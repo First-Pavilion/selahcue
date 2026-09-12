@@ -135,7 +135,17 @@ DIST = os.environ.get("SELAHCUE_OPERATOR_DIST") or os.path.join(
 # fixture (short/long/medium thirds, not interleaved) and jump straight into it fresh before each
 # check, mutation-verified against the same compensation-disabled mutant. See the "=== TR
 # regime-change fresh-open jump control" block below.
-EXPECTED_MIN_CHECKS = 1250
+# 1250 -> 1254: performance re-review (Vera V-13, test gap) found no control specifically proves
+# the ANCHOR half of the V-6 fix (as opposed to the ratio-fallback half) is necessary: the
+# ratio-only-fallback mutant (MV6a, round 2's "P1") passes every check above at 0 FAIL, because a
+# ratio-only correction still avoids a fully blank frame — it just lands 300-1,257px off the row
+# it should have kept anchored, which none of "at least one row visible" / "reachable" can see.
+# The 4 new "TR V-13" checks track ONE real row across a hysteresis-crossing render on the PHASED
+# fixture's long block and assert its on-screen position stays within 2px of the expected
+# 60px-per-tick displacement — a bound only the anchor term (reading that row's own live position)
+# can hit. See the "=== TR V-13" block below; mutation-verified against the anchor-forced-null
+# mutant (the assertion goes red; the two setup preconditions above it stay green).
+EXPECTED_MIN_CHECKS = 1254
 
 
 def find_chrome():
@@ -2983,6 +2993,59 @@ DRIVER = r"""
            " (a length regime the calibration ratio has not seen yet) shows at least one real row — not a blank frame (Vera V-6)");
         el("tr-detail-back").click();
       }
+
+      // === TR V-13 (performance review, Vera, test gap): no control specifically proves the
+      // ANCHOR half of the V-6 fix (as opposed to the ratio-fallback half) is necessary. Every
+      // check above — including "TR regime-change" just above — passes at 0 FAIL even with the
+      // anchor forced null and only the ratio-only term applied (round 2's partial "P1" fix,
+      // Vera's MV6a mutant): a ratio-only correction still avoids a fully BLANK frame, it just
+      // lands 300-1,257px off the row it should have kept anchored on a fair fraction of frames,
+      // which none of the "at least one row visible" / "reachable" style assertions can see.
+      // This tracks ONE real row that survives a hysteresis-crossing render (the overlap of the
+      // old/new window — the same computation "TR identity" above already uses) and asserts its
+      // ON-SCREEN pixel position after N real 60px wheel-sized steps lands within 2px of "moved
+      // up by exactly 60*N px" — a bound only the anchor term (which reads that row's OWN live
+      // rendered position) can hit, since the ratio-only fallback has no way to know any ONE
+      // row's individual real/estimate error and misses by far more than 2px whenever a real
+      // row's height diverges from the running average ratio (the whole reason the PHASED
+      // fixture's long block exists).
+      el('tr-list').querySelector('.tr-card[data-id="5"] .tr-card-open').click();
+      await waitFor(function(){ return !el("tr-detail-view").hidden && el("tr-detail-title").textContent.indexOf("Regime Change Service") === 0; });
+      await waitFor(function(){ return window.__trRenderedRowCount && window.__trRenderedRowCount() > 0; });
+      window.__trScrollToFraction(0.5); // deep in the long block, same as "TR regime-change" above
+      var trV13Before = window.__trWindowBounds();
+      var trV13TargetIdx = Math.min(trV13Before.start + 70, trV13Before.end - 1);
+      var trV13TargetId = String(20000 + trV13TargetIdx);
+      var trV13Row = window.__trRowFor(trV13TargetId);
+      ok(!!trV13Row, "TR V-13 (setup): the tracked row is mounted before any wheel-sized steps");
+      var trV13OldTop = trV13Row ? trV13Row.getBoundingClientRect().top : null;
+      var trV13RenderBefore = window.__trRenderCount();
+      var trV13Ticks = 0, trV13RenderAfter = trV13RenderBefore;
+      while (trV13Ticks < 80 && trV13RenderAfter === trV13RenderBefore) {
+        window.__trScrollBy(60);
+        trV13Ticks++;
+        trV13RenderAfter = window.__trRenderCount();
+      }
+      ok(trV13RenderAfter > trV13RenderBefore,
+         "TR V-13 (setup): a real hysteresis-crossing render fired within the tick budget (" + trV13Ticks + " ticks)");
+      var trV13After = window.__trWindowBounds();
+      var trV13RowAfter = window.__trRowFor(trV13TargetId);
+      var trV13Survived = !!trV13RowAfter && trV13RowAfter === trV13Row;
+      ok(trV13Survived,
+         "TR V-13 (setup): the tracked row SURVIVED the crossing render as the same DOM node (still in the overlap)");
+      // Always runs (never skipped) so this file's own check COUNT cannot vary run to run: a
+      // failed survival above still fails this assertion outright rather than silently omitting
+      // it, instead of leaving the count dependent on a runtime condition.
+      var trV13NewTop = trV13Survived ? trV13RowAfter.getBoundingClientRect().top : NaN;
+      var trV13ExpectedDelta = 60 * trV13Ticks;
+      var trV13Error = trV13Survived && trV13OldTop !== null
+        ? Math.abs(trV13NewTop - trV13OldTop + trV13ExpectedDelta) : Infinity;
+      ok(trV13Error <= 2,
+         "TR V-13: the anchor keeps a real tracked row within 2px of its expected on-screen " +
+         "position after " + trV13Ticks + " real 60px steps crossing a render (error " +
+         trV13Error.toFixed(2) + "px) — the ratio-only fallback alone cannot hit this bound " +
+         "(Vera measured 300-1,257px hops under that mutant)");
+      el("tr-detail-back").click();
 
       trDetailViewEl.style.width = trSavedWidth;
       trDetailViewEl.style.maxWidth = trSavedMaxWidth;

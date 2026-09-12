@@ -171,12 +171,30 @@
   var EDGE_MARGIN_ROWS = 40;
   // Sub-pixel rounding slack at the true bottom of the scrollable area.
   var END_PIN_EPSILON_PX = 2;
+  // Native keyboard "page" scroll step (performance review, Vera V-10): Blink and WebKit share
+  // WebCore's ScrollableArea::PageStep formula for PageUp/PageDown/Space — the larger of (the
+  // visible length minus a fixed small overlap, so a line or two of context carries over) and
+  // (87.5% of the visible length). Computed from `logEl.clientHeight` at the moment of each
+  // keypress (see `pageStepPx` below), NOT a fixed pixel literal: Vera measured 748px at the
+  // operator's own 1520x984 default window, but that number is `clientHeight(788) - 40` for THAT
+  // window only — hardcoding 748 would silently go wrong at any other window size or after a
+  // resize, which is exactly the kind of thing this ticket's review rounds keep catching late.
+  var PAGE_STEP_OVERLAP_PX = 40;
+  var PAGE_STEP_MIN_FRACTION = 0.875;
+  function pageStepPx() {
+    var length = logEl.clientHeight;
+    return Math.max(length - PAGE_STEP_OVERLAP_PX, Math.round(length * PAGE_STEP_MIN_FRACTION));
+  }
 
   var segs = [];       // the full, unbounded segment array for the open transcript (data, not DOM)
   var offsets = [0];   // offsets[i] = ESTIMATED px height of everything BEFORE segment i (unscaled)
   var winStart = 0, winEnd = 0;
   var rafPending = false;
   var renderCount = 0; // how many times the mounted window actually moved (test hook, V-2)
+  // Echo-suppression state for the scroll-position race (QA finding, this round): see `onScroll`
+  // below for the full mechanism. Written ONLY by `recomputeWindow`, at the very end of every
+  // call, after every synchronous scrollTop write that pass could have made.
+  var expectedScrollTop = null;
 
   // Measured-height writeback + calibration (Vera V-1 fix direction (a)+(b)): once a row is
   // mounted, its real `offsetHeight` is folded into a running measured-vs-estimated ratio, and
@@ -278,7 +296,7 @@
   // unmount/remount, no re-announcement); only rows that actually left or entered the window are
   // removed/added. This also collapses the per-render DOM-node churn from up to WINDOW_ROWS
   // (~450 elements incl. children) to just the delta, which is V-2's fix.
-  function renderWindow(start, end, pinned) {
+  function renderWindow(start, end, pinned, suppressCompensation) {
     start = Math.max(0, Math.min(start, segs.length));
     end = Math.max(start, Math.min(end, segs.length));
     renderCount++;
@@ -290,15 +308,35 @@
 
     // Capture the scroll-anchor BEFORE any DOM write below (V-6 fix) — with no overlap (a
     // scrollbar drag/big jump has nothing in common with what's mounted to anchor to) there is
-    // no survivor to track, and the compensation below falls back to the ratio-only term. `pinned`
-    // (the tail-pin caller, below) is exempt entirely: that path already deliberately holds
-    // `scrollTop` at the real end regardless of estimate error, `bottomSpacer` is always 0 there
-    // (nothing follows the true last segment), and the browser auto-clamps `scrollTop` to the new
-    // `scrollHeight` on its own — compensating on top of that would pull the view back OFF the
-    // true end the pin exists to guarantee (confirmed by running the committed end-reachability
-    // checks: applying either term here regressed "TR realistic: ... actually VISIBLE at
-    // scroll-to-end" before this guard was added).
-    var anchor = !pinned && hasOverlap ? findTopVisibleSurvivor(overlapStart, overlapEnd) : null;
+    // no survivor to track, and the compensation below falls back to the ratio-only term.
+    // `pinned` (the tail-pin caller, below) is exempt entirely: that path already deliberately
+    // holds `scrollTop` at the real end regardless of estimate error, `bottomSpacer` is always 0
+    // there (nothing follows the true last segment), and the browser auto-clamps `scrollTop` to
+    // the new `scrollHeight` on its own — compensating on top of that would pull the view back
+    // OFF the true end the pin exists to guarantee (confirmed by running the committed
+    // end-reachability checks: applying either term here regressed "TR realistic: ... actually
+    // VISIBLE at scroll-to-end" before this guard was added).
+    //
+    // `suppressCompensation` (QA finding, this round — Home/End's own fix racing with itself) is
+    // the same exemption for a different reason, and — unlike `pinned` — is passed by Home/End
+    // ONLY, never by PageUp/PageDown/Space (see `jumpScrollTop`'s call sites below for why the
+    // paging keys deliberately do NOT pass this, having briefly done so in an earlier draft of
+    // this fix and reintroduced V-6's own blank-frame failure through a new door). Home/End
+    // target an ABSOLUTE edge (offset 0 or the true end) that `jumpScrollTop` already set
+    // `scrollTop` to exactly; the anchor search that compensation would run is computed by
+    // inspecting whatever DOM is STILL mounted from before the jump, which for an arbitrary
+    // cross-document jump has no meaningful spatial relationship to where we just moved — so
+    // "correcting" against it silently pulls the view off the exact edge the key promised, which
+    // is exactly what let Home land 313-315px off target and let End's window un-pin itself after
+    // a correct pinned render (see `onScroll` below for the other half of that bug). PageUp/
+    // PageDown/Space have no such absolute target to protect — they move by a native pixel step
+    // relative to wherever the log already was, the same kind of small, local change a wheel tick
+    // makes — so the compensation stays ON for them, same as a wheel tick, and is in fact
+    // necessary there: verified directly that repeated real PageDown presses crossing a
+    // length-regime change produce a fully blank frame with compensation suppressed and none with
+    // it left on, at otherwise identical scroll positions.
+    var skipCompensation = pinned || suppressCompensation;
+    var anchor = !skipCompensation && hasOverlap ? findTopVisibleSurvivor(overlapStart, overlapEnd) : null;
     var ratioBefore = avgRatio;
 
     if (!hasOverlap) {
@@ -345,13 +383,13 @@
     // change alone against this render's own top offset.
     if (anchor) {
       logEl.scrollTop += anchor.node.getBoundingClientRect().top - anchor.top;
-    } else if (!pinned && avgRatio !== ratioBefore) {
+    } else if (!skipCompensation && avgRatio !== ratioBefore) {
       logEl.scrollTop += offsets[start] * (avgRatio - ratioBefore);
     }
   }
-  function recomputeWindow() {
+  function recomputeWindow(suppressCompensation) {
     rafPending = false;
-    if (!segs.length) return;
+    if (!segs.length) { expectedScrollTop = logEl.scrollTop; return; }
     var scrollTop = logEl.scrollTop;
     var maxScroll = Math.max(0, logEl.scrollHeight - logEl.clientHeight);
     // Pin the tail (Vera V-1): at the TRUE bottom of the real scrollable area, always mount all
@@ -364,6 +402,14 @@
         var pinnedEnd = segs.length;
         renderWindow(Math.max(0, pinnedEnd - WINDOW_ROWS), pinnedEnd, true);
       }
+      // V-11 (Vera, low): the pinned render above may have just folded newly-measured tail rows
+      // into `avgRatio`, which can GROW `scrollHeight` out from under the `scrollTop` we entered
+      // this function with — the pin's whole reason to exist is "the true last segment is always
+      // reachable," which a `scrollTop` computed BEFORE that growth cannot guarantee. Re-assert
+      // the true max now that the spacer/measurement writes above are done, rather than leaving
+      // the view short until the next scroll event happens to correct it.
+      logEl.scrollTop = Math.max(0, logEl.scrollHeight - logEl.clientHeight);
+      expectedScrollTop = logEl.scrollTop;
       return;
     }
     var idx = indexAtOffset(scrollTop);
@@ -375,35 +421,112 @@
     // mounted edge — this is also what catches a big jump (e.g. a scrollbar drag), since being
     // fully outside the mounted window trivially satisfies one side of this check too.
     var nearMountedEdge = idx <= winStart + EDGE_MARGIN_ROWS || idx >= winEnd - EDGE_MARGIN_ROWS;
-    if (nearMountedEdge && (start !== winStart || end !== winEnd)) renderWindow(start, end);
+    if (nearMountedEdge && (start !== winStart || end !== winEnd)) renderWindow(start, end, false, suppressCompensation);
+    // Record the fully-settled value THIS call leaves `scrollTop` at — after every synchronous
+    // write this pass could have made (the branch above, or `renderWindow`'s own compensation) —
+    // so `onScroll` below can tell its own echo apart from a genuine further scroll. Must be the
+    // LAST thing this function does on every exit path.
+    expectedScrollTop = logEl.scrollTop;
   }
+  // Echo suppression (QA finding, this round — generalizes the fix to every path that can move
+  // scrollTop, not just Home/End): writing `.scrollTop` from script fires a native, ASYNCHRONOUS
+  // `scroll` event — indistinguishable, to this handler, from a real user scroll. Before this
+  // fix, a manual jump's own write (Home/End, and unavoidably the paging keys once V-10 added
+  // them) scheduled a SECOND, independent `recomputeWindow()` on the next frame, which
+  // re-evaluated the position from scratch using whatever `scrollTop`/`scrollHeight` happened to
+  // be current by then. If the jump's own synchronous call had just folded newly-measured rows
+  // into `avgRatio` — ordinary, since a keyboard jump usually lands somewhere not yet rendered —
+  // the resulting `scrollHeight` change made that SECOND call conclude it was no longer at the
+  // true edge: it rendered a non-pinned window, and the (correctly-)compensating anchor logic
+  // from V-6 then wrote a further, unwanted `scrollTop` delta on top of a jump that had already
+  // landed correctly. `expectedScrollTop` closes this by construction rather than by timing: it
+  // is written by `recomputeWindow()` itself, as the LAST thing every exit path does, so it
+  // always names the fully-settled value this module most recently intended, after every
+  // synchronous write that pass could make. A `scroll` event reporting exactly that value is
+  // therefore provably an echo this file already accounted for — not new information — and is
+  // skipped; any OTHER value (a real wheel tick, drag, or native scroll this file did not
+  // initiate) still schedules a real recompute, so genuine user scrolling is never suppressed.
   function onScroll() {
+    if (expectedScrollTop !== null && logEl.scrollTop === expectedScrollTop) {
+      expectedScrollTop = null;
+      return;
+    }
+    expectedScrollTop = null;
     if (rafPending) return;
     rafPending = true;
-    window.requestAnimationFrame(recomputeWindow);
+    window.requestAnimationFrame(function () { recomputeWindow(false); });
   }
   logEl.addEventListener("scroll", onScroll);
-  // Home/End: jump straight there ourselves, rather than let the browser's own default action
-  // drive it (V-6 fix follow-up, found while verifying the fix against the real WebKit gate
-  // below, not part of the original finding). WebKit runs a genuine multi-frame animation for a
-  // native Home/End keyboard scroll (confirmed by tracing scrollTop across ~13 intermediate
-  // frames over ~300ms — `docs/delivery` evidence for this ticket has the full trace), and ANY
-  // script write to `scrollTop` — including this render's own anchor/ratio compensation above,
-  // required for the wheel/drag fix — cancels that animation outright, the same way any other
-  // programmatic scroll would. Left alone, the very first hysteresis-crossing render fired mid
-  // -animation stops it a few hundred rows short of the true end, regressing the already-shipped,
-  // four-reviewer-verified "End reaches the last segment" guarantee (NFR-019) purely as a side
-  // effect of fixing V-6. A real mouse wheel or scrollbar drag never hits this: both re-assert
-  // their own position on the very next native input event regardless of what we write, so they
-  // do not depend on an uninterrupted engine-driven animation the way Home/End's default action
-  // does. Handling the two jump keys ourselves — the same instant jump `__trScrollToFraction`
-  // already performs for the committed Blink gate — sidesteps the race entirely instead of
-  // trying to out-guess when a native animation might be in flight.
+  // Keyboard paging: Home, End, PageUp, PageDown, Space and Shift+Space all jump straight there
+  // ourselves through `jumpScrollTop`, rather than letting the browser's own default action drive
+  // it (V-6 fix follow-up for Home/End; extended to the paging keys by Vera's V-10). WebKit runs a
+  // genuine multi-frame animation for ALL FIVE of these keys when the log has focus (confirmed by
+  // tracing scrollTop across ~13 intermediate frames over ~300ms for Home/End — `docs/delivery`
+  // evidence for this ticket has the full trace — and Vera independently measured the same
+  // cancellation mechanism stranding PageDown/PageUp/Space 171-330px short of the real
+  // (`clientHeight`-derived) native step on 3-5 of every 6-14 presses that cross a render
+  // boundary), and ANY script write to `scrollTop` during that animation — including this
+  // render's own anchor/ratio compensation, required for the wheel/drag fix — cancels it outright.
+  // A real mouse wheel or scrollbar drag never hits this: both re-assert their own position on
+  // the very next native input event regardless of what we write, so they do not depend on an
+  // uninterrupted engine-driven animation the way these keys' default action does. Handling all
+  // five ourselves — the same instant jump `__trScrollToFraction` already performs for the
+  // committed Blink gate — sidesteps the race entirely instead of trying to out-guess when a
+  // native animation might be in flight.
+  //
+  // `suppressCompensation` is Home/End ONLY, not the paging keys (own verification, this round —
+  // an earlier draft of this fix suppressed it for all five and reintroduced V-6's own blank-frame
+  // failure mode through a NEW door): Home/End target an ABSOLUTE, well-defined edge (0 or the
+  // true end), where the anchor/ratio compensation's correction is not merely unwanted but
+  // actively wrong — it is computed by inspecting whatever DOM is still mounted from BEFORE the
+  // jump, which for an arbitrary cross-document jump has no meaningful spatial relationship to
+  // where we just moved, so "correcting" against it silently pulls the view off the exact edge
+  // the key promised (Quinn's finding). PageUp/PageDown/Space are different: they move scrollTop
+  // by a NATIVE PIXEL STEP relative to wherever the log already was, the same kind of small, local
+  // change a wheel tick makes — and repeating that step across a length-regime change is exactly
+  // the estimate-vs-real drift the anchor/ratio compensation exists to correct (V-1/V-6). Verified
+  // directly: 45 repeated real PageDown presses crossing a regime boundary produced a fully BLANK
+  // frame (and two further near-blank ones) with compensation suppressed, and zero blank frames
+  // with it left on, at otherwise identical positions — compensation is not merely "the wheel/drag
+  // case", it is what keeps a rapid sequence of any raw-pixel jumps aligned with the content as
+  // the ratio moves out from under them. The instant-jump-instead-of-native-animation fix for
+  // WebKit's cancellation bug (V-10) does not depend on suppressing compensation at all: `preventDefault()`
+  // already takes the browser's own animation out of the picture entirely, so this file's own
+  // compensation write next is just one more synchronous script write in the same turn, never a
+  // race against anything. `onScroll`'s echo suppression (above) is what keeps THAT write's own
+  // async 'scroll' event from over-triggering a redundant cascade, the same as it does for wheel
+  // scrolling.
+  //
+  // Modifiers (Vera V-12): Ctrl/Alt/Meta are always left to the browser/OS. Shift is native for
+  // Home/End/PageUp/PageDown too — e.g. Shift+End should extend a text selection to the end;
+  // collapsing that selection by jumping the scroll position instead (the pre-fix behaviour) is
+  // the bug. Shift+Space is the one exception: it is not a selection gesture, it is itself the
+  // standard "page up" pairing (plain Space pages down), so it is handled below rather than
+  // bailing out on `ev.shiftKey` the way the other four keys do.
+  function jumpScrollTop(target, suppressCompensation) {
+    var max = Math.max(0, logEl.scrollHeight - logEl.clientHeight);
+    logEl.scrollTop = Math.max(0, Math.min(max, target));
+    recomputeWindow(suppressCompensation);
+  }
   logEl.addEventListener("keydown", function (ev) {
-    if (ev.key !== "Home" && ev.key !== "End") return;
-    ev.preventDefault();
-    logEl.scrollTop = ev.key === "End" ? Math.max(0, logEl.scrollHeight - logEl.clientHeight) : 0;
-    recomputeWindow();
+    if (ev.ctrlKey || ev.altKey || ev.metaKey) return;
+    var key = ev.key;
+    if (!ev.shiftKey && (key === "Home" || key === "End")) {
+      ev.preventDefault();
+      jumpScrollTop(key === "End" ? Number.POSITIVE_INFINITY : 0, true);
+      return;
+    }
+    if (!ev.shiftKey && (key === "PageDown" || key === "PageUp")) {
+      ev.preventDefault();
+      var pageStep = pageStepPx();
+      jumpScrollTop(logEl.scrollTop + (key === "PageDown" ? pageStep : -pageStep), false);
+      return;
+    }
+    if (key === " " || key === "Spacebar") {
+      ev.preventDefault();
+      var spaceStep = pageStepPx();
+      jumpScrollTop(logEl.scrollTop + (ev.shiftKey ? -spaceStep : spaceStep), false);
+    }
   });
 
   // Test hooks (CLAUDE.md bounded-memory discipline): a per-key Option-returning accessor, never a
@@ -435,7 +558,9 @@
   window.__trScrollToFraction = function (f) {
     var max = Math.max(0, logEl.scrollHeight - logEl.clientHeight);
     logEl.scrollTop = Math.max(0, Math.min(1, f)) * max;
-    recomputeWindow();
+    // A fraction jump simulates a scrollbar drag — exactly the case the anchor/ratio
+    // compensation exists for (V-6), so it stays ON here, unlike the keyboard jumps above.
+    recomputeWindow(false);
   };
   // A REAL small pixel delta (matching an actual wheel tick, e.g. Vera's measured "60px wheel
   // steps"), unlike `__trScrollToFraction` above which can jump across the WHOLE transcript in
@@ -445,7 +570,7 @@
   window.__trScrollBy = function (deltaPx) {
     var max = Math.max(0, logEl.scrollHeight - logEl.clientHeight);
     logEl.scrollTop = Math.max(0, Math.min(max, logEl.scrollTop + deltaPx));
-    recomputeWindow();
+    recomputeWindow(false); // simulates a real wheel tick — compensation stays ON, same as onScroll
   };
 
   // ---------- DETAIL: header + load ----------
@@ -483,6 +608,7 @@
         renderDetailHeader(t);
         renderWindow(0, Math.min(segs.length, WINDOW_ROWS));
         logEl.scrollTop = 0;
+        expectedScrollTop = logEl.scrollTop; // every scrollTop write funnels through this bookkeeping
         logEl.focus();
         liveEl.textContent = "Opened " + (t.label || "transcript") + ", " + fmtSegCount(segs.length) + ".";
       })

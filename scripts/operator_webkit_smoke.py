@@ -78,6 +78,63 @@ REALISTIC_SEGMENT_COUNT = 1200
 REALISTIC_SEGMENTS = _realistic_transcript_segments(REALISTIC_SEGMENT_COUNT)
 REALISTIC_LAST_SEG_ID = REALISTIC_SEGMENTS[-1]["id"]
 
+
+def _phased_transcript_segments(count, id_base):
+    """Three back-to-back length regimes (short/long/medium thirds) — the same PHASED shape
+    `scripts/operator_headless.py`'s own "TR regime-change" fixture uses. A fresh jump anywhere in
+    a fixture that interleaves lengths evenly lands near whatever average ratio the calibration
+    already learned near the top, which is exactly why V-6 never showed up on the evenly-mixed
+    `_realistic_transcript_segments` fixture above. A regime-change fixture is what's needed to
+    force `avgRatio` to move meaningfully mid-transcript — the precondition this round's Home/End
+    race (QA finding) and V-10 (PageDown/PageUp/Space) both need to reproduce."""
+    filler = (
+        "the quick brown fox jumps over the lazy dog near the riverbank at dawn while "
+        "the choir softly hums an old familiar hymn before the sermon begins "
+    )
+    third = count // 3
+    segs = []
+    for i in range(count):
+        if i < third:
+            length = 8 + (i % 23)
+        elif i < 2 * third:
+            length = 260 + (i % 161)
+        else:
+            length = 40 + (i % 101)
+        text = "Segment " + str(i) + ": "
+        while len(text) < length:
+            text += filler
+        segs.append({"id": id_base + i, "start_ms": i * 3000, "end_ms": i * 3000 + 2500, "text": text[:length]})
+    return segs
+
+
+PHASED_SEGMENT_COUNT = 3000
+PHASED_SEGMENTS = _phased_transcript_segments(PHASED_SEGMENT_COUNT, 40000)
+PHASED_FIRST_SEG_ID = PHASED_SEGMENTS[0]["id"]
+PHASED_LAST_SEG_ID = PHASED_SEGMENTS[-1]["id"]
+
+# Uniform-LONG fixture for V-11 (a tail-pin render that GROWS the ratio): every segment is long
+# enough that narrowing `#tr-detail-view` (done in the V-11 check below) makes the real wrapped
+# line count exceed the 88-chars/line estimate everywhere, so `avgRatio` moves away from its
+# un-measured default of 1 the very first time ANY row is measured — including a tail-pin render
+# reached on a fresh open with no prior scrolling, which is exactly the precondition V-11 needs.
+def _uniform_long_segments(count, id_base, length):
+    filler = (
+        "the quick brown fox jumps over the lazy dog near the riverbank at dawn while "
+        "the choir softly hums an old familiar hymn before the sermon begins "
+    )
+    segs = []
+    for i in range(count):
+        text = "Segment " + str(i) + ": "
+        while len(text) < length:
+            text += filler
+        segs.append({"id": id_base + i, "start_ms": i * 3000, "end_ms": i * 3000 + 2500, "text": text[:length]})
+    return segs
+
+
+UNIFORM_LONG_COUNT = 400
+UNIFORM_LONG_SEGMENTS = _uniform_long_segments(UNIFORM_LONG_COUNT, 50000, 300)
+UNIFORM_LONG_LAST_SEG_ID = UNIFORM_LONG_SEGMENTS[-1]["id"]
+
 # The same __TAURI__ stub the Chrome harness uses, so app.js boots + the render path runs.
 STUB = r"""
 window.__calls = [];
@@ -105,13 +162,26 @@ window.__TAURI__ = { core: { invoke: function(cmd, args){
   // id:4 is the realistic-width/content-size fixture (performance review, Vera V-1/V-2) — a
   // second, independent entry alongside id:1's small fixture; the boot-smoke checks below still
   // pick the FIRST `.tr-card-open` (id:1), so adding this does not disturb them.
+  // id:5 is the PHASED (regime-change) fixture and id:6 the uniform-LONG/narrow-column fixture,
+  // both added this round for the Home/End race, V-10 and V-11 checks below — see their own
+  // comments for why an evenly-mixed fixture cannot exercise those.
   if (cmd === "transcript_list") return Promise.resolve([
     {id:1, label:"Sunday Service", provider:"manual", started_at_ms:1722760800000, ended_at_ms:1722764460000, segment_count:1},
-    {id:4, label:"Realistic Long Service", provider:"manual", started_at_ms:1728700000000, ended_at_ms:1728700000000 + __REALISTIC_SEGMENT_COUNT__ * 3000, segment_count:__REALISTIC_SEGMENT_COUNT__}
+    {id:4, label:"Realistic Long Service", provider:"manual", started_at_ms:1728700000000, ended_at_ms:1728700000000 + __REALISTIC_SEGMENT_COUNT__ * 3000, segment_count:__REALISTIC_SEGMENT_COUNT__},
+    {id:5, label:"Regime Change Service", provider:"manual", started_at_ms:1730000000000, ended_at_ms:1730000000000 + __PHASED_SEGMENT_COUNT__ * 3000, segment_count:__PHASED_SEGMENT_COUNT__},
+    {id:6, label:"Uniform Long Service", provider:"manual", started_at_ms:1731000000000, ended_at_ms:1731000000000 + __UNIFORM_LONG_COUNT__ * 3000, segment_count:__UNIFORM_LONG_COUNT__}
   ]);
   if (cmd === "transcript_get" && args && args.id === 4) return Promise.resolve({
     id:4, label:"Realistic Long Service", provider:"manual", started_at_ms:1728700000000, ended_at_ms:1728700000000 + __REALISTIC_SEGMENT_COUNT__ * 3000,
     notes_generated:false, segments: __REALISTIC_SEGMENTS_JSON__
+  });
+  if (cmd === "transcript_get" && args && args.id === 5) return Promise.resolve({
+    id:5, label:"Regime Change Service", provider:"manual", started_at_ms:1730000000000, ended_at_ms:1730000000000 + __PHASED_SEGMENT_COUNT__ * 3000,
+    notes_generated:false, segments: __PHASED_SEGMENTS_JSON__
+  });
+  if (cmd === "transcript_get" && args && args.id === 6) return Promise.resolve({
+    id:6, label:"Uniform Long Service", provider:"manual", started_at_ms:1731000000000, ended_at_ms:1731000000000 + __UNIFORM_LONG_COUNT__ * 3000,
+    notes_generated:false, segments: __UNIFORM_LONG_SEGMENTS_JSON__
   });
   if (cmd === "transcript_get") return Promise.resolve({
     id:1, label:"Sunday Service", provider:"manual", started_at_ms:1722760800000, ended_at_ms:1722764460000,
@@ -123,6 +193,10 @@ window.__TAURI__ = { core: { invoke: function(cmd, args){
 STUB = (
     STUB.replace("__REALISTIC_SEGMENT_COUNT__", str(REALISTIC_SEGMENT_COUNT))
     .replace("__REALISTIC_SEGMENTS_JSON__", json.dumps(REALISTIC_SEGMENTS))
+    .replace("__PHASED_SEGMENT_COUNT__", str(PHASED_SEGMENT_COUNT))
+    .replace("__PHASED_SEGMENTS_JSON__", json.dumps(PHASED_SEGMENTS))
+    .replace("__UNIFORM_LONG_COUNT__", str(UNIFORM_LONG_COUNT))
+    .replace("__UNIFORM_LONG_SEGMENTS_JSON__", json.dumps(UNIFORM_LONG_SEGMENTS))
 )
 
 HAS_RENDER = (
@@ -257,6 +331,235 @@ def main():
         except Exception as e:  # noqa: BLE001 — any failure here is itself the finding
             tr_real_errors.append(str(e).splitlines()[0])
 
+        # === Home/End keyboard race (QA finding, this round): Home/End's own fix (added last
+        # round to sidestep WebKit's native keyboard-scroll-animation cancellation) raced with the
+        # scroll-anchor compensation it was built alongside — a manual jump's own scrollTop write
+        # fired a native async 'scroll' event that scheduled a SECOND, independent
+        # recomputeWindow() next frame, which could un-pin a render that had just correctly landed
+        # at the true start/end. Reproduces the exact shape QA used: calibrate `avgRatio` deep in
+        # one length regime via REAL wheel scrolling (a fresh, un-calibrated jump would trivially
+        # pass), then wheel back until the mounted window already overlaps the eventual Home/End
+        # target, then a single real trusted keypress. Mutation-verified against the pre-fix
+        # `jumpScrollTop`-less handler (removing `suppressCompensation` from the keydown path):
+        # both `tr_home_landed`/`tr_end_landed` go RED — see the PR verification notes.
+        tr_kb_errors = []
+        tr_home_landed = tr_home_visible = tr_end_landed = tr_end_visible2 = False
+        try:
+            page3 = browser.new_page(viewport={"width": 1520, "height": 984})
+            page3.on("pageerror", lambda e: tr_kb_errors.append(str(e)))
+            page3.add_init_script(STUB)
+            page3.goto("file://" + os.path.join(DIST, "index.html"))
+            page3.wait_for_function(HAS_RENDER, timeout=8000)
+            page3.click("#app-menu-btn")
+            page3.wait_for_selector('.nav-item[data-surface="transcripts"]', state="visible", timeout=8000)
+            page3.click('.nav-item[data-surface="transcripts"]')
+            page3.wait_for_function(
+                "() => document.querySelectorAll('#tr-list .tr-card').length >= 3", timeout=8000
+            )
+            page3.click('#tr-list .tr-card[data-id="5"] .tr-card-open')
+            page3.wait_for_function(
+                "() => window.__trRenderedRowCount && window.__trRenderedRowCount() > 0", timeout=8000
+            )
+            page3.hover("#tr-detail-log")
+            # Calibrate deep in the long-text middle third via real wheel scrolling.
+            for _ in range(40):
+                page3.mouse.wheel(0, 800)
+                page3.wait_for_timeout(15)
+            page3.wait_for_timeout(100)
+
+            # --- Home: real wheel back up until the mounted window overlaps [0, 150).
+            for _ in range(400):
+                page3.mouse.wheel(0, -120)
+                page3.wait_for_timeout(12)
+                b = page3.evaluate("() => window.__trWindowBounds()")
+                if b["start"] < 150:
+                    break
+            page3.click("#tr-detail-log")
+            page3.keyboard.press("Home")
+            page3.wait_for_timeout(300)
+            tr_home_landed = page3.evaluate(
+                "() => document.getElementById('tr-detail-log').scrollTop"
+            ) == 0
+            home_visible = page3.evaluate("() => window.__trVisibleSegIds()")
+            tr_home_visible = str(PHASED_FIRST_SEG_ID) in (home_visible or [])
+
+            # --- End: real wheel back down until the mounted window overlaps the tail.
+            for _ in range(400):
+                page3.mouse.wheel(0, 120)
+                page3.wait_for_timeout(12)
+                b = page3.evaluate("() => window.__trWindowBounds()")
+                if b["end"] > PHASED_SEGMENT_COUNT - 150:
+                    break
+            page3.click("#tr-detail-log")
+            page3.keyboard.press("End")
+            page3.wait_for_timeout(300)
+            end_scrolltop = page3.evaluate("() => document.getElementById('tr-detail-log').scrollTop")
+            end_max = page3.evaluate(
+                "() => Math.max(0, document.getElementById('tr-detail-log').scrollHeight -"
+                " document.getElementById('tr-detail-log').clientHeight)"
+            )
+            tr_end_landed = abs(end_scrolltop - end_max) <= 2
+            end_visible = page3.evaluate("() => window.__trVisibleSegIds()")
+            tr_end_visible2 = str(PHASED_LAST_SEG_ID) in (end_visible or [])
+            page3.close()
+        except Exception as e:  # noqa: BLE001 — any failure here is itself the finding
+            tr_kb_errors.append(str(e).splitlines()[0])
+
+        # === V-10 (Vera, High, WebKit): PageDown/PageUp/Space travelled only a fraction of a
+        # page whenever the press crossed a render boundary, because real WebKit runs the SAME
+        # native multi-frame keyboard-scroll animation for these keys as it does for Home/End, and
+        # a concurrent scrollTop write (the anchor/ratio compensation) cancelled it mid-flight.
+        # These keys now go through the same `jumpScrollTop` instant-jump path as Home/End —
+        # unlike Home/End, WITHOUT suppressing the anchor/ratio compensation (own verification,
+        # this round: suppressing it for these keys too reintroduced V-6's blank-frame failure the
+        # first time a repeated press crossed a length-regime change). Presses ONE AT A TIME with
+        # waits (matching Vera's own repro shape) and asserts every press travels WITHIN 10% of
+        # the derived native step — not bit-exact equality, because the compensation staying ON
+        # means a press whose render folds newly-measured rows can legitimately move a few percent
+        # more or less than the raw estimate (the same "breathing" this file already documents and
+        # accepts elsewhere), but a real cancellation is nowhere close: Vera measured actual
+        # failures at 171-330px against a 748px step (23-44%, roughly a third to a fifth of the
+        # true step), nothing like the ~1-2% variance a healthy press shows. `expected_step` is
+        # read from the live `clientHeight`, the same formula `pageStepPx()` uses, never a literal
+        # pixel constant.
+        tr_pk_errors = []
+        tr_pagedown_ok = tr_pageup_ok = tr_space_ok = False
+        tr_pagedown_deltas = tr_pageup_deltas = tr_space_deltas = []
+        try:
+            page4 = browser.new_page(viewport={"width": 1520, "height": 984})
+            page4.on("pageerror", lambda e: tr_pk_errors.append(str(e)))
+            page4.add_init_script(STUB)
+            page4.goto("file://" + os.path.join(DIST, "index.html"))
+            page4.wait_for_function(HAS_RENDER, timeout=8000)
+            page4.click("#app-menu-btn")
+            page4.wait_for_selector('.nav-item[data-surface="transcripts"]', state="visible", timeout=8000)
+            page4.click('.nav-item[data-surface="transcripts"]')
+            page4.wait_for_function(
+                "() => document.querySelectorAll('#tr-list .tr-card').length >= 3", timeout=8000
+            )
+            page4.click('#tr-list .tr-card[data-id="5"] .tr-card-open')
+            page4.wait_for_function(
+                "() => window.__trRenderedRowCount && window.__trRenderedRowCount() > 0", timeout=8000
+            )
+            page4.click("#tr-detail-log")
+            expected_step = page4.evaluate(
+                "() => { var h = document.getElementById('tr-detail-log').clientHeight;"
+                " return Math.max(h - 40, Math.round(h * 0.875)); }"
+            )
+
+            def presses(key, count, sign):
+                deltas = []
+                prev = page4.evaluate("() => document.getElementById('tr-detail-log').scrollTop")
+                for _ in range(count):
+                    page4.keyboard.press(key)
+                    page4.wait_for_timeout(60)
+                    cur = page4.evaluate("() => document.getElementById('tr-detail-log').scrollTop")
+                    deltas.append((cur - prev) * sign)
+                    prev = cur
+                return deltas
+
+            tr_pagedown_deltas = presses("PageDown", 14, 1)
+            tr_pageup_deltas = presses("PageUp", 6, -1)
+            page4.evaluate("() => window.__trScrollToFraction(0.02)")
+            page4.wait_for_timeout(50)
+            tr_space_deltas = presses("Space", 8, 1)
+
+            def within_tolerance(deltas):
+                return len(deltas) > 0 and all(
+                    expected_step * 0.9 <= d <= expected_step * 1.1 for d in deltas
+                )
+
+            tr_pagedown_ok = within_tolerance(tr_pagedown_deltas)
+            tr_pageup_ok = within_tolerance(tr_pageup_deltas)
+            tr_space_ok = within_tolerance(tr_space_deltas)
+            page4.close()
+        except Exception as e:  # noqa: BLE001 — any failure here is itself the finding
+            tr_pk_errors.append(str(e).splitlines()[0])
+
+        # === V-11 (Vera, Low): a tail-pin render that GROWS the ratio can leave the view short of
+        # the true end — the pin's whole point is "the true last segment is always reachable,"
+        # which a scrollTop computed BEFORE that growth cannot guarantee. Narrows the log column
+        # so every row's REAL wrapped-line count exceeds the 88-chars/line estimate, then jumps
+        # straight to End on a FRESH open (no prior scroll — avgRatio still at its un-measured
+        # default of 1) so the very FIRST measurement is the tail itself growing the ratio
+        # mid-pinned-render, the exact precondition V-11 needs.
+        tr_v11_errors = []
+        tr_v11_at_true_end = tr_v11_last_visible = False
+        try:
+            page5 = browser.new_page(viewport={"width": 1520, "height": 984})
+            page5.on("pageerror", lambda e: tr_v11_errors.append(str(e)))
+            page5.add_init_script(STUB)
+            page5.goto("file://" + os.path.join(DIST, "index.html"))
+            page5.wait_for_function(HAS_RENDER, timeout=8000)
+            page5.click("#app-menu-btn")
+            page5.wait_for_selector('.nav-item[data-surface="transcripts"]', state="visible", timeout=8000)
+            page5.click('.nav-item[data-surface="transcripts"]')
+            page5.wait_for_function(
+                "() => document.querySelectorAll('#tr-list .tr-card').length >= 4", timeout=8000
+            )
+            page5.click('#tr-list .tr-card[data-id="6"] .tr-card-open')
+            page5.wait_for_function(
+                "() => window.__trRenderedRowCount && window.__trRenderedRowCount() > 0", timeout=8000
+            )
+            page5.evaluate(
+                "() => { var v = document.getElementById('tr-detail-view');"
+                " v.style.maxWidth = 'none'; v.style.width = '340px'; }"
+            )
+            page5.wait_for_timeout(50)
+            page5.click("#tr-detail-log")
+            page5.keyboard.press("End")
+            page5.wait_for_timeout(300)
+            v11_scrolltop = page5.evaluate("() => document.getElementById('tr-detail-log').scrollTop")
+            v11_max = page5.evaluate(
+                "() => Math.max(0, document.getElementById('tr-detail-log').scrollHeight -"
+                " document.getElementById('tr-detail-log').clientHeight)"
+            )
+            tr_v11_at_true_end = abs(v11_scrolltop - v11_max) <= 1
+            v11_visible = page5.evaluate("() => window.__trVisibleSegIds()")
+            tr_v11_last_visible = str(UNIFORM_LONG_LAST_SEG_ID) in (v11_visible or [])
+            page5.close()
+        except Exception as e:  # noqa: BLE001 — any failure here is itself the finding
+            tr_v11_errors.append(str(e).splitlines()[0])
+
+        # === V-12 (Vera, Low): the Home/End/PageUp/PageDown handler must ignore modifier keys —
+        # Shift+End should extend a text selection to the end (or at minimum leave an existing
+        # selection alone), never silently collapse it into a scroll-only jump.
+        tr_v12_errors = []
+        tr_v12_selection_preserved = False
+        try:
+            page6 = browser.new_page(viewport={"width": 1520, "height": 984})
+            page6.on("pageerror", lambda e: tr_v12_errors.append(str(e)))
+            page6.add_init_script(STUB)
+            page6.goto("file://" + os.path.join(DIST, "index.html"))
+            page6.wait_for_function(HAS_RENDER, timeout=8000)
+            page6.click("#app-menu-btn")
+            page6.wait_for_selector('.nav-item[data-surface="transcripts"]', state="visible", timeout=8000)
+            page6.click('.nav-item[data-surface="transcripts"]')
+            page6.wait_for_function(
+                "() => document.querySelectorAll('#tr-list .tr-card').length >= 3", timeout=8000
+            )
+            page6.click('#tr-list .tr-card[data-id="5"] .tr-card-open')
+            page6.wait_for_function(
+                "() => window.__trRenderedRowCount && window.__trRenderedRowCount() > 0", timeout=8000
+            )
+            page6.click("#tr-detail-log")
+            make_selection_js = (
+                "(id) => { var row = window.__trRowFor(id); var t = row.querySelector('.tr-line-txt').firstChild;"
+                " var sel = window.getSelection(); sel.removeAllRanges(); var r = document.createRange();"
+                " r.setStart(t, 0); r.setEnd(t, Math.min(5, t.length)); sel.addRange(r);"
+                " return sel.toString().length; }"
+            )
+            before_len = page6.evaluate(make_selection_js, PHASED_FIRST_SEG_ID)
+            page6.keyboard.down("Shift")
+            page6.keyboard.press("End")
+            page6.keyboard.up("Shift")
+            page6.wait_for_timeout(200)
+            after_len = page6.evaluate("() => window.getSelection().toString().length")
+            tr_v12_selection_preserved = before_len > 0 and after_len >= before_len
+            page6.close()
+        except Exception as e:  # noqa: BLE001 — any failure here is itself the finding
+            tr_v12_errors.append(str(e).splitlines()[0])
+
         browser.close()
 
     checks = []
@@ -277,6 +580,28 @@ def main():
     checks.append((tr_ratio_moved, "Transcripts realistic-width: the height calibration ratio moved away from the un-measured default of 1 on real WebKit"))
     checks.append((tr_last_visible, "Transcripts realistic-width: a real 'End' keypress mounts the LAST segment of a realistic-width, realistic-length transcript"))
     checks.append((tr_end_visible, "Transcripts realistic-width: the last segment is actually VISIBLE after a real scroll-to-end (Vera V-1: previously 0/8 attempts) — the real scroll path, not a test hook"))
+
+    checks.append((not tr_kb_errors, "Transcripts Home/End race: exercised on real WebKit with a regime-calibrated jump, no exception"
+                   + (" — " + "; ".join(tr_kb_errors) if tr_kb_errors else "")))
+    checks.append((tr_home_landed, "Transcripts Home/End race: a real Home keypress after calibrating on a DIFFERENT length regime lands scrollTop exactly at 0 (QA finding: previously landed 300+px off)"))
+    checks.append((tr_home_visible, "Transcripts Home/End race: the true FIRST segment is actually visible after that real Home keypress"))
+    checks.append((tr_end_landed, "Transcripts Home/End race: a real End keypress after calibrating on a DIFFERENT length regime lands scrollTop exactly at the true max (QA finding: the cascaded second recompute previously un-pinned the just-correct render)"))
+    checks.append((tr_end_visible2, "Transcripts Home/End race: the true LAST segment is actually visible after that real End keypress"))
+
+    checks.append((not tr_pk_errors, "Transcripts V-10: PageDown/PageUp/Space exercised on real WebKit, no exception"
+                   + (" — " + "; ".join(tr_pk_errors) if tr_pk_errors else "")))
+    checks.append((tr_pagedown_ok, "Transcripts V-10: every real PageDown press travels within 10% of the derived native step (Vera: previously 5/14 fell to 23-44% of it on WebKit) — deltas " + str(tr_pagedown_deltas)))
+    checks.append((tr_pageup_ok, "Transcripts V-10: every real PageUp press travels within 10% of the derived native step — deltas " + str(tr_pageup_deltas)))
+    checks.append((tr_space_ok, "Transcripts V-10: every real Space press travels within 10% of the derived native step (Vera: previously 4/8 fell to 23-44% of it on WebKit) — deltas " + str(tr_space_deltas)))
+
+    checks.append((not tr_v11_errors, "Transcripts V-11: tail-growth exercised on real WebKit, no exception"
+                   + (" — " + "; ".join(tr_v11_errors) if tr_v11_errors else "")))
+    checks.append((tr_v11_at_true_end, "Transcripts V-11: a fresh-open End keypress whose OWN tail-pin render grows avgRatio still lands scrollTop exactly at the (recalculated) true end"))
+    checks.append((tr_v11_last_visible, "Transcripts V-11: the true last segment is actually visible after that fresh-open End keypress"))
+
+    checks.append((not tr_v12_errors, "Transcripts V-12: Shift+End modifier exercised on real WebKit, no exception"
+                   + (" — " + "; ".join(tr_v12_errors) if tr_v12_errors else "")))
+    checks.append((tr_v12_selection_preserved, "Transcripts V-12: a real Shift+End keypress over an active text selection preserves/extends it rather than silently collapsing it via our own scroll jump"))
 
     for passed, msg in checks:
         print(("PASS" if passed else "FAIL") + ": " + msg)
