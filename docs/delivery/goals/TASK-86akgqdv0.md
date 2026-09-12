@@ -164,7 +164,7 @@ the operator has no existing channel to a transcript's row id.
 | C-006 | yes | Cascade-on-delete proposal implemented + explicitly flagged as needing sign-off | code comments + `transcript_repo` tests (cascade true deletes note; false detaches note) + PR/ClickUp comment | pass + comment posted | 3 new tests pass; PR description + PR comment + ClickUp comment all posted | PASS |
 | C-007 | yes | Oversized/malformed edit rejected, storage stays bounded; mutation-verified | `cargo test -p selahcue-data` bounded-memory test, manual mutation (guard removed → RED, restored → GREEN, whole file w/ siblings) | RED then GREEN observed | RED then GREEN observed | PASS |
 | C-008 | yes | `make ci` passes | `make ci` | exit 0 | `MAKE_CI_EXIT_CODE=0`, "ALL GREEN" | PASS |
-| C-009 | yes | Four-reviewer gate (Cody, Vera, Sana, Quinn) | review round | all blocking findings resolved | Ran (PR #33 comments); Sana filed one High (F1) + two Medium (F2/F3); Vera filed two Low (F1/F2) + routed one correctness defect (F3) + one behaviour note (F4); Cody approved with one Low; Quinn passed all ACs with one Low/Medium gap. All remediated this iteration — see Iteration 4 below. | PASS (remediated; awaiting reviewers' own re-verification of this diff before the gate is formally re-closed) |
+| C-009 | yes | Four-reviewer gate (Cody, Vera, Sana, Quinn) | review round | all blocking findings resolved | Ran once already (PR #33 comments against `4a44df4`): Sana filed one High (F1) + two Medium (F2/F3); Vera filed two Low (F1/F2) + routed one correctness defect (F3) + one behaviour note (F4); Cody approved with one Low; Quinn passed all ACs with one Low/Medium gap. All remediated this iteration — see Iteration 4 below. The four reviewers have not yet re-verified THIS remediated diff (`0bc9ebe`). | PENDING |
 
 ## Verification plan
 
@@ -331,9 +331,10 @@ the operator has no existing channel to a transcript's row id.
   headless checks; full Rust workspace incl. feature-gated suites; Flutter
   analyze+test; zero `error`/`FAILED`/`panicked` matches anywhere in the log
   outside expected test-name substrings like `a_failed_open_...`).
-- Result: PASS (C-001..C-009, C-009 remediated pending the reviewers' own
-  re-verification of this exact diff — not re-requested as a fresh review
-  round in this session; see Final evaluation).
+- Result: PASS on C-001..C-008; C-009 PENDING — every finding from the gate's
+  first pass is remediated, but the four reviewers have not yet independently
+  re-verified this exact diff (not re-requested as a fresh review round in
+  this session; see Final evaluation).
 - Decision: commit, push, leave PR in Draft (per this task's own "do not mark
   ready yourself" instruction), post PR + ClickUp evidence comments. Terminal
   state: `GATE_REVIEW` — independent re-verification of THIS remediation by
@@ -372,16 +373,17 @@ the operator has no existing channel to a transcript's row id.
   F3 correctness; Vera F4) finding is remediated in Iteration 4 above. This
   session did not re-dispatch the four reviewers against the remediated diff —
   that re-verification is the reviewers' own next step, not fabricated here.
-- Terminal state: **GATE_REVIEW**. C-001..C-009 PASS against the remediated
-  diff by this role's own re-verification (`make ci` ALL GREEN, mutation checks
+- Terminal state: **GATE_REVIEW**. C-001..C-008 PASS by this role's own
+  re-verification of the remediated diff (`make ci` ALL GREEN, mutation checks
   on the fixed tests, a real end-to-end transcript-id test replacing the
-  hardcoded `42`); the four reviewers have not yet independently re-verified
-  THIS diff, which is what keeps this GATE_REVIEW rather than
-  VERIFIED_COMPLETE, per the Operating Contract's review-pipeline section.
-- Remaining failed or blocked criteria: none FAILED. C-009 is PASS-pending-
-  independent-re-verification, not PENDING/BLOCKED — the mechanism (four-
-  reviewer gate) already ran once; what remains is a second pass over a diff
-  that has since changed.
+  hardcoded `42`). C-009 is PENDING: the four-reviewer gate mechanism already
+  ran once (against `4a44df4`) and every finding it raised is remediated, but
+  the reviewers have not yet independently re-verified THIS diff (`0bc9ebe`) —
+  that gap is what keeps this GATE_REVIEW rather than VERIFIED_COMPLETE, per
+  the Operating Contract's review-pipeline section.
+- Remaining failed or blocked criteria: none FAILED, none BLOCKED. C-009
+  PENDING only — a second reviewer pass over a diff that has changed since
+  their first pass, not a new decision or dependency.
 - ClickUp final evidence comment: Iteration 3 comment id `90130319846390`;
   Iteration 4's own evidence comment is posted after this file's commit (see
   the ClickUp task for the current comment). Task status: `code review`
