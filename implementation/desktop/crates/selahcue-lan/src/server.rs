@@ -43,7 +43,20 @@ const DEFAULT_MAX_CONNECTIONS: usize = 128;
 
 /// Cap on a single control message. Control frames are tiny (a JSON command); this
 /// stops a peer from forcing large pre-auth buffering.
-const MAX_MESSAGE_BYTES: usize = 64 * 1024;
+///
+/// **`pub` deliberately (86akgqdv0 PR #33 review, Vera F5 / Sana N1 — High).** This is a
+/// SHARED cap for the whole LAN protocol, not a sermon-note-specific number — but a sender
+/// that builds a frame without knowing it has no way to avoid exceeding it. Before this fix,
+/// a sermon-note save/update whose serialized `Request` exceeded this cap was refused by
+/// tungstenite at the socket level, which `request_loop` (below) surfaces as a dropped TCP
+/// connection with no retry — silently taking the operator's control link (GO LIVE, Next,
+/// Blackout, Clear — everything sharing this one connection) down with it, a real violation
+/// of this app's "no component failure may blank live output" principle. Re-exported via
+/// `selahcue-lan`'s crate root so a sender (`selahcue_app::RemoteOperator`) can measure its
+/// own outgoing frame the same way `protocol::to_json` + `send_json` would serialize it, and
+/// refuse to send anything that would exceed this cap — never attempt-then-catch, since the
+/// failure this cap causes is not a clean error, it is the whole connection.
+pub const MAX_MESSAGE_BYTES: usize = 64 * 1024;
 
 /// How long a device's `Pair` connection parks awaiting the operator's approve/deny
 /// decision. Applied *after* the network handshake completed (the pairing peer has

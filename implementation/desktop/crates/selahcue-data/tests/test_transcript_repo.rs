@@ -1116,7 +1116,17 @@ fn purge_expired_cascade_deletes_notes_for_every_purged_transcript() {
     )
     .unwrap();
     transcript_repo::end(&db, transcript_id, now - 9 * DAY_MS).unwrap();
-    let note_id = sermon_note_repo::create(&db, &sample_note(transcript_id)).unwrap();
+    // The note's OWN created_at/edited_at must be RECENT (well inside the 7-day retention
+    // window below), not `sample_note`'s default epoch-adjacent `1_000` (PR #33 review, Cody
+    // + Sana N4 — Medium: with the default, the note is old enough that purge_expired's
+    // SEPARATE detached-note sweep (Sana F3) would delete it anyway even if the explicit
+    // cascade DELETE inside purge_expired's own loop were removed entirely, masking the
+    // branch this test exists to prove. Verified: disabling only that cascade block leaves
+    // this test green with the old timestamp; with a recent one, only the cascade branch can
+    // produce row count 0 — see the mutation note below.)
+    let mut note = sample_note(transcript_id);
+    note.created_at_ms = now - DAY_MS;
+    let note_id = sermon_note_repo::create(&db, &note).unwrap();
     assert_eq!(
         sermon_note_row_count(&db, note_id),
         1,

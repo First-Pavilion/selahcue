@@ -5,6 +5,7 @@
 #![allow(clippy::unwrap_used)]
 
 use selahcue_core::plan::{ItemKind, ServicePlan};
+use selahcue_data::sermon_note_repo::{self, NewSermonNote};
 use selahcue_data::transcript_repo::{self, NewTranscript};
 use selahcue_data::{plan_repo, Database, EncryptionKey};
 
@@ -162,6 +163,73 @@ fn encrypted_transcript_round_trips_and_leaves_no_plaintext_on_disk() {
     assert!(
         !contains(&bytes, MARKER.as_bytes()),
         "transcript/detection plaintext leaked into the encrypted database file"
+    );
+    assert!(
+        !bytes.starts_with(b"SQLite format 3\0"),
+        "database header is not encrypted"
+    );
+}
+
+#[test]
+fn encrypted_sermon_note_round_trips_and_leaves_no_plaintext_on_disk() {
+    // FR-154 for the `sermon_note` table (86akgqdv0 PR #33 review, Sana N5 — Low,
+    // carried from the original round: no `sermon_note` marker existed in this file).
+    // Same "no per-table wiring needed" story as the transcript test above — the whole
+    // database file is keyed before migrations run — but that posture had never
+    // actually been exercised for THIS table's columns until now.
+    const MARKER: &str = "PLAINTEXT_MARKER_Nehemiah_Wall_Rebuilding_Sermon_Note";
+    let file = tempfile::NamedTempFile::new().unwrap();
+    let transcript_id = {
+        let db = Database::open_encrypted(file.path(), &key_a()).unwrap();
+        let transcript_id = transcript_repo::create(
+            &db,
+            &NewTranscript {
+                label: "svc".into(),
+                provider: "manual".into(),
+                plan_id: None,
+                started_at_ms: 0,
+            },
+        )
+        .unwrap();
+        sermon_note_repo::create(
+            &db,
+            &NewSermonNote {
+                transcript_id,
+                title: MARKER.to_string(),
+                summary: Some(MARKER.to_string()),
+                sections_json: format!(r#"[{{"heading":"{MARKER}","items":[],"points":[]}}]"#),
+                scriptures_json: "[]".into(),
+                ai_generated: true,
+                disclosure: Some(MARKER.to_string()),
+                provider: "SelahCue AI".into(),
+                model: None,
+                created_at_ms: 0,
+            },
+        )
+        .unwrap();
+        db.checkpoint_truncate().unwrap();
+        transcript_id
+    };
+
+    // Reopening with the correct key returns the data intact.
+    let db = Database::open_encrypted(file.path(), &key_a()).unwrap();
+    db.integrity_check().unwrap();
+    let note = sermon_note_repo::find_by_transcript(&db, transcript_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(note.title, MARKER);
+    assert_eq!(note.summary.as_deref(), Some(MARKER));
+    assert!(note.sections_json.contains(MARKER));
+    assert_eq!(note.disclosure.as_deref(), Some(MARKER));
+    drop(db);
+
+    // The raw file must not contain the plaintext marker anywhere — title, summary,
+    // sections, and disclosure all carry it, so this exercises every text-bearing
+    // column this table has.
+    let bytes = std::fs::read(file.path()).unwrap();
+    assert!(
+        !contains(&bytes, MARKER.as_bytes()),
+        "sermon-note plaintext leaked into the encrypted database file"
     );
     assert!(
         !bytes.starts_with(b"SQLite format 3\0"),

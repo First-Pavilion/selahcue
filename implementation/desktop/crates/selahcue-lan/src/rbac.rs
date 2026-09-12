@@ -55,6 +55,16 @@ pub enum Permission {
     ManageDevices,
     /// Enumerate/assign physical outputs and trigger identify (host config).
     ConfigureOutputs,
+    /// Persist (create, or wholesale-replace) a sermon-note draft's full content INCLUDING
+    /// its `ai_generated`/`disclosure`/`provider`/`model` provenance (`SaveSermonNoteDraft`
+    /// only — PR #33 review, Sana N2 — Medium). Operator-only: deliberately narrower than
+    /// `Transcribe`, which still governs `LoadSermonNoteDraft`/`UpdateSermonNoteDraft`/
+    /// `GetActiveTranscriptId`. See [`Command`]'s doc on `SaveSermonNoteDraft` for the full
+    /// reasoning — in short, Save is the one command that can attach a label/disclosure to
+    /// NEW content or wholesale-replace an already-persisted (possibly operator-edited)
+    /// draft, and its only legitimate caller today is the operator console's own
+    /// `generate_sermon_notes` flow.
+    SaveSermonNotes,
 }
 
 impl Role {
@@ -74,6 +84,7 @@ impl Role {
                 ManageDevices,
                 EditPlan,
                 ConfigureOutputs,
+                SaveSermonNotes,
             ],
             Role::Producer => &[
                 GoLive,
@@ -127,13 +138,22 @@ pub fn required_permission(cmd: &Command) -> Permission {
         Command::IngestTranscript { .. }
         | Command::StartTranscript { .. }
         | Command::EndTranscript
-        // Sermon-note draft persistence (86akgqdv0) reads/writes AI-derived content generated
-        // from congregation speech — the same privilege tier as feeding/opening the transcript
-        // stream that content is derived from, never a narrower or wider one.
+        // Sermon-note draft READ/EDIT persistence (86akgqdv0) reads/writes AI-derived content
+        // generated from congregation speech — the same privilege tier as feeding/opening the
+        // transcript stream that content is derived from, never a narrower or wider one.
+        // `SaveSermonNoteDraft` is DELIBERATELY EXCLUDED from this arm — see below.
         | Command::GetActiveTranscriptId
         | Command::LoadSermonNoteDraft { .. }
-        | Command::SaveSermonNoteDraft { .. }
         | Command::UpdateSermonNoteDraft { .. } => Transcribe,
+        // Persisting (creating/replacing) a draft's full content + provenance is narrower than
+        // the above (PR #33 review, Sana N2 — Medium; see `SaveSermonNotes`'s and
+        // `Command::SaveSermonNoteDraft`'s doc comments for the full reasoning). Reconsidered
+        // from this feature's original "same tier as IngestTranscript" design specifically
+        // because Save — unlike Load/Update — can plant a fully-formed, validly-labelled but
+        // FABRICATED "AI-generated" draft, or silently discard the operator's own edits, from
+        // any Transcribe-tier Producer device. The operator console's own generate flow is the
+        // only legitimate caller today.
+        Command::SaveSermonNoteDraft { .. } => SaveSermonNotes,
         Command::GetState
         | Command::GetOperatorState
         | Command::GetConsoleThumbnails { .. }

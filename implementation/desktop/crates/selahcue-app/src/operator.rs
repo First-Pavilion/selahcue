@@ -1539,10 +1539,33 @@ impl RemoteOperator {
         }
     }
 
+    /// Whether sending `command` right now would build a wire frame the host's control-link
+    /// transport will refuse (86akgqdv0 PR #33 review — Vera F5 / Sana N1, High). Measures the
+    /// EXACT bytes [`selahcue_lan::ControlClient::command`] would put on the wire — the same
+    /// `Request` envelope, serialized the same way (`selahcue_lan::protocol::to_json`) — against
+    /// [`selahcue_lan::MAX_MESSAGE_BYTES`], the single source of truth for the frame cap the
+    /// host's WebSocket transport actually enforces (`selahcue-lan/src/server.rs`). This is a
+    /// measurement, not an estimate: sending an over-cap frame does not fail cleanly —
+    /// tungstenite refuses it at the socket level, `request_loop` (server.rs) reads that as an
+    /// error and drops the TCP connection outright, and this shell never re-dials
+    /// (`selahcue-operator`'s `build_backend` runs once) — so EVERY other command sharing this
+    /// link (GO LIVE, Next, Blackout, Clear) fails until the console restarts. The request id
+    /// used for measurement is `u64::MAX` (the widest a real id can ever be) rather than this
+    /// connection's real next id, which `ControlClient` does not expose — deliberately
+    /// conservative: it can only OVER-estimate the frame size by a few bytes, never under.
+    fn would_exceed_wire_cap(command: &Command) -> Result<bool, selahcue_lan::TransportError> {
+        let request = selahcue_lan::protocol::Request::new(u64::MAX, command.clone());
+        let wire = selahcue_lan::protocol::to_json(&request)?;
+        Ok(wire.len() > selahcue_lan::MAX_MESSAGE_BYTES)
+    }
+
     /// Persist (upsert) a freshly generated draft against `transcript_id` on the host
-    /// (86akgqdv0) — `generate_sermon_notes`'s persist-on-success path. `Ok(Denied)` (not an
-    /// `Err`) when the host refuses it (e.g. an oversized field); an `Err` is a transport/
-    /// protocol failure.
+    /// (86akgqdv0) — `generate_sermon_notes`'s persist-on-success path. `Ok(None)` (not an
+    /// `Err`) when the host refuses it (e.g. an oversized field) OR when this frame is never
+    /// sent because it would exceed the control link's frame cap (86akgqdv0 PR #33 review,
+    /// Vera F5 / Sana N1 — see [`Self::would_exceed_wire_cap`]) — fails soft exactly like a
+    /// host-side `Denied`: the draft stays shown/editable locally, the link stays up. An `Err`
+    /// is a genuine transport/protocol failure.
     pub async fn save_sermon_note_draft(
         &mut self,
         transcript_id: i64,
@@ -1550,14 +1573,14 @@ impl RemoteOperator {
     ) -> Result<Option<selahcue_lan::protocol::SermonNoteDraftView>, selahcue_lan::TransportError>
     {
         use selahcue_lan::protocol::ServerMessage;
-        match self
-            .client
-            .command(Command::SaveSermonNoteDraft {
-                transcript_id,
-                draft,
-            })
-            .await?
-        {
+        let command = Command::SaveSermonNoteDraft {
+            transcript_id,
+            draft,
+        };
+        if Self::would_exceed_wire_cap(&command)? {
+            return Ok(None);
+        }
+        match self.client.command(command).await? {
             ServerMessage::SermonNoteDraft { draft, .. } => Ok(draft),
             ServerMessage::Denied { .. } => Ok(None),
             other => Err(selahcue_lan::TransportError::Protocol(format!(
@@ -1568,7 +1591,9 @@ impl RemoteOperator {
 
     /// Apply an operator edit to the persisted draft's text for `transcript_id` on the host
     /// (86akgqdv0). `Ok(None)` when the host refuses it (no draft exists yet, an oversized
-    /// field); an `Err` is a transport/protocol failure.
+    /// field) OR when this frame is never sent because it would exceed the control link's
+    /// frame cap (see [`Self::would_exceed_wire_cap`]) — the in-progress edit stays in the
+    /// form, never silently dropped. An `Err` is a transport/protocol failure.
     pub async fn update_sermon_note_draft(
         &mut self,
         transcript_id: i64,
@@ -1576,14 +1601,14 @@ impl RemoteOperator {
     ) -> Result<Option<selahcue_lan::protocol::SermonNoteDraftView>, selahcue_lan::TransportError>
     {
         use selahcue_lan::protocol::ServerMessage;
-        match self
-            .client
-            .command(Command::UpdateSermonNoteDraft {
-                transcript_id,
-                edit,
-            })
-            .await?
-        {
+        let command = Command::UpdateSermonNoteDraft {
+            transcript_id,
+            edit,
+        };
+        if Self::would_exceed_wire_cap(&command)? {
+            return Ok(None);
+        }
+        match self.client.command(command).await? {
             ServerMessage::SermonNoteDraft { draft, .. } => Ok(draft),
             ServerMessage::Denied { .. } => Ok(None),
             other => Err(selahcue_lan::TransportError::Protocol(format!(

@@ -3156,13 +3156,42 @@ impl LiveController {
             Command::SaveSermonNoteDraft {
                 transcript_id,
                 draft,
-            } => match self.sermon_notes.save_draft(*transcript_id, draft) {
-                Ok(saved) => ControllerReply::Message(ServerMessage::SermonNoteDraft {
-                    transcript_id: *transcript_id,
-                    draft: Some(saved),
-                }),
-                Err(_) => ControllerReply::Deny(DenyReason::BadRequest),
-            },
+            } => {
+                // FR-123/FR-128 integrity (PR #33 review, Sana N2 — Medium). Enforced HERE, in
+                // the command handler every caller's request passes through — never left to a
+                // well-behaved caller, since RBAC narrowing (`SaveSermonNotes`, Operator-only)
+                // alone does not stop a PERMITTED caller from sending an internally consistent
+                // but still-wrong payload (e.g. a legitimate regenerate that happens to degrade
+                // to an offline fallback). Two independent checks, neither a proxy for the
+                // other:
+                //  1. `disclosure`/`ai_generated` pairing (a single predicate both this call
+                //     site and this crate's own tests consume — see its doc comment).
+                //  2. Once a draft is AI-generated, it can never be re-saved as NOT
+                //     AI-generated — "once AI-generated, always AI-generated": editing/
+                //     regenerating text must never un-label provenance, even when the new
+                //     payload's own pairing is internally consistent (ai_generated: false +
+                //     disclosure: None passes check 1 on its own).
+                if !draft.disclosure_pairing_is_consistent() {
+                    return ControllerReply::Deny(DenyReason::BadRequest);
+                }
+                let existing_ai_generated = self
+                    .sermon_notes
+                    .load_draft(*transcript_id)
+                    .ok()
+                    .flatten()
+                    .map(|existing| existing.ai_generated)
+                    .unwrap_or(false);
+                if existing_ai_generated && !draft.ai_generated {
+                    return ControllerReply::Deny(DenyReason::BadRequest);
+                }
+                match self.sermon_notes.save_draft(*transcript_id, draft) {
+                    Ok(saved) => ControllerReply::Message(ServerMessage::SermonNoteDraft {
+                        transcript_id: *transcript_id,
+                        draft: Some(saved),
+                    }),
+                    Err(_) => ControllerReply::Deny(DenyReason::BadRequest),
+                }
+            }
             Command::UpdateSermonNoteDraft {
                 transcript_id,
                 edit,

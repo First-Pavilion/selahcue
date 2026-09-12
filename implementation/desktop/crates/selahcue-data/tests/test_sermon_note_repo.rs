@@ -13,7 +13,10 @@
 #![allow(clippy::unwrap_used)]
 
 use rusqlite::params;
-use selahcue_data::sermon_note_repo::{self, DraftEdit, NewSermonNote, MAX_SECTIONS_JSON_BYTES};
+use selahcue_data::sermon_note_repo::{
+    self, DraftEdit, NewSermonNote, MAX_DISCLOSURE_CHARS, MAX_MODEL_CHARS, MAX_PROVIDER_CHARS,
+    MAX_SECTIONS_JSON_BYTES,
+};
 use selahcue_data::transcript_repo::{self, NewTranscript};
 use selahcue_data::{DataError, Database};
 
@@ -452,6 +455,81 @@ fn an_oversized_title_on_create_is_refused_before_any_row_is_written() {
         None,
         "a refused create must not leave a partial row behind"
     );
+}
+
+// --- provider/disclosure/model bounds (PR #33 review, Sana N3 — Low: previously
+// unbounded — a 30,000-char provider / 20,000-char disclosure / 5,000-char model was
+// accepted and stored). Create-only: `DraftEdit`/`update` cannot touch these fields at
+// all, so only `create` needs the check. -----------------------------------------
+
+#[test]
+fn an_oversized_provider_on_create_is_refused_before_any_row_is_written() {
+    let db = db();
+    let transcript_id = make_transcript(&db, 1_000);
+    let mut note = sample_note(transcript_id);
+    note.provider = "x".repeat(MAX_PROVIDER_CHARS + 1);
+
+    let err = sermon_note_repo::create(&db, &note).unwrap_err();
+    assert!(matches!(err, DataError::TooLarge(_)));
+    assert_eq!(
+        sermon_note_repo::find_by_transcript(&db, transcript_id).unwrap(),
+        None,
+        "a refused create must not leave a partial row behind"
+    );
+}
+
+#[test]
+fn an_oversized_disclosure_on_create_is_refused_before_any_row_is_written() {
+    let db = db();
+    let transcript_id = make_transcript(&db, 1_000);
+    let mut note = sample_note(transcript_id);
+    note.disclosure = Some("x".repeat(MAX_DISCLOSURE_CHARS + 1));
+
+    let err = sermon_note_repo::create(&db, &note).unwrap_err();
+    assert!(matches!(err, DataError::TooLarge(_)));
+    assert_eq!(
+        sermon_note_repo::find_by_transcript(&db, transcript_id).unwrap(),
+        None,
+        "a refused create must not leave a partial row behind"
+    );
+}
+
+#[test]
+fn an_oversized_model_on_create_is_refused_before_any_row_is_written() {
+    let db = db();
+    let transcript_id = make_transcript(&db, 1_000);
+    let mut note = sample_note(transcript_id);
+    note.model = Some("x".repeat(MAX_MODEL_CHARS + 1));
+
+    let err = sermon_note_repo::create(&db, &note).unwrap_err();
+    assert!(matches!(err, DataError::TooLarge(_)));
+    assert_eq!(
+        sermon_note_repo::find_by_transcript(&db, transcript_id).unwrap(),
+        None,
+        "a refused create must not leave a partial row behind"
+    );
+}
+
+#[test]
+fn provider_disclosure_and_model_exactly_at_their_bounds_are_accepted_positive_control() {
+    // Positive control for the three tests above: the mechanism must not reject
+    // everything — only what actually exceeds each bound (an off-by-one guard, or one
+    // that rejects unconditionally, would fail this).
+    let db = db();
+    let transcript_id = make_transcript(&db, 1_000);
+    let mut note = sample_note(transcript_id);
+    note.provider = "p".repeat(MAX_PROVIDER_CHARS);
+    note.disclosure = Some("d".repeat(MAX_DISCLOSURE_CHARS));
+    note.model = Some("m".repeat(MAX_MODEL_CHARS));
+
+    sermon_note_repo::create(&db, &note).unwrap();
+
+    let loaded = sermon_note_repo::find_by_transcript(&db, transcript_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(loaded.provider, note.provider);
+    assert_eq!(loaded.disclosure, note.disclosure);
+    assert_eq!(loaded.model, note.model);
 }
 
 // --- delete_for_transcript is idempotent ------------------------------------------

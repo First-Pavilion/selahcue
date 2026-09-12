@@ -43,13 +43,59 @@ use rusqlite::params;
 pub const MAX_TITLE_CHARS: usize = 300;
 /// Upper bound on a draft summary, in characters.
 pub const MAX_SUMMARY_CHARS: usize = 4_000;
-/// Upper bound on the serialized `sections` JSON, in bytes. Generous (a multi-point
-/// outline with sub-points easily runs a few KB) but bounded — this is the ceiling
-/// that stops a hostile or malformed edit from parking an unbounded string in the
-/// database, not a realistic-content estimate.
-pub const MAX_SECTIONS_JSON_BYTES: usize = 200_000;
-/// Upper bound on the serialized `scriptures` JSON, in bytes.
-pub const MAX_SCRIPTURES_JSON_BYTES: usize = 20_000;
+/// Upper bound on the serialized `sections` JSON, in bytes. A multi-point outline with
+/// sub-points realistically runs 3-10 KB (PR #33 review, Vera's own measurements); this
+/// leaves generous headroom above that while staying well under what the LAN control link
+/// can actually carry — see the note below.
+///
+/// **Reconciled with `selahcue_lan::MAX_MESSAGE_BYTES` (86akgqdv0 PR #33 review, Vera F5 /
+/// Sana N1 — High), deliberately shrunk from an earlier `200_000`.** The old value was a
+/// pure storage-side "stop an unbounded string" number that never considered the fact that
+/// every persisted draft now travels over the LAN control link (`SaveSermonNoteDraft`/
+/// `UpdateSermonNoteDraft`) inside a JSON `Request` envelope whose OWN transport caps the
+/// whole frame at 64 KiB (`selahcue-lan/src/server.rs`'s `MAX_MESSAGE_BYTES`) — and a string
+/// embedded inside a JSON string is escaped, so its wire cost can be UP TO 6x its raw byte
+/// length (a raw control character becomes a 6-byte `\u00XX` escape; SQLite/this crate place
+/// no format constraint on the content, only a byte-length one). At the old cap, a draft
+/// need not even be adversarial to hang the operator's control link — Vera reproduced a
+/// dropped connection from an ordinary `sections_json` around 63 KiB alone, before summary/
+/// title/scriptures/disclosure/provider/model are even added in.
+///
+/// This crate has no channel to `selahcue-lan`'s cap (a lower layer must not depend on a
+/// higher one), so the two are reconciled BY HAND and must be re-checked together if either
+/// changes: with every field below at ITS OWN maximum, using the worst-case per-field
+/// encoding (the widest of "all 4-byte UTF-8" and "all `\u00XX`-escaped control characters"),
+/// the full `SaveSermonNoteDraft` `Request` envelope is ~60,060 bytes — about 5.4 KB (8%)
+/// under the 64 KiB transport cap even in that worst case (verified by hand, worked example
+/// in the PR description; `selahcue-app`'s `test_sermon_note_remote.rs` proves it against
+/// the REAL wire, not just this arithmetic). This is the PRIMARY fix (data caps that fit);
+/// `selahcue_app::RemoteOperator`'s pre-send guard (measuring the actual serialized frame
+/// against `selahcue_lan::MAX_MESSAGE_BYTES` before sending) is the BACKSTOP for any content
+/// that still manages to exceed it — e.g. a hostile LAN peer packing every byte of a field
+/// with control characters, which can still blow past this budget's realistic-escaping
+/// assumption. Neither alone is "the fix"; see the PR description's "LAN-cap fix direction"
+/// section for the full reasoning on why both exist.
+pub const MAX_SECTIONS_JSON_BYTES: usize = 15_000;
+/// Upper bound on the serialized `scriptures` JSON, in bytes. See
+/// [`MAX_SECTIONS_JSON_BYTES`]'s doc for why this shrank from `20_000` — same reconciliation,
+/// same combined worst-case budget.
+pub const MAX_SCRIPTURES_JSON_BYTES: usize = 3_500;
+/// Upper bound on the serving provider's label, in characters (PR #33 review, Sana N3 —
+/// Low: previously unbounded — a 30,000-character `provider` was accepted and stored).
+/// Generous for a human-readable label (`"SelahCue AI"`, `"Local (offline)"`) while keeping
+/// this field out of the same unbounded-growth class `check_bounds` already closes for
+/// title/summary/sections/scriptures.
+pub const MAX_PROVIDER_CHARS: usize = 200;
+/// Upper bound on the FR-128 fabrication disclosure, in characters (PR #33 review, Sana N3
+/// — Low: previously unbounded — a 20,000-character `disclosure` was accepted and stored).
+/// [`selahcue_core::providers::FABRICATION_DISCLOSURE`] is a fixed ~260-character template;
+/// this leaves nearly 4x headroom for a future, longer disclosure without reopening the
+/// unbounded-growth gap.
+pub const MAX_DISCLOSURE_CHARS: usize = 1_000;
+/// Upper bound on the provider-reported model identifier, in characters (PR #33 review,
+/// Sana N3 — Low: previously unbounded — a 5,000-character `model` was accepted and
+/// stored).
+pub const MAX_MODEL_CHARS: usize = 200;
 
 /// A freshly generated draft to persist against its source transcript.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -144,6 +190,37 @@ fn check_bounds(
     Ok(())
 }
 
+/// Reject an oversized `provider`/`disclosure`/`model` before a write. Separate from
+/// [`check_bounds`] because these three are set ONLY at [`create`] time — [`DraftEdit`] has
+/// no fields for them, so [`update`] never needs to check them (PR #33 review, Sana N3 —
+/// Low: these were previously unbounded at the data layer).
+fn check_create_only_bounds(
+    provider: &str,
+    disclosure: Option<&str>,
+    model: Option<&str>,
+) -> Result<()> {
+    if provider.chars().count() > MAX_PROVIDER_CHARS {
+        return Err(DataError::TooLarge(format!(
+            "sermon_note.provider exceeds {MAX_PROVIDER_CHARS} characters"
+        )));
+    }
+    if let Some(d) = disclosure {
+        if d.chars().count() > MAX_DISCLOSURE_CHARS {
+            return Err(DataError::TooLarge(format!(
+                "sermon_note.disclosure exceeds {MAX_DISCLOSURE_CHARS} characters"
+            )));
+        }
+    }
+    if let Some(m) = model {
+        if m.chars().count() > MAX_MODEL_CHARS {
+            return Err(DataError::TooLarge(format!(
+                "sermon_note.model exceeds {MAX_MODEL_CHARS} characters"
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// Persist a freshly generated draft against its source transcript. Upserts: a
 /// second call for the same `transcript_id` REPLACES the existing row wholesale
 /// (see the module docs — this is FR-129's territory to change). Rejects an
@@ -168,6 +245,11 @@ pub fn create(db: &Database, note: &NewSermonNote) -> Result<i64> {
         note.summary.as_deref(),
         &note.sections_json,
         &note.scriptures_json,
+    )?;
+    check_create_only_bounds(
+        &note.provider,
+        note.disclosure.as_deref(),
+        note.model.as_deref(),
     )?;
     db.conn()
         .query_row(

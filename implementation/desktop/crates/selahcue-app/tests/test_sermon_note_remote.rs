@@ -304,6 +304,187 @@ async fn a_real_transcript_id_flows_from_start_transcript_through_a_saved_and_lo
     assert!(transcript_after.segments.is_empty());
 }
 
+// ---------------------------------------------------------------------------------------
+// LAN frame cap vs. data-layer draft cap (86akgqdv0 PR #33 review — Vera F5 / Sana N1,
+// High). Reproduced by BOTH reviewers independently against `d7d89f9`: a save/update whose
+// serialized `Request` exceeded `selahcue_lan::MAX_MESSAGE_BYTES` (64 KiB) turned into a
+// DROPPED TCP CONNECTION (tungstenite refuses the over-cap frame; `request_loop` reads that
+// as an error and closes the socket), taking the operator's WHOLE control link down with it
+// — GO LIVE, Next, Blackout, Clear all fail afterward, since `selahcue-operator` never
+// re-dials. The fix has two parts, both exercised below: (1) `sermon_note_repo`'s
+// `MAX_SECTIONS_JSON_BYTES`/`MAX_SCRIPTURES_JSON_BYTES` shrank so a REALISTIC draft at every
+// declared maximum fits comfortably under the wire cap (the primary fix); (2)
+// `RemoteOperator::would_exceed_wire_cap` measures the actual outgoing frame and refuses to
+// send anything that would still exceed the cap — e.g. a hostile payload whose JSON escaping
+// inflates far past its raw byte count (the backstop). Both tests below use a REAL
+// `Database::open` file, a REAL `ControlServer`/`RemoteOperator` TLS round trip — no
+// fabricated transcript id, no mocked transport.
+// ---------------------------------------------------------------------------------------
+
+/// A draft at every data-layer maximum, with ordinary (non-adversarial) content, must
+/// persist over the real wire — not merely avoid crashing. This is the positive control for
+/// the refusal test below: the cap reconciliation must not make the feature useless for
+/// realistic content, only for pathological content.
+///
+/// **Before 86akgqdv0's fix** (the old `MAX_SECTIONS_JSON_BYTES = 200_000` /
+/// `MAX_SCRIPTURES_JSON_BYTES = 20_000`, no pre-send guard), building this exact draft at
+/// those old maxima and sending it would exceed `MAX_MESSAGE_BYTES` and drop the connection
+/// — this test would fail with a `TransportError`, not a clean `unwrap()` panic on a `None`.
+/// Mutation-verified by hand: reverting `sermon_note_repo`'s caps to their pre-fix values
+/// turns this RED with exactly that symptom (see the PR description's verification section).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_draft_at_every_data_layer_maximum_with_realistic_content_persists_over_the_real_wire() {
+    let (mut op, assertion_db) = setup().await;
+    op.start_transcript("Sunday Service", "on-device-whisper")
+        .await
+        .unwrap();
+    let real_id = op
+        .active_transcript_id()
+        .await
+        .unwrap()
+        .expect("a transcript now exists in the real store");
+
+    let draft = SermonNoteDraftInput {
+        title: "x".repeat(sermon_note_repo::MAX_TITLE_CHARS),
+        summary: Some("y".repeat(sermon_note_repo::MAX_SUMMARY_CHARS)),
+        sections_json: format!(
+            r#"["{}"]"#,
+            "s".repeat(sermon_note_repo::MAX_SECTIONS_JSON_BYTES - 4)
+        ),
+        scriptures_json: format!(
+            r#"["{}"]"#,
+            "r".repeat(sermon_note_repo::MAX_SCRIPTURES_JSON_BYTES - 4)
+        ),
+        ai_generated: true,
+        disclosure: Some("d".repeat(sermon_note_repo::MAX_DISCLOSURE_CHARS)),
+        provider: "p".repeat(sermon_note_repo::MAX_PROVIDER_CHARS),
+        model: Some("m".repeat(sermon_note_repo::MAX_MODEL_CHARS)),
+    };
+    // Sanity: every field really is AT its declared maximum, not merely close to it.
+    assert_eq!(
+        draft.title.chars().count(),
+        sermon_note_repo::MAX_TITLE_CHARS
+    );
+    assert_eq!(
+        draft.summary.as_ref().unwrap().chars().count(),
+        sermon_note_repo::MAX_SUMMARY_CHARS
+    );
+    assert_eq!(
+        draft.sections_json.len(),
+        sermon_note_repo::MAX_SECTIONS_JSON_BYTES
+    );
+    assert_eq!(
+        draft.scriptures_json.len(),
+        sermon_note_repo::MAX_SCRIPTURES_JSON_BYTES
+    );
+
+    let saved = op
+        .save_sermon_note_draft(real_id, draft.clone())
+        .await
+        .unwrap()
+        .expect("a realistic draft at every declared maximum must persist over the real wire");
+    assert_eq!(saved.title, draft.title);
+    assert_eq!(saved.disclosure, draft.disclosure);
+
+    // The link must still be alive: a follow-up command on the SAME connection succeeds.
+    let after = op.active_transcript_id().await.unwrap();
+    assert_eq!(
+        after,
+        Some(real_id),
+        "the control link must survive this save"
+    );
+
+    // And it is REALLY on disk, bypassing the LAN link.
+    let on_disk = sermon_note_repo::find_by_transcript(&assertion_db, real_id)
+        .unwrap()
+        .expect("the maximal draft must actually be persisted");
+    assert_eq!(
+        on_disk.sections_json.len(),
+        sermon_note_repo::MAX_SECTIONS_JSON_BYTES
+    );
+}
+
+/// The regression test proper: a draft at the SAME declared data-layer maxima as the test
+/// above, but with hostile content (every byte of `sections_json`/`scriptures_json` a JSON
+/// control character, which escapes to a 6-byte `\u00XX` sequence on the wire — the data
+/// layer bounds byte length only, never format, so this is a legal value at this layer).
+/// `6 * (MAX_SECTIONS_JSON_BYTES + MAX_SCRIPTURES_JSON_BYTES)` alone is ~111 KB, comfortably
+/// past the 64 KiB transport cap even after 86akgqdv0's cap reconciliation — proving the
+/// PRE-SEND GUARD, not merely the shrunk caps, is what keeps the connection alive here.
+///
+/// **This test fails today (before the guard existed) and passes after**: mutation-verified
+/// by hand by deleting the `would_exceed_wire_cap` check from `RemoteOperator::
+/// save_sermon_note_draft` — with the guard gone, this exact call becomes a dropped
+/// connection (`Err(TransportError::Ws(..))`, "Connection reset by peer"), and the
+/// `.unwrap()` on the save call panics instead of returning `Ok(None)`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_draft_whose_escaped_wire_size_exceeds_the_frame_cap_is_refused_without_dropping_the_connection(
+) {
+    let (mut op, assertion_db) = setup().await;
+    op.start_transcript("Sunday Service", "on-device-whisper")
+        .await
+        .unwrap();
+    let real_id = op
+        .active_transcript_id()
+        .await
+        .unwrap()
+        .expect("a transcript now exists in the real store");
+
+    let draft = SermonNoteDraftInput {
+        title: "x".repeat(sermon_note_repo::MAX_TITLE_CHARS),
+        summary: Some("y".repeat(sermon_note_repo::MAX_SUMMARY_CHARS)),
+        sections_json: "\u{1}".repeat(sermon_note_repo::MAX_SECTIONS_JSON_BYTES),
+        scriptures_json: "\u{1}".repeat(sermon_note_repo::MAX_SCRIPTURES_JSON_BYTES),
+        ai_generated: true,
+        disclosure: Some("d".repeat(sermon_note_repo::MAX_DISCLOSURE_CHARS)),
+        provider: "p".repeat(sermon_note_repo::MAX_PROVIDER_CHARS),
+        model: Some("m".repeat(sermon_note_repo::MAX_MODEL_CHARS)),
+    };
+
+    // The critical assertion: `Ok(_)`, never `Err` — the connection must never drop, even
+    // though this frame is refused.
+    let result = op
+        .save_sermon_note_draft(real_id, draft)
+        .await
+        .expect("an over-cap save must be refused cleanly, never a transport/connection error");
+    assert_eq!(
+        result, None,
+        "a frame this large must be refused pre-send, not sent and then rejected"
+    );
+    // Nothing was persisted.
+    assert_eq!(
+        sermon_note_repo::find_by_transcript(&assertion_db, real_id).unwrap(),
+        None
+    );
+
+    // The whole point of the fix: the control link is still alive afterward. GO LIVE, Next,
+    // Blackout, Clear all share this same connection in the real operator console.
+    let after = op
+        .active_transcript_id()
+        .await
+        .expect("the control link must survive an over-cap save attempt");
+    assert_eq!(after, Some(real_id));
+
+    // And the SAME connection can still do a normal, in-budget save afterward — the link is
+    // not merely alive, it is still fully functional.
+    let small_draft = SermonNoteDraftInput {
+        title: "A Faithful Servant".into(),
+        summary: None,
+        sections_json: "[]".into(),
+        scriptures_json: "[]".into(),
+        ai_generated: false,
+        disclosure: None,
+        provider: "Local (offline)".into(),
+        model: None,
+    };
+    let saved = op
+        .save_sermon_note_draft(real_id, small_draft)
+        .await
+        .unwrap()
+        .expect("a normal save on the same connection must still work after the refusal");
+    assert_eq!(saved.title, "A Faithful Servant");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_stale_transcript_id_from_before_a_restart_still_resolves_over_the_real_wire() {
     // Extra confidence beyond the happy path above: start a transcript, end it (as a normal

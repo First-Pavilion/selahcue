@@ -284,6 +284,159 @@ fn update_sermon_note_draft_for_a_transcript_with_no_draft_is_denied() {
     ));
 }
 
+// ---------------------------------------------------------------------------------------
+// FR-123/FR-128 integrity (PR #33 review, Sana N2 — Medium): the disclosure/ai_generated
+// pairing and the "once AI-generated, always AI-generated" invariant are enforced HERE, in
+// `LiveController::apply`, not merely hoped for from a well-behaved caller — RBAC narrowing
+// (`SaveSermonNotes`, Operator-only) alone does not stop a PERMITTED caller from sending an
+// internally inconsistent or provenance-downgrading payload.
+// ---------------------------------------------------------------------------------------
+
+#[test]
+fn save_sermon_note_draft_with_ai_generated_true_and_no_disclosure_is_denied() {
+    // Before this check existed, this exact payload silently relabelled an AI draft as
+    // human-authored / stripped the FR-128 warning (PR #33 review, Sana N2's reproduction).
+    let mut c = controller();
+    let store = SpyStore::new();
+    c.set_sermon_note_store(Box::new(store.clone()));
+
+    let mut draft = sample_draft();
+    draft.ai_generated = true;
+    draft.disclosure = None;
+    let reply = c.apply(&Command::SaveSermonNoteDraft {
+        transcript_id: 7,
+        draft,
+    });
+    assert!(matches!(
+        reply,
+        selahcue_app::ControllerReply::Deny(selahcue_lan::protocol::DenyReason::BadRequest)
+    ));
+    assert!(
+        store.saved_calls().is_empty(),
+        "an inconsistent pairing must be refused BEFORE it ever reaches the store"
+    );
+}
+
+#[test]
+fn save_sermon_note_draft_with_ai_generated_false_and_a_disclosure_is_denied() {
+    // The other half of the "present EXACTLY WHEN" pairing: a disclosure on a draft that
+    // claims to be human-authored is just as inconsistent as the reverse.
+    let mut c = controller();
+    let store = SpyStore::new();
+    c.set_sermon_note_store(Box::new(store.clone()));
+
+    let mut draft = sample_draft();
+    draft.ai_generated = false;
+    draft.disclosure = Some("AI-generated. Check every reference.".into());
+    let reply = c.apply(&Command::SaveSermonNoteDraft {
+        transcript_id: 7,
+        draft,
+    });
+    assert!(matches!(
+        reply,
+        selahcue_app::ControllerReply::Deny(selahcue_lan::protocol::DenyReason::BadRequest)
+    ));
+    assert!(store.saved_calls().is_empty());
+}
+
+#[test]
+fn save_sermon_note_draft_with_a_consistent_human_authored_pairing_is_accepted_positive_control() {
+    // Positive control for the two tests above: the pairing check must not reject
+    // everything — a genuinely human-authored (or degraded-offline) draft with NO
+    // disclosure and `ai_generated: false` is legitimate and must still save. Mirrors the
+    // real `generate_sermon_notes` degraded/offline-fallback outcome (FR-135).
+    let mut c = controller();
+    let store = SpyStore::new();
+    c.set_sermon_note_store(Box::new(store.clone()));
+
+    let mut draft = sample_draft();
+    draft.ai_generated = false;
+    draft.disclosure = None;
+    let reply = c.apply(&Command::SaveSermonNoteDraft {
+        transcript_id: 7,
+        draft: draft.clone(),
+    });
+    assert!(matches!(
+        reply,
+        selahcue_app::ControllerReply::Message(ServerMessage::SermonNoteDraft {
+            draft: Some(_),
+            ..
+        })
+    ));
+    assert_eq!(store.saved_calls(), vec![(7, draft)]);
+}
+
+#[test]
+fn save_sermon_note_draft_cannot_flip_an_existing_ai_generated_draft_to_false() {
+    // "Once AI-generated, always AI-generated": a SECOND save for the same transcript that
+    // is itself internally consistent (ai_generated: false, disclosure: None passes the
+    // pairing check above on its own) must still be refused if it would downgrade a draft
+    // that is ALREADY persisted as AI-generated — editing/regenerating text must never
+    // un-label provenance.
+    let mut c = controller();
+    let store = SpyStore::new();
+    c.set_sermon_note_store(Box::new(store.clone()));
+
+    // First save: a real AI-generated draft, persisted.
+    let first = sample_draft();
+    assert!(first.ai_generated);
+    c.apply(&Command::SaveSermonNoteDraft {
+        transcript_id: 7,
+        draft: first,
+    });
+    assert_eq!(
+        store.saved_calls().len(),
+        1,
+        "positive control: the first save succeeded"
+    );
+
+    // Second save: internally consistent on its own, but would downgrade the existing draft.
+    let mut downgrade = sample_draft();
+    downgrade.ai_generated = false;
+    downgrade.disclosure = None;
+    downgrade.title = "Rewritten as if human-authored".into();
+    let reply = c.apply(&Command::SaveSermonNoteDraft {
+        transcript_id: 7,
+        draft: downgrade,
+    });
+    assert!(matches!(
+        reply,
+        selahcue_app::ControllerReply::Deny(selahcue_lan::protocol::DenyReason::BadRequest)
+    ));
+    assert_eq!(
+        store.saved_calls().len(),
+        1,
+        "the downgrade attempt must never reach the store — only the first save should be there"
+    );
+}
+
+#[test]
+fn save_sermon_note_draft_can_be_resaved_ai_generated_when_no_draft_exists_yet() {
+    // Positive control for the no-downgrade test above: with NO existing draft, there is
+    // nothing to downgrade FROM, so any consistent pairing (including ai_generated: false)
+    // must be accepted on a fresh transcript — this must not become "Save always refuses
+    // ai_generated: false".
+    let mut c = controller();
+    let store = SpyStore::new();
+    c.set_sermon_note_store(Box::new(store.clone()));
+
+    let mut draft = sample_draft();
+    draft.ai_generated = false;
+    draft.disclosure = None;
+    let reply = c.apply(&Command::SaveSermonNoteDraft {
+        transcript_id: 42,
+        draft,
+    });
+    assert!(matches!(
+        reply,
+        selahcue_app::ControllerReply::Message(ServerMessage::SermonNoteDraft {
+            draft: Some(_),
+            ..
+        })
+    ));
+    assert_eq!(store.saved_calls().len(), 1);
+}
+
 #[test]
 fn save_sermon_note_draft_refused_by_the_store_is_denied_not_a_panic() {
     let mut c = controller();

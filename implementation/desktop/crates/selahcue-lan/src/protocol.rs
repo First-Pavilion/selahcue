@@ -353,11 +353,29 @@ pub enum Command {
     /// (regenerate-with-history is FR-129's separate, not-yet-built territory). Reply:
     /// [`ServerMessage::SermonNoteDraft`] (the row re-read from the store, the source of truth,
     /// never an echo of what was sent) on success, [`ServerMessage::Denied`] with
-    /// [`DenyReason::BadRequest`] if the desktop refuses it (e.g. an oversized field). Requires
-    /// `Transcribe` — the operator process that may generate/feed a transcript's derived
-    /// content is the same one trusted to attach a label/disclosure/provider to it; RBAC gates
-    /// the WHOLE command the same way `IngestTranscript` already trusts its caller for the
-    /// transcript text itself, not a narrower one for just these fields.
+    /// [`DenyReason::BadRequest`] if the desktop refuses it (e.g. an oversized field, an
+    /// inconsistent `ai_generated`/`disclosure` pairing, or an attempt to flip an existing
+    /// draft's `ai_generated` from `true` to `false` — see
+    /// [`SermonNoteDraftInput::disclosure_pairing_is_consistent`] and
+    /// `selahcue_app::LiveController::apply`'s `SaveSermonNoteDraft` handler, PR #33 review,
+    /// Sana N2 — Medium).
+    ///
+    /// **Requires [`crate::rbac::Permission::SaveSermonNotes`] — Operator only, NOT the
+    /// broader `Transcribe` tier `LoadSermonNoteDraft`/`UpdateSermonNoteDraft`/
+    /// `GetActiveTranscriptId` use (PR #33 review, Sana N2).** This feature originally gated
+    /// the whole command family at `Transcribe`, reasoning that "the operator process that may
+    /// generate/feed a transcript's derived content is the same one trusted to attach a label/
+    /// disclosure/provider to it" — the same tier as `IngestTranscript`. Sana proved that
+    /// reasoning wrong for Save specifically: unlike Load (read-only) and Update (structurally
+    /// cannot touch the label — see [`SermonNoteEditInput`]), Save can plant a fully-formed,
+    /// VALIDLY-LABELLED but entirely fabricated "AI-generated" draft (a Producer device can
+    /// supply its own consistent `ai_generated: true` + non-empty `disclosure` — the pairing
+    /// check above cannot catch a lie that is internally consistent), or wholesale-replace an
+    /// already-persisted, possibly operator-edited draft outright, since `create` is an upsert.
+    /// The operator console's own `generate_sermon_notes` flow is the ONLY legitimate caller of
+    /// this command today; nothing else needs to attach new provenance or replace existing
+    /// content. Narrowing to Operator closes both exploits with one RBAC-table change, rather
+    /// than inventing an ownership/precondition mechanism this protocol has nowhere else.
     SaveSermonNoteDraft {
         transcript_id: i64,
         draft: SermonNoteDraftInput,
@@ -493,6 +511,28 @@ pub struct SermonNoteDraftInput {
     /// doesn't — never invented data.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+}
+
+impl SermonNoteDraftInput {
+    /// FR-123/FR-128 (PR #33 review, Sana N2 — Medium): a non-empty fabrication disclosure
+    /// must be present EXACTLY WHEN `ai_generated` is true — never present on a
+    /// human-authored draft (nothing to disclose) and never absent on an AI-generated one.
+    /// Before this check existed, `SaveSermonNoteDraft`'s handler accepted whatever pairing a
+    /// caller sent, so any Transcribe-tier device could relabel an AI draft as human-authored
+    /// by sending `ai_generated: false, disclosure: null`, silently stripping the FR-128
+    /// warning.
+    ///
+    /// A SINGLE definition, consumed by both `selahcue_app::LiveController::apply`'s
+    /// enforcement and this crate's own tests, so neither can drift from the other (this
+    /// codebase has already been bitten once by a control that re-derived a conjunction
+    /// instead of consuming the real one — see `CLAUDE.md`'s bounded-memory-tests notes).
+    pub fn disclosure_pairing_is_consistent(&self) -> bool {
+        let disclosure_present = self
+            .disclosure
+            .as_deref()
+            .is_some_and(|d| !d.trim().is_empty());
+        disclosure_present == self.ai_generated
+    }
 }
 
 /// An operator-supplied edit to an existing draft's TEXT only — [`Command::UpdateSermonNoteDraft`]'s
