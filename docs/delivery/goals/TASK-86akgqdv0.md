@@ -8,12 +8,15 @@
   transcript and the operator can edit them afterward, with the source transcript
   provably untouched (FR-123 "editable" half)
 - Role: backend-engineer
-- Status: GATE_REVIEW (implementation + local verification complete; awaiting
-  four-reviewer gate and product sign-off on the cascade-on-delete proposal)
+- Status: GATE_REVIEW (four-reviewer gate ran and returned findings; every
+  blocking/routed finding remediated this session; cascade-on-delete product
+  sign-off was already confirmed on the ticket before this iteration; PR
+  remains Draft pending the reviewers' own re-verification of the remediation)
 - Execution engine: goal
 - ClickUp task: https://app.clickup.com/t/86akgqdv0
 - Created: 2026-09-11
-- Updated: 2026-09-11 (PR #33 opened, head `81a24744a5df352a69d21bdddfcf10284c2c31ea`)
+- Updated: 2026-09-12 (Iteration 4: four-reviewer-gate findings remediated,
+  `make ci` re-verified green, head `cd92ddf1101deeed2dddb663cdf0b4fd4e44f848`)
 - Maximum iterations: 8
 - Independent verification required: yes
 
@@ -161,7 +164,7 @@ the operator has no existing channel to a transcript's row id.
 | C-006 | yes | Cascade-on-delete proposal implemented + explicitly flagged as needing sign-off | code comments + `transcript_repo` tests (cascade true deletes note; false detaches note) + PR/ClickUp comment | pass + comment posted | 3 new tests pass; PR description + PR comment + ClickUp comment all posted | PASS |
 | C-007 | yes | Oversized/malformed edit rejected, storage stays bounded; mutation-verified | `cargo test -p selahcue-data` bounded-memory test, manual mutation (guard removed → RED, restored → GREEN, whole file w/ siblings) | RED then GREEN observed | RED then GREEN observed | PASS |
 | C-008 | yes | `make ci` passes | `make ci` | exit 0 | `MAKE_CI_EXIT_CODE=0`, "ALL GREEN" | PASS |
-| C-009 | yes | Four-reviewer gate (Cody, Vera, Sana, Quinn) | review round | all blocking findings resolved | not yet requested | PENDING |
+| C-009 | yes | Four-reviewer gate (Cody, Vera, Sana, Quinn) | review round | all blocking findings resolved | Ran (PR #33 comments); Sana filed one High (F1) + two Medium (F2/F3); Vera filed two Low (F1/F2) + routed one correctness defect (F3) + one behaviour note (F4); Cody approved with one Low; Quinn passed all ACs with one Low/Medium gap. All remediated this iteration — see Iteration 4 below. | PASS (remediated; awaiting reviewers' own re-verification of this diff before the gate is formally re-closed) |
 
 ## Verification plan
 
@@ -242,6 +245,100 @@ the operator has no existing channel to a transcript's row id.
   remaining criterion — owned by the review pipeline, not this role, per the
   Operating Contract's review pipeline section).
 
+### Iteration 4
+
+- Target criterion: C-009 (four-reviewer gate remediation), re-verify C-001..C-008
+  against the remediated diff.
+- Hypothesis: the four review rounds already run against `4a44df4` (Sana, Cody,
+  Vera, Quinn — all posted as PR #33 comments) named a closed, fixable set of
+  findings; addressing every blocking/routed one without re-litigating the
+  cascade-on-delete decision or the five 86ajtxzrn open questions restores a
+  green `make ci` and a real (not fabricated-id) end-to-end proof of the fix.
+- Findings addressed (this session recovered substantial uncommitted work
+  already on disk in this worktree from carrying out most of this iteration
+  before a prior session stalled; this session verified, fixed one bug found
+  during verification, and closed it out):
+  - **Sana F1 (High)** — the operator and desktop opened different SQLite
+    files, so no real launch could ever attribute a draft to a real
+    `transcript_id`. Fixed by routing sermon-note load/save/update through new
+    LAN commands (`GetActiveTranscriptId`/`LoadSermonNoteDraft`/
+    `SaveSermonNoteDraft`/`UpdateSermonNoteDraft`) to the desktop's
+    `LiveController`, mirroring 86akcfftu's `TranscriptSink` seam exactly
+    (`selahcue-app::SermonNoteStore` trait, `NullSermonNoteStore` default,
+    `RealSermonNoteStore` adapter in `selahcue-desktop`). Real end-to-end proof
+    added: `selahcue-app/tests/test_sermon_note_remote.rs`
+    (`a_real_transcript_id_flows_from_start_transcript_through_a_saved_and_loaded_draft`),
+    a real on-disk SQLite file + real `ControlServer`/`RemoteOperator` TLS
+    round trip, no fabricated id anywhere (replaces the `SN_TRANSCRIPT_ID = 42`
+    the headless harness alone could never disprove). RBAC/protocol fixtures
+    added matching this codebase's own conventions
+    (`sermon_note_draft_commands_require_the_same_permission_as_transcribe` in
+    `test_rbac.rs`; `every_command_round_trips` + a new
+    `sermon_note_server_messages_round_trip` in `test_protocol.rs`).
+  - **Sana F2 (Medium)** — both cascade-ON tests asserted only
+    `find_by_transcript(...).is_none()`, satisfied by the schema's own
+    `ON DELETE SET NULL` floor alone. Fixed: both now assert
+    `SELECT COUNT(*) FROM sermon_note WHERE id = ?` is `0` (and `1` before, as
+    a positive control).
+  - **Sana F3 (Medium)** — a cascade-OFF detached note (`transcript_id = NULL`)
+    was unreachable by every public `sermon_note_repo` function and survived
+    `purge_expired` forever. Fixed: `sermon_note_repo::list_detached`/
+    `delete_by_id` give it a path; `transcript_repo::purge_expired` now also
+    purges detached notes past their own `edited_at` retention window.
+  - **Vera F3 (correctness)** — `sermon_note_repo::create`'s upsert returned a
+    stale `last_insert_rowid()` on the `DO UPDATE` branch. Fixed with
+    `INSERT ... ON CONFLICT ... DO UPDATE ... RETURNING id`; new test
+    interleaves an unrelated insert between two `create` calls and asserts the
+    second still returns the first row's real id.
+  - **Vera F1 (Low)** — migration v21 carried a redundant explicit index
+    alongside the `UNIQUE` constraint's own autoindex. Fixed: dropped the
+    explicit `CREATE INDEX`; added
+    `sermon_note_has_exactly_one_index_from_its_unique_constraint`.
+  - **Vera F2 / Cody Low** — `most_recent_transcript_id` resolved via the
+    unbounded `transcript_repo::list(db).first()`. Fixed: new
+    `transcript_repo::most_recent_id` (`SELECT id ... ORDER BY started_at DESC,
+    id DESC LIMIT 1`), with a dedicated test asserting the query plan carries
+    no separate sort step.
+  - **Vera F4** — confirmed intentional and now documented:
+    `transcript_repo::delete` reads only the cascade flag
+    (`load_cascade_setting`), never routes through `load_retention_settings`,
+    so a malformed `retention_days` (which `delete` never consults) can no
+    longer fail-closed a manual deletion request — `purge_expired` is
+    unaffected and still fails closed on that same malformed value, since it
+    genuinely needs the window.
+  - **Quinn's Low** — `loadPersistedDraft()`'s UI restore path had no headless
+    test simulating a real page reload. Added `window.__resetSermonNoteDraftForTest()`
+    (test-only hook in `settings.js`) plus a new `PP SN-9` headless check
+    sequence in `scripts/operator_headless.py`.
+- Bug found and fixed during this session's own verification (not a reviewer
+  finding): the first cut of `PP SN-9` was placed AFTER `SN-7`/`SN-8`, both of
+  which call `generate_sermon_notes` again and so overwrite the mock backend's
+  single-slot persisted draft — by the time `PP SN-9` ran, the "last saved"
+  title was no longer the one it asserted, and the check was genuinely RED
+  (`1232 checks, 1 FAIL`) the first time `scripts/operator_headless.py` was
+  actually run this session. Fixed by moving the whole `SN-9` block to
+  immediately after `SN-6` (before `SN-7`/`SN-8` mutate the persisted draft
+  again) — re-run: `1232 checks, 0 FAIL`. This is exactly the class of bug
+  mutation-verification and "actually run the test" discipline exist to catch;
+  it was caught here by executing the suite, not by inspection.
+- Verifier executed: `python3 scripts/operator_headless.py` (1232 checks, 0
+  FAIL, including the fixed `PP SN-9`); `make ci` — first run failed at the
+  operator's own separate `cargo fmt --check` (one line over the 100-col
+  limit in `main.rs`, introduced by this iteration's own edits), fixed and
+  reran; second run failed at the `PP SN-9` bug above, fixed and reran; third
+  run: full `make ci`, clean checkout of the actual state committed next,
+  **ALL GREEN** (`== local Rust/Flutter gate: ALL GREEN ==`; 1232/1232
+  headless checks; full Rust workspace incl. feature-gated suites; Flutter
+  analyze+test; zero `error`/`FAILED`/`panicked` matches anywhere in the log
+  outside expected test-name substrings like `a_failed_open_...`).
+- Result: PASS (C-001..C-009, C-009 remediated pending the reviewers' own
+  re-verification of this exact diff — not re-requested as a fresh review
+  round in this session; see Final evaluation).
+- Decision: commit, push, leave PR in Draft (per this task's own "do not mark
+  ready yourself" instruction), post PR + ClickUp evidence comments. Terminal
+  state: `GATE_REVIEW` — independent re-verification of THIS remediation by
+  the four reviewers has not yet happened and is not this role's to claim.
+
 ## Risks and rollback
 
 - Risks: the "most recent transcript" resolution heuristic (see Assumptions) is
@@ -263,23 +360,34 @@ the operator has no existing channel to a transcript's row id.
 ## Final evaluation
 
 - Validator command: `python3 ~/.claude/skills/goal/scripts/validate_goal_contract.py docs/delivery/goals/TASK-86akgqdv0.md`
-- Validator result: structural OK (run before iteration 1); this file's own
-  `--completion` pass was not re-run after this final edit — see the note below.
-- Independent verification result: pending four-reviewer gate (C-009) — not
-  requested in this session; the ticket's own scope ended at "Draft PR open,
-  report back", matching the precedent set by TASK-86akcfftu (C-008 there was
-  also left PENDING for the same reason).
-- Terminal state: **GATE_REVIEW**. C-001..C-008 PASS; C-009 (four-reviewer gate)
-  and the cascade-on-delete product sign-off are both explicitly open and owned
-  outside this role, per the Operating Contract's boundary ("Product scope...
-  are owned by other roles — escalate rather than decide them").
-- Remaining failed or blocked criteria: C-009 only (PENDING, not FAILED —
-  blocked on dispatching the review pipeline, which is the natural next step).
-- ClickUp final evidence comment: POSTED —
-  https://app.clickup.com/t/86akgqdv0 (comment id `90130319846390`), read back
-  to confirm it persisted in full (no Markdown-table content in it, per the
-  known ClickUp table-dropping issue — plain lists only). Task status moved
-  `planning/todo` -> `code review`.
-- PR: https://github.com/First-Pavilion/selahcue/pull/33 (Draft, base `main`,
-  head `81a24744a5df352a69d21bdddfcf10284c2c31ea`) — description + a separate
-  summary comment posted.
+- Validator result: structural OK (run before iteration 1); not re-run
+  `--completion` this iteration (see note below).
+- Independent verification result: the four-reviewer gate (Sana, Vera, Cody,
+  Quinn) DID run, against `4a44df4`, and posted findings (PR #33 comments +
+  ClickUp comments from Vera/Cody/Quinn; Sana's mirror comment on ClickUp did
+  not land — her session reported no ClickUp MCP tools were exposed to it and
+  handed the mirror to a dispatcher that this session found no record of
+  completing; her finding is fully recorded in the PR comment instead). Every
+  blocking (Sana F1 High) and routed (Sana F2/F3 Medium; Vera F1/F2 Low; Vera
+  F3 correctness; Vera F4) finding is remediated in Iteration 4 above. This
+  session did not re-dispatch the four reviewers against the remediated diff —
+  that re-verification is the reviewers' own next step, not fabricated here.
+- Terminal state: **GATE_REVIEW**. C-001..C-009 PASS against the remediated
+  diff by this role's own re-verification (`make ci` ALL GREEN, mutation checks
+  on the fixed tests, a real end-to-end transcript-id test replacing the
+  hardcoded `42`); the four reviewers have not yet independently re-verified
+  THIS diff, which is what keeps this GATE_REVIEW rather than
+  VERIFIED_COMPLETE, per the Operating Contract's review-pipeline section.
+- Remaining failed or blocked criteria: none FAILED. C-009 is PASS-pending-
+  independent-re-verification, not PENDING/BLOCKED — the mechanism (four-
+  reviewer gate) already ran once; what remains is a second pass over a diff
+  that has since changed.
+- ClickUp final evidence comment: Iteration 3 comment id `90130319846390`;
+  Iteration 4's own evidence comment is posted after this file's commit (see
+  the ClickUp task for the current comment). Task status: `code review`
+  (unchanged).
+- PR: https://github.com/First-Pavilion/selahcue/pull/33 (Draft, base `main`) —
+  Iteration 3 head `81a24744a5df352a69d21bdddfcf10284c2c31ea`; Iteration 4
+  head `cd92ddf1101deeed2dddb663cdf0b4fd4e44f848` (this commit's parent — the
+  code fix; this Goal Contract update follows as its own commit, matching
+  Iteration 3's own `81a2474` + `4a44df4` split).
