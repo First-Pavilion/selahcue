@@ -146,11 +146,15 @@
   if (retryBtn) retryBtn.addEventListener("click", loadList);
 
   // ---------- DETAIL: bounded sliding-window renderer ----------
-  // Character-count height ESTIMATE, not a measured one — deliberately: a measured/remeasured
-  // virtualizer needs ResizeObserver + timing that is hard to make deterministic across engines,
-  // and this console has a documented history of engine-specific layout surprises (WKWebView flex
-  // <select> collapse, grid implicit auto-row overflow). An estimate only has to keep the
-  // scrollbar roughly proportional and pick the right window — it never has to be pixel-exact.
+  // Character-count height ESTIMATE as the STARTING POINT only — not the whole story. A fixed
+  // 88-chars/line guess cannot know the real column width the log renders at (performance review,
+  // Vera V-1): measured at the operator's own default window (1520x984) real rows ran 0.36-0.79x
+  // the estimate, which left the median scroll frame showing only 44% of the viewport as text, up
+  // to 131/240 frames fully BLANK with long utterances, and the last segment unreachable after
+  // scrolling to the end (0/8 attempts — the window re-centred back up on the very next scroll
+  // event). The estimate alone is kept only as the pre-measurement seed and as the per-row
+  // DENOMINATOR the calibration ratio below is computed against; every position calculation is
+  // scaled by that ratio once real rows have been measured.
   var CHARS_PER_LINE = 88;
   var LINE_HEIGHT_PX = 20;
   var ROW_VPAD = 14;
@@ -159,12 +163,32 @@
   // Comfortably above a typical viewport's visible rows (a few dozen) so scrolling never outruns
   // the window, and far below what even a short multi-hour service accumulates.
   var WINDOW_ROWS = 150;
+  // Hysteresis margin (Vera V-1/V-2 verified fix direction (c)): only recompute the mounted
+  // window once the real scroll position has drifted this many ROWS from a mounted edge, instead
+  // of on every single row of movement. Collapses re-render count from "nearly every scroll
+  // frame" (measured: 175/240 wheel frames, 146/150 arrow-key frames) to only the frames that
+  // would otherwise run past what's mounted (11/240 in Vera's verified prototype).
+  var EDGE_MARGIN_ROWS = 40;
+  // Sub-pixel rounding slack at the true bottom of the scrollable area.
+  var END_PIN_EPSILON_PX = 2;
 
   var segs = [];       // the full, unbounded segment array for the open transcript (data, not DOM)
-  var offsets = [0];   // offsets[i] = estimated px height of everything BEFORE segment i
-  var totalHeight = 0;
+  var offsets = [0];   // offsets[i] = ESTIMATED px height of everything BEFORE segment i (unscaled)
   var winStart = 0, winEnd = 0;
   var rafPending = false;
+  var renderCount = 0; // how many times the mounted window actually moved (test hook, V-2)
+
+  // Measured-height writeback + calibration (Vera V-1 fix direction (a)+(b)): once a row is
+  // mounted, its real `offsetHeight` is folded into a running measured-vs-estimated ratio, and
+  // every position calculation (spacer heights, the offset->index search) scales the character
+  // estimate by that ratio. A single running scalar — rather than rewriting the whole `offsets`
+  // prefix-sum array per measurement — keeps lookups O(1)/O(log n) while correcting the
+  // systematic bias (Vera's own verified prototype: this leaves ~5-6% residual "breathing" since
+  // the real ratio varies 0.36-0.79 row to row within one transcript, which is the accepted,
+  // measured trade-off of a cheap global correction vs. an exact per-row remeasurement scheme).
+  var measuredIds = Object.create(null); // segId -> true once folded into the ratio (never re-added)
+  var sumMeasuredPx = 0, sumEstimatedPx = 0;
+  var avgRatio = 1;
 
   function estRowHeight(text) {
     var len = (text || "").length || 1;
@@ -175,16 +199,17 @@
     offsets = new Array(segs.length + 1);
     offsets[0] = 0;
     for (var i = 0; i < segs.length; i++) offsets[i + 1] = offsets[i] + estRowHeight(segs[i].text);
-    totalHeight = offsets[segs.length];
   }
-  // The index of the segment whose estimated [offset, offset+height) range contains `y` — a
-  // standard upper-bound binary search over the strictly increasing `offsets` prefix sums.
+  function scaledOffset(i) { return offsets[i] * avgRatio; }
+  // The index of the segment whose CALIBRATED [offset, offset+height) range contains `y` — a
+  // standard upper-bound binary search over the strictly increasing `offsets` prefix sums, scaled
+  // uniformly by `avgRatio` at lookup time.
   function indexAtOffset(y) {
     var lo = 0, hi = segs.length - 1;
     if (hi < 0) return 0;
     while (lo < hi) {
       var mid = (lo + hi) >> 1;
-      if (offsets[mid + 1] <= y) lo = mid + 1; else hi = mid;
+      if (scaledOffset(mid + 1) <= y) lo = mid + 1; else hi = mid;
     }
     return lo;
   }
@@ -195,27 +220,110 @@
     row.appendChild(el("span", "tr-line-txt", s.text));
     return row;
   }
+  // Read the just-mounted nodes' REAL rendered heights (one forced layout after all the DOM
+  // writes in this render, never interleaved with them) and roll them into the running
+  // measured/estimated ratio. `newRows` is [{node, est}] — the estimate captured at creation
+  // time, since by the time this runs the node may have scrolled out of `winStart..winEnd` again
+  // (a fast scroll can mount and unmount a row within one render).
+  function foldMeasurements(newRows) {
+    var changed = false;
+    for (var k = 0; k < newRows.length; k++) {
+      var segId = newRows[k].node.dataset.segId;
+      if (measuredIds[segId]) continue;
+      var real = newRows[k].node.offsetHeight;
+      if (!real) continue; // not laid out yet (hidden/detached) — try again next render
+      measuredIds[segId] = true;
+      sumMeasuredPx += real;
+      sumEstimatedPx += newRows[k].est;
+      changed = true;
+    }
+    if (changed && sumEstimatedPx > 0) avgRatio = sumMeasuredPx / sumEstimatedPx;
+  }
   // Mount [start, end) as REAL rows; everything outside that range is represented only by the two
   // spacer heights. The DOM therefore never holds more than WINDOW_ROWS real segment rows no
   // matter how long the transcript is.
+  //
+  // DIFF-AND-PATCH, not clear+rebuild (code/QA review, Cody/Quinn High): `#tr-detail-log` is
+  // role="log", whose implicit `aria-live` is "polite" — `innerHTML = ""` + a full rebuild on
+  // every scroll-driven recompute would make assistive tech re-announce the ENTIRE mounted window
+  // on every step, the exact anti-pattern `app.js`'s `syncTranscript` already documents fixing
+  // for the live console. `[start, end)` is a CONTIGUOUS range, so the diff is simple: rows in
+  // the overlap of the old and new windows are left untouched (same DOM node, no
+  // unmount/remount, no re-announcement); only rows that actually left or entered the window are
+  // removed/added. This also collapses the per-render DOM-node churn from up to WINDOW_ROWS
+  // (~450 elements incl. children) to just the delta, which is V-2's fix.
   function renderWindow(start, end) {
     start = Math.max(0, Math.min(start, segs.length));
     end = Math.max(start, Math.min(end, segs.length));
+    renderCount++;
+
+    var newRows = []; // [{node, est}] mounted THIS call — measured together, once, below
+    var overlapStart = Math.max(start, winStart);
+    var overlapEnd = Math.min(end, winEnd);
+    var hasOverlap = overlapStart < overlapEnd && rowsHost.children.length > 0;
+
+    if (!hasOverlap) {
+      // No overlap with what's currently mounted (first render, or a big jump) — nothing to
+      // diff against.
+      rowsHost.innerHTML = "";
+      for (var i = start; i < end; i++) {
+        var node = segRow(segs[i]);
+        rowsHost.appendChild(node);
+        newRows.push({ node: node, est: estRowHeight(segs[i].text) });
+      }
+    } else {
+      for (var r = winStart; r < overlapStart; r++) {
+        var stale = rowsHost.firstChild;
+        if (stale) rowsHost.removeChild(stale);
+      }
+      for (var r2 = winEnd; r2 > overlapEnd; r2--) {
+        var staleEnd = rowsHost.lastChild;
+        if (staleEnd) rowsHost.removeChild(staleEnd);
+      }
+      for (var p = overlapStart - 1; p >= start; p--) {
+        var pNode = segRow(segs[p]);
+        rowsHost.insertBefore(pNode, rowsHost.firstChild);
+        newRows.push({ node: pNode, est: estRowHeight(segs[p].text) });
+      }
+      for (var a = overlapEnd; a < end; a++) {
+        var aNode = segRow(segs[a]);
+        rowsHost.appendChild(aNode);
+        newRows.push({ node: aNode, est: estRowHeight(segs[a].text) });
+      }
+    }
+
     winStart = start; winEnd = end;
-    rowsHost.innerHTML = "";
-    for (var i = start; i < end; i++) rowsHost.appendChild(segRow(segs[i]));
-    topSpacer.style.height = offsets[start] + "px";
-    bottomSpacer.style.height = Math.max(0, totalHeight - offsets[end]) + "px";
+    foldMeasurements(newRows);
+    topSpacer.style.height = scaledOffset(start) + "px";
+    bottomSpacer.style.height = Math.max(0, scaledOffset(segs.length) - scaledOffset(end)) + "px";
   }
   function recomputeWindow() {
     rafPending = false;
     if (!segs.length) return;
-    var idx = indexAtOffset(logEl.scrollTop);
+    var scrollTop = logEl.scrollTop;
+    var maxScroll = Math.max(0, logEl.scrollHeight - logEl.clientHeight);
+    // Pin the tail (Vera V-1): at the TRUE bottom of the real scrollable area, always mount all
+    // the way to the real last segment, regardless of what the (still imperfect) height estimate
+    // maps `scrollTop` to. This is what makes the last segment reachable independent of
+    // calibration accuracy — mapping the true end through an estimate is exactly what left it
+    // unreachable before (0/8 attempts; the window re-centred back up on the next scroll event).
+    if (scrollTop >= maxScroll - END_PIN_EPSILON_PX) {
+      if (winEnd !== segs.length) {
+        var pinnedEnd = segs.length;
+        renderWindow(Math.max(0, pinnedEnd - WINDOW_ROWS), pinnedEnd);
+      }
+      return;
+    }
+    var idx = indexAtOffset(scrollTop);
     var half = Math.floor(WINDOW_ROWS / 2);
     var start = Math.max(0, idx - half);
     var end = Math.min(segs.length, start + WINDOW_ROWS);
     start = Math.max(0, end - WINDOW_ROWS); // re-clamp start if end got clamped near the tail
-    if (start !== winStart || end !== winEnd) renderWindow(start, end);
+    // Hysteresis: recompute only once `idx` has drifted within EDGE_MARGIN_ROWS of (or past) a
+    // mounted edge — this is also what catches a big jump (e.g. a scrollbar drag), since being
+    // fully outside the mounted window trivially satisfies one side of this check too.
+    var nearMountedEdge = idx <= winStart + EDGE_MARGIN_ROWS || idx >= winEnd - EDGE_MARGIN_ROWS;
+    if (nearMountedEdge && (start !== winStart || end !== winEnd)) renderWindow(start, end);
   }
   function onScroll() {
     if (rafPending) return;
@@ -226,14 +334,43 @@
 
   // Test hooks (CLAUDE.md bounded-memory discipline): a per-key Option-returning accessor, never a
   // global counter — a caller must name the segment it expects, so one assertion's hit can never
-  // mask another's miss.
+  // mask another's miss. `__trRenderCount`/`__trAvgRatio`/`__trWindowBounds` are informational
+  // process state (like `__trRenderedRowCount` already was), not per-key hit counters — added for
+  // the realistic-width/content-size control (performance review, Vera V-1/V-2) so a headless
+  // test can assert the calibration actually ran and the hysteresis actually reduced re-renders,
+  // not just that the end state looks right.
   window.__trRowFor = function (segId) {
     return rowsHost.querySelector('.tr-line[data-seg-id="' + segId + '"]') || null;
   };
   window.__trRenderedRowCount = function () { return rowsHost.children.length; };
+  window.__trRenderCount = function () { return renderCount; };
+  window.__trAvgRatio = function () { return avgRatio; };
+  window.__trWindowBounds = function () { return { start: winStart, end: winEnd }; };
+  // A row is genuinely VISIBLE (not just mounted somewhere in the 150-row window) iff its real
+  // bounding rect actually overlaps the log container's — the direct measure of Vera's "blank
+  // frame" finding (a frame where rows are mounted but none intersect the viewport).
+  window.__trVisibleSegIds = function () {
+    var host = logEl.getBoundingClientRect();
+    var ids = [];
+    for (var i = 0; i < rowsHost.children.length; i++) {
+      var r = rowsHost.children[i].getBoundingClientRect();
+      if (r.bottom > host.top && r.top < host.bottom) ids.push(rowsHost.children[i].dataset.segId);
+    }
+    return ids;
+  };
   window.__trScrollToFraction = function (f) {
     var max = Math.max(0, logEl.scrollHeight - logEl.clientHeight);
     logEl.scrollTop = Math.max(0, Math.min(1, f)) * max;
+    recomputeWindow();
+  };
+  // A REAL small pixel delta (matching an actual wheel tick, e.g. Vera's measured "60px wheel
+  // steps"), unlike `__trScrollToFraction` above which can jump across the WHOLE transcript in
+  // one call — the hysteresis fix (V-2) only has anything to demonstrate against genuinely small,
+  // incremental scroll steps; a handful of huge fraction jumps legitimately needs a render each
+  // time regardless of hysteresis.
+  window.__trScrollBy = function (deltaPx) {
+    var max = Math.max(0, logEl.scrollHeight - logEl.clientHeight);
+    logEl.scrollTop = Math.max(0, Math.min(max, logEl.scrollTop + deltaPx));
     recomputeWindow();
   };
 
@@ -255,7 +392,14 @@
     detailTitle.textContent = "Loading…";
     detailMeta.textContent = "";
     notesBadge.textContent = "";
-    segs = []; offsets = [0]; totalHeight = 0; winStart = 0; winEnd = 0;
+    segs = []; offsets = [0]; winStart = 0; winEnd = 0;
+    // Fresh calibration per transcript (Vera V-1 fix): a ratio learned from one transcript's
+    // real row heights has no bearing on another's (different text, but more importantly a
+    // stale measuredIds set would make foldMeasurements silently skip every row of a new
+    // transcript, freezing avgRatio at whatever the PREVIOUS transcript last measured).
+    measuredIds = Object.create(null);
+    sumMeasuredPx = 0; sumEstimatedPx = 0; avgRatio = 1;
+    renderCount = 0;
     rowsHost.innerHTML = ""; topSpacer.style.height = "0px"; bottomSpacer.style.height = "0px";
     invoke("transcript_get", { id: id })
       .then(function (t) {

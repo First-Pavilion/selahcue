@@ -982,7 +982,9 @@ struct AppState {
     /// its durable write path (86akcfftu) — see [`open_transcript_db`]'s doc comment for why this
     /// is a SEPARATE connection/path from `providers_db` above, never the same file. `None` → the
     /// Transcripts page (86akcffvt) reports "transcript store unavailable"; this shell never
-    /// creates or writes to this store.
+    /// creates or writes to this store — structurally, via `open_existing_readonly` (SQLite's own
+    /// `SQLITE_OPEN_READ_ONLY`, no `CREATE`, migrations never run), not merely by doc-comment
+    /// claim (86akcffvt review, Sana F1 / Cody Blocker).
     transcript_db: Option<Mutex<selahcue_data::Database>>,
     /// The SelahCue account/session token store (FR-134): OS keychain in a `cloud-live` build,
     /// in-memory otherwise. Never a user-pasted third-party key.
@@ -1742,13 +1744,33 @@ fn transcript_data_dir() -> Option<std::path::PathBuf> {
 
 /// Open a best-effort READ connection to the shared transcript store at
 /// `<transcript_data_dir>/selahcue.db3`. `None` on any failure (no HOME/APPDATA, no service ever
-/// recorded yet so the directory doesn't exist, or an at-rest-encrypted store this default
-/// (non-`encryption`) build can't open) — the caller reports an honest "transcript store
-/// unavailable" rather than panicking; never creates or writes anything (this shell only ever
-/// reads transcripts — `selahcue-desktop` alone owns creating and writing this store).
+/// recorded yet so the directory doesn't exist, the file present but not yet a real store, or an
+/// at-rest-encrypted store this default (non-`encryption`) build can't open) — the caller reports
+/// an honest "transcript store unavailable" rather than panicking.
+///
+/// Structurally, not just documentarily, never creates or writes anything: this calls
+/// [`selahcue_data::Database::open_existing_readonly`] (86akcffvt review, Sana F1 / Cody
+/// Blocker), never plain `open`. Plain `open` opens with SQLite's default CREATE flag and runs
+/// migrations on demand — so a folder that exists but whose store doesn't yet (a real, ordinary
+/// sequence: `make operator` run standalone before `selahcue-desktop` ever has, or a store
+/// deleted by hand to reset transcript history) would have silently minted a fully-migrated
+/// PLAINTEXT store from this "read-only" page. `selahcue-desktop`'s own `SessionStore::open_store`
+/// decides plaintext-vs-encrypted for what it thinks is a brand-new store by reading what's
+/// already on disk — it would see that operator-created file, find a plaintext header, and open
+/// plain forever, permanently defeating FR-154 for that install the day desktop encryption
+/// ships. `selahcue-desktop` alone owns creating, migrating, and writing this store; this shell
+/// only ever reads it.
 fn open_transcript_db() -> Option<selahcue_data::Database> {
-    let dir = transcript_data_dir()?;
-    selahcue_data::Database::open(dir.join("selahcue.db3")).ok()
+    open_transcript_db_at(&transcript_data_dir()?)
+}
+
+/// As [`open_transcript_db`], but takes the directory explicitly rather than resolving the real
+/// per-OS `transcript_data_dir()` — split out purely so a test can point this at a temp directory
+/// it owns and can inspect afterward (86akcffvt review, Sana F1's required verification: "folder
+/// present, no store → None and no file created" only means something against a directory the
+/// test controls). Not a change of behaviour, just of testability.
+fn open_transcript_db_at(dir: &std::path::Path) -> Option<selahcue_data::Database> {
+    selahcue_data::Database::open_existing_readonly(dir.join("selahcue.db3")).ok()
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1996,6 +2018,130 @@ mod transcript_view_tests {
         let err = transcript_repo::load(&db, 999)
             .expect_err("a missing transcript id is NotFound, not Ok");
         assert_eq!(err.to_string(), "row not found");
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// `open_transcript_db_at` (86akcffvt review, Sana F1 / Cody Blocker): this shell must never
+// create, write to, or migrate the shared transcript store it only reads. These tests exercise
+// the FULL operator-level path (directory resolution + open), not just the crate-level
+// constructor `selahcue-data`'s own tests already cover — the two layers can regress
+// independently (e.g. a future edit could re-introduce `create_dir_all` here, or swap the call
+// back to plain `open`), so both are tested. Mutation-verified: swapping the
+// `open_existing_readonly` call in `open_transcript_db_at` back to plain `Database::open` turns
+// (a) and (b) red together (see the ticket's evidence for the recorded run).
+// ---------------------------------------------------------------------------------------------
+#[cfg(test)]
+mod transcript_db_open_tests {
+    use super::*;
+    use selahcue_data::{transcript_repo, Database};
+
+    #[test]
+    fn a_folder_present_but_no_store_yet_yields_none_and_creates_no_file() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let store_path = dir.path().join("selahcue.db3");
+        assert!(!store_path.exists(), "premise: no store in the folder yet");
+
+        let result = open_transcript_db_at(dir.path());
+
+        assert!(
+            result.is_none(),
+            "a folder with no store yet must report unavailable, not open one"
+        );
+        assert!(
+            !store_path.exists(),
+            "the 'read-only' open must not have created a store where none existed \
+             (this is the exact FR-154 plaintext-lock-in shape: make operator run standalone \
+             before selahcue-desktop ever has, or a store deleted by hand to reset history)"
+        );
+    }
+
+    #[test]
+    fn a_zero_byte_placeholder_yields_none_and_stays_zero_bytes() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let store_path = dir.path().join("selahcue.db3");
+        std::fs::write(&store_path, []).expect("write empty placeholder");
+
+        let result = open_transcript_db_at(dir.path());
+
+        assert!(
+            result.is_none(),
+            "a zero-byte placeholder is not a real store and must report unavailable"
+        );
+        assert_eq!(
+            store_path.metadata().expect("metadata").len(),
+            0,
+            "the refused open must not have written a schema into the placeholder"
+        );
+    }
+
+    #[test]
+    fn a_real_existing_store_opens_and_lists_its_transcript_positive_control() {
+        // Positive control: the two refusal tests above prove nothing without proof this same
+        // function still does its one real job against an ordinary, real store.
+        let dir = tempfile::tempdir().expect("temp dir");
+        let store_path = dir.path().join("selahcue.db3");
+        {
+            let db = Database::open(&store_path).expect("create the real store");
+            transcript_repo::create(
+                &db,
+                &transcript_repo::NewTranscript {
+                    label: "Sunday Service".to_string(),
+                    provider: "manual".to_string(),
+                    plan_id: None,
+                    started_at_ms: 1_722_760_800_000,
+                },
+            )
+            .expect("seed one transcript");
+        }
+
+        let db = open_transcript_db_at(dir.path())
+            .expect("a real, ordinary store at this path must open");
+
+        let rows = transcript_repo::list(&db).expect("list succeeds");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].label, "Sunday Service");
+    }
+
+    #[test]
+    fn a_store_from_a_newer_build_still_opens_and_reads_correctly() {
+        // What "the newer-schema-version case" resolves to for THIS constructor (see
+        // `Database::open_existing_readonly`'s own doc comment for the full reasoning): every
+        // migration to date is purely additive, and this path never migrates in either
+        // direction, so refusing a newer-but-otherwise-normal store would only break the
+        // reverse case this repo's shared checkouts hit in practice (an older read-only build
+        // pointed at a store a newer sibling build already migrated forward) while protecting
+        // nothing (there is no write to protect here). The one invariant under test is that the
+        // version on disk is left exactly as found.
+        let dir = tempfile::tempdir().expect("temp dir");
+        let store_path = dir.path().join("selahcue.db3");
+        {
+            let db = Database::open(&store_path).expect("create the real store");
+            transcript_repo::create(
+                &db,
+                &transcript_repo::NewTranscript {
+                    label: "Sunday Service".to_string(),
+                    provider: "manual".to_string(),
+                    plan_id: None,
+                    started_at_ms: 1_722_760_800_000,
+                },
+            )
+            .expect("seed one transcript");
+            let future = selahcue_data::migrations::target_version() + 1;
+            db.conn()
+                .execute_batch(&format!("PRAGMA user_version = {future};"))
+                .expect("simulate a sibling build's future migration");
+        }
+
+        let db = open_transcript_db_at(dir.path()).expect("a newer-schema store still opens");
+
+        assert_eq!(
+            db.schema_version().expect("read version"),
+            selahcue_data::migrations::target_version() + 1,
+            "the version on disk must be left exactly as found — never migrated"
+        );
+        let rows = transcript_repo::list(&db).expect("list still succeeds");
+        assert_eq!(rows.len(), 1);
     }
 }
 

@@ -13,6 +13,7 @@ LOUD skip UNLESS SELAHCUE_WEBKIT_REQUIRE=1 (set in CI), which turns a missing en
 hard failure so the gate can never silently no-op. SELAHCUE_OPERATOR_DIST overrides the
 webview path (e.g. a mutated copy in a test).
 """
+import json
 import os
 import sys
 
@@ -39,6 +40,44 @@ try:
 except ImportError:
     skip_or_fail("Playwright not installed (pip install playwright && playwright install webkit)")
 
+
+def _realistic_transcript_segments(count):
+    """A deterministic, mixed character-length segment list approximating real speech (performance
+    review, Vera V-1/V-2): ~10% short 8-30 char utterances, ~70% medium 40-140, ~15% long 140-260,
+    ~5% very long 260-420 "utterance-level final" segments — the same distribution and generator
+    shape `scripts/operator_headless.py`'s own realistic fixture uses, so both engines exercise the
+    same regime. No randomness, so a run reproduces identically."""
+    filler = (
+        "the quick brown fox jumps over the lazy dog near the riverbank at dawn while "
+        "the choir softly hums an old familiar hymn before the sermon begins "
+    )
+    segs = []
+    for i in range(count):
+        m = i % 20
+        if m < 2:
+            length = 8 + (i % 23)
+        elif m < 16:
+            length = 40 + (i % 101)
+        elif m < 19:
+            length = 140 + (i % 121)
+        else:
+            length = 260 + (i % 161)
+        text = "Segment " + str(i) + ": "
+        while len(text) < length:
+            text += filler
+        segs.append({"id": 20000 + i, "start_ms": i * 3000, "end_ms": i * 3000 + 2500, "text": text[:length]})
+    return segs
+
+
+# Realistic-width/content-size control (performance review, Vera V-1/V-2): a 1520x984 REAL
+# viewport (the operator's own default, tauri.conf.json) with a realistic mixed-length transcript
+# is where Vera measured the estimate-only virtualizer failing (blank scroll frames, unreachable
+# last segment) — this is what makes a real-WebKit run exercise that regime rather than only the
+# small, uniform-text fixture the boot-smoke checks below already use.
+REALISTIC_SEGMENT_COUNT = 1200
+REALISTIC_SEGMENTS = _realistic_transcript_segments(REALISTIC_SEGMENT_COUNT)
+REALISTIC_LAST_SEG_ID = REALISTIC_SEGMENTS[-1]["id"]
+
 # The same __TAURI__ stub the Chrome harness uses, so app.js boots + the render path runs.
 STUB = r"""
 window.__calls = [];
@@ -63,9 +102,17 @@ window.__TAURI__ = { core: { invoke: function(cmd, args){
   // surface's flex layout + [hidden]-attribute toggling (list <-> detail) actually paints —
   // exactly the class of trap (flex collapse, an author `display` beating `[hidden]`) this
   // console has hit before on WKWebView specifically and never on Blink.
+  // id:4 is the realistic-width/content-size fixture (performance review, Vera V-1/V-2) — a
+  // second, independent entry alongside id:1's small fixture; the boot-smoke checks below still
+  // pick the FIRST `.tr-card-open` (id:1), so adding this does not disturb them.
   if (cmd === "transcript_list") return Promise.resolve([
-    {id:1, label:"Sunday Service", provider:"manual", started_at_ms:1722760800000, ended_at_ms:1722764460000, segment_count:1}
+    {id:1, label:"Sunday Service", provider:"manual", started_at_ms:1722760800000, ended_at_ms:1722764460000, segment_count:1},
+    {id:4, label:"Realistic Long Service", provider:"manual", started_at_ms:1728700000000, ended_at_ms:1728700000000 + __REALISTIC_SEGMENT_COUNT__ * 3000, segment_count:__REALISTIC_SEGMENT_COUNT__}
   ]);
+  if (cmd === "transcript_get" && args && args.id === 4) return Promise.resolve({
+    id:4, label:"Realistic Long Service", provider:"manual", started_at_ms:1728700000000, ended_at_ms:1728700000000 + __REALISTIC_SEGMENT_COUNT__ * 3000,
+    notes_generated:false, segments: __REALISTIC_SEGMENTS_JSON__
+  });
   if (cmd === "transcript_get") return Promise.resolve({
     id:1, label:"Sunday Service", provider:"manual", started_at_ms:1722760800000, ended_at_ms:1722764460000,
     notes_generated:false, segments:[{id:101, start_ms:0, end_ms:4000, text:"Good morning, church."}]
@@ -73,6 +120,10 @@ window.__TAURI__ = { core: { invoke: function(cmd, args){
   return Promise.resolve(null);
 } } };
 """
+STUB = (
+    STUB.replace("__REALISTIC_SEGMENT_COUNT__", str(REALISTIC_SEGMENT_COUNT))
+    .replace("__REALISTIC_SEGMENTS_JSON__", json.dumps(REALISTIC_SEGMENTS))
+)
 
 HAS_RENDER = (
     "() => { var s = document.querySelector('#preview-panel .surface');"
@@ -136,6 +187,76 @@ def main():
             tr_errors.append(str(e).splitlines()[0])
             tr_list_visible = tr_detail_visible = tr_list_hidden_now = False
 
+        # === Realistic-width/content-size regression control (performance review, Vera V-1/V-2):
+        # a REAL 1520x984 viewport (the operator's own default window, tauri.conf.json) with a
+        # realistic mixed-length transcript, driven by REAL WebKit input (a real mouse wheel, a
+        # real "End" keypress) rather than the `__trScrollToFraction` test-hook shortcut — this is
+        # the "real scroll path" the performance review specifically asked to verify on real
+        # WebKit, which the Blink `operator_headless.py` gate structurally cannot: headless Chrome
+        # under `--virtual-time-budget` drives no real `requestAnimationFrame` (Vera's own
+        # finding), so that gate exercises the fix's MATH via its own test hooks while this one
+        # exercises the full production onScroll -> rAF -> recomputeWindow path end to end.
+        # Mutation-verified: reverting transcripts.js to its pre-fix estimate-only scrollTop
+        # mapping turns tr_last_visible/tr_end_visible/tr_ratio_moved RED — see the ticket's
+        # evidence for the recorded run.
+        tr_real_errors = []
+        tr_mid_visible = tr_ratio_moved = tr_last_visible = tr_end_visible = False
+        try:
+            page2 = browser.new_page(viewport={"width": 1520, "height": 984})
+            page2.on("pageerror", lambda e: tr_real_errors.append(str(e)))
+            page2.add_init_script(STUB)
+            page2.goto("file://" + os.path.join(DIST, "index.html"))
+            page2.wait_for_function(HAS_RENDER, timeout=8000)
+            page2.click("#app-menu-btn")
+            page2.wait_for_selector('.nav-item[data-surface="transcripts"]', state="visible", timeout=8000)
+            page2.click('.nav-item[data-surface="transcripts"]')
+            page2.wait_for_function(
+                "() => document.querySelectorAll('#tr-list .tr-card').length >= 2", timeout=8000
+            )
+            page2.click('#tr-list .tr-card[data-id="4"] .tr-card-open')
+            page2.wait_for_function(
+                "() => !document.getElementById('tr-detail-view').hidden && "
+                "document.getElementById('tr-detail-title').textContent.indexOf('Realistic Long Service') === 0",
+                timeout=8000,
+            )
+            page2.wait_for_function(
+                "() => window.__trRenderedRowCount && window.__trRenderedRowCount() > 0", timeout=8000
+            )
+
+            # Real trusted mouse-wheel steps over the log (page.mouse.wheel, not a dispatched
+            # synthetic event) — confirms no blank frame partway through scrolling, the direct
+            # measure of Vera's "median scroll frame <50% covered" finding, and that the
+            # measured-height calibration ratio actually moved on a SECOND engine.
+            page2.hover("#tr-detail-log")
+            for _ in range(15):
+                page2.mouse.wheel(0, 400)
+                page2.wait_for_timeout(30)
+            page2.wait_for_timeout(150)
+            tr_mid_visible = page2.evaluate(
+                "() => window.__trVisibleSegIds ? window.__trVisibleSegIds().length > 0 : false"
+            )
+            tr_ratio_moved = page2.evaluate(
+                "() => window.__trAvgRatio ? Math.abs(window.__trAvgRatio() - 1) > 0.05 : false"
+            )
+
+            # Real "scroll to end" via a real trusted "End" keypress on the focused, natively
+            # keyboard-scrollable log region (tabindex=0, NFR-019) — the real scroll path, not the
+            # `__trScrollToFraction` test hook.
+            page2.click("#tr-detail-log")
+            page2.keyboard.press("End")
+            page2.wait_for_timeout(300)
+            tr_end_visible = page2.evaluate(
+                "(id) => { var ids = window.__trVisibleSegIds ? window.__trVisibleSegIds() : [];"
+                " return ids.indexOf(String(id)) !== -1; }",
+                REALISTIC_LAST_SEG_ID,
+            )
+            tr_last_visible = page2.evaluate(
+                "(id) => !!(window.__trRowFor && window.__trRowFor(id))", REALISTIC_LAST_SEG_ID
+            )
+            page2.close()
+        except Exception as e:  # noqa: BLE001 — any failure here is itself the finding
+            tr_real_errors.append(str(e).splitlines()[0])
+
         browser.close()
 
     checks = []
@@ -150,6 +271,12 @@ def main():
     checks.append((tr_list_visible, "Transcripts: the list view paints on WebKit (computed display, not just .hidden)"))
     checks.append((tr_detail_visible, "Transcripts: opening a transcript paints the flex-based detail view on WebKit (computed display)"))
     checks.append((tr_list_hidden_now, "Transcripts: the list view is actually display:none on WebKit once the detail view is showing — [hidden] wins over the flex display (the documented WKWebView trap)"))
+    checks.append((not tr_real_errors, "Transcripts realistic-width: exercised on real WebKit at 1520x984 with real input, no exception"
+                   + (" — " + "; ".join(tr_real_errors) if tr_real_errors else "")))
+    checks.append((tr_mid_visible, "Transcripts realistic-width: after real mouse-wheel scrolling, at least one row is VISIBLE (not a blank frame — Vera V-1)"))
+    checks.append((tr_ratio_moved, "Transcripts realistic-width: the height calibration ratio moved away from the un-measured default of 1 on real WebKit"))
+    checks.append((tr_last_visible, "Transcripts realistic-width: a real 'End' keypress mounts the LAST segment of a realistic-width, realistic-length transcript"))
+    checks.append((tr_end_visible, "Transcripts realistic-width: the last segment is actually VISIBLE after a real scroll-to-end (Vera V-1: previously 0/8 attempts) — the real scroll path, not a test hook"))
 
     for passed, msg in checks:
         print(("PASS" if passed else "FAIL") + ": " + msg)

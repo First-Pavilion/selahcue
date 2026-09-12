@@ -107,8 +107,17 @@ DIST = os.environ.get("SELAHCUE_OPERATOR_DIST") or os.path.join(
 # windowed render call was mutated to render every segment unconditionally, which flipped exactly
 # those three checks RED (mounted-row-count bound, the last-segment-absent-on-open control, and
 # the scroll-to-end exact-text check) while every other check in the 1233-check run stayed GREEN
-# — restoring the guard returned the suite to 0 FAIL. See the "=== Transcripts" block below.)
-EXPECTED_MIN_CHECKS = 1233
+# — restoring the guard returned the suite to 0 FAIL. See the "=== Transcripts" block below.
+# 1233 -> 1243: performance review (Vera V-1/V-2) found the 500-segment fixture above uses
+# UNIFORM 85-char lines at this harness's 800x600 default, which happens to sit just above the
+# real/estimated row-height "break-even" ratio (~0.63) the virtualizer's fixed 88-chars/line
+# height ESTIMATE needs to stay correct — so the fixture never exercised the regime where the
+# bug actually bites. The 10 new "TR realistic" checks widen the detail view to ~1500px (the
+# operator's own real 1520px default) with a REALISTIC mixed-length transcript, reproducing
+# Vera's measured failure (blank scroll frames, an unreachable last segment) and its fix
+# (measured-height calibration, diff-and-patch + hysteresis). See the "=== TR realistic-width
+# regression control" block below; mutation-verified against the pre-fix transcripts.js.)
+EXPECTED_MIN_CHECKS = 1243
 
 
 def find_chrome():
@@ -652,6 +661,40 @@ STUB = r"""
       var bigStart = 1725600000000, bigEnd = bigStart + 500 * 4000;
       TR.detail[3] = {id:3, label:"Three-Hour Service — Sep 6", provider:"manual", started_at_ms:bigStart, ended_at_ms:bigEnd, notes_generated:false, segments:bigSegs};
       TR.list.push({id:3, label:"Three-Hour Service — Sep 6", provider:"manual", started_at_ms:bigStart, ended_at_ms:bigEnd, segment_count:500});
+    }
+    // A REALISTIC-width/content-size transcript (performance review, Vera V-1/V-2), seeded only
+    // when a test explicitly asks for it (window.__trSeedRealistic) — NOT unconditionally like
+    // the 500-segment fixture above, because this fixture-seeding code runs on every invoke() and
+    // an unconditional 4th list entry would break the earlier "exactly 3 transcripts" checks that
+    // run before this block is ever reached. The 500-segment fixture above uses UNIFORM 85-char
+    // lines, which sits just on the safe side of the real/estimated height "break-even" ratio
+    // (~0.63) the virtualizer's fixed-chars-per-line ESTIMATE needs to stay accurate — that
+    // narrow safety margin is why the estimate-only virtualizer's bug shipped undetected. This
+    // fixture instead uses a MIXED character-length distribution approximating real speech
+    // (~10% short 8-30 char utterances, ~70% medium 40-140, ~15% long 140-260, ~5% very long
+    // 260-420 "utterance-level final" segments) — deterministic (no Math.random()) so the test
+    // reproduces identically every run.
+    if (window.__trSeedRealistic && !window.__trRealisticSeeded) {
+      window.__trRealisticSeeded = true;
+      var TR_FILLER = "the quick brown fox jumps over the lazy dog near the riverbank at dawn while the choir softly hums an old familiar hymn before the sermon begins ";
+      var trRealisticText = function (n, len) {
+        var s = "Segment " + n + ": ";
+        while (s.length < len) s += TR_FILLER;
+        return s.slice(0, len);
+      };
+      var realSegs = [];
+      var TR_REALISTIC_COUNT = 3000;
+      for (var ri = 0; ri < TR_REALISTIC_COUNT; ri++) {
+        var rm = ri % 20, rlen;
+        if (rm < 2) rlen = 8 + (ri % 23);          // ~10%: 8-30 chars
+        else if (rm < 16) rlen = 40 + (ri % 101);  // ~70%: 40-140 chars
+        else if (rm < 19) rlen = 140 + (ri % 121); // ~15%: 140-260 chars
+        else rlen = 260 + (ri % 161);              // ~5%: 260-420 chars
+        realSegs.push({id: 10000 + ri, start_ms: ri * 3000, end_ms: ri * 3000 + 2500, text: trRealisticText(ri, rlen)});
+      }
+      var realStart = 1728700000000, realEnd = realStart + TR_REALISTIC_COUNT * 3000;
+      TR.detail[4] = {id:4, label:"Realistic Long Service — Oct 12", provider:"manual", started_at_ms:realStart, ended_at_ms:realEnd, notes_generated:false, segments:realSegs};
+      TR.list.push({id:4, label:"Realistic Long Service — Oct 12", provider:"manual", started_at_ms:realStart, ended_at_ms:realEnd, segment_count:TR_REALISTIC_COUNT});
     }
     if (cmd === "transcript_list") {
       if (window.__trListFailOnce) { window.__trListFailOnce = false; return Promise.reject("simulated host rejection"); }
@@ -2755,6 +2798,77 @@ DRIVER = r"""
       ok(!!window.__trRowFor(1250), "TR bounded: scrolling to the middle reaches a middle segment");
       ok(!window.__trRowFor(1000) && !window.__trRowFor(1499), "TR bounded: at the middle position, NEITHER the first nor the last segment is mounted — a genuine sliding window");
       ok(window.__trRenderedRowCount() <= TR_BOUND, "TR bounded: the middle position also stays <= " + TR_BOUND + " rows");
+      el("tr-detail-back").click();
+
+      // === TR realistic-width regression control (performance review, Vera V-1/V-2) ==========
+      // The 500-segment fixture above uses UNIFORM 85-char lines at this harness's 800x600
+      // default — a ratio that sits just above the real/estimated row-height "break-even" point
+      // (~0.63) the virtualizer's fixed 88-chars/line ESTIMATE needs to stay accurate, which is
+      // exactly why that fixture never caught the bug. This block widens #tr-detail-view to
+      // ~1500px (the operator's own real 1520px default window, tauri.conf.json) with a
+      // REALISTIC mixed-length 3000-segment transcript, reproducing the regime Vera measured
+      // breaking the estimate-only mapping: most scroll frames under 50% covered, up to 131/240
+      // fully BLANK with long utterances, and the last segment unreachable (0/8 attempts — the
+      // window re-centred back up on the next scroll event). Mutation-verified: reverting
+      // transcripts.js to its pre-fix estimate-only scrollTop mapping (no measured-height
+      // calibration, no end-pin, clear+rebuild instead of diff-and-patch) turns this whole block
+      // RED — see the ticket's evidence for the recorded run.
+      window.__trSeedRealistic = true;
+      el("tr-retry").click();
+      await waitFor(function(){ return el("tr-list").querySelectorAll(".tr-card").length >= 4; });
+      var trDetailViewEl = document.getElementById("tr-detail-view");
+      var trSavedWidth = trDetailViewEl.style.width, trSavedMaxWidth = trDetailViewEl.style.maxWidth;
+      trDetailViewEl.style.maxWidth = "none";
+      trDetailViewEl.style.width = "1500px";
+      el('tr-list').querySelector('.tr-card[data-id="4"] .tr-card-open').click();
+      await waitFor(function(){ return !el("tr-detail-view").hidden && el("tr-detail-title").textContent.indexOf("Realistic Long Service") === 0; });
+      await waitFor(function(){ return window.__trRenderedRowCount && window.__trRenderedRowCount() > 0; });
+
+      // Calibration actually ran (Vera's verified fix direction (a)+(b)): at a real width this
+      // mismatched, the learned ratio must have moved meaningfully away from the un-calibrated
+      // default of 1 — proof the measured-height writeback engaged, not just that the end state
+      // happens to look plausible.
+      var trRatio = window.__trAvgRatio ? window.__trAvgRatio() : 1;
+      ok(typeof trRatio === "number" && Math.abs(trRatio - 1) > 0.05,
+         "TR realistic: the height calibration ratio moved away from the un-measured default of 1 (got " + trRatio.toFixed(3) + ")");
+
+      // The last segment must be reachable AND actually VISIBLE (not merely mounted somewhere in
+      // the window while sitting behind a mis-sized spacer) after a real scroll to the end.
+      var trLastId = String(10000 + 2999);
+      window.__trScrollToFraction(1);
+      await waitFor(function(){ return !!window.__trRowFor(10000 + 2999); }, 200);
+      ok(!!window.__trRowFor(10000 + 2999),
+         "TR realistic: scrolling to the end mounts the LAST segment of a realistic-width, realistic-length transcript");
+      var trVisAtEnd = window.__trVisibleSegIds ? window.__trVisibleSegIds() : [];
+      ok(trVisAtEnd.indexOf(trLastId) !== -1,
+         "TR realistic: the last segment is not just mounted but actually VISIBLE at scroll-to-end (Vera V-1: previously 0/8 attempts)");
+
+      // No fully blank frames at several realistic scroll positions (Vera V-1: previously up to
+      // 131/240 frames fully blank with long utterances at this width).
+      [0.15, 0.35, 0.5, 0.65, 0.85].forEach(function (f) {
+        window.__trScrollToFraction(f);
+        var trVis = window.__trVisibleSegIds ? window.__trVisibleSegIds() : [];
+        ok(trVis.length > 0, "TR realistic: scroll position " + f + " shows at least one real row in the viewport (not a blank frame)");
+      });
+      ok(window.__trRenderedRowCount() <= TR_BOUND,
+         "TR realistic: mounted row count stays bounded (<= " + TR_BOUND + ") on a realistic 3000-segment transcript too");
+
+      // Hysteresis (V-2): a gradual scroll of REAL small wheel-sized steps (60px each, matching
+      // Vera's own measured wheel-step size) must re-render far fewer times than it steps —
+      // previously nearly every wheel step re-rendered (measured: 175/240 wheel frames, 3-8ms
+      // each). Starts from the middle of the transcript (not the very top) so there is a full
+      // mounted window's worth of buffer on both sides to demonstrate the hysteresis margin
+      // against, rather than immediately hitting the start-of-document edge.
+      window.__trScrollToFraction(0.5);
+      var trRenderCountBefore = window.__trRenderCount ? window.__trRenderCount() : 0;
+      for (var trGi = 0; trGi < 40; trGi++) window.__trScrollBy(60);
+      var trRenderCountAfter = window.__trRenderCount ? window.__trRenderCount() : 0;
+      ok((trRenderCountAfter - trRenderCountBefore) < 20,
+         "TR realistic: 40 real 60px wheel-sized steps trigger well under 40 re-renders (got " +
+         (trRenderCountAfter - trRenderCountBefore) + ") — hysteresis is real, not decorative");
+
+      trDetailViewEl.style.width = trSavedWidth;
+      trDetailViewEl.style.maxWidth = trSavedMaxWidth;
       el("tr-detail-back").click();
 
       // === Pre-service Check (moved into the Settings sidebar, Design 2.0) ===

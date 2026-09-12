@@ -2,9 +2,28 @@
 //! (FR-079; ADR-0007).
 
 use crate::{migrations, DataError, Result};
-use rusqlite::{Connection, DatabaseName};
+use rusqlite::{Connection, DatabaseName, OpenFlags};
+use std::io::Read as _;
 use std::path::Path;
 use std::time::Duration;
+
+/// SQLite's own 16-byte "this is a database file" signature — the literal bytes at offset 0 of
+/// every non-empty SQLite file. Used by [`has_sqlite_header`] to reject a zero-byte or truncated
+/// placeholder file that SQLite's own default-flags `open` would otherwise treat as a legitimate,
+/// if brand new, empty database (verified empirically: opening a real zero-byte file with only
+/// `SQLITE_OPEN_READ_ONLY` succeeds, reports `user_version = 0`, no tables, and leaves the file
+/// untouched — exactly the state [`Database::open_existing_readonly`] must read as "no store
+/// here", not "an empty store that's fine to treat as present").
+const SQLITE_HEADER: &[u8; 16] = b"SQLite format 3\0";
+
+/// `true` iff `path` exists, is readable, and its first 16 bytes are SQLite's own magic header.
+fn has_sqlite_header(path: &Path) -> bool {
+    let Ok(mut file) = std::fs::File::open(path) else {
+        return false;
+    };
+    let mut buf = [0u8; SQLITE_HEADER.len()];
+    file.read_exact(&mut buf).is_ok() && &buf == SQLITE_HEADER
+}
 
 /// An open SelahCue database with its schema migrated to the current version.
 pub struct Database {
@@ -52,6 +71,53 @@ impl Database {
         let conn = Connection::open_in_memory()?;
         key.apply(&conn)?;
         Self::init(conn)
+    }
+
+    /// Open an **existing** file-backed database strictly for reading — for a caller that must
+    /// never create, write to, or migrate a store it does not own (86akcffvt review finding: the
+    /// operator's Transcripts viewer reads a store `selahcue-desktop` alone writes and migrates,
+    /// but was calling plain [`open`](Self::open), which creates-and-migrates on demand — one
+    /// missing file away from silently minting a plaintext store and defeating FR-154 the day
+    /// desktop encryption ships).
+    ///
+    /// Three things make this structurally, not just documentarily, read-only:
+    /// - The file's first 16 bytes must already be SQLite's own magic header (see
+    ///   [`has_sqlite_header`]) — checked *before* SQLite ever touches the path. This rejects a
+    ///   zero-byte or truncated placeholder that SQLite's own lenient "an existing zero-byte file
+    ///   is a legitimate empty database" behaviour would otherwise accept even in read-only mode.
+    /// - The connection opens with SQLite's own `SQLITE_OPEN_READ_ONLY` flag and no
+    ///   `SQLITE_OPEN_CREATE`, so SQLite itself refuses a still-missing file
+    ///   (`Err(DataError::Sqlite(_))`, `SQLITE_CANTOPEN`) — this is enforced by the flag SQLite
+    ///   checks on every call, not a `path.exists()` check a future edit could drop by accident.
+    /// - [`migrations::run`] is never called, so this path can never run schema-writing DDL.
+    ///
+    /// Deliberately does **not** refuse a store whose `user_version` is ahead of this build's own
+    /// migrations (unlike the write path's forward-compat guard in [`migrations::run`]): every
+    /// migration recorded in [`migrations::MIGRATIONS`] to date is purely additive (`CREATE
+    /// TABLE` / `ALTER TABLE ... ADD COLUMN`, never a rename or drop — see that module's own
+    /// "append only" contract), so a plain read against a newer schema written by a later build
+    /// finds every table/column this crate's queries reference completely unchanged; refusing it
+    /// here would gain nothing (there is no write to protect) while being actively harmful in
+    /// this repo's own shared-checkout reality, where two worktrees at adjacent schema versions
+    /// routinely point at the same real data directory (PR #33 added migration v21 on top of
+    /// this ticket's v20) — a version-ahead refusal would make an older read-only build treat a
+    /// perfectly good, already-migrated store as absent. If a future migration ever did become
+    /// non-additive, the resulting query would fail with its own ordinary SQL error (a stable,
+    /// already-handled `DataError::Sqlite`, e.g. "no such column"), not a silent misread.
+    ///
+    /// Returns `Err(DataError::NotFound)` if `path` does not exist or fails the header check, and
+    /// `Err(DataError::Sqlite(_))` for any other open failure (permissions, a locked file, an
+    /// at-rest-encrypted store this build's plain `open` doesn't understand, etc).
+    pub fn open_existing_readonly(path: impl AsRef<Path>) -> Result<Self> {
+        let path = path.as_ref();
+        if !has_sqlite_header(path) {
+            return Err(DataError::NotFound);
+        }
+        let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        // Session-scoped only (never a file write): lets a read wait briefly rather than fail
+        // outright if `selahcue-desktop` happens to hold a WAL write lock at the same instant.
+        conn.busy_timeout(Duration::from_millis(5000))?;
+        Ok(Database { conn })
     }
 
     fn init(conn: Connection) -> Result<Self> {
