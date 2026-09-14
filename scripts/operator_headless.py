@@ -33,6 +33,69 @@ DIST = os.environ.get("SELAHCUE_OPERATOR_DIST") or os.path.join(
     _REPO, "implementation", "desktop", "crates", "selahcue-operator", "dist"
 )
 
+# ---------------------------------------------------------------------------------------------
+# D5 (ADR-0026 rev 2, 86akcffvt) — the "transcripts.js never writes scrollTop" invariant is
+# STATIC and grep-checkable, not inferred from timing-dependent browser behaviour. Per the ADR:
+# every previous round's control had to infer correctness from behaviour under conditions nobody
+# could reliably reproduce, which is exactly how round 6 shipped a mutation-verified check that
+# pinned a bug (the "TR wheel-race" block this same round deletes, below) instead of catching one.
+# A static rule over the committed TEXT cannot pass vacuously and cannot drift with a future edit.
+#
+# The rule: `dist/transcripts.js` may contain NO assignment to `<expr>.scrollTop` — read access
+# (`x.scrollTop` with no `=`, or comparisons `===`/`!==`/`>=` etc.) is unrestricted — except the
+# two exemptions the ADR names explicitly: `openTranscript`'s initial `= 0` (runs before any
+# scroll or animation can exist) and the two test hooks that exist to SIMULATE user input
+# (`__trScrollToFraction` / `__trScrollBy`), three write sites in total. Every permitted site is
+# required to carry a trailing `D5-exempt` marker comment. This check fails on (a) ANY scrollTop
+# write with no marker, and (b) a marked-exemption count that does not match the ADR's own number
+# — (b) is what stops a future violation from being silenced by copy-pasting the marker onto a
+# NEW write instead of deleting it, which a marker-presence-only check could not catch.
+#
+# Runs before Chrome is even resolved (a pure source-text check, independent of a browser being
+# available at all) so it still gates a Chrome-less dev box, and reads through `DIST` — the same
+# SELAHCUE_OPERATOR_DIST override every other check in this file honours — so this file's own
+# mutation-verification discipline (CLAUDE.md: "mutation-verify before claiming it") can point it
+# at an isolated mutated copy without touching the tracked tree.
+D5_EXPECTED_EXEMPT_COUNT = 3
+D5_SCROLLTOP_WRITE_RE = re.compile(r"\.scrollTop\s*[+\-]?=[^=]")
+D5_MARKER = "D5-exempt"
+
+
+def check_d5_no_scrolltop_writes():
+    path = os.path.join(DIST, "transcripts.js")
+    lines = open(path, encoding="utf-8").read().splitlines()
+    unmarked, marked = [], []
+    for lineno, text in enumerate(lines, start=1):
+        if D5_SCROLLTOP_WRITE_RE.search(text):
+            (marked if D5_MARKER in text else unmarked).append(lineno)
+    ok_unmarked = len(unmarked) == 0
+    ok_count = len(marked) == D5_EXPECTED_EXEMPT_COUNT
+    print(
+        "PASS: D5 (ADR-0026) — no unmarked `.scrollTop` write in transcripts.js"
+        if ok_unmarked
+        else "FAIL: D5 (ADR-0026) — unmarked `.scrollTop` write(s) at line(s) %s "
+        "(every write must carry a 'D5-exempt' marker comment naming which of the ADR's two "
+        "exemptions it is, or be deleted)" % unmarked
+    )
+    print(
+        "PASS: D5 (ADR-0026) — exactly %d marked scrollTop-write exemption(s), matching the ADR"
+        % D5_EXPECTED_EXEMPT_COUNT
+        if ok_count
+        else "FAIL: D5 (ADR-0026) — expected exactly %d marked exemptions, found %d at line(s) %s "
+        "(a new exemption cannot be added by marking it; only a revision of the ADR can grow "
+        "this number)" % (D5_EXPECTED_EXEMPT_COUNT, len(marked), marked)
+    )
+    return ok_unmarked and ok_count
+
+
+if not check_d5_no_scrolltop_writes():
+    print(
+        "\n=== D5 static check FAILED — transcripts.js violates the ADR-0026 "
+        "no-scrollTop-write invariant — see docs/architecture/adr/"
+        "ADR-0026-operator-virtualized-list-scroll-model.md ==="
+    )
+    sys.exit(1)
+
 # Floor on the number of checks the driver must run — so a driver regression that
 # silently runs FEWER checks (and thus reports 0 FAIL) still fails. Set TIGHT to the
 # real load-bearing count (no tautologies), so any single dropped check trips exit 4.
@@ -2912,13 +2975,13 @@ DRIVER = r"""
       await waitFor(function(){ return !el("tr-detail-view").hidden && el("tr-detail-title").textContent.indexOf("Realistic Long Service") === 0; });
       await waitFor(function(){ return window.__trRenderedRowCount && window.__trRenderedRowCount() > 0; });
 
-      // Calibration actually ran (Vera's verified fix direction (a)+(b)): at a real width this
-      // mismatched, the learned ratio must have moved meaningfully away from the un-calibrated
-      // default of 1 — proof the measured-height writeback engaged, not just that the end state
-      // happens to look plausible.
-      var trRatio = window.__trAvgRatio ? window.__trAvgRatio() : 1;
-      ok(typeof trRatio === "number" && Math.abs(trRatio - 1) > 0.05,
-         "TR realistic: the height calibration ratio moved away from the un-measured default of 1 (got " + trRatio.toFixed(3) + ")");
+      // Calibration actually ran (ADR-0026 D1: exact per-row heights via a Fenwick tree,
+      // replacing the deleted global `avgRatio` scalar this check used to read). The direct
+      // successor assertion: a real number of rows were folded into the exact metric — proof the
+      // measured-height writeback engaged, not just that the end state happens to look plausible.
+      var trMeasured = window.__trMeasuredCount ? window.__trMeasuredCount() : 0;
+      ok(trMeasured > 50,
+         "TR realistic: a real number of rows were measured and folded into the exact height metric (got " + trMeasured + ")");
 
       // The last segment must be reachable AND actually VISIBLE (not merely mounted somewhere in
       // the window while sitting behind a mis-sized spacer) after a real scroll to the end.
@@ -3074,92 +3137,107 @@ DRIVER = r"""
          trV13Error.toFixed(2) + "px) — the ratio-only fallback alone cannot hit this bound " +
          "(Vera measured 300-1,257px hops under that mutant)");
 
-      // === TR wheel/jump race guard (QA finding, round 6 — Quinn, High): a REAL wheel tick
-      // landing 0-4ms before a keyboard jump (Home/End/PageUp/PageDown/Space) is not defended by
-      // `expectedScrollTop` echo-suppression alone — Chromium/Blink can apply a wheel tick's
-      // scroll effect on a LATER turn than the one that dispatched it (confirmed absent on
-      // WebKit), so a still-pending commit from a wheel tick that preceded the jump can land
-      // AFTER the jump's own synchronous write and corrupt it. No existing check (this file's or
-      // the WebKit smoke's) can see this class of bug: this file only ever drives synthetic
-      // `dispatchEvent` calls, which never engage Chromium's real threaded-scrolling commit path
-      // in the first place, and the WebKit smoke drives an engine confirmed NOT to exhibit it —
-      // so the actual browser-engine race is untestable deterministically in CI either way. What
-      // IS testable, deterministically and engine-independently, is the JS-level DEFENSE this
-      // round adds (`armJumpGuard`/`wheelEventSeq` in transcripts.js): its whole job is to tell
-      // "a scroll event with no accompanying new 'wheel' event" (which is exactly what a stale,
-      // late-landing commit looks like from the DOM's own perspective, regardless of what
-      // engine-internal timing produced it) apart from "a genuine new wheel scroll" — so this
-      // synthesizes exactly that DOM-observable signature directly, rather than gambling on
-      // reproducing Chromium's internal scheduling under `--virtual-time-budget` (which this
-      // round's PL AC-53 fix, elsewhere in this file, already establishes is not a sound thing to
-      // gamble on).
+      // === TR keyboard-jump no longer intercepted (ADR-0026 rev 2, D2/D3 — replaces round 6's
+      // "TR wheel/jump race guard" block with its INVERSE, per the ADR's own words: "a suite that
+      // has to be inverted is evidence the model is wrong, not that a case was missed"). Round
+      // 6's guard (`armJumpGuard`/`wheelEventSeq`/`jumpGuardGen`/`expectedScrollTop`) existed only
+      // to defend an ABSOLUTE `scrollTop` promise a keyboard jump made against a foreign write
+      // landing after it. Under D2 nothing in this file ever writes `scrollTop` reactively, so
+      // there is no promise left to defend and no guard exists to fight anything — round 7 (the
+      // guard fighting a genuine scrollbar drag, Cody/Quinn) and round 5 (a stale wheel commit
+      // corrupting a jump's landing, Quinn) are both unreachable by construction now, not merely
+      // defended against. This asserts that directly: simulate a "jump" (the same
+      // `__trScrollToFraction` setup the old block used) landing away from 0, then apply EXACTLY
+      // the old test's stale-commit DOM signature (a bare `scrollTop` write + a `scroll` event
+      // with no accompanying new `wheel` event) and assert it now STICKS — the same settle window
+      // (10 * 20ms) the old guard used to poll, so a reintroduced guard would still have every
+      // chance to reveal itself here.
       el('tr-list').querySelector('.tr-card[data-id="5"] .tr-card-open').click();
       await waitFor(function(){ return !el("tr-detail-view").hidden && window.__trRenderedRowCount && window.__trRenderedRowCount() > 0; });
       window.__trScrollToFraction(0.5); // start deep in the transcript, same as TR V-13 above
-      el("tr-detail-log").dispatchEvent(new KeyboardEvent("keydown", {key:"Home", bubbles:true}));
-      ok(el("tr-detail-log").scrollTop === 0,
-         "TR wheel-race (setup): a plain Home keypress with no wheel in flight lands at 0, as before");
-      // Simulate a STALE commit from a wheel tick that was already in flight before the jump:
-      // scrollTop drifts and a 'scroll' event fires, but — critically — no NEW 'wheel' event
-      // precedes it. This is the exact DOM signature Quinn's finding describes.
-      el("tr-detail-log").scrollTop = 400;
+      var trKjBefore = el("tr-detail-log").scrollTop;
+      ok(trKjBefore > 0, "TR keyboard-jump (setup): the jump landed away from 0");
+      el("tr-detail-log").scrollTop = trKjBefore + 400;
       el("tr-detail-log").dispatchEvent(new Event("scroll"));
-      var trWrTargetAfterHome = el("tr-detail-log").scrollTop;
-      await waitFor(function(){ return el("tr-detail-log").scrollTop === 0; });
-      ok(el("tr-detail-log").scrollTop === 0,
-         "TR wheel-race: a stale scroll commit with NO accompanying new wheel event (target was " +
-         trWrTargetAfterHome + "px right after it landed) is corrected back to Home's true target " +
-         "(0) within the guard's frame budget — the corruption Quinn found stays fixed");
-      var trWrVisAfterGuard = window.__trVisibleSegIds ? window.__trVisibleSegIds() : [];
-      // The PHASED fixture's segment ids start at 20000 (see phasedSegs.push above) — same base
-      // TR V-13 uses just above this block.
-      ok(trWrVisAfterGuard.indexOf(String(20000)) !== -1,
-         "TR wheel-race: ...and the window is re-settled to match — the TRUE first segment is " +
-         "actually visible again, not just scrollTop reading 0 with stale content mounted");
-      // Negative control (own verification, this round): a GENUINE new wheel event arriving after
-      // the jump must NOT be fought — proves the guard tells stale residue apart from real input
-      // rather than simply reasserting the jump target no matter what happens next, which would
-      // just trade one bug (corruption) for another (the log freezing against real scrolling for
-      // a few frames after every keyboard jump).
+      for (var trKjSettle = 0; trKjSettle < 10; trKjSettle++) { await sleep(20); }
+      ok(el("tr-detail-log").scrollTop === trKjBefore + 400,
+         "TR keyboard-jump: a scrollTop write right after a jump STICKS — round 7's guard (which " +
+         "used to revert exactly this DOM signature, mistaking it for a stale wheel commit) no " +
+         "longer exists to fight it (got " + el("tr-detail-log").scrollTop + ", expected " +
+         (trKjBefore + 400) + ")");
+
+      // === TR anchoring-is-live (ADR-0026 D2, "3 new controls"): the compensation that used to
+      // be `renderWindow`'s own `findTopVisibleSurvivor` + anchor-term script write is now the
+      // BROWSER's job — native scroll anchoring, enabled on `.tr-log` (no longer disabled),
+      // excluded on the two spacers instead (`.tr-log-spacer { overflow-anchor: none }`) so a
+      // real `.tr-line` row is always the anchor candidate. This is the ADR's own spike
+      // discriminator (Q7/Q8) run against the REAL component instead of a synthetic fixture: grow
+      // the top spacer (content entirely above the viewport) by a fixed amount with NO
+      // accompanying scrollTop write, and assert (a) the row the reader is looking at drifts
+      // <= 2px on screen, and (b) scrollTop moved by ~the same amount the spacer grew — i.e. the
+      // ENGINE did the compensation, not this file. Mutation: restoring `overflow-anchor: none`
+      // on `.tr-log` (undoing D2) makes scrollTop NOT move and the reader's row jump by the full
+      // growth instead — the exact pre-fix defect this ADR replaces.
+      el("tr-detail-back").click();
+      el('tr-list').querySelector('.tr-card[data-id="4"] .tr-card-open').click();
+      await waitFor(function(){ return !el("tr-detail-view").hidden && window.__trRenderedRowCount && window.__trRenderedRowCount() > 0; });
       window.__trScrollToFraction(0.5);
-      el("tr-detail-log").dispatchEvent(new KeyboardEvent("keydown", {key:"Home", bubbles:true}));
-      ok(el("tr-detail-log").scrollTop === 0, "TR wheel-race (control setup): Home lands at 0 again");
-      el("tr-detail-log").dispatchEvent(new WheelEvent("wheel", {deltaY: 60, bubbles:true}));
-      el("tr-detail-log").scrollTop = 500;
-      el("tr-detail-log").dispatchEvent(new Event("scroll"));
-      // Not a "wait for condition" — scrollTop is already 500 synchronously above. This waits out
-      // the guard's own bounded correction window (6 setTimeout ticks at ~16ms; several sleep(20)
-      // cycles is generous margin) so a wrongly-overreaching guard has every chance to reveal
-      // itself before the assertion below reads the settled value.
-      for (var trWrSettle = 0; trWrSettle < 10; trWrSettle++) { await sleep(20); }
-      ok(el("tr-detail-log").scrollTop === 500,
-         "TR wheel-race (control): a GENUINE new wheel event arriving after the jump is left " +
-         "alone, not forced back to the jump's target — the guard defends against stale residue, " +
-         "it does not freeze the log against real scrolling (got " + el("tr-detail-log").scrollTop + ")");
-      // Own hardening (this round): a guard armed by a jump must not outlive the transcript it was
-      // armed for. Arm one, then IMMEDIATELY (before its ~6-tick window can elapse) leave and
-      // RE-open the same (long) transcript fresh — deliberately the SAME long fixture, not a
-      // short one: reopening something short would make the guard's own current-max reclamp
-      // (added for the legitimate resize case) coincidentally clamp any stale drag-back down to
-      // ~0 anyway, masking whether the dedicated reopen-invalidation below is doing anything.
-      // Reopening the SAME long transcript keeps `scrollHeight` comparable to before, so a
-      // still-live guard has every opportunity to drag the fresh scrollTop back toward the old
-      // target — which is worse than the bug this round fixes (it would corrupt a transcript the
-      // stale guard was never armed for).
-      window.__trScrollToFraction(0.5);
-      el("tr-detail-log").dispatchEvent(new KeyboardEvent("keydown", {key:"End", bubbles:true}));
-      var trWrEndTargetBeforeReopen = el("tr-detail-log").scrollTop;
-      ok(trWrEndTargetBeforeReopen > 1000,
-         "TR wheel-race (reopen setup): End lands somewhere far from 0, so a stale drag-back would be obvious");
+      var trAnchVis = window.__trVisibleSegIds();
+      ok(trAnchVis.length > 0, "TR anchoring-is-live (setup): at least one row visible before the mutation");
+      var trAnchRow = window.__trRowFor(trAnchVis[0]);
+      var trAnchBeforeTop = trAnchRow.getBoundingClientRect().top;
+      var trAnchBeforeScroll = el("tr-detail-log").scrollTop;
+      var trAnchSpacer = el("tr-log-top-spacer");
+      var trAnchGrow = 200;
+      var trAnchCurH = parseFloat(trAnchSpacer.style.height) || 0;
+      trAnchSpacer.style.height = (trAnchCurH + trAnchGrow) + "px"; // a plain DOM mutation — NO scrollTop write
+      void el("tr-detail-log").offsetHeight; // force layout so anchoring has run before reading below
+      await sleep(50);
+      var trAnchAfterTop = trAnchRow.getBoundingClientRect().top;
+      var trAnchAfterScroll = el("tr-detail-log").scrollTop;
+      trAnchSpacer.style.height = trAnchCurH + "px"; // restore — this block owns no lasting DOM change
+      ok(Math.abs(trAnchAfterTop - trAnchBeforeTop) <= 2,
+         "TR anchoring-is-live: growing the top spacer by " + trAnchGrow + "px drifts the reader's " +
+         "own row by <= 2px on screen (got " + (trAnchAfterTop - trAnchBeforeTop).toFixed(2) +
+         "px) — native scroll anchoring compensates it, not this file");
+      ok(Math.abs((trAnchAfterScroll - trAnchBeforeScroll) - trAnchGrow) <= 2,
+         "TR anchoring-is-live: scrollTop moved by ~" + trAnchGrow + "px on its OWN (delta " +
+         (trAnchAfterScroll - trAnchBeforeScroll) + "), matching the spacer growth — proves the " +
+         "ENGINE did this compensation, with no script scrollTop write anywhere in the path");
+
+      // === TR I2 monotonicity (ADR-0026 D1, "3 new controls"): D1's whole justification is that
+      // measuring row i moves the position of rows > i ONLY — rows <= i never move (I2). This
+      // reads the D1 metric DIRECTLY (`__trOffsetAt`, the exact Fenwick-tree prefix sum), not a
+      // rendered pixel position, so it tests the DATA STRUCTURE'S invariant rather than anything
+      // conflated with rendering/anchoring. Snapshot the offsets of several EARLY rows, force a
+      // real number of LATER rows (deep in the transcript) to be measured, then assert the early
+      // rows' offsets are byte-identical to before. Mutation: reintroducing a global rescale
+      // (the deleted `avgRatio` mechanism) moves every earlier row's offset too — this fails
+      // immediately and by a large margin, not a rounding-sized drift.
       el("tr-detail-back").click();
       el('tr-list').querySelector('.tr-card[data-id="5"] .tr-card-open').click();
       await waitFor(function(){ return window.__trRenderedRowCount && window.__trRenderedRowCount() > 0; });
-      for (var trWrReopenWait = 0; trWrReopenWait < 10; trWrReopenWait++) { await sleep(20); }
-      ok(el("tr-detail-log").scrollTop === 0,
-         "TR wheel-race (reopen): a guard armed just before leaving does not reach into a FRESH " +
-         "open of the SAME (comparably long) transcript and drag its scrollTop back to the old " +
-         "target (" + trWrEndTargetBeforeReopen + "px) — got " + el("tr-detail-log").scrollTop);
-      el("tr-detail-back").click();
+      window.__trScrollToFraction(0.3);
+      var trI2Wb = window.__trWindowBounds();
+      var trI2EarlyIdx = [0, 50, 150, Math.max(0, trI2Wb.start - 10)];
+      var trI2Before = trI2EarlyIdx.map(function (i) { return window.__trOffsetAt(i); });
+      window.__trScrollToFraction(0.8);
+      for (var trI2T = 0; trI2T < 20; trI2T++) window.__trScrollBy(600);
+      var trI2Measured = window.__trMeasuredCount();
+      ok(trI2Measured > 100,
+         "TR I2 (setup): a real number of rows were measured deep in the transcript (" + trI2Measured + ")");
+      var trI2After = trI2EarlyIdx.map(function (i) { return window.__trOffsetAt(i); });
+      var trI2AllSame = true, trI2Diffs = [];
+      for (var trI2K = 0; trI2K < trI2EarlyIdx.length; trI2K++) {
+        if (trI2Before[trI2K] !== trI2After[trI2K]) {
+          trI2AllSame = false;
+          trI2Diffs.push([trI2EarlyIdx[trI2K], trI2Before[trI2K], trI2After[trI2K]]);
+        }
+      }
+      ok(trI2AllSame,
+         "TR I2 monotonicity: the exact offsets of early rows " + JSON.stringify(trI2EarlyIdx) +
+         " are UNCHANGED after measuring rows far below them (diffs: " + JSON.stringify(trI2Diffs) +
+         ") — measuring row i never moves the position of rows <= i");
       el("tr-detail-back").click();
 
       trDetailViewEl.style.width = trSavedWidth;

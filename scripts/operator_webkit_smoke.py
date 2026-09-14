@@ -309,8 +309,11 @@ def main():
             tr_mid_visible = page2.evaluate(
                 "() => window.__trVisibleSegIds ? window.__trVisibleSegIds().length > 0 : false"
             )
+            # ADR-0026 D1: the global `avgRatio` scalar this check used to read is deleted —
+            # replaced by an exact per-row Fenwick-tree metric with no single ratio to inspect.
+            # `__trMeasuredCount` is the direct successor: "did real measurement actually happen".
             tr_ratio_moved = page2.evaluate(
-                "() => window.__trAvgRatio ? Math.abs(window.__trAvgRatio() - 1) > 0.05 : false"
+                "() => window.__trMeasuredCount ? window.__trMeasuredCount() > 50 : false"
             )
 
             # Real "scroll to end" via a real trusted "End" keypress on the focused, natively
@@ -331,17 +334,24 @@ def main():
         except Exception as e:  # noqa: BLE001 — any failure here is itself the finding
             tr_real_errors.append(str(e).splitlines()[0])
 
-        # === Home/End keyboard race (QA finding, this round): Home/End's own fix (added last
-        # round to sidestep WebKit's native keyboard-scroll-animation cancellation) raced with the
-        # scroll-anchor compensation it was built alongside — a manual jump's own scrollTop write
-        # fired a native async 'scroll' event that scheduled a SECOND, independent
-        # recomputeWindow() next frame, which could un-pin a render that had just correctly landed
-        # at the true start/end. Reproduces the exact shape QA used: calibrate `avgRatio` deep in
-        # one length regime via REAL wheel scrolling (a fresh, un-calibrated jump would trivially
-        # pass), then wheel back until the mounted window already overlaps the eventual Home/End
-        # target, then a single real trusted keypress. Mutation-verified against the pre-fix
-        # `jumpScrollTop`-less handler (removing `suppressCompensation` from the keydown path):
-        # both `tr_home_landed`/`tr_end_landed` go RED — see the PR verification notes.
+        # === Home/End reach the true edges natively (ADR-0026 rev 2): this block used to reproduce
+        # a QA-found race between Home/End's own `jumpScrollTop` fix and the scroll-anchor
+        # compensation it was built alongside — a manual jump's own scrollTop write fired a native
+        # async 'scroll' event that scheduled a SECOND, independent recomputeWindow() next frame,
+        # which could un-pin a render that had just correctly landed at the true start/end. Under
+        # ADR-0026 D3 that entire apparatus (`jumpScrollTop`/`suppressCompensation`/the five-key
+        # `keydown` handler) is deleted outright: Home/End now run their NATIVE default action, and
+        # nothing in this file ever schedules a second, independent recompute off the back of its
+        # own write — D2 means nothing writes scrollTop reactively in the first place, so the race
+        # this block used to reproduce is unreachable by construction, not merely defended against.
+        # What this block now proves is the positive claim ADR-0026's spike measured: a native
+        # keyboard jump reaches the TRUE edge exactly, and the right content becomes visible, even
+        # from deep in a length regime the D1 metric estimated wrong — i.e. native scroll anchoring
+        # (D2) correctly settles the view, with no help from this file. Same setup as before
+        # (calibrate deep in one length regime via REAL wheel scrolling, wheel back until the
+        # mounted window overlaps the eventual target, then a single real trusted keypress) because
+        # that is still the regime where a compensation bug would show up if D2 were ever silently
+        # reintroduced.
         tr_kb_errors = []
         tr_home_landed = tr_home_visible = tr_end_landed = tr_end_visible2 = False
         try:
@@ -405,23 +415,25 @@ def main():
         except Exception as e:  # noqa: BLE001 — any failure here is itself the finding
             tr_kb_errors.append(str(e).splitlines()[0])
 
-        # === V-10 (Vera, High, WebKit): PageDown/PageUp/Space travelled only a fraction of a
-        # page whenever the press crossed a render boundary, because real WebKit runs the SAME
-        # native multi-frame keyboard-scroll animation for these keys as it does for Home/End, and
-        # a concurrent scrollTop write (the anchor/ratio compensation) cancelled it mid-flight.
-        # These keys now go through the same `jumpScrollTop` instant-jump path as Home/End —
-        # unlike Home/End, WITHOUT suppressing the anchor/ratio compensation (own verification,
-        # this round: suppressing it for these keys too reintroduced V-6's blank-frame failure the
-        # first time a repeated press crossed a length-regime change). Presses ONE AT A TIME with
-        # waits (matching Vera's own repro shape) and asserts every press travels WITHIN 10% of
-        # the derived native step — not bit-exact equality, because the compensation staying ON
-        # means a press whose render folds newly-measured rows can legitimately move a few percent
-        # more or less than the raw estimate (the same "breathing" this file already documents and
-        # accepts elsewhere), but a real cancellation is nowhere close: Vera measured actual
-        # failures at 171-330px against a 748px step (23-44%, roughly a third to a fifth of the
-        # true step), nothing like the ~1-2% variance a healthy press shows. `expected_step` is
-        # read from the live `clientHeight`, the same formula `pageStepPx()` uses, never a literal
-        # pixel constant.
+        # === V-10, now native by construction (ADR-0026 rev 2, WebKit): PageDown/PageUp/Space used
+        # to travel only a fraction of a page whenever the press crossed a render boundary, because
+        # real WebKit runs a genuine multi-frame keyboard-scroll ANIMATION for these keys, and this
+        # file's own scrollTop write (the old anchor/ratio compensation, reacting to the render the
+        # press triggered) cancelled that animation mid-flight — the spike behind ADR-0026 proved
+        # this is true of ANY script scrollTop write, including a no-op. Under D2/D3 there is no
+        # interception and no compensation write left to cancel anything: these keys run their pure
+        # native default action, and native scroll anchoring (not this file) settles the view if a
+        # newly-measured row above the viewport shifts content. Presses ONE AT A TIME with waits
+        # (matching Vera's own original repro shape) and asserts every press travels WITHIN 10% of
+        # the browser's own derived native step — not bit-exact equality, because native anchoring
+        # reacting to a newly-measured row can legitimately add a small correction on top of the
+        # raw native step (the same "breathing" this file already documents and accepts elsewhere),
+        # but a real cancellation is nowhere close: Vera measured actual pre-fix failures at
+        # 171-330px against a 748px step (23-44%, roughly a third to a fifth of the true step),
+        # nothing like the ~1-2% variance a healthy press shows. `expected_step` is this test's OWN
+        # independent computation of WebKit's real internal `ScrollableArea::PageStep` formula
+        # (clientHeight minus a fixed overlap, floored at 87.5% of clientHeight) — transcripts.js no
+        # longer computes this at all (the deleted `pageStepPx()`); the browser does, natively.
         tr_pk_errors = []
         tr_pagedown_ok = tr_pageup_ok = tr_space_ok = False
         tr_pagedown_deltas = tr_pageup_deltas = tr_space_deltas = []
@@ -448,11 +460,19 @@ def main():
             )
 
             def presses(key, count, sign):
+                # 60ms between presses was sized for the pre-M1 file's INSTANT jumpScrollTop
+                # (no animation at all, so 60ms was ample settle time). Under ADR-0026 these keys
+                # run WebKit's genuine multi-frame native scroll animation (spike C2 — traced at
+                # ~300ms for Home/End), so a press arriving before the previous one's animation
+                # has settled reads a MID-ANIMATION sample, not a per-press delta — exactly the
+                # kind of irregular reading a real user could never produce by pressing keys at a
+                # normal cadence. 400ms is the wait this ticket's own M1 spike (ADR-0026 rev 2 go/
+                # no-go) validated as reliably clearing that animation on both engines.
                 deltas = []
                 prev = page4.evaluate("() => document.getElementById('tr-detail-log').scrollTop")
                 for _ in range(count):
                     page4.keyboard.press(key)
-                    page4.wait_for_timeout(60)
+                    page4.wait_for_timeout(400)
                     cur = page4.evaluate("() => document.getElementById('tr-detail-log').scrollTop")
                     deltas.append((cur - prev) * sign)
                     prev = cur
@@ -476,13 +496,18 @@ def main():
         except Exception as e:  # noqa: BLE001 — any failure here is itself the finding
             tr_pk_errors.append(str(e).splitlines()[0])
 
-        # === V-11 (Vera, Low): a tail-pin render that GROWS the ratio can leave the view short of
-        # the true end — the pin's whole point is "the true last segment is always reachable,"
-        # which a scrollTop computed BEFORE that growth cannot guarantee. Narrows the log column
-        # so every row's REAL wrapped-line count exceeds the 88-chars/line estimate, then jumps
-        # straight to End on a FRESH open (no prior scroll — avgRatio still at its un-measured
-        # default of 1) so the very FIRST measurement is the tail itself growing the ratio
-        # mid-pinned-render, the exact precondition V-11 needs.
+        # === V-11, closed by construction under D1 (Vera, Low, WebKit): a tail-pin render that
+        # GROWS the (formerly global) ratio used to be able to leave the view short of the true
+        # end — the pin's whole point is "the true last segment is always reachable," which a
+        # scrollTop computed BEFORE that growth could not guarantee, and the pre-M1 file's fix was
+        # a `scrollTop` RE-ASSERTION write after the pin's own measurement pass. ADR-0026 D2
+        # deletes that re-assertion outright (it is one of the writes the "component never writes
+        # scrollTop" invariant forbids) — this now works because D1's per-row metric is exact and
+        # local (I2): measuring the tail's real heights never needs correcting anything ABOVE it,
+        # so there is nothing left for a re-assertion to fix. Narrows the log column so every row's
+        # REAL wrapped-line count exceeds the 88-chars/line estimate, then jumps straight to End on
+        # a FRESH open (no prior scroll) so the very FIRST measurement is the tail itself, the exact
+        # precondition this used to need a script write to handle correctly.
         tr_v11_errors = []
         tr_v11_at_true_end = tr_v11_last_visible = False
         try:
@@ -521,9 +546,13 @@ def main():
         except Exception as e:  # noqa: BLE001 — any failure here is itself the finding
             tr_v11_errors.append(str(e).splitlines()[0])
 
-        # === V-12 (Vera, Low): the Home/End/PageUp/PageDown handler must ignore modifier keys —
-        # Shift+End should extend a text selection to the end (or at minimum leave an existing
-        # selection alone), never silently collapse it into a scroll-only jump.
+        # === V-12, closed by construction (Vera, Low, WebKit): Shift+End should extend a text
+        # selection to the end (or at minimum leave an existing selection alone), never silently
+        # collapse it into a scroll-only jump. The pre-M1 file needed an explicit `!ev.shiftKey`
+        # guard in its keydown handler to get this right; ADR-0026 D3 deletes the handler entirely,
+        # so every modifier combination — Shift included — is simply the browser's own native
+        # behaviour with nothing left to intercept it. This regression-tests that native behaviour
+        # directly, the same as before.
         tr_v12_errors = []
         tr_v12_selection_preserved = False
         try:
@@ -577,16 +606,16 @@ def main():
     checks.append((not tr_real_errors, "Transcripts realistic-width: exercised on real WebKit at 1520x984 with real input, no exception"
                    + (" — " + "; ".join(tr_real_errors) if tr_real_errors else "")))
     checks.append((tr_mid_visible, "Transcripts realistic-width: after real mouse-wheel scrolling, at least one row is VISIBLE (not a blank frame — Vera V-1)"))
-    checks.append((tr_ratio_moved, "Transcripts realistic-width: the height calibration ratio moved away from the un-measured default of 1 on real WebKit"))
+    checks.append((tr_ratio_moved, "Transcripts realistic-width: a real number of rows were measured and folded into the exact D1 height metric on real WebKit"))
     checks.append((tr_last_visible, "Transcripts realistic-width: a real 'End' keypress mounts the LAST segment of a realistic-width, realistic-length transcript"))
     checks.append((tr_end_visible, "Transcripts realistic-width: the last segment is actually VISIBLE after a real scroll-to-end (Vera V-1: previously 0/8 attempts) — the real scroll path, not a test hook"))
 
-    checks.append((not tr_kb_errors, "Transcripts Home/End race: exercised on real WebKit with a regime-calibrated jump, no exception"
+    checks.append((not tr_kb_errors, "Transcripts Home/End native: exercised on real WebKit with a regime-calibrated jump, no exception"
                    + (" — " + "; ".join(tr_kb_errors) if tr_kb_errors else "")))
-    checks.append((tr_home_landed, "Transcripts Home/End race: a real Home keypress after calibrating on a DIFFERENT length regime lands scrollTop exactly at 0 (QA finding: previously landed 300+px off)"))
-    checks.append((tr_home_visible, "Transcripts Home/End race: the true FIRST segment is actually visible after that real Home keypress"))
-    checks.append((tr_end_landed, "Transcripts Home/End race: a real End keypress after calibrating on a DIFFERENT length regime lands scrollTop exactly at the true max (QA finding: the cascaded second recompute previously un-pinned the just-correct render)"))
-    checks.append((tr_end_visible2, "Transcripts Home/End race: the true LAST segment is actually visible after that real End keypress"))
+    checks.append((tr_home_landed, "Transcripts Home/End native: a real Home keypress after calibrating on a DIFFERENT length regime lands scrollTop exactly at 0 (ADR-0026: native default action, no interception left to race)"))
+    checks.append((tr_home_visible, "Transcripts Home/End native: the true FIRST segment is actually visible after that real Home keypress"))
+    checks.append((tr_end_landed, "Transcripts Home/End native: a real End keypress after calibrating on a DIFFERENT length regime lands scrollTop exactly at the true max (ADR-0026: native default action + native scroll anchoring, no cascaded recompute to un-pin it)"))
+    checks.append((tr_end_visible2, "Transcripts Home/End native: the true LAST segment is actually visible after that real End keypress"))
 
     checks.append((not tr_pk_errors, "Transcripts V-10: PageDown/PageUp/Space exercised on real WebKit, no exception"
                    + (" — " + "; ".join(tr_pk_errors) if tr_pk_errors else "")))

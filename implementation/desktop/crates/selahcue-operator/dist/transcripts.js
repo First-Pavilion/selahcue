@@ -145,103 +145,174 @@
   }
   if (retryBtn) retryBtn.addEventListener("click", loadList);
 
-  // ---------- DETAIL: bounded sliding-window renderer ----------
-  // Character-count height ESTIMATE as the STARTING POINT only — not the whole story. A fixed
-  // 88-chars/line guess cannot know the real column width the log renders at (performance review,
-  // Vera V-1): measured at the operator's own default window (1520x984) real rows ran 0.36-0.79x
-  // the estimate, which left the median scroll frame showing only 44% of the viewport as text, up
-  // to 131/240 frames fully BLANK with long utterances, and the last segment unreachable after
-  // scrolling to the end (0/8 attempts — the window re-centred back up on the very next scroll
-  // event). The estimate alone is kept only as the pre-measurement seed and as the per-row
-  // DENOMINATOR the calibration ratio below is computed against; every position calculation is
-  // scaled by that ratio once real rows have been measured.
-  var CHARS_PER_LINE = 88;
+  // ---------- DETAIL: bounded sliding-window renderer (ADR-0026 rev 2) ----------
+  // D1: exact, monotone per-row heights via a Fenwick/BIT prefix-sum tree, replacing the old
+  // global `avgRatio` scalar. D2: this component never writes `scrollTop`; native
+  // `overflow-anchor` does all compensation (see `app.css`'s `.tr-log`/`.tr-log-spacer` rules).
+  // D3: the five-key keyboard interception apparatus is deleted outright — Home/End/PageUp/
+  // PageDown/Space/arrows all run their native default action. D5: the "never writes scrollTop"
+  // invariant is statically enforced (`scripts/operator_headless.py`'s `check_d5_no_scrolltop_writes`),
+  // not inferred from behaviour — every write site below is marked `D5-exempt`.
+  var CHARS_PER_LINE = 88; // pre-measurement seed; calibrateCharsPerLine() below corrects it once
+  var lastCalibratedWidth = 0; // set by calibrateCharsPerLine(); drives the ResizeObserver below
   var LINE_HEIGHT_PX = 20;
   var ROW_VPAD = 14;
-  // Hard cap on real `.tr-line` rows mounted in the DOM at once, regardless of transcript length —
-  // the entity this ticket's bounded-memory test asserts directly (never a byte/proxy measure).
-  // Comfortably above a typical viewport's visible rows (a few dozen) so scrolling never outruns
-  // the window, and far below what even a short multi-hour service accumulates.
   var WINDOW_ROWS = 150;
-  // Hysteresis margin (Vera V-1/V-2 verified fix direction (c)): only recompute the mounted
-  // window once the real scroll position has drifted this many ROWS from a mounted edge, instead
-  // of on every single row of movement. Collapses re-render count from "nearly every scroll
-  // frame" (measured: 175/240 wheel frames, 146/150 arrow-key frames) to only the frames that
-  // would otherwise run past what's mounted (11/240 in Vera's verified prototype).
   var EDGE_MARGIN_ROWS = 40;
-  // Sub-pixel rounding slack at the true bottom of the scrollable area.
   var END_PIN_EPSILON_PX = 2;
-  // Native keyboard "page" scroll step (performance review, Vera V-10): Blink and WebKit share
-  // WebCore's ScrollableArea::PageStep formula for PageUp/PageDown/Space — the larger of (the
-  // visible length minus a fixed small overlap, so a line or two of context carries over) and
-  // (87.5% of the visible length). Computed from `logEl.clientHeight` at the moment of each
-  // keypress (see `pageStepPx` below), NOT a fixed pixel literal: Vera measured 748px at the
-  // operator's own 1520x984 default window, but that number is `clientHeight(788) - 40` for THAT
-  // window only — hardcoding 748 would silently go wrong at any other window size or after a
-  // resize, which is exactly the kind of thing this ticket's review rounds keep catching late.
-  var PAGE_STEP_OVERLAP_PX = 40;
-  var PAGE_STEP_MIN_FRACTION = 0.875;
-  function pageStepPx() {
-    var length = logEl.clientHeight;
-    return Math.max(length - PAGE_STEP_OVERLAP_PX, Math.round(length * PAGE_STEP_MIN_FRACTION));
-  }
 
-  var segs = [];       // the full, unbounded segment array for the open transcript (data, not DOM)
-  var offsets = [0];   // offsets[i] = ESTIMATED px height of everything BEFORE segment i (unscaled)
+  var segs = [];        // the full, unbounded segment array for the open transcript (data, not DOM)
   var winStart = 0, winEnd = 0;
   var rafPending = false;
-  var renderCount = 0; // how many times the mounted window actually moved (test hook, V-2)
-  // Echo-suppression state for the scroll-position race (QA finding, round 5): see `onScroll`
-  // below for the full mechanism. Written ONLY by `recomputeWindow`, at the very end of every
-  // call, after every synchronous scrollTop write that pass could have made.
-  var expectedScrollTop = null;
+  var renderCount = 0;  // how many times the mounted window actually moved (test hook, V-2)
 
-  // Wheel/jump race defense (QA finding, round 6 — Quinn): see `armJumpGuard` below, next to
-  // `jumpScrollTop`, for the full mechanism. `wheelEventSeq` is a monotonic count of every real
-  // 'wheel' event this element has observed — the ONE signal that can tell "a stale commit from
-  // an EARLIER wheel tick, landing late" apart from "the user genuinely wheeled again just now",
-  // which `expectedScrollTop`'s plain value comparison structurally cannot: both look like "a
-  // scrollTop that isn't the value I last intended". `jumpGuardGen` is bumped by every keyboard
-  // jump so an older guard's own pending checks can recognize a newer jump superseded them and
-  // stop cleanly, rather than two guards fighting over the same correction.
-  var wheelEventSeq = 0;
-  var jumpGuardGen = 0;
-  logEl.addEventListener("wheel", function () { wheelEventSeq++; }, { passive: true });
+  // ---------- D1: exact, monotone height metric ----------
+  // Fenwick/BIT (Binary Indexed Tree) over `heights`, replacing the single global `avgRatio`
+  // scalar. `heights[i]` starts at the char-count ESTIMATE and is overwritten EXACTLY ONCE, with
+  // the row's real `offsetHeight`, the first time it is laid out.
+  //   I1 — Monotone: a row's recorded height changes at most once and never again for the life
+  //        of an open transcript.
+  //   I2 — Local: changing row i's height changes the position (prefix sum) of rows > i only;
+  //        rows <= i never move.
+  // This is what keeps the corrections native scroll anchoring has to make small and local
+  // (tens of px, one row's line-count error) instead of global and depth-proportional (Vera
+  // measured single `avgRatio` corrections of 2,563px and 3,479px).
+  var heights = new Int32Array(0);
+  var fenwick = new Int32Array(1); // 1-indexed BIT over `heights`; fenwick[0] unused
+  var fenN = 0;
+  var measuredIds = Object.create(null); // segId -> true once folded into `heights` (never re-added)
 
-  // Measured-height writeback + calibration (Vera V-1 fix direction (a)+(b)): once a row is
-  // mounted, its real `offsetHeight` is folded into a running measured-vs-estimated ratio, and
-  // every position calculation (spacer heights, the offset->index search) scales the character
-  // estimate by that ratio. A single running scalar — rather than rewriting the whole `offsets`
-  // prefix-sum array per measurement — keeps lookups O(1)/O(log n) while correcting the
-  // systematic bias (Vera's own verified prototype: this leaves ~5-6% residual "breathing" since
-  // the real ratio varies 0.36-0.79 row to row within one transcript, which is the accepted,
-  // measured trade-off of a cheap global correction vs. an exact per-row remeasurement scheme).
-  var measuredIds = Object.create(null); // segId -> true once folded into the ratio (never re-added)
-  var sumMeasuredPx = 0, sumEstimatedPx = 0;
-  var avgRatio = 1;
-
+  function fenAdd(i, delta) {
+    if (!delta) return;
+    for (var idx = i + 1; idx <= fenN; idx += idx & -idx) fenwick[idx] += delta;
+  }
+  // Exact cumulative px height of everything BEFORE row i (i may equal fenN, the grand total).
+  function fenPrefix(i) {
+    var sum = 0;
+    for (var idx = i; idx > 0; idx -= idx & -idx) sum += fenwick[idx];
+    return sum;
+  }
+  // The index of the row whose EXACT [offset, offset+height) range contains `y` — Fenwick-tree
+  // order-statistics binary lift, O(log n), replacing the old scaled binary search over the
+  // `offsets` prefix-sum array.
+  function fenFindByPrefix(y) {
+    if (fenN === 0) return 0;
+    var pos = 0, remaining = Math.max(0, y);
+    var bit = 1;
+    while (bit * 2 <= fenN) bit *= 2;
+    for (; bit > 0; bit = bit >> 1) {
+      var next = pos + bit;
+      if (next <= fenN && fenwick[next] <= remaining) {
+        pos = next;
+        remaining -= fenwick[next];
+      }
+    }
+    return Math.min(pos, fenN - 1);
+  }
   function estRowHeight(text) {
     var len = (text || "").length || 1;
     var lines = Math.max(1, Math.ceil(len / CHARS_PER_LINE));
     return lines * LINE_HEIGHT_PX + ROW_VPAD;
   }
-  function buildOffsets() {
-    offsets = new Array(segs.length + 1);
-    offsets[0] = 0;
-    for (var i = 0; i < segs.length; i++) offsets[i + 1] = offsets[i] + estRowHeight(segs[i].text);
+  // D4's "free improvement" (ADR-0026): calibrate CHARS_PER_LINE ONCE per transcript, from the
+  // REAL rendered column width, before the first row is placed — safe under I1/I2, since it runs
+  // before any row exists and only sets the STARTING baseline every future estimate is computed
+  // from; it changes nothing retroactively. Without this, the hardcoded 88-chars/line guess can
+  // be off by 2x or more at a real operator window width (this file's own measured history: real
+  // rows ran 0.36-0.79x the estimate at 1520px) — which matters specifically for a FRESH jump
+  // into never-before-measured territory (a scrollbar drag, or `__trScrollToFraction`): with no
+  // overlap to anchor to (ADR-0026's own named residual risk), the landing position is only as
+  // good as this baseline, so a 2x-wrong estimate can land the mounted window far enough from the
+  // real target position to produce a fully blank frame. Falls back to the hardcoded default if
+  // the log has no usable layout yet (defensive; `openTranscript` always shows the detail view,
+  // giving it real layout, before this runs).
+  function calibrateCharsPerLine() {
+    if (!logEl.clientWidth) return;
+    var SAMPLE = "The quick brown fox jumps over the lazy dog, said the preacher, 0123456789.";
+    var probe = el("span", "tr-line-txt", SAMPLE);
+    probe.style.position = "absolute";
+    probe.style.visibility = "hidden";
+    probe.style.whiteSpace = "pre";
+    probe.style.left = "-9999px";
+    var tsProbe = el("span", "tr-line-t", "00:00:00"); // widest realistic timestamp, h:mm:ss
+    tsProbe.style.position = "absolute";
+    tsProbe.style.visibility = "hidden";
+    tsProbe.style.whiteSpace = "pre";
+    tsProbe.style.left = "-9999px";
+    document.body.appendChild(probe);
+    document.body.appendChild(tsProbe);
+    var textWidthPx = probe.getBoundingClientRect().width;
+    var tsWidthPx = tsProbe.getBoundingClientRect().width;
+    document.body.removeChild(probe);
+    document.body.removeChild(tsProbe);
+    if (!textWidthPx) return;
+    var avgCharPx = textWidthPx / SAMPLE.length;
+    // Mirror `.tr-line`'s real layout (`display:flex; gap:10px`, `.tr-log`'s `padding: 6px 28px
+    // 28px`) rather than using the log's raw clientWidth — the text column is narrower than the
+    // log by the timestamp column and the inter-column gap.
+    var LOG_HPAD_PX = 56, ROW_GAP_PX = 10;
+    var availPx = Math.max(100, logEl.clientWidth - LOG_HPAD_PX - tsWidthPx - ROW_GAP_PX);
+    CHARS_PER_LINE = Math.max(10, Math.floor(availPx / avgCharPx));
+    lastCalibratedWidth = logEl.clientWidth;
   }
-  function scaledOffset(i) { return offsets[i] * avgRatio; }
-  // The index of the segment whose CALIBRATED [offset, offset+height) range contains `y` — a
-  // standard upper-bound binary search over the strictly increasing `offsets` prefix sums, scaled
-  // uniformly by `avgRatio` at lookup time.
-  function indexAtOffset(y) {
-    var lo = 0, hi = segs.length - 1;
-    if (hi < 0) return 0;
-    while (lo < hi) {
-      var mid = (lo + hi) >> 1;
-      if (scaledOffset(mid + 1) <= y) lo = mid + 1; else hi = mid;
+  // (Re)builds the Fenwick tree from scratch — called once per transcript open, when the full
+  // estimate baseline is known and nothing has been measured yet.
+  function buildHeights() {
+    calibrateCharsPerLine();
+    fenN = segs.length;
+    heights = new Int32Array(fenN);
+    fenwick = new Int32Array(fenN + 1);
+    for (var i = 0; i < fenN; i++) {
+      heights[i] = estRowHeight(segs[i].text);
+      fenAdd(i, heights[i]);
     }
-    return lo;
+    measuredIds = Object.create(null);
+  }
+  // D4's ResizeObserver role (ADR-0026: "a width ResizeObserver to invalidate the height cache on
+  // a column resize, which also closes Vera's V-9"). This is the one asynchronous-observer role
+  // the ADR adopts — everywhere else D1/D2 stay purely synchronous — because there is no
+  // synchronous signal for "the flex layout finished recalculating the log's column width" the
+  // way there is for "a row just got measured". A measured height (D1's `heights[i]`, folded via
+  // I1) is only "real" for the column width it was measured under; a resize invalidates EVERY
+  // row's height back to a fresh, re-calibrated estimate rather than trying to selectively
+  // preserve some of them, matching the ADR's own word "invalidate". The currently-mounted window
+  // is then force-remounted so its rows are freshly measured under the new width immediately,
+  // instead of waiting for the next scroll to notice.
+  function invalidateHeightsForWidth() {
+    if (!segs.length || logEl.clientWidth === lastCalibratedWidth) return;
+    var savedStart = winStart, savedEnd = winEnd;
+    buildHeights();
+    winStart = 0; winEnd = 0;
+    rowsHost.innerHTML = "";
+    renderWindow(savedStart, savedEnd);
+  }
+  var resizeObserver = typeof ResizeObserver !== "undefined"
+    ? new ResizeObserver(function () { invalidateHeightsForWidth(); })
+    : null;
+  if (resizeObserver) resizeObserver.observe(logEl);
+
+  function offsetAt(i) { return fenPrefix(i); }
+  function totalHeight() { return fenPrefix(fenN); }
+  function indexAtOffset(y) { return fenFindByPrefix(y); }
+  // Read the just-mounted nodes' REAL rendered heights (one forced layout after all the DOM
+  // writes in this render, never interleaved with them) and fold each into the Fenwick tree
+  // EXACTLY ONCE (I1). `newRows` is [{node, idx}] — idx is the row's absolute index, captured at
+  // mount time, since by the time this runs a fast scroll can have mounted and unmounted a row
+  // within one render.
+  function foldMeasurements(newRows) {
+    for (var k = 0; k < newRows.length; k++) {
+      var node = newRows[k].node, idx = newRows[k].idx;
+      var segId = node.dataset.segId;
+      if (measuredIds[segId]) continue;
+      var real = node.offsetHeight;
+      if (!real) continue; // not laid out yet (hidden/detached) — try again next render
+      measuredIds[segId] = true;
+      var delta = real - heights[idx];
+      if (delta !== 0) {
+        heights[idx] = real;
+        fenAdd(idx, delta);
+      }
+    }
   }
   function segRow(s) {
     var row = el("div", "tr-line");
@@ -250,115 +321,40 @@
     row.appendChild(el("span", "tr-line-txt", s.text));
     return row;
   }
-  // Scroll-anchor compensation (performance review, Vera V-6, verified fix "P2"): a calibration
-  // update moves EVERYTHING below `start` (topSpacer = offsets[start] * avgRatio), and dropping a
-  // row off the mounted window's edge loses its real measured height in favour of the estimate —
-  // but `scrollTop` itself never moves, and `.tr-log { overflow-anchor: none }` (needed so the
-  // browser's OWN scroll anchoring stops fighting the diff-and-patch rewrite above) removes the
-  // browser's own compensation for this too. Left uncorrected this produced fully blank
-  // viewports and multi-hundred-pixel visual jumps on a transcript whose segment lengths change
-  // regime partway through (measured: up to 2,563px on a 30,000-segment fixture). Find the
-  // topmost row, among those that will still be mounted after this render (the overlap of the
-  // old and new window), whose box currently touches or is below the top of the visible log —
-  // i.e. the row the user is actually looking at right now that survives the diff — and return
-  // its live on-screen top. Called BEFORE any DOM write in `renderWindow`.
-  function findTopVisibleSurvivor(overlapStart, overlapEnd) {
-    var hostTop = logEl.getBoundingClientRect().top;
-    var idx = winStart;
-    var node = rowsHost.firstChild;
-    while (node) {
-      if (idx >= overlapStart && idx < overlapEnd) {
-        var r = node.getBoundingClientRect();
-        if (r.bottom > hostTop) return { node: node, top: r.top };
-      }
-      idx++;
-      node = node.nextSibling;
-    }
-    return null;
-  }
-  // Read the just-mounted nodes' REAL rendered heights (one forced layout after all the DOM
-  // writes in this render, never interleaved with them) and roll them into the running
-  // measured/estimated ratio. `newRows` is [{node, est}] — the estimate captured at creation
-  // time, since by the time this runs the node may have scrolled out of `winStart..winEnd` again
-  // (a fast scroll can mount and unmount a row within one render).
-  function foldMeasurements(newRows) {
-    var changed = false;
-    for (var k = 0; k < newRows.length; k++) {
-      var segId = newRows[k].node.dataset.segId;
-      if (measuredIds[segId]) continue;
-      var real = newRows[k].node.offsetHeight;
-      if (!real) continue; // not laid out yet (hidden/detached) — try again next render
-      measuredIds[segId] = true;
-      sumMeasuredPx += real;
-      sumEstimatedPx += newRows[k].est;
-      changed = true;
-    }
-    if (changed && sumEstimatedPx > 0) avgRatio = sumMeasuredPx / sumEstimatedPx;
-  }
   // Mount [start, end) as REAL rows; everything outside that range is represented only by the two
   // spacer heights. The DOM therefore never holds more than WINDOW_ROWS real segment rows no
   // matter how long the transcript is.
   //
   // DIFF-AND-PATCH, not clear+rebuild (code/QA review, Cody/Quinn High): `#tr-detail-log` is
-  // role="log", whose implicit `aria-live` is "polite" — `innerHTML = ""` + a full rebuild on
-  // every scroll-driven recompute would make assistive tech re-announce the ENTIRE mounted window
-  // on every step, the exact anti-pattern `app.js`'s `syncTranscript` already documents fixing
-  // for the live console. `[start, end)` is a CONTIGUOUS range, so the diff is simple: rows in
-  // the overlap of the old and new windows are left untouched (same DOM node, no
-  // unmount/remount, no re-announcement); only rows that actually left or entered the window are
-  // removed/added. This also collapses the per-render DOM-node churn from up to WINDOW_ROWS
-  // (~450 elements incl. children) to just the delta, which is V-2's fix.
-  function renderWindow(start, end, pinned, suppressCompensation) {
+  // role="log", whose implicit `aria-live` is "polite" — a full rebuild on every scroll-driven
+  // recompute would make assistive tech re-announce the ENTIRE mounted window on every step.
+  // `[start, end)` is a CONTIGUOUS range, so the diff is simple: rows in the overlap of the old
+  // and new windows are left untouched (same DOM node, no unmount/remount, no re-announcement);
+  // only rows that actually left or entered the window are removed/added.
+  //
+  // D2 (ADR-0026 rev 2): this function NEVER writes `scrollTop`. The only things it moves are the
+  // two spacers' `height` — a plain DOM mutation, not a scroll write — and native scroll
+  // anchoring (enabled on `.tr-log`, excluded on the spacers via `overflow-anchor: none` there)
+  // is what keeps the row the reader is looking at stationary across that mutation. Spike
+  // evidence: a script `scrollTop` write cancels an in-flight WebKit keyboard-scroll animation
+  // (any value, including a no-op); a DOM mutation that shifts content does not, on either engine,
+  // and native anchoring holds through the animation too.
+  function renderWindow(start, end) {
     start = Math.max(0, Math.min(start, segs.length));
     end = Math.max(start, Math.min(end, segs.length));
     renderCount++;
 
-    var newRows = []; // [{node, est}] mounted THIS call — measured together, once, below
+    var newRows = []; // [{node, idx}] mounted THIS call — measured together, once, below
     var overlapStart = Math.max(start, winStart);
     var overlapEnd = Math.min(end, winEnd);
     var hasOverlap = overlapStart < overlapEnd && rowsHost.children.length > 0;
 
-    // Capture the scroll-anchor BEFORE any DOM write below (V-6 fix) — with no overlap (a
-    // scrollbar drag/big jump has nothing in common with what's mounted to anchor to) there is
-    // no survivor to track, and the compensation below falls back to the ratio-only term.
-    // `pinned` (the tail-pin caller, below) is exempt entirely: that path already deliberately
-    // holds `scrollTop` at the real end regardless of estimate error, `bottomSpacer` is always 0
-    // there (nothing follows the true last segment), and the browser auto-clamps `scrollTop` to
-    // the new `scrollHeight` on its own — compensating on top of that would pull the view back
-    // OFF the true end the pin exists to guarantee (confirmed by running the committed
-    // end-reachability checks: applying either term here regressed "TR realistic: ... actually
-    // VISIBLE at scroll-to-end" before this guard was added).
-    //
-    // `suppressCompensation` (QA finding, this round — Home/End's own fix racing with itself) is
-    // the same exemption for a different reason, and — unlike `pinned` — is passed by Home/End
-    // ONLY, never by PageUp/PageDown/Space (see `jumpScrollTop`'s call sites below for why the
-    // paging keys deliberately do NOT pass this, having briefly done so in an earlier draft of
-    // this fix and reintroduced V-6's own blank-frame failure through a new door). Home/End
-    // target an ABSOLUTE edge (offset 0 or the true end) that `jumpScrollTop` already set
-    // `scrollTop` to exactly; the anchor search that compensation would run is computed by
-    // inspecting whatever DOM is STILL mounted from before the jump, which for an arbitrary
-    // cross-document jump has no meaningful spatial relationship to where we just moved — so
-    // "correcting" against it silently pulls the view off the exact edge the key promised, which
-    // is exactly what let Home land 313-315px off target and let End's window un-pin itself after
-    // a correct pinned render (see `onScroll` below for the other half of that bug). PageUp/
-    // PageDown/Space have no such absolute target to protect — they move by a native pixel step
-    // relative to wherever the log already was, the same kind of small, local change a wheel tick
-    // makes — so the compensation stays ON for them, same as a wheel tick, and is in fact
-    // necessary there: verified directly that repeated real PageDown presses crossing a
-    // length-regime change produce a fully blank frame with compensation suppressed and none with
-    // it left on, at otherwise identical scroll positions.
-    var skipCompensation = pinned || suppressCompensation;
-    var anchor = !skipCompensation && hasOverlap ? findTopVisibleSurvivor(overlapStart, overlapEnd) : null;
-    var ratioBefore = avgRatio;
-
     if (!hasOverlap) {
-      // No overlap with what's currently mounted (first render, or a big jump) — nothing to
-      // diff against.
       rowsHost.innerHTML = "";
       for (var i = start; i < end; i++) {
         var node = segRow(segs[i]);
         rowsHost.appendChild(node);
-        newRows.push({ node: node, est: estRowHeight(segs[i].text) });
+        newRows.push({ node: node, idx: i });
       }
     } else {
       for (var r = winStart; r < overlapStart; r++) {
@@ -372,56 +368,36 @@
       for (var p = overlapStart - 1; p >= start; p--) {
         var pNode = segRow(segs[p]);
         rowsHost.insertBefore(pNode, rowsHost.firstChild);
-        newRows.push({ node: pNode, est: estRowHeight(segs[p].text) });
+        newRows.push({ node: pNode, idx: p });
       }
       for (var a = overlapEnd; a < end; a++) {
         var aNode = segRow(segs[a]);
         rowsHost.appendChild(aNode);
-        newRows.push({ node: aNode, est: estRowHeight(segs[a].text) });
+        newRows.push({ node: aNode, idx: a });
       }
     }
 
     winStart = start; winEnd = end;
     foldMeasurements(newRows);
-    topSpacer.style.height = scaledOffset(start) + "px";
-    bottomSpacer.style.height = Math.max(0, scaledOffset(segs.length) - scaledOffset(end)) + "px";
-
-    // Compensate (V-6 fix): move scrollTop by exactly the on-screen displacement the spacer/DOM
-    // changes above just caused, so whatever the user was looking at does not jump. The anchor
-    // term (same DOM node, real re-measured position) captures BOTH halves of the shift — the
-    // ratio change AND the local estimate-vs-real error from rows dropping off the mounted
-    // edge — because it reads the actual rendered position rather than recomputing from offsets.
-    // With no anchor (no overlap to survive the diff), fall back to compensating for the ratio
-    // change alone against this render's own top offset.
-    if (anchor) {
-      logEl.scrollTop += anchor.node.getBoundingClientRect().top - anchor.top;
-    } else if (!skipCompensation && avgRatio !== ratioBefore) {
-      logEl.scrollTop += offsets[start] * (avgRatio - ratioBefore);
-    }
+    topSpacer.style.height = offsetAt(start) + "px";
+    bottomSpacer.style.height = Math.max(0, totalHeight() - offsetAt(end)) + "px";
+    // No scrollTop write here — none. See D2 above.
   }
-  function recomputeWindow(suppressCompensation) {
+  function recomputeWindow() {
     rafPending = false;
-    if (!segs.length) { expectedScrollTop = logEl.scrollTop; return; }
+    if (!segs.length) return;
     var scrollTop = logEl.scrollTop;
     var maxScroll = Math.max(0, logEl.scrollHeight - logEl.clientHeight);
-    // Pin the tail (Vera V-1): at the TRUE bottom of the real scrollable area, always mount all
-    // the way to the real last segment, regardless of what the (still imperfect) height estimate
-    // maps `scrollTop` to. This is what makes the last segment reachable independent of
-    // calibration accuracy — mapping the true end through an estimate is exactly what left it
-    // unreachable before (0/8 attempts; the window re-centred back up on the next scroll event).
+    // Pin the tail: at the TRUE bottom of the real scrollable area, always mount all the way to
+    // the real last segment, regardless of any transient estimate-vs-real gap in rows not yet
+    // measured. Unlike the pre-M1 file, this performs NO `scrollTop` re-assertion (D2) — with an
+    // exact metric for every already-measured row and native anchoring covering the rest, the
+    // browser's own clamp keeps `scrollTop` correct on its own.
     if (scrollTop >= maxScroll - END_PIN_EPSILON_PX) {
       if (winEnd !== segs.length) {
         var pinnedEnd = segs.length;
-        renderWindow(Math.max(0, pinnedEnd - WINDOW_ROWS), pinnedEnd, true);
+        renderWindow(Math.max(0, pinnedEnd - WINDOW_ROWS), pinnedEnd);
       }
-      // V-11 (Vera, low): the pinned render above may have just folded newly-measured tail rows
-      // into `avgRatio`, which can GROW `scrollHeight` out from under the `scrollTop` we entered
-      // this function with — the pin's whole reason to exist is "the true last segment is always
-      // reachable," which a `scrollTop` computed BEFORE that growth cannot guarantee. Re-assert
-      // the true max now that the spacer/measurement writes above are done, rather than leaving
-      // the view short until the next scroll event happens to correct it.
-      logEl.scrollTop = Math.max(0, logEl.scrollHeight - logEl.clientHeight);
-      expectedScrollTop = logEl.scrollTop;
       return;
     }
     var idx = indexAtOffset(scrollTop);
@@ -433,202 +409,44 @@
     // mounted edge — this is also what catches a big jump (e.g. a scrollbar drag), since being
     // fully outside the mounted window trivially satisfies one side of this check too.
     var nearMountedEdge = idx <= winStart + EDGE_MARGIN_ROWS || idx >= winEnd - EDGE_MARGIN_ROWS;
-    if (nearMountedEdge && (start !== winStart || end !== winEnd)) renderWindow(start, end, false, suppressCompensation);
-    // Record the fully-settled value THIS call leaves `scrollTop` at — after every synchronous
-    // write this pass could have made (the branch above, or `renderWindow`'s own compensation) —
-    // so `onScroll` below can tell its own echo apart from a genuine further scroll. Must be the
-    // LAST thing this function does on every exit path.
-    expectedScrollTop = logEl.scrollTop;
+    if (nearMountedEdge && (start !== winStart || end !== winEnd)) renderWindow(start, end);
   }
-  // Echo suppression (QA finding, this round — generalizes the fix to every path that can move
-  // scrollTop, not just Home/End): writing `.scrollTop` from script fires a native, ASYNCHRONOUS
-  // `scroll` event — indistinguishable, to this handler, from a real user scroll. Before this
-  // fix, a manual jump's own write (Home/End, and unavoidably the paging keys once V-10 added
-  // them) scheduled a SECOND, independent `recomputeWindow()` on the next frame, which
-  // re-evaluated the position from scratch using whatever `scrollTop`/`scrollHeight` happened to
-  // be current by then. If the jump's own synchronous call had just folded newly-measured rows
-  // into `avgRatio` — ordinary, since a keyboard jump usually lands somewhere not yet rendered —
-  // the resulting `scrollHeight` change made that SECOND call conclude it was no longer at the
-  // true edge: it rendered a non-pinned window, and the (correctly-)compensating anchor logic
-  // from V-6 then wrote a further, unwanted `scrollTop` delta on top of a jump that had already
-  // landed correctly. `expectedScrollTop` closes this by construction rather than by timing: it
-  // is written by `recomputeWindow()` itself, as the LAST thing every exit path does, so it
-  // always names the fully-settled value this module most recently intended, after every
-  // synchronous write that pass could make. A `scroll` event reporting exactly that value is
-  // therefore provably an echo this file already accounted for — not new information — and is
-  // skipped; any OTHER value (a real wheel tick, drag, or native scroll this file did not
-  // initiate) still schedules a real recompute, so genuine user scrolling is never suppressed.
+  // D2/D3: no echo-suppression bookkeeping. This file never writes `scrollTop` reactively, so a
+  // `scroll` event is always genuine (user input or native anchoring/animation) and simply
+  // schedules a recompute, rAF-coalesced same as before.
   function onScroll() {
-    if (expectedScrollTop !== null && logEl.scrollTop === expectedScrollTop) {
-      expectedScrollTop = null;
-      return;
-    }
-    expectedScrollTop = null;
     if (rafPending) return;
     rafPending = true;
-    window.requestAnimationFrame(function () { recomputeWindow(false); });
+    window.requestAnimationFrame(function () { recomputeWindow(); });
   }
   logEl.addEventListener("scroll", onScroll);
-  // Keyboard paging: Home, End, PageUp, PageDown, Space and Shift+Space all jump straight there
-  // ourselves through `jumpScrollTop`, rather than letting the browser's own default action drive
-  // it (V-6 fix follow-up for Home/End; extended to the paging keys by Vera's V-10). WebKit runs a
-  // genuine multi-frame animation for ALL FIVE of these keys when the log has focus (confirmed by
-  // tracing scrollTop across ~13 intermediate frames over ~300ms for Home/End — `docs/delivery`
-  // evidence for this ticket has the full trace — and Vera independently measured the same
-  // cancellation mechanism stranding PageDown/PageUp/Space 171-330px short of the real
-  // (`clientHeight`-derived) native step on 3-5 of every 6-14 presses that cross a render
-  // boundary), and ANY script write to `scrollTop` during that animation — including this
-  // render's own anchor/ratio compensation, required for the wheel/drag fix — cancels it outright.
-  // A real mouse wheel or scrollbar drag never hits this: both re-assert their own position on
-  // the very next native input event regardless of what we write, so they do not depend on an
-  // uninterrupted engine-driven animation the way these keys' default action does. Handling all
-  // five ourselves — the same instant jump `__trScrollToFraction` already performs for the
-  // committed Blink gate — sidesteps the race entirely instead of trying to out-guess when a
-  // native animation might be in flight.
-  //
-  // `suppressCompensation` is Home/End ONLY, not the paging keys (own verification, this round —
-  // an earlier draft of this fix suppressed it for all five and reintroduced V-6's own blank-frame
-  // failure mode through a NEW door): Home/End target an ABSOLUTE, well-defined edge (0 or the
-  // true end), where the anchor/ratio compensation's correction is not merely unwanted but
-  // actively wrong — it is computed by inspecting whatever DOM is still mounted from BEFORE the
-  // jump, which for an arbitrary cross-document jump has no meaningful spatial relationship to
-  // where we just moved, so "correcting" against it silently pulls the view off the exact edge
-  // the key promised (Quinn's finding). PageUp/PageDown/Space are different: they move scrollTop
-  // by a NATIVE PIXEL STEP relative to wherever the log already was, the same kind of small, local
-  // change a wheel tick makes — and repeating that step across a length-regime change is exactly
-  // the estimate-vs-real drift the anchor/ratio compensation exists to correct (V-1/V-6). Verified
-  // directly: 45 repeated real PageDown presses crossing a regime boundary produced a fully BLANK
-  // frame (and two further near-blank ones) with compensation suppressed, and zero blank frames
-  // with it left on, at otherwise identical positions — compensation is not merely "the wheel/drag
-  // case", it is what keeps a rapid sequence of any raw-pixel jumps aligned with the content as
-  // the ratio moves out from under them. The instant-jump-instead-of-native-animation fix for
-  // WebKit's cancellation bug (V-10) does not depend on suppressing compensation at all: `preventDefault()`
-  // already takes the browser's own animation out of the picture entirely, so this file's own
-  // compensation write next is just one more synchronous script write in the same turn, never a
-  // race against anything. `onScroll`'s echo suppression (above) is what keeps THAT write's own
-  // async 'scroll' event from over-triggering a redundant cascade, the same as it does for wheel
-  // scrolling.
-  //
-  // Modifiers (Vera V-12): Ctrl/Alt/Meta are always left to the browser/OS. Shift is native for
-  // Home/End/PageUp/PageDown too — e.g. Shift+End should extend a text selection to the end;
-  // collapsing that selection by jumping the scroll position instead (the pre-fix behaviour) is
-  // the bug. Shift+Space is the one exception: it is not a selection gesture, it is itself the
-  // standard "page up" pairing (plain Space pages down), so it is handled below rather than
-  // bailing out on `ev.shiftKey` the way the other four keys do.
-  // Wheel/jump race defense (QA finding, round 6 — Quinn, High): a REAL wheel tick landing
-  // immediately (0-4ms) before one of these five keys is not defended by echo-suppression alone.
-  // `jumpScrollTop`'s write and `recomputeWindow`'s own compensation both happen SYNCHRONOUSLY, in
-  // the same turn as the keypress — but on Blink/Chromium a real wheel tick's scroll effect can be
-  // applied to `scrollTop` on a LATER turn (measured directly: `scrollTop` is unchanged immediately
-  // after `mouse.wheel()` returns, only catching up later — a genuine compositor-thread scheduling
-  // behaviour, confirmed ABSENT on WebKit, where the wheel's `scrollTop` write is synchronous).
-  // When that deferred commit lands AFTER the jump's own write, it does not overwrite the jump —
-  // it applies its pending delta ON TOP of it, permanently corrupting the landing position (Home
-  // lands at the wheel's delta instead of 0, PageDown/PageUp/Space land at step +/- wheel-delta).
-  // `expectedScrollTop`'s echo-suppression cannot see this: the corrupting write carries no
-  // "this is my own old write" marker, and a same-VALUE comparison cannot distinguish "an old
-  // wheel's commit settling late" from "the user genuinely scrolled again" — both are simply "a
-  // scrollTop that isn't the value I last intended". The two states differ on a DIFFERENT axis:
-  // whether a NEW 'wheel' event has actually fired since the jump. `wheelEventSeq` names that
-  // axis directly, so the guard below can tell them apart without guessing at timing.
-  //
-  // Mechanism: every keyboard jump snapshots (its own generation, the wheel-event count at that
-  // instant, and the fully-settled target `recomputeWindow` just committed to `expectedScrollTop`)
-  // and polls a handful of times shortly afterward — enough real ticks to comfortably clear
-  // Quinn's measured <=4ms unsafe window with margin, without gambling on a single fixed-duration
-  // sleep (the same "poll, don't guess a duration" reasoning as this ticket's `PL AC-53` fix).
-  // Scheduled via `setTimeout`, deliberately NOT `requestAnimationFrame`: verified directly (a
-  // standalone probe run under this project's own committed headless-Chrome harness) that an rAF
-  // chain does not reliably complete more than 1-2 ticks under `--dump-dom --virtual-time-budget`
-  // (no continuous compositor is driving repaints in that one-shot render-and-exit mode) — the
-  // very harness this fix needs a deterministic committed check in — while a `setTimeout` chain
-  // completes every tick there without exception. rAF's usual advantage (aligning with the real
-  // paint cycle) buys this correctness guard nothing; portability across execution contexts does.
-  // On each tick: if a NEWER jump has since been armed (`jumpGuardGen` moved on), this chain is
-  // stale — stop, cleanly, so two guards never fight over the same correction. If a genuinely NEW
-  // wheel event fired since THIS jump (`wheelEventSeq` moved on), the drift is the user's own next
-  // input, not residue — stop guarding and let the ordinary `onScroll` path own it, same as any
-  // other real scroll. Otherwise, if `scrollTop` no longer matches the target (re-clamped against
-  // the CURRENT max, so a legitimate resize-forced clamp during the guard window is never mistaken
-  // for corruption and fought), the only remaining explanation is a stale commit from the wheel
-  // tick that preceded this jump — restore the target and re-settle the window at it.
-  var JUMP_GUARD_TICKS = 6;      // ticks of margin above Quinn's measured <=4ms unsafe window
-  var JUMP_GUARD_TICK_MS = 16;   // ~one frame interval at 60Hz — not load-bearing precision, just cadence
-  function armJumpGuard() {
-    jumpGuardGen++;
-    var gen = jumpGuardGen;
-    var wheelSeqAtJump = wheelEventSeq;
-    var target = expectedScrollTop;
-    var ticksLeft = JUMP_GUARD_TICKS;
-    function tick() {
-      if (gen !== jumpGuardGen || ticksLeft <= 0) return;
-      ticksLeft--;
-      window.setTimeout(function () {
-        if (gen !== jumpGuardGen) return; // superseded by a newer jump
-        if (wheelEventSeq !== wheelSeqAtJump) return; // a genuine new wheel fired — not stale residue
-        var curMax = Math.max(0, logEl.scrollHeight - logEl.clientHeight);
-        var restoreTo = Math.max(0, Math.min(curMax, target));
-        if (logEl.scrollTop !== restoreTo) {
-          // Always suppress compensation on the RESTORE write, regardless of whether the
-          // original jump suppressed it: `target` already IS the fully-settled, correct answer
-          // (captured from `expectedScrollTop` right after the original jump's own recompute —
-          // compensation included, if that jump used it). This call's job is only to re-render
-          // the window to match a scrollTop we are forcibly re-asserting, not to calculate a new
-          // position — running compensation here would layer a SECOND, unwanted shift on top of
-          // an already-correct absolute value.
-          logEl.scrollTop = restoreTo;
-          recomputeWindow(true);
-          expectedScrollTop = logEl.scrollTop;
-        }
-        tick();
-      }, JUMP_GUARD_TICK_MS);
-    }
-    tick();
-  }
-  function jumpScrollTop(target, suppressCompensation) {
-    var max = Math.max(0, logEl.scrollHeight - logEl.clientHeight);
-    logEl.scrollTop = Math.max(0, Math.min(max, target));
-    recomputeWindow(suppressCompensation);
-    armJumpGuard();
-  }
-  logEl.addEventListener("keydown", function (ev) {
-    if (ev.ctrlKey || ev.altKey || ev.metaKey) return;
-    var key = ev.key;
-    if (!ev.shiftKey && (key === "Home" || key === "End")) {
-      ev.preventDefault();
-      jumpScrollTop(key === "End" ? Number.POSITIVE_INFINITY : 0, true);
-      return;
-    }
-    if (!ev.shiftKey && (key === "PageDown" || key === "PageUp")) {
-      ev.preventDefault();
-      var pageStep = pageStepPx();
-      jumpScrollTop(logEl.scrollTop + (key === "PageDown" ? pageStep : -pageStep), false);
-      return;
-    }
-    if (key === " " || key === "Spacebar") {
-      ev.preventDefault();
-      var spaceStep = pageStepPx();
-      jumpScrollTop(logEl.scrollTop + (ev.shiftKey ? -spaceStep : spaceStep), false);
-    }
-  });
+  // D3 (the part D2 requires to be honestly testable): NO keydown interception. Home, End,
+  // PageUp, PageDown, Space, Shift+Space, and the arrow keys all run their native default action.
+  // Under D2 nothing ever writes `scrollTop` from script, so nothing can cancel WebKit's native
+  // keyboard-scroll animation (the spike's C1) — the five-key interception this file's pre-M1
+  // version needed (`jumpScrollTop`/`armJumpGuard`/`wheelEventSeq`/`jumpGuardGen`/`pageStepPx`)
+  // no longer has anything to protect against and is deleted outright, not merely unused.
 
   // Test hooks (CLAUDE.md bounded-memory discipline): a per-key Option-returning accessor, never a
-  // global counter — a caller must name the segment it expects, so one assertion's hit can never
-  // mask another's miss. `__trRenderCount`/`__trAvgRatio`/`__trWindowBounds` are informational
-  // process state (like `__trRenderedRowCount` already was), not per-key hit counters — added for
-  // the realistic-width/content-size control (performance review, Vera V-1/V-2) so a headless
-  // test can assert the calibration actually ran and the hysteresis actually reduced re-renders,
-  // not just that the end state looks right.
+  // global counter. `__trAvgRatio` is deleted — there is no more ratio (D1).
   window.__trRowFor = function (segId) {
     return rowsHost.querySelector('.tr-line[data-seg-id="' + segId + '"]') || null;
   };
   window.__trRenderedRowCount = function () { return rowsHost.children.length; };
   window.__trRenderCount = function () { return renderCount; };
-  window.__trAvgRatio = function () { return avgRatio; };
   window.__trWindowBounds = function () { return { start: winStart, end: winEnd }; };
+  // The exact cumulative Fenwick-tree offset of row i — direct access to the D1 metric itself,
+  // not a rendered pixel reading (which conflates the data structure with layout/anchoring).
+  // This is what the I2 monotonicity control below reads: "measuring row i never moves the
+  // offset of any row <= i" is a property of THIS function's return value, not of anything on
+  // screen.
+  window.__trOffsetAt = function (i) { return offsetAt(i); };
+  // How many distinct rows have been folded into the exact metric so far (D1) — the direct
+  // successor to the deleted `__trAvgRatio`: "did real measurement actually happen" without
+  // exposing a ratio that no longer exists.
+  window.__trMeasuredCount = function () { return Object.keys(measuredIds).length; };
   // A row is genuinely VISIBLE (not just mounted somewhere in the 150-row window) iff its real
-  // bounding rect actually overlaps the log container's — the direct measure of Vera's "blank
-  // frame" finding (a frame where rows are mounted but none intersect the viewport).
+  // bounding rect actually overlaps the log container's — the direct measure of "blank frame".
   window.__trVisibleSegIds = function () {
     var host = logEl.getBoundingClientRect();
     var ids = [];
@@ -638,22 +456,18 @@
     }
     return ids;
   };
+  // D5 exemption (b): these two hooks exist to SIMULATE user input (a scrollbar drag / a wheel
+  // tick), not to compensate anything — the ADR names them explicitly as the one class of
+  // permitted scrollTop write besides openTranscript's initial `= 0`.
   window.__trScrollToFraction = function (f) {
     var max = Math.max(0, logEl.scrollHeight - logEl.clientHeight);
-    logEl.scrollTop = Math.max(0, Math.min(1, f)) * max;
-    // A fraction jump simulates a scrollbar drag — exactly the case the anchor/ratio
-    // compensation exists for (V-6), so it stays ON here, unlike the keyboard jumps above.
-    recomputeWindow(false);
+    logEl.scrollTop = Math.max(0, Math.min(1, f)) * max; // D5-exempt: simulates a scrollbar drag (test hook)
+    recomputeWindow();
   };
-  // A REAL small pixel delta (matching an actual wheel tick, e.g. Vera's measured "60px wheel
-  // steps"), unlike `__trScrollToFraction` above which can jump across the WHOLE transcript in
-  // one call — the hysteresis fix (V-2) only has anything to demonstrate against genuinely small,
-  // incremental scroll steps; a handful of huge fraction jumps legitimately needs a render each
-  // time regardless of hysteresis.
   window.__trScrollBy = function (deltaPx) {
     var max = Math.max(0, logEl.scrollHeight - logEl.clientHeight);
-    logEl.scrollTop = Math.max(0, Math.min(max, logEl.scrollTop + deltaPx));
-    recomputeWindow(false); // simulates a real wheel tick — compensation stays ON, same as onScroll
+    logEl.scrollTop = Math.max(0, Math.min(max, logEl.scrollTop + deltaPx)); // D5-exempt: simulates a wheel tick (test hook)
+    recomputeWindow();
   };
 
   // ---------- DETAIL: header + load ----------
@@ -674,31 +488,23 @@
     detailTitle.textContent = "Loading…";
     detailMeta.textContent = "";
     notesBadge.textContent = "";
-    segs = []; offsets = [0]; winStart = 0; winEnd = 0;
-    // Invalidate any jump guard still pending from whatever was on screen before (own
-    // verification, this round): its remembered target belongs to a scroll position that no
-    // longer means anything once the log is about to be rebuilt for a (possibly different)
-    // transcript — without this, a guard armed just before a fast Back-then-reopen could fire
-    // AFTER this transcript's own fresh scrollTop=0 is set below and forcibly drag it back to a
-    // stale pixel value from whatever was open previously.
-    jumpGuardGen++;
-    // Fresh calibration per transcript (Vera V-1 fix): a ratio learned from one transcript's
-    // real row heights has no bearing on another's (different text, but more importantly a
-    // stale measuredIds set would make foldMeasurements silently skip every row of a new
-    // transcript, freezing avgRatio at whatever the PREVIOUS transcript last measured).
+    segs = []; heights = new Int32Array(0); fenN = 0; fenwick = new Int32Array(1);
+    winStart = 0; winEnd = 0;
+    // Fresh metric per transcript (D1): a Fenwick tree built from one transcript's real row
+    // heights has no bearing on another's (different text, but more importantly a stale
+    // `measuredIds` set would make `foldMeasurements` silently skip every row of a new
+    // transcript, freezing its heights at whatever the PREVIOUS transcript last measured).
     measuredIds = Object.create(null);
-    sumMeasuredPx = 0; sumEstimatedPx = 0; avgRatio = 1;
     renderCount = 0;
     rowsHost.innerHTML = ""; topSpacer.style.height = "0px"; bottomSpacer.style.height = "0px";
     invoke("transcript_get", { id: id })
       .then(function (t) {
         if (openId !== id) return; // a later selection superseded this one
         segs = Array.isArray(t.segments) ? t.segments : [];
-        buildOffsets();
+        buildHeights();
         renderDetailHeader(t);
         renderWindow(0, Math.min(segs.length, WINDOW_ROWS));
-        logEl.scrollTop = 0;
-        expectedScrollTop = logEl.scrollTop; // every scrollTop write funnels through this bookkeeping
+        logEl.scrollTop = 0; // D5-exempt: initial position, before any scroll/animation can exist
         logEl.focus();
         liveEl.textContent = "Opened " + (t.label || "transcript") + ", " + fmtSegCount(segs.length) + ".";
       })

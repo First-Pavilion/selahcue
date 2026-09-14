@@ -7215,13 +7215,16 @@
   min-height: 0;
   overflow-y: auto;
   padding: 6px 28px 28px;
-  /* Performance review (Vera V-1): Chromium's native scroll anchoring tries to keep the
-     "anchor" element under the pointer stable across a DOM mutation — but every mutation here
-     (rows added/removed, spacer heights changed) is the virtualizer's OWN scroll-position math
-     already accounting for the shift, so anchoring fights it: a 60px wheel step was observed
-     turning into 700-4000px jumps (traced). Disabling it lets `renderWindow`'s own spacer-height
-     bookkeeping be the only thing that moves the visible content. */
-  overflow-anchor: none;
+  /* ADR-0026 rev 2, D2: native scroll anchoring is now load-bearing, not disabled. Every
+     mutation here (rows added/removed, spacer heights changed) is a plain DOM mutation with NO
+     accompanying `scrollTop` write — the browser's own anchoring is what keeps the row the
+     reader is looking at stationary across it. `overflow-anchor: none` moved to the two spacers
+     below (`.tr-log-spacer`) instead: excluding a large, content-free box whose height we mutate
+     from anchor CANDIDACY is what the property is for at element level, so a real `.tr-line` row
+     is always the anchor. Spike evidence (docs/architecture/spikes/adr-0026): a spacer-height
+     mutation with no scrollTop write does NOT cancel WebKit's native keyboard-scroll animation,
+     and native anchoring moves scrollTop by exactly the mutation's size on its own, 3/3 both
+     engines, holding through the animation too. */
 }
 .tr-log:focus-visible {
   outline: 2px solid var(--sc-primary);
@@ -7229,8 +7232,12 @@
 }
 
 .tr-log-spacer {
-  /* height is set inline by transcripts.js from the estimated cumulative segment heights */
+  /* height is set inline by transcripts.js from the exact per-row Fenwick-tree cumulative
+     heights (ADR-0026 D1). ADR-0026 D2: excluded from scroll-anchor candidacy — a large,
+     content-free box whose height we mutate every render is exactly the wrong node for the
+     engine to pick as the thing to keep stationary; the `.tr-line` rows remain candidates. */
   flex: none;
+  overflow-anchor: none;
 }
 
 /* One rendered transcript line. Distinct from the LIVE console's `.tr-seg`/`.tr-seg-time`/
