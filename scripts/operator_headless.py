@@ -33,6 +33,69 @@ DIST = os.environ.get("SELAHCUE_OPERATOR_DIST") or os.path.join(
     _REPO, "implementation", "desktop", "crates", "selahcue-operator", "dist"
 )
 
+# ---------------------------------------------------------------------------------------------
+# D5 (ADR-0026 rev 2, 86akcffvt) — the "transcripts.js never writes scrollTop" invariant is
+# STATIC and grep-checkable, not inferred from timing-dependent browser behaviour. Per the ADR:
+# every previous round's control had to infer correctness from behaviour under conditions nobody
+# could reliably reproduce, which is exactly how round 6 shipped a mutation-verified check that
+# pinned a bug (the "TR wheel-race" block this same round deletes, below) instead of catching one.
+# A static rule over the committed TEXT cannot pass vacuously and cannot drift with a future edit.
+#
+# The rule: `dist/transcripts.js` may contain NO assignment to `<expr>.scrollTop` — read access
+# (`x.scrollTop` with no `=`, or comparisons `===`/`!==`/`>=` etc.) is unrestricted — except the
+# two exemptions the ADR names explicitly: `openTranscript`'s initial `= 0` (runs before any
+# scroll or animation can exist) and the two test hooks that exist to SIMULATE user input
+# (`__trScrollToFraction` / `__trScrollBy`), three write sites in total. Every permitted site is
+# required to carry a trailing `D5-exempt` marker comment. This check fails on (a) ANY scrollTop
+# write with no marker, and (b) a marked-exemption count that does not match the ADR's own number
+# — (b) is what stops a future violation from being silenced by copy-pasting the marker onto a
+# NEW write instead of deleting it, which a marker-presence-only check could not catch.
+#
+# Runs before Chrome is even resolved (a pure source-text check, independent of a browser being
+# available at all) so it still gates a Chrome-less dev box, and reads through `DIST` — the same
+# SELAHCUE_OPERATOR_DIST override every other check in this file honours — so this file's own
+# mutation-verification discipline (CLAUDE.md: "mutation-verify before claiming it") can point it
+# at an isolated mutated copy without touching the tracked tree.
+D5_EXPECTED_EXEMPT_COUNT = 3
+D5_SCROLLTOP_WRITE_RE = re.compile(r"\.scrollTop\s*[+\-]?=[^=]")
+D5_MARKER = "D5-exempt"
+
+
+def check_d5_no_scrolltop_writes():
+    path = os.path.join(DIST, "transcripts.js")
+    lines = open(path, encoding="utf-8").read().splitlines()
+    unmarked, marked = [], []
+    for lineno, text in enumerate(lines, start=1):
+        if D5_SCROLLTOP_WRITE_RE.search(text):
+            (marked if D5_MARKER in text else unmarked).append(lineno)
+    ok_unmarked = len(unmarked) == 0
+    ok_count = len(marked) == D5_EXPECTED_EXEMPT_COUNT
+    print(
+        "PASS: D5 (ADR-0026) — no unmarked `.scrollTop` write in transcripts.js"
+        if ok_unmarked
+        else "FAIL: D5 (ADR-0026) — unmarked `.scrollTop` write(s) at line(s) %s "
+        "(every write must carry a 'D5-exempt' marker comment naming which of the ADR's two "
+        "exemptions it is, or be deleted)" % unmarked
+    )
+    print(
+        "PASS: D5 (ADR-0026) — exactly %d marked scrollTop-write exemption(s), matching the ADR"
+        % D5_EXPECTED_EXEMPT_COUNT
+        if ok_count
+        else "FAIL: D5 (ADR-0026) — expected exactly %d marked exemptions, found %d at line(s) %s "
+        "(a new exemption cannot be added by marking it; only a revision of the ADR can grow "
+        "this number)" % (D5_EXPECTED_EXEMPT_COUNT, len(marked), marked)
+    )
+    return ok_unmarked and ok_count
+
+
+if not check_d5_no_scrolltop_writes():
+    print(
+        "\n=== D5 static check FAILED — transcripts.js violates the ADR-0026 "
+        "no-scrollTop-write invariant — see docs/architecture/adr/"
+        "ADR-0026-operator-virtualized-list-scroll-model.md ==="
+    )
+    sys.exit(1)
+
 # Floor on the number of checks the driver must run — so a driver regression that
 # silently runs FEWER checks (and thus reports 0 FAIL) still fails. Set TIGHT to the
 # real load-bearing count (no tautologies), so any single dropped check trips exit 4.
@@ -98,7 +161,82 @@ DIST = os.environ.get("SELAHCUE_OPERATOR_DIST") or os.path.join(
 #   120-tail #transcript-log renders from, not the unsliced list — the bridge was changed from
 #   `all.map(...)` to `segs.map(...)` in app.js's syncTranscript() to make that true.
 # The REAL observed count (1179 + 5 + 2 = 1186).)
-EXPECTED_MIN_CHECKS = 1186
+# (Raised for the Transcripts surface — 86akcffvt / FR-130 core slice: the new page's list,
+# read-only detail viewer, empty/error states, and the bounded-window rendering control (the
+# transcript-length virtualizer that keeps mounted DOM rows bounded regardless of segment count).
+# 1196 -> 1233, the REAL observed count (baseline drifted 1186 -> 1196 between rounds; both
+# numbers are floors, never exact, per this constant's own contract). The three bounded-DOM
+# checks were mutation-verified BY HAND with the whole suite running (not `--exact`): the initial
+# windowed render call was mutated to render every segment unconditionally, which flipped exactly
+# those three checks RED (mounted-row-count bound, the last-segment-absent-on-open control, and
+# the scroll-to-end exact-text check) while every other check in the 1233-check run stayed GREEN
+# — restoring the guard returned the suite to 0 FAIL. See the "=== Transcripts" block below.
+# 1233 -> 1243: performance review (Vera V-1/V-2) found the 500-segment fixture above uses
+# UNIFORM 85-char lines at this harness's 800x600 default, which happens to sit just above the
+# real/estimated row-height "break-even" ratio (~0.63) the virtualizer's fixed 88-chars/line
+# height ESTIMATE needs to stay correct — so the fixture never exercised the regime where the
+# bug actually bites. The 10 new "TR realistic" checks widen the detail view to ~1500px (the
+# operator's own real 1520px default) with a REALISTIC mixed-length transcript, reproducing
+# Vera's measured failure (blank scroll frames, an unreachable last segment) and its fix
+# (measured-height calibration, diff-and-patch + hysteresis). See the "=== TR realistic-width
+# regression control" block below; mutation-verified against the pre-fix transcripts.js.
+# 1243 -> 1246: code review (Cody) and performance review (Vera V-7) independently found that
+# NONE of the checks above actually verify DOM-node identity across a diff-and-patch render —
+# they assert render count, visual coverage, or reachability, all of which stay green even if
+# the clear+rebuild anti-pattern this PR fixed were silently reintroduced (Vera confirmed by
+# mutation: disabling only the diff-and-patch branch survives both committed suites at 0 FAIL).
+# The 3 new "TR identity" checks tag mounted rows with a test-owned marker, force a real
+# hysteresis-crossing window move, and assert every row still in the overlap between the old and
+# new window kept ITS OWN marker (same DOM node), not a fresh one a rebuild would create. See the
+# "=== TR DOM-node identity" block below; mutation-verified against a forced clear+rebuild.
+# 1246 -> 1250: performance re-review (Vera V-6, blocking) found the scroll-anchor compensation
+# fix itself has NO regression test either: the "TR realistic" fixture interleaves segment
+# lengths evenly, so it happens to stay near the calibration ratio everywhere and never triggers
+# the fully-blank-frame regression a fresh scrollbar-drag/jump into a DIFFERENT length regime
+# produces (confirmed by mutation: disabling the V-6 compensation entirely leaves every check
+# above, including "TR realistic", at 0 FAIL). The 4 new "TR regime-change" checks add a PHASED
+# fixture (short/long/medium thirds, not interleaved) and jump straight into it fresh before each
+# check, mutation-verified against the same compensation-disabled mutant. See the "=== TR
+# regime-change fresh-open jump control" block below.
+# 1250 -> 1254: performance re-review (Vera V-13, test gap) found no control specifically proves
+# the ANCHOR half of the V-6 fix (as opposed to the ratio-fallback half) is necessary: the
+# ratio-only-fallback mutant (MV6a, round 2's "P1") passes every check above at 0 FAIL, because a
+# ratio-only correction still avoids a fully blank frame — it just lands 300-1,257px off the row
+# it should have kept anchored, which none of "at least one row visible" / "reachable" can see.
+# The 4 new "TR V-13" checks track ONE real row across a hysteresis-crossing render on the PHASED
+# fixture's long block and assert its on-screen position stays within 2px of the expected
+# 60px-per-tick displacement — a bound only the anchor term (reading that row's own live position)
+# can hit. See the "=== TR V-13" block below; mutation-verified against the anchor-forced-null
+# mutant (the assertion goes red; the two setup preconditions above it stay green).
+# (drifted 1254 -> 1290 across intervening rounds without this constant being kept in step — the
+# floor's own contract says "never lower it to hide a lost one", not "never let it fall behind the
+# real count either", but a floor that drifts this far behind stops doing useful work. Round 6
+# re-tightens it to the REAL observed count at HEAD before this round's own additions, then adds
+# this round's own: 1290 -> 1297, the 7 new "TR wheel-race" checks (QA finding — Quinn, High: a
+# real wheel tick landing 0-4ms before a keyboard jump is not defended by `expectedScrollTop`
+# echo-suppression alone on Chromium/Blink). See the "=== TR wheel/jump race guard" block below —
+# mutation-verified against three independent mutants: removing the `armJumpGuard()` call in
+# `jumpScrollTop` turns the "corrected back to Home's true target" assertion red (the corruption
+# this round fixes reappears); separately removing just the `wheelEventSeq` genuine-new-wheel bail
+# turns the negative-control assertion red (the guard starts fighting real scrolling instead of
+# only stale residue); separately removing `openTranscript`'s own `jumpGuardGen++` (own hardening,
+# this round — a guard must not outlive the transcript it was armed for) turns the reopen check
+# red ONLY when the reopened transcript is comparably long to the one the guard was armed for —
+# the first version of this control reopened a short fixture instead and passed even with that
+# invalidation removed, because a short transcript's own small `scrollHeight` reclamps ANY stale
+# target down near 0 by coincidence (the same reclamp this round added for the legitimate resize
+# case), so the control was rewritten to reopen the SAME long fixture instead, which does not
+# benefit from that coincidence. All three verified with the whole suite running, not `--exact`.
+# This same round
+# also fixes `PL AC-53`'s two-check flake (Quinn, bisected to `0876d6c`, confirmed live on this
+# PR's own CI run): a fixed `await sleep(20)` after a synchronous state-changing call raced an
+# unrelated timing-margin change from THIS round's own `TR V-13` block added earlier in the same
+# script execution. Replaced with `waitFor` polling the actual DOM condition, and `rowNode`'s
+# capture for the adjacent "rebuilds nothing" control now happens only once that condition has
+# verifiably settled — closing what had looked like a second, independent failure but was a
+# knock-on effect of the same race. No check COUNT change from that fix (same two assertions,
+# reworded trigger).)
+EXPECTED_MIN_CHECKS = 1297
 
 
 def find_chrome():
@@ -607,6 +745,117 @@ STUB = r"""
       LIB.decks=LIB.decks.filter(function(x){return x.id!==args.id;});
       if (wasOpen){ if(LIB.decks.length){ LIB.open=LIB.decks[0].id; D.name=LIB.decks[0].name; D.count=LIB.decks[0].slides; } else { LIB.decks.push({id:LIB.nextId++, name:"Untitled presentation", slides:1}); LIB.open=LIB.decks[0].id; D.name="Untitled presentation"; D.count=1; } }
       return Promise.resolve(libView());
+    }
+    // --- Transcripts (86akcffvt / FR-130 core slice): transcript_list / transcript_get ---
+    var TR = window.__TR || (window.__TR = {
+      list: [
+        {id:1, label:"Sunday Service — Aug 4", provider:"manual", started_at_ms: 1722760800000, ended_at_ms: 1722764460000, segment_count: 3},
+        // Never ended (a crash mid-service / still recording, FR-075) — exercises the "In progress"
+        // duration branch instead of a bogus negative/garbage one.
+        {id:2, label:"Wednesday Bible Study", provider:"whisper", started_at_ms: 1722160800000, ended_at_ms: null, segment_count: 1},
+      ],
+      detail: {
+        1: { id:1, label:"Sunday Service — Aug 4", provider:"manual", started_at_ms: 1722760800000, ended_at_ms: 1722764460000,
+             notes_generated: false,
+             segments: [
+               {id:101, start_ms:0, end_ms:4000, text:"Good morning, church."},
+               {id:102, start_ms:4000, end_ms:9000, text:"Please turn with me to Romans chapter eight."},
+               {id:103, start_ms:9000, end_ms:15000, text:"Verse twenty-eight: And we know that all things work together for good."},
+             ] },
+        2: { id:2, label:"Wednesday Bible Study", provider:"whisper", started_at_ms: 1722160800000, ended_at_ms: null,
+             notes_generated: false,
+             segments: [ {id:201, start_ms:0, end_ms:5000, text:"Let's open in prayer."} ] },
+      },
+    });
+    // A synthetic three-hour-scale transcript — 500 segments, well past the live console's
+    // 240-segment ring cap — for the bounded-DOM-rendering checks (86akcffvt AC3). Each segment's
+    // text names its own index so a check can assert exactly which ones are/aren't mounted.
+    if (!window.__trBigSeeded) {
+      window.__trBigSeeded = true;
+      var bigSegs = [];
+      for (var bi = 0; bi < 500; bi++) {
+        bigSegs.push({id: 1000 + bi, start_ms: bi * 4000, end_ms: bi * 4000 + 3500,
+          text: "Segment " + bi + " — the quick brown fox jumps over the lazy dog near the riverbank at dawn."});
+      }
+      var bigStart = 1725600000000, bigEnd = bigStart + 500 * 4000;
+      TR.detail[3] = {id:3, label:"Three-Hour Service — Sep 6", provider:"manual", started_at_ms:bigStart, ended_at_ms:bigEnd, notes_generated:false, segments:bigSegs};
+      TR.list.push({id:3, label:"Three-Hour Service — Sep 6", provider:"manual", started_at_ms:bigStart, ended_at_ms:bigEnd, segment_count:500});
+    }
+    // A REALISTIC-width/content-size transcript (performance review, Vera V-1/V-2), seeded only
+    // when a test explicitly asks for it (window.__trSeedRealistic) — NOT unconditionally like
+    // the 500-segment fixture above, because this fixture-seeding code runs on every invoke() and
+    // an unconditional 4th list entry would break the earlier "exactly 3 transcripts" checks that
+    // run before this block is ever reached. The 500-segment fixture above uses UNIFORM 85-char
+    // lines, which sits just on the safe side of the real/estimated height "break-even" ratio
+    // (~0.63) the virtualizer's fixed-chars-per-line ESTIMATE needs to stay accurate — that
+    // narrow safety margin is why the estimate-only virtualizer's bug shipped undetected. This
+    // fixture instead uses a MIXED character-length distribution approximating real speech
+    // (~10% short 8-30 char utterances, ~70% medium 40-140, ~15% long 140-260, ~5% very long
+    // 260-420 "utterance-level final" segments) — deterministic (no Math.random()) so the test
+    // reproduces identically every run.
+    if (window.__trSeedRealistic && !window.__trRealisticSeeded) {
+      window.__trRealisticSeeded = true;
+      var TR_FILLER = "the quick brown fox jumps over the lazy dog near the riverbank at dawn while the choir softly hums an old familiar hymn before the sermon begins ";
+      var trRealisticText = function (n, len) {
+        var s = "Segment " + n + ": ";
+        while (s.length < len) s += TR_FILLER;
+        return s.slice(0, len);
+      };
+      var realSegs = [];
+      var TR_REALISTIC_COUNT = 3000;
+      for (var ri = 0; ri < TR_REALISTIC_COUNT; ri++) {
+        var rm = ri % 20, rlen;
+        if (rm < 2) rlen = 8 + (ri % 23);          // ~10%: 8-30 chars
+        else if (rm < 16) rlen = 40 + (ri % 101);  // ~70%: 40-140 chars
+        else if (rm < 19) rlen = 140 + (ri % 121); // ~15%: 140-260 chars
+        else rlen = 260 + (ri % 161);              // ~5%: 260-420 chars
+        realSegs.push({id: 10000 + ri, start_ms: ri * 3000, end_ms: ri * 3000 + 2500, text: trRealisticText(ri, rlen)});
+      }
+      var realStart = 1728700000000, realEnd = realStart + TR_REALISTIC_COUNT * 3000;
+      TR.detail[4] = {id:4, label:"Realistic Long Service — Oct 12", provider:"manual", started_at_ms:realStart, ended_at_ms:realEnd, notes_generated:false, segments:realSegs};
+      TR.list.push({id:4, label:"Realistic Long Service — Oct 12", provider:"manual", started_at_ms:realStart, ended_at_ms:realEnd, segment_count:TR_REALISTIC_COUNT});
+    }
+    // A PHASED (segment-length REGIME CHANGE) transcript — performance review, Vera V-6 — seeded
+    // only on request (window.__trSeedPhased), same reasoning as __trSeedRealistic above. The
+    // fixture above interleaves short/medium/long segments EVENLY throughout, which is why it
+    // never caught V-6: a fresh jump anywhere in it lands in roughly the SAME average length
+    // regime the calibration ratio already learned near the top, so the ratio-driven spacer math
+    // stays close to right by chance. This fixture instead runs three back-to-back BLOCKS of one
+    // length each (short, then long, then medium thirds) — Vera's own reproduction shape — so a
+    // fresh jump into the long or medium block lands somewhere the ratio learned from the OTHER
+    // block(s) systematically mis-estimates, which is exactly the regime V-6 needs a fresh-open
+    // jump/drag INTO to ever show a blank frame.
+    if (window.__trSeedPhased && !window.__trPhasedSeeded) {
+      window.__trPhasedSeeded = true;
+      var TR_PFILLER = "the quick brown fox jumps over the lazy dog near the riverbank at dawn while the choir softly hums an old familiar hymn before the sermon begins ";
+      var trPhasedText = function (n, len) {
+        var s = "Segment " + n + ": ";
+        while (s.length < len) s += TR_PFILLER;
+        return s.slice(0, len);
+      };
+      var phasedSegs = [];
+      var TR_PHASED_COUNT = 3000;
+      var pThird = Math.floor(TR_PHASED_COUNT / 3);
+      for (var pi = 0; pi < TR_PHASED_COUNT; pi++) {
+        var plen;
+        if (pi < pThird) plen = 8 + (pi % 23);                 // first third: short 8-30 chars
+        else if (pi < 2 * pThird) plen = 260 + (pi % 161);      // middle third: long 260-420 chars
+        else plen = 40 + (pi % 101);                            // last third: medium 40-140 chars
+        phasedSegs.push({id: 20000 + pi, start_ms: pi * 3000, end_ms: pi * 3000 + 2500, text: trPhasedText(pi, plen)});
+      }
+      var phasedStart = 1730000000000, phasedEnd = phasedStart + TR_PHASED_COUNT * 3000;
+      TR.detail[5] = {id:5, label:"Regime Change Service — Nov 2", provider:"manual", started_at_ms:phasedStart, ended_at_ms:phasedEnd, notes_generated:false, segments:phasedSegs};
+      TR.list.push({id:5, label:"Regime Change Service — Nov 2", provider:"manual", started_at_ms:phasedStart, ended_at_ms:phasedEnd, segment_count:TR_PHASED_COUNT});
+    }
+    if (cmd === "transcript_list") {
+      if (window.__trListFailOnce) { window.__trListFailOnce = false; return Promise.reject("simulated host rejection"); }
+      return Promise.resolve(TR.list.map(function(t){ return {id:t.id, label:t.label, provider:t.provider, started_at_ms:t.started_at_ms, ended_at_ms:t.ended_at_ms, segment_count:t.segment_count}; }));
+    }
+    if (cmd === "transcript_get") {
+      if (window.__trGetFailOnce) { window.__trGetFailOnce = false; return Promise.reject("simulated host rejection"); }
+      var td = TR.detail[args.id];
+      if (!td) return Promise.reject("row not found");
+      return Promise.resolve(JSON.parse(JSON.stringify(td)));
     }
     // Detector liveness (HOST-SIGNAL-WEBVIEW-CONTRACT Tier 1a). All four keys always present.
     // __detHealthFail simulates a host with no such command — the UNKNOWN case, which is the one
@@ -2574,6 +2823,426 @@ DRIVER = r"""
       document.dispatchEvent(new KeyboardEvent("keydown", {key:"3", metaKey:true, bubbles:true}));
       ok(el("surface-theme-designer").classList.contains("active") && !el("surface-presentation").classList.contains("active"),
          "PM: ⌘3 routes to Theme Designer (menu-order ⌘1–7 map)");
+
+      // === Transcripts (86akcffvt / FR-130 core slice) ===============================
+      // Local contrast helpers (NOT the shared _cr/_rgba/_f — those are function declarations
+      // later in this same `try` block, and Annex B block-function hoisting only makes the NAME
+      // safe to reference early, not the value: the outer binding stays undefined until actual
+      // execution reaches that later declaration. Self-contained copies avoid depending on
+      // execution order at all.)
+      function _trSl(v){ v/=255; return v<=0.03928 ? v/12.92 : Math.pow((v+0.055)/1.055,2.4); }
+      function _trLum(c){ return 0.2126*_trSl(c[0])+0.7152*_trSl(c[1])+0.0722*_trSl(c[2]); }
+      function _trCr(a,b){ var la=_trLum(a), lb=_trLum(b), hi=Math.max(la,lb), lo=Math.min(la,lb); return (hi+0.05)/(lo+0.05); }
+      function _trRgba(s){ var m=String(s).match(/[-\d.]+/g)||["0","0","0"]; return [+m[0],+m[1],+m[2], m.length>3?+m[3]:1]; }
+      function _trF(r){ return r.toFixed(2); }
+      document.querySelector('.nav-item[data-surface="transcripts"]').click();
+      ok(el("surface-transcripts").classList.contains("active") && getComputedStyle(el("surface-transcripts")).display !== "none",
+         "TR: the nav item opens the Transcripts surface (computed display, WKWebView-safe)");
+      await waitFor(function(){ return el("tr-list").querySelectorAll(".tr-card").length >= 3; });
+      ok(el("tr-list").querySelectorAll(".tr-card").length === 3, "TR: transcript_list renders one card per transcript");
+      ok(el("tr-empty").hidden && getComputedStyle(el("tr-empty")).display === "none", "TR: the empty state is hidden (computed display) while transcripts exist");
+      ok(/Sunday Service — Aug 4/.test(el("tr-list").textContent), "TR: a card shows the transcript's label");
+      var card1Meta = el('tr-list').querySelector('.tr-card[data-id="1"] .tr-card-meta').textContent;
+      ok(/3 segments/.test(card1Meta), "TR: a card shows its segment count");
+      ok(/\d{1,2}:\d{2}:\d{2}/.test(card1Meta), "TR: a card shows an h:mm:ss duration for a finished transcript (1h01m — over an hour)");
+      var card2Meta = el('tr-list').querySelector('.tr-card[data-id="2"] .tr-card-meta').textContent;
+      ok(/In progress/.test(card2Meta), "TR: a never-ended transcript (crash/still-recording) shows 'In progress', not a bogus negative duration");
+      ok(el("tr-list").querySelector(".tr-card-open").tagName === "BUTTON", "TR: each row's open control is a real <button> (keyboard-activatable by default, NFR-019)");
+      // Contrast (NFR-020): card meta text on its card background clears AA-NORMAL.
+      var trMetaEl = el("tr-list").querySelector(".tr-card-meta");
+      var trMetaC = _trCr(_trRgba(getComputedStyle(trMetaEl).color), _trRgba(getComputedStyle(el("tr-list").querySelector(".tr-card")).backgroundColor));
+      ok(trMetaC >= 4.5, "TR: card meta text clears AA-NORMAL on its card ground (" + _trF(trMetaC) + ":1)");
+
+      // ⌘8 (menu-order ⌘1–8, raised from ⌘1–7 by this ticket): away then back.
+      document.querySelector('.nav-item[data-surface="console"]').click();
+      ok(!el("surface-transcripts").classList.contains("active"), "TR (setup): navigated away from Transcripts");
+      document.dispatchEvent(new KeyboardEvent("keydown", {key:"8", metaKey:true, bubbles:true}));
+      ok(el("surface-transcripts").classList.contains("active"), "TR: ⌘8 routes to Transcripts (menu-order ⌘1–8 map)");
+      await waitFor(function(){ return el("tr-list").querySelectorAll(".tr-card").length >= 3; });
+
+      // Selecting a transcript shows its FULL stored text (86akcffvt AC2) — every segment, not a
+      // tail or a sample — plus the honest notes-generated status.
+      el('tr-list').querySelector('.tr-card[data-id="1"] .tr-card-open').click();
+      ok(window.__calls.some(function(c){ return c.cmd === "transcript_get" && c.args.id === 1; }), "TR: opening a card drives transcript_get(that card's id)");
+      await waitFor(function(){ return !el("tr-detail-view").hidden && /Good morning/.test(el("tr-detail-log").textContent); });
+      ok(!el("tr-detail-view").hidden && getComputedStyle(el("tr-detail-view")).display !== "none", "TR: selecting a card opens the detail view (computed display)");
+      ok(el("tr-list-view").hidden, "TR: the list view is hidden while a transcript is open");
+      ok(el("tr-detail-title").textContent === "Sunday Service — Aug 4", "TR: the detail header shows the transcript's label");
+      ok(/3 segments/.test(el("tr-detail-meta").textContent), "TR: the detail header shows the segment count");
+      var trLog = el("tr-detail-log").textContent;
+      ok(/Good morning, church\./.test(trLog) && /Romans chapter eight/.test(trLog) && /all things work together for good/.test(trLog),
+         "TR: ALL THREE stored segments render — the full text, not a tail or a sample");
+      ok(el("tr-detail-notes").textContent === "Notes not yet generated", "TR: the notes-generated status is honestly reported (no notes table exists yet, 86akcffy0)");
+      ok(el("tr-detail-log").getAttribute("role") === "log" && el("tr-detail-log").getAttribute("tabindex") === "0",
+         "TR: the transcript text is a role=log, tabindex=0 region — natively keyboard-scrollable once focused (NFR-019)");
+      ok(document.activeElement === el("tr-detail-log"), "TR: opening a transcript moves focus INTO the scrollable log (WCAG 2.4.3)");
+      // Contrast (NFR-020): rendered line text on the log's background clears AA-NORMAL.
+      var trLineEl = el("tr-detail-log").querySelector(".tr-line-txt");
+      var trLineC = _trCr(_trRgba(getComputedStyle(trLineEl).color), _trRgba(getComputedStyle(el("tr-detail-log")).backgroundColor));
+      ok(trLineC >= 4.5, "TR: transcript line text clears AA-NORMAL on the log's ground (" + _trF(trLineC) + ":1)");
+
+      // Back returns to the list, focus lands on a stable element (WCAG 2.4.3) — the card that
+      // opened this transcript is gone from view, so focus must not fall to <body>.
+      el("tr-detail-back").click();
+      ok(el("tr-list-view").hidden === false && el("tr-detail-view").hidden === true, "TR: ‹ Transcripts returns to the list");
+      ok(document.activeElement === el("tr-list").querySelector(".tr-card-open"), "TR: Back restores focus to a real control, not <body>");
+
+      // Detail error state: a rejected transcript_get shows a role=alert error + Retry recovers.
+      window.__trGetFailOnce = true;
+      el('tr-list').querySelector('.tr-card[data-id="1"] .tr-card-open').click();
+      await waitFor(function(){ return !el("tr-detail-error").hidden; });
+      ok(!el("tr-detail-error").hidden && el("tr-detail-error").getAttribute("role") === "alert" && getComputedStyle(el("tr-detail-error")).display !== "none",
+         "TR: a failed transcript_get shows a role=alert error state (computed display)");
+      el("tr-detail-retry").click();
+      await waitFor(function(){ return el("tr-detail-error").hidden && /Good morning/.test(el("tr-detail-log").textContent); });
+      ok(el("tr-detail-error").hidden, "TR: Retry recovers the transcript detail");
+      el("tr-detail-back").click();
+
+      // List error state: a rejected transcript_list shows a role=alert error + Retry recovers.
+      window.__trListFailOnce = true;
+      el("tr-retry").click();
+      await waitFor(function(){ return !el("tr-error").hidden; });
+      ok(!el("tr-error").hidden && el("tr-error").getAttribute("role") === "alert" && getComputedStyle(el("tr-error")).display !== "none",
+         "TR: a failed transcript_list shows a role=alert error state (computed display)");
+      el("tr-retry").click();
+      await waitFor(function(){ return el("tr-error").hidden && el("tr-list").querySelectorAll(".tr-card").length >= 3; });
+      ok(el("tr-error").hidden, "TR: Retry recovers the transcripts list");
+
+      // Empty state: no transcripts yet is shown clearly rather than a blank page.
+      var savedTrList = window.__TR.list;
+      window.__TR.list = [];
+      el("tr-retry").click();
+      await waitFor(function(){ return !el("tr-empty").hidden; });
+      ok(!el("tr-empty").hidden && getComputedStyle(el("tr-empty")).display !== "none" && el("tr-list").querySelectorAll(".tr-card").length === 0,
+         "TR: an empty store shows the 'No transcripts yet' state (computed display), not a blank page");
+      window.__TR.list = savedTrList;
+      el("tr-retry").click();
+      await waitFor(function(){ return el("tr-list").querySelectorAll(".tr-card").length >= 3; });
+
+      // === TR bounded rendering (86akcffvt AC3): a transcript with FAR more segments than the
+      // live console's 240-segment cap must render COMPLETELY (every segment reachable by
+      // scrolling) WITHOUT unbounded DOM growth (the mounted row count stays bounded throughout,
+      // never approaching the transcript's real length). This is the mutation-verified control:
+      // break `WINDOW_ROWS`/the windowing in transcripts.js and this whole block goes RED. ===
+      var TR_BOUND = 200; // comfortably above WINDOW_ROWS(150); far below the 500-segment fixture
+      el('tr-list').querySelector('.tr-card[data-id="3"] .tr-card-open').click();
+      await waitFor(function(){ return !el("tr-detail-view").hidden && el("tr-detail-title").textContent === "Three-Hour Service — Sep 6"; });
+      await waitFor(function(){ return window.__trRenderedRowCount && window.__trRenderedRowCount() > 0; });
+      ok(window.__trRenderedRowCount() <= TR_BOUND,
+         "TR bounded: opening a 500-segment transcript mounts <= " + TR_BOUND + " real rows (got " + window.__trRenderedRowCount() + "), not one unbounded DOM blob");
+      var firstRow = window.__trRowFor(1000);
+      ok(!!firstRow && /Segment 0 —/.test(firstRow.textContent), "TR bounded: the FIRST segment is mounted and reads correctly on open");
+      ok(!window.__trRowFor(1499), "TR bounded (control): the LAST segment is NOT mounted on open — proves this is a real window, not every row pre-rendered and merely capped visually");
+      // Scroll to the very end: the LAST segment must become reachable (full text, not truncated),
+      // and the row count must stay bounded (not grow to 500) — the two halves of AC3 together.
+      window.__trScrollToFraction(1);
+      await waitFor(function(){ return !!window.__trRowFor(1499); }, 200);
+      var lastRow = window.__trRowFor(1499);
+      ok(!!lastRow && /Segment 499 —/.test(lastRow.textContent), "TR bounded: scrolling to the end reaches the LAST segment with its exact stored text — the full transcript, not a tail");
+      ok(window.__trRenderedRowCount() <= TR_BOUND,
+         "TR bounded: after scrolling to the end the mounted row count is STILL <= " + TR_BOUND + " (got " + window.__trRenderedRowCount() + ") — bounded throughout use, not just on first paint");
+      ok(!window.__trRowFor(1000), "TR bounded: the FIRST segment's row was evicted once scrolled away — rows are recycled, not endlessly appended (the real 'unbounded growth' failure mode)");
+      // A middle position reaches a middle segment, with BOTH ends absent — rules out a mutation
+      // that special-cases only the first/last window instead of a genuine sliding one.
+      window.__trScrollToFraction(0.5);
+      await waitFor(function(){ return !!window.__trRowFor(1250); }, 200);
+      ok(!!window.__trRowFor(1250), "TR bounded: scrolling to the middle reaches a middle segment");
+      ok(!window.__trRowFor(1000) && !window.__trRowFor(1499), "TR bounded: at the middle position, NEITHER the first nor the last segment is mounted — a genuine sliding window");
+      ok(window.__trRenderedRowCount() <= TR_BOUND, "TR bounded: the middle position also stays <= " + TR_BOUND + " rows");
+      el("tr-detail-back").click();
+
+      // === TR realistic-width regression control (performance review, Vera V-1/V-2) ==========
+      // The 500-segment fixture above uses UNIFORM 85-char lines at this harness's 800x600
+      // default — a ratio that sits just above the real/estimated row-height "break-even" point
+      // (~0.63) the virtualizer's fixed 88-chars/line ESTIMATE needs to stay accurate, which is
+      // exactly why that fixture never caught the bug. This block widens #tr-detail-view to
+      // ~1500px (the operator's own real 1520px default window, tauri.conf.json) with a
+      // REALISTIC mixed-length 3000-segment transcript, reproducing the regime Vera measured
+      // breaking the estimate-only mapping: most scroll frames under 50% covered, up to 131/240
+      // fully BLANK with long utterances, and the last segment unreachable (0/8 attempts — the
+      // window re-centred back up on the next scroll event). Mutation-verified: reverting
+      // transcripts.js to its pre-fix estimate-only scrollTop mapping (no measured-height
+      // calibration, no end-pin, clear+rebuild instead of diff-and-patch) turns this whole block
+      // RED — see the ticket's evidence for the recorded run.
+      window.__trSeedRealistic = true;
+      el("tr-retry").click();
+      await waitFor(function(){ return el("tr-list").querySelectorAll(".tr-card").length >= 4; });
+      var trDetailViewEl = document.getElementById("tr-detail-view");
+      var trSavedWidth = trDetailViewEl.style.width, trSavedMaxWidth = trDetailViewEl.style.maxWidth;
+      trDetailViewEl.style.maxWidth = "none";
+      trDetailViewEl.style.width = "1500px";
+      el('tr-list').querySelector('.tr-card[data-id="4"] .tr-card-open').click();
+      await waitFor(function(){ return !el("tr-detail-view").hidden && el("tr-detail-title").textContent.indexOf("Realistic Long Service") === 0; });
+      await waitFor(function(){ return window.__trRenderedRowCount && window.__trRenderedRowCount() > 0; });
+
+      // Calibration actually ran (ADR-0026 D1: exact per-row heights via a Fenwick tree,
+      // replacing the deleted global `avgRatio` scalar this check used to read). The direct
+      // successor assertion: a real number of rows were folded into the exact metric — proof the
+      // measured-height writeback engaged, not just that the end state happens to look plausible.
+      var trMeasured = window.__trMeasuredCount ? window.__trMeasuredCount() : 0;
+      ok(trMeasured > 50,
+         "TR realistic: a real number of rows were measured and folded into the exact height metric (got " + trMeasured + ")");
+
+      // The last segment must be reachable AND actually VISIBLE (not merely mounted somewhere in
+      // the window while sitting behind a mis-sized spacer) after a real scroll to the end.
+      var trLastId = String(10000 + 2999);
+      window.__trScrollToFraction(1);
+      await waitFor(function(){ return !!window.__trRowFor(10000 + 2999); }, 200);
+      ok(!!window.__trRowFor(10000 + 2999),
+         "TR realistic: scrolling to the end mounts the LAST segment of a realistic-width, realistic-length transcript");
+      var trVisAtEnd = window.__trVisibleSegIds ? window.__trVisibleSegIds() : [];
+      ok(trVisAtEnd.indexOf(trLastId) !== -1,
+         "TR realistic: the last segment is not just mounted but actually VISIBLE at scroll-to-end (Vera V-1: previously 0/8 attempts)");
+
+      // No fully blank frames at several realistic scroll positions (Vera V-1: previously up to
+      // 131/240 frames fully blank with long utterances at this width).
+      [0.15, 0.35, 0.5, 0.65, 0.85].forEach(function (f) {
+        window.__trScrollToFraction(f);
+        var trVis = window.__trVisibleSegIds ? window.__trVisibleSegIds() : [];
+        ok(trVis.length > 0, "TR realistic: scroll position " + f + " shows at least one real row in the viewport (not a blank frame)");
+      });
+      ok(window.__trRenderedRowCount() <= TR_BOUND,
+         "TR realistic: mounted row count stays bounded (<= " + TR_BOUND + ") on a realistic 3000-segment transcript too");
+
+      // Hysteresis (V-2): a gradual scroll of REAL small wheel-sized steps (60px each, matching
+      // Vera's own measured wheel-step size) must re-render far fewer times than it steps —
+      // previously nearly every wheel step re-rendered (measured: 175/240 wheel frames, 3-8ms
+      // each). Starts from the middle of the transcript (not the very top) so there is a full
+      // mounted window's worth of buffer on both sides to demonstrate the hysteresis margin
+      // against, rather than immediately hitting the start-of-document edge.
+      window.__trScrollToFraction(0.5);
+      var trRenderCountBefore = window.__trRenderCount ? window.__trRenderCount() : 0;
+      for (var trGi = 0; trGi < 40; trGi++) window.__trScrollBy(60);
+      var trRenderCountAfter = window.__trRenderCount ? window.__trRenderCount() : 0;
+      ok((trRenderCountAfter - trRenderCountBefore) < 20,
+         "TR realistic: 40 real 60px wheel-sized steps trigger well under 40 re-renders (got " +
+         (trRenderCountAfter - trRenderCountBefore) + ") — hysteresis is real, not decorative");
+
+      // === TR DOM-node identity across a diff-and-patch render (code review Cody; independently
+      // found by Vera as V-7): every check above asserts render COUNT, visual COVERAGE, or
+      // reachability — none of that distinguishes a genuine diff-and-patch from a silent
+      // clear+rebuild regression, because both can produce the same right-segments-visible end
+      // state. Cody proved the gap with his own DOM-node-identity probe; Vera independently
+      // confirmed it by mutation (disabling only the diff-and-patch branch survives both
+      // committed suites at 0 FAIL). Tag every row currently mounted in the window with a marker
+      // THIS TEST owns (transcripts.js never touches it), force a real window move with genuine
+      // overlap between the old and new window, then assert every row still in that overlap kept
+      // ITS OWN marker — i.e. is the same DOM node the previous render mounted, not a fresh one a
+      // clear+rebuild would have created bearing no marker at all.
+      window.__trScrollToFraction(0.5);
+      var trIdBefore = window.__trWindowBounds();
+      for (var trTagI = trIdBefore.start; trTagI < trIdBefore.end; trTagI++) {
+        var trTagRow = window.__trRowFor(10000 + trTagI);
+        if (trTagRow) trTagRow.setAttribute("data-tr-identity-probe", "1");
+      }
+      var trIdAfter = trIdBefore;
+      for (var trStep = 0; trStep < 60 && trIdAfter.start === trIdBefore.start && trIdAfter.end === trIdBefore.end; trStep++) {
+        window.__trScrollBy(60);
+        trIdAfter = window.__trWindowBounds();
+      }
+      ok(trIdAfter.start !== trIdBefore.start || trIdAfter.end !== trIdBefore.end,
+         "TR identity (setup): scrolling past the hysteresis margin actually moved the mounted window");
+      var trOverlapStart = Math.max(trIdBefore.start, trIdAfter.start);
+      var trOverlapEnd = Math.min(trIdBefore.end, trIdAfter.end);
+      ok(trOverlapStart < trOverlapEnd,
+         "TR identity (setup): the window move left a real overlap to check identity against (not a full jump)");
+      var trOverlapCount = 0, trSameNodeCount = 0;
+      for (var trOi = trOverlapStart; trOi < trOverlapEnd; trOi++) {
+        var trORow = window.__trRowFor(10000 + trOi);
+        trOverlapCount++;
+        if (trORow && trORow.getAttribute("data-tr-identity-probe") === "1") trSameNodeCount++;
+      }
+      ok(trOverlapCount > 0 && trSameNodeCount === trOverlapCount,
+         "TR identity: every row still in the overlap between the old and new window (" + trOverlapCount +
+         ") is the SAME DOM node the previous render mounted, not a freshly created one (" +
+         trSameNodeCount + "/" + trOverlapCount + " kept their marker) — proves renderWindow() diffs " +
+         "in place and does not silently clear+rebuild");
+
+      // === TR regime-change fresh-open jump control (performance review, Vera V-6) ==============
+      // The fixture above interleaves short/medium/long segments EVENLY, so a fresh jump anywhere
+      // in it lands in roughly the average regime the calibration ratio already learned near the
+      // top — which is exactly why it never caught V-6 (confirmed by mutation: disabling the
+      // scroll-anchor compensation entirely leaves every check above at 0 FAIL). The PHASED
+      // fixture instead runs three back-to-back length regimes; jumping straight into the long or
+      // medium block puts the spacer math against a ratio calibrated on a DIFFERENT regime, which
+      // without compensation can put the mounted window somewhere that does not overlap the
+      // viewport at all (a fully blank frame). Re-opens the transcript FRESH before EACH jump — a
+      // real scrollbar drag starts from a cold window every time the user first grabs the thumb,
+      // not from wherever a previous scroll left off.
+      window.__trSeedPhased = true;
+      el("tr-retry").click();
+      await waitFor(function(){ return el("tr-list").querySelectorAll(".tr-card").length >= 5; });
+      var trPhasedFractions = [0.4, 0.5, 0.6, 0.8];
+      for (var trPfi = 0; trPfi < trPhasedFractions.length; trPfi++) {
+        el('tr-list').querySelector('.tr-card[data-id="5"] .tr-card-open').click();
+        await waitFor(function(){ return !el("tr-detail-view").hidden && el("tr-detail-title").textContent.indexOf("Regime Change Service") === 0; });
+        await waitFor(function(){ return window.__trRenderedRowCount && window.__trRenderedRowCount() > 0; });
+        window.__trScrollToFraction(trPhasedFractions[trPfi]);
+        var trPhasedVis = window.__trVisibleSegIds ? window.__trVisibleSegIds() : [];
+        ok(trPhasedVis.length > 0,
+           "TR regime-change: a FRESH-OPEN jump straight to fraction " + trPhasedFractions[trPfi] +
+           " (a length regime the calibration ratio has not seen yet) shows at least one real row — not a blank frame (Vera V-6)");
+        el("tr-detail-back").click();
+      }
+
+      // === TR V-13 (performance review, Vera, test gap): no control specifically proves the
+      // ANCHOR half of the V-6 fix (as opposed to the ratio-fallback half) is necessary. Every
+      // check above — including "TR regime-change" just above — passes at 0 FAIL even with the
+      // anchor forced null and only the ratio-only term applied (round 2's partial "P1" fix,
+      // Vera's MV6a mutant): a ratio-only correction still avoids a fully BLANK frame, it just
+      // lands 300-1,257px off the row it should have kept anchored on a fair fraction of frames,
+      // which none of the "at least one row visible" / "reachable" style assertions can see.
+      // This tracks ONE real row that survives a hysteresis-crossing render (the overlap of the
+      // old/new window — the same computation "TR identity" above already uses) and asserts its
+      // ON-SCREEN pixel position after N real 60px wheel-sized steps lands within 2px of "moved
+      // up by exactly 60*N px" — a bound only the anchor term (which reads that row's OWN live
+      // rendered position) can hit, since the ratio-only fallback has no way to know any ONE
+      // row's individual real/estimate error and misses by far more than 2px whenever a real
+      // row's height diverges from the running average ratio (the whole reason the PHASED
+      // fixture's long block exists).
+      el('tr-list').querySelector('.tr-card[data-id="5"] .tr-card-open').click();
+      await waitFor(function(){ return !el("tr-detail-view").hidden && el("tr-detail-title").textContent.indexOf("Regime Change Service") === 0; });
+      await waitFor(function(){ return window.__trRenderedRowCount && window.__trRenderedRowCount() > 0; });
+      window.__trScrollToFraction(0.5); // deep in the long block, same as "TR regime-change" above
+      var trV13Before = window.__trWindowBounds();
+      var trV13TargetIdx = Math.min(trV13Before.start + 70, trV13Before.end - 1);
+      var trV13TargetId = String(20000 + trV13TargetIdx);
+      var trV13Row = window.__trRowFor(trV13TargetId);
+      ok(!!trV13Row, "TR V-13 (setup): the tracked row is mounted before any wheel-sized steps");
+      var trV13OldTop = trV13Row ? trV13Row.getBoundingClientRect().top : null;
+      var trV13RenderBefore = window.__trRenderCount();
+      var trV13Ticks = 0, trV13RenderAfter = trV13RenderBefore;
+      while (trV13Ticks < 80 && trV13RenderAfter === trV13RenderBefore) {
+        window.__trScrollBy(60);
+        trV13Ticks++;
+        trV13RenderAfter = window.__trRenderCount();
+      }
+      ok(trV13RenderAfter > trV13RenderBefore,
+         "TR V-13 (setup): a real hysteresis-crossing render fired within the tick budget (" + trV13Ticks + " ticks)");
+      var trV13After = window.__trWindowBounds();
+      var trV13RowAfter = window.__trRowFor(trV13TargetId);
+      var trV13Survived = !!trV13RowAfter && trV13RowAfter === trV13Row;
+      ok(trV13Survived,
+         "TR V-13 (setup): the tracked row SURVIVED the crossing render as the same DOM node (still in the overlap)");
+      // Always runs (never skipped) so this file's own check COUNT cannot vary run to run: a
+      // failed survival above still fails this assertion outright rather than silently omitting
+      // it, instead of leaving the count dependent on a runtime condition.
+      var trV13NewTop = trV13Survived ? trV13RowAfter.getBoundingClientRect().top : NaN;
+      var trV13ExpectedDelta = 60 * trV13Ticks;
+      var trV13Error = trV13Survived && trV13OldTop !== null
+        ? Math.abs(trV13NewTop - trV13OldTop + trV13ExpectedDelta) : Infinity;
+      ok(trV13Error <= 2,
+         "TR V-13: the anchor keeps a real tracked row within 2px of its expected on-screen " +
+         "position after " + trV13Ticks + " real 60px steps crossing a render (error " +
+         trV13Error.toFixed(2) + "px) — the ratio-only fallback alone cannot hit this bound " +
+         "(Vera measured 300-1,257px hops under that mutant)");
+
+      // === TR keyboard-jump no longer intercepted (ADR-0026 rev 2, D2/D3 — replaces round 6's
+      // "TR wheel/jump race guard" block with its INVERSE, per the ADR's own words: "a suite that
+      // has to be inverted is evidence the model is wrong, not that a case was missed"). Round
+      // 6's guard (`armJumpGuard`/`wheelEventSeq`/`jumpGuardGen`/`expectedScrollTop`) existed only
+      // to defend an ABSOLUTE `scrollTop` promise a keyboard jump made against a foreign write
+      // landing after it. Under D2 nothing in this file ever writes `scrollTop` reactively, so
+      // there is no promise left to defend and no guard exists to fight anything — round 7 (the
+      // guard fighting a genuine scrollbar drag, Cody/Quinn) and round 5 (a stale wheel commit
+      // corrupting a jump's landing, Quinn) are both unreachable by construction now, not merely
+      // defended against. This asserts that directly: simulate a "jump" (the same
+      // `__trScrollToFraction` setup the old block used) landing away from 0, then apply EXACTLY
+      // the old test's stale-commit DOM signature (a bare `scrollTop` write + a `scroll` event
+      // with no accompanying new `wheel` event) and assert it now STICKS — the same settle window
+      // (10 * 20ms) the old guard used to poll, so a reintroduced guard would still have every
+      // chance to reveal itself here.
+      el('tr-list').querySelector('.tr-card[data-id="5"] .tr-card-open').click();
+      await waitFor(function(){ return !el("tr-detail-view").hidden && window.__trRenderedRowCount && window.__trRenderedRowCount() > 0; });
+      window.__trScrollToFraction(0.5); // start deep in the transcript, same as TR V-13 above
+      var trKjBefore = el("tr-detail-log").scrollTop;
+      ok(trKjBefore > 0, "TR keyboard-jump (setup): the jump landed away from 0");
+      el("tr-detail-log").scrollTop = trKjBefore + 400;
+      el("tr-detail-log").dispatchEvent(new Event("scroll"));
+      for (var trKjSettle = 0; trKjSettle < 10; trKjSettle++) { await sleep(20); }
+      ok(el("tr-detail-log").scrollTop === trKjBefore + 400,
+         "TR keyboard-jump: a scrollTop write right after a jump STICKS — round 7's guard (which " +
+         "used to revert exactly this DOM signature, mistaking it for a stale wheel commit) no " +
+         "longer exists to fight it (got " + el("tr-detail-log").scrollTop + ", expected " +
+         (trKjBefore + 400) + ")");
+
+      // === TR anchoring-is-live (ADR-0026 D2, "3 new controls"): the compensation that used to
+      // be `renderWindow`'s own `findTopVisibleSurvivor` + anchor-term script write is now the
+      // BROWSER's job — native scroll anchoring, enabled on `.tr-log` (no longer disabled),
+      // excluded on the two spacers instead (`.tr-log-spacer { overflow-anchor: none }`) so a
+      // real `.tr-line` row is always the anchor candidate. This is the ADR's own spike
+      // discriminator (Q7/Q8) run against the REAL component instead of a synthetic fixture: grow
+      // the top spacer (content entirely above the viewport) by a fixed amount with NO
+      // accompanying scrollTop write, and assert (a) the row the reader is looking at drifts
+      // <= 2px on screen, and (b) scrollTop moved by ~the same amount the spacer grew — i.e. the
+      // ENGINE did the compensation, not this file. Mutation: restoring `overflow-anchor: none`
+      // on `.tr-log` (undoing D2) makes scrollTop NOT move and the reader's row jump by the full
+      // growth instead — the exact pre-fix defect this ADR replaces.
+      el("tr-detail-back").click();
+      el('tr-list').querySelector('.tr-card[data-id="4"] .tr-card-open').click();
+      await waitFor(function(){ return !el("tr-detail-view").hidden && window.__trRenderedRowCount && window.__trRenderedRowCount() > 0; });
+      window.__trScrollToFraction(0.5);
+      var trAnchVis = window.__trVisibleSegIds();
+      ok(trAnchVis.length > 0, "TR anchoring-is-live (setup): at least one row visible before the mutation");
+      var trAnchRow = window.__trRowFor(trAnchVis[0]);
+      var trAnchBeforeTop = trAnchRow.getBoundingClientRect().top;
+      var trAnchBeforeScroll = el("tr-detail-log").scrollTop;
+      var trAnchSpacer = el("tr-log-top-spacer");
+      var trAnchGrow = 200;
+      var trAnchCurH = parseFloat(trAnchSpacer.style.height) || 0;
+      trAnchSpacer.style.height = (trAnchCurH + trAnchGrow) + "px"; // a plain DOM mutation — NO scrollTop write
+      void el("tr-detail-log").offsetHeight; // force layout so anchoring has run before reading below
+      await sleep(50);
+      var trAnchAfterTop = trAnchRow.getBoundingClientRect().top;
+      var trAnchAfterScroll = el("tr-detail-log").scrollTop;
+      trAnchSpacer.style.height = trAnchCurH + "px"; // restore — this block owns no lasting DOM change
+      ok(Math.abs(trAnchAfterTop - trAnchBeforeTop) <= 2,
+         "TR anchoring-is-live: growing the top spacer by " + trAnchGrow + "px drifts the reader's " +
+         "own row by <= 2px on screen (got " + (trAnchAfterTop - trAnchBeforeTop).toFixed(2) +
+         "px) — native scroll anchoring compensates it, not this file");
+      ok(Math.abs((trAnchAfterScroll - trAnchBeforeScroll) - trAnchGrow) <= 2,
+         "TR anchoring-is-live: scrollTop moved by ~" + trAnchGrow + "px on its OWN (delta " +
+         (trAnchAfterScroll - trAnchBeforeScroll) + "), matching the spacer growth — proves the " +
+         "ENGINE did this compensation, with no script scrollTop write anywhere in the path");
+
+      // === TR I2 monotonicity (ADR-0026 D1, "3 new controls"): D1's whole justification is that
+      // measuring row i moves the position of rows > i ONLY — rows <= i never move (I2). This
+      // reads the D1 metric DIRECTLY (`__trOffsetAt`, the exact Fenwick-tree prefix sum), not a
+      // rendered pixel position, so it tests the DATA STRUCTURE'S invariant rather than anything
+      // conflated with rendering/anchoring. Snapshot the offsets of several EARLY rows, force a
+      // real number of LATER rows (deep in the transcript) to be measured, then assert the early
+      // rows' offsets are byte-identical to before. Mutation: reintroducing a global rescale
+      // (the deleted `avgRatio` mechanism) moves every earlier row's offset too — this fails
+      // immediately and by a large margin, not a rounding-sized drift.
+      el("tr-detail-back").click();
+      el('tr-list').querySelector('.tr-card[data-id="5"] .tr-card-open').click();
+      await waitFor(function(){ return window.__trRenderedRowCount && window.__trRenderedRowCount() > 0; });
+      window.__trScrollToFraction(0.3);
+      var trI2Wb = window.__trWindowBounds();
+      var trI2EarlyIdx = [0, 50, 150, Math.max(0, trI2Wb.start - 10)];
+      var trI2Before = trI2EarlyIdx.map(function (i) { return window.__trOffsetAt(i); });
+      window.__trScrollToFraction(0.8);
+      for (var trI2T = 0; trI2T < 20; trI2T++) window.__trScrollBy(600);
+      var trI2Measured = window.__trMeasuredCount();
+      ok(trI2Measured > 100,
+         "TR I2 (setup): a real number of rows were measured deep in the transcript (" + trI2Measured + ")");
+      var trI2After = trI2EarlyIdx.map(function (i) { return window.__trOffsetAt(i); });
+      var trI2AllSame = true, trI2Diffs = [];
+      for (var trI2K = 0; trI2K < trI2EarlyIdx.length; trI2K++) {
+        if (trI2Before[trI2K] !== trI2After[trI2K]) {
+          trI2AllSame = false;
+          trI2Diffs.push([trI2EarlyIdx[trI2K], trI2Before[trI2K], trI2After[trI2K]]);
+        }
+      }
+      ok(trI2AllSame,
+         "TR I2 monotonicity: the exact offsets of early rows " + JSON.stringify(trI2EarlyIdx) +
+         " are UNCHANGED after measuring rows far below them (diffs: " + JSON.stringify(trI2Diffs) +
+         ") — measuring row i never moves the position of rows <= i");
+      el("tr-detail-back").click();
+
+      trDetailViewEl.style.width = trSavedWidth;
+      trDetailViewEl.style.maxWidth = trSavedMaxWidth;
+      el("tr-detail-back").click();
 
       // === Pre-service Check (moved into the Settings sidebar, Design 2.0) ===
       document.querySelector('.nav-item[data-surface="settings"]').click();
@@ -4796,10 +5465,26 @@ DRIVER = r"""
       planRenderBuilder(demoteBase);
       ok(!el("plan-viewonly") && !!document.querySelector("#plan-b-list .plan-b-up"),
          "PL AC-53 (setup): the operator may edit, so there is no View only badge and the row reorder controls are built");
+      // QA regression (round 6 — Quinn, bisected to 0876d6c): this block's two state-CHANGE
+      // assertions used a fixed `await sleep(20)` between triggering the rebuild and reading the
+      // DOM, on the assumption that `planSyncViewerFromPoll` — a plain synchronous function — is
+      // always fully applied well within that budget. Adding an unrelated, purely-synchronous
+      // block of work earlier in this same script (the TR V-13 checks above — confirmed by Quinn
+      // bisecting to `0876d6c` and reproducing on both her machine and this PR's own CI run) was
+      // enough to push this fixed budget past its margin under `--virtual-time-budget`, failing
+      // this check AND the "rebuilds nothing" control right after it (which captures `rowNode`
+      // from whatever the DOM happened to be at that moment — a premature read here left it
+      // capturing a stale/pre-rebuild node, so the control failed as a knock-on effect of the
+      // same race, not a second independent bug). `waitFor` polls the actual condition instead of
+      // gambling on a fixed duration, so this no longer races machine load or a neighbouring
+      // check's timing footprint — and `rowNode` below is now captured only once that condition
+      // has verifiably settled, closing the knock-on failure at its source.
       var demoted = JSON.parse(JSON.stringify(demoteBase));
       demoted.viewer = { role: "viewer", can_edit: false };
       planSyncViewerFromPoll(demoted);
-      await sleep(20);
+      await waitFor(function(){
+        return !!el("plan-viewonly") && !document.querySelector("#plan-b-list .plan-b-up");
+      });
       ok(!!el("plan-viewonly") && !document.querySelector("#plan-b-list .plan-b-up"),
          "PL AC-53 (Quinn): a DEMOTION arriving on the poll takes the edit controls away — the chrome alone was not enough, because the per-row ↑/↓ controls are built by planRenderBuilder and a View only badge over live reorder buttons is worse than either state");
       // ...and it must not rebuild on every poll, for the same reason the publish one must not.
@@ -4809,7 +5494,9 @@ DRIVER = r"""
          "PL AC-53 (control): an unchanged poll rebuilds NOTHING — a surface rebuilt every second would eat the clicks landing on it");
       // ...and a PROMOTION travels the same path, so the mechanism is not one-directional.
       planSyncViewerFromPoll(demoteBase);
-      await sleep(20);
+      await waitFor(function(){
+        return !el("plan-viewonly") && !!document.querySelector("#plan-b-list .plan-b-up");
+      });
       ok(!el("plan-viewonly") && !!document.querySelector("#plan-b-list .plan-b-up"),
          "PL AC-53 (control): a promotion arriving on the poll gives the controls BACK — the check above measures the verdict, not a one-way latch");
 

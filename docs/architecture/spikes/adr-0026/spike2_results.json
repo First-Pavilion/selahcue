@@ -1,0 +1,120 @@
+[
+ {
+  "engine": "chromium",
+  "rest_anchor_ON": [
+   {
+    "anchor_off": false,
+    "scrollTop_before": 100000,
+    "scrollTop_after": 100200,
+    "scrollTop_delta": 200,
+    "reader_row_drift_px": 0,
+    "anchored": true
+   },
+   {
+    "anchor_off": false,
+    "scrollTop_before": 100000,
+    "scrollTop_after": 100200,
+    "scrollTop_delta": 200,
+    "reader_row_drift_px": 0,
+    "anchored": true
+   },
+   {
+    "anchor_off": false,
+    "scrollTop_before": 100000,
+    "scrollTop_after": 100200,
+    "scrollTop_delta": 200,
+    "reader_row_drift_px": 0,
+    "anchored": true
+   }
+  ],
+  "rest_anchor_OFF": [
+   {
+    "anchor_off": true,
+    "scrollTop_before": 100000,
+    "scrollTop_after": 100000,
+    "scrollTop_delta": 0,
+    "reader_row_drift_px": 200,
+    "anchored": false
+   },
+   {
+    "anchor_off": true,
+    "scrollTop_before": 100000,
+    "scrollTop_after": 100000,
+    "scrollTop_delta": 0,
+    "reader_row_drift_px": 200,
+    "anchored": false
+   },
+   {
+    "anchor_off": true,
+    "scrollTop_before": 100000,
+    "scrollTop_after": 100000,
+    "scrollTop_delta": 0,
+    "reader_row_drift_px": 200,
+    "anchored": false
+   }
+  ],
+  "during_animation_anchor_ON": {
+   "moved_after_inject": -534,
+   "samples_after": 73
+  }
+ },
+ {
+  "engine": "webkit",
+  "rest_anchor_ON": [
+   {
+    "anchor_off": false,
+    "scrollTop_before": 100000,
+    "scrollTop_after": 100200,
+    "scrollTop_delta": 200,
+    "reader_row_drift_px": 0,
+    "anchored": true
+   },
+   {
+    "anchor_off": false,
+    "scrollTop_before": 100000,
+    "scrollTop_after": 100200,
+    "scrollTop_delta": 200,
+    "reader_row_drift_px": 0,
+    "anchored": true
+   },
+   {
+    "anchor_off": false,
+    "scrollTop_before": 100000,
+    "scrollTop_after": 100200,
+    "scrollTop_delta": 200,
+    "reader_row_drift_px": 0,
+    "anchored": true
+   }
+  ],
+  "rest_anchor_OFF": [
+   {
+    "anchor_off": true,
+    "scrollTop_before": 100000,
+    "scrollTop_after": 100000,
+    "scrollTop_delta": 0,
+    "reader_row_drift_px": 200,
+    "anchored": false
+   },
+   {
+    "anchor_off": true,
+    "scrollTop_before": 100000,
+    "scrollTop_after": 100000,
+    "scrollTop_delta": 0,
+    "reader_row_drift_px": 200,
+    "anchored": false
+   },
+   {
+    "anchor_off": true,
+    "scrollTop_before": 100000,
+    "scrollTop_after": 100000,
+    "scrollTop_delta": 0,
+    "reader_row_drift_px": 200,
+    "anchored": false
+   }
+  ],
+  "during_animation_anchor_ON": {
+   "moved_after_inject": -634,
+   "samples_after": 18
+  }
+ }
+]

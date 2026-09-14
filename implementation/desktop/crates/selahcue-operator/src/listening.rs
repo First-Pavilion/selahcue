@@ -2679,6 +2679,7 @@ mod tests {
                 library: Mutex::new(crate::DeckLibrary::load(None)),
                 providers: Mutex::new(providers),
                 providers_db: None,
+                transcript_db: None,
                 secrets: crate::make_secret_store(),
                 link_error: Mutex::new(None),
             });
@@ -2931,6 +2932,7 @@ mod tests {
             library: Mutex::new(crate::DeckLibrary::load(None)),
             providers: Mutex::new(selahcue_core::providers::ProvidersConfig::default()),
             providers_db: None,
+            transcript_db: None,
             secrets: crate::make_secret_store(),
             link_error: Mutex::new(None),
         });
@@ -3072,6 +3074,7 @@ mod tests {
             library: Mutex::new(crate::DeckLibrary::load(None)),
             providers: Mutex::new(selahcue_core::providers::ProvidersConfig::default()),
             providers_db: None,
+            transcript_db: None,
             secrets: crate::make_secret_store(),
             link_error: Mutex::new(None),
         });
@@ -3174,6 +3177,7 @@ mod tests {
                 library: Mutex::new(crate::DeckLibrary::load(None)),
                 providers: Mutex::new(selahcue_core::providers::ProvidersConfig::default()),
                 providers_db: None,
+                transcript_db: None,
                 secrets: crate::make_secret_store(),
                 link_error: Mutex::new(None),
             });
@@ -3301,6 +3305,7 @@ mod tests {
             library: Mutex::new(crate::DeckLibrary::load(None)),
             providers: Mutex::new(selahcue_core::providers::ProvidersConfig::default()),
             providers_db: None,
+            transcript_db: None,
             secrets: crate::make_secret_store(),
             link_error: Mutex::new(None),
         });
