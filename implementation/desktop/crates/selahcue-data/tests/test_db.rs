@@ -304,6 +304,137 @@ fn refuses_database_from_a_newer_build() {
     ));
 }
 
+// ---------------------------------------------------------------------------------------------
+// `open_existing_readonly` (86akcffvt review, Sana F1 / Cody Blocker): a caller that reads a
+// store it does not own (the operator's Transcripts viewer, reading what `selahcue-desktop`
+// alone writes and migrates) must not be able to create, write to, or migrate that store —
+// structurally, not just by doc-comment claim. Each test below names exactly which guarantee it
+// pins; the mutation check run separately (see the ticket's evidence) confirms swapping the
+// constructor back to plain `open` (the pre-fix behaviour) turns (a) and (b) red together, which
+// is what proves these are real discriminators and not vacuous assertions.
+// ---------------------------------------------------------------------------------------------
+
+#[test]
+fn open_existing_readonly_a_creates_nothing_when_the_file_is_absent() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("selahcue.db3");
+    assert!(!path.exists(), "premise: no file at this path yet");
+
+    let result = Database::open_existing_readonly(&path);
+
+    assert!(
+        matches!(result, Err(DataError::NotFound)),
+        "a missing file must be refused, not silently opened"
+    );
+    assert!(
+        !path.exists(),
+        "the read-only open must not have created a file at a path that had none"
+    );
+}
+
+#[test]
+fn open_existing_readonly_b_refuses_a_zero_byte_placeholder_and_leaves_it_untouched() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("selahcue.db3");
+    // A zero-byte file is exactly the shape a `touch`, an interrupted first write, or an
+    // installer-created placeholder leaves behind — and, per db.rs's own doc comment, exactly
+    // the shape plain SQLite (even opened read-only) would otherwise treat as a legitimate,
+    // brand-new empty database.
+    std::fs::write(&path, []).unwrap();
+    assert_eq!(
+        path.metadata().unwrap().len(),
+        0,
+        "premise: file is zero bytes"
+    );
+
+    let result = Database::open_existing_readonly(&path);
+
+    assert!(
+        matches!(result, Err(DataError::NotFound)),
+        "a zero-byte file has no SQLite header and must read as 'no store', not 'an empty one'"
+    );
+    assert_eq!(
+        path.metadata().unwrap().len(),
+        0,
+        "the refused open must not have written anything into the placeholder"
+    );
+}
+
+#[test]
+fn open_existing_readonly_c_reads_a_store_from_a_newer_build_without_migrating_it() {
+    // Every migration recorded to date is purely additive (CREATE TABLE / ALTER TABLE ... ADD
+    // COLUMN — see migrations.rs's own "append only" contract), so a read-only, non-migrating
+    // open against a store whose user_version is AHEAD of this build's target should still
+    // succeed and read correctly: there is nothing to protect by refusing it (no write follows),
+    // and refusing would only break the reverse case this repo actually hits in practice — an
+    // older read-only build pointed at a store a newer sibling build already migrated forward
+    // (PR #33 added migration v21 on top of this ticket's v20 in the same shared data directory).
+    // The one invariant that must hold is the second half of this test: the version on disk is
+    // genuinely left exactly as found, proving no migration ran.
+    let file = tempfile::NamedTempFile::new().unwrap();
+    let path = file.path().to_path_buf();
+    {
+        let db = Database::open(&path).unwrap();
+        selahcue_data::transcript_repo::create(
+            &db,
+            &selahcue_data::transcript_repo::NewTranscript {
+                label: "Sunday Service".to_string(),
+                provider: "manual".to_string(),
+                plan_id: None,
+                started_at_ms: 1_722_760_800_000,
+            },
+        )
+        .unwrap();
+        // Simulate a sibling build's future migration having already run.
+        let future = migrations::target_version() + 1;
+        db.conn()
+            .execute_batch(&format!("PRAGMA user_version = {future};"))
+            .unwrap();
+    }
+
+    let db = Database::open_existing_readonly(&path).expect("a newer-schema store still opens");
+
+    assert_eq!(
+        db.schema_version().unwrap(),
+        migrations::target_version() + 1,
+        "user_version must be left exactly as found — this path never migrates, forward or back"
+    );
+    let rows = selahcue_data::transcript_repo::list(&db).unwrap();
+    assert_eq!(
+        rows.len(),
+        1,
+        "the transcript written before the version bump is still readable"
+    );
+}
+
+#[test]
+fn open_existing_readonly_d_positive_control_reads_a_real_store() {
+    // Positive control (CLAUDE.md bounded-memory discipline): the two refusal tests above are
+    // meaningless without proof the SAME constructor still does its one real job — open a
+    // genuine, ordinary store and return its data.
+    let file = tempfile::NamedTempFile::new().unwrap();
+    let path = file.path().to_path_buf();
+    {
+        let db = Database::open(&path).unwrap();
+        selahcue_data::transcript_repo::create(
+            &db,
+            &selahcue_data::transcript_repo::NewTranscript {
+                label: "Sunday Service".to_string(),
+                provider: "manual".to_string(),
+                plan_id: None,
+                started_at_ms: 1_722_760_800_000,
+            },
+        )
+        .unwrap();
+    }
+
+    let db = Database::open_existing_readonly(&path).expect("a real, ordinary store opens fine");
+
+    let rows = selahcue_data::transcript_repo::list(&db).unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].label, "Sunday Service");
+}
+
 #[test]
 fn backup_produces_a_loadable_copy() {
     use selahcue_core::plan::{ItemKind, ServicePlan};

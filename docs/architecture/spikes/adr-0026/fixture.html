@@ -1,0 +1,95 @@
+<!doctype html>
+<html><head><meta charset="utf-8">
+<style>
+  html, body { margin: 0; padding: 0; }
+  #log {
+    width: 900px; height: 800px; overflow-y: scroll;
+    border: 1px solid #ccc; font-family: monospace; font-size: 14px;
+  }
+  /* Matches the component under test: transcripts.js's .tr-log sets this. */
+  #log.anchor-off { overflow-anchor: none; }
+  .row { height: 40px; line-height: 40px; padding: 0 8px; box-sizing: border-box; border-bottom: 1px solid #eee; }
+  .spacer { flex: none; }
+</style>
+</head>
+<body>
+<div id="log" tabindex="0" class="anchor-off">
+  <div id="top" class="spacer" style="height:0px"></div>
+  <div id="rows"></div>
+  <div id="bot" class="spacer" style="height:0px"></div>
+</div>
+<script>
+  var host = document.getElementById('log');
+  var rows = document.getElementById('rows');
+  var top_ = document.getElementById('top');
+  var bot = document.getElementById('bot');
+  var frag = document.createDocumentFragment();
+  for (var i = 0; i < 5000; i++) {
+    var d = document.createElement('div');
+    d.className = 'row'; d.textContent = 'row ' + i;
+    frag.appendChild(d);
+  }
+  rows.appendChild(frag);
+
+  window.__trace = []; window.__tracing = false;
+  function traceLoop() {
+    if (!window.__tracing) return;
+    window.__trace.push([performance.now(), host.scrollTop]);
+    requestAnimationFrame(traceLoop);
+  }
+  window.__startTrace = function () { window.__trace = []; window.__tracing = true; requestAnimationFrame(traceLoop); };
+  window.__stopTrace = function () { window.__tracing = false; return window.__trace; };
+
+  window.__setScroll = function (y) { host.scrollTop = y; };
+  window.__getScroll = function () { return host.scrollTop; };
+  window.__focusLog = function () { host.focus(); };
+  window.__setAnchor = function (off) { host.className = off ? 'anchor-off' : ''; };
+
+  // ---- the operations under test ----
+  // R: relative scrollTop write (ADR-0026 D2's compensation shape)
+  window.__op_rel = function (d) { host.scrollTop += d; return host.scrollTop; };
+  // A: absolute scrollTop write (the current code's jumpScrollTop shape)
+  window.__op_abs = function (d) { host.scrollTop = host.scrollTop + d; return host.scrollTop; };
+  // N: no-op write -- same value re-written. Does the WRITE itself cancel, or only a CHANGE?
+  window.__op_noop = function () { host.scrollTop = host.scrollTop; return host.scrollTop; };
+  // S: pure DOM mutation -- grow the TOP spacer. Shifts all content down, changes
+  //    scrollHeight. NO scrollTop write at all. This is what every virtualizer does on
+  //    every render, independent of whether it compensates.
+  window.__op_spacer = function (d) {
+    top_.style.height = (parseInt(top_.style.height, 10) + d) + 'px';
+    return host.scrollTop;
+  };
+  // C: row churn -- diff-and-patch with NO net height change and NO scrollTop write.
+  //    Removes n rows from the top of #rows and appends n equivalents at the bottom.
+  window.__op_churn = function (n) {
+    for (var i = 0; i < n; i++) {
+      var first = rows.firstChild; if (first) rows.removeChild(first);
+      var d = document.createElement('div');
+      d.className = 'row'; d.textContent = 'churn ' + i;
+      rows.appendChild(d);
+    }
+    return host.scrollTop;
+  };
+  // Feature probes
+  window.__probe = function () {
+    return {
+      scrollend_on_window: ('onscrollend' in window),
+      scrollend_on_el: ('onscrollend' in host),
+      scrollBehavior_supported: ('scrollBehavior' in document.documentElement.style),
+      overflowAnchor_supported: ('overflowAnchor' in document.documentElement.style),
+      contentVisibility_supported: ('contentVisibility' in document.documentElement.style)
+    };
+  };
+  // Count scroll events during a window, to see whether an animated scroll is
+  // distinguishable from a discrete one by event cadence alone.
+  window.__countScroll = function (ms) {
+    var n = 0;
+    function h() { n++; }
+    host.addEventListener('scroll', h);
+    return new Promise(function (res) {
+      setTimeout(function () { host.removeEventListener('scroll', h); res(n); }, ms);
+    });
+  };
+</script>
+</body>
+</html>

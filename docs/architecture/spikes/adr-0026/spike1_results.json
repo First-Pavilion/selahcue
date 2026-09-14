@@ -1,0 +1,696 @@
+[
+ {
+  "engine": "chromium",
+  "features": {
+   "scrollend_on_window": true,
+   "scrollend_on_el": true,
+   "scrollBehavior_supported": true,
+   "overflowAnchor_supported": true,
+   "contentVisibility_supported": true
+  },
+  "trials": [
+   {
+    "engine": "chromium",
+    "key": "PageUp",
+    "op": "rel-write",
+    "anchor_off": true,
+    "settle_ms": 157.2,
+    "inject_at_ms": 62,
+    "control_would_move": -497,
+    "moved_after_inject": -427,
+    "verdict": "SURVIVED"
+   },
+   {
+    "engine": "chromium",
+    "key": "PageUp",
+    "op": "rel-write",
+    "anchor_off": true,
+    "settle_ms": 153.6,
+    "inject_at_ms": 61,
+    "control_would_move": -502,
+    "moved_after_inject": -460,
+    "verdict": "SURVIVED"
+   },
+   {
+    "engine": "chromium",
+    "key": "PageUp",
+    "op": "rel-write",
+    "anchor_off": true,
+    "settle_ms": 153.6,
+    "inject_at_ms": 61,
+    "control_would_move": -500,
+    "moved_after_inject": -463,
+    "verdict": "SURVIVED"
+   },
+   {
+    "engine": "chromium",
+    "key": "PageUp",
+    "op": "noop-write",
+    "anchor_off": true,
+    "settle_ms": 155.8,
+    "inject_at_ms": 62,
+    "control_would_move": -477,
+    "moved_after_inject": -413,
+    "verdict": "SURVIVED"
+   },
+   {
+    "engine": "chromium",
+    "key": "PageUp",
+    "op": "noop-write",
+    "anchor_off": true,
+    "settle_ms": 158.0,
+    "inject_at_ms": 63,
+    "control_would_move": -491,
+    "moved_after_inject": -412,
+    "verdict": "SURVIVED"
+   },
+   {
+    "engine": "chromium",
+    "key": "PageUp",
+    "op": "noop-write",
+    "anchor_off": true,
+    "settle_ms": 155.2,
+    "inject_at_ms": 62,
+    "control_would_move": -486,
+    "moved_after_inject": -434,
+    "verdict": "SURVIVED"
+   },
+   {
+    "engine": "chromium",
+    "key": "PageUp",
+    "op": "spacer-mutate",
+    "anchor_off": true,
+    "settle_ms": 151.1,
+    "inject_at_ms": 60,
+    "control_would_move": -449,
+    "moved_after_inject": -484,
+    "verdict": "SURVIVED"
+   },
+   {
+    "engine": "chromium",
+    "key": "PageUp",
+    "op": "spacer-mutate",
+    "anchor_off": true,
+    "settle_ms": 152.9,
+    "inject_at_ms": 61,
+    "control_would_move": -507,
+    "moved_after_inject": -432,
+    "verdict": "SURVIVED"
+   },
+   {
+    "engine": "chromium",
+    "key": "PageUp",
+    "op": "spacer-mutate",
+    "anchor_off": true,
+    "settle_ms": 151.6,
+    "inject_at_ms": 60,
+    "control_would_move": -448,
+    "moved_after_inject": -451,
+    "verdict": "SURVIVED"
+   },
+   {
+    "engine": "chromium",
+    "key": "PageUp",
+    "op": "row-churn",
+    "anchor_off": true,
+    "settle_ms": 151.0,
+    "inject_at_ms": 60,
+    "control_would_move": -449,
+    "moved_after_inject": -433,
+    "verdict": "SURVIVED"
+   },
+   {
+    "engine": "chromium",
+    "key": "PageUp",
+    "op": "row-churn",
+    "anchor_off": true,
+    "settle_ms": 155.9,
+    "inject_at_ms": 62,
+    "control_would_move": -483,
+    "moved_after_inject": -456,
+    "verdict": "SURVIVED"
+   },
+   {
+    "engine": "chromium",
+    "key": "PageUp",
+    "op": "row-churn",
+    "anchor_off": true,
+    "settle_ms": 149.0,
+    "inject_at_ms": 59,
+    "control_would_move": -462,
+    "moved_after_inject": -497,
+    "verdict": "SURVIVED"
+   },
+   {
+    "engine": "chromium",
+    "key": "Home",
+    "op": "rel-write",
+    "anchor_off": true,
+    "settle_ms": 153.0,
+    "inject_at_ms": 61,
+    "control_would_move": -66114,
+    "moved_after_inject": -58771,
+    "verdict": "SURVIVED"
+   },
+   {
+    "engine": "chromium",
+    "key": "Home",
+    "op": "rel-write",
+    "anchor_off": true,
+    "settle_ms": 151.8,
+    "inject_at_ms": 60,
+    "control_would_move": -67458,
+    "moved_after_inject": -58708,
+    "verdict": "SURVIVED"
+   },
+   {
+    "engine": "chromium",
+    "key": "Home",
+    "op": "rel-write",
+    "anchor_off": true,
+    "settle_ms": 153.2,
+    "inject_at_ms": 61,
+    "control_would_move": -66034,
+    "moved_after_inject": -58117,
+    "verdict": "SURVIVED"
+   },
+   {
+    "engine": "chromium",
+    "key": "Home",
+    "op": "noop-write",
+    "anchor_off": true,
+    "settle_ms": 153.6,
+    "inject_at_ms": 61,
+    "control_would_move": -65875,
+    "moved_after_inject": -59294,
+    "verdict": "SURVIVED"
+   },
+   {
+    "engine": "chromium",
+    "key": "Home",
+    "op": "noop-write",
+    "anchor_off": true,
+    "settle_ms": 152.5,
+    "inject_at_ms": 61,
+    "control_would_move": -58855,
+    "moved_after_inject": -55928,
+    "verdict": "SURVIVED"
+   },
+   {
+    "engine": "chromium",
+    "key": "Home",
+    "op": "noop-write",
+    "anchor_off": true,
+    "settle_ms": 154.4,
+    "inject_at_ms": 61,
+    "control_would_move": -65517,
+    "moved_after_inject": -62871,
+    "verdict": "SURVIVED"
+   },
+   {
+    "engine": "chromium",
+    "key": "Home",
+    "op": "spacer-mutate",
+    "anchor_off": true,
+    "settle_ms": 151.6,
+    "inject_at_ms": 60,
+    "control_would_move": -58809,
+    "moved_after_inject": -58987,
+    "verdict": "SURVIVED"
+   },
+   {
+    "engine": "chromium",
+    "key": "Home",
+    "op": "spacer-mutate",
+    "anchor_off": true,
+    "settle_ms": 157.7,
+    "inject_at_ms": 63,
+    "control_would_move": -61673,
+    "moved_after_inject": -53563,
+    "verdict": "SURVIVED"
+   },
+   {
+    "engine": "chromium",
+    "key": "Home",
+    "op": "spacer-mutate",
+    "anchor_off": true,
+    "settle_ms": 151.6,
+    "inject_at_ms": 60,
+    "control_would_move": -58558,
+    "moved_after_inject": -64374,
+    "verdict": "SURVIVED"
+   },
+   {
+    "engine": "chromium",
+    "key": "Home",
+    "op": "row-churn",
+    "anchor_off": true,
+    "settle_ms": 151.9,
+    "inject_at_ms": 60,
+    "control_would_move": -67403,
+    "moved_after_inject": -55460,
+    "verdict": "SURVIVED"
+   },
+   {
+    "engine": "chromium",
+    "key": "Home",
+    "op": "row-churn",
+    "anchor_off": true,
+    "settle_ms": 155.9,
+    "inject_at_ms": 62,
+    "control_would_move": -62222,
+    "moved_after_inject": -59947,
+    "verdict": "SURVIVED"
+   },
+   {
+    "engine": "chromium",
+    "key": "Home",
+    "op": "row-churn",
+    "anchor_off": true,
+    "settle_ms": 156.7,
+    "inject_at_ms": 62,
+    "control_would_move": -61970,
+    "moved_after_inject": -61192,
+    "verdict": "SURVIVED"
+   },
+   {
+    "engine": "chromium",
+    "key": "PageUp",
+    "op": "spacer-mutate[anchor-ON]",
+    "anchor_off": false,
+    "settle_ms": 149.2,
+    "inject_at_ms": 59,
+    "control_would_move": -467,
+    "moved_after_inject": -500,
+    "verdict": "SURVIVED"
+   },
+   {
+    "engine": "chromium",
+    "key": "PageUp",
+    "op": "spacer-mutate[anchor-ON]",
+    "anchor_off": false,
+    "settle_ms": 154.4,
+    "inject_at_ms": 61,
+    "control_would_move": -495,
+    "moved_after_inject": -481,
+    "verdict": "SURVIVED"
+   },
+   {
+    "engine": "chromium",
+    "key": "PageUp",
+    "op": "spacer-mutate[anchor-ON]",
+    "anchor_off": false,
+    "settle_ms": 152.2,
+    "inject_at_ms": 60,
+    "control_would_move": -500,
+    "moved_after_inject": -456,
+    "verdict": "SURVIVED"
+   },
+   {
+    "engine": "chromium",
+    "key": "PageUp",
+    "op": "row-churn[anchor-ON]",
+    "anchor_off": false,
+    "settle_ms": 150.0,
+    "inject_at_ms": 60,
+    "control_would_move": -461,
+    "moved_after_inject": -471,
+    "verdict": "SURVIVED"
+   },
+   {
+    "engine": "chromium",
+    "key": "PageUp",
+    "op": "row-churn[anchor-ON]",
+    "anchor_off": false,
+    "settle_ms": 148.3,
+    "inject_at_ms": 59,
+    "control_would_move": -473,
+    "moved_after_inject": -438,
+    "verdict": "SURVIVED"
+   },
+   {
+    "engine": "chromium",
+    "key": "PageUp",
+    "op": "row-churn[anchor-ON]",
+    "anchor_off": false,
+    "settle_ms": 156.3,
+    "inject_at_ms": 62,
+    "control_would_move": -479,
+    "moved_after_inject": -454,
+    "verdict": "SURVIVED"
+   }
+  ],
+  "wheel": {
+   "engine": "chromium",
+   "wheel_settle_ms": 42.6,
+   "frames_traced": 72
+  }
+ },
+ {
+  "engine": "webkit",
+  "features": {
+   "scrollend_on_window": true,
+   "scrollend_on_el": true,
+   "scrollBehavior_supported": true,
+   "overflowAnchor_supported": true,
+   "contentVisibility_supported": true
+  },
+  "trials": [
+   {
+    "engine": "webkit",
+    "key": "PageUp",
+    "op": "rel-write",
+    "anchor_off": true,
+    "settle_ms": 232,
+    "inject_at_ms": 92,
+    "control_would_move": -368,
+    "moved_after_inject": 0,
+    "verdict": "CANCELLED"
+   },
+   {
+    "engine": "webkit",
+    "key": "PageUp",
+    "op": "rel-write",
+    "anchor_off": true,
+    "settle_ms": 233,
+    "inject_at_ms": 93,
+    "control_would_move": -330,
+    "moved_after_inject": 0,
+    "verdict": "CANCELLED"
+   },
+   {
+    "engine": "webkit",
+    "key": "PageUp",
+    "op": "rel-write",
+    "anchor_off": true,
+    "settle_ms": 234,
+    "inject_at_ms": 93,
+    "control_would_move": -251,
+    "moved_after_inject": 0,
+    "verdict": "CANCELLED"
+   },
+   {
+    "engine": "webkit",
+    "key": "PageUp",
+    "op": "noop-write",
+    "anchor_off": true,
+    "settle_ms": 232,
+    "inject_at_ms": 92,
+    "control_would_move": -205,
+    "moved_after_inject": 0,
+    "verdict": "CANCELLED"
+   },
+   {
+    "engine": "webkit",
+    "key": "PageUp",
+    "op": "noop-write",
+    "anchor_off": true,
+    "settle_ms": 202,
+    "inject_at_ms": 80,
+    "control_would_move": -177,
+    "moved_after_inject": 0,
+    "verdict": "CANCELLED"
+   },
+   {
+    "engine": "webkit",
+    "key": "PageUp",
+    "op": "noop-write",
+    "anchor_off": true,
+    "settle_ms": 233,
+    "inject_at_ms": 93,
+    "control_would_move": -246,
+    "moved_after_inject": 0,
+    "verdict": "CANCELLED"
+   },
+   {
+    "engine": "webkit",
+    "key": "PageUp",
+    "op": "spacer-mutate",
+    "anchor_off": true,
+    "settle_ms": 234,
+    "inject_at_ms": 93,
+    "control_would_move": -205,
+    "moved_after_inject": -212,
+    "verdict": "SURVIVED"
+   },
+   {
+    "engine": "webkit",
+    "key": "PageUp",
+    "op": "spacer-mutate",
+    "anchor_off": true,
+    "settle_ms": 202,
+    "inject_at_ms": 80,
+    "control_would_move": -172,
+    "moved_after_inject": -310,
+    "verdict": "SURVIVED"
+   },
+   {
+    "engine": "webkit",
+    "key": "PageUp",
+    "op": "spacer-mutate",
+    "anchor_off": true,
+    "settle_ms": 235,
+    "inject_at_ms": 94,
+    "control_would_move": -238,
+    "moved_after_inject": -256,
+    "verdict": "SURVIVED"
+   },
+   {
+    "engine": "webkit",
+    "key": "PageUp",
+    "op": "row-churn",
+    "anchor_off": true,
+    "settle_ms": 233,
+    "inject_at_ms": 93,
+    "control_would_move": -217,
+    "moved_after_inject": -232,
+    "verdict": "SURVIVED"
+   },
+   {
+    "engine": "webkit",
+    "key": "PageUp",
+    "op": "row-churn",
+    "anchor_off": true,
+    "settle_ms": 199,
+    "inject_at_ms": 79,
+    "control_would_move": -172,
+    "moved_after_inject": -309,
+    "verdict": "SURVIVED"
+   },
+   {
+    "engine": "webkit",
+    "key": "PageUp",
+    "op": "row-churn",
+    "anchor_off": true,
+    "settle_ms": 200,
+    "inject_at_ms": 80,
+    "control_would_move": -162,
+    "moved_after_inject": -341,
+    "verdict": "SURVIVED"
+   },
+   {
+    "engine": "webkit",
+    "key": "Home",
+    "op": "rel-write",
+    "anchor_off": true,
+    "settle_ms": 234,
+    "inject_at_ms": 93,
+    "control_would_move": -21468,
+    "moved_after_inject": 0,
+    "verdict": "CANCELLED"
+   },
+   {
+    "engine": "webkit",
+    "key": "Home",
+    "op": "rel-write",
+    "anchor_off": true,
+    "settle_ms": 201,
+    "inject_at_ms": 80,
+    "control_would_move": -19907,
+    "moved_after_inject": 0,
+    "verdict": "CANCELLED"
+   },
+   {
+    "engine": "webkit",
+    "key": "Home",
+    "op": "rel-write",
+    "anchor_off": true,
+    "settle_ms": 201,
+    "inject_at_ms": 80,
+    "control_would_move": -19992,
+    "moved_after_inject": 0,
+    "verdict": "CANCELLED"
+   },
+   {
+    "engine": "webkit",
+    "key": "Home",
+    "op": "noop-write",
+    "anchor_off": true,
+    "settle_ms": 232,
+    "inject_at_ms": 92,
+    "control_would_move": -19909,
+    "moved_after_inject": 0,
+    "verdict": "CANCELLED"
+   },
+   {
+    "engine": "webkit",
+    "key": "Home",
+    "op": "noop-write",
+    "anchor_off": true,
+    "settle_ms": 200,
+    "inject_at_ms": 80,
+    "control_would_move": -19895,
+    "moved_after_inject": 0,
+    "verdict": "CANCELLED"
+   },
+   {
+    "engine": "webkit",
+    "key": "Home",
+    "op": "noop-write",
+    "anchor_off": true,
+    "settle_ms": 202,
+    "inject_at_ms": 80,
+    "control_would_move": -19867,
+    "moved_after_inject": 0,
+    "verdict": "CANCELLED"
+   },
+   {
+    "engine": "webkit",
+    "key": "Home",
+    "op": "spacer-mutate",
+    "anchor_off": true,
+    "settle_ms": 200,
+    "inject_at_ms": 80,
+    "control_would_move": -19859,
+    "moved_after_inject": -41642,
+    "verdict": "SURVIVED"
+   },
+   {
+    "engine": "webkit",
+    "key": "Home",
+    "op": "spacer-mutate",
+    "anchor_off": true,
+    "settle_ms": 200,
+    "inject_at_ms": 80,
+    "control_would_move": -19909,
+    "moved_after_inject": -44493,
+    "verdict": "SURVIVED"
+   },
+   {
+    "engine": "webkit",
+    "key": "Home",
+    "op": "spacer-mutate",
+    "anchor_off": true,
+    "settle_ms": 200,
+    "inject_at_ms": 80,
+    "control_would_move": -19524,
+    "moved_after_inject": -20822,
+    "verdict": "SURVIVED"
+   },
+   {
+    "engine": "webkit",
+    "key": "Home",
+    "op": "row-churn",
+    "anchor_off": true,
+    "settle_ms": 200,
+    "inject_at_ms": 80,
+    "control_would_move": -20635,
+    "moved_after_inject": -19879,
+    "verdict": "SURVIVED"
+   },
+   {
+    "engine": "webkit",
+    "key": "Home",
+    "op": "row-churn",
+    "anchor_off": true,
+    "settle_ms": 201,
+    "inject_at_ms": 80,
+    "control_would_move": -19160,
+    "moved_after_inject": -42632,
+    "verdict": "SURVIVED"
+   },
+   {
+    "engine": "webkit",
+    "key": "Home",
+    "op": "row-churn",
+    "anchor_off": true,
+    "settle_ms": 200,
+    "inject_at_ms": 80,
+    "control_would_move": -20462,
+    "moved_after_inject": -42665,
+    "verdict": "SURVIVED"
+   },
+   {
+    "engine": "webkit",
+    "key": "PageUp",
+    "op": "spacer-mutate[anchor-ON]",
+    "anchor_off": false,
+    "settle_ms": 234,
+    "inject_at_ms": 93,
+    "control_would_move": -234,
+    "moved_after_inject": -423,
+    "verdict": "SURVIVED"
+   },
+   {
+    "engine": "webkit",
+    "key": "PageUp",
+    "op": "spacer-mutate[anchor-ON]",
+    "anchor_off": false,
+    "settle_ms": 232,
+    "inject_at_ms": 92,
+    "control_would_move": -191,
+    "moved_after_inject": -574,
+    "verdict": "SURVIVED"
+   },
+   {
+    "engine": "webkit",
+    "key": "PageUp",
+    "op": "spacer-mutate[anchor-ON]",
+    "anchor_off": false,
+    "settle_ms": 233,
+    "inject_at_ms": 93,
+    "control_would_move": -307,
+    "moved_after_inject": -485,
+    "verdict": "SURVIVED"
+   },
+   {
+    "engine": "webkit",
+    "key": "PageUp",
+    "op": "row-churn[anchor-ON]",
+    "anchor_off": false,
+    "settle_ms": 235,
+    "inject_at_ms": 94,
+    "control_would_move": -233,
+    "moved_after_inject": 572,
+    "verdict": "SURVIVED"
+   },
+   {
+    "engine": "webkit",
+    "key": "PageUp",
+    "op": "row-churn[anchor-ON]",
+    "anchor_off": false,
+    "settle_ms": 235,
+    "inject_at_ms": 94,
+    "control_would_move": -316,
+    "moved_after_inject": 509,
+    "verdict": "SURVIVED"
+   },
+   {
+    "engine": "webkit",
+    "key": "PageUp",
+    "op": "row-churn[anchor-ON]",
+    "anchor_off": false,
+    "settle_ms": 234,
+    "inject_at_ms": 93,
+    "control_would_move": -228,
+    "moved_after_inject": 600,
+    "verdict": "SURVIVED"
+   }
+  ],
+  "wheel": {
+   "engine": "webkit",
+   "wheel_settle_ms": 33,
+   "frames_traced": 19
+  }
+ }
+]

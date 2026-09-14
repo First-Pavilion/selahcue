@@ -978,6 +978,14 @@ struct AppState {
     /// Best-effort persistence connection for the providers config (`None` → in-memory only, like
     /// the deck library's fallback). A second connection to the same WAL DB is safe.
     providers_db: Option<Mutex<selahcue_data::Database>>,
+    /// Best-effort READ connection to the shared transcript store `selahcue-desktop` writes via
+    /// its durable write path (86akcfftu) — see [`open_transcript_db`]'s doc comment for why this
+    /// is a SEPARATE connection/path from `providers_db` above, never the same file. `None` → the
+    /// Transcripts page (86akcffvt) reports "transcript store unavailable"; this shell never
+    /// creates or writes to this store — structurally, via `open_existing_readonly` (SQLite's own
+    /// `SQLITE_OPEN_READ_ONLY`, no `CREATE`, migrations never run), not merely by doc-comment
+    /// claim (86akcffvt review, Sana F1 / Cody Blocker).
+    transcript_db: Option<Mutex<selahcue_data::Database>>,
     /// The SelahCue account/session token store (FR-134): OS keychain in a `cloud-live` build,
     /// in-memory otherwise. Never a user-pasted third-party key.
     secrets: Box<dyn selahcue_cloud::SecretStore + Send + Sync>,
@@ -1694,6 +1702,447 @@ fn open_deck_db(app: &tauri::App) -> Option<selahcue_data::Database> {
     let dir = app.path().app_data_dir().ok()?;
     std::fs::create_dir_all(&dir).ok()?;
     selahcue_data::Database::open(dir.join("selahcue.db3")).ok()
+}
+
+/// The platform data directory `selahcue-desktop` (the desktop-authoritative process that owns
+/// the real `Database`, ADR-0002/0003) actually writes transcripts into via its durable write
+/// path (86akcfftu) — mirrors `selahcue-desktop/src/main.rs`'s own `data_dir()` exactly, same
+/// per-OS branches, so both processes agree on the one file.
+///
+/// This is deliberately NOT `open_deck_db`'s `<app_data_dir>/selahcue.db3`: that path is keyed
+/// on THIS shell's own Tauri bundle identifier (`com.selahcue.operator`), which resolves to a
+/// DIFFERENT directory than `selahcue-desktop`'s (e.g. macOS: `~/Library/Application
+/// Support/com.selahcue.operator` vs. `~/Library/Application Support/SelahCue`) — `open_deck_db`'s
+/// own doc comment already names this exact gap as a documented follow-up ("aligning this path
+/// with the desktop bin's data_dir() for a single shared DB"). Transcripts are the one thing this
+/// shell reads that it never writes (86akcfftu's sink lives in `selahcue-desktop`, not here), so
+/// reusing the operator-local path here would make the Transcripts page (86akcffvt) silently
+/// empty against a real packaged app — the ticket's whole goal would go unmet. Scoped to
+/// transcripts only: the deck/providers path stays its own separate follow-up, out of this
+/// ticket's file footprint.
+fn transcript_data_dir() -> Option<std::path::PathBuf> {
+    // Windows resolves via APPDATA below and never reads HOME.
+    #[cfg(not(target_os = "windows"))]
+    let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+    #[cfg(target_os = "macos")]
+    let dir = home.map(|h| h.join("Library/Application Support/SelahCue"));
+    #[cfg(target_os = "linux")]
+    let dir = std::env::var_os("XDG_DATA_HOME")
+        .map(std::path::PathBuf::from)
+        // Per the XDG spec, an empty or relative XDG_DATA_HOME is treated as unset.
+        .filter(|p| p.is_absolute())
+        .or(home.map(|h| h.join(".local/share")))
+        .map(|d| d.join("selahcue"));
+    #[cfg(target_os = "windows")]
+    let dir = std::env::var_os("APPDATA")
+        .map(std::path::PathBuf::from)
+        .map(|d| d.join("SelahCue"));
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+    let dir: Option<std::path::PathBuf> = home.map(|h| h.join(".selahcue"));
+    dir
+}
+
+/// Open a best-effort READ connection to the shared transcript store at
+/// `<transcript_data_dir>/selahcue.db3`. `None` on any failure (no HOME/APPDATA, no service ever
+/// recorded yet so the directory doesn't exist, the file present but not yet a real store, or an
+/// at-rest-encrypted store this default (non-`encryption`) build can't open) — the caller reports
+/// an honest "transcript store unavailable" rather than panicking.
+///
+/// Structurally, not just documentarily, never creates or writes anything: this calls
+/// [`selahcue_data::Database::open_existing_readonly`] (86akcffvt review, Sana F1 / Cody
+/// Blocker), never plain `open`. Plain `open` opens with SQLite's default CREATE flag and runs
+/// migrations on demand — so a folder that exists but whose store doesn't yet (a real, ordinary
+/// sequence: `make operator` run standalone before `selahcue-desktop` ever has, or a store
+/// deleted by hand to reset transcript history) would have silently minted a fully-migrated
+/// PLAINTEXT store from this "read-only" page. `selahcue-desktop`'s own `SessionStore::open_store`
+/// decides plaintext-vs-encrypted for what it thinks is a brand-new store by reading what's
+/// already on disk — it would see that operator-created file, find a plaintext header, and open
+/// plain forever, permanently defeating FR-154 for that install the day desktop encryption
+/// ships. `selahcue-desktop` alone owns creating, migrating, and writing this store; this shell
+/// only ever reads it.
+fn open_transcript_db() -> Option<selahcue_data::Database> {
+    open_transcript_db_at(&transcript_data_dir()?)
+}
+
+/// As [`open_transcript_db`], but takes the directory explicitly rather than resolving the real
+/// per-OS `transcript_data_dir()` — split out purely so a test can point this at a temp directory
+/// it owns and can inspect afterward (86akcffvt review, Sana F1's required verification: "folder
+/// present, no store → None and no file created" only means something against a directory the
+/// test controls). Not a change of behaviour, just of testability.
+fn open_transcript_db_at(dir: &std::path::Path) -> Option<selahcue_data::Database> {
+    selahcue_data::Database::open_existing_readonly(dir.join("selahcue.db3")).ok()
+}
+
+// ---------------------------------------------------------------------------------------------
+// Transcripts (86akcffvt / FR-130 core slice): list + read-only full-text viewer. Read-only —
+// wired straight to 86ajtxzrn's `transcript_repo`, no new persistence/migration. Editing/
+// corrections, the detected-scripture list, and generating notes from a selected transcript are
+// all explicitly out of THIS ticket's scope (see the ticket's non-goals; 86akcffy0 depends on
+// this one for notes generation).
+// ---------------------------------------------------------------------------------------------
+
+/// One row of the Transcripts list: label, date, duration, segment count — enough to render the
+/// list without a second read per row (mirrors `transcript_repo::TranscriptSummary` field for
+/// field; the JS side computes date/duration display strings from the raw `_ms` fields, the same
+/// convention `OperatorView`'s other timing fields already use).
+#[derive(serde::Serialize)]
+struct TranscriptSummaryView {
+    id: i64,
+    label: String,
+    provider: String,
+    started_at_ms: i64,
+    ended_at_ms: Option<i64>,
+    segment_count: i64,
+}
+
+impl From<selahcue_data::transcript_repo::TranscriptSummary> for TranscriptSummaryView {
+    fn from(t: selahcue_data::transcript_repo::TranscriptSummary) -> Self {
+        TranscriptSummaryView {
+            id: t.id,
+            label: t.label,
+            provider: t.provider,
+            started_at_ms: t.started_at_ms,
+            ended_at_ms: t.ended_at_ms,
+            segment_count: t.segment_count,
+        }
+    }
+}
+
+/// One segment of a transcript's full stored text. `TranscriptSegment` itself derives no
+/// `Serialize` (it is a pure domain type, `selahcue-core`), so this is the wire view.
+#[derive(serde::Serialize)]
+struct TranscriptSegmentView {
+    id: u64,
+    start_ms: u64,
+    end_ms: u64,
+    text: String,
+}
+
+impl From<&selahcue_core::transcript::TranscriptSegment> for TranscriptSegmentView {
+    fn from(s: &selahcue_core::transcript::TranscriptSegment) -> Self {
+        TranscriptSegmentView {
+            id: s.id,
+            start_ms: s.start_ms,
+            end_ms: s.end_ms,
+            text: s.text.clone(),
+        }
+    }
+}
+
+/// A transcript read back in full: every stored segment, in order — never a tail or a sample
+/// (86akcffvt AC2). `transcripts.js` owns bounded/windowed DOM rendering of however many segments
+/// come back; this command does no pagination of its own (the ticket's scope is "get one
+/// transcript in full").
+///
+/// `notes_generated` is honestly always `false` today: there is no notes table yet (86akcffy0,
+/// which depends on this ticket, has not shipped it), so this is not a placeholder guess — it is
+/// the true state of every transcript that currently exists. The field exists now so a future
+/// ticket only has to change this ONE value, never touch the wire contract or the JS that reads
+/// it.
+#[derive(serde::Serialize)]
+struct TranscriptDetailView {
+    id: i64,
+    label: String,
+    provider: String,
+    started_at_ms: i64,
+    ended_at_ms: Option<i64>,
+    segments: Vec<TranscriptSegmentView>,
+    notes_generated: bool,
+}
+
+/// Lock the shared transcript store for one read, or fail with a stable message the UI can tell
+/// apart from "zero transcripts" (`transcripts.js`'s error state vs. its empty state). Same
+/// lock-error shape as `with_providers`/`with_deck` — never panics on a poisoned lock, surfaces it
+/// as an `Err` instead.
+fn with_transcript_db<T>(
+    state: &State<'_, AppState>,
+    f: impl FnOnce(&selahcue_data::Database) -> selahcue_data::Result<T>,
+) -> Result<T, String> {
+    let guard = state
+        .transcript_db
+        .as_ref()
+        .ok_or_else(|| "transcript store unavailable".to_string())?;
+    let db = guard.lock().map_err(|e| format!("transcript lock: {e}"))?;
+    f(&db).map_err(|e| e.to_string())
+}
+
+/// List every persisted transcript, most recent first (86akcffvt AC1).
+#[tauri::command]
+async fn transcript_list(state: State<'_, AppState>) -> Result<Vec<TranscriptSummaryView>, String> {
+    with_transcript_db(&state, selahcue_data::transcript_repo::list)
+        .map(|rows| rows.into_iter().map(TranscriptSummaryView::from).collect())
+}
+
+/// Read one transcript back in full (86akcffvt AC2). `NotFound` (a stale/deleted id) surfaces as
+/// the repo's own stable, speech-free message ("row not found" — see `transcript_repo`'s FR-082
+/// guarantee), never a fabricated one.
+#[tauri::command]
+async fn transcript_get(
+    id: i64,
+    state: State<'_, AppState>,
+) -> Result<TranscriptDetailView, String> {
+    with_transcript_db(&state, |db| selahcue_data::transcript_repo::load(db, id)).map(|t| {
+        TranscriptDetailView {
+            id: t.id,
+            label: t.label,
+            provider: t.provider,
+            started_at_ms: t.started_at_ms,
+            ended_at_ms: t.ended_at_ms,
+            segments: t.segments.iter().map(TranscriptSegmentView::from).collect(),
+            notes_generated: false,
+        }
+    })
+}
+
+#[cfg(test)]
+mod transcript_view_tests {
+    use super::*;
+    use selahcue_data::{transcript_repo, Database};
+
+    fn fixture_db() -> Database {
+        let db = Database::open_in_memory().expect("in-memory db opens");
+        let id = transcript_repo::create(
+            &db,
+            &transcript_repo::NewTranscript {
+                label: "Sunday Service — Aug 4".to_string(),
+                provider: "manual".to_string(),
+                plan_id: None,
+                started_at_ms: 1_000,
+            },
+        )
+        .expect("create transcript");
+        transcript_repo::append_segment(&db, id, 0, 4_000, "Good morning, church.")
+            .expect("append segment");
+        transcript_repo::append_segment(&db, id, 4_000, 9_000, "Turn with me to Romans eight.")
+            .expect("append segment");
+        transcript_repo::end(&db, id, 9_000).expect("end transcript");
+        db
+    }
+
+    /// The frontend contract field names, pinned the same way `providers_view_tests` pins
+    /// `ProvidersView` — `transcripts.js` reads these names verbatim, so a rename here must ship
+    /// in the SAME merge request as the JS that reads it.
+    #[test]
+    fn the_summary_view_field_names_are_pinned() {
+        let db = fixture_db();
+        let rows = transcript_repo::list(&db).expect("list");
+        let view: TranscriptSummaryView = rows.into_iter().next().expect("one row").into();
+        let v = serde_json::to_value(&view).expect("view serialises");
+        let obj = v.as_object().expect("object");
+        let mut got: Vec<&str> = obj.keys().map(String::as_str).collect();
+        got.sort_unstable();
+        let mut expected = vec![
+            "id",
+            "label",
+            "provider",
+            "started_at_ms",
+            "ended_at_ms",
+            "segment_count",
+        ];
+        expected.sort_unstable();
+        assert_eq!(got, expected, "the summary view contract changed; transcripts.js must change in the SAME merge request");
+    }
+
+    #[test]
+    fn the_detail_view_field_names_are_pinned() {
+        let db = fixture_db();
+        let rows = transcript_repo::list(&db).expect("list");
+        let id = rows[0].id;
+        let t = transcript_repo::load(&db, id).expect("load");
+        let view = TranscriptDetailView {
+            id: t.id,
+            label: t.label,
+            provider: t.provider,
+            started_at_ms: t.started_at_ms,
+            ended_at_ms: t.ended_at_ms,
+            segments: t.segments.iter().map(TranscriptSegmentView::from).collect(),
+            notes_generated: false,
+        };
+        let v = serde_json::to_value(&view).expect("view serialises");
+        let obj = v.as_object().expect("object");
+        let mut got: Vec<&str> = obj.keys().map(String::as_str).collect();
+        got.sort_unstable();
+        let mut expected = vec![
+            "id",
+            "label",
+            "provider",
+            "started_at_ms",
+            "ended_at_ms",
+            "segments",
+            "notes_generated",
+        ];
+        expected.sort_unstable();
+        assert_eq!(got, expected, "the detail view contract changed; transcripts.js must change in the SAME merge request");
+
+        let seg_obj = v["segments"][0].as_object().expect("segment is an object");
+        let mut seg_got: Vec<&str> = seg_obj.keys().map(String::as_str).collect();
+        seg_got.sort_unstable();
+        let mut seg_expected = vec!["id", "start_ms", "end_ms", "text"];
+        seg_expected.sort_unstable();
+        assert_eq!(seg_got, seg_expected, "the segment view contract changed; transcripts.js must change in the SAME merge request");
+    }
+
+    /// The load-bearing behaviour: full text back, in order, none dropped — not a tail, not a
+    /// sample (86akcffvt AC2). A regression that truncated/paginated at the Rust layer would
+    /// still pass a naive "some segments came back" check; this pins the EXACT count and order.
+    #[test]
+    fn transcript_get_returns_every_segment_in_order_not_a_tail() {
+        let db = fixture_db();
+        let rows = transcript_repo::list(&db).expect("list");
+        let id = rows[0].id;
+        let t = transcript_repo::load(&db, id).expect("load");
+        let view = TranscriptDetailView {
+            id: t.id,
+            label: t.label.clone(),
+            provider: t.provider.clone(),
+            started_at_ms: t.started_at_ms,
+            ended_at_ms: t.ended_at_ms,
+            segments: t.segments.iter().map(TranscriptSegmentView::from).collect(),
+            notes_generated: false,
+        };
+        assert_eq!(
+            view.segments.len(),
+            2,
+            "both segments came back, not a tail"
+        );
+        assert_eq!(view.segments[0].text, "Good morning, church.");
+        assert_eq!(
+            view.segments[1].text, "Turn with me to Romans eight.",
+            "segment order is preserved end to end"
+        );
+    }
+
+    #[test]
+    fn a_missing_transcript_reports_not_found_not_a_panic() {
+        let db = Database::open_in_memory().expect("in-memory db opens");
+        let err = transcript_repo::load(&db, 999)
+            .expect_err("a missing transcript id is NotFound, not Ok");
+        assert_eq!(err.to_string(), "row not found");
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// `open_transcript_db_at` (86akcffvt review, Sana F1 / Cody Blocker): this shell must never
+// create, write to, or migrate the shared transcript store it only reads. These tests exercise
+// the FULL operator-level path (directory resolution + open), not just the crate-level
+// constructor `selahcue-data`'s own tests already cover — the two layers can regress
+// independently (e.g. a future edit could re-introduce `create_dir_all` here, or swap the call
+// back to plain `open`), so both are tested. Mutation-verified: swapping the
+// `open_existing_readonly` call in `open_transcript_db_at` back to plain `Database::open` turns
+// (a) and (b) red together (see the ticket's evidence for the recorded run).
+// ---------------------------------------------------------------------------------------------
+#[cfg(test)]
+mod transcript_db_open_tests {
+    use super::*;
+    use selahcue_data::{transcript_repo, Database};
+
+    #[test]
+    fn a_folder_present_but_no_store_yet_yields_none_and_creates_no_file() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let store_path = dir.path().join("selahcue.db3");
+        assert!(!store_path.exists(), "premise: no store in the folder yet");
+
+        let result = open_transcript_db_at(dir.path());
+
+        assert!(
+            result.is_none(),
+            "a folder with no store yet must report unavailable, not open one"
+        );
+        assert!(
+            !store_path.exists(),
+            "the 'read-only' open must not have created a store where none existed \
+             (this is the exact FR-154 plaintext-lock-in shape: make operator run standalone \
+             before selahcue-desktop ever has, or a store deleted by hand to reset history)"
+        );
+    }
+
+    #[test]
+    fn a_zero_byte_placeholder_yields_none_and_stays_zero_bytes() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let store_path = dir.path().join("selahcue.db3");
+        std::fs::write(&store_path, []).expect("write empty placeholder");
+
+        let result = open_transcript_db_at(dir.path());
+
+        assert!(
+            result.is_none(),
+            "a zero-byte placeholder is not a real store and must report unavailable"
+        );
+        assert_eq!(
+            store_path.metadata().expect("metadata").len(),
+            0,
+            "the refused open must not have written a schema into the placeholder"
+        );
+    }
+
+    #[test]
+    fn a_real_existing_store_opens_and_lists_its_transcript_positive_control() {
+        // Positive control: the two refusal tests above prove nothing without proof this same
+        // function still does its one real job against an ordinary, real store.
+        let dir = tempfile::tempdir().expect("temp dir");
+        let store_path = dir.path().join("selahcue.db3");
+        {
+            let db = Database::open(&store_path).expect("create the real store");
+            transcript_repo::create(
+                &db,
+                &transcript_repo::NewTranscript {
+                    label: "Sunday Service".to_string(),
+                    provider: "manual".to_string(),
+                    plan_id: None,
+                    started_at_ms: 1_722_760_800_000,
+                },
+            )
+            .expect("seed one transcript");
+        }
+
+        let db = open_transcript_db_at(dir.path())
+            .expect("a real, ordinary store at this path must open");
+
+        let rows = transcript_repo::list(&db).expect("list succeeds");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].label, "Sunday Service");
+    }
+
+    #[test]
+    fn a_store_from_a_newer_build_still_opens_and_reads_correctly() {
+        // What "the newer-schema-version case" resolves to for THIS constructor (see
+        // `Database::open_existing_readonly`'s own doc comment for the full reasoning): every
+        // migration to date is purely additive, and this path never migrates in either
+        // direction, so refusing a newer-but-otherwise-normal store would only break the
+        // reverse case this repo's shared checkouts hit in practice (an older read-only build
+        // pointed at a store a newer sibling build already migrated forward) while protecting
+        // nothing (there is no write to protect here). The one invariant under test is that the
+        // version on disk is left exactly as found.
+        let dir = tempfile::tempdir().expect("temp dir");
+        let store_path = dir.path().join("selahcue.db3");
+        {
+            let db = Database::open(&store_path).expect("create the real store");
+            transcript_repo::create(
+                &db,
+                &transcript_repo::NewTranscript {
+                    label: "Sunday Service".to_string(),
+                    provider: "manual".to_string(),
+                    plan_id: None,
+                    started_at_ms: 1_722_760_800_000,
+                },
+            )
+            .expect("seed one transcript");
+            let future = selahcue_data::migrations::target_version() + 1;
+            db.conn()
+                .execute_batch(&format!("PRAGMA user_version = {future};"))
+                .expect("simulate a sibling build's future migration");
+        }
+
+        let db = open_transcript_db_at(dir.path()).expect("a newer-schema store still opens");
+
+        assert_eq!(
+            db.schema_version().expect("read version"),
+            selahcue_data::migrations::target_version() + 1,
+            "the version on disk must be left exactly as found — never migrated"
+        );
+        let rows = transcript_repo::list(&db).expect("list still succeeds");
+        assert_eq!(rows.len(), 1);
+    }
 }
 
 /// Lock the deck workspace AND the library (in that order — consistent, no deadlock) and run `f`,
@@ -4502,12 +4951,18 @@ fn main() {
                 .as_ref()
                 .and_then(|db| selahcue_data::providers_repo::load(db).ok())
                 .unwrap_or_default();
+            // Transcripts (86akcffvt): a best-effort READ-ONLY connection to the store
+            // `selahcue-desktop` actually writes to (see `open_transcript_db`'s doc comment for
+            // why this is a DIFFERENT path from `providers_db` above). Failing to open it is not
+            // fatal to boot — the Transcripts page degrades to an honest "unavailable" state.
+            let transcript_db = open_transcript_db();
             app.manage(AppState {
                 backend,
                 deck: Mutex::new(ws),
                 library: Mutex::new(library),
                 providers: Mutex::new(providers),
                 providers_db: providers_db.map(Mutex::new),
+                transcript_db: transcript_db.map(Mutex::new),
                 secrets: make_secret_store(),
                 link_error: Mutex::new(None),
             });
@@ -4642,7 +5097,9 @@ fn main() {
             clear_account_token,
             generate_sermon_notes,
             load_sermon_note_draft,
-            update_sermon_note_draft
+            update_sermon_note_draft,
+            transcript_list,
+            transcript_get
         ])
         .run(tauri::generate_context!())
         .expect("run SelahCue operator shell");
