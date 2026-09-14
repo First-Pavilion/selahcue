@@ -172,6 +172,10 @@ futures-util = { version = "0.3", default-features = false, features = [
     "sink",
     "std",
 ] }
+# `open_transcript_db_at`'s tests (86akcffvt review, Sana F1 / Cody Blocker) need a real
+# directory they own and can inspect afterward — the same crate + convention `selahcue-data`'s
+# own tests already use for this.
+tempfile = "3"
 
 [lints.clippy]
 unwrap_used = "warn"
