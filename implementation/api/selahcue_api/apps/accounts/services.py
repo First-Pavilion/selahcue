@@ -215,11 +215,13 @@ def count_customers(actor: ActorContext | None, *, search: str | None = None) ->
 #
 # THE NO-ORACLE DISCIPLINE IS NOT UNIFORM ACROSS THESE PATHS. Do not read the rule above as a
 # guarantee that none of them leaks existence. `_pad_to_floor` equalises exactly ONE endpoint,
-# `resend_email_verification`, its only caller. `request_password_reset` is unpadded,
-# unauthenticated and unthrottled, and since no branch there runs a dummy PBKDF2 any more,
-# nothing equalises its branches at all — the measured residual is ~2x remote. The numbers and
-# the reasoning are in that function's own comment. Padding and rate-limiting it is a separate,
-# deliberately deferred decision.
+# `resend_email_verification`. `request_password_reset` is unpadded and unauthenticated, and
+# since no branch there runs a dummy PBKDF2 any more, nothing equalises its branches at all —
+# the measured residual is ~2x remote. The numbers and the reasoning are in that function's own
+# comment. Padding it is a separate, deliberately deferred decision — but as of 86akcmfd4 it is
+# no longer UNTHROTTLED: both `request_password_reset` and `confirm_password_reset` now spend a
+# per-client-IP budget before any existence-dependent branch runs, which bounds how many timing
+# samples one source can take even though the gap itself is untouched.
 # ---------------------------------------------------------------------------
 
 # Config (overridable via settings; documented in deployments.md). Read at import.
@@ -284,18 +286,27 @@ def _reset_floor_overrun_reporting() -> None:
     _last_unresolved_ip_log = float("-inf")
 
 
-def _report_unresolved_client_ip() -> None:
-    """Warn — at most once per interval — that the per-IP budget lost its key."""
+def _report_unresolved_client_ip(source: str) -> None:
+    """Warn — at most once per interval — that a per-IP throttle lost its key.
+
+    `source` names which caller saw it (`resend_email_verification`, `request_password_reset`,
+    `confirm_password_reset`) so the one report that survives suppression is still actionable.
+    The suppression window is SHARED across all of them on purpose: the only way this fires at
+    all is the GraphQL context losing its request object, which is a transport-level defect
+    that would hit every unauthenticated mutation on the same surface at once — three warnings
+    for one root cause would be exactly the log spam this suppression exists to prevent.
+    """
     global _last_unresolved_ip_log
     now = time.monotonic()
     if now - _last_unresolved_ip_log < _UNRESOLVED_IP_LOG_INTERVAL_SECONDS:
         return
     _last_unresolved_ip_log = now
     logger.warning(
-        "resend-verification could not resolve a caller IP; spending the shared '%s' budget "
-        "instead. `client_ip()` never returns empty, so this means the transport supplied no "
-        "request object — most likely the GraphQL context shape changed. Every caller now "
-        "shares one per-IP budget until it is fixed. Further reports suppressed for %.0fs.",
+        "%s could not resolve a caller IP; spending the shared '%s' budget instead. "
+        "`client_ip()` never returns empty, so this means the transport supplied no request "
+        "object — most likely the GraphQL context shape changed. Every caller now shares one "
+        "per-IP budget until it is fixed. Further reports suppressed for %.0fs.",
+        source,
         UNRESOLVED_CLIENT_IP,
         _UNRESOLVED_IP_LOG_INTERVAL_SECONDS,
     )
@@ -305,6 +316,12 @@ def _report_unresolved_client_ip() -> None:
 RESEND_ADDRESS_BUDGET = (3, 900)
 RESEND_IP_BUDGET = (10, 3600)
 RESEND_GLOBAL_BUDGET = (500, 3600)
+
+# Per-client-IP budgets for the two password-reset mutations (86akcmfd4 — DEC-013's required
+# follow-up: see the module-level comment above and each function's own docstring). Defaults
+# only — `enforce_budget` reads the matching setting at call time.
+RESET_REQUEST_IP_BUDGET = (20, 3600)
+RESET_CONFIRM_IP_BUDGET = (20, 3600)
 
 # --- sending while the limiter is down ---------------------------------------------------
 # All three budgets above FAIL OPEN. That is right for the RESPONSE — refusing because the
@@ -879,7 +896,7 @@ def resend_email_verification(data: ResendVerificationData) -> AcceptedResult:
     # 10/hour budget, so the misconfiguration shows up as refusals rather than as an
     # unmetered send path.
     if not data.client_ip:
-        _report_unresolved_client_ip()
+        _report_unresolved_client_ip("resend_email_verification")
     limiter_degraded |= enforce_budget_reporting_outage(
         "resend_verify_ip",
         data.client_ip or UNRESOLVED_CLIENT_IP,
@@ -1118,9 +1135,27 @@ def logout_session(presented_token: str, *, all_sessions: bool = False) -> Logou
     return LogoutResult(revoked=True)
 
 
-def request_password_reset(email: str) -> AcceptedResult:
+def request_password_reset(email: str, client_ip: str = "") -> AcceptedResult:
     """Always returns accepted:true (no enumeration). When the email matches a user, invalidate any
-    prior unconsumed reset tokens and email a fresh single-use one."""
+    prior unconsumed reset tokens and email a fresh single-use one.
+
+    Spends a per-client-IP budget FIRST, before the email is even validated — 86akcmfd4, DEC-013's
+    required follow-up. The mint-vs-no-mint branch below is what DEC-013 measured a ~0.437ms gap
+    on; this does not close that gap (see the comment on the `else` branch for why not), it bounds
+    how many times one source can sample it. The budget is spent UNCONDITIONALLY, before the
+    existence check, for the same reason the resend budgets are: a limiter that only bit for real
+    accounts would itself be an existence oracle. `RATE_LIMITED` cannot leak anything about the
+    email either way — it is decided purely by request COUNT from `client_ip`, before any
+    existence-dependent branch runs, so a throttled caller learns nothing about the email they sent.
+    """
+    if not client_ip:
+        _report_unresolved_client_ip("request_password_reset")
+    enforce_budget(
+        "password_reset_request_ip",
+        client_ip or UNRESOLVED_CLIENT_IP,
+        "SELAHCUE_THROTTLE_RESET_REQUEST",
+        RESET_REQUEST_IP_BUDGET,
+    )
     normalized = _require_valid_email(email)
     fingerprint = _email_fingerprint(normalized)
     now = djtz.now()
@@ -1154,24 +1189,27 @@ def request_password_reset(email: str) -> AcceptedResult:
             # invert the oracle.
             #
             # NO FLOOR APPLIES ON THIS PATH. `_pad_to_floor` is called only from
-            # `resend_email_verification`; `request_password_reset` is unpadded,
-            # unauthenticated and has no rate limiting at all, so nothing here equalises the
-            # two branches. What used to obscure the gap was the minting branch's own PBKDF2
-            # noise, never a constant-time guarantee. Measured, removing that PBKDF2 moved the
-            # branch gap from +2.66ms (sd 83ms) to +0.437ms (sd 0.27ms): absolutely smaller,
-            # but far cheaper to sample now that the noise hiding it shrank with it. Modelled
-            # against network jitter that is roughly a 2x reduction in remote attack cost — a
-            # modest regression of a PRE-EXISTING oracle, not a new one — and it collapses
-            # further for a co-located attacker. Signup is unaffected: its password PBKDF2
-            # runs before the branch.
+            # `resend_email_verification`; `request_password_reset` is still unpadded, so
+            # nothing here equalises the two branches' DURATION. What used to obscure the gap
+            # was the minting branch's own PBKDF2 noise, never a constant-time guarantee.
+            # Measured, removing that PBKDF2 moved the branch gap from +2.66ms (sd 83ms) to
+            # +0.437ms (sd 0.27ms): absolutely smaller, but far cheaper to sample now that the
+            # noise hiding it shrank with it. Modelled against network jitter that is roughly a
+            # 2x reduction in remote attack cost — a modest regression of a PRE-EXISTING oracle,
+            # not a new one — and it collapses further for a co-located attacker. Signup is
+            # unaffected: its password PBKDF2 runs before the branch.
             #
-            # Whether to pad and rate-limit this path is a separate decision, tracked as a
-            # follow-up ticket. Deliberately NOT done here.
+            # Padding this path (closing the gap itself) is a separate, deliberately deferred
+            # decision — it is not what 86akcmfd4 does. What 86akcmfd4 DOES do is spend a
+            # per-client-IP budget before this function is even entered (see the docstring),
+            # which bounds how many times one source can sample this gap rather than closing it.
             pass
     return AcceptedResult(accepted=True)
 
 
-def confirm_password_reset(raw_token: str, new_password: str) -> ConfirmPasswordResetResult:
+def confirm_password_reset(
+    raw_token: str, new_password: str, client_ip: str = ""
+) -> ConfirmPasswordResetResult:
     """Consume a PASSWORD_RESET token, set the new password, and revoke ALL of the user's ACTIVE
     sessions (invalidation on password change).
 
@@ -1181,7 +1219,23 @@ def confirm_password_reset(raw_token: str, new_password: str) -> ConfirmPassword
       collapsed VALIDATION_FAILED, mutually indistinguishable. Unchanged (FR-529 / CON-P6).
     - A bad password behind a LIVE token is PASSWORD_INVALID, so the caller is told the one
       thing they can act on. Reachable only after the token has been validated.
+
+    Spends a per-client-IP budget FIRST — 86akcmfd4, DEC-013's required follow-up — before the
+    token is even looked at. This endpoint was previously reachable at an unlimited rate, which
+    is what let a token-guessing or timing probe repeat indefinitely. `RATE_LIMITED` cannot
+    become a sixth, more-informative token-failure code: it is decided purely by request COUNT
+    from `client_ip`, checked before the token lookup runs, so it fires identically whether the
+    token offered was live, dead, or never existed. It does not touch the FIVE-way collapse
+    above, and it is not reachable from behind a validated token any more than in front of one.
     """
+    if not client_ip:
+        _report_unresolved_client_ip("confirm_password_reset")
+    enforce_budget(
+        "password_reset_confirm_ip",
+        client_ip or UNRESOLVED_CLIENT_IP,
+        "SELAHCUE_THROTTLE_RESET_CONFIRM",
+        RESET_CONFIRM_IP_BUDGET,
+    )
     token_value = (raw_token or "").strip()
     if not token_value:
         raise _validation_error()

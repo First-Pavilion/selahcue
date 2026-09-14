@@ -224,13 +224,28 @@ class AccountMutation:
 
     @strawberry.mutation
     def request_password_reset(self, info: strawberry.Info, email: str) -> RequestPasswordResetPayload:
-        return RequestPasswordResetPayload(accepted=request_password_reset(email).accepted)
+        """The caller IP is resolved HERE, same as `resend_verification_email` above and for the
+        same reason: only the transport knows how many proxy hops are trustworthy
+        (`SELAHCUE_TRUSTED_PROXY_COUNT`), and a service that read the header itself would be
+        trusting a caller-supplied value (86akcmfd4 — DEC-013's required follow-up)."""
+        request = getattr(getattr(info, "context", None), "request", None)
+        result = request_password_reset(
+            email, client_ip=client_ip(request) if request is not None else ""
+        )
+        return RequestPasswordResetPayload(accepted=result.accepted)
 
     @strawberry.mutation
     def confirm_password_reset(
         self, info: strawberry.Info, input: ConfirmPasswordResetInput
     ) -> ConfirmPasswordResetPayload:
-        result: ConfirmPasswordResetResult = confirm_password_reset(input.token, input.new_password)
+        """Caller IP resolved here for the same reason as `request_password_reset` above
+        (86akcmfd4 — DEC-013's required follow-up)."""
+        request = getattr(getattr(info, "context", None), "request", None)
+        result: ConfirmPasswordResetResult = confirm_password_reset(
+            input.token,
+            input.new_password,
+            client_ip=client_ip(request) if request is not None else "",
+        )
         return ConfirmPasswordResetPayload(reset=result.reset)
 
     @strawberry.mutation
