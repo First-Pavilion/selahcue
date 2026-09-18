@@ -459,20 +459,42 @@ def main():
                 " return Math.max(h - 40, Math.round(h * 0.875)); }"
             )
 
+            def wait_for_scroll_settle(quiet_ms=120, timeout_ms=2500):
+                # 86akhf8e6: a FIXED 400ms wait here (this ticket's own M1 spike measurement,
+                # ~300ms for Home/End) was reliable on the author's dev box but not on a loaded
+                # CI runner — reproduced live on GitHub's hosted ubuntu-latest, two attempts in a
+                # row: every OTHER PageDown/PageUp/Space landed at roughly half the native step
+                # (e.g. deltas [630, 630, 630, 630, 462, 630, 351, ...] against a 630px step) —
+                # the exact "read mid-animation" failure mode ADR-0026's own spike C2 diagnosed,
+                # just triggered by scheduler jitter under load instead of a scrollTop write. A
+                # wider fixed wait would still be a guess about how loaded the runner is; polling
+                # for the animation to actually settle (mirroring #11's boot-render poll in
+                # operator_headless.py — a bounded `wait_for_function`, not a longer sleep) is not.
+                # Requires scrollTop to be unchanged for `quiet_ms` straight, bounded by
+                # `timeout_ms` so a genuinely stuck animation still fails loud rather than hangs.
+                page4.evaluate("() => { window.__scrollSettle = undefined; }")
+                page4.wait_for_function(
+                    """(quietMs) => {
+                        var el = document.getElementById('tr-detail-log');
+                        var now = performance.now();
+                        var s = window.__scrollSettle;
+                        if (!s || s.v !== el.scrollTop) {
+                            window.__scrollSettle = { v: el.scrollTop, t: now };
+                            return false;
+                        }
+                        return (now - s.t) >= quietMs;
+                    }""",
+                    arg=quiet_ms,
+                    timeout=timeout_ms,
+                    polling="raf",
+                )
+
             def presses(key, count, sign):
-                # 60ms between presses was sized for the pre-M1 file's INSTANT jumpScrollTop
-                # (no animation at all, so 60ms was ample settle time). Under ADR-0026 these keys
-                # run WebKit's genuine multi-frame native scroll animation (spike C2 — traced at
-                # ~300ms for Home/End), so a press arriving before the previous one's animation
-                # has settled reads a MID-ANIMATION sample, not a per-press delta — exactly the
-                # kind of irregular reading a real user could never produce by pressing keys at a
-                # normal cadence. 400ms is the wait this ticket's own M1 spike (ADR-0026 rev 2 go/
-                # no-go) validated as reliably clearing that animation on both engines.
                 deltas = []
                 prev = page4.evaluate("() => document.getElementById('tr-detail-log').scrollTop")
                 for _ in range(count):
                     page4.keyboard.press(key)
-                    page4.wait_for_timeout(400)
+                    wait_for_scroll_settle()
                     cur = page4.evaluate("() => document.getElementById('tr-detail-log').scrollTop")
                     deltas.append((cur - prev) * sign)
                     prev = cur
