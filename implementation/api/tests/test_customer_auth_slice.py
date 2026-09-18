@@ -8,6 +8,7 @@ import json
 
 import pytest
 from django.contrib.auth.hashers import check_password, make_password
+from django.core.cache import cache
 from django.db import transaction
 from django.test import TestCase, override_settings
 from django.utils import timezone
@@ -23,6 +24,19 @@ from selahcue_api.apps.accounts.models import (
     CustomerUserStatus,
 )
 from selahcue_api.apps.license_keys.models import AppLicenseKey, LicenseKeyStatus
+
+
+@pytest.fixture(autouse=True)
+def _fresh_reset_throttle_budget():
+    """`request_password_reset` / `confirm_password_reset` now spend a per-client-IP budget
+    (86akcmfd4) in the SAME default LocMemCache used everywhere else, which persists for the
+    whole pytest process. This file's Django test client defaults every call to
+    REMOTE_ADDR=127.0.0.1, so without a per-test reset every test in this module would share
+    ONE budget and the later ones would start seeing RATE_LIMITED instead of the codes they
+    assert on. Mirrors `_fresh_throttle_budget` in test_resend_verification.py, which pins the
+    same fixture for the same reason on the resend mutation.
+    """
+    cache.clear()
 
 
 # --- helpers ---------------------------------------------------------------
