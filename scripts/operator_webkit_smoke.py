@@ -204,6 +204,21 @@ HAS_RENDER = (
     " return !!(s && s.classList.contains('has-render')); }"
 )
 
+# 86akhf8e6: how long to wait after a native Home/End/PageDown/PageUp/Space keypress for
+# WebKit's own multi-frame keyboard-scroll animation to finish before reading `scrollTop`.
+# This file's own spike (ADR-0026 rev 2 M1 go/no-go) measured that animation at ~300ms and a
+# 300-400ms wait was reliable on the author's dev box -- but not on a loaded CI runner:
+# reproduced live on GitHub's hosted ubuntu-latest, 2/2 attempts, with every OTHER
+# PageDown/PageUp/Space (and some Home/End presses) landing at roughly half the native step --
+# the exact "read mid-animation" failure ADR-0026 diagnosed, just triggered by scheduler
+# jitter under load instead of a scrollTop write. A settle-poll (wait until `scrollTop` stops
+# changing) was tried first and made no measurable difference: with a short quiet window the
+# poll's own effective wait converges to roughly animation-duration + quiet-window, which is
+# barely more than the fixed wait it replaced. Widening the margin is what actually matters
+# here, not how the wait is expressed, so this stays a plain bounded sleep -- generous enough
+# to clear the animation even under CI load, cheap relative to this job's multi-minute runtime.
+NATIVE_KEY_SCROLL_SETTLE_MS = 900
+
 
 def main():
     errors = []
@@ -321,7 +336,7 @@ def main():
             # `__trScrollToFraction` test hook.
             page2.click("#tr-detail-log")
             page2.keyboard.press("End")
-            page2.wait_for_timeout(300)
+            page2.wait_for_timeout(NATIVE_KEY_SCROLL_SETTLE_MS)
             tr_end_visible = page2.evaluate(
                 "(id) => { var ids = window.__trVisibleSegIds ? window.__trVisibleSegIds() : [];"
                 " return ids.indexOf(String(id)) !== -1; }",
@@ -402,7 +417,7 @@ def main():
                     break
             page3.click("#tr-detail-log")
             page3.keyboard.press("End")
-            page3.wait_for_timeout(300)
+            page3.wait_for_timeout(NATIVE_KEY_SCROLL_SETTLE_MS)
             end_scrolltop = page3.evaluate("() => document.getElementById('tr-detail-log').scrollTop")
             end_max = page3.evaluate(
                 "() => Math.max(0, document.getElementById('tr-detail-log').scrollHeight -"
@@ -459,42 +474,12 @@ def main():
                 " return Math.max(h - 40, Math.round(h * 0.875)); }"
             )
 
-            def wait_for_scroll_settle(quiet_ms=120, timeout_ms=2500):
-                # 86akhf8e6: a FIXED 400ms wait here (this ticket's own M1 spike measurement,
-                # ~300ms for Home/End) was reliable on the author's dev box but not on a loaded
-                # CI runner — reproduced live on GitHub's hosted ubuntu-latest, two attempts in a
-                # row: every OTHER PageDown/PageUp/Space landed at roughly half the native step
-                # (e.g. deltas [630, 630, 630, 630, 462, 630, 351, ...] against a 630px step) —
-                # the exact "read mid-animation" failure mode ADR-0026's own spike C2 diagnosed,
-                # just triggered by scheduler jitter under load instead of a scrollTop write. A
-                # wider fixed wait would still be a guess about how loaded the runner is; polling
-                # for the animation to actually settle (mirroring #11's boot-render poll in
-                # operator_headless.py — a bounded `wait_for_function`, not a longer sleep) is not.
-                # Requires scrollTop to be unchanged for `quiet_ms` straight, bounded by
-                # `timeout_ms` so a genuinely stuck animation still fails loud rather than hangs.
-                page4.evaluate("() => { window.__scrollSettle = undefined; }")
-                page4.wait_for_function(
-                    """(quietMs) => {
-                        var el = document.getElementById('tr-detail-log');
-                        var now = performance.now();
-                        var s = window.__scrollSettle;
-                        if (!s || s.v !== el.scrollTop) {
-                            window.__scrollSettle = { v: el.scrollTop, t: now };
-                            return false;
-                        }
-                        return (now - s.t) >= quietMs;
-                    }""",
-                    arg=quiet_ms,
-                    timeout=timeout_ms,
-                    polling="raf",
-                )
-
             def presses(key, count, sign):
                 deltas = []
                 prev = page4.evaluate("() => document.getElementById('tr-detail-log').scrollTop")
                 for _ in range(count):
                     page4.keyboard.press(key)
-                    wait_for_scroll_settle()
+                    page4.wait_for_timeout(NATIVE_KEY_SCROLL_SETTLE_MS)
                     cur = page4.evaluate("() => document.getElementById('tr-detail-log').scrollTop")
                     deltas.append((cur - prev) * sign)
                     prev = cur
@@ -555,7 +540,7 @@ def main():
             page5.wait_for_timeout(50)
             page5.click("#tr-detail-log")
             page5.keyboard.press("End")
-            page5.wait_for_timeout(300)
+            page5.wait_for_timeout(NATIVE_KEY_SCROLL_SETTLE_MS)
             v11_scrolltop = page5.evaluate("() => document.getElementById('tr-detail-log').scrollTop")
             v11_max = page5.evaluate(
                 "() => Math.max(0, document.getElementById('tr-detail-log').scrollHeight -"
