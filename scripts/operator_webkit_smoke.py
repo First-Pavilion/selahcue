@@ -204,6 +204,21 @@ HAS_RENDER = (
     " return !!(s && s.classList.contains('has-render')); }"
 )
 
+# 86akhf8e6: how long to wait after a native Home/End/PageDown/PageUp/Space keypress for
+# WebKit's own multi-frame keyboard-scroll animation to finish before reading `scrollTop`.
+# This file's own spike (ADR-0026 rev 2 M1 go/no-go) measured that animation at ~300ms and a
+# 300-400ms wait was reliable on the author's dev box -- but not on a loaded CI runner:
+# reproduced live on GitHub's hosted ubuntu-latest, 2/2 attempts, with every OTHER
+# PageDown/PageUp/Space (and some Home/End presses) landing at roughly half the native step --
+# the exact "read mid-animation" failure ADR-0026 diagnosed, just triggered by scheduler
+# jitter under load instead of a scrollTop write. A settle-poll (wait until `scrollTop` stops
+# changing) was tried first and made no measurable difference: with a short quiet window the
+# poll's own effective wait converges to roughly animation-duration + quiet-window, which is
+# barely more than the fixed wait it replaced. Widening the margin is what actually matters
+# here, not how the wait is expressed, so this stays a plain bounded sleep -- generous enough
+# to clear the animation even under CI load, cheap relative to this job's multi-minute runtime.
+NATIVE_KEY_SCROLL_SETTLE_MS = 900
+
 
 def main():
     errors = []
@@ -321,7 +336,7 @@ def main():
             # `__trScrollToFraction` test hook.
             page2.click("#tr-detail-log")
             page2.keyboard.press("End")
-            page2.wait_for_timeout(300)
+            page2.wait_for_timeout(NATIVE_KEY_SCROLL_SETTLE_MS)
             tr_end_visible = page2.evaluate(
                 "(id) => { var ids = window.__trVisibleSegIds ? window.__trVisibleSegIds() : [];"
                 " return ids.indexOf(String(id)) !== -1; }",
@@ -402,7 +417,7 @@ def main():
                     break
             page3.click("#tr-detail-log")
             page3.keyboard.press("End")
-            page3.wait_for_timeout(300)
+            page3.wait_for_timeout(NATIVE_KEY_SCROLL_SETTLE_MS)
             end_scrolltop = page3.evaluate("() => document.getElementById('tr-detail-log').scrollTop")
             end_max = page3.evaluate(
                 "() => Math.max(0, document.getElementById('tr-detail-log').scrollHeight -"
@@ -460,19 +475,11 @@ def main():
             )
 
             def presses(key, count, sign):
-                # 60ms between presses was sized for the pre-M1 file's INSTANT jumpScrollTop
-                # (no animation at all, so 60ms was ample settle time). Under ADR-0026 these keys
-                # run WebKit's genuine multi-frame native scroll animation (spike C2 — traced at
-                # ~300ms for Home/End), so a press arriving before the previous one's animation
-                # has settled reads a MID-ANIMATION sample, not a per-press delta — exactly the
-                # kind of irregular reading a real user could never produce by pressing keys at a
-                # normal cadence. 400ms is the wait this ticket's own M1 spike (ADR-0026 rev 2 go/
-                # no-go) validated as reliably clearing that animation on both engines.
                 deltas = []
                 prev = page4.evaluate("() => document.getElementById('tr-detail-log').scrollTop")
                 for _ in range(count):
                     page4.keyboard.press(key)
-                    page4.wait_for_timeout(400)
+                    page4.wait_for_timeout(NATIVE_KEY_SCROLL_SETTLE_MS)
                     cur = page4.evaluate("() => document.getElementById('tr-detail-log').scrollTop")
                     deltas.append((cur - prev) * sign)
                     prev = cur
@@ -533,7 +540,7 @@ def main():
             page5.wait_for_timeout(50)
             page5.click("#tr-detail-log")
             page5.keyboard.press("End")
-            page5.wait_for_timeout(300)
+            page5.wait_for_timeout(NATIVE_KEY_SCROLL_SETTLE_MS)
             v11_scrolltop = page5.evaluate("() => document.getElementById('tr-detail-log').scrollTop")
             v11_max = page5.evaluate(
                 "() => Math.max(0, document.getElementById('tr-detail-log').scrollHeight -"

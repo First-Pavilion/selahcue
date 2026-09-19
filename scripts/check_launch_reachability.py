@@ -696,12 +696,24 @@ def classify_probe(returncode: int | None, output: str, guard_target: str) -> Pr
     deleted, an unrelated Makefile syntax error elsewhere in the file, a `cwd` mismatch --
     produces output that does not match this signature either, and is classified as
     `COULD_NOT_RUN` rather than `DID_NOT_REFUSE`. A failure OF the probe must never be reported
-    as a failure IN the thing being probed."""
+    as a failure IN the thing being probed.
+
+    THE BRACKETED TARGET NAME CARRIES AN OPTIONAL `file:line:` PREFIX -- GNU Make >= 4.x
+    (Ubuntu 24.04's default, confirmed live: 4.3) prints `*** [Makefile:462: release-ai-guard]
+    Error 1`, while macOS's ancient bundled Make 3.81 prints the bare `*** [release-ai-guard]
+    Error 1` with no prefix at all. A substring match on the bare form only recognises the
+    macOS shape and misclassifies every genuine Linux refusal as `COULD_NOT_RUN` -- which is
+    exactly how this script's own Linux CI job went red (86akhf8e6): `main`'s `rust
+    (ubuntu-latest)` job failed this check on every real invocation, which (via the surrounding
+    workflow's success()-gated steps) skipped installing `libdbus-1-dev` further down the same
+    job, surfacing an hour later as an unrelated-looking `libdbus-sys` pkg-config failure. The
+    self-test below only ever exercised the bare macOS shape (a hardcoded fixture, never a real
+    `make` call), so it stayed green throughout. The regex below accepts either shape."""
     if returncode is None:
         return ProbeOutcome("COULD_NOT_RUN", output)
     if returncode == 0:
         return ProbeOutcome("DID_NOT_REFUSE", output)
-    if f"*** [{guard_target}] Error" in output:
+    if re.search(rf"\*\*\* \[(?:[^\[\]\n]*:\s*)?{re.escape(guard_target)}\] Error", output):
         return ProbeOutcome("REFUSED", output)
     return ProbeOutcome("COULD_NOT_RUN", output)
 
@@ -1462,6 +1474,18 @@ def self_test() -> int:
     )
     if real_refusal.kind != "REFUSED":
         failures.append(f"classify_probe: a genuine `*** [target] Error` line must be REFUSED, got {real_refusal.kind}")
+    # 86akhf8e6: GNU Make >= 4.x (Ubuntu 24.04's default -- confirmed live: 4.3) prefixes the
+    # bracketed target with `file:line:`; macOS's bundled Make 3.81 does not. A fixture using
+    # only the bare macOS shape stayed green while every real Linux invocation misclassified as
+    # COULD_NOT_RUN -- this is the shape that actually broke `main`'s `rust (ubuntu-latest)` job.
+    real_refusal_linux_make = classify_probe(
+        1, "ERROR: refusing to build...\nmake: *** [Makefile:462: release-ai-guard] Error 1", "release-ai-guard"
+    )
+    if real_refusal_linux_make.kind != "REFUSED":
+        failures.append(
+            "classify_probe: a genuine refusal with GNU Make's `file:line:`-prefixed target "
+            f"(the real shape on Linux) must be REFUSED, got {real_refusal_linux_make.kind}"
+        )
     benign = classify_probe(0, "make: Nothing to be done for `release-ai-guard'.", "release-ai-guard")
     if benign.kind != "DID_NOT_REFUSE":
         failures.append(f"classify_probe: exit 0 must be DID_NOT_REFUSE, got {benign.kind}")
@@ -1631,7 +1655,9 @@ def self_test() -> int:
         + 2  # NEW-1b: plain `=` and indented `:=` weakenings
         + 1  # NEW-2: unenforced-crate UNSAFE tag
         + 3  # NEW-2b: pick_probe_tokens (has-one, returns-every-token-sorted, raises-on-none)
-        + 7  # NEW-2b: classify_probe (refused, benign, missing target, syntax error, wrong-target error, make missing, detached-recipe PINNED)
+        + 8  # NEW-2b: classify_probe (refused, refused w/ GNU Make's file:line-prefixed target
+        #     (86akhf8e6), benign, missing target, syntax error, wrong-target error, make
+        #     missing, detached-recipe PINNED)
         + 4  # verify_crate_release_guard: all-refused+calls, mixed (non-trivial), truncation-count, truncation-tokenset
         + 3  # verify_all_release_guards: no-problems, iterates-live-registry, truncation-count
         + 1  # mutation control
