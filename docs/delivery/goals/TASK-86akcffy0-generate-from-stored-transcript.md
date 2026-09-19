@@ -153,7 +153,7 @@ Verified against `origin/main` @ 269591e (2026-09-19):
 | C-005 | yes | Consent off blocks the network call for the from-history path exactly as it does live-tail | `scripts/operator_headless.py` "TR generate consent" checks (live UI, shared `ProvidersConfig`) + `cargo test -p selahcue-operator` (`consent_off_refuses_the_from_history_text_before_any_provider_is_touched`) + existing `selahcue-cloud` crate test unaffected | all PASS; mutation-verified RED when the frontend is made to ignore a refused result | `/tmp/headless_86akcffy0.log`, `/tmp/headless_mutant2.log`, cargo test output | PASS |
 | C-006 | yes | The source transcript is byte-identical before and after generation | `cargo test -p selahcue-operator` (`source_transcript_is_unchanged_by_generation`) + command-level before/after equality check in `transcript_generate_notes` itself | PASS | cargo test output (141 passed) | PASS |
 | C-007 | yes | `make ci` passes end to end, including the headless operator webview check | `make ci` | exit 0, "ALL GREEN" | `/tmp/make_ci_86akcffy0.log` ("== local Rust/Flutter gate: ALL GREEN ==", incl. "1330 checks, 0 FAIL" and "Flutter: All tests passed!"); GitHub Actions PR #45 run 35472932995 — every job pass (rust/operator shell/release-features on macOS+Ubuntu+Windows, launch-smoke, dependency audit, supply chain) | PASS |
-| C-008 | yes | Four-reviewer gate (Cody/Vera/Sana/Quinn) completed, blocking findings remediated | review artifact + PR comments | no open blocking findings | published Artifact URL on PR | PENDING |
+| C-008 | yes | Four-reviewer gate (Cody/Vera/Sana/Quinn) completed, blocking findings remediated | review artifact + PR comments | no open blocking findings | https://claude.ai/artifact/CCqU44fqZeG21Mw6WfweQq (posted on PR #45); focused re-checks requested from Cody/Sana/Vera on commit f992075 | PENDING |
 
 ## Verification plan
 
@@ -208,6 +208,65 @@ Verified against `origin/main` @ 269591e (2026-09-19):
   mutation, 1 FAIL), `/tmp/headless_mutant2.log` (consent-bypass mutation, 2 FAIL),
   `/tmp/headless_mutant3.log` (clamp-notice mutation, 2 FAIL + early abort).
 - Decision: iterate (C-007 `make ci` launched; C-008 four-reviewer gate not yet requested)
+
+### Iteration 3
+
+- Target criterion: C-008 (four-reviewer gate) — dispatched Cody, Vera, Sana, Quinn against PR
+  #45 @ b5b5648 (with an isolation warning relayed mid-run: each reviewer told to pin to that
+  commit and use its own `git worktree add`/`git archive` copy for any hands-on testing, per a
+  cross-session collision the coordinator flagged from a parallel ticket).
+- Hypothesis: the implementation as shipped in iterations 1-2 would clear all four reviews with
+  at most Low/Nit findings.
+- Result: PARTIALLY WRONG. Quinn: PASS, no blocking findings (independently re-ran all evidence
+  in an isolated `git archive` copy). Vera: PASS WITH ONE FIX REQUESTED (PERF-1, Medium — the
+  preview rendered the full transcript into one un-virtualized DOM node, measured ~0.10ms/KB,
+  contradicting a comment this PR itself edited). Cody: NOT YET MERGEABLE (High — the 400k clamp
+  was never applied on the path to a hosted `CloudNoteProvider`, only the OpenAI dev-key
+  transport's own `build_body`; Medium — no computed-display regression test for the new
+  `.tr-gen[hidden]` CSS fix). Sana: NOT YET MERGEABLE (High F1 — an in-progress, still-recording
+  transcript was eligible for Generate, defeating the "stored transcript is static" premise the
+  whole flow's honesty and unchanged-invariant claims depend on; Medium F2 — silent overwrite of
+  an existing draft; Medium F3 — no stale-selection guard in `confirmGenerate`; Medium F4 — a
+  query error in the new `notes_generated` read could break the whole `transcript_get` command
+  on a pre-migration store).
+- New evidence: reviews posted on PR #45 (Cody, Sana, Vera, Quinn comments); relayed in full by
+  the coordinator/session messages.
+- Decision: iterate — remediate all High/Medium findings before re-requesting.
+
+### Iteration 4
+
+- Target criterion: C-008, remediating iteration 3's High/Medium findings.
+- Change or investigation: `selahcue-cloud`: `clamp_transcript_in_place` (new) applied inside
+  `generate_sermon_notes` itself — the one choke point every provider passes through — plus a
+  `MockTransport::requests_handle` addition so a test can inspect what a `SelahCueCloudClient`
+  actually sent after taking ownership of the transport, and a new
+  `the_hosted_client_never_sends_an_unclamped_transcript` test. `main.rs`:
+  `transcript_is_eligible_for_generate`/refuse-if-not-ended (Sana F1), `notes_generated_for`
+  fault isolation (Sana F4). `transcripts.js`: disabled-button + explanation for an in-progress
+  transcript with `onGenerate` defense-in-depth (F1), an overwrite warning in the preview (F2),
+  an `openId !== id` guard in `confirmGenerate`'s callbacks (F3), unicode-scalar-aware
+  length/prefix helpers plus a preview bounded to the clamp with corrected wording (Vera PERF-1 +
+  Sana F5), and a re-checked guard after the async limit lookup (Vera PERF-2).
+  `scripts/operator_headless.py`: a deferred-response stub mode for F3, 17 new checks total,
+  `EXPECTED_MIN_CHECKS` 1330 -> 1347.
+- Verifier executed: `cargo test`/`clippy`/`fmt` on `selahcue-cloud` (bare + `--features openai`)
+  and `selahcue-operator` (bare + `--features dev-keys,openai-notes`); `python3
+  scripts/operator_headless.py`; five targeted mutation tests (shared clamp removed, F1 disabled
+  write removed, F3 guards removed, PERF-1 bounding removed — each independently confirmed RED
+  then restored GREEN).
+- Result: all green. selahcue-cloud 9 (bare) / 41 (openai, incl. the 3 new tests) pass;
+  selahcue-operator 132 (bare) / 145 (dev-keys,openai-notes) pass, incl. 6 new unit tests;
+  clippy clean under `-D warnings` in every combination checked; fmt clean; headless suite 1347
+  checks, 0 FAIL, each new/changed check mutation-verified. Pushed as commit f992075; GitHub
+  Actions re-triggered; a fresh full local `make ci` launched to confirm end to end.
+- New evidence: `/tmp/headless_final_remediation.log` (1347/0 FAIL); `/tmp/headless_mutantF1.log`
+  (4 FAIL), `/tmp/headless_mutantF3.log` (2 FAIL), `/tmp/headless_mutantPERF1.log` (1 FAIL); the
+  `lib.rs`/`clamp_transcript_in_place`-removed mutant (`test_fallback.rs` FAILED); PR comment
+  https://github.com/First-Pavilion/selahcue/pull/45#issuecomment-5745973208 summarising the
+  remediation for re-review.
+- Decision: iterate — confirm `make ci` (C-007) and GitHub Actions are green on the remediation
+  commit, then close out C-008 once reviewers confirm or a reasonable window has passed with no
+  objection to the posted remediation.
 
 ## Risks and rollback
 

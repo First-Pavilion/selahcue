@@ -262,12 +262,18 @@ if not check_d5_no_scrolltop_writes():
 # `getComputedStyle(...).display`, so deleting the CSS rule would have passed everything); the
 # preview is bounded to the clamp instead of rendering an unbounded DOM node (Vera PERF-1 —
 # measured ~0.10ms/KB of unbounded forced layout before the fix); and a fast double-click before
-# the async character-limit resolves renders the review step exactly once (Vera PERF-2). Every
-# one of these mutation-verified RED/GREEN. The value below is the REAL observed count after
-# rebasing onto 86akmdkdg's own 1301, not 1301+51 by arithmetic — this file's own history (above)
+# the async character-limit resolves renders the review step exactly once (Vera PERF-2, whose
+# own regression test needed a rebuild after a first, DOM-node-count version proved vacuous
+# under its own mutation check — `openGenPreview` clears its container on every call, so two
+# back-to-back calls leave an IDENTICAL final DOM to one; fixed with a real invocation counter,
+# `window.__trOpenGenPreviewCallCount`, neither call site can fake). Every one of these
+# mutation-verified RED/GREEN across three rounds (initial implementation, four-reviewer
+# remediation, reviewer re-check follow-ups — see the PR's own commit history for the blow-by-
+# blow). The value below is the REAL observed count after rebasing this whole ticket's three
+# commits onto 86akmdkdg's own 1301, not 1301+55 by arithmetic — this file's own history (above)
 # is why: the floor has drifted quietly between rounds before, so it is re-measured at HEAD,
 # never merely incremented.
-EXPECTED_MIN_CHECKS = 1301  # placeholder — corrected to the real post-rebase count below
+EXPECTED_MIN_CHECKS = 1301  # placeholder — corrected to the real post-rebase count once measured
 
 
 def find_chrome():
@@ -918,7 +924,21 @@ STUB = r"""
     // `note_generation_limits` mirrors `selahcue_cloud::transcript_bounds::MAX_TRANSCRIPT_CHARS`
     // — a real host always returns 400000 here; the driver never overrides it, so a check that
     // wants an "over the clamp" transcript builds one bigger than this exact number.
-    if (cmd === "note_generation_limits") return Promise.resolve({ max_transcript_chars: 400000 });
+    if (cmd === "note_generation_limits") {
+      // Vera performance review (PERF-2, re-check): lets a check hold EVERY concurrent call
+      // PENDING (a queue, not a single slot — `loadNoteCharLimit` has no in-flight
+      // de-duplication, so N rapid clicks genuinely issue N of these before the first resolves)
+      // so a check can fire several rapid clicks, then resolve them ALL — in order — and assert
+      // only ONE preview ever rendered. Same deferred-promise convention as
+      // window.__trGenDeferred (Sana F3), extended to a queue for this multi-in-flight case.
+      if (window.__trLimitsDeferred) {
+        return new Promise(function (resolve) {
+          window.__trLimitsPendingResolvers = window.__trLimitsPendingResolvers || [];
+          window.__trLimitsPendingResolvers.push(function () { resolve({ max_transcript_chars: 400000 }); });
+        });
+      }
+      return Promise.resolve({ max_transcript_chars: 400000 });
+    }
     if (cmd === "transcript_generate_notes") {
       // Consent-gated exactly like `generate_sermon_notes` (same shared `P.cloud_notes_consent`
       // — the real backend reads ONE `ProvidersConfig` for both flows): no notes consent → the
@@ -3590,8 +3610,10 @@ DRIVER = r"""
       var trInProgressResult = el("tr-gen-result");
       ok(!!trInProgressResult && !trInProgressResult.hidden && /still being recorded/.test(trInProgressResult.textContent),
          "TR generate (Sana F1): the operator is told WHY Generate is unavailable, before clicking anything");
-      // Defense in depth: even a direct call to the click handler (bypassing the disabled
-      // attribute, as a stale/replayed event could) must not open a preview or call the backend.
+      // A genuinely `disabled` button never fires its click listener at all in a real browser,
+      // so clicking it here only proves the DOM's own disabled semantics — not that `onGenerate`
+      // HAS its own guard (Sana security review, re-check: this exact gap in an earlier version
+      // of this test). Prove the disabled attribute itself blocks the click first...
       var trInProgressCallsBefore = trCall("transcript_generate_notes").length;
       el("tr-generate").click();
       await sleep(30);
@@ -3599,6 +3621,15 @@ DRIVER = r"""
          "TR generate (Sana F1): clicking the disabled button never opens the review step");
       ok(trCall("transcript_generate_notes").length === trInProgressCallsBefore,
          "TR generate (Sana F1): clicking the disabled button never reaches the backend");
+      // ...then prove `onGenerate`'s OWN `generateAllowed` check is what actually does the work,
+      // by clearing the attribute (simulating a stale/replayed event bypassing it) and clicking
+      // again — real defense in depth, not two assertions of the same DOM fact.
+      el("tr-generate").disabled = false;
+      el("tr-generate").click();
+      await sleep(30);
+      ok(el("tr-gen-preview").hidden === true && trCall("transcript_generate_notes").length === trInProgressCallsBefore,
+         "TR generate (Sana F1, true defense in depth): with the disabled attribute forcibly cleared, onGenerate's OWN generateAllowed check still refuses — the backend refusal is not the only thing standing between a bypass and a call");
+      el("tr-generate").disabled = true; // restore, so the next checks see the real state
 
       // Positive control: switching BACK to an ENDED transcript re-enables Generate — "disabled"
       // above is a real per-transcript check, not a mechanism that has gone permanently dead.
@@ -3703,6 +3734,41 @@ DRIVER = r"""
       ok(el("tr-generate").disabled === true,
          "TR generate (Sana F3): transcript 1's stale completion does not re-enable transcript 2's (correctly disabled) Generate button");
       window.__trGenDeferred = false;
+
+      // (l) Vera performance review PERF-2 (re-check): a fast double-click, both landing before
+      // `note_generation_limits` resolves, must render the review step exactly ONCE, not twice
+      // (a genuine risk: `onGenerate`'s own synchronous guards — `generating`, the preview's own
+      // `hidden` state — do not change until the FIRST resolution actually opens the preview, so
+      // nothing stops a second click from also calling `loadNoteCharLimit` before then). Resolve
+      // BOTH pending calls (in order) rather than just one, so this proves the guard holds even
+      // when every in-flight call eventually completes, not only the specific one a test happens
+      // to resolve.
+      el("tr-detail-back").click();
+      el('tr-list').querySelector('.tr-card[data-id="1"] .tr-card-open').click();
+      await waitFor(function () { return window.__trRenderedRowCount && window.__trRenderedRowCount() > 0; });
+      window.__resetNoteCharLimitForTest(); // force the UNCACHED path — every earlier check above already warmed it
+      window.__trLimitsDeferred = true;
+      window.__trLimitsPendingResolvers = [];
+      var trOpenGenPreviewCountBefore = window.__trOpenGenPreviewCallCount;
+      el("tr-generate").click();
+      el("tr-generate").click();
+      await sleep(20);
+      ok(window.__trLimitsPendingResolvers.length === 2,
+         "TR generate (Vera PERF-2, premise): two rapid clicks really did issue two concurrent note_generation_limits calls — onGenerate has no synchronous guard against this, which is exactly why the resolution-time check matters");
+      window.__trLimitsPendingResolvers.forEach(function (resolve) { resolve(); });
+      await sleep(30);
+      ok(el("tr-gen-preview").hidden === false,
+         "TR generate (Vera PERF-2): the preview opens once the deferred limits resolve");
+      // NOT a DOM-node count: openGenPreview clears its container on every call, so two calls
+      // back-to-back leave an IDENTICAL final DOM to one call — a node count would pass here
+      // even with the guard deleted (confirmed: it did, on first attempt). The call counter is
+      // the only signal that actually distinguishes "rendered once" from "rendered twice,
+      // second call silently overwrote the first" — which is the real PERF-2 property (redundant
+      // work), not a rendering-correctness one.
+      ok(window.__trOpenGenPreviewCallCount === trOpenGenPreviewCountBefore + 1,
+         "TR generate (Vera PERF-2): a fast double-click before the async limit resolves calls openGenPreview exactly ONCE, not twice, even though BOTH concurrent calls complete");
+      window.__trLimitsDeferred = false;
+      el("tr-gen-preview-cancel").click();
 
       // Restore shared consent state to its default (false): this section runs BEFORE the
       // dedicated "Settings → Providers & Privacy" section below, whose own checks assume the

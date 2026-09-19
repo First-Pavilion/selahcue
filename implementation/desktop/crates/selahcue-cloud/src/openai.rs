@@ -917,6 +917,19 @@ impl<T: HttpTransport> OpenAiNoteProvider<T> {
     /// Separated from the network call so a test can assert **what would be sent** —
     /// in particular that it carries the transcript and nothing resembling audio, and
     /// that the key is not in the body (it belongs in the header alone).
+    ///
+    /// **Known gap (86akcffy0, Cody review, Low, accepted — not fixed here):** since
+    /// `generate_sermon_notes` now clamps `req.transcript` itself before any provider is called
+    /// (the fix for that same review's High finding — the size cap needed to hold for every
+    /// provider, not just this one), `bounded_transcript` here almost always sees an
+    /// already-under-cap string, so `dropped` is `None` and `instruction(...)`'s "tell the model
+    /// this was truncated, don't invent a conclusion" branch effectively never fires for a
+    /// transcript that WAS truncated upstream. `NoteRequest` carries no field for "this many
+    /// characters were already cut before I saw you", so recovering that hint here would mean
+    /// widening a core, wire-shared type for one dev-only, deliberately-throwaway provider (see
+    /// this module's own doc comment: "this whole module goes when the hosted proxy lands").
+    /// Accepted as a documented tradeoff rather than fixed in that same change; tracked as a
+    /// follow-up if this path outlives the hosted service longer than expected.
     pub fn build_body(&self, req: &NoteRequest) -> (String, ClampLog) {
         let mut log = ClampLog::default();
         let (transcript, dropped) = bounded_transcript(&req.transcript);

@@ -732,6 +732,12 @@
       })
       .catch(function () { return NOTE_TRANSCRIPT_CHAR_LIMIT_FALLBACK; });
   }
+  // Test-only hook (Vera performance review PERF-2 re-check): a real app never needs this — the
+  // cache is a correct, permanent-for-the-session optimization — but a headless check that wants
+  // to exercise the UNCACHED, concurrent-in-flight-calls race needs a way back to that state
+  // without restarting the whole page, the same shape as `window.__resetSermonNoteDraftForTest`
+  // in settings.js.
+  window.__resetNoteCharLimitForTest = function () { noteCharLimit = null; };
 
   // Joins EVERY currently-loaded segment's text with "\n" — matching `app.js`'s `syncTranscript`
   // bridge (`segs.map(s => s.text).join("\n")`) byte for byte, the same wire shape the backend's
@@ -914,7 +920,15 @@
   // surface's own bounded-window design, see this file's header comment, exists to prevent).
   // Clamping the RENDERED text to `limit` fixes both at once: the preview is now always exactly
   // what gets sent, and its cost is capped regardless of how large the stored transcript grows.
+  // Test-visible invocation counter (Vera performance review PERF-2 re-check): `box.textContent
+  // = ""` below makes two back-to-back calls produce an IDENTICAL final DOM (each clears the
+  // other's work before rebuilding), so a check counting `.pp-gen-preview-text` nodes cannot
+  // tell "rendered once" from "rendered twice, second one overwrote the first" — this counter
+  // is the only way to observe the difference, which is exactly what PERF-2 is about (redundant
+  // work, not wrong output).
+  window.__trOpenGenPreviewCallCount = 0;
   function openGenPreview(transcript, limit) {
+    window.__trOpenGenPreviewCallCount++;
     var box = genPreviewBox;
     if (!box) return;
     box.textContent = "";
