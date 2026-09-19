@@ -464,8 +464,11 @@
     rafPending = true;
     window.requestAnimationFrame(function () {
       inScrollFrame = true;
-      recomputeWindow();
-      inScrollFrame = false;
+      try {
+        recomputeWindow();
+      } finally {
+        inScrollFrame = false;
+      }
     });
   }
   logEl.addEventListener("scroll", onScroll);
