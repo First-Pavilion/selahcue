@@ -445,10 +445,19 @@ def main():
         # raw native step (the same "breathing" this file already documents and accepts elsewhere),
         # but a real cancellation is nowhere close: Vera measured actual pre-fix failures at
         # 171-330px against a 748px step (23-44%, roughly a third to a fifth of the true step),
-        # nothing like the ~1-2% variance a healthy press shows. `expected_step` is this test's OWN
-        # independent computation of WebKit's real internal `ScrollableArea::PageStep` formula
-        # (clientHeight minus a fixed overlap, floored at 87.5% of clientHeight) — transcripts.js no
-        # longer computes this at all (the deleted `pageStepPx()`); the browser does, natively.
+        # nothing like the ~1-2% variance a healthy press shows. `expected_step` USED to be this
+        # test's own independent computation of WebKit's internal `ScrollableArea::PageStep`
+        # formula (clientHeight minus a fixed overlap, floored at 87.5% of clientHeight) — but
+        # 86akmd00b found that formula had gone stale: a real, current WebKit (26.4) measured a
+        # rock-solid, perfectly uniform 630px step on a 788px `clientHeight` (~80%, not 87.5%) —
+        # confirming the underlying bug (mid-animation interruption; see transcripts.js) is fixed
+        # while proving the formula's specific ratio no longer matches this engine version.
+        # Guessing at a replacement ratio would just go stale again the next time WebKit's
+        # internals shift; measuring `expected_step` from the browser's own FIRST real PageDown —
+        # this file's own established idiom elsewhere (`calibrateCharsPerLine` in transcripts.js
+        # does the same: measure once, don't guess) — self-calibrates against whatever the current
+        # engine actually does, so what this block tests stays exactly what matters: every OTHER
+        # press matches the first, i.e. nothing is being intermittently interrupted.
         tr_pk_errors = []
         tr_pagedown_ok = tr_pageup_ok = tr_space_ok = False
         tr_pagedown_deltas = tr_pageup_deltas = tr_space_deltas = []
@@ -469,10 +478,6 @@ def main():
                 "() => window.__trRenderedRowCount && window.__trRenderedRowCount() > 0", timeout=8000
             )
             page4.click("#tr-detail-log")
-            expected_step = page4.evaluate(
-                "() => { var h = document.getElementById('tr-detail-log').clientHeight;"
-                " return Math.max(h - 40, Math.round(h * 0.875)); }"
-            )
 
             def presses(key, count, sign):
                 deltas = []
@@ -490,6 +495,11 @@ def main():
             page4.evaluate("() => window.__trScrollToFraction(0.02)")
             page4.wait_for_timeout(50)
             tr_space_deltas = presses("Space", 8, 1)
+
+            # Self-calibrated from the browser's own first real PageDown (see the block comment
+            # above) rather than a guessed formula — immune to a future WebKit engine change
+            # shifting the exact ratio again.
+            expected_step = tr_pagedown_deltas[0] if tr_pagedown_deltas else 0
 
             def within_tolerance(deltas):
                 return len(deltas) > 0 and all(
