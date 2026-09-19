@@ -4229,6 +4229,7 @@ mod providers_view_tests {
                 }],
             )],
             scriptures: Vec::new(),
+            caveats: Vec::new(),
         };
         let j = draft_json(&draft);
         assert_eq!(j["sections"][0]["points"][0]["text"], "parent");
@@ -4239,6 +4240,52 @@ mod providers_view_tests {
                 .expect("items is an array")
                 .is_empty(),
             "sub-points must NOT also be flattened into items"
+        );
+    }
+
+    #[test]
+    fn draft_json_marks_a_caveated_section_empty_requested_and_others_not() {
+        // 86akc0tua: `draft_json` computes `empty_requested` per section, once, so
+        // `settings.js` never has to cross-reference headings against `caveats` itself.
+        use selahcue_core::providers::{DraftCaveat, NoteDraft, NoteSection};
+        let draft = NoteDraft {
+            title: "t".into(),
+            summary: None,
+            sections: vec![
+                NoteSection::flat("Illustrations", vec!["a lantern".into()]),
+                NoteSection::flat("Chapter markers", Vec::new()),
+            ],
+            scriptures: Vec::new(),
+            caveats: vec![DraftCaveat::SectionRequestedEmpty {
+                heading: "Chapter markers".to_string(),
+            }],
+        };
+        let j = draft_json(&draft);
+        assert_eq!(j["sections"][0]["heading"], "Illustrations");
+        assert_eq!(
+            j["sections"][0]["empty_requested"], false,
+            "a populated section must never be marked empty_requested"
+        );
+        assert_eq!(j["sections"][1]["heading"], "Chapter markers");
+        assert_eq!(j["sections"][1]["empty_requested"], true);
+        assert_eq!(j["caveats"], serde_json::json!(["Chapter markers"]));
+    }
+
+    #[test]
+    fn draft_json_reports_no_caveats_when_the_draft_has_none() {
+        use selahcue_core::providers::{NoteDraft, NoteSection};
+        let draft = NoteDraft {
+            title: "t".into(),
+            summary: None,
+            sections: vec![NoteSection::flat("Illustrations", vec!["a lantern".into()])],
+            scriptures: Vec::new(),
+            caveats: Vec::new(),
+        };
+        let j = draft_json(&draft);
+        assert_eq!(j["sections"][0]["empty_requested"], false);
+        assert_eq!(
+            j["caveats"].as_array().expect("caveats is an array").len(),
+            0
         );
     }
 }
@@ -4416,6 +4463,23 @@ fn note_error_code(e: &selahcue_core::providers::NoteError) -> &'static str {
 }
 
 fn draft_json(d: &selahcue_core::providers::NoteDraft) -> serde_json::Value {
+    // 86akc0tua: every requested-but-empty heading — includes the two that are not
+    // `NoteSection`s at all ("Summary", "Scripture references"), which `settings.js`
+    // checks by name, alongside section headings matched below.
+    // A `match`, not an irrefutable destructure: `DraftCaveat` is documented to grow a
+    // second variant for 86akby820's scripture verification, at which point this must
+    // fail to compile until it is deliberately taught how to render the new kind, rather
+    // than silently ignoring it.
+    let caveat_headings: Vec<&str> = d
+        .caveats
+        .iter()
+        .map(|c| match c {
+            selahcue_core::providers::DraftCaveat::SectionRequestedEmpty { heading } => {
+                heading.as_str()
+            }
+        })
+        .collect();
+
     serde_json::json!({
         "title": d.title,
         "summary": d.summary,
@@ -4429,8 +4493,15 @@ fn draft_json(d: &selahcue_core::providers::NoteDraft) -> serde_json::Value {
             "points": s.points().iter().map(|p| serde_json::json!({
                 "text": p.text, "sub_points": p.sub_points,
             })).collect::<Vec<_>>(),
+            // 86akc0tua: true when this section was requested (an enabled `IncludeInNotes`
+            // flag, or one of the handful FR-122 always includes) and came back with
+            // nothing at all — distinct from a section the operator left off, which never
+            // reaches `sections` in the first place. Computed here, once, so `settings.js`
+            // never has to re-derive it by cross-referencing headings itself.
+            "empty_requested": caveat_headings.iter().any(|h| *h == s.heading),
         })).collect::<Vec<_>>(),
         "scriptures": d.scriptures,
+        "caveats": caveat_headings,
     })
 }
 

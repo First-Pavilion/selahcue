@@ -6940,6 +6940,35 @@
   color: var(--sc-text-secondary);
 }
 
+/* --- 86akc0tua: a section the operator requested came back with nothing --------------- */
+/* Deliberately NOT the --sc-warn register above. That trio is FABRICATION_DISCLOSURE's and
+   DEGRADED_FALLBACK_NOTICE's — "read this before you act on it" — and an empty section is
+   not a worse outcome than a full one; up to nine sections can be in this state on one
+   ordinary draft, and colouring all of them as warnings misrepresents a routine result as a
+   problem (Uma, ui-ux-designer). "Unmissable while skimming" comes from position and
+   weight, not colour: the line sits exactly where the missing list would have been. */
+.pp-gen-empty {
+  margin: 0;
+  padding-left: 18px; /* matches .pp-gen-list, so this starts on the same rule a list item would */
+  font-size: 12px;
+  font-weight: 400; /* .pp-gen-list li is 500 upright; quietness comes from weight and slant only */
+  font-style: italic;
+  color: var(--sc-text-secondary); /* 8.49:1 on --sc-inset, verified AA — not --sc-text-muted */
+}
+
+/* Once per draft, after the last section — structurally like .pp-gen-disclosure (padding,
+   border width, line-height) but chromatically neutral, so it does not import the alarm
+   register this ticket's copy is written specifically to avoid. */
+.pp-gen-empty-explainer {
+  margin: 8px 0 4px;
+  padding: 8px 10px;
+  border-left: 3px solid var(--sc-border);
+  border-radius: 4px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--sc-text-secondary);
+}
+
 /* FR-122 sub-points render as a nested list inside their parent point, so subordination
    is visible as structure rather than implied by an indent character inside the text. */
 .pp-gen-point { font-weight: 500; }

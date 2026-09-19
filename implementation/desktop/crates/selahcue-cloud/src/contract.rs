@@ -135,6 +135,9 @@ impl NoteDraftDto {
                 .map(|s| NoteSection::flat(s.heading.clone(), s.items.clone()))
                 .collect(),
             scriptures: self.scriptures.clone(),
+            // The hosted v1 contract has no equivalent of 86akc0tua's requested-but-empty
+            // signal yet; this stays empty rather than guessing one from `Dto` shape.
+            caveats: Vec::new(),
         }
     }
 }

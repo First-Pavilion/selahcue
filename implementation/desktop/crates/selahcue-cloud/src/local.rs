@@ -92,6 +92,12 @@ impl NoteProvider for LocalNoteProvider {
             summary,
             sections,
             scriptures: Vec::new(),
+            // Deliberately always empty (86akc0tua). This scaffold cannot tell "the sermon
+            // had none" from "nothing came back" any more than the cloud path can — it
+            // simply doesn't try, and it already says its own honest thing via
+            // `DEGRADED_FALLBACK_NOTICE`. A requested-but-empty caveat here would repeat
+            // that fact in a second, contradictory-sounding voice underneath it.
+            caveats: Vec::new(),
         })
     }
 }

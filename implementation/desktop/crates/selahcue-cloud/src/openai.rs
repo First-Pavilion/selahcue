@@ -46,8 +46,8 @@
 use crate::transport::HttpTransport;
 use crate::CloudNoteProvider;
 use selahcue_core::providers::{
-    IncludeInNotes, NoteDraft, NoteError, NoteOptions, NotePoint, NoteProvider, NoteRequest,
-    NoteSection, NotesTemplate, Quota,
+    DraftCaveat, IncludeInNotes, NoteDraft, NoteError, NoteOptions, NotePoint, NoteProvider,
+    NoteRequest, NoteSection, NotesTemplate, Quota,
 };
 
 // ---------------------------------------------------------------------------
@@ -605,6 +605,12 @@ pub fn parse_draft(body: &str, inc: &IncludeInNotes) -> Result<(NoteDraft, Clamp
         serde_json::from_str(&text).map_err(|e| NoteError::Malformed(e.to_string()))?;
 
     let mut log = ClampLog::default();
+    // 86akc0tua: sections the operator requested that came back with nothing. Populated
+    // ONLY here, never in `local.rs`'s offline scaffold — that is the entire mechanism by
+    // which a degraded outcome carries zero caveats without a special case (see
+    // `GenerationOutcome::degraded`, which is true exactly when the offline scaffold, not
+    // this function, served the draft).
+    let mut caveats: Vec<DraftCaveat> = Vec::new();
 
     let (title, dropped) = clamp_chars(
         d.get("title").and_then(|v| v.as_str()).unwrap_or(""),
@@ -617,8 +623,9 @@ pub fn parse_draft(body: &str, inc: &IncludeInNotes) -> Result<(NoteDraft, Clamp
         title
     };
 
+    let summary_field = d.get("summary");
     let summary = if inc.short_summary {
-        d.get("summary")
+        summary_field
             .and_then(|v| v.as_str())
             .map(|s| {
                 let (t, dropped) = clamp_chars(s, MAX_SUMMARY_CHARS);
@@ -631,11 +638,23 @@ pub fn parse_draft(body: &str, inc: &IncludeInNotes) -> Result<(NoteDraft, Clamp
         // than rendered.
         None
     };
+    // Requested, present as the schema's declared type (a string — possibly blank), and
+    // still nothing usable: a legitimate empty answer. A MISSING or wrong-typed field is
+    // a malformed/truncated response, not an answer, and must not be read as one (86akc0tua
+    // acceptance criterion: a truncated response cannot be reported as "legitimately
+    // empty").
+    if inc.short_summary && summary.is_none() && is_json_string(summary_field) {
+        caveats.push(DraftCaveat::SectionRequestedEmpty {
+            heading: "Summary".to_string(),
+        });
+    }
 
     // --- scriptures: main first, then supporting, capped as one list ---
     let mut scriptures: Vec<String> = Vec::new();
     if inc.scripture_extraction {
-        if let Some(main) = d.get("main_scripture").and_then(|v| v.as_str()) {
+        let main_field = d.get("main_scripture");
+        let supporting_field = d.get("supporting_scriptures");
+        if let Some(main) = main_field.and_then(|v| v.as_str()) {
             let (t, dropped) = clamp_chars(main, MAX_ITEM_CHARS);
             log.record(Bound::ItemChars, dropped);
             if !t.trim().is_empty() {
@@ -643,19 +662,45 @@ pub fn parse_draft(body: &str, inc: &IncludeInNotes) -> Result<(NoteDraft, Clamp
             }
         }
         let supporting = take_strings(
-            d.get("supporting_scriptures"),
+            supporting_field,
             MAX_SCRIPTURES.saturating_sub(scriptures.len()),
             Bound::Scriptures,
             &mut log,
         );
         scriptures.extend(supporting);
+
+        // Both halves of the pair must be present in their declared shape — a string and
+        // an array respectively — before "nothing extracted" is trusted as an answer
+        // rather than a symptom of a cut-off response.
+        if scriptures.is_empty() && is_json_string(main_field) && is_json_array(supporting_field) {
+            caveats.push(DraftCaveat::SectionRequestedEmpty {
+                heading: "Scripture references".to_string(),
+            });
+        }
     }
 
     // --- the one hierarchical section (FR-122 points/sub-points) ---
     let mut sections: Vec<NoteSection> = Vec::new();
-    let points = parse_points(d.get("points"), &mut log);
+    let points_field = d.get("points");
+    let points = parse_points(points_field, &mut log);
     if !points.is_empty() {
         sections.push(NoteSection::outline(OUTLINE_HEADING, points));
+    } else if is_json_array(points_field) {
+        // `points` is unconditional in the schema (like `title`) — always "requested" —
+        // and sits OUTSIDE the `FLAT_SECTIONS` loop below, so it needs its own check: the
+        // section carrying FR-122's points and sub-points is the most visible thing on
+        // the screen, and a fix that only covered the loop would miss it.
+        //
+        // A `NoteSection` is still pushed (flat, empty — the outline/flat distinction is
+        // moot with nothing in either list) so the heading keeps its natural position in
+        // the console (Uma's design: "empty sections keep their natural position ...
+        // do not collect them at the bottom"). `caveats` is what tells the renderer THIS
+        // particular empty section is a confirmed "nothing came back" rather than one of
+        // `local.rs`'s deliberate offline placeholders.
+        sections.push(NoteSection::flat(OUTLINE_HEADING, Vec::new()));
+        caveats.push(DraftCaveat::SectionRequestedEmpty {
+            heading: OUTLINE_HEADING.to_string(),
+        });
     }
 
     // --- flat sections, filtered by the SAME table the schema was built from ---
@@ -663,17 +708,22 @@ pub fn parse_draft(body: &str, inc: &IncludeInNotes) -> Result<(NoteDraft, Clamp
         if !spec.enabled(inc) {
             // Second layer. The schema never asked for this field, but a response is a
             // third party's output and "we did not ask" is not a guarantee. A section
-            // the operator switched off does not reach the draft, whatever arrives.
+            // the operator switched off does not reach the draft, whatever arrives, and
+            // carries no caveat either — silence, not a message, is the correct output
+            // for something never requested.
             continue;
         }
-        let items = take_strings(
-            d.get(spec.field),
-            MAX_SECTION_ITEMS,
-            Bound::SectionItems,
-            &mut log,
-        );
+        let field_v = d.get(spec.field);
+        let items = take_strings(field_v, MAX_SECTION_ITEMS, Bound::SectionItems, &mut log);
         if !items.is_empty() {
             sections.push(NoteSection::flat(spec.heading, items));
+        } else if is_json_array(field_v) {
+            // Pushed empty (not omitted) so the heading holds its position in the
+            // console's natural section order — see the outline case above for why.
+            sections.push(NoteSection::flat(spec.heading, Vec::new()));
+            caveats.push(DraftCaveat::SectionRequestedEmpty {
+                heading: spec.heading.to_string(),
+            });
         }
     }
 
@@ -683,9 +733,25 @@ pub fn parse_draft(body: &str, inc: &IncludeInNotes) -> Result<(NoteDraft, Clamp
             summary,
             sections,
             scriptures,
+            caveats,
         },
         log,
     ))
+}
+
+/// Whether `v` is present and is a JSON array — the strict-schema-conformant shape for
+/// every section field (`draft_schema` declares each one `{"type": "array", ...}`).
+/// `false` covers both "missing" and "wrong type", which this module treats identically:
+/// the schema promises the field is always an array, so anything else is a malformed or
+/// truncated response, never a legitimate empty answer (86akc0tua).
+fn is_json_array(v: Option<&serde_json::Value>) -> bool {
+    matches!(v, Some(serde_json::Value::Array(_)))
+}
+
+/// The `summary`/`main_scripture` analogue of [`is_json_array`]: present and a JSON
+/// string (even `""`), as `draft_schema` declares those two fields.
+fn is_json_string(v: Option<&serde_json::Value>) -> bool {
+    matches!(v, Some(serde_json::Value::String(_)))
 }
 
 fn parse_points(v: Option<&serde_json::Value>, log: &mut ClampLog) -> Vec<NotePoint> {
