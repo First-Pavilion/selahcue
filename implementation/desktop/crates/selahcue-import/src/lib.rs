@@ -60,6 +60,7 @@ mod ooxml;
 mod pkgpath;
 pub mod pptx;
 pub mod report;
+pub mod safe_extract;
 pub mod sink;
 pub mod source;
 pub mod text;
@@ -72,6 +73,9 @@ pub use model::{
 };
 pub use report::{
     ImportReport, LimitKind, Notice, Severity, SkipKind, SkippedItem, TruncatedField, Truncation,
+};
+pub use safe_extract::{
+    safe_extract_zip, ExtractedFile, RefusalReason, RefusedEntry, SafeExtractResult,
 };
 pub use sink::{ImageProbe, MediaSink, RecordingSink, RefusingSink};
 pub use source::{ByteSource, MemorySource};

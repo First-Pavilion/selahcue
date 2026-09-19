@@ -561,7 +561,11 @@ STUB = r"""
     if (cmd === "scripture_search")
       return Promise.resolve([{reference:"Romans 8:28", text:"And we know that all things work together for good"}]);
     if (cmd === "preview_theme") return Promise.resolve({rgba: btoa("\x00\x00\x00\xff"), w:1, h:1});
-    if (cmd === "pick_image") return Promise.resolve("/tmp/picked.png");
+    // FR-138 / 86ak0qmzv: pick_image now returns a tagged outcome, not a bare path. Tests can
+    // override the next outcome via window.__pickImageNextOutcome (e.g. a validation refusal)
+    // before triggering a pick, then clear it back to the default.
+    if (cmd === "pick_image")
+      return Promise.resolve(window.__pickImageNextOutcome || {outcome: "picked", path: "/tmp/picked.png"});
     if (cmd === "remote_snapshot")
       return Promise.resolve({devices: window.__remote.devices.slice(), pending: window.__remote.pending.slice()});
     if (cmd === "remote_approve") {
@@ -1327,6 +1331,28 @@ DRIVER = r"""
       var ti = applied();
       ok(el("td-img-row").hidden, "#1 Add Image uses the native picker (no manual path row)");
       ok(ti.elements.some(function(e){return e.kind==="image" && e.source==="/tmp/picked.png";}), "#1 native picker adds an image with the chosen path");
+
+      // FR-138 / 86ak0qmzv: a host-side validation refusal is surfaced to the operator, not
+      // silently swallowed as "picker unavailable" or silently treated as a cancel. Count
+      // elements before/after so a false-accept (the rejected file added anyway) is caught too.
+      var elsBeforeRejection = applied().elements.length;
+      window.__pickImageNextOutcome = {outcome: "rejected", reason: "that file is too large to import"};
+      document.querySelector('.td-addbar button[data-add="image"]').click();
+      await sleep(30);
+      ok(el("td-status").textContent === "that file is too large to import",
+        "a pick_image refusal shows the host's own reason, verbatim, to the operator");
+      ok(applied().elements.length === elsBeforeRejection,
+        "a rejected pick adds NO element — the refusal must not be treated as a successful pick");
+      delete window.__pickImageNextOutcome;
+
+      // A cancelled dialog adds no element and must not be confused with the rejection path
+      // above — must not regress into treating a cancel as a refusal (or vice versa) now that
+      // the outcome is tagged instead of a bare nullable path.
+      window.__pickImageNextOutcome = {outcome: "cancelled"};
+      document.querySelector('.td-addbar button[data-add="image"]').click();
+      await sleep(30);
+      ok(applied().elements.length === elsBeforeRejection, "a cancelled pick adds no element");
+      delete window.__pickImageNextOutcome;
 
       // 86ajq6j64: the TEXT add button is ENABLED and adds a text element; the inspector edits it.
       var textBtn = document.querySelector('.td-addbar button[data-add="text"]');

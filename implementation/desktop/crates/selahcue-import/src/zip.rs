@@ -80,10 +80,12 @@ const METHOD_STORE: u16 = 0;
 /// Deflate.
 const METHOD_DEFLATE: u16 = 8;
 
-/// What the central directory says about one entry. Deliberately **not** recorded: entry type,
-/// mode bits, external attributes and link targets. Nothing in this reader can distinguish or act
-/// on a symlink entry, which is the point — a symlink entry is just an entry whose contents
-/// happen to be a string.
+/// What the central directory says about one entry. This reader still never acts on entry type,
+/// mode bits or link targets for the in-memory OOXML path — [`find`](Archive::find)/
+/// [`read_entry`](Archive::read_entry) treat a symlink entry as just an entry whose contents
+/// happen to be a string, which is safe because that path never writes a byte to disk. But
+/// `safe_extract` (which does write to disk) needs to tell a symlink entry apart from a regular
+/// one, so the two fields below are recorded — read, never interpreted, by anything in this file.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct EntryMeta {
     pub name: String,
@@ -105,13 +107,40 @@ pub(crate) struct EntryMeta {
     /// only the capped prefix is ever read, so [`name`](Self::name) may be a truncated quote
     /// suitable for a report and nothing else.
     pub bad_name: bool,
+    /// The host-OS byte of the central-directory "version made by" field. Only a value of
+    /// [`UNIX_HOST_OS`] makes [`external_attrs`](Self::external_attrs)'s upper 16 bits a Unix file
+    /// mode at all — on every other host OS that field means something else (or nothing), so
+    /// [`is_symlink`](Self::is_symlink) must and does check this first.
+    pub host_os: u8,
+    /// Raw external file attributes, exactly as the central directory declares them. Interpreted
+    /// nowhere except [`is_symlink`](Self::is_symlink).
+    pub external_attrs: u32,
 }
+
+/// Host-OS byte (central-directory "version made by", high byte) for Unix-originated archives —
+/// the only origin on which `external_attrs`'s upper 16 bits are a Unix file mode.
+const UNIX_HOST_OS: u8 = 3;
+/// `st_mode`'s format mask (the top 4 bits of the 16-bit mode).
+const UNIX_MODE_FMT_MASK: u32 = 0o170_000;
+/// `S_IFLNK` — the format bits that mark a Unix symlink.
+const UNIX_MODE_SYMLINK: u32 = 0o120_000;
 
 impl EntryMeta {
     /// Whether this entry may be looked up and read at all. A shadowed duplicate and an entry
     /// whose name we refused are both unusable, and neither may ever resolve a part name.
     pub fn usable(&self) -> bool {
         !self.duplicate && !self.bad_name
+    }
+
+    /// Whether the central directory marks this entry as a Unix symlink.
+    ///
+    /// Judged **only** from a Unix-origin archive's own mode bits, never guessed at or inferred
+    /// from a name or a missing field: on a non-Unix host OS `external_attrs` is either zero or
+    /// means something entirely unrelated (an MS-DOS attribute byte, for instance), and reading a
+    /// mode out of it there would be reading a mode nobody wrote.
+    pub fn is_symlink(&self) -> bool {
+        self.host_os == UNIX_HOST_OS
+            && (self.external_attrs >> 16) & UNIX_MODE_FMT_MASK == UNIX_MODE_SYMLINK
     }
 }
 
@@ -586,6 +615,10 @@ fn read_central_directory(
                 limit: MAX_ZIP_ENTRIES,
             });
         }
+        // Byte 5 of the fixed header is "version made by"'s high byte — the host OS. Byte 4, the
+        // spec-version low byte, is never used by this reader.
+        let host_os = *header.get(5).ok_or(ImportError::NotAnArchive)?;
+        let external_attrs = le_u32(&header, 38).ok_or(ImportError::NotAnArchive)?;
         let flags = le_u16(&header, 8).ok_or(ImportError::NotAnArchive)?;
         let method = le_u16(&header, 10).ok_or(ImportError::NotAnArchive)?;
         let comp = le_u32(&header, 20).ok_or(ImportError::NotAnArchive)?;
@@ -635,6 +668,8 @@ fn read_central_directory(
             local_offset: u64::from(local_offset),
             duplicate,
             bad_name,
+            host_os,
+            external_attrs,
         });
 
         at = name_end
@@ -678,4 +713,71 @@ fn le_u32(buf: &[u8], at: usize) -> Option<u32> {
         *s.get(2)?,
         *s.get(3)?,
     ]))
+}
+
+/// White-box tests, inline by exception — the same documented exception `pkgpath.rs` and
+/// `selahcue_core::scripture` use: a private, total, pure predicate whose exact behaviour is a
+/// merge gate, where routing it through a whole archive just to reach it would obscure what is
+/// actually being asserted. `EntryMeta` is `pub(crate)`, so an integration test in `tests/` cannot
+/// construct one at all — `is_symlink`'s only other coverage is indirect, through
+/// `safe_extract`'s own integration tests.
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entry(host_os: u8, external_attrs: u32) -> EntryMeta {
+        EntryMeta {
+            name: "x".into(),
+            folded: "x".into(),
+            method: METHOD_STORE,
+            encrypted: false,
+            declared_size: 0,
+            compressed_size: 0,
+            local_offset: 0,
+            duplicate: false,
+            bad_name: false,
+            host_os,
+            external_attrs,
+        }
+    }
+
+    #[test]
+    fn a_unix_entry_with_the_symlink_mode_bits_is_a_symlink() {
+        // 0o120777: S_IFLNK | 0777, exactly what `ln -s` produces, in the upper 16 bits.
+        assert!(entry(UNIX_HOST_OS, 0o120_777 << 16).is_symlink());
+    }
+
+    #[test]
+    fn a_unix_entry_with_a_regular_file_mode_is_not_a_symlink() {
+        // 0o100644: S_IFREG | 0644 — an ordinary file, same host OS.
+        assert!(!entry(UNIX_HOST_OS, 0o100_644 << 16).is_symlink());
+    }
+
+    #[test]
+    fn a_unix_entry_with_no_mode_recorded_is_not_a_symlink() {
+        // The common case for an archive nobody bothered to set attributes on: zero is not a
+        // valid S_IFLNK value under the format mask, so this must read as "not a symlink", never
+        // panic or default the other way.
+        assert!(!entry(UNIX_HOST_OS, 0).is_symlink());
+    }
+
+    #[test]
+    fn the_symlink_mode_bits_on_a_non_unix_host_are_never_interpreted_as_a_mode() {
+        // The load-bearing case: host_os=0 (MS-DOS/FAT) with the SAME bit pattern a Unix symlink
+        // would carry. On DOS this field is a DOS attribute byte, not a mode, and reading it as
+        // one would be reading a mode nobody wrote — exactly the bug this predicate exists to
+        // avoid. Removing the `host_os == UNIX_HOST_OS` guard is the mutation this pins.
+        assert!(!entry(0, 0o120_777 << 16).is_symlink());
+    }
+
+    #[test]
+    fn only_the_format_bits_are_consulted_not_the_permission_bits() {
+        // Same format (S_IFLNK) with different, unusual permission bits: the verdict must not
+        // move, because only the top 4 bits identify the entry TYPE.
+        assert!(entry(UNIX_HOST_OS, 0o120_000 << 16).is_symlink());
+        assert!(entry(UNIX_HOST_OS, 0o120_444 << 16).is_symlink());
+        // And a directory (S_IFDIR = 0o040000) sharing no bits with S_IFLNK's format nibble must
+        // read as not-a-symlink regardless of its permission bits.
+        assert!(!entry(UNIX_HOST_OS, 0o040_755 << 16).is_symlink());
+    }
 }
