@@ -274,6 +274,71 @@ response; this is NOT persisted through the LAN wire protocol (documented non-go
   matches the nine files declared in the ClickUp ticket and the start comment.
 - Decision: complete → proceed to commit, Draft PR, four-reviewer gate.
 
+### Iteration 5
+
+- Target criterion: C-012 (four-reviewer gate)
+- Hypothesis: N/A — this is the review round itself.
+- Change or investigation: dispatched Cody, Vera, Sana, Quinn against PR #46 in parallel,
+  each in an isolated worktree.
+- Verifier executed: each reviewer's own independent build/test run against the PR head.
+- Result: Vera (performance) — PASS, no findings. Sana (security) — PASS, non-blocking
+  (three informational/low findings, none requiring a code change beyond what's already
+  planned). Quinn (QA) — GATE_REVIEW, all in-scope acceptance criteria PASS; filed one
+  out-of-scope gap (86akmfn54: caveats don't survive the persisted-draft-reload path) as a
+  linked follow-up, correctly not blocking. Cody (code) — **one BLOCKER**: the same
+  persistence gap Quinn/Vera/Sana treated as a disclosed non-goal, but sharpened: after a
+  reload or the next edit-save, a caveated-empty section reappears as a bare heading over
+  a silently empty list with NO explanation at all — objectively worse than this ticket's
+  own pre-fix behaviour (fully silent), not merely "the improvement doesn't persist."
+- New evidence: traced the exact mechanism Cody named — `sections_to_json`/
+  `sermon_note_draft_json`'s round trip has no caveat-carrying field, and `draft_json`'s
+  caveat computation only ever runs for the live-generation response.
+- Decision: iterate → remediate Cody's blocker (the only one), re-verify, re-run `make
+  ci`, reply on the PR, do not claim `VERIFIED_COMPLETE` until this is closed.
+
+### Iteration 6
+
+- Target criterion: C-012 (remediate Cody's blocking finding)
+- Hypothesis: filtering caveated-empty sections out of what gets PERSISTED (not changing
+  the wire protocol) restores the pre-86akc0tua persisted shape for exactly those
+  sections, closing the "worse than silence" gap without the larger, cross-language wire
+  contract change threading full caveat data through would require.
+- Change or investigation: added `sections_to_persist(&NoteDraft) -> Vec<NoteSection>` in
+  `main.rs`, called at the one persistence call site instead of passing
+  `outcome.draft.sections` straight to `sections_to_json`. Filters by heading against
+  `SectionRequestedEmpty` caveats only — `local.rs`'s uncaveated, deliberately-empty
+  placeholder sections are untouched. Three new unit tests (`sections_to_persist_tests`):
+  a caveated-empty section is dropped; an uncaveated empty section still persists; a
+  populated section sharing a caveat's heading (a combination `parse_draft` never
+  actually produces) is still filtered, with that heading-keyed-not-emptiness-keyed
+  behaviour documented explicitly rather than silently relied upon.
+- Verifier executed: `cargo test --features dev-keys,openai-notes` (targeted, then full),
+  `cargo clippy --features dev-keys,openai-notes --all-targets -- -D warnings`, `cargo fmt
+  --check` (both the workspace and the operator crate), full `make ci`.
+- Result: 138 operator tests pass (135 + 3 new). Clippy clean after one fix (an
+  exhaustive-single-variant `filter_map` that should be a `map` today — deliberately
+  documented as becoming a real `filter_map` again once 86akby820 adds `DraftCaveat`'s
+  second variant). `cargo fmt --check` clean. Full `make ci` re-run pending at time of
+  writing this entry; see the next entry for its result.
+- New evidence: replied on PR #46 describing the fix and its scope, including what was
+  deliberately NOT done (making the headless mock's `load_sermon_note_draft` simulate the
+  real backend's field loss, which is a separate, smaller test-fidelity improvement, not
+  part of this remediation).
+- Decision: iterate → confirm `make ci` green, then push and request Cody re-check.
+
+### Iteration 7
+
+- Target criterion: C-011, C-012 (re-verify `make ci`; close Cody's blocker)
+- Verifier executed: `make ci` (system load had dropped to 4.97/9.96/15.51 with zero
+  concurrent make/cargo/flutter processes — checked before running).
+- Result: `MAKE_CI_EXIT:0`, `ALL GREEN`, `1311 checks, 0 FAIL` (headless — unchanged, this
+  remediation touched no JS/CSS), zero `^FAIL` lines anywhere in the log,
+  `git status --porcelain` shows only the two intended files changed (no repeat of the
+  earlier `pubspec.lock` drift). Replied on PR #46 describing the fix, its scope, and the
+  one thing deliberately left out (headless-mock fidelity for the persisted-reload path).
+- Decision: complete → C-011 and C-012 both PASS pending Cody's re-check acknowledgement.
+  Proceeding to push and continue 86akby820 in parallel.
+
 ## Risks and rollback
 
 - Risks: `settings.js` render path is shared with the FR-135 degraded notice and

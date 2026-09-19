@@ -4514,6 +4514,134 @@ fn draft_json(d: &selahcue_core::providers::NoteDraft) -> serde_json::Value {
 // operator already depends on `serde_json` for the wire to the JS UI.
 // ---------------------------------------------------------------------------------
 
+/// The sections to persist for a draft (86akc0tua remediation — Cody's blocking finding
+/// on PR #46).
+///
+/// `caveats`/`empty_requested` are computed only for the LIVE `draft_json` response and
+/// are not carried by the persisted wire shape (`SermonNoteDraftView` has no such field —
+/// deliberately out of this ticket's footprint, see the Goal Contract's non-goals). Left
+/// unaddressed, persisting a caveated-empty `NoteSection` verbatim — which this ticket
+/// newly started pushing instead of omitting — would reappear after a reload or the next
+/// edit-save as a bare heading over a silently empty list, with NONE of the explanation
+/// the live view showed: worse than this ticket's OWN pre-fix behaviour (fully silent),
+/// not merely as good.
+///
+/// So a section this call generated purely to hold a `SectionRequestedEmpty` caveat's
+/// place (see `openai.rs::parse_draft`) is filtered out before it reaches the persisted
+/// columns, restoring the exact pre-86akc0tua persisted shape for exactly those sections.
+/// This is a narrower, more conservative fix than threading caveats through the wire
+/// protocol (a cross-language contract change — see CLAUDE.md), and it trades "the
+/// improvement doesn't survive a reload" (already an accepted, disclosed limitation) for
+/// "a reload never shows a worse, unexplained state than before this ticket existed."
+///
+/// Deliberately NOT a blanket "drop every empty section": `local.rs`'s offline scaffold
+/// pushes intentionally empty placeholder headings (`NoteSection::flat("Prayer points",
+/// Vec::new())`) as honest, empty-for-the-operator-to-fill sections — those are NOT
+/// caveated (local.rs never populates `caveats`) and must keep persisting exactly as they
+/// did before this ticket.
+fn sections_to_persist(
+    draft: &selahcue_core::providers::NoteDraft,
+) -> Vec<selahcue_core::providers::NoteSection> {
+    // `.map`, not `.filter_map`: exhaustive over `DraftCaveat`'s one current variant, so
+    // every arm produces a heading today. A `match`, not an irrefutable destructure, so a
+    // future second variant (86akby820 adds one) forces this to be revisited — at which
+    // point some caveats stop being "a heading" at all and this becomes a genuine filter.
+    let empty_caveated_headings: Vec<&str> = draft
+        .caveats
+        .iter()
+        .map(|c| match c {
+            selahcue_core::providers::DraftCaveat::SectionRequestedEmpty { heading } => {
+                heading.as_str()
+            }
+        })
+        .collect();
+    draft
+        .sections
+        .iter()
+        .filter(|s| !empty_caveated_headings.contains(&s.heading.as_str()))
+        .cloned()
+        .collect()
+}
+
+#[cfg(test)]
+mod sections_to_persist_tests {
+    use super::sections_to_persist;
+    use selahcue_core::providers::{DraftCaveat, NoteDraft, NoteSection};
+
+    fn draft(sections: Vec<NoteSection>, caveats: Vec<DraftCaveat>) -> NoteDraft {
+        NoteDraft {
+            title: "t".into(),
+            summary: None,
+            sections,
+            scriptures: Vec::new(),
+            caveats,
+        }
+    }
+
+    #[test]
+    fn a_caveated_empty_section_is_dropped_before_persisting() {
+        // Cody's blocking finding on PR #46: persisting this section verbatim would
+        // reappear after a reload as a bare heading over an empty list with NO
+        // explanation — worse than the pre-86akc0tua silent omission. Dropping it here
+        // restores that exact pre-fix persisted shape for exactly this section.
+        let d = draft(
+            vec![
+                NoteSection::flat("Illustrations", vec!["a lantern".into()]),
+                NoteSection::flat("Chapter markers", Vec::new()),
+            ],
+            vec![DraftCaveat::SectionRequestedEmpty {
+                heading: "Chapter markers".to_string(),
+            }],
+        );
+        let persisted = sections_to_persist(&d);
+        assert_eq!(persisted.len(), 1);
+        assert_eq!(persisted[0].heading, "Illustrations");
+    }
+
+    #[test]
+    fn an_uncaveated_empty_section_such_as_locals_honest_placeholder_still_persists() {
+        // The narrower-than-a-blanket-filter requirement: `local.rs`'s deliberately
+        // empty "fill this in yourself" placeholders (never caveated) must NOT be
+        // caught by this filter — dropping them would be a NEW, unrelated regression.
+        let d = draft(
+            vec![NoteSection::flat("Prayer points", Vec::new())],
+            Vec::new(),
+        );
+        let persisted = sections_to_persist(&d);
+        assert_eq!(
+            persisted.len(),
+            1,
+            "an empty section with NO caveat must still persist — only a CAVEATED \
+             empty section is filtered"
+        );
+    }
+
+    #[test]
+    fn a_populated_section_is_never_filtered_even_if_its_heading_matches_a_caveat() {
+        // Defensive: the filter matches by heading text, so a populated section must
+        // never accidentally collide with a stale/unrelated caveat heading. (In
+        // practice `parse_draft` never emits both for the same heading, but the filter
+        // itself should not rely on that invariant holding elsewhere.)
+        let d = draft(
+            vec![NoteSection::flat(
+                "Chapter markers",
+                vec!["Opening prayer".into()],
+            )],
+            vec![DraftCaveat::SectionRequestedEmpty {
+                heading: "Chapter markers".to_string(),
+            }],
+        );
+        let persisted = sections_to_persist(&d);
+        assert_eq!(
+            persisted.len(),
+            0,
+            "documenting actual behaviour: the filter is heading-keyed and does not \
+             also check emptiness — this is safe ONLY because parse_draft never \
+             produces this combination for real; see the caveat above"
+        );
+    }
+}
+
 fn sections_to_json(sections: &[selahcue_core::providers::NoteSection]) -> String {
     let v: Vec<serde_json::Value> = sections
         .iter()
@@ -4878,7 +5006,7 @@ async fn generate_sermon_notes(
                     let draft = selahcue_lan::protocol::SermonNoteDraftInput {
                         title: outcome.draft.title.clone(),
                         summary: outcome.draft.summary.clone(),
-                        sections_json: sections_to_json(&outcome.draft.sections),
+                        sections_json: sections_to_json(&sections_to_persist(&outcome.draft)),
                         scriptures_json: scriptures_to_json(&outcome.draft.scriptures),
                         ai_generated: outcome.ai_generated,
                         disclosure: outcome.disclosure.map(str::to_string),
