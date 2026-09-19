@@ -152,8 +152,8 @@ Verified against `origin/main` @ 269591e (2026-09-19):
 | C-004 | yes | The from-history preview's `.pp-gen-preview-scope` copy states the complete transcript + its size; the live-tail copy is unchanged | `scripts/operator_headless.py` "PP F-5 L-2" (unchanged) + new "TR F-5 L-2" check | both PASS; mutation-verified RED on a 1-word change to the new copy | `/tmp/headless_86akcffy0.log`, `/tmp/headless_mutant1.log` | PASS |
 | C-005 | yes | Consent off blocks the network call for the from-history path exactly as it does live-tail | `scripts/operator_headless.py` "TR generate consent" checks (live UI, shared `ProvidersConfig`) + `cargo test -p selahcue-operator` (`consent_off_refuses_the_from_history_text_before_any_provider_is_touched`) + existing `selahcue-cloud` crate test unaffected | all PASS; mutation-verified RED when the frontend is made to ignore a refused result | `/tmp/headless_86akcffy0.log`, `/tmp/headless_mutant2.log`, cargo test output | PASS |
 | C-006 | yes | The source transcript is byte-identical before and after generation | `cargo test -p selahcue-operator` (`source_transcript_is_unchanged_by_generation`) + command-level before/after equality check in `transcript_generate_notes` itself | PASS | cargo test output (141 passed) | PASS |
-| C-007 | yes | `make ci` passes end to end, including the headless operator webview check | `make ci` | exit 0, "ALL GREEN" | `/tmp/make_ci_86akcffy0.log` ("== local Rust/Flutter gate: ALL GREEN ==", incl. "1330 checks, 0 FAIL" and "Flutter: All tests passed!"); GitHub Actions PR #45 run 35472932995 — every job pass (rust/operator shell/release-features on macOS+Ubuntu+Windows, launch-smoke, dependency audit, supply chain) | PASS |
-| C-008 | yes | Four-reviewer gate (Cody/Vera/Sana/Quinn) completed, blocking findings remediated | review artifact + PR comments | no open blocking findings | https://claude.ai/artifact/CCqU44fqZeG21Mw6WfweQq (posted on PR #45); focused re-checks requested from Cody/Sana/Vera on commit f992075 | PENDING |
+| C-007 | yes | `make ci` passes end to end, including the headless operator webview check | `make ci` | exit 0, "ALL GREEN" | `/tmp/make_ci_86akcffy0_v3.log` (final commit `1a909fa`: "== local Rust/Flutter gate: ALL GREEN ==", incl. "1351 checks, 0 FAIL"); GitHub Actions PR #45 run 35476056482 — every job pass (rust/operator shell/release-features on macOS+Ubuntu+Windows, launch-smoke, dependency audit, supply chain) | PASS |
+| C-008 | yes | Four-reviewer gate (Cody/Vera/Sana/Quinn) completed, blocking findings remediated | review artifact + PR comments + re-check responses | no open blocking findings | https://claude.ai/artifact/CCqU44fqZeG21Mw6WfweQq; Sana re-check "Pass. All four findings closed" (+ a Nit fixed in `1a909fa`); Cody re-check "both of my findings are fixed" (+ a Low documented, not fixed, in `1a909fa`); Vera re-check "both closed — no performance objection to merging" (+ PERF-2 regression test added in `1a909fa`); Quinn's original pass unaffected (no regression in remediated areas) | PASS |
 
 ## Verification plan
 
@@ -289,8 +289,8 @@ Verified against `origin/main` @ 269591e (2026-09-19):
 ## Final evaluation
 
 - Validator command: `python3 ~/.claude/skills/goal/scripts/validate_goal_contract.py docs/delivery/goals/TASK-86akcffy0-generate-from-stored-transcript.md --completion`
-- Validator result: (recorded before VERIFIED_COMPLETE claim)
-- Independent verification result: (recorded after four-reviewer gate)
-- Terminal state: (recorded at handoff)
-- Remaining failed or blocked criteria: (recorded at handoff)
-- ClickUp final evidence comment: (link, recorded at handoff)
+- Validator result: `OK (completion): ... satisfies the Goal Contract schema and all mandatory criteria PASS`
+- Independent verification result: all four reviewers (Cody, Vera, Sana, Quinn) reviewed; Cody and Sana's High findings and all Mediums (Cody, Sana, Vera) remediated and independently re-confirmed fixed by each of the three who found them; Quinn's original pass unaffected.
+- Terminal state: **VERIFIED_COMPLETE** (backend-engineer scope). PR #45 marked ready for review against `main`; not merged by this role, per the operating contract ("do not merge it yourself").
+- Remaining failed or blocked criteria: none.
+- ClickUp final evidence comment: recorded on task 86akcffy0; task moved to `code review` (PR opened) — final `qa`/`complete` transitions are owned by QA/delivery per the operating contract, not self-assigned here.
