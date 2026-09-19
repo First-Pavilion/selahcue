@@ -99,10 +99,7 @@ pub fn validate_picked_image(picked: &Path) -> Result<PathBuf, SafeImportError> 
 
 /// [`validate_picked_image`]'s actual logic, parametrised on the size cap so the cap's own
 /// enforcement is testable without a multi-megabyte fixture on disk.
-fn validate_picked_image_within(
-    picked: &Path,
-    max_bytes: u64,
-) -> Result<PathBuf, SafeImportError> {
+fn validate_picked_image_within(picked: &Path, max_bytes: u64) -> Result<PathBuf, SafeImportError> {
     let canonical = fs::canonicalize(picked).map_err(|e| match e.kind() {
         std::io::ErrorKind::NotFound => SafeImportError::NotFound,
         kind => SafeImportError::Io(kind),
@@ -204,7 +201,11 @@ mod tests {
     #[test]
     fn plain_text_masquerading_as_an_image_is_refused() {
         let dir = temp_dir("text");
-        let path = write(&dir, "not-an-image.png", b"just some text, not an image at all");
+        let path = write(
+            &dir,
+            "not-an-image.png",
+            b"just some text, not an image at all",
+        );
         assert_eq!(
             validate_picked_image(&path),
             Err(SafeImportError::UnsupportedType)
