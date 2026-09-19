@@ -1576,12 +1576,21 @@ async fn pick_image(app: tauri::AppHandle) -> PickImageOutcome {
     else {
         return PickImageOutcome::Cancelled;
     };
-    match safe_import::validate_picked_image(&picked) {
-        Ok(canonical) => PickImageOutcome::Picked {
+    // Offload validation (canonicalize + a bounded read) onto a blocking thread, mirroring the
+    // same offload contract `run_note_generation` already uses for its blocking `reqwest` call
+    // (main.rs, "Offload the BLOCKING ... call onto a blocking thread"): a slow/network/cloud-
+    // placeholder path here must not stall a Tokio worker other async Tauri commands depend on.
+    match tauri::async_runtime::spawn_blocking(move || safe_import::validate_picked_image(&picked))
+        .await
+    {
+        Ok(Ok(canonical)) => PickImageOutcome::Picked {
             path: canonical.to_string_lossy().into_owned(),
         },
-        Err(e) => PickImageOutcome::Rejected {
+        Ok(Err(e)) => PickImageOutcome::Rejected {
             reason: e.to_string(),
+        },
+        Err(join_err) => PickImageOutcome::Rejected {
+            reason: format!("internal error validating that file: {join_err}"),
         },
     }
 }
@@ -2580,7 +2589,13 @@ async fn deck_import_image(
     let Some(picked) = picked else {
         return with_deck(&state, |_| ()); // the user cancelled — no-op, current view back
     };
-    let path = safe_import::validate_picked_image(&picked).map_err(|e| e.to_string())?;
+    // Same offload as `pick_image`: validation does a bounded read of a user-chosen file and
+    // must not run on the shared Tokio worker pool.
+    let path =
+        tauri::async_runtime::spawn_blocking(move || safe_import::validate_picked_image(&picked))
+            .await
+            .map_err(|join_err| format!("internal error validating that file: {join_err}"))?
+            .map_err(|e| e.to_string())?;
     with_deck(&state, |w| {
         let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
         w.import_media(
