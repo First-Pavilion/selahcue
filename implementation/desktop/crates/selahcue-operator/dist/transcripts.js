@@ -350,10 +350,37 @@
   // exact shape of the leak this ticket fixes (a resize firing mid-async-measurement used to clear
   // rowsHost without disconnecting first). Every observe/unobserve/disconnect call on
   // `measureObserver` MUST go through these three wrappers so the count never drifts from reality.
+  // Membership is tracked with a WeakSet, not a Set (security review, Sana): a `Set` of DOM nodes
+  // holds STRONG references, which would make this instrumentation the only thing in the file
+  // capable of keeping a detached row alive forever if some future row-removal path ever forgot to
+  // route through these wrappers — reintroducing, inside the leak-detector itself, the exact bug
+  // class this ticket exists to fix. A `WeakSet` never keeps a node alive on its own. Its trade-off
+  // is no `.size`/iteration/`.clear()`, so a plain counter still carries the actual count — kept
+  // accurate (QA review, Quinn) by only touching it when the WeakSet confirms real membership, not
+  // unconditionally on every observe/unobserve/disconnect call: `startMeasuring` only ever routes a
+  // node through `moObserve` while `inScrollFrame` (every other mount — initial open, a test-hook
+  // jump, invalidateHeightsForWidth's own rebuild — measures synchronously and never registers with
+  // `measureObserver` at all), yet `moUnobserve` is still called on those never-observed nodes too
+  // (renderWindow's stale-row eviction doesn't know which rows were ever observed); an unconditional
+  // decrement there would silently under-report a real leak elsewhere in the same session.
+  var measureObservedSet = new WeakSet();
   var measureObservedCount = 0;
-  function moObserve(node) { if (measureObserver) { measureObserver.observe(node); measureObservedCount++; } }
-  function moUnobserve(node) { if (measureObserver) { measureObserver.unobserve(node); measureObservedCount = Math.max(0, measureObservedCount - 1); } }
-  function moDisconnect() { if (measureObserver) { measureObserver.disconnect(); measureObservedCount = 0; } }
+  function moObserve(node) {
+    if (!measureObserver) return;
+    measureObserver.observe(node);
+    if (!measureObservedSet.has(node)) { measureObservedSet.add(node); measureObservedCount++; }
+  }
+  function moUnobserve(node) {
+    if (!measureObserver) return;
+    measureObserver.unobserve(node);
+    if (measureObservedSet.has(node)) { measureObservedSet.delete(node); measureObservedCount--; }
+  }
+  function moDisconnect() {
+    if (!measureObserver) return;
+    measureObserver.disconnect();
+    measureObservedSet = new WeakSet(); // WeakSet has no .clear() — replace it instead
+    measureObservedCount = 0;
+  }
   function segRow(s, idx) {
     var row = el("div", "tr-line");
     row.dataset.segId = String(s.id);
