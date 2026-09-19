@@ -39,6 +39,11 @@ pub struct Entry {
     /// many times its own size, and it is the shape the whole-archive WORK budget exists for —
     /// which cannot be tested at all without the ability to write one.
     pub alias_of: Option<String>,
+    /// The high byte of central directory's "version made by" field — the host OS. `0` (the
+    /// default) is MS-DOS/FAT, on which `external_attrs` is never a Unix mode. `3` is Unix.
+    pub version_made_by_host: u8,
+    /// Raw external file attributes. On a Unix-host entry, the upper 16 bits are `st_mode`.
+    pub external_attrs: u32,
 }
 
 impl Entry {
@@ -50,6 +55,8 @@ impl Entry {
             flags: 0,
             declared_size: None,
             alias_of: None,
+            version_made_by_host: 0,
+            external_attrs: 0,
         }
     }
 
@@ -61,7 +68,17 @@ impl Entry {
             flags: 0,
             declared_size: Some(data.len() as u32),
             alias_of: None,
+            version_made_by_host: 0,
+            external_attrs: 0,
         }
+    }
+
+    /// Mark this entry as a real Unix archiver would mark a symlink: host OS `3` (Unix), and
+    /// `mode`'s bits in the upper 16 of `external_attrs` — e.g. `0o120_777` for `S_IFLNK | 0777`.
+    pub fn unix_mode(mut self, mode: u32) -> Self {
+        self.version_made_by_host = 3;
+        self.external_attrs = mode << 16;
+        self
     }
 
     /// Claim a different uncompressed size than the truth — the lying-header case, which is the
@@ -91,6 +108,8 @@ impl Entry {
             flags: 0,
             declared_size: Some(declared),
             alias_of: None,
+            version_made_by_host: 0,
+            external_attrs: 0,
         }
     }
 
@@ -105,6 +124,8 @@ impl Entry {
             flags: 0,
             declared_size: Some(size),
             alias_of: Some(target.to_string()),
+            version_made_by_host: 0,
+            external_attrs: 0,
         }
     }
 }
@@ -198,7 +219,8 @@ pub fn zip_declaring(entries: &[Entry], declared_entries: Option<u16>) -> Vec<u8
             Some(_) => declared,
         };
         out.extend_from_slice(&0x0201_4b50u32.to_le_bytes()); // central directory signature
-        out.extend_from_slice(&20u16.to_le_bytes()); // version made by
+                                                              // version made by: low byte is a spec version (20 = 2.0), high byte is the host OS.
+        out.extend_from_slice(&[20u8, e.version_made_by_host]);
         out.extend_from_slice(&20u16.to_le_bytes()); // version needed
         out.extend_from_slice(&e.flags.to_le_bytes());
         out.extend_from_slice(&e.method.to_le_bytes());
@@ -212,10 +234,7 @@ pub fn zip_declaring(entries: &[Entry], declared_entries: Option<u16>) -> Vec<u8
         out.extend_from_slice(&0u16.to_le_bytes()); // comment
         out.extend_from_slice(&0u16.to_le_bytes()); // disk
         out.extend_from_slice(&0u16.to_le_bytes()); // internal attrs
-                                                    // External attributes carry the Unix mode on archives that record one. A SYMLINK entry
-                                                    // sets `0o120000 << 16` here. This reader never reads the field, which is the point: it
-                                                    // cannot act on a link because it cannot see one.
-        out.extend_from_slice(&0u32.to_le_bytes());
+        out.extend_from_slice(&e.external_attrs.to_le_bytes());
         out.extend_from_slice(&offset.to_le_bytes());
         out.extend_from_slice(e.name.as_bytes());
     }
@@ -232,11 +251,21 @@ pub fn zip_declaring(entries: &[Entry], declared_entries: Option<u16>) -> Vec<u8
     out
 }
 
-/// A symlink entry as a real archiver would write one: the Unix mode in the external attributes
-/// and the link target as the entry's content. Our writer does not emit external attributes, so
-/// this is expressed the only way it can matter here — as an entry whose *content* is a path.
+/// A symlink entry with no Unix mode bits set — content is a path, but nothing marks the entry as
+/// a link at the format level. Exercises the in-memory OOXML path's own guarantee: it never acts
+/// on an entry's type at all (see `zip.rs`'s module doc), so it must not care whether this
+/// entry's content merely *looks like* a path.
 pub fn symlink_entry(name: &str, target: &str) -> Entry {
     Entry::stored(name, target.as_bytes())
+}
+
+/// A symlink entry as a real Unix archiver (`zip -y`, `ditto`) would actually write one: content
+/// is the link target, and the central directory's own mode bits mark it as `S_IFLNK`. This is
+/// what [`EntryMeta::is_symlink`](selahcue_import) — and therefore `safe_extract` — detects;
+/// [`symlink_entry`] above deliberately does not set these bits, for the OOXML path's own,
+/// different property.
+pub fn unix_symlink(name: &str, target: &str) -> Entry {
+    Entry::stored(name, target.as_bytes()).unix_mode(0o120_777)
 }
 
 // --- a minimal .pptx package -----------------------------------------------------------

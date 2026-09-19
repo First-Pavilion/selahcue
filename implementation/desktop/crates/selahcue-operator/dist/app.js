@@ -2431,10 +2431,12 @@
       // paste-a-path field. (HTML5 file-drop is unreliable in WKWebView, so the card is click-only.)
       async function tdPickBgImage() {
         if (!tdTheme) { tdStatus("Load or start a theme first."); return; }
-        let path;
-        try { path = await invoke("pick_image"); }
+        let result;
+        try { result = await invoke("pick_image"); }
         catch (e) { tdStatus("No native picker — paste the image path in the field below."); document.getElementById("td-bg-img-path").focus(); return; }
-        if (!path) return; // cancelled
+        if (result.outcome === "cancelled") return;
+        if (result.outcome === "rejected") { tdStatus(result.reason); return; }
+        const path = result.path;
         document.getElementById("td-bg-img-path").value = path;
         tdCommitBgImage(path);
         tdAnnounce("Background image set");
@@ -2810,14 +2812,16 @@
       async function tdPickImage(replace) {
         if (!tdTheme) { tdStatus("Load or start a theme first."); return; }
         if (!replace && tdEls().length >= 64) { tdStatus("Maximum 64 elements per theme."); return; }
-        let path;
+        let result;
         try {
-          path = await invoke("pick_image");
+          result = await invoke("pick_image");
         } catch (e) {
           tdOpenImgRow(replace); // no native dialog → the manual path row
           return;
         }
-        if (!path) return; // the user cancelled
+        if (result.outcome === "cancelled") return;
+        if (result.outcome === "rejected") { tdStatus(result.reason); return; }
+        const path = result.path;
         if (path.indexOf("\0") !== -1 || tdNameBytes(path) > 1024) {
           tdStatus("That image path is not valid (too long or contains an invalid character).");
           return;
@@ -5986,6 +5990,24 @@
           console.error("[SelahCue] deck action failed", e);
           pmShowError(opName);
           return false;
+        } finally {
+          pmSetBusy(false);
+        }
+      }
+
+      // Import an image into the media library (FR-138 / 86ak0qmzv). NOT routed through `pAct`:
+      // a validation refusal is a final, specific reason (e.g. "that file is too large to
+      // import"), not a transient failure worth a generic "Couldn't import the image — please
+      // retry" — same reasoning as `pmLibRestore`'s own `pmShowErrorRaw` use above.
+      async function pmImportImage() {
+        pmSetBusy(true);
+        try {
+          pmDv = await invoke("deck_import_image");
+          pmClearError();
+          renderPresentation(pmDv);
+        } catch (e) {
+          console.error("[SelahCue] deck action failed", e);
+          pmShowErrorRaw(String(e && e.message ? e.message : e));
         } finally {
           pmSetBusy(false);
         }
@@ -9922,7 +9944,7 @@
         if (pmEl("pm-done")) pmEl("pm-done").onclick = () => { pmSetMode("grid"); pmRenderGrid(pmDv); }; // editor → grid
         pmEl("pm-undo").onclick = pmUndo;
         pmEl("pm-redo").onclick = pmRedo;
-        pmEl("pm-import").onclick = () => pAct(() => invoke("deck_import_image"), "import the image");
+        pmEl("pm-import").onclick = pmImportImage;
         // Error banner: Retry re-runs the last rejected deck action; Dismiss hides it.
         pmEl("pm-error-retry").onclick = () => { if (pmLastAct) pAct(pmLastAct.fn, pmLastAct.opName); };
         pmEl("pm-error-dismiss").onclick = pmClearError;

@@ -52,6 +52,11 @@ pub use trash::{DeckTrash, MAX_TRASH_BYTES, MAX_TRASH_ENTRIES};
 /// [`Presenter::inject_fault`](present::Presenter::inject_fault), or rendering the reason an
 /// output is held — without depending on `selahcue-engine` directly.
 pub use selahcue_engine::fault::Fault;
+/// Re-exported so a consumer can identify an image's format by magic bytes — never an
+/// extension, which is attacker-supplied on every path that reaches it — without depending on
+/// `selahcue-engine` directly. Used by `selahcue-operator::safe_import` (FR-138) as the type
+/// allowlist for a user-picked file, ahead of and separate from this same crate's own decode.
+pub use selahcue_engine::media::sniff;
 pub use selahcue_engine::media::ImageFormat;
 /// Re-exported so consumers can name the output pixel buffer (and its pixel colour)
 /// without depending on `selahcue-engine` directly.

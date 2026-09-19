@@ -71,6 +71,11 @@ use selahcue_present::{DeckId, SlideId};
 /// is strictly worse than shipping it unused.
 mod media_store;
 
+/// Safe, hardened validation of a user-picked file before it becomes a `MediaRef` or a library
+/// asset (FR-138, 86ak0qmzv) — canonicalisation, a regular-file check, a size cap and a
+/// magic-byte type allowlist, ahead of and separate from `selahcue_engine`'s own decode hardening.
+mod safe_import;
+
 /// Developer AI provider keys from the repo-root `.env` (feature `dev-keys`; OFF by default, and
 /// the file read is not compiled in without it). Temporary scaffolding for the developer-key
 /// phase — the module's own docs name what replaces it.
@@ -1537,22 +1542,48 @@ fn builtin_themes() -> Vec<serde_json::Value> {
 fn system_fonts() -> Vec<String> {
     selahcue_present::system_font_families()
 }
-/// Open the native OS file picker for a PNG image and return the chosen absolute path
-/// (86ajq6j4p / 86ajq6j49 frontend). Host-local + user-initiated; the path becomes an
-/// `Element::Image` source (validated by `MediaRef` host-side). FR-138 import-path
-/// canonicalization / media-root confinement remains the deferred hardening. `None` = the
-/// user cancelled. **Must be `async`** so Tauri spawns it OFF the main thread: `blocking_pick_file`
-/// enqueues the dialog onto the main event loop and waits on it, so running it ON the main
-/// thread would deadlock/freeze the whole operator (the plugin documents this footgun).
+/// The three things a picker command can hand back: a validated path, "the user cancelled the
+/// dialog", or "a file was picked but FR-138's [`safe_import::validate_picked_image`] refused
+/// it". Deliberately NOT a Tauri command `Result`/`Err`: both `pick_image` call sites in
+/// `dist/app.js` already treat a thrown command error as "no native picker available, fall back
+/// to the manual path field" — conflating that with a validation refusal would silently swallow
+/// the refusal's own reason and point the operator at the very field with no validation on it at
+/// all. Serialised with a `outcome` tag so the frontend can distinguish the three cases without
+/// re-deriving them from shape.
+#[derive(serde::Serialize)]
+#[serde(tag = "outcome", rename_all = "snake_case")]
+enum PickImageOutcome {
+    Picked { path: String },
+    Cancelled,
+    Rejected { reason: String },
+}
+
+/// Open the native OS file picker for a PNG image and return the chosen path, validated
+/// (86ajq6j4p / 86ajq6j49 frontend; FR-138 / 86ak0qmzv). Host-local + user-initiated; the
+/// returned path becomes an `Element::Image` source. **Must be `async`** so Tauri spawns it OFF
+/// the main thread: `blocking_pick_file` enqueues the dialog onto the main event loop and waits
+/// on it, so running it ON the main thread would deadlock/freeze the whole operator (the plugin
+/// documents this footgun).
 #[tauri::command]
-async fn pick_image(app: tauri::AppHandle) -> Option<String> {
+async fn pick_image(app: tauri::AppHandle) -> PickImageOutcome {
     use tauri_plugin_dialog::DialogExt;
-    app.dialog()
+    let Some(picked) = app
+        .dialog()
         .file()
         .add_filter("Images (PNG)", &["png"])
         .blocking_pick_file()
         .and_then(|fp| fp.into_path().ok())
-        .map(|p| p.to_string_lossy().into_owned())
+    else {
+        return PickImageOutcome::Cancelled;
+    };
+    match safe_import::validate_picked_image(&picked) {
+        Ok(canonical) => PickImageOutcome::Picked {
+            path: canonical.to_string_lossy().into_owned(),
+        },
+        Err(e) => PickImageOutcome::Rejected {
+            reason: e.to_string(),
+        },
+    }
 }
 /// Render a Theme-Designer theme as a sample slide and return it as base64 RGBA8
 /// (+ dimensions) — the webview draws it to a <canvas> via ImageData for an ACCURATE
@@ -2525,8 +2556,15 @@ async fn deck_remove_media(
     with_deck(&state, |w| w.remove_media(id))
 }
 
-/// Import an image into the media library via the native file picker, recording its real byte
-/// size. Video/audio disk import (and on-output playback) is a deferred affordance (ADR-0020).
+/// Import an image into the media library via the native file picker, validated (FR-138 /
+/// 86ak0qmzv) before it is staged, recording its real byte size. Video/audio disk import (and
+/// on-output playback) is a deferred affordance (ADR-0020).
+///
+/// A cancelled dialog or a validation refusal are both `Ok` with the plan unchanged — matching
+/// `pick_image`'s own "a refusal is not a transport failure" choice, but expressed differently
+/// here because `deck_import_image` already had a real `Result` error channel and its one JS
+/// caller already routes a thrown error through `pmShowErrorRaw` (see `dist/app.js`'s `pm-import`
+/// handler), so a refusal surfaces to the operator as the command's own `Err`.
 #[tauri::command]
 async fn deck_import_image(
     app: tauri::AppHandle,
@@ -2539,18 +2577,20 @@ async fn deck_import_image(
         .add_filter("Images", &["png", "jpg", "jpeg"])
         .blocking_pick_file()
         .and_then(|fp| fp.into_path().ok());
+    let Some(picked) = picked else {
+        return with_deck(&state, |_| ()); // the user cancelled — no-op, current view back
+    };
+    let path = safe_import::validate_picked_image(&picked).map_err(|e| e.to_string())?;
     with_deck(&state, |w| {
-        if let Some(path) = picked {
-            let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
-            w.import_media(
-                path.to_string_lossy().into_owned(),
-                "image",
-                size,
-                None,
-                None,
-                None,
-            );
-        }
+        let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+        w.import_media(
+            path.to_string_lossy().into_owned(),
+            "image",
+            size,
+            None,
+            None,
+            None,
+        );
     })
 }
 
