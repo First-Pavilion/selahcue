@@ -294,29 +294,53 @@
   function offsetAt(i) { return fenPrefix(i); }
   function totalHeight() { return fenPrefix(fenN); }
   function indexAtOffset(y) { return fenFindByPrefix(y); }
-  // Read the just-mounted nodes' REAL rendered heights (one forced layout after all the DOM
-  // writes in this render, never interleaved with them) and fold each into the Fenwick tree
-  // EXACTLY ONCE (I1). `newRows` is [{node, idx}] — idx is the row's absolute index, captured at
-  // mount time, since by the time this runs a fast scroll can have mounted and unmounted a row
-  // within one render.
-  function foldMeasurements(newRows) {
-    for (var k = 0; k < newRows.length; k++) {
-      var node = newRows[k].node, idx = newRows[k].idx;
-      var segId = node.dataset.segId;
-      if (measuredIds[segId]) continue;
-      var real = node.offsetHeight;
-      if (!real) continue; // not laid out yet (hidden/detached) — try again next render
-      measuredIds[segId] = true;
-      var delta = real - heights[idx];
-      if (delta !== 0) {
-        heights[idx] = real;
-        fenAdd(idx, delta);
-      }
+  // Fold ONE row's REAL rendered height into the Fenwick tree, EXACTLY ONCE (I1), and refresh the
+  // spacers so the correction is visible. `idx` is read off the node itself (`row._idx`, stashed
+  // by `segRow` at creation) rather than passed in, so this can run from either call site below.
+  function foldOneMeasurement(node, real) {
+    var segId = node.dataset.segId;
+    if (measuredIds[segId]) return;
+    if (!real) return; // not laid out yet (hidden/detached) — the observer fires again once it is
+    measuredIds[segId] = true;
+    var idx = node._idx;
+    var delta = real - heights[idx];
+    if (delta !== 0) {
+      heights[idx] = real;
+      fenAdd(idx, delta);
+      topSpacer.style.height = offsetAt(winStart) + "px";
+      bottomSpacer.style.height = Math.max(0, totalHeight() - offsetAt(winEnd)) + "px";
     }
   }
-  function segRow(s) {
+  // 86akmd00b: measurement used to read `node.offsetHeight` SYNCHRONOUSLY inside `renderWindow`,
+  // itself called from `recomputeWindow` inside `onScroll`'s `requestAnimationFrame` callback —
+  // i.e. on every frame of a native keyboard-scroll animation. `.offsetHeight` forces a
+  // synchronous layout; ADR-0026's own spike already established that a `scrollTop` WRITE mid-
+  // animation cancels WebKit's in-flight native scroll (D2's whole reason for existing). A forced
+  // synchronous layout READ, landing mid-animation on WebKit's compositor the same way, is the
+  // leading candidate for the V-10 PageDown/PageUp/Space/End shortfalls found investigating
+  // 86akhf8e6 (confirmed NOT explained by anchoring: instrumented real animated PageDown presses
+  // against this file under Chromium and the scroll delta was identical whether a spacer moved
+  // that press or not) — ADR-0026 D2 eliminated the WRITE side of this hazard but never addressed
+  // a forced-layout READ recurring on every scroll frame. A `ResizeObserver` reports AFTER the
+  // browser's own layout pass, asynchronously, off the scroll/rAF path entirely — the same
+  // non-forcing pattern D4 already uses for column-width invalidation just below — so measurement
+  // no longer performs its own synchronous layout during a scroll event. Unverified against real
+  // WebKit (unavailable in the environment that made this change); see the ticket.
+  var measureObserver = typeof ResizeObserver !== "undefined"
+    ? new ResizeObserver(function (entries) {
+        for (var i = 0; i < entries.length; i++) {
+          var node = entries[i].target;
+          var box = entries[i].borderBoxSize && entries[i].borderBoxSize[0];
+          var real = box ? box.blockSize : node.offsetHeight;
+          foldOneMeasurement(node, real);
+          if (measuredIds[node.dataset.segId]) measureObserver.unobserve(node);
+        }
+      })
+    : null;
+  function segRow(s, idx) {
     var row = el("div", "tr-line");
     row.dataset.segId = String(s.id);
+    row._idx = idx;
     row.appendChild(el("span", "tr-line-t", fmtTimestamp(s.start_ms)));
     row.appendChild(el("span", "tr-line-txt", s.text));
     return row;
@@ -339,46 +363,64 @@
   // evidence: a script `scrollTop` write cancels an in-flight WebKit keyboard-scroll animation
   // (any value, including a no-op); a DOM mutation that shifts content does not, on either engine,
   // and native anchoring holds through the animation too.
+  // Start measuring a newly-mounted row. Deferred (via the observer, async, off the scroll/rAF
+  // path) ONLY while `inScrollFrame` — i.e. only for a recompute reached through `onScroll`'s own
+  // `requestAnimationFrame` callback, the one path a real in-flight native scroll animation can
+  // actually be racing. Every other caller (initial mount, the `__trScrollBy`/
+  // `__trScrollToFraction` test hooks, `invalidateHeightsForWidth`'s force-remount) calls
+  // `renderWindow` directly — no animation is in flight to protect, and several of those callers
+  // (e.g. the I2/anchoring-is-live checks in `operator_headless.py`, which call `__trScrollBy` in
+  // a tight loop with no yield between calls) rely on measurement completing SYNCHRONOUSLY, the
+  // same as before this change. Deferring unconditionally regressed those checks (confirmed:
+  // `operator_headless.py` FAILED `TR I2 (setup)`/`TR anchoring-is-live` intermittently once
+  // deferred everywhere) without buying anything, since there is nothing to protect them from.
+  function startMeasuring(node) {
+    if (measureObserver && inScrollFrame) measureObserver.observe(node);
+    else foldOneMeasurement(node, node.offsetHeight);
+  }
   function renderWindow(start, end) {
     start = Math.max(0, Math.min(start, segs.length));
     end = Math.max(start, Math.min(end, segs.length));
     renderCount++;
 
-    var newRows = []; // [{node, idx}] mounted THIS call — measured together, once, below
+    var newRows = []; // nodes mounted THIS call — measurement started on each, once, below
     var overlapStart = Math.max(start, winStart);
     var overlapEnd = Math.min(end, winEnd);
     var hasOverlap = overlapStart < overlapEnd && rowsHost.children.length > 0;
 
     if (!hasOverlap) {
+      // Every currently-mounted row is being discarded — stop observing all of them in one call
+      // rather than walking the (about to be destroyed) child list individually.
+      if (measureObserver) measureObserver.disconnect();
       rowsHost.innerHTML = "";
       for (var i = start; i < end; i++) {
-        var node = segRow(segs[i]);
+        var node = segRow(segs[i], i);
         rowsHost.appendChild(node);
-        newRows.push({ node: node, idx: i });
+        newRows.push(node);
       }
     } else {
       for (var r = winStart; r < overlapStart; r++) {
         var stale = rowsHost.firstChild;
-        if (stale) rowsHost.removeChild(stale);
+        if (stale) { if (measureObserver) measureObserver.unobserve(stale); rowsHost.removeChild(stale); }
       }
       for (var r2 = winEnd; r2 > overlapEnd; r2--) {
         var staleEnd = rowsHost.lastChild;
-        if (staleEnd) rowsHost.removeChild(staleEnd);
+        if (staleEnd) { if (measureObserver) measureObserver.unobserve(staleEnd); rowsHost.removeChild(staleEnd); }
       }
       for (var p = overlapStart - 1; p >= start; p--) {
-        var pNode = segRow(segs[p]);
+        var pNode = segRow(segs[p], p);
         rowsHost.insertBefore(pNode, rowsHost.firstChild);
-        newRows.push({ node: pNode, idx: p });
+        newRows.push(pNode);
       }
       for (var a = overlapEnd; a < end; a++) {
-        var aNode = segRow(segs[a]);
+        var aNode = segRow(segs[a], a);
         rowsHost.appendChild(aNode);
-        newRows.push({ node: aNode, idx: a });
+        newRows.push(aNode);
       }
     }
 
     winStart = start; winEnd = end;
-    foldMeasurements(newRows);
+    for (var m = 0; m < newRows.length; m++) startMeasuring(newRows[m]);
     topSpacer.style.height = offsetAt(start) + "px";
     bottomSpacer.style.height = Math.max(0, totalHeight() - offsetAt(end)) + "px";
     // No scrollTop write here — none. See D2 above.
@@ -414,10 +456,17 @@
   // D2/D3: no echo-suppression bookkeeping. This file never writes `scrollTop` reactively, so a
   // `scroll` event is always genuine (user input or native anchoring/animation) and simply
   // schedules a recompute, rAF-coalesced same as before.
+  // True only while a recompute reached through THIS function's own rAF callback is running — see
+  // `startMeasuring`'s comment above for why that is the one path measurement defers on (86akmd00b).
+  var inScrollFrame = false;
   function onScroll() {
     if (rafPending) return;
     rafPending = true;
-    window.requestAnimationFrame(function () { recomputeWindow(); });
+    window.requestAnimationFrame(function () {
+      inScrollFrame = true;
+      recomputeWindow();
+      inScrollFrame = false;
+    });
   }
   logEl.addEventListener("scroll", onScroll);
   // D3 (the part D2 requires to be honestly testable): NO keydown interception. Home, End,
@@ -492,10 +541,11 @@
     winStart = 0; winEnd = 0;
     // Fresh metric per transcript (D1): a Fenwick tree built from one transcript's real row
     // heights has no bearing on another's (different text, but more importantly a stale
-    // `measuredIds` set would make `foldMeasurements` silently skip every row of a new
-    // transcript, freezing its heights at whatever the PREVIOUS transcript last measured).
+    // `measuredIds` set would make measurement silently skip every row of a new transcript,
+    // freezing its heights at whatever the PREVIOUS transcript last measured).
     measuredIds = Object.create(null);
     renderCount = 0;
+    if (measureObserver) measureObserver.disconnect(); // stop watching the previous transcript's rows
     rowsHost.innerHTML = ""; topSpacer.style.height = "0px"; bottomSpacer.style.height = "0px";
     invoke("transcript_get", { id: id })
       .then(function (t) {
