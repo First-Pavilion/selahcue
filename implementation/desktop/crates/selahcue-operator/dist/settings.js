@@ -718,6 +718,11 @@
       provider: res.provider || "AI sermon notes",
       degraded: !!res.degraded,
       degradedNotice: res.degraded_notice || null,
+      // 86akby820: present only on a fresh generation — like the caveats/empty_requested
+      // signal it travels alongside, this is not persisted through a reload or an
+      // edit-save (see the `scripture_verdicts` doc comment on `NoteDraft`), so it is
+      // explicitly nulled on those two paths below rather than left stale.
+      scriptureVerificationNote: res.scripture_verification_note || null,
     };
     editingDraft = false;
     renderCurrentDraft();
@@ -746,6 +751,8 @@
         provider: res.provider || "AI sermon notes",
         degraded: false,
         degradedNotice: null,
+        // Not persisted (86akby820) — a reloaded draft never carries verdicts.
+        scriptureVerificationNote: null,
       };
       editingDraft = false;
       renderCurrentDraft();
@@ -804,8 +811,36 @@
     "comes back empty — the sermon may not have covered it, or this run may simply not " +
     "have returned it. Generating again may give a different result.";
 
-  function hasCaveat(d, heading) {
-    return !!(d.caveats && d.caveats.indexOf(heading) !== -1);
+  // 86akby820 (FR-125/FR-128): a short suffix marking a reference that did not resolve
+  // to any verse in the bundled Bible text. Deliberately says only what was checked —
+  // "not found" — not that the model failed or the sermon misquoted it; this ticket
+  // confirms the ADDRESS exists, nothing about the words attributed to it.
+  var SCRIPTURE_UNVERIFIED_SUFFIX = " (unverified — not found in the bundled text)";
+
+  // `d.caveats` (86akc0tua + 86akby820) is a flat array of kind-tagged objects:
+  // {kind:"section_empty", heading} or {kind:"scripture_unverified", reference}. Two
+  // small readers, one per kind, rather than one generic "has a caveat" check — the two
+  // kinds gate two DIFFERENT pieces of UI (an empty-section line vs. a scripture mark)
+  // and must never cross-fire on each other's presence.
+  function hasEmptySectionCaveat(d, heading) {
+    return !!(d.caveats || []).some(function (c) {
+      return c.kind === "section_empty" && c.heading === heading;
+    });
+  }
+  function anySectionEmptyCaveat(d) {
+    return !!(d.caveats || []).some(function (c) { return c.kind === "section_empty"; });
+  }
+  // True/false/null: null means no verdict was recorded for this exact reference text at
+  // all (verification never ran, or — after a reload/edit-save, where verdicts are not
+  // persisted — the data simply is not there any more). A caller renders `null` as
+  // "no mark", the same as this ticket never having shipped, rather than guessing either
+  // way: neither a false "verified" reassurance nor a false "unverified" alarm is honest
+  // when the check simply did not run.
+  function scriptureVerifiedOrNull(d, reference) {
+    var v = (d.scripture_verdicts || []).filter(function (x) {
+      return x.reference === reference;
+    })[0];
+    return v ? v.verified : null;
   }
 
   function renderDraftView(r) {
@@ -821,7 +856,7 @@
     renderDraftHeader(r);
     if (d.summary) {
       r.appendChild(el("p", "pp-gen-summary", d.summary));
-    } else if (showEmptyState && hasCaveat(d, "Summary")) {
+    } else if (showEmptyState && hasEmptySectionCaveat(d, "Summary")) {
       r.appendChild(el("p", "pp-gen-sec-h", "Summary"));
       r.appendChild(el("p", "pp-gen-empty", EMPTY_REQUESTED_LINE));
     }
@@ -853,17 +888,56 @@
     if (d.scriptures && d.scriptures.length) {
       var sc = el("p", "pp-gen-scriptures");
       sc.appendChild(el("span", "pp-gen-sec-h", "Scriptures: "));
-      sc.appendChild(el("span", "pp-gen-scr-list", d.scriptures.join(" · ")));
+      // 86akby820: each reference renders individually (not one joined string) so an
+      // unverified one can carry its own mark. `scripture_verdicts` is absent after a
+      // reload/edit-save (not persisted) — `scriptureVerifiedOrNull` then returns `null`
+      // for every entry and every reference renders exactly as it did before this ticket.
+      d.scriptures.forEach(function (ref, i) {
+        if (i > 0) sc.appendChild(document.createTextNode(" · "));
+        var verified = scriptureVerifiedOrNull(d, ref);
+        var span = el("span", "pp-gen-scr-item", ref);
+        sc.appendChild(span);
+        if (verified === false) {
+          sc.appendChild(el("span", "pp-gen-scr-unverified", SCRIPTURE_UNVERIFIED_SUFFIX));
+        }
+      });
       r.appendChild(sc);
-    } else if (showEmptyState && hasCaveat(d, "Scripture references")) {
+    } else if (showEmptyState && hasEmptySectionCaveat(d, "Scripture references")) {
       var scEmpty = el("p", "pp-gen-scriptures");
       scEmpty.appendChild(el("span", "pp-gen-sec-h", "Scriptures: "));
       scEmpty.appendChild(el("span", "pp-gen-empty", EMPTY_REQUESTED_LINE));
       r.appendChild(scEmpty);
     }
+    // 86akby820: a reference found ONLY embedded in a section's body text — not in the
+    // extracted list above — that did not verify. A fabricated verse quoted inside a
+    // sermon point is exactly as dangerous as one in the tidy list, so it still needs an
+    // unmissable mark even though there is no list entry to attach it to. Verified
+    // embedded references are not called out separately here — they need no attention,
+    // and the extracted list above is already the place a reader looks for scripture.
+    var embeddedUnverified = (d.scripture_verdicts || []).filter(function (v) {
+      return !v.verified && (d.scriptures || []).indexOf(v.reference) === -1;
+    });
+    if (embeddedUnverified.length) {
+      var elsewhere = el("p", "pp-gen-scriptures");
+      elsewhere.appendChild(el("span", "pp-gen-sec-h", "Also referenced in this draft: "));
+      embeddedUnverified.forEach(function (v, i) {
+        if (i > 0) elsewhere.appendChild(document.createTextNode(" · "));
+        elsewhere.appendChild(el("span", "pp-gen-scr-item", v.reference));
+        elsewhere.appendChild(el("span", "pp-gen-scr-unverified", SCRIPTURE_UNVERIFIED_SUFFIX));
+      });
+      r.appendChild(elsewhere);
+    }
+    // 86akby820: the address-only scope of verification, stated once whenever at least
+    // one reference was actually checked — never implies the check also vouches for a
+    // quotation's accuracy.
+    if (currentDraft.scriptureVerificationNote) {
+      var scNote = el("p", "pp-gen-scripture-note", currentDraft.scriptureVerificationNote);
+      scNote.setAttribute("role", "note");
+      r.appendChild(scNote);
+    }
     // Once per draft, after everything else — never at the top, where the AI-disclosure and
     // degraded-notice pair (renderDraftHeader) must be read first.
-    if (showEmptyState && d.caveats && d.caveats.length) {
+    if (showEmptyState && anySectionEmptyCaveat(d)) {
       var explainer = el("p", "pp-gen-empty-explainer", EMPTY_REQUESTED_EXPLAINER);
       explainer.setAttribute("role", "note");
       r.appendChild(explainer);
@@ -1071,6 +1145,9 @@
         provider: res.provider || currentDraft.provider,
         degraded: currentDraft.degraded,
         degradedNotice: currentDraft.degradedNotice,
+        // Not persisted (86akby820) — an edit-save's response carries no verdict data
+        // either, so this cannot survive an edit any more than it survives a reload.
+        scriptureVerificationNote: null,
       };
       editingDraft = false;
       renderCurrentDraft();

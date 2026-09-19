@@ -98,6 +98,9 @@ impl NoteProvider for LocalNoteProvider {
             // `DEGRADED_FALLBACK_NOTICE`. A requested-but-empty caveat here would repeat
             // that fact in a second, contradictory-sounding voice underneath it.
             caveats: Vec::new(),
+            // The scaffold invents nothing and extracts no scriptures at all (86akby820) —
+            // there is nothing here to verify.
+            scripture_verdicts: Vec::new(),
         })
     }
 }

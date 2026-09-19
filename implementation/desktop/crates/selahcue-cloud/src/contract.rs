@@ -138,6 +138,10 @@ impl NoteDraftDto {
             // The hosted v1 contract has no equivalent of 86akc0tua's requested-but-empty
             // signal yet; this stays empty rather than guessing one from `Dto` shape.
             caveats: Vec::new(),
+            // Likewise no scripture-verification equivalent yet (86akby820) — the operator
+            // is the layer that runs verification today (see `main.rs`), and this contract
+            // has no wire field to carry a pre-computed verdict even if it wanted to.
+            scripture_verdicts: Vec::new(),
         }
     }
 }

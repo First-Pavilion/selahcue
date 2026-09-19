@@ -297,7 +297,24 @@ if not check_d5_no_scrolltop_writes():
 # remediation round above (where an implicit `ok()` inside a helper call made naive arithmetic
 # wrong by one), this rebase's three additions really are fully independent with no shared
 # side effects between them.
-EXPECTED_MIN_CHECKS = 1369
+#
+# 86akby820 (this branch) separately adds 6 more on top of the ORIGINAL pre-86akcffy0 1311
+# (verified before 86akmdkdg's, 86akcffy0's, and 86akc0tua's second round existed): 5 explicit
+# `ok()` calls on the new "scripture_verification" fixture (a verified reference still renders
+# + its positive control carrying no unverified mark, an unverified reference in the extracted
+# list carrying a computed-visible mark, a fabricated reference found ONLY embedded in a
+# section's body text still rendering with its own mark, and the verification-scope note
+# rendering with the exact required wording) plus ONE implicit check from the extra
+# `ppGenerateAndConfirm` call. 1311 + 5 + 1 = 1317, matching the real observed count at the
+# time (before 86akmdkdg/86akcffy0/86akc0tua's second round existed).
+#
+# Rebased onto the now-combined 86akmdkdg+86akcffy0+86akc0tua floor of 1369: this ticket's own
+# 6 checks are independent of all three (own fixture, own DRIVER section, inserted immediately
+# after 86akc0tua's edit-save block rather than overlapping it), so the combined floor is
+# provisionally 1369 + 6 = 1375. As with every step above, this is a naive sum until a
+# standalone run confirms it — re-run this script after the rebase and correct this value to
+# the REAL observed total before trusting it.
+EXPECTED_MIN_CHECKS = 1375
 
 
 def find_chrome():
@@ -1175,7 +1192,7 @@ STUB = r"""
             // never to combine the two — a mutation deleting that guard would still be
             // caught here even though it could never be caught by a realistic fixture.
             {heading:"Prayer points", items:[], points:[], empty_requested:true}
-          ], scriptures:[], caveats:["Prayer points"]};
+          ], scriptures:[], caveats:[{kind:"section_empty", heading:"Prayer points"}]};
         // A degraded (offline-fallback) draft is STILL persisted by the real backend — FR-123
         // "editable" applies to it too, it is just not labelled AI-generated (see below).
         SN.draft = { transcript_id: SN_TRANSCRIPT_ID, draft: snDegDraft, ai_generated:false,
@@ -1203,7 +1220,12 @@ STUB = r"""
             {heading:"Chapter markers", items:[], points:[], empty_requested:true}
           ],
           scriptures:[],
-          caveats:["Chapter markers","Summary","Scripture references"]
+          caveats:[
+            {kind:"section_empty", heading:"Chapter markers"},
+            {kind:"section_empty", heading:"Summary"},
+            {kind:"section_empty", heading:"Scripture references"}
+          ],
+          scripture_verdicts:[]
         };
         SN.draft = { transcript_id: SN_TRANSCRIPT_ID, draft: snEmptyDraft, ai_generated:true,
           ai_label:"AI-generated draft", disclosure:"disc", provider:"OpenAI" };
@@ -1213,6 +1235,40 @@ STUB = r"""
           disclosure:"AI-generated. It can invent quotations, misattribute scripture and state things the sermon did not say. Check every reference and quotation against the transcript before you publish or project it.",
           degraded_notice:null,
           draft: snEmptyDraft,
+          transcript_id: SN_TRANSCRIPT_ID,
+          quota:null
+        });
+      }
+      if (g === "scripture_verification") {
+        // 86akby820 (FR-125/FR-128): a real reference (positive control), a fabricated
+        // reference IN the extracted list, and a fabricated reference found ONLY embedded
+        // in a section's body text (Jude 2:1 — not in `scriptures` at all) — all in one
+        // render, so ON/unverified/embedded-only/positive-control are proven together.
+        var snScriptDraft = {
+          title:"Grace in the Wilderness", summary:"A sermon on provision.",
+          sections:[
+            {heading:"Illustrations", items:["This truth is affirmed in Jude 2:1 as well."], points:[], empty_requested:false}
+          ],
+          scriptures:["John 3:16","3 John 4:12"],
+          caveats:[
+            {kind:"scripture_unverified", reference:"3 John 4:12"},
+            {kind:"scripture_unverified", reference:"Jude 2:1"}
+          ],
+          scripture_verdicts:[
+            {reference:"John 3:16", verified:true},
+            {reference:"3 John 4:12", verified:false},
+            {reference:"Jude 2:1", verified:false}
+          ]
+        };
+        SN.draft = { transcript_id: SN_TRANSCRIPT_ID, draft: snScriptDraft, ai_generated:true,
+          ai_label:"AI-generated draft", disclosure:"disc", provider:"OpenAI" };
+        return Promise.resolve({
+          ok:true, degraded:false, provider:"OpenAI",
+          ai_generated:true, ai_label:"AI-generated draft",
+          disclosure:"AI-generated. It can invent quotations, misattribute scripture and state things the sermon did not say. Check every reference and quotation against the transcript before you publish or project it.",
+          degraded_notice:null,
+          scripture_verification_note:"Verified means the reference address exists in the bundled Bible text — it does not confirm that any words this draft attributes to it are accurate. Always check a quotation against the actual text before you use it.",
+          draft: snScriptDraft,
           transcript_id: SN_TRANSCRIPT_ID,
           quota:null
         });
@@ -6576,6 +6632,52 @@ DRIVER = r"""
          "PP 86akc0tua (positive control): an ordinary populated section is NOT dropped by the " +
          "same filter — without this, the assertion above could pass on a mechanism that drops " +
          "every section");
+
+      // --- 86akby820: scripture verification (FR-125/FR-128) -----------------------------------
+      // Runs AFTER the 86akc0tua edit-save block above rather than before it: that block keeps
+      // operating on the still-active "empty_sections" draft from earlier in this section (no
+      // re-generate call), while this block deliberately switches `window.__ppGen` and calls
+      // `ppGenerateAndConfirm` again — doing that first would pull the rug out from under the
+      // edit-save block's fixture. Two independent, non-conflicting insertions at the same
+      // point in the file (confirmed by reading both diffs before merging, not assumed); this
+      // ordering is the only one that keeps both correct.
+      window.__ppGen = "scripture_verification"; await ppGenerateAndConfirm(80);
+      var gS = el("pp-gen-result");
+      var scLine = gS.querySelector(".pp-gen-scriptures");
+      ok(!!scLine && /John 3:16/.test(scLine.textContent),
+         "PP 86akby820: a verified reference still renders in the Scriptures line");
+      var verifiedItem = Array.prototype.filter.call(scLine.querySelectorAll(".pp-gen-scr-item"), function (s) {
+        return s.textContent === "John 3:16";
+      })[0];
+      ok(!!verifiedItem && (!verifiedItem.nextElementSibling ||
+           !verifiedItem.nextElementSibling.classList.contains("pp-gen-scr-unverified")),
+         "PP 86akby820 (positive control): a verified reference carries NO unverified mark — " +
+         "without this, the assertion below could pass on a mechanism that marks EVERY reference");
+      var unverifiedItem = Array.prototype.filter.call(scLine.querySelectorAll(".pp-gen-scr-item"), function (s) {
+        return s.textContent === "3 John 4:12";
+      })[0];
+      var unverifiedMark = unverifiedItem && unverifiedItem.nextElementSibling;
+      ok(!!unverifiedMark && unverifiedMark.classList.contains("pp-gen-scr-unverified") &&
+         getComputedStyle(unverifiedMark).display !== "none" && unverifiedMark.getClientRects().length > 0 &&
+         /unverified/i.test(unverifiedMark.textContent),
+         "PP 86akby820: an unverified reference in the extracted list carries a computed-visible mark");
+      // Embedded-only: a fabricated reference found ONLY inside a section's body text (not in
+      // the extracted `scriptures` list at all) still gets an unmissable mark — the ticket's own
+      // named more-dangerous case.
+      var elsewhereBlock = Array.prototype.filter.call(gS.querySelectorAll(".pp-gen-scriptures"), function (p) {
+        return /Also referenced in this draft/.test(p.textContent);
+      })[0];
+      ok(!!elsewhereBlock && /Jude 2:1/.test(elsewhereBlock.textContent) &&
+         !!elsewhereBlock.querySelector(".pp-gen-scr-unverified"),
+         "PP 86akby820: a fabricated reference embedded ONLY in a sermon point (not in the " +
+         "extracted list) still renders, unmissably marked — the more dangerous case the ticket names");
+      // The address-only scope of verification is stated in words, not implied.
+      var scNote = gS.querySelector(".pp-gen-scripture-note");
+      ok(!!scNote && getComputedStyle(scNote).display !== "none" && scNote.getAttribute("role") === "note" &&
+         /exists in the bundled Bible text/.test(scNote.textContent) &&
+         /does not confirm/.test(scNote.textContent),
+         "PP 86akby820: the verification-scope note renders, role=note, and is explicit that " +
+         "verification confirms the reference exists, not that quoted words are accurate");
 
       window.__ppGen = "ok"; // restore for any later reads
 

@@ -4230,6 +4230,7 @@ mod providers_view_tests {
             )],
             scriptures: Vec::new(),
             caveats: Vec::new(),
+            scripture_verdicts: Vec::new(),
         };
         let j = draft_json(&draft);
         assert_eq!(j["sections"][0]["points"][0]["text"], "parent");
@@ -4259,6 +4260,7 @@ mod providers_view_tests {
             caveats: vec![DraftCaveat::SectionRequestedEmpty {
                 heading: "Chapter markers".to_string(),
             }],
+            scripture_verdicts: Vec::new(),
         };
         let j = draft_json(&draft);
         assert_eq!(j["sections"][0]["heading"], "Illustrations");
@@ -4268,7 +4270,10 @@ mod providers_view_tests {
         );
         assert_eq!(j["sections"][1]["heading"], "Chapter markers");
         assert_eq!(j["sections"][1]["empty_requested"], true);
-        assert_eq!(j["caveats"], serde_json::json!(["Chapter markers"]));
+        assert_eq!(
+            j["caveats"],
+            serde_json::json!([{"kind": "section_empty", "heading": "Chapter markers"}])
+        );
     }
 
     #[test]
@@ -4280,12 +4285,173 @@ mod providers_view_tests {
             sections: vec![NoteSection::flat("Illustrations", vec!["a lantern".into()])],
             scriptures: Vec::new(),
             caveats: Vec::new(),
+            scripture_verdicts: Vec::new(),
         };
         let j = draft_json(&draft);
         assert_eq!(j["sections"][0]["empty_requested"], false);
         assert_eq!(
             j["caveats"].as_array().expect("caveats is an array").len(),
             0
+        );
+    }
+}
+
+/// End-to-end verification against the REAL bundled Bible text (86akby820; FR-125/FR-128).
+///
+/// `selahcue-core`'s own tests (`test_scripture_verify.rs`) drive `verify_scriptures` with
+/// a stub oracle, because that crate cannot depend on `selahcue-scripture` (the dependency
+/// runs the other way). This crate depends on both, so this is where the real
+/// `selahcue_scripture::verses` oracle is actually wired in and where the exact
+/// looks-plausible-but-isn't table from the ticket is proven against the real text, not a
+/// fake one.
+#[cfg(test)]
+mod scripture_verification_tests {
+    use super::draft_json;
+    use selahcue_core::providers::{verify_scriptures, DraftCaveat, NotePoint, NoteSection};
+
+    fn real_oracle() -> impl FnMut(&selahcue_core::scripture::Reference) -> bool {
+        |r: &selahcue_core::scripture::Reference| !selahcue_scripture::verses(r).is_empty()
+    }
+
+    #[test]
+    fn a_real_valid_reference_verifies_against_the_bundled_text() {
+        let verdicts = verify_scriptures(&["John 3:16".to_string()], &[], real_oracle());
+        assert_eq!(verdicts.len(), 1);
+        assert!(verdicts[0].verified, "John 3:16 is a real verse");
+    }
+
+    #[test]
+    fn a_reference_naming_no_real_book_is_unverified() {
+        let verdicts = verify_scriptures(&["Frobnicate 1:1".to_string()], &[], real_oracle());
+        assert_eq!(verdicts.len(), 1);
+        assert!(!verdicts[0].verified);
+        assert_eq!(verdicts[0].reference, "Frobnicate 1:1");
+    }
+
+    #[test]
+    fn a_chapter_past_a_real_short_books_end_is_unverified() {
+        // Obadiah has one chapter. Chapter 2 does not exist.
+        let verdicts = verify_scriptures(&["Obadiah 2:1".to_string()], &[], real_oracle());
+        assert_eq!(verdicts.len(), 1);
+        assert!(!verdicts[0].verified);
+    }
+
+    #[test]
+    fn a_verse_past_a_real_chapters_end_is_unverified() {
+        // John 3 has 36 verses.
+        let verdicts = verify_scriptures(&["John 3:99".to_string()], &[], real_oracle());
+        assert_eq!(verdicts.len(), 1);
+        assert!(!verdicts[0].verified);
+    }
+
+    #[test]
+    fn unparseable_text_in_the_list_is_unverified_and_still_shown() {
+        let verdicts = verify_scriptures(
+            &["definitely not a scripture reference".to_string()],
+            &[],
+            real_oracle(),
+        );
+        assert_eq!(
+            verdicts,
+            vec![selahcue_core::providers::ScriptureVerdict {
+                reference: "definitely not a scripture reference".to_string(),
+                verified: false,
+            }]
+        );
+    }
+
+    /// The ticket's own bar: "a test suite of obviously-broken inputs would not prove the
+    /// check works on the realistic case." These four are real books, syntactically
+    /// well-formed, that read as entirely plausible sermon citations — and every one
+    /// names a chapter beyond that book's real (single-chapter) length. A checker that
+    /// only validates syntax would pass all four; this one must not.
+    #[test]
+    fn four_plausible_but_nonexistent_references_are_all_caught() {
+        let candidates = ["Obadiah 2:1", "3 John 4:12", "Jude 2:1", "Philemon 2:3"];
+        let verdicts = verify_scriptures(
+            &candidates.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+            &[],
+            real_oracle(),
+        );
+        assert_eq!(verdicts.len(), 4);
+        for v in &verdicts {
+            assert!(
+                !v.verified,
+                "{} looks plausible (real book, well-formed syntax) but its chapter does \
+                 not exist — a verifier that only parses would wrongly pass it: {v:?}",
+                v.reference
+            );
+        }
+    }
+
+    #[test]
+    fn a_fabricated_reference_embedded_in_a_sermon_point_is_caught_against_the_real_text() {
+        let sections = vec![NoteSection::outline(
+            "Main points",
+            vec![NotePoint {
+                text: "This is affirmed in 3 John 4:12, among other places.".to_string(),
+                sub_points: vec![],
+            }],
+        )];
+        let verdicts = verify_scriptures(&[], &sections, real_oracle());
+        assert_eq!(verdicts.len(), 1);
+        assert_eq!(verdicts[0].reference, "3 John 4:12");
+        assert!(!verdicts[0].verified);
+    }
+
+    #[test]
+    fn a_real_reference_embedded_in_a_flat_item_verifies_against_the_real_text() {
+        let sections = vec![NoteSection::flat(
+            "Illustrations",
+            vec!["As it says in Isaiah 55:1, come.".to_string()],
+        )];
+        let verdicts = verify_scriptures(&[], &sections, real_oracle());
+        assert_eq!(verdicts.len(), 1);
+        assert_eq!(verdicts[0].reference, "Isaiah 55:1");
+        assert!(verdicts[0].verified);
+    }
+
+    #[test]
+    fn draft_json_carries_scripture_verdicts_and_the_matching_caveats() {
+        // Pins the shape the frontend actually reads: `scripture_verdicts` carries every
+        // reference with its verdict, and an unverified one is ALSO present in `caveats`
+        // as a `ScriptureUnverified` entry — the same "one shared vocabulary" mechanism
+        // 86akc0tua established for requested-but-empty sections.
+        use selahcue_core::providers::NoteDraft;
+        let verdicts = verify_scriptures(
+            &["John 3:16".to_string(), "3 John 4:12".to_string()],
+            &[],
+            real_oracle(),
+        );
+        let mut draft = NoteDraft {
+            title: "t".into(),
+            summary: None,
+            sections: Vec::new(),
+            scriptures: vec!["John 3:16".to_string(), "3 John 4:12".to_string()],
+            caveats: Vec::new(),
+            scripture_verdicts: Vec::new(),
+        };
+        draft
+            .caveats
+            .extend(verdicts.iter().filter(|v| !v.verified).map(|v| {
+                DraftCaveat::ScriptureUnverified {
+                    reference: v.reference.clone(),
+                }
+            }));
+        draft.scripture_verdicts = verdicts;
+
+        let j = draft_json(&draft);
+        let sv = j["scripture_verdicts"].as_array().expect("array");
+        assert_eq!(sv.len(), 2);
+        assert_eq!(sv[0]["reference"], "John 3:16");
+        assert_eq!(sv[0]["verified"], true);
+        assert_eq!(sv[1]["reference"], "3 John 4:12");
+        assert_eq!(sv[1]["verified"], false);
+
+        let caveats = j["caveats"].as_array().expect("array");
+        assert_eq!(
+            *caveats,
+            vec![serde_json::json!({"kind": "scripture_unverified", "reference": "3 John 4:12"})]
         );
     }
 }
@@ -4463,19 +4629,30 @@ fn note_error_code(e: &selahcue_core::providers::NoteError) -> &'static str {
 }
 
 fn draft_json(d: &selahcue_core::providers::NoteDraft) -> serde_json::Value {
-    // 86akc0tua: every requested-but-empty heading — includes the two that are not
-    // `NoteSection`s at all ("Summary", "Scripture references"), which `settings.js`
-    // checks by name, alongside section headings matched below.
-    // A `match`, not an irrefutable destructure: `DraftCaveat` is documented to grow a
-    // second variant for 86akby820's scripture verification, at which point this must
-    // fail to compile until it is deliberately taught how to render the new kind, rather
-    // than silently ignoring it.
-    let caveat_headings: Vec<&str> = d
+    use selahcue_core::providers::DraftCaveat;
+
+    // Two purposes, one shared enum (86akc0tua + 86akby820): which section HEADINGS are
+    // requested-but-empty (drives the per-section `empty_requested` flag and the
+    // Summary/Scripture-references empty checks) is a different question from which
+    // scripture REFERENCES are unverified (drives the scripture rendering below). A
+    // `match`, not an irrefutable destructure, so a future third variant fails this to
+    // compile until it is deliberately taught how to render the new kind.
+    let mut empty_headings: Vec<&str> = Vec::new();
+    for c in &d.caveats {
+        match c {
+            DraftCaveat::SectionRequestedEmpty { heading } => empty_headings.push(heading.as_str()),
+            DraftCaveat::ScriptureUnverified { .. } => {}
+        }
+    }
+    let caveats_json: Vec<serde_json::Value> = d
         .caveats
         .iter()
         .map(|c| match c {
-            selahcue_core::providers::DraftCaveat::SectionRequestedEmpty { heading } => {
-                heading.as_str()
+            DraftCaveat::SectionRequestedEmpty { heading } => {
+                serde_json::json!({"kind": "section_empty", "heading": heading})
+            }
+            DraftCaveat::ScriptureUnverified { reference } => {
+                serde_json::json!({"kind": "scripture_unverified", "reference": reference})
             }
         })
         .collect();
@@ -4498,10 +4675,22 @@ fn draft_json(d: &selahcue_core::providers::NoteDraft) -> serde_json::Value {
             // nothing at all — distinct from a section the operator left off, which never
             // reaches `sections` in the first place. Computed here, once, so `settings.js`
             // never has to re-derive it by cross-referencing headings itself.
-            "empty_requested": caveat_headings.iter().any(|h| *h == s.heading),
+            "empty_requested": empty_headings.iter().any(|h| *h == s.heading),
         })).collect::<Vec<_>>(),
+        // Unchanged shape (a flat string array) — this is a PINNED cross-path contract
+        // with `sermon_note_draft_json` (the persisted-draft-reload path), which reads the
+        // same stored column back into the same shape. 86akby820's per-reference verified
+        // verdicts travel in the NEW `scripture_verdicts` field below instead of changing
+        // this one's shape.
         "scriptures": d.scriptures,
-        "caveats": caveat_headings,
+        // 86akby820 (FR-125/FR-128): every reference found anywhere in the draft — the
+        // list above AND ones embedded only in a section's body text — with its verdict.
+        // settings.js cross-references by exact string against `scriptures` to mark the
+        // list inline, and renders anything left over (embedded-only) separately.
+        "scripture_verdicts": d.scripture_verdicts.iter().map(|v| serde_json::json!({
+            "reference": v.reference, "verified": v.verified,
+        })).collect::<Vec<_>>(),
+        "caveats": caveats_json,
     })
 }
 
@@ -4986,8 +5175,32 @@ async fn generate_sermon_notes(
             .map_err(|e| format!("providers lock: {e}"))?
             .clone()
     };
+    // Captured before `cfg` moves into `run_note_generation` below (86akby820).
+    let scripture_extraction_on = cfg.settings.include.scripture_extraction;
     match run_note_generation(cfg, transcript, &state).await {
-        Ok(outcome) => {
+        Ok(mut outcome) => {
+            // 86akby820 (FR-125/FR-128): every scripture reference this draft carries —
+            // in the extracted list AND embedded in a section's body text — is checked
+            // against the bundled Bible text, offline, only when the operator turned
+            // extraction on. Runs regardless of `degraded`: a reference the preacher
+            // genuinely spoke, echoed into the offline scaffold from the real transcript,
+            // is exactly as worth confirming as one a cloud model proposed.
+            if scripture_extraction_on {
+                let verdicts = selahcue_core::providers::verify_scriptures(
+                    &outcome.draft.scriptures,
+                    &outcome.draft.sections,
+                    |r| !selahcue_scripture::verses(r).is_empty(),
+                );
+                outcome
+                    .draft
+                    .caveats
+                    .extend(verdicts.iter().filter(|v| !v.verified).map(|v| {
+                        selahcue_core::providers::DraftCaveat::ScriptureUnverified {
+                            reference: v.reference.clone(),
+                        }
+                    }));
+                outcome.draft.scripture_verdicts = verdicts;
+            }
             // Best-effort, mirroring `with_providers`'s "persistence failure never blocks the
             // edit" contract: resolve the real transcript id from the HOST (never fabricated),
             // then persist against it. Either step failing (no store configured, host refusal,
@@ -5055,6 +5268,12 @@ async fn generate_sermon_notes(
                 // were the notes they asked for. `degraded_notice` is Some exactly when `degraded`.
                 "degraded_notice": outcome.degraded
                     .then_some(selahcue_core::providers::DEGRADED_FALLBACK_NOTICE),
+                // 86akby820 (FR-125): the address-only scope of scripture verification,
+                // stated once here rather than left to the console to phrase — shown
+                // exactly when at least one reference was actually checked, so it never
+                // appears over an empty "Scriptures" line with nothing to caveat.
+                "scripture_verification_note": (!outcome.draft.scripture_verdicts.is_empty())
+                    .then_some(selahcue_core::providers::SCRIPTURE_VERIFICATION_WORDING),
                 "draft": draft_json(&outcome.draft),
                 // `null` when persistence was unavailable/failed — the edit surface stays
                 // hidden in that case (nothing to key an edit off) but the draft itself is
