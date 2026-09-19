@@ -109,10 +109,23 @@ fn validate_picked_image_within(picked: &Path, max_bytes: u64) -> Result<PathBuf
     // path lookups: those re-touch the same path independently, leaving a TOCTOU window for a
     // local swap of the target between the two. A single open `File` decides both from the same
     // underlying inode.
-    let mut file = fs::File::open(&canonical).map_err(|e| match e.kind() {
-        std::io::ErrorKind::NotFound => SafeImportError::NotFound,
-        kind => SafeImportError::Io(kind),
-    })?;
+    let mut file = match fs::File::open(&canonical) {
+        Ok(f) => f,
+        Err(e) => {
+            // Unlike Unix, `File::open` on Windows refuses a directory outright (no handle to
+            // read metadata from at all) instead of succeeding and letting `is_file()` below
+            // catch it. Fall back to a plain metadata lookup ONLY to classify this failure —
+            // the TOCTOU this seam closes is between the size/type decision and the content
+            // read, both of which still come from one handle on every path that gets this far.
+            if fs::metadata(&canonical).is_ok_and(|m| !m.is_file()) {
+                return Err(SafeImportError::NotAFile);
+            }
+            return Err(match e.kind() {
+                std::io::ErrorKind::NotFound => SafeImportError::NotFound,
+                kind => SafeImportError::Io(kind),
+            });
+        }
+    };
     let metadata = file.metadata().map_err(|e| SafeImportError::Io(e.kind()))?;
     if !metadata.is_file() {
         return Err(SafeImportError::NotAFile);
