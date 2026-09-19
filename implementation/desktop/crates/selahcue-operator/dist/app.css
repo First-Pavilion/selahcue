@@ -6888,6 +6888,9 @@
 .pp-gen-preview-title { margin: 0; font-size: 13px; font-weight: 700; color: var(--sc-text); }
 .pp-gen-preview-title:focus-visible { outline: 2px solid var(--sc-primary-hover); outline-offset: 2px; }
 .pp-gen-preview-desc { margin: 0; font-size: 12px; font-weight: 500; color: var(--sc-text-secondary); line-height: 1.5; }
+/* 86akcffy0 (Sana security review F2): a Confirm that will REPLACE an existing draft says so
+   in a colour that reads as "pay attention", not just another neutral description line. */
+.pp-gen-preview-overwrite { color: var(--sc-warn); font-weight: 700; }
 .pp-gen-preview-text { max-height: 220px; overflow-y: auto; white-space: pre-wrap; word-break: break-word; font-size: 12px; line-height: 1.5; color: var(--sc-text); background: var(--sc-elevated); border: 1px solid var(--sc-border); border-radius: 9px; padding: 10px 12px; }
 .pp-gen-preview-text:focus-visible { outline: 2px solid var(--sc-primary-hover); outline-offset: 2px; }
 .pp-gen-preview-actions { display: flex; gap: 10px; justify-content: flex-end; flex-wrap: wrap; }

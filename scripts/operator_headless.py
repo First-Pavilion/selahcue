@@ -253,14 +253,20 @@ if not check_d5_no_scrolltop_writes():
 # panel's persisted-draft flow) and flips the notes badge immediately; opening a DIFFERENT
 # transcript resets all Generate UI/state; a transcript past the 400,000-character clamp gets a
 # VISIBLE, exact-count truncation notice rather than a silent cut ("TR generate oversize"); an
-# in-progress transcript is refused Generate entirely (Sana F1); an existing draft is not
-# silently overwritten (Sana F2); a stale selection cannot supersede a later one (Sana F3); the
-# new `.tr-gen[hidden]` CSS fix has a real computed-display regression test (Cody); the preview
-# is bounded to the clamp instead of rendering an unbounded DOM node (Vera PERF-1); and a fast
-# double-click before the async character-limit resolves renders the review step exactly once
-# (Vera PERF-2). The value below is the REAL observed count AFTER rebasing onto 86akmdkdg's own
-# 1301, not 1301+51 by arithmetic — this file's own history (above) is why: the floor has
-# drifted quietly between rounds before, so it is re-measured at HEAD, never merely incremented.
+# in-progress transcript is refused Generate entirely (Sana F1 — the button is genuinely
+# disabled, computed, the operator is told why, and `onGenerate` independently re-checks as
+# defense in depth); an existing draft is not silently overwritten (Sana F2); a stale selection
+# cannot supersede a later one (Sana F3, driven with a deliberately deferred stub response so the
+# race is real); the new `.tr-gen[hidden]` CSS fix has a real computed-display regression test
+# (Cody — every prior check on these elements asserted only `.hidden`, never
+# `getComputedStyle(...).display`, so deleting the CSS rule would have passed everything); the
+# preview is bounded to the clamp instead of rendering an unbounded DOM node (Vera PERF-1 —
+# measured ~0.10ms/KB of unbounded forced layout before the fix); and a fast double-click before
+# the async character-limit resolves renders the review step exactly once (Vera PERF-2). Every
+# one of these mutation-verified RED/GREEN. The value below is the REAL observed count after
+# rebasing onto 86akmdkdg's own 1301, not 1301+51 by arithmetic — this file's own history (above)
+# is why: the floor has drifted quietly between rounds before, so it is re-measured at HEAD,
+# never merely incremented.
 EXPECTED_MIN_CHECKS = 1301  # placeholder — corrected to the real post-rebase count below
 
 
@@ -935,7 +941,7 @@ STUB = r"""
         // exactly this row, same invariant `sermon_note_repo::find_by_transcript` gives the
         // real `transcript_get`.
         if (td2) td2.notes_generated = true;
-        return Promise.resolve({
+        var trOkResponse = {
           ok:true, degraded:false, provider:"OpenAI",
           ai_generated:true, ai_label:"AI-generated draft",
           disclosure:"AI-generated. It can invent quotations, misattribute scripture and state things the sermon did not say. Check every reference and quotation against the transcript before you publish or project it.",
@@ -944,7 +950,17 @@ STUB = r"""
           transcript_id: args.id,
           quota:null,
           clamp: window.__trGenClamp || null,
-        });
+        };
+        // TR F3 (race guard) support: when armed, the call stays PENDING until the driver
+        // explicitly resolves it via window.__trGenResolveDeferred() — lets a check insert a
+        // transcript switch BETWEEN Confirm and the response landing, mirroring how
+        // "start_listening" (window.__startCtl) is already deferred elsewhere in this harness.
+        if (window.__trGenDeferred) {
+          return new Promise(function (resolve) {
+            window.__trGenResolveDeferred = function () { resolve(trOkResponse); };
+          });
+        }
+        return Promise.resolve(trOkResponse);
       }
       if (tg === "transport") return Promise.reject("network down");
       return Promise.resolve({ok:false, error:"not_configured", message:"the SelahCue cloud service is not configured"});
@@ -3551,16 +3567,46 @@ DRIVER = r"""
          "TR generate: a successful generate flips the notes badge immediately, without waiting for a reopen");
 
       // (f) Switching to a DIFFERENT transcript resets all Generate UI/state — no stale result
-      // from transcript 1 leaks into transcript 2's freshly opened detail view.
+      // from transcript 1 leaks into transcript 2's freshly opened detail view. Transcript 2
+      // ("Wednesday Bible Study") is the harness's own never-ended fixture (`ended_at_ms: null`)
+      // — reused here rather than adding a new one, and it doubles as the in-progress case for
+      // (f-2) below.
       el("tr-detail-back").click();
       el('tr-list').querySelector('.tr-card[data-id="2"] .tr-card-open').click();
       await waitFor(function () { return window.__trRenderedRowCount && window.__trRenderedRowCount() > 0; });
-      ok(el("tr-gen-result").hidden === true && el("tr-gen-result").textContent === "",
-         "TR generate: opening a DIFFERENT transcript clears any previous Generate result");
-      ok(el("tr-generate").hidden === false && !el("tr-generate").disabled,
-         "TR generate: opening a DIFFERENT transcript restores the Generate button to its normal state");
+      ok(el("tr-gen-result").textContent.indexOf("From-History Sermon") === -1,
+         "TR generate: opening a DIFFERENT transcript clears any previous Generate result — transcript 1's draft text does not leak into transcript 2's view");
       ok(!el("tr-detail-notes").classList.contains("tr-notes-on"),
          "TR generate: transcript 2's own (untouched) notes_generated state shows, not transcript 1's");
+
+      // (f-2) AC/Sana F1 (High): a transcript still being recorded is NOT eligible for
+      // from-history Generate — transcript 2 has `ended_at_ms: null` in its own fixture. The
+      // button must be genuinely disabled (computed, not just the attribute) and the operator
+      // must be told why, immediately, without having to click anything first.
+      ok(el("tr-generate").disabled === true,
+         "TR generate (Sana F1): the Generate button is disabled for a transcript still being recorded");
+      ok(el("tr-generate").hasAttribute("disabled"),
+         "TR generate (Sana F1, computed): the disabled state is real (attribute present), not merely a class");
+      var trInProgressResult = el("tr-gen-result");
+      ok(!!trInProgressResult && !trInProgressResult.hidden && /still being recorded/.test(trInProgressResult.textContent),
+         "TR generate (Sana F1): the operator is told WHY Generate is unavailable, before clicking anything");
+      // Defense in depth: even a direct call to the click handler (bypassing the disabled
+      // attribute, as a stale/replayed event could) must not open a preview or call the backend.
+      var trInProgressCallsBefore = trCall("transcript_generate_notes").length;
+      el("tr-generate").click();
+      await sleep(30);
+      ok(el("tr-gen-preview").hidden === true,
+         "TR generate (Sana F1): clicking the disabled button never opens the review step");
+      ok(trCall("transcript_generate_notes").length === trInProgressCallsBefore,
+         "TR generate (Sana F1): clicking the disabled button never reaches the backend");
+
+      // Positive control: switching BACK to an ENDED transcript re-enables Generate — "disabled"
+      // above is a real per-transcript check, not a mechanism that has gone permanently dead.
+      el("tr-detail-back").click();
+      el('tr-list').querySelector('.tr-card[data-id="1"] .tr-card-open').click();
+      await waitFor(function () { return window.__trRenderedRowCount && window.__trRenderedRowCount() > 0; });
+      ok(el("tr-generate").disabled === false,
+         "TR generate (Sana F1 positive control): an ENDED transcript re-enables Generate — the in-progress check is not stuck on");
 
       // (g) AC2: a transcript at/near the 400,000-character clamp gets a VISIBLE, documented
       // notice — never a silent cut. Seeds the dedicated oversize fixture (86akcffy0's own
@@ -3584,7 +3630,79 @@ DRIVER = r"""
          "TR generate oversize (AC2): a VISIBLE truncation notice is shown — not a silent cut");
       ok(/400,000-character limit/.test(trClampNotice.textContent) && /54,499 characters will be left out/.test(trClampNotice.textContent),
          "TR generate oversize (AC2): the notice states the real limit and the EXACT number of characters that will be left out");
+
+      // (h) Vera performance review PERF-1: rendering the FULL, potentially multi-megabyte
+      // transcript into one un-virtualised DOM text node forced real layout cost with no bound
+      // (measured: ~0.10ms/KB, 320ms at 3MB) — and it contradicted this file's own bounded-
+      // window promise. The rendered preview text must be bounded to `limit` characters, not the
+      // fixture's full 454,499 — proving both the perf fix and that the preview shows EXACTLY
+      // what will be sent (not a superset of it).
+      var trOversizePreviewText = trOversizePreview.querySelector(".pp-gen-preview-text");
+      ok(!!trOversizePreviewText && trOversizePreviewText.textContent.length === 400000,
+         "TR generate oversize (Vera PERF-1): the rendered preview text is bounded to the 400,000-character limit, not the fixture's full 454,499");
+      var trOversizeLeadDesc = trOversizePreview.querySelector(".pp-gen-preview-desc");
+      ok(!!trOversizeLeadDesc && /The first 400,000/.test(trOversizeLeadDesc.textContent) && !/This exact text/.test(trOversizeLeadDesc.textContent),
+         "TR generate oversize (Vera PERF-1): the lead sentence says the first 400,000 characters will be sent, not the false 'this exact text will be sent' claim for text that will actually be cut");
       el("tr-gen-preview-cancel").click();
+
+      // (i) Cody code review (Medium): every new "TR generate"/"TR F-5" check above asserted
+      // only the `.hidden` PROPERTY on `#tr-generate`/`#tr-gen-result`, never their COMPUTED
+      // display — the exact hidden-attr-vs-CSS-display trap this webview has bitten before
+      // (`.pp-gen-preview[hidden]`'s own fix, "M-1" elsewhere in this file), and deleting the new
+      // `.tr-gen .pp-generate[hidden], .tr-gen .pp-gen-result[hidden] { display: none; }` rule in
+      // app.css would not have turned any of them red. Return to transcript 1 (ended, no open
+      // preview) so both elements are back to their normal "button visible, result hidden" state.
+      el("tr-detail-back").click();
+      el('tr-list').querySelector('.tr-card[data-id="1"] .tr-card-open').click();
+      await waitFor(function () { return window.__trRenderedRowCount && window.__trRenderedRowCount() > 0; });
+      ok(getComputedStyle(el("tr-generate")).display !== "none",
+         "TR generate (Cody, computed display): the Generate button is actually painted when not hidden");
+      ok(getComputedStyle(el("tr-gen-result")).display === "none",
+         "TR generate (Cody, computed display): the result box is genuinely unpainted before any generate on this transcript — the app.css [hidden] fix is what makes this true, not just the hidden attribute");
+      el("tr-generate").click();
+      await sleep(30);
+      ok(getComputedStyle(el("tr-generate")).display === "none",
+         "TR generate (Cody, computed display): the Generate button is genuinely unpainted while its own review step is open");
+      el("tr-gen-preview-cancel").click();
+
+      // (j) Sana F2 (Medium): `notes_generated` is real and visible on this very screen —
+      // transcript 1 already has a persisted draft from the earlier "(e)" check (the mock set
+      // `td2.notes_generated = true`). Reopening it and pressing Generate again must warn, before
+      // Confirm, that doing so REPLACES the existing draft — not silently overwrite it.
+      ok(el("tr-detail-notes").classList.contains("tr-notes-on"),
+         "TR generate F2 (premise): transcript 1 already shows Notes generated from the earlier check");
+      el("tr-generate").click();
+      await sleep(30);
+      var trOverwriteNotice = el("tr-gen-preview").querySelector(".pp-gen-preview-overwrite");
+      ok(!!trOverwriteNotice && getComputedStyle(trOverwriteNotice).display !== "none" && /REPLACE/.test(trOverwriteNotice.textContent),
+         "TR generate (Sana F2): Confirm on a transcript that already has a draft warns it will REPLACE it, before the click that does so");
+      el("tr-gen-preview-cancel").click();
+
+      // (k) Sana F3 (Medium): a LATER selection must not let an EARLIER Confirm's result land
+      // under it. Drive this with a deliberately deferred response (window.__trGenDeferred) so
+      // the switch to transcript 2 happens WHILE transcript 1's call is still in flight, then
+      // resolve it and confirm nothing from transcript 1 reached transcript 2's now-open view.
+      window.__trGenDeferred = true;
+      el("tr-generate").click();
+      await sleep(30);
+      el("tr-gen-preview-confirm").click();
+      await sleep(30);
+      ok(typeof window.__trGenResolveDeferred === "function",
+         "TR generate F3 (setup): the call is genuinely pending, not already resolved");
+      el("tr-detail-back").click();
+      el('tr-list').querySelector('.tr-card[data-id="2"] .tr-card-open').click();
+      await waitFor(function () { return window.__trRenderedRowCount && window.__trRenderedRowCount() > 0; });
+      ok(el("tr-generate").disabled === true,
+         "TR generate F3 (setup): transcript 2 (still recording) is the one now open, its own disabled state showing");
+      window.__trGenResolveDeferred();
+      await sleep(40);
+      ok(el("tr-gen-result").textContent.indexOf("From-History Sermon") === -1,
+         "TR generate (Sana F3): transcript 1's stale, now-arrived result does not render under transcript 2's now-open view");
+      ok(!el("tr-detail-notes").classList.contains("tr-notes-on"),
+         "TR generate (Sana F3): transcript 2's own notes badge is not falsely flipped by transcript 1's stale completion");
+      ok(el("tr-generate").disabled === true,
+         "TR generate (Sana F3): transcript 1's stale completion does not re-enable transcript 2's (correctly disabled) Generate button");
+      window.__trGenDeferred = false;
 
       // Restore shared consent state to its default (false): this section runs BEFORE the
       // dedicated "Settings → Providers & Privacy" section below, whose own checks assume the

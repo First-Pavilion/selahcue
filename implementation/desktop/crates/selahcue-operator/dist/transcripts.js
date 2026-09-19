@@ -593,6 +593,25 @@
     detailMeta.textContent = fmtDate(t.started_at_ms) + " · " + fmtDuration(t.started_at_ms, t.ended_at_ms) + " · " + fmtSegCount(t.segments.length);
     notesBadge.textContent = t.notes_generated ? "Notes generated" : "Notes not yet generated";
     notesBadge.className = "tr-notes-badge" + (t.notes_generated ? " tr-notes-on" : "");
+    // Generate is only for a FINISHED service (86akcffy0, Sana security review — High): a
+    // still-recording transcript is not the immutable record this flow's preview/consent/
+    // persist steps all assume — its writer can append segments the preview never showed, and
+    // the "complete transcript... every recorded segment" disclosure copy would be lying about
+    // one still growing. `transcript_list` has no ended-only filter, so an in-progress service
+    // can be the very FIRST, most-clickable card — this is not a rare edge case to shrug off.
+    generateAllowed = t.ended_at_ms != null;
+    generateHasExistingDraft = !!t.notes_generated;
+    if (generateBtn) generateBtn.disabled = !generateAllowed;
+    if (!generateAllowed) {
+      var r = genResultEl();
+      if (r) {
+        r.className = "pp-gen-result pp-gen-info";
+        r.setAttribute("role", "status");
+        r.appendChild(el("span", "pp-gen-info-ico", "◔"));
+        r.appendChild(el("span", null,
+          "This service is still being recorded. Generate becomes available once it ends."));
+      }
+    }
   }
   function openTranscript(id) {
     openId = id;
@@ -658,12 +677,44 @@
   var genPreviewBox = document.getElementById("tr-gen-preview");
   var genResultBox = document.getElementById("tr-gen-result");
   var generating = false;
+  // Set by renderDetailHeader from the transcript's OWN `ended_at_ms`/`notes_generated` fields
+  // every time a transcript is opened (86akcffy0, Sana security review) — `onGenerate` re-checks
+  // `generateAllowed` itself (defense in depth) rather than trusting only the disabled button.
+  var generateAllowed = false;
+  var generateHasExistingDraft = false;
 
   // Same floor as settings.js's MIN_TRANSCRIPT_CHARS (Vera, PERF-3): an empty/near-empty
   // transcript is refused before any network call, never billed as a fully fabricated draft. A
   // stored, completed transcript should essentially never be this short, but the guard costs
   // nothing and keeps both Generate entry points behaving identically at the edges.
   var MIN_TRANSCRIPT_CHARS = 20;
+
+  // Unicode-scalar-aware length/prefix helpers (Sana security review F5 + Vera performance
+  // review PERF-1, 86akcffy0). Plain JS `str.length`/`str.slice` count/cut UTF-16 CODE UNITS, not
+  // characters — an astral character (rare in spoken-transcript text, but possible) is 2 UTF-16
+  // units and would inflate a `.length`-based count above what the backend's `chars().count()`
+  // (Unicode SCALAR values) reports, and `.slice` could split a surrogate pair in half. Neither
+  // function below materializes the whole string into an array first: `unicodeLength` is a single
+  // counting pass, `firstUnicodeChars` stops as soon as it has `n` characters, so previewing a
+  // multi-megabyte transcript never costs more work than the `limit` it is bounded to.
+  function unicodeLength(s) {
+    var n = 0;
+    for (var i = 0; i < s.length; ) {
+      var code = s.codePointAt(i);
+      i += (code > 0xFFFF) ? 2 : 1;
+      n++;
+    }
+    return n;
+  }
+  function firstUnicodeChars(s, n) {
+    var end = 0, count = 0;
+    while (count < n && end < s.length) {
+      var code = s.codePointAt(end);
+      end += (code > 0xFFFF) ? 2 : 1;
+      count++;
+    }
+    return s.slice(0, end);
+  }
 
   // Mirrors `selahcue_cloud::transcript_bounds::MAX_TRANSCRIPT_CHARS` — fetched from the host
   // (`note_generation_limits`, 86akcffy0) so the number has exactly ONE owner. This constant is
@@ -802,9 +853,13 @@
   }
 
   // Resets ALL Generate-related UI/state — called whenever a different transcript is opened
-  // (86akcffy0) so nothing from a previous selection leaks into the newly opened one.
+  // (86akcffy0) so nothing from a previous selection leaks into the newly opened one. Leaves
+  // `generateAllowed`/`generateHasExistingDraft` at a neutral "not yet known" false/false —
+  // `renderDetailHeader` sets their real values once the newly opened transcript's data arrives.
   function resetGenerateUi() {
     generating = false;
+    generateAllowed = false;
+    generateHasExistingDraft = false;
     if (genPreviewBox) { genPreviewBox.hidden = true; genPreviewBox.textContent = ""; }
     if (genResultBox) { genResultBox.hidden = true; genResultBox.textContent = ""; genResultBox.className = "pp-gen-result"; }
     if (generateBtn) { generateBtn.hidden = false; generateBtn.disabled = false; generateBtn.removeAttribute("aria-busy"); }
@@ -819,19 +874,46 @@
     generating = true;
     if (generateBtn) { generateBtn.setAttribute("aria-busy", "true"); generateBtn.disabled = true; }
     invoke("transcript_generate_notes", { id: id })
-      .then(showGenResult)
-      .catch(function (e) { showGenError("transport", String(e && e.message ? e.message : e)); })
+      .then(function (res) {
+        // A LATER selection superseded this one while the call was in flight (86akcffy0, Sana
+        // F3) — without this guard, transcript A's result/badge would render under transcript
+        // B's now-open heading. `openTranscript`'s own `if (openId !== id) return` a few lines up
+        // is the exact precedent this mirrors.
+        if (openId !== id) return;
+        showGenResult(res);
+      })
+      .catch(function (e) {
+        if (openId !== id) return;
+        showGenError("transport", String(e && e.message ? e.message : e));
+      })
       .then(function () {
         generating = false;
-        if (generateBtn) { generateBtn.removeAttribute("aria-busy"); generateBtn.disabled = false; }
+        // Only restore THIS transcript's button state — if a different one is open now,
+        // `openTranscript`/`renderDetailHeader` already set its own correct state, and this
+        // stale completion must not clobber it (e.g. re-enabling a button `renderDetailHeader`
+        // deliberately disabled because the NOW-open transcript is still recording).
+        if (openId === id && generateBtn) {
+          generateBtn.removeAttribute("aria-busy");
+          generateBtn.disabled = !generateAllowed;
+        }
       });
   }
 
-  // Renders the exact text about to be sent, plus who it's going to, and waits for an explicit
-  // Confirm click — nothing is sent until then. `limit` is the live `note_generation_limits`
-  // value (or its fallback); when `transcript` exceeds it, an ADDITIONAL paragraph discloses the
-  // truncation plainly (86akcffy0 AC2: a documented, VISIBLE strategy, never a silent cut) —
-  // truncate-to-head, the same behaviour `bounded_transcript` already applies at send time.
+  // Renders the text about to be sent, plus who it's going to, and waits for an explicit Confirm
+  // click — nothing is sent until then. `limit` is the live `note_generation_limits` value (or
+  // its fallback).
+  //
+  // When `transcript` exceeds it: an ADDITIONAL paragraph discloses the truncation plainly
+  // (86akcffy0 AC2: a documented, VISIBLE strategy, never a silent cut) — truncate-to-head, the
+  // same behaviour the backend's `clamp_transcript_in_place` already applies at send time — AND
+  // the preview text box itself shows only the first `limit` characters, the same ones that will
+  // actually be sent. Before this it showed the FULL, unclamped transcript while only a prefix
+  // would be sent — its own "this exact text will be sent" claim was false in the clamped case,
+  // and rendering a multi-megabyte string into one DOM node forced real layout cost with no
+  // bound (Vera performance review PERF-1, measured ~0.10ms/KB — 320ms at 3MB — that this
+  // surface's own bounded-window design, see this file's header comment, exists to prevent).
+  // Clamping the RENDERED text to `limit` fixes both at once: the preview is now always exactly
+  // what gets sent, and its cost is capped regardless of how large the stored transcript grows.
   function openGenPreview(transcript, limit) {
     var box = genPreviewBox;
     if (!box) return;
@@ -845,9 +927,17 @@
     heading.tabIndex = -1;
     box.appendChild(heading);
 
+    var totalChars = unicodeLength(transcript);
+    var willClamp = typeof limit === "number" && totalChars > limit;
+    var sentText = willClamp ? firstUnicodeChars(transcript, limit) : transcript;
+
     box.appendChild(el("p", "pp-gen-preview-desc",
-      "This exact text (" + transcript.length + " characters) will be sent to " + providerName +
-      ". Nothing leaves this device until you press Confirm."));
+      willClamp
+        ? ("This transcript is " + totalChars.toLocaleString() + " characters. The first " +
+           limit.toLocaleString() + " (shown below) will be sent to " + providerName +
+           ". Nothing leaves this device until you press Confirm.")
+        : ("This exact text (" + totalChars.toLocaleString() + " characters) will be sent to " +
+           providerName + ". Nothing leaves this device until you press Confirm.")));
 
     // Honest for THIS flow (86akcffy0): the operator explicitly selected this transcript from
     // the Transcripts list, and this is its COMPLETE stored text — every recorded segment, not
@@ -858,8 +948,17 @@
       "This is the complete transcript stored for this service — every recorded segment, not a " +
       "recent window."));
 
-    if (typeof limit === "number" && transcript.length > limit) {
-      var dropped = transcript.length - limit;
+    // FR-129-adjacent honesty (86akcffy0, Sana security review F2): `notes_generated` is now
+    // real and visible on this same screen — Confirm here silently REPLACES whatever draft
+    // already exists (possibly hand-edited via the Settings panel), so say so before it happens
+    // rather than after.
+    if (generateHasExistingDraft) {
+      box.appendChild(el("p", "pp-gen-preview-desc pp-gen-preview-overwrite",
+        "This will REPLACE the sermon notes already generated for this transcript."));
+    }
+
+    if (willClamp) {
+      var dropped = totalChars - limit;
       box.appendChild(el("p", "pp-gen-preview-desc pp-gen-preview-clamp",
         "This transcript is longer than the " + limit.toLocaleString() + "-character limit for " +
         "one request. The first " + limit.toLocaleString() + " characters will be sent; the " +
@@ -867,8 +966,9 @@
         "not reflect the end of the service."));
     }
 
-    // Untrusted transcript text → el() sets it via textContent, never innerHTML.
-    var text = el("div", "pp-gen-preview-text", transcript);
+    // Untrusted transcript text → el() sets it via textContent, never innerHTML. Bounded to
+    // `limit` characters when clamped — see the function doc comment above (PERF-1).
+    var text = el("div", "pp-gen-preview-text", sentText);
     text.tabIndex = 0;
     box.appendChild(text);
 
@@ -897,6 +997,11 @@
     if (generating) return;
     if (genPreviewBox && !genPreviewBox.hidden) return; // already reviewing
     if (openId == null) return;
+    // Defense in depth (86akcffy0, Sana security review F1): `generateBtn.disabled` already
+    // stops a normal click while the transcript is still recording, but this function is the
+    // one place that actually decides whether to open the review step, so it re-checks rather
+    // than trusting only the button's own attribute.
+    if (!generateAllowed) return;
     var transcript = fullTranscriptText();
     var trimmed = transcript.trim();
     if (trimmed.length === 0) {
@@ -908,7 +1013,15 @@
         "This transcript is too short to generate sermon notes from, so nothing was sent.");
       return;
     }
-    loadNoteCharLimit().then(function (limit) { openGenPreview(transcript, limit); });
+    // Capture the transcript id THIS call refers to, in case a fast double-click races
+    // `loadNoteCharLimit`'s async round trip and the operator switches transcripts before it
+    // resolves (Vera performance review PERF-2) — never open a preview for a transcript that
+    // is no longer the one open.
+    var forId = openId;
+    loadNoteCharLimit().then(function (limit) {
+      if (openId !== forId || generating || (genPreviewBox && !genPreviewBox.hidden)) return;
+      openGenPreview(transcript, limit);
+    });
   }
   if (generateBtn) generateBtn.addEventListener("click", onGenerate);
 

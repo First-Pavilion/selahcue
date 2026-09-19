@@ -5,7 +5,7 @@
 //! mode to exercise the graceful-fallback path (FR-135) without real networking.
 
 use crate::transport::{HttpResponse, HttpTransport, TransportError};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 /// One recorded outbound request (for privacy assertions in tests).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -17,12 +17,17 @@ pub struct RecordedRequest {
 }
 
 /// A scripted transport. Not thread-heavy: a `Mutex` guards the recording so it can be
-/// shared behind `&self` (the trait takes `&self`).
+/// shared behind `&self` (the trait takes `&self`). The recording itself is behind an
+/// `Arc` (not a bare `Mutex`) so [`MockTransport::requests_handle`] can hand out a cloned
+/// handle BEFORE the transport is moved by value into a client (e.g.
+/// `SelahCueCloudClient::new(transport, ...)`, which takes ownership) — a test can still
+/// inspect exactly what left the device afterward without needing the client to expose
+/// its transport back out.
 #[derive(Debug)]
 pub struct MockTransport {
     response: HttpResponse,
     fail: bool,
-    requests: Mutex<Vec<RecordedRequest>>,
+    requests: Arc<Mutex<Vec<RecordedRequest>>>,
 }
 
 impl MockTransport {
@@ -34,7 +39,7 @@ impl MockTransport {
                 body: body.into(),
             },
             fail: false,
-            requests: Mutex::new(Vec::new()),
+            requests: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -47,7 +52,7 @@ impl MockTransport {
                 body: String::new(),
             },
             fail: true,
-            requests: Mutex::new(Vec::new()),
+            requests: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -65,6 +70,15 @@ impl MockTransport {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .len()
+    }
+
+    /// A cloned handle onto the SAME recording this transport writes to — call this
+    /// BEFORE handing the transport by value to something that takes ownership of it
+    /// (e.g. `SelahCueCloudClient::new`), so a test can still inspect exactly what left
+    /// the device afterward. Reads through it with the same lock/clone shape as
+    /// [`MockTransport::recorded`].
+    pub fn requests_handle(&self) -> Arc<Mutex<Vec<RecordedRequest>>> {
+        Arc::clone(&self.requests)
     }
 
     fn record(&self, method: &'static str, url: &str, body: &str, bearer: Option<&str>) {
