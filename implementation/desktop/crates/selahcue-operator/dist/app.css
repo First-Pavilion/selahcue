@@ -7240,6 +7240,28 @@
   overflow-anchor: none;
 }
 
+/* Generate Sermon Notes from a stored transcript (86akcffy0) — reuses the `.pp-generate`/
+   `.pp-gen-preview`/`.pp-gen-result` rules above (Settings panel's live-tail Generate) so both
+   flows look and behave identically; `.tr-gen` itself is just a `flex: none` footer strip below
+   the (flex:1) log, padded to match this surface's own edges rather than the Settings panel's. */
+.tr-gen {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px 28px 20px;
+  border-top: 1px solid var(--sc-border);
+}
+/* Scoped to THIS surface only (descendant selector) — never touches `#surface-settings`'s own
+   `.pp-generate`/`.pp-gen-result` instances. Same trap and same fix as `.pp-gen-preview[hidden]`
+   above (M-1, Cody): the shared classes' `display: flex` outranks the UA `[hidden]{display:none}`
+   default regardless of specificity (author origin beats user-agent origin), so an element left
+   with only the `hidden` ATTRIBUTE stays laid out as an empty bordered/gradient box. */
+.tr-gen .pp-generate[hidden],
+.tr-gen .pp-gen-result[hidden] {
+  display: none;
+}
+
 /* One rendered transcript line. Distinct from the LIVE console's `.tr-seg`/`.tr-seg-time`/
    `.tr-seg-text` (the always-visible in-service panel) on purpose — this page renders the
    full stored text of a SAVED transcript, a different context with its own bounded-window

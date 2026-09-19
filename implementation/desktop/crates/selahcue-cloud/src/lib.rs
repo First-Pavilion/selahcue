@@ -30,6 +30,9 @@ pub mod mock;
 #[cfg(feature = "openai")]
 pub mod openai;
 pub mod secret;
+/// The note-generation transcript-length clamp — always compiled (86akcffy0). See the module
+/// docs for why this had to move out from behind the `openai` feature.
+pub mod transcript_bounds;
 pub mod transport;
 
 pub use client::SelahCueCloudClient;

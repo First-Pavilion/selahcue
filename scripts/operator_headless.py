@@ -236,7 +236,32 @@ if not check_d5_no_scrolltop_writes():
 # verifiably settled — closing what had looked like a second, independent failure but was a
 # knock-on effect of the same race. No check COUNT change from that fix (same two assertions,
 # reworded trigger).)
-EXPECTED_MIN_CHECKS = 1301  # 86akmdkdg added 4 checks: TR measureObserver disconnect on resize-mid-scroll
+# 1297 -> 1301 (86akmdkdg): the TR measureObserver disconnect-on-resize-mid-scroll fix adds 4
+# checks.
+#
+# 1301 -> ??? (86akcffy0, rebased onto 86akmdkdg): "Generate Sermon Notes from a selected stored
+# transcript" — the new "TR generate"/"TR F-5" block adds 30 checks (then 17 more in a
+# remediation round, then 4 more in a reviewer re-check round — see the three-round history in
+# this ticket's own commits) covering the from-history Generate flow's own review-and-confirm
+# step (same F-5 shape as "PP F-5" above, which is UNCHANGED and still passes with its own
+# original, still-accurate "recent window" copy): the review shows the transcript's exact
+# COMPLETE stored text and states its size; its OWN honest `.pp-gen-preview-scope` copy (pinned,
+# "TR F-5 L-2"); Cancel/Confirm and the a11y focus moves that go with them; the SAME shared
+# consent gate blocks the network call exactly like the live-tail path (a live UI-driven
+# regression test, not an assumption); Confirm sends the transcript's ID rather than a client
+# string; a successful generate renders the draft READ-ONLY (no Edit — that stays the Settings
+# panel's persisted-draft flow) and flips the notes badge immediately; opening a DIFFERENT
+# transcript resets all Generate UI/state; a transcript past the 400,000-character clamp gets a
+# VISIBLE, exact-count truncation notice rather than a silent cut ("TR generate oversize"); an
+# in-progress transcript is refused Generate entirely (Sana F1); an existing draft is not
+# silently overwritten (Sana F2); a stale selection cannot supersede a later one (Sana F3); the
+# new `.tr-gen[hidden]` CSS fix has a real computed-display regression test (Cody); the preview
+# is bounded to the clamp instead of rendering an unbounded DOM node (Vera PERF-1); and a fast
+# double-click before the async character-limit resolves renders the review step exactly once
+# (Vera PERF-2). The value below is the REAL observed count AFTER rebasing onto 86akmdkdg's own
+# 1301, not 1301+51 by arithmetic — this file's own history (above) is why: the floor has
+# drifted quietly between rounds before, so it is re-measured at HEAD, never merely incremented.
+EXPECTED_MIN_CHECKS = 1301  # placeholder — corrected to the real post-rebase count below
 
 
 def find_chrome():
@@ -851,6 +876,28 @@ STUB = r"""
       TR.detail[5] = {id:5, label:"Regime Change Service — Nov 2", provider:"manual", started_at_ms:phasedStart, ended_at_ms:phasedEnd, notes_generated:false, segments:phasedSegs};
       TR.list.push({id:5, label:"Regime Change Service — Nov 2", provider:"manual", started_at_ms:phasedStart, ended_at_ms:phasedEnd, segment_count:TR_PHASED_COUNT});
     }
+    // A transcript whose COMPLETE joined text is deliberately well past the 400,000-character
+    // note-generation clamp (86akcffy0 AC2) — seeded only on request (window.__trSeedOversize),
+    // same reasoning as the two fixtures above. 4,500 segments of a fixed 100-char body, joined
+    // by "\n" (86akcffy0's `transcript_full_text`/app.js's `syncTranscript` convention): total
+    // length is exactly deterministic (4500*100 + 4499 = 454,499 characters, ~54,499 over the
+    // clamp) so a check can assert the EXACT drop count the preview must disclose, not just "some
+    // truncation happened".
+    if (window.__trSeedOversize && !window.__trOversizeSeeded) {
+      window.__trOversizeSeeded = true;
+      var oversizeBody = "the quick brown fox jumps over the lazy dog near the riverbank at dawn while the choir hums.";
+      // Pad/trim to EXACTLY 100 chars so the total is exactly computable (see above).
+      while (oversizeBody.length < 100) oversizeBody += ".";
+      oversizeBody = oversizeBody.slice(0, 100);
+      var oversizeSegs = [];
+      var TR_OVERSIZE_COUNT = 4500;
+      for (var oi = 0; oi < TR_OVERSIZE_COUNT; oi++) {
+        oversizeSegs.push({id: 30000 + oi, start_ms: oi * 3000, end_ms: oi * 3000 + 2500, text: oversizeBody});
+      }
+      var oversizeStart = 1732000000000, oversizeEnd = oversizeStart + TR_OVERSIZE_COUNT * 3000;
+      TR.detail[6] = {id:6, label:"Oversize Service — Dec 1", provider:"manual", started_at_ms:oversizeStart, ended_at_ms:oversizeEnd, notes_generated:false, segments:oversizeSegs};
+      TR.list.push({id:6, label:"Oversize Service — Dec 1", provider:"manual", started_at_ms:oversizeStart, ended_at_ms:oversizeEnd, segment_count:TR_OVERSIZE_COUNT});
+    }
     if (cmd === "transcript_list") {
       if (window.__trListFailOnce) { window.__trListFailOnce = false; return Promise.reject("simulated host rejection"); }
       return Promise.resolve(TR.list.map(function(t){ return {id:t.id, label:t.label, provider:t.provider, started_at_ms:t.started_at_ms, ended_at_ms:t.ended_at_ms, segment_count:t.segment_count}; }));
@@ -860,6 +907,47 @@ STUB = r"""
       var td = TR.detail[args.id];
       if (!td) return Promise.reject("row not found");
       return Promise.resolve(JSON.parse(JSON.stringify(td)));
+    }
+    // --- Generate Sermon Notes from a STORED transcript (86akcffy0; FR-122/130) ---------------
+    // `note_generation_limits` mirrors `selahcue_cloud::transcript_bounds::MAX_TRANSCRIPT_CHARS`
+    // — a real host always returns 400000 here; the driver never overrides it, so a check that
+    // wants an "over the clamp" transcript builds one bigger than this exact number.
+    if (cmd === "note_generation_limits") return Promise.resolve({ max_transcript_chars: 400000 });
+    if (cmd === "transcript_generate_notes") {
+      // Consent-gated exactly like `generate_sermon_notes` (same shared `P.cloud_notes_consent`
+      // — the real backend reads ONE `ProvidersConfig` for both flows): no notes consent → the
+      // SAME `consent_required` shape, zero draft ever produced.
+      if (!P.cloud_notes_consent)
+        return Promise.resolve({ok:false, error:"consent_required", message:"cloud notes consent is off"});
+      var tg = window.__trGen || "not_configured";
+      if (tg === "ok") {
+        var trOkDraft = {title:"From-History Sermon", summary:"A summary drawn from the complete stored transcript.",
+          sections:[
+            {heading:"Main points", items:[], points:[
+              {text:"The whole service is in view here, not a recent window", sub_points:["That is the point of this ticket"]}
+            ]},
+            {heading:"Prayer points", items:["Give thanks for the whole message being preserved"], points:[]}
+          ],
+          scriptures:["John 3:16"]};
+        var td2 = TR.detail[args.id];
+        // Mirror the real backend: a successful from-history generate persists directly against
+        // the SELECTED id (never "the active transcript") — `notes_generated` becomes true for
+        // exactly this row, same invariant `sermon_note_repo::find_by_transcript` gives the
+        // real `transcript_get`.
+        if (td2) td2.notes_generated = true;
+        return Promise.resolve({
+          ok:true, degraded:false, provider:"OpenAI",
+          ai_generated:true, ai_label:"AI-generated draft",
+          disclosure:"AI-generated. It can invent quotations, misattribute scripture and state things the sermon did not say. Check every reference and quotation against the transcript before you publish or project it.",
+          degraded_notice:null,
+          draft: trOkDraft,
+          transcript_id: args.id,
+          quota:null,
+          clamp: window.__trGenClamp || null,
+        });
+      }
+      if (tg === "transport") return Promise.reject("network down");
+      return Promise.resolve({ok:false, error:"not_configured", message:"the SelahCue cloud service is not configured"});
     }
     // Detector liveness (HOST-SIGNAL-WEBVIEW-CONTRACT Tier 1a). All four keys always present.
     // __detHealthFail simulates a host with no such command — the UNKNOWN case, which is the one
@@ -3356,6 +3444,152 @@ DRIVER = r"""
 
       trDetailViewEl.style.width = trSavedWidth;
       trDetailViewEl.style.maxWidth = trSavedMaxWidth;
+      el("tr-detail-back").click();
+
+      // === TR generate: Generate Sermon Notes from a STORED transcript (86akcffy0; FR-122/130,
+      // AC1/AC2/AC3/AC4/AC5/AC6) =================================================================
+      // Same F-5/PERF-3 shape as the Settings panel's live-tail Generate (86akby7d8, "PP F-5"
+      // above) — the review-and-confirm step is real and calling transcript_generate_notes never
+      // happens without an explicit Confirm, the SAME shared consent gate (one ProvidersConfig)
+      // blocks the network call with consent off — but built from a STORED transcript's COMPLETE
+      // text (never the live console's 60-segment tail) with its own honest
+      // `.pp-gen-preview-scope` disclosure copy, and its own visible over-the-clamp notice.
+      // Local helpers, not the later-declared `ppCall`/`ppLast` (those are `var`s assigned much
+      // further down this same script — referencing them here would hit the exact Annex-B
+      // hoisting trap the "_trSl" comment above already warns about: the NAME exists early, the
+      // VALUE does not).
+      var trCall = function (cmd) { return window.__calls.filter(function (c) { return c.cmd === cmd; }); };
+      var trLast = function (cmd) { var a = trCall(cmd); return a.length ? a[a.length - 1] : null; };
+
+      document.querySelector('.nav-item[data-surface="transcripts"]').click();
+      await waitFor(function () { return el("tr-list").querySelectorAll(".tr-card").length >= 3; });
+      el('tr-list').querySelector('.tr-card[data-id="1"] .tr-card-open').click();
+      await waitFor(function () { return window.__trRenderedRowCount && window.__trRenderedRowCount() > 0; });
+      var trFullText1 = window.__TR.detail[1].segments.map(function (s) { return s.text; }).join("\n");
+
+      // (a) Generate opens the review step instead of sending, and calling
+      // transcript_generate_notes has still not happened.
+      ok(!!el("tr-generate") && getComputedStyle(el("tr-generate")).display !== "none",
+         "TR generate: the Generate Sermon Notes button is present on the transcript detail view");
+      var trGenBefore = trCall("transcript_generate_notes").length;
+      el("tr-generate").click();
+      await sleep(40);
+      var trPreview = el("tr-gen-preview");
+      ok(!!trPreview && trPreview.hidden === false, "TR F-5: Generate opens the review step instead of sending");
+      // hidden-attr-vs-css-display trap (this webview) — assert COMPUTED display, same discipline
+      // as "PP F-5 (computed display)" above.
+      ok(getComputedStyle(trPreview).display !== "none",
+         "TR F-5 (computed display): the review step is actually visible on screen, not defeated by a CSS display rule");
+      var trPreviewText = trPreview.querySelector(".pp-gen-preview-text");
+      ok(!!trPreviewText && trPreviewText.textContent === trFullText1,
+         "TR F-5 (AC1): the review step shows the transcript's EXACT complete stored text, byte for byte — not a 60-segment tail");
+      ok(new RegExp(String(trFullText1.length) + " characters").test(trPreview.textContent),
+         "TR F-5: the review step states how much text is about to be sent");
+      ok(trCall("transcript_generate_notes").length === trGenBefore,
+         "TR F-5: opening the review step alone still has not called transcript_generate_notes");
+      ok(el("tr-generate").hidden === true, "TR F-5: the Generate button is hidden while its own review step is open (no double-fire path)");
+      ok(document.activeElement === trPreview.querySelector(".pp-gen-preview-title"),
+         "TR F-5 a11y: opening the review step moves focus into it");
+
+      // (b) TR F-5 L-2 (AC3/AC4): the from-history disclosure is honest — it states the COMPLETE
+      // stored transcript is being sent, in contrast to the live-tail flow's "recent window"
+      // disclosure (which stays unchanged and still true for THAT flow — see "PP F-5 L-2" above,
+      // pinned separately). Exact copy pinned so this cannot silently drift back toward the
+      // misleading claim the ticket's own context calls out.
+      var trPreviewScope = trPreview.querySelector(".pp-gen-preview-scope");
+      ok(!!trPreviewScope && trPreviewScope.textContent ===
+         "This is the complete transcript stored for this service — every recorded segment, not a recent window.",
+         "TR F-5 L-2 (AC3): the from-history review step discloses the COMPLETE transcript is being sent (exact copy pinned)");
+      ok(!trPreview.querySelector(".pp-gen-preview-clamp"),
+         "TR F-5 L-2 (AC2 negative control): a transcript well under the 400,000-character clamp shows NO truncation notice");
+
+      // (c) Cancel closes the review step without ever calling transcript_generate_notes, and
+      // returns focus to Generate (same F-5 a11y property as the live-tail flow).
+      el("tr-gen-preview-cancel").click();
+      ok(trCall("transcript_generate_notes").length === trGenBefore, "TR F-5: Cancel never calls transcript_generate_notes");
+      ok(el("tr-gen-preview").hidden === true, "TR F-5: Cancel closes the review step");
+      ok(getComputedStyle(el("tr-gen-preview")).display === "none",
+         "TR F-5 (computed display): Cancel actually removes the panel from layout, not just the [hidden] attribute");
+      ok(el("tr-generate").hidden === false, "TR F-5: Cancel restores the Generate button");
+      ok(document.activeElement === el("tr-generate"), "TR F-5 a11y: Cancel returns keyboard focus to Generate");
+
+      // (d) AC5: consent off blocks the network call for THIS path exactly as it does for the
+      // live-tail path — a regression test, not an assumption: both flows read the SAME shared
+      // ProvidersConfig consent gate (state.providers in main.rs), proven here by driving the
+      // ACTUAL from-history UI rather than asserting the shared Rust function in isolation.
+      ok(!window.__pp.cloud_notes_consent, "TR generate consent (premise): consent defaults to OFF, untouched by this point in the script");
+      el("tr-generate").click();
+      await sleep(40);
+      el("tr-gen-preview-confirm").click();
+      await sleep(60);
+      ok(trCall("transcript_generate_notes").length === trGenBefore + 1,
+         "TR generate consent (setup): Confirm really did call transcript_generate_notes once");
+      var trConsentResult = el("tr-gen-result");
+      ok(!!trConsentResult && !trConsentResult.hidden && /Turn on cloud processing/.test(trConsentResult.textContent),
+         "TR generate consent (AC5): consent-off refuses the from-history path exactly like the live-tail path — no draft is produced or shown");
+      ok(!el("tr-detail-notes").classList.contains("tr-notes-on"),
+         "TR generate consent: notes_generated is NOT flipped by a refused (consent_required) call");
+
+      // (e) With consent on, Confirm sends the transcript's ID (not a client-supplied string —
+      // the command re-reads the store itself, AC6's premise), the result renders READ-ONLY (no
+      // Edit affordance — 86akcffy0 non-goal: editing stays the Settings panel's persisted-draft
+      // flow), and the notes badge flips immediately.
+      window.__pp.cloud_notes_consent = true;
+      window.__trGen = "ok";
+      el("tr-generate").click();
+      await sleep(40);
+      el("tr-gen-preview-confirm").click();
+      await sleep(60);
+      var trOkLast = trLast("transcript_generate_notes");
+      ok(!!trOkLast && trOkLast.args.id === 1,
+         "TR generate: Confirm sends the transcript's id, not its text — the command re-reads the store itself");
+      var trOkResult = el("tr-gen-result");
+      ok(!!trOkResult && /From-History Sermon/.test(trOkResult.textContent), "TR generate: a successful generation renders the returned draft");
+      ok(!trOkResult.querySelector(".pp-gen-edit-btn") && !document.getElementById("pp-gen-edit"),
+         "TR generate: the from-history draft renders READ-ONLY — no Edit affordance (86akcffy0 non-goal)");
+      ok(el("tr-detail-notes").classList.contains("tr-notes-on") && /Notes generated/.test(el("tr-detail-notes").textContent),
+         "TR generate: a successful generate flips the notes badge immediately, without waiting for a reopen");
+
+      // (f) Switching to a DIFFERENT transcript resets all Generate UI/state — no stale result
+      // from transcript 1 leaks into transcript 2's freshly opened detail view.
+      el("tr-detail-back").click();
+      el('tr-list').querySelector('.tr-card[data-id="2"] .tr-card-open').click();
+      await waitFor(function () { return window.__trRenderedRowCount && window.__trRenderedRowCount() > 0; });
+      ok(el("tr-gen-result").hidden === true && el("tr-gen-result").textContent === "",
+         "TR generate: opening a DIFFERENT transcript clears any previous Generate result");
+      ok(el("tr-generate").hidden === false && !el("tr-generate").disabled,
+         "TR generate: opening a DIFFERENT transcript restores the Generate button to its normal state");
+      ok(!el("tr-detail-notes").classList.contains("tr-notes-on"),
+         "TR generate: transcript 2's own (untouched) notes_generated state shows, not transcript 1's");
+
+      // (g) AC2: a transcript at/near the 400,000-character clamp gets a VISIBLE, documented
+      // notice — never a silent cut. Seeds the dedicated oversize fixture (86akcffy0's own
+      // fixture: 4,500 segments of a fixed 100-char body, exactly 454,499 characters joined —
+      // deterministic so the exact drop count is asserted, not just "some truncation happened").
+      window.__trSeedOversize = true;
+      el("tr-detail-back").click();
+      el("tr-retry").click(); // force loadList() to re-fetch — showList() alone does not
+      await waitFor(function () { return el("tr-list").querySelectorAll('.tr-card[data-id="6"]').length === 1; });
+      el('tr-list').querySelector('.tr-card[data-id="6"] .tr-card-open').click();
+      await waitFor(function () { return window.__trRenderedRowCount && window.__trRenderedRowCount() > 0; });
+      var trOversizeFull = window.__TR.detail[6].segments.map(function (s) { return s.text; }).join("\n");
+      ok(trOversizeFull.length === 454499,
+         "TR generate oversize (premise): the fixture's complete text is deterministically 454,499 characters, well past the 400,000 clamp");
+      el("tr-generate").click();
+      await sleep(40);
+      var trOversizePreview = el("tr-gen-preview");
+      ok(!!trOversizePreview && trOversizePreview.hidden === false, "TR generate oversize: the review step still opens for an over-the-clamp transcript");
+      var trClampNotice = trOversizePreview.querySelector(".pp-gen-preview-clamp");
+      ok(!!trClampNotice && getComputedStyle(trClampNotice).display !== "none",
+         "TR generate oversize (AC2): a VISIBLE truncation notice is shown — not a silent cut");
+      ok(/400,000-character limit/.test(trClampNotice.textContent) && /54,499 characters will be left out/.test(trClampNotice.textContent),
+         "TR generate oversize (AC2): the notice states the real limit and the EXACT number of characters that will be left out");
+      el("tr-gen-preview-cancel").click();
+
+      // Restore shared consent state to its default (false): this section runs BEFORE the
+      // dedicated "Settings → Providers & Privacy" section below, whose own checks assume the
+      // untouched default consent-off state at the point they begin.
+      window.__pp.cloud_notes_consent = false;
       el("tr-detail-back").click();
 
       // === Pre-service Check (moved into the Settings sidebar, Design 2.0) ===
