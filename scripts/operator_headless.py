@@ -291,12 +291,12 @@ if not check_d5_no_scrolltop_writes():
 #
 # Rebased onto 86akcffy0 (which is itself rebased onto 86akmdkdg): all three tickets' additions
 # are non-overlapping (different fixtures, different DRIVER sections — confirmed by inspecting
-# each diff's hunk locations before this rebase, not assumed), so the combined floor is
-# provisionally 1355 + 11 + 3 = 1369. This is still a naive sum, not a verified count for the
-# COMBINED file — this file's own history has caught that kind of arithmetic being wrong more
-# than once (an implicit `ok()` inside a helper call is easy to miss, as the first remediation
-# round above shows). Re-run this script standalone after the rebase and set this to the REAL
-# observed total, not this provisional value, before trusting it.
+# each diff's hunk locations before this rebase, not assumed). The naive sum was
+# 1355 + 11 + 3 = 1369, and this is confirmed as the REAL observed count too — a standalone run
+# of this file after the rebase reported "1369 checks, 0 FAIL" exactly, so unlike the first
+# remediation round above (where an implicit `ok()` inside a helper call made naive arithmetic
+# wrong by one), this rebase's three additions really are fully independent with no shared
+# side effects between them.
 EXPECTED_MIN_CHECKS = 1369
 
 
