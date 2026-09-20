@@ -5603,8 +5603,12 @@ async fn generate_sermon_notes(
             // for "no persistence available".
             let transcript_id = match state.backend.active_transcript_id().await {
                 Ok(id) => id,
-                Err(e) => {
-                    eprintln!("selahcue-operator: could not resolve the active transcript id: {e}");
+                Err(_) => {
+                    // Deliberately NOT interpolated (Quinn, PR #50, 86akgqdxr four-reviewer-gate
+                    // remediation): the same TransportError::Protocol Debug-dump-of-a-whole-
+                    // ServerMessage risk Sana's F1 fixed elsewhere in this file — see
+                    // transcript_get's doc comment for the full call chain.
+                    eprintln!("selahcue-operator: could not resolve the active transcript id");
                     None
                 }
             };
@@ -5635,10 +5639,10 @@ async fn generate_sermon_notes(
                             );
                             None
                         }
-                        Err(e) => {
-                            eprintln!(
-                                "selahcue-operator: failed to persist sermon-note draft: {e}"
-                            );
+                        Err(_) => {
+                            // Deliberately NOT interpolated (same F1-class risk, see
+                            // transcript_get's doc comment for the full call chain).
+                            eprintln!("selahcue-operator: failed to persist sermon-note draft");
                             None
                         }
                     }
@@ -6262,8 +6266,15 @@ async fn update_sermon_note_draft(
             "message": "The host refused this edit: no saved draft exists for this \
                 transcript, or a field was too large.",
         })),
-        Err(e) => Ok(serde_json::json!({
-            "ok": false, "error": "storage_error", "message": e,
+        Err(_) => Ok(serde_json::json!({
+            // Deliberately NOT the raw error string (Quinn, PR #50, 86akgqdxr four-reviewer-gate
+            // remediation — the same F1-class risk Sana found elsewhere in this file, but WORSE
+            // here: this "message" is rendered directly on the operator's own screen via
+            // showGenError/saveDraftEdit (role="alert"), not merely logged. See transcript_get's
+            // doc comment for the full TransportError::Protocol Debug-dump call chain.
+            "ok": false, "error": "storage_error",
+            "message": "The host reported a connection or protocol problem while saving this \
+                edit. Check the connection and try again.",
         })),
     }
 }
