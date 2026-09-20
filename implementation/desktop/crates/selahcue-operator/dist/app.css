@@ -6866,7 +6866,28 @@
 .pp-gen-list { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 3px; }
 .pp-gen-list li { font-size: 12px; font-weight: 500; color: var(--sc-text-secondary); }
 .pp-gen-scriptures { margin: 4px 0 0; font-size: 12px; }
-.pp-gen-scr-list { color: var(--sc-gold); font-weight: 600; }
+/* 86akby820: a single reference (was one joined string, .pp-gen-scr-list, before this
+   ticket) — split apart so an individual unverified one can carry its own mark. */
+.pp-gen-scr-item { color: var(--sc-gold); font-weight: 600; }
+/* Genuinely a fabrication-safety concern (FR-125/FR-128), not a routine/neutral outcome
+   like 86akc0tua's empty-section case — this reuses the --sc-warn register deliberately,
+   the same one FABRICATION_DISCLOSURE and DEGRADED_FALLBACK_NOTICE already use for "read
+   this before you act on it". */
+.pp-gen-scr-unverified { color: var(--sc-warn); font-weight: 700; }
+/* Security review finding (Sana F3 on PR #47): a plain checkmark, not a new colour —
+   "verified" needs its OWN explicit mark so it is never just "the absence of a warning",
+   which would let a reference that slips past a gap in the check read as clean. */
+.pp-gen-scr-verified { color: var(--sc-text-secondary); font-weight: 700; }
+.pp-gen-scripture-note {
+  margin: 8px 0 4px;
+  padding: 8px 10px;
+  border-left: 3px solid var(--sc-warn);
+  border-radius: 4px;
+  background: var(--sc-warn-soft);
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--sc-text-secondary);
+}
 .pp-gen-info { flex-direction: row; align-items: center; gap: 10px; color: var(--sc-info); background: var(--sc-info-soft); border-color: var(--sc-info-border); font-size: 12px; font-weight: 600; }
 .pp-gen-info-ico { font-size: 14px; flex: none; }
 .pp-gen-err { flex-direction: row; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; color: var(--sc-warn); background: var(--sc-warn-soft); border-color: var(--sc-warn-border); font-size: 12px; font-weight: 600; }

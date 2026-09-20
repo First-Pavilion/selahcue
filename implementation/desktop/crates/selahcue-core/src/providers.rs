@@ -330,6 +330,173 @@ pub enum DraftCaveat {
     /// (`"Summary"`, `"Scripture references"`) so the console can render one uniform
     /// list regardless of which kind of "requested" it was.
     SectionRequestedEmpty { heading: String },
+    /// A scripture reference in this draft — in the extracted `scriptures` list, or
+    /// embedded in a section's body text — did not resolve to any verse in the bundled
+    /// Bible text (86akby820; FR-125/FR-128). Covers a wrong book, a chapter past a real
+    /// book's end, a verse past a real chapter's end, AND a reference that could not be
+    /// parsed at all — the parser's own silent-drop behaviour is exactly what this ticket
+    /// exists to stop happening at this layer.
+    ///
+    /// Confirms only that the address does not exist; it says nothing about whether any
+    /// words the draft attributes to it are accurate; that is a different, unchecked
+    /// claim (see `SCRIPTURE_VERIFICATION_WORDING`).
+    ScriptureUnverified {
+        /// The reference exactly as it appeared in the draft — an unparseable string is
+        /// kept verbatim, since there is no canonical form to normalise it to.
+        reference: String,
+    },
+}
+
+/// The address-only scope of scripture verification, stated once so every place that
+/// renders a verdict says the same true thing (86akby820; FR-125). This check confirms a
+/// reference resolves to real verses in the bundled text; it never reads what the draft
+/// claims those verses say, so it cannot and does not vouch for a quotation's accuracy.
+pub const SCRIPTURE_VERIFICATION_WORDING: &str =
+    "Verified means the reference address exists in the bundled Bible text — it does not \
+     confirm that any words this draft attributes to it are accurate. Always check a \
+     quotation against the actual text before you use it.";
+
+/// One scripture reference found anywhere in a draft, and whether it resolves to real
+/// verses in the bundled Bible text (86akby820; FR-125/FR-128).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScriptureVerdict {
+    /// The reference exactly as the caller supplied it (trimmed), whether or not it
+    /// parsed — NEVER re-serialised through `Reference::to_string()`. Security review
+    /// finding (Sana F1 on PR #47): an earlier version canonicalised a successfully-
+    /// parsed reference, which silently broke the exact-string match a console uses to
+    /// attach this verdict to a `scriptures` list entry, since the parser accepts
+    /// abbreviations the model may have written instead of the canonical spelling.
+    pub reference: String,
+    /// True when the reference parsed AND resolved to at least one verse. False for
+    /// EITHER an unparseable reference OR one that parses but is outside the canon
+    /// (wrong book, chapter past the book's end, verse past the chapter's end) — both are
+    /// "unverified", never dropped, never an error.
+    pub verified: bool,
+}
+
+/// Upper bound on scripture references verified from the extracted `scriptures` list.
+/// Set well above every upstream cap this crate is aware of
+/// (`selahcue-cloud::openai::MAX_SCRIPTURES = 128` at review time) — this crate cannot
+/// import that constant directly (the dependency runs the other way), so the margin here
+/// is deliberate insurance, not a tight fit. This must never be the reason a real list
+/// entry goes unchecked: an entry beyond this cap would render identically to a verified
+/// one, which is precisely Sana's F2 finding on PR #47.
+pub const MAX_LIST_REFERENCES: usize = 256;
+
+/// Upper bound on scripture references found by scanning section body text (flat items,
+/// outline point text, sub-point text). This bound stays tight: unlike the extracted
+/// list (bounded upstream to a small, deliberate count), body text is bounded only by
+/// character count, and a hostile draft could cram many reference-shaped substrings into
+/// it — this is the genuinely adversarial-input-prone half of this function.
+pub const MAX_EMBEDDED_REFERENCES: usize = 64;
+
+/// Verify every scripture reference in a draft — the extracted `scriptures` list AND
+/// references embedded in a section's body text (flat items, outline point text, and
+/// sub-point text) — against `exists`, an injected lookup so this function stays testable
+/// with a stub oracle and has no dependency on `selahcue-scripture` (which depends on this
+/// crate, not the other way round; the real caller wires `exists` to
+/// `|r| !selahcue_scripture::verses(r).is_empty()`).
+///
+/// `ScriptureVerdict::reference` is always the CALLER's own string, verbatim (trimmed) —
+/// never re-serialised through `Reference::to_string()`. Security review finding (Sana,
+/// F1 on PR #47): the parser accepts aliases (`"Obad"`, `"3jn"`, the space-shorthand
+/// form, …), so re-serialising a successfully-parsed reference to its canonical form
+/// silently broke the exact-string match the console uses to attach a verdict to a
+/// `scriptures` list entry — an abbreviated fabricated reference parsed fine, verified
+/// `false`, and then rendered with NO mark at all, because the console was looking for
+/// the canonical spelling, not the one actually in the list. Echoing the input back
+/// verbatim makes that match reliable by construction rather than by convention.
+///
+/// Bounded and total: never panics on adversarial input. The list is capped at
+/// [`MAX_LIST_REFERENCES`], embedded-text scanning separately at
+/// [`MAX_EMBEDDED_REFERENCES`] (see each constant's doc for why they differ). A reference
+/// that cannot be parsed at all is retained as unverified, never silently dropped (unlike
+/// [`crate::scripture::parse`], which is the wrong entry point here for exactly that
+/// reason). Duplicate reference text (by exact string, shared across both phases) is
+/// verified once; a fabricated reference repeated ten times in one draft is reported
+/// once, not ten times.
+pub fn verify_scriptures(
+    scriptures: &[String],
+    sections: &[NoteSection],
+    mut exists: impl FnMut(&crate::scripture::Reference) -> bool,
+) -> Vec<ScriptureVerdict> {
+    let mut verdicts = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+
+    // Returns `true` iff a NEW verdict was pushed — the caller's own cap counter only
+    // advances on an actual push, so a run of duplicates never eats into either budget.
+    let mut consider = |raw: &str,
+                        verdicts: &mut Vec<ScriptureVerdict>,
+                        seen: &mut std::collections::HashSet<String>|
+     -> bool {
+        let raw = raw.trim();
+        if raw.is_empty() || !seen.insert(raw.to_string()) {
+            return false;
+        }
+        let verified = crate::scripture::parse_one(raw)
+            .map(|reference| exists(&reference))
+            .unwrap_or(false);
+        verdicts.push(ScriptureVerdict {
+            reference: raw.to_string(),
+            verified,
+        });
+        true
+    };
+
+    let mut list_count = 0usize;
+    for raw in scriptures {
+        if list_count >= MAX_LIST_REFERENCES {
+            break;
+        }
+        if consider(raw, &mut verdicts, &mut seen) {
+            list_count += 1;
+        }
+    }
+
+    let mut embedded_count = 0usize;
+    'sections: for section in sections {
+        for item in section.items() {
+            if embedded_count >= MAX_EMBEDDED_REFERENCES {
+                break 'sections;
+            }
+            for candidate in crate::detection::detect(item) {
+                if embedded_count >= MAX_EMBEDDED_REFERENCES {
+                    break 'sections;
+                }
+                if consider(&candidate, &mut verdicts, &mut seen) {
+                    embedded_count += 1;
+                }
+            }
+        }
+        for point in section.points() {
+            if embedded_count >= MAX_EMBEDDED_REFERENCES {
+                break 'sections;
+            }
+            for candidate in crate::detection::detect(&point.text) {
+                if embedded_count >= MAX_EMBEDDED_REFERENCES {
+                    break 'sections;
+                }
+                if consider(&candidate, &mut verdicts, &mut seen) {
+                    embedded_count += 1;
+                }
+            }
+            for sub in &point.sub_points {
+                if embedded_count >= MAX_EMBEDDED_REFERENCES {
+                    break 'sections;
+                }
+                for candidate in crate::detection::detect(sub) {
+                    if embedded_count >= MAX_EMBEDDED_REFERENCES {
+                        break 'sections;
+                    }
+                    if consider(&candidate, &mut verdicts, &mut seen) {
+                        embedded_count += 1;
+                    }
+                }
+            }
+        }
+    }
+
+    verdicts
 }
 
 /// A generated sermon-note draft. Always labelled AI-generated by the UI (FR-123);
@@ -348,6 +515,14 @@ pub struct NoteDraft {
     /// here (that crate depends on this one, not the other way round, so this doc comment
     /// names it in prose rather than as an intra-doc link).
     pub caveats: Vec<DraftCaveat>,
+    /// Every scripture reference found in this draft — the extracted `scriptures` list
+    /// AND references embedded in a section's body text — each carrying its own verified
+    /// verdict (86akby820; FR-125/FR-128). Populated only when
+    /// `include.scripture_extraction` is on; empty otherwise, matching `scriptures`
+    /// itself. An UNVERIFIED entry here also appears as a
+    /// [`DraftCaveat::ScriptureUnverified`] in `caveats`, so a console that only reads the
+    /// shared caveat list still sees it.
+    pub scripture_verdicts: Vec<ScriptureVerdict>,
 }
 
 /// Why a note generation could not proceed. Stable, actionable, and — importantly —

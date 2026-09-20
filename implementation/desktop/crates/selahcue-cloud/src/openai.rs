@@ -734,6 +734,11 @@ pub fn parse_draft(body: &str, inc: &IncludeInNotes) -> Result<(NoteDraft, Clamp
             sections,
             scriptures,
             caveats,
+            // Left empty here (86akby820): this crate has no dependency on
+            // `selahcue-scripture` and cannot supply a real lookup oracle. Verification
+            // runs one layer up, in `selahcue-operator`, against every provider's output
+            // uniformly rather than duplicating it per provider.
+            scripture_verdicts: Vec::new(),
         },
         log,
     ))
