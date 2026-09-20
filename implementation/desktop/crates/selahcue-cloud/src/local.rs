@@ -86,6 +86,12 @@ impl NoteProvider for LocalNoteProvider {
         if inc.social_excerpts {
             sections.push(NoteSection::flat("Social excerpts", Vec::new()));
         }
+        if inc.podcast_show_notes {
+            sections.push(NoteSection::flat("Podcast show notes", Vec::new()));
+        }
+        if inc.short_description {
+            sections.push(NoteSection::flat("Short description", Vec::new()));
+        }
 
         Ok(NoteDraft {
             title,

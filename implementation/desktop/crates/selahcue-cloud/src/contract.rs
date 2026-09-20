@@ -69,14 +69,32 @@ impl OptionsDto {
 }
 
 /// Wire form of [`IncludeInNotes`].
+///
+/// `#[serde(default)]` on every field (Cody + Sana, independently, on PR #48's review):
+/// with none of the 8 booleans defaulted, a peer payload that predates a field fails to
+/// deserialize rather than defaulting to off. Fails closed today (there is no live
+/// consumer of this unshipped v1 contract), but costs nothing to fix now rather than
+/// leave as a note for whoever ships the real hosted client.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IncludeDto {
+    #[serde(default)]
     pub prayer_points: bool,
+    #[serde(default)]
     pub scripture_extraction: bool,
+    #[serde(default)]
     pub social_excerpts: bool,
+    #[serde(default)]
     pub chapter_markers: bool,
+    #[serde(default)]
     pub notable_quotations: bool,
+    #[serde(default)]
     pub short_summary: bool,
+    /// Wire form of [`IncludeInNotes::podcast_show_notes`] (86akgqdwc/FR-126).
+    #[serde(default)]
+    pub podcast_show_notes: bool,
+    /// Wire form of [`IncludeInNotes::short_description`] (86akgqdwc/FR-126).
+    #[serde(default)]
+    pub short_description: bool,
 }
 
 impl IncludeDto {
@@ -88,6 +106,8 @@ impl IncludeDto {
             chapter_markers: i.chapter_markers,
             notable_quotations: i.notable_quotations,
             short_summary: i.short_summary,
+            podcast_show_notes: i.podcast_show_notes,
+            short_description: i.short_description,
         }
     }
 
@@ -99,6 +119,8 @@ impl IncludeDto {
             chapter_markers: self.chapter_markers,
             notable_quotations: self.notable_quotations,
             short_summary: self.short_summary,
+            podcast_show_notes: self.podcast_show_notes,
+            short_description: self.short_description,
         }
     }
 }

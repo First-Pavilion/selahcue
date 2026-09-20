@@ -419,6 +419,24 @@ const FLAT_SECTIONS: &[SectionSpec] = &[
         heading: "Social excerpts",
         gate: Some(|i| i.social_excerpts),
     },
+    // 86akgqdwc (FR-126): two more FR-126-named artifacts, added as table rows rather
+    // than a parallel mechanism. That single addition is the whole implementation —
+    // `draft_schema` asks for the field only when its flag is on, the loop below drops
+    // it when off, pushes it (possibly empty) when on, and raises the SAME
+    // `DraftCaveat::SectionRequestedEmpty` an on-but-empty flat section already raises
+    // for every other gated row in this table. Distinct from `short_summary` (a scalar
+    // `NoteDraft.summary` field, not a section here at all) and from `social_excerpts`
+    // by field name and heading, by construction.
+    SectionSpec {
+        field: "podcast_show_notes",
+        heading: "Podcast show notes",
+        gate: Some(|i| i.podcast_show_notes),
+    },
+    SectionSpec {
+        field: "short_description",
+        heading: "Short description",
+        gate: Some(|i| i.short_description),
+    },
 ];
 
 /// The heading of the one hierarchical section (FR-122 "points/sub-points").
@@ -516,7 +534,11 @@ fn template_guidance(t: NotesTemplate) -> &'static str {
 /// the prompt has already told it not to and given it somewhere to put "the sermon did
 /// not say".
 fn instruction(options: &NoteOptions, truncated: bool) -> String {
-    let mut s = String::with_capacity(1_400);
+    // NIT (Vera, performance review on PR #48): 1_400 was the pre-86akgqdwc worst case.
+    // Measured against compiled code: 1,095 before this ticket's two new prompt clauses,
+    // 1,621 after (both toggles on, truncated) — 2_048 clears the real worst case again
+    // with headroom, avoiding a reallocation on the path that used to fit.
+    let mut s = String::with_capacity(2_048);
     s.push_str(
         "You turn a completed sermon transcript into a structured sermon-note draft for \
          a church media operator.\n\n\
@@ -537,6 +559,31 @@ fn instruction(options: &NoteOptions, truncated: bool) -> String {
     ));
     s.push('\n');
     s.push_str(template_guidance(options.template));
+    if options.include.podcast_show_notes {
+        s.push_str(
+            "\n\n'podcast_show_notes' is ready-to-publish show-notes copy for a podcast \
+             episode of this sermon — NOT the outline. Each list entry is one line of \
+             publish-ready copy: a one-line episode title, a short blurb, and the key \
+             discussion points as their own entries. Do not restate the full outline \
+             here.",
+        );
+        // Security review finding (Sana F1 on PR #48): asking for scripture in this
+        // artifact regardless of `scripture_extraction` let a reference reach the ONE
+        // artifact meant for external publication with no verification pass ever run
+        // over it (`generate_sermon_notes` in main.rs only calls `verify_scriptures` when
+        // `scripture_extraction` is on). Asking for it only when that toggle is also on
+        // keeps this section from asking for something the draft can never check.
+        if options.include.scripture_extraction {
+            s.push_str(" Include the scripture referenced as its own entry too.");
+        }
+    }
+    if options.include.short_description {
+        s.push_str(
+            "\n\n'short_description' is a single one-to-two sentence caption suitable for \
+             a listing or thumbnail — shorter and more compressed than a summary. Return \
+             it as one list entry, not a paragraph-length summary.",
+        );
+    }
     if truncated {
         s.push_str(
             "\n\nThe transcript below was truncated and does not contain the end of the \

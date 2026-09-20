@@ -362,6 +362,7 @@ if not check_d5_no_scrolltop_writes():
 # saved (setup), the verified mark survives an unrelated edit-save, the unverified mark
 # ALSO survives it (the actual harm this ticket exists to prevent — a reloaded/saved
 # draft, not just the live response), and the verification-scope note is still present.
+
 # 1319 + 4 = 1323, matching the real observed count at the time (before 86akmdkdg/86akcffy0/
 # 86akc0tua's second round existed) — this ticket's total own contribution across all three
 # commits is therefore 1323 - 1311 = 12 checks.
@@ -421,7 +422,48 @@ if not check_d5_no_scrolltop_writes():
 #   pre-existing hook-driven assertions stay GREEN — proving they test different things, closing
 #   the gap without touching the pre-existing hook's own contract.
 #   1419 + 1 + 3 = 1423, matching the real observed count.
-EXPECTED_MIN_CHECKS = 1423
+#
+# 86akgqdwc (rebased onto this settled 1423) separately adds 6 more, all in the unrelated
+# "INCLUDE IN NOTES"/scripture-verification blocks, none overlapping 86akgqdxr's detections-
+# panel/edit-surface work (confirmed by inspecting hunk locations before merging, not
+# assumed):
+#   - 2 from the include-in-notes forEach loop driving the two new toggles
+#     ("podcast_show_notes", "short_description") through set_include_flag, each its own
+#     `ok()`. The column/row-count assertion in the same block changed its numbers (3/3 ->
+#     4/4) but stayed ONE `ok()` call, so it contributes nothing to the delta.
+#   - 4 from security review remediation (Sana F2 on PR #48): a NEW, isolated
+#     "scripture_incomplete" DRIVER block proving `DraftCaveat::ScriptureVerificationIncomplete`
+#     renders — 3 explicit `ok()` calls (the note renders computed-visible with role=note;
+#     the section it would most affect still renders its own content alongside the note; a
+#     NEGATIVE CONTROL on the preceding "scripture_verification" draft, which carries no such
+#     caveat, confirms the two notes are gated on different caveat kinds) plus ONE implicit
+#     check from the extra `ppGenerateAndConfirm` call.
+# The naive sum is 1423 + 2 + 4 = 1429, and this was confirmed as the real observed count too
+# (a standalone run at that point reported "1429 checks, 0 FAIL" exactly).
+#
+# 1429 -> 1431: Cody's delta re-check on this ticket's rebased head caught a real gap, not
+# rebuild noise — `transcripts.js` (the Transcripts-tab draft viewer) never rendered the new
+# `scripture_verification_incomplete` note, even though `settings.js` does and the backend
+# computes the caveat for both surfaces (`generate_sermon_notes` AND `sermon_note_draft_json`,
+# which feeds `transcript_get` as well as the Settings reload path). Cody reproduced it live:
+# added the caveat to the "Fixture Sermon" fixture, added a throwaway assertion mirroring
+# settings.js's own check, confirmed FAIL, reverted the probe cleanly. Fixed by porting the
+# identical `anyScriptureVerificationIncomplete` helper + note block from settings.js into
+# transcripts.js (the same pattern already used there for the other two caveat kinds), and by
+# adding this caveat to the SAME "Fixture Sermon" fixture (id 7) Cody's own reproduction used
+# — real regression coverage, not the throwaway probe — with 2 explicit `ok()` calls (the note
+# renders computed-visible with role=note; the draft's own content, asserted just above, still
+# renders alongside it — a positive control that this is an addition, not a replacement). No
+# new fixture, no new generate/open call was needed since fixture 7 was already opened earlier
+# in this same test flow, so there is no additional implicit check here.
+#
+# This constant is a SINGLE assignment on purpose (Cody's NIT on the same re-check): two live
+# `EXPECTED_MIN_CHECKS = ...` lines previously existed in this file (1423, then 1429) — harmless
+# today only because Python resolves module-level names last-write-wins, but the identical
+# shape this repo's own CLAUDE.md warns about elsewhere (the Makefile's
+# `RELEASE_UNSAFE_FEATURES` multi-assignment guard). Updated in place from here on, never
+# appended.
+EXPECTED_MIN_CHECKS = 1431
 
 
 def find_chrome():
@@ -677,7 +719,7 @@ STUB = r"""
     notes_templates:[{value:"full_outline",label:"Full outline + scriptures"},{value:"summary",label:"Short summary"},{value:"bullets",label:"Bullet points"}],
     preferred_translation:"KJV",
     translations:[{code:"KJV",name:"King James Version"},{code:"WEB",name:"World English Bible"},{code:"ASV",name:"American Standard Version"}],
-    include:{prayer_points:true, scripture_extraction:true, social_excerpts:false, chapter_markers:true, notable_quotations:true, short_summary:true},
+    include:{prayer_points:true, scripture_extraction:true, social_excerpts:false, chapter_markers:true, notable_quotations:true, short_summary:true, podcast_show_notes:false, short_description:false},
     cloud_status:"not_configured", notes_provider:null, notes_available:false,
     account_token_set:false, quota:null,
     // Cloud (Deepgram) transcription readiness (86akby7th) — mirrors notes_provider/notes_available
@@ -988,7 +1030,12 @@ STUB = r"""
             {heading:"Main points", items:["Faith"], points:[], empty_requested:false},
             {heading:"Prayer points", items:[], points:[], empty_requested:true},
           ],
-          scriptures:["Romans 8:28"], caveats:[], scripture_verdicts:[{reference:"Romans 8:28", verified:true}],
+          // 86akgqdwc (Sana F2 on PR #48; gap on THIS surface caught by Cody's delta re-check):
+          // this fixture is where transcripts.js's own rendering of the draft-wide
+          // "scripture_verification_incomplete" caveat is proven — added here rather than a
+          // new isolated fixture because this is the exact reproduction Cody's own re-check
+          // used (adding it to "Fixture Sermon", not a fresh one).
+          scriptures:["Romans 8:28"], caveats:[{kind:"scripture_verification_incomplete"}], scripture_verdicts:[{reference:"Romans 8:28", verified:true}],
         },
         scripture_verification_note:"Verified means the reference address exists in the bundled Bible text — it does not confirm that any words this draft attributes to it are accurate. Always check a quotation against the actual text before you use it.",
         ai_generated:true, ai_label:"AI-generated draft",
@@ -1457,6 +1504,33 @@ STUB = r"""
           degraded_notice:null,
           scripture_verification_note:"Verified means the reference address exists in the bundled Bible text — it does not confirm that any words this draft attributes to it are accurate. Always check a quotation against the actual text before you use it.",
           draft: snScriptDraft,
+          transcript_id: SN_TRANSCRIPT_ID,
+          quota:null
+        });
+      }
+      if (g === "scripture_incomplete") {
+        // 86akgqdwc (Sana F2 on PR #48): the embedded-scripture scan hit its budget before
+        // scanning every section — a SEPARATE, minimal fixture from "scripture_verification"
+        // above (which already exercises verified/unverified/embedded-only marks) so this
+        // one new caveat kind's rendering is proven in isolation, not entangled with those.
+        var snIncompleteDraft = {
+          title:"A Long Sermon", summary:"A sermon with many references.",
+          sections:[
+            {heading:"Podcast show notes", items:["Title: A Long Sermon", "Scripture referenced: Isaiah 55:1"], points:[], empty_requested:false}
+          ],
+          scriptures:["John 3:16"],
+          caveats:[{kind:"scripture_verification_incomplete"}],
+          scripture_verdicts:[{reference:"John 3:16", verified:true}]
+        };
+        SN.draft = { transcript_id: SN_TRANSCRIPT_ID, draft: snIncompleteDraft, ai_generated:true,
+          ai_label:"AI-generated draft", disclosure:"disc", provider:"OpenAI" };
+        return Promise.resolve({
+          ok:true, degraded:false, provider:"OpenAI",
+          ai_generated:true, ai_label:"AI-generated draft",
+          disclosure:"AI-generated. It can invent quotations, misattribute scripture and state things the sermon did not say. Check every reference and quotation against the transcript before you publish or project it.",
+          degraded_notice:null,
+          scripture_verification_note:"Verified means the reference address exists in the bundled Bible text — it does not confirm that any words this draft attributes to it are accurate. Always check a quotation against the actual text before you use it.",
+          draft: snIncompleteDraft,
           transcript_id: SN_TRANSCRIPT_ID,
           quota:null
         });
@@ -4200,6 +4274,25 @@ DRIVER = r"""
          "TR notes (AC2/FR-128): the AI-generated label and fabrication disclosure travel with a RELOADED draft, not only a freshly generated one");
       ok(!!trNotesResult.querySelector(".pp-gen-scr-verified"),
          "TR notes (86akby820 vocabulary reused): a verified scripture reference carries its explicit checkmark, same as the live-session panel");
+      // 86akgqdwc (Sana F2 on PR #48; gap caught by Cody's delta re-check on this ticket):
+      // settings.js already rendered the draft-wide "scripture_verification_incomplete" note;
+      // transcripts.js did not, despite its own header comment claiming the wire vocabulary is
+      // reused unchanged. The fixture above now carries this caveat — real regression coverage,
+      // not the throwaway probe Cody used to prove the gap.
+      var trIncompleteNote = Array.prototype.filter.call(
+        trNotesResult.querySelectorAll(".pp-gen-scripture-note"),
+        function (p) { return /more scripture references than could be checked/.test(p.textContent); }
+      )[0];
+      ok(!!trIncompleteNote && getComputedStyle(trIncompleteNote).display !== "none" &&
+         trIncompleteNote.getAttribute("role") === "note",
+         "TR notes (86akgqdwc): the scripture-verification-incomplete note renders on the " +
+         "Transcripts surface too, computed-visible, role=note — not just in Settings");
+      // POSITIVE CONTROL: the draft's own content (asserted above — title, summary, section
+      // text, the verified checkmark) still renders alongside the new note, so this is an
+      // addition, not a replacement.
+      ok(/Faith/.test(trNotesResult.textContent) && !!trNotesResult.querySelector(".pp-gen-scr-verified"),
+         "TR notes (86akgqdwc, positive control): the draft's own content still renders " +
+         "alongside the incomplete-verification note");
       var trEditBtn = document.getElementById("tr-gen-edit");
       ok(!!trEditBtn, "TR notes (editable workspace): Edit is reachable for a saved draft opened from the Transcripts list, not only the Settings panel");
 
@@ -6827,10 +6920,12 @@ DRIVER = r"""
       ok(ppLast("set_preferred_translation") && ppLast("set_preferred_translation").args.code==="WEB",
          "PP C-003: changing the translation invokes set_preferred_translation{code}");
 
-      // (3) INCLUDE IN NOTES — 6 switches in two columns; each invokes set_include_flag{name,enabled}.
+      // (3) INCLUDE IN NOTES — 8 switches in two columns; each invokes set_include_flag{name,enabled}.
+      // 86akgqdwc added "Podcast show notes" (left) and "Short description" (right), one per
+      // column, so the 3/3 split from the six pre-existing toggles becomes 4/4.
       var incCols = document.querySelectorAll("#surface-settings .pp-inc-col");
-      ok(incCols.length===2 && incCols[0].querySelectorAll(".pp-inc-row").length===3 && incCols[1].querySelectorAll(".pp-inc-row").length===3,
-         "PP C-004: the 6 include-in-notes toggles render in two columns of three");
+      ok(incCols.length===2 && incCols[0].querySelectorAll(".pp-inc-row").length===4 && incCols[1].querySelectorAll(".pp-inc-row").length===4,
+         "PP C-004: the 8 include-in-notes toggles render in two columns of four");
       var soc = el("pp-inc-social_excerpts");
       ok(!!soc && soc.getAttribute("role")==="switch" && soc.checked===false,
          "PP C-004: 'Social excerpts' is a switch reflecting the backend (off)");
@@ -6844,8 +6939,10 @@ DRIVER = r"""
       ok(ppLast("set_include_flag").args.name==="prayer_points" && ppLast("set_include_flag").args.enabled===false,
          "PP C-004: toggling another switch off invokes set_include_flag{name:prayer_points,enabled:false}");
       // Every one of the remaining flags fires with the correct snake_case name + toggled value
-      // (a wrong name string would be a silent no-op the 2-flag check above would miss).
-      ["scripture_extraction","chapter_markers","notable_quotations","short_summary"].forEach(function(nm){
+      // (a wrong name string would be a silent no-op the 2-flag check above would miss). Includes
+      // the two 86akgqdwc toggles, both OFF in the backend fixture, so this also exercises the
+      // off→on direction the two checks above didn't.
+      ["scripture_extraction","chapter_markers","notable_quotations","short_summary","podcast_show_notes","short_description"].forEach(function(nm){
         var sw = el("pp-inc-"+nm), before = sw.checked;
         sw.click(); // checkbox change fires synchronously → the invoke is recorded immediately
         var last = ppLast("set_include_flag");
@@ -7212,6 +7309,31 @@ DRIVER = r"""
          "live-generation response");
       ok(!!gSAfterSave.querySelector(".pp-gen-scripture-note"),
          "PP 86akby820 (F4): the verification-scope note is still present after an edit-save");
+
+      // NEGATIVE CONTROL for the NEXT block: this "scripture_verification" draft carries no
+      // `scripture_verification_incomplete` caveat, so its own scripture-note text must never
+      // contain the "more than could be checked" wording — proves the two notes render from
+      // DIFFERENT caveat kinds, not from the same generic "any scripture note" branch.
+      ok(!/more scripture references than could be checked/.test(gSAfterSave.textContent),
+         "PP 86akgqdwc (negative control): a draft with no scripture_verification_incomplete " +
+         "caveat must not show its note");
+
+      // --- 86akgqdwc (Sana F2 on PR #48): scripture verification budget exhaustion --------------
+      window.__ppGen = "scripture_incomplete"; await ppGenerateAndConfirm(80);
+      var gSIncomplete = el("pp-gen-result");
+      var incompleteNote = Array.prototype.filter.call(
+        gSIncomplete.querySelectorAll(".pp-gen-scripture-note"),
+        function (p) { return /more scripture references than could be checked/.test(p.textContent); }
+      )[0];
+      ok(!!incompleteNote && getComputedStyle(incompleteNote).display !== "none" &&
+         incompleteNote.getAttribute("role") === "note",
+         "PP 86akgqdwc: the scripture-verification-incomplete note renders, computed-visible, role=note");
+      // POSITIVE CONTROL: the section this budget exhaustion would most affect (last in scan
+      // order in the real backend) still renders normally alongside the note — the note is an
+      // ADDITION, not a replacement for the section's own content.
+      ok(/Podcast show notes/.test(gSIncomplete.textContent) && /Isaiah 55:1/.test(gSIncomplete.textContent),
+         "PP 86akgqdwc (positive control): the podcast section's own content still renders " +
+         "alongside the incomplete-verification note");
 
       window.__ppGen = "ok"; // restore for any later reads
 

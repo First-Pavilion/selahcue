@@ -983,6 +983,17 @@
   function anySectionEmptyCaveat(d) {
     return !!(d.caveats || []).some(function (c) { return c.kind === "section_empty"; });
   }
+  // 86akgqdwc (Sana F2 on PR #48; gap on THIS surface caught by Cody's delta re-check): the
+  // embedded-scripture scan can hit its budget before every section is scanned — a reference
+  // in a LATER section (e.g. "Podcast show notes", last in scan order) can then carry NO
+  // verdict at all, not even unverified. Ported unchanged from settings.js, which already had
+  // this — this file's own header comment claims the wire vocabulary is reused unchanged, and
+  // this was the one place that claim was not yet true.
+  function anyScriptureVerificationIncomplete(d) {
+    return !!(d.caveats || []).some(function (c) {
+      return c.kind === "scripture_verification_incomplete";
+    });
+  }
   function scriptureVerifiedOrNull(d, reference) {
     var needle = (reference || "").trim();
     var v = (d.scripture_verdicts || []).filter(function (x) {
@@ -1083,6 +1094,22 @@
       var scNote = el("p", "pp-gen-scripture-note", currentDraft.scriptureVerificationNote);
       scNote.setAttribute("role", "note");
       r.appendChild(scNote);
+    }
+    // 86akgqdwc (Sana F2 on PR #48): same suppression reasoning as settings.js — the
+    // backend's verify_scriptures call runs on a degraded draft too (a reference echoed
+    // into local.rs's "Outline" section from the real transcript is worth checking exactly
+    // like a cloud model's own text), so this is a deliberate choice about which single
+    // explanation the degraded UI shows, not a statement that the condition cannot occur.
+    if (showEmptyState && anyScriptureVerificationIncomplete(d)) {
+      var scIncomplete = el(
+        "p",
+        "pp-gen-scripture-note",
+        "This draft has more scripture references than could be checked — some may not " +
+          "carry a verified or unverified mark. Review any reference below the ones " +
+          "already marked."
+      );
+      scIncomplete.setAttribute("role", "note");
+      r.appendChild(scIncomplete);
     }
     if (showEmptyState && anySectionEmptyCaveat(d)) {
       var explainer = el("p", "pp-gen-empty-explainer", EMPTY_REQUESTED_EXPLAINER);

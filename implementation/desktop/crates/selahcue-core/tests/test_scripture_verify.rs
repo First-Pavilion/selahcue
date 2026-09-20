@@ -36,7 +36,7 @@ fn verdict(reference: &str, verified: bool) -> ScriptureVerdict {
 
 #[test]
 fn a_valid_known_reference_is_verified() {
-    let verdicts = verify_scriptures(&["John 3:16".to_string()], &[], oracle(&["John 3:16"]));
+    let (verdicts, _) = verify_scriptures(&["John 3:16".to_string()], &[], oracle(&["John 3:16"]));
     assert_eq!(verdicts, vec![verdict("John 3:16", true)]);
 }
 
@@ -45,7 +45,8 @@ fn a_reference_the_oracle_does_not_know_is_unverified_not_dropped() {
     // Stands in for "chapter past the book's end" / "verse past the chapter's end" at
     // this layer: the oracle simply reports it does not exist, exactly as the real
     // `selahcue_scripture::verses` would for an out-of-canon reference.
-    let verdicts = verify_scriptures(&["3 John 4:12".to_string()], &[], oracle(&["John 3:16"]));
+    let (verdicts, _) =
+        verify_scriptures(&["3 John 4:12".to_string()], &[], oracle(&["John 3:16"]));
     assert_eq!(
         verdicts,
         vec![verdict("3 John 4:12", false)],
@@ -62,7 +63,7 @@ fn an_abbreviated_reference_keeps_its_own_spelling_in_the_verdict_not_the_canoni
     // exact string match against what it is actually displaying. Re-serialising to the
     // canonical spelling ("3 John 4:12") broke that match silently: the fabricated entry
     // rendered with NO mark at all, indistinguishable from a verified one.
-    let verdicts = verify_scriptures(&["3Jn 4:12".to_string()], &[], oracle(&[]));
+    let (verdicts, _) = verify_scriptures(&["3Jn 4:12".to_string()], &[], oracle(&[]));
     assert_eq!(
         verdicts,
         vec![verdict("3Jn 4:12", false)],
@@ -78,7 +79,7 @@ fn two_different_spellings_of_the_same_verse_each_get_their_own_correct_verdict(
     // each independently parsed and checked — not silently collapsed into one (which
     // would misattribute one spelling's verdict to the other's on-screen entry) and not
     // duplicated under a shared canonical identity either.
-    let verdicts = verify_scriptures(
+    let (verdicts, _) = verify_scriptures(
         &["3Jn 4:12".to_string(), "3 John 4:12".to_string()],
         &[],
         oracle(&[]),
@@ -96,7 +97,8 @@ fn an_unparseable_reference_is_unverified_and_kept_verbatim_never_dropped() {
     // The ticket's most important negative requirement: `parse()` (scripture.rs) silently
     // drops what it cannot parse via `filter_map(...ok())`. `verify_scriptures` must NOT
     // use that entry point — every segment gets a verdict, including this one.
-    let verdicts = verify_scriptures(&["not a reference at all".to_string()], &[], oracle(&[]));
+    let (verdicts, _) =
+        verify_scriptures(&["not a reference at all".to_string()], &[], oracle(&[]));
     assert_eq!(
         verdicts,
         vec![verdict("not a reference at all", false)],
@@ -107,13 +109,13 @@ fn an_unparseable_reference_is_unverified_and_kept_verbatim_never_dropped() {
 #[test]
 fn a_blank_or_whitespace_only_entry_produces_no_verdict() {
     // Not a reference at all — nothing to report either way, verified or not.
-    let verdicts = verify_scriptures(&["   ".to_string(), "".to_string()], &[], oracle(&[]));
+    let (verdicts, _) = verify_scriptures(&["   ".to_string(), "".to_string()], &[], oracle(&[]));
     assert!(verdicts.is_empty());
 }
 
 #[test]
 fn every_entry_in_a_mixed_list_gets_its_own_independent_verdict() {
-    let verdicts = verify_scriptures(
+    let (verdicts, _) = verify_scriptures(
         &[
             "John 3:16".to_string(),
             "3 John 4:12".to_string(),
@@ -142,7 +144,7 @@ fn a_reference_embedded_in_a_flat_sections_item_text_is_found_and_verified() {
         "Illustrations",
         vec!["As it says in Isaiah 55:1, come.".to_string()],
     )];
-    let verdicts = verify_scriptures(&[], &sections, oracle(&["Isaiah 55:1"]));
+    let (verdicts, _) = verify_scriptures(&[], &sections, oracle(&["Isaiah 55:1"]));
     assert_eq!(verdicts, vec![verdict("Isaiah 55:1", true)]);
 }
 
@@ -159,7 +161,7 @@ fn a_fabricated_reference_embedded_inside_a_sermon_point_is_found_and_marked_unv
             sub_points: vec!["Some quote from Philemon 2:3 too.".to_string()],
         }],
     )];
-    let verdicts = verify_scriptures(&[], &sections, oracle(&[]));
+    let (verdicts, _) = verify_scriptures(&[], &sections, oracle(&[]));
     assert_eq!(
         verdicts,
         vec![verdict("Jude 2:1", false), verdict("Philemon 2:3", false)],
@@ -173,7 +175,7 @@ fn the_same_reference_in_the_list_and_embedded_in_text_is_reported_once() {
         "Illustrations",
         vec!["John 3:16 says it plainly.".to_string()],
     )];
-    let verdicts = verify_scriptures(
+    let (verdicts, _) = verify_scriptures(
         &["John 3:16".to_string()],
         &sections,
         oracle(&["John 3:16"]),
@@ -191,7 +193,7 @@ fn a_section_the_operator_left_off_is_not_scanned_because_it_never_reaches_the_d
     // reaches `NoteDraft.sections` at all (openai.rs's own second layer), so
     // `verify_scriptures` naturally never sees its text. Documented here as the reason
     // this function takes no `IncludeInNotes` parameter.
-    let verdicts = verify_scriptures(&[], &[], oracle(&[]));
+    let (verdicts, _) = verify_scriptures(&[], &[], oracle(&[]));
     assert!(verdicts.is_empty());
 }
 
@@ -204,7 +206,7 @@ fn an_absurd_number_of_distinct_list_entries_is_bounded_at_the_list_cap() {
     let many: Vec<String> = (0..10_000)
         .map(|i| format!("garbage reference {i}"))
         .collect();
-    let verdicts = verify_scriptures(&many, &[], oracle(&[]));
+    let (verdicts, _) = verify_scriptures(&many, &[], oracle(&[]));
     assert!(
         verdicts.len() <= selahcue_core::providers::MAX_LIST_REFERENCES,
         "got {} verdicts, bound is {}",
@@ -235,7 +237,7 @@ fn an_absurd_number_of_distinct_embedded_references_is_bounded_at_the_tighter_em
         .map(|i| format!("See Psalms {i}:1 for more on this."))
         .collect();
     let sections = vec![NoteSection::flat("Illustrations", hostile_items)];
-    let verdicts = verify_scriptures(&[], &sections, oracle(&[]));
+    let (verdicts, truncated) = verify_scriptures(&[], &sections, oracle(&[]));
     assert!(
         verdicts.len() <= selahcue_core::providers::MAX_EMBEDDED_REFERENCES,
         "got {} verdicts, bound is {}",
@@ -248,6 +250,64 @@ fn an_absurd_number_of_distinct_embedded_references_is_bounded_at_the_tighter_em
         "10,000 DISTINCT, genuinely detectable candidates must actually hit the cap, not \
          stop early for some other reason — the positive control that proves the bound \
          is exercised, not merely that `detect()` found nothing to bound"
+    );
+    // 86akgqdwc (Sana F2 on PR #48): hitting the cap must be REPORTED, not just enforced
+    // silently — a caller turns this into `DraftCaveat::ScriptureVerificationIncomplete`.
+    assert!(
+        truncated,
+        "the cap really was hit mid-scan, so the caller must be told some candidates \
+         were never even considered"
+    );
+}
+
+#[test]
+fn the_truncation_flag_is_false_when_the_embedded_cap_is_not_hit() {
+    // POSITIVE CONTROL for the flag above: a well-behaved draft, nowhere near the cap,
+    // must not be reported as truncated — otherwise the flag is dead-code true, not
+    // meaningfully tied to the budget actually running out.
+    let sections = vec![NoteSection::flat(
+        "Illustrations",
+        vec!["As it says in Isaiah 55:1, come.".to_string()],
+    )];
+    let (verdicts, truncated) = verify_scriptures(&[], &sections, oracle(&["Isaiah 55:1"]));
+    assert_eq!(verdicts.len(), 1);
+    assert!(!truncated, "one reference is nowhere near the embedded cap");
+}
+
+#[test]
+fn a_later_section_gets_no_verdict_at_all_once_an_earlier_one_exhausts_the_embedded_budget() {
+    // The exact harm Sana's F2 finding names: sections are scanned in the order they
+    // appear in `sections`, and the cap is shared across ALL of them. A section that
+    // happens to come LATER (86akgqdwc's `podcast_show_notes`/`short_description` are
+    // last in `FLAT_SECTIONS`'s scan order) can lose 100% of its own references to a
+    // budget an EARLIER section already spent — not marked unverified, not reported at
+    // all, unless the caller reads `truncated`.
+    let starving_items: Vec<String> = (0..selahcue_core::providers::MAX_EMBEDDED_REFERENCES + 4)
+        .map(|i| format!("See Psalms {i}:1 for more on this."))
+        .collect();
+    let sections = vec![
+        NoteSection::flat("Illustrations", starving_items),
+        NoteSection::flat(
+            "Podcast show notes",
+            vec!["Scripture referenced: Isaiah 55:1".to_string()],
+        ),
+    ];
+    let (verdicts, truncated) = verify_scriptures(&[], &sections, oracle(&["Isaiah 55:1"]));
+    assert!(
+        truncated,
+        "the first section alone already exceeds the embedded cap"
+    );
+    assert!(
+        !verdicts.iter().any(|v| v.reference == "Isaiah 55:1"),
+        "the second section's own, perfectly real reference must get NO verdict at all — \
+         proving it is silently starved, not merely unverified — got {verdicts:?}"
+    );
+    // POSITIVE CONTROL: the first section's own references DID get verdicts up to the
+    // cap, so the assertion above is about starvation, not a verifier that stopped
+    // working entirely.
+    assert_eq!(
+        verdicts.len(),
+        selahcue_core::providers::MAX_EMBEDDED_REFERENCES
     );
 }
 
@@ -262,7 +322,7 @@ fn the_list_cap_is_generous_enough_to_never_starve_a_realistic_list() {
     let many: Vec<String> = (0..UPSTREAM_MAX_SCRIPTURES)
         .map(|i| format!("John 3:{i}"))
         .collect();
-    let verdicts = verify_scriptures(&many, &[], oracle(&[]));
+    let (verdicts, _) = verify_scriptures(&many, &[], oracle(&[]));
     assert_eq!(
         verdicts.len(),
         UPSTREAM_MAX_SCRIPTURES,
@@ -276,7 +336,7 @@ fn an_absurdly_long_single_item_does_not_panic_and_stays_bounded() {
     // embedded-looking tokens. Must not panic and must not produce unbounded verdicts.
     let hostile = "Isaiah 55:1 ".repeat(50_000);
     let sections = vec![NoteSection::flat("Illustrations", vec![hostile])];
-    let verdicts = verify_scriptures(&[], &sections, oracle(&["Isaiah 55:1"]));
+    let (verdicts, _) = verify_scriptures(&[], &sections, oracle(&["Isaiah 55:1"]));
     // The same reference repeated: at most ONE verdict (dedup), well under the cap either way.
     assert!(verdicts.len() <= 1);
 }
@@ -287,7 +347,7 @@ fn duplicates_do_not_erode_the_bound_budget_for_genuinely_distinct_references() 
     // thousands of times must not exhaust the budget that distinct references need.
     let mut many = vec!["John 3:16".to_string(); 9_999];
     many.push("Romans 8:28".to_string());
-    let verdicts = verify_scriptures(&many, &[], oracle(&["John 3:16", "Romans 8:28"]));
+    let (verdicts, _) = verify_scriptures(&many, &[], oracle(&["John 3:16", "Romans 8:28"]));
     assert_eq!(
         verdicts,
         vec![verdict("John 3:16", true), verdict("Romans 8:28", true)],
@@ -302,7 +362,7 @@ fn duplicates_do_not_erode_the_bound_budget_for_genuinely_distinct_references() 
 
 #[test]
 fn only_unverified_verdicts_are_the_caveat_shape_callers_are_expected_to_extract() {
-    let verdicts = verify_scriptures(
+    let (verdicts, _) = verify_scriptures(
         &["John 3:16".to_string(), "3 John 4:12".to_string()],
         &[],
         oracle(&["John 3:16"]),

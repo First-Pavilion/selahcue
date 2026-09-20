@@ -27,11 +27,39 @@ fn defaults_are_offline_and_private() {
         NotesTemplate::FullOutlineWithScriptures
     );
     assert_eq!(cfg.settings.preferred_translation, "KJV");
-    // Include-in-notes defaults: social excerpts OFF, the rest ON.
+    // Include-in-notes defaults: social excerpts, podcast show notes and short
+    // description OFF, the rest ON.
     let i = cfg.settings.include;
     assert!(i.prayer_points && i.scripture_extraction && i.chapter_markers);
     assert!(i.notable_quotations && i.short_summary);
     assert!(!i.social_excerpts);
+    assert!(!i.podcast_show_notes);
+    assert!(!i.short_description);
+}
+
+#[test]
+fn podcast_and_short_description_toggle_independently_and_round_trip() {
+    // Each carries its own persisted key, distinct from the other and from every
+    // pre-existing toggle (86akgqdwc, following the exact pattern the ticket asks
+    // for — mirrors `kv_round_trips_every_field` but isolates just these two so a
+    // future regression here is unambiguous about which key broke).
+    let mut cfg = ProvidersConfig::default();
+    cfg.settings.include.podcast_show_notes = true;
+    let restored = ProvidersConfig::from_kv(cfg.to_kv());
+    assert!(restored.settings.include.podcast_show_notes);
+    assert!(
+        !restored.settings.include.short_description,
+        "toggling podcast_show_notes must not also flip short_description"
+    );
+
+    let mut cfg2 = ProvidersConfig::default();
+    cfg2.settings.include.short_description = true;
+    let restored2 = ProvidersConfig::from_kv(cfg2.to_kv());
+    assert!(restored2.settings.include.short_description);
+    assert!(
+        !restored2.settings.include.podcast_show_notes,
+        "toggling short_description must not also flip podcast_show_notes"
+    );
 }
 
 #[test]
@@ -113,6 +141,8 @@ fn kv_round_trips_every_field() {
                 chapter_markers: false,
                 notable_quotations: false,
                 short_summary: false,
+                podcast_show_notes: true,
+                short_description: true,
             },
         },
         consent: ConsentState {
