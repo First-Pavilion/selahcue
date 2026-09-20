@@ -8,7 +8,7 @@
   consent-gated generation path while retaining the currently-saved draft
   ("prior version") until the operator explicitly accepts the new one (FR-129)
 - Role: backend-engineer
-- Status: DRAFT
+- Status: VERIFIED_COMPLETE
 - Execution engine: goal
 - ClickUp task: https://app.clickup.com/t/86akgqdx8
 - Created: 2026-09-20
@@ -257,9 +257,9 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
 | C-010 | yes | A degraded (local-fallback) regenerate still requires confirm, still carries `ai_generated:false` + `degraded_notice`, and the confirmed result matches | `cargo test -p selahcue-operator` | test passes | test output | PASS |
 | C-011 | yes | The regenerated draft carries the AI-generated label + fabrication disclosure exactly like first-generation, once confirmed | `cargo test -p selahcue-operator`/`-p selahcue-data` | test passes | test output | PASS |
 | C-012 | yes | Both `dist/settings.js` and `dist/transcripts.js` handle the pending-regeneration state (or a documented reason one doesn't need to) | code review + `scripts/operator_headless.py` | headless checks pass; MR documents the decision | headless output + MR text | PASS |
-| C-013 | yes | `make ci` passes in full, including the headless operator webview check, with the real exit code captured in the log file | `make ci` output redirected to a log file, exit code appended to that same file | exit code 0 recorded in the log | ci log file under the scratchpad or repo tmp dir | PENDING |
-| C-014 | yes | Four-reviewer gate (Cody, Vera, Sana, Quinn) run in isolated worktrees pinned to the reviewed commit; blocking findings remediated | reviewer reports + re-check | no outstanding blocking findings | PR comments + published report artifact | PENDING |
-| C-015 | yes | Retention-model decision (single prior version; explicit-confirm-before-replace) is documented in the MR description | MR body review | present and matches what shipped | PR description | PENDING |
+| C-013 | yes | `make ci` passes in full, including the headless operator webview check, with the real exit code captured in the log file | `make ci` output redirected to a log file, exit code appended to that same file | exit code 0 recorded in the log | ci log file under the scratchpad or repo tmp dir | PASS |
+| C-014 | yes | Four-reviewer gate (Cody, Vera, Sana, Quinn) run in isolated worktrees pinned to the reviewed commit; blocking findings remediated | reviewer reports + re-check | no outstanding blocking findings | PR comments + published report artifact | PASS |
+| C-015 | yes | Retention-model decision (single prior version; explicit-confirm-before-replace) is documented in the MR description | MR body review | present and matches what shipped | PR description | PASS |
 
 ## Verification plan
 
@@ -509,6 +509,44 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
   Iteration 3 diff (a 2-file, ~100-line addition since the commit they
   already approved) but may do so if any of them wants to.
 
+### Iteration 4
+
+- Target criterion: C-013 (a fresh, uninterrupted `make ci` run against
+  the fully remediated tree, commit `33783b0`).
+- Hypothesis: a `make ci` run started with no concurrent edits to this
+  worktree in flight (unlike the first attempt, which overlapped with the
+  remediation edits themselves and so could not be trusted as clean
+  evidence for the post-remediation tree) will pass end to end.
+- Change or investigation: none — verification only. Queued behind a peer
+  session's own `make ci` on this shared machine (checked `ps aux` first;
+  serialized rather than running concurrently, per this repo's own
+  documented Flutter-ephemeral-directory collision risk) via a background
+  wait loop, then ran automatically once the peer's run exited.
+- Verifier executed: `make ci`, full output redirected to
+  `/tmp/scph-a4658-make-ci-round2.log`, real exit code appended to the
+  same file by the shell (`echo "EXIT_CODE=$?" >> ...`), not trusted from
+  a wrapper or piped command.
+- Result: `== local Rust/Flutter gate: ALL GREEN ==`, `EXIT_CODE=0`. Scanned
+  the FULL log, not just the tail: 235 `test result: ok` blocks, 0
+  `test result: FAILED`, 0 lines matching `^error(\[|:)`. Working tree
+  clean afterward (`git status --porcelain` empty), `HEAD` still exactly
+  `33783b0` (the commit under review — confirms nothing shifted mid-run).
+- New evidence: `/tmp/scph-a4658-make-ci-round2.log` (the full, real,
+  uninterrupted run).
+- Decision: **terminate — VERIFIED_COMPLETE.** All 15 completion-predicate
+  criteria (C-001..C-015) now PASS with independently verified evidence:
+  C-001..C-012 from this session's own crate-by-crate re-verification
+  (Iteration 1), C-013 from this clean `make ci` run, C-014 from all four
+  reviewers' verdicts converging on zero Blockers/Majors outstanding
+  (Cody APPROVE WITH NITS, Vera APPROVE WITH NITS after re-review, Sana
+  APPROVE WITH NITS with a Pass security verdict, Quinn PASS WITH
+  FOLLOW-UPS), and C-015 from the retention-model decision documented in
+  PR #55's own description (matches what shipped: single prior version,
+  explicit-confirm-before-replace). Two follow-up tickets (17tnw2axpt1,
+  17tnw2axpt3) and one deferred-improvement ticket (17tnw2axpuq) capture
+  everything intentionally left for later, each with its own recorded
+  reasoning — nothing was silently dropped.
+
 ## Risks and rollback
 
 - Risks: the LAN/RBAC/SermonNoteStore footprint is larger than the ticket's
@@ -544,8 +582,28 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
 ## Final evaluation
 
 - Validator command: `python3 ~/.claude/skills/goal/scripts/validate_goal_contract.py docs/delivery/goals/TASK-86akgqdx8-regenerate-notes-version-retention.md --completion`
-- Validator result: (recorded at completion)
-- Independent verification result: (recorded at completion)
-- Terminal state: (recorded at completion)
-- Remaining failed or blocked criteria: (recorded at completion)
-- ClickUp final evidence comment: (recorded at completion)
+- Validator result: `OK (completion): ... satisfies the Goal Contract
+  schema and all mandatory criteria PASS`.
+- Independent verification result: four-reviewer gate complete, zero
+  outstanding Blockers/Majors — Cody APPROVE WITH NITS, Vera APPROVE WITH
+  NITS (after one remediation + re-review round), Sana APPROVE WITH NITS
+  (security verdict Pass), Quinn PASS WITH FOLLOW-UPS. All findings either
+  remediated (with fresh evidence in Iterations 1-4 above) or deferred to
+  a filed follow-up ticket with recorded reasoning.
+- Terminal state: **VERIFIED_COMPLETE** (backend-engineer role goal).
+  ClickUp task 86akgqdx8 itself moves to the delivery lifecycle's next
+  stage (code review), never self-marked complete, per the Operating
+  Contract.
+- Remaining failed or blocked criteria: none. C-001 through C-015 all
+  PASS.
+- ClickUp final evidence comment: posted to
+  [86akgqdx8](https://app.clickup.com/t/86akgqdx8) — implementation,
+  review-gate outcome, `make ci` result, and follow-up ticket links.
+- Deliverable: [PR #55](https://github.com/First-Pavilion/selahcue/pull/55)
+  against `main`, branch `feat/86akgqdx8-regenerate-notes-version-retention`,
+  head commit `33783b0`. Still Draft — moving it to Ready for Review is
+  the delivery-manager/product-owner's call, not this role's, per the
+  Operating Contract's "never self-mark complete."
+- Follow-up tickets filed from review findings: 17tnw2axpt1 (LAN reply-
+  direction frame-size enforcement), 17tnw2axpt3 (regenerate's narrow
+  load-then-persist TOCTOU), 17tnw2axpuq (lean accepted-draft read path).
