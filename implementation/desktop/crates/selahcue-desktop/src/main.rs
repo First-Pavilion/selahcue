@@ -704,7 +704,13 @@ impl selahcue_app::SermonNoteStore for RealSermonNoteStore {
     }
 
     /// Discard the pending regeneration for `transcript_id` (FR-129), leaving the accepted
-    /// draft unchanged. Idempotent — never errors for "nothing was pending".
+    /// draft unchanged. Idempotent — never errors for "nothing was pending", INCLUDING the
+    /// edge case of no `sermon_note` row at all for this transcript (86akgqdx8 review, Cody
+    /// — Minor): `sermon_note_repo::discard_regeneration`'s own `UPDATE` is already a no-op
+    /// with zero rows affected in that case, so reading back `None` here is not "the draft
+    /// vanished", it is "there was never one" — an honest `RegenerationSlot::default()`
+    /// (`current: None, pending: None`), not an error the caller has to interpret as a
+    /// refusal.
     fn discard_regeneration(
         &mut self,
         transcript_id: i64,
@@ -712,9 +718,11 @@ impl selahcue_app::SermonNoteStore for RealSermonNoteStore {
         sermon_note_repo::discard_regeneration(&self.db, transcript_id)
             .map_err(|e| e.to_string())?;
         let record = sermon_note_repo::find_by_transcript(&self.db, transcript_id)
-            .map_err(|e| e.to_string())?
-            .ok_or_else(|| "draft vanished immediately after discard".to_string())?;
-        Ok(regeneration_slot_of(&record))
+            .map_err(|e| e.to_string())?;
+        Ok(match record {
+            Some(record) => regeneration_slot_of(&record),
+            None => selahcue_app::RegenerationSlot::default(),
+        })
     }
 }
 

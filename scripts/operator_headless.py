@@ -479,7 +479,16 @@ if not check_d5_no_scrolltop_writes():
 # (Confirm outright REPLACES an existing draft) stopped being true the moment this shipped — the
 # notice now says the accurate, safer thing. Confirmed as the real observed count: a standalone
 # run at this point reported "1490 checks, 0 FAIL" exactly.
-EXPECTED_MIN_CHECKS = 1490
+#
+# 1490 -> 1496: 86akgqdx8 four-reviewer gate (Quinn — Low). PP REGEN-4/PP REGEN-5 proved
+# consent-off and transport-failure SPECIFICALLY against a transcript that already has a saved
+# draft (the regenerate scenario); the pre-existing TR consent-off check ("(d)" above) only
+# covers the FIRST-TIME-generate case on this surface, so the same proof was missing for TR's
+# own regenerate path — exactly the "proven on one console, assumed on the other" shape this
+# batch has hit as a real MAJOR bug before. Added TR REGEN-5/TR REGEN-6, mirroring PP REGEN-4/
+# PP REGEN-5 through this surface's own `tr-` wiring. Confirmed as the real observed count: a
+# standalone run at this point reported "1496 checks, 0 FAIL" exactly.
+EXPECTED_MIN_CHECKS = 1496
 
 
 def find_chrome():
@@ -4272,6 +4281,51 @@ DRIVER = r"""
       await sleep(60);
       ok(/From-History Sermon \(regenerated\)/.test(el("tr-gen-result").textContent),
          "TR REGEN-4: discarding the refused degraded regeneration cleanly restores the accepted draft");
+
+      // TR REGEN-5/6 (Quinn, 86akgqdx8 four-reviewer gate — Low): PP REGEN-4/PP REGEN-5 prove
+      // consent-off and transport-failure SPECIFICALLY against a transcript that ALREADY has a
+      // saved draft (the regenerate scenario) — not just the first-time-generate case (d) above
+      // already covers on this surface. Code inspection shows both consoles share the exact
+      // same `persist_generated_draft`/`transcript_generate_notes` call sites, so this is not
+      // expected to reveal a functional gap — but this batch has hit a real MAJOR bug before
+      // from exactly this shape of "proven on one console, assumed on the other" gap, so it is
+      // proven here explicitly rather than left as an inference from (d) + PP REGEN-4/5.
+      window.__pp.cloud_notes_consent = false;
+      window.__trGen = "regenerate_pending";
+      var trRegenConsentGenCallsBefore = trCall("transcript_generate_notes").length;
+      el("tr-generate").click();
+      await sleep(40);
+      el("tr-gen-preview-confirm").click();
+      await sleep(60);
+      var trRegenConsentOffResult = el("tr-gen-result");
+      ok(trRegenConsentOffResult.getAttribute("role") === "alert" &&
+         /Turn on cloud processing/.test(trRegenConsentOffResult.textContent),
+         "TR REGEN-5: with consent OFF, regenerating a transcript that already has a saved " +
+         "draft is STILL gated exactly like a first-time generate (consent_required)");
+      ok(trCall("transcript_generate_notes").length === trRegenConsentGenCallsBefore + 1,
+         "TR REGEN-5 (sanity): the call reached the backend and was gated there — the client " +
+         "did not merely refuse locally");
+      ok(!/regenerated/.test(trRegenConsentOffResult.textContent),
+         "TR REGEN-5: no draft content of any kind leaked into view — nothing was generated");
+      ok(window.__TR.detail[1].draft.title === "From-History Sermon (regenerated)" &&
+         !window.__TR.detail[1].pending,
+         "TR REGEN-5: the saved draft from REGEN-3 is completely unaffected by the refused " +
+         "attempt, and no pending regeneration was created");
+      window.__pp.cloud_notes_consent = true;
+
+      window.__trGen = "transport";
+      el("tr-generate").click();
+      await sleep(40);
+      el("tr-gen-preview-confirm").click();
+      await sleep(60);
+      var trRegenTransportResult = el("tr-gen-result");
+      ok(trRegenTransportResult.getAttribute("role") === "alert",
+         "TR REGEN-6: a transport failure during regenerate surfaces as an alert, same as a first-time generate");
+      ok(window.__TR.detail[1].draft.title === "From-History Sermon (regenerated)" &&
+         !window.__TR.detail[1].pending,
+         "TR REGEN-6 (AC): a transport failure during regenerate never loses the prior " +
+         "(pre-regenerate) draft, and stages nothing");
+
       window.__trGen = "ok"; // restore for any later reads
 
       // (f) Switching to a DIFFERENT transcript resets all Generate UI/state — no stale result

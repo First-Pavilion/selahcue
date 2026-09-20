@@ -21,7 +21,9 @@
 use selahcue_app::{handler_for, LiveController, RemoteOperator, SermonNoteStore};
 use selahcue_core::plan::{ItemKind, ServicePlan};
 use selahcue_data::{sermon_note_repo, transcript_repo, Database};
-use selahcue_lan::protocol::{SermonNoteDraftInput, SermonNoteEditInput};
+use selahcue_lan::protocol::{
+    self, SermonNoteDraftInput, SermonNoteDraftView, SermonNoteEditInput, ServerMessage,
+};
 use selahcue_lan::session::{DeviceId, SessionRegistry, SessionToken};
 use selahcue_lan::{ControlServer, Role, SelfSigned};
 use selahcue_present::Theme;
@@ -164,6 +166,11 @@ impl SermonNoteStore for RealSermonNoteStore {
             .map_err(|e| e.to_string())?;
         Ok(regeneration_slot_of(&record))
     }
+    // 86akgqdx8 review, Cody — Minor: a transcript with NO `sermon_note` row at all (never
+    // generated) must discard as a harmless no-op, matching `discard_regeneration`'s own
+    // trait doc ("never errors for nothing was pending") — not surface as a store-layer
+    // error just because there is nothing to read back. Kept in sync by hand with
+    // `selahcue-desktop`'s `RealSermonNoteStore` (see this file's module doc).
     fn discard_regeneration(
         &mut self,
         transcript_id: i64,
@@ -171,9 +178,11 @@ impl SermonNoteStore for RealSermonNoteStore {
         sermon_note_repo::discard_regeneration(&self.db, transcript_id)
             .map_err(|e| e.to_string())?;
         let record = sermon_note_repo::find_by_transcript(&self.db, transcript_id)
-            .map_err(|e| e.to_string())?
-            .ok_or("draft vanished immediately after discard")?;
-        Ok(regeneration_slot_of(&record))
+            .map_err(|e| e.to_string())?;
+        Ok(match record {
+            Some(record) => regeneration_slot_of(&record),
+            None => selahcue_app::RegenerationSlot::default(),
+        })
     }
 }
 
@@ -547,6 +556,146 @@ async fn a_draft_whose_escaped_wire_size_exceeds_the_frame_cap_is_refused_withou
         .unwrap()
         .expect("a normal save on the same connection must still work after the refusal");
     assert_eq!(saved.title, "A Faithful Servant");
+}
+
+/// `sermon_note_repo`'s per-field caps are hand-reconciled against `MAX_MESSAGE_BYTES` for a
+/// SINGLE draft travelling inside a `SaveSermonNoteDraft`/`UpdateSermonNoteDraft` `Request`
+/// (see that doc comment, ~60,060 B worst case, 8% under the 64 KiB cap). FR-129's
+/// `ServerMessage::SermonNoteRegenerationState` carries TWO drafts (`current` + `pending`) in
+/// one REPLY — a shape that reconciliation never accounted for (Vera, this ticket's review).
+///
+/// This measures the REAL wire size (`selahcue_lan::protocol::to_json`, the exact function
+/// `wire::send_json` calls) rather than trusting arithmetic, turning the reconciliation claim
+/// into an executable, maintained fact instead of prose that can silently go stale.
+///
+/// Two data points, both real:
+/// - Ordinary Latin-script content, every field at its declared maximum: the reply fits
+///   comfortably under the cap (this test's main assertion — a REGRESSION here means a future
+///   change to any of the per-field maxima needs to re-examine this reply shape too).
+/// - Ordinary NON-Latin content (any 3-byte-UTF-8 script — CJK, many African/Asian scripts) at
+///   the SAME declared maxima: `MAX_TITLE_CHARS`/`MAX_SUMMARY_CHARS` are CHARACTER bounds, so
+///   3-byte-per-character content triples their byte footprint versus the Latin case above,
+///   and the two-draft reply EXCEEDS the 64 KiB cap. This is NOT a live defect today — proven
+///   separately below by actually sending it over the real wire and confirming the connection
+///   survives — because neither the server's write path (only `max_message_size`/
+///   `max_frame_size` on the READ side, `selahcue-lan/src/server.rs`) nor the client's default
+///   `WebSocketConfig` (`selahcue-lan/src/client.rs`, ~64 MiB reader) enforces any cap on this
+///   REPLY direction. `OperatorStateView.transcript` was already unbounded on this same reply
+///   path before this ticket; FR-129 does not introduce the asymmetry. It DOES make the
+///   per-field caps' "reconciled with the wire cap" doc claim overbroad for this reply shape —
+///   fixed by scoping that doc to the request direction it was actually measured for. Adding
+///   real enforcement to the reply direction (a `WebSocketConfig` on the client, matching the
+///   server's) is tracked as a follow-up, not fixed here.
+#[test]
+fn a_two_draft_regeneration_state_reply_is_measured_against_the_wire_cap_both_ways() {
+    fn maxed_view(fill_char: char) -> SermonNoteDraftView {
+        SermonNoteDraftView {
+            title: fill_char
+                .to_string()
+                .repeat(sermon_note_repo::MAX_TITLE_CHARS),
+            summary: Some(
+                fill_char
+                    .to_string()
+                    .repeat(sermon_note_repo::MAX_SUMMARY_CHARS),
+            ),
+            // Byte-denominated bounds already: the fill character choice does not change
+            // their byte footprint the way the char-denominated bounds above do.
+            sections_json: format!(
+                r#"["{}"]"#,
+                "s".repeat(sermon_note_repo::MAX_SECTIONS_JSON_BYTES - 4)
+            ),
+            scriptures_json: format!(
+                r#"["{}"]"#,
+                "r".repeat(sermon_note_repo::MAX_SCRIPTURES_JSON_BYTES - 4)
+            ),
+            ai_generated: true,
+            disclosure: Some(
+                fill_char
+                    .to_string()
+                    .repeat(sermon_note_repo::MAX_DISCLOSURE_CHARS),
+            ),
+            provider: fill_char
+                .to_string()
+                .repeat(sermon_note_repo::MAX_PROVIDER_CHARS),
+            model: Some(
+                fill_char
+                    .to_string()
+                    .repeat(sermon_note_repo::MAX_MODEL_CHARS),
+            ),
+            created_at_ms: 1_000,
+            edited_at_ms: 2_000,
+        }
+    }
+
+    let reply_size = |fill_char: char| -> usize {
+        let msg = ServerMessage::SermonNoteRegenerationState {
+            transcript_id: 1,
+            current: Some(maxed_view(fill_char)),
+            pending: Some(maxed_view(fill_char)),
+        };
+        protocol::to_json(&msg)
+            .expect("a valid SermonNoteRegenerationState always serializes")
+            .len()
+    };
+
+    let ascii_size = reply_size('x');
+    assert!(
+        ascii_size <= selahcue_lan::MAX_MESSAGE_BYTES,
+        "a two-draft regeneration reply with ordinary Latin-script content at every declared \
+         maximum must fit under the wire cap ({ascii_size} B vs {} B cap) — if this regresses, \
+         a per-field maximum grew without re-checking this reply shape",
+        selahcue_lan::MAX_MESSAGE_BYTES
+    );
+
+    // U+6771 ('東'): a real, ordinary 3-byte-UTF-8 character — not adversarial control-byte
+    // escaping like the hostile test above, just everyday non-Latin text.
+    let multibyte_size = reply_size('\u{6771}');
+    assert!(
+        multibyte_size > selahcue_lan::MAX_MESSAGE_BYTES,
+        "ordinary non-Latin content at the same declared maxima was expected to exceed the \
+         wire cap on THIS reply shape ({multibyte_size} B vs {} B cap) — if this now fits, the \
+         reconciliation doc comment on sermon_note_repo's caps may be stale in the other \
+         direction; re-check it either way",
+        selahcue_lan::MAX_MESSAGE_BYTES
+    );
+}
+
+/// 86akgqdx8 review, Cody — Minor: discarding a regeneration for a transcript that has NO
+/// `sermon_note` row at all (never generated, nothing ever saved) must be the same harmless
+/// no-op `discard_regeneration`'s trait doc promises for "nothing was pending" — not a denied
+/// command. Before the fix, `RealSermonNoteStore`'s adapter read back `find_by_transcript`
+/// after the (successful, zero-rows-affected) `UPDATE` and turned the resulting `None` into a
+/// store-layer `Err`, which `LiveController::apply` turns into `ControllerReply::Deny` —
+/// observable here as `Ok(None)` from `RemoteOperator`, exactly like a REFUSED command, not a
+/// harmless one. Only reachable through the REAL SQL-backed store (the `SpyStore`-based
+/// controller test of the same name never had this bug — it does not model "no row exists").
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn discarding_with_no_draft_ever_generated_is_a_harmless_success_over_the_real_wire() {
+    let (mut op, _assertion_db) = setup().await;
+    op.start_transcript("Sunday Service", "on-device-whisper")
+        .await
+        .unwrap();
+    let real_id = op
+        .active_transcript_id()
+        .await
+        .unwrap()
+        .expect("a transcript now exists in the real store");
+    // No SaveSermonNoteDraft/generate ever happened for this transcript — the premise.
+
+    let slot = op
+        .discard_sermon_note_regeneration(real_id)
+        .await
+        .expect("a discard with nothing to discard must never be a transport error")
+        .expect(
+            "discarding must be a harmless success even when no draft was ever generated, \
+             not a denied command",
+        );
+    assert!(slot.current.is_none());
+    assert!(slot.pending.is_none());
+
+    // The link is still alive and functional afterward.
+    let after = op.active_transcript_id().await.unwrap();
+    assert_eq!(after, Some(real_id));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

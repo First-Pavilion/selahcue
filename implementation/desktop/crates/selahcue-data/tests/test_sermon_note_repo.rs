@@ -714,21 +714,43 @@ fn staging_a_regeneration_with_no_existing_draft_is_not_found() {
 fn a_second_stage_before_confirm_overwrites_the_first_pending_regeneration() {
     // Single pending slot: only the ACCEPTED draft is guaranteed retained, never an
     // intermediate, never-confirmed regeneration attempt.
+    //
+    // 86akgqdx8 review (Vera N1): asserting only the LATEST pending title/timestamp proves
+    // last-writer-wins, but would still pass against a history-table implementation that kept
+    // every attempt and merely returned the newest one — it does not prove the "single slot"
+    // part of the design. Repeatedly re-staging and then asserting `sermon_note`'s row COUNT
+    // stays at exactly 1 for this transcript is what actually pins boundedness: a history-table
+    // regression would grow that count, and this loop would catch it on the very next stage.
     let db = db();
     let transcript_id = make_transcript(&db, 1_000);
     sermon_note_repo::create(&db, &sample_note(transcript_id)).unwrap();
-    sermon_note_repo::stage_regeneration(&db, transcript_id, &sample_pending(9_000)).unwrap();
 
-    let mut second_pending = sample_pending(9_500);
-    second_pending.title = "Second Regeneration Attempt".into();
-    sermon_note_repo::stage_regeneration(&db, transcript_id, &second_pending).unwrap();
+    for attempt in 0..5 {
+        let mut pending = sample_pending(9_000 + attempt);
+        pending.title = format!("Regeneration Attempt {attempt}");
+        sermon_note_repo::stage_regeneration(&db, transcript_id, &pending).unwrap();
+
+        let row_count: i64 = db
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM sermon_note WHERE transcript_id = ?1",
+                params![transcript_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            row_count, 1,
+            "staging must overwrite the single pending slot in place, never grow a history \
+             (attempt {attempt})"
+        );
+    }
 
     let loaded = sermon_note_repo::find_by_transcript(&db, transcript_id)
         .unwrap()
         .unwrap();
     let pending = loaded.pending.unwrap();
-    assert_eq!(pending.title, "Second Regeneration Attempt");
-    assert_eq!(pending.generated_at_ms, 9_500);
+    assert_eq!(pending.title, "Regeneration Attempt 4");
+    assert_eq!(pending.generated_at_ms, 9_004);
 }
 
 #[test]

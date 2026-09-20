@@ -84,6 +84,26 @@ pub const MAX_SUMMARY_CHARS: usize = 4_000;
 /// with control characters, which can still blow past this budget's realistic-escaping
 /// assumption. Neither alone is "the fix"; see the PR description's "LAN-cap fix direction"
 /// section for the full reasoning on why both exist.
+///
+/// **Scope of the ~60,060 B reconciliation above (FR-129, 86akgqdx8 review — Vera F1):** it
+/// covers exactly ONE draft travelling inside a `SaveSermonNoteDraft`/`UpdateSermonNoteDraft`
+/// `Request` — the direction the pre-send guard (`RemoteOperator::would_exceed_wire_cap`) and
+/// the server's `max_message_size`/`max_frame_size` (read side, `selahcue-lan/src/server.rs`)
+/// actually enforce. It does NOT cover `ServerMessage::SermonNoteRegenerationState`, which
+/// carries TWO drafts (`current` + `pending`) in one REPLY: measured against the real wire
+/// (`selahcue-app`'s `a_two_draft_regeneration_state_reply_is_measured_against_the_wire_cap_
+/// both_ways`), every field at its declared maximum with ordinary Latin-script content is
+/// ~48.8 KB (fits, 74% of the cap), but the SAME maxima with ordinary NON-Latin content (any
+/// 3-byte-UTF-8 script — `MAX_TITLE_CHARS`/`MAX_SUMMARY_CHARS` are CHARACTER bounds, so this
+/// content triples their byte footprint) is ~71.6 KB — OVER the 64 KiB cap. This is not a live
+/// defect: unlike the request direction, nothing on the REPLY path enforces any cap today
+/// (tungstenite's write path performs no size check; `selahcue-lan/src/client.rs`'s
+/// `client_async` call takes no `WebSocketConfig`, so it defaults to a large reader) — the
+/// connection does not drop, it just silently carries a frame this reconciliation never sized
+/// for. `OperatorStateView.transcript` was already unbounded on this same reply path before
+/// FR-129; this ticket does not introduce the read/write asymmetry, only a second instance of
+/// relying on it. Adding real enforcement to the reply direction (a `WebSocketConfig` on the
+/// client, symmetric with the server's) is a follow-up, not fixed here — see 86akgwbq2.
 pub const MAX_SECTIONS_JSON_BYTES: usize = 15_000;
 /// Upper bound on the serialized `scriptures` JSON, in bytes. See
 /// [`MAX_SECTIONS_JSON_BYTES`]'s doc for why this shrank from `20_000` — same reconciliation,

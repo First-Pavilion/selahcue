@@ -331,6 +331,126 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
   verified evidence; C-013 (`make ci`), C-014 (four-reviewer gate), and
   C-015 (MR description) remain.
 
+### Iteration 2
+
+- Target criterion: C-014 (four-reviewer gate remediation).
+- Hypothesis: PR #55 opened Draft against `main`; Cody/Vera/Sana/Quinn each
+  reviewed commit `65121da` in their own isolated worktree
+  (`scph-worktrees/review-86akgqdx8-{cody,vera,sana,quinn}`); their findings
+  can be triaged and remediated without a further architecture change.
+- Change or investigation: all four verdicts received —
+  **Cody: APPROVE WITH NITS** (1 Minor, 3 Nits). **Vera: CHANGES REQUESTED**
+  (1 Major — F1; 2 Minor — F2/F3; 3 Nits). **Sana: APPROVE WITH NITS**
+  (0 Blocker/Major; 2 Minor; 3 Nits; security verdict Pass). **Quinn: PASS
+  WITH FOLLOW-UPS** (1 Low finding).
+  Remediated in this iteration:
+  - **Vera F1 (Major, required)**: `sermon_note_repo.rs`'s hand-reconciled
+    ~60,060 B wire-cap budget covered only a SINGLE draft
+    (`SaveSermonNoteDraft`/`UpdateSermonNoteDraft`), never
+    `ServerMessage::SermonNoteRegenerationState`'s TWO drafts. Added a new
+    test (`a_two_draft_regeneration_state_reply_is_measured_against_the_wire_
+    cap_both_ways`, `test_sermon_note_remote.rs`) measuring the REAL
+    serialized size via `protocol::to_json` (not arithmetic): ordinary
+    Latin-script content at every field's maximum is 48,824 B (fits, 74% of
+    the 64 KiB cap); ordinary 3-byte-UTF-8 content at the SAME maxima is
+    71,624 B (exceeds it) — both numbers corroborate Vera's own independent
+    measurement (48,860 B / 71,660 B) within rounding. Rewrote the doc
+    comment on `MAX_SECTIONS_JSON_BYTES` to scope the original reconciliation
+    to the request direction and document the reply-direction gap honestly.
+    Confirmed this is NOT a live defect (no transport-level enforcement
+    exists on the reply/write direction at all, pre-dating this ticket) and
+    filed a follow-up, [17tnw2axpt1](https://app.clickup.com/t/17tnw2axpt1),
+    for adding a symmetric `WebSocketConfig` to the client.
+  - **Cody Minor**: `RealSermonNoteStore::discard_regeneration` (both
+    `selahcue-desktop/src/main.rs` and its hand-mirrored test copy in
+    `test_sermon_note_remote.rs`) turned "no `sermon_note` row at all" into
+    a store-layer `Err` (via `.ok_or_else` on the post-write read-back),
+    which `LiveController::apply` turns into `ControllerReply::Deny` —
+    observable as a denied command rather than the trait's documented
+    "never errors for nothing was pending" no-op. Fixed to return
+    `RegenerationSlot::default()` in that case. Added
+    `discarding_with_no_draft_ever_generated_is_a_harmless_success_over_the_
+    real_wire` and mutation-verified it (reverted the fix, confirmed RED
+    with exactly the predicted symptom, restored the fix, confirmed GREEN).
+  - **Sana Minor 2**: this contract's own "a rollback is reverting the
+    branch" claim was inaccurate — `migrations.rs::run` refuses
+    `DataError::SchemaTooNew` for a `user_version` ahead of the running
+    build's `target_version()`, so a reverted v21 binary cannot open a store
+    a v22 binary already migrated. Corrected in this document's Risks
+    section (no data loss either way, but "revert the branch" alone does
+    not restore access).
+  - **Quinn (Low)**: `dist/transcripts.js`'s REGEN-* headless checks proved
+    the happy path/discard/confirm/degraded cases but never the
+    regenerate-specific consent-off or transport-failure cases PP REGEN-4/
+    PP REGEN-5 prove on `dist/settings.js` — the same "proven on one
+    console, assumed on the other" shape this batch has hit as a real MAJOR
+    bug before. Added TR REGEN-5/TR REGEN-6 to
+    `scripts/operator_headless.py`, re-derived `EXPECTED_MIN_CHECKS` fresh
+    (1490 -> 1496, confirmed by an actual standalone run), both new checks
+    pass.
+  - **Vera N1 (Nit, addressed anyway)**: `a_second_stage_before_confirm_
+    overwrites_the_first_pending_regeneration` proved last-writer-wins but
+    not boundedness (would still pass against a history-table
+    implementation). Strengthened to loop 5 re-stages, asserting
+    `SELECT COUNT(*) FROM sermon_note WHERE transcript_id = ?` stays at
+    exactly 1 after every one.
+  Deferred, with reasoning recorded rather than silently dropped:
+  - **Vera F2 (Minor)**: `find_by_transcript`'s widened 12->21 columns cost
+    every plain load an unnecessary ~19 KB decode/allocation of a pending
+    payload it discards. Vera's own suggested fix (a lean
+    `find_accepted_by_transcript` for the load path) is real but touches a
+    well-tested, multiply-consumed production function under time pressure
+    for a perf-only (not correctness) gain; deferred rather than rushed.
+  - **Vera F3(a) (non-goal)**: no UI reclaim path for an abandoned pending
+    slot once its banner is gone — Vera herself ties this to the durable
+    cross-reload pending-banner follow-up already recorded in this
+    contract's Non-goals section; not built here, for the same reason.
+  - **Vera F3(b) / Sana Minor 1 (Minor, independently converged)**:
+    `persist_generated_draft`'s load-then-branch is two separate calls, not
+    one atomic operation — a narrow TOCTOU window if two Operator-tier LAN
+    clients race on the same transcript (single-console double-submission
+    is already blocked by both consoles' `generating` flag). Both reviewers
+    rated this non-blocking and said risk-acceptance, if deferred, belongs
+    to the human owner. Filed as a follow-up,
+    [17tnw2axpt3](https://app.clickup.com/t/17tnw2axpt3), rather than
+    attempt an under-reviewed atomicity redesign
+    (a new `create_or_stage` repo-level primitive) inside review
+    remediation.
+  - **Cody's remaining 2 Nits** (duplicated `PendingRegenerationRecord`->
+    `SermonNoteDraftView` mapping across selahcue-desktop/selahcue-app's
+    test files/selahcue-operator's test module; duplicated confirm/discard/
+    banner JS between `settings.js`/`transcripts.js`): both match an
+    ALREADY-established, explicitly-documented convention in this codebase
+    (`RealTranscriptStore`/`RealSermonNoteStore` "kept in sync by hand,
+    that binary crate is excluded from the workspace and cannot be
+    depended on from here"; both consoles independently implementing the
+    same UI state is what C-012 itself requires). Not fixed — consistent
+    with precedent, not an oversight.
+  - **Sana's 3 Nits** (a `.map_err(|e| e.to_string())` that materializes a
+    potentially large string even though every caller today discards it;
+    one unreachable corrupt-row shape; orphaned pending regenerations after
+    a reload — a documented, bounded non-goal): all explicitly rated
+    low-value/acceptable by Sana herself; not fixed.
+- Verifier executed: `cargo test -p selahcue-data -p selahcue-lan`,
+  `-p selahcue-app` (`--features server`), `cargo test --manifest-path
+  .../selahcue-operator/Cargo.toml`, `cargo clippy --all-targets
+  -- -D warnings` + `cargo fmt --check` across every touched crate,
+  `python3 scripts/operator_headless.py`,
+  `python3 scripts/validate_goal_contract.py` — all re-run fresh AFTER
+  every remediation edit above, not trusted from before the fixes.
+- Result: selahcue-data + selahcue-lan 24 test-result blocks all `ok`, 0
+  FAILED; selahcue-app 15 test-result blocks all `ok` (0 FAILED),
+  `test_sermon_note_remote.rs` now 9 tests (was 7; +2 from this iteration);
+  selahcue-operator 161 tests pass, 0 failed; clippy clean across every
+  touched crate; `cargo fmt --check` clean; headless 1496 checks, 0 FAIL;
+  goal-contract validator PASS (15/15 mandatory criteria present).
+- New evidence: log files under `/tmp/scph-a4658-final-*.log`; follow-up
+  tickets 17tnw2axpt1, 17tnw2axpt3; PR #55 review comments from all four
+  reviewers.
+- Decision: iterate — C-013 (a fresh, uninterrupted `make ci` run against
+  the fully remediated tree) and re-checks from Vera/Cody/Sana/Quinn on
+  the remediation itself remain before C-014/C-015 can be marked PASS.
+
 ## Risks and rollback
 
 - Risks: the LAN/RBAC/SermonNoteStore footprint is larger than the ticket's
@@ -341,7 +461,19 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
   mitigated by re-checking `migrations.rs` immediately before finalizing and
   rebasing before requesting review.
 - Rollback or recovery: the migration is additive-only (new nullable
-  columns); a rollback is reverting the branch, not a data migration.
+  columns), so applying it is always safe and never destroys pre-existing
+  data. **Correction (86akgqdx8 review, Sana — Minor 2): "a rollback is
+  reverting the branch" is not quite right as originally written.**
+  `migrations.rs::run` refuses to open a database whose `user_version` is
+  AHEAD of the running build's `target_version()` (`DataError::SchemaTooNew`)
+  — so a reverted v21 binary cannot open a store a v22 binary already
+  migrated; it has to stay on v22 (or later) until a v22-or-newer build is
+  reinstalled. No data is lost either way (the v22 columns are simply
+  unreadable to the older binary, not deleted), and this "cannot open a
+  newer schema" behaviour is a pre-existing property of every one of this
+  crate's 22 migrations, not something FR-129 introduces — but "revert the
+  branch" alone does not restore a working v21 binary against an
+  already-migrated store; reinstalling v22-or-later does.
 
 ## Pause and escalation conditions
 
