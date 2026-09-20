@@ -139,11 +139,71 @@ def check_d5_no_scrolltop_writes():
     return ok_unmarked and ok_counts
 
 
+# S3 (Sana, PR #51 security review, on the `D5-exempt(jump)` class rev 4 adds): the check above
+# counts WRITE sites but constrains nothing about who may CALL `jumpToOffsetMs`. Moving that one
+# call into a `scroll`/`wheel`/`keydown`/animation-frame handler would reintroduce the exact
+# C1 hazard D5 exists to forbid while the write-site count stayed green at `jump: 1` — the write
+# itself would not move, only its trigger. This is the call-site counterpart: `jumpToOffsetMs`
+# may be CALLED from exactly one site, and that site's own line must register for a `"click"`
+# event and must not sit alongside `scroll`/`wheel`/`keydown`/`requestAnimationFrame`.
+JUMP_CALL_RE = re.compile(r"jumpToOffsetMs\(")
+JUMP_DEF_RE = re.compile(r"function jumpToOffsetMs\(")
+JUMP_FORBIDDEN_CONTEXT = ('"scroll"', "'scroll'", '"wheel"', "'wheel'", '"keydown"', "'keydown'", "requestAnimationFrame(")
+
+
+def check_jump_call_site_is_click_only():
+    path = os.path.join(DIST, "transcripts.js")
+    lines = open(path, encoding="utf-8").read().splitlines()
+    call_sites = [
+        lineno
+        for lineno, text in enumerate(lines, start=1)
+        if JUMP_CALL_RE.search(text) and not JUMP_DEF_RE.search(text)
+    ]
+    if len(call_sites) != 1:
+        print(
+            "FAIL: D5-jump-caller (ADR-0026 rev 4) — expected exactly 1 call site for "
+            "jumpToOffsetMs(), found %d at line(s) %s (a second call site needs its own review "
+            "against the same 'never reachable from scroll/wheel/keydown/an animation frame' "
+            "argument Revision 4 makes for the one write)" % (len(call_sites), call_sites)
+        )
+        return False
+    lineno = call_sites[0]
+    text = lines[lineno - 1]
+    forbidden = [kw for kw in JUMP_FORBIDDEN_CONTEXT if kw in text]
+    if forbidden:
+        print(
+            "FAIL: D5-jump-caller (ADR-0026 rev 4) — jumpToOffsetMs's one call site (line %d) "
+            "sits alongside %s — exactly the reactive-handler class D5 forbids for a scrollTop "
+            "write, even though the write itself is still marked D5-exempt(jump)" % (lineno, forbidden)
+        )
+        return False
+    if '"click"' not in text and "'click'" not in text:
+        print(
+            "FAIL: D5-jump-caller (ADR-0026 rev 4) — jumpToOffsetMs's one call site (line %d) is "
+            "not textually inside a \"click\" event registration — Revision 4's safety argument "
+            "rests specifically on this being a click handler" % lineno
+        )
+        return False
+    print(
+        "PASS: D5-jump-caller (ADR-0026 rev 4) — jumpToOffsetMs has exactly 1 call site, and it "
+        "registers for \"click\" only"
+    )
+    return True
+
+
 if not check_d5_no_scrolltop_writes():
     print(
         "\n=== D5 static check FAILED — transcripts.js violates the ADR-0026 "
         "no-scrollTop-write invariant — see docs/architecture/adr/"
         "ADR-0026-operator-virtualized-list-scroll-model.md ==="
+    )
+    sys.exit(1)
+
+if not check_jump_call_site_is_click_only():
+    print(
+        "\n=== D5-jump-caller static check FAILED — jumpToOffsetMs is reachable from somewhere "
+        "other than a single click handler — see docs/architecture/adr/"
+        "ADR-0026-operator-virtualized-list-scroll-model.md 'Revision 4' ==="
     )
     sys.exit(1)
 
@@ -1123,13 +1183,29 @@ STUB = r"""
     // never a broken one).
     if (window.__trSeedTimestampsFixture && !window.__trTimestampsFixtureSeeded) {
       window.__trTimestampsFixtureSeeded = true;
-      TR.detail[8] = { id:8, label:"Timestamps Fixture", provider:"manual", started_at_ms: 1724000000000, ended_at_ms: 1724001000000,
+      // Sana's security review (PR #51, S2): the three-segment fixture below is too small to
+      // exercise the ADR-0026 rev-4 `D5-exempt(jump)` write's ENTIRE reason to exist — "the
+      // target row may not be mounted" — every one of its 3 rows is already mounted well
+      // under WINDOW_ROWS(150), so the original jump checks below pass in the one
+      // configuration where the jump is trivially exact. `tsFillerSegs` adds 300 filler
+      // segments (comfortably past WINDOW_ROWS) so a FOURTH marker, "Deep in the service",
+      // targets a segment that is genuinely NOT in the initially-mounted window — verified
+      // below by asserting its row is absent BEFORE the click.
+      var tsFillerSegs = [];
+      for (var tsi = 0; tsi < 300; tsi++) {
+        tsFillerSegs.push({id: 900000 + tsi, start_ms: 15000 + tsi * 4000, end_ms: 15000 + tsi * 4000 + 3500,
+          text: "Filler segment " + tsi + " of a long service, well past the initial WINDOW_ROWS mount."});
+      }
+      var TS_DEEP_INDEX = 200; // filler index; absolute segment index 203 — far past WINDOW_ROWS(150)
+      var TS_DEEP_ID = 900000 + TS_DEEP_INDEX;
+      var TS_DEEP_OFFSET_MS = 15000 + TS_DEEP_INDEX * 4000;
+      TR.detail[8] = { id:8, label:"Timestamps Fixture", provider:"manual", started_at_ms: 1724000000000, ended_at_ms: 1724001000000 + 300 * 4000,
         notes_generated: true,
         detections: [], corrections: [],
         draft: {
           title:"Timestamps Fixture", summary:null,
           sections:[
-            {heading:"Chapter markers", items:["Opening prayer","Far future","Bogus type"], points:[], empty_requested:false},
+            {heading:"Chapter markers", items:["Opening prayer","Far future","Bogus type","Deep in the service"], points:[], empty_requested:false},
           ],
           scriptures:[], caveats:[], scripture_verdicts:[],
           timestamps:[
@@ -1140,6 +1216,8 @@ STUB = r"""
             {heading:"Chapter markers", text:"Far future", offset_ms:99999999999},
             // Non-numeric — the shape a hand-corrupted or hostile draft could carry.
             {heading:"Chapter markers", text:"Bogus type", offset_ms:"not-a-number"},
+            // S2: a REAL segment far outside the window mounted on open.
+            {heading:"Chapter markers", text:"Deep in the service", offset_ms:TS_DEEP_OFFSET_MS},
           ],
         },
         scripture_verification_note:null,
@@ -1150,8 +1228,9 @@ STUB = r"""
           {id:801, start_ms:0, end_ms:4000, text:"Good morning, church."},
           {id:802, start_ms:4000, end_ms:9000, text:"Let us open this morning in a word of prayer."},
           {id:803, start_ms:9000, end_ms:15000, text:"Turn with me to Romans chapter eight."},
-        ] };
-      TR.list.push({id:8, label:"Timestamps Fixture", provider:"manual", started_at_ms: 1724000000000, ended_at_ms: 1724001000000, segment_count:3});
+        ].concat(tsFillerSegs) };
+      window.__trTsDeepId = TS_DEEP_ID;
+      TR.list.push({id:8, label:"Timestamps Fixture", provider:"manual", started_at_ms: 1724000000000, ended_at_ms: 1724001000000 + 300 * 4000, segment_count: 3 + 300});
     }
     // A synthetic three-hour-scale transcript — 500 segments, well past the live console's
     // 240-segment ring cap — for the bounded-DOM-rendering checks (86akcffvt AC3). Each segment's
@@ -4908,13 +4987,42 @@ DRIVER = r"""
 
       var tsResult = el("tr-gen-result");
       var tsBadges = tsResult.querySelectorAll(".tr-item-ts");
-      ok(tsBadges.length === 2,
-         "TR timestamps (adversarial fixture): exactly two of the three chapter markers carry a " +
-         "badge — 'Opening prayer' (real match) and 'Far future' (out-of-range but numeric); " +
-         "'Bogus type' (non-numeric offset) gets none at all, never a broken one");
+      ok(tsBadges.length === 3,
+         "TR timestamps (adversarial fixture): exactly three of the four chapter markers carry a " +
+         "badge — 'Opening prayer' (real match), 'Far future' (out-of-range but numeric) and " +
+         "'Deep in the service' (a real, genuinely unmounted match); 'Bogus type' (non-numeric " +
+         "offset) gets none at all, never a broken one");
       ok(tsResult.textContent.indexOf("Bogus type") !== -1,
          "TR timestamps (adversarial fixture): the malformed item's OWN text still renders — only " +
          "its timestamp badge is missing");
+      // S2 (Sana, PR #51 security review): checked FIRST, before any other click in this block
+      // moves the virtualizer's window — every jump exercised below this point in the ORIGINAL
+      // fixture landed within a 3-segment log where every row was ALREADY mounted (well under
+      // WINDOW_ROWS), the trivial case, not the one ADR-0026 rev 4's `D5-exempt(jump)` exists for
+      // ("the target row may not be mounted"). `tsFillerSegs` (300 segments) makes the "Deep in
+      // the service" marker's target genuinely unmounted on the pristine, just-opened window —
+      // verified explicitly below, not assumed.
+      ok(window.__trRowFor(window.__trTsDeepId) === null,
+         "TR timestamps (S2 setup): the deep target segment is genuinely UNMOUNTED before the " +
+         "jump — the actual case this ADR revision exists for, not a trivially-already-visible row");
+      var tsDeepBtn = Array.prototype.filter.call(tsBadges, function (b) { return b.textContent === "13:35"; })[0];
+      ok(!!tsDeepBtn, "TR timestamps (S2): the deep marker's badge renders with its real, far-future timestamp");
+      tsDeepBtn.click();
+      ok(window.__trJumpTargetSegId() === window.__trTsDeepId,
+         "TR timestamps (S2): clicking a badge for an UNMOUNTED target still jumps to the segment it actually matched");
+      var tsDeepRow = window.__trRowFor(window.__trTsDeepId);
+      ok(!!tsDeepRow && tsDeepRow.classList.contains("tr-line-jump-target"),
+         "TR timestamps (S2): the target row is now MOUNTED — the virtualizer's window re-rendered " +
+         "around it, not merely scrolled toward a row that was never there — and highlighted");
+      var tsDeepMaxScroll = Math.max(0, el("tr-detail-log").scrollHeight - el("tr-detail-log").clientHeight);
+      ok(el("tr-detail-log").scrollTop >= 0 && el("tr-detail-log").scrollTop <= tsDeepMaxScroll,
+         "TR timestamps (S2): the resulting scrollTop stays within the log's real scrollable range " +
+         "even for a jump the virtualizer had to remount for");
+      ok(el("tr-detail-log").scrollTop === window.__trOffsetAt(203),
+         "TR timestamps (S2): scrollTop is set to exactly the newly-mounted window's own computed " +
+         "offset for the target row (D1's metric) — segment index 203 (3 real + 200 filler), the " +
+         "same value jumpToOffsetMs itself reads immediately after remounting");
+
       var tsOpenBtn = Array.prototype.filter.call(tsBadges, function (b) { return b.textContent === "00:04"; })[0];
       ok(!!tsOpenBtn, "TR timestamps: the real match shows its transcript timestamp (segment 802 starts at 4s)");
       // Verification expectation (this ticket's own): "asserted on computed style" — a real,
@@ -4924,9 +5032,12 @@ DRIVER = r"""
       ok(tsOpenBtn.getAttribute("aria-label").indexOf("00:04") !== -1,
          "TR timestamps: the badge names the time it jumps to in its accessible label");
 
-      // Click it: jumps to segment 802 (id 802, start_ms 4000) and highlights it. The log has
-      // only 3 segments (well under WINDOW_ROWS), so all three are already mounted — the
-      // assertion is on the EXACT scrollTop the jump computed, not merely "it moved".
+      // Click it: jumps to segment 802 (id 802, start_ms 4000) and highlights it. The S2 jump
+      // above already moved the mounted window away from segment 802 (index 1) — this click's
+      // own remount (`jumpToOffsetMs`'s own `renderWindow` call, exercised for real, not assumed)
+      // is what brings it back, so the assertion below is on the EXACT scrollTop the jump
+      // computed, not merely "it moved" and not resting on any assumption about what was already
+      // mounted going in.
       tsOpenBtn.click();
       ok(window.__trJumpTargetSegId() === 802,
          "TR timestamps: clicking the real-match badge jumps to the segment it actually matched");
@@ -4944,15 +5055,20 @@ DRIVER = r"""
          "non-target row's — the highlight class has real visual effect, not just a name");
 
       // Adversarial: an out-of-range-but-numeric offset (99999999999 — past every real segment,
-      // the shape a corrupted store row's stale value could take) must clamp to the nearest real
-      // position, never crash and never scroll to something nonsensical. DOM order follows item
-      // order ("Opening prayer" then "Far future" — "Bogus type" contributed no badge), so the
-      // second (and last) rendered badge is "Far future"'s.
-      var tsFarBtn = tsResult.querySelectorAll(".tr-item-ts")[1];
-      ok(!!tsFarBtn && tsFarBtn !== tsOpenBtn,
-         "TR timestamps (setup): the second badge is a distinct element from the first");
+      // INCLUDING the 300 filler ones added for S2 above) must clamp to the nearest real
+      // position, never crash and never scroll to something nonsensical. The last of the 303
+      // segments is the final filler row, id 900299 (900000 + tsi for tsi up to 299).
+      // fmtTimestamp's own format includes an hour component (`h + ":" + mm + ":" + ss`) only
+      // when h > 0 — true only of "Far future"'s raw, unclamped offset_ms (99999999999 ≈
+      // 3170 years, badge text like "27777:46:40"); "Opening prayer" (00:04) and "Deep in the
+      // service" (13:35) both stay under an hour, so this uniquely identifies it without
+      // hardcoding the exact digits.
+      var tsFarBtn = Array.prototype.filter.call(tsBadges, function (b) { return /^\d+:\d\d:\d\d$/.test(b.textContent); })[0];
+      ok(!!tsFarBtn && tsFarBtn !== tsOpenBtn && tsFarBtn !== tsDeepBtn,
+         "TR timestamps (setup): the 'Far future' badge (the only one with an hours component) " +
+         "is a distinct element from the other two");
       tsFarBtn.click();
-      ok(window.__trJumpTargetSegId() === 803,
+      ok(window.__trJumpTargetSegId() === 900299,
          "TR timestamps (adversarial fixture): an out-of-range offset clamps to the LAST real " +
          "segment — a bounded, sane landing, never an out-of-bounds index and never a crash");
       var tsMaxScroll = Math.max(0, el("tr-detail-log").scrollHeight - el("tr-detail-log").clientHeight);
