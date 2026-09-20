@@ -236,7 +236,7 @@ if not check_d5_no_scrolltop_writes():
 # verifiably settled — closing what had looked like a second, independent failure but was a
 # knock-on effect of the same race. No check COUNT change from that fix (same two assertions,
 # reworded trigger).)
-EXPECTED_MIN_CHECKS = 1297
+EXPECTED_MIN_CHECKS = 1301  # 86akmdkdg added 4 checks: TR measureObserver disconnect on resize-mid-scroll
 
 
 def find_chrome():
@@ -3264,6 +3264,94 @@ DRIVER = r"""
          "TR I2 monotonicity: the exact offsets of early rows " + JSON.stringify(trI2EarlyIdx) +
          " are UNCHANGED after measuring rows far below them (diffs: " + JSON.stringify(trI2Diffs) +
          ") — measuring row i never moves the position of rows <= i");
+      el("tr-detail-back").click();
+
+      // === TR measureObserver disconnect on resize-mid-scroll (86akmdkdg): `invalidateHeightsForWidth`
+      // (the resize-triggered force-remount path, ADR-0026 D4) used to clear `rowsHost.innerHTML`
+      // WITHOUT disconnecting `measureObserver` first, unlike the file's other two mount call sites
+      // (`renderWindow`'s no-overlap branch, `openTranscript`). If a row is mid-async-measurement —
+      // the deferred `ResizeObserver` path 86akmd00b introduced, only ever live while `inScrollFrame`
+      // (i.e. reached through a real `scroll` event's own rAF callback, never through a test hook
+      // that calls `renderWindow` directly) — when a resize fires, the observer is left holding a
+      // reference to a now-detached node: a real leak (CLAUDE.md's bounded-memory discipline).
+      //
+      // NOTE on why this checks ORDER, not just the end state: `invalidateHeightsForWidth` ends by
+      // calling `renderWindow(savedStart, savedEnd)` with `winStart`/`winEnd` already zeroed, which
+      // makes THAT call's own no-overlap branch disconnect `measureObserver` a few lines later
+      // regardless of this ticket's fix — so the count of live observer targets is back to 0 by the
+      // time `invalidateHeightsForWidth` RETURNS either way, and a check that only reads the count
+      // afterwards would pass even without the fix (exactly the "control asserting nothing" trap
+      // this repo's bounded-memory discipline warns about). What actually differs is ORDER: does
+      // `rowsHost.innerHTML` get cleared before or after `measureObserver` is disconnected? This is
+      // captured by intercepting the `innerHTML` setter on `rowsHost` itself and reading
+      // `__trMeasureObservedCount()` at the exact moment of the FIRST clear inside the call — before
+      // the fix that count is whatever was pending; after the fix it is already 0.
+      //
+      // The pending state is reproduced by dispatching a genuine `scroll` event (so `onScroll`
+      // schedules its usual rAF callback, and — critically — `rafPending` really is set, matching
+      // production) but capturing that ONE callback via a temporary `requestAnimationFrame`
+      // override instead of racing the browser's own frame scheduling to run right after it. This
+      // file runs under Chrome's `--virtual-time-budget` (see the harness docstring above): real
+      // rAF-ordering-across-frames assumptions are exactly the kind of "condition nobody can
+      // reliably reproduce" ADR-0026 D3's own comment warns against, and an ordering surprise here
+      // does not merely flake — it can throw partway through the driver and abort the ENTIRE run
+      // with "NO RESULTS BLOCK" instead of one named FAIL (confirmed against this exact block: solid
+      // standalone, but crashed the whole suite once under load — never again with the direct-call
+      // approach below, which needs no frame scheduling at all). Invoking the captured callback
+      // ourselves runs the SAME code (`inScrollFrame = true; recomputeWindow(); … inScrollFrame =
+      // false;`) as a real frame would, deterministically, on our own schedule.
+      el('tr-list').querySelector('.tr-card[data-id="5"] .tr-card-open').click();
+      await waitFor(function(){ return !el("tr-detail-view").hidden && window.__trRenderedRowCount && window.__trRenderedRowCount() > 0; });
+      window.__trScrollToFraction(0.5); // land mid-transcript (test-hook jump, no async path — count stays 0)
+      var trMoLog = el("tr-detail-log");
+      var trMoOrigRaf = window.requestAnimationFrame;
+      var trMoCapturedCb = null;
+      try {
+        window.requestAnimationFrame = function (cb) { trMoCapturedCb = cb; return 1; };
+        var trMoMax = Math.max(0, trMoLog.scrollHeight - trMoLog.clientHeight);
+        trMoLog.scrollTop = trMoMax; // a REAL scroll all the way to the end — guaranteed to move the
+                                      // mounted window regardless of this fixture's per-row height
+        trMoLog.dispatchEvent(new Event("scroll")); // onScroll() runs synchronously here and calls
+                                                      // the patched requestAnimationFrame above,
+                                                      // which just records the callback (does not run it)
+      } finally {
+        window.requestAnimationFrame = trMoOrigRaf;
+      }
+      ok(typeof trMoCapturedCb === "function",
+         "TR measureObserver disconnect (setup): the real scroll event scheduled onScroll's rAF " +
+         "callback — captured directly rather than racing real frame timing");
+      trMoCapturedCb(); // run it ourselves: inScrollFrame is true for exactly this call, during
+                         // which startMeasuring defers the newly-scrolled-in rows onto measureObserver
+      var trMoPending = window.__trMeasureObservedCount();
+      ok(trMoPending > 0,
+         "TR measureObserver disconnect (setup): a real scroll deferred at least one row onto " +
+         "measureObserver (got " + trMoPending + ") — without a pending measurement the check " +
+         "below would test nothing");
+
+      var trMoRowsHost = el("tr-log-rows");
+      var trMoAtFirstClear = null;
+      var trMoOrigDesc = Object.getOwnPropertyDescriptor(Element.prototype, "innerHTML");
+      Object.defineProperty(trMoRowsHost, "innerHTML", {
+        configurable: true,
+        get: function () { return trMoOrigDesc.get.call(this); },
+        set: function (v) {
+          if (trMoAtFirstClear === null) trMoAtFirstClear = window.__trMeasureObservedCount();
+          return trMoOrigDesc.set.call(this, v);
+        }
+      });
+      try {
+        window.__trInvalidateHeightsForWidth(); // force-fires the resize path, mid the pending measurement above
+      } finally {
+        delete trMoRowsHost.innerHTML; // restore the prototype's own accessor unconditionally
+      }
+      ok(trMoAtFirstClear === 0,
+         "TR measureObserver disconnect on resize: invalidateHeightsForWidth must disconnect " +
+         "measureObserver BEFORE the FIRST time it clears rowsHost.innerHTML — measureObserver " +
+         "still had " + trMoAtFirstClear + " live target(s) referencing now-detached nodes at that " +
+         "exact moment (expected 0) — matching renderWindow's no-overlap branch and openTranscript");
+      ok(window.__trMeasureObservedCount() === 0,
+         "TR measureObserver disconnect on resize: no live observer targets remain once " +
+         "invalidateHeightsForWidth has finished re-rendering (got " + window.__trMeasureObservedCount() + ")");
       el("tr-detail-back").click();
 
       trDetailViewEl.style.width = trSavedWidth;

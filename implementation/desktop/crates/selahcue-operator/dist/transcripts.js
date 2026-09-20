@@ -283,6 +283,14 @@
     var savedStart = winStart, savedEnd = winEnd;
     buildHeights();
     winStart = 0; winEnd = 0;
+    // 86akmdkdg: disconnect BEFORE clearing, matching renderWindow's no-overlap branch and
+    // openTranscript below — otherwise a row mid-async-measurement (observed via startMeasuring's
+    // deferred/inScrollFrame path) leaves measureObserver holding a reference to a node this line
+    // is about to detach. The very next line's renderWindow(savedStart, savedEnd) call happens to
+    // disconnect again on its own (winStart/winEnd are already zeroed above, so it always takes the
+    // no-overlap branch) — but that is AFTER this clear, not before it, so the detach-before-
+    // disconnect ordering bug (and the leak window it opens) is real regardless.
+    moDisconnect();
     rowsHost.innerHTML = "";
     renderWindow(savedStart, savedEnd);
   }
@@ -333,10 +341,46 @@
           var box = entries[i].borderBoxSize && entries[i].borderBoxSize[0];
           var real = box ? box.blockSize : node.offsetHeight;
           foldOneMeasurement(node, real);
-          if (measuredIds[node.dataset.segId]) measureObserver.unobserve(node);
+          if (measuredIds[node.dataset.segId]) moUnobserve(node);
         }
       })
     : null;
+  // 86akmdkdg: `measureObserver` has no query API of its own, so this counter is the only way to
+  // see "how many now-detached nodes are still referenced by the observer" from outside — the
+  // exact shape of the leak this ticket fixes (a resize firing mid-async-measurement used to clear
+  // rowsHost without disconnecting first). Every observe/unobserve/disconnect call on
+  // `measureObserver` MUST go through these three wrappers so the count never drifts from reality.
+  // Membership is tracked with a WeakSet, not a Set (security review, Sana): a `Set` of DOM nodes
+  // holds STRONG references, which would make this instrumentation the only thing in the file
+  // capable of keeping a detached row alive forever if some future row-removal path ever forgot to
+  // route through these wrappers — reintroducing, inside the leak-detector itself, the exact bug
+  // class this ticket exists to fix. A `WeakSet` never keeps a node alive on its own. Its trade-off
+  // is no `.size`/iteration/`.clear()`, so a plain counter still carries the actual count — kept
+  // accurate (QA review, Quinn) by only touching it when the WeakSet confirms real membership, not
+  // unconditionally on every observe/unobserve/disconnect call: `startMeasuring` only ever routes a
+  // node through `moObserve` while `inScrollFrame` (every other mount — initial open, a test-hook
+  // jump, invalidateHeightsForWidth's own rebuild — measures synchronously and never registers with
+  // `measureObserver` at all), yet `moUnobserve` is still called on those never-observed nodes too
+  // (renderWindow's stale-row eviction doesn't know which rows were ever observed); an unconditional
+  // decrement there would silently under-report a real leak elsewhere in the same session.
+  var measureObservedSet = new WeakSet();
+  var measureObservedCount = 0;
+  function moObserve(node) {
+    if (!measureObserver) return;
+    measureObserver.observe(node);
+    if (!measureObservedSet.has(node)) { measureObservedSet.add(node); measureObservedCount++; }
+  }
+  function moUnobserve(node) {
+    if (!measureObserver) return;
+    measureObserver.unobserve(node);
+    if (measureObservedSet.has(node)) { measureObservedSet.delete(node); measureObservedCount--; }
+  }
+  function moDisconnect() {
+    if (!measureObserver) return;
+    measureObserver.disconnect();
+    measureObservedSet = new WeakSet(); // WeakSet has no .clear() — replace it instead
+    measureObservedCount = 0;
+  }
   function segRow(s, idx) {
     var row = el("div", "tr-line");
     row.dataset.segId = String(s.id);
@@ -375,7 +419,7 @@
   // `operator_headless.py` FAILED `TR I2 (setup)`/`TR anchoring-is-live` intermittently once
   // deferred everywhere) without buying anything, since there is nothing to protect them from.
   function startMeasuring(node) {
-    if (measureObserver && inScrollFrame) measureObserver.observe(node);
+    if (measureObserver && inScrollFrame) moObserve(node);
     else foldOneMeasurement(node, node.offsetHeight);
   }
   function renderWindow(start, end) {
@@ -391,7 +435,7 @@
     if (!hasOverlap) {
       // Every currently-mounted row is being discarded — stop observing all of them in one call
       // rather than walking the (about to be destroyed) child list individually.
-      if (measureObserver) measureObserver.disconnect();
+      moDisconnect();
       rowsHost.innerHTML = "";
       for (var i = start; i < end; i++) {
         var node = segRow(segs[i], i);
@@ -401,11 +445,11 @@
     } else {
       for (var r = winStart; r < overlapStart; r++) {
         var stale = rowsHost.firstChild;
-        if (stale) { if (measureObserver) measureObserver.unobserve(stale); rowsHost.removeChild(stale); }
+        if (stale) { moUnobserve(stale); rowsHost.removeChild(stale); }
       }
       for (var r2 = winEnd; r2 > overlapEnd; r2--) {
         var staleEnd = rowsHost.lastChild;
-        if (staleEnd) { if (measureObserver) measureObserver.unobserve(staleEnd); rowsHost.removeChild(staleEnd); }
+        if (staleEnd) { moUnobserve(staleEnd); rowsHost.removeChild(staleEnd); }
       }
       for (var p = overlapStart - 1; p >= start; p--) {
         var pNode = segRow(segs[p], p);
@@ -497,6 +541,19 @@
   // successor to the deleted `__trAvgRatio`: "did real measurement actually happen" without
   // exposing a ratio that no longer exists.
   window.__trMeasuredCount = function () { return Object.keys(measuredIds).length; };
+  // 86akmdkdg: `measureObserver` exposes no query API, so this is the only way from outside to see
+  // "how many nodes is the observer still holding a reference to" — the direct measure of the
+  // leak this ticket fixes (a resize firing mid-async-measurement used to detach a row without
+  // ever disconnecting the observer watching it).
+  window.__trMeasureObservedCount = function () { return measureObservedCount; };
+  // Force-fires the resize-triggered force-remount path independent of an actual layout-width
+  // change reaching the real ResizeObserver on `logEl` — makes "invalidate mid an in-flight async
+  // measurement" a deterministic test setup instead of racing real browser resize-notification
+  // timing.
+  window.__trInvalidateHeightsForWidth = function () {
+    lastCalibratedWidth = -1; // force the width-unchanged early-return below to fall through
+    invalidateHeightsForWidth();
+  };
   // A row is genuinely VISIBLE (not just mounted somewhere in the 150-row window) iff its real
   // bounding rect actually overlaps the log container's — the direct measure of "blank frame".
   window.__trVisibleSegIds = function () {
@@ -548,7 +605,7 @@
     // freezing its heights at whatever the PREVIOUS transcript last measured).
     measuredIds = Object.create(null);
     renderCount = 0;
-    if (measureObserver) measureObserver.disconnect(); // stop watching the previous transcript's rows
+    moDisconnect(); // stop watching the previous transcript's rows
     rowsHost.innerHTML = ""; topSpacer.style.height = "0px"; bottomSpacer.style.height = "0px";
     invoke("transcript_get", { id: id })
       .then(function (t) {
