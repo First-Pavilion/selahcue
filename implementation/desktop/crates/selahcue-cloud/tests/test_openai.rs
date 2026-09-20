@@ -25,7 +25,7 @@ use selahcue_cloud::{
     generate_sermon_notes, CloudNoteProvider, LocalNoteProvider, MockTransport, Token,
 };
 use selahcue_core::providers::{
-    ConsentState, IncludeInNotes, NoteError, NoteProvider, NoteRequest, NotesTemplate,
+    ConsentState, DraftCaveat, IncludeInNotes, NoteError, NoteProvider, NoteRequest, NotesTemplate,
     ProvidersConfig, ProvidersSettings, AI_GENERATED_LABEL, FABRICATION_DISCLOSURE,
 };
 
@@ -803,6 +803,191 @@ fn a_disabled_section_is_not_even_requested_in_the_schema() {
 }
 
 // ===========================================================================
+// 3b · Requested-but-empty sections carry a caveat, never silence (86akc0tua)
+// ===========================================================================
+
+/// [`full_draft_json`] with one or more top-level keys overridden — lets a test isolate
+/// exactly the field(s) it wants empty/malformed while every other FR-122 element stays
+/// populated, exactly as the reported live case did (only `chapter_markers` varied
+/// between the two runs).
+fn draft_json_with(overrides: serde_json::Value) -> String {
+    let mut base: serde_json::Value = serde_json::from_str(&full_draft_json()).unwrap();
+    let obj = base.as_object_mut().unwrap();
+    for (k, v) in overrides.as_object().unwrap() {
+        obj.insert(k.clone(), v.clone());
+    }
+    base.to_string()
+}
+
+#[test]
+fn the_outline_is_flagged_requested_but_empty_when_points_comes_back_as_an_empty_array() {
+    // The outline sits OUTSIDE the `FLAT_SECTIONS` loop — the ticket's own named risk is a
+    // fix that only covers the loop and misses this, the most visible section on screen.
+    let body = draft_json_with(serde_json::json!({ "points": [] }));
+    let (draft, _log) = parse_draft(&envelope(&body), &all_on()).unwrap();
+
+    assert_eq!(
+        draft.caveats,
+        vec![DraftCaveat::SectionRequestedEmpty {
+            heading: OUTLINE_HEADING.to_string()
+        }],
+    );
+    // Positional control (Uma's design): the heading still appears in `sections`, empty,
+    // in its natural place — never silently omitted.
+    let outline = draft
+        .sections
+        .iter()
+        .find(|s| s.heading == OUTLINE_HEADING)
+        .expect("the outline heading must still appear, empty, not be omitted");
+    assert!(outline.items().is_empty() && outline.points().is_empty());
+}
+
+#[test]
+fn every_enabled_flat_section_is_flagged_requested_but_empty_when_it_comes_back_as_an_empty_array()
+{
+    // Table-driven over EVERY `FLAT_SECTIONS` field, not just the observed
+    // `chapter_markers` case — the ticket's explicit bar for this criterion.
+    for (field, heading) in [
+        ("introduction", "Introduction"),
+        ("illustrations", "Illustrations"),
+        ("quotes", "Notable quotations"),
+        ("prayer_points", "Prayer points"),
+        ("calls_to_action", "Calls to action"),
+        ("key_lessons", "Key lessons"),
+        ("chapter_markers", "Chapter markers"),
+        ("social_excerpts", "Social excerpts"),
+    ] {
+        let body = draft_json_with(serde_json::json!({ field: [] }));
+        let (draft, _log) = parse_draft(&envelope(&body), &all_on()).unwrap();
+        assert!(
+            draft.caveats.contains(&DraftCaveat::SectionRequestedEmpty {
+                heading: heading.to_string()
+            }),
+            "{field} came back empty but was not flagged; caveats = {:?}",
+            draft.caveats
+        );
+        let sec = draft
+            .sections
+            .iter()
+            .find(|s| s.heading == heading)
+            .unwrap_or_else(|| panic!("{heading} must still appear in sections, empty"));
+        assert!(sec.items().is_empty());
+    }
+}
+
+#[test]
+fn summary_and_scriptures_are_flagged_requested_but_empty_too() {
+    // Uma's Finding 2: two more drop sites behave identically and are gated on toggles
+    // the operator really does switch on. Same wording covers all four unmodified.
+    let body = draft_json_with(serde_json::json!({
+        "summary": "",
+        "main_scripture": "",
+        "supporting_scriptures": [],
+    }));
+    let (draft, _log) = parse_draft(&envelope(&body), &all_on()).unwrap();
+    assert_eq!(
+        draft.summary, None,
+        "premise: a blank summary is dropped as before"
+    );
+    assert!(
+        draft.scriptures.is_empty(),
+        "premise: nothing usable was extracted"
+    );
+    assert!(draft.caveats.contains(&DraftCaveat::SectionRequestedEmpty {
+        heading: "Summary".to_string()
+    }));
+    assert!(draft.caveats.contains(&DraftCaveat::SectionRequestedEmpty {
+        heading: "Scripture references".to_string()
+    }));
+}
+
+#[test]
+fn a_section_the_operator_switched_off_never_gets_a_caveat() {
+    let mut inc = all_on();
+    inc.chapter_markers = false;
+    // A well-behaved model does not return a field the strict schema never asked for;
+    // simulate that rather than testing the (already-covered) "model ignored the schema"
+    // case here.
+    let mut base: serde_json::Value = serde_json::from_str(&full_draft_json()).unwrap();
+    base.as_object_mut().unwrap().remove("chapter_markers");
+    let (draft, _log) = parse_draft(&envelope(&base.to_string()), &inc).unwrap();
+
+    assert!(
+        !draft.caveats.iter().any(|c| matches!(
+            c,
+            DraftCaveat::SectionRequestedEmpty { heading } if heading == "Chapter markers"
+        )),
+        "a section switched OFF must never carry a caveat — silence is the correct output"
+    );
+    assert!(!draft
+        .sections
+        .iter()
+        .any(|s| s.heading == "Chapter markers"));
+}
+
+#[test]
+fn a_degraded_local_fallback_carries_zero_caveats_even_though_its_placeholders_are_empty() {
+    // Uma's Finding 3, promoted to its own acceptance criterion: `local.rs` deliberately
+    // pushes empty placeholder sections for enabled toggles. A naive
+    // "requested && empty -> caveat" computed generically over `sections` would fire on
+    // every one of them, printing "nothing came back" directly beneath
+    // `DEGRADED_FALLBACK_NOTICE`, which already explains the emptiness. This is exactly
+    // the case the design (caveats populated ONLY in `openai.rs::parse_draft`, never in
+    // `local.rs`) is built to make impossible without a special case.
+    let cfg = config_with_consent(all_on());
+    let local = LocalNoteProvider::new();
+    let outcome = generate_sermon_notes(
+        &cfg,
+        TRANSCRIPT,
+        true,
+        &provider(MockTransport::failing()),
+        &local,
+    )
+    .expect("a transport failure must serve the degraded local draft");
+    assert!(outcome.degraded, "premise: this is the DEGRADED path");
+    assert!(
+        outcome.draft.caveats.is_empty(),
+        "a degraded (offline scaffold) draft must never carry requested-but-empty caveats: {:?}",
+        outcome.draft.caveats
+    );
+    // POSITIVE CONTROL: the scaffold really did push an empty placeholder for an enabled
+    // toggle — otherwise the assertion above passes on dead code (no placeholders at all).
+    assert!(
+        outcome
+            .draft
+            .sections
+            .iter()
+            .any(|s| s.heading == "Prayer points" && s.items().is_empty()),
+        "premise: the offline scaffold must still push its empty placeholder sections"
+    );
+}
+
+#[test]
+fn a_truncated_or_partial_response_is_never_read_as_legitimately_empty() {
+    // Every field below is either MISSING or the WRONG type — the shape a response cut
+    // off mid-stream, or garbled by a transport error, would actually take. None of this
+    // may be read as "requested and legitimately empty": that reads a data problem as a
+    // confirmed answer, which is the acceptance criterion this test guards.
+    let body = serde_json::json!({
+        "title": "Partial",
+        "points": "not an array",  // wrong type
+        "chapter_markers": null,   // present, not an array
+        // "introduction" MISSING entirely, as if the body were cut off before it arrived
+        "summary": 42,             // wrong type, not a string
+        "main_scripture": null,    // wrong type
+        // "supporting_scriptures" MISSING entirely
+    })
+    .to_string();
+    let (draft, _log) = parse_draft(&envelope(&body), &all_on()).unwrap();
+
+    assert!(
+        draft.caveats.is_empty(),
+        "a malformed/partial response must never be read as confirmed-empty: {:?}",
+        draft.caveats
+    );
+}
+
+// ===========================================================================
 // 4 · FR-123 / FR-128 — labelling, disclosure, and the untouched transcript
 // ===========================================================================
 
@@ -1453,8 +1638,37 @@ fn wrong_types_and_missing_fields_degrade_to_empty_rather_than_failing() {
     .to_string();
     let (draft, _log) = parse_draft(&envelope(&body), &all_on()).unwrap();
     assert_eq!(draft.title, "Sermon notes", "a non-string title falls back");
+
+    // `points` (wrong type: a string) and `prayer_points` (wrong type: null) are neither
+    // arrays — 86akc0tua's guard reads that as a malformed/truncated field, not a
+    // confirmed answer, so both stay silently absent exactly as before this ticket.
     assert!(
-        draft.sections.is_empty(),
-        "unusable sections are dropped, not faked"
+        !draft.sections.iter().any(|s| s.heading == OUTLINE_HEADING),
+        "a wrong-typed points field must not be faked into an outline"
+    );
+    assert!(
+        !draft.sections.iter().any(|s| s.heading == "Prayer points"),
+        "a wrong-typed (null) field must not be faked into a section, and must not be \
+         read as a confirmed empty answer either"
+    );
+
+    // `illustrations` IS well-typed (a JSON array) — the model returned something, just
+    // nothing usable came out of it after filtering non-string entries. 86akc0tua treats
+    // this the same as a genuinely empty array: a real, empty answer, not a data problem.
+    // This is the ticket's own fix in action — before it, this section vanished with no
+    // trace; now the operator sees it, empty, exactly where it belongs.
+    let illustrations = draft
+        .sections
+        .iter()
+        .find(|s| s.heading == "Illustrations")
+        .expect("a well-typed-but-unusable array is a real empty answer, not dropped silently");
+    assert!(illustrations.items().is_empty());
+    assert_eq!(
+        draft.caveats,
+        vec![DraftCaveat::SectionRequestedEmpty {
+            heading: "Illustrations".to_string()
+        }],
+        "illustrations is the only field here that is well-typed AND empty; points and \
+         prayer_points are wrong-typed, not legitimate empty answers"
     );
 }

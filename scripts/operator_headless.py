@@ -239,7 +239,7 @@ if not check_d5_no_scrolltop_writes():
 # 1297 -> 1301 (86akmdkdg): the TR measureObserver disconnect-on-resize-mid-scroll fix adds 4
 # checks.
 #
-# 1301 -> ??? (86akcffy0, rebased onto 86akmdkdg): "Generate Sermon Notes from a selected stored
+# 1301 -> 1355 (86akcffy0, rebased onto 86akmdkdg): "Generate Sermon Notes from a selected stored
 # transcript" — the new "TR generate"/"TR F-5" block adds 30 checks (then 17 more in a
 # remediation round, then 4 more in a reviewer re-check round — see the three-round history in
 # this ticket's own commits) covering the from-history Generate flow's own review-and-confirm
@@ -269,13 +269,35 @@ if not check_d5_no_scrolltop_writes():
 # `window.__trOpenGenPreviewCallCount`, neither call site can fake). Every one of these
 # mutation-verified RED/GREEN across three rounds (initial implementation, four-reviewer
 # remediation, reviewer re-check follow-ups — see the PR's own commit history for the blow-by-
-# blow). The value below is the REAL observed count after rebasing this whole ticket's three
-# commits onto 86akmdkdg's own 1301, not 1301+55 by arithmetic — this file's own history (above)
-# is why: the floor has drifted quietly between rounds before, so it is re-measured at HEAD,
-# never merely incremented.
-# Measured post-rebase (86akcffy0's branch rebased onto 86akmdkdg's merged 1301): 1355 checks,
-# 0 FAIL — exactly 1301 + 54, confirming no collision or overlap between the two tickets' checks.
-EXPECTED_MIN_CHECKS = 1355
+# blow). Measured post-rebase (86akcffy0's branch rebased onto 86akmdkdg's merged 1301): 1355
+# checks, 0 FAIL — exactly 1301 + 54, confirming no collision or overlap between the two
+# tickets' checks. (86akcffy0's own comment here notes this is the REAL observed count, not
+# 1301+55 by arithmetic — the floor has drifted quietly between rounds before, so it is
+# re-measured at HEAD, never merely incremented. Same discipline applies below.)
+#
+# 86akc0tua (this branch) separately adds 14 checks on top of the ORIGINAL 1300 baseline
+# (verified against a clean `origin/main` worktree at 269591e, run BEFORE this change: 1300,
+# not the 1297 this constant last recorded — this file's own count had already drifted a
+# little stale; a floor value is a lower bound, not an exact tracker, so that alone is not a
+# defect): 10 explicit `ok()` calls + 1 implicit one from an extra `ppGenerateAndConfirm` call
+# in the first remediation round (empty-but-requested sections filtered from persistence,
+# 1300 + 10 + 1 = 1311, matching two consecutive standalone runs), plus 3 more explicit `ok()`
+# calls with no further implicit ones in the second remediation round (Cody's second finding
+# on PR #46, the edit-save route — this edits an ALREADY-generated draft via
+# el("pp-gen-edit")/el("pp-gen-save") directly, no new Generate click: the save actually
+# happened (setup), the caveated-empty section is never sent to update_sermon_note_draft, and
+# a populated section is NOT dropped by the same filter (positive control): 1311 + 3 = 1314,
+# matching the real observed count — both measured BEFORE 86akmdkdg or 86akcffy0 existed).
+#
+# Rebased onto 86akcffy0 (which is itself rebased onto 86akmdkdg): all three tickets' additions
+# are non-overlapping (different fixtures, different DRIVER sections — confirmed by inspecting
+# each diff's hunk locations before this rebase, not assumed). The naive sum was
+# 1355 + 11 + 3 = 1369, and this is confirmed as the REAL observed count too — a standalone run
+# of this file after the rebase reported "1369 checks, 0 FAIL" exactly, so unlike the first
+# remediation round above (where an implicit `ok()` inside a helper call made naive arithmetic
+# wrong by one), this rebase's three additions really are fully independent with no shared
+# side effects between them.
+EXPECTED_MIN_CHECKS = 1369
 
 
 def find_chrome():
@@ -1144,7 +1166,16 @@ STUB = r"""
       }
       if (g === "degraded") {
         var snDegDraft = {title:"Offline outline", summary:null,
-          sections:[{heading:"Outline", items:["point one"], points:[]}], scriptures:[]};
+          sections:[
+            {heading:"Outline", items:["point one"], points:[]},
+            // 86akc0tua: a (hypothetical — the real backend never sends this combination,
+            // since `local.rs` never populates `caveats`) caveated empty section on a
+            // DEGRADED draft. Proves the console suppresses the empty-requested line via
+            // `currentDraft.degraded` itself, not merely that the real backend happens
+            // never to combine the two — a mutation deleting that guard would still be
+            // caught here even though it could never be caught by a realistic fixture.
+            {heading:"Prayer points", items:[], points:[], empty_requested:true}
+          ], scriptures:[], caveats:["Prayer points"]};
         // A degraded (offline-fallback) draft is STILL persisted by the real backend — FR-123
         // "editable" applies to it too, it is just not labelled AI-generated (see below).
         SN.draft = { transcript_id: SN_TRANSCRIPT_ID, draft: snDegDraft, ai_generated:false,
@@ -1156,6 +1187,32 @@ STUB = r"""
           ai_generated:false, ai_label:"AI-generated draft", disclosure:null,
           degraded_notice:"The AI provider could not be reached, so this is an offline outline built from your transcript — not AI-generated notes. The headings are placeholders for you to fill in. Try again when you are back online.",
           draft: snDegDraft,
+          transcript_id: SN_TRANSCRIPT_ID,
+          quota:null
+        });
+      }
+      if (g === "empty_sections") {
+        // 86akc0tua: one draft carrying BOTH states at once (Uma's own instruction — assert
+        // ON+empty and a populated positive control from the SAME render, not two fixtures).
+        // "Notable quotations" is deliberately absent altogether, simulating a section the
+        // operator left switched off: no heading, no message, nothing.
+        var snEmptyDraft = {
+          title:"A Quiet Sunday", summary:null,
+          sections:[
+            {heading:"Illustrations", items:["The mill closed after nineteen years."], points:[], empty_requested:false},
+            {heading:"Chapter markers", items:[], points:[], empty_requested:true}
+          ],
+          scriptures:[],
+          caveats:["Chapter markers","Summary","Scripture references"]
+        };
+        SN.draft = { transcript_id: SN_TRANSCRIPT_ID, draft: snEmptyDraft, ai_generated:true,
+          ai_label:"AI-generated draft", disclosure:"disc", provider:"OpenAI" };
+        return Promise.resolve({
+          ok:true, degraded:false, provider:"OpenAI",
+          ai_generated:true, ai_label:"AI-generated draft",
+          disclosure:"AI-generated. It can invent quotations, misattribute scripture and state things the sermon did not say. Check every reference and quotation against the transcript before you publish or project it.",
+          degraded_notice:null,
+          draft: snEmptyDraft,
           transcript_id: SN_TRANSCRIPT_ID,
           quota:null
         });
@@ -6434,6 +6491,92 @@ DRIVER = r"""
          "PP C-011 (FR-135): the degraded notice is explicit that these are not AI-generated notes");
       ok(gD.getAttribute("role")==="status",
          "PP C-005 (L1): a success after an error is announced as role=status, not a lingering alert");
+
+      // --- 86akc0tua: a section the operator requested and got nothing back says so ------------
+      // Degraded suppression FIRST, on the SAME "degraded" fixture already rendered above (gD) —
+      // its mock now also carries a caveated, empty "Prayer points" section (see the fixture's own
+      // comment for why: this is a mutation-catching check, not a realistic-payload one).
+      ok(gD.querySelectorAll(".pp-gen-empty").length === 0,
+         "PP 86akc0tua: a degraded draft renders ZERO empty-requested lines, even though its own " +
+         "payload carries an empty, caveated section — the suppression is the CONSOLE's, not merely " +
+         "an accident of what the real backend happens to send");
+      ok(!gD.querySelector(".pp-gen-empty-explainer"),
+         "PP 86akc0tua: a degraded draft never renders the once-per-draft explainer either");
+
+      function ppSecHeading(root, text) {
+        return Array.prototype.filter.call(root.querySelectorAll(".pp-gen-sec-h"), function (h) {
+          return h.textContent === text;
+        })[0];
+      }
+      var EMPTY_LINE = "Included in the request — nothing came back.";
+
+      window.__ppGen = "empty_sections"; await ppGenerateAndConfirm(80);
+      var gE = el("pp-gen-result");
+
+      var chHeading = ppSecHeading(gE, "Chapter markers");
+      ok(!!chHeading, "PP 86akc0tua: an empty-but-requested section's heading still renders, in its natural position");
+      var chEmpty = chHeading && chHeading.nextElementSibling;
+      ok(!!chEmpty && chEmpty.classList.contains("pp-gen-empty") &&
+         getComputedStyle(chEmpty).display !== "none" && chEmpty.getClientRects().length > 0 &&
+         chEmpty.textContent === EMPTY_LINE,
+         "PP 86akc0tua: the empty-requested line replaces the (would-be-empty) list — computed-visible, exact copy");
+
+      // POSITIVE CONTROL: a populated section in the SAME render still gets its list, not a
+      // line — without this, the assertion above could pass on a mechanism that marks
+      // EVERY section empty regardless of content.
+      var illHeading = ppSecHeading(gE, "Illustrations");
+      var illList = illHeading && illHeading.nextElementSibling;
+      ok(!!illList && illList.tagName === "UL" && illList.classList.contains("pp-gen-list") &&
+         illList.querySelectorAll("li").length === 1 && !illList.classList.contains("pp-gen-empty"),
+         "PP 86akc0tua (positive control): a populated section renders its list, not an empty-line");
+
+      // OFF: a section never in the response (the operator left it switched off) is absent
+      // entirely — no heading, no message. Asserted on absence of the heading TEXT, not a class,
+      // per the ticket's own verification bar.
+      ok(!/Notable quotations/.test(gE.textContent),
+         "PP 86akc0tua: a section the operator never enabled is absent entirely — no heading, no message");
+
+      // `summary`/`scriptures` are not `NoteSection`s, so they get their own assertions —
+      // same copy, same suppression rule, per Uma's "one string covers all four unmodified".
+      var summaryHeading = ppSecHeading(gE, "Summary");
+      ok(!!summaryHeading, "PP 86akc0tua: an empty-but-requested Summary is given a heading so the line has somewhere to attach");
+      ok(!!summaryHeading && summaryHeading.nextElementSibling &&
+         summaryHeading.nextElementSibling.classList.contains("pp-gen-empty") &&
+         summaryHeading.nextElementSibling.textContent === EMPTY_LINE,
+         "PP 86akc0tua: the empty Summary uses the exact same copy as a section");
+      var scriptEmpty = gE.querySelector(".pp-gen-scriptures .pp-gen-empty");
+      ok(!!scriptEmpty && scriptEmpty.textContent === EMPTY_LINE,
+         "PP 86akc0tua: an empty-but-requested scripture list renders the same line inline after 'Scriptures:'");
+
+      // Once per draft, after everything else, only because at least one caveat fired.
+      var explainer = gE.querySelector(".pp-gen-empty-explainer");
+      ok(!!explainer && getComputedStyle(explainer).display !== "none" && explainer.getAttribute("role") === "note" &&
+         /doesn.t say why/i.test(explainer.textContent) && /Generating again/.test(explainer.textContent),
+         "PP 86akc0tua: the once-per-draft explainer renders, role=note, exact wording, when at least one caveat fired");
+
+      // Cody's second finding on PR #46 (the reload route was fixed by `sections_to_persist`
+      // server-side; this is the OTHER reachable route — edit-save, which the backend has NO
+      // caveat data to filter on at all, since `NoteSectionInput` carries no `empty_requested`).
+      // Generate a caveated-empty section, edit something ELSE, Save — the caveated-empty
+      // section must never reach `update_sermon_note_draft`'s payload, while an ordinary
+      // populated section still does (positive control).
+      el("pp-gen-edit").click();
+      document.getElementById("pp-edit-title").value = "A Quiet Sunday (edited)";
+      var emptySaveBefore = ppCall("update_sermon_note_draft").length;
+      el("pp-gen-save").click();
+      await sleep(60);
+      ok(ppCall("update_sermon_note_draft").length === emptySaveBefore + 1,
+         "PP 86akc0tua (edit-save fix, setup): Save actually called update_sermon_note_draft");
+      var emptySaveArgs = ppLast("update_sermon_note_draft").args;
+      ok(!emptySaveArgs.sections.some(function (s) { return s.heading === "Chapter markers"; }),
+         "PP 86akc0tua (edit-save fix): a caveated-empty section the operator did not fill in " +
+         "is NEVER sent to update_sermon_note_draft — saving ANY unrelated edit must not write " +
+         "the confusing 'bare heading, no explanation' state to persisted storage");
+      ok(emptySaveArgs.sections.some(function (s) { return s.heading === "Illustrations"; }),
+         "PP 86akc0tua (positive control): an ordinary populated section is NOT dropped by the " +
+         "same filter — without this, the assertion above could pass on a mechanism that drops " +
+         "every section");
+
       window.__ppGen = "ok"; // restore for any later reads
 
       // === 86akgqdv0: sermon-note draft persistence + editing (FR-123 "editable" half) ========

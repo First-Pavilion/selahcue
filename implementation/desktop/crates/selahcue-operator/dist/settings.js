@@ -790,12 +790,49 @@
     }
   }
 
+  // 86akc0tua: the operator explicitly requested this (an enabled toggle, or one of the
+  // handful FR-122 always includes) and the draft came back with nothing for it. Copy is
+  // agentless by design — it does not say "you asked" or "you switched this on", because
+  // several sections (the outline included) are never toggled by anybody; and it does not
+  // say the model failed or the sermon lacked the content, because neither is a claim this
+  // screen can support (same prompt, same transcript produced 0 chapter markers on one run
+  // and 7 on the next). Wording agreed with Uma (ui-ux-designer); copy verbatim, including
+  // the em dash (—) and curly apostrophe (’) — do not let an editor ASCII-normalise
+  // them.
+  var EMPTY_REQUESTED_LINE = "Included in the request — nothing came back.";
+  var EMPTY_REQUESTED_EXPLAINER = "The response doesn’t say why a requested section " +
+    "comes back empty — the sermon may not have covered it, or this run may simply not " +
+    "have returned it. Generating again may give a different result.";
+
+  function hasCaveat(d, heading) {
+    return !!(d.caveats && d.caveats.indexOf(heading) !== -1);
+  }
+
   function renderDraftView(r) {
     var d = currentDraft.draft || {};
+    // Both empty-requested strings are suppressed entirely for a degraded (offline
+    // fallback) draft: `local.rs` deliberately pushes its own empty placeholder sections,
+    // and DEGRADED_FALLBACK_NOTICE (rendered above, in renderDraftHeader) already explains
+    // the emptiness — a second, contradictory-sounding message must not stack under it.
+    // The backend already guarantees `caveats` is empty in this case; this is defence in
+    // depth, reaffirming the ticket's own acceptance criterion rather than relying only on
+    // that guarantee.
+    var showEmptyState = !currentDraft.degraded;
     renderDraftHeader(r);
-    if (d.summary) r.appendChild(el("p", "pp-gen-summary", d.summary));
+    if (d.summary) {
+      r.appendChild(el("p", "pp-gen-summary", d.summary));
+    } else if (showEmptyState && hasCaveat(d, "Summary")) {
+      r.appendChild(el("p", "pp-gen-sec-h", "Summary"));
+      r.appendChild(el("p", "pp-gen-empty", EMPTY_REQUESTED_LINE));
+    }
     (d.sections || []).forEach(function (s) {
       r.appendChild(el("p", "pp-gen-sec-h", s.heading || ""));
+      if (showEmptyState && s.empty_requested) {
+        // Replaces the (would-be-empty) list for this section, in its own natural
+        // position — empty sections are never collected at the bottom.
+        r.appendChild(el("p", "pp-gen-empty", EMPTY_REQUESTED_LINE));
+        return;
+      }
       var ul = el("ul", "pp-gen-list");
       (s.items || []).forEach(function (it) { ul.appendChild(el("li", null, it)); });
       // FR-122 points/sub-points. Sub-points render as a NESTED list inside their parent point, so
@@ -818,6 +855,18 @@
       sc.appendChild(el("span", "pp-gen-sec-h", "Scriptures: "));
       sc.appendChild(el("span", "pp-gen-scr-list", d.scriptures.join(" · ")));
       r.appendChild(sc);
+    } else if (showEmptyState && hasCaveat(d, "Scripture references")) {
+      var scEmpty = el("p", "pp-gen-scriptures");
+      scEmpty.appendChild(el("span", "pp-gen-sec-h", "Scriptures: "));
+      scEmpty.appendChild(el("span", "pp-gen-empty", EMPTY_REQUESTED_LINE));
+      r.appendChild(scEmpty);
+    }
+    // Once per draft, after everything else — never at the top, where the AI-disclosure and
+    // degraded-notice pair (renderDraftHeader) must be read first.
+    if (showEmptyState && d.caveats && d.caveats.length) {
+      var explainer = el("p", "pp-gen-empty-explainer", EMPTY_REQUESTED_EXPLAINER);
+      explainer.setAttribute("role", "note");
+      r.appendChild(explainer);
     }
     // Editing needs a transcript id to save against — null only when local persistence itself was
     // unavailable/failed for this draft (see the `currentDraft` doc comment above).
@@ -929,33 +978,60 @@
     titleInput.focus();
   }
 
+  // A section round-tripped through the form is still empty — no non-blank item, no
+  // point with non-blank text or a non-blank sub-point. Judged on content only, never
+  // the heading, matching openai.rs's own emptiness test on the server side.
+  function isStillEmpty(s) {
+    var hasItem = (s.items || []).some(function (it) { return it && it.trim(); });
+    if (hasItem) return false;
+    return !(s.points || []).some(function (pt) {
+      if (pt.text && pt.text.trim()) return true;
+      return (pt.sub_points || []).some(function (sp) { return sp && sp.trim(); });
+    });
+  }
+
   // Reads the edit form's current input values back into the sections/points/items shape the
   // backend expects, preserving the flat-items-XOR-outline-points shape of each section (FR-122)
   // — never re-derived from scratch, always keyed off the SAME section/point/item positions
   // `renderDraftEditForm` drew the inputs at, so a value read back can never land on the wrong row.
+  //
+  // 86akc0tua remediation (Cody's second finding on PR #46 — the first, `generate`'s own
+  // persistence call site, is fixed server-side by `sections_to_persist`; this is the OTHER
+  // reachable route into the same persisted storage, and the backend has NO caveat data at
+  // THIS call site to filter on: `NoteSectionInput` carries no `empty_requested` field, and
+  // `update_sermon_note_draft` never sees a `NoteDraft` with caveats, only raw submitted
+  // sections). A section that was `empty_requested` on the live view and is STILL empty after
+  // reading the form (the operator did not fill it in) is dropped here, client-side, before
+  // the payload is built — saving ANY edit elsewhere in the draft would otherwise silently
+  // write that section's confusing "bare heading, no explanation" state straight into
+  // storage. A section the operator DID fill in is kept: this is not a blanket "drop empty
+  // sections" filter, only "don't re-persist the exact caveated-empty state unchanged."
   function readSectionsFromForm(form, sections) {
-    return (sections || []).map(function (s, si) {
-      var headingEl = form.querySelector('.pp-edit-section-heading[data-si="' + si + '"]');
-      var heading = headingEl ? headingEl.value : (s.heading || "");
-      var isOutline = (s.points || []).length > 0;
-      if (isOutline) {
-        var points = (s.points || []).map(function (pt, pi) {
-          var textEl = form.querySelector('.pp-edit-point-text[data-si="' + si + '"][data-pi="' + pi + '"]');
-          var subPoints = (pt && pt.sub_points || []).map(function (sp, spi) {
-            var sel = '.pp-edit-subpoint-text[data-si="' + si + '"][data-pi="' + pi + '"][data-spi="' + spi + '"]';
-            var spEl = form.querySelector(sel);
-            return spEl ? spEl.value : sp;
+    return (sections || [])
+      .map(function (s, si) {
+        var headingEl = form.querySelector('.pp-edit-section-heading[data-si="' + si + '"]');
+        var heading = headingEl ? headingEl.value : (s.heading || "");
+        var isOutline = (s.points || []).length > 0;
+        if (isOutline) {
+          var points = (s.points || []).map(function (pt, pi) {
+            var textEl = form.querySelector('.pp-edit-point-text[data-si="' + si + '"][data-pi="' + pi + '"]');
+            var subPoints = (pt && pt.sub_points || []).map(function (sp, spi) {
+              var sel = '.pp-edit-subpoint-text[data-si="' + si + '"][data-pi="' + pi + '"][data-spi="' + spi + '"]';
+              var spEl = form.querySelector(sel);
+              return spEl ? spEl.value : sp;
+            });
+            return { text: textEl ? textEl.value : (pt && pt.text) || "", sub_points: subPoints };
           });
-          return { text: textEl ? textEl.value : (pt && pt.text) || "", sub_points: subPoints };
+          return { heading: heading, items: [], points: points, __empty_requested: !!s.empty_requested };
+        }
+        var items = (s.items || []).map(function (it, ii) {
+          var itEl = form.querySelector('.pp-edit-item-text[data-si="' + si + '"][data-ii="' + ii + '"]');
+          return itEl ? itEl.value : it;
         });
-        return { heading: heading, items: [], points: points };
-      }
-      var items = (s.items || []).map(function (it, ii) {
-        var itEl = form.querySelector('.pp-edit-item-text[data-si="' + si + '"][data-ii="' + ii + '"]');
-        return itEl ? itEl.value : it;
-      });
-      return { heading: heading, items: items, points: [] };
-    });
+        return { heading: heading, items: items, points: [], __empty_requested: !!s.empty_requested };
+      })
+      .filter(function (s) { return !(s.__empty_requested && isStillEmpty(s)); })
+      .map(function (s) { return { heading: s.heading, items: s.items, points: s.points }; });
   }
 
   function saveDraftEdit(form) {
