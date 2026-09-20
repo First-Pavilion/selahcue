@@ -385,8 +385,11 @@ if not check_d5_no_scrolltop_writes():
 # 86akcffy0's own "no edit surface" restriction was written expecting this exact successor
 # ticket to lift it). Previously measured against the old, pre-rebuild 1323 floor as ~76 checks
 # (1410 - 1323 by subtraction) — per this constant's own repeated discipline, that arithmetic is
-# NOT trusted here either; the real value below is re-measured fresh against the rebuilt branch.
-EXPECTED_MIN_CHECKS = 1381
+# NOT trusted here either. The naive sum against the new 1381 floor would be 1381 + 36 = 1417 by
+# subtraction from the old figures, and this IS confirmed as the real observed count too — a
+# standalone run of this file against the rebuilt branch (cherry-picked onto current
+# `origin/main`, all four dependencies included) reported "1417 checks, 0 FAIL" exactly.
+EXPECTED_MIN_CHECKS = 1417
 
 
 def find_chrome():
