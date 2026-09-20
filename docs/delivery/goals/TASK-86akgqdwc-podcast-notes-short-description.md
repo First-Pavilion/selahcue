@@ -6,7 +6,7 @@
 - Parent goal ID: NONE
 - Title: Two new generatable sermon-note artifacts — podcast show notes and a short description (FR-126)
 - Role: backend-engineer
-- Status: DRAFT
+- Status: VERIFIED_COMPLETE
 - Execution engine: goal
 - ClickUp task: https://app.clickup.com/t/86akgqdwc
 - Created: 2026-09-20
@@ -188,7 +188,7 @@ instruction, since both Wave-1 PRs are open at start:
 | C-008 | yes | Persistence repo round-trip covers the two new fields | `cargo test -p selahcue-data --test test_providers_repo` | PASS | test output, 3 passed | PASS |
 | C-009 | yes | Headless operator webview check reflects 8 toggles, both new ones wired | `python3 scripts/operator_headless.py` | PASS, 0 FAIL | 1325 checks, 0 FAIL; mutation-verified (984 checks, 2 FAIL) | PASS |
 | C-010 | yes | `make ci` passes in full | `make ci` | exit 0, ALL GREEN | `MAKE_CI_EXIT:0`, `ALL GREEN`, 0 FAIL/error[/FAILED across 7085 lines (`/tmp/make_ci_86akgqdwc_v4.log`, post-rebase onto settled `origin/main`) | PASS |
-| C-011 | yes | Four-reviewer gate passed (Cody/Vera/Sana/Quinn) | dispatched reviews, blocking findings remediated | no blocking findings outstanding | review artifact | PENDING |
+| C-011 | yes | Four-reviewer gate passed (Cody/Vera/Sana/Quinn) | dispatched reviews, blocking findings remediated | no blocking findings outstanding | review artifact: https://claude.ai/artifact/EWiZ4BMQy2EKkds9QrQEJL | PASS |
 
 ## Verification plan
 
@@ -595,9 +595,17 @@ instruction, since both Wave-1 PRs are open at start:
 
 ## Final evaluation
 
-- Validator command: `python3 ~/.claude/skills/goal/scripts/validate_goal_contract.py <path> --completion`
-- Validator result: (recorded after execution)
-- Independent verification result: (recorded after execution)
-- Terminal state: (recorded after execution)
-- Remaining failed or blocked criteria: (recorded after execution)
-- ClickUp final evidence comment: (recorded after execution)
+- Validator command: `python3 ~/.claude/skills/goal/scripts/validate_goal_contract.py docs/delivery/goals/TASK-86akgqdwc-podcast-notes-short-description.md --completion`
+- Validator result: `OK (completion): ... satisfies the Goal Contract schema and all mandatory criteria PASS`
+- Independent verification result: all four required reviewers (Cody, Vera,
+  Sana, Quinn) independently confirmed on the final commit `7afcbc9` with no
+  BLOCKING/MAJOR findings outstanding — Cody APPROVE, Vera APPROVE, Sana
+  APPROVE, Quinn PASS. One genuine MAJOR (Cody, Transcripts-tab missing the
+  new caveat's render treatment) was found and closed with mutation-verified
+  regression coverage, independently re-confirmed by all four. Consolidated
+  report: https://claude.ai/artifact/EWiZ4BMQy2EKkds9QrQEJL
+- Terminal state: VERIFIED_COMPLETE
+- Remaining failed or blocked criteria: none. All 11 mandatory criteria PASS.
+- ClickUp final evidence comment: posted 2026-09-20, moving the task to
+  `qa` — https://app.clickup.com/t/86akgqdwc (handoff comment with files
+  changed, decisions, and recommended next step)
