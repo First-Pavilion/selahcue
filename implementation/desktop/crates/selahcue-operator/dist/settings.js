@@ -751,8 +751,10 @@
         provider: res.provider || "AI sermon notes",
         degraded: false,
         degradedNotice: null,
-        // Not persisted (86akby820) — a reloaded draft never carries verdicts.
-        scriptureVerificationNote: null,
+        // 86akby820 (Sana F4 remediation): the backend RE-VERIFIES fresh on every load
+        // rather than persisting a stale verdict, so this reads the real response like
+        // every other field here — it is no longer hardcoded null.
+        scriptureVerificationNote: res.scripture_verification_note || null,
       };
       editingDraft = false;
       renderCurrentDraft();
@@ -816,6 +818,11 @@
   // "not found" — not that the model failed or the sermon misquoted it; this ticket
   // confirms the ADDRESS exists, nothing about the words attributed to it.
   var SCRIPTURE_UNVERIFIED_SUFFIX = " (unverified — not found in the bundled text)";
+  // A plain checkmark, not a new colour — security review finding (Sana F3 on PR #47):
+  // "verified" must be an explicit mark too, never just the absence of the unverified
+  // one, or a reference that slips past a gap in the check (an alias mismatch, a cap,
+  // some future bug) reads as clean instead of simply unchecked.
+  var SCRIPTURE_VERIFIED_SUFFIX = " ✓";
 
   // `d.caveats` (86akc0tua + 86akby820) is a flat array of kind-tagged objects:
   // {kind:"section_empty", heading} or {kind:"scripture_unverified", reference}. Two
@@ -897,7 +904,16 @@
         var verified = scriptureVerifiedOrNull(d, ref);
         var span = el("span", "pp-gen-scr-item", ref);
         sc.appendChild(span);
-        if (verified === false) {
+        // Security review finding (Sana F3 on PR #47): silence must never be the ONLY
+        // signal for "verified" — a reference that was never checked (verified === null,
+        // e.g. after a reload where verdicts are not persisted) would otherwise render
+        // pixel-identical to one that was checked and passed, so an unverified reference
+        // slipping through any gap (an alias mismatch, a cap, a future bug) reads as
+        // clean rather than as simply unmarked. Every reference that WAS checked gets an
+        // explicit mark either way; only "never checked at all" stays silent.
+        if (verified === true) {
+          sc.appendChild(el("span", "pp-gen-scr-verified", SCRIPTURE_VERIFIED_SUFFIX));
+        } else if (verified === false) {
           sc.appendChild(el("span", "pp-gen-scr-unverified", SCRIPTURE_UNVERIFIED_SUFFIX));
         }
       });
@@ -1145,9 +1161,8 @@
         provider: res.provider || currentDraft.provider,
         degraded: currentDraft.degraded,
         degradedNotice: currentDraft.degradedNotice,
-        // Not persisted (86akby820) — an edit-save's response carries no verdict data
-        // either, so this cannot survive an edit any more than it survives a reload.
-        scriptureVerificationNote: null,
+        // 86akby820 (Sana F4 remediation): re-verified fresh against what was just saved.
+        scriptureVerificationNote: res.scripture_verification_note || null,
       };
       editingDraft = false;
       renderCurrentDraft();

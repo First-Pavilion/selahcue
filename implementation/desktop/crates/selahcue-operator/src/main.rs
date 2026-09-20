@@ -4851,17 +4851,6 @@ fn scriptures_to_json(scriptures: &[String]) -> String {
     serde_json::to_string(scriptures).unwrap_or_else(|_| "[]".to_string())
 }
 
-/// Parse a persisted `sections`/`scriptures` JSON column back into a `Value` for the
-/// wire to JS. Both columns are written exclusively by [`sections_to_json`]/
-/// [`scriptures_to_json`] above (or, for a freshly generated draft, the equivalent
-/// shape `draft_json` already produces), so a parse failure here means the stored
-/// value is corrupt — fall back to an empty array rather than fail the whole load,
-/// mirroring `media_repo::load_all`'s "an unrecognised row degrades, it does not
-/// take down the read" precedent.
-fn parse_json_column(s: &str) -> serde_json::Value {
-    serde_json::from_str(s).unwrap_or_else(|_| serde_json::Value::Array(Vec::new()))
-}
-
 /// One outline point as submitted by the edit surface — mirrors
 /// `selahcue_core::providers::NotePoint` field-for-field so deserialization doubles
 /// as the shape check (a malformed edit fails HERE, at the Tauri IPC boundary,
@@ -4923,13 +4912,56 @@ fn sections_from_input(input: Vec<NoteSectionInput>) -> Vec<selahcue_core::provi
 /// file, at a DIFFERENT path than the desktop's, could never see a real `transcript`
 /// row in a real launch; persistence now goes through `Backend`'s LAN commands, which
 /// execute against the desktop's authoritative store).
-fn sermon_note_draft_json(v: &selahcue_lan::protocol::SermonNoteDraftView) -> serde_json::Value {
-    serde_json::json!({
-        "title": v.title,
-        "summary": v.summary,
-        "sections": parse_json_column(&v.sections_json),
-        "scriptures": parse_json_column(&v.scriptures_json),
-    })
+///
+/// 86akby820 (Sana F4 on PR #47): scripture verdicts are NOT persisted (same non-goal as
+/// 86akc0tua's caveats, and for the same cross-language-wire-contract reason), but unlike
+/// that ticket's empty-section caveats — which are deliberately never written to storage
+/// at all (`sections_to_persist`) — the raw material this check needs (`scriptures`,
+/// `sections`) IS still here on every load. `verify_scriptures` is pure and offline, so
+/// re-running it fresh on every load/edit-save costs nothing a live generation didn't
+/// already pay, and it closes the exact "the safety check doesn't survive a reload" gap
+/// Cody blocked 86akc0tua on — for the harm this ticket's own PRD cites (a pastor reading
+/// from a RELOADED Sunday-morning draft), not only the just-generated one.
+/// Returns the draft JSON (in `draft_json`'s own shape) alongside the address-only
+/// verification-scope note, gated exactly like `generate_sermon_notes`'s own response:
+/// present only when at least one reference was actually (re-)checked. One return value,
+/// not two separate re-computations, since both come from the same `verify_scriptures`
+/// call — see the doc comment above for why this re-verifies on every load/edit-save.
+fn sermon_note_draft_json(
+    v: &selahcue_lan::protocol::SermonNoteDraftView,
+) -> (serde_json::Value, Option<&'static str>) {
+    let sections: Vec<NoteSectionInput> =
+        serde_json::from_str(&v.sections_json).unwrap_or_default();
+    let sections = sections_from_input(sections);
+    let scriptures: Vec<String> = serde_json::from_str(&v.scriptures_json).unwrap_or_default();
+
+    let verdicts = selahcue_core::providers::verify_scriptures(&scriptures, &sections, |r| {
+        !selahcue_scripture::verses(r).is_empty()
+    });
+    let note =
+        (!verdicts.is_empty()).then_some(selahcue_core::providers::SCRIPTURE_VERIFICATION_WORDING);
+    let caveats: Vec<selahcue_core::providers::DraftCaveat> = verdicts
+        .iter()
+        .filter(|v| !v.verified)
+        .map(
+            |v| selahcue_core::providers::DraftCaveat::ScriptureUnverified {
+                reference: v.reference.clone(),
+            },
+        )
+        .collect();
+
+    // Reuses `draft_json` rather than a second, slightly-different JSON builder — one
+    // place knows the wire contract, whether the draft just arrived from a live
+    // generation or was reconstructed here from persisted columns.
+    let json = draft_json(&selahcue_core::providers::NoteDraft {
+        title: v.title.clone(),
+        summary: v.summary.clone(),
+        sections,
+        scriptures,
+        caveats,
+        scripture_verdicts: verdicts,
+    });
+    (json, note)
 }
 
 #[cfg(test)]
@@ -5004,12 +5036,26 @@ mod sermon_note_codec_tests {
     }
 
     #[test]
-    fn parse_json_column_degrades_to_an_empty_array_on_corrupt_stored_json() {
-        // A `sections`/`scriptures` column is written exclusively by this module's own encoders
-        // (see the function's doc comment) — a parse failure here means the stored value is
-        // corrupt. This must degrade the ONE field, not fail the whole draft load.
-        let v = parse_json_column("{not valid json");
-        assert_eq!(v, serde_json::Value::Array(Vec::new()));
+    fn corrupt_stored_sections_or_scriptures_degrade_to_empty_not_a_panic() {
+        // A `sections`/`scriptures` column is written exclusively by this module's own
+        // encoders — a parse failure here means the stored value is corrupt. This must
+        // degrade the ONE field, not fail (or panic) the whole draft load.
+        let view = selahcue_lan::protocol::SermonNoteDraftView {
+            title: "A Title".to_string(),
+            summary: None,
+            sections_json: "{not valid json".to_string(),
+            scriptures_json: "{not valid json".to_string(),
+            ai_generated: false,
+            disclosure: None,
+            provider: "Local (offline)".to_string(),
+            model: None,
+            created_at_ms: 1,
+            edited_at_ms: 2,
+        };
+        let (json, note) = sermon_note_draft_json(&view);
+        assert_eq!(json["sections"], serde_json::json!([]));
+        assert_eq!(json["scriptures"], serde_json::json!([]));
+        assert!(note.is_none(), "nothing to verify, so no note either");
     }
 
     #[test]
@@ -5029,11 +5075,46 @@ mod sermon_note_codec_tests {
             created_at_ms: 1,
             edited_at_ms: 2,
         };
-        let json = sermon_note_draft_json(&view);
+        let (json, note) = sermon_note_draft_json(&view);
         assert_eq!(json["title"], "A Title");
         assert_eq!(json["summary"], "A summary");
         assert_eq!(json["sections"][0]["heading"], "H");
         assert_eq!(json["scriptures"][0], "Gen 1:1");
+        // 86akby820 (Sana F4): re-verified fresh from the persisted columns — "Gen 1:1" is
+        // a real verse, so it comes back verified even though nothing was persisted
+        // ABOUT its verdict, only the raw reference text.
+        assert_eq!(json["scripture_verdicts"][0]["reference"], "Gen 1:1");
+        assert_eq!(json["scripture_verdicts"][0]["verified"], true);
+        assert!(
+            note.is_some(),
+            "the verification-scope note must accompany a reloaded draft too, not only a \
+             freshly-generated one"
+        );
+    }
+
+    #[test]
+    fn sermon_note_draft_json_re_verifies_and_catches_an_unverified_reference_on_reload() {
+        // The actual harm this fix closes (Sana F4): a fabricated reference must still be
+        // marked unverified after a reload/edit-save, not just on the live generation.
+        let view = selahcue_lan::protocol::SermonNoteDraftView {
+            title: "A Title".to_string(),
+            summary: None,
+            sections_json: "[]".to_string(),
+            scriptures_json: r#"["3 John 4:12"]"#.to_string(),
+            ai_generated: true,
+            disclosure: Some("disc".to_string()),
+            provider: "SelahCue AI".to_string(),
+            model: None,
+            created_at_ms: 1,
+            edited_at_ms: 2,
+        };
+        let (json, _note) = sermon_note_draft_json(&view);
+        assert_eq!(json["scripture_verdicts"][0]["reference"], "3 John 4:12");
+        assert_eq!(json["scripture_verdicts"][0]["verified"], false);
+        assert_eq!(
+            json["caveats"],
+            serde_json::json!([{"kind": "scripture_unverified", "reference": "3 John 4:12"}])
+        );
     }
 }
 
@@ -5783,18 +5864,24 @@ async fn load_sermon_note_draft(state: State<'_, AppState>) -> Result<serde_json
         return Ok(serde_json::json!({ "ok": false }));
     };
     match state.backend.load_sermon_note_draft(transcript_id).await {
-        Ok(Some(view)) => Ok(serde_json::json!({
-            "ok": true,
-            "transcript_id": transcript_id,
-            "ai_generated": view.ai_generated,
-            "ai_label": selahcue_core::providers::AI_GENERATED_LABEL,
-            // FR-123/FR-128: the label and disclosure travel with the draft through a
-            // restart exactly as they did through an edit — read back verbatim from
-            // what the host persisted, never re-derived here.
-            "disclosure": view.disclosure,
-            "provider": view.provider,
-            "draft": sermon_note_draft_json(&view),
-        })),
+        Ok(Some(view)) => {
+            let (draft, scripture_verification_note) = sermon_note_draft_json(&view);
+            Ok(serde_json::json!({
+                "ok": true,
+                "transcript_id": transcript_id,
+                "ai_generated": view.ai_generated,
+                "ai_label": selahcue_core::providers::AI_GENERATED_LABEL,
+                // FR-123/FR-128: the label and disclosure travel with the draft through a
+                // restart exactly as they did through an edit — read back verbatim from
+                // what the host persisted, never re-derived here.
+                "disclosure": view.disclosure,
+                "provider": view.provider,
+                // 86akby820 (Sana F4): re-verified fresh on every load — see
+                // `sermon_note_draft_json`'s doc comment for why this is safe and cheap.
+                "scripture_verification_note": scripture_verification_note,
+                "draft": draft,
+            }))
+        }
         Ok(None) => Ok(serde_json::json!({ "ok": false })),
         Err(e) => {
             eprintln!("selahcue-operator: failed to load sermon-note draft: {e}");
@@ -5839,15 +5926,20 @@ async fn update_sermon_note_draft(
         .update_sermon_note_draft(transcript_id, edit)
         .await
     {
-        Ok(Some(view)) => Ok(serde_json::json!({
-            "ok": true,
-            "transcript_id": transcript_id,
-            "ai_generated": view.ai_generated,
-            "ai_label": selahcue_core::providers::AI_GENERATED_LABEL,
-            "disclosure": view.disclosure,
-            "provider": view.provider,
-            "draft": sermon_note_draft_json(&view),
-        })),
+        Ok(Some(view)) => {
+            let (draft, scripture_verification_note) = sermon_note_draft_json(&view);
+            Ok(serde_json::json!({
+                "ok": true,
+                "transcript_id": transcript_id,
+                "ai_generated": view.ai_generated,
+                "ai_label": selahcue_core::providers::AI_GENERATED_LABEL,
+                "disclosure": view.disclosure,
+                "provider": view.provider,
+                // 86akby820 (Sana F4): re-verified fresh against what was just saved.
+                "scripture_verification_note": scripture_verification_note,
+                "draft": draft,
+            }))
+        }
         Ok(None) => Ok(serde_json::json!({
             "ok": false, "error": "refused",
             "message": "The host refused this edit: no saved draft exists for this \

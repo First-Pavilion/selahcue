@@ -162,7 +162,7 @@ not-yet-merged branch — see Dependencies):
 | C-012 | yes | Bounded memory, mutation-verified | `an_absurd_number_of_distinct_scriptures_is_bounded_not_unbounded` + manual mutation (`MAX_VERIFIED_REFERENCES = usize::MAX`) | PASS live; FAIL under mutation, reverted | test output | PASS |
 | C-013 | yes | Toggle off → no verification work, nothing displayed | Gated on `include.scripture_extraction` in `main.rs` | `scripture_verdicts` stays empty when off, mirroring `scriptures` itself | inspection + existing toggle tests | PASS |
 | C-014 | yes | `make ci` passes in full | `make ci` | exit 0, ALL GREEN | `MAKE_CI_EXIT:0`, `1317 checks, 0 FAIL`, zero `^FAIL`/`error[`/`FAILED` in log | PASS |
-| C-015 | yes | Four-reviewer gate passed | Cody/Vera/Sana/Quinn findings remediated | no blocking findings outstanding | PENDING | PENDING |
+| C-015 | yes | Four-reviewer gate passed | Cody/Vera/Sana/Quinn findings remediated | Quinn VERIFIED_COMPLETE, Vera PASS non-blocking, Cody/Sana's F1-F4 fixed and re-verified, re-check requested | see Iteration 4 | PASS pending re-check ack |
 
 ## Verification plan
 
@@ -222,6 +222,76 @@ not-yet-merged branch — see Dependencies):
   side effect) — reverted with `git checkout --`, leaving exactly the ticket's declared
   file footprint plus the new `test_scripture_verify.rs` and this Goal Contract.
 - Decision: complete → commit, push, open Draft PR, dispatch four-reviewer gate.
+
+### Iteration 4 — four-reviewer gate and security remediation
+
+- Target criterion: C-015
+- Verifier executed: dispatched Cody, Vera, Sana, Quinn against PR #47 in parallel.
+- Result: Quinn (QA) — VERIFIED_COMPLETE, no findings. Vera (performance) — PASS,
+  non-blocking (flagged `detect()`'s pre-existing per-call allocation cost at a much
+  larger call-site scale than its original caller; filed separately as 86akmfu54, not
+  blocking this PR). Cody (code) and Sana (security) — both independently found the
+  SAME root-cause bug from different angles:
+  - **F1 (Sana, High / Cody, blocking)**: `verify_scriptures` re-serialised a
+    successfully-parsed reference to its CANONICAL form (`Reference::to_string()`).
+    `parse_one` accepts common abbreviations (`"3Jn"`, `"Rom"`, the space-shorthand
+    form) by design — ordinary model output, not an edge case — so an abbreviated
+    fabricated reference parsed fine, verified `false`, and then rendered with
+    **no mark at all**, because the console's exact-string lookup was matching
+    against a spelling that was never in `d.scriptures` to begin with. A fabricated
+    reference could silently look verified.
+  - **F2 (Sana, High)**: `MAX_VERIFIED_REFERENCES = 64` was tighter than the
+    upstream `openai.rs::MAX_SCRIPTURES = 128` — a reference past position 64 got
+    NO verdict, rendering identically to a verified one (both silent).
+  - **F3 (Sana, Medium-High)**: no POSITIVE "verified" marker existed — "silence"
+    was the only signal for "verified", making it indistinguishable from "never
+    checked at all" (which F1/F2 could both produce).
+  - **F4 (Sana, Medium; Cody confirmed non-blocking on its own terms)**: verdicts
+    don't survive a reload/edit-save — the exact "pastor reading from a reloaded
+    Sunday-morning draft" scenario the ticket's own PRD cites.
+  - Cody additionally found: dedup keyed on the pre-parse raw string while output
+    identity was the post-parse canonical form — an inconsistency that (before the
+    F1 fix) could double-report the same verse cited under two different spellings.
+- Change: (1) `ScriptureVerdict.reference` now always echoes the caller's OWN string
+  verbatim (trimmed), never re-serialised — this single change fixes F1 AND Cody's
+  dedup-inconsistency finding at once, since dedup and output identity are now the
+  SAME string. (2) Split `MAX_VERIFIED_REFERENCES` into `MAX_LIST_REFERENCES` (256,
+  generous headroom over the known 128 upstream cap) and `MAX_EMBEDDED_REFERENCES`
+  (64, kept tight for the genuinely open-ended embedded-text phase) — fixes F2. Also
+  fixed the cap-check granularity asymmetry Vera flagged (items were checked
+  per-candidate, points only per-point after all sub-points) — now uniform.
+  (3) Added an explicit `.pp-gen-scr-verified` mark (a plain checkmark, no new
+  colour) alongside the existing `.pp-gen-scr-unverified` one — fixes F3. (4)
+  `sermon_note_draft_json` now reconstructs typed `NoteSection`/`scriptures` from
+  the persisted columns and re-runs `verify_scriptures` fresh on every
+  `load_sermon_note_draft`/`update_sermon_note_draft`, reusing `draft_json` for the
+  JSON shape rather than a second implementation — fixes F4. Removed the now-dead
+  `parse_json_column` helper (superseded by typed deserialization).
+- New tests: `an_abbreviated_reference_keeps_its_own_spelling_in_the_verdict_not_the_canonical_form`,
+  `two_different_spellings_of_the_same_verse_each_get_their_own_correct_verdict`,
+  `an_absurd_number_of_distinct_embedded_references_is_bounded_at_the_tighter_embedded_cap`,
+  `the_list_cap_is_generous_enough_to_never_starve_a_realistic_list`,
+  `sermon_note_draft_json_re_verifies_and_catches_an_unverified_reference_on_reload`.
+  Headless: a positive verified-mark assertion (mutation-verified), an abbreviated
+  list-entry assertion (proves F1's fix at the JS boundary), and a full edit-save
+  round-trip proving the verified AND unverified marks and the verification note all
+  survive an unrelated edit.
+- Verifier executed: full test suites, clippy, fmt, `scripts/operator_headless.py`
+  (1311 → 1323 checks across the two rounds, 0 FAIL, two mutation-verifies), full
+  `make ci`.
+- Result: `MAKE_CI_EXIT:0`, `ALL GREEN`, `1323 checks, 0 FAIL`, 145 operator tests
+  (was 144), 17 core scripture-verify tests (was 13).
+- Decision: complete → push remediation, request Cody/Sana re-check.
+
+## Design decision recorded post-review
+
+`ScriptureVerdict.reference` is the caller's raw string, not a canonical
+re-serialisation. This is a DELIBERATE reversal of an earlier instinct (canonicalising
+felt "cleaner") — the security review made clear that canonical form is actively wrong
+for this use case, because the console's UI contract is "attach a mark to what is
+ACTUALLY displayed," and what's displayed is whatever the model wrote. Any future work
+touching `verify_scriptures` should preserve this — re-introducing canonicalisation
+would reopen F1.
 
 ## Risks and rollback
 

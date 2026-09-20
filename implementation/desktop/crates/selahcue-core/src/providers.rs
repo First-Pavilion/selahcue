@@ -371,12 +371,21 @@ pub struct ScriptureVerdict {
     pub verified: bool,
 }
 
-/// Upper bound on scripture references actually verified per draft, across the extracted
-/// list AND every section's body text combined. Independent of any upstream bound (e.g.
-/// `selahcue-cloud`'s per-provider caps) so this guarantee holds for any `NoteDraft`
-/// regardless of which provider built it — a hostile or absurdly long draft cannot make
-/// verification do unbounded work or grow the verdict list without limit.
-pub const MAX_VERIFIED_REFERENCES: usize = 64;
+/// Upper bound on scripture references verified from the extracted `scriptures` list.
+/// Set well above every upstream cap this crate is aware of
+/// (`selahcue-cloud::openai::MAX_SCRIPTURES = 128` at review time) — this crate cannot
+/// import that constant directly (the dependency runs the other way), so the margin here
+/// is deliberate insurance, not a tight fit. This must never be the reason a real list
+/// entry goes unchecked: an entry beyond this cap would render identically to a verified
+/// one, which is precisely Sana's F2 finding on PR #47.
+pub const MAX_LIST_REFERENCES: usize = 256;
+
+/// Upper bound on scripture references found by scanning section body text (flat items,
+/// outline point text, sub-point text). This bound stays tight: unlike the extracted
+/// list (bounded upstream to a small, deliberate count), body text is bounded only by
+/// character count, and a hostile draft could cram many reference-shaped substrings into
+/// it — this is the genuinely adversarial-input-prone half of this function.
+pub const MAX_EMBEDDED_REFERENCES: usize = 64;
 
 /// Verify every scripture reference in a draft — the extracted `scriptures` list AND
 /// references embedded in a section's body text (flat items, outline point text, and
@@ -385,13 +394,24 @@ pub const MAX_VERIFIED_REFERENCES: usize = 64;
 /// crate, not the other way round; the real caller wires `exists` to
 /// `|r| !selahcue_scripture::verses(r).is_empty()`).
 ///
-/// Bounded and total: never panics on adversarial input, and never verifies more than
-/// [`MAX_VERIFIED_REFERENCES`] references regardless of how large or hostile `scriptures`
-/// or `sections` are. A reference that cannot be parsed at all is retained as unverified,
-/// never silently dropped (unlike [`crate::scripture::parse`], which is the wrong entry
-/// point here for exactly that reason). Duplicate reference text (by exact string) is
-/// verified once; a fabricated reference repeated ten times in one draft is reported once,
-/// not ten times.
+/// `ScriptureVerdict::reference` is always the CALLER's own string, verbatim (trimmed) —
+/// never re-serialised through `Reference::to_string()`. Security review finding (Sana,
+/// F1 on PR #47): the parser accepts aliases (`"Obad"`, `"3jn"`, the space-shorthand
+/// form, …), so re-serialising a successfully-parsed reference to its canonical form
+/// silently broke the exact-string match the console uses to attach a verdict to a
+/// `scriptures` list entry — an abbreviated fabricated reference parsed fine, verified
+/// `false`, and then rendered with NO mark at all, because the console was looking for
+/// the canonical spelling, not the one actually in the list. Echoing the input back
+/// verbatim makes that match reliable by construction rather than by convention.
+///
+/// Bounded and total: never panics on adversarial input. The list is capped at
+/// [`MAX_LIST_REFERENCES`], embedded-text scanning separately at
+/// [`MAX_EMBEDDED_REFERENCES`] (see each constant's doc for why they differ). A reference
+/// that cannot be parsed at all is retained as unverified, never silently dropped (unlike
+/// [`crate::scripture::parse`], which is the wrong entry point here for exactly that
+/// reason). Duplicate reference text (by exact string, shared across both phases) is
+/// verified once; a fabricated reference repeated ten times in one draft is reported
+/// once, not ten times.
 pub fn verify_scriptures(
     scriptures: &[String],
     sections: &[NoteSection],
@@ -400,53 +420,75 @@ pub fn verify_scriptures(
     let mut verdicts = Vec::new();
     let mut seen = std::collections::HashSet::new();
 
+    // Returns `true` iff a NEW verdict was pushed — the caller's own cap counter only
+    // advances on an actual push, so a run of duplicates never eats into either budget.
     let mut consider = |raw: &str,
                         verdicts: &mut Vec<ScriptureVerdict>,
-                        seen: &mut std::collections::HashSet<String>| {
-        if verdicts.len() >= MAX_VERIFIED_REFERENCES {
-            return;
-        }
+                        seen: &mut std::collections::HashSet<String>|
+     -> bool {
         let raw = raw.trim();
         if raw.is_empty() || !seen.insert(raw.to_string()) {
-            return;
+            return false;
         }
-        let verdict = match crate::scripture::parse_one(raw) {
-            Ok(reference) => ScriptureVerdict {
-                reference: reference.to_string(),
-                verified: exists(&reference),
-            },
-            Err(_) => ScriptureVerdict {
-                reference: raw.to_string(),
-                verified: false,
-            },
-        };
-        verdicts.push(verdict);
+        let verified = crate::scripture::parse_one(raw)
+            .map(|reference| exists(&reference))
+            .unwrap_or(false);
+        verdicts.push(ScriptureVerdict {
+            reference: raw.to_string(),
+            verified,
+        });
+        true
     };
 
+    let mut list_count = 0usize;
     for raw in scriptures {
-        consider(raw, &mut verdicts, &mut seen);
+        if list_count >= MAX_LIST_REFERENCES {
+            break;
+        }
+        if consider(raw, &mut verdicts, &mut seen) {
+            list_count += 1;
+        }
     }
 
+    let mut embedded_count = 0usize;
     'sections: for section in sections {
         for item in section.items() {
+            if embedded_count >= MAX_EMBEDDED_REFERENCES {
+                break 'sections;
+            }
             for candidate in crate::detection::detect(item) {
-                consider(&candidate, &mut verdicts, &mut seen);
-                if verdicts.len() >= MAX_VERIFIED_REFERENCES {
+                if embedded_count >= MAX_EMBEDDED_REFERENCES {
                     break 'sections;
+                }
+                if consider(&candidate, &mut verdicts, &mut seen) {
+                    embedded_count += 1;
                 }
             }
         }
         for point in section.points() {
-            for candidate in crate::detection::detect(&point.text) {
-                consider(&candidate, &mut verdicts, &mut seen);
+            if embedded_count >= MAX_EMBEDDED_REFERENCES {
+                break 'sections;
             }
-            for sub in &point.sub_points {
-                for candidate in crate::detection::detect(sub) {
-                    consider(&candidate, &mut verdicts, &mut seen);
+            for candidate in crate::detection::detect(&point.text) {
+                if embedded_count >= MAX_EMBEDDED_REFERENCES {
+                    break 'sections;
+                }
+                if consider(&candidate, &mut verdicts, &mut seen) {
+                    embedded_count += 1;
                 }
             }
-            if verdicts.len() >= MAX_VERIFIED_REFERENCES {
-                break 'sections;
+            for sub in &point.sub_points {
+                if embedded_count >= MAX_EMBEDDED_REFERENCES {
+                    break 'sections;
+                }
+                for candidate in crate::detection::detect(sub) {
+                    if embedded_count >= MAX_EMBEDDED_REFERENCES {
+                        break 'sections;
+                    }
+                    if consider(&candidate, &mut verdicts, &mut seen) {
+                        embedded_count += 1;
+                    }
+                }
             }
         }
     }

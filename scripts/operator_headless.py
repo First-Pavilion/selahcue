@@ -308,13 +308,28 @@ if not check_d5_no_scrolltop_writes():
 # `ppGenerateAndConfirm` call. 1311 + 5 + 1 = 1317, matching the real observed count at the
 # time (before 86akmdkdg/86akcffy0/86akc0tua's second round existed).
 #
+# Security review remediation (Sana F1/F3 on PR #47) adds 2 more: the verified reference
+# now carries its own explicit computed-visible mark (F3), and the list's unverified
+# entry is deliberately an ABBREVIATED spelling ("3Jn 4:12") rather than canonical, with
+# an assertion that it still renders in the list at all before checking its mark (F1).
+# 1317 + 2 = 1319, matching the real observed count at the time.
+#
+# Security review remediation (Sana F4 on PR #47) adds 4 more, no implicit ones (this
+# block edits an ALREADY-generated draft, no new Generate click): the edit-save actually
+# saved (setup), the verified mark survives an unrelated edit-save, the unverified mark
+# ALSO survives it (the actual harm this ticket exists to prevent — a reloaded/saved
+# draft, not just the live response), and the verification-scope note is still present.
+# 1319 + 4 = 1323, matching the real observed count at the time (before 86akmdkdg/86akcffy0/
+# 86akc0tua's second round existed) — this ticket's total own contribution across all three
+# commits is therefore 1323 - 1311 = 12 checks.
+#
 # Rebased onto the now-combined 86akmdkdg+86akcffy0+86akc0tua floor of 1369: this ticket's own
-# 6 checks are independent of all three (own fixture, own DRIVER section, inserted immediately
-# after 86akc0tua's edit-save block rather than overlapping it), so the combined floor is
-# provisionally 1369 + 6 = 1375. As with every step above, this is a naive sum until a
-# standalone run confirms it — re-run this script after the rebase and correct this value to
-# the REAL observed total before trusting it.
-EXPECTED_MIN_CHECKS = 1375
+# 12 checks (across all three of its commits) are independent of all three (own fixture, own
+# DRIVER section, inserted immediately after 86akc0tua's edit-save block rather than
+# overlapping it), so the combined floor is provisionally 1369 + 12 = 1381. As with every step
+# above, this is a naive sum until a standalone run confirms it — re-run this script after the
+# rebase and correct this value to the REAL observed total before trusting it.
+EXPECTED_MIN_CHECKS = 1381
 
 
 def find_chrome():
@@ -1249,14 +1264,20 @@ STUB = r"""
           sections:[
             {heading:"Illustrations", items:["This truth is affirmed in Jude 2:1 as well."], points:[], empty_requested:false}
           ],
-          scriptures:["John 3:16","3 John 4:12"],
+          // "3Jn 4:12" — an ABBREVIATED spelling, deliberately not the canonical "3 John
+          // 4:12" — end-to-end-verifies the JS side's contract that a verdict is matched
+          // to a scriptures-list entry by EXACT string, whatever spelling the model used
+          // (security review, Sana F1 on PR #47; the Rust-level regression that the
+          // BACKEND echoes back the caller's own spelling, not a re-canonicalised one,
+          // lives in selahcue-core's own test suite, which a JS-level mock cannot reach).
+          scriptures:["John 3:16","3Jn 4:12"],
           caveats:[
-            {kind:"scripture_unverified", reference:"3 John 4:12"},
+            {kind:"scripture_unverified", reference:"3Jn 4:12"},
             {kind:"scripture_unverified", reference:"Jude 2:1"}
           ],
           scripture_verdicts:[
             {reference:"John 3:16", verified:true},
-            {reference:"3 John 4:12", verified:false},
+            {reference:"3Jn 4:12", verified:false},
             {reference:"Jude 2:1", verified:false}
           ]
         };
@@ -1279,12 +1300,37 @@ STUB = r"""
       return Promise.resolve({ok:false, error:"not_configured", message:"the SelahCue cloud service is not configured"});
     }
     // --- 86akgqdv0: sermon-note draft persistence + editing (FR-123 "editable" half) ---------
+    // 86akby820 (Sana F4 remediation): the REAL backend re-verifies fresh from the
+    // persisted `scriptures`/`sections` on every load/edit-save, rather than trusting a
+    // stale stored verdict — this small helper mirrors that against the same "known good"
+    // reference the mock's own fixtures already use, so `load_sermon_note_draft` and
+    // `update_sermon_note_draft` below simulate re-verification rather than merely
+    // echoing back whatever verdicts happened to be attached at generate time.
+    var MOCK_VERIFIED_REFS = ["John 3:16"];
+    function mockReVerify(scriptures) {
+      var verdicts = (scriptures || []).map(function (ref) {
+        return { reference: ref, verified: MOCK_VERIFIED_REFS.indexOf(ref) !== -1 };
+      });
+      var caveats = verdicts.filter(function (v) { return !v.verified; }).map(function (v) {
+        return { kind: "scripture_unverified", reference: v.reference };
+      });
+      var note = verdicts.length
+        ? "Verified means the reference address exists in the bundled Bible text — it does not confirm that any words this draft attributes to it are accurate. Always check a quotation against the actual text before you use it."
+        : null;
+      return { verdicts: verdicts, caveats: caveats, note: note };
+    }
     if (cmd === "load_sermon_note_draft") {
       if (!SN.draft) return Promise.resolve({ok:false}); // no persistence connection / nothing saved
+      var loadReVerified = mockReVerify(SN.draft.draft.scriptures);
+      var loadDraft = Object.assign({}, SN.draft.draft, {
+        scripture_verdicts: loadReVerified.verdicts, caveats: loadReVerified.caveats,
+      });
       return Promise.resolve({
         ok:true, transcript_id:SN.draft.transcript_id,
         ai_generated:SN.draft.ai_generated, ai_label:SN.draft.ai_label,
-        disclosure:SN.draft.disclosure, provider:SN.draft.provider, draft:SN.draft.draft
+        disclosure:SN.draft.disclosure, provider:SN.draft.provider,
+        scripture_verification_note: loadReVerified.note,
+        draft: loadDraft
       });
     }
     if (cmd === "update_sermon_note_draft") {
@@ -1309,11 +1355,16 @@ STUB = r"""
         }),
         scriptures: args.scriptures || []
       };
+      var updateReVerified = mockReVerify(snUpdated.scriptures);
+      snUpdated.scripture_verdicts = updateReVerified.verdicts;
+      snUpdated.caveats = updateReVerified.caveats;
       SN.draft.draft = snUpdated;
       return Promise.resolve({
         ok:true, transcript_id:SN.draft.transcript_id,
         ai_generated:SN.draft.ai_generated, ai_label:SN.draft.ai_label,
-        disclosure:SN.draft.disclosure, provider:SN.draft.provider, draft:snUpdated
+        disclosure:SN.draft.disclosure, provider:SN.draft.provider,
+        scripture_verification_note: updateReVerified.note,
+        draft:snUpdated
       });
     }
     return Promise.resolve(null);
@@ -6649,18 +6700,30 @@ DRIVER = r"""
       var verifiedItem = Array.prototype.filter.call(scLine.querySelectorAll(".pp-gen-scr-item"), function (s) {
         return s.textContent === "John 3:16";
       })[0];
-      ok(!!verifiedItem && (!verifiedItem.nextElementSibling ||
-           !verifiedItem.nextElementSibling.classList.contains("pp-gen-scr-unverified")),
-         "PP 86akby820 (positive control): a verified reference carries NO unverified mark — " +
-         "without this, the assertion below could pass on a mechanism that marks EVERY reference");
+      var verifiedMark = verifiedItem && verifiedItem.nextElementSibling;
+      // Security review finding (Sana F3): "verified" gets its OWN explicit mark — silence
+      // is never the only signal, so a check that slips past a gap can't read as clean.
+      ok(!!verifiedMark && verifiedMark.classList.contains("pp-gen-scr-verified") &&
+         getComputedStyle(verifiedMark).display !== "none" && verifiedMark.getClientRects().length > 0,
+         "PP 86akby820 (F3): a verified reference carries its OWN explicit computed-visible mark, " +
+         "not just the absence of the unverified one");
+      ok(!verifiedMark.classList.contains("pp-gen-scr-unverified"),
+         "PP 86akby820 (positive control): a verified reference's mark is the VERIFIED class, " +
+         "not the unverified one — without this, the assertion below could pass on a mechanism " +
+         "that marks EVERY reference the same way");
       var unverifiedItem = Array.prototype.filter.call(scLine.querySelectorAll(".pp-gen-scr-item"), function (s) {
-        return s.textContent === "3 John 4:12";
+        return s.textContent === "3Jn 4:12";
       })[0];
+      ok(!!unverifiedItem,
+         "PP 86akby820 (F1): an ABBREVIATED reference ('3Jn 4:12', not the canonical '3 John " +
+         "4:12') still renders in the list at all — proves the exact-match lookup keys on the " +
+         "model's own spelling, not a re-canonicalised one");
       var unverifiedMark = unverifiedItem && unverifiedItem.nextElementSibling;
       ok(!!unverifiedMark && unverifiedMark.classList.contains("pp-gen-scr-unverified") &&
          getComputedStyle(unverifiedMark).display !== "none" && unverifiedMark.getClientRects().length > 0 &&
          /unverified/i.test(unverifiedMark.textContent),
-         "PP 86akby820: an unverified reference in the extracted list carries a computed-visible mark");
+         "PP 86akby820: an unverified (abbreviated-spelling) reference in the extracted list " +
+         "carries a computed-visible mark — the exact bug class Sana's F1 finding named");
       // Embedded-only: a fabricated reference found ONLY inside a section's body text (not in
       // the extracted `scriptures` list at all) still gets an unmissable mark — the ticket's own
       // named more-dangerous case.
@@ -6678,6 +6741,36 @@ DRIVER = r"""
          /does not confirm/.test(scNote.textContent),
          "PP 86akby820: the verification-scope note renders, role=note, and is explicit that " +
          "verification confirms the reference exists, not that quoted words are accurate");
+
+      // Security review remediation (Sana F4 on PR #47): the check must survive an
+      // edit-save, not just the live generation — edit something UNRELATED (the title)
+      // and confirm the unverified mark, the verified mark, and the note are all STILL
+      // there afterward, re-verified fresh rather than silently dropped.
+      el("pp-gen-edit").click();
+      document.getElementById("pp-edit-title").value = "Grace in the Wilderness (edited)";
+      el("pp-gen-save").click();
+      await sleep(60);
+      var gSAfterSave = el("pp-gen-result");
+      ok(/Grace in the Wilderness \(edited\)/.test(gSAfterSave.textContent),
+         "PP 86akby820 (F4 setup): the edit actually saved — proves the check below is against " +
+         "a real post-save render, not the pre-edit one");
+      var scLineAfterSave = gSAfterSave.querySelector(".pp-gen-scriptures");
+      var verifiedAfterSave = Array.prototype.filter.call(scLineAfterSave.querySelectorAll(".pp-gen-scr-item"), function (s) {
+        return s.textContent === "John 3:16";
+      })[0];
+      ok(!!verifiedAfterSave && verifiedAfterSave.nextElementSibling &&
+         verifiedAfterSave.nextElementSibling.classList.contains("pp-gen-scr-verified"),
+         "PP 86akby820 (F4): the verified mark survives an UNRELATED edit-save, re-verified fresh");
+      var unverifiedAfterSave = Array.prototype.filter.call(scLineAfterSave.querySelectorAll(".pp-gen-scr-item"), function (s) {
+        return s.textContent === "3Jn 4:12";
+      })[0];
+      ok(!!unverifiedAfterSave && unverifiedAfterSave.nextElementSibling &&
+         unverifiedAfterSave.nextElementSibling.classList.contains("pp-gen-scr-unverified"),
+         "PP 86akby820 (F4): the unverified mark ALSO survives an edit-save — this is the exact " +
+         "harm the ticket cites (a pastor reading from a saved/reloaded draft), not only the " +
+         "live-generation response");
+      ok(!!gSAfterSave.querySelector(".pp-gen-scripture-note"),
+         "PP 86akby820 (F4): the verification-scope note is still present after an edit-save");
 
       window.__ppGen = "ok"; // restore for any later reads
 

@@ -54,6 +54,44 @@ fn a_reference_the_oracle_does_not_know_is_unverified_not_dropped() {
 }
 
 #[test]
+fn an_abbreviated_reference_keeps_its_own_spelling_in_the_verdict_not_the_canonical_form() {
+    // Security review regression (Sana F1 / Cody, PR #47): `parse_one` accepts common
+    // abbreviations ("3Jn" for "3 John") by design — that is completely normal model
+    // output, not an edge case. The verdict's `reference` MUST echo back the caller's
+    // own string, because the console attaches a mark to a `scriptures` list entry by
+    // exact string match against what it is actually displaying. Re-serialising to the
+    // canonical spelling ("3 John 4:12") broke that match silently: the fabricated entry
+    // rendered with NO mark at all, indistinguishable from a verified one.
+    let verdicts = verify_scriptures(&["3Jn 4:12".to_string()], &[], oracle(&[]));
+    assert_eq!(
+        verdicts,
+        vec![verdict("3Jn 4:12", false)],
+        "the verdict must be keyed to the RAW input spelling, not the re-serialised \
+         canonical form — otherwise the console's exact-match lookup misses it"
+    );
+}
+
+#[test]
+fn two_different_spellings_of_the_same_verse_each_get_their_own_correct_verdict() {
+    // Dedup is keyed on the SAME string the verdict echoes back (the raw input), so two
+    // different spellings of the same underlying verse are two different list entries,
+    // each independently parsed and checked — not silently collapsed into one (which
+    // would misattribute one spelling's verdict to the other's on-screen entry) and not
+    // duplicated under a shared canonical identity either.
+    let verdicts = verify_scriptures(
+        &["3Jn 4:12".to_string(), "3 John 4:12".to_string()],
+        &[],
+        oracle(&[]),
+    );
+    assert_eq!(
+        verdicts,
+        vec![verdict("3Jn 4:12", false), verdict("3 John 4:12", false)],
+        "each distinct spelling gets its own verdict, correctly resolved to the same \
+         underlying (nonexistent) reference"
+    );
+}
+
+#[test]
 fn an_unparseable_reference_is_unverified_and_kept_verbatim_never_dropped() {
     // The ticket's most important negative requirement: `parse()` (scripture.rs) silently
     // drops what it cannot parse via `filter_map(...ok())`. `verify_scriptures` must NOT
@@ -162,22 +200,59 @@ fn a_section_the_operator_left_off_is_not_scanned_because_it_never_reaches_the_d
 // ===========================================================================
 
 #[test]
-fn an_absurd_number_of_distinct_scriptures_is_bounded_not_unbounded() {
+fn an_absurd_number_of_distinct_list_entries_is_bounded_at_the_list_cap() {
     let many: Vec<String> = (0..10_000)
         .map(|i| format!("garbage reference {i}"))
         .collect();
     let verdicts = verify_scriptures(&many, &[], oracle(&[]));
     assert!(
-        verdicts.len() <= selahcue_core::providers::MAX_VERIFIED_REFERENCES,
+        verdicts.len() <= selahcue_core::providers::MAX_LIST_REFERENCES,
         "got {} verdicts, bound is {}",
         verdicts.len(),
-        selahcue_core::providers::MAX_VERIFIED_REFERENCES
+        selahcue_core::providers::MAX_LIST_REFERENCES
     );
     assert_eq!(
         verdicts.len(),
-        selahcue_core::providers::MAX_VERIFIED_REFERENCES,
+        selahcue_core::providers::MAX_LIST_REFERENCES,
         "10,000 DISTINCT candidates must actually hit the cap, not stop early for some \
          other reason — the positive control that proves the bound is exercised"
+    );
+}
+
+#[test]
+fn an_absurd_number_of_distinct_embedded_references_is_bounded_at_the_tighter_embedded_cap() {
+    // The list and embedded-text phases are bounded SEPARATELY (Sana's F2 finding on PR
+    // #47): embedded text is the genuinely open-ended, adversarial-input-prone half, and
+    // this is its own positive control, independent of the list cap above.
+    let hostile_items: Vec<String> = (0..10_000)
+        .map(|i| format!("garbage reference {i}"))
+        .collect();
+    let sections = vec![NoteSection::flat("Illustrations", hostile_items)];
+    let verdicts = verify_scriptures(&[], &sections, oracle(&[]));
+    assert!(
+        verdicts.len() <= selahcue_core::providers::MAX_EMBEDDED_REFERENCES,
+        "got {} verdicts, bound is {}",
+        verdicts.len(),
+        selahcue_core::providers::MAX_EMBEDDED_REFERENCES
+    );
+}
+
+#[test]
+fn the_list_cap_is_generous_enough_to_never_starve_a_realistic_list() {
+    // Sana's F2, as a positive assertion rather than only a bound check: a list AT the
+    // known upstream cap (selahcue-cloud::openai::MAX_SCRIPTURES = 128, duplicated here
+    // as a literal since this crate cannot import it) must ALL get verdicts — none of
+    // them silently rendering as if verified because they fell outside this function's
+    // own, smaller cap.
+    const UPSTREAM_MAX_SCRIPTURES: usize = 128;
+    let many: Vec<String> = (0..UPSTREAM_MAX_SCRIPTURES)
+        .map(|i| format!("John 3:{i}"))
+        .collect();
+    let verdicts = verify_scriptures(&many, &[], oracle(&[]));
+    assert_eq!(
+        verdicts.len(),
+        UPSTREAM_MAX_SCRIPTURES,
+        "every entry up to the known upstream list cap must get its own verdict"
     );
 }
 

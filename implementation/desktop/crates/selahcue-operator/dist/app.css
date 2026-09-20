@@ -6874,6 +6874,10 @@
    the same one FABRICATION_DISCLOSURE and DEGRADED_FALLBACK_NOTICE already use for "read
    this before you act on it". */
 .pp-gen-scr-unverified { color: var(--sc-warn); font-weight: 700; }
+/* Security review finding (Sana F3 on PR #47): a plain checkmark, not a new colour —
+   "verified" needs its OWN explicit mark so it is never just "the absence of a warning",
+   which would let a reference that slips past a gap in the check read as clean. */
+.pp-gen-scr-verified { color: var(--sc-text-secondary); font-weight: 700; }
 .pp-gen-scripture-note {
   margin: 8px 0 4px;
   padding: 8px 10px;
