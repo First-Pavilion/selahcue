@@ -3625,6 +3625,8 @@ struct IncludeView {
     chapter_markers: bool,
     notable_quotations: bool,
     short_summary: bool,
+    podcast_show_notes: bool,
+    short_description: bool,
 }
 
 #[derive(serde::Serialize)]
@@ -3994,6 +3996,8 @@ fn providers_view_from(
             chapter_markers: inc.chapter_markers,
             notable_quotations: inc.notable_quotations,
             short_summary: inc.short_summary,
+            podcast_show_notes: inc.podcast_show_notes,
+            short_description: inc.short_description,
         },
         cloud_status,
         notes_available,
@@ -4069,8 +4073,10 @@ mod providers_view_tests {
             vec![
                 "chapter_markers",
                 "notable_quotations",
+                "podcast_show_notes",
                 "prayer_points",
                 "scripture_extraction",
+                "short_description",
                 "short_summary",
                 "social_excerpts",
             ]
@@ -4601,14 +4607,16 @@ mod scripture_verification_tests {
 
     #[test]
     fn a_real_valid_reference_verifies_against_the_bundled_text() {
-        let verdicts = verify_scriptures(&["John 3:16".to_string()], &[], real_oracle());
+        let (verdicts, truncated) =
+            verify_scriptures(&["John 3:16".to_string()], &[], real_oracle());
         assert_eq!(verdicts.len(), 1);
         assert!(verdicts[0].verified, "John 3:16 is a real verse");
+        assert!(!truncated, "one reference is nowhere near either budget");
     }
 
     #[test]
     fn a_reference_naming_no_real_book_is_unverified() {
-        let verdicts = verify_scriptures(&["Frobnicate 1:1".to_string()], &[], real_oracle());
+        let (verdicts, _) = verify_scriptures(&["Frobnicate 1:1".to_string()], &[], real_oracle());
         assert_eq!(verdicts.len(), 1);
         assert!(!verdicts[0].verified);
         assert_eq!(verdicts[0].reference, "Frobnicate 1:1");
@@ -4617,7 +4625,7 @@ mod scripture_verification_tests {
     #[test]
     fn a_chapter_past_a_real_short_books_end_is_unverified() {
         // Obadiah has one chapter. Chapter 2 does not exist.
-        let verdicts = verify_scriptures(&["Obadiah 2:1".to_string()], &[], real_oracle());
+        let (verdicts, _) = verify_scriptures(&["Obadiah 2:1".to_string()], &[], real_oracle());
         assert_eq!(verdicts.len(), 1);
         assert!(!verdicts[0].verified);
     }
@@ -4625,14 +4633,14 @@ mod scripture_verification_tests {
     #[test]
     fn a_verse_past_a_real_chapters_end_is_unverified() {
         // John 3 has 36 verses.
-        let verdicts = verify_scriptures(&["John 3:99".to_string()], &[], real_oracle());
+        let (verdicts, _) = verify_scriptures(&["John 3:99".to_string()], &[], real_oracle());
         assert_eq!(verdicts.len(), 1);
         assert!(!verdicts[0].verified);
     }
 
     #[test]
     fn unparseable_text_in_the_list_is_unverified_and_still_shown() {
-        let verdicts = verify_scriptures(
+        let (verdicts, _) = verify_scriptures(
             &["definitely not a scripture reference".to_string()],
             &[],
             real_oracle(),
@@ -4654,7 +4662,7 @@ mod scripture_verification_tests {
     #[test]
     fn four_plausible_but_nonexistent_references_are_all_caught() {
         let candidates = ["Obadiah 2:1", "3 John 4:12", "Jude 2:1", "Philemon 2:3"];
-        let verdicts = verify_scriptures(
+        let (verdicts, _) = verify_scriptures(
             &candidates.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
             &[],
             real_oracle(),
@@ -4679,7 +4687,7 @@ mod scripture_verification_tests {
                 sub_points: vec![],
             }],
         )];
-        let verdicts = verify_scriptures(&[], &sections, real_oracle());
+        let (verdicts, _) = verify_scriptures(&[], &sections, real_oracle());
         assert_eq!(verdicts.len(), 1);
         assert_eq!(verdicts[0].reference, "3 John 4:12");
         assert!(!verdicts[0].verified);
@@ -4691,7 +4699,7 @@ mod scripture_verification_tests {
             "Illustrations",
             vec!["As it says in Isaiah 55:1, come.".to_string()],
         )];
-        let verdicts = verify_scriptures(&[], &sections, real_oracle());
+        let (verdicts, _) = verify_scriptures(&[], &sections, real_oracle());
         assert_eq!(verdicts.len(), 1);
         assert_eq!(verdicts[0].reference, "Isaiah 55:1");
         assert!(verdicts[0].verified);
@@ -4704,7 +4712,7 @@ mod scripture_verification_tests {
         // as a `ScriptureUnverified` entry — the same "one shared vocabulary" mechanism
         // 86akc0tua established for requested-but-empty sections.
         use selahcue_core::providers::NoteDraft;
-        let verdicts = verify_scriptures(
+        let (verdicts, _) = verify_scriptures(
             &["John 3:16".to_string(), "3 John 4:12".to_string()],
             &[],
             real_oracle(),
@@ -4738,6 +4746,32 @@ mod scripture_verification_tests {
         assert_eq!(
             *caveats,
             vec![serde_json::json!({"kind": "scripture_unverified", "reference": "3 John 4:12"})]
+        );
+    }
+
+    #[test]
+    fn draft_json_renders_the_scripture_verification_incomplete_caveat() {
+        // 86akgqdwc (Sana F2 on PR #48): pins the wire shape for the new draft-wide
+        // caveat — no `heading`, no `reference`, just its `kind` — and confirms it
+        // survives `draft_json` alongside an ordinary section, unlike
+        // `SectionRequestedEmpty` it must never mark any section `empty_requested`.
+        use selahcue_core::providers::NoteDraft;
+        let draft = NoteDraft {
+            title: "t".into(),
+            summary: None,
+            sections: vec![NoteSection::flat("Podcast show notes", vec!["ok".into()])],
+            scriptures: Vec::new(),
+            caveats: vec![DraftCaveat::ScriptureVerificationIncomplete],
+            scripture_verdicts: Vec::new(),
+        };
+        let j = draft_json(&draft);
+        assert_eq!(
+            j["caveats"],
+            serde_json::json!([{"kind": "scripture_verification_incomplete"}])
+        );
+        assert_eq!(
+            j["sections"][0]["empty_requested"], false,
+            "a draft-wide caveat must never mark an unrelated, populated section empty"
         );
     }
 }
@@ -4863,6 +4897,8 @@ async fn set_include_flag(
             "chapter_markers" => i.chapter_markers = enabled,
             "notable_quotations" => i.notable_quotations = enabled,
             "short_summary" => i.short_summary = enabled,
+            "podcast_show_notes" => i.podcast_show_notes = enabled,
+            "short_description" => i.short_description = enabled,
             _ => {}
         }
     })
@@ -4928,6 +4964,8 @@ fn draft_json(d: &selahcue_core::providers::NoteDraft) -> serde_json::Value {
         match c {
             DraftCaveat::SectionRequestedEmpty { heading } => empty_headings.push(heading.as_str()),
             DraftCaveat::ScriptureUnverified { .. } => {}
+            // Draft-wide; names no section heading (86akgqdwc, Sana F2).
+            DraftCaveat::ScriptureVerificationIncomplete => {}
         }
     }
     let caveats_json: Vec<serde_json::Value> = d
@@ -4939,6 +4977,9 @@ fn draft_json(d: &selahcue_core::providers::NoteDraft) -> serde_json::Value {
             }
             DraftCaveat::ScriptureUnverified { reference } => {
                 serde_json::json!({"kind": "scripture_unverified", "reference": reference})
+            }
+            DraftCaveat::ScriptureVerificationIncomplete => {
+                serde_json::json!({"kind": "scripture_verification_incomplete"})
             }
         })
         .collect();
@@ -5030,6 +5071,8 @@ fn sections_to_persist(
                 Some(heading.as_str())
             }
             selahcue_core::providers::DraftCaveat::ScriptureUnverified { .. } => None,
+            // Draft-wide (86akgqdwc); names no section either.
+            selahcue_core::providers::DraftCaveat::ScriptureVerificationIncomplete => None,
         })
         .collect();
     draft
@@ -5115,6 +5158,25 @@ mod sections_to_persist_tests {
             1,
             "a ScriptureUnverified caveat must never cause an unrelated section to be \
              dropped — it names a reference, not a heading"
+        );
+    }
+
+    #[test]
+    fn a_scripture_verification_incomplete_caveat_drops_nothing_either() {
+        // 86akgqdwc added `DraftCaveat::ScriptureVerificationIncomplete` (Sana F2 on PR
+        // #48) — draft-wide, names no section and no reference. Same exhaustive-match
+        // discipline as the `ScriptureUnverified` test above: without this arm the match
+        // in `sections_to_persist` would not compile.
+        let d = draft(
+            vec![NoteSection::flat("Illustrations", vec!["a lantern".into()])],
+            vec![DraftCaveat::ScriptureVerificationIncomplete],
+        );
+        let persisted = sections_to_persist(&d);
+        assert_eq!(
+            persisted.len(),
+            1,
+            "a ScriptureVerificationIncomplete caveat must never cause an unrelated \
+             section to be dropped — it names nothing"
         );
     }
 
@@ -5248,12 +5310,13 @@ fn sermon_note_draft_json(
     let sections = sections_from_input(sections);
     let scriptures: Vec<String> = serde_json::from_str(&v.scriptures_json).unwrap_or_default();
 
-    let verdicts = selahcue_core::providers::verify_scriptures(&scriptures, &sections, |r| {
-        !selahcue_scripture::verses(r).is_empty()
-    });
+    let (verdicts, embedded_scan_truncated) =
+        selahcue_core::providers::verify_scriptures(&scriptures, &sections, |r| {
+            !selahcue_scripture::verses(r).is_empty()
+        });
     let note =
         (!verdicts.is_empty()).then_some(selahcue_core::providers::SCRIPTURE_VERIFICATION_WORDING);
-    let caveats: Vec<selahcue_core::providers::DraftCaveat> = verdicts
+    let mut caveats: Vec<selahcue_core::providers::DraftCaveat> = verdicts
         .iter()
         .filter(|v| !v.verified)
         .map(
@@ -5262,6 +5325,12 @@ fn sermon_note_draft_json(
             },
         )
         .collect();
+    // 86akgqdwc (Sana F2 on PR #48): a reload must carry the same "some references were
+    // never checked at all" signal a fresh generation does — re-verification runs fresh
+    // here (see this function's own doc comment above) and can hit the same budget.
+    if embedded_scan_truncated {
+        caveats.push(selahcue_core::providers::DraftCaveat::ScriptureVerificationIncomplete);
+    }
 
     // Reuses `draft_json` rather than a second, slightly-different JSON builder — one
     // place knows the wire contract, whether the draft just arrived from a live
@@ -5580,11 +5649,12 @@ async fn generate_sermon_notes(
             // genuinely spoke, echoed into the offline scaffold from the real transcript,
             // is exactly as worth confirming as one a cloud model proposed.
             if scripture_extraction_on {
-                let verdicts = selahcue_core::providers::verify_scriptures(
-                    &outcome.draft.scriptures,
-                    &outcome.draft.sections,
-                    |r| !selahcue_scripture::verses(r).is_empty(),
-                );
+                let (verdicts, embedded_scan_truncated) =
+                    selahcue_core::providers::verify_scriptures(
+                        &outcome.draft.scriptures,
+                        &outcome.draft.sections,
+                        |r| !selahcue_scripture::verses(r).is_empty(),
+                    );
                 outcome
                     .draft
                     .caveats
@@ -5593,6 +5663,15 @@ async fn generate_sermon_notes(
                             reference: v.reference.clone(),
                         }
                     }));
+                // 86akgqdwc (Sana F2 on PR #48): the embedded-reference scan can hit
+                // MAX_EMBEDDED_REFERENCES before every section is considered — a reference
+                // past that budget gets no verdict at all, not even `Unverified`. Say so,
+                // rather than let the absence of a caveat read as "everything was checked".
+                if embedded_scan_truncated {
+                    outcome.draft.caveats.push(
+                        selahcue_core::providers::DraftCaveat::ScriptureVerificationIncomplete,
+                    );
+                }
                 outcome.draft.scripture_verdicts = verdicts;
             }
             // Best-effort, mirroring `with_providers`'s "persistence failure never blocks the

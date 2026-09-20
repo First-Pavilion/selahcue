@@ -34,6 +34,8 @@ fn save_then_load_round_trips_every_field() {
                 chapter_markers: false,
                 notable_quotations: true,
                 short_summary: false,
+                podcast_show_notes: true,
+                short_description: false,
             },
         },
         consent: ConsentState {

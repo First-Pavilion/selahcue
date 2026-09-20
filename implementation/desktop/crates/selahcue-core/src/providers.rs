@@ -111,7 +111,8 @@ impl NotesTemplate {
 pub const MAX_TRANSLATION_CODE_LEN: usize = 16;
 
 /// Which sections the AI sermon notes should include. Defaults match the design
-/// (social excerpts OFF by default; the rest ON).
+/// (social excerpts, podcast show notes and short description OFF by default; the
+/// rest ON).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct IncludeInNotes {
     pub prayer_points: bool,
@@ -120,6 +121,16 @@ pub struct IncludeInNotes {
     pub chapter_markers: bool,
     pub notable_quotations: bool,
     pub short_summary: bool,
+    /// Ready-to-publish podcast show-notes copy (FR-126) — a blurb, key discussion
+    /// points and scripture referenced. Distinct in shape from the full outline and
+    /// from `short_summary` (a fuller paragraph): this is publish-ready listing copy.
+    /// OFF by default, matching `social_excerpts`'s precedent for a secondary,
+    /// publishing-oriented artifact rather than a core note.
+    pub podcast_show_notes: bool,
+    /// A one-to-two sentence description suitable for a listing/thumbnail caption
+    /// (FR-126) — distinct from `short_summary`, which is a fuller paragraph-level
+    /// summary. OFF by default, same reasoning as `podcast_show_notes`.
+    pub short_description: bool,
 }
 
 impl Default for IncludeInNotes {
@@ -131,6 +142,8 @@ impl Default for IncludeInNotes {
             chapter_markers: true,
             notable_quotations: true,
             short_summary: true,
+            podcast_show_notes: false,
+            short_description: false,
         }
     }
 }
@@ -345,6 +358,20 @@ pub enum DraftCaveat {
         /// kept verbatim, since there is no canonical form to normalise it to.
         reference: String,
     },
+    /// The embedded-scripture-reference scan (body text of sections, as opposed to the
+    /// extracted `scriptures` list) hit [`MAX_EMBEDDED_REFERENCES`] before every section
+    /// had been scanned (86akgqdwc, Sana's F2 finding on this ticket's own security
+    /// review). Names no section and no reference: it is a draft-wide statement that
+    /// [`verify_scriptures`] stopped early, so a reference in one of the LATER sections
+    /// (by [`crate::providers::NoteDraft::sections`] order) may carry no verdict at all —
+    /// not even an `Unverified` mark — purely because the budget ran out before reaching
+    /// it. Distinct from [`ScriptureUnverified`](DraftCaveat::ScriptureUnverified), which
+    /// means a specific reference WAS checked and failed; this means some references were
+    /// never checked in the first place. The two new artifacts 86akgqdwc added
+    /// (`podcast_show_notes`, `short_description`) sit last in scan order and are
+    /// therefore structurally the most exposed to this — the exact reason the finding
+    /// surfaced on this ticket rather than an earlier one.
+    ScriptureVerificationIncomplete,
 }
 
 /// The address-only scope of scripture verification, stated once so every place that
@@ -415,13 +442,22 @@ pub const MAX_EMBEDDED_REFERENCES: usize = 64;
 /// reason). Duplicate reference text (by exact string, shared across both phases) is
 /// verified once; a fabricated reference repeated ten times in one draft is reported
 /// once, not ten times.
+///
+/// Returns the verdicts AND a second value: `true` iff the embedded-text scan hit
+/// [`MAX_EMBEDDED_REFERENCES`] before every section had been considered (86akgqdwc, Sana's
+/// F2 finding). `MAX_LIST_REFERENCES` is deliberately set above every known upstream cap
+/// and so is not expected to truncate in practice (see its own doc comment) — only the
+/// embedded-text budget is reported here. The caller turns a `true` into
+/// [`DraftCaveat::ScriptureVerificationIncomplete`] so a reference in a section past the
+/// budget reads as "not checked", never as silently clean.
 pub fn verify_scriptures(
     scriptures: &[String],
     sections: &[NoteSection],
     mut exists: impl FnMut(&crate::scripture::Reference) -> bool,
-) -> Vec<ScriptureVerdict> {
+) -> (Vec<ScriptureVerdict>, bool) {
     let mut verdicts = Vec::new();
     let mut seen = std::collections::HashSet::new();
+    let mut embedded_truncated = false;
 
     // Returns `true` iff a NEW verdict was pushed — the caller's own cap counter only
     // advances on an actual push, so a run of duplicates never eats into either budget.
@@ -457,10 +493,12 @@ pub fn verify_scriptures(
     'sections: for section in sections {
         for item in section.items() {
             if embedded_count >= MAX_EMBEDDED_REFERENCES {
+                embedded_truncated = true;
                 break 'sections;
             }
             for candidate in crate::detection::detect(item) {
                 if embedded_count >= MAX_EMBEDDED_REFERENCES {
+                    embedded_truncated = true;
                     break 'sections;
                 }
                 if consider(&candidate, &mut verdicts, &mut seen) {
@@ -470,10 +508,12 @@ pub fn verify_scriptures(
         }
         for point in section.points() {
             if embedded_count >= MAX_EMBEDDED_REFERENCES {
+                embedded_truncated = true;
                 break 'sections;
             }
             for candidate in crate::detection::detect(&point.text) {
                 if embedded_count >= MAX_EMBEDDED_REFERENCES {
+                    embedded_truncated = true;
                     break 'sections;
                 }
                 if consider(&candidate, &mut verdicts, &mut seen) {
@@ -482,10 +522,12 @@ pub fn verify_scriptures(
             }
             for sub in &point.sub_points {
                 if embedded_count >= MAX_EMBEDDED_REFERENCES {
+                    embedded_truncated = true;
                     break 'sections;
                 }
                 for candidate in crate::detection::detect(sub) {
                     if embedded_count >= MAX_EMBEDDED_REFERENCES {
+                        embedded_truncated = true;
                         break 'sections;
                     }
                     if consider(&candidate, &mut verdicts, &mut seen) {
@@ -496,7 +538,7 @@ pub fn verify_scriptures(
         }
     }
 
-    verdicts
+    (verdicts, embedded_truncated)
 }
 
 /// A generated sermon-note draft. Always labelled AI-generated by the UI (FR-123);
@@ -649,6 +691,8 @@ const K_INC_SOCIAL: &str = "include.social_excerpts";
 const K_INC_CHAPTER: &str = "include.chapter_markers";
 const K_INC_QUOTES: &str = "include.notable_quotations";
 const K_INC_SUMMARY: &str = "include.short_summary";
+const K_INC_PODCAST: &str = "include.podcast_show_notes";
+const K_INC_SHORT_DESC: &str = "include.short_description";
 const K_CONSENT_TRANSCRIPTION: &str = "consent.cloud_transcription";
 const K_CONSENT_NOTES: &str = "consent.cloud_notes";
 
@@ -692,6 +736,8 @@ impl ProvidersConfig {
             (K_INC_CHAPTER.into(), bool_str(i.chapter_markers)),
             (K_INC_QUOTES.into(), bool_str(i.notable_quotations)),
             (K_INC_SUMMARY.into(), bool_str(i.short_summary)),
+            (K_INC_PODCAST.into(), bool_str(i.podcast_show_notes)),
+            (K_INC_SHORT_DESC.into(), bool_str(i.short_description)),
             (
                 K_CONSENT_TRANSCRIPTION.into(),
                 bool_str(c.cloud_transcription),
@@ -725,6 +771,8 @@ impl ProvidersConfig {
                 K_INC_CHAPTER => cfg.settings.include.chapter_markers = parse_bool(v, true),
                 K_INC_QUOTES => cfg.settings.include.notable_quotations = parse_bool(v, true),
                 K_INC_SUMMARY => cfg.settings.include.short_summary = parse_bool(v, true),
+                K_INC_PODCAST => cfg.settings.include.podcast_show_notes = parse_bool(v, false),
+                K_INC_SHORT_DESC => cfg.settings.include.short_description = parse_bool(v, false),
                 // Consent defaults to false for anything not explicitly "true".
                 K_CONSENT_TRANSCRIPTION => cfg.consent.cloud_transcription = parse_bool(v, false),
                 K_CONSENT_NOTES => cfg.consent.cloud_notes = parse_bool(v, false),

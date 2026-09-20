@@ -77,6 +77,10 @@ pub struct IncludeDto {
     pub chapter_markers: bool,
     pub notable_quotations: bool,
     pub short_summary: bool,
+    /// Wire form of [`IncludeInNotes::podcast_show_notes`] (86akgqdwc/FR-126).
+    pub podcast_show_notes: bool,
+    /// Wire form of [`IncludeInNotes::short_description`] (86akgqdwc/FR-126).
+    pub short_description: bool,
 }
 
 impl IncludeDto {
@@ -88,6 +92,8 @@ impl IncludeDto {
             chapter_markers: i.chapter_markers,
             notable_quotations: i.notable_quotations,
             short_summary: i.short_summary,
+            podcast_show_notes: i.podcast_show_notes,
+            short_description: i.short_description,
         }
     }
 
@@ -99,6 +105,8 @@ impl IncludeDto {
             chapter_markers: self.chapter_markers,
             notable_quotations: self.notable_quotations,
             short_summary: self.short_summary,
+            podcast_show_notes: self.podcast_show_notes,
+            short_description: self.short_description,
         }
     }
 }

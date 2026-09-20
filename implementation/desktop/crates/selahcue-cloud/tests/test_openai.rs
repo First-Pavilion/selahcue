@@ -190,6 +190,13 @@ fn full_draft_json() -> String {
         "calls_to_action": ["Come to him before anything else this week"],
         "key_lessons": ["The provision and the provider are the same"],
         "chapter_markers": ["Opening prayer", "First point"],
+        "podcast_show_notes": [
+            "Title: The Bread of Life",
+            "Blurb: What it means to be fed by grace, not by our own striving.",
+            "Key discussion point: the crowd came back for the wrong reason",
+            "Scripture referenced: John 6:35"
+        ],
+        "short_description": ["A sermon on the bread of life and provision, from John 6."],
         "summary": "A sermon on provision and grace."
     })
     .to_string()
@@ -203,6 +210,8 @@ fn all_on() -> IncludeInNotes {
         chapter_markers: true,
         notable_quotations: true,
         short_summary: true,
+        podcast_show_notes: true,
+        short_description: true,
     }
 }
 
@@ -679,12 +688,155 @@ fn a_generated_draft_carries_every_fr122_element_the_toggles_ask_for() {
         "Key lessons",
         "Chapter markers",
         "Social excerpts",
+        "Podcast show notes",
+        "Short description",
     ] {
         assert!(
             headings.contains(&expected),
             "FR-122 element {expected:?} missing from the draft; got {headings:?}"
         );
     }
+}
+
+// ===========================================================================
+// 3c · Podcast show notes / short description (86akgqdwc, FR-126)
+// ===========================================================================
+
+#[test]
+fn podcast_show_notes_and_short_description_are_distinct_from_summary_and_social_excerpts() {
+    // Structural/labelling distinctness, per the ticket's own acceptance bar — not prose
+    // quality. Turn OFF short_summary and social_excerpts, turn ON only the two new
+    // toggles, and confirm the two new artifacts still populate on their own fields.
+    let mut inc = all_on();
+    inc.short_summary = false;
+    inc.social_excerpts = false;
+
+    let req = request_with(inc, TRANSCRIPT);
+    let p = provider(MockTransport::responding(200, envelope(&full_draft_json())));
+    let draft = p.generate(&req).unwrap();
+
+    assert_eq!(draft.summary, None, "short_summary was off");
+    let headings: Vec<&str> = draft.sections.iter().map(|s| s.heading.as_str()).collect();
+    assert!(
+        !headings.contains(&"Social excerpts"),
+        "social_excerpts was off"
+    );
+    // POSITIVE CONTROL + distinctness: both new artifacts are present, on their own
+    // headings, with the content this fixture put under their own (distinct) JSON
+    // fields — never merged into or read from `summary`/`social_excerpts`.
+    let podcast = draft
+        .sections
+        .iter()
+        .find(|s| s.heading == "Podcast show notes")
+        .expect("Podcast show notes must be present when its own toggle is on");
+    assert!(podcast.items().iter().any(|i| i.contains("Bread of Life")));
+    let short_desc = draft
+        .sections
+        .iter()
+        .find(|s| s.heading == "Short description")
+        .expect("Short description must be present when its own toggle is on");
+    assert!(short_desc.items().iter().any(|i| i.contains("provision")));
+}
+
+#[test]
+fn the_podcast_prompt_never_asks_for_scripture_when_extraction_is_off() {
+    // Security review finding (Sana F1 on PR #48): the podcast prompt clause used to ask
+    // for "the scripture referenced" regardless of `scripture_extraction`, so a reference
+    // could reach the one artifact meant for external publication with NO verification
+    // pass ever run over it (`generate_sermon_notes` in main.rs only calls
+    // `verify_scriptures` when `scripture_extraction` is on). Asserted on the actual
+    // outgoing developer instruction, not on a private helper.
+    let mut inc = all_on();
+    inc.scripture_extraction = false;
+    let req = request_with(inc, TRANSCRIPT);
+    let (p, t) = inspectable_provider();
+    p.generate(&req).unwrap();
+    let (_req, body) = sole_request(&t);
+    let developer_msg = body["input"]
+        .as_array()
+        .expect("input is an array")
+        .iter()
+        .find(|m| m["role"] == "developer")
+        .and_then(|m| m["content"].as_str())
+        .expect("a developer message with string content");
+
+    assert!(
+        developer_msg.contains("podcast_show_notes"),
+        "premise: the podcast clause is still present at all"
+    );
+    assert!(
+        !developer_msg
+            .to_lowercase()
+            .contains("scripture referenced"),
+        "scripture_extraction is off, so the podcast clause must not ask for scripture \
+         either — the draft can never verify it: {developer_msg}"
+    );
+}
+
+#[test]
+fn the_podcast_prompt_asks_for_scripture_when_extraction_is_also_on() {
+    // POSITIVE CONTROL for the fix above: with `scripture_extraction` genuinely on (so
+    // `verify_scriptures` WILL run over every section, including this one), the podcast
+    // clause still asks for the scripture referenced — otherwise the fix above could have
+    // been satisfied by deleting the clause outright rather than gating it correctly.
+    let inc = all_on();
+    assert!(inc.scripture_extraction, "premise: all_on() means all on");
+    let req = request_with(inc, TRANSCRIPT);
+    let (p, t) = inspectable_provider();
+    p.generate(&req).unwrap();
+    let (_req, body) = sole_request(&t);
+    let developer_msg = body["input"]
+        .as_array()
+        .expect("input is an array")
+        .iter()
+        .find(|m| m["role"] == "developer")
+        .and_then(|m| m["content"].as_str())
+        .expect("a developer message with string content");
+
+    assert!(
+        developer_msg
+            .to_lowercase()
+            .contains("scripture referenced"),
+        "scripture_extraction is on, so the podcast clause should still ask for the \
+         scripture referenced: {developer_msg}"
+    );
+}
+
+#[test]
+fn podcast_show_notes_and_short_description_toggle_off_independently() {
+    let mut inc = all_on();
+    inc.podcast_show_notes = false;
+    inc.short_description = false;
+
+    let req = request_with(inc, TRANSCRIPT);
+    // The response deliberately still contains both fields — layer two must drop them
+    // anyway, the same "we did not ask is not a guarantee" rule every other toggle
+    // already gets.
+    let p = provider(MockTransport::responding(200, envelope(&full_draft_json())));
+    let draft = p.generate(&req).unwrap();
+
+    let headings: Vec<&str> = draft.sections.iter().map(|s| s.heading.as_str()).collect();
+    for off in ["Podcast show notes", "Short description"] {
+        assert!(
+            !headings.contains(&off),
+            "{off:?} was switched off but reached the draft; got {headings:?}"
+        );
+    }
+    assert!(
+        draft.caveats.is_empty(),
+        "a section never requested must never carry a caveat; got {:?}",
+        draft.caveats
+    );
+
+    // POSITIVE CONTROL: the schema itself never asked for either field.
+    let schema = draft_schema(&inc);
+    let props = schema["properties"].as_object().unwrap();
+    assert!(!props.contains_key("podcast_show_notes"));
+    assert!(!props.contains_key("short_description"));
+    assert!(
+        props.contains_key("quotes"),
+        "premise: other enabled sections are still in the schema"
+    );
 }
 
 #[test]
@@ -856,6 +1008,8 @@ fn every_enabled_flat_section_is_flagged_requested_but_empty_when_it_comes_back_
         ("key_lessons", "Key lessons"),
         ("chapter_markers", "Chapter markers"),
         ("social_excerpts", "Social excerpts"),
+        ("podcast_show_notes", "Podcast show notes"),
+        ("short_description", "Short description"),
     ] {
         let body = draft_json_with(serde_json::json!({ field: [] }));
         let (draft, _log) = parse_draft(&envelope(&body), &all_on()).unwrap();

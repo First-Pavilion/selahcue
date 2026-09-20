@@ -103,6 +103,7 @@
       include: {
         prayer_points: false, scripture_extraction: false, social_excerpts: false,
         chapter_markers: false, notable_quotations: false, short_summary: false,
+        podcast_show_notes: false, short_description: false,
       },
       cloud_status: "not_configured",
       notes_available: false,
@@ -401,7 +402,9 @@
     ));
     aiEl.appendChild(fields);
 
-    // --- INCLUDE IN NOTES — 6 switches in two explicit columns (matches the frame's order) ---
+    // --- INCLUDE IN NOTES — 8 switches in two explicit columns (matches the frame's order;
+    //     86akgqdwc added "Podcast show notes" and "Short description", one per column so
+    //     the 3/3 split becomes 4/4 rather than lopsided) ---
     aiEl.appendChild(el("p", "pp-seclabel pp-seclabel-inline", "INCLUDE IN NOTES"));
     var inc = view.include || {};
     var cols = el("div", "pp-inc-cols");
@@ -410,9 +413,11 @@
     left.appendChild(includeRow("prayer_points", "Prayer points", inc.prayer_points));
     left.appendChild(includeRow("scripture_extraction", "Scripture extraction", inc.scripture_extraction));
     left.appendChild(includeRow("social_excerpts", "Social excerpts", inc.social_excerpts));
+    left.appendChild(includeRow("podcast_show_notes", "Podcast show notes", inc.podcast_show_notes));
     right.appendChild(includeRow("chapter_markers", "Chapter markers", inc.chapter_markers));
     right.appendChild(includeRow("notable_quotations", "Notable quotations", inc.notable_quotations));
     right.appendChild(includeRow("short_summary", "Short summary", inc.short_summary));
+    right.appendChild(includeRow("short_description", "Short description", inc.short_description));
     cols.appendChild(left);
     cols.appendChild(right);
     aiEl.appendChild(cols);
@@ -837,6 +842,15 @@
   function anySectionEmptyCaveat(d) {
     return !!(d.caveats || []).some(function (c) { return c.kind === "section_empty"; });
   }
+  // 86akgqdwc (Sana F2 on PR #48): the embedded-scripture scan can hit its budget before
+  // every section is scanned — a reference in a LATER section (e.g. "Podcast show notes",
+  // which sits last in scan order) can then carry NO verdict at all, not even unverified.
+  // A third kind, checked the same small way as the two above.
+  function anyScriptureVerificationIncomplete(d) {
+    return !!(d.caveats || []).some(function (c) {
+      return c.kind === "scripture_verification_incomplete";
+    });
+  }
   // True/false/null: null means no verdict was recorded for this exact reference text at
   // all (verification never ran, or — after a reload/edit-save, where verdicts are not
   // persisted — the data simply is not there any more). A caller renders `null` as
@@ -964,6 +978,28 @@
       var scNote = el("p", "pp-gen-scripture-note", currentDraft.scriptureVerificationNote);
       scNote.setAttribute("role", "note");
       r.appendChild(scNote);
+    }
+    // 86akgqdwc (Sana F2 on PR #48, corrected on her re-check): suppressed for a degraded
+    // draft for the SAME reason as the other caveats here — DEGRADED_FALLBACK_NOTICE
+    // already explains the offline scaffold, and a second, verification-detail note
+    // stacked under it would read as a contradictory second voice. Unlike
+    // `SectionRequestedEmpty`/`ScriptureUnverified`, this one is NOT merely defensive:
+    // the backend's `verify_scriptures` call runs on a degraded draft too (a reference
+    // the preacher genuinely spoke, echoed into `local.rs`'s "Outline" section from the
+    // real transcript, is worth checking exactly like a cloud model's own text — see that
+    // call site's own doc comment in main.rs), so this caveat CAN genuinely fire on the
+    // degraded path; suppressing its note here is a deliberate choice about which single
+    // explanation the degraded UI shows, not a statement that the condition cannot occur.
+    if (showEmptyState && anyScriptureVerificationIncomplete(d)) {
+      var scIncomplete = el(
+        "p",
+        "pp-gen-scripture-note",
+        "This draft has more scripture references than could be checked — some may not " +
+          "carry a verified or unverified mark. Review any reference below the ones " +
+          "already marked."
+      );
+      scIncomplete.setAttribute("role", "note");
+      r.appendChild(scIncomplete);
     }
     // Once per draft, after everything else — never at the top, where the AI-disclosure and
     // degraded-notice pair (renderDraftHeader) must be read first.
