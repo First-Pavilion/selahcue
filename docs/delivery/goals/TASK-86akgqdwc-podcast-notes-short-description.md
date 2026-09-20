@@ -529,6 +529,52 @@ instruction, since both Wave-1 PRs are open at start:
 - Decision: iterate → await Cody's delta re-check as the last outstanding
   item before requesting `qa` status.
 
+### Iteration 8
+
+- Target criterion: C-011 (four-reviewer gate) — Cody's delta re-check
+  returned a genuine MAJOR, not a pass.
+- Hypothesis: `transcripts.js` needs the same `scripture_verification_incomplete`
+  render treatment `settings.js` already has, ported unchanged, with real
+  (not throwaway) regression coverage.
+- Change or investigation: Cody's delta re-check on `69b041f` found that
+  `transcripts.js` (the Transcripts-tab draft viewer) never renders the new
+  caveat, despite its own header comment claiming the wire vocabulary is
+  reused unchanged from `settings.js`, and despite the backend computing
+  the caveat for both surfaces (`generate_sermon_notes` AND
+  `sermon_note_draft_json`, which feeds `transcript_get`/the Transcripts
+  tab as well as the Settings reload path). He reproduced it live — added
+  the caveat to the "Fixture Sermon" headless fixture, added a throwaway
+  assertion, confirmed FAIL, reverted cleanly — and recommended porting the
+  identical helper + note block from `settings.js`, plus a real regression
+  check. He also flagged a NIT: `operator_headless.py` had two live
+  `EXPECTED_MIN_CHECKS = ...` assignments (1423, then 1429) — harmless via
+  Python's last-write-wins, but the same multi-assignment shape this repo's
+  CLAUDE.md warns about elsewhere.
+  Fixed both: ported `anyScriptureVerificationIncomplete` + the render
+  block into `transcripts.js` verbatim. Added the caveat to the SAME
+  "Fixture Sermon" fixture (id 7) Cody's own reproduction used — not a new
+  isolated fixture, since that fixture was already opened in the existing
+  "TR notes (AC2)" test flow and Cody's own reproduction had already
+  established it as the natural integration point — with 2 new real
+  assertions (note renders computed-visible/role=note; the draft's own
+  content still renders alongside it, a positive control). Collapsed the
+  two `EXPECTED_MIN_CHECKS` assignments into one, updated in place.
+- Verifier executed: `python3 scripts/operator_headless.py` (plus a
+  mutation-verify: reverted the new render branch, confirmed exactly the
+  targeted check went RED with 1430 siblings staying GREEN, restored);
+  `git status` (confirmed only the two JS/Python files changed, no Rust
+  drift); `make ci` (re-run on the final commit); `gh pr checks 48 --watch`.
+- Result: headless **1431 checks, 0 FAIL**, matching the corrected
+  derivation exactly (not the originally-guessed 1433 — the actual fix
+  needed 2 new checks, not 4, since it reused an already-open fixture
+  rather than needing a new isolated one). Mutation-verify confirmed
+  non-vacuous. `make ci` and GitHub Actions CI re-running on `7afcbc9`.
+- New evidence: committed `7afcbc9`; pushed; fresh worktree created for
+  Cody (`86akgqdwc-review-cody-v3`, pinned to `7afcbc9`); re-check
+  requested.
+- Decision: iterate → await `make ci`/CI green on `7afcbc9` and Cody's
+  final verdict before requesting `qa` status.
+
 ## Risks and rollback
 
 - Risks: `scripts/operator_headless.py` is a large (~6500-line) end-to-end
