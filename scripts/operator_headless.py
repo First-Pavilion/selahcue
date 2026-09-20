@@ -389,7 +389,18 @@ if not check_d5_no_scrolltop_writes():
 # subtraction from the old figures, and this IS confirmed as the real observed count too — a
 # standalone run of this file against the rebuilt branch (cherry-picked onto current
 # `origin/main`, all four dependencies included) reported "1417 checks, 0 FAIL" exactly.
-EXPECTED_MIN_CHECKS = 1417
+# 1417 -> 1419: closed a real gap the rebuild surfaced, not a rebuild artefact. This ticket's own
+# `readSectionsFromForm` in transcripts.js was ported from settings.js BEFORE bfedaf2 (86akc0tua's
+# second remediation round) added a client-side filter there dropping a caveated-empty section
+# from the edit-save payload — so this ticket's own Transcripts edit surface carried the exact
+# same bug bfedaf2 fixed for Settings, just never caught because no dependency branch touches
+# transcripts.js. Fixed by porting the identical filter (+ its `isStillEmpty` helper) into
+# transcripts.js; 2 new checks added to the existing "TR notes" edit-save block (a caveated-empty
+# section is never sent; a populated section is not dropped by the same filter — positive
+# control). Mutation-verified: disabling the new filter (`.filter(function (s) { return true; })`)
+# turned exactly the first new assertion red while the positive control and every sibling check
+# stayed green; restored and re-confirmed green. 1417 + 2 = 1419, matching the real observed count.
+EXPECTED_MIN_CHECKS = 1419
 
 
 def find_chrome():
@@ -952,7 +963,10 @@ STUB = r"""
         corrections: [ {segment_id:701, corrected_text:"Good morning, everyone.", corrected_at_ms:5000} ],
         draft: {
           title:"Fixture Sermon", summary:"A saved draft's real content, not just a badge.",
-          sections:[ {heading:"Main points", items:["Faith"], points:[], empty_requested:false} ],
+          sections:[
+            {heading:"Main points", items:["Faith"], points:[], empty_requested:false},
+            {heading:"Prayer points", items:[], points:[], empty_requested:true},
+          ],
           scriptures:["Romans 8:28"], caveats:[], scripture_verdicts:[{reference:"Romans 8:28", verified:true}],
         },
         scripture_verification_note:"Verified means the reference address exists in the bundled Bible text — it does not confirm that any words this draft attributes to it are accurate. Always check a quotation against the actual text before you use it.",
@@ -4189,6 +4203,23 @@ DRIVER = r"""
       ok(!!document.getElementById("tr-gen-edit"), "TR notes: Edit is reachable again after a save");
       ok(el("tr-detail-notes").classList.contains("tr-notes-on"),
          "TR notes: the notes badge still reads generated after an edit — editing a draft is not the same as un-generating it");
+
+      // TR 86akc0tua parity (bfedaf2's fix, ported): this ticket's own edit surface reaches the
+      // SAME update_sermon_note_draft call as settings.js's, via the SAME transcript-id-generic
+      // command — so it needs the identical client-side caveated-empty-section filter settings.js
+      // already carries. The just-completed save above did not touch "Prayer points" (empty,
+      // empty_requested:true in the fixture): it must never have reached the payload, while the
+      // populated "Main points" section (edited via the title-only change above, itself untouched)
+      // still does (positive control) — proves the filter drops the RIGHT section, not every one.
+      ok(!trSaveCall.args.sections.some(function (s) { return s.heading === "Prayer points"; }),
+         "TR notes (86akc0tua parity, edit-save fix): a caveated-empty section the operator did " +
+         "not fill in is NEVER sent to update_sermon_note_draft from the Transcripts workspace " +
+         "either — the same bug bfedaf2 fixed for the Settings panel, ported to this ticket's own " +
+         "edit surface");
+      ok(trSaveCall.args.sections.some(function (s) { return s.heading === "Main points"; }),
+         "TR notes (positive control): an ordinary populated section is NOT dropped by the same " +
+         "filter — without this, the assertion above could pass on a mechanism that drops every " +
+         "section");
 
       // Correction layer (86akgqdxr; "reachable from one screen", read-only in this ticket — see
       // the linked follow-up for actual editing): transcript 7's segment 701 carries an existing
