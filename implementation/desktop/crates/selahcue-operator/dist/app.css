@@ -7417,7 +7417,13 @@
   flex-wrap: wrap;
 }
 .tr-line-txt-raw {
-  color: var(--sc-text-muted);
+  /* Cody, PR #50: measured 3.79:1 on --sc-surface / 3.96:1 on --sc-inset, failing AA-normal —
+     the same --sc-text-muted trap this file already fixed once for .scr-card-meta (stepped to
+     --sc-text-secondary, 8.12:1). The struck-through raw text is essential content (the whole
+     point of the correction overlay is that neither the raw nor the corrected text is hidden),
+     not decorative, so AA-normal applies. The line-through decoration alone still distinguishes
+     it from .tr-line-corrected-txt's --sc-text. */
+  color: var(--sc-text-secondary);
   text-decoration: line-through;
   word-break: break-word;
   white-space: pre-wrap;

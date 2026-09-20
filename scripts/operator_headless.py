@@ -400,7 +400,28 @@ if not check_d5_no_scrolltop_writes():
 # control). Mutation-verified: disabling the new filter (`.filter(function (s) { return true; })`)
 # turned exactly the first new assertion red while the positive control and every sibling check
 # stayed green; restored and re-confirmed green. 1417 + 2 = 1419, matching the real observed count.
-EXPECTED_MIN_CHECKS = 1419
+# 1419 -> 1423: four-reviewer gate remediation on PR #50, both real findings, not rebuild noise.
+#   Cody (High) — .tr-line-txt-raw measured 3.79:1/3.96:1, failing AA-normal (the same
+#   --sc-text-muted trap this file's own app.css already fixed once for .scr-card-meta). Fixed by
+#   stepping to --sc-text-secondary; adds 1 check (NFR-020 on the correction overlay's raw text),
+#   mutation-verified (reverting the colour turns exactly this check red at 4.41:1).
+#   Vera (V-3) — the three existing AC5 scroll-driven checks are ALL driven through
+#   `__trDetScrollToFraction`, which calls `recomputeDetWindow()` directly — the same "control
+#   reads a copy" trap `implementation/desktop/CLAUDE.md` documents. The committed mutant (2)
+#   disabled BOTH call sites (`onDetScroll`'s and the test hook's) together, so it proved ONE of
+#   the two matters, never that the REAL `scroll` -> `onDetScroll` -> rAF path does anything —
+#   disabling only `onDetScroll`'s call passed unchanged (Vera measured this live). Fixed by
+#   adding 3 checks using the same proven-safe idiom the "TR measureObserver disconnect" block
+#   already established for this harness's `--virtual-time-budget` (a real dispatched `scroll`
+#   event, with `requestAnimationFrame` intercepted to CAPTURE the scheduled callback rather than
+#   race real frame timing, then invoked directly): 1 setup assertion (the real event reached
+#   `onDetScroll` and scheduled a frame) + 2 exercising the captured callback (eviction/mount via
+#   the REAL path). Mutation-verified against Vera's exact scenario: disabling only `onDetScroll`'s
+#   `recomputeDetWindow()` call turns RED exactly the 2 new real-path assertions while the 3
+#   pre-existing hook-driven assertions stay GREEN — proving they test different things, closing
+#   the gap without touching the pre-existing hook's own contract.
+#   1419 + 1 + 3 = 1423, matching the real observed count.
+EXPECTED_MIN_CHECKS = 1423
 
 
 def find_chrome():
@@ -4235,6 +4256,12 @@ DRIVER = r"""
       var trUncorrectedRow = window.__trRowFor(702);
       ok(!!trUncorrectedRow && !trUncorrectedRow.classList.contains("tr-line-corrected"),
          "TR correction layer: a segment with NO correction renders exactly as before (no false positive)");
+      // Cody, PR #50 (High): --sc-text-muted measured 3.79:1 on this ground, failing AA-normal —
+      // the raw (struck-through) text is essential content, not decorative, since the whole point
+      // of the overlay is that neither the raw nor the corrected text is hidden. No prior check
+      // covered this element's contrast, unlike every other new text this ticket added.
+      var trRawTxtC = _trCr(_trRgba(getComputedStyle(trCorrectedRow.querySelector(".tr-line-txt-raw")).color), _trRgba(getComputedStyle(el("tr-detail-log")).backgroundColor));
+      ok(trRawTxtC >= 4.5, "TR correction layer (NFR-020): the raw (struck-through) text clears AA-NORMAL on the log's ground (" + _trF(trRawTxtC) + ":1)");
 
       // AC3: no detections / no draft shows a CLEAR empty state, not a blank area — reopening
       // transcript 2. NOT transcript 1: an earlier "TR generate" check (e) already ran a
@@ -4289,6 +4316,22 @@ DRIVER = r"""
       //       end); the initial-open assertions above stay GREEN, confirming they exercise a
       //       DIFFERENT code path than these three.
       // 1410 checks total in both runs, only the named ones move — no vacuous over-broad mutant.
+      //
+      // Vera, PR #50 (V-3): the three scroll-driven checks above are ALL driven through
+      // `__trDetScrollToFraction`, which calls `recomputeDetWindow()` DIRECTLY — the same "control
+      // reads a copy" trap `implementation/desktop/CLAUDE.md` documents. Mutant (2) disabled BOTH
+      // call sites (`onDetScroll`'s and the test hook's) together, so it proves ONE of the two
+      // matters, not that the REAL `scroll` → `onDetScroll` → rAF path does anything — disabling
+      // only `onDetScroll`'s call passes unchanged (Vera measured this live). The check below
+      // bypasses the test hook entirely, using the SAME proven-safe idiom the "TR measureObserver
+      // disconnect" block above already established for this exact class of problem: this harness
+      // runs under Chrome's `--virtual-time-budget`, where racing REAL rAF timing is unreliable
+      // and can crash the whole suite rather than just fail one check (documented above, hard-won).
+      // A genuine `scroll` event runs `onDetScroll()` synchronously, which calls
+      // `requestAnimationFrame(cb)` — intercepted here to CAPTURE `cb` instead of letting the
+      // browser schedule it, then invoked directly on our own schedule. This exercises the real
+      // listener wiring (proven by asserting the callback was actually captured) without racing
+      // frame timing.
       window.__trSeedManyDetections = true;
       el("tr-retry").click();
       await waitFor(function () { return el("tr-list").querySelectorAll(".tr-card").length >= 5; });
@@ -4298,6 +4341,29 @@ DRIVER = r"""
          "TR detections bounded (AC5): far fewer than 120 detections are ever mounted as real DOM nodes at once");
       ok(window.__trDetRowFor(40119) === null,
          "TR detections bounded (AC5, positive control): the LAST detection is NOT mounted on initial open — this is a real window, not all 120 rendered and hidden");
+      var trDetLogEl = el("tr-det-log");
+      var trDetOrigRaf = window.requestAnimationFrame;
+      var trDetCapturedCb = null;
+      try {
+        window.requestAnimationFrame = function (cb) { trDetCapturedCb = cb; return 1; };
+        var trDetMax = Math.max(0, trDetLogEl.scrollHeight - trDetLogEl.clientHeight);
+        trDetLogEl.scrollTop = trDetMax; // a REAL scroll to the end, NOT the test hook
+        trDetLogEl.dispatchEvent(new Event("scroll")); // onDetScroll() runs synchronously here
+      } finally {
+        window.requestAnimationFrame = trDetOrigRaf;
+      }
+      ok(typeof trDetCapturedCb === "function",
+         "TR detections bounded (AC5, real scroll event, setup): the real scroll event reached " +
+         "onDetScroll and scheduled its rAF-coalesced recompute — captured directly rather than " +
+         "racing real frame timing under this harness's --virtual-time-budget");
+      trDetCapturedCb(); // run the REAL captured callback — the same recomputeDetWindow() call
+                          // onDetScroll's own rAF frame would make, on our own deterministic schedule
+      ok(window.__trDetRowFor(40000) === null,
+         "TR detections bounded (AC5, real scroll event): the real onDetScroll → rAF path evicts " +
+         "the FIRST detection from the DOM — not just the test hook's direct call");
+      ok(window.__trDetRowFor(40119) !== null,
+         "TR detections bounded (AC5, real scroll event, positive control): the same real path " +
+         "mounts the LAST detection — every detection stays reachable through genuine scrolling");
       window.__trDetScrollToFraction(1);
       await sleep(20);
       ok(window.__trDetRowFor(40000) === null,
