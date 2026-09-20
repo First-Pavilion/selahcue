@@ -1,23 +1,30 @@
-// Transcripts surface (86akcffvt / FR-130 core slice): every saved transcript (label · date ·
-// duration · segment count), most recent first; selecting one opens a read-only, fully scrollable
-// view of its complete stored text, plus whether sermon notes have already been generated from it
-// (real status, not a placeholder — see `notes_generated` below). From this same detail view the
-// operator can also Generate sermon notes from the transcript's COMPLETE stored text (86akcffy0;
-// see the "Generate Sermon Notes" section near the end of this file) — the shipped counterpart to
-// the tail-limited Generate the Settings panel's live console offers. Editing/corrections and the
-// detected-scripture list remain deferred — see 86akgqdxr.
+// Transcripts surface (86akcffvt core slice + 86akgqdxr; FR-130): every saved transcript (label ·
+// date · duration · segment count), most recent first; selecting one opens ONE workspace with its
+// complete stored text (scrollable, bounded-window rendered), any existing correction overlaid
+// read-only on its raw segment (`.tr-line-corrected`, 86akgqdxr — writing a NEW correction is a
+// linked follow-up, not this file's scope), every scripture reference detected during that
+// service (`#tr-detections`, 86akgqdxr — see that section below), and the saved sermon-note
+// draft's ACTUAL content if one exists, view + edit (`#tr-gen-result`, 86akgqdxr) — not merely
+// whether one was generated. Generating a NEW draft from this stored transcript (86akcffy0; see
+// the "Generate Sermon Notes" section near the end of this file) is the shipped counterpart to the
+// tail-limited Generate the Settings panel's live console offers.
 //
 // DATA: `transcript_list` / `transcript_get`, read-only Tauri commands wired to 86ajtxzrn's
 // `transcript_repo`; `transcript_generate_notes` / `note_generation_limits` (86akcffy0) for
-// generation. Nav + ⌘8 live in app.js; this module owns the surface body and is loaded after
-// app.js (same convention as preservice.js/settings.js).
+// generation; `update_sermon_note_draft` (86akgqdv0) for editing a saved draft — already generic
+// over `transcriptId`, reused here unchanged, no backend change needed. Nav + ⌘8 live in app.js;
+// this module owns the surface body and is loaded after app.js (same convention as
+// preservice.js/settings.js).
 //
-// BOUNDED RENDERING (86akcffvt AC3): a transcript can run to thousands of segments (a multi-hour
-// service), far past the live console's 240-segment ring cap. The full segment array is fetched
-// once (fine — it's data, not DOM), but only a bounded, contiguous WINDOW of it is ever turned
-// into real `.tr-line` DOM rows at any one time; two spacer elements keep the scrollbar
-// proportional to the transcript's FULL length so every segment is still reachable by scrolling,
-// never truncated to a tail or a sample. See `renderWindow`/`recomputeWindow` below.
+// BOUNDED RENDERING (86akcffvt AC3 + 86akgqdxr AC5): a transcript can run to thousands of segments
+// (a multi-hour service) and detect far more scripture references than the live console's own
+// in-session queue (`MAX_DETECTIONS = 32`) ever holds at once. The full segment/detection arrays
+// are fetched once each (fine — it's data, not DOM), but only a bounded, contiguous WINDOW of
+// either is ever turned into real DOM rows at any one time; spacer elements keep each list's
+// scrollbar proportional to its FULL length so every row is still reachable by scrolling, never
+// truncated to a tail or a sample. See `renderWindow`/`recomputeWindow` (transcript log) and
+// `renderDetWindow`/`recomputeDetWindow` (detections — deliberately simpler: fixed row height, no
+// Fenwick tree, since a detection row never wraps to a variable height).
 (function () {
   "use strict";
   var root = document.getElementById("surface-transcripts");
@@ -56,6 +63,16 @@
   var rowsHost = document.getElementById("tr-log-rows");
   var bottomSpacer = document.getElementById("tr-log-bottom-spacer");
   var liveEl = document.getElementById("tr-detail-live");
+
+  // Detected scripture (86akgqdxr) — see the "Detected scripture" section below.
+  var detEmptyEl = document.getElementById("tr-detections-empty");
+  var detLogEl = document.getElementById("tr-det-log");
+  var detTopSpacer = document.getElementById("tr-det-top-spacer");
+  var detRowsHost = document.getElementById("tr-det-rows");
+  var detBottomSpacer = document.getElementById("tr-det-bottom-spacer");
+
+  // Saved sermon-note draft (86akgqdxr) — see the "Sermon notes" section below.
+  var notesEmptyEl = document.getElementById("tr-notes-empty");
 
   var loading = false;
   var transcripts = [];
@@ -156,7 +173,9 @@
   // D3: the five-key keyboard interception apparatus is deleted outright — Home/End/PageUp/
   // PageDown/Space/arrows all run their native default action. D5: the "never writes scrollTop"
   // invariant is statically enforced (`scripts/operator_headless.py`'s `check_d5_no_scrolltop_writes`),
-  // not inferred from behaviour — every write site below is marked `D5-exempt`.
+  // not inferred from behaviour — every write site below is marked `D5-exempt(init)` or
+  // `D5-exempt(test-hook)` (ADR-0026 rev 3 — the file holds a second virtualizer as of 86akgqdxr,
+  // the detections panel below, with its own matching pair of marked sites).
   var CHARS_PER_LINE = 88; // pre-measurement seed; calibrateCharsPerLine() below corrects it once
   var lastCalibratedWidth = 0; // set by calibrateCharsPerLine(); drives the ResizeObserver below
   var LINE_HEIGHT_PX = 20;
@@ -390,7 +409,20 @@
     row.dataset.segId = String(s.id);
     row._idx = idx;
     row.appendChild(el("span", "tr-line-t", fmtTimestamp(s.start_ms)));
-    row.appendChild(el("span", "tr-line-txt", s.text));
+    // 86akgqdxr: the "editable correction layer" 86ajtxzrn's schema reserved, made REACHABLE
+    // from this screen — read-only in this ticket (see the linked follow-up for actual editing).
+    // `s.correctedText` is merged onto the segment in `openTranscript`, from `t.corrections`; the
+    // RAW segment text (`s.text`) is never mutated or hidden — both render, so a correction is
+    // visibly an overlay on the immutable stream, never a silent rewrite of it.
+    if (s.correctedText != null) {
+      row.classList.add("tr-line-corrected");
+      row.appendChild(el("span", "tr-line-txt tr-line-txt-raw", s.text));
+      var corrected = el("span", "tr-line-txt tr-line-corrected-txt", s.correctedText);
+      corrected.setAttribute("aria-label", "Corrected: " + s.correctedText);
+      row.appendChild(corrected);
+    } else {
+      row.appendChild(el("span", "tr-line-txt", s.text));
+    }
     return row;
   }
   // Mount [start, end) as REAL rows; everything outside that range is represented only by the two
@@ -574,13 +606,103 @@
   // permitted scrollTop write besides openTranscript's initial `= 0`.
   window.__trScrollToFraction = function (f) {
     var max = Math.max(0, logEl.scrollHeight - logEl.clientHeight);
-    logEl.scrollTop = Math.max(0, Math.min(1, f)) * max; // D5-exempt: simulates a scrollbar drag (test hook)
+    logEl.scrollTop = Math.max(0, Math.min(1, f)) * max; // D5-exempt(test-hook): simulates a scrollbar drag
     recomputeWindow();
   };
   window.__trScrollBy = function (deltaPx) {
     var max = Math.max(0, logEl.scrollHeight - logEl.clientHeight);
-    logEl.scrollTop = Math.max(0, Math.min(max, logEl.scrollTop + deltaPx)); // D5-exempt: simulates a wheel tick (test hook)
+    logEl.scrollTop = Math.max(0, Math.min(max, logEl.scrollTop + deltaPx)); // D5-exempt(test-hook): simulates a wheel tick
     recomputeWindow();
+  };
+
+  // ---------- Detected scripture (86akgqdxr; FR-130) — bounded, fixed-row-height window ---------
+  // A transcript with a long/oratorical service can persist far more detections than the LIVE
+  // console's `MAX_DETECTIONS = 32` queue ever holds at once — the point of this window is the
+  // same bounded-DOM discipline as the transcript log above, deliberately SIMPLER: a detection
+  // row is always exactly one line (reference · position · confidence), never variable-height
+  // wrapped body text, so a fixed-row-height sliding window needs no Fenwick tree/measurement —
+  // `Math.floor(scrollTop / DET_ROW_HEIGHT)` is exact, not an estimate. `DET_ROW_HEIGHT` must
+  // match `.tr-det-row`'s CSS height (`app.css`) exactly, or the spacer math and the real
+  // scrollbar drift apart.
+  var DET_ROW_HEIGHT = 32;
+  var DET_WINDOW_ROWS = 40;
+  var dets = [];
+  var detWinStart = 0;
+  var detWinEnd = 0;
+
+  // "Approximate transcript position" (the ticket's own wording): resolves a detection's
+  // `source_segment` id against the FULL `segs` array `openTranscript` already fetched (never a
+  // second query) into that segment's start timestamp, formatted the same way the log's own
+  // timestamps would be. `source_segment === 0` is `transcript_repo::load`'s documented "no known
+  // segment" sentinel (see `DetectedReferenceView`'s Rust-side doc comment) — shown honestly as
+  // "Position unknown" rather than guessed at.
+  function detPositionLabel(d) {
+    if (!d || !d.source_segment) return "Position unknown";
+    for (var i = 0; i < segs.length; i++) {
+      if (segs[i] && segs[i].id === d.source_segment) return fmtTimestamp(segs[i].start_ms);
+    }
+    return "Position unknown";
+  }
+
+  function detRow(d) {
+    var row = el("div", "tr-det-row");
+    row.setAttribute("role", "listitem");
+    row.setAttribute("data-det-id", d.id);
+    row.appendChild(el("span", "tr-det-ref", d.reference || ""));
+    row.appendChild(el("span", "tr-det-pos", detPositionLabel(d)));
+    var conf = el("span", "tr-det-conf", (typeof d.confidence === "number" ? d.confidence : 0) + "% match");
+    conf.setAttribute("aria-label", (typeof d.confidence === "number" ? d.confidence : 0) + " percent match confidence");
+    row.appendChild(conf);
+    return row;
+  }
+
+  // Mounts ONLY rows [start, end) as real DOM nodes; two spacers keep the scrollbar proportional
+  // to the FULL detection count so every one stays reachable by scrolling, never truncated to a
+  // sample — the same "renders completely, not just visibly" guarantee the transcript log makes.
+  function renderDetWindow(start, end) {
+    start = Math.max(0, Math.min(start, dets.length));
+    end = Math.max(start, Math.min(end, dets.length));
+    detWinStart = start;
+    detWinEnd = end;
+    detRowsHost.innerHTML = "";
+    for (var i = start; i < end; i++) detRowsHost.appendChild(detRow(dets[i]));
+    detTopSpacer.style.height = (start * DET_ROW_HEIGHT) + "px";
+    detBottomSpacer.style.height = ((dets.length - end) * DET_ROW_HEIGHT) + "px";
+  }
+
+  function recomputeDetWindow() {
+    var scrollTop = detLogEl.scrollTop;
+    var idx = Math.floor(scrollTop / DET_ROW_HEIGHT);
+    var half = Math.floor(DET_WINDOW_ROWS / 2);
+    var start = Math.max(0, idx - half);
+    var end = Math.min(dets.length, start + DET_WINDOW_ROWS);
+    start = Math.max(0, end - DET_WINDOW_ROWS);
+    if (start !== detWinStart || end !== detWinEnd) renderDetWindow(start, end);
+  }
+
+  // Same D2/D3 discipline as the transcript log above: never write `scrollTop` reactively — a
+  // `scroll` event here is always genuine input, rAF-coalesced.
+  var detRafPending = false;
+  function onDetScroll() {
+    if (detRafPending) return;
+    detRafPending = true;
+    window.requestAnimationFrame(function () {
+      detRafPending = false;
+      recomputeDetWindow();
+    });
+  }
+  detLogEl.addEventListener("scroll", onDetScroll);
+
+  // Test hooks (CLAUDE.md bounded-memory discipline: per-key accessor, never only a global count).
+  window.__trDetRowFor = function (detId) {
+    return detRowsHost.querySelector('.tr-det-row[data-det-id="' + detId + '"]') || null;
+  };
+  window.__trDetRenderedRowCount = function () { return detRowsHost.children.length; };
+  window.__trDetWindowBounds = function () { return { start: detWinStart, end: detWinEnd }; };
+  window.__trDetScrollToFraction = function (f) {
+    var max = Math.max(0, detLogEl.scrollHeight - detLogEl.clientHeight);
+    detLogEl.scrollTop = Math.max(0, Math.min(1, f)) * max; // D5-exempt(test-hook): simulates a scrollbar drag
+    recomputeDetWindow();
   };
 
   // ---------- DETAIL: header + load ----------
@@ -613,6 +735,28 @@
       }
     }
   }
+
+  // Populates the detected-scripture list from `transcript_get`'s OWN response (86akgqdxr) — the
+  // `detection` rows 86ajtxzrn already persisted, forwarded now instead of dropped. A clear empty
+  // state when there are none, never a blank area (AC3); bounded rendering when there are many.
+  function renderDetections(t) {
+    dets = Array.isArray(t.detections) ? t.detections : [];
+    detWinStart = 0;
+    detWinEnd = 0;
+    if (dets.length === 0) {
+      detEmptyEl.hidden = false;
+      detLogEl.hidden = true;
+      detRowsHost.innerHTML = "";
+      detTopSpacer.style.height = "0px";
+      detBottomSpacer.style.height = "0px";
+      return;
+    }
+    detEmptyEl.hidden = true;
+    detLogEl.hidden = false;
+    renderDetWindow(0, Math.min(dets.length, DET_WINDOW_ROWS));
+    detLogEl.scrollTop = 0; // D5-exempt(init): before any scroll/animation can exist on this container
+  }
+
   function openTranscript(id) {
     openId = id;
     showDetail();
@@ -637,12 +781,27 @@
       .then(function (t) {
         if (openId !== id) return; // a later selection superseded this one
         segs = Array.isArray(t.segments) ? t.segments : [];
+        // 86akgqdxr: merge any existing correction onto its segment BEFORE heights are measured
+        // (a corrected line can render taller/shorter than the raw one) — read-only display, see
+        // segRow's own doc comment for why the raw text is never touched.
+        var corrById = {};
+        (Array.isArray(t.corrections) ? t.corrections : []).forEach(function (c) {
+          corrById[c.segment_id] = c.corrected_text;
+        });
+        segs.forEach(function (s) {
+          if (Object.prototype.hasOwnProperty.call(corrById, s.id)) s.correctedText = corrById[s.id];
+        });
         buildHeights();
         renderDetailHeader(t);
+        // 86akgqdxr: detections + the saved draft's real content, alongside the transcript — one
+        // workspace, not three separate places to piece together.
+        renderDetections(t);
+        renderNotesFromDetail(t);
         renderWindow(0, Math.min(segs.length, WINDOW_ROWS));
-        logEl.scrollTop = 0; // D5-exempt: initial position, before any scroll/animation can exist
+        logEl.scrollTop = 0; // D5-exempt(init): before any scroll/animation can exist on this container
         logEl.focus();
-        liveEl.textContent = "Opened " + (t.label || "transcript") + ", " + fmtSegCount(segs.length) + ".";
+        liveEl.textContent = "Opened " + (t.label || "transcript") + ", " + fmtSegCount(segs.length) +
+          ", " + (Array.isArray(t.detections) ? t.detections.length : 0) + " detected reference(s).";
       })
       .catch(function (e) {
         console.error("[SelahCue] transcript_get failed", e);
@@ -783,38 +942,94 @@
     r.appendChild(el("span", null, message || ""));
   }
 
-  // Read-only rendering (86akcffy0 non-goal: no edit surface for a from-history draft — that
-  // stays the Settings panel's persisted-draft flow, `update_sermon_note_draft`, unchanged).
-  function renderDraftReadOnly(res) {
-    var r = genResultEl();
-    if (!r) return;
-    r.className = "pp-gen-result pp-gen-ok";
-    r.setAttribute("role", "status");
-    var d = res.draft || {};
+  // ---------- Saved sermon-note draft: view + edit (86akgqdxr) ------------------------------
+  // Ported from settings.js's persisted-draft surface (86akgqdv0/86akc0tua/86akby820), ADAPTED
+  // to whichever HISTORICAL transcript is open here rather than "the active session" — the
+  // underlying save call (`update_sermon_note_draft`) was already generic over `transcriptId`,
+  // confirmed by reading its full call chain (Backend -> LAN Command::UpdateSermonNoteDraft ->
+  // LiveController::apply, which does not special-case "the active transcript"). This removes
+  // 86akcffy0's own documented restriction ("no edit surface for a from-history draft — that
+  // stays the Settings panel's persisted-draft flow") — this ticket IS that restriction's
+  // successor. Element IDs are prefixed `tr-` (never `pp-`) because both panels' markup coexists
+  // in the same document (one hidden via its `surface-*` ancestor) — a duplicate `id` would make
+  // `document.getElementById` silently resolve to the WRONG panel's node. CSS classes
+  // (`.pp-gen-edit-form`, `.pp-edit-section-heading`, ...) are reused verbatim: every read of
+  // them here is scoped to a specific `form`/`r` subtree, never `document.querySelector`, so a
+  // duplicate class is safe (this codebase's own convention — see 86akcffy0 reusing
+  // `.pp-generate`/`.pp-gen-preview*`/`.pp-gen-result*` the same way).
+  //
+  // `currentDraft` is the single source of truth for what `#tr-gen-result` shows — set by
+  // `renderNotesFromDetail` (an existing saved draft, on open), `showGenResult` (a fresh
+  // generate), or `saveDraftEdit` (an edit just saved). It never accumulates: each setter
+  // REPLACES it wholesale.
+  var currentDraft = null;
+  var editingDraft = false;
+
+  var EMPTY_REQUESTED_LINE = "Included in the request — nothing came back.";
+  var EMPTY_REQUESTED_EXPLAINER = "The response doesn’t say why a requested section " +
+    "comes back empty — the sermon may not have covered it, or this run may simply not " +
+    "have returned it. Generating again may give a different result.";
+  var SCRIPTURE_UNVERIFIED_SUFFIX = " (unverified — not found in the bundled text)";
+  var SCRIPTURE_VERIFIED_SUFFIX = " ✓";
+
+  // `d.caveats`/`d.scripture_verdicts` (86akc0tua + 86akby820) — same wire vocabulary
+  // `sermon_note_draft_json` produces for both the live-session panel and this one; reused
+  // unchanged rather than inventing a second vocabulary (the ticket's own instruction).
+  function hasEmptySectionCaveat(d, heading) {
+    return !!(d.caveats || []).some(function (c) {
+      return c.kind === "section_empty" && c.heading === heading;
+    });
+  }
+  function anySectionEmptyCaveat(d) {
+    return !!(d.caveats || []).some(function (c) { return c.kind === "section_empty"; });
+  }
+  function scriptureVerifiedOrNull(d, reference) {
+    var needle = (reference || "").trim();
+    var v = (d.scripture_verdicts || []).filter(function (x) {
+      return (x.reference || "").trim() === needle;
+    })[0];
+    return v ? v.verified : null;
+  }
+
+  function renderDraftHeader(host) {
     var hd = el("div", "pp-gen-hdr");
-    hd.appendChild(el("span", "pp-gen-badge", res.degraded ? "Local draft" : (res.provider || "AI sermon notes")));
-    hd.appendChild(el("span", "pp-gen-title", d.title || "Sermon notes"));
-    // FR-123: a model draft is labelled as one.
-    if (res.ai_generated) hd.appendChild(el("span", "pp-gen-ai-label", res.ai_label || "AI-generated draft"));
-    r.appendChild(hd);
-    // FR-128: the fabrication warning travels WITH the draft, never omitted.
-    if (res.ai_generated && res.disclosure) {
-      var disc = el("p", "pp-gen-disclosure", res.disclosure);
+    hd.setAttribute("role", "status");
+    hd.appendChild(el("span", "pp-gen-badge", (currentDraft.degraded ? "Local draft" : currentDraft.provider)));
+    hd.appendChild(el("span", "pp-gen-title", (currentDraft.draft && currentDraft.draft.title) || "Sermon notes"));
+    if (currentDraft.aiGenerated) {
+      hd.appendChild(el("span", "pp-gen-ai-label", currentDraft.aiLabel));
+    }
+    host.appendChild(hd);
+    if (currentDraft.aiGenerated && currentDraft.disclosure) {
+      var disc = el("p", "pp-gen-disclosure", currentDraft.disclosure);
       disc.setAttribute("role", "note");
-      r.appendChild(disc);
+      host.appendChild(disc);
     }
-    // FR-135: a degraded draft says so in words, not just via a badge.
-    if (res.degraded && res.degraded_notice) {
-      var deg = el("p", "pp-gen-degraded", res.degraded_notice);
+    if (currentDraft.degraded && currentDraft.degradedNotice) {
+      var deg = el("p", "pp-gen-degraded", currentDraft.degradedNotice);
       deg.setAttribute("role", "note");
-      r.appendChild(deg);
+      host.appendChild(deg);
     }
-    if (d.summary) r.appendChild(el("p", "pp-gen-summary", d.summary));
+  }
+
+  function renderDraftView(r) {
+    var d = currentDraft.draft || {};
+    var showEmptyState = !currentDraft.degraded;
+    renderDraftHeader(r);
+    if (d.summary) {
+      r.appendChild(el("p", "pp-gen-summary", d.summary));
+    } else if (showEmptyState && hasEmptySectionCaveat(d, "Summary")) {
+      r.appendChild(el("p", "pp-gen-sec-h", "Summary"));
+      r.appendChild(el("p", "pp-gen-empty", EMPTY_REQUESTED_LINE));
+    }
     (d.sections || []).forEach(function (s) {
       r.appendChild(el("p", "pp-gen-sec-h", s.heading || ""));
+      if (showEmptyState && s.empty_requested) {
+        r.appendChild(el("p", "pp-gen-empty", EMPTY_REQUESTED_LINE));
+        return;
+      }
       var ul = el("ul", "pp-gen-list");
       (s.items || []).forEach(function (it) { ul.appendChild(el("li", null, it)); });
-      // FR-122 points/sub-points render as a NESTED list inside their parent point.
       (s.points || []).forEach(function (pt) {
         var li = el("li", "pp-gen-point", pt && pt.text ? pt.text : "");
         var subs = (pt && pt.sub_points) || [];
@@ -830,8 +1045,297 @@
     if (d.scriptures && d.scriptures.length) {
       var sc = el("p", "pp-gen-scriptures");
       sc.appendChild(el("span", "pp-gen-sec-h", "Scriptures: "));
-      sc.appendChild(el("span", "pp-gen-scr-list", d.scriptures.join(" · ")));
+      d.scriptures.forEach(function (ref, i) {
+        if (i > 0) sc.appendChild(document.createTextNode(" · "));
+        var verified = scriptureVerifiedOrNull(d, ref);
+        var span = el("span", "pp-gen-scr-item", ref);
+        sc.appendChild(span);
+        if (verified === true) {
+          var vMark = el("span", "pp-gen-scr-verified", SCRIPTURE_VERIFIED_SUFFIX);
+          vMark.setAttribute("role", "img");
+          vMark.setAttribute("aria-label", "verified against the bundled Bible text");
+          sc.appendChild(vMark);
+        } else if (verified === false) {
+          sc.appendChild(el("span", "pp-gen-scr-unverified", SCRIPTURE_UNVERIFIED_SUFFIX));
+        }
+      });
       r.appendChild(sc);
+    } else if (showEmptyState && hasEmptySectionCaveat(d, "Scripture references")) {
+      var scEmpty = el("p", "pp-gen-scriptures");
+      scEmpty.appendChild(el("span", "pp-gen-sec-h", "Scriptures: "));
+      scEmpty.appendChild(el("span", "pp-gen-empty", EMPTY_REQUESTED_LINE));
+      r.appendChild(scEmpty);
+    }
+    var embeddedUnverified = (d.scripture_verdicts || []).filter(function (v) {
+      return !v.verified && (d.scriptures || []).indexOf(v.reference) === -1;
+    });
+    if (embeddedUnverified.length) {
+      var elsewhere = el("p", "pp-gen-scriptures");
+      elsewhere.appendChild(el("span", "pp-gen-sec-h", "Also referenced in this draft: "));
+      embeddedUnverified.forEach(function (v, i) {
+        if (i > 0) elsewhere.appendChild(document.createTextNode(" · "));
+        elsewhere.appendChild(el("span", "pp-gen-scr-item", v.reference));
+        elsewhere.appendChild(el("span", "pp-gen-scr-unverified", SCRIPTURE_UNVERIFIED_SUFFIX));
+      });
+      r.appendChild(elsewhere);
+    }
+    if (currentDraft.scriptureVerificationNote) {
+      var scNote = el("p", "pp-gen-scripture-note", currentDraft.scriptureVerificationNote);
+      scNote.setAttribute("role", "note");
+      r.appendChild(scNote);
+    }
+    if (showEmptyState && anySectionEmptyCaveat(d)) {
+      var explainer = el("p", "pp-gen-empty-explainer", EMPTY_REQUESTED_EXPLAINER);
+      explainer.setAttribute("role", "note");
+      r.appendChild(explainer);
+    }
+    // Editing needs a transcript id to save against — always set here (this panel only ever
+    // shows a draft for the currently OPEN transcript, `openId`).
+    if (currentDraft.transcriptId != null) {
+      var actions = el("div", "pp-gen-actions");
+      var editBtn = el("button", "pp-gen-edit-btn", "Edit");
+      editBtn.type = "button";
+      editBtn.id = "tr-gen-edit";
+      editBtn.addEventListener("click", function () { editingDraft = true; renderCurrentDraft(); });
+      actions.appendChild(editBtn);
+      r.appendChild(actions);
+    }
+  }
+
+  function editField(labelText, inputEl, extraCls) {
+    var wrap = el("label", "pp-gen-field" + (extraCls ? " " + extraCls : ""));
+    wrap.appendChild(el("span", "pp-gen-field-label", labelText));
+    wrap.appendChild(inputEl);
+    return wrap;
+  }
+
+  // Editable text for existing title/summary/heading/item/point/sub-point wording — mirrors
+  // settings.js's own scope decision: FR-130 asks for "editable", not a structural outline
+  // builder, so adding/removing a section/item/point stays a later affordance, not faked here.
+  function renderDraftEditForm(r) {
+    var d = currentDraft.draft || {};
+    renderDraftHeader(r);
+
+    var form = el("div", "pp-gen-edit-form");
+    form.setAttribute("role", "group");
+    form.setAttribute("aria-label", "Edit sermon notes draft");
+
+    var titleInput = document.createElement("input");
+    titleInput.type = "text";
+    titleInput.id = "tr-edit-title";
+    titleInput.value = d.title || "";
+    form.appendChild(editField("Title", titleInput));
+
+    var summaryInput = document.createElement("textarea");
+    summaryInput.id = "tr-edit-summary";
+    summaryInput.rows = 3;
+    summaryInput.value = d.summary || "";
+    form.appendChild(editField("Summary", summaryInput));
+
+    var sectionsHost = el("div", "pp-gen-edit-sections");
+    (d.sections || []).forEach(function (s, si) {
+      var box = el("div", "pp-gen-edit-section");
+      var headingInput = document.createElement("input");
+      headingInput.type = "text";
+      headingInput.className = "pp-edit-section-heading";
+      headingInput.setAttribute("data-si", si);
+      headingInput.value = s.heading || "";
+      box.appendChild(editField("Heading", headingInput));
+
+      var isOutline = (s.points || []).length > 0;
+      if (isOutline) {
+        (s.points || []).forEach(function (pt, pi) {
+          var ptWrap = el("div", "pp-gen-edit-point");
+          var ptInput = document.createElement("input");
+          ptInput.type = "text";
+          ptInput.className = "pp-edit-point-text";
+          ptInput.setAttribute("data-si", si);
+          ptInput.setAttribute("data-pi", pi);
+          ptInput.value = (pt && pt.text) || "";
+          ptWrap.appendChild(editField("Point", ptInput));
+          (pt && pt.sub_points || []).forEach(function (sp, spi) {
+            var spInput = document.createElement("input");
+            spInput.type = "text";
+            spInput.className = "pp-edit-subpoint-text";
+            spInput.setAttribute("data-si", si);
+            spInput.setAttribute("data-pi", pi);
+            spInput.setAttribute("data-spi", spi);
+            spInput.value = sp || "";
+            ptWrap.appendChild(editField("Sub-point", spInput, "pp-gen-field-sub"));
+          });
+          box.appendChild(ptWrap);
+        });
+      } else {
+        (s.items || []).forEach(function (it, ii) {
+          var itInput = document.createElement("input");
+          itInput.type = "text";
+          itInput.className = "pp-edit-item-text";
+          itInput.setAttribute("data-si", si);
+          itInput.setAttribute("data-ii", ii);
+          itInput.value = it || "";
+          box.appendChild(editField("Item", itInput));
+        });
+      }
+      sectionsHost.appendChild(box);
+    });
+    form.appendChild(sectionsHost);
+
+    var actions = el("div", "pp-gen-preview-actions");
+    var cancel = el("button", "pp-gen-preview-cancel", "Cancel");
+    cancel.type = "button";
+    cancel.id = "tr-gen-edit-cancel";
+    cancel.addEventListener("click", function () { editingDraft = false; renderCurrentDraft(); });
+    actions.appendChild(cancel);
+
+    var save = el("button", "pp-gen-preview-confirm", "Save");
+    save.type = "button";
+    save.id = "tr-gen-save";
+    save.addEventListener("click", function () { saveDraftEdit(form); });
+    actions.appendChild(save);
+    form.appendChild(actions);
+
+    r.appendChild(form);
+    titleInput.focus();
+  }
+
+  // A section round-tripped through the form is still empty — no non-blank item, no
+  // point with non-blank text or a non-blank sub-point. Judged on content only, never
+  // the heading, matching openai.rs's own emptiness test on the server side and
+  // settings.js's own `isStillEmpty` (86akc0tua, bfedaf2) this mirrors.
+  function isStillEmpty(s) {
+    var hasItem = (s.items || []).some(function (it) { return it && it.trim(); });
+    if (hasItem) return false;
+    return !(s.points || []).some(function (pt) {
+      if (pt.text && pt.text.trim()) return true;
+      return (pt.sub_points || []).some(function (sp) { return sp && sp.trim(); });
+    });
+  }
+
+  // Reads the edit form's current values back into the sections/points/items shape the backend
+  // expects — keyed off the SAME positions `renderDraftEditForm` drew the inputs at (scoped to
+  // `form`, never `document`, so this is safe even though `.pp-edit-*` classes also exist in
+  // settings.js's own edit form elsewhere in the document).
+  //
+  // 86akc0tua remediation (bfedaf2, Cody's second finding on PR #46 — the first, `generate`'s own
+  // persistence call site, is fixed server-side by `sections_to_persist`; this edit-save route has
+  // no caveat data at THIS call site to filter on server-side: `NoteSectionInput` carries no
+  // `empty_requested` field). This ticket's own edit surface reaches the SAME
+  // `update_sermon_note_draft` call as settings.js's, so it needs the identical client-side
+  // filter: a section that was `empty_requested` on the loaded draft and is STILL empty after
+  // reading the form (the operator did not fill it in) is dropped here before the payload is
+  // built — otherwise saving any OTHER edit in this draft would silently persist that section's
+  // confusing "bare heading, no explanation" state. A section the operator DID fill in is kept:
+  // not a blanket "drop empty sections" filter, only "don't re-persist the exact caveated-empty
+  // state unchanged."
+  function readSectionsFromForm(form, sections) {
+    return (sections || [])
+      .map(function (s, si) {
+        var headingEl = form.querySelector('.pp-edit-section-heading[data-si="' + si + '"]');
+        var heading = headingEl ? headingEl.value : (s.heading || "");
+        var isOutline = (s.points || []).length > 0;
+        if (isOutline) {
+          var points = (s.points || []).map(function (pt, pi) {
+            var textEl = form.querySelector('.pp-edit-point-text[data-si="' + si + '"][data-pi="' + pi + '"]');
+            var subPoints = (pt && pt.sub_points || []).map(function (sp, spi) {
+              var sel = '.pp-edit-subpoint-text[data-si="' + si + '"][data-pi="' + pi + '"][data-spi="' + spi + '"]';
+              var spEl = form.querySelector(sel);
+              return spEl ? spEl.value : sp;
+            });
+            return { text: textEl ? textEl.value : (pt && pt.text) || "", sub_points: subPoints };
+          });
+          return { heading: heading, items: [], points: points, __empty_requested: !!s.empty_requested };
+        }
+        var items = (s.items || []).map(function (it, ii) {
+          var itEl = form.querySelector('.pp-edit-item-text[data-si="' + si + '"][data-ii="' + ii + '"]');
+          return itEl ? itEl.value : it;
+        });
+        return { heading: heading, items: items, points: [], __empty_requested: !!s.empty_requested };
+      })
+      .filter(function (s) { return !(s.__empty_requested && isStillEmpty(s)); })
+      .map(function (s) { return { heading: s.heading, items: s.items, points: s.points }; });
+  }
+
+  function saveDraftEdit(form) {
+    if (!currentDraft || currentDraft.transcriptId == null) return;
+    var d = currentDraft.draft || {};
+    var titleEl = document.getElementById("tr-edit-title");
+    var summaryEl = document.getElementById("tr-edit-summary");
+    var title = titleEl ? titleEl.value : (d.title || "");
+    var summaryVal = summaryEl ? summaryEl.value : "";
+    var sections = readSectionsFromForm(form, d.sections);
+    var scriptures = d.scriptures || []; // scripture list editing is not in this ticket's scope
+
+    var saveBtn = document.getElementById("tr-gen-save");
+    if (saveBtn) { saveBtn.disabled = true; saveBtn.setAttribute("aria-busy", "true"); }
+    invoke("update_sermon_note_draft", {
+      transcriptId: currentDraft.transcriptId,
+      title: title,
+      summary: summaryVal.trim() ? summaryVal : null,
+      sections: sections,
+      scriptures: scriptures,
+    }).then(function (res) {
+      if (!res || res.ok !== true) {
+        var err = res || {};
+        showGenError(err.error || "malformed", err.message || "The edit could not be saved.");
+        return;
+      }
+      // Re-read the label/disclosure/provider FROM the backend response — the guarantee that
+      // editing cannot drop them belongs to the backend (`sermon_note_repo::update` cannot touch
+      // those columns), so this renders exactly what it reports, not what the client assumes.
+      currentDraft = {
+        transcriptId: currentDraft.transcriptId,
+        draft: res.draft || {},
+        aiGenerated: !!res.ai_generated,
+        aiLabel: res.ai_label || currentDraft.aiLabel,
+        disclosure: res.disclosure || null,
+        provider: res.provider || currentDraft.provider,
+        degraded: currentDraft.degraded,
+        degradedNotice: currentDraft.degradedNotice,
+        scriptureVerificationNote: res.scripture_verification_note || null,
+      };
+      editingDraft = false;
+      renderCurrentDraft();
+    }).catch(function (e) {
+      showGenError("transport", String(e && e.message ? e.message : e));
+    }).then(function () {
+      var b = document.getElementById("tr-gen-save");
+      if (b) { b.disabled = false; b.removeAttribute("aria-busy"); }
+    });
+  }
+
+  // Renders `currentDraft` (view or edit mode) into `#tr-gen-result` — the ONLY place either mode
+  // is drawn, so view <-> edit is always a full re-render from the same state.
+  function renderCurrentDraft() {
+    var r = genResultEl();
+    if (!r || !currentDraft) return;
+    r.className = "pp-gen-result pp-gen-ok";
+    r.setAttribute("role", "status");
+    if (editingDraft) renderDraftEditForm(r); else renderDraftView(r);
+  }
+
+  // Populates `currentDraft` from `transcript_get`'s OWN response (86akgqdxr) — the saved
+  // draft's real content, shown the moment the transcript is opened, not only after a fresh
+  // Generate. `#tr-notes-empty` covers the "nothing generated yet" case explicitly.
+  function renderNotesFromDetail(t) {
+    if (t && t.draft) {
+      currentDraft = {
+        transcriptId: t.id,
+        draft: t.draft,
+        aiGenerated: !!t.ai_generated,
+        aiLabel: t.ai_label || "AI-generated draft",
+        disclosure: t.disclosure || null,
+        provider: t.notes_provider || "AI sermon notes",
+        degraded: false,
+        degradedNotice: null,
+        scriptureVerificationNote: t.scripture_verification_note || null,
+      };
+      editingDraft = false;
+      notesEmptyEl.hidden = true;
+      renderCurrentDraft();
+    } else {
+      currentDraft = null;
+      editingDraft = false;
+      notesEmptyEl.hidden = false;
     }
   }
 
@@ -841,7 +1345,20 @@
       showGenError(err.error || "malformed", err.message || "Something went wrong.");
       return;
     }
-    renderDraftReadOnly(res);
+    currentDraft = {
+      transcriptId: (typeof res.transcript_id === "number") ? res.transcript_id : openId,
+      draft: res.draft || {},
+      aiGenerated: !!res.ai_generated,
+      aiLabel: res.ai_label || "AI-generated draft",
+      disclosure: res.disclosure || null,
+      provider: res.provider || "AI sermon notes",
+      degraded: !!res.degraded,
+      degradedNotice: res.degraded_notice || null,
+      scriptureVerificationNote: res.scripture_verification_note || null,
+    };
+    editingDraft = false;
+    notesEmptyEl.hidden = true;
+    renderCurrentDraft();
     // The backend just persisted this draft against `openId` (`sermon_note_repo` — 86akcffy0);
     // reflect that immediately rather than waiting for a future reopen of this same transcript.
     if (openId != null) {
@@ -869,6 +1386,19 @@
     if (genPreviewBox) { genPreviewBox.hidden = true; genPreviewBox.textContent = ""; }
     if (genResultBox) { genResultBox.hidden = true; genResultBox.textContent = ""; genResultBox.className = "pp-gen-result"; }
     if (generateBtn) { generateBtn.hidden = false; generateBtn.disabled = false; generateBtn.removeAttribute("aria-busy"); }
+    // 86akgqdxr: a previous transcript's saved-draft state/empty-state must not leak into the
+    // newly opened one either — `renderNotesFromDetail`/`renderDetections` set the real values
+    // once the new transcript's data arrives, same discipline as `generateAllowed` above.
+    currentDraft = null;
+    editingDraft = false;
+    if (notesEmptyEl) notesEmptyEl.hidden = true;
+    dets = [];
+    detWinStart = 0; detWinEnd = 0;
+    if (detRowsHost) detRowsHost.innerHTML = "";
+    if (detTopSpacer) detTopSpacer.style.height = "0px";
+    if (detBottomSpacer) detBottomSpacer.style.height = "0px";
+    if (detLogEl) detLogEl.hidden = true;
+    if (detEmptyEl) detEmptyEl.hidden = true;
   }
 
   // The actual send — reachable ONLY from openGenPreview's Confirm button. Sends `id`, never the

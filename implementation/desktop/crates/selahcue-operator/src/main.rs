@@ -1815,10 +1815,13 @@ fn open_transcript_db_at(dir: &std::path::Path) -> Option<selahcue_data::Databas
 
 // ---------------------------------------------------------------------------------------------
 // Transcripts (86akcffvt / FR-130 core slice): list + read-only full-text viewer. Read-only —
-// wired straight to 86ajtxzrn's `transcript_repo`, no new persistence/migration. Editing/
-// corrections, the detected-scripture list, and generating notes from a selected transcript are
-// all explicitly out of THIS ticket's scope (see the ticket's non-goals; 86akcffy0 depends on
-// this one for notes generation).
+// wired straight to 86ajtxzrn's `transcript_repo`, no new persistence/migration. Generating notes
+// from a selected transcript is 86akcffy0's territory (depends on this one). The detected-
+// scripture list and the saved sermon-note draft's actual content — both explicitly deferred by
+// this ticket's own non-goals — are 86akgqdxr's territory: see `TranscriptDetailView`'s
+// `detections`/`corrections`/`draft` fields and `transcript_get` below. Building a NEW write path
+// for the correction layer is still out of scope (86akgqdxr's own non-goals) — `corrections` is
+// forwarded read-only; nothing here opens `transcript_db` for a write.
 // ---------------------------------------------------------------------------------------------
 
 /// One row of the Transcripts list: label, date, duration, segment count — enough to render the
@@ -1869,6 +1872,57 @@ impl From<&selahcue_core::transcript::TranscriptSegment> for TranscriptSegmentVi
     }
 }
 
+/// One scripture reference detected during a transcript's service (86akgqdxr; FR-130). Mirrors
+/// `selahcue_core::detection::DetectedReference` field for field — that type derives no
+/// `Serialize` (pure core, no wire concerns), same reason `TranscriptSegmentView` exists above.
+/// `source_segment` is the "approximate transcript position" the ticket's scope asks for:
+/// `transcripts.js` resolves it against the SAME response's `segments` array (by `id`) to derive
+/// a human position, rather than this view duplicating segment ordinal/offset data it can already
+/// reach. `0` is `transcript_repo::load`'s documented sentinel for "no known source segment" —
+/// carried through unchanged, not reinterpreted here.
+#[derive(serde::Serialize)]
+struct DetectedReferenceView {
+    id: u64,
+    reference: String,
+    source_segment: u64,
+    confidence: u8,
+}
+
+impl From<&selahcue_core::detection::DetectedReference> for DetectedReferenceView {
+    fn from(d: &selahcue_core::detection::DetectedReference) -> Self {
+        DetectedReferenceView {
+            id: d.id,
+            reference: d.reference.clone(),
+            source_segment: d.source_segment,
+            confidence: d.confidence,
+        }
+    }
+}
+
+/// One segment's correction (86akgqdxr; the "editable correction layer" 86ajtxzrn's schema
+/// reserved). READ-ONLY on this wire view — this ticket surfaces whatever corrections already
+/// exist so the correction layer is reachable from this screen, but does not add a new command to
+/// WRITE one: `transcript_repo::correct_segment` exists in `selahcue-data` but is reachable only
+/// from a writable connection, which this operator shell structurally does not hold for the
+/// transcript store (see `transcript_db`'s doc comment). Building that write path is this ticket's
+/// own named non-goal, deferred to a follow-up.
+#[derive(serde::Serialize)]
+struct SegmentCorrectionView {
+    segment_id: i64,
+    corrected_text: String,
+    corrected_at_ms: i64,
+}
+
+impl From<&selahcue_data::transcript_repo::SegmentCorrection> for SegmentCorrectionView {
+    fn from(c: &selahcue_data::transcript_repo::SegmentCorrection) -> Self {
+        SegmentCorrectionView {
+            segment_id: c.segment_id,
+            corrected_text: c.corrected_text.clone(),
+            corrected_at_ms: c.corrected_at_ms,
+        }
+    }
+}
+
 /// A transcript read back in full: every stored segment, in order — never a tail or a sample
 /// (86akcffvt AC2). `transcripts.js` owns bounded/windowed DOM rendering of however many segments
 /// come back; this command does no pagination of its own (the ticket's scope is "get one
@@ -1879,6 +1933,16 @@ impl From<&selahcue_core::transcript::TranscriptSegment> for TranscriptSegmentVi
 /// this command didn't already pay for opening the store. Before this ticket it was hardcoded
 /// `false` (there was no notes table); this is the "future ticket only has to change this ONE
 /// value" the field's original comment named.
+///
+/// `detections`/`corrections` (86akgqdxr) were loaded by `transcript_repo::load` all along and
+/// simply dropped on the way to this view — forwarding them costs no new query. `draft` and its
+/// siblings (86akgqdxr) are the ACTUAL saved sermon-note content, not just `notes_generated`'s
+/// boolean: fetched via `state.backend.load_sermon_note_draft(id)`, the SAME transcript-id-
+/// generic path `update_sermon_note_draft` already uses to edit it — a second, independent read
+/// from `notes_generated_for`'s (see `transcript_get`), kept deliberately separate so neither's
+/// existing fault-isolation behaviour couples to the other's. All `Option` fields always
+/// serialize (present as `null` when absent, matching `ended_at_ms`'s existing convention) so the
+/// frontend contract's key set never depends on whether a draft happens to exist.
 #[derive(serde::Serialize)]
 struct TranscriptDetailView {
     id: i64,
@@ -1888,6 +1952,64 @@ struct TranscriptDetailView {
     ended_at_ms: Option<i64>,
     segments: Vec<TranscriptSegmentView>,
     notes_generated: bool,
+    detections: Vec<DetectedReferenceView>,
+    corrections: Vec<SegmentCorrectionView>,
+    draft: Option<serde_json::Value>,
+    scripture_verification_note: Option<&'static str>,
+    ai_generated: Option<bool>,
+    ai_label: Option<&'static str>,
+    disclosure: Option<String>,
+    notes_provider: Option<String>,
+}
+
+/// Pure mapping from a loaded `TranscriptDetail` (+ the two independently-fetched notes signals)
+/// to the wire view — split out from `transcript_get` so the mapping is unit-testable without a
+/// full `AppState`/Tauri context or an async runtime (86akgqdxr).
+fn build_transcript_detail_view(
+    t: selahcue_data::transcript_repo::TranscriptDetail,
+    notes_generated: bool,
+    draft_view: Option<&selahcue_lan::protocol::SermonNoteDraftView>,
+) -> TranscriptDetailView {
+    let (draft, scripture_verification_note, ai_generated, ai_label, disclosure, notes_provider) =
+        match draft_view {
+            Some(view) => {
+                let (draft_json, note) = sermon_note_draft_json(view);
+                (
+                    Some(draft_json),
+                    note,
+                    Some(view.ai_generated),
+                    Some(selahcue_core::providers::AI_GENERATED_LABEL),
+                    view.disclosure.clone(),
+                    Some(view.provider.clone()),
+                )
+            }
+            None => (None, None, None, None, None, None),
+        };
+    TranscriptDetailView {
+        id: t.id,
+        label: t.label,
+        provider: t.provider,
+        started_at_ms: t.started_at_ms,
+        ended_at_ms: t.ended_at_ms,
+        segments: t.segments.iter().map(TranscriptSegmentView::from).collect(),
+        notes_generated,
+        detections: t
+            .detections
+            .iter()
+            .map(DetectedReferenceView::from)
+            .collect(),
+        corrections: t
+            .corrections
+            .iter()
+            .map(SegmentCorrectionView::from)
+            .collect(),
+        draft,
+        scripture_verification_note,
+        ai_generated,
+        ai_label,
+        disclosure,
+        notes_provider,
+    }
 }
 
 /// Lock the shared transcript store for one read, or fail with a stable message the UI can tell
@@ -1940,19 +2062,42 @@ async fn transcript_get(
     id: i64,
     state: State<'_, AppState>,
 ) -> Result<TranscriptDetailView, String> {
-    with_transcript_db(&state, |db| {
+    let (t, notes_generated) = with_transcript_db(&state, |db| {
         let t = selahcue_data::transcript_repo::load(db, id)?;
         let notes_generated = notes_generated_for(db, id);
-        Ok(TranscriptDetailView {
-            id: t.id,
-            label: t.label,
-            provider: t.provider,
-            started_at_ms: t.started_at_ms,
-            ended_at_ms: t.ended_at_ms,
-            segments: t.segments.iter().map(TranscriptSegmentView::from).collect(),
-            notes_generated,
-        })
-    })
+        Ok((t, notes_generated))
+    })?;
+    // Fault-isolated exactly like `notes_generated_for` above (86akgqdxr): a failure reading the
+    // draft's actual content must never block the transcript/detections from being shown — it
+    // degrades to "no draft", the same honest floor `notes_generated_for` already established for
+    // its own boolean.
+    //
+    // The error is deliberately NOT interpolated (Sana, PR #50 F1): `Backend::load_sermon_note_
+    // draft`'s `Remote` path stringifies whatever `TransportError` `RemoteOperator::
+    // load_sermon_note_draft` returns, and its non-conforming-reply branch
+    // (`selahcue-app/src/operator.rs`) builds that via `TransportError::Protocol(format!("expected
+    // sermon_note_draft, got: {other:?}"))` — a `Debug` dump of the ENTIRE unexpected
+    // `ServerMessage`, which can be `OperatorState` carrying live `transcript`/`partial_transcript`/
+    // `detections` text verbatim. Reaching this needs a non-conforming host reply (version skew, a
+    // host bug, or a request/response desync — `ControlClient::command` does not correlate
+    // `request_id`), but FR-082 (no transcript/detection text reaches a diagnostic verbatim) covers
+    // that text the same as draft text, so this path drops the error entirely rather than assume
+    // any given `TransportError` variant is safe to print.
+    let draft_view = match state.backend.load_sermon_note_draft(id).await {
+        Ok(view) => view,
+        Err(_) => {
+            eprintln!(
+                "selahcue-operator: could not load the sermon-note draft for transcript {id}, \
+                 showing the transcript without it"
+            );
+            None
+        }
+    };
+    Ok(build_transcript_detail_view(
+        t,
+        notes_generated,
+        draft_view.as_ref(),
+    ))
 }
 
 #[cfg(test)]
@@ -2010,15 +2155,10 @@ mod transcript_view_tests {
         let rows = transcript_repo::list(&db).expect("list");
         let id = rows[0].id;
         let t = transcript_repo::load(&db, id).expect("load");
-        let view = TranscriptDetailView {
-            id: t.id,
-            label: t.label,
-            provider: t.provider,
-            started_at_ms: t.started_at_ms,
-            ended_at_ms: t.ended_at_ms,
-            segments: t.segments.iter().map(TranscriptSegmentView::from).collect(),
-            notes_generated: false,
-        };
+        // Built through the SAME `build_transcript_detail_view` `transcript_get` itself calls
+        // (86akgqdxr) — this pinned test can no longer drift from the real construction path the
+        // way a hand-copied struct literal could.
+        let view = build_transcript_detail_view(t, false, None);
         let v = serde_json::to_value(&view).expect("view serialises");
         let obj = v.as_object().expect("object");
         let mut got: Vec<&str> = obj.keys().map(String::as_str).collect();
@@ -2031,6 +2171,14 @@ mod transcript_view_tests {
             "ended_at_ms",
             "segments",
             "notes_generated",
+            "detections",
+            "corrections",
+            "draft",
+            "scripture_verification_note",
+            "ai_generated",
+            "ai_label",
+            "disclosure",
+            "notes_provider",
         ];
         expected.sort_unstable();
         assert_eq!(got, expected, "the detail view contract changed; transcripts.js must change in the SAME merge request");
@@ -2041,6 +2189,16 @@ mod transcript_view_tests {
         let mut seg_expected = vec!["id", "start_ms", "end_ms", "text"];
         seg_expected.sort_unstable();
         assert_eq!(seg_got, seg_expected, "the segment view contract changed; transcripts.js must change in the SAME merge request");
+
+        // No detections/corrections seeded by `fixture_db` — the arrays must still be present as
+        // `[]`, never omitted, so `transcripts.js` can rely on the key existing either way.
+        assert_eq!(v["detections"], serde_json::json!([]));
+        assert_eq!(v["corrections"], serde_json::json!([]));
+        assert_eq!(
+            v["draft"],
+            serde_json::Value::Null,
+            "no draft was passed in"
+        );
     }
 
     /// The load-bearing behaviour: full text back, in order, none dropped — not a tail, not a
@@ -2052,15 +2210,7 @@ mod transcript_view_tests {
         let rows = transcript_repo::list(&db).expect("list");
         let id = rows[0].id;
         let t = transcript_repo::load(&db, id).expect("load");
-        let view = TranscriptDetailView {
-            id: t.id,
-            label: t.label.clone(),
-            provider: t.provider.clone(),
-            started_at_ms: t.started_at_ms,
-            ended_at_ms: t.ended_at_ms,
-            segments: t.segments.iter().map(TranscriptSegmentView::from).collect(),
-            notes_generated: false,
-        };
+        let view = build_transcript_detail_view(t, false, None);
         assert_eq!(
             view.segments.len(),
             2,
@@ -2079,6 +2229,142 @@ mod transcript_view_tests {
         let err = transcript_repo::load(&db, 999)
             .expect_err("a missing transcript id is NotFound, not Ok");
         assert_eq!(err.to_string(), "row not found");
+    }
+
+    // --- 86akgqdxr: detections + corrections + saved-draft content on `TranscriptDetailView` ---
+
+    /// A fixture transcript that ALSO carries two detections (one with a known source segment,
+    /// one with none — the documented `0` sentinel) and one correction, on top of `fixture_db`'s
+    /// two segments.
+    fn fixture_db_with_detections_and_correction() -> (Database, i64) {
+        let db = fixture_db();
+        let rows = transcript_repo::list(&db).expect("list");
+        let id = rows[0].id;
+        let t = transcript_repo::load(&db, id).expect("load");
+        let first_segment_id = t.segments[0].id as i64;
+        transcript_repo::append_detection(&db, id, Some(first_segment_id), "Romans 8:28", 95)
+            .expect("append detection with a known segment");
+        transcript_repo::append_detection(&db, id, None, "John 3:16", 70)
+            .expect("append detection with no known segment");
+        transcript_repo::correct_segment(&db, first_segment_id, "Good morning, everyone.", 5_000)
+            .expect("correct a segment");
+        (db, id)
+    }
+
+    /// Every detection persisted against the transcript comes back — reference, confidence, and
+    /// the segment it was traced to (86akgqdxr AC1). This is the load-bearing behaviour the whole
+    /// ticket exists to add: before this change, `transcript_repo::load` already read these rows
+    /// and `TranscriptDetailView` silently dropped them.
+    #[test]
+    fn every_persisted_detection_is_forwarded_to_the_wire_view() {
+        let (db, id) = fixture_db_with_detections_and_correction();
+        let t = transcript_repo::load(&db, id).expect("load");
+        let view = build_transcript_detail_view(t, false, None);
+        assert_eq!(view.detections.len(), 2, "both detections came back");
+        assert_eq!(view.detections[0].reference, "Romans 8:28");
+        assert_eq!(view.detections[0].confidence, 95);
+        assert_ne!(
+            view.detections[0].source_segment, 0,
+            "a detection with a known segment must not read back as the 'unknown' sentinel"
+        );
+        assert_eq!(view.detections[1].reference, "John 3:16");
+        assert_eq!(
+            view.detections[1].source_segment, 0,
+            "a detection with no known segment reads back as the documented 0 sentinel, \
+             carried through unchanged rather than reinterpreted at this layer"
+        );
+    }
+
+    /// A transcript with no detections shows an empty array, never a missing key or `null` —
+    /// `transcripts.js` renders its empty state off `detections.length === 0`, not off the key's
+    /// presence (86akgqdxr AC3, empty state is not "blank" but is also not absent from the wire).
+    #[test]
+    fn no_detections_forwards_an_empty_array_not_a_missing_field() {
+        let db = fixture_db();
+        let rows = transcript_repo::list(&db).expect("list");
+        let t = transcript_repo::load(&db, rows[0].id).expect("load");
+        let view = build_transcript_detail_view(t, false, None);
+        assert!(view.detections.is_empty(), "fixture_db seeds no detections");
+        let v = serde_json::to_value(&view).expect("view serialises");
+        assert_eq!(
+            v["detections"],
+            serde_json::json!([]),
+            "an empty Vec must serialise as [], not be omitted"
+        );
+    }
+
+    /// Any existing correction is forwarded read-only (86akgqdxr: "the correction layer...
+    /// reachable from one screen") — this ticket does not add a way to WRITE one (see
+    /// `SegmentCorrectionView`'s doc comment), only to display what already exists.
+    #[test]
+    fn an_existing_correction_is_forwarded_read_only() {
+        let (db, id) = fixture_db_with_detections_and_correction();
+        let t = transcript_repo::load(&db, id).expect("load");
+        let view = build_transcript_detail_view(t, false, None);
+        assert_eq!(view.corrections.len(), 1);
+        assert_eq!(
+            view.corrections[0].corrected_text,
+            "Good morning, everyone."
+        );
+    }
+
+    fn fixture_draft_view() -> selahcue_lan::protocol::SermonNoteDraftView {
+        selahcue_lan::protocol::SermonNoteDraftView {
+            title: "Sunday Service Notes".to_string(),
+            summary: Some("A short summary.".to_string()),
+            sections_json: serde_json::json!([
+                {"heading": "Main points", "items": ["Faith", "Hope"], "points": []}
+            ])
+            .to_string(),
+            scriptures_json: serde_json::json!(["Romans 8:28"]).to_string(),
+            ai_generated: true,
+            disclosure: Some("AI-generated. Verify before use.".to_string()),
+            provider: "OpenAI".to_string(),
+            model: Some("gpt-test".to_string()),
+            created_at_ms: 1_000,
+            edited_at_ms: 2_000,
+        }
+    }
+
+    /// When a draft exists, its ACTUAL content reaches the wire — title, summary, sections,
+    /// scriptures — not merely `notes_generated: true` (86akgqdxr AC2, the whole point of this
+    /// ticket's notes half). Reuses `sermon_note_draft_json` unchanged, so the caveat/
+    /// scripture-verdict vocabulary is byte-identical to Settings' own persisted-draft view.
+    #[test]
+    fn a_saved_draft_forwards_its_real_content_not_just_the_generated_flag() {
+        let db = fixture_db();
+        let rows = transcript_repo::list(&db).expect("list");
+        let t = transcript_repo::load(&db, rows[0].id).expect("load");
+        let draft_view = fixture_draft_view();
+        let view = build_transcript_detail_view(t, true, Some(&draft_view));
+        assert!(view.notes_generated);
+        let draft = view.draft.expect("a draft was passed in");
+        assert_eq!(draft["title"], "Sunday Service Notes");
+        assert_eq!(draft["summary"], "A short summary.");
+        assert_eq!(draft["scriptures"], serde_json::json!(["Romans 8:28"]));
+        assert_eq!(view.ai_generated, Some(true));
+        assert_eq!(
+            view.disclosure.as_deref(),
+            Some("AI-generated. Verify before use.")
+        );
+        assert_eq!(view.notes_provider.as_deref(), Some("OpenAI"));
+    }
+
+    /// No saved draft: every draft-content field is `None`/`null`, independent of whatever
+    /// `notes_generated` happens to say (they are two separate reads, deliberately — see
+    /// `build_transcript_detail_view`'s doc comment).
+    #[test]
+    fn no_saved_draft_leaves_every_draft_field_none() {
+        let db = fixture_db();
+        let rows = transcript_repo::list(&db).expect("list");
+        let t = transcript_repo::load(&db, rows[0].id).expect("load");
+        let view = build_transcript_detail_view(t, false, None);
+        assert!(view.draft.is_none());
+        assert!(view.scripture_verification_note.is_none());
+        assert!(view.ai_generated.is_none());
+        assert!(view.ai_label.is_none());
+        assert!(view.disclosure.is_none());
+        assert!(view.notes_provider.is_none());
     }
 }
 
@@ -5317,8 +5603,12 @@ async fn generate_sermon_notes(
             // for "no persistence available".
             let transcript_id = match state.backend.active_transcript_id().await {
                 Ok(id) => id,
-                Err(e) => {
-                    eprintln!("selahcue-operator: could not resolve the active transcript id: {e}");
+                Err(_) => {
+                    // Deliberately NOT interpolated (Quinn, PR #50, 86akgqdxr four-reviewer-gate
+                    // remediation): the same TransportError::Protocol Debug-dump-of-a-whole-
+                    // ServerMessage risk Sana's F1 fixed elsewhere in this file — see
+                    // transcript_get's doc comment for the full call chain.
+                    eprintln!("selahcue-operator: could not resolve the active transcript id");
                     None
                 }
             };
@@ -5349,10 +5639,10 @@ async fn generate_sermon_notes(
                             );
                             None
                         }
-                        Err(e) => {
-                            eprintln!(
-                                "selahcue-operator: failed to persist sermon-note draft: {e}"
-                            );
+                        Err(_) => {
+                            // Deliberately NOT interpolated (same F1-class risk, see
+                            // transcript_get's doc comment for the full call chain).
+                            eprintln!("selahcue-operator: failed to persist sermon-note draft");
                             None
                         }
                     }
@@ -5562,9 +5852,13 @@ async fn transcript_generate_notes(
                     );
                     None
                 }
-                Err(e) => {
+                Err(_) => {
+                    // Deliberately NOT interpolated (Quinn, PR #50, 86akgqdxr four-reviewer-gate
+                    // remediation — the second, distinct `save_sermon_note_draft` call site her
+                    // original F1-completion report named; see `transcript_get`'s doc comment for
+                    // the full TransportError::Protocol Debug-dump call chain).
                     eprintln!(
-                        "selahcue-operator: failed to persist sermon-note draft for transcript {id}: {e}"
+                        "selahcue-operator: failed to persist sermon-note draft for transcript {id}"
                     );
                     None
                 }
@@ -5910,8 +6204,12 @@ async fn load_sermon_note_draft(state: State<'_, AppState>) -> Result<serde_json
             }))
         }
         Ok(None) => Ok(serde_json::json!({ "ok": false })),
-        Err(e) => {
-            eprintln!("selahcue-operator: failed to load sermon-note draft: {e}");
+        Err(_) => {
+            // Deliberately NOT interpolated (Sana, PR #50 F1, mirrored from `transcript_get`'s
+            // identical fix): this error can carry a `Debug`-dumped `ServerMessage::OperatorState`
+            // with live transcript/detection text (FR-082) — see `transcript_get`'s doc comment
+            // for the full call chain.
+            eprintln!("selahcue-operator: failed to load sermon-note draft");
             Ok(serde_json::json!({ "ok": false }))
         }
     }
@@ -5972,8 +6270,15 @@ async fn update_sermon_note_draft(
             "message": "The host refused this edit: no saved draft exists for this \
                 transcript, or a field was too large.",
         })),
-        Err(e) => Ok(serde_json::json!({
-            "ok": false, "error": "storage_error", "message": e,
+        Err(_) => Ok(serde_json::json!({
+            // Deliberately NOT the raw error string (Quinn, PR #50, 86akgqdxr four-reviewer-gate
+            // remediation — the same F1-class risk Sana found elsewhere in this file, but WORSE
+            // here: this "message" is rendered directly on the operator's own screen via
+            // showGenError/saveDraftEdit (role="alert"), not merely logged. See transcript_get's
+            // doc comment for the full TransportError::Protocol Debug-dump call chain.
+            "ok": false, "error": "storage_error",
+            "message": "The host reported a connection or protocol problem while saving this \
+                edit. Check the connection and try again.",
         })),
     }
 }

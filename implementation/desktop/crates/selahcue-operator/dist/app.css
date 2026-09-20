@@ -7293,10 +7293,79 @@
   overflow-anchor: none;
 }
 
+/* Detected scripture (86akgqdxr; FR-130) — a bounded panel below the (flex:1) transcript log;
+   `flex: none` like `.tr-gen` below, so it never competes with the log for grow space. */
+.tr-panel {
+  flex: none;
+  padding: 14px 28px 4px;
+  border-top: 1px solid var(--sc-border);
+}
+.tr-panel-h {
+  margin: 0 0 8px;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--sc-text);
+}
+/* Deliberately NO unconditional `display` override on this class (the exact trap `.tr-gen
+   .pp-generate[hidden]` below exists to fix, restated here so it is never reintroduced): both
+   `#tr-detections-empty` and `#tr-notes-empty` are shown/hidden purely via the `hidden`
+   attribute, and staying at the UA block default means there is no author `display` rule for
+   `[hidden]` to lose to (author origin always beats user-agent origin, regardless of source
+   order or specificity — the fix is to never author a competing `display` rule at all). */
+.tr-panel-empty {
+  padding: 10px 12px;
+  border-radius: 9px;
+  border: 1px solid var(--sc-border);
+  background: var(--sc-inset);
+  color: var(--sc-text-secondary);
+  font-size: 12px;
+}
+#tr-detections-empty { margin: 0 0 8px; }
+#tr-notes-empty { margin: 14px 28px 0; }
+
+/* Bounded sliding window (86akgqdxr) — `.tr-det-log`'s OWN scroll container, mirroring `.tr-log`
+   above but deliberately simpler: `max-height` + `overflow-y: auto` rather than `flex: 1`, since
+   this panel must never compete with the transcript log for the surface's dominant grow space. */
+.tr-det-log {
+  max-height: 220px;
+  overflow-y: auto;
+  border: 1px solid var(--sc-border);
+  border-radius: 9px;
+  background: var(--sc-inset);
+}
+.tr-det-log:focus-visible {
+  outline: 2px solid var(--sc-primary);
+  outline-offset: -2px;
+}
+/* The two spacer divs reuse `.tr-log-spacer` verbatim (its `flex: none; overflow-anchor: none;`
+   applies identically here — same D2 reasoning, a different scroll container). */
+/* height MUST equal `DET_ROW_HEIGHT` in transcripts.js exactly (32px, border-box) — the fixed-
+   row-height window's spacer math assumes every mounted row is this tall, with no measurement. */
+.tr-det-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 32px;
+  box-sizing: border-box;
+  padding: 0 12px;
+  font-size: 12px;
+}
+.tr-det-row:nth-child(even) { background: rgba(255, 255, 255, 0.03); }
+.tr-det-ref { flex: none; font-weight: 700; color: var(--sc-gold); }
+.tr-det-pos {
+  flex: none;
+  color: var(--sc-text-secondary);
+  font-variant-numeric: tabular-nums;
+  font-size: 11px;
+}
+.tr-det-conf { flex: 1; text-align: right; color: var(--sc-text-secondary); font-size: 11px; }
+
 /* Generate Sermon Notes from a stored transcript (86akcffy0) — reuses the `.pp-generate`/
    `.pp-gen-preview`/`.pp-gen-result` rules above (Settings panel's live-tail Generate) so both
    flows look and behave identically; `.tr-gen` itself is just a `flex: none` footer strip below
-   the (flex:1) log, padded to match this surface's own edges rather than the Settings panel's. */
+   the (flex:1) log, padded to match this surface's own edges rather than the Settings panel's.
+   `#tr-gen-result` (86akgqdxr) is ALSO where an EXISTING saved draft's view/edit UI renders, not
+   only a freshly generated one — same classes, same rules, one render path. */
 .tr-gen {
   flex: none;
   display: flex;
@@ -7339,4 +7408,35 @@
   color: var(--sc-text);
   word-break: break-word;
   white-space: pre-wrap;
+}
+/* Correction overlay (86akgqdxr; read-only in this ticket — see the linked follow-up for
+   editing). `.tr-line-corrected` rows stack the raw and corrected text vertically so both are
+   always visible at once — a correction is never a silent rewrite of the immutable raw stream. */
+.tr-line-corrected {
+  align-items: flex-start;
+  flex-wrap: wrap;
+}
+.tr-line-txt-raw {
+  /* Cody, PR #50: measured 3.79:1 on --sc-surface / 3.96:1 on --sc-inset, failing AA-normal —
+     the same --sc-text-muted trap this file already fixed once for .scr-card-meta (stepped to
+     --sc-text-secondary, 8.12:1). The struck-through raw text is essential content (the whole
+     point of the correction overlay is that neither the raw nor the corrected text is hidden),
+     not decorative, so AA-normal applies. The line-through decoration alone still distinguishes
+     it from .tr-line-corrected-txt's --sc-text. */
+  color: var(--sc-text-secondary);
+  text-decoration: line-through;
+  word-break: break-word;
+  white-space: pre-wrap;
+  flex-basis: 100%;
+}
+.tr-line-corrected-txt {
+  /* `--sc-text` (the same colour `.tr-line-txt` already uses, proven AA-NORMAL against this
+     log's own background by the existing "TR: transcript line text..." contrast check) rather
+     than an unverified new pairing — the CURRENT, correct reading is not a lesser-emphasis
+     detail, only the superseded raw text (`.tr-line-txt-raw`, above) is. */
+  color: var(--sc-text);
+  font-weight: 600;
+  word-break: break-word;
+  white-space: pre-wrap;
+  flex-basis: 100%;
 }

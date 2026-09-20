@@ -1,11 +1,11 @@
 # ADR-0026 — The operator console's virtualized lists never write `scrollTop`
 
-- Status: Proposed (for review) — **revision 2.** Revision 1 recommended a design that the S1 spike falsified; this revision replaces its central mechanism. Assessment deliverable for 86akcffvt / PR #34. **No code change is proposed here; implementation is a separate ticket.**
-- Date: 2026-09-14 (rev 2)
-- Confidence: **High.** Unlike revision 1, the central mechanism is now measured rather than reasoned — on both engines, with negative controls, by two independent sessions. The residual unknowns are named in "Before this is accepted" and are about the *real component*, not about the mechanism.
+- Status: Proposed (for review) — **revision 3.** Revision 1 recommended a design that the S1 spike falsified and revision 2 replaced its central mechanism. Revision 3 re-opens **nothing**: D1–D4 stand unchanged, and it extends **D5 only**, to cover the second virtualizer 86akgqdxr adds to the same file. Revision 2 was the assessment deliverable for 86akcffvt / PR #34, and its decisions shipped there (`cc9a3a5`).
+- Date: 2026-09-14 (rev 2) · 2026-09-20 (rev 3)
+- Confidence: **High** for revision 2 — unlike revision 1, its central mechanism is measured rather than reasoned, on both engines, with negative controls, by two independent sessions; the residual unknowns named in "Before this is accepted" are about the *real component*, not the mechanism. **High** for revision 3 on a deliberately narrower basis: it introduces no new mechanism and no new class of `scrollTop` write, and the existing safety argument was re-checked against the second container's actual call graph rather than assumed to carry over (see "Revision 3").
 - Owner: Software Architect, with Frontend Engineer (delivery), QA and Performance Engineer
-- Relates: ADR-0002 / ADR-0003 (the WebView is the operator console only), FR-130, NFR-019, AC3 of 86akcffvt
-- Applies to: `selahcue-operator/dist/transcripts.js` today; binding on any future virtualized list in this console
+- Relates: ADR-0002 / ADR-0003 (the WebView is the operator console only), FR-130, NFR-019, AC3 of 86akcffvt; 86akgqdxr (rev 3)
+- Applies to: every virtualized list in `selahcue-operator/dist/transcripts.js` — **two** as of rev 3, the transcript log and the detections panel — and binding on any future virtualized list in this console
 
 ---
 
@@ -90,9 +90,25 @@ One free improvement, safe under I1/I2: calibrate `CHARS_PER_LINE` **once at ope
 
 ### D5 — The invariant is statically enforced, not behaviourally inferred
 
-> `transcripts.js` contains **no assignment to `.scrollTop`**, except (a) `openTranscript`'s initial `scrollTop = 0`, which runs before any scroll or animation can exist, and (b) the `__trScrollToFraction` / `__trScrollBy` test hooks, which exist to *simulate* user input.
+> `transcripts.js` contains **no assignment to `.scrollTop`**, except sites in these two classes, each of which must carry a marker comment naming **its own class**:
+>
+> - **`D5-exempt(init)`** — a virtualizer's single initial-position reset, which runs before any scroll or animation can exist on that container.
+> - **`D5-exempt(test-hook)`** — a write inside a `window.__tr*` hook whose only purpose is to *simulate* user input for the headless driver.
+>
+> There is no third class. Any write reachable from a `scroll`, `wheel`, `keydown` or animation-frame handler falls in neither and is forbidden outright — that is precisely the write C1 says cannot be made correct.
 
-This is a **grep-checkable** rule, and it is the most valuable thing in this ADR. Every previous round's control had to infer correctness from observed behaviour under conditions nobody could reliably reproduce — which is why round 6 shipped a mutation-verified check that pinned a bug. D5 needs no reproduction at all: a one-line committed assertion over the file's text, with the two exemptions named explicitly, cannot be satisfied vacuously and cannot drift. It converts the entire class from "did we get the heuristic right" into a static check a reviewer can confirm by reading.
+This is a **grep-checkable** rule, and it is the most valuable thing in this ADR. Every previous round's control had to infer correctness from observed behaviour under conditions nobody could reliably reproduce — which is why round 6 shipped a mutation-verified check that pinned a bug. D5 needs no reproduction at all: a one-line committed assertion over the file's text, with the exemptions named explicitly, cannot be satisfied vacuously and cannot drift. It converts the entire class from "did we get the heuristic right" into a static check a reviewer can confirm by reading.
+
+**The counts are per class, not one total (rev 3).** `scripts/operator_headless.py` asserts the number of marked sites in each class separately:
+
+- **`init` — 2**: the transcript log's, in `openTranscript`'s success handler; the detections panel's, in `renderDetections`.
+- **`test-hook` — 3**: `__trScrollToFraction`, `__trScrollBy`, `__trDetScrollToFraction`.
+
+One total was sufficient while the file held one virtualizer. With two it is not, and simply raising `3` to `5` would have quietly weakened the check: a flat budget is **fungible**, so a later edit could delete an `init` reset and spend the freed slot on a reactive write marked `D5-exempt`, leaving the total at five and the check green — reintroducing the exact copy-paste hole the count exists to close.
+
+This is **measured, not argued.** A seven-case mutation battery was run against the real `scripts/operator_headless.py` over isolated copies of `dist/` (positive control green, six mutations red, 7/7). Its M3 case deletes the detections panel's `init` reset and adds a reactive `detLogEl.scrollTop` write inside `onDetScroll` — the precise defect class this ADR exists to prevent — leaving five marked sites. The naive flat-count-of-5 check **passes M3**; the per-class check fails it on both classes. The other cases cover an unmarked reactive write, one silenced with a copied class marker, a bare classless `D5-exempt`, an unknown class, and a *deleted* exemption (so the numbers are guarded downward as well as upward).
+
+Per-class counts also scale: a third virtualizer raises `init` by one and `test-hook` by however many hooks it needs, each recorded here in its own revision. As before, **a new exemption cannot be added by marking it; only a revision of this ADR can grow either number.**
 
 ---
 
@@ -147,3 +163,25 @@ Estimated effort for the whole change after M1 clears: 1–2 focused days includ
 ## Delivery note (owner's call, not the architect's)
 
 PR #34 also carries a **security** fix — the read-only transcript-store open — that four reviewers have cleared and that is currently unshipped behind a scroll bug, now for an eighth round. Landing that Rust work on its own and taking the virtualizer as its own ticket is worth considering. It cuts against the one-ticket-one-branch-one-MR rule in the operating contract, so it is a delivery decision, flagged rather than taken.
+
+---
+
+## Revision 3 — the detections panel is the second virtualizer (86akgqdxr)
+
+86akgqdxr surfaces a transcript's detected-scripture list beside its log, in one workspace. That list grows with the service and is unbounded in principle, so it gets a bounded-DOM renderer of its own: a second, independent virtualizer over its own scroll container, `#tr-det-log`.
+
+**What this revision decides: nothing new.** D1–D4 are untouched. The detections panel introduces no new *class* of `scrollTop` write — only a second instance of each class D5 already permits. D5's invariant text and its static check are extended to name those two sites, and the exemption budget is restructured per class (above). That is the whole change.
+
+**Why the same safety argument holds — checked, not assumed.**
+
+- **The initial reset.** `renderDetections(t)` has exactly one caller: `openTranscript`'s `transcript_get` success handler. It sets `detLogEl.scrollTop = 0` only after re-rendering the window from index 0, one statement before the transcript log's own identical reset in the same handler. It is **not** reachable from `onDetScroll`, from `recomputeDetWindow`, or from any animation frame. `#tr-det-log` is a persistent node reused across transcripts, which is the same reason the log needs its own reset: without it, a new transcript opens at the previous one's scroll offset.
+- **It stands on firmer ground than the log's, not weaker.** `openTranscript` calls `resetGenerateUi()` *before* issuing the fetch, and that sets `detLogEl.hidden = true`; `renderDetections` un-hides it immediately before the reset. The container therefore has no layout box at all across the transition. An element with no box cannot carry an in-flight native scroll animation for a write to cancel — which is the precise hazard C1 names. The transcript log has no equivalent hide/show and rests on the timing argument alone.
+- **We do not lean on that, though.** Whether destroying and recreating a scroll box *also* zeroes `scrollTop` on WebKitGTK, WKWebView and WebView2 is unmeasured here, and this ADR's standing rule is that unmeasured engine behaviour is not evidence. The reset stays an explicit write; the hide/show is recorded as a *second, independent* reason it is safe, never as a reason to drop it.
+- **The test hook.** `__trDetScrollToFraction` is the shape of `__trScrollToFraction` applied to the other container. It exists because a headless driver cannot dispatch a *trusted* scrollbar drag; without it the detections panel's bounded-rendering claim — the counterpart to AC3 — would have no control at all. There is no alternative to weigh: the hook is the only way to test the thing.
+- **There is no compensation problem to solve here.** D2's machinery — native scroll anchoring, `overflow-anchor: none` on the spacers — exists because the log's rows are *measured* after layout, so its metric shifts under the reader. Detection rows are fixed-height single lines (`DET_ROW_HEIGHT`), so `Math.floor(scrollTop / DET_ROW_HEIGHT)` is exact from the first frame and nothing is ever remeasured. The second virtualizer has nothing to compensate, which is why it correctly carries no Fenwick tree and no anchoring argument — **and why it must never acquire a reactive write to justify one.** If a future change makes detection rows variable-height, that is a D1/D2 question and returns here.
+
+**Alternative considered and rejected: recreate the node instead of resetting `scrollTop`.** Replacing `#tr-det-log` with a fresh element on each open would hold the exemption count at three without an ADR revision. **Rejected:** it buys the number, not the property. It trades a write this ADR has proved safe for DOM churn whose own failure mode — a `scroll` listener silently lost on re-creation, stranding the virtualizer on its first window — is behavioural rather than grep-checkable, and would be invisible to D5 precisely because D5 only sees `scrollTop`. It would also leave two virtualizers in one file using two different mechanisms for the same job, which costs every future reader more than one extra row in a table costs. The count is an instrument; the invariant is the thing, and optimising the instrument at the invariant's expense is the wrong trade.
+
+**Consequences.** The exemption budget becomes per class (2 `init`, 3 `test-hook`), a *tightening* relative to a flat bump to five. Every `D5-exempt` marker in `transcripts.js` must now name its class, and a bare `D5-exempt` no longer satisfies the check — deliberately, so the migration cannot be half-done silently. `scripts/operator_headless.py` carries the check and runs before Chrome is resolved, so it still gates a Chrome-less box.
+
+**Unchanged.** Every revision-2 decision and consequence, and the verification bar. This revision re-opens no engine question and makes no new engine claim.

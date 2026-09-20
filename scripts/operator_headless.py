@@ -34,58 +34,101 @@ DIST = os.environ.get("SELAHCUE_OPERATOR_DIST") or os.path.join(
 )
 
 # ---------------------------------------------------------------------------------------------
-# D5 (ADR-0026 rev 2, 86akcffvt) — the "transcripts.js never writes scrollTop" invariant is
-# STATIC and grep-checkable, not inferred from timing-dependent browser behaviour. Per the ADR:
-# every previous round's control had to infer correctness from behaviour under conditions nobody
-# could reliably reproduce, which is exactly how round 6 shipped a mutation-verified check that
-# pinned a bug (the "TR wheel-race" block this same round deletes, below) instead of catching one.
-# A static rule over the committed TEXT cannot pass vacuously and cannot drift with a future edit.
+# D5 (ADR-0026 rev 3 — rev 2 / 86akcffvt, extended by 86akgqdxr) — the "transcripts.js never
+# writes scrollTop" invariant is STATIC and grep-checkable, not inferred from timing-dependent
+# browser behaviour. Per the ADR: every previous round's control had to infer correctness from
+# behaviour under conditions nobody could reliably reproduce, which is exactly how round 6 shipped
+# a mutation-verified check that pinned a bug (the "TR wheel-race" block that round deletes,
+# below) instead of catching one. A static rule over the committed TEXT cannot pass vacuously and
+# cannot drift with a future edit.
 #
 # The rule: `dist/transcripts.js` may contain NO assignment to `<expr>.scrollTop` — read access
-# (`x.scrollTop` with no `=`, or comparisons `===`/`!==`/`>=` etc.) is unrestricted — except the
-# two exemptions the ADR names explicitly: `openTranscript`'s initial `= 0` (runs before any
-# scroll or animation can exist) and the two test hooks that exist to SIMULATE user input
-# (`__trScrollToFraction` / `__trScrollBy`), three write sites in total. Every permitted site is
-# required to carry a trailing `D5-exempt` marker comment. This check fails on (a) ANY scrollTop
-# write with no marker, and (b) a marked-exemption count that does not match the ADR's own number
-# — (b) is what stops a future violation from being silenced by copy-pasting the marker onto a
-# NEW write instead of deleting it, which a marker-presence-only check could not catch.
+# (`x.scrollTop` with no `=`, or comparisons `===`/`!==`/`>=` etc.) is unrestricted — except sites
+# in the TWO CLASSES the ADR names, each of which must carry a marker comment naming its OWN
+# class. As of rev 3 the file holds TWO independent virtualizers, so each class has more than one
+# member:
+#
+#   D5-exempt(init)       — a virtualizer's single initial-position reset, which runs before any
+#                           scroll or animation can exist on that container. TWO sites: the
+#                           transcript log's, in `openTranscript`'s `transcript_get` success
+#                           handler, and the detections panel's, in `renderDetections` (86akgqdxr
+#                           — `#tr-det-log` is a persistent node reused across transcripts, so
+#                           without it a new transcript opens at the previous one's offset).
+#   D5-exempt(test-hook)  — a write inside a `window.__tr*` hook whose only purpose is to SIMULATE
+#                           user input for this driver, which cannot dispatch a trusted scrollbar
+#                           drag or wheel tick. THREE sites: `__trScrollToFraction`,
+#                           `__trScrollBy`, `__trDetScrollToFraction`.
+#
+# There is no third class: a write reachable from a `scroll`/`wheel`/`keydown`/animation-frame
+# handler is in neither and is forbidden outright — it is exactly the write ADR-0026's C1 says
+# cannot be made correct on WebKit.
+#
+# This check fails on (a) ANY scrollTop write whose line carries no `D5-exempt(<class>)` marker,
+# or carries a class this file does not know, and (b) a PER-CLASS marked count that does not match
+# the ADR's own numbers. (b) is what stops a future violation from being silenced by copy-pasting
+# a marker onto a NEW write instead of deleting it, which a marker-presence-only check could not
+# catch.
+#
+# Why per-class and not one total of five (86akgqdxr): a flat budget is FUNGIBLE. With one total,
+# a later edit could delete an `init` reset and spend the freed slot on a reactive write marked
+# `D5-exempt`, leaving the total unchanged and this check green — reintroducing the very hole the
+# count exists to close. Bumping 3 -> 5 for the second virtualizer would therefore have WEAKENED
+# the control while appearing to keep it. Counting each class separately restores it, and scales:
+# a third virtualizer raises `init` by one and `test-hook` by however many hooks it needs, each
+# recorded in its own ADR revision. As before: a new exemption cannot be added by marking it.
+#
+# NOTE (rev 3 migration): a BARE `D5-exempt` with no `(class)` no longer satisfies this check, by
+# design — it reports as unmarked, so the marker migration cannot be left half-done silently.
 #
 # Runs before Chrome is even resolved (a pure source-text check, independent of a browser being
 # available at all) so it still gates a Chrome-less dev box, and reads through `DIST` — the same
 # SELAHCUE_OPERATOR_DIST override every other check in this file honours — so this file's own
 # mutation-verification discipline (CLAUDE.md: "mutation-verify before claiming it") can point it
 # at an isolated mutated copy without touching the tracked tree.
-D5_EXPECTED_EXEMPT_COUNT = 3
+D5_EXPECTED_EXEMPT_COUNTS = {"init": 2, "test-hook": 3}
 D5_SCROLLTOP_WRITE_RE = re.compile(r"\.scrollTop\s*[+\-]?=[^=]")
-D5_MARKER = "D5-exempt"
+D5_MARKER_RE = re.compile(r"D5-exempt\(([A-Za-z0-9_-]+)\)")
 
 
 def check_d5_no_scrolltop_writes():
     path = os.path.join(DIST, "transcripts.js")
     lines = open(path, encoding="utf-8").read().splitlines()
-    unmarked, marked = [], []
+    unmarked, by_class = [], {}
     for lineno, text in enumerate(lines, start=1):
-        if D5_SCROLLTOP_WRITE_RE.search(text):
-            (marked if D5_MARKER in text else unmarked).append(lineno)
+        if not D5_SCROLLTOP_WRITE_RE.search(text):
+            continue
+        m = D5_MARKER_RE.search(text)
+        if m is None or m.group(1) not in D5_EXPECTED_EXEMPT_COUNTS:
+            unmarked.append(lineno)
+        else:
+            by_class.setdefault(m.group(1), []).append(lineno)
     ok_unmarked = len(unmarked) == 0
-    ok_count = len(marked) == D5_EXPECTED_EXEMPT_COUNT
     print(
         "PASS: D5 (ADR-0026) — no unmarked `.scrollTop` write in transcripts.js"
         if ok_unmarked
-        else "FAIL: D5 (ADR-0026) — unmarked `.scrollTop` write(s) at line(s) %s "
-        "(every write must carry a 'D5-exempt' marker comment naming which of the ADR's two "
-        "exemptions it is, or be deleted)" % unmarked
+        else "FAIL: D5 (ADR-0026) — unmarked or unknown-class `.scrollTop` write(s) at line(s) %s "
+        "(every write must carry a marker comment naming its class — 'D5-exempt(init)' or "
+        "'D5-exempt(test-hook)', the only two the ADR permits — or be deleted; a bare "
+        "'D5-exempt' with no class does NOT count)" % unmarked
     )
-    print(
-        "PASS: D5 (ADR-0026) — exactly %d marked scrollTop-write exemption(s), matching the ADR"
-        % D5_EXPECTED_EXEMPT_COUNT
-        if ok_count
-        else "FAIL: D5 (ADR-0026) — expected exactly %d marked exemptions, found %d at line(s) %s "
-        "(a new exemption cannot be added by marking it; only a revision of the ADR can grow "
-        "this number)" % (D5_EXPECTED_EXEMPT_COUNT, len(marked), marked)
-    )
-    return ok_unmarked and ok_count
+    ok_counts = True
+    for cls in sorted(D5_EXPECTED_EXEMPT_COUNTS):
+        want = D5_EXPECTED_EXEMPT_COUNTS[cls]
+        got = by_class.get(cls, [])
+        if len(got) == want:
+            print(
+                "PASS: D5 (ADR-0026) — exactly %d marked `D5-exempt(%s)` write(s), matching the ADR"
+                % (want, cls)
+            )
+        else:
+            ok_counts = False
+            print(
+                "FAIL: D5 (ADR-0026) — expected exactly %d `D5-exempt(%s)` write(s), found %d at "
+                "line(s) %s (a new exemption cannot be added by marking it, and the classes are "
+                "counted separately so a deleted one cannot pay for a new one; only a revision of "
+                "the ADR can grow either number)" % (want, cls, len(got), got)
+            )
+    return ok_unmarked and ok_counts
 
 
 if not check_d5_no_scrolltop_writes():
@@ -330,7 +373,55 @@ if not check_d5_no_scrolltop_writes():
 # observed count too — a standalone run of this file after the rebase (and after fixing the
 # sections_to_persist compile break the combined DraftCaveat enum exposed — see that commit)
 # reported "1381 checks, 0 FAIL" exactly.
-EXPECTED_MIN_CHECKS = 1381
+#
+# 86akgqdxr (this ticket) rebuilt onto the above 1381 floor (86akmdkdg+86akcffy0+86akc0tua+
+# 86akby820, all four now on `origin/main`) by cherry-picking only its own 3 unique commits
+# rather than replaying its old fast-forward-merge history (which carried pre-fix copies of
+# 86akcffy0/86akc0tua/86akby820 that no longer match their now-merged, differently-shaped
+# equivalents). Adds its own detections panel (AC1, bounded-rendering AC5, NFR-019/020), the
+# saved-draft's real content and in-place edit (AC2, ported from settings.js's persisted-draft
+# surface), the empty states (AC3), the read-only correction overlay, and one flipped
+# pre-existing assertion (the from-history draft now correctly shows an Edit affordance —
+# 86akcffy0's own "no edit surface" restriction was written expecting this exact successor
+# ticket to lift it). Previously measured against the old, pre-rebuild 1323 floor as ~76 checks
+# (1410 - 1323 by subtraction) — per this constant's own repeated discipline, that arithmetic is
+# NOT trusted here either. The naive sum against the new 1381 floor would be 1381 + 36 = 1417 by
+# subtraction from the old figures, and this IS confirmed as the real observed count too — a
+# standalone run of this file against the rebuilt branch (cherry-picked onto current
+# `origin/main`, all four dependencies included) reported "1417 checks, 0 FAIL" exactly.
+# 1417 -> 1419: closed a real gap the rebuild surfaced, not a rebuild artefact. This ticket's own
+# `readSectionsFromForm` in transcripts.js was ported from settings.js BEFORE bfedaf2 (86akc0tua's
+# second remediation round) added a client-side filter there dropping a caveated-empty section
+# from the edit-save payload — so this ticket's own Transcripts edit surface carried the exact
+# same bug bfedaf2 fixed for Settings, just never caught because no dependency branch touches
+# transcripts.js. Fixed by porting the identical filter (+ its `isStillEmpty` helper) into
+# transcripts.js; 2 new checks added to the existing "TR notes" edit-save block (a caveated-empty
+# section is never sent; a populated section is not dropped by the same filter — positive
+# control). Mutation-verified: disabling the new filter (`.filter(function (s) { return true; })`)
+# turned exactly the first new assertion red while the positive control and every sibling check
+# stayed green; restored and re-confirmed green. 1417 + 2 = 1419, matching the real observed count.
+# 1419 -> 1423: four-reviewer gate remediation on PR #50, both real findings, not rebuild noise.
+#   Cody (High) — .tr-line-txt-raw measured 3.79:1/3.96:1, failing AA-normal (the same
+#   --sc-text-muted trap this file's own app.css already fixed once for .scr-card-meta). Fixed by
+#   stepping to --sc-text-secondary; adds 1 check (NFR-020 on the correction overlay's raw text),
+#   mutation-verified (reverting the colour turns exactly this check red at 4.41:1).
+#   Vera (V-3) — the three existing AC5 scroll-driven checks are ALL driven through
+#   `__trDetScrollToFraction`, which calls `recomputeDetWindow()` directly — the same "control
+#   reads a copy" trap `implementation/desktop/CLAUDE.md` documents. The committed mutant (2)
+#   disabled BOTH call sites (`onDetScroll`'s and the test hook's) together, so it proved ONE of
+#   the two matters, never that the REAL `scroll` -> `onDetScroll` -> rAF path does anything —
+#   disabling only `onDetScroll`'s call passed unchanged (Vera measured this live). Fixed by
+#   adding 3 checks using the same proven-safe idiom the "TR measureObserver disconnect" block
+#   already established for this harness's `--virtual-time-budget` (a real dispatched `scroll`
+#   event, with `requestAnimationFrame` intercepted to CAPTURE the scheduled callback rather than
+#   race real frame timing, then invoked directly): 1 setup assertion (the real event reached
+#   `onDetScroll` and scheduled a frame) + 2 exercising the captured callback (eviction/mount via
+#   the REAL path). Mutation-verified against Vera's exact scenario: disabling only `onDetScroll`'s
+#   `recomputeDetWindow()` call turns RED exactly the 2 new real-path assertions while the 3
+#   pre-existing hook-driven assertions stay GREEN — proving they test different things, closing
+#   the gap without touching the pre-existing hook's own contract.
+#   1419 + 1 + 3 = 1423, matching the real observed count.
+EXPECTED_MIN_CHECKS = 1423
 
 
 def find_chrome():
@@ -853,8 +944,17 @@ STUB = r"""
         {id:2, label:"Wednesday Bible Study", provider:"whisper", started_at_ms: 1722160800000, ended_at_ms: null, segment_count: 1},
       ],
       detail: {
+        // 86akgqdxr: fixtures 1/2 now also carry the REAL wire shape `transcript_get` returns
+        // for "nothing detected/generated yet" (`detections`/`corrections: []`, `draft` and its
+        // siblings `null`) — explicit rather than left `undefined`, though `transcripts.js`'s own
+        // `Array.isArray(t.detections) ? ... : []` / `if (t.draft)` guards degrade either way
+        // identically, which is exactly why fixtures 3-6 below (the bounded-rendering/oversize
+        // scenarios, unrelated to this ticket) are left UNCHANGED rather than touched everywhere.
+        // Dedicated fixtures 7/8 below cover the NEW detections/saved-draft rendering paths.
         1: { id:1, label:"Sunday Service — Aug 4", provider:"manual", started_at_ms: 1722760800000, ended_at_ms: 1722764460000,
              notes_generated: false,
+             detections: [], corrections: [], draft: null, scripture_verification_note: null,
+             ai_generated: null, ai_label: null, disclosure: null, notes_provider: null,
              segments: [
                {id:101, start_ms:0, end_ms:4000, text:"Good morning, church."},
                {id:102, start_ms:4000, end_ms:9000, text:"Please turn with me to Romans chapter eight."},
@@ -862,9 +962,44 @@ STUB = r"""
              ] },
         2: { id:2, label:"Wednesday Bible Study", provider:"whisper", started_at_ms: 1722160800000, ended_at_ms: null,
              notes_generated: false,
+             detections: [], corrections: [], draft: null, scripture_verification_note: null,
+             ai_generated: null, ai_label: null, disclosure: null, notes_provider: null,
              segments: [ {id:201, start_ms:0, end_ms:5000, text:"Let's open in prayer."} ] },
       },
     });
+    // A transcript with TWO detections (one traced to a known segment, one with no known source
+    // — the documented 0 sentinel) and an already-SAVED draft — the AC1/AC2 rendering fixture
+    // (86akgqdxr). Seeded only on request (window.__trSeedDetectionsFixture), same reasoning as
+    // the other conditionally-seeded fixtures below: an unconditional 3rd list entry here would
+    // break the "TR: transcript_list renders one card per transcript" check's exact `=== 3`
+    // count, which runs BEFORE this block would otherwise be reached.
+    if (window.__trSeedDetectionsFixture && !window.__trDetectionsFixtureSeeded) {
+      window.__trDetectionsFixtureSeeded = true;
+      TR.detail[7] = { id:7, label:"Detections + Notes Fixture", provider:"manual", started_at_ms: 1723000000000, ended_at_ms: 1723003600000,
+        notes_generated: true,
+        detections: [
+          {id:901, reference:"Romans 8:28", source_segment:702, confidence:95},
+          {id:902, reference:"John 3:16", source_segment:0, confidence:70},
+        ],
+        corrections: [ {segment_id:701, corrected_text:"Good morning, everyone.", corrected_at_ms:5000} ],
+        draft: {
+          title:"Fixture Sermon", summary:"A saved draft's real content, not just a badge.",
+          sections:[
+            {heading:"Main points", items:["Faith"], points:[], empty_requested:false},
+            {heading:"Prayer points", items:[], points:[], empty_requested:true},
+          ],
+          scriptures:["Romans 8:28"], caveats:[], scripture_verdicts:[{reference:"Romans 8:28", verified:true}],
+        },
+        scripture_verification_note:"Verified means the reference address exists in the bundled Bible text — it does not confirm that any words this draft attributes to it are accurate. Always check a quotation against the actual text before you use it.",
+        ai_generated:true, ai_label:"AI-generated draft",
+        disclosure:"AI-generated. It can invent quotations, misattribute scripture and state things the sermon did not say. Check every reference and quotation against the transcript before you publish or project it.",
+        notes_provider:"OpenAI",
+        segments: [
+          {id:701, start_ms:0, end_ms:4000, text:"Good morning, church."},
+          {id:702, start_ms:4000, end_ms:9000, text:"Turn with me to Romans eight."},
+        ] };
+      TR.list.push({id:7, label:"Detections + Notes Fixture", provider:"manual", started_at_ms: 1723000000000, ended_at_ms: 1723003600000, segment_count:2});
+    }
     // A synthetic three-hour-scale transcript — 500 segments, well past the live console's
     // 240-segment ring cap — for the bounded-DOM-rendering checks (86akcffvt AC3). Each segment's
     // text names its own index so a check can assert exactly which ones are/aren't mounted.
@@ -967,6 +1102,27 @@ STUB = r"""
       TR.detail[6] = {id:6, label:"Oversize Service — Dec 1", provider:"manual", started_at_ms:oversizeStart, ended_at_ms:oversizeEnd, notes_generated:false, segments:oversizeSegs};
       TR.list.push({id:6, label:"Oversize Service — Dec 1", provider:"manual", started_at_ms:oversizeStart, ended_at_ms:oversizeEnd, segment_count:TR_OVERSIZE_COUNT});
     }
+    // A transcript with 120 detections — comfortably past the LIVE console's `MAX_DETECTIONS =
+    // 32` queue cap — for the bounded-DOM-rendering check on the detections panel (86akgqdxr
+    // AC5). Seeded only on request (window.__trSeedManyDetections), same reasoning as the
+    // fixtures above: an unconditional 9th list entry would break earlier "exactly N
+    // transcripts" checks that run before this block is ever reached. Each detection's
+    // reference names its own index so a check can assert exactly which ones are/aren't mounted,
+    // the same technique the 500-segment fixture above uses for the transcript log.
+    if (window.__trSeedManyDetections && !window.__trManyDetectionsSeeded) {
+      window.__trManyDetectionsSeeded = true;
+      var manyDets = [];
+      var TR_MANY_DET_COUNT = 120;
+      for (var di = 0; di < TR_MANY_DET_COUNT; di++) {
+        manyDets.push({id: 40000 + di, reference: "Detection " + di + " — Psalm " + (di + 1) + ":1", source_segment: 0, confidence: 80});
+      }
+      var manyDetStart = 1733000000000, manyDetEnd = manyDetStart + 3000;
+      TR.detail[8] = {id:8, label:"Many Detections Service — Dec 15", provider:"manual", started_at_ms:manyDetStart, ended_at_ms:manyDetEnd,
+        notes_generated:false, detections:manyDets, corrections:[], draft:null, scripture_verification_note:null,
+        ai_generated:null, ai_label:null, disclosure:null, notes_provider:null,
+        segments: [ {id:50000, start_ms:0, end_ms:2500, text:"A single short segment is enough for this fixture."} ] };
+      TR.list.push({id:8, label:"Many Detections Service — Dec 15", provider:"manual", started_at_ms:manyDetStart, ended_at_ms:manyDetEnd, segment_count:1});
+    }
     if (cmd === "transcript_list") {
       if (window.__trListFailOnce) { window.__trListFailOnce = false; return Promise.reject("simulated host rejection"); }
       return Promise.resolve(TR.list.map(function(t){ return {id:t.id, label:t.label, provider:t.provider, started_at_ms:t.started_at_ms, ended_at_ms:t.ended_at_ms, segment_count:t.segment_count}; }));
@@ -1016,8 +1172,18 @@ STUB = r"""
         // Mirror the real backend: a successful from-history generate persists directly against
         // the SELECTED id (never "the active transcript") — `notes_generated` becomes true for
         // exactly this row, same invariant `sermon_note_repo::find_by_transcript` gives the
-        // real `transcript_get`.
-        if (td2) td2.notes_generated = true;
+        // real `transcript_get`. 86akgqdxr: the draft's REAL content is now also mirrored onto
+        // the fixture, so closing and reopening this same transcript (a fresh `transcript_get`)
+        // shows the content it actually just generated, not just the notes_generated flag.
+        if (td2) {
+          td2.notes_generated = true;
+          td2.draft = trOkDraft;
+          td2.ai_generated = true;
+          td2.ai_label = "AI-generated draft";
+          td2.disclosure = "AI-generated. It can invent quotations, misattribute scripture and state things the sermon did not say. Check every reference and quotation against the transcript before you publish or project it.";
+          td2.notes_provider = "OpenAI";
+          td2.scripture_verification_note = null;
+        }
         var trOkResponse = {
           ok:true, degraded:false, provider:"OpenAI",
           ai_generated:true, ai_label:"AI-generated draft",
@@ -1343,6 +1509,36 @@ STUB = r"""
         return Promise.resolve({ok:false, error:"not_found", message:"No saved draft exists for this transcript."}); }
       if (window.__snRejectTooLarge) { window.__snRejectTooLarge = false;
         return Promise.resolve({ok:false, error:"too_large", message:"sermon_note.title exceeds 300 characters"}); }
+      // 86akgqdxr: this command is ALREADY transcript-id-generic on the real backend (confirmed
+      // by reading the full call chain — Backend::update_sermon_note_draft -> LAN
+      // Command::UpdateSermonNoteDraft -> LiveController::apply, none of which special-case "the
+      // active transcript"), so the Transcripts workspace calls it for a HISTORICAL transcript
+      // via the exact same command settings.js's live-session panel already used. The mock
+      // therefore needs a SECOND branch, keyed against `window.__TR.detail[id]` instead of the
+      // single `SN.draft` — checked only when the id does not match `SN.draft`'s, so every
+      // existing Settings-panel test (all of which use `SN`) is completely unaffected.
+      var trDetailForEdit = window.__TR && window.__TR.detail && window.__TR.detail[args.transcriptId];
+      if ((!SN.draft || SN.draft.transcript_id !== args.transcriptId) && trDetailForEdit && trDetailForEdit.draft) {
+        var trUpdated = {
+          title: args.title,
+          summary: args.summary,
+          sections: (args.sections || []).map(function(s){
+            return { heading: s.heading, items: s.items || [], points: s.points || [] };
+          }),
+          scriptures: args.scriptures || []
+        };
+        var trReVerified = mockReVerify(trUpdated.scriptures);
+        trUpdated.scripture_verdicts = trReVerified.verdicts;
+        trUpdated.caveats = trReVerified.caveats;
+        trDetailForEdit.draft = trUpdated;
+        return Promise.resolve({
+          ok:true, transcript_id: args.transcriptId,
+          ai_generated: trDetailForEdit.ai_generated, ai_label: trDetailForEdit.ai_label,
+          disclosure: trDetailForEdit.disclosure, provider: trDetailForEdit.notes_provider,
+          scripture_verification_note: trReVerified.note,
+          draft: trUpdated
+        });
+      }
       if (!SN.draft || SN.draft.transcript_id !== args.transcriptId)
         return Promise.resolve({ok:false, error:"not_found", message:"No saved draft exists for this transcript."});
       // `ai_generated`/`disclosure`/`provider` are NOT accepted as arguments at all (mirrors the
@@ -3734,9 +3930,11 @@ DRIVER = r"""
          "TR generate consent: notes_generated is NOT flipped by a refused (consent_required) call");
 
       // (e) With consent on, Confirm sends the transcript's ID (not a client-supplied string —
-      // the command re-reads the store itself, AC6's premise), the result renders READ-ONLY (no
-      // Edit affordance — 86akcffy0 non-goal: editing stays the Settings panel's persisted-draft
-      // flow), and the notes badge flips immediately.
+      // the command re-reads the store itself, AC6's premise), the result renders WITH an Edit
+      // affordance (86akgqdxr: this ticket is the named successor to 86akcffy0's own "editing
+      // stays the Settings panel's persisted-draft flow" restriction — a from-history draft is
+      // now editable in place, via the SAME transcript-id-generic `update_sermon_note_draft`
+      // command), and the notes badge flips immediately.
       window.__pp.cloud_notes_consent = true;
       window.__trGen = "ok";
       el("tr-generate").click();
@@ -3748,8 +3946,10 @@ DRIVER = r"""
          "TR generate: Confirm sends the transcript's id, not its text — the command re-reads the store itself");
       var trOkResult = el("tr-gen-result");
       ok(!!trOkResult && /From-History Sermon/.test(trOkResult.textContent), "TR generate: a successful generation renders the returned draft");
-      ok(!trOkResult.querySelector(".pp-gen-edit-btn") && !document.getElementById("pp-gen-edit"),
-         "TR generate: the from-history draft renders READ-ONLY — no Edit affordance (86akcffy0 non-goal)");
+      ok(!!trOkResult.querySelector(".pp-gen-edit-btn") && !!document.getElementById("tr-gen-edit"),
+         "TR generate (86akgqdxr): the from-history draft now renders WITH an Edit affordance — the id is tr-gen-edit, never pp-gen-edit, since both panels' markup coexists in one document");
+      ok(!document.getElementById("pp-gen-edit"),
+         "TR generate: this Edit button is NOT settings.js's own #pp-gen-edit — no id collision between the two panels");
       ok(el("tr-detail-notes").classList.contains("tr-notes-on") && /Notes generated/.test(el("tr-detail-notes").textContent),
          "TR generate: a successful generate flips the notes badge immediately, without waiting for a reopen");
 
@@ -3849,14 +4049,26 @@ DRIVER = r"""
       // (`.pp-gen-preview[hidden]`'s own fix, "M-1" elsewhere in this file), and deleting the new
       // `.tr-gen .pp-generate[hidden], .tr-gen .pp-gen-result[hidden] { display: none; }` rule in
       // app.css would not have turned any of them red. Return to transcript 1 (ended, no open
-      // preview) so both elements are back to their normal "button visible, result hidden" state.
+      // preview).
+      //
+      // 86akgqdxr changes what "before any generate" now means here: step (e) above already ran
+      // a SUCCESSFUL generate against transcript 1, and the real backend (unlike the pre-86akgqdxr
+      // mock) now PERSISTS that draft's real content — so reopening transcript 1 correctly shows
+      // it painted immediately, without a fresh Generate click, exactly like a genuine restart
+      // would (AC2). The pre-86akgqdxr version of this check asserted the OPPOSITE (result box
+      // unpainted) because the mock never remembered a prior generate across a reopen; that
+      // premise no longer holds, and asserting it would now be asserting a REGRESSION of AC2, not
+      // a control on the M-1 CSS fix. The M-1 fix itself is still exercised two checks below (a
+      // still-hidden `#tr-gen-preview` after Cancel closes the review step) and by the AC3 empty-
+      // state checks in the "Detected scripture + saved sermon notes" section further down (a
+      // transcript with NO draft still needs `#tr-gen-result` genuinely unpainted).
       el("tr-detail-back").click();
       el('tr-list').querySelector('.tr-card[data-id="1"] .tr-card-open').click();
       await waitFor(function () { return window.__trRenderedRowCount && window.__trRenderedRowCount() > 0; });
       ok(getComputedStyle(el("tr-generate")).display !== "none",
          "TR generate (Cody, computed display): the Generate button is actually painted when not hidden");
-      ok(getComputedStyle(el("tr-gen-result")).display === "none",
-         "TR generate (Cody, computed display): the result box is genuinely unpainted before any generate on this transcript — the app.css [hidden] fix is what makes this true, not just the hidden attribute");
+      ok(getComputedStyle(el("tr-gen-result")).display !== "none" && /From-History Sermon/.test(el("tr-gen-result").textContent),
+         "TR generate + 86akgqdxr (computed display): reopening a transcript with an earlier successful generate shows its PERSISTED draft painted immediately — this is AC2, not a regression of the M-1 fix (see the empty-state checks below for the still-unpainted case)");
       el("tr-generate").click();
       await sleep(30);
       ok(getComputedStyle(el("tr-generate")).display === "none",
@@ -3941,6 +4153,234 @@ DRIVER = r"""
       // dedicated "Settings → Providers & Privacy" section below, whose own checks assume the
       // untouched default consent-off state at the point they begin.
       window.__pp.cloud_notes_consent = false;
+      el("tr-detail-back").click();
+
+      // === Detected scripture + saved sermon notes (86akgqdxr; FR-130 remaining scope) ========
+      // Opening transcript 7 (fixture: 2 detections + an already-saved draft) must show BOTH,
+      // as real content — not the `notes_generated` status-only badge 86akcffvt shipped, and not
+      // nothing at all for detections (86ajtxzrn's `detection` table was never surfaced before
+      // this ticket). Seeded now (not from the top) for the same reason __trSeedRealistic/
+      // __trSeedPhased/__trSeedOversize are seeded on request above, not unconditionally.
+      window.__trSeedDetectionsFixture = true;
+      el("tr-retry").click();
+      await waitFor(function () { return el("tr-list").querySelectorAll(".tr-card").length >= 4; });
+      el('tr-list').querySelector('.tr-card[data-id="7"] .tr-card-open').click();
+      await waitFor(function () { return window.__trRenderedRowCount && window.__trRenderedRowCount() > 0; });
+
+      // AC1: every detection persisted against the transcript renders — reference, confidence,
+      // and an approximate position (resolved from the segment it was traced to, or "Position
+      // unknown" for the documented 0/no-known-segment sentinel — never guessed at).
+      ok(el("tr-detections-empty").hidden === true && getComputedStyle(el("tr-detections-empty")).display === "none",
+         "TR detections (AC1): the empty state is hidden when detections exist (computed, not just the attribute)");
+      ok(el("tr-det-log").hidden === false && getComputedStyle(el("tr-det-log")).display !== "none",
+         "TR detections (AC1): the detections list is genuinely painted (computed) when detections exist");
+      ok(window.__trDetRenderedRowCount() === 2, "TR detections (AC1): both persisted detections are mounted");
+      var trDetRowsText = el("tr-det-rows").textContent;
+      ok(/Romans 8:28/.test(trDetRowsText) && /95% match/.test(trDetRowsText),
+         "TR detections (AC1): the known-segment detection shows its reference and confidence");
+      ok(/John 3:16/.test(trDetRowsText) && /70% match/.test(trDetRowsText),
+         "TR detections (AC1): the no-known-segment detection ALSO shows — it is not silently dropped");
+      var trRow901 = window.__trDetRowFor(901), trRow902 = window.__trDetRowFor(902);
+      ok(!!trRow901 && /00:04/.test(trRow901.textContent),
+         "TR detections (AC1): a detection traced to a known segment shows that segment's timestamp as its approximate position (segment 702 starts at 4s)");
+      ok(!!trRow902 && /Position unknown/.test(trRow902.textContent),
+         "TR detections (AC1): a detection with the documented 0/no-known-segment sentinel says so honestly, rather than guessing a position");
+
+      // AC2: the saved draft's ACTUAL content shows — not just a "Notes generated" badge — and
+      // is editable from this same screen via the ALREADY-transcript-id-generic
+      // `update_sermon_note_draft` command (86akgqdv0/86akby820's own vocabulary, reused
+      // unchanged: caveats/scripture_verdicts/empty_requested).
+      ok(el("tr-notes-empty").hidden === true, "TR notes (AC2): the empty state is hidden when a draft exists");
+      var trNotesResult = el("tr-gen-result");
+      ok(!trNotesResult.hidden && /Fixture Sermon/.test(trNotesResult.textContent) &&
+         /A saved draft's real content, not just a badge\./.test(trNotesResult.textContent),
+         "TR notes (AC2): the saved draft's real title and summary render, not only notes_generated");
+      ok(/Faith/.test(trNotesResult.textContent), "TR notes (AC2): the draft's real section content renders");
+      ok(/AI-generated draft/.test(trNotesResult.textContent) && /invent quotations/.test(trNotesResult.textContent),
+         "TR notes (AC2/FR-128): the AI-generated label and fabrication disclosure travel with a RELOADED draft, not only a freshly generated one");
+      ok(!!trNotesResult.querySelector(".pp-gen-scr-verified"),
+         "TR notes (86akby820 vocabulary reused): a verified scripture reference carries its explicit checkmark, same as the live-session panel");
+      var trEditBtn = document.getElementById("tr-gen-edit");
+      ok(!!trEditBtn, "TR notes (editable workspace): Edit is reachable for a saved draft opened from the Transcripts list, not only the Settings panel");
+
+      // Editing: same `update_sermon_note_draft` command, this transcript's id (7) — the edit
+      // form and Save/Cancel wiring mirror settings.js's own (ported), with `tr-` prefixed ids so
+      // neither panel's `document.getElementById` can resolve to the other's node.
+      trEditBtn.click();
+      ok(!!document.querySelector(".pp-gen-edit-form") && !document.getElementById("tr-gen-edit"),
+         "TR notes: Edit swaps the view for the edit form (Edit itself is gone while editing)");
+      var trTitleInput = document.getElementById("tr-edit-title");
+      ok(!!trTitleInput && trTitleInput.value === "Fixture Sermon", "TR notes: the edit form is pre-filled with the real saved title");
+      trTitleInput.value = "Edited Fixture Sermon";
+      var trSaveCallsBefore = window.__calls.filter(function (c) { return c.cmd === "update_sermon_note_draft"; }).length;
+      document.getElementById("tr-gen-save").click();
+      await waitFor(function () { return window.__calls.filter(function (c) { return c.cmd === "update_sermon_note_draft"; }).length > trSaveCallsBefore; });
+      await sleep(30);
+      var trSaveCall = window.__calls.filter(function (c) { return c.cmd === "update_sermon_note_draft"; }).slice(-1)[0];
+      ok(!!trSaveCall && trSaveCall.args.transcriptId === 7,
+         "TR notes: Save calls update_sermon_note_draft with THIS transcript's id — the same command the Settings panel already uses, unchanged");
+      ok(!document.querySelector(".pp-gen-edit-form") && /Edited Fixture Sermon/.test(el("tr-gen-result").textContent),
+         "TR notes: a successful save re-renders the view with the edited title, form closed");
+      ok(!!document.getElementById("tr-gen-edit"), "TR notes: Edit is reachable again after a save");
+      ok(el("tr-detail-notes").classList.contains("tr-notes-on"),
+         "TR notes: the notes badge still reads generated after an edit — editing a draft is not the same as un-generating it");
+
+      // TR 86akc0tua parity (bfedaf2's fix, ported): this ticket's own edit surface reaches the
+      // SAME update_sermon_note_draft call as settings.js's, via the SAME transcript-id-generic
+      // command — so it needs the identical client-side caveated-empty-section filter settings.js
+      // already carries. The just-completed save above did not touch "Prayer points" (empty,
+      // empty_requested:true in the fixture): it must never have reached the payload, while the
+      // populated "Main points" section (edited via the title-only change above, itself untouched)
+      // still does (positive control) — proves the filter drops the RIGHT section, not every one.
+      ok(!trSaveCall.args.sections.some(function (s) { return s.heading === "Prayer points"; }),
+         "TR notes (86akc0tua parity, edit-save fix): a caveated-empty section the operator did " +
+         "not fill in is NEVER sent to update_sermon_note_draft from the Transcripts workspace " +
+         "either — the same bug bfedaf2 fixed for the Settings panel, ported to this ticket's own " +
+         "edit surface");
+      ok(trSaveCall.args.sections.some(function (s) { return s.heading === "Main points"; }),
+         "TR notes (positive control): an ordinary populated section is NOT dropped by the same " +
+         "filter — without this, the assertion above could pass on a mechanism that drops every " +
+         "section");
+
+      // Correction layer (86akgqdxr; "reachable from one screen", read-only in this ticket — see
+      // the linked follow-up for actual editing): transcript 7's segment 701 carries an existing
+      // correction. Both the raw and corrected text must render — a correction is an overlay,
+      // never a silent rewrite of the immutable raw stream.
+      var trCorrectedRow = window.__trRowFor(701);
+      ok(!!trCorrectedRow && trCorrectedRow.classList.contains("tr-line-corrected"),
+         "TR correction layer: a segment with an existing correction is marked as corrected");
+      ok(!!trCorrectedRow && /Good morning, church\./.test(trCorrectedRow.textContent),
+         "TR correction layer: the RAW segment text still renders — a correction never hides the original");
+      ok(!!trCorrectedRow && /Good morning, everyone\./.test(trCorrectedRow.textContent),
+         "TR correction layer: the corrected text also renders");
+      var trUncorrectedRow = window.__trRowFor(702);
+      ok(!!trUncorrectedRow && !trUncorrectedRow.classList.contains("tr-line-corrected"),
+         "TR correction layer: a segment with NO correction renders exactly as before (no false positive)");
+      // Cody, PR #50 (High): --sc-text-muted measured 3.79:1 on this ground, failing AA-normal —
+      // the raw (struck-through) text is essential content, not decorative, since the whole point
+      // of the overlay is that neither the raw nor the corrected text is hidden. No prior check
+      // covered this element's contrast, unlike every other new text this ticket added.
+      var trRawTxtC = _trCr(_trRgba(getComputedStyle(trCorrectedRow.querySelector(".tr-line-txt-raw")).color), _trRgba(getComputedStyle(el("tr-detail-log")).backgroundColor));
+      ok(trRawTxtC >= 4.5, "TR correction layer (NFR-020): the raw (struck-through) text clears AA-NORMAL on the log's ground (" + _trF(trRawTxtC) + ":1)");
+
+      // AC3: no detections / no draft shows a CLEAR empty state, not a blank area — reopening
+      // transcript 2. NOT transcript 1: an earlier "TR generate" check (e) already ran a
+      // successful generate against transcript 1, and 86akgqdxr means that draft now correctly
+      // PERSISTS across a reopen (see that check's own updated comment) — so transcript 1 no
+      // longer has "no draft" by this point in the continuous script. Transcript 2 is still
+      // recording (`ended_at_ms: null`) for its entire life in this fixture, so Generate is
+      // disabled for it throughout and nothing in this script can ever attach a draft to it —
+      // it is genuinely draft-less and detection-less at every point, not just by coincidence
+      // of test ordering.
+      el('tr-list').querySelector('.tr-card[data-id="2"] .tr-card-open').click();
+      await waitFor(function () { return window.__trRenderedRowCount && window.__trRenderedRowCount() > 0; });
+      ok(el("tr-detections-empty").hidden === false && getComputedStyle(el("tr-detections-empty")).display !== "none" &&
+         /No scripture references were detected/.test(el("tr-detections-empty").textContent),
+         "TR detections (AC3): a clear, non-blank empty state when there are none (computed, not just the attribute)");
+      ok(el("tr-det-log").hidden === true && getComputedStyle(el("tr-det-log")).display === "none",
+         "TR detections (AC3): the (empty) list itself is genuinely unpainted, not just visually collapsed");
+      ok(el("tr-notes-empty").hidden === false && getComputedStyle(el("tr-notes-empty")).display !== "none" &&
+         /No sermon notes have been generated/.test(el("tr-notes-empty").textContent),
+         "TR notes (AC3): a clear, non-blank empty state when no draft exists yet (computed, not just the attribute)");
+
+      // NFR-019 (keyboard parity): the detections list is a native keyboard-scrollable region
+      // once focused, same shape as the transcript log above.
+      ok(el("tr-det-log").getAttribute("role") === "list" && el("tr-det-log").getAttribute("tabindex") === "0",
+         "TR detections (NFR-019): the panel is a native keyboard-scrollable/focusable region");
+      // Contrast (NFR-020): the detections panel's own text clears AA-NORMAL against its ground —
+      // reopen transcript 7 (has real rows to measure against).
+      el('tr-list').querySelector('.tr-card[data-id="7"] .tr-card-open').click();
+      await waitFor(function () { return window.__trDetRenderedRowCount && window.__trDetRenderedRowCount() > 0; });
+      var trDetRowEl = window.__trDetRowFor(901);
+      var trDetRefC = _trCr(_trRgba(getComputedStyle(trDetRowEl.querySelector(".tr-det-ref")).color), _trRgba(getComputedStyle(el("tr-det-log")).backgroundColor));
+      ok(trDetRefC >= 4.5, "TR detections (NFR-020): the reference text clears AA-NORMAL on the panel's ground (" + _trF(trDetRefC) + ":1)");
+      var trDetConfC = _trCr(_trRgba(getComputedStyle(trDetRowEl.querySelector(".tr-det-conf")).color), _trRgba(getComputedStyle(el("tr-det-log")).backgroundColor));
+      ok(trDetConfC >= 4.5, "TR detections (NFR-020): the confidence text clears AA-NORMAL on the panel's ground (" + _trF(trDetConfC) + ":1)");
+      el('tr-list').querySelector('.tr-card[data-id="1"] .tr-card-open').click();
+      await waitFor(function () { return el("tr-detections-empty").hidden === false; });
+      var trEmptyC = _trCr(_trRgba(getComputedStyle(el("tr-detections-empty")).color), _trRgba(getComputedStyle(el("tr-detections-empty")).backgroundColor));
+      ok(trEmptyC >= 4.5, "TR detections empty state (NFR-020): its text clears AA-NORMAL on its own background (" + _trF(trEmptyC) + ":1)");
+
+      // AC5: a transcript with far more detections than the LIVE console's own MAX_DETECTIONS=32
+      // queue cap renders COMPLETELY (every one reachable by scrolling) without unbounded DOM
+      // growth — bounded, fixed-row-height sliding window (transcripts.js). Mutation-verified
+      // against two isolated `SELAHCUE_OPERATOR_DIST` copies, whole suite running (never
+      // `--exact`), both restored after:
+      //   (1) `renderDetections` mutated to `renderDetWindow(0, dets.length)` (ignore
+      //       DET_WINDOW_ROWS) — turns RED exactly the bound check and the initial-open positive
+      //       control (120 mounted, last detection present on open); every sibling check,
+      //       including the scroll-driven ones below, stays GREEN.
+      //   (2) `recomputeDetWindow()` calls in `onDetScroll` and `__trDetScrollToFraction`
+      //       commented out (scroll-driven recompute disabled) — turns RED exactly the three
+      //       scroll-driven assertions below (end-scroll eviction/mount, middle-scroll neither
+      //       end); the initial-open assertions above stay GREEN, confirming they exercise a
+      //       DIFFERENT code path than these three.
+      // 1410 checks total in both runs, only the named ones move — no vacuous over-broad mutant.
+      //
+      // Vera, PR #50 (V-3): the three scroll-driven checks above are ALL driven through
+      // `__trDetScrollToFraction`, which calls `recomputeDetWindow()` DIRECTLY — the same "control
+      // reads a copy" trap `implementation/desktop/CLAUDE.md` documents. Mutant (2) disabled BOTH
+      // call sites (`onDetScroll`'s and the test hook's) together, so it proves ONE of the two
+      // matters, not that the REAL `scroll` → `onDetScroll` → rAF path does anything — disabling
+      // only `onDetScroll`'s call passes unchanged (Vera measured this live). The check below
+      // bypasses the test hook entirely, using the SAME proven-safe idiom the "TR measureObserver
+      // disconnect" block above already established for this exact class of problem: this harness
+      // runs under Chrome's `--virtual-time-budget`, where racing REAL rAF timing is unreliable
+      // and can crash the whole suite rather than just fail one check (documented above, hard-won).
+      // A genuine `scroll` event runs `onDetScroll()` synchronously, which calls
+      // `requestAnimationFrame(cb)` — intercepted here to CAPTURE `cb` instead of letting the
+      // browser schedule it, then invoked directly on our own schedule. This exercises the real
+      // listener wiring (proven by asserting the callback was actually captured) without racing
+      // frame timing.
+      window.__trSeedManyDetections = true;
+      el("tr-retry").click();
+      await waitFor(function () { return el("tr-list").querySelectorAll(".tr-card").length >= 5; });
+      el('tr-list').querySelector('.tr-card[data-id="8"] .tr-card-open').click();
+      await waitFor(function () { return window.__trDetRenderedRowCount && window.__trDetRenderedRowCount() > 0; });
+      ok(window.__trDetRenderedRowCount() <= 40,
+         "TR detections bounded (AC5): far fewer than 120 detections are ever mounted as real DOM nodes at once");
+      ok(window.__trDetRowFor(40119) === null,
+         "TR detections bounded (AC5, positive control): the LAST detection is NOT mounted on initial open — this is a real window, not all 120 rendered and hidden");
+      var trDetLogEl = el("tr-det-log");
+      var trDetOrigRaf = window.requestAnimationFrame;
+      var trDetCapturedCb = null;
+      try {
+        window.requestAnimationFrame = function (cb) { trDetCapturedCb = cb; return 1; };
+        var trDetMax = Math.max(0, trDetLogEl.scrollHeight - trDetLogEl.clientHeight);
+        trDetLogEl.scrollTop = trDetMax; // a REAL scroll to the end, NOT the test hook
+        trDetLogEl.dispatchEvent(new Event("scroll")); // onDetScroll() runs synchronously here
+      } finally {
+        window.requestAnimationFrame = trDetOrigRaf;
+      }
+      ok(typeof trDetCapturedCb === "function",
+         "TR detections bounded (AC5, real scroll event, setup): the real scroll event reached " +
+         "onDetScroll and scheduled its rAF-coalesced recompute — captured directly rather than " +
+         "racing real frame timing under this harness's --virtual-time-budget");
+      // Vera, PR #50 (V-6, LOW): guarded rather than called unconditionally — if the assertion
+      // above ever goes red (nothing captured), calling a null callback threw and aborted the
+      // whole driver mid-script (EXPECTED_MIN_CHECKS still caught the resulting shrink and failed
+      // safe, but as "most of the suite vanished" rather than named reds — the exact noisy-failure
+      // shape this block's own capture idiom exists to avoid in the first place).
+      if (typeof trDetCapturedCb === "function") trDetCapturedCb(); // run the REAL captured callback —
+                          // the same recomputeDetWindow() call onDetScroll's own rAF frame would
+                          // make, on our own deterministic schedule
+      ok(window.__trDetRowFor(40000) === null,
+         "TR detections bounded (AC5, real scroll event): the real onDetScroll → rAF path evicts " +
+         "the FIRST detection from the DOM — not just the test hook's direct call");
+      ok(window.__trDetRowFor(40119) !== null,
+         "TR detections bounded (AC5, real scroll event, positive control): the same real path " +
+         "mounts the LAST detection — every detection stays reachable through genuine scrolling");
+      window.__trDetScrollToFraction(1);
+      await sleep(20);
+      ok(window.__trDetRowFor(40000) === null,
+         "TR detections bounded (AC5): scrolling to the end evicts the FIRST detection from the DOM");
+      ok(window.__trDetRowFor(40119) !== null,
+         "TR detections bounded (AC5, positive control): scrolling to the end mounts the LAST detection — every detection stays reachable by scrolling, none truncated to a sample");
+      window.__trDetScrollToFraction(0.5);
+      await sleep(20);
+      ok(window.__trDetRowFor(40000) === null && window.__trDetRowFor(40119) === null,
+         "TR detections bounded (AC5): scrolling to the middle mounts neither end — confirms a real sliding window, not two static halves");
+
       el("tr-detail-back").click();
 
       // === Pre-service Check (moved into the Settings sidebar, Design 2.0) ===
