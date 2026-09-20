@@ -401,6 +401,10 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
     `find_accepted_by_transcript` for the load path) is real but touches a
     well-tested, multiply-consumed production function under time pressure
     for a perf-only (not correctness) gain; deferred rather than rushed.
+    Filed as its own ticket,
+    [17tnw2axpuq](https://app.clickup.com/t/17tnw2axpuq), per Vera's
+    explicit request on re-review — "an unticketed deferral in a document
+    is how a cheap known improvement becomes permanent."
   - **Vera F3(a) (non-goal)**: no UI reclaim path for an abandoned pending
     slot once its banner is gone — Vera herself ties this to the durable
     cross-reload pending-banner follow-up already recorded in this
@@ -450,6 +454,60 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
 - Decision: iterate — C-013 (a fresh, uninterrupted `make ci` run against
   the fully remediated tree) and re-checks from Vera/Cody/Sana/Quinn on
   the remediation itself remain before C-014/C-015 can be marked PASS.
+
+### Iteration 3
+
+- Target criterion: C-014 (Vera's re-review of commit `c7d54c9`).
+- Hypothesis: the Iteration 2 remediation fully closes Vera's F1; her
+  re-review can confirm this without finding a new gap of the same shape.
+- Change or investigation: **Vera re-reviewed `c7d54c9` — verdict APPROVE
+  WITH NITS.** F1 confirmed genuinely remediated (her independent
+  measurement agreed with mine within rounding — the small delta was a
+  `request_id` field she'd included that the real reply does not carry).
+  She found one NEW Minor (V1) and two Nits (V2, V3):
+  - **V1 (Minor)**: the wire-cap measuring test's doc comment claimed the
+    over-cap case was "proven separately below by actually sending it over
+    the real wire" — nothing did. Fixed by WRITING that test rather than
+    deleting the claim (per V2's reasoning below):
+    `an_oversized_two_draft_reply_is_delivered_intact_over_the_real_wire_
+    today` builds the real oversized reply through the actual product path
+    (accept a multibyte-maxed draft, stage a second one — the host's own
+    reply to that call carries both) over a REAL `ControlServer`/
+    `RemoteOperator` round trip, asserts `Ok(Some(_))` (never a transport
+    error), and independently re-measures the ACTUAL received reply against
+    `MAX_MESSAGE_BYTES` to confirm it really was oversized. Passed on first
+    run.
+  - **V2 (Nit, folded into the V1 fix)**: a size-only assertion
+    (`serialized_size > MAX_MESSAGE_BYTES`) would keep passing even after
+    17tnw2axpt1 adds real client-side enforcement, since the SIZE doesn't
+    change — only whether it is REFUSED does. The real-wire test above goes
+    red at that point instead, because it asserts the CALL succeeds, not
+    just a byte count. This is why V1 was fixed with an actual over-the-wire
+    test rather than by editing the doc comment alone.
+  - **V3 (Nit)**: the doc comment on `sermon_note_repo.rs`'s
+    `MAX_SECTIONS_JSON_BYTES` referenced a placeholder ticket id
+    (`86akgwbq2`, from before 17tnw2axpt1 was actually filed) that does not
+    resolve. Fixed to link 17tnw2axpt1 like every other reference.
+  Also per Vera's explicit ask: filed F2 as its own ticket
+  ([17tnw2axpuq](https://app.clickup.com/t/17tnw2axpuq)) rather than only a
+  Goal Contract note. Added a comment to 17tnw2axpt1 flagging her caveat
+  that "refused without dropping the connection" may not be achievable on
+  the REPLY direction (tungstenite's reader errors the whole stream on an
+  oversized frame, unlike the pre-send guard on the request direction) —
+  left for that ticket's own scoping, not resolved here.
+- Verifier executed: `cargo test -p selahcue-app --features server --test
+  test_sermon_note_remote` (targeted, then full-file).
+- Result: `test_sermon_note_remote.rs` now 10 tests (was 9), all pass, 0
+  failed, on first run of the new test (no iteration needed).
+- New evidence: `/tmp/scph-a4658-oversized-reply.log`,
+  `/tmp/scph-a4658-remote-v1fix.log`; ClickUp comments on 17tnw2axpt1;
+  new ticket 17tnw2axpuq; PR #55 comment
+  https://github.com/First-Pavilion/selahcue/pull/55#issuecomment-5752435205.
+- Decision: iterate — C-013 (`make ci`, still queued behind a peer
+  session's run on this shared machine) is the only criterion without
+  fresh evidence; Cody/Sana/Quinn have not been asked to re-review the
+  Iteration 3 diff (a 2-file, ~100-line addition since the commit they
+  already approved) but may do so if any of them wants to.
 
 ## Risks and rollback
 

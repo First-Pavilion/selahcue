@@ -103,7 +103,8 @@ pub const MAX_SUMMARY_CHARS: usize = 4_000;
 /// for. `OperatorStateView.transcript` was already unbounded on this same reply path before
 /// FR-129; this ticket does not introduce the read/write asymmetry, only a second instance of
 /// relying on it. Adding real enforcement to the reply direction (a `WebSocketConfig` on the
-/// client, symmetric with the server's) is a follow-up, not fixed here — see 86akgwbq2.
+/// client, symmetric with the server's) is a follow-up, not fixed here — see
+/// [ClickUp 17tnw2axpt1](https://app.clickup.com/t/17tnw2axpt1).
 pub const MAX_SECTIONS_JSON_BYTES: usize = 15_000;
 /// Upper bound on the serialized `scriptures` JSON, in bytes. See
 /// [`MAX_SECTIONS_JSON_BYTES`]'s doc for why this shrank from `20_000` — same reconciliation,

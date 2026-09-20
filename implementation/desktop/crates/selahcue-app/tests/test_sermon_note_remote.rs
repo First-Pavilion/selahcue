@@ -576,16 +576,17 @@ async fn a_draft_whose_escaped_wire_size_exceeds_the_frame_cap_is_refused_withou
 ///   the SAME declared maxima: `MAX_TITLE_CHARS`/`MAX_SUMMARY_CHARS` are CHARACTER bounds, so
 ///   3-byte-per-character content triples their byte footprint versus the Latin case above,
 ///   and the two-draft reply EXCEEDS the 64 KiB cap. This is NOT a live defect today — proven
-///   separately below by actually sending it over the real wire and confirming the connection
-///   survives — because neither the server's write path (only `max_message_size`/
-///   `max_frame_size` on the READ side, `selahcue-lan/src/server.rs`) nor the client's default
-///   `WebSocketConfig` (`selahcue-lan/src/client.rs`, ~64 MiB reader) enforces any cap on this
-///   REPLY direction. `OperatorStateView.transcript` was already unbounded on this same reply
-///   path before this ticket; FR-129 does not introduce the asymmetry. It DOES make the
-///   per-field caps' "reconciled with the wire cap" doc claim overbroad for this reply shape —
-///   fixed by scoping that doc to the request direction it was actually measured for. Adding
-///   real enforcement to the reply direction (a `WebSocketConfig` on the client, matching the
-///   server's) is tracked as a follow-up, not fixed here.
+///   for real, over the actual wire, by the NEXT test below (this one only measures a
+///   serialized length; it never sends anything) — because neither the server's write path
+///   (only `max_message_size`/`max_frame_size` on the READ side, `selahcue-lan/src/server.rs`)
+///   nor the client's default `WebSocketConfig` (`selahcue-lan/src/client.rs`, ~64 MiB reader)
+///   enforces any cap on this REPLY direction. `OperatorStateView.transcript` was already
+///   unbounded on this same reply path before this ticket; FR-129 does not introduce the
+///   asymmetry. It DOES make the per-field caps' "reconciled with the wire cap" doc claim
+///   overbroad for this reply shape — fixed by scoping that doc to the request direction it
+///   was actually measured for. Adding real enforcement to the reply direction (a
+///   `WebSocketConfig` on the client, matching the server's) is tracked as a follow-up
+///   ([17tnw2axpt1](https://app.clickup.com/t/17tnw2axpt1)), not fixed here.
 #[test]
 fn a_two_draft_regeneration_state_reply_is_measured_against_the_wire_cap_both_ways() {
     fn maxed_view(fill_char: char) -> SermonNoteDraftView {
@@ -658,6 +659,127 @@ fn a_two_draft_regeneration_state_reply_is_measured_against_the_wire_cap_both_wa
          direction; re-check it either way",
         selahcue_lan::MAX_MESSAGE_BYTES
     );
+}
+
+/// 86akgqdx8 review (Vera, second pass — V1/V2): the sibling test above only measures a
+/// serialized length; nothing in the ORIGINAL version of this file actually sent the oversized
+/// reply over the real wire, so the "not a live defect today" claim rested on inspecting
+/// `tungstenite`/`selahcue-lan/src/client.rs` by hand rather than on a test. This closes that
+/// gap for real: it builds the exact SAME oversized `SermonNoteRegenerationState` reply through
+/// the real product path (accept a multibyte-maxed draft, then stage a second one — the host's
+/// own reply to the second call necessarily carries BOTH) and drives it over a REAL
+/// `ControlServer`/`RemoteOperator` TLS round trip. Deliberately does NOT re-run `reply_size`
+/// and compare a number — it calls `RemoteOperator::stage_sermon_note_regeneration` for real,
+/// so the day [17tnw2axpt1](https://app.clickup.com/t/17tnw2axpt1) adds a client-side reply cap,
+/// THIS test (not merely a serialized-length assertion elsewhere) is what turns red.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_oversized_two_draft_reply_is_delivered_intact_over_the_real_wire_today() {
+    fn maxed_draft(fill_char: char) -> SermonNoteDraftInput {
+        SermonNoteDraftInput {
+            title: fill_char
+                .to_string()
+                .repeat(sermon_note_repo::MAX_TITLE_CHARS),
+            summary: Some(
+                fill_char
+                    .to_string()
+                    .repeat(sermon_note_repo::MAX_SUMMARY_CHARS),
+            ),
+            sections_json: format!(
+                r#"["{}"]"#,
+                "s".repeat(sermon_note_repo::MAX_SECTIONS_JSON_BYTES - 4)
+            ),
+            scriptures_json: format!(
+                r#"["{}"]"#,
+                "r".repeat(sermon_note_repo::MAX_SCRIPTURES_JSON_BYTES - 4)
+            ),
+            ai_generated: true,
+            disclosure: Some(
+                fill_char
+                    .to_string()
+                    .repeat(sermon_note_repo::MAX_DISCLOSURE_CHARS),
+            ),
+            provider: fill_char
+                .to_string()
+                .repeat(sermon_note_repo::MAX_PROVIDER_CHARS),
+            model: Some(
+                fill_char
+                    .to_string()
+                    .repeat(sermon_note_repo::MAX_MODEL_CHARS),
+            ),
+        }
+    }
+
+    let (mut op, _assertion_db) = setup().await;
+    op.start_transcript("Sunday Service", "on-device-whisper")
+        .await
+        .unwrap();
+    let real_id = op
+        .active_transcript_id()
+        .await
+        .unwrap()
+        .expect("a transcript now exists in the real store");
+
+    // U+6771 ('東'): the SAME ordinary 3-byte-UTF-8 fill character the measuring test above
+    // used. Each SINGLE-draft REQUEST below still fits comfortably under the wire cap — the
+    // original ~60,060 B reconciliation already assumed a MORE aggressive worst case (4-byte
+    // UTF-8 / escaped control characters) than this real 3-byte content — so neither call is
+    // expected to be refused by `would_exceed_wire_cap`; only the two-draft REPLY that follows
+    // the second call is oversized.
+    let accepted = op
+        .save_sermon_note_draft(real_id, maxed_draft('\u{6771}'))
+        .await
+        .unwrap()
+        .expect("a single multibyte-maxed draft must persist — it is well under the request cap");
+    assert_eq!(accepted.title.chars().next(), Some('\u{6771}'));
+
+    // This call's own REPLY is `SermonNoteRegenerationState { current: accepted, pending: this
+    // draft }` — BOTH multibyte-maxed, which is exactly the oversized reply the sibling test
+    // measured at ~71.6 KB. The critical assertion: `Ok(Some(_))`, never a `TransportError` and
+    // never a silent `Ok(None)` — the connection must carry this oversized frame through today,
+    // not drop it or refuse it.
+    let slot = op
+        .stage_sermon_note_regeneration(real_id, maxed_draft('\u{6771}'))
+        .await
+        .expect(
+            "an oversized REPLY must never surface as a transport error today — nothing on the \
+             reply direction enforces a cap (see this test's own doc comment)",
+        )
+        .expect("staging a legitimate regeneration over an existing draft must not be refused");
+    let current = slot
+        .current
+        .expect("the accepted draft must be echoed back");
+    let pending = slot
+        .pending
+        .expect("the freshly staged draft must be echoed back");
+    assert_eq!(current.title.chars().next(), Some('\u{6771}'));
+    assert_eq!(pending.title.chars().next(), Some('\u{6771}'));
+
+    // Tie this real call directly to the SAME size claim the sibling test makes, rather than
+    // merely assuming today's real reply matches yesterday's synthetic one: reconstruct the
+    // message from what was ACTUALLY received and confirm it really was over the cap.
+    let real_reply = ServerMessage::SermonNoteRegenerationState {
+        transcript_id: real_id,
+        current: Some(current),
+        pending: Some(pending),
+    };
+    let real_reply_size = protocol::to_json(&real_reply)
+        .expect("a valid SermonNoteRegenerationState always serializes")
+        .len();
+    assert!(
+        real_reply_size > selahcue_lan::MAX_MESSAGE_BYTES,
+        "premise check: the reply this test just received over the real wire must actually be \
+         oversized ({real_reply_size} B vs {} B cap), or this test proves nothing about the \
+         oversized case",
+        selahcue_lan::MAX_MESSAGE_BYTES
+    );
+
+    // The whole point: the control link is still alive and functional afterward, exactly like
+    // the request-direction over-cap-refusal test above proves for ITS direction.
+    let after = op
+        .active_transcript_id()
+        .await
+        .expect("the control link must survive an oversized reply");
+    assert_eq!(after, Some(real_id));
 }
 
 /// 86akgqdx8 review, Cody — Minor: discarding a regeneration for a transcript that has NO
