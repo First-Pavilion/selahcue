@@ -4356,8 +4356,14 @@ DRIVER = r"""
          "TR detections bounded (AC5, real scroll event, setup): the real scroll event reached " +
          "onDetScroll and scheduled its rAF-coalesced recompute — captured directly rather than " +
          "racing real frame timing under this harness's --virtual-time-budget");
-      trDetCapturedCb(); // run the REAL captured callback — the same recomputeDetWindow() call
-                          // onDetScroll's own rAF frame would make, on our own deterministic schedule
+      // Vera, PR #50 (V-6, LOW): guarded rather than called unconditionally — if the assertion
+      // above ever goes red (nothing captured), calling a null callback threw and aborted the
+      // whole driver mid-script (EXPECTED_MIN_CHECKS still caught the resulting shrink and failed
+      // safe, but as "most of the suite vanished" rather than named reds — the exact noisy-failure
+      // shape this block's own capture idiom exists to avoid in the first place).
+      if (typeof trDetCapturedCb === "function") trDetCapturedCb(); // run the REAL captured callback —
+                          // the same recomputeDetWindow() call onDetScroll's own rAF frame would
+                          // make, on our own deterministic schedule
       ok(window.__trDetRowFor(40000) === null,
          "TR detections bounded (AC5, real scroll event): the real onDetScroll → rAF path evicts " +
          "the FIRST detection from the DOM — not just the test hook's direct call");
