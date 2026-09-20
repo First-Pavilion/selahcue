@@ -422,7 +422,6 @@ if not check_d5_no_scrolltop_writes():
 #   pre-existing hook-driven assertions stay GREEN — proving they test different things, closing
 #   the gap without touching the pre-existing hook's own contract.
 #   1419 + 1 + 3 = 1423, matching the real observed count.
-EXPECTED_MIN_CHECKS = 1423
 #
 # 86akgqdwc (rebased onto this settled 1423) separately adds 6 more, all in the unrelated
 # "INCLUDE IN NOTES"/scripture-verification blocks, none overlapping 86akgqdxr's detections-
@@ -439,9 +438,32 @@ EXPECTED_MIN_CHECKS = 1423
 #     NEGATIVE CONTROL on the preceding "scripture_verification" draft, which carries no such
 #     caveat, confirms the two notes are gated on different caveat kinds) plus ONE implicit
 #     check from the extra `ppGenerateAndConfirm` call.
-# The naive sum is 1423 + 2 + 4 = 1429; re-verified as the REAL observed count by running
-# this file standalone after the rebase, not trusted from arithmetic alone.
-EXPECTED_MIN_CHECKS = 1429
+# The naive sum is 1423 + 2 + 4 = 1429, and this was confirmed as the real observed count too
+# (a standalone run at that point reported "1429 checks, 0 FAIL" exactly).
+#
+# 1429 -> 1431: Cody's delta re-check on this ticket's rebased head caught a real gap, not
+# rebuild noise — `transcripts.js` (the Transcripts-tab draft viewer) never rendered the new
+# `scripture_verification_incomplete` note, even though `settings.js` does and the backend
+# computes the caveat for both surfaces (`generate_sermon_notes` AND `sermon_note_draft_json`,
+# which feeds `transcript_get` as well as the Settings reload path). Cody reproduced it live:
+# added the caveat to the "Fixture Sermon" fixture, added a throwaway assertion mirroring
+# settings.js's own check, confirmed FAIL, reverted the probe cleanly. Fixed by porting the
+# identical `anyScriptureVerificationIncomplete` helper + note block from settings.js into
+# transcripts.js (the same pattern already used there for the other two caveat kinds), and by
+# adding this caveat to the SAME "Fixture Sermon" fixture (id 7) Cody's own reproduction used
+# — real regression coverage, not the throwaway probe — with 2 explicit `ok()` calls (the note
+# renders computed-visible with role=note; the draft's own content, asserted just above, still
+# renders alongside it — a positive control that this is an addition, not a replacement). No
+# new fixture, no new generate/open call was needed since fixture 7 was already opened earlier
+# in this same test flow, so there is no additional implicit check here.
+#
+# This constant is a SINGLE assignment on purpose (Cody's NIT on the same re-check): two live
+# `EXPECTED_MIN_CHECKS = ...` lines previously existed in this file (1423, then 1429) — harmless
+# today only because Python resolves module-level names last-write-wins, but the identical
+# shape this repo's own CLAUDE.md warns about elsewhere (the Makefile's
+# `RELEASE_UNSAFE_FEATURES` multi-assignment guard). Updated in place from here on, never
+# appended.
+EXPECTED_MIN_CHECKS = 1431
 
 
 def find_chrome():
@@ -1008,7 +1030,12 @@ STUB = r"""
             {heading:"Main points", items:["Faith"], points:[], empty_requested:false},
             {heading:"Prayer points", items:[], points:[], empty_requested:true},
           ],
-          scriptures:["Romans 8:28"], caveats:[], scripture_verdicts:[{reference:"Romans 8:28", verified:true}],
+          // 86akgqdwc (Sana F2 on PR #48; gap on THIS surface caught by Cody's delta re-check):
+          // this fixture is where transcripts.js's own rendering of the draft-wide
+          // "scripture_verification_incomplete" caveat is proven — added here rather than a
+          // new isolated fixture because this is the exact reproduction Cody's own re-check
+          // used (adding it to "Fixture Sermon", not a fresh one).
+          scriptures:["Romans 8:28"], caveats:[{kind:"scripture_verification_incomplete"}], scripture_verdicts:[{reference:"Romans 8:28", verified:true}],
         },
         scripture_verification_note:"Verified means the reference address exists in the bundled Bible text — it does not confirm that any words this draft attributes to it are accurate. Always check a quotation against the actual text before you use it.",
         ai_generated:true, ai_label:"AI-generated draft",
@@ -4247,6 +4274,25 @@ DRIVER = r"""
          "TR notes (AC2/FR-128): the AI-generated label and fabrication disclosure travel with a RELOADED draft, not only a freshly generated one");
       ok(!!trNotesResult.querySelector(".pp-gen-scr-verified"),
          "TR notes (86akby820 vocabulary reused): a verified scripture reference carries its explicit checkmark, same as the live-session panel");
+      // 86akgqdwc (Sana F2 on PR #48; gap caught by Cody's delta re-check on this ticket):
+      // settings.js already rendered the draft-wide "scripture_verification_incomplete" note;
+      // transcripts.js did not, despite its own header comment claiming the wire vocabulary is
+      // reused unchanged. The fixture above now carries this caveat — real regression coverage,
+      // not the throwaway probe Cody used to prove the gap.
+      var trIncompleteNote = Array.prototype.filter.call(
+        trNotesResult.querySelectorAll(".pp-gen-scripture-note"),
+        function (p) { return /more scripture references than could be checked/.test(p.textContent); }
+      )[0];
+      ok(!!trIncompleteNote && getComputedStyle(trIncompleteNote).display !== "none" &&
+         trIncompleteNote.getAttribute("role") === "note",
+         "TR notes (86akgqdwc): the scripture-verification-incomplete note renders on the " +
+         "Transcripts surface too, computed-visible, role=note — not just in Settings");
+      // POSITIVE CONTROL: the draft's own content (asserted above — title, summary, section
+      // text, the verified checkmark) still renders alongside the new note, so this is an
+      // addition, not a replacement.
+      ok(/Faith/.test(trNotesResult.textContent) && !!trNotesResult.querySelector(".pp-gen-scr-verified"),
+         "TR notes (86akgqdwc, positive control): the draft's own content still renders " +
+         "alongside the incomplete-verification note");
       var trEditBtn = document.getElementById("tr-gen-edit");
       ok(!!trEditBtn, "TR notes (editable workspace): Edit is reachable for a saved draft opened from the Transcripts list, not only the Settings panel");
 
