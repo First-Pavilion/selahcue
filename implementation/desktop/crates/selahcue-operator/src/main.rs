@@ -5853,9 +5853,7 @@ async fn persist_generated_draft(
                     PersistOutcome {
                         transcript_id: Some(transcript_id),
                         pending_confirmation: true,
-                        previous_draft: Some(
-                            sermon_note_draft_json(&existing_view, &segments).0,
-                        ),
+                        previous_draft: Some(sermon_note_draft_json(&existing_view, &segments).0),
                     }
                 }
                 Ok(None) => {
