@@ -1874,11 +1874,11 @@ impl From<&selahcue_core::transcript::TranscriptSegment> for TranscriptSegmentVi
 /// come back; this command does no pagination of its own (the ticket's scope is "get one
 /// transcript in full").
 ///
-/// `notes_generated` is honestly always `false` today: there is no notes table yet (86akcffy0,
-/// which depends on this ticket, has not shipped it), so this is not a placeholder guess — it is
-/// the true state of every transcript that currently exists. The field exists now so a future
-/// ticket only has to change this ONE value, never touch the wire contract or the JS that reads
-/// it.
+/// `notes_generated` is real as of 86akcffy0: `sermon_note_repo::find_by_transcript` on the
+/// SAME read-only connection this command already holds — a plain `SELECT`, so it costs nothing
+/// this command didn't already pay for opening the store. Before this ticket it was hardcoded
+/// `false` (there was no notes table); this is the "future ticket only has to change this ONE
+/// value" the field's original comment named.
 #[derive(serde::Serialize)]
 struct TranscriptDetailView {
     id: i64,
@@ -1913,6 +1913,25 @@ async fn transcript_list(state: State<'_, AppState>) -> Result<Vec<TranscriptSum
         .map(|rows| rows.into_iter().map(TranscriptSummaryView::from).collect())
 }
 
+/// Whether transcript `id` has a persisted sermon-note draft — fault-isolated (86akcffy0, Sana
+/// security review F4): a query error here (most plausibly "no such table: sermon_note" on a
+/// store from a build older than the v21 migration that added it, since
+/// `Database::open_existing_readonly` never migrates) degrades to the honest, pre-this-ticket
+/// default (`false`) instead of propagating — `notes_generated` is a nice-to-have annotation on
+/// an otherwise successful transcript read; it must never be the reason reading a transcript
+/// stops working entirely.
+fn notes_generated_for(db: &selahcue_data::Database, id: i64) -> bool {
+    selahcue_data::sermon_note_repo::find_by_transcript(db, id)
+        .unwrap_or_else(|e| {
+            eprintln!(
+                "selahcue-operator: could not check for a persisted sermon-note draft \
+                 (transcript {id}), treating as not generated: {e}"
+            );
+            None
+        })
+        .is_some()
+}
+
 /// Read one transcript back in full (86akcffvt AC2). `NotFound` (a stale/deleted id) surfaces as
 /// the repo's own stable, speech-free message ("row not found" — see `transcript_repo`'s FR-082
 /// guarantee), never a fabricated one.
@@ -1921,16 +1940,18 @@ async fn transcript_get(
     id: i64,
     state: State<'_, AppState>,
 ) -> Result<TranscriptDetailView, String> {
-    with_transcript_db(&state, |db| selahcue_data::transcript_repo::load(db, id)).map(|t| {
-        TranscriptDetailView {
+    with_transcript_db(&state, |db| {
+        let t = selahcue_data::transcript_repo::load(db, id)?;
+        let notes_generated = notes_generated_for(db, id);
+        Ok(TranscriptDetailView {
             id: t.id,
             label: t.label,
             provider: t.provider,
             started_at_ms: t.started_at_ms,
             ended_at_ms: t.ended_at_ms,
             segments: t.segments.iter().map(TranscriptSegmentView::from).collect(),
-            notes_generated: false,
-        }
+            notes_generated,
+        })
     })
 }
 
@@ -4853,6 +4874,483 @@ async fn generate_sermon_notes(
     }
 }
 
+// ---------------------------------------------------------------------------------------------
+// Generate sermon notes from a STORED transcript (86akcffy0; FR-122/130) — the from-history
+// sibling of `generate_sermon_notes` above, reachable from a transcript the operator selected in
+// the Transcripts list (86akcffvt), not the console currently listening. Same consent gate, same
+// provider machinery (`run_note_generation`, untouched), same persist-on-success shape. What
+// differs:
+//   - The transcript text is a FRESH read of the shared read-only store
+//     (`transcript_repo::load` + `transcript_full_text`), never `window.scCompletedTranscript`'s
+//     bounded, polled live tail (`OPERATOR_TRANSCRIPT_TAIL = 60`, `selahcue-app/src/
+//     controller.rs`).
+//   - The draft persists directly against the CALLER-SUPPLIED `id` via
+//     `state.backend.save_sermon_note_draft(id, draft)` — never through `active_transcript_id()`,
+//     which resolves the LIVE session's transcript and has no relationship to a transcript the
+//     operator explicitly opened from history (that call already accepts an explicit id with no
+//     "must be active" restriction; see its doc comment).
+//   - A stored transcript can be many times larger than the live tail, so the 400,000-character
+//     clamp (`selahcue_cloud::transcript_bounds::MAX_TRANSCRIPT_CHARS`) is realistically
+//     reachable here. The decided strategy (86akcffy0 AC2) is: truncate to the head — the same
+//     behaviour `bounded_transcript` already applies at send time — but SURFACE it, both to the
+//     preview step before Confirm (`note_generation_limits` reports the clamp so the frontend
+//     never hardcodes it) and echoed back in this command's own result (`clamp`), rather than
+//     letting it happen invisibly.
+// ---------------------------------------------------------------------------------------------
+
+/// Join a transcript's segments into one string exactly the way `app.js`'s `syncTranscript`
+/// joins the live tail (`\n`-joined segment texts) — so a from-history request is built from the
+/// SAME shape of text the live-tail flow always sent, just the complete stored transcript rather
+/// than a bounded, polled tail.
+fn transcript_full_text(segments: &[selahcue_core::transcript::TranscriptSegment]) -> String {
+    segments
+        .iter()
+        .map(|s| s.text.as_str())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// What the from-history transcript-length clamp will do to `transcript`, for an HONEST preview
+/// (86akcffy0 AC2) — `None` when it fits under
+/// [`selahcue_cloud::transcript_bounds::MAX_TRANSCRIPT_CHARS`] untouched, `Some` with exactly how
+/// much will be left out otherwise. Never changes what is actually sent — `bounded_transcript`
+/// still applies the real clamp downstream in the OpenAI transport; this only reports it.
+#[derive(serde::Serialize, Debug, Clone, PartialEq, Eq)]
+struct TranscriptClampNotice {
+    /// The full transcript's length, in characters, before any clamping.
+    total_chars: usize,
+    /// How many trailing characters will be left out of the request.
+    dropped_chars: usize,
+    /// The clamp itself, mirrored here (not just in [`note_generation_limits`]) so a result the
+    /// frontend already has in hand is self-describing.
+    max_chars: usize,
+}
+
+/// Whether `t` may be used for the from-history Generate flow — `false` while it is still
+/// recording (`ended_at_ms` is `None`). See [`transcript_generate_notes`]'s doc comment for why
+/// this must be a hard refusal, not a race-narrowing check.
+fn transcript_is_eligible_for_generate(
+    t: &selahcue_data::transcript_repo::TranscriptDetail,
+) -> bool {
+    t.ended_at_ms.is_some()
+}
+
+fn transcript_clamp_notice(transcript: &str) -> Option<TranscriptClampNotice> {
+    let (_, dropped) = selahcue_cloud::transcript_bounds::bounded_transcript(transcript);
+    dropped.map(|dropped_chars| TranscriptClampNotice {
+        total_chars: transcript.chars().count(),
+        dropped_chars,
+        max_chars: selahcue_cloud::transcript_bounds::MAX_TRANSCRIPT_CHARS,
+    })
+}
+
+/// The canonical note-generation transcript-length clamp, for the frontend's preview step —
+/// reachable in EVERY build configuration (`selahcue_cloud::transcript_bounds` is unconditionally
+/// compiled, 86akcffy0), so `transcripts.js` never hardcodes/duplicates the number.
+#[tauri::command]
+fn note_generation_limits() -> serde_json::Value {
+    serde_json::json!({ "max_transcript_chars": selahcue_cloud::transcript_bounds::MAX_TRANSCRIPT_CHARS })
+}
+
+/// Generate AI sermon notes from the FULL stored text of transcript `id` (86akcffy0). See the
+/// section comment above for how this differs from `generate_sermon_notes`; everything else —
+/// the consent gate, the provider fallback ladder, the response shape — is that same function's
+/// machinery, reused unchanged via [`run_note_generation`].
+///
+/// Refuses (honestly, `error: "transcript_not_ended"`, no network call) when `id`'s transcript
+/// is still recording (`ended_at_ms` is `None`) — Sana's security review (86akcffy0): this
+/// path's whole design leans on a stored transcript being STATIC between the preview the
+/// operator reviewed and the request this command actually reads/sends. That is true once
+/// [`selahcue_data::transcript_repo::end`] has been called (nothing in this codebase appends a
+/// segment to an ended transcript again — a new session starts a NEW row) and false before it:
+/// `transcript_list` orders by `started_at DESC` with no `ended_at` filter, so an in-progress
+/// service can be the very first, most-clickable card, its writer still appending segments the
+/// preview never showed and the "complete transcript... every recorded segment" disclosure copy
+/// would then be lying about. Refusing outright — rather than re-checking the segment set for
+/// growth — is both simpler and strictly stronger: it removes the race window entirely instead
+/// of narrowing it.
+#[tauri::command]
+async fn transcript_generate_notes(
+    id: i64,
+    state: State<'_, AppState>,
+) -> Result<serde_json::Value, String> {
+    let before = with_transcript_db(&state, |db| selahcue_data::transcript_repo::load(db, id))?;
+    if !transcript_is_eligible_for_generate(&before) {
+        return Ok(serde_json::json!({
+            "ok": false,
+            "error": "transcript_not_ended",
+            "message": "This service is still being recorded. Generate sermon notes once it ends.",
+        }));
+    }
+    let transcript = transcript_full_text(&before.segments);
+    let clamp = transcript_clamp_notice(&transcript);
+
+    // Snapshot the config under the lock, then generate without holding it — same discipline as
+    // `generate_sermon_notes` above.
+    let cfg = {
+        state
+            .providers
+            .lock()
+            .map_err(|e| format!("providers lock: {e}"))?
+            .clone()
+    };
+
+    match run_note_generation(cfg, transcript, &state).await {
+        Ok(outcome) => {
+            // FR-123's "the source transcript is unchanged" invariant, RE-VERIFIED rather than
+            // assumed from `transcript_db` being a read-only connection: a from-history generate
+            // must never persist a draft against a record that no longer matches what was
+            // actually sent. See `source_transcript_is_unchanged_by_generation` for the direct
+            // test of the comparison this leans on.
+            let after =
+                with_transcript_db(&state, |db| selahcue_data::transcript_repo::load(db, id))?;
+            if after.segments != before.segments {
+                return Err(
+                    "the source transcript changed while generating notes; refusing to persist \
+                     a draft against a record that may no longer match what was sent"
+                        .to_string(),
+                );
+            }
+
+            let draft = selahcue_lan::protocol::SermonNoteDraftInput {
+                title: outcome.draft.title.clone(),
+                summary: outcome.draft.summary.clone(),
+                sections_json: sections_to_json(&outcome.draft.sections),
+                scriptures_json: scriptures_to_json(&outcome.draft.scriptures),
+                ai_generated: outcome.ai_generated,
+                disclosure: outcome.disclosure.map(str::to_string),
+                provider: outcome.provider_label.clone(),
+                // See `generate_sermon_notes`'s identical field: no `NoteProvider` exposes a
+                // model id through `GenerationOutcome` today.
+                model: None,
+            };
+            let persisted_transcript_id = match state
+                .backend
+                .save_sermon_note_draft(id, draft)
+                .await
+            {
+                Ok(Some(_)) => Some(id),
+                Ok(None) => {
+                    eprintln!(
+                        "selahcue-operator: the host refused to persist the sermon-note draft for transcript {id}"
+                    );
+                    None
+                }
+                Err(e) => {
+                    eprintln!(
+                        "selahcue-operator: failed to persist sermon-note draft for transcript {id}: {e}"
+                    );
+                    None
+                }
+            };
+
+            Ok(serde_json::json!({
+                "ok": true,
+                "degraded": outcome.degraded,
+                "provider": outcome.provider_label,
+                "ai_generated": outcome.ai_generated,
+                "ai_label": selahcue_core::providers::AI_GENERATED_LABEL,
+                "disclosure": outcome.disclosure,
+                "degraded_notice": outcome.degraded
+                    .then_some(selahcue_core::providers::DEGRADED_FALLBACK_NOTICE),
+                "draft": draft_json(&outcome.draft),
+                "transcript_id": persisted_transcript_id,
+                "quota": outcome.quota.map(|q| serde_json::json!({
+                    "used": q.used, "limit": q.limit, "remaining": q.remaining(), "resets_label": q.resets_label,
+                })),
+                "clamp": clamp,
+            }))
+        }
+        Err(e) => Ok(serde_json::json!({
+            "ok": false,
+            "error": note_error_code(&e),
+            "message": e.to_string(),
+            "clamp": clamp,
+        })),
+    }
+}
+
+#[cfg(test)]
+mod transcript_generate_notes_tests {
+    use super::*;
+    use selahcue_data::{sermon_note_repo, transcript_repo, Database};
+
+    fn fixture_db_with_segments(texts: &[&str]) -> (Database, i64) {
+        let db = Database::open_in_memory().expect("in-memory db opens");
+        let id = transcript_repo::create(
+            &db,
+            &transcript_repo::NewTranscript {
+                label: "Sunday Service".to_string(),
+                provider: "manual".to_string(),
+                plan_id: None,
+                started_at_ms: 1_000,
+            },
+        )
+        .expect("create transcript");
+        let mut t_ms = 0u64;
+        for text in texts {
+            transcript_repo::append_segment(&db, id, t_ms, t_ms + 1_000, text)
+                .expect("append segment");
+            t_ms += 1_000;
+        }
+        transcript_repo::end(&db, id, t_ms as i64).expect("end transcript");
+        (db, id)
+    }
+
+    /// As [`fixture_db_with_segments`], but never calls `transcript_repo::end` — a service still
+    /// being recorded (86akcffy0, Sana review).
+    fn fixture_db_in_progress(texts: &[&str]) -> (Database, i64) {
+        let db = Database::open_in_memory().expect("in-memory db opens");
+        let id = transcript_repo::create(
+            &db,
+            &transcript_repo::NewTranscript {
+                label: "Sunday Service".to_string(),
+                provider: "manual".to_string(),
+                plan_id: None,
+                started_at_ms: 1_000,
+            },
+        )
+        .expect("create transcript");
+        let mut t_ms = 0u64;
+        for text in texts {
+            transcript_repo::append_segment(&db, id, t_ms, t_ms + 1_000, text)
+                .expect("append segment");
+            t_ms += 1_000;
+        }
+        (db, id)
+    }
+
+    /// Sana's High finding (86akcffy0): a transcript still recording must never be eligible for
+    /// from-history Generate — nothing else in this flow (the preview snapshot, the disclosure
+    /// copy's "complete transcript" claim, the before/after unchanged check) holds once the
+    /// writer can still append segments underneath it.
+    #[test]
+    fn an_in_progress_transcript_is_not_eligible_for_generate() {
+        let (db, id) = fixture_db_in_progress(&["still recording"]);
+        let t = transcript_repo::load(&db, id).expect("load");
+        assert_eq!(
+            t.ended_at_ms, None,
+            "premise: this transcript has not ended"
+        );
+        assert!(!transcript_is_eligible_for_generate(&t));
+    }
+
+    /// Positive control for the check above: an ordinary ENDED transcript remains eligible —
+    /// otherwise "refused" would be indistinguishable from a check that always refuses.
+    #[test]
+    fn an_ended_transcript_is_eligible_for_generate() {
+        let (db, id) = fixture_db_with_segments(&["a normal, finished service"]);
+        let t = transcript_repo::load(&db, id).expect("load");
+        assert!(
+            t.ended_at_ms.is_some(),
+            "premise: this transcript has ended"
+        );
+        assert!(transcript_is_eligible_for_generate(&t));
+    }
+
+    /// The load-bearing behaviour this whole ticket exists for: the from-history request is
+    /// built from EVERY stored segment, not a 60-segment tail. `OPERATOR_TRANSCRIPT_TAIL` (60,
+    /// `selahcue-app::controller`) would drop segment 0 from a 70-segment transcript; this
+    /// asserts segment 0's text is still present in the joined string.
+    #[test]
+    fn the_full_text_includes_segments_far_past_the_live_tail_bound() {
+        let texts: Vec<String> = (0..70).map(|i| format!("segment-{i}")).collect();
+        let refs: Vec<&str> = texts.iter().map(String::as_str).collect();
+        let (db, id) = fixture_db_with_segments(&refs);
+        let t = transcript_repo::load(&db, id).expect("load");
+        assert_eq!(
+            t.segments.len(),
+            70,
+            "premise: more than OPERATOR_TRANSCRIPT_TAIL (60)"
+        );
+        let joined = transcript_full_text(&t.segments);
+        assert!(
+            joined.contains("segment-0"),
+            "the first segment must survive — a 60-tail would have dropped it"
+        );
+        assert!(joined.contains("segment-69"));
+    }
+
+    /// Matches `app.js`'s `syncTranscript` bridge (`segs.map(s => s.text).join("\n")`) exactly —
+    /// this is the wire contract the from-history flow now shares with the live-tail one.
+    #[test]
+    fn segments_are_joined_with_newlines_matching_the_live_tail_bridge() {
+        let (db, id) =
+            fixture_db_with_segments(&["Good morning, church.", "Turn to Romans eight."]);
+        let t = transcript_repo::load(&db, id).expect("load");
+        assert_eq!(
+            transcript_full_text(&t.segments),
+            "Good morning, church.\nTurn to Romans eight."
+        );
+    }
+
+    #[test]
+    fn a_transcript_under_the_clamp_gets_no_notice() {
+        let (db, id) = fixture_db_with_segments(&["short and unremarkable"]);
+        let t = transcript_repo::load(&db, id).expect("load");
+        let joined = transcript_full_text(&t.segments);
+        assert_eq!(transcript_clamp_notice(&joined), None);
+    }
+
+    /// AC2: a transcript at/near the clamp gets a VISIBLE notice, not a silent cut. This is the
+    /// exact information `transcripts.js`'s preview step renders before Confirm.
+    #[test]
+    fn a_transcript_over_the_clamp_reports_the_real_drop_count() {
+        let huge = "a".repeat(selahcue_cloud::transcript_bounds::MAX_TRANSCRIPT_CHARS + 123);
+        let notice = transcript_clamp_notice(&huge).expect("over the clamp must produce a notice");
+        assert_eq!(notice.dropped_chars, 123);
+        assert_eq!(
+            notice.total_chars,
+            selahcue_cloud::transcript_bounds::MAX_TRANSCRIPT_CHARS + 123
+        );
+        assert_eq!(
+            notice.max_chars,
+            selahcue_cloud::transcript_bounds::MAX_TRANSCRIPT_CHARS
+        );
+    }
+
+    /// `note_generation_limits` is what lets the frontend compute the SAME notice above without
+    /// hardcoding `400_000` — pin the field name/value so `transcripts.js` and this command
+    /// cannot silently drift apart.
+    #[test]
+    fn note_generation_limits_reports_the_real_clamp() {
+        let v = note_generation_limits();
+        assert_eq!(
+            v["max_transcript_chars"],
+            serde_json::json!(selahcue_cloud::transcript_bounds::MAX_TRANSCRIPT_CHARS)
+        );
+    }
+
+    /// FR-123's "the source transcript is unchanged" invariant, at the layer
+    /// `transcript_generate_notes` actually relies on: two consecutive reads of a store nothing
+    /// wrote to in between must agree exactly. This is the premise the command's own
+    /// before/after equality check leans on — see its doc comment.
+    #[test]
+    fn source_transcript_is_unchanged_by_generation() {
+        let (db, id) =
+            fixture_db_with_segments(&["Good morning, church.", "Turn to Romans eight."]);
+        let before = transcript_repo::load(&db, id).expect("load before");
+        // Nothing runs between these two reads — `transcript_generate_notes` does real
+        // generation work here instead; this test isolates the invariant it depends on.
+        let after = transcript_repo::load(&db, id).expect("load after");
+        assert_eq!(
+            before.segments, after.segments,
+            "reading the same read-only store twice must yield identical segments"
+        );
+    }
+
+    /// The consent gate the from-history path relies on is `ProvidersConfig::
+    /// build_note_request` — the SAME egress choke point `generate_sermon_notes`'s existing
+    /// crate-level test already proves refuses with zero network calls
+    /// (`selahcue-cloud/tests/test_openai.rs::
+    /// with_consent_off_generate_makes_no_network_call_and_says_consent_is_required`). This test
+    /// proves specifically that the TEXT OUR NEW PATH BUILDS — a full multi-segment transcript
+    /// joined by `transcript_full_text`, not a short live-tail string — does not somehow bypass
+    /// that gate: build_note_request must still refuse it.
+    #[test]
+    fn consent_off_refuses_the_from_history_text_before_any_provider_is_touched() {
+        let texts: Vec<String> = (0..70).map(|i| format!("segment-{i}")).collect();
+        let refs: Vec<&str> = texts.iter().map(String::as_str).collect();
+        let (db, id) = fixture_db_with_segments(&refs);
+        let t = transcript_repo::load(&db, id).expect("load");
+        let transcript = transcript_full_text(&t.segments);
+
+        let cfg = selahcue_core::providers::ProvidersConfig::default();
+        assert!(!cfg.consent.cloud_notes, "premise: consent defaults to OFF");
+        let err = cfg
+            .build_note_request(&transcript, true)
+            .expect_err("consent is off; the request must be refused");
+        assert_eq!(err, selahcue_core::providers::NoteError::ConsentRequired);
+    }
+
+    /// `notes_generated` (`transcript_get`'s field, 86akcffy0) must become `true` once a draft
+    /// has actually been persisted against a transcript, and stay `false` until then — the exact
+    /// value a future ticket's comment asked this ticket to make real.
+    #[test]
+    fn notes_generated_reflects_a_persisted_draft() {
+        let (db, id) = fixture_db_with_segments(&["Good morning, church."]);
+        assert_eq!(
+            sermon_note_repo::find_by_transcript(&db, id).expect("query"),
+            None,
+            "no draft has been persisted yet"
+        );
+
+        sermon_note_repo::create(
+            &db,
+            &sermon_note_repo::NewSermonNote {
+                transcript_id: id,
+                title: "A Title".to_string(),
+                summary: None,
+                sections_json: "[]".to_string(),
+                scriptures_json: "[]".to_string(),
+                ai_generated: true,
+                disclosure: Some("disc".to_string()),
+                provider: "OpenAI".to_string(),
+                model: None,
+                created_at_ms: 1,
+            },
+        )
+        .expect("create draft");
+
+        assert!(
+            sermon_note_repo::find_by_transcript(&db, id)
+                .expect("query")
+                .is_some(),
+            "notes_generated must be true once a draft exists for this transcript"
+        );
+    }
+
+    /// Sana's F4 (86akcffy0): on a store from a build older than the v21 migration that added
+    /// `sermon_note` (`open_existing_readonly` never migrates), `find_by_transcript` errors —
+    /// `notes_generated_for` must degrade to `false`, never propagate and break the whole
+    /// transcript read. Simulated directly rather than constructing a real pre-v21 fixture: drop
+    /// the table `find_by_transcript`'s own query names, on an otherwise normal database.
+    #[test]
+    fn notes_generated_for_degrades_to_false_when_the_sermon_note_table_is_missing() {
+        let (db, id) = fixture_db_with_segments(&["Good morning, church."]);
+        db.conn()
+            .execute("DROP TABLE sermon_note", [])
+            .expect("drop table for the test fixture");
+
+        assert!(
+            sermon_note_repo::find_by_transcript(&db, id).is_err(),
+            "premise: the query against the dropped table must actually fail"
+        );
+        assert!(
+            !notes_generated_for(&db, id),
+            "a query failure must degrade to false, not propagate and break transcript_get"
+        );
+    }
+
+    /// Positive control for the fault-isolation above: on a normal store, `notes_generated_for`
+    /// still reports the real answer — otherwise "degrades to false" would be indistinguishable
+    /// from "always returns false".
+    #[test]
+    fn notes_generated_for_reports_true_on_a_normal_store_with_a_draft() {
+        let (db, id) = fixture_db_with_segments(&["Good morning, church."]);
+        assert!(!notes_generated_for(&db, id), "no draft persisted yet");
+
+        sermon_note_repo::create(
+            &db,
+            &sermon_note_repo::NewSermonNote {
+                transcript_id: id,
+                title: "A Title".to_string(),
+                summary: None,
+                sections_json: "[]".to_string(),
+                scriptures_json: "[]".to_string(),
+                ai_generated: true,
+                disclosure: Some("disc".to_string()),
+                provider: "OpenAI".to_string(),
+                model: None,
+                created_at_ms: 1,
+            },
+        )
+        .expect("create draft");
+
+        assert!(notes_generated_for(&db, id));
+    }
+}
+
 /// Load the persisted sermon-note draft for the currently active transcript, if any
 /// (86akgqdv0). Called on Settings panel activation so a draft generated in a prior
 /// session — or edited and left unread — reappears after a restart. `{"ok": false}`
@@ -5154,7 +5652,9 @@ fn main() {
             load_sermon_note_draft,
             update_sermon_note_draft,
             transcript_list,
-            transcript_get
+            transcript_get,
+            transcript_generate_notes,
+            note_generation_limits
         ])
         .run(tauri::generate_context!())
         .expect("run SelahCue operator shell");

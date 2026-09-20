@@ -30,6 +30,9 @@ pub mod mock;
 #[cfg(feature = "openai")]
 pub mod openai;
 pub mod secret;
+/// The note-generation transcript-length clamp — always compiled (86akcffy0). See the module
+/// docs for why this had to move out from behind the `openai` feature.
+pub mod transcript_bounds;
 pub mod transport;
 
 pub use client::SelahCueCloudClient;
@@ -82,8 +85,15 @@ fn disclosure_for(ai_generated: bool) -> Option<&'static str> {
 /// 1. The core builds a consent-gated request — returns [`NoteError::ConsentRequired`]
 ///    (and issues **no** network call) unless cloud-notes consent is set and Generate
 ///    was pressed.
-/// 2. The `cloud` provider is tried first.
-/// 3. On a **transport** failure only (network loss/unreachable), the `local` provider
+/// 2. The transcript-length clamp ([`transcript_bounds::MAX_TRANSCRIPT_CHARS`]) is applied
+///    HERE, once, before any provider is touched (86akcffy0, Cody review). This used to be
+///    each transport's own responsibility — `openai::build_body` clamped it, but nothing
+///    clamped it on the path to a hosted `CloudNoteProvider` — so a from-history transcript
+///    past the cap would have gone out in full the moment a real hosted provider existed.
+///    Enforcing it at this single, provider-agnostic choke point means every current and
+///    future `C: CloudNoteProvider` receives an already-bounded request by construction.
+/// 3. The `cloud` provider is tried first.
+/// 4. On a **transport** failure only (network loss/unreachable), the `local` provider
 ///    serves a degraded draft (FR-135). `NotConfigured` and `QuotaExceeded` propagate
 ///    (they are honest states the UI must show, not network blips to paper over).
 pub fn generate_sermon_notes<C, L>(
@@ -98,7 +108,8 @@ where
     L: NoteProvider,
 {
     // Egress choke point — nothing leaves the device unless this succeeds.
-    let req = config.build_note_request(transcript, generate_pressed)?;
+    let mut req = config.build_note_request(transcript, generate_pressed)?;
+    transcript_bounds::clamp_transcript_in_place(&mut req.transcript);
 
     match cloud.generate_with_quota(&req) {
         Ok((draft, quota)) => Ok(GenerationOutcome {

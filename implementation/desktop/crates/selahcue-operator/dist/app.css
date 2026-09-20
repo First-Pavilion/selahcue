@@ -6888,6 +6888,9 @@
 .pp-gen-preview-title { margin: 0; font-size: 13px; font-weight: 700; color: var(--sc-text); }
 .pp-gen-preview-title:focus-visible { outline: 2px solid var(--sc-primary-hover); outline-offset: 2px; }
 .pp-gen-preview-desc { margin: 0; font-size: 12px; font-weight: 500; color: var(--sc-text-secondary); line-height: 1.5; }
+/* 86akcffy0 (Sana security review F2): a Confirm that will REPLACE an existing draft says so
+   in a colour that reads as "pay attention", not just another neutral description line. */
+.pp-gen-preview-overwrite { color: var(--sc-warn); font-weight: 700; }
 .pp-gen-preview-text { max-height: 220px; overflow-y: auto; white-space: pre-wrap; word-break: break-word; font-size: 12px; line-height: 1.5; color: var(--sc-text); background: var(--sc-elevated); border: 1px solid var(--sc-border); border-radius: 9px; padding: 10px 12px; }
 .pp-gen-preview-text:focus-visible { outline: 2px solid var(--sc-primary-hover); outline-offset: 2px; }
 .pp-gen-preview-actions { display: flex; gap: 10px; justify-content: flex-end; flex-wrap: wrap; }
@@ -7238,6 +7241,28 @@
      engine to pick as the thing to keep stationary; the `.tr-line` rows remain candidates. */
   flex: none;
   overflow-anchor: none;
+}
+
+/* Generate Sermon Notes from a stored transcript (86akcffy0) — reuses the `.pp-generate`/
+   `.pp-gen-preview`/`.pp-gen-result` rules above (Settings panel's live-tail Generate) so both
+   flows look and behave identically; `.tr-gen` itself is just a `flex: none` footer strip below
+   the (flex:1) log, padded to match this surface's own edges rather than the Settings panel's. */
+.tr-gen {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px 28px 20px;
+  border-top: 1px solid var(--sc-border);
+}
+/* Scoped to THIS surface only (descendant selector) — never touches `#surface-settings`'s own
+   `.pp-generate`/`.pp-gen-result` instances. Same trap and same fix as `.pp-gen-preview[hidden]`
+   above (M-1, Cody): the shared classes' `display: flex` outranks the UA `[hidden]{display:none}`
+   default regardless of specificity (author origin beats user-agent origin), so an element left
+   with only the `hidden` ATTRIBUTE stays laid out as an empty bordered/gradient box. */
+.tr-gen .pp-generate[hidden],
+.tr-gen .pp-gen-result[hidden] {
+  display: none;
 }
 
 /* One rendered transcript line. Distinct from the LIVE console's `.tr-seg`/`.tr-seg-time`/

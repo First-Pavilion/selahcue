@@ -1191,12 +1191,13 @@
     <!-- TRANSCRIPTS surface (86akcffvt / FR-130 core slice): every saved transcript (label · date ·
          duration · segment count), most recent first; selecting one opens a read-only, fully
          scrollable view of its complete stored text plus whether sermon notes have already been
-         generated (status only). Editing/corrections, the detected-scripture list, and generating
-         notes from a selected transcript are explicitly out of this slice (see 86akcffvt's
-         non-goals; note generation is 86akcffy0, which depends on this ticket). A long transcript's
-         text is rendered through a bounded sliding window (see transcripts.js) so the DOM never
-         holds more than a small, fixed number of segment rows regardless of a service's length.
-         Populated + wired by transcripts.js. -->
+         generated (real status, `notes_generated`). From the same detail view the operator can
+         Generate sermon notes from the transcript's COMPLETE stored text (86akcffy0) — reuses the
+         Settings panel's preview-and-confirm consent pattern (`#tr-gen`, below) with its own
+         honest disclosure copy. Editing/corrections and the detected-scripture list remain
+         deferred (86akgqdxr). A long transcript's text is rendered through a bounded sliding
+         window (see transcripts.js) so the DOM never holds more than a small, fixed number of
+         segment rows regardless of a service's length. Populated + wired by transcripts.js. -->
     <section id="surface-transcripts" class="surface-page surface-pad" aria-label="Transcripts">
       <div id="tr-list-view" class="tr-view">
         <div class="tr-head">
@@ -1235,6 +1236,16 @@
           <div id="tr-log-top-spacer" class="tr-log-spacer" aria-hidden="true"></div>
           <div id="tr-log-rows"></div>
           <div id="tr-log-bottom-spacer" class="tr-log-spacer" aria-hidden="true"></div>
+        </div>
+        <!-- Generate Sermon Notes (86akcffy0; FR-122/130): builds the request from THIS
+             transcript's complete stored text (`transcript_generate_notes`), never a bounded
+             tail. Reuses the same preview-and-confirm consent pattern (FR-132/135) as the
+             Settings panel's live-tail Generate — same `.pp-generate`/`.pp-gen-preview`/
+             `.pp-gen-result` classes — with its own honest disclosure copy (transcripts.js). -->
+        <div id="tr-gen" class="tr-gen">
+          <button id="tr-generate" class="pp-generate" type="button">✦   Generate Sermon Notes</button>
+          <div id="tr-gen-preview" class="pp-gen-preview" hidden></div>
+          <div id="tr-gen-result" class="pp-gen-result" hidden></div>
         </div>
         <p id="tr-detail-live" class="sr-only" role="status" aria-live="polite"></p>
       </div>
