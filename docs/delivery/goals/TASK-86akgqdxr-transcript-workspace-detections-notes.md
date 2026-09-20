@@ -250,7 +250,7 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
 | C-009 | yes | `TranscriptDetailView`'s field-name contract stays pinned and every existing struct-literal call site is updated in this same change | `cargo test -p selahcue-operator the_detail_view_field_names_are_pinned` | PASS with the new field set asserted | `make ci` log: `transcript_view_tests::the_detail_view_field_names_are_pinned ... ok`, `the_summary_view_field_names_are_pinned ... ok` | PASS |
 | C-010 | yes | No transcript/detection/note text reaches a log/diagnostic string verbatim (FR-082) for any new code path | code review + a targeted test mirroring `transcript_repo.rs`'s existing no-speech-in-diagnostics test | no planted marker text leaks | pre-existing `no_segment_or_detection_text_reaches_a_dataerror_diagnostic` ok in `make ci` log; new code (`build_transcript_detail_view`) is a pure field-mapping function with no new `eprintln!`/error path added — verified by reading the diff, so the existing test's coverage of `transcript_repo`'s data source is the applicable guard | PASS |
 | C-011 | yes | Four-reviewer gate (Cody, Vera, Sana, Quinn) passed, blocking findings remediated and re-checked | reviewer reports (own isolated worktrees), consolidated Artifact | all four report no blocking findings outstanding | Artifact URL on PR | PENDING |
-| C-012 | yes | Draft PR opened against `main`, rebased onto `origin/main` immediately before marking ready | `git log --oneline origin/main..HEAD` / `git merge-base --is-ancestor origin/main HEAD` | PR open, branch not behind `origin/main` at ready-for-review time | **BLOCKED**: branch was built by fast-forward-merging 86akcffy0/86akc0tua/86akby820 rather than rebasing; 2 of 3 (PR #45, #46) have since merged to `origin/main` with different (fixed-up) SHAs, and a plain `git rebase origin/main` conflicts on the superseded pre-fix commits. Correct fix (cherry-pick only `10f776b`/`c737dad`/`d317f7c` onto fresh `origin/main`) is in progress on branch `rebuild-86akgqdxr` (2/3 clean; 3rd conflicts only in `operator_headless.py`'s `EXPECTED_MIN_CHECKS`, mechanically resolvable). Cannot complete yet: this ticket's own `transcripts.js` code reads `scripture_verdicts`/`scripture_verification_note` from **86akby820 (PR #47)**, which is `MERGEABLE` but not yet merged to `origin/main` — confirmed via `git merge-base --is-ancestor`. Original branch preserved untouched at `d317f7c` (tagged `backup-d317f7c`). | BLOCKED |
+| C-012 | yes | Draft PR opened against `main`, rebased onto `origin/main` immediately before marking ready | `git log --oneline origin/main..HEAD` / `git merge-base --is-ancestor origin/main HEAD` | PR open, branch not behind `origin/main` at ready-for-review time | PR #50 (https://github.com/First-Pavilion/selahcue/pull/50), draft, against `main`. Branch rebuilt by cherry-picking this ticket's 3 unique commits onto current `origin/main` (all four prior dependencies, including 86akby820/PR #47, merged) on `rebuild-86akgqdxr`, pushed as the remote `feat/86akgqdxr-transcript-workspace-detections-notes`. `git merge-base --is-ancestor origin/main HEAD` confirms not behind (5 commits ahead, 0 behind). | PASS |
 
 Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABLE`.
 
@@ -363,6 +363,42 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
   `d317f7c`, verified clean (`git status`, `git reflog`) and untouched by the exploration.
   `rebuild-86akgqdxr` (2/3 commits already cherry-picked clean) kept as a head start for once PR #47
   lands.
+
+### Iteration 4 — branch rebuilt onto origin/main (all 4 dependencies merged); real gap found and fixed; PR opened
+
+- Target criterion: C-012, C-011 (dispatch)
+- Hypothesis: with 86akby820 (PR #47) merged, resuming the cherry-pick plan from `rebuild-86akgqdxr`
+  (2/3 commits already validated clean) would close the branch-currency blocker.
+- Change: rebased `rebuild-86akgqdxr`'s 2 clean commits onto the new `origin/main`; cherry-picked
+  the 3rd (`d317f7c`) — conflicted only in `scripts/operator_headless.py`'s `EXPECTED_MIN_CHECKS`
+  history comment, resolved by keeping `origin/main`'s real lineage (the more complete, currently
+  accurate narrative — confirmed by reading which side's fragment grammatically continues into the
+  unconflicted text either side of the marker) and appending this ticket's own addition, re-measured
+  empirically rather than by arithmetic. While verifying, found a genuine gap this ticket's own code
+  carried: `transcripts.js`'s `readSectionsFromForm` was ported from `settings.js` before `bfedaf2`
+  (86akc0tua's second remediation round, a real Cody-found bug) added a client-side filter dropping
+  a caveated-empty note section from the edit-save payload — this ticket's new Transcripts edit
+  surface reached the exact same `update_sermon_note_draft` call and so carried the identical bug,
+  undetected until this rebuild surfaced the fix it was ported without. Fixed by porting the
+  identical filter + `isStillEmpty` helper; added a fixture section and 2 new headless assertions
+  (a caveated-empty section never sent; a populated section not dropped by the same filter —
+  positive control), mutation-verified (disabling the filter turns exactly the new "never sent"
+  assertion red, siblings including the positive control stay green).
+- Verifier executed: `python3 scripts/operator_headless.py` standalone (1417, then 1419 after the
+  fix, both 0 FAIL); `cargo check`/`cargo test --manifest-path
+  implementation/desktop/crates/selahcue-operator/Cargo.toml --features stt` (169/169); full
+  `make ci` on the rebuilt branch (`/tmp/make_ci_86akgqdxr_rebuild.log`); `python3
+  scripts/operator_webkit_smoke.py` on the rebuilt branch (`/tmp/webkit_smoke_86akgqdxr_rebuild.log`).
+- Result: `make ci` real exit 0 (`== local Rust/Flutter gate: ALL GREEN ==`), headless suite 1419/0
+  FAIL confirmed inside that same run, Flutter 223/223. WebKit smoke 28/0 FAIL, exit 0. Pushed
+  `rebuild-86akgqdxr` to `origin/feat/86akgqdxr-transcript-workspace-detections-notes` (no remote
+  branch existed yet under that name — a new ref, not a force-push over existing remote history).
+  Opened draft PR #50 against `main`. Confirmed not behind: `git merge-base --is-ancestor
+  origin/main HEAD` passes, 5 commits ahead / 0 behind.
+- New evidence: the pre-rebuild local `feat/86akgqdxr-transcript-workspace-detections-notes` branch
+  and its `backup-d317f7c` safety branch are left untouched and unpushed, superseded but preserved
+  locally for reference — no destructive operation was performed on either.
+- Decision: iterate — dispatch the four-reviewer gate (C-011) against PR #50.
 
 ## Risks and rollback
 
