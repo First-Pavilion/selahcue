@@ -239,18 +239,18 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
 
 | ID | Mandatory | Criterion | Verifier | Expected result | Evidence | Status |
 |---|---|---|---|---|---|---|
-| C-001 | yes | Opening a transcript with detections shows every detection persisted against it (reference, confidence, position) | `cargo test -p selahcue-operator` (new Rust unit tests) + `python3 scripts/operator_headless.py` (new "TR detections" checks) | Rust tests green; headless checks report every seeded detection's reference text present in the DOM | test output | PENDING |
-| C-002 | yes | Opening a transcript with a saved draft shows the draft's actual content, not just a status badge | `python3 scripts/operator_headless.py` (new "TR notes" checks) | title/summary/sections/scriptures/caveats render from `transcript_get`'s `draft` field | test output | PENDING |
-| C-003 | yes | No detections / no draft shows a clear empty state, not a blank area | `python3 scripts/operator_headless.py` | empty-state elements present with `getComputedStyle(...).display !== "none"` when applicable | test output | PENDING |
-| C-004 | yes | Transcript, detections, and notes are reachable and editable from one screen | `python3 scripts/operator_headless.py` | a single `#surface-transcripts` detail view exposes the log, detections list, and a working save-edit round trip via `update_sermon_note_draft` | test output | PENDING |
-| C-005 | yes | A transcript with more detections than `MAX_DETECTIONS` (32) renders completely without unbounded DOM growth; mutation-verified | `python3 scripts/operator_headless.py` (new bounded-rendering block) + manual mutation-verify (break the window cap, confirm RED, restore) | mounted node count stays bounded across scroll positions; positive control proves a real window, not visual hiding; documented mutation-verify note in the code comment | test output + code comment | PENDING |
-| C-006 | yes | Meets this console's NFR-019/020 accessibility baseline | `python3 scripts/operator_headless.py` (new "TR: ...(NFR-019/020)" assertions) | keyboard-reachable via native controls; contrast >= 4.5 on new text | test output | PENDING |
-| C-007 | yes | `make ci` passes end to end, including the headless operator webview check | `make ci` (serialized with any concurrent session) | exit 0 | terminal output | PENDING |
-| C-008 | yes | WebKit smoke passes on the same surface | `python3 scripts/operator_webkit_smoke.py` (or documented equivalent if unavailable locally) | exit 0 / documented pass | terminal output | PENDING |
-| C-009 | yes | `TranscriptDetailView`'s field-name contract stays pinned and every existing struct-literal call site is updated in this same change | `cargo test -p selahcue-operator the_detail_view_field_names_are_pinned` | PASS with the new field set asserted | test output | PENDING |
-| C-010 | yes | No transcript/detection/note text reaches a log/diagnostic string verbatim (FR-082) for any new code path | code review + a targeted test mirroring `transcript_repo.rs`'s existing no-speech-in-diagnostics test | no planted marker text leaks | test output | PENDING |
+| C-001 | yes | Opening a transcript with detections shows every detection persisted against it (reference, confidence, position) | `cargo test -p selahcue-operator` (new Rust unit tests) + `python3 scripts/operator_headless.py` (new "TR detections" checks) | Rust tests green; headless checks report every seeded detection's reference text present in the DOM | `make ci` log (`transcript_view_tests::every_persisted_detection_is_forwarded_to_the_wire_view ... ok`, 149/149 in `selahcue-operator`); headless suite 1410/1410 within same run | PASS |
+| C-002 | yes | Opening a transcript with a saved draft shows the draft's actual content, not just a status badge | `python3 scripts/operator_headless.py` (new "TR notes" checks) | title/summary/sections/scriptures/caveats render from `transcript_get`'s `draft` field | `make ci` log (`transcript_view_tests::a_saved_draft_forwards_its_real_content_not_just_the_generated_flag ... ok`); headless suite 1410/1410 | PASS |
+| C-003 | yes | No detections / no draft shows a clear empty state, not a blank area | `python3 scripts/operator_headless.py` | empty-state elements present with `getComputedStyle(...).display !== "none"` when applicable | `make ci` log (`no_detections_forwards_an_empty_array_not_a_missing_field`, `no_saved_draft_leaves_every_draft_field_none` both ok); headless suite 1410/1410 | PASS |
+| C-004 | yes | Transcript, detections, and notes are reachable and editable from one screen | `python3 scripts/operator_headless.py` | a single `#surface-transcripts` detail view exposes the log, detections list, and a working save-edit round trip via `update_sermon_note_draft` | headless suite 1410/1410 within verified `make ci` run; WebKit smoke "Transcripts: nav + list + detail exercised... no exception" | PASS |
+| C-005 | yes | A transcript with more detections than `MAX_DETECTIONS` (32) renders completely without unbounded DOM growth; mutation-verified | `python3 scripts/operator_headless.py` (new bounded-rendering block) + manual mutation-verify (break the window cap, confirm RED, restore) | mounted node count stays bounded across scroll positions; positive control proves a real window, not visual hiding; documented mutation-verify note in the code comment | headless suite 1410/1410 (verified run); mutation-verify narrated in ClickUp comment 1400430000001310 (two independent mutants, siblings stay green) | PASS |
+| C-006 | yes | Meets this console's NFR-019/020 accessibility baseline | `python3 scripts/operator_headless.py` (new "TR: ...(NFR-019/020)" assertions) | keyboard-reachable via native controls; contrast >= 4.5 on new text | headless suite 1410/1410 (verified run) | PASS |
+| C-007 | yes | `make ci` passes end to end, including the headless operator webview check | `make ci` (serialized with any concurrent session) | exit 0 | `/tmp/make_ci_86akgqdxr.log`: `== local Rust/Flutter gate: ALL GREEN ==` / `MAKE_CI_EXIT:0` (real exit code captured in the log itself, not the wrapper's) | PASS |
+| C-008 | yes | WebKit smoke passes on the same surface | `python3 scripts/operator_webkit_smoke.py` (or documented equivalent if unavailable locally) | exit 0 / documented pass | `/tmp/webkit_smoke_86akgqdxr.log`: `=== WebKit smoke: 28 checks, 0 FAIL ===` / `WEBKIT_SMOKE_EXIT:0` | PASS |
+| C-009 | yes | `TranscriptDetailView`'s field-name contract stays pinned and every existing struct-literal call site is updated in this same change | `cargo test -p selahcue-operator the_detail_view_field_names_are_pinned` | PASS with the new field set asserted | `make ci` log: `transcript_view_tests::the_detail_view_field_names_are_pinned ... ok`, `the_summary_view_field_names_are_pinned ... ok` | PASS |
+| C-010 | yes | No transcript/detection/note text reaches a log/diagnostic string verbatim (FR-082) for any new code path | code review + a targeted test mirroring `transcript_repo.rs`'s existing no-speech-in-diagnostics test | no planted marker text leaks | pre-existing `no_segment_or_detection_text_reaches_a_dataerror_diagnostic` ok in `make ci` log; new code (`build_transcript_detail_view`) is a pure field-mapping function with no new `eprintln!`/error path added — verified by reading the diff, so the existing test's coverage of `transcript_repo`'s data source is the applicable guard | PASS |
 | C-011 | yes | Four-reviewer gate (Cody, Vera, Sana, Quinn) passed, blocking findings remediated and re-checked | reviewer reports (own isolated worktrees), consolidated Artifact | all four report no blocking findings outstanding | Artifact URL on PR | PENDING |
-| C-012 | yes | Draft PR opened against `main`, rebased onto `origin/main` immediately before marking ready | `git log --oneline origin/main..HEAD` / `git merge-base --is-ancestor origin/main HEAD` | PR open, branch not behind `origin/main` at ready-for-review time | PR URL | PENDING |
+| C-012 | yes | Draft PR opened against `main`, rebased onto `origin/main` immediately before marking ready | `git log --oneline origin/main..HEAD` / `git merge-base --is-ancestor origin/main HEAD` | PR open, branch not behind `origin/main` at ready-for-review time | **BLOCKED**: branch was built by fast-forward-merging 86akcffy0/86akc0tua/86akby820 rather than rebasing; 2 of 3 (PR #45, #46) have since merged to `origin/main` with different (fixed-up) SHAs, and a plain `git rebase origin/main` conflicts on the superseded pre-fix commits. Correct fix (cherry-pick only `10f776b`/`c737dad`/`d317f7c` onto fresh `origin/main`) is in progress on branch `rebuild-86akgqdxr` (2/3 clean; 3rd conflicts only in `operator_headless.py`'s `EXPECTED_MIN_CHECKS`, mechanically resolvable). Cannot complete yet: this ticket's own `transcripts.js` code reads `scripture_verdicts`/`scripture_verification_note` from **86akby820 (PR #47)**, which is `MERGEABLE` but not yet merged to `origin/main` — confirmed via `git merge-base --is-ancestor`. Original branch preserved untouched at `d317f7c` (tagged `backup-d317f7c`). | BLOCKED |
 
 Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABLE`.
 
@@ -317,6 +317,52 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
 - Decision: **blocked** pending Aria's verdict on the ADR-0026 extension (see Pause and
   escalation conditions). Continuing non-blocked prep (this contract, the follow-up ticket,
   ClickUp status) in the meantime.
+
+### Iteration 3 — real `make ci` / WebKit smoke verification; branch-currency blocker found
+
+- Target criterion: C-007, C-008, C-012 (plus retroactive evidence for C-001..C-006, C-009, C-010)
+- Hypothesis: with Aria's ADR-0026 rev 3 landed and the shared machine's earlier disk-space
+  exhaustion resolved, a full `make ci` run plus the WebKit smoke test would close C-007/C-008;
+  bringing the branch up to date with `origin/main` (C-012) would be a routine rebase.
+- Change: none to source; verification only. `make ci` run to completion, real exit code captured
+  inside the log file itself (`echo "MAKE_CI_EXIT:$?" >> log`, not inferred from the wrapper) —
+  this mattered in practice: an earlier same-day attempt on this exact ticket had silently reported
+  a false "exit 0" from the wrapper while `make ci` itself had failed with `Error 101` on disk
+  exhaustion (see ClickUp comment history) and a later attempt was genuinely `SIGTERM`'d by
+  machine-wide CPU/memory contention from concurrent sessions' own `make ci` runs — both required
+  reading the log's actual captured exit code, not the tool wrapper's, to tell apart from a real
+  result.
+- Verifier executed: `make ci` (full run) — `/tmp/make_ci_86akgqdxr.log`; `python3
+  scripts/operator_webkit_smoke.py` — `/tmp/webkit_smoke_86akgqdxr.log`.
+- Result: `make ci` exit 0 (`== local Rust/Flutter gate: ALL GREEN ==`), 149/149 `selahcue-operator`
+  unit tests, headless webview suite re-confirmed 1410/1410 checks 0 FAIL within the same run, full
+  Flutter suite 223/223. WebKit smoke: 28 checks, 0 FAIL, exit 0, specifically exercising the
+  Transcripts surface (nav/list/detail, the WKWebView `[hidden]`-vs-computed-display trap, native
+  Home/End/PageUp/PageDown/Space scroll behaviour, Shift+End selection preservation). No genuine
+  failures found scanning the full 6855-line `make ci` log.
+- New evidence: attempting C-012 (branch currency) surfaced that this branch was built by
+  fast-forward-merging its three dependency branches rather than rebasing onto them, so a plain
+  `git rebase origin/main` replays now-superseded pre-fix commits against their differently-shaped,
+  already-merged equivalents and conflicts immediately (5 files) on the first replayed commit.
+  Correct approach — cherry-pick only this ticket's 3 unique commits (`10f776b`, `c737dad`,
+  `d317f7c`) onto fresh `origin/main` — validated on a throwaway branch `rebuild-86akgqdxr`
+  (original tip preserved at `backup-d317f7c`): first two cherry-pick clean; the third conflicts
+  only in `scripts/operator_headless.py`'s `EXPECTED_MIN_CHECKS` (the exact "stray second
+  assignment" class this file's own convention and Aria's ADR-0026 review already name), which is
+  mechanically resolvable by re-measuring the real count at HEAD. However, this ticket's own
+  `transcripts.js` code reads `scripture_verdicts`/`scripture_verification_note` — vocabulary that
+  exists only because of **86akby820 (PR #47)**, confirmed via `git merge-base --is-ancestor` to
+  be `MERGEABLE` but NOT YET merged to `origin/main`, unlike its two sibling dependency branches
+  (86akcffy0/PR #45, 86akc0tua/PR #46) which have merged. Completing the rebuild against bare
+  `origin/main` now would silently degrade the scripture-verification part of this ticket's own UI
+  (fields resolve to null/empty) rather than reflect real integration.
+- Decision: **blocked** on PR #47 (86akby820) actually merging — this was always this ticket's own
+  documented dependency (see Baseline/Dependencies sections), not a new one. Not deciding
+  unilaterally to strip the scripture-verification integration to force a clean merge onto an
+  incomplete base. Worktree returned to `feat/86akgqdxr-transcript-workspace-detections-notes` at
+  `d317f7c`, verified clean (`git status`, `git reflog`) and untouched by the exploration.
+  `rebuild-86akgqdxr` (2/3 commits already cherry-picked clean) kept as a head start for once PR #47
+  lands.
 
 ## Risks and rollback
 
