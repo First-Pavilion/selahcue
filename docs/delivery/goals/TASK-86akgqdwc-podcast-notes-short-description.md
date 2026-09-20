@@ -416,6 +416,119 @@ instruction, since both Wave-1 PRs are open at start:
   `5cae53d` before treating C-010/C-011 as settled; Cody/Vera/Quinn's
   initial verdicts still outstanding.
 
+### Iteration 6
+
+- Target criterion: C-011 (four-reviewer gate) — Cody/Vera/Quinn's initial
+  verdicts, plus a second real rebase.
+- Change or investigation: GitHub Actions CI on `245f9d9` went fully green
+  (confirmed via `gh pr checks 48 --watch`, all non-skipped jobs pass). The
+  coordinator then reported PRs #44-#47/#49/#50 all merged and PR #48
+  showing CONFLICTING again — confirmed real (`main` advanced 7a49d3e →
+  4b3bb9e, PR #50/86akgqdxr merged). Simultaneously, Cody/Vera/Quinn's
+  completion notifications had actually already arrived earlier without
+  being surfaced as expected — status-check pings to all three confirmed
+  they were each long finished, not stuck: **Cody APPROVE** (1 MEDIUM:
+  undifferentiated flat-list content shape, ticket-permitted, recommends
+  looping in Uma or filing a follow-up; 2 MINOR: `short_description` no
+  schema-level cap, `IncludeDto` missing `#[serde(default)]`); **Vera
+  APPROVE** (1 MINOR: fixed `MAX_OUTPUT_TOKENS` + uninspected `incomplete`
+  status, pre-existing; 2 NIT: stale capacity hint, headless O(n²) rescan —
+  no action requested on the second); **Quinn PASS-WITH-FOLLOWUPS** (2
+  MINOR test-coverage gaps — schema "on"-direction untested, degraded
+  positive-control names only one pre-existing heading; 1 NIT — same
+  "structural distinctness" question as Cody's MEDIUM). No BLOCKING/MAJOR
+  from any of the four.
+  Rebase: first attempt (plain `git rebase origin/main` on the existing
+  8-commit branch) hit the SAME pathology as before — a `<<<<<<<` conflict
+  in `operator_headless.py` resolved as if it were the FINAL diff, when it
+  was actually only replaying commit 1 of 8 (my own original feature
+  commit), which would have caused the identical conflict again on
+  commit 4 (the F1/F2 fix, which also touches this constant). Aborted,
+  soft-reset to the merge-base, and squashed all 8 commits into 2 clean
+  ones (feature+fixes, then goal-contract docs) — confirmed byte-identical
+  tree via `git diff <old-head> <new-head>` (empty). Rebased the squashed
+  branch onto the new `origin/main`: ONE real conflict, in
+  `operator_headless.py`'s `EXPECTED_MIN_CHECKS`, between the settled 1423
+  baseline (four merged tickets including 86akgqdxr) and this ticket's own
+  6-check delta (2 toggle-wiring + 4 from the Sana F1/F2 headless coverage)
+  — resolved as 1423 + 6 = 1429.
+  Then closed the non-blocking findings that were cheap/safe to fix now:
+  Quinn's two MINOR test-coverage gaps (new schema+wire-body positive test;
+  extended the degraded test's positive control to both new headings);
+  Cody's/Sana's independently-found `#[serde(default)]` gap on all 8
+  `IncludeDto` fields; Vera's capacity-hint NIT (1_400 → 2_048, with her own
+  measured numbers cited). Filed two follow-up ClickUp tickets for what
+  both reviewers explicitly deferred rather than fixing blind: content-shape
+  richness (Cody's MEDIUM + Quinn's NIT-1, looping in Uma per the Goal
+  Contract's own escalation trigger) — 17tnw2axppx; and the pre-existing
+  `MAX_OUTPUT_TOKENS`/`incomplete`-status gap (Vera's MINOR, Sana's
+  corroboration) — 17tnw2axppy. Both linked back to this ticket.
+  Fresh isolated worktrees created for Cody/Vera/Quinn pinned to the final
+  head (Vera explicitly asked not to reuse hers), and each sent a
+  targeted delta re-check request naming exactly what changed in their
+  area. Sana's own approval stands unchanged — nothing in this iteration
+  touched scripture-verification code, only the unrelated toggle-wiring
+  test, the wire-contract serde attribute, and a capacity hint.
+- Verifier executed: `cargo test -p selahcue-core`, `-p selahcue-cloud
+  --features openai`, `-p selahcue-data`, `--manifest-path
+  crates/selahcue-operator/Cargo.toml --features dev-keys,openai-notes`;
+  `cargo fmt --check` (workspace + operator separately); `cargo clippy -- -D
+  warnings` on every touched crate; `python3 scripts/operator_headless.py`;
+  `git diff <pre-squash> <post-squash>` (byte-identity check); `make ci`
+  (re-run on the final commit, in progress); `gh pr view 48`.
+- Result: selahcue-cloud 49/49 (up from 48); selahcue-operator 168/168 (up
+  from 163, gained PR #50's own tests); headless 1429 checks, 0 FAIL,
+  matching the re-derived arithmetic exactly; fmt/clippy clean on every
+  touched crate; pre/post-squash tree diff empty; `gh pr view 48` →
+  `mergeable: MERGEABLE` (no conflicts after the second rebase).
+- New evidence: force-pushed the rebased, review-follow-up-fixed branch
+  (`69b041f`, replacing the prior 8-commit history with a clean 2-commit
+  one); two follow-up ClickUp tickets filed and linked.
+- Decision: iterate → confirm `make ci` full pass on `69b041f`, then await
+  Cody/Vera/Quinn's delta re-check verdicts before requesting `qa` status.
+
+### Iteration 7
+
+- Target criterion: C-010, C-011 (final `make ci` + delta re-checks)
+- Hypothesis: `make ci` passes on `69b041f`, GitHub Actions CI is green, and
+  Cody/Vera/Quinn's delta re-checks confirm nothing regressed across the
+  two rebases and the review-follow-up fixes.
+- Change or investigation: GitHub Actions CI on `69b041f` went fully green
+  (`gh pr checks 48 --watch`, all non-skipped jobs pass). Local `make ci`
+  run to completion. Vera's delta re-check: **APPROVE, unchanged** — she
+  independently re-measured the capacity-hint fix rather than trusting the
+  diff (the F1 fix changed the same prompt text in the same commit, so her
+  original 1,621 figure was stale; re-measured worst case 1,660, `2_048`
+  clears it) and caught her own synthetic-benchmark error before it reached
+  this report (a first pass suggested the two new sections added 3.2s;
+  root-caused to her own harness holding items-per-section constant rather
+  than total text constant — controlling for total text showed the two new
+  sections add negligible cost). She also surfaced one pre-existing,
+  out-of-scope finding: `load_sermon_note_draft` runs `verify_scriptures`
+  synchronously in an async Tauri command rather than via
+  `spawn_blocking` (five other CPU-bound sites in the same file use it) —
+  filed as its own follow-up ticket (17tnw2axpq3, LOW priority, explicit
+  tail-latency framing per her request) rather than bolted onto
+  17tnw2axppy, since it's a different root cause in a different file.
+  Quinn's delta re-check: **PASS, upgraded from PASS-WITH-FOLLOWUPS** —
+  independently re-verified both MINOR fixes and the F1/F2 security fixes
+  that came in on the rebase, confirmed no LAN wire protocol impact.
+  Cody's delta re-check still outstanding.
+- Verifier executed: `gh pr checks 48 --watch`; `make ci` (real exit code
+  captured directly in the log); `git status`/`git diff --stat` (side-effect
+  check).
+- Result: GitHub Actions CI fully green on `69b041f`. `make ci` →
+  `MAKE_CI_EXIT:0`, `ALL GREEN`, zero FAIL/error[/FAILED across 6876 log
+  lines. `git status` clean except this goal-contract doc itself (no
+  unrelated side-effect diffs this run). `gh pr view 48` →
+  `mergeStateStatus: CLEAN`, `mergeable: MERGEABLE`.
+- New evidence: two more follow-up ClickUp tickets created and linked
+  (17tnw2axpq3, in addition to 17tnw2axppx and 17tnw2axppy from iteration
+  6) — three follow-ups total, none blocking, all explicitly scoped and
+  linked back to this ticket.
+- Decision: iterate → await Cody's delta re-check as the last outstanding
+  item before requesting `qa` status.
+
 ## Risks and rollback
 
 - Risks: `scripts/operator_headless.py` is a large (~6500-line) end-to-end
