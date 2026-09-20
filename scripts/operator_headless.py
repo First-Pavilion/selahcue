@@ -34,58 +34,101 @@ DIST = os.environ.get("SELAHCUE_OPERATOR_DIST") or os.path.join(
 )
 
 # ---------------------------------------------------------------------------------------------
-# D5 (ADR-0026 rev 2, 86akcffvt) — the "transcripts.js never writes scrollTop" invariant is
-# STATIC and grep-checkable, not inferred from timing-dependent browser behaviour. Per the ADR:
-# every previous round's control had to infer correctness from behaviour under conditions nobody
-# could reliably reproduce, which is exactly how round 6 shipped a mutation-verified check that
-# pinned a bug (the "TR wheel-race" block this same round deletes, below) instead of catching one.
-# A static rule over the committed TEXT cannot pass vacuously and cannot drift with a future edit.
+# D5 (ADR-0026 rev 3 — rev 2 / 86akcffvt, extended by 86akgqdxr) — the "transcripts.js never
+# writes scrollTop" invariant is STATIC and grep-checkable, not inferred from timing-dependent
+# browser behaviour. Per the ADR: every previous round's control had to infer correctness from
+# behaviour under conditions nobody could reliably reproduce, which is exactly how round 6 shipped
+# a mutation-verified check that pinned a bug (the "TR wheel-race" block that round deletes,
+# below) instead of catching one. A static rule over the committed TEXT cannot pass vacuously and
+# cannot drift with a future edit.
 #
 # The rule: `dist/transcripts.js` may contain NO assignment to `<expr>.scrollTop` — read access
-# (`x.scrollTop` with no `=`, or comparisons `===`/`!==`/`>=` etc.) is unrestricted — except the
-# two exemptions the ADR names explicitly: `openTranscript`'s initial `= 0` (runs before any
-# scroll or animation can exist) and the two test hooks that exist to SIMULATE user input
-# (`__trScrollToFraction` / `__trScrollBy`), three write sites in total. Every permitted site is
-# required to carry a trailing `D5-exempt` marker comment. This check fails on (a) ANY scrollTop
-# write with no marker, and (b) a marked-exemption count that does not match the ADR's own number
-# — (b) is what stops a future violation from being silenced by copy-pasting the marker onto a
-# NEW write instead of deleting it, which a marker-presence-only check could not catch.
+# (`x.scrollTop` with no `=`, or comparisons `===`/`!==`/`>=` etc.) is unrestricted — except sites
+# in the TWO CLASSES the ADR names, each of which must carry a marker comment naming its OWN
+# class. As of rev 3 the file holds TWO independent virtualizers, so each class has more than one
+# member:
+#
+#   D5-exempt(init)       — a virtualizer's single initial-position reset, which runs before any
+#                           scroll or animation can exist on that container. TWO sites: the
+#                           transcript log's, in `openTranscript`'s `transcript_get` success
+#                           handler, and the detections panel's, in `renderDetections` (86akgqdxr
+#                           — `#tr-det-log` is a persistent node reused across transcripts, so
+#                           without it a new transcript opens at the previous one's offset).
+#   D5-exempt(test-hook)  — a write inside a `window.__tr*` hook whose only purpose is to SIMULATE
+#                           user input for this driver, which cannot dispatch a trusted scrollbar
+#                           drag or wheel tick. THREE sites: `__trScrollToFraction`,
+#                           `__trScrollBy`, `__trDetScrollToFraction`.
+#
+# There is no third class: a write reachable from a `scroll`/`wheel`/`keydown`/animation-frame
+# handler is in neither and is forbidden outright — it is exactly the write ADR-0026's C1 says
+# cannot be made correct on WebKit.
+#
+# This check fails on (a) ANY scrollTop write whose line carries no `D5-exempt(<class>)` marker,
+# or carries a class this file does not know, and (b) a PER-CLASS marked count that does not match
+# the ADR's own numbers. (b) is what stops a future violation from being silenced by copy-pasting
+# a marker onto a NEW write instead of deleting it, which a marker-presence-only check could not
+# catch.
+#
+# Why per-class and not one total of five (86akgqdxr): a flat budget is FUNGIBLE. With one total,
+# a later edit could delete an `init` reset and spend the freed slot on a reactive write marked
+# `D5-exempt`, leaving the total unchanged and this check green — reintroducing the very hole the
+# count exists to close. Bumping 3 -> 5 for the second virtualizer would therefore have WEAKENED
+# the control while appearing to keep it. Counting each class separately restores it, and scales:
+# a third virtualizer raises `init` by one and `test-hook` by however many hooks it needs, each
+# recorded in its own ADR revision. As before: a new exemption cannot be added by marking it.
+#
+# NOTE (rev 3 migration): a BARE `D5-exempt` with no `(class)` no longer satisfies this check, by
+# design — it reports as unmarked, so the marker migration cannot be left half-done silently.
 #
 # Runs before Chrome is even resolved (a pure source-text check, independent of a browser being
 # available at all) so it still gates a Chrome-less dev box, and reads through `DIST` — the same
 # SELAHCUE_OPERATOR_DIST override every other check in this file honours — so this file's own
 # mutation-verification discipline (CLAUDE.md: "mutation-verify before claiming it") can point it
 # at an isolated mutated copy without touching the tracked tree.
-D5_EXPECTED_EXEMPT_COUNT = 3
+D5_EXPECTED_EXEMPT_COUNTS = {"init": 2, "test-hook": 3}
 D5_SCROLLTOP_WRITE_RE = re.compile(r"\.scrollTop\s*[+\-]?=[^=]")
-D5_MARKER = "D5-exempt"
+D5_MARKER_RE = re.compile(r"D5-exempt\(([A-Za-z0-9_-]+)\)")
 
 
 def check_d5_no_scrolltop_writes():
     path = os.path.join(DIST, "transcripts.js")
     lines = open(path, encoding="utf-8").read().splitlines()
-    unmarked, marked = [], []
+    unmarked, by_class = [], {}
     for lineno, text in enumerate(lines, start=1):
-        if D5_SCROLLTOP_WRITE_RE.search(text):
-            (marked if D5_MARKER in text else unmarked).append(lineno)
+        if not D5_SCROLLTOP_WRITE_RE.search(text):
+            continue
+        m = D5_MARKER_RE.search(text)
+        if m is None or m.group(1) not in D5_EXPECTED_EXEMPT_COUNTS:
+            unmarked.append(lineno)
+        else:
+            by_class.setdefault(m.group(1), []).append(lineno)
     ok_unmarked = len(unmarked) == 0
-    ok_count = len(marked) == D5_EXPECTED_EXEMPT_COUNT
     print(
         "PASS: D5 (ADR-0026) — no unmarked `.scrollTop` write in transcripts.js"
         if ok_unmarked
-        else "FAIL: D5 (ADR-0026) — unmarked `.scrollTop` write(s) at line(s) %s "
-        "(every write must carry a 'D5-exempt' marker comment naming which of the ADR's two "
-        "exemptions it is, or be deleted)" % unmarked
+        else "FAIL: D5 (ADR-0026) — unmarked or unknown-class `.scrollTop` write(s) at line(s) %s "
+        "(every write must carry a marker comment naming its class — 'D5-exempt(init)' or "
+        "'D5-exempt(test-hook)', the only two the ADR permits — or be deleted; a bare "
+        "'D5-exempt' with no class does NOT count)" % unmarked
     )
-    print(
-        "PASS: D5 (ADR-0026) — exactly %d marked scrollTop-write exemption(s), matching the ADR"
-        % D5_EXPECTED_EXEMPT_COUNT
-        if ok_count
-        else "FAIL: D5 (ADR-0026) — expected exactly %d marked exemptions, found %d at line(s) %s "
-        "(a new exemption cannot be added by marking it; only a revision of the ADR can grow "
-        "this number)" % (D5_EXPECTED_EXEMPT_COUNT, len(marked), marked)
-    )
-    return ok_unmarked and ok_count
+    ok_counts = True
+    for cls in sorted(D5_EXPECTED_EXEMPT_COUNTS):
+        want = D5_EXPECTED_EXEMPT_COUNTS[cls]
+        got = by_class.get(cls, [])
+        if len(got) == want:
+            print(
+                "PASS: D5 (ADR-0026) — exactly %d marked `D5-exempt(%s)` write(s), matching the ADR"
+                % (want, cls)
+            )
+        else:
+            ok_counts = False
+            print(
+                "FAIL: D5 (ADR-0026) — expected exactly %d `D5-exempt(%s)` write(s), found %d at "
+                "line(s) %s (a new exemption cannot be added by marking it, and the classes are "
+                "counted separately so a deleted one cannot pay for a new one; only a revision of "
+                "the ADR can grow either number)" % (want, cls, len(got), got)
+            )
+    return ok_unmarked and ok_counts
 
 
 if not check_d5_no_scrolltop_writes():
