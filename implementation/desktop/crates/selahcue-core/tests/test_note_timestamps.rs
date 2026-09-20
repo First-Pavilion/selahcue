@@ -183,6 +183,67 @@ fn markers_are_matched_in_a_forward_only_pass_never_binding_backward() {
     );
 }
 
+#[test]
+fn an_unmatched_marker_between_two_matched_ones_lands_strictly_between_them_never_before_the_earlier_one(
+) {
+    // Cody's code-review finding on PR #51: a prior revision of the positional fallback
+    // interpolated an unmatched marker by its ordinal position among only the OTHER
+    // unmatched markers, ignoring where already-matched neighbours actually landed. Traced
+    // example: markers [M1@5000 match, M2 no match, M3@10000 match, M4 no match] over a
+    // 0..20000ms transcript used to yield M2=0 — landing chronologically BEFORE M1's own
+    // 5000, breaking the monotonic, sermon-order guarantee this module's own "Matching"
+    // doc section promises, and unusable as a strictly-ordered exportable chapter list
+    // (YouTube's own chapter-marker convention requires strictly increasing timestamps).
+    let segments = vec![
+        seg(0, 0, 1_000, "welcome and greetings this morning"),
+        seg(1, 5_000, 6_000, "the story of the prodigal son begins"),
+        seg(2, 10_000, 11_000, "now we turn to grace and mercy"),
+        seg(3, 20_000, 21_000, "closing remarks and benediction"),
+    ];
+    let sections = vec![NoteSection::flat(
+        CHAPTER_MARKERS_HEADING,
+        vec![
+            "The prodigal son".to_string(),        // M1: matches segment 1 @ 5_000
+            "Xylophone zephyr quokka".to_string(), // M2: matches nothing
+            "Grace and mercy".to_string(),         // M3: matches segment 2 @ 10_000
+            "Bumblebee marmalade jamboree".to_string(), // M4: matches nothing
+        ],
+    )];
+    let out = link_timestamps(&sections, &segments);
+    assert_eq!(out.len(), 4, "every marker must still carry SOME timestamp");
+    assert_eq!(
+        out[0].offset_ms, 5_000,
+        "M1's real match must be unaffected"
+    );
+    assert_eq!(
+        out[2].offset_ms, 10_000,
+        "M3's real match must be unaffected"
+    );
+    assert!(
+        out[1].offset_ms > out[0].offset_ms,
+        "M2 (unmatched) must land AFTER M1's real match (5_000), got {}",
+        out[1].offset_ms
+    );
+    assert!(
+        out[1].offset_ms < out[2].offset_ms,
+        "M2 (unmatched) must land BEFORE M3's real match (10_000), got {}",
+        out[1].offset_ms
+    );
+    assert!(
+        out[3].offset_ms > out[2].offset_ms,
+        "M4 (unmatched, trailing) must land AFTER M3's real match (10_000), got {}",
+        out[3].offset_ms
+    );
+    // The whole list — matched and fallback-derived alike — must be non-decreasing in item
+    // order, not merely each subset non-decreasing on its own.
+    for pair in out.windows(2) {
+        assert!(
+            pair[0].offset_ms <= pair[1].offset_ms,
+            "the full chapter-marker list must be monotonically non-decreasing, got {out:?}"
+        );
+    }
+}
+
 // ===========================================================================
 // 3 · Positional fallback — chapter markers ALWAYS get an offset
 // ===========================================================================

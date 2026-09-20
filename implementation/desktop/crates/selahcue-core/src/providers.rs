@@ -707,6 +707,70 @@ fn plausible_bounds(eligible: &[crate::transcript::TranscriptSegment]) -> Option
     first.zip(last)
 }
 
+/// Fill every still-`None`, non-blank entry of `offsets` (chapter markers only — see
+/// [`link_timestamps`]'s "Positional fallback" doc section) by linear interpolation between
+/// its nearest RESOLVED neighbours, never by ordinal position among only the other unmatched
+/// entries.
+///
+/// `offsets[i]` corresponds to `texts[i]`; a blank (`texts[i].trim().is_empty()`) entry is
+/// skipped entirely — it is not a fallback candidate and, critically, not a neighbour anchor
+/// either, so it can never anchor a nonsensical interpolation for its own actual neighbours.
+///
+/// For each maximal run of consecutive unresolved candidates, the LEFT anchor is the nearest
+/// preceding candidate's own already-resolved offset (a real match from pass 1, or a value
+/// this same function already filled for an earlier run — runs are processed strictly
+/// left-to-right, so an earlier run's fills are always resolved before a later run reads
+/// past them) — or `first` when there is no preceding candidate at all. The RIGHT anchor is
+/// the nearest following candidate's offset, or `last` when there is none. Every point in the
+/// run is then placed at an even fraction of the `[left, right]` interval — `frac =
+/// (position-in-run + 1) / (run length + 1)`, so no fallback point lands exactly ON `left` or
+/// `right`, only strictly between them (or equal, only if `left == right`).
+///
+/// Because every anchor is itself either an existing (monotonic, per [`link_timestamps`]'s
+/// "Matching" pass) real match or a value already proven `>= ` its own left neighbour by this
+/// same interpolation, and every filled value lies in `[left, right]`, the WHOLE returned
+/// `offsets` sequence ends up non-decreasing in item order — matched and fallback-derived
+/// entries alike — never merely each subset non-decreasing on its own. Interpolating against
+/// only the transcript's global `first`/`last` span (an earlier revision's approach) does not
+/// have this property: a marker's ordinal position among *only the other unmatched* markers
+/// says nothing about where an ADJACENT matched marker already landed, and could place a
+/// later marker's fallback offset before an earlier marker's real match.
+fn fill_positional_fallback(offsets: &mut [Option<u64>], texts: &[&str], first: u64, last: u64) {
+    let candidates: Vec<usize> = (0..texts.len())
+        .filter(|&i| !texts[i].trim().is_empty())
+        .collect();
+    let mut c = 0usize;
+    while c < candidates.len() {
+        if offsets[candidates[c]].is_some() {
+            c += 1;
+            continue;
+        }
+        let run_start = c;
+        while c < candidates.len() && offsets[candidates[c]].is_none() {
+            c += 1;
+        }
+        let run_end = c; // exclusive, index into `candidates`
+        let left = if run_start > 0 {
+            offsets[candidates[run_start - 1]]
+                .expect("every candidate before run_start was already resolved by the loop above")
+        } else {
+            first
+        };
+        let right = if run_end < candidates.len() {
+            offsets[candidates[run_end]]
+                .expect("the candidate immediately after this run ended it by being resolved")
+        } else {
+            last
+        };
+        let span = right.saturating_sub(left) as f64;
+        let steps = (run_end - run_start + 1) as f64;
+        for (offset_in_run, pos) in (run_start..run_end).enumerate() {
+            let frac = (offset_in_run + 1) as f64 / steps;
+            offsets[candidates[pos]] = Some(left + (span * frac) as u64);
+        }
+    }
+}
+
 /// Attach a transcript timestamp to each chapter-marker item (always attempted) and each
 /// top-level outline point (best-effort only — see below) by matching the item's own text
 /// against the transcript's real segments (86akgqdw0; FR-124).
@@ -750,13 +814,24 @@ fn plausible_bounds(eligible: &[crate::transcript::TranscriptSegment]) -> Option
 /// word-overlap score for every marker would silently leave many markers unlinked in
 /// ordinary, non-adversarial use — failing the acceptance criterion in the common case, not
 /// just the edge case. So: when a marker's best textual match scores `0.0` against every
-/// eligible remaining segment (or none is eligible at all), it is placed at an
-/// evenly-interpolated point between the transcript's earliest and latest eligible segment,
-/// according to its ordinal position among the markers still needing one. This is still
-/// "derived from the source transcript" — the offset is computed from that transcript's own
-/// real span, never invented — it is simply a coarser derivation than a text match, and is
-/// exactly as far as "we could not find a confident match" can honestly be pushed without
-/// fabricating content the way this codebase otherwise refuses to.
+/// eligible remaining segment (or none is eligible at all), it is placed by linear
+/// interpolation **between its nearest already-resolved neighbours** — the previous marker's
+/// own resolved offset (matched or itself already filled by this same fallback) on the left,
+/// and the next marker's own MATCHED offset on the right; the transcript's earliest/latest
+/// eligible `start_ms` stand in only at the true ends (before the first resolved marker, or
+/// after the last). This is deliberately NOT "ordinal position among only the other unmatched
+/// markers" — an earlier revision of this function did exactly that and could place an
+/// unmatched marker BEFORE an earlier, already-matched one (four markers `[M1@5000ms match,
+/// M2 no match, M3@10000ms match, M4 no match]` over a 0..20000ms transcript produced `M1=
+/// 5000, M2=0, M3=10000, M4=20000` — `M2` landing chronologically before `M1`, breaking the
+/// "Matching" section's own monotonic-forward guarantee for the markers that DID match, and
+/// unusable as an exportable, strictly-ordered YouTube chapter list). Interpolating between
+/// real resolved neighbours instead keeps the WHOLE returned list — matched and
+/// fallback-derived alike — non-decreasing in item order, never merely each subset on its
+/// own. This is still "derived from the source transcript" — every fallback offset lies
+/// between two values themselves derived from that transcript (a real match, or the
+/// transcript's own earliest/latest plausible timestamp) — never invented, simply a coarser
+/// derivation than a text match.
 ///
 /// Outline points get NO positional fallback: a top-level point is FR-124's explicitly
 /// "ideally"/best-effort half, so a point with no confident textual match is simply left
@@ -831,23 +906,14 @@ pub fn link_timestamps(
             }
         }
 
-        // Pass 2 (chapter markers only): positional fallback for anything still
-        // unmatched, interpolated across the transcript's own real, plausible span.
+        // Pass 2 (chapter markers only): positional fallback for anything still unmatched,
+        // interpolated between its nearest RESOLVED neighbours (see this function's own doc
+        // comment, "Positional fallback", for why ordinal position among only the other
+        // unmatched markers is the wrong basis — it can place an unmatched marker before an
+        // earlier, already-matched one).
         if is_chapter_markers {
             if let Some((first, last)) = bounds {
-                let span = last.saturating_sub(first) as f64;
-                let pending: Vec<usize> = (0..texts.len())
-                    .filter(|&i| offsets[i].is_none() && !texts[i].trim().is_empty())
-                    .collect();
-                let n = pending.len();
-                for (k, &i) in pending.iter().enumerate() {
-                    let frac = if n <= 1 {
-                        0.0
-                    } else {
-                        k as f64 / (n - 1) as f64
-                    };
-                    offsets[i] = Some(first + (span * frac) as u64);
-                }
+                fill_positional_fallback(&mut offsets, texts.as_slice(), first, last);
             }
         }
 
