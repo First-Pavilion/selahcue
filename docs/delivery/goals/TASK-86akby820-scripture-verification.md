@@ -9,7 +9,7 @@
   the local Bible text; unverified references (including unparseable ones) are marked,
   never silently dropped
 - Role: backend-engineer
-- Status: DRAFT
+- Status: VERIFIED_COMPLETE
 - Execution engine: goal
 - ClickUp task: https://app.clickup.com/t/86akby820
 - Created: 2026-09-20
@@ -161,8 +161,8 @@ not-yet-merged branch — see Dependencies):
 | C-011 | yes | Offline, no network | Design review — no HTTP/network code added | no network calls in `verify_scriptures`/its call sites | inspection | PASS |
 | C-012 | yes | Bounded memory, mutation-verified | `an_absurd_number_of_distinct_scriptures_is_bounded_not_unbounded` + manual mutation (`MAX_VERIFIED_REFERENCES = usize::MAX`) | PASS live; FAIL under mutation, reverted | test output | PASS |
 | C-013 | yes | Toggle off → no verification work, nothing displayed | Gated on `include.scripture_extraction` in `main.rs` | `scripture_verdicts` stays empty when off, mirroring `scriptures` itself | inspection + existing toggle tests | PASS |
-| C-014 | yes | `make ci` passes in full | `make ci` | exit 0, ALL GREEN | `MAKE_CI_EXIT:0`, `1317 checks, 0 FAIL`, zero `^FAIL`/`error[`/`FAILED` in log | PASS |
-| C-015 | yes | Four-reviewer gate passed | Cody/Vera/Sana/Quinn findings remediated | Quinn VERIFIED_COMPLETE, Vera PASS non-blocking, Cody/Sana's F1-F4 fixed and re-verified, re-check requested | see Iteration 4 | PASS pending re-check ack |
+| C-014 | yes | `make ci` passes in full | `make ci` | exit 0, ALL GREEN | `MAKE_CI_EXIT:0` across 3 rounds (`2cc8b51`, `9573bac`, `0dab0e6`); final: `1323 checks, 0 FAIL` | PASS |
+| C-015 | yes | Four-reviewer gate passed | Cody/Vera/Sana/Quinn findings remediated | Quinn VERIFIED_COMPLETE; Vera PASS non-blocking; Cody's F1 and Sana's F1-F4 independently re-checked and confirmed resolved (Sana: Blocked → Pass with Accepted Risk); 4 additional low-severity residuals from Sana's re-check fixed in `0dab0e6` | [Review report](https://claude.ai/artifact/7kva7L2PKhXDmZPc4fv9M1) | PASS |
 
 ## Verification plan
 
@@ -309,9 +309,18 @@ would reopen F1.
 
 ## Final evaluation
 
-- Validator command: `python3 ~/.claude/skills/goal/scripts/validate_goal_contract.py <path> --completion`
-- Validator result: (recorded after execution)
-- Independent verification result: (recorded after execution)
-- Terminal state: (recorded after execution)
-- Remaining failed or blocked criteria: (recorded after execution)
-- ClickUp final evidence comment: (recorded after execution)
+- Validator command: `python3 ~/.claude/skills/goal/scripts/validate_goal_contract.py TASK-86akby820-scripture-verification.md --completion`
+- Validator result: (recorded after execution — see terminal output)
+- Independent verification result: Quinn VERIFIED_COMPLETE; Vera PASS non-blocking;
+  Cody and Sana each independently found the same F1 root cause plus Sana found
+  F2/F3/F4 — a genuinely valuable round that caught a real defect class (silence
+  overloaded to mean both "verified" and "never checked") the original
+  implementation and the QA pass had not surfaced. All four re-confirmed resolved by
+  the reviewers who raised them.
+- Terminal state: VERIFIED_COMPLETE
+- Remaining failed or blocked criteria: none. Two deliberate non-goals recorded from
+  the outset (persistence through the LAN wire protocol; licensed translations). One
+  accepted low-severity residual (a corrupted stored section can blank a reloaded
+  list — triggers only on already-corrupted data, not adversarial model output).
+- ClickUp final evidence comment: posted, task moved to `qa`
+  (https://app.clickup.com/t/86akby820)
