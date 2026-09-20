@@ -224,8 +224,15 @@ fn an_absurd_number_of_distinct_embedded_references_is_bounded_at_the_tighter_em
     // The list and embedded-text phases are bounded SEPARATELY (Sana's F2 finding on PR
     // #47): embedded text is the genuinely open-ended, adversarial-input-prone half, and
     // this is its own positive control, independent of the list cap above.
+    //
+    // Security review finding (Sana, re-check on PR #47): the FIRST version of this test
+    // used `"garbage reference {i}"` strings, which `detect()` never recognises as
+    // candidates at all (no real book name), so it silently exercised NOTHING and the
+    // assertion below passed as `0 <= 64` — a bound this repo's own conventions
+    // explicitly call a test that "guards nothing". Real book-shaped text is required to
+    // actually drive candidates through `detect()` and into the cap.
     let hostile_items: Vec<String> = (0..10_000)
-        .map(|i| format!("garbage reference {i}"))
+        .map(|i| format!("See Psalms {i}:1 for more on this."))
         .collect();
     let sections = vec![NoteSection::flat("Illustrations", hostile_items)];
     let verdicts = verify_scriptures(&[], &sections, oracle(&[]));
@@ -234,6 +241,13 @@ fn an_absurd_number_of_distinct_embedded_references_is_bounded_at_the_tighter_em
         "got {} verdicts, bound is {}",
         verdicts.len(),
         selahcue_core::providers::MAX_EMBEDDED_REFERENCES
+    );
+    assert_eq!(
+        verdicts.len(),
+        selahcue_core::providers::MAX_EMBEDDED_REFERENCES,
+        "10,000 DISTINCT, genuinely detectable candidates must actually hit the cap, not \
+         stop early for some other reason — the positive control that proves the bound \
+         is exercised, not merely that `detect()` found nothing to bound"
     );
 }
 

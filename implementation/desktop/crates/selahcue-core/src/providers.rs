@@ -360,9 +360,12 @@ pub const SCRIPTURE_VERIFICATION_WORDING: &str =
 /// verses in the bundled Bible text (86akby820; FR-125/FR-128).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScriptureVerdict {
-    /// The reference exactly as it appeared — canonical form when it parsed (e.g. the
-    /// extracted-list entry or a text match, both already in `parse_one`'s accepted
-    /// shape), or the original text verbatim when it did not parse at all.
+    /// The reference exactly as the caller supplied it (trimmed), whether or not it
+    /// parsed — NEVER re-serialised through `Reference::to_string()`. Security review
+    /// finding (Sana F1 on PR #47): an earlier version canonicalised a successfully-
+    /// parsed reference, which silently broke the exact-string match a console uses to
+    /// attach this verdict to a `scriptures` list entry, since the parser accepts
+    /// abbreviations the model may have written instead of the canonical spelling.
     pub reference: String,
     /// True when the reference parsed AND resolved to at least one verse. False for
     /// EITHER an unparseable reference OR one that parses but is outside the canon

@@ -844,8 +844,14 @@
   // way: neither a false "verified" reassurance nor a false "unverified" alarm is honest
   // when the check simply did not run.
   function scriptureVerifiedOrNull(d, reference) {
+    // Trimmed on both sides (security review, Sana, re-check on PR #47): the Rust side
+    // trims before storing a verdict's `reference`, but a `scriptures`-list entry passed
+    // straight through from the model is not guaranteed to be — `openai.rs`'s own extraction
+    // clamps length without trimming. An untrimmed list entry would otherwise miss its own
+    // verdict by whitespace alone, which is the same exact-match fragility F1 was about.
+    var needle = (reference || "").trim();
     var v = (d.scripture_verdicts || []).filter(function (x) {
-      return x.reference === reference;
+      return (x.reference || "").trim() === needle;
     })[0];
     return v ? v.verified : null;
   }
@@ -896,23 +902,31 @@
       var sc = el("p", "pp-gen-scriptures");
       sc.appendChild(el("span", "pp-gen-sec-h", "Scriptures: "));
       // 86akby820: each reference renders individually (not one joined string) so an
-      // unverified one can carry its own mark. `scripture_verdicts` is absent after a
-      // reload/edit-save (not persisted) — `scriptureVerifiedOrNull` then returns `null`
-      // for every entry and every reference renders exactly as it did before this ticket.
+      // unverified one can carry its own mark. `scripture_verdicts` is recomputed fresh
+      // on every load/edit-save too (Sana F4 remediation, `sermon_note_draft_json` on the
+      // Rust side) — `verified === null` is now reserved for the genuinely-never-checked
+      // case (extraction was off, or a corrupt/legacy stored draft), not "any reload".
       d.scriptures.forEach(function (ref, i) {
         if (i > 0) sc.appendChild(document.createTextNode(" · "));
         var verified = scriptureVerifiedOrNull(d, ref);
         var span = el("span", "pp-gen-scr-item", ref);
         sc.appendChild(span);
         // Security review finding (Sana F3 on PR #47): silence must never be the ONLY
-        // signal for "verified" — a reference that was never checked (verified === null,
-        // e.g. after a reload where verdicts are not persisted) would otherwise render
-        // pixel-identical to one that was checked and passed, so an unverified reference
-        // slipping through any gap (an alias mismatch, a cap, a future bug) reads as
-        // clean rather than as simply unmarked. Every reference that WAS checked gets an
-        // explicit mark either way; only "never checked at all" stays silent.
+        // signal for "verified" — a reference that was never checked at all
+        // (verified === null) would otherwise render pixel-identical to one that was
+        // checked and passed, so an unverified reference slipping through any gap (an
+        // alias mismatch, a cap, a future bug) reads as clean rather than as simply
+        // unmarked. Every reference that WAS checked gets an explicit mark either way;
+        // only "never checked at all" stays silent.
         if (verified === true) {
-          sc.appendChild(el("span", "pp-gen-scr-verified", SCRIPTURE_VERIFIED_SUFFIX));
+          var vMark = el("span", "pp-gen-scr-verified", SCRIPTURE_VERIFIED_SUFFIX);
+          // Accessibility finding (Sana, re-check on PR #47): a bare checkmark glyph has
+          // no accessible name of its own — the unverified mark already reads as prose
+          // ("(unverified — not found in the bundled text)"), so the verified one needs
+          // an equivalent spoken label, not just a visual glyph.
+          vMark.setAttribute("role", "img");
+          vMark.setAttribute("aria-label", "verified against the bundled Bible text");
+          sc.appendChild(vMark);
         } else if (verified === false) {
           sc.appendChild(el("span", "pp-gen-scr-unverified", SCRIPTURE_UNVERIFIED_SUFFIX));
         }
