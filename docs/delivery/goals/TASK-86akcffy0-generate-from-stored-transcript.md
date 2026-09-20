@@ -152,7 +152,7 @@ Verified against `origin/main` @ 269591e (2026-09-19):
 | C-004 | yes | The from-history preview's `.pp-gen-preview-scope` copy states the complete transcript + its size; the live-tail copy is unchanged | `scripts/operator_headless.py` "PP F-5 L-2" (unchanged) + new "TR F-5 L-2" check | both PASS; mutation-verified RED on a 1-word change to the new copy | `/tmp/headless_86akcffy0.log`, `/tmp/headless_mutant1.log` | PASS |
 | C-005 | yes | Consent off blocks the network call for the from-history path exactly as it does live-tail | `scripts/operator_headless.py` "TR generate consent" checks (live UI, shared `ProvidersConfig`) + `cargo test -p selahcue-operator` (`consent_off_refuses_the_from_history_text_before_any_provider_is_touched`) + existing `selahcue-cloud` crate test unaffected | all PASS; mutation-verified RED when the frontend is made to ignore a refused result | `/tmp/headless_86akcffy0.log`, `/tmp/headless_mutant2.log`, cargo test output | PASS |
 | C-006 | yes | The source transcript is byte-identical before and after generation | `cargo test -p selahcue-operator` (`source_transcript_is_unchanged_by_generation`) + command-level before/after equality check in `transcript_generate_notes` itself | PASS | cargo test output (141 passed) | PASS |
-| C-007 | yes | `make ci` passes end to end, including the headless operator webview check | `make ci` | exit 0, "ALL GREEN" | `/tmp/make_ci_86akcffy0_v3.log` (final commit `1a909fa`: "== local Rust/Flutter gate: ALL GREEN ==", incl. "1351 checks, 0 FAIL"); GitHub Actions PR #45 run 35476056482 — every job pass (rust/operator shell/release-features on macOS+Ubuntu+Windows, launch-smoke, dependency audit, supply chain) | PASS |
+| C-007 | yes | `make ci` passes end to end, including the headless operator webview check, on a branch current with `origin/main` | `make ci` | exit 0, "ALL GREEN" | `/tmp/make_ci_86akcffy0_rebase.log` (final commit `2ccf006`, rebased onto `origin/main`@`6d4dc36` after PR #44 merged: "== local Rust/Flutter gate: ALL GREEN ==", incl. "1355 checks, 0 FAIL"); GitHub Actions PR #45 run 35491112646 on `2ccf006` — every non-skipped job pass (rust/operator shell/release-features on macOS+Ubuntu+Windows, launch-smoke, dependency audit, supply chain, workflows lint) (superseding the earlier `1a909fa`/run 35476056482 evidence, made stale by the rebase — see Iteration 6) | PASS |
 | C-008 | yes | Four-reviewer gate (Cody/Vera/Sana/Quinn) completed, blocking findings remediated | review artifact + PR comments + re-check responses | no open blocking findings | https://claude.ai/artifact/CCqU44fqZeG21Mw6WfweQq; Sana re-check "Pass. All four findings closed" (+ a Nit fixed in `1a909fa`); Cody re-check "both of my findings are fixed" (+ a Low documented, not fixed, in `1a909fa`); Vera re-check "both closed — no performance objection to merging" (+ PERF-2 regression test added in `1a909fa`); Quinn's original pass unaffected (no regression in remediated areas) | PASS |
 
 ## Verification plan
@@ -268,6 +268,56 @@ Verified against `origin/main` @ 269591e (2026-09-19):
   commit, then close out C-008 once reviewers confirm or a reasonable window has passed with no
   objection to the posted remediation.
 
+### Iteration 5
+
+- Target criterion: C-008 — reviewer re-checks (Cody, Sana, Vera each asked to re-verify their
+  own findings against `f992075`).
+- Result: Sana "Pass. All four findings closed," with a genuine test-quality gap of her own
+  flagged (the F1 "defense in depth" pair only proved a disabled button's click listener never
+  fires, not that `onGenerate`'s own guard does anything). Cody "both of my findings are fixed,"
+  plus a new Low from reading the High fix itself (the shared clamp move silently disables the
+  OpenAI provider's own truncation-notice-to-the-model instruction). Vera "both closed — no
+  performance objection to merging," plus a request for the PERF-2 regression test she'd asked
+  for but that hadn't landed yet.
+- Change or investigation: fixed Sana's gap (a check that forcibly clears `disabled` before
+  clicking, so the JS guard itself is exercised); added Vera's PERF-2 test (first attempt vacuous
+  — `openGenPreview` clears its container every call, so it couldn't distinguish one render from
+  two — rebuilt around a real invocation counter); documented (not fixed, per Cody's own Low/
+  non-blocking call) the truncation-notice side effect at its exact call site and spawned a
+  follow-up task rather than widening `NoteRequest` for a throwaway dev-only path. 1347 -> 1351
+  checks. Pushed as `1a909fa`; `make ci` and GitHub Actions green again.
+- Decision: complete — PR marked ready for review, ticket moved to `qa`, Goal Contract's
+  completion predicate validated all-PASS.
+
+### Iteration 6
+
+- Target criterion: C-007 (branch currency) — PR #44 (86akmdkdg) merged to `main` while this
+  ticket's PR sat open; GitHub reported #45 CONFLICTING/DIRTY (`gh pr view 45 --json
+  mergeable,mergeStateStatus`). #44 touched `dist/transcripts.js` (a `measureObserver`
+  leak-tracking fix, self-contained in `moObserve`/`moUnobserve`/`moDisconnect`, non-overlapping
+  with this ticket's Generate-feature additions) and `scripts/operator_headless.py` (new checks +
+  its own `EXPECTED_MIN_CHECKS` bump 1297 -> 1301) — the exact same constant this ticket's three
+  commits also bumped, each from the same 1297 baseline.
+- Change or investigation: `git fetch origin main` + `git rebase origin/main`. `transcripts.js`
+  auto-merged cleanly with no textual conflict; verified by hand that it's also semantically
+  correct — `openTranscript` now calls both `resetGenerateUi()` (this ticket) and `moDisconnect()`
+  (86akmdkdg's renamed wrapper) with no interaction between them. `scripts/operator_headless.py`
+  conflicted on `EXPECTED_MIN_CHECKS` three times (once per commit being replayed) — mechanical,
+  not a logical clash: each resolution combined both branches' change narratives and left a
+  placeholder pending a real re-measurement, per this file's own convention. Re-measured after
+  the full rebase: 1355 checks, 0 FAIL — exactly 1301 + 54, confirming zero collision between the
+  two tickets' additions. Corrected the placeholder in a small follow-up commit (`2ccf006`).
+- Verifier executed: `cargo fmt --check` + `cargo test`/`cargo clippy` for `selahcue-cloud`
+  (`--features openai`) and `selahcue-operator` (`--features dev-keys,openai-notes`); `python3
+  scripts/operator_headless.py`; a full `make ci` run.
+- Result: all green post-rebase — 145/64 cargo tests pass, clippy clean, 1355/0 FAIL headless,
+  `make ci` "ALL GREEN". Force-pushed with `--force-with-lease`; `gh pr view 45
+  --json mergeable,mergeStateStatus` now reports `MERGEABLE` (`UNSTABLE` only because GitHub
+  Actions had not yet re-run against the new SHA at that instant).
+- New evidence: `/tmp/headless_post_rebase.log` (1355/0 FAIL); `/tmp/make_ci_86akcffy0_rebase.log`
+  ("ALL GREEN"); PR #45 re-triggered GitHub Actions run on commit `2ccf006`.
+- Decision: complete.
+
 ## Risks and rollback
 
 - Risks: a 400k+ character transcript round-tripped through Tauri IPC/JSON could be slow or
@@ -291,6 +341,15 @@ Verified against `origin/main` @ 269591e (2026-09-19):
 - Validator command: `python3 ~/.claude/skills/goal/scripts/validate_goal_contract.py docs/delivery/goals/TASK-86akcffy0-generate-from-stored-transcript.md --completion`
 - Validator result: `OK (completion): ... satisfies the Goal Contract schema and all mandatory criteria PASS`
 - Independent verification result: all four reviewers (Cody, Vera, Sana, Quinn) reviewed; Cody and Sana's High findings and all Mediums (Cody, Sana, Vera) remediated and independently re-confirmed fixed by each of the three who found them; Quinn's original pass unaffected.
-- Terminal state: **VERIFIED_COMPLETE** (backend-engineer scope). PR #45 marked ready for review against `main`; not merged by this role, per the operating contract ("do not merge it yourself").
+- Terminal state: **VERIFIED_COMPLETE** (backend-engineer scope). PR #45 marked ready for review
+  against `main`, rebased onto `origin/main`@`6d4dc36` after PR #44 (86akmdkdg) merged ahead of it
+  (Iteration 6), re-verified all-green on the rebased commit `2ccf006`; not merged by this role,
+  per the operating contract ("do not merge it yourself") — merged by the repo owner
+  (`moluwole`) at `2026-09-20T05:18:37Z` as merge commit `14ab801`, confirmed via
+  `gh pr view 45 --json state,mergedAt,mergedBy,mergeCommit`.
 - Remaining failed or blocked criteria: none.
-- ClickUp final evidence comment: recorded on task 86akcffy0; task moved to `code review` (PR opened) — final `qa`/`complete` transitions are owned by QA/delivery per the operating contract, not self-assigned here.
+- ClickUp final evidence comment: recorded on task 86akcffy0; task moved to `code review` (PR
+  opened), then `qa` — final `complete` transition and any further ClickUp status change belong to
+  QA/delivery per the operating contract, not self-assigned here. A follow-up comment records the
+  post-merge rebase (final commit `2ccf006`, superseding the earlier `64e051d` reference) and the
+  PR's merge to `main`.
