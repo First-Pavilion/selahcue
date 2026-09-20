@@ -282,9 +282,12 @@ if not check_d5_no_scrolltop_writes():
 # defect): 10 explicit `ok()` calls + 1 implicit one from an extra `ppGenerateAndConfirm` call
 # in the first remediation round (empty-but-requested sections filtered from persistence,
 # 1300 + 10 + 1 = 1311, matching two consecutive standalone runs), plus 3 more explicit `ok()`
-# calls with no further implicit ones in the second remediation round (the same filter applied
-# to the edit-save route: 1311 + 3 = 1314, matching the real observed count — both measured
-# BEFORE 86akmdkdg or 86akcffy0 existed).
+# calls with no further implicit ones in the second remediation round (Cody's second finding
+# on PR #46, the edit-save route — this edits an ALREADY-generated draft via
+# el("pp-gen-edit")/el("pp-gen-save") directly, no new Generate click: the save actually
+# happened (setup), the caveated-empty section is never sent to update_sermon_note_draft, and
+# a populated section is NOT dropped by the same filter (positive control): 1311 + 3 = 1314,
+# matching the real observed count — both measured BEFORE 86akmdkdg or 86akcffy0 existed).
 #
 # Rebased onto 86akcffy0 (which is itself rebased onto 86akmdkdg): all three tickets' additions
 # are non-overlapping (different fixtures, different DRIVER sections — confirmed by inspecting
@@ -6550,6 +6553,29 @@ DRIVER = r"""
       ok(!!explainer && getComputedStyle(explainer).display !== "none" && explainer.getAttribute("role") === "note" &&
          /doesn.t say why/i.test(explainer.textContent) && /Generating again/.test(explainer.textContent),
          "PP 86akc0tua: the once-per-draft explainer renders, role=note, exact wording, when at least one caveat fired");
+
+      // Cody's second finding on PR #46 (the reload route was fixed by `sections_to_persist`
+      // server-side; this is the OTHER reachable route — edit-save, which the backend has NO
+      // caveat data to filter on at all, since `NoteSectionInput` carries no `empty_requested`).
+      // Generate a caveated-empty section, edit something ELSE, Save — the caveated-empty
+      // section must never reach `update_sermon_note_draft`'s payload, while an ordinary
+      // populated section still does (positive control).
+      el("pp-gen-edit").click();
+      document.getElementById("pp-edit-title").value = "A Quiet Sunday (edited)";
+      var emptySaveBefore = ppCall("update_sermon_note_draft").length;
+      el("pp-gen-save").click();
+      await sleep(60);
+      ok(ppCall("update_sermon_note_draft").length === emptySaveBefore + 1,
+         "PP 86akc0tua (edit-save fix, setup): Save actually called update_sermon_note_draft");
+      var emptySaveArgs = ppLast("update_sermon_note_draft").args;
+      ok(!emptySaveArgs.sections.some(function (s) { return s.heading === "Chapter markers"; }),
+         "PP 86akc0tua (edit-save fix): a caveated-empty section the operator did not fill in " +
+         "is NEVER sent to update_sermon_note_draft — saving ANY unrelated edit must not write " +
+         "the confusing 'bare heading, no explanation' state to persisted storage");
+      ok(emptySaveArgs.sections.some(function (s) { return s.heading === "Illustrations"; }),
+         "PP 86akc0tua (positive control): an ordinary populated section is NOT dropped by the " +
+         "same filter — without this, the assertion above could pass on a mechanism that drops " +
+         "every section");
 
       window.__ppGen = "ok"; // restore for any later reads
 

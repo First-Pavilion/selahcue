@@ -339,6 +339,39 @@ response; this is NOT persisted through the LAN wire protocol (documented non-go
 - Decision: complete → C-011 and C-012 both PASS pending Cody's re-check acknowledgement.
   Proceeding to push and continue 86akby820 in parallel.
 
+### Iteration 8 — Cody's re-check found a SECOND reachable route
+
+- Target criterion: C-012 (Cody's re-check of the persistence fix)
+- Result: Cody's re-check (relayed via the coordinator) confirmed `sections_to_persist`
+  correctly closes the RELOAD route, but named a SECOND, independently-reachable route
+  his ORIGINAL finding had also named: `update_sermon_note_draft`'s persistence call
+  site. `readSectionsFromForm`/`saveDraftEdit` (settings.js) round-trip EVERY section
+  through the edit form with zero caveat-awareness — `NoteSectionInput` (the Tauri IPC
+  type) carries no `empty_requested` field at all, so the backend has no caveat data
+  to filter on at that call site, unlike the generate path. Repro: generate notes, get
+  a caveated-empty section, click Edit → Save on anything else (no reload needed) — the
+  bare heading with no explanation gets written straight to the DB.
+- Change: added `isStillEmpty(s)` and a filter step in `readSectionsFromForm` — a
+  section that was `empty_requested` on the live view AND is STILL empty after reading
+  the form (the operator did not fill it in — and today's edit UI has no "add item"
+  affordance, so this is unconditionally true for a zero-item section) is dropped from
+  the payload sent to `update_sermon_note_draft`, client-side, since the backend has no
+  caveat data to filter on there. A section the operator DID fill in would be kept —
+  this is not a blanket "drop empty sections" filter, only "don't re-persist the exact
+  caveated-empty state unchanged."
+- New test: a headless assertion generating the "empty_sections" fixture, editing the
+  title only (leaving the caveated-empty "Chapter markers" section untouched), saving,
+  and confirming `update_sermon_note_draft`'s payload never contains that section while
+  the populated "Illustrations" section still does (positive control).
+- Verifier executed: `python3 scripts/operator_headless.py` (1311 → 1314 checks, 0
+  FAIL), manual mutation (disabled the filter, confirmed exactly the targeted check
+  goes red, reverted), `cargo test`/`clippy`/`fmt` on the operator crate, full `make
+  ci`.
+- Result: `MAKE_CI_EXIT:0`, `ALL GREEN`, `1314 checks, 0 FAIL`, 138 operator tests
+  unchanged (this fix is JS-only), zero stray file drift.
+- Decision: complete → push, reply on PR #46, re-request Cody's check on BOTH routes
+  this time.
+
 ## Risks and rollback
 
 - Risks: `settings.js` render path is shared with the FR-135 degraded notice and

@@ -978,33 +978,60 @@
     titleInput.focus();
   }
 
+  // A section round-tripped through the form is still empty — no non-blank item, no
+  // point with non-blank text or a non-blank sub-point. Judged on content only, never
+  // the heading, matching openai.rs's own emptiness test on the server side.
+  function isStillEmpty(s) {
+    var hasItem = (s.items || []).some(function (it) { return it && it.trim(); });
+    if (hasItem) return false;
+    return !(s.points || []).some(function (pt) {
+      if (pt.text && pt.text.trim()) return true;
+      return (pt.sub_points || []).some(function (sp) { return sp && sp.trim(); });
+    });
+  }
+
   // Reads the edit form's current input values back into the sections/points/items shape the
   // backend expects, preserving the flat-items-XOR-outline-points shape of each section (FR-122)
   // — never re-derived from scratch, always keyed off the SAME section/point/item positions
   // `renderDraftEditForm` drew the inputs at, so a value read back can never land on the wrong row.
+  //
+  // 86akc0tua remediation (Cody's second finding on PR #46 — the first, `generate`'s own
+  // persistence call site, is fixed server-side by `sections_to_persist`; this is the OTHER
+  // reachable route into the same persisted storage, and the backend has NO caveat data at
+  // THIS call site to filter on: `NoteSectionInput` carries no `empty_requested` field, and
+  // `update_sermon_note_draft` never sees a `NoteDraft` with caveats, only raw submitted
+  // sections). A section that was `empty_requested` on the live view and is STILL empty after
+  // reading the form (the operator did not fill it in) is dropped here, client-side, before
+  // the payload is built — saving ANY edit elsewhere in the draft would otherwise silently
+  // write that section's confusing "bare heading, no explanation" state straight into
+  // storage. A section the operator DID fill in is kept: this is not a blanket "drop empty
+  // sections" filter, only "don't re-persist the exact caveated-empty state unchanged."
   function readSectionsFromForm(form, sections) {
-    return (sections || []).map(function (s, si) {
-      var headingEl = form.querySelector('.pp-edit-section-heading[data-si="' + si + '"]');
-      var heading = headingEl ? headingEl.value : (s.heading || "");
-      var isOutline = (s.points || []).length > 0;
-      if (isOutline) {
-        var points = (s.points || []).map(function (pt, pi) {
-          var textEl = form.querySelector('.pp-edit-point-text[data-si="' + si + '"][data-pi="' + pi + '"]');
-          var subPoints = (pt && pt.sub_points || []).map(function (sp, spi) {
-            var sel = '.pp-edit-subpoint-text[data-si="' + si + '"][data-pi="' + pi + '"][data-spi="' + spi + '"]';
-            var spEl = form.querySelector(sel);
-            return spEl ? spEl.value : sp;
+    return (sections || [])
+      .map(function (s, si) {
+        var headingEl = form.querySelector('.pp-edit-section-heading[data-si="' + si + '"]');
+        var heading = headingEl ? headingEl.value : (s.heading || "");
+        var isOutline = (s.points || []).length > 0;
+        if (isOutline) {
+          var points = (s.points || []).map(function (pt, pi) {
+            var textEl = form.querySelector('.pp-edit-point-text[data-si="' + si + '"][data-pi="' + pi + '"]');
+            var subPoints = (pt && pt.sub_points || []).map(function (sp, spi) {
+              var sel = '.pp-edit-subpoint-text[data-si="' + si + '"][data-pi="' + pi + '"][data-spi="' + spi + '"]';
+              var spEl = form.querySelector(sel);
+              return spEl ? spEl.value : sp;
+            });
+            return { text: textEl ? textEl.value : (pt && pt.text) || "", sub_points: subPoints };
           });
-          return { text: textEl ? textEl.value : (pt && pt.text) || "", sub_points: subPoints };
+          return { heading: heading, items: [], points: points, __empty_requested: !!s.empty_requested };
+        }
+        var items = (s.items || []).map(function (it, ii) {
+          var itEl = form.querySelector('.pp-edit-item-text[data-si="' + si + '"][data-ii="' + ii + '"]');
+          return itEl ? itEl.value : it;
         });
-        return { heading: heading, items: [], points: points };
-      }
-      var items = (s.items || []).map(function (it, ii) {
-        var itEl = form.querySelector('.pp-edit-item-text[data-si="' + si + '"][data-ii="' + ii + '"]');
-        return itEl ? itEl.value : it;
-      });
-      return { heading: heading, items: items, points: [] };
-    });
+        return { heading: heading, items: items, points: [], __empty_requested: !!s.empty_requested };
+      })
+      .filter(function (s) { return !(s.__empty_requested && isStillEmpty(s)); })
+      .map(function (s) { return { heading: s.heading, items: s.items, points: s.points }; });
   }
 
   function saveDraftEdit(form) {
