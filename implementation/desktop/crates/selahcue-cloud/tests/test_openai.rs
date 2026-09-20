@@ -840,6 +840,50 @@ fn podcast_show_notes_and_short_description_toggle_off_independently() {
 }
 
 #[test]
+fn podcast_show_notes_and_short_description_reach_the_schema_and_the_real_wire_body_when_on() {
+    // QA finding (Quinn MINOR-1 on PR #48): the existing toggle-off test proves the
+    // schema does NOT ask for either field when off, with a positive control that OTHER
+    // fields are still present — but nothing asserted the "on" direction specifically for
+    // THESE two fields against the schema AND the real outgoing wire body (the acceptance
+    // criterion says "each in the response schema").
+    let inc = all_on();
+    assert!(
+        inc.podcast_show_notes && inc.short_description,
+        "premise: both on"
+    );
+
+    let schema = draft_schema(&inc);
+    let props = schema["properties"].as_object().unwrap();
+    assert!(
+        props.contains_key("podcast_show_notes"),
+        "podcast_show_notes must be asked for when its toggle is on"
+    );
+    assert!(
+        props.contains_key("short_description"),
+        "short_description must be asked for when its toggle is on"
+    );
+    let required: Vec<&str> = schema["required"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    assert!(required.contains(&"podcast_show_notes"));
+    assert!(required.contains(&"short_description"));
+
+    // Also on the REAL outgoing body, not only the schema-builder's own return value —
+    // the two must actually agree.
+    let (p, t) = inspectable_provider();
+    p.generate(&request_with(inc, TRANSCRIPT)).unwrap();
+    let (_req, body) = sole_request(&t);
+    let wire_props = body["text"]["format"]["schema"]["properties"]
+        .as_object()
+        .expect("the request carries the same schema shape");
+    assert!(wire_props.contains_key("podcast_show_notes"));
+    assert!(wire_props.contains_key("short_description"));
+}
+
+#[test]
 fn sub_points_are_subordinate_to_their_parent_point_and_not_flattened() {
     let req = request_with(all_on(), TRANSCRIPT);
     let p = provider(MockTransport::responding(200, envelope(&full_draft_json())));
@@ -1114,6 +1158,20 @@ fn a_degraded_local_fallback_carries_zero_caveats_even_though_its_placeholders_a
             .any(|s| s.heading == "Prayer points" && s.items().is_empty()),
         "premise: the offline scaffold must still push its empty placeholder sections"
     );
+    // QA finding (Quinn MINOR-2 on PR #48): the positive control above only named a
+    // pre-existing toggle's placeholder — extending it to the two NEW toggles closes the
+    // coverage gap for "suppression when degraded" specifically for podcast_show_notes/
+    // short_description, not just inferred by analogy.
+    for heading in ["Podcast show notes", "Short description"] {
+        assert!(
+            outcome
+                .draft
+                .sections
+                .iter()
+                .any(|s| s.heading == heading && s.items().is_empty()),
+            "premise: the offline scaffold must also push {heading:?}'s empty placeholder"
+        );
+    }
 }
 
 #[test]

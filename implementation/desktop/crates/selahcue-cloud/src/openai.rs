@@ -534,7 +534,11 @@ fn template_guidance(t: NotesTemplate) -> &'static str {
 /// the prompt has already told it not to and given it somewhere to put "the sermon did
 /// not say".
 fn instruction(options: &NoteOptions, truncated: bool) -> String {
-    let mut s = String::with_capacity(1_400);
+    // NIT (Vera, performance review on PR #48): 1_400 was the pre-86akgqdwc worst case.
+    // Measured against compiled code: 1,095 before this ticket's two new prompt clauses,
+    // 1,621 after (both toggles on, truncated) — 2_048 clears the real worst case again
+    // with headroom, avoiding a reallocation on the path that used to fit.
+    let mut s = String::with_capacity(2_048);
     s.push_str(
         "You turn a completed sermon transcript into a structured sermon-note draft for \
          a church media operator.\n\n\
