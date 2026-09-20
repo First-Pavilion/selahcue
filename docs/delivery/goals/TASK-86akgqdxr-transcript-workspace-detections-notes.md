@@ -271,17 +271,52 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
 
 ## Iteration ledger
 
-### Iteration 1
+### Iteration 1 — backend wire fields
 
-- Target criterion: C-001, C-009 (backend: detections on the wire)
-- Hypothesis: forwarding `TranscriptDetail.detections`/`.corrections` onto `TranscriptDetailView`
-  is a pure plumbing change (data already loaded); a failing test asserting the new field first,
-  per TDD.
-- Change or investigation: (recorded as implementation proceeds)
-- Verifier executed:
-- Result:
-- New evidence:
-- Decision: iterate
+- Target criterion: C-001, C-002, C-009
+- Hypothesis: forwarding `TranscriptDetail.detections`/`.corrections` and the saved draft's real
+  content onto `TranscriptDetailView` is additive plumbing (data already loaded / already
+  reachable via the existing transcript-id-generic `Backend::load_sermon_note_draft`); a failing
+  test first, per TDD.
+- Change: added `DetectedReferenceView`/`SegmentCorrectionView`; extended `TranscriptDetailView`;
+  extracted pure `build_transcript_detail_view()`; `transcript_get` now also awaits
+  `state.backend.load_sermon_note_draft(id)`, fault-isolated independently of `notes_generated_for`.
+- Verifier executed: `cargo test --manifest-path implementation/desktop/Cargo.toml -p selahcue-operator`
+- Result: 149/149 passed (9 new/updated in `transcript_view_tests`); `cargo clippy --all-targets -- -D warnings` and `cargo fmt --check` clean.
+- New evidence: confirmed `update_sermon_note_draft`'s full call chain (Backend → LAN
+  `Command::UpdateSermonNoteDraft` → `LiveController::apply`) has no active-transcript
+  restriction — no backend change needed for editing from this new location.
+- Decision: iterate (frontend next)
+
+### Iteration 2 — frontend: detections panel, saved-draft view/edit, correction overlay
+
+- Target criterion: C-001..C-006
+- Hypothesis: a fixed-row-height sliding window (simpler than the segment log's Fenwick tree) is
+  sufficient for the detections list, since rows are uniform height; the saved-draft view/edit
+  surface can be ported from `settings.js` parameterized by `openId` instead of "the active
+  session"; a read-only correction overlay on `.tr-line` satisfies "the correction layer...
+  reachable from one screen" without new write plumbing (see the linked follow-up ticket
+  `17tnw2axpe3` for actual editing).
+- Change: `dist/transcripts.js` (detections virtualizer + test hooks; ported
+  `renderDraftHeader`/`renderDraftView`/`renderDraftEditForm`/`saveDraftEdit` with `tr-`-prefixed
+  ids to avoid colliding with settings.js's `pp-`-prefixed ones; `segRow` correction overlay);
+  `dist/index.html` (new panels + empty states); `dist/app.css` (new classes, deliberately no
+  `display` override on the two empty-state classes, per this console's own WKWebView `[hidden]`
+  trap); `scripts/operator_headless.py` (new fixtures 7/8, `update_sermon_note_draft` stub's new
+  `TR.detail`-keyed branch, ~20 new "TR detections"/"TR notes"/"TR correction layer" assertions,
+  the "TR generate" Edit-affordance assertion flipped to match the NEW intended behaviour).
+- Verifier executed: `node --check` (syntax) so far; the full headless suite is BLOCKED — see
+  below.
+- Result: syntax clean; behavioural verification pending.
+- New evidence: `dist/transcripts.js` is governed by ADR-0026's statically-enforced D5 invariant
+  (exactly 3 named `scrollTop`-write exemptions, hard-capped — "only a revision of the ADR can
+  grow this number"). The new detections virtualizer needs the identical two exemption categories
+  (initial reset, test-hook simulation) applied to its own scroll container — 2 more sites, 5
+  total. Escalated to Aria (software architect) rather than deciding unilaterally, per this
+  ticket's non-goals around scope and this repo's role boundaries around architecture decisions.
+- Decision: **blocked** pending Aria's verdict on the ADR-0026 extension (see Pause and
+  escalation conditions). Continuing non-blocked prep (this contract, the follow-up ticket,
+  ClickUp status) in the meantime.
 
 ## Risks and rollback
 

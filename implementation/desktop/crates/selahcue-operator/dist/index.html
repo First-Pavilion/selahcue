@@ -1188,16 +1188,15 @@
       </div>
     </section>
 
-    <!-- TRANSCRIPTS surface (86akcffvt / FR-130 core slice): every saved transcript (label · date ·
-         duration · segment count), most recent first; selecting one opens a read-only, fully
-         scrollable view of its complete stored text plus whether sermon notes have already been
-         generated (real status, `notes_generated`). From the same detail view the operator can
-         Generate sermon notes from the transcript's COMPLETE stored text (86akcffy0) — reuses the
-         Settings panel's preview-and-confirm consent pattern (`#tr-gen`, below) with its own
-         honest disclosure copy. Editing/corrections and the detected-scripture list remain
-         deferred (86akgqdxr). A long transcript's text is rendered through a bounded sliding
-         window (see transcripts.js) so the DOM never holds more than a small, fixed number of
-         segment rows regardless of a service's length. Populated + wired by transcripts.js. -->
+    <!-- TRANSCRIPTS surface (86akcffvt core slice + 86akgqdxr, FR-130): every saved transcript
+         (label · date · duration · segment count), most recent first; selecting one opens ONE
+         workspace with the full stored text, every scripture reference detected during that
+         service (`#tr-detections`, 86akgqdxr), and the saved sermon-note draft's actual content
+         if one exists (`#tr-gen-result`, view/edit — 86akgqdxr; Generate itself is 86akcffy0).
+         Both the transcript log and the detections list render through a bounded sliding window
+         (see transcripts.js) so the DOM never holds more than a small, fixed number of rows
+         regardless of a service's length or how many references it detected. Populated + wired
+         by transcripts.js. -->
     <section id="surface-transcripts" class="surface-page surface-pad" aria-label="Transcripts">
       <div id="tr-list-view" class="tr-view">
         <div class="tr-head">
@@ -1237,11 +1236,36 @@
           <div id="tr-log-rows"></div>
           <div id="tr-log-bottom-spacer" class="tr-log-spacer" aria-hidden="true"></div>
         </div>
+
+        <!-- Detected scripture (86akgqdxr; FR-130): every reference persisted against this
+             transcript (`selahcue-data`'s `detection` table, 86ajtxzrn) — reference, confidence,
+             and an approximate position derived from its source segment's timestamp. Bounded,
+             fixed-row-height sliding window (transcripts.js) — a service can detect far more
+             references than the live console's 32-item queue ever holds at once (NFR consistent
+             with the transcript log above). -->
+        <div id="tr-detections" class="tr-panel">
+          <h3 class="tr-panel-h">Detected scripture</h3>
+          <div id="tr-detections-empty" class="tr-panel-empty" hidden>No scripture references were detected during this service.</div>
+          <div id="tr-det-log" class="tr-det-log" role="list" aria-label="Detected scripture references" tabindex="0" hidden>
+            <div id="tr-det-top-spacer" class="tr-log-spacer" aria-hidden="true"></div>
+            <div id="tr-det-rows"></div>
+            <div id="tr-det-bottom-spacer" class="tr-log-spacer" aria-hidden="true"></div>
+          </div>
+        </div>
+
+        <!-- Sermon notes (86akgqdxr; FR-123/130): the saved draft's ACTUAL content when one
+             exists — view + Edit, via the same `update_sermon_note_draft` command the Settings
+             panel's live-session draft already uses (transcript-id-generic; no backend change).
+             `#tr-notes-empty` covers the "nothing generated yet" case explicitly, alongside the
+             Generate affordance below (86akcffy0) rather than leaving the area blank. -->
+        <div id="tr-notes-empty" class="tr-panel-empty" hidden>No sermon notes have been generated for this transcript yet.</div>
         <!-- Generate Sermon Notes (86akcffy0; FR-122/130): builds the request from THIS
              transcript's complete stored text (`transcript_generate_notes`), never a bounded
              tail. Reuses the same preview-and-confirm consent pattern (FR-132/135) as the
              Settings panel's live-tail Generate — same `.pp-generate`/`.pp-gen-preview`/
-             `.pp-gen-result` classes — with its own honest disclosure copy (transcripts.js). -->
+             `.pp-gen-result` classes — with its own honest disclosure copy (transcripts.js).
+             `#tr-gen-result` is ALSO where an EXISTING saved draft renders (view/edit,
+             86akgqdxr), not only a freshly generated one — one panel, one render path. -->
         <div id="tr-gen" class="tr-gen">
           <button id="tr-generate" class="pp-generate" type="button">✦   Generate Sermon Notes</button>
           <div id="tr-gen-preview" class="pp-gen-preview" hidden></div>
