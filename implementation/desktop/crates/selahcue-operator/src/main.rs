@@ -5852,9 +5852,13 @@ async fn transcript_generate_notes(
                     );
                     None
                 }
-                Err(e) => {
+                Err(_) => {
+                    // Deliberately NOT interpolated (Quinn, PR #50, 86akgqdxr four-reviewer-gate
+                    // remediation — the second, distinct `save_sermon_note_draft` call site her
+                    // original F1-completion report named; see `transcript_get`'s doc comment for
+                    // the full TransportError::Protocol Debug-dump call chain).
                     eprintln!(
-                        "selahcue-operator: failed to persist sermon-note draft for transcript {id}: {e}"
+                        "selahcue-operator: failed to persist sermon-note draft for transcript {id}"
                     );
                     None
                 }
