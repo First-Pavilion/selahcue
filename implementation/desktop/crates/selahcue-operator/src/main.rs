@@ -2070,14 +2070,25 @@ async fn transcript_get(
     // Fault-isolated exactly like `notes_generated_for` above (86akgqdxr): a failure reading the
     // draft's actual content must never block the transcript/detections from being shown — it
     // degrades to "no draft", the same honest floor `notes_generated_for` already established for
-    // its own boolean. The error string here is `Backend`'s own (a transport/lock message), never
-    // draft text (FR-082) — matching every other error path this command touches.
+    // its own boolean.
+    //
+    // The error is deliberately NOT interpolated (Sana, PR #50 F1): `Backend::load_sermon_note_
+    // draft`'s `Remote` path stringifies whatever `TransportError` `RemoteOperator::
+    // load_sermon_note_draft` returns, and its non-conforming-reply branch
+    // (`selahcue-app/src/operator.rs`) builds that via `TransportError::Protocol(format!("expected
+    // sermon_note_draft, got: {other:?}"))` — a `Debug` dump of the ENTIRE unexpected
+    // `ServerMessage`, which can be `OperatorState` carrying live `transcript`/`partial_transcript`/
+    // `detections` text verbatim. Reaching this needs a non-conforming host reply (version skew, a
+    // host bug, or a request/response desync — `ControlClient::command` does not correlate
+    // `request_id`), but FR-082 (no transcript/detection text reaches a diagnostic verbatim) covers
+    // that text the same as draft text, so this path drops the error entirely rather than assume
+    // any given `TransportError` variant is safe to print.
     let draft_view = match state.backend.load_sermon_note_draft(id).await {
         Ok(view) => view,
-        Err(e) => {
+        Err(_) => {
             eprintln!(
                 "selahcue-operator: could not load the sermon-note draft for transcript {id}, \
-                 showing the transcript without it: {e}"
+                 showing the transcript without it"
             );
             None
         }
@@ -6185,8 +6196,12 @@ async fn load_sermon_note_draft(state: State<'_, AppState>) -> Result<serde_json
             }))
         }
         Ok(None) => Ok(serde_json::json!({ "ok": false })),
-        Err(e) => {
-            eprintln!("selahcue-operator: failed to load sermon-note draft: {e}");
+        Err(_) => {
+            // Deliberately NOT interpolated (Sana, PR #50 F1, mirrored from `transcript_get`'s
+            // identical fix): this error can carry a `Debug`-dumped `ServerMessage::OperatorState`
+            // with live transcript/detection text (FR-082) — see `transcript_get`'s doc comment
+            // for the full call chain.
+            eprintln!("selahcue-operator: failed to load sermon-note draft");
             Ok(serde_json::json!({ "ok": false }))
         }
     }
