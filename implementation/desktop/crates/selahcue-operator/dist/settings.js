@@ -3,7 +3,8 @@
 // the operator commands and wires every control to its command:
 //   providers_view · set_transcription_mode · set_cloud_consent · set_notes_template ·
 //   set_preferred_translation · set_include_flag · set_account_token / clear_account_token ·
-//   generate_sermon_notes · load_sermon_note_draft · update_sermon_note_draft
+//   generate_sermon_notes · load_sermon_note_draft · update_sermon_note_draft ·
+//   confirm_sermon_note_regeneration · discard_sermon_note_regeneration
 //
 // PERSISTENCE (86akgqdv0; FR-123 "editable" half): a successful generate is saved by the backend
 // against its source transcript (best-effort — see `generate_sermon_notes`'s Rust doc comment),
@@ -11,6 +12,18 @@
 // activation, so it survives a restart. `update_sermon_note_draft` persists an edit; the AI-
 // generated label and FR-128 disclosure are re-read from the backend's response after a save, not
 // assumed unchanged client-side, so an edit can never visually drift from what is actually stored.
+//
+// REGENERATE-WITH-RETENTION (FR-129, 86akgqdx8): pressing Generate again on a transcript that
+// already has a saved draft does NOT replace it immediately. The backend STAGES the fresh draft
+// instead (`generate_sermon_notes`/`transcript_generate_notes` return `pending_confirmation: true`
+// + `previous_draft`, the untouched, still-saved draft) and this screen shows a banner — the new
+// draft's content, a reminder of what is still saved, and two explicit actions: "Use this draft"
+// (`confirm_sermon_note_regeneration`, which replaces the saved draft — the version it replaces is
+// then gone; this repo keeps a SINGLE prior version, not a history) or "Keep my current notes"
+// (`discard_sermon_note_regeneration`, which leaves the saved draft exactly as it was). Editing is
+// hidden while a regeneration is pending — the on-screen content is the UNCONFIRMED draft, and
+// `update_sermon_note_draft` would otherwise silently edit the SAVED row while the operator is
+// looking at different text.
 //
 // HONESTY (this screen is about trust): only real state is rendered, and under-reporting breaks
 // that contract exactly as much as over-reporting does.
@@ -714,6 +727,7 @@
       var err = res || {};
       return showGenError(err.error || "malformed", err.message || "Something went wrong.");
     }
+    regenError = null; // a fresh generate/regenerate attempt clears any prior inline refusal
     currentDraft = {
       transcriptId: (typeof res.transcript_id === "number") ? res.transcript_id : null,
       draft: res.draft || {},
@@ -728,6 +742,11 @@
       // edit-save (see the `scripture_verdicts` doc comment on `NoteDraft`), so it is
       // explicitly nulled on those two paths below rather than left stale.
       scriptureVerificationNote: res.scripture_verification_note || null,
+      // FR-129 (86akgqdx8): true when a draft already existed for this transcript and the
+      // backend STAGED this fresh one instead of replacing it — `draft` above is the NEW,
+      // not-yet-accepted content; `previousDraft` is the still-saved one, untouched.
+      pendingConfirmation: !!res.pending_confirmation,
+      previousDraft: res.previous_draft || null,
     };
     editingDraft = false;
     renderCurrentDraft();
@@ -760,6 +779,12 @@
         // rather than persisting a stale verdict, so this reads the real response like
         // every other field here — it is no longer hardcoded null.
         scriptureVerificationNote: res.scripture_verification_note || null,
+        // FR-129 (86akgqdx8): `load_sermon_note_draft` always answers with the ACCEPTED
+        // draft only — a pending, not-yet-confirmed regeneration does not re-surface its
+        // banner across a reload/restart (the underlying data survives; see the Goal
+        // Contract's documented non-goal). Explicit here rather than left undefined.
+        pendingConfirmation: false,
+        previousDraft: null,
       };
       editingDraft = false;
       renderCurrentDraft();
@@ -870,6 +895,133 @@
     return v ? v.verified : null;
   }
 
+  // FR-129 (86akgqdx8): the pending-regeneration banner — the operator's only path to
+  // Confirm/Discard, and the one place this screen says out loud that the currently saved
+  // draft has NOT changed yet. Drawn immediately after the header (same prominence as the
+  // AI-disclosure/degraded-notice pair) because it changes how everything below it should
+  // be read: the content on screen is the NEW, unconfirmed draft, not what is actually saved.
+  var regenActing = false;
+  // A refusal/transport-failure on Confirm/Discard is kept INLINE on the banner, never routed
+  // through showGenError()'s whole-region wipe — the whole point of this banner is that the
+  // pending draft stays reachable until the operator resolves it, and a wipe would strand a
+  // refused Confirm with no way back to Discard except leaving and reopening this transcript
+  // (which, on the Transcripts workspace, would also LOSE the pending state entirely — see the
+  // Goal Contract's documented non-goal on why `transcript_get`/`load_sermon_note_draft` never
+  // re-surface a pending regeneration). Cleared on every fresh render attempt.
+  var regenError = null;
+  function renderRegenerationBanner(host) {
+    if (!currentDraft.pendingConfirmation) return;
+    var prev = currentDraft.previousDraft || {};
+    var banner = el("div", "pp-gen-regen-banner");
+    banner.setAttribute("role", "status");
+    banner.appendChild(el("p", "pp-gen-regen-title", "A new draft has been generated."));
+    banner.appendChild(el("p", "pp-gen-regen-desc",
+      "Your currently saved notes (“" + (prev.title || "Sermon notes") + "”) have " +
+      "not been changed. Use this new draft to replace them, or keep what you already have."));
+    if (regenError) {
+      var err = el("p", "pp-gen-regen-error", regenError);
+      err.setAttribute("role", "alert");
+      banner.appendChild(err);
+    }
+    var actions = el("div", "pp-gen-actions pp-gen-regen-actions");
+    var discardBtn = el("button", "pp-gen-regen-discard", "Keep my current notes");
+    discardBtn.type = "button";
+    discardBtn.id = "pp-gen-regen-discard";
+    discardBtn.addEventListener("click", discardRegeneration);
+    actions.appendChild(discardBtn);
+    var confirmBtn = el("button", "pp-gen-regen-confirm", "Use this draft");
+    confirmBtn.type = "button";
+    confirmBtn.id = "pp-gen-regen-confirm";
+    confirmBtn.addEventListener("click", confirmRegeneration);
+    actions.appendChild(confirmBtn);
+    banner.appendChild(actions);
+    host.appendChild(banner);
+  }
+
+  // Shared by confirmRegeneration/discardRegeneration below: both replace `currentDraft`
+  // wholesale from the backend's own re-read (never an echo of anything client-held),
+  // mirroring `saveDraftEdit`'s identical discipline. Both always leave `pendingConfirmation`
+  // false and `previousDraft` null — a confirm/discard resolves the regeneration one way or
+  // the other; there is nothing left pending afterward either way.
+  function applyResolvedRegeneration(res) {
+    regenError = null;
+    currentDraft = {
+      transcriptId: currentDraft.transcriptId,
+      draft: res.draft || {},
+      aiGenerated: !!res.ai_generated,
+      aiLabel: res.ai_label || currentDraft.aiLabel,
+      disclosure: res.disclosure || null,
+      provider: res.provider || currentDraft.provider,
+      degraded: false,
+      degradedNotice: null,
+      scriptureVerificationNote: res.scripture_verification_note || null,
+      pendingConfirmation: false,
+      previousDraft: null,
+    };
+    editingDraft = false;
+    renderCurrentDraft();
+  }
+
+  // Accept the pending regeneration — the saved draft becomes this one (single prior
+  // version: whatever it replaces is now gone, not kept as a further history).
+  function confirmRegeneration() {
+    if (regenActing || !currentDraft || currentDraft.transcriptId == null) return;
+    regenActing = true;
+    var btn = document.getElementById("pp-gen-regen-confirm");
+    if (btn) { btn.disabled = true; btn.setAttribute("aria-busy", "true"); }
+    invoke("confirm_sermon_note_regeneration", { transcriptId: currentDraft.transcriptId })
+      .then(function (res) {
+        if (!res || res.ok !== true) {
+          var err = res || {};
+          // A DISTINCT, INLINE message — the draft WAS generated; only accepting it was
+          // refused (most often the "once AI-generated, always AI-generated" guard on a
+          // degraded regenerate). The pending draft stays shown and reachable; the operator
+          // can still discard it themselves without leaving this screen.
+          regenError = err.message || "This draft could not be used to replace your saved notes.";
+          renderCurrentDraft();
+          return;
+        }
+        applyResolvedRegeneration(res);
+      })
+      .catch(function (e) {
+        regenError = String(e && e.message ? e.message : e);
+        renderCurrentDraft();
+      })
+      .then(function () {
+        regenActing = false;
+        var b = document.getElementById("pp-gen-regen-confirm");
+        if (b) { b.disabled = false; b.removeAttribute("aria-busy"); }
+      });
+  }
+
+  // Discard the pending regeneration — the saved draft is untouched; this only clears the
+  // pending slot so a future regenerate has a clean start.
+  function discardRegeneration() {
+    if (regenActing || !currentDraft || currentDraft.transcriptId == null) return;
+    regenActing = true;
+    var btn = document.getElementById("pp-gen-regen-discard");
+    if (btn) { btn.disabled = true; btn.setAttribute("aria-busy", "true"); }
+    invoke("discard_sermon_note_regeneration", { transcriptId: currentDraft.transcriptId })
+      .then(function (res) {
+        if (!res || res.ok !== true) {
+          var err = res || {};
+          regenError = err.message || "This draft could not be discarded.";
+          renderCurrentDraft();
+          return;
+        }
+        applyResolvedRegeneration(res);
+      })
+      .catch(function (e) {
+        regenError = String(e && e.message ? e.message : e);
+        renderCurrentDraft();
+      })
+      .then(function () {
+        regenActing = false;
+        var b = document.getElementById("pp-gen-regen-discard");
+        if (b) { b.disabled = false; b.removeAttribute("aria-busy"); }
+      });
+  }
+
   function renderDraftView(r) {
     var d = currentDraft.draft || {};
     // Both empty-requested strings are suppressed entirely for a degraded (offline
@@ -881,6 +1033,7 @@
     // that guarantee.
     var showEmptyState = !currentDraft.degraded;
     renderDraftHeader(r);
+    renderRegenerationBanner(r);
     if (d.summary) {
       r.appendChild(el("p", "pp-gen-summary", d.summary));
     } else if (showEmptyState && hasEmptySectionCaveat(d, "Summary")) {
@@ -1009,8 +1162,12 @@
       r.appendChild(explainer);
     }
     // Editing needs a transcript id to save against — null only when local persistence itself was
-    // unavailable/failed for this draft (see the `currentDraft` doc comment above).
-    if (currentDraft.transcriptId != null) {
+    // unavailable/failed for this draft (see the `currentDraft` doc comment above). Also hidden
+    // while a regeneration is pending (FR-129, 86akgqdx8): the content on screen is the
+    // UNCONFIRMED new draft, and `update_sermon_note_draft` writes straight to the SAVED row —
+    // letting the operator "edit" what they are looking at here would silently edit different
+    // content than what they can see. Confirm/discard first (the banner above); edit afterward.
+    if (currentDraft.transcriptId != null && !currentDraft.pendingConfirmation) {
       var actions = el("div", "pp-gen-actions");
       var editBtn = el("button", "pp-gen-edit-btn", "Edit");
       editBtn.type = "button";
@@ -1213,6 +1370,10 @@
         degradedNotice: currentDraft.degradedNotice,
         // 86akby820 (Sana F4 remediation): re-verified fresh against what was just saved.
         scriptureVerificationNote: res.scripture_verification_note || null,
+        // Editing is only reachable when nothing was pending (see renderDraftView) —
+        // explicit here rather than left undefined.
+        pendingConfirmation: false,
+        previousDraft: null,
       };
       editingDraft = false;
       renderCurrentDraft();

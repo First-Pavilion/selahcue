@@ -390,6 +390,45 @@ pub enum Command {
         transcript_id: i64,
         edit: SermonNoteEditInput,
     },
+    /// Stage a freshly (re)generated draft against `transcript_id` WITHOUT replacing the
+    /// currently-accepted draft (FR-129, 86akgqdx8 — "regenerate produces a new draft while
+    /// retaining the prior version until replaced"). The accepted draft is completely
+    /// untouched by this command; the new draft sits in a separate pending slot until the
+    /// operator explicitly [`Self::ConfirmSermonNoteRegeneration`]s it (replacing the
+    /// accepted draft) or [`Self::DiscardSermonNoteRegeneration`]s it (leaving the accepted
+    /// draft alone). **Single prior version, not a history**: a second Stage before a
+    /// Confirm/Discard OVERWRITES whatever was pending — only the CONFIRMED accepted draft
+    /// is guaranteed retained.
+    ///
+    /// Reply: [`ServerMessage::SermonNoteRegenerationState`] with `current` = the unchanged
+    /// accepted draft, `pending` = the newly staged one. [`ServerMessage::Denied`] with
+    /// [`DenyReason::BadRequest`] if no accepted draft exists yet for `transcript_id` —
+    /// regenerate requires something to regenerate FROM; a true first-time generate uses
+    /// [`Self::SaveSermonNoteDraft`] instead, never this command.
+    ///
+    /// Requires [`crate::rbac::Permission::SaveSermonNotes`] — the same tier as
+    /// [`Self::SaveSermonNoteDraft`] and for the identical reason: this command attaches new
+    /// provenance to content the operator has not yet reviewed, and the operator console's
+    /// own regenerate flow is the only legitimate caller.
+    StageSermonNoteRegeneration {
+        transcript_id: i64,
+        draft: SermonNoteDraftInput,
+    },
+    /// Accept the pending regeneration for `transcript_id` (FR-129): the accepted draft
+    /// becomes what was staged, and the version it replaces is now gone (single prior
+    /// version — not a history). Reply: [`ServerMessage::SermonNoteRegenerationState`] with
+    /// `current` = the newly accepted draft, `pending: None`. [`ServerMessage::Denied`] with
+    /// [`DenyReason::BadRequest`] if nothing is currently pending for `transcript_id`.
+    /// Requires `SaveSermonNotes` (see [`Self::StageSermonNoteRegeneration`]).
+    ConfirmSermonNoteRegeneration { transcript_id: i64 },
+    /// Discard the pending regeneration for `transcript_id` (FR-129), leaving the accepted
+    /// draft completely unchanged. A harmless no-op, never a refusal, if nothing was
+    /// pending. Reply: [`ServerMessage::SermonNoteRegenerationState`] with `current` = the
+    /// unchanged accepted draft, `pending: None`. Requires `SaveSermonNotes` (see
+    /// [`Self::StageSermonNoteRegeneration`]) — kept at the same tier as Stage/Confirm for
+    /// consistency, even though discarding cannot itself alter accepted content, because
+    /// the whole regenerate lifecycle is one operator-console-only feature.
+    DiscardSermonNoteRegeneration { transcript_id: i64 },
     /// Approve a queued scripture detection by id (R4): stage its verse in Preview (the
     /// operator Goes Live when ready — detections never auto-display, FR-115) and remove
     /// it from the queue. Requires `SearchScripture` (stages scripture).
@@ -721,6 +760,25 @@ pub enum ServerMessage {
         transcript_id: i64,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         draft: Option<SermonNoteDraftView>,
+    },
+    /// Reply to [`Command::StageSermonNoteRegeneration`]/
+    /// [`Command::ConfirmSermonNoteRegeneration`]/[`Command::DiscardSermonNoteRegeneration`]
+    /// (FR-129, 86akgqdx8): the sermon-note "slot" for `transcript_id` after the operation,
+    /// as the store actually holds it — never an echo of what was sent. A dedicated message
+    /// (rather than reusing [`Self::SermonNoteDraft`]) so the existing Load/Save/Update wire
+    /// shape and its pinned fixtures stay byte-for-byte unchanged.
+    ///
+    /// `current` is the accepted/confirmed draft — `None` only if `transcript_id` somehow
+    /// has no accepted draft at all (should not happen for these three commands, which all
+    /// require one to exist; reported honestly rather than assumed). `pending` is the
+    /// not-yet-confirmed regenerated draft awaiting Confirm/Discard; `None` once nothing is
+    /// staged (immediately after Confirm or Discard).
+    SermonNoteRegenerationState {
+        transcript_id: i64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        current: Option<SermonNoteDraftView>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pending: Option<SermonNoteDraftView>,
     },
     /// A protocol-level or transport-level error not tied to a single request.
     Error { message: String },

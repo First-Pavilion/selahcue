@@ -132,6 +132,70 @@ impl SermonNoteStore for RealSermonNoteStore {
             .ok_or("draft vanished immediately after update")?;
         Ok(record_to_view(&record))
     }
+    fn stage_regeneration(
+        &mut self,
+        transcript_id: i64,
+        draft: &SermonNoteDraftInput,
+    ) -> Result<selahcue_app::RegenerationSlot, String> {
+        let generated_at_ms = 3_000;
+        let pending = sermon_note_repo::PendingRegeneration {
+            title: draft.title.clone(),
+            summary: draft.summary.clone(),
+            sections_json: draft.sections_json.clone(),
+            scriptures_json: draft.scriptures_json.clone(),
+            ai_generated: draft.ai_generated,
+            disclosure: draft.disclosure.clone(),
+            provider: draft.provider.clone(),
+            model: draft.model.clone(),
+            generated_at_ms,
+        };
+        sermon_note_repo::stage_regeneration(&self.db, transcript_id, &pending)
+            .map_err(|e| e.to_string())?;
+        let record = sermon_note_repo::find_by_transcript(&self.db, transcript_id)
+            .map_err(|e| e.to_string())?
+            .ok_or("draft vanished immediately after stage")?;
+        Ok(regeneration_slot_of(&record))
+    }
+    fn confirm_regeneration(
+        &mut self,
+        transcript_id: i64,
+    ) -> Result<selahcue_app::RegenerationSlot, String> {
+        let record = sermon_note_repo::confirm_regeneration(&self.db, transcript_id)
+            .map_err(|e| e.to_string())?;
+        Ok(regeneration_slot_of(&record))
+    }
+    fn discard_regeneration(
+        &mut self,
+        transcript_id: i64,
+    ) -> Result<selahcue_app::RegenerationSlot, String> {
+        sermon_note_repo::discard_regeneration(&self.db, transcript_id)
+            .map_err(|e| e.to_string())?;
+        let record = sermon_note_repo::find_by_transcript(&self.db, transcript_id)
+            .map_err(|e| e.to_string())?
+            .ok_or("draft vanished immediately after discard")?;
+        Ok(regeneration_slot_of(&record))
+    }
+}
+
+fn regeneration_slot_of(r: &sermon_note_repo::SermonNoteRecord) -> selahcue_app::RegenerationSlot {
+    selahcue_app::RegenerationSlot {
+        current: Some(record_to_view(r)),
+        pending: r
+            .pending
+            .as_ref()
+            .map(|p| selahcue_lan::protocol::SermonNoteDraftView {
+                title: p.title.clone(),
+                summary: p.summary.clone(),
+                sections_json: p.sections_json.clone(),
+                scriptures_json: p.scriptures_json.clone(),
+                ai_generated: p.ai_generated,
+                disclosure: p.disclosure.clone(),
+                provider: p.provider.clone(),
+                model: p.model.clone(),
+                created_at_ms: p.generated_at_ms,
+                edited_at_ms: p.generated_at_ms,
+            }),
+    }
 }
 
 fn record_to_view(
@@ -507,5 +571,195 @@ async fn a_stale_transcript_id_from_before_a_restart_still_resolves_over_the_rea
     assert!(
         rows[0].ended_at_ms.is_some(),
         "sanity: the transcript really is ended, not still open"
+    );
+}
+
+// ---------------------------------------------------------------------------------------
+// Regenerate-with-retention (FR-129, 86akgqdx8), real store + real wire — the same "no id
+// or content is ever fabricated by the test" discipline as the rest of this file.
+// ---------------------------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn staging_over_the_real_wire_leaves_the_accepted_draft_retrievable_until_confirmed() {
+    let (mut op, assertion_db) = setup().await;
+    op.start_transcript("Sunday Service", "on-device-whisper")
+        .await
+        .unwrap();
+    let real_id = op.active_transcript_id().await.unwrap().unwrap();
+
+    let original = SermonNoteDraftInput {
+        title: "The Faithful Servant".into(),
+        summary: Some("Original summary.".into()),
+        sections_json: "[]".into(),
+        scriptures_json: "[]".into(),
+        ai_generated: true,
+        disclosure: Some("AI-generated. Check every reference.".into()),
+        provider: "SelahCue AI".into(),
+        model: None,
+    };
+    op.save_sermon_note_draft(real_id, original.clone())
+        .await
+        .unwrap()
+        .unwrap();
+
+    let regenerated = SermonNoteDraftInput {
+        title: "Regenerated Title".into(),
+        summary: Some("A fresh summary.".into()),
+        sections_json: "[]".into(),
+        scriptures_json: "[]".into(),
+        ai_generated: true,
+        disclosure: Some("AI-generated. Check every reference.".into()),
+        provider: "SelahCue AI".into(),
+        model: None,
+    };
+    let slot = op
+        .stage_sermon_note_regeneration(real_id, regenerated.clone())
+        .await
+        .unwrap()
+        .expect("staging over a real draft must be accepted");
+    // The accepted (prior) draft, as reported over the wire, is UNCHANGED.
+    assert_eq!(slot.current.as_ref().unwrap().title, "The Faithful Servant");
+    assert_eq!(slot.pending.as_ref().unwrap().title, "Regenerated Title");
+
+    // Directly on disk, bypassing the LAN link: the prior draft's real columns are
+    // untouched, and the pending regeneration really is there.
+    let on_disk = sermon_note_repo::find_by_transcript(&assertion_db, real_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(on_disk.title, "The Faithful Servant");
+    assert_eq!(on_disk.pending.as_ref().unwrap().title, "Regenerated Title");
+
+    // Confirming replaces the accepted draft; the prior version is now gone (single
+    // prior version — not a history).
+    let confirmed_slot = op
+        .confirm_sermon_note_regeneration(real_id)
+        .await
+        .unwrap()
+        .expect("confirming a legitimate pending regeneration must be accepted");
+    assert_eq!(
+        confirmed_slot.current.as_ref().unwrap().title,
+        "Regenerated Title"
+    );
+    assert!(confirmed_slot.pending.is_none());
+
+    let on_disk_after_confirm = sermon_note_repo::find_by_transcript(&assertion_db, real_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(on_disk_after_confirm.title, "Regenerated Title");
+    assert!(on_disk_after_confirm.pending.is_none());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn discarding_over_the_real_wire_leaves_the_accepted_draft_exactly_as_it_was() {
+    let (mut op, assertion_db) = setup().await;
+    op.start_transcript("Sunday Service", "on-device-whisper")
+        .await
+        .unwrap();
+    let real_id = op.active_transcript_id().await.unwrap().unwrap();
+
+    let original = SermonNoteDraftInput {
+        title: "The Faithful Servant".into(),
+        summary: None,
+        sections_json: "[]".into(),
+        scriptures_json: "[]".into(),
+        ai_generated: true,
+        disclosure: Some("AI-generated. Check every reference.".into()),
+        provider: "SelahCue AI".into(),
+        model: None,
+    };
+    op.save_sermon_note_draft(real_id, original.clone())
+        .await
+        .unwrap()
+        .unwrap();
+
+    op.stage_sermon_note_regeneration(
+        real_id,
+        SermonNoteDraftInput {
+            title: "A regeneration nobody wanted".into(),
+            ..original.clone()
+        },
+    )
+    .await
+    .unwrap()
+    .unwrap();
+
+    let after_discard = op
+        .discard_sermon_note_regeneration(real_id)
+        .await
+        .unwrap()
+        .expect("discard must succeed even though it changes nothing about the accepted draft");
+    assert_eq!(
+        after_discard.current.as_ref().unwrap().title,
+        "The Faithful Servant"
+    );
+    assert!(after_discard.pending.is_none());
+
+    let on_disk = sermon_note_repo::find_by_transcript(&assertion_db, real_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(on_disk.title, "The Faithful Servant");
+    assert!(on_disk.pending.is_none());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn confirming_a_downgrading_regeneration_is_denied_over_the_real_wire_and_stays_pending() {
+    // "Once AI-generated, always AI-generated" (PR #33 review, Sana N2), proven end-to-end:
+    // a degraded regenerate's pending draft cannot be confirmed over an AI-generated
+    // accepted draft, but it STAYS staged (visible, discardable) rather than vanishing.
+    let (mut op, assertion_db) = setup().await;
+    op.start_transcript("Sunday Service", "on-device-whisper")
+        .await
+        .unwrap();
+    let real_id = op.active_transcript_id().await.unwrap().unwrap();
+
+    op.save_sermon_note_draft(
+        real_id,
+        SermonNoteDraftInput {
+            title: "The Faithful Servant".into(),
+            summary: None,
+            sections_json: "[]".into(),
+            scriptures_json: "[]".into(),
+            ai_generated: true,
+            disclosure: Some("AI-generated. Check every reference.".into()),
+            provider: "SelahCue AI".into(),
+            model: None,
+        },
+    )
+    .await
+    .unwrap()
+    .unwrap();
+
+    op.stage_sermon_note_regeneration(
+        real_id,
+        SermonNoteDraftInput {
+            title: "Offline outline".into(),
+            summary: None,
+            sections_json: "[]".into(),
+            scriptures_json: "[]".into(),
+            ai_generated: false,
+            disclosure: None,
+            provider: "Local (offline)".into(),
+            model: None,
+        },
+    )
+    .await
+    .unwrap()
+    .unwrap();
+
+    let denied = op.confirm_sermon_note_regeneration(real_id).await.unwrap();
+    assert!(
+        denied.is_none(),
+        "the host must deny confirming a provenance downgrade"
+    );
+
+    // The accepted draft is untouched, and the pending draft is STILL there.
+    let on_disk = sermon_note_repo::find_by_transcript(&assertion_db, real_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(on_disk.title, "The Faithful Servant");
+    assert!(on_disk.ai_generated);
+    assert!(
+        on_disk.pending.is_some(),
+        "the refused pending draft must remain staged, not be silently dropped"
     );
 }

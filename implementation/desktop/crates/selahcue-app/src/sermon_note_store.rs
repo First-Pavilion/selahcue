@@ -15,8 +15,25 @@
 //! way — both `selahcue-desktop` and `selahcue-operator` depend on `selahcue-app` AND
 //! `selahcue-data` as siblings), so this trait is the seam a binary crate implements against its
 //! own `Database` + `sermon_note_repo`.
+//!
+//! **Regenerate-with-retention (FR-129, 86akgqdx8)** adds three more methods
+//! (`stage_regeneration`/`confirm_regeneration`/`discard_regeneration`), the SAME seam
+//! extended the same way: `LiveController` delegates to whatever store is wired in, a real
+//! desktop-side implementation persists against `sermon_note_repo`'s new `pending_*` columns,
+//! and [`NullSermonNoteStore`] answers honestly for a caller with no store configured. See
+//! [`RegenerationSlot`] for the shared "current + pending" shape all three return.
 
 use selahcue_lan::protocol::{SermonNoteDraftInput, SermonNoteDraftView, SermonNoteEditInput};
+
+/// The sermon-note "slot" for a transcript after a stage/confirm/discard operation
+/// (FR-129, 86akgqdx8) — mirrors [`selahcue_lan::protocol::ServerMessage::SermonNoteRegenerationState`]
+/// minus the `transcript_id` (the caller already has it). `current` is the accepted draft;
+/// `pending` is the not-yet-confirmed regeneration, `None` once nothing is staged.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct RegenerationSlot {
+    pub current: Option<SermonNoteDraftView>,
+    pub pending: Option<SermonNoteDraftView>,
+}
 
 /// A durable store for sermon-note drafts. [`LiveController`](crate::LiveController) holds one
 /// as `Box<dyn SermonNoteStore>`, defaulting to [`NullSermonNoteStore`] — exactly like
@@ -58,6 +75,28 @@ pub trait SermonNoteStore: Send {
         transcript_id: i64,
         edit: &SermonNoteEditInput,
     ) -> Result<SermonNoteDraftView, String>;
+
+    /// Stage a freshly (re)generated draft against `transcript_id` WITHOUT replacing the
+    /// currently-accepted draft (FR-129, 86akgqdx8). `Err` if no accepted draft exists yet
+    /// for `transcript_id` — regenerate requires something to regenerate FROM; a true
+    /// first-time generate goes through [`save_draft`](Self::save_draft) instead. A second
+    /// call before the first is confirmed/discarded OVERWRITES the pending slot (single
+    /// pending slot per transcript — see [`RegenerationSlot`]'s doc and
+    /// `sermon_note_repo::stage_regeneration`'s for the full reasoning).
+    fn stage_regeneration(
+        &mut self,
+        transcript_id: i64,
+        draft: &SermonNoteDraftInput,
+    ) -> Result<RegenerationSlot, String>;
+
+    /// Accept the pending regeneration for `transcript_id`, replacing the accepted draft
+    /// with it. `Err` if nothing is currently pending.
+    fn confirm_regeneration(&mut self, transcript_id: i64) -> Result<RegenerationSlot, String>;
+
+    /// Discard the pending regeneration for `transcript_id`, leaving the accepted draft
+    /// unchanged. Never errors for "nothing was pending" — idempotent, mirroring
+    /// `sermon_note_repo::discard_regeneration`.
+    fn discard_regeneration(&mut self, transcript_id: i64) -> Result<RegenerationSlot, String>;
 }
 
 /// The default, no-op store. A caller with no real store configured sees exactly what the
@@ -86,6 +125,19 @@ impl SermonNoteStore for NullSermonNoteStore {
         _transcript_id: i64,
         _edit: &SermonNoteEditInput,
     ) -> Result<SermonNoteDraftView, String> {
+        Err("no sermon-note store is configured".into())
+    }
+    fn stage_regeneration(
+        &mut self,
+        _transcript_id: i64,
+        _draft: &SermonNoteDraftInput,
+    ) -> Result<RegenerationSlot, String> {
+        Err("no sermon-note store is configured".into())
+    }
+    fn confirm_regeneration(&mut self, _transcript_id: i64) -> Result<RegenerationSlot, String> {
+        Err("no sermon-note store is configured".into())
+    }
+    fn discard_regeneration(&mut self, _transcript_id: i64) -> Result<RegenerationSlot, String> {
         Err("no sermon-note store is configured".into())
     }
 }
