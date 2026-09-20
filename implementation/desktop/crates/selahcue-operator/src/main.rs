@@ -4731,17 +4731,19 @@ fn draft_json(d: &selahcue_core::providers::NoteDraft) -> serde_json::Value {
 fn sections_to_persist(
     draft: &selahcue_core::providers::NoteDraft,
 ) -> Vec<selahcue_core::providers::NoteSection> {
-    // `.map`, not `.filter_map`: exhaustive over `DraftCaveat`'s one current variant, so
-    // every arm produces a heading today. A `match`, not an irrefutable destructure, so a
-    // future second variant (86akby820 adds one) forces this to be revisited — at which
-    // point some caveats stop being "a heading" at all and this becomes a genuine filter.
+    // `.filter_map`, as the comment this replaced predicted: 86akby820 added a second
+    // `DraftCaveat` variant, `ScriptureUnverified`, which is about a single reference, not
+    // a whole section — it names nothing that ever matches a `NoteSection::heading`, so it
+    // has no heading to contribute here and is skipped rather than persisted-out-of-
+    // existence. Only `SectionRequestedEmpty` still identifies a section to drop.
     let empty_caveated_headings: Vec<&str> = draft
         .caveats
         .iter()
-        .map(|c| match c {
+        .filter_map(|c| match c {
             selahcue_core::providers::DraftCaveat::SectionRequestedEmpty { heading } => {
-                heading.as_str()
+                Some(heading.as_str())
             }
+            selahcue_core::providers::DraftCaveat::ScriptureUnverified { .. } => None,
         })
         .collect();
     draft
@@ -4764,6 +4766,7 @@ mod sections_to_persist_tests {
             sections,
             scriptures: Vec::new(),
             caveats,
+            scripture_verdicts: Vec::new(),
         }
     }
 
@@ -4802,6 +4805,30 @@ mod sections_to_persist_tests {
             1,
             "an empty section with NO caveat must still persist — only a CAVEATED \
              empty section is filtered"
+        );
+    }
+
+    #[test]
+    fn a_scripture_unverified_caveat_drops_nothing_it_names_no_section_at_all() {
+        // 86akby820 added `DraftCaveat::ScriptureUnverified`, which this function's
+        // `filter_map` must skip (it has no `heading` field to compare against — it
+        // names a reference, not a section). Without this arm the match would not
+        // compile at all (the compile error this test guards against); with a `_ => None`
+        // wildcard instead of an explicit arm, a THIRD future caveat variant could
+        // silently fall through unnoticed — this exhaustive match is what forces that
+        // to be revisited too. A section sharing NO heading with any caveat must survive.
+        let d = draft(
+            vec![NoteSection::flat("Illustrations", vec!["a lantern".into()])],
+            vec![DraftCaveat::ScriptureUnverified {
+                reference: "3 John 4:12".to_string(),
+            }],
+        );
+        let persisted = sections_to_persist(&d);
+        assert_eq!(
+            persisted.len(),
+            1,
+            "a ScriptureUnverified caveat must never cause an unrelated section to be \
+             dropped — it names a reference, not a heading"
         );
     }
 
