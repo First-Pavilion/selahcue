@@ -273,7 +273,9 @@ if not check_d5_no_scrolltop_writes():
 # commits onto 86akmdkdg's own 1301, not 1301+55 by arithmetic — this file's own history (above)
 # is why: the floor has drifted quietly between rounds before, so it is re-measured at HEAD,
 # never merely incremented.
-EXPECTED_MIN_CHECKS = 1301  # placeholder — corrected to the real post-rebase count once measured
+# Measured post-rebase (86akcffy0's branch rebased onto 86akmdkdg's merged 1301): 1355 checks,
+# 0 FAIL — exactly 1301 + 54, confirming no collision or overlap between the two tickets' checks.
+EXPECTED_MIN_CHECKS = 1355
 
 
 def find_chrome():
