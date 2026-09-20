@@ -6,7 +6,7 @@
 - Parent goal ID: NONE
 - Title: A note section the operator switched ON that comes back empty is reported as requested-but-empty, never silently absent
 - Role: backend-engineer
-- Status: DRAFT
+- Status: VERIFIED_COMPLETE
 - Execution engine: goal
 - ClickUp task: https://app.clickup.com/t/86akc0tua
 - Created: 2026-09-19
@@ -139,9 +139,9 @@ Verified against `origin/main` @ `269591e043d3edb96f66cafef512025a374b603a`
 | C-007 | yes | A truncated/malformed response is never read as "legitimately empty" | `a_truncated_or_partial_response_is_never_read_as_legitimately_empty` | PASS | test output | PASS |
 | C-008 | yes | Wording is agreed with Uma | Uma's response recorded on the ClickUp task | agreed copy in comment | ClickUp comment 90130316130904 (settled), reaffirmed 90130323184524 | PASS |
 | C-009 | yes | Console renders the caveat unmissably, suppressed when degraded | `scripts/operator_headless.py`, computed-style assertion; mutation-verified | PASS, 1300→1311 checks, mutation RED confirmed then reverted GREEN | headless output | PASS |
-| C-010 | yes | `settings.js` change and backend change are one commit/MR | will confirm at commit time (`git show --stat`) | both files present | git log | PENDING |
-| C-011 | yes | `make ci` passes in full | `make ci` | exit 0, ALL GREEN | `MAKE_CI_EXIT:0`, `1311 checks, 0 FAIL`, zero FAIL/error[/FAILED in ~6500-line log | PASS |
-| C-012 | yes | Four-reviewer gate passed | Cody/Vera/Sana/Quinn findings remediated | no blocking findings outstanding | review artifact | PENDING |
+| C-010 | yes | `settings.js` change and backend change are one commit/MR | `git show --stat` on commit `6d957b0` | both files present | 10 files incl. both settings.js and main.rs in one commit | PASS |
+| C-011 | yes | `make ci` passes in full | `make ci` | exit 0, ALL GREEN | `MAKE_CI_EXIT:0` across 3 rounds (`6d957b0`, `20dc7c1`, `ae34ea1`); final: `1314 checks, 0 FAIL` | PASS |
+| C-012 | yes | Four-reviewer gate passed | Cody/Vera/Sana/Quinn findings remediated | no blocking findings outstanding | [Review report](https://claude.ai/artifact/7kva7L2PKhXDmZPc4fv9M1); Cody's 2-route persistence finding remediated across 2 rounds and independently re-confirmed closed on both routes | PASS |
 
 Design note (for 86akby820 and future reuse, per the requesting session's ask): the shared
 vocabulary is `selahcue_core::providers::DraftCaveat` (currently one variant,
@@ -392,9 +392,15 @@ response; this is NOT persisted through the LAN wire protocol (documented non-go
 
 ## Final evaluation
 
-- Validator command: `python3 ~/.claude/skills/goal/scripts/validate_goal_contract.py <path> --completion`
-- Validator result: (recorded after execution)
-- Independent verification result: (recorded after execution)
-- Terminal state: (recorded after execution)
-- Remaining failed or blocked criteria: (recorded after execution)
-- ClickUp final evidence comment: (recorded after execution)
+- Validator command: `python3 ~/.claude/skills/goal/scripts/validate_goal_contract.py TASK-86akc0tua-requested-but-empty-sections.md --completion`
+- Validator result: (recorded after execution — see terminal output)
+- Independent verification result: Vera PASS, Sana PASS (non-blocking), Quinn all
+  in-scope criteria PASS, Cody one blocker across two remediation rounds, both routes
+  independently re-confirmed closed on the final commit.
+- Terminal state: VERIFIED_COMPLETE
+- Remaining failed or blocked criteria: none. One deliberate non-goal (caveats not
+  threaded through the LAN wire protocol) recorded from the outset; one low-severity
+  follow-up filed (86akmfwmv, server-side enforcement of the edit-save filter) as
+  accepted, non-blocking residual risk.
+- ClickUp final evidence comment: posted, task moved to `qa`
+  (https://app.clickup.com/t/86akc0tua)
