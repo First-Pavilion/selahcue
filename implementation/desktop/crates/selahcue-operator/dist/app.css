@@ -7440,3 +7440,66 @@
   white-space: pre-wrap;
   flex-basis: 100%;
 }
+
+/* Timestamp-linked note items (86akgqdw0; FR-124). A note item's own linked transcript
+   timestamp, rendered as a small clickable badge before its text — the same `--sc-primary-
+   hover` / rgba(110, 92, 240, ...) treatment `.pp-gen-badge` already uses for a pill-shaped
+   accent, so a jump target reads as "the same kind of thing" wherever it appears. */
+.tr-item-ts {
+  font: inherit;
+  font-variant-numeric: tabular-nums;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--sc-primary-hover);
+  background: rgba(110, 92, 240, 0.14);
+  border: 1px solid rgba(110, 92, 240, 0.45);
+  border-radius: 999px;
+  padding: 1px 8px;
+  margin-right: 7px;
+  cursor: pointer;
+}
+.tr-item-ts:hover { background: rgba(110, 92, 240, 0.24); }
+.tr-item-ts:focus-visible { outline: 2px solid var(--sc-primary-hover); outline-offset: 2px; }
+
+/* Plain, non-interactive counterpart on the Settings surface (86akgqdw0) — no jump affordance
+   exists there (no transcript-log virtualizer to jump within), so this deliberately carries no
+   `cursor: pointer` and no hover/focus treatment: it must not look clickable when it is not. */
+.pp-item-ts {
+  font: inherit;
+  font-variant-numeric: tabular-nums;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--sc-text-secondary);
+  background: var(--sc-inset);
+  border: 1px solid var(--sc-border);
+  border-radius: 999px;
+  padding: 1px 8px;
+  margin-right: 7px;
+}
+
+/* The transcript line a clicked note-item timestamp jumped to (86akgqdw0) — a transient landing
+   marker, distinct from `.tr-line-corrected`'s permanent overlay: cleared on the NEXT jump (see
+   `highlightJumpedRow` in transcripts.js), never a permanent annotation on the log. */
+.tr-line-jump-target {
+  background: rgba(110, 92, 240, 0.16);
+  border-radius: 6px;
+}
+
+/* "Copy chapter markers" (86akgqdw0) — reuses `.pp-gen-edit-btn`'s exact treatment so the two
+   actions read as siblings in the same row, never as two different button languages. */
+.tr-copy-chapters-btn,
+.pp-copy-chapters-btn {
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--sc-text);
+  background: var(--sc-elevated);
+  border: 1px solid var(--sc-border);
+  border-radius: 8px;
+  padding: 7px 13px;
+  cursor: pointer;
+}
+.tr-copy-chapters-btn:hover,
+.pp-copy-chapters-btn:hover { background: var(--sc-inset); }
+.tr-copy-chapters-btn:focus-visible,
+.pp-copy-chapters-btn:focus-visible { outline: 2px solid var(--sc-primary-hover); outline-offset: 2px; }

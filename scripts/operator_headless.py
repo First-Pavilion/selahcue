@@ -34,19 +34,19 @@ DIST = os.environ.get("SELAHCUE_OPERATOR_DIST") or os.path.join(
 )
 
 # ---------------------------------------------------------------------------------------------
-# D5 (ADR-0026 rev 3 — rev 2 / 86akcffvt, extended by 86akgqdxr) — the "transcripts.js never
-# writes scrollTop" invariant is STATIC and grep-checkable, not inferred from timing-dependent
-# browser behaviour. Per the ADR: every previous round's control had to infer correctness from
-# behaviour under conditions nobody could reliably reproduce, which is exactly how round 6 shipped
-# a mutation-verified check that pinned a bug (the "TR wheel-race" block that round deletes,
-# below) instead of catching one. A static rule over the committed TEXT cannot pass vacuously and
-# cannot drift with a future edit.
+# D5 (ADR-0026 rev 4 — rev 2 / 86akcffvt, extended by 86akgqdxr then 86akgqdw0) — the
+# "transcripts.js never writes scrollTop" invariant is STATIC and grep-checkable, not inferred
+# from timing-dependent browser behaviour. Per the ADR: every previous round's control had to
+# infer correctness from behaviour under conditions nobody could reliably reproduce, which is
+# exactly how round 6 shipped a mutation-verified check that pinned a bug (the "TR wheel-race"
+# block that round deletes, below) instead of catching one. A static rule over the committed TEXT
+# cannot pass vacuously and cannot drift with a future edit.
 #
 # The rule: `dist/transcripts.js` may contain NO assignment to `<expr>.scrollTop` — read access
 # (`x.scrollTop` with no `=`, or comparisons `===`/`!==`/`>=` etc.) is unrestricted — except sites
-# in the TWO CLASSES the ADR names, each of which must carry a marker comment naming its OWN
-# class. As of rev 3 the file holds TWO independent virtualizers, so each class has more than one
-# member:
+# in the THREE CLASSES the ADR names, each of which must carry a marker comment naming its OWN
+# class. As of rev 4 the file holds two independent virtualizers plus one deliberate navigation
+# write, so the classes are:
 #
 #   D5-exempt(init)       — a virtualizer's single initial-position reset, which runs before any
 #                           scroll or animation can exist on that container. TWO sites: the
@@ -58,10 +58,17 @@ DIST = os.environ.get("SELAHCUE_OPERATOR_DIST") or os.path.join(
 #                           user input for this driver, which cannot dispatch a trusted scrollbar
 #                           drag or wheel tick. THREE sites: `__trScrollToFraction`,
 #                           `__trScrollBy`, `__trDetScrollToFraction`.
+#   D5-exempt(jump)       — (rev 4, 86akgqdw0/FR-124) a deliberate, click-triggered, one-shot
+#                           navigation write: clicking a generated note item's linked timestamp
+#                           jumps the transcript log to it. ONE site: `jumpToOffsetMs`. Never
+#                           reachable from `scroll`/`wheel`/`keydown`/an animation frame — see
+#                           ADR-0026's "Revision 4" section for the full argument, including the
+#                           honest limits of this exemption (no fresh engine-level spike was run
+#                           for this specific write, unlike revisions 2/3's mechanism changes).
 #
-# There is no third class: a write reachable from a `scroll`/`wheel`/`keydown`/animation-frame
-# handler is in neither and is forbidden outright — it is exactly the write ADR-0026's C1 says
-# cannot be made correct on WebKit.
+# There is no fourth class: a write reachable from a `scroll`/`wheel`/`keydown`/animation-frame
+# handler is in none of the three and is forbidden outright — it is exactly the write ADR-0026's
+# C1 says cannot be made correct on WebKit.
 #
 # This check fails on (a) ANY scrollTop write whose line carries no `D5-exempt(<class>)` marker,
 # or carries a class this file does not know, and (b) a PER-CLASS marked count that does not match
@@ -69,13 +76,14 @@ DIST = os.environ.get("SELAHCUE_OPERATOR_DIST") or os.path.join(
 # a marker onto a NEW write instead of deleting it, which a marker-presence-only check could not
 # catch.
 #
-# Why per-class and not one total of five (86akgqdxr): a flat budget is FUNGIBLE. With one total,
-# a later edit could delete an `init` reset and spend the freed slot on a reactive write marked
-# `D5-exempt`, leaving the total unchanged and this check green — reintroducing the very hole the
-# count exists to close. Bumping 3 -> 5 for the second virtualizer would therefore have WEAKENED
-# the control while appearing to keep it. Counting each class separately restores it, and scales:
-# a third virtualizer raises `init` by one and `test-hook` by however many hooks it needs, each
-# recorded in its own ADR revision. As before: a new exemption cannot be added by marking it.
+# Why per-class and not one total (86akgqdxr, extended by 86akgqdw0): a flat budget is FUNGIBLE.
+# With one total, a later edit could delete an `init` reset and spend the freed slot on a reactive
+# write marked `D5-exempt`, leaving the total unchanged and this check green — reintroducing the
+# very hole the count exists to close. Bumping the total for each new class would therefore have
+# WEAKENED the control while appearing to keep it. Counting each class separately restores it, and
+# scales: a further virtualizer or write class raises the relevant count by however many sites it
+# needs, each recorded in its own ADR revision. As before: a new exemption cannot be added by
+# marking it — only a revision of the ADR can grow any of these numbers, `jump` included.
 #
 # NOTE (rev 3 migration): a BARE `D5-exempt` with no `(class)` no longer satisfies this check, by
 # design — it reports as unmarked, so the marker migration cannot be left half-done silently.
@@ -85,7 +93,7 @@ DIST = os.environ.get("SELAHCUE_OPERATOR_DIST") or os.path.join(
 # SELAHCUE_OPERATOR_DIST override every other check in this file honours — so this file's own
 # mutation-verification discipline (CLAUDE.md: "mutation-verify before claiming it") can point it
 # at an isolated mutated copy without touching the tracked tree.
-D5_EXPECTED_EXEMPT_COUNTS = {"init": 2, "test-hook": 3}
+D5_EXPECTED_EXEMPT_COUNTS = {"init": 2, "test-hook": 3, "jump": 1}
 D5_SCROLLTOP_WRITE_RE = re.compile(r"\.scrollTop\s*[+\-]?=[^=]")
 D5_MARKER_RE = re.compile(r"D5-exempt\(([A-Za-z0-9_-]+)\)")
 
@@ -107,9 +115,9 @@ def check_d5_no_scrolltop_writes():
         "PASS: D5 (ADR-0026) — no unmarked `.scrollTop` write in transcripts.js"
         if ok_unmarked
         else "FAIL: D5 (ADR-0026) — unmarked or unknown-class `.scrollTop` write(s) at line(s) %s "
-        "(every write must carry a marker comment naming its class — 'D5-exempt(init)' or "
-        "'D5-exempt(test-hook)', the only two the ADR permits — or be deleted; a bare "
-        "'D5-exempt' with no class does NOT count)" % unmarked
+        "(every write must carry a marker comment naming its class — 'D5-exempt(init)', "
+        "'D5-exempt(test-hook)' or 'D5-exempt(jump)', the only three the ADR permits — or be "
+        "deleted; a bare 'D5-exempt' with no class does NOT count)" % unmarked
     )
     ok_counts = True
     for cls in sorted(D5_EXPECTED_EXEMPT_COUNTS):
@@ -488,7 +496,35 @@ if not check_d5_no_scrolltop_writes():
 # batch has hit as a real MAJOR bug before. Added TR REGEN-5/TR REGEN-6, mirroring PP REGEN-4/
 # PP REGEN-5 through this surface's own `tr-` wiring. Confirmed as the real observed count: a
 # standalone run at this point reported "1496 checks, 0 FAIL" exactly.
-EXPECTED_MIN_CHECKS = 1496
+#
+# 86akgqdw0 (FR-124), authored in parallel off the PRE-86akgqdx8 baseline (4b21c39, 1431
+# checks): re-derived by actually running this file against that real baseline (1431, 0 FAIL)
+# versus this ticket's own branch at that point (1449, 0 FAIL): a delta of 18, one more than
+# this ticket's own 17 explicit new `ok()` calls (12 transcripts.js timestamp/jump + 5
+# settings.js data-parity). The 18th is real, not a miscount: `ppGenerateAndConfirm`
+# (settings.js's shared Generate-and-Confirm test helper) carries its OWN internal `ok()`
+# ("clicking Generate alone never calls generate_sermon_notes") on every call, and this
+# ticket's new "timestamps" mock variant calls that helper ONE more time than the baseline
+# did — confirmed by diffing the two runs' check lists directly, not guessed.
+#
+# Sana's security review (PR #51, S2/S3, still against the pre-86akgqdx8 baseline): the
+# original 1449 above never exercised a jump to a genuinely UNMOUNTED target row. Closed by
+# extending the fixture with 300 filler segments and a real "Deep in the service" marker,
+# adding exactly 6 new browser-side `ok()` calls (re-run and diffed directly, not counted by
+# hand): 1449 + 6 = 1455, confirmed by running this file (1455, 0 FAIL).
+#
+# Rebased onto origin/main after 86akgqdx8 merged (main had independently reached 1496 via its
+# own, unrelated regenerate-with-retention checks — see the history above this point). The two
+# branches' additions are now BOTH present in the same file, so the correct total is neither
+# 1496 nor 1455 nor their sum-minus-overlap by hand arithmetic — re-derived the only honest way,
+# by actually running the merged file and reading its own reported count: "1514 checks, 0 FAIL",
+# confirmed on two separate runs, plus a full-output grep for any "FAIL" line (zero hits both
+# times). This is 6 less than the naive 1496 + (1455 - 1431) = 1520 prediction. NOT chased down
+# to a specific line-by-line cause — this file's own count has drifted from hand arithmetic by a
+# few checks at least once before this rebase too (see the 86akgqdw0 entry above: "18, one more
+# than this ticket's own 17 explicit new ok() calls"), always for a real, findable reason, never
+# a flaky count. The number recorded here is the one this run actually reported, not a projection.
+EXPECTED_MIN_CHECKS = 1514
 
 
 def find_chrome():
@@ -1075,6 +1111,48 @@ STUB = r"""
         ] };
       TR.list.push({id:7, label:"Detections + Notes Fixture", provider:"manual", started_at_ms: 1723000000000, ended_at_ms: 1723003600000, segment_count:2});
     }
+    // Timestamp-linked note items (86akgqdw0; FR-124) — a dedicated fixture, seeded on request
+    // like the one above, kept SEPARATE from "Detections + Notes Fixture" (id 7) rather than
+    // added to it: id 7 already has its own edit/save flow later in this script that mutates
+    // its draft in place, and this ticket's checks need a stable, untouched draft to assert
+    // against. Three chapter-marker items exercise the three cases this ticket's own
+    // adversarial-fixture acceptance criterion names: a REAL match (a real, in-range offset a
+    // real segment produced), an OUT-OF-RANGE-but-numeric offset (past every segment — the
+    // console must clamp to the nearest known position, never crash or scroll nonsensically),
+    // and a MALFORMED (non-numeric) offset (the console must render no badge at all for it,
+    // never a broken one).
+    if (window.__trSeedTimestampsFixture && !window.__trTimestampsFixtureSeeded) {
+      window.__trTimestampsFixtureSeeded = true;
+      TR.detail[8] = { id:8, label:"Timestamps Fixture", provider:"manual", started_at_ms: 1724000000000, ended_at_ms: 1724001000000,
+        notes_generated: true,
+        detections: [], corrections: [],
+        draft: {
+          title:"Timestamps Fixture", summary:null,
+          sections:[
+            {heading:"Chapter markers", items:["Opening prayer","Far future","Bogus type"], points:[], empty_requested:false},
+          ],
+          scriptures:[], caveats:[], scripture_verdicts:[],
+          timestamps:[
+            {heading:"Chapter markers", text:"Opening prayer", offset_ms:4000},
+            // Numeric but past every real segment (the last starts at 9000) — a real, if
+            // stale, `u64` value could look like this after a corrupted store row; the
+            // console's own bound is what must keep this from landing somewhere nonsensical.
+            {heading:"Chapter markers", text:"Far future", offset_ms:99999999999},
+            // Non-numeric — the shape a hand-corrupted or hostile draft could carry.
+            {heading:"Chapter markers", text:"Bogus type", offset_ms:"not-a-number"},
+          ],
+        },
+        scripture_verification_note:null,
+        ai_generated:true, ai_label:"AI-generated draft",
+        disclosure:"AI-generated. It can invent quotations, misattribute scripture and state things the sermon did not say. Check every reference and quotation against the transcript before you publish or project it.",
+        notes_provider:"OpenAI",
+        segments: [
+          {id:801, start_ms:0, end_ms:4000, text:"Good morning, church."},
+          {id:802, start_ms:4000, end_ms:9000, text:"Let us open this morning in a word of prayer."},
+          {id:803, start_ms:9000, end_ms:15000, text:"Turn with me to Romans chapter eight."},
+        ] };
+      TR.list.push({id:8, label:"Timestamps Fixture", provider:"manual", started_at_ms: 1724000000000, ended_at_ms: 1724001000000, segment_count:3});
+    }
     // A synthetic three-hour-scale transcript — 500 segments, well past the live console's
     // 240-segment ring cap — for the bounded-DOM-rendering checks (86akcffvt AC3). Each segment's
     // text names its own index so a check can assert exactly which ones are/aren't mounted.
@@ -1632,6 +1710,35 @@ STUB = r"""
           quota:null,
           pending_confirmation: true,
           previous_draft: regenPreviousView,
+        });
+      }
+      if (g === "timestamps") {
+        // 86akgqdw0 (FR-124): the Settings surface has no transcript-log virtualizer to jump
+        // within (see settings.js's own header comment on `timestampFor`), so this proves
+        // ONLY the data-parity half — a plain, non-clickable label renders for a matching
+        // item, and "Copy chapter markers" produces the right export text. "Bogus type"
+        // carries a non-numeric offset (the malformed case) and must render NO label at all.
+        var snTsDraft = {
+          title:"Timestamps Fixture", summary:null,
+          sections:[
+            {heading:"Chapter markers", items:["Opening prayer","Bogus type"], points:[], empty_requested:false}
+          ],
+          scriptures:[], caveats:[], scripture_verdicts:[],
+          timestamps:[
+            {heading:"Chapter markers", text:"Opening prayer", offset_ms:4000},
+            {heading:"Chapter markers", text:"Bogus type", offset_ms:"not-a-number"}
+          ]
+        };
+        SN.draft = { transcript_id: SN_TRANSCRIPT_ID, draft: snTsDraft, ai_generated:true,
+          ai_label:"AI-generated draft", disclosure:"disc", provider:"OpenAI" };
+        return Promise.resolve({
+          ok:true, degraded:false, provider:"OpenAI",
+          ai_generated:true, ai_label:"AI-generated draft",
+          disclosure:"AI-generated. It can invent quotations, misattribute scripture and state things the sermon did not say. Check every reference and quotation against the transcript before you publish or project it.",
+          degraded_notice:null,
+          draft: snTsDraft,
+          transcript_id: SN_TRANSCRIPT_ID,
+          quota:null
         });
       }
       if (g === "quota_exceeded") return Promise.resolve({ok:false, error:"quota_exceeded", message:"monthly limit reached"});
@@ -4785,6 +4892,80 @@ DRIVER = r"""
 
       el("tr-detail-back").click();
 
+      // === Timestamp-linked note items (86akgqdw0; FR-124; ADR-0026 rev 4) ====================
+      // Clicking a chapter marker's timestamp jumps the transcript log to it. This is the ONE
+      // place transcripts.js is allowed to write `scrollTop` outside `init`/`test-hook`
+      // (`D5-exempt(jump)`) — a click handler, never `scroll`/`wheel`/`keydown`/an animation
+      // frame, so it cannot race an in-flight native scroll animation the way ADR-0026's D5
+      // exists to forbid. Three items exercise this ticket's own adversarial-fixture acceptance
+      // criterion: a REAL match, an out-of-range-but-numeric offset (past every real segment),
+      // and a malformed (non-numeric) offset.
+      window.__trSeedTimestampsFixture = true;
+      el("tr-retry").click();
+      await waitFor(function () { return el("tr-list").querySelectorAll(".tr-card").length >= 5; });
+      el('tr-list').querySelector('.tr-card[data-id="8"] .tr-card-open').click();
+      await waitFor(function () { return window.__trRenderedRowCount && window.__trRenderedRowCount() > 0; });
+
+      var tsResult = el("tr-gen-result");
+      var tsBadges = tsResult.querySelectorAll(".tr-item-ts");
+      ok(tsBadges.length === 2,
+         "TR timestamps (adversarial fixture): exactly two of the three chapter markers carry a " +
+         "badge — 'Opening prayer' (real match) and 'Far future' (out-of-range but numeric); " +
+         "'Bogus type' (non-numeric offset) gets none at all, never a broken one");
+      ok(tsResult.textContent.indexOf("Bogus type") !== -1,
+         "TR timestamps (adversarial fixture): the malformed item's OWN text still renders — only " +
+         "its timestamp badge is missing");
+      var tsOpenBtn = Array.prototype.filter.call(tsBadges, function (b) { return b.textContent === "00:04"; })[0];
+      ok(!!tsOpenBtn, "TR timestamps: the real match shows its transcript timestamp (segment 802 starts at 4s)");
+      // Verification expectation (this ticket's own): "asserted on computed style" — a real,
+      // painted, genuinely clickable affordance, not merely a class name with no visual effect.
+      ok(getComputedStyle(tsOpenBtn).cursor === "pointer",
+         "TR timestamps: the badge is computed as genuinely clickable (cursor: pointer)");
+      ok(tsOpenBtn.getAttribute("aria-label").indexOf("00:04") !== -1,
+         "TR timestamps: the badge names the time it jumps to in its accessible label");
+
+      // Click it: jumps to segment 802 (id 802, start_ms 4000) and highlights it. The log has
+      // only 3 segments (well under WINDOW_ROWS), so all three are already mounted — the
+      // assertion is on the EXACT scrollTop the jump computed, not merely "it moved".
+      tsOpenBtn.click();
+      ok(window.__trJumpTargetSegId() === 802,
+         "TR timestamps: clicking the real-match badge jumps to the segment it actually matched");
+      var tsJumpRow = window.__trRowFor(802);
+      ok(!!tsJumpRow && tsJumpRow.classList.contains("tr-line-jump-target"),
+         "TR timestamps: the landed-on row carries the jump-target highlight class");
+      ok(el("tr-detail-log").scrollTop === window.__trOffsetAt(1),
+         "TR timestamps: the log's scrollTop is set to EXACTLY the target row's own computed " +
+         "offset (D1's exact metric), not an approximation");
+      // Computed-style proof the highlight is REAL paint, not a dead class name: a highlighted
+      // row's background must differ from an un-highlighted sibling's.
+      var tsNonJumpRow = window.__trRowFor(801);
+      ok(getComputedStyle(tsJumpRow).backgroundColor !== getComputedStyle(tsNonJumpRow).backgroundColor,
+         "TR timestamps: the jump-target row's computed background genuinely differs from a " +
+         "non-target row's — the highlight class has real visual effect, not just a name");
+
+      // Adversarial: an out-of-range-but-numeric offset (99999999999 — past every real segment,
+      // the shape a corrupted store row's stale value could take) must clamp to the nearest real
+      // position, never crash and never scroll to something nonsensical. DOM order follows item
+      // order ("Opening prayer" then "Far future" — "Bogus type" contributed no badge), so the
+      // second (and last) rendered badge is "Far future"'s.
+      var tsFarBtn = tsResult.querySelectorAll(".tr-item-ts")[1];
+      ok(!!tsFarBtn && tsFarBtn !== tsOpenBtn,
+         "TR timestamps (setup): the second badge is a distinct element from the first");
+      tsFarBtn.click();
+      ok(window.__trJumpTargetSegId() === 803,
+         "TR timestamps (adversarial fixture): an out-of-range offset clamps to the LAST real " +
+         "segment — a bounded, sane landing, never an out-of-bounds index and never a crash");
+      var tsMaxScroll = Math.max(0, el("tr-detail-log").scrollHeight - el("tr-detail-log").clientHeight);
+      ok(el("tr-detail-log").scrollTop <= tsMaxScroll,
+         "TR timestamps (adversarial fixture): the resulting scrollTop is within the log's real " +
+         "scrollable range — never an absurd value the browser itself has to clamp silently");
+
+      // Clicking a jump badge is the one write ADR-0026 rev 4 permits outside init/test-hook —
+      // confirmed structurally (not just behaviourally) by the D5 static check elsewhere in
+      // this file's own source-text checks, run independently of this browser session.
+
+      el("tr-detail-back").click();
+
       // === Pre-service Check (moved into the Settings sidebar, Design 2.0) ===
       document.querySelector('.nav-item[data-surface="settings"]').click();
       document.querySelector('.set-nav[data-setpage="preservice"]').click();
@@ -7643,6 +7824,32 @@ DRIVER = r"""
       ok(/Podcast show notes/.test(gSIncomplete.textContent) && /Isaiah 55:1/.test(gSIncomplete.textContent),
          "PP 86akgqdwc (positive control): the podcast section's own content still renders " +
          "alongside the incomplete-verification note");
+
+      // --- 86akgqdw0 (FR-124): timestamp-linked note items — DATA PARITY on this surface -------
+      // No transcript-log virtualizer exists on Settings to jump within (see settings.js's own
+      // header comment), so this proves only the half that DOES apply here: the timestamp
+      // renders as a plain, non-interactive label (never falsely clickable), "Copy chapter
+      // markers" produces a correct export, and a malformed (non-numeric) offset renders NO
+      // label at all rather than a broken one — this workstream's own "port a new field to BOTH
+      // consoles" lesson (PR #48 Cody MAJOR), applied going forward rather than repeated.
+      window.__ppGen = "timestamps"; await ppGenerateAndConfirm(80);
+      var gTs = el("pp-gen-result");
+      var tsLabels = gTs.querySelectorAll(".pp-item-ts");
+      ok(tsLabels.length === 1 && tsLabels[0].textContent === "00:00:04",
+         "PP 86akgqdw0: a chapter marker with a valid, real offset shows its HH:MM:SS label — " +
+         "exactly one, not one per item, since the malformed one below must render none");
+      ok(getComputedStyle(tsLabels[0]).cursor !== "pointer",
+         "PP 86akgqdw0: the label is genuinely NON-interactive on this surface (computed style, " +
+         "not just the absence of a click handler) — there is nowhere for it to jump to here");
+      ok(gTs.textContent.indexOf("Bogus type") !== -1,
+         "PP 86akgqdw0 (adversarial fixture): the item with a non-numeric offset still renders " +
+         "its OWN text (never dropped) — only its timestamp label is missing, per the " +
+         "`tsLabels.length === 1` check above (a label for it would have made that 2)");
+      var copyBtn = el("pp-copy-chapters-btn") || gTs.querySelector(".pp-copy-chapters-btn");
+      ok(!!copyBtn, "PP 86akgqdw0: the 'Copy chapter markers' action is offered whenever at " +
+         "least one marker resolved a timestamp");
+      ok(copyBtn.textContent === "Copy chapter markers",
+         "PP 86akgqdw0: the copy button's default label, before any click");
 
       window.__ppGen = "ok"; // restore for any later reads
 
