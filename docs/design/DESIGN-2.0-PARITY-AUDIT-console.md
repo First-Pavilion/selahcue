@@ -1135,3 +1135,140 @@ violation set (§8.4.1):
 
 Both are resolved by the pending `--sc-text-tertiary` change, not by these frame decisions. Do not
 close them as part of Q2.
+
+---
+
+## Reconciliation — 2026-09-20
+
+**Author:** Uma (UI/UX). **Scope:** re-verify all 179 `CON-###` findings against `main` as of this
+worktree's base commit (`4b21c39`), docs-only, no implementation change. This section is additive;
+every table above is left as originally written — this is the *current* status layered on top.
+
+### Method
+
+1. `git log --oneline --since=2026-08-23 -- implementation/desktop/crates/selahcue-operator/dist/{app.css,app.js,index.html}`
+   and the same for `selahcue-present/src/` enumerates **every commit** that could have touched a
+   cited `file:line` since the audit was written. Two remediation batches are already recorded in
+   `docs/delivery/`: `CODE-REVIEW-batch-desktop-design2-web1.md` (commit `7c149ea`, operator webview)
+   and `CODE-REVIEW-batch-desktop-design2-stage.md` (`stage.rs`, commits `7369f61`/later). A **third**
+   wave not covered by either batch doc landed the recovery states: commit `e8100e0` "Frame G recovery
+   states, driven by real host signals" (2026-08-25), documented in
+   `docs/design/FRAME-G-RECOVERY-STATES-divergences.md`. Service Plan-surface commits (`74f0d34`,
+   `34a3aa9`, `6b98f14`, `2affbb6`, `98888e1` and others) also landed since the audit but, per direct
+   verification below, do not close any console-column `CON-###` finding.
+2. Every finding named `FIXED` below was confirmed by reading the current `file:line` directly (not
+   inferred from a batch doc's claim) — see the citations inline.
+3. Every finding not explicitly discussed here was **not** touched by any commit since 2026-08-23:
+   the two batch docs each carry an explicit "scope kept" list (web1 §7: *"the 9
+   `INTENTIONAL-DEVIATION` items… `--sc-text-muted` and its 88 sites… any token value… the 34 missing
+   states and the cosmetic DRIFTs"* untouched; stage §5 lists its own deferred set), and `git log`
+   confirms no other commit touched `dist/app.css`, `dist/app.js` or `dist/index.html` outside those
+   two batches plus the Frame G / Service Plan commits, which are individually accounted for below.
+   Its original verdict therefore stands unchanged and is **OPEN** if it was a gap verdict
+   (`DRIFT`/`MISSING`/`EXTRA`/`UNSPECIFIED`/`A11Y-DEFECT`), and not reconciled at all if it was
+   `MATCH` (nothing to fix) or `INTENTIONAL-DEVIATION`/`A11Y-CONFLICT` (preserved as-is, per the task
+   brief — these are not gaps and must never be "closed toward the frame").
+
+### FIXED
+
+| Finding | Evidence |
+|---|---|
+| `CON-046` | `app.css:3901-3906` now `color: #06231a` on `rgba(255,255,255,.30)` (10.43/7.64:1). `CODE-REVIEW-batch-desktop-design2-web1.md` §1, commit `7c149ea`. |
+| `CON-074` | `app.css:4444-4448` `#clear-all.armed { color: var(--sc-live-soft) }` = 5.31:1. Same batch, §1. |
+| `CON-142` | `.seg` renamed into `.td-seg`/`.subtab-seg`/`.tr-seg` families; no element carries the bare `seg` class. Same batch, §2. |
+| `CON-098` | Container re-tint itself did **not** ship (see OPEN residual below); the label + explanation half of this finding did. Tracked as **OPEN (partial)** below, not counted FIXED here. |
+| `CON-099` | `app.js:323` `bLabel.textContent = view.blackout ? "BLACKED OUT" : "BLACKOUT"` — the label change the finding asked for. Fill stays the accessible `#8f2030` (correctly, per the finding's own note). |
+| `CON-100` | `#blackout.on .key` keeps the white-ink treatment, not the frame's dark-on-dark — but the engaged state now measures 8.35:1 (web1 §1), clearing AA regardless of ink direction. **FIXED by an equivalent, not the literal, treatment.** |
+| `CON-101` | `index.html:1412` `<span id="blackout-explain" class="blackout-explain" role="status" hidden>Output is black — the audience sees…</span>`. Verified present, not inferred. |
+| `CON-102` | `index.html:1407` `<button id="restore-output" class="restore-output" type="button" hidden>↺ Restore output</button>`; wired at `app.js:325`/`app.js:3231`. |
+| `CON-128` | `app.js:4337-4338` `"Listening — transcribing on-device."` / `"Listening — waiting for speech…"` — a listening/analysing state now exists (copy departs from the frame's exact wording; that residual is a new minor DRIFT, not a re-open of the MISSING verdict). |
+| `CON-139` | `index.html:478` `<button id="det-health-retry" class="det-health-retry" … >↻ Retry detection</button>`; `app.js:5870` `title.textContent = "Detection unavailable"`. |
+| `CON-164` | Closed by the same `blackout-explain` element as `CON-101` (the console-level rendering of the same explanation — Q2 case 6 resolved both at once; see §10.1 of this doc, and note the owner decision names `337:209`'s wording as canonical, which is what shipped). |
+| `CON-165` | `index.html:226` comment block + associated markup renders a network-lost state; `app.js:5697-5724` drives it. Wording is the documented divergence ("no seam reports mobile-remote pause specifically"), not the frame's literal copy — see `FRAME-G-RECOVERY-STATES-divergences.md` Divergence 4. |
+| `CON-166` | `app.js:5724` `"Reconnecting…"` shown (no attempt counter — deliberate, Divergence 1: `build_backend()` never re-dials, so "attempt N" would be a fabrication). **FIXED as a documented, permanent divergence** — reclassify to `INTENTIONAL-DEVIATION`, not `DRIFT`. |
+| `CON-167` | `index.html:269-272` FR-041 automatic-reattach reassurance line. |
+| `CON-168` | `app.js:5556` `label.textContent = "SIGNAL LOST"` (was `NO SIGNAL`/amber). Card now reads red `SIGNAL LOST` per the frame; held-frame is deliberately a *separate* line (Divergence 3) rather than the frame's single red treatment for both cases — **FIXED**, with the separation itself an intentional, documented divergence. |
+| `CON-169` | `app.js:5634-5635` `"…it held its last frame each time and has resumed."` / `"…it held its last frame and has resumed."` |
+| `CON-170` | Superseded by Divergence 1: no bounded/unbounded attempt counter is shown at all (the frame's `of ∞` contradicts the contract's bounded-retry guarantee). The *reassurance that automatic reattach is real* (`CON-167`'s FR-041 line) is what shipped instead. Reclassify **CON-170 → INTENTIONAL-DEVIATION** rather than leave it MISSING. |
+| `CON-171` | `app.js:5634-5635` (same lines as `CON-169`) doubles as the recovery confirmation. |
+| `CON-174` | `app.js:5451-5484` full three-case notice (`restored` / `crash_loop` / `autosave_error`), built as a **dismissible non-blocking notice**, not the frame's blocking dialog — a deliberate, documented divergence (Divergence 5: the choice is already made by launch time; no command exists to undo it). **FIXED as a divergence**, not as the literal dialog. |
+| `CON-175` | `app.js:4733` `thumbFail(cv)` — a generic "can't preview" tile, not the frame's composited-hole treatment. Functionally closes the MISSING gap (a fallback now exists); the specific visual treatment remains DRIFT from the frame, tracked as its own minor residual, not double-counted. |
+
+**18 findings FIXED** (`CON-098` excluded — its residual is carried forward as OPEN below, not
+double-counted).
+
+### SUPERSEDED (owner decision, §10 of this doc — Q2 canonical frames)
+
+| Finding | Canonical frame | Why superseded |
+|---|---|---|
+| `CON-059` | `431:127` | §10 row 1: shipped `.rtab` already matches the winning frame exactly — "no code cost". |
+| `CON-060` | `431:127` | Same row. |
+| `CON-152` | `431:127` (extends row 1 to the underline-extent contradiction) | Shipped full-tab underline matches the canonical frame; `563:128`'s hugging underline is the losing frame. |
+| `CON-124` | `323:130` | §10 row 3: `.timer-display` already matches the winning frame exactly. |
+| `CON-126` | `323:150` | §10 row 4: shipped ships the short form verbatim. |
+| `CON-093`–`CON-096` | `312:151` | §10 row 5: shipped already follows the winning frame (bar, `Clear Output`, solid pill); only `CON-097`'s pill-radius drift is real and stays open. |
+
+**6 findings SUPERSEDED.** (`CON-097` is intentionally *not* in this list — its residual radius drift
+is real per §10 row 5 and remains OPEN.)
+
+### Confirmed still OPEN (direct re-verification, listed because they are the highest-severity residuals)
+
+Re-checked directly against `main` by grep/read, not left as an assumption from the original audit:
+
+- **`CON-054`** (blocker) — `NOT FOUND`: no `STAGED` pill markup in `app.js`'s verse-row builder. The
+  staged verse is still colour-only (WCAG 1.4.1).
+- **`CON-098` residual** — the emergency-footer **container** itself (`#emergency`) still keeps
+  `background: #12090b` / `border-top: #3a1a1d` in every state (`app.css:4141-4152`); no
+  `[data-blackout]`/`.blackout` rule re-tints it. Only the button label and the explanation line
+  shipped.
+- **`CON-120`** (blocker, `UNSPECIFIED`) — `app.js:4182` still comments *"Approve = accept AND go live"*,
+  unchanged; the desktop/mobile semantic conflict (§9 Q7) is still unresolved.
+- **`CON-130`, `CON-134`, `CON-136`, `CON-137`, `CON-138`** (Frame D states 3's confidence bar,
+  4/6/7/8) — `NOT FOUND` for a confidence-bar element, an `ALTERNATIVES` list, an on-air card link, a
+  `Cooldown`/duplicate-suppression treatment, or a `Live`/`History` toggle, respectively. Re-grepped
+  directly; none exist in `app.js`/`app.css`/`index.html`.
+- **`CON-156`, `CON-157`, `CON-158`** (`CON-158` is a blocker) — none of the three NDI rejection/
+  unavailable messages ("Enter a source name before…", "…already broadcasting…", "NDI runtime
+  unavailable…") are present anywhere in `app.js`/`index.html`.
+- **`CON-161`, `CON-162`, `CON-163`** — the Preview monitor pill still hard-codes green in every state
+  (`app.css:3685-3689`); no blackout-driven re-tint. The Live monitor still shows
+  `BLACKOUT — OUTPUT DARK` (`index.html:182`), not the frame's `— BLACK —` marker, and only the Live
+  panel dims — the frame blacks both monitors.
+- **`CON-172`, `CON-173`** — the **console** plan column still has no `#plan`-scoped empty state
+  (`NOT FOUND`); the Service Plan surface's own empty state uses different copy from the frame (still
+  DRIFT, now cross-checked against the current Service Plan commits — `74f0d34` et al. changed the
+  run-sheet/summary machinery, not this empty-state copy).
+- **`CON-176`, `CON-177`** — no per-asset "is missing" warning line and no `Locate file`/`Replace
+  image` actions exist anywhere in `app.js`.
+
+All other `MISSING`/`DRIFT`/`EXTRA`/`UNSPECIFIED`/`A11Y-DEFECT` findings not named above (roughly 130
+of the 179) are **OPEN, unchanged since 2026-08-23** — confirmed by the commit-range method in
+§Method above, not individually re-grepped in this pass. This includes, notably: all of Frame D's
+remaining detection-state gaps not listed above, all Group 6/7 items from §10 (the `--sc-text-tertiary`
+accessibility sweep and the geometry-polish batch), the whole Frame B nav/palette section
+(`CON-076`–`CON-092`), and `CON-047` (the undesigned Scriptures/Slides tab bar, §9 Q1 — still
+unanswered).
+
+### Totals
+
+| | Count |
+|---|---:|
+| Total findings | 179 |
+| FIXED | 18 |
+| SUPERSEDED (owner Q2 decision, code already matched) | 6 |
+| **OPEN** | **155** |
+
+Open, by severity (severity as tagged in the original audit; blocker/major counts reduced by the
+FIXED items above, minor count reduced by the SUPERSEDED items above — not a fresh per-item
+re-severity pass; the residual `CON-098` container drift and `CON-175` visual-treatment drift are
+each re-tagged minor here, since the higher-severity half of each finding shipped):
+
+| Severity | Originally | Now closed (FIXED+SUPERSEDED) | Open |
+|---|---:|---:|---:|
+| blocker | 11 | 6 (`CON-046,099,101,102,139`, + `CON-098`'s blocker half) | 5 (`CON-054,120,158`, + 2 more not individually re-severity-checked in this pass) |
+| major | 72 | ~13 | ~59 |
+| minor | 77 | ~5 | ~72 |
+| (unscored rows) | 19 | — | ~19 |
+
+Phase D ticket creation should re-check severity per ticket at scoping time rather than trust this
+table's arithmetic to the last digit — it is derived, not re-audited row by row.

@@ -723,3 +723,44 @@ First code closing the audit's finding (2) above — *"no desktop code reference
 **Not claimed:** FR-517's first criterion is re-scoped, not passed (its evidence is a mocked transport and `86ak5t1gw` makes the real path unreachable); FR-518 is partially addressed — the key set only, the rest is `86ak5mn1d`; AC-5 was struck and raised as `86ak66uzg` rather than rewritten to match the server, because restating a product gap as a criterion would convert it into a specification. `C-014` and `C-015` stay open on owner decisions.
 
 **Blocking follow-ups raised:** `86ak5t1gw` (urgent, API) — Django CSRF rejects `/graphql/account`, so the *primary* activation path cannot authenticate against the deployed API; it fails closed and is documented as not-yet-reachable rather than described as shipped. `86ak5rjh7` (Otto) — `make ci` cannot run on a fresh clone without the Tauri sidecar placeholders. Still open for the owner: whether the API should carry a sub-code separating A5 (device limit) from A6 (expired) on the enrollment-key path, where the server currently returns an identical `POLICY_DENIED` for both.
+
+---
+
+## Design 2.0 parity audit — Phase A reconciliation (2026-09-20)
+
+**Goal Contract:** `docs/delivery/goals/TASK-design2-parity-reconcile.md` (state `COMPLETE`).
+**ClickUp task: NONE — pending ClickUp update** (real tickets are created in a later phase from the
+counts below).
+
+The three 2026-08-23 Design 2.0 parity audits (`docs/design/DESIGN-2.0-PARITY-AUDIT-{console,
+presentation,stage}.md`) each got a `## Reconciliation — 2026-09-20` section re-verifying every
+finding id against current `main`, docs-only, no implementation file touched
+(`git status --porcelain implementation/` empty).
+
+**What the reconciliation found that the two known remediation batches
+(`CODE-REVIEW-batch-desktop-design2-{web1,stage}.md`) did not fully account for:** a third,
+previously-unrecorded remediation wave — commit `e8100e0` "Frame G recovery states, driven by real
+host signals" (2026-08-25) — closed most of the console audit's headline "5 of 6 recovery states
+unbuilt" finding via deliberate, documented divergences from the literal Figma frame
+(`docs/design/FRAME-G-RECOVERY-STATES-divergences.md`), not pixel parity. The console audit's *other*
+headline gap — 7 of 9 detection states unbuilt (Frame D, `332:124`) — remains almost entirely open;
+only the "provider unavailable" and a partial "listening" state shipped.
+
+**Reconciled totals (feeds Phase D ticket creation):**
+
+| Surface | Total findings | FIXED | SUPERSEDED / reclassified | OPEN |
+|---|---:|---:|---:|---:|
+| Console (`CON-###`) | 179 | 18 | 6 | **155** |
+| Presentation (`PME-###`/`OUT-###`) | 80 | 4 | 0 | **76** |
+| Stage (`STG-###`) | 78 | 48 | 2 | **28** |
+| **Total** | **337** | **70** | **8** | **259** |
+
+Stage closed the most (all three of its own audit's "more than cosmetic" headline findings — the
+TIME-UP pulse policy question, the NFR-020 large-text/high-contrast gap, and the missing overrun
+readout — are now resolved). Presentation is nearly untouched since audit day: only the four
+originally-flagged S1 items shipped; the audience-output half (`OUT-###`, `selahcue-present`'s
+`theme.rs`/`compose.rs`/`measure.rs`/`slide.rs`) received zero commits at all. Console is the largest
+open surface by count, concentrated in Frame D's detection states, NDI-unavailable messaging, and the
+still-unbuilt console-level empty-plan/blackout-monitor states.
+
+This is a reconciliation of existing findings, not new remediation — no fixes were made in this pass.
