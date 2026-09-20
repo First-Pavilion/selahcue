@@ -4,11 +4,20 @@
 //!
 //! One editable draft per transcript (`transcript_id` is `UNIQUE`). [`create`]
 //! upserts: a second call for a transcript that already has a draft REPLACES it
-//! wholesale, including `created_at` — regenerating a draft and retaining a prior
-//! version (FR-129, 86akgqdx8) is a separate, not-yet-built ticket, so today a
-//! regenerate silently discards any edits made to the previous draft. This is a
-//! deliberate interim behaviour, not an oversight; see the migration comment
-//! (v20 -> v21, `migrations.rs`) and this ticket's PR description.
+//! wholesale, including `created_at`. This is intentional and UNCHANGED by FR-129 —
+//! [`create`] is what runs for a true first-time generate (no draft exists yet); see
+//! the migration comment (v20 -> v21, `migrations.rs`).
+//!
+//! **Regenerate-with-retention (FR-129, 86akgqdx8)** sits ABOVE [`create`], as three
+//! new functions operating on the SAME row's additive `pending_*` columns (migration
+//! v21 -> v22): [`stage_regeneration`] writes a freshly generated draft into the
+//! `pending_*` slot WITHOUT touching the currently-accepted columns at all (so the
+//! prior draft is retrievable, byte-for-byte, via [`find_by_transcript`] the entire
+//! time a regeneration is pending); [`confirm_regeneration`] moves `pending_*` onto
+//! the accepted columns and clears `pending_*`; [`discard_regeneration`] clears
+//! `pending_*` and leaves the accepted columns alone. The decided retention model —
+//! single prior version, explicit-confirm-before-replace — is documented on each of
+//! the three functions and in this ticket's Goal Contract / MR description.
 //!
 //! `sections`/`scriptures` are opaque JSON `TEXT` — this crate never parses them.
 //! `selahcue_core::providers::NoteSection` is a tagged union (flat items XOR
@@ -75,6 +84,27 @@ pub const MAX_SUMMARY_CHARS: usize = 4_000;
 /// with control characters, which can still blow past this budget's realistic-escaping
 /// assumption. Neither alone is "the fix"; see the PR description's "LAN-cap fix direction"
 /// section for the full reasoning on why both exist.
+///
+/// **Scope of the ~60,060 B reconciliation above (FR-129, 86akgqdx8 review — Vera F1):** it
+/// covers exactly ONE draft travelling inside a `SaveSermonNoteDraft`/`UpdateSermonNoteDraft`
+/// `Request` — the direction the pre-send guard (`RemoteOperator::would_exceed_wire_cap`) and
+/// the server's `max_message_size`/`max_frame_size` (read side, `selahcue-lan/src/server.rs`)
+/// actually enforce. It does NOT cover `ServerMessage::SermonNoteRegenerationState`, which
+/// carries TWO drafts (`current` + `pending`) in one REPLY: measured against the real wire
+/// (`selahcue-app`'s `a_two_draft_regeneration_state_reply_is_measured_against_the_wire_cap_
+/// both_ways`), every field at its declared maximum with ordinary Latin-script content is
+/// ~48.8 KB (fits, 74% of the cap), but the SAME maxima with ordinary NON-Latin content (any
+/// 3-byte-UTF-8 script — `MAX_TITLE_CHARS`/`MAX_SUMMARY_CHARS` are CHARACTER bounds, so this
+/// content triples their byte footprint) is ~71.6 KB — OVER the 64 KiB cap. This is not a live
+/// defect: unlike the request direction, nothing on the REPLY path enforces any cap today
+/// (tungstenite's write path performs no size check; `selahcue-lan/src/client.rs`'s
+/// `client_async` call takes no `WebSocketConfig`, so it defaults to a large reader) — the
+/// connection does not drop, it just silently carries a frame this reconciliation never sized
+/// for. `OperatorStateView.transcript` was already unbounded on this same reply path before
+/// FR-129; this ticket does not introduce the read/write asymmetry, only a second instance of
+/// relying on it. Adding real enforcement to the reply direction (a `WebSocketConfig` on the
+/// client, symmetric with the server's) is a follow-up, not fixed here — see
+/// [ClickUp 17tnw2axpt1](https://app.clickup.com/t/17tnw2axpt1).
 pub const MAX_SECTIONS_JSON_BYTES: usize = 15_000;
 /// Upper bound on the serialized `scriptures` JSON, in bytes. See
 /// [`MAX_SECTIONS_JSON_BYTES`]'s doc for why this shrank from `20_000` — same reconciliation,
@@ -138,6 +168,40 @@ pub struct DraftEdit {
     pub scriptures_json: String,
 }
 
+/// A freshly (re)generated draft awaiting operator confirmation, to [`stage_regeneration`]
+/// against a transcript that already has an accepted draft (FR-129, 86akgqdx8). Field-for-
+/// field identical to [`NewSermonNote`] minus `transcript_id` (the caller already has it —
+/// it is the key, not payload) — a pending regeneration is exactly "a draft that has not
+/// been accepted yet", carrying every field a confirmed one would.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingRegeneration {
+    pub title: String,
+    pub summary: Option<String>,
+    pub sections_json: String,
+    pub scriptures_json: String,
+    pub ai_generated: bool,
+    pub disclosure: Option<String>,
+    pub provider: String,
+    pub model: Option<String>,
+    pub generated_at_ms: i64,
+}
+
+/// A pending regeneration read back in full — the `pending_*` half of
+/// [`SermonNoteRecord`], present exactly when a regeneration has been [`stage_regeneration`]d
+/// and not yet [`confirm_regeneration`]d or [`discard_regeneration`]d.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingRegenerationRecord {
+    pub title: String,
+    pub summary: Option<String>,
+    pub sections_json: String,
+    pub scriptures_json: String,
+    pub ai_generated: bool,
+    pub disclosure: Option<String>,
+    pub provider: String,
+    pub model: Option<String>,
+    pub generated_at_ms: i64,
+}
+
 /// A draft read back in full.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SermonNoteRecord {
@@ -155,6 +219,10 @@ pub struct SermonNoteRecord {
     pub model: Option<String>,
     pub created_at_ms: i64,
     pub edited_at_ms: i64,
+    /// A not-yet-confirmed regeneration awaiting the operator's accept/discard decision
+    /// (FR-129, 86akgqdx8). `None` is the common state (no regeneration in flight, or one
+    /// was just confirmed/discarded) — never an error.
+    pub pending: Option<PendingRegenerationRecord>,
 }
 
 /// Reject an oversized field before it ever reaches a write. Shared by [`create`]
@@ -286,15 +354,25 @@ pub fn create(db: &Database, note: &NewSermonNote) -> Result<i64> {
         .map_err(Into::into)
 }
 
+/// The full column list shared by every `SELECT` that produces a [`SermonNoteRecord`] via
+/// [`row_to_record`] — one definition, so [`find_by_transcript`] and [`list_detached`]
+/// cannot drift out of the column order [`row_to_record`] expects.
+const SELECT_COLUMNS: &str =
+    "id, transcript_id, title, summary, sections, scriptures, ai_generated,
+        disclosure, provider, model, created_at, edited_at,
+        pending_title, pending_summary, pending_sections, pending_scriptures,
+        pending_ai_generated, pending_disclosure, pending_provider, pending_model,
+        pending_generated_at";
+
 /// Read the draft for a transcript, if one exists (and has not been detached by a
-/// non-cascading transcript delete — see the module docs).
+/// non-cascading transcript delete — see the module docs). Carries the `pending`
+/// regeneration slot (FR-129, 86akgqdx8) exactly as stored — `Some` only when a
+/// regeneration has been staged and not yet confirmed/discarded.
 pub fn find_by_transcript(db: &Database, transcript_id: i64) -> Result<Option<SermonNoteRecord>> {
     let conn = db.conn();
-    let mut stmt = conn.prepare(
-        "SELECT id, transcript_id, title, summary, sections, scriptures, ai_generated,
-                disclosure, provider, model, created_at, edited_at
-         FROM sermon_note WHERE transcript_id = ?1",
-    )?;
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {SELECT_COLUMNS} FROM sermon_note WHERE transcript_id = ?1"
+    ))?;
     let mut rows = stmt.query_map(params![transcript_id], row_to_record)?;
     match rows.next() {
         Some(row) => Ok(Some(row?)),
@@ -302,7 +380,30 @@ pub fn find_by_transcript(db: &Database, transcript_id: i64) -> Result<Option<Se
     }
 }
 
+/// `pending_title` is the presence sentinel for a staged-but-unconfirmed regeneration (see
+/// the v21 -> v22 migration comment for why): a real draft always has a non-empty
+/// `pending_title` when ANY `pending_*` column is set, since [`stage_regeneration`] writes
+/// all nine together and [`confirm_regeneration`]/[`discard_regeneration`] clear all nine
+/// together. `None` for every OTHER `pending_*` column here is a genuine `unwrap`-free
+/// decode failure (a hand-edited or corrupt row), not an expected state — this crate is a
+/// dumb store, so it decodes optimistically and never invents placeholder text for a column
+/// this module itself always writes as a group; see [`row_to_record`].
 fn row_to_record(r: &rusqlite::Row<'_>) -> rusqlite::Result<SermonNoteRecord> {
+    let pending_title: Option<String> = r.get(12)?;
+    let pending = match pending_title {
+        Some(title) => Some(PendingRegenerationRecord {
+            title,
+            summary: r.get(13)?,
+            sections_json: r.get(14)?,
+            scriptures_json: r.get(15)?,
+            ai_generated: r.get(16)?,
+            disclosure: r.get(17)?,
+            provider: r.get(18)?,
+            model: r.get(19)?,
+            generated_at_ms: r.get(20)?,
+        }),
+        None => None,
+    };
     Ok(SermonNoteRecord {
         id: r.get(0)?,
         transcript_id: r.get(1)?,
@@ -316,6 +417,7 @@ fn row_to_record(r: &rusqlite::Row<'_>) -> rusqlite::Result<SermonNoteRecord> {
         model: r.get(9)?,
         created_at_ms: r.get(10)?,
         edited_at_ms: r.get(11)?,
+        pending,
     })
 }
 
@@ -389,11 +491,9 @@ pub fn delete_for_transcript(db: &Database, transcript_id: i64) -> Result<()> {
 /// write half.
 pub fn list_detached(db: &Database) -> Result<Vec<SermonNoteRecord>> {
     let conn = db.conn();
-    let mut stmt = conn.prepare(
-        "SELECT id, transcript_id, title, summary, sections, scriptures, ai_generated,
-                disclosure, provider, model, created_at, edited_at
-         FROM sermon_note WHERE transcript_id IS NULL",
-    )?;
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {SELECT_COLUMNS} FROM sermon_note WHERE transcript_id IS NULL"
+    ))?;
     let rows = stmt.query_map([], row_to_record)?;
     rows.collect::<std::result::Result<Vec<_>, _>>()
         .map_err(Into::into)
@@ -408,5 +508,160 @@ pub fn list_detached(db: &Database) -> Result<Vec<SermonNoteRecord>> {
 pub fn delete_by_id(db: &Database, id: i64) -> Result<()> {
     db.conn()
         .execute("DELETE FROM sermon_note WHERE id = ?1", params![id])?;
+    Ok(())
+}
+
+// --- Regenerate-with-retention (FR-129, 86akgqdx8) --------------------------------
+//
+// Single prior version, explicit-confirm-before-replace (see the module docs and the
+// v21 -> v22 migration comment for the full reasoning). All three functions below
+// operate on the `pending_*` columns only — none of them ever touches the accepted
+// columns except `confirm_regeneration`, which is the ONE place that does, and does so
+// by copying `pending_*` onto them, mirroring `create`'s own `VALUES (?10, ?10)` for
+// `created_at`/`edited_at`.
+
+/// Stage a freshly (re)generated draft against a transcript that already has an
+/// ACCEPTED draft, without touching that accepted draft at all. `NotFound` if no
+/// accepted draft exists yet for `transcript_id` — regenerate requires something to
+/// regenerate FROM; a true first-time generate goes through [`create`] instead, never
+/// this function.
+///
+/// A second call before the first is confirmed/discarded OVERWRITES the pending slot
+/// (single pending slot per transcript; only the ACCEPTED draft is guaranteed
+/// retained — an intermediate, never-confirmed regeneration is not).
+///
+/// Rejects an oversized field with [`DataError::TooLarge`] before writing anything —
+/// the SAME bounds as [`create`], since a pending draft is exactly as capable of being
+/// oversized as an accepted one and travels the same LAN frame once confirmed.
+pub fn stage_regeneration(
+    db: &Database,
+    transcript_id: i64,
+    pending: &PendingRegeneration,
+) -> Result<()> {
+    check_bounds(
+        &pending.title,
+        pending.summary.as_deref(),
+        &pending.sections_json,
+        &pending.scriptures_json,
+    )?;
+    check_create_only_bounds(
+        &pending.provider,
+        pending.disclosure.as_deref(),
+        pending.model.as_deref(),
+    )?;
+    let n = db.conn().execute(
+        "UPDATE sermon_note
+         SET pending_title = ?2, pending_summary = ?3, pending_sections = ?4,
+             pending_scriptures = ?5, pending_ai_generated = ?6, pending_disclosure = ?7,
+             pending_provider = ?8, pending_model = ?9, pending_generated_at = ?10
+         WHERE transcript_id = ?1",
+        params![
+            transcript_id,
+            pending.title,
+            pending.summary,
+            pending.sections_json,
+            pending.scriptures_json,
+            pending.ai_generated,
+            pending.disclosure,
+            pending.provider,
+            pending.model,
+            pending.generated_at_ms,
+        ],
+    )?;
+    if n == 0 {
+        Err(DataError::NotFound)
+    } else {
+        Ok(())
+    }
+}
+
+/// Accept the pending regeneration for `transcript_id`: the accepted columns become
+/// what `pending_*` held, `created_at`/`edited_at` both become `pending_generated_at`
+/// (mirroring a fresh [`create`]'s own `VALUES (?10, ?10)`), and `pending_*` is cleared.
+/// The version this replaces is now gone — single prior version, not a history (see the
+/// module docs).
+///
+/// `NotFound` if nothing is currently pending for `transcript_id` (whether because none
+/// was ever staged, or a prior confirm/discard already cleared it) — this is a real
+/// refusal, not a silent no-op, so a caller cannot mistake "nothing happened" for "your
+/// regeneration was accepted".
+///
+/// `Refused` if accepting would silently strip the FR-123 AI-generated label: once a
+/// draft is accepted as AI-generated, it can never be replaced by a NOT-AI-generated
+/// one via confirm — "once AI-generated, always AI-generated", the same invariant
+/// `selahcue_app::LiveController::apply`'s `SaveSermonNoteDraft` handler already
+/// enforces for a direct save (PR #33 review, Sana N2). This is exactly the case a
+/// degraded (local-fallback) regenerate produces: the pending draft is still staged and
+/// VISIBLE (so the operator sees the degraded outline and its `degraded_notice`), but it
+/// cannot be confirmed over an existing AI-generated draft — only discarded. A pending
+/// draft that is ITSELF `ai_generated: true`, or one replacing an accepted draft that
+/// was never AI-generated in the first place, is unaffected by this guard.
+///
+/// Returns the record read back after the write — the source of truth, never an echo of
+/// the pending input, mirroring [`create`]'s own read-after-write discipline.
+pub fn confirm_regeneration(db: &Database, transcript_id: i64) -> Result<SermonNoteRecord> {
+    let n = db.conn().execute(
+        "UPDATE sermon_note
+         SET title = pending_title,
+             summary = pending_summary,
+             sections = pending_sections,
+             scriptures = pending_scriptures,
+             ai_generated = pending_ai_generated,
+             disclosure = pending_disclosure,
+             provider = pending_provider,
+             model = pending_model,
+             created_at = pending_generated_at,
+             edited_at = pending_generated_at,
+             pending_title = NULL,
+             pending_summary = NULL,
+             pending_sections = NULL,
+             pending_scriptures = NULL,
+             pending_ai_generated = NULL,
+             pending_disclosure = NULL,
+             pending_provider = NULL,
+             pending_model = NULL,
+             pending_generated_at = NULL
+         WHERE transcript_id = ?1
+           AND pending_title IS NOT NULL
+           AND NOT (ai_generated != 0 AND pending_ai_generated = 0)",
+        params![transcript_id],
+    )?;
+    if n > 0 {
+        return find_by_transcript(db, transcript_id)?.ok_or(DataError::NotFound);
+    }
+    // Distinguish "nothing pending" from "would downgrade provenance" so the two
+    // reach the caller as different, honest refusals — a plain re-read costs nothing
+    // extra on an already-refused write.
+    match find_by_transcript(db, transcript_id)? {
+        Some(record) if record.pending.is_some() => Err(DataError::Refused(
+            "confirming this regeneration would remove the AI-generated label from an \
+             already AI-generated draft"
+                .to_string(),
+        )),
+        _ => Err(DataError::NotFound),
+    }
+}
+
+/// Discard the pending regeneration for `transcript_id`, leaving the accepted draft
+/// completely unchanged. Idempotent — `Ok(())` whether or not anything was pending
+/// (mirrors [`delete_for_transcript`]'s own idempotent convention): a caller discarding
+/// a regeneration that was already confirmed/discarded elsewhere (or never staged at
+/// all) gets the same honest "nothing is pending now" outcome either way, not an error
+/// for a state that is not actually wrong.
+pub fn discard_regeneration(db: &Database, transcript_id: i64) -> Result<()> {
+    db.conn().execute(
+        "UPDATE sermon_note
+         SET pending_title = NULL,
+             pending_summary = NULL,
+             pending_sections = NULL,
+             pending_scriptures = NULL,
+             pending_ai_generated = NULL,
+             pending_disclosure = NULL,
+             pending_provider = NULL,
+             pending_model = NULL,
+             pending_generated_at = NULL
+         WHERE transcript_id = ?1",
+        params![transcript_id],
+    )?;
     Ok(())
 }

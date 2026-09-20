@@ -694,6 +694,73 @@ impl OperatorShell {
         })
     }
 
+    /// Stage a freshly (re)generated draft against `transcript_id` WITHOUT replacing the
+    /// currently-accepted draft (FR-129, 86akgqdx8). `None` on refusal (no accepted draft
+    /// exists yet, an oversized field, or no store configured).
+    pub fn stage_sermon_note_regeneration(
+        &self,
+        transcript_id: i64,
+        draft: selahcue_lan::protocol::SermonNoteDraftInput,
+    ) -> Option<crate::sermon_note_store::RegenerationSlot> {
+        self.with(|c| {
+            match c.apply(&Command::StageSermonNoteRegeneration {
+                transcript_id,
+                draft,
+            }) {
+                crate::ControllerReply::Message(
+                    selahcue_lan::protocol::ServerMessage::SermonNoteRegenerationState {
+                        current,
+                        pending,
+                        ..
+                    },
+                ) => Some(crate::sermon_note_store::RegenerationSlot { current, pending }),
+                _ => None,
+            }
+        })
+    }
+
+    /// Accept the pending regeneration for `transcript_id` (FR-129), replacing the accepted
+    /// draft with it. `None` on refusal (nothing pending, a would-be AI-generated-label
+    /// downgrade, or no store configured).
+    pub fn confirm_sermon_note_regeneration(
+        &self,
+        transcript_id: i64,
+    ) -> Option<crate::sermon_note_store::RegenerationSlot> {
+        self.with(
+            |c| match c.apply(&Command::ConfirmSermonNoteRegeneration { transcript_id }) {
+                crate::ControllerReply::Message(
+                    selahcue_lan::protocol::ServerMessage::SermonNoteRegenerationState {
+                        current,
+                        pending,
+                        ..
+                    },
+                ) => Some(crate::sermon_note_store::RegenerationSlot { current, pending }),
+                _ => None,
+            },
+        )
+    }
+
+    /// Discard the pending regeneration for `transcript_id` (FR-129), leaving the accepted
+    /// draft unchanged. `None` only if no store is configured — discarding nothing pending
+    /// is a harmless success, not a refusal.
+    pub fn discard_sermon_note_regeneration(
+        &self,
+        transcript_id: i64,
+    ) -> Option<crate::sermon_note_store::RegenerationSlot> {
+        self.with(
+            |c| match c.apply(&Command::DiscardSermonNoteRegeneration { transcript_id }) {
+                crate::ControllerReply::Message(
+                    selahcue_lan::protocol::ServerMessage::SermonNoteRegenerationState {
+                        current,
+                        pending,
+                        ..
+                    },
+                ) => Some(crate::sermon_note_store::RegenerationSlot { current, pending }),
+                _ => None,
+            },
+        )
+    }
+
     /// Search scripture: reference parse first, then keyword search over the
     /// bundled translation. Each hit carries its verse text (stage by reference).
     pub fn scripture_search(
@@ -1613,6 +1680,92 @@ impl RemoteOperator {
             ServerMessage::Denied { .. } => Ok(None),
             other => Err(selahcue_lan::TransportError::Protocol(format!(
                 "expected sermon_note_draft, got: {other:?}"
+            ))),
+        }
+    }
+
+    /// Stage a freshly (re)generated draft against `transcript_id` on the host WITHOUT
+    /// replacing the currently-accepted draft (FR-129, 86akgqdx8). `Ok(None)` when the host
+    /// refuses it (no accepted draft exists yet, an oversized field) OR when this frame is
+    /// never sent because it would exceed the control link's frame cap (see
+    /// [`Self::would_exceed_wire_cap`]) — fails soft exactly like [`Self::save_sermon_note_draft`].
+    pub async fn stage_sermon_note_regeneration(
+        &mut self,
+        transcript_id: i64,
+        draft: selahcue_lan::protocol::SermonNoteDraftInput,
+    ) -> Result<Option<crate::sermon_note_store::RegenerationSlot>, selahcue_lan::TransportError>
+    {
+        use selahcue_lan::protocol::ServerMessage;
+        let command = Command::StageSermonNoteRegeneration {
+            transcript_id,
+            draft,
+        };
+        if Self::would_exceed_wire_cap(&command)? {
+            return Ok(None);
+        }
+        match self.client.command(command).await? {
+            ServerMessage::SermonNoteRegenerationState {
+                current, pending, ..
+            } => Ok(Some(crate::sermon_note_store::RegenerationSlot {
+                current,
+                pending,
+            })),
+            ServerMessage::Denied { .. } => Ok(None),
+            other => Err(selahcue_lan::TransportError::Protocol(format!(
+                "expected sermon_note_regeneration_state, got: {other:?}"
+            ))),
+        }
+    }
+
+    /// Accept the pending regeneration for `transcript_id` on the host (FR-129), replacing
+    /// the accepted draft with it. `Ok(None)` when the host refuses it (nothing pending, a
+    /// would-be AI-generated-label downgrade) — never a hard error for a normal refusal.
+    pub async fn confirm_sermon_note_regeneration(
+        &mut self,
+        transcript_id: i64,
+    ) -> Result<Option<crate::sermon_note_store::RegenerationSlot>, selahcue_lan::TransportError>
+    {
+        use selahcue_lan::protocol::ServerMessage;
+        match self
+            .client
+            .command(Command::ConfirmSermonNoteRegeneration { transcript_id })
+            .await?
+        {
+            ServerMessage::SermonNoteRegenerationState {
+                current, pending, ..
+            } => Ok(Some(crate::sermon_note_store::RegenerationSlot {
+                current,
+                pending,
+            })),
+            ServerMessage::Denied { .. } => Ok(None),
+            other => Err(selahcue_lan::TransportError::Protocol(format!(
+                "expected sermon_note_regeneration_state, got: {other:?}"
+            ))),
+        }
+    }
+
+    /// Discard the pending regeneration for `transcript_id` on the host (FR-129), leaving
+    /// the accepted draft unchanged.
+    pub async fn discard_sermon_note_regeneration(
+        &mut self,
+        transcript_id: i64,
+    ) -> Result<Option<crate::sermon_note_store::RegenerationSlot>, selahcue_lan::TransportError>
+    {
+        use selahcue_lan::protocol::ServerMessage;
+        match self
+            .client
+            .command(Command::DiscardSermonNoteRegeneration { transcript_id })
+            .await?
+        {
+            ServerMessage::SermonNoteRegenerationState {
+                current, pending, ..
+            } => Ok(Some(crate::sermon_note_store::RegenerationSlot {
+                current,
+                pending,
+            })),
+            ServerMessage::Denied { .. } => Ok(None),
+            other => Err(selahcue_lan::TransportError::Protocol(format!(
+                "expected sermon_note_regeneration_state, got: {other:?}"
             ))),
         }
     }

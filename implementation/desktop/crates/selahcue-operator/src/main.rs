@@ -885,6 +885,58 @@ impl Backend {
             Backend::Local(s) => Ok(s.update_sermon_note_draft(transcript_id, edit)),
         }
     }
+    /// Stage a freshly (re)generated draft against `transcript_id` on the host WITHOUT
+    /// replacing the currently-accepted draft (FR-129, 86akgqdx8). `Ok(None)` when the host
+    /// refuses it (no accepted draft exists yet, an oversized field, or the frame would
+    /// exceed the control link's cap on a Remote backend).
+    async fn stage_sermon_note_regeneration(
+        &self,
+        transcript_id: i64,
+        draft: selahcue_lan::protocol::SermonNoteDraftInput,
+    ) -> Result<Option<selahcue_app::RegenerationSlot>, String> {
+        match self {
+            Backend::Remote(m) => m
+                .lock()
+                .await
+                .stage_sermon_note_regeneration(transcript_id, draft)
+                .await
+                .map_err(|e| e.to_string()),
+            Backend::Local(s) => Ok(s.stage_sermon_note_regeneration(transcript_id, draft)),
+        }
+    }
+    /// Accept the pending regeneration for `transcript_id` on the host (FR-129), replacing
+    /// the accepted draft with it. `Ok(None)` when the host refuses it (nothing pending, or
+    /// accepting would strip the FR-123 AI-generated label from an already-labelled draft).
+    async fn confirm_sermon_note_regeneration(
+        &self,
+        transcript_id: i64,
+    ) -> Result<Option<selahcue_app::RegenerationSlot>, String> {
+        match self {
+            Backend::Remote(m) => m
+                .lock()
+                .await
+                .confirm_sermon_note_regeneration(transcript_id)
+                .await
+                .map_err(|e| e.to_string()),
+            Backend::Local(s) => Ok(s.confirm_sermon_note_regeneration(transcript_id)),
+        }
+    }
+    /// Discard the pending regeneration for `transcript_id` on the host (FR-129), leaving
+    /// the accepted draft unchanged.
+    async fn discard_sermon_note_regeneration(
+        &self,
+        transcript_id: i64,
+    ) -> Result<Option<selahcue_app::RegenerationSlot>, String> {
+        match self {
+            Backend::Remote(m) => m
+                .lock()
+                .await
+                .discard_sermon_note_regeneration(transcript_id)
+                .await
+                .map_err(|e| e.to_string()),
+            Backend::Local(s) => Ok(s.discard_sermon_note_regeneration(transcript_id)),
+        }
+    }
     /// Open a durable transcript session (86akcfftu) — the session-boundary sibling of
     /// [`ingest_transcript`](Self::ingest_transcript), same dispatch shape. Only called from
     /// the `stt`-gated `listening` module today (there is no webview affordance to open a
@@ -5625,6 +5677,112 @@ async fn run_note_generation(
 /// (Sana F1 — High) found the operator's own connection was to a DIFFERENT file than the
 /// desktop's authoritative store, so the feature was inert outside a test harness. See
 /// `Backend::active_transcript_id`/`save_sermon_note_draft`'s doc comments.
+///
+/// **Regenerate-with-retention (FR-129, 86akgqdx8)** lives here, shared by both
+/// `generate_sermon_notes` (below) and `transcript_generate_notes` (the from-history
+/// sibling further down): a transcript with NO existing accepted draft is persisted exactly
+/// as before this ticket (an immediate save — true first-time generation is unaffected).
+/// A transcript that ALREADY has an accepted draft gets the new draft STAGED instead —
+/// the accepted draft is never touched by this call, and the operator must explicitly
+/// confirm or discard it via the two new commands below. See [`PersistOutcome`].
+struct PersistOutcome {
+    /// The transcript id persistence was attempted against, when resolvable AND the
+    /// attempt succeeded (either an immediate save or a stage) — `None` on any failure
+    /// (unresolvable id, host refusal, transport error), mirroring the pre-86akgqdx8
+    /// `persisted_transcript_id` contract exactly.
+    transcript_id: Option<i64>,
+    /// True when an existing accepted draft was found and the new draft was staged
+    /// (pending operator confirm/discard) rather than saved immediately.
+    pending_confirmation: bool,
+    /// The JSON view of the untouched accepted draft (via [`sermon_note_draft_json`]),
+    /// present ONLY when `pending_confirmation` is true — so the operator console can
+    /// show/compare it alongside the freshly generated one.
+    previous_draft: Option<serde_json::Value>,
+}
+
+/// Persist a freshly generated draft against `transcript_id`, applying the FR-129 rule
+/// described on [`PersistOutcome`]. Best-effort, mirroring the pre-86akgqdx8 behaviour this
+/// replaces: persistence failing never blocks the draft from being generated and shown —
+/// only the persisted/pending state is affected.
+async fn persist_generated_draft(
+    state: &State<'_, AppState>,
+    transcript_id: i64,
+    draft: selahcue_lan::protocol::SermonNoteDraftInput,
+) -> PersistOutcome {
+    let existing = state
+        .backend
+        .load_sermon_note_draft(transcript_id)
+        .await
+        .ok()
+        .flatten();
+    match existing {
+        // An accepted draft already exists: STAGE, never upsert-replace directly — the
+        // whole point of FR-129 is that this call must not be able to destroy it.
+        Some(existing_view) => {
+            match state
+                .backend
+                .stage_sermon_note_regeneration(transcript_id, draft)
+                .await
+            {
+                Ok(Some(_)) => PersistOutcome {
+                    transcript_id: Some(transcript_id),
+                    pending_confirmation: true,
+                    previous_draft: Some(sermon_note_draft_json(&existing_view).0),
+                },
+                Ok(None) => {
+                    eprintln!(
+                        "selahcue-operator: the host refused to stage the sermon-note regeneration"
+                    );
+                    PersistOutcome {
+                        transcript_id: None,
+                        pending_confirmation: false,
+                        previous_draft: None,
+                    }
+                }
+                Err(_) => {
+                    // Deliberately NOT interpolated — the same TransportError::Protocol
+                    // Debug-dump-of-a-whole-ServerMessage risk Sana's F1 fixed elsewhere in
+                    // this file; see `transcript_get`'s doc comment for the full call chain.
+                    eprintln!("selahcue-operator: failed to stage sermon-note regeneration");
+                    PersistOutcome {
+                        transcript_id: None,
+                        pending_confirmation: false,
+                        previous_draft: None,
+                    }
+                }
+            }
+        }
+        // No accepted draft yet: the ORIGINAL, unchanged immediate-save path.
+        None => match state
+            .backend
+            .save_sermon_note_draft(transcript_id, draft)
+            .await
+        {
+            Ok(Some(_)) => PersistOutcome {
+                transcript_id: Some(transcript_id),
+                pending_confirmation: false,
+                previous_draft: None,
+            },
+            Ok(None) => {
+                eprintln!("selahcue-operator: the host refused to persist the sermon-note draft");
+                PersistOutcome {
+                    transcript_id: None,
+                    pending_confirmation: false,
+                    previous_draft: None,
+                }
+            }
+            Err(_) => {
+                eprintln!("selahcue-operator: failed to persist sermon-note draft");
+                PersistOutcome {
+                    transcript_id: None,
+                    pending_confirmation: false,
+                    previous_draft: None,
+                }
+            }
+        },
+    }
+}
+
 #[tauri::command]
 async fn generate_sermon_notes(
     transcript: String,
@@ -5691,7 +5849,7 @@ async fn generate_sermon_notes(
                     None
                 }
             };
-            let persisted_transcript_id = match transcript_id {
+            let persist = match transcript_id {
                 Some(transcript_id) => {
                     let draft = selahcue_lan::protocol::SermonNoteDraftInput {
                         title: outcome.draft.title.clone(),
@@ -5706,27 +5864,13 @@ async fn generate_sermon_notes(
                         // this is honestly `None`, not invented data.
                         model: None,
                     };
-                    match state
-                        .backend
-                        .save_sermon_note_draft(transcript_id, draft)
-                        .await
-                    {
-                        Ok(Some(_)) => Some(transcript_id),
-                        Ok(None) => {
-                            eprintln!(
-                                "selahcue-operator: the host refused to persist the sermon-note draft"
-                            );
-                            None
-                        }
-                        Err(_) => {
-                            // Deliberately NOT interpolated (same F1-class risk, see
-                            // transcript_get's doc comment for the full call chain).
-                            eprintln!("selahcue-operator: failed to persist sermon-note draft");
-                            None
-                        }
-                    }
+                    persist_generated_draft(&state, transcript_id, draft).await
                 }
-                None => None,
+                None => PersistOutcome {
+                    transcript_id: None,
+                    pending_confirmation: false,
+                    previous_draft: None,
+                },
             };
             Ok(serde_json::json!({
                 "ok": true,
@@ -5755,7 +5899,14 @@ async fn generate_sermon_notes(
                 // `null` when persistence was unavailable/failed — the edit surface stays
                 // hidden in that case (nothing to key an edit off) but the draft itself is
                 // still shown, exactly like the pre-86akgqdv0 behaviour.
-                "transcript_id": persisted_transcript_id,
+                "transcript_id": persist.transcript_id,
+                // FR-129 (86akgqdx8): true when an accepted draft already existed and this
+                // fresh draft was STAGED (not saved) — the operator must Confirm or Discard
+                // it via `confirm_sermon_note_regeneration`/`discard_sermon_note_regeneration`,
+                // both keyed on `transcript_id` above. `previous_draft` is the untouched,
+                // still-accepted draft the operator can compare against or keep.
+                "pending_confirmation": persist.pending_confirmation,
+                "previous_draft": persist.previous_draft,
                 "quota": outcome.quota.map(|q| serde_json::json!({
                     "used": q.used, "limit": q.limit, "remaining": q.remaining(), "resets_label": q.resets_label,
                 })),
@@ -5919,29 +6070,7 @@ async fn transcript_generate_notes(
                 // model id through `GenerationOutcome` today.
                 model: None,
             };
-            let persisted_transcript_id = match state
-                .backend
-                .save_sermon_note_draft(id, draft)
-                .await
-            {
-                Ok(Some(_)) => Some(id),
-                Ok(None) => {
-                    eprintln!(
-                        "selahcue-operator: the host refused to persist the sermon-note draft for transcript {id}"
-                    );
-                    None
-                }
-                Err(_) => {
-                    // Deliberately NOT interpolated (Quinn, PR #50, 86akgqdxr four-reviewer-gate
-                    // remediation — the second, distinct `save_sermon_note_draft` call site her
-                    // original F1-completion report named; see `transcript_get`'s doc comment for
-                    // the full TransportError::Protocol Debug-dump call chain).
-                    eprintln!(
-                        "selahcue-operator: failed to persist sermon-note draft for transcript {id}"
-                    );
-                    None
-                }
-            };
+            let persist = persist_generated_draft(&state, id, draft).await;
 
             Ok(serde_json::json!({
                 "ok": true,
@@ -5953,7 +6082,10 @@ async fn transcript_generate_notes(
                 "degraded_notice": outcome.degraded
                     .then_some(selahcue_core::providers::DEGRADED_FALLBACK_NOTICE),
                 "draft": draft_json(&outcome.draft),
-                "transcript_id": persisted_transcript_id,
+                "transcript_id": persist.transcript_id,
+                // FR-129 (86akgqdx8) — see `generate_sermon_notes`'s identical fields.
+                "pending_confirmation": persist.pending_confirmation,
+                "previous_draft": persist.previous_draft,
                 "quota": outcome.quota.map(|q| serde_json::json!({
                     "used": q.used, "limit": q.limit, "remaining": q.remaining(), "resets_label": q.resets_label,
                 })),
@@ -6250,6 +6382,27 @@ mod transcript_generate_notes_tests {
     }
 }
 
+/// Build the `{"ok": true, ...}` JSON body shared by `load_sermon_note_draft`,
+/// `update_sermon_note_draft`, and the FR-129 (86akgqdx8) `confirm_sermon_note_regeneration`/
+/// `discard_sermon_note_regeneration` below — "here is the CURRENT accepted draft", the same
+/// shape every one of those commands returns on success.
+fn sermon_note_view_ok_json(
+    transcript_id: i64,
+    view: &selahcue_lan::protocol::SermonNoteDraftView,
+) -> serde_json::Value {
+    let (draft, scripture_verification_note) = sermon_note_draft_json(view);
+    serde_json::json!({
+        "ok": true,
+        "transcript_id": transcript_id,
+        "ai_generated": view.ai_generated,
+        "ai_label": selahcue_core::providers::AI_GENERATED_LABEL,
+        "disclosure": view.disclosure,
+        "provider": view.provider,
+        "scripture_verification_note": scripture_verification_note,
+        "draft": draft,
+    })
+}
+
 /// Load the persisted sermon-note draft for the currently active transcript, if any
 /// (86akgqdv0). Called on Settings panel activation so a draft generated in a prior
 /// session — or edited and left unread — reappears after a restart. `{"ok": false}`
@@ -6359,6 +6512,512 @@ async fn update_sermon_note_draft(
             "message": "The host reported a connection or protocol problem while saving this \
                 edit. Check the connection and try again.",
         })),
+    }
+}
+
+/// Accept the pending regeneration for `transcript_id` (FR-129, 86akgqdx8), replacing the
+/// accepted draft with it — the "Use this draft" action on the regenerate-confirmation
+/// banner. `transcript_id` is the id `generate_sermon_notes`/`transcript_generate_notes`
+/// returned alongside `pending_confirmation: true`.
+///
+/// `{"ok": false, "error": "refused", ...}` when the host refuses: nothing is currently
+/// pending for this transcript, OR accepting would strip the FR-123 AI-generated label from
+/// an already AI-generated draft (`sermon_note_repo::confirm_regeneration`'s "once
+/// AI-generated, always AI-generated" guard — the case a degraded/local-fallback regenerate
+/// produces). Either way the pending draft is left exactly as it was, still available to
+/// discard.
+#[tauri::command]
+async fn confirm_sermon_note_regeneration(
+    transcript_id: i64,
+    state: State<'_, AppState>,
+) -> Result<serde_json::Value, String> {
+    match state
+        .backend
+        .confirm_sermon_note_regeneration(transcript_id)
+        .await
+    {
+        Ok(Some(slot)) => match slot.current {
+            Some(view) => Ok(sermon_note_view_ok_json(transcript_id, &view)),
+            None => Ok(serde_json::json!({
+                "ok": false, "error": "refused",
+                "message": "The host has no accepted draft for this transcript.",
+            })),
+        },
+        Ok(None) => Ok(serde_json::json!({
+            "ok": false, "error": "refused",
+            "message": "The host refused to confirm this regeneration: nothing is pending, \
+                or accepting it would remove the AI-generated label from an already \
+                AI-generated draft.",
+        })),
+        Err(_) => Ok(serde_json::json!({
+            // Same Debug-dump-avoidance discipline as `update_sermon_note_draft` above.
+            "ok": false, "error": "storage_error",
+            "message": "The host reported a connection or protocol problem while confirming \
+                this regeneration. Check the connection and try again.",
+        })),
+    }
+}
+
+/// Discard the pending regeneration for `transcript_id` (FR-129, 86akgqdx8), leaving the
+/// accepted draft completely unchanged — the "Keep my current notes" action on the
+/// regenerate-confirmation banner. A harmless success even if nothing was pending.
+#[tauri::command]
+async fn discard_sermon_note_regeneration(
+    transcript_id: i64,
+    state: State<'_, AppState>,
+) -> Result<serde_json::Value, String> {
+    match state
+        .backend
+        .discard_sermon_note_regeneration(transcript_id)
+        .await
+    {
+        Ok(Some(slot)) => match slot.current {
+            Some(view) => Ok(sermon_note_view_ok_json(transcript_id, &view)),
+            // No accepted draft at all is an odd state to discard against, but honest rather
+            // than fabricated — mirrors `save_sermon_note_draft`'s own "no store configured"
+            // shape for an unavailable store.
+            None => Ok(serde_json::json!({ "ok": false })),
+        },
+        Ok(None) => Ok(serde_json::json!({ "ok": false })),
+        Err(_) => Ok(serde_json::json!({
+            "ok": false, "error": "storage_error",
+            "message": "The host reported a connection or protocol problem while discarding \
+                this regeneration. Check the connection and try again.",
+        })),
+    }
+}
+
+/// FR-129 (86akgqdx8) operator-layer tests for the regenerate-with-retention flow.
+/// `selahcue-data`/`selahcue-app` already prove the retention model itself exhaustively (stage/
+/// confirm/discard semantics, the single-pending-slot rule, the "once AI-generated, always
+/// AI-generated" guard) — what is unique to THIS crate, and untested anywhere else, is
+/// `persist_generated_draft`'s own branch (does an existing draft cause a STAGE rather than an
+/// upsert) and the two new Tauri commands' own JSON shape end to end through a real backend.
+///
+/// `run_note_generation`'s real provider paths (`cloud-live`/`openai-notes`) need a live network
+/// call or a developer key this suite must never touch (the repo's own constraint: "Test against
+/// a stub transport; never live OpenAI") — with neither feature enabled (the default build this
+/// crate's `cargo test` runs under), generation itself always ends in `NotConfigured`/
+/// `ConsentRequired`, never `Ok`. So `persist_generated_draft` is exercised directly with a
+/// hand-built `SermonNoteDraftInput`, exactly as if a real generation had just produced it,
+/// rather than by driving `generate_sermon_notes` all the way to a successful outcome.
+#[cfg(test)]
+mod regenerate_with_retention_tests {
+    use super::*;
+    use selahcue_app::{RegenerationSlot, SermonNoteStore};
+    use selahcue_data::{sermon_note_repo, transcript_repo, Database};
+
+    /// The same `selahcue_data::sermon_note_repo` adapter `selahcue-desktop::RealSermonNoteStore`
+    /// runs in production, rebuilt here so this crate's own tests can drive
+    /// `persist_generated_draft`/the two new commands against a REAL retention-capable store —
+    /// `NullSermonNoteStore` refuses every one of these calls by design and would prove nothing.
+    struct DbStore {
+        db: Database,
+    }
+
+    impl SermonNoteStore for DbStore {
+        fn active_transcript_id(&mut self) -> Result<Option<i64>, String> {
+            transcript_repo::most_recent_id(&self.db).map_err(|e| e.to_string())
+        }
+        fn save_draft(
+            &mut self,
+            transcript_id: i64,
+            draft: &selahcue_lan::protocol::SermonNoteDraftInput,
+        ) -> Result<selahcue_lan::protocol::SermonNoteDraftView, String> {
+            let note = sermon_note_repo::NewSermonNote {
+                transcript_id,
+                title: draft.title.clone(),
+                summary: draft.summary.clone(),
+                sections_json: draft.sections_json.clone(),
+                scriptures_json: draft.scriptures_json.clone(),
+                ai_generated: draft.ai_generated,
+                disclosure: draft.disclosure.clone(),
+                provider: draft.provider.clone(),
+                model: draft.model.clone(),
+                created_at_ms: 1_000,
+            };
+            sermon_note_repo::create(&self.db, &note).map_err(|e| e.to_string())?;
+            let record = sermon_note_repo::find_by_transcript(&self.db, transcript_id)
+                .map_err(|e| e.to_string())?
+                .expect("draft vanished immediately after create");
+            Ok(view_of(&record))
+        }
+        fn load_draft(
+            &mut self,
+            transcript_id: i64,
+        ) -> Result<Option<selahcue_lan::protocol::SermonNoteDraftView>, String> {
+            sermon_note_repo::find_by_transcript(&self.db, transcript_id)
+                .map(|opt| opt.map(|r| view_of(&r)))
+                .map_err(|e| e.to_string())
+        }
+        fn update_draft(
+            &mut self,
+            _transcript_id: i64,
+            _edit: &selahcue_lan::protocol::SermonNoteEditInput,
+        ) -> Result<selahcue_lan::protocol::SermonNoteDraftView, String> {
+            Err("not exercised by this suite".into())
+        }
+        fn stage_regeneration(
+            &mut self,
+            transcript_id: i64,
+            draft: &selahcue_lan::protocol::SermonNoteDraftInput,
+        ) -> Result<RegenerationSlot, String> {
+            let pending = sermon_note_repo::PendingRegeneration {
+                title: draft.title.clone(),
+                summary: draft.summary.clone(),
+                sections_json: draft.sections_json.clone(),
+                scriptures_json: draft.scriptures_json.clone(),
+                ai_generated: draft.ai_generated,
+                disclosure: draft.disclosure.clone(),
+                provider: draft.provider.clone(),
+                model: draft.model.clone(),
+                generated_at_ms: 2_000,
+            };
+            sermon_note_repo::stage_regeneration(&self.db, transcript_id, &pending)
+                .map_err(|e| e.to_string())?;
+            let record = sermon_note_repo::find_by_transcript(&self.db, transcript_id)
+                .map_err(|e| e.to_string())?
+                .expect("draft vanished immediately after stage");
+            Ok(slot_of(&record))
+        }
+        fn confirm_regeneration(&mut self, transcript_id: i64) -> Result<RegenerationSlot, String> {
+            let record = sermon_note_repo::confirm_regeneration(&self.db, transcript_id)
+                .map_err(|e| e.to_string())?;
+            Ok(slot_of(&record))
+        }
+        fn discard_regeneration(&mut self, transcript_id: i64) -> Result<RegenerationSlot, String> {
+            sermon_note_repo::discard_regeneration(&self.db, transcript_id)
+                .map_err(|e| e.to_string())?;
+            let record = sermon_note_repo::find_by_transcript(&self.db, transcript_id)
+                .map_err(|e| e.to_string())?
+                .expect("draft vanished immediately after discard");
+            Ok(slot_of(&record))
+        }
+    }
+
+    fn view_of(
+        r: &sermon_note_repo::SermonNoteRecord,
+    ) -> selahcue_lan::protocol::SermonNoteDraftView {
+        selahcue_lan::protocol::SermonNoteDraftView {
+            title: r.title.clone(),
+            summary: r.summary.clone(),
+            sections_json: r.sections_json.clone(),
+            scriptures_json: r.scriptures_json.clone(),
+            ai_generated: r.ai_generated,
+            disclosure: r.disclosure.clone(),
+            provider: r.provider.clone(),
+            model: r.model.clone(),
+            created_at_ms: r.created_at_ms,
+            edited_at_ms: r.edited_at_ms,
+        }
+    }
+
+    fn slot_of(r: &sermon_note_repo::SermonNoteRecord) -> RegenerationSlot {
+        RegenerationSlot {
+            current: Some(view_of(r)),
+            pending: r
+                .pending
+                .as_ref()
+                .map(|p| selahcue_lan::protocol::SermonNoteDraftView {
+                    title: p.title.clone(),
+                    summary: p.summary.clone(),
+                    sections_json: p.sections_json.clone(),
+                    scriptures_json: p.scriptures_json.clone(),
+                    ai_generated: p.ai_generated,
+                    disclosure: p.disclosure.clone(),
+                    provider: p.provider.clone(),
+                    model: p.model.clone(),
+                    created_at_ms: p.generated_at_ms,
+                    edited_at_ms: p.generated_at_ms,
+                }),
+        }
+    }
+
+    /// A ready-to-run `AppState` wired to a REAL, DB-backed sermon-note store (via a
+    /// `LiveController` in `Backend::Local`) with one ended transcript already in it —
+    /// `listening.rs`'s `tauri::test::mock_app()` pattern is the established way this crate
+    /// builds a full Tauri `State` in a unit test without a running window; reused verbatim.
+    fn state_with_transcript(
+        consent_cloud_notes: bool,
+    ) -> (tauri::App<tauri::test::MockRuntime>, i64) {
+        let db = Database::open_in_memory().expect("in-memory db opens");
+        let id = transcript_repo::create(
+            &db,
+            &transcript_repo::NewTranscript {
+                label: "Sunday Service".to_string(),
+                provider: "manual".to_string(),
+                plan_id: None,
+                started_at_ms: 1_000,
+            },
+        )
+        .expect("create transcript");
+        transcript_repo::append_segment(&db, id, 0, 1_000, "Good morning, church.")
+            .expect("append segment");
+        transcript_repo::end(&db, id, 1_000).expect("end transcript");
+
+        let mut plan = ServicePlan::new("Test Service");
+        plan.add_item(ItemKind::Section, "Sermon");
+        let controller = Arc::new(Mutex::new(LiveController::new(
+            plan,
+            320,
+            180,
+            Theme::dark(),
+        )));
+        controller
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .set_sermon_note_store(Box::new(DbStore { db }));
+        let shell = OperatorShell::new(controller);
+
+        let mut providers = selahcue_core::providers::ProvidersConfig::default();
+        providers.consent.cloud_notes = consent_cloud_notes;
+
+        let app = tauri::test::mock_app();
+        app.handle().manage(AppState {
+            backend: Backend::Local(shell),
+            deck: Mutex::new(crate::DeckWorkspace::demo()),
+            library: Mutex::new(crate::DeckLibrary::load(None)),
+            providers: Mutex::new(providers),
+            providers_db: None,
+            transcript_db: None,
+            secrets: make_secret_store(),
+            link_error: Mutex::new(None),
+        });
+        (app, id)
+    }
+
+    fn sample_draft(
+        title: &str,
+        ai_generated: bool,
+    ) -> selahcue_lan::protocol::SermonNoteDraftInput {
+        selahcue_lan::protocol::SermonNoteDraftInput {
+            title: title.to_string(),
+            summary: None,
+            sections_json: "[]".to_string(),
+            scriptures_json: "[]".to_string(),
+            ai_generated,
+            disclosure: ai_generated.then(|| "AI-generated; verify before use.".to_string()),
+            provider: "Local (offline)".to_string(),
+            model: None,
+        }
+    }
+
+    /// C-007 (first half): no accepted draft exists yet — `persist_generated_draft` takes the
+    /// ORIGINAL, unchanged immediate-save path, exactly like pre-86akgqdx8 behaviour.
+    #[tokio::test]
+    async fn persist_with_no_existing_draft_saves_immediately_not_staged() {
+        let (app, id) = state_with_transcript(true);
+        let state = app.state::<AppState>();
+        let outcome = persist_generated_draft(&state, id, sample_draft("First draft", true)).await;
+        assert_eq!(outcome.transcript_id, Some(id));
+        assert!(
+            !outcome.pending_confirmation,
+            "no draft existed yet — this must be a save, not a stage"
+        );
+        assert!(outcome.previous_draft.is_none());
+
+        let saved = state
+            .backend
+            .load_sermon_note_draft(id)
+            .await
+            .expect("load_sermon_note_draft against a real store succeeds")
+            .expect("saved");
+        assert_eq!(saved.title, "First draft");
+    }
+
+    /// C-007 (second half): an accepted draft already exists — the fresh draft is STAGED, and
+    /// the accepted draft already on record is retrievable and unchanged, exactly what makes
+    /// "the prior draft is retained until confirmed" true at this call site.
+    #[tokio::test]
+    async fn persist_with_an_existing_draft_stages_and_leaves_it_untouched() {
+        let (app, id) = state_with_transcript(true);
+        let state = app.state::<AppState>();
+        // Seed an accepted draft the way a true first-time generate would.
+        persist_generated_draft(&state, id, sample_draft("Original notes", true)).await;
+
+        let outcome =
+            persist_generated_draft(&state, id, sample_draft("Regenerated notes", true)).await;
+        assert_eq!(outcome.transcript_id, Some(id));
+        assert!(
+            outcome.pending_confirmation,
+            "an accepted draft already existed — this must stage, not upsert"
+        );
+        let previous = outcome.previous_draft.expect("previous draft echoed back");
+        assert_eq!(previous["title"], serde_json::json!("Original notes"));
+
+        // The accepted draft on record is STILL the original — never touched by staging.
+        let still_accepted = state
+            .backend
+            .load_sermon_note_draft(id)
+            .await
+            .expect("load_sermon_note_draft against a real store succeeds")
+            .expect("accepted draft");
+        assert_eq!(
+            still_accepted.title, "Original notes",
+            "staging a regeneration must never replace the accepted draft"
+        );
+    }
+
+    /// C-009 (operator layer, reinforcing the `selahcue-app`-level test of the same shape): the
+    /// host refusing to stage (here, an oversized field the repo's own bounds reject) must never
+    /// leave the accepted draft touched or a pending row behind.
+    #[tokio::test]
+    async fn a_refused_stage_never_touches_the_accepted_draft_or_leaves_a_pending_row() {
+        let (app, id) = state_with_transcript(true);
+        let state = app.state::<AppState>();
+        persist_generated_draft(&state, id, sample_draft("Original notes", true)).await;
+
+        let mut oversized = sample_draft("Regenerated notes", true);
+        oversized.title = "x".repeat(10_000); // past sermon_note_repo::MAX_TITLE_CHARS (300)
+        let outcome = persist_generated_draft(&state, id, oversized).await;
+        assert_eq!(
+            outcome.transcript_id, None,
+            "a refused stage must not be reported as persisted"
+        );
+        assert!(!outcome.pending_confirmation);
+
+        let still_accepted = state
+            .backend
+            .load_sermon_note_draft(id)
+            .await
+            .expect("load_sermon_note_draft against a real store succeeds")
+            .expect("accepted draft");
+        assert_eq!(still_accepted.title, "Original notes");
+        // `discard` is a harmless no-op when nothing is pending — using it here to observe
+        // `pending` is `None` proves the refused stage left no partial row behind.
+        let slot = state
+            .backend
+            .discard_sermon_note_regeneration(id)
+            .await
+            .expect("discard_sermon_note_regeneration against a real store succeeds")
+            .expect("slot");
+        assert!(
+            slot.pending.is_none(),
+            "the refused stage must not have left a pending row"
+        );
+    }
+
+    /// C-008: the consent gate is unchanged, shared code for Generate and Regenerate alike — this
+    /// proves it specifically for a transcript that ALREADY has an accepted draft (the Regenerate
+    /// scenario), not just the first-time-Generate case the existing crate-level tests already
+    /// cover. With consent off, `generate_sermon_notes` must refuse before ever reaching
+    /// `persist_generated_draft` — the accepted draft stays exactly as it was and no pending row
+    /// is created.
+    #[tokio::test]
+    async fn consent_off_refuses_regenerate_before_touching_the_accepted_draft() {
+        let (app, id) = state_with_transcript(false);
+        let state = app.state::<AppState>();
+        // Seed an accepted draft directly against the store (bypassing the command, which would
+        // itself refuse with consent off) so this transcript is genuinely in the "already has a
+        // draft" state the Regenerate affordance targets.
+        persist_generated_draft(&state, id, sample_draft("Original notes", true)).await;
+
+        let result = generate_sermon_notes("a fresh transcript".to_string(), state.clone())
+            .await
+            .expect("command returns Ok(json) even on refusal");
+        assert_eq!(result["ok"], serde_json::json!(false));
+        assert_eq!(result["error"], serde_json::json!("consent_required"));
+
+        let still_accepted = state
+            .backend
+            .load_sermon_note_draft(id)
+            .await
+            .expect("load_sermon_note_draft against a real store succeeds")
+            .expect("accepted draft");
+        assert_eq!(
+            still_accepted.title, "Original notes",
+            "a consent-off refusal must never reach persistence"
+        );
+        let slot = state
+            .backend
+            .discard_sermon_note_regeneration(id)
+            .await
+            .expect("discard_sermon_note_regeneration against a real store succeeds")
+            .expect("slot");
+        assert!(
+            slot.pending.is_none(),
+            "a consent-off refusal must never stage a pending regeneration"
+        );
+    }
+
+    /// C-010 (operator layer): a degraded (local-fallback) regeneration — `ai_generated: false`,
+    /// no disclosure, exactly what a local fallback produces — still goes through the SAME
+    /// stage/confirm gate as an AI-generated one when an existing draft is present, and the
+    /// label survives confirm unchanged (the "once AI-generated, always AI-generated" rule is
+    /// `selahcue-data`'s; this proves the operator's own stage/confirm call sites carry
+    /// `ai_generated: false` through faithfully rather than defaulting it).
+    #[tokio::test]
+    async fn a_degraded_regenerate_over_a_never_ai_generated_draft_still_requires_confirm() {
+        let (app, id) = state_with_transcript(true);
+        let state = app.state::<AppState>();
+        // The existing accepted draft was itself never AI-generated (a human-authored draft, or
+        // an earlier degraded one) — `selahcue-data`'s own positive control already proves
+        // confirming a degraded regeneration over such a draft is ALLOWED.
+        persist_generated_draft(&state, id, sample_draft("Human notes", false)).await;
+
+        let outcome = persist_generated_draft(
+            &state,
+            id,
+            sample_draft("Degraded regenerated notes", false),
+        )
+        .await;
+        assert!(
+            outcome.pending_confirmation,
+            "even a degraded regenerate must be staged, not auto-applied"
+        );
+
+        let confirmed = state
+            .backend
+            .confirm_sermon_note_regeneration(id)
+            .await
+            .expect("confirm_sermon_note_regeneration against a real store succeeds")
+            .expect("confirm succeeds");
+        let current = confirmed.current.expect("confirmed draft");
+        assert_eq!(current.title, "Degraded regenerated notes");
+        assert!(
+            !current.ai_generated,
+            "a degraded regenerate's ai_generated:false must survive confirm unchanged"
+        );
+        assert!(current.disclosure.is_none());
+    }
+
+    /// The two new Tauri commands' own JSON shape, end to end through a real backend — nothing
+    /// else in this suite calls them as commands (only via `Backend` directly), so this is the
+    /// only place a rename/shape drift in `confirm_sermon_note_regeneration`/
+    /// `discard_sermon_note_regeneration` themselves would be caught.
+    #[tokio::test]
+    async fn confirm_and_discard_commands_round_trip_through_a_real_backend() {
+        let (app, id) = state_with_transcript(true);
+        let state = app.state::<AppState>();
+        persist_generated_draft(&state, id, sample_draft("Original notes", true)).await;
+        persist_generated_draft(&state, id, sample_draft("Regenerated notes", true)).await;
+
+        // Discard first: the accepted draft must come back unchanged.
+        let discarded = discard_sermon_note_regeneration(id, state.clone())
+            .await
+            .expect("discard_sermon_note_regeneration command succeeds");
+        assert_eq!(discarded["ok"], serde_json::json!(true));
+        assert_eq!(
+            discarded["draft"]["title"],
+            serde_json::json!("Original notes")
+        );
+
+        // Stage again, then confirm: the accepted draft must now be the regenerated one.
+        persist_generated_draft(&state, id, sample_draft("Regenerated notes 2", true)).await;
+        let confirmed = confirm_sermon_note_regeneration(id, state.clone())
+            .await
+            .expect("confirm_sermon_note_regeneration command succeeds");
+        assert_eq!(confirmed["ok"], serde_json::json!(true));
+        assert_eq!(
+            confirmed["draft"]["title"],
+            serde_json::json!("Regenerated notes 2")
+        );
+
+        // Confirming again with nothing pending is refused, not fabricated.
+        let refused = confirm_sermon_note_regeneration(id, state.clone())
+            .await
+            .expect("confirm_sermon_note_regeneration command succeeds");
+        assert_eq!(refused["ok"], serde_json::json!(false));
     }
 }
 
@@ -6572,6 +7231,8 @@ fn main() {
             generate_sermon_notes,
             load_sermon_note_draft,
             update_sermon_note_draft,
+            confirm_sermon_note_regeneration,
+            discard_sermon_note_regeneration,
             transcript_list,
             transcript_get,
             transcript_generate_notes,
