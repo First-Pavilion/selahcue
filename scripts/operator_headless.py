@@ -326,9 +326,10 @@ if not check_d5_no_scrolltop_writes():
 # Rebased onto the now-combined 86akmdkdg+86akcffy0+86akc0tua floor of 1369: this ticket's own
 # 12 checks (across all three of its commits) are independent of all three (own fixture, own
 # DRIVER section, inserted immediately after 86akc0tua's edit-save block rather than
-# overlapping it), so the combined floor is provisionally 1369 + 12 = 1381. As with every step
-# above, this is a naive sum until a standalone run confirms it — re-run this script after the
-# rebase and correct this value to the REAL observed total before trusting it.
+# overlapping it). The naive sum was 1369 + 12 = 1381, and this is confirmed as the REAL
+# observed count too — a standalone run of this file after the rebase (and after fixing the
+# sections_to_persist compile break the combined DraftCaveat enum exposed — see that commit)
+# reported "1381 checks, 0 FAIL" exactly.
 EXPECTED_MIN_CHECKS = 1381
 
 
