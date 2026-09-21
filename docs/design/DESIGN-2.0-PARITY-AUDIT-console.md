@@ -1398,7 +1398,14 @@ detection takes the same cautious Edit branch a known-low-confidence one does. (
 non-blocking item — a dismissed verse reporting as "Already shown" — was mooted by finding 3's
 removal of that whole card type.)
 
-**Verification for this addendum:** `scripts/operator_headless.py`, 1598 checks / 0 FAIL,
-confirmed by two independent runs in this worktree. `EXPECTED_MIN_CHECKS` bumped 1589 → 1598 (see
-that constant's own history in the script for the full provenance, including Cody's separate
-rebase finding this addendum does not repeat).
+**Verification for this addendum:** `scripts/operator_headless.py`, 1598 checks / 0 FAIL at the
+time this addendum was first written, confirmed by two independent runs in this worktree.
+
+**Correction (Cody's review of the follow-up PR #64):** the number above went stale the same way
+this document's own §"How to read this" already warns against — two further rebases (PR #61
+merging pre-remediation, then a second, unrelated PR landing mid-rebase) each moved the true
+count without this line being revisited. The count as of PR #64's final state is **1610** (Cody's
+own finding also added 2 of those: verse-range regression coverage for the Edit/History staging
+fix, mutation-verified). `EXPECTED_MIN_CHECKS`'s own history comment in the script is the single
+source of truth for this number going forward — this line will not be kept in sync with every
+future bump; read the script, not this document, for the current count.

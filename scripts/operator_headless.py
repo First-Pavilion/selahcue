@@ -647,7 +647,16 @@ if not check_jump_call_site_is_click_only():
 # demonstrating cannot be trusted in isolation. Re-derived the only honest way, per this
 # comment's own repeated lesson, against the file as it stands after resolving that conflict:
 # 1605, confirmed by two independent runs in this worktree (both 1605, 0 FAIL).
-EXPECTED_MIN_CHECKS = 1605
+#
+# 1605 -> 1610: Cody's review of PR #64 found the verse-RANGE half of the Edit/History staging
+# fix (app.js's `isRange` branch) had zero regression coverage — every existing fixture used a
+# single-verse reference, so `isRange` was always false by construction and mutating that
+# branch's own `stage` guard produced 0 FAIL across the whole suite. Widened the get_chapter mock
+# to return a genuine range response for a "N-M" reference and added 2 real assertions (Edit and
+# History re-stage each with a range reference) plus their setup/premise checks. Mutation-verified
+# (reverted the guard, confirmed exactly those 2 assertions RED, restored). Confirmed by two
+# independent runs (both 1610, 0 FAIL).
+EXPECTED_MIN_CHECKS = 1610
 
 
 def find_chrome():
@@ -1049,12 +1058,32 @@ STUB = r"""
     // host worker that loads the model + opens the mic before signalling readiness.
     if (cmd === "start_listening") return new Promise(function(res, rej){ window.__startCtl = {resolve:res, reject:rej}; });
     if (cmd === "stop_listening") return Promise.resolve(null);
-    if (cmd === "get_chapter") return Promise.resolve({
-      reference: (args && args.reference) ? String(args.reference).replace(/:.*$/, "") : "Isaiah 61",
-      translation: "KJV", translations: ["KJV"],
-      verses: [[1, "verse one text"], [5, "verse five text"]],
-      verse_start: 5, verse_end: null, prev: true, next: true,
-    });
+    // Cody's review of PR #64: the RANGE half of loadChapter's stage=false guard
+    // (app.js's isRange branch) had zero coverage — every fixture in this file requested a
+    // single-verse reference, so verse_end was always null and isRange was always false by
+    // construction, regardless of what the real production comparison would do. A reference
+    // containing "N-M" after the colon (e.g. "John 3:16-18") now gets a genuine range response,
+    // so a test can actually exercise that branch instead of it being permanently dead code as
+    // far as this suite can see.
+    if (cmd === "get_chapter") {
+      var _gcRef = (args && args.reference) ? String(args.reference) : "";
+      var _gcRange = /:(\d+)-(\d+)/.exec(_gcRef);
+      if (_gcRange) {
+        var _gcLo = +_gcRange[1], _gcHi = +_gcRange[2];
+        return Promise.resolve({
+          reference: _gcRef.replace(/:.*$/, ""),
+          translation: "KJV", translations: ["KJV"],
+          verses: [[_gcLo, "verse " + _gcLo + " text"], [_gcHi, "verse " + _gcHi + " text"]],
+          verse_start: _gcLo, verse_end: _gcHi, prev: true, next: true,
+        });
+      }
+      return Promise.resolve({
+        reference: _gcRef ? _gcRef.replace(/:.*$/, "") : "Isaiah 61",
+        translation: "KJV", translations: ["KJV"],
+        verses: [[1, "verse one text"], [5, "verse five text"]],
+        verse_start: 5, verse_end: null, prev: true, next: true,
+      });
+    }
     // approve_detection stages (dequeues + remembers which reference was staged, mirroring the
     // real host); go_live commits that remembered reference to live_scripture ONLY when actually
     // called — Stage alone must never move it (CON-136's on-air card depends on this distinction:
@@ -2977,6 +3006,28 @@ DRIVER = r"""
          "CON-134 (Sana finding 1): Edit never stages — checked well past the 120ms debounce, over the FULL call list, not just approve/dismiss");
       ok(!callsAfterEdit.some(function (c) { return c.cmd === "dismiss_detection" || c.cmd === "approve_detection"; }),
          "CON-134: Edit is non-destructive — it does not dequeue or dismiss the detection either");
+      // Cody's review of PR #64: the VERSE-RANGE half of this fix (loadChapter's `isRange`
+      // branch, app.js ~line 3699) is correct by code trace but had ZERO coverage — every
+      // fixture above requests a single-verse reference, so `isRange` was always false by
+      // construction and that branch's own `if (stage)` guard was dead code as far as this
+      // suite could tell (mutating it back to always-stage produced 0 FAIL across the whole
+      // suite). selahcue-core::Reference's Display confirms a range like "John 3:16-18" is real
+      // production input (spoken multi-verse citations), not a hypothetical. This exercises it
+      // directly: the mock's get_chapter now returns a genuine range response for a "N-M"
+      // reference (see its own comment), so isRange really is true here, not simulated.
+      window.__detResetForTest();
+      render(Object.assign({}, baseView, { detections: [
+        { id: 598, reference: "John 3:16-18", text: "For God so loved the world", confidence: 62 },
+      ] }));
+      var rangeCard = el("detections-list").querySelector(".detection");
+      var callsBeforeRangeEdit = window.__calls.length;
+      rangeCard.querySelector(".det-edit").click();
+      await sleep(200);
+      ok(window.__calls.some(function (c) { return c.cmd === "get_chapter" && c.args && c.args.reference === "John 3:16-18"; }),
+         "CON-134 (Sana finding 1, range coverage): Edit opens a range reference in the chapter browser");
+      var callsAfterRangeEdit = window.__calls.slice(callsBeforeRangeEdit);
+      ok(!callsAfterRangeEdit.some(function (c) { return c.cmd === "stage_scripture" || c.cmd === "follow_scripture"; }),
+         "CON-134 (Sana finding 1, range coverage): Edit never stages a RANGE reference either — the isRange branch's own stage=false guard, not just the single-verse one");
       // Sana's non-blocking finding: a MISSING confidence used to fail OPEN into the confident
       // branch (Approve fast-path) purely because `hasConfidence && …` short-circuits false on
       // no score at all — an unscored match is at least as uncertain as a known-low one.
@@ -3210,6 +3261,28 @@ DRIVER = r"""
       ok(!callsAfterRestage.some(function (c) { return c.cmd === "stage_scripture" || c.cmd === "follow_scripture"; }),
          "CON-138 (Sana finding 1): re-stage never stages on its own — checked well past the 120ms debounce, over the full call list");
       ok(!el("detections-live-view").hidden, "CON-138: re-stage switches the panel back to Live");
+      // Cody's review of PR #64: same range-coverage hole as CON-134's Edit test above, for
+      // re-stage's own call site. Dismiss a RANGE-reference detection to seed a History row,
+      // then re-stage it — the mock's get_chapter now returns a genuine range response for it.
+      window.__detResetForTest();
+      render(Object.assign({}, baseView, { detections: [
+        { id: 597, reference: "Romans 8:28-30", text: "And we know", confidence: 91 },
+      ] }));
+      el("detections-list").querySelector('[aria-label="Dismiss Romans 8:28-30"]').click();
+      await sleep(15);
+      histBtn.click();
+      var rangeHistRow = Array.prototype.filter.call(el("detections-history-list").querySelectorAll(".det-history-row"),
+        function (r) { return /Romans 8:28-30/.test(r.textContent); })[0];
+      ok(!!rangeHistRow, "CON-138 (range coverage, setup): the range-reference dismissal is recorded in History");
+      var callsBeforeRangeRestage = window.__calls.length;
+      rangeHistRow.querySelector(".det-history-restage").click();
+      await sleep(200);
+      ok(window.__calls.some(function (c) { return c.cmd === "get_chapter" && c.args && c.args.reference === "Romans 8:28-30"; }),
+         "CON-138 (range coverage): re-stage opens the range reference in the chapter browser");
+      var callsAfterRangeRestage = window.__calls.slice(callsBeforeRangeRestage);
+      ok(!callsAfterRangeRestage.some(function (c) { return c.cmd === "stage_scripture" || c.cmd === "follow_scripture"; }),
+         "CON-138 (Sana finding 1, range coverage): re-stage never stages a RANGE reference either — the isRange branch's own stage=false guard");
+      liveBtn.click();
       // DET_HISTORY_MAX bounds the log so it cannot grow without limit across a long service
       // (bounded-memory). Dismiss 60 distinct detections, OLDEST (#0) first through NEWEST
       // (#59) last — recordDetectionOutcome runs synchronously inside each click handler
