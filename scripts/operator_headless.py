@@ -146,6 +146,16 @@ def check_d5_no_scrolltop_writes():
 # itself would not move, only its trigger. This is the call-site counterpart: `jumpToOffsetMs`
 # may be CALLED from exactly one site, and that site's own line must register for a `"click"`
 # event and must not sit alongside `scroll`/`wheel`/`keydown`/`requestAnimationFrame`.
+#
+# Known, accepted limitations (Sana's re-review, PR #51 round 2) — this is a line-local textual
+# check, not a data-flow analysis, so it is defeated by (a) a misleading `"click"` string placed
+# in a comment beside a real reactive registration (verified live; the same accepted-limit class
+# as the Makefile's `RELEASE_UNSAFE_FEATURES` regex — see ADR-0026 Revision 4's own text), and
+# (b) ALIASING: `var __alias = jumpToOffsetMs; someOtherHandler(function(){ __alias(ms); });`
+# passes this check GREEN, since `JUMP_CALL_RE` matches the literal substring `jumpToOffsetMs(`
+# and a bare reference assignment is invisible to it. Neither evasion is reachable by an
+# ordinary refactor (every benign reshape Sana tried still fails RED); both would need to be
+# introduced deliberately, which is what code review is for.
 JUMP_CALL_RE = re.compile(r"jumpToOffsetMs\(")
 JUMP_DEF_RE = re.compile(r"function jumpToOffsetMs\(")
 JUMP_FORBIDDEN_CONTEXT = ('"scroll"', "'scroll'", '"wheel"', "'wheel'", '"keydown"', "'keydown'", "requestAnimationFrame(")
@@ -577,14 +587,21 @@ if not check_jump_call_site_is_click_only():
 # own, unrelated regenerate-with-retention checks — see the history above this point). The two
 # branches' additions are now BOTH present in the same file, so the correct total is neither
 # 1496 nor 1455 nor their sum-minus-overlap by hand arithmetic — re-derived the only honest way,
-# by actually running the merged file and reading its own reported count: "1514 checks, 0 FAIL",
-# confirmed on two separate runs, plus a full-output grep for any "FAIL" line (zero hits both
-# times). This is 6 less than the naive 1496 + (1455 - 1431) = 1520 prediction. NOT chased down
-# to a specific line-by-line cause — this file's own count has drifted from hand arithmetic by a
-# few checks at least once before this rebase too (see the 86akgqdw0 entry above: "18, one more
-# than this ticket's own 17 explicit new ok() calls"), always for a real, findable reason, never
-# a flaky count. The number recorded here is the one this run actually reported, not a projection.
-EXPECTED_MIN_CHECKS = 1514
+# by actually running the merged file: 1520, exactly the naive 1496 + (1455 - 1431) prediction
+# (the two branches' checks really are simply additive here; there was no hidden interaction).
+#
+# CORRECTION: this constant briefly read 1514 — a wrong number from a single run whose exact
+# cause was never root-caused (recorded at the time as "this file's own count has drifted from
+# hand arithmetic before... never a flaky count," which was itself wrong reasoning: no evidence
+# was gathered for WHY that run undercounted by 6, and no evidence was gathered that it wasn't a
+# one-off before writing a confident explanation for it). Caught only because two independent
+# reviewers (Quinn, Sana), each in their OWN fresh worktree pinned to the same commit, both
+# independently ran this file and both got 1520 — not 1514 — which is what prompted re-running
+# it a further two times in THIS worktree (1520 both times, `git status` clean throughout, no
+# `SELAHCUE_OPERATOR_DIST` override). Four independent runs across three separate worktrees now
+# agree on 1520; zero runs since have reproduced 1514. The number below is the one every
+# available run actually reports, not the one first written down.
+EXPECTED_MIN_CHECKS = 1520
 
 
 def find_chrome():
