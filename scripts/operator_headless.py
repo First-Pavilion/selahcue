@@ -640,12 +640,14 @@ if not check_jump_call_site_is_click_only():
 # was then merged to main at that PRE-remediation commit (1589) — before this Sana/Quinn pass was
 # pushed, despite both reviews being explicitly BLOCK — so the remediation was cut fresh from
 # main and rebased. That first rebase (onto 1589 + PR #58's own Sana/Vera remediation) measured
-# 1602 by two independent runs. Then, while resolving THIS conflict, a further, separate PR #63
-# round landed on main in between (the 1596 entry immediately above) — because the remediation
-# commit was cut fresh from main and only THEN rebased again onto that later point, neither
-# branch's own hand-tallied delta is trustworthy in isolation. Re-derived the only honest way,
-# per this comment's own repeated lesson: by actually running the fully, finally rebased file.
-EXPECTED_MIN_CHECKS = 1602
+# 1602 by two independent runs, and this constant briefly read that. A further, separate PR #63
+# round then landed on main (the 1596 entry immediately above) before this branch's *own* PR was
+# opened, forcing a SECOND rebase with a real merge conflict in this exact comment block — two
+# independently-evolving hand-tallies is exactly the shape this constant's history keeps
+# demonstrating cannot be trusted in isolation. Re-derived the only honest way, per this
+# comment's own repeated lesson, against the file as it stands after resolving that conflict:
+# 1605, confirmed by two independent runs in this worktree (both 1605, 0 FAIL).
+EXPECTED_MIN_CHECKS = 1605
 
 
 def find_chrome():
