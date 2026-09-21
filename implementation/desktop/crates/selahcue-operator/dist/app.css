@@ -2863,6 +2863,23 @@
         font-size: 11px;
       }
 
+      /* CON-121 — the detections empty state redesigned toward 332:146-148: the panel's own
+         gold "✦" identity mark (bigger, full opacity) instead of the generic ✨, and a real
+         heading weight distinguishing "No scriptures detected yet" from the body copy below
+         it. Scoped to #detections-empty only — .fwd-empty/.fwd-icon/.fwd-msg are shared with
+         the transcript and slides empty states, which this finding does not touch. */
+      #detections-empty .fwd-icon {
+        color: var(--sc-gold);
+        font-size: 26px;
+        opacity: 1;
+      }
+
+      #detections-empty .fwd-msg {
+        font-size: 15px;
+        font-weight: 700;
+        color: var(--sc-text);
+      }
+
       /* Live transcript (R3) + scripture detection queue (R4) */
       .stream {
         flex: 1;
@@ -2876,6 +2893,13 @@
 
       .stream:empty {
         display: none;
+      }
+
+      /* CON-111 — detection cards read as a solid block at the transcript's 4px gap (431:143
+         wants 12px). Scoped to the detections list only — .stream is shared with the live
+         transcript log, which keeps its own tighter rhythm. */
+      #detections-list.stream {
+        gap: 12px;
       }
 
       /* One finalised transcript line. Was `.seg` (CON-142) — being last in the file, this
@@ -3250,8 +3274,12 @@
         overflow: hidden;
       }
 
+      /* CON-116 — 11px vs the frame's 12px (432:130). Ink stays --sc-text-muted for now: the
+         3.45:1 A11Y-DEFECT this carries is real but is tracked as part of the cross-platform
+         --sc-text-tertiary sweep (§8.4.1, Group 6, blocked on Q9) — out of scope here, not
+         silently dropped. */
       .detection .det-meta {
-        font-size: 11px;
+        font-size: 12px;
         color: var(--sc-text-muted);
       }
 
@@ -3291,6 +3319,313 @@
 
       .detection-actions .det-approve:hover {
         border-color: var(--sc-preview);
+      }
+
+      /* CON-129 — card tint by confidence (canonical frame 332:200, §10 row 2 of the audit's
+         owner decisions). Extends the SAME token pair the match-pill already uses (confident =
+         --sc-preview*, fuzzy = --sc-warn*) onto the card itself, rather than inventing a new
+         colour choice — only applied when the host supplied a real confidence (honest-empty
+         otherwise, matching the pill's own condition). */
+      .detection.det-confident {
+        background: var(--sc-preview-soft);
+        border-color: var(--sc-preview-border);
+      }
+
+      .detection.det-fuzzy {
+        background: var(--sc-warn-soft);
+        border-color: var(--sc-warn-border);
+      }
+
+      /* CON-130 — the confidence bar (332:205/206), the only non-textual, non-colour
+         representation of match confidence. Track sits on --sc-inset regardless of card tint
+         (332:205 is drawn flat); the fill follows the same confident/fuzzy split as the pill. */
+      .det-bar-track {
+        height: 5px;
+        border-radius: 999px;
+        background: var(--sc-inset);
+        overflow: hidden;
+      }
+
+      .det-bar-fill {
+        display: block;
+        height: 100%;
+        border-radius: 999px;
+        background: var(--sc-preview);
+      }
+
+      .det-bar-fill.fuzzy {
+        background: var(--sc-warn);
+      }
+
+      /* CON-134 — low-confidence detections drop the Approve fast-path (334:142 draws only
+         Stage / Edit / Dismiss): an uncertain AI match should not have a one-click route to the
+         audience. Edit is real — it opens the reference in the Scriptures browser so the
+         operator can inspect/correct it manually (window.__openChapterForStage, the same call
+         Stage already makes) — but the frame's ALTERNATIVES list (other candidate references
+         with individual scores) is NOT built: no field anywhere in the detection wire protocol
+         carries alternate candidates, and inventing scores the detector never computed would be
+         exactly the kind of fabrication this codebase's "never fabricate" precedent (honest
+         empty/disabled states throughout dist/) forbids. This note explains the sub-line below
+         in place of a list this build cannot honestly draw. */
+      .det-alt-note {
+        font-size: 11px;
+        line-height: 1.4;
+        color: var(--sc-text-secondary);
+        background: var(--sc-inset);
+        border: 1px solid var(--sc-border);
+        border-radius: 8px;
+        padding: 8px 10px;
+      }
+
+      .detection-actions .det-edit {
+        background: var(--sc-elevated);
+        border: 1px solid var(--sc-border);
+        color: var(--sc-text-secondary);
+        font-weight: 700;
+      }
+
+      .detection-actions .det-edit:hover {
+        border-color: var(--sc-border-strong);
+      }
+
+      /* CON-136 — the on-air card (334:217-228). Reuses .detection/.detection-head/.snippet/
+         .det-meta/.detection-actions so it inherits the same type scale and only needs its own
+         tint + pill + button colours. Shown ONLY while view.live_scripture still equals the
+         reference this card approved (verified against the host on every poll, in app.js — see
+         syncDetOnAir) — never a stale claim once live content actually moves on. */
+      .detection.det-onair {
+        background: var(--sc-live-soft);
+        border-color: var(--sc-live-border);
+      }
+
+      .detection.det-onair[hidden] {
+        display: none;
+      }
+
+      .det-onair-pill {
+        flex: none;
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: 0.04em;
+        color: var(--sc-live);
+      }
+
+      .det-onair-dot {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: currentColor;
+      }
+
+      /* The frame draws "Clear output" white-on-solid #ff4d4d (3.27:1, A11Y-DEFECT — CON-136's
+         own note). Uses the same accessible substitution already shipped for #blackout /
+         #clear-all.armed (#a3283a, 7.19:1) rather than the frame's fill, per RISK-205/NFR-204. */
+      .det-onair-clear {
+        background: #a3283a;
+        border: none;
+        color: #fff;
+        font-weight: 700;
+      }
+
+      .det-onair-clear:hover {
+        filter: brightness(1.1);
+      }
+
+      /* "Next verse" — the frame's ink is --sc-text-muted (3.79:1 at 12px, A11Y-DEFECT).
+         Promoted to --sc-text-secondary, the same accessible substitution this file already
+         makes throughout (§8.1: .rtab, .seg-btn, stage-theme sub-label, …). */
+      .det-onair-next {
+        background: var(--sc-elevated);
+        border: 1px solid var(--sc-border);
+        color: var(--sc-text-secondary);
+        font-weight: 700;
+      }
+
+      .det-onair-next:hover {
+        border-color: var(--sc-border-strong);
+      }
+
+      /* CON-137 — duplicate suppression + cooldown (335:140-146). A client-side flicker guard:
+         no "duplicate" signal exists anywhere in the detection wire protocol, so this is built
+         entirely from the operator's own recent Stage/Approve/Dismiss actions (app.js) — never a
+         host contract change. Reference ink is --sc-text-secondary, not the frame's
+         --sc-text-muted @ opacity-85 (3.16:1 at 15px Bold — an A11Y-DEFECT the audit calls out
+         explicitly, §8.5: "build at full opacity with a compliant ink"). */
+      .detection.det-duplicate {
+        background: var(--sc-inset);
+        border-color: var(--sc-border);
+      }
+
+      .detection.det-duplicate .detection-head .ref {
+        color: var(--sc-text-secondary);
+      }
+
+      .det-dup-pill {
+        flex: none;
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: 0.04em;
+        border-radius: 999px;
+        padding: 3px 9px;
+        background: var(--sc-elevated);
+        border: 1px solid var(--sc-border);
+        color: var(--sc-text-secondary);
+      }
+
+      .det-dup-body {
+        font-size: 12px;
+        line-height: 1.35;
+        color: var(--sc-text-secondary);
+      }
+
+      .det-dup-cooldown {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        border-radius: 8px;
+        padding: 7px 10px;
+        background: var(--sc-elevated);
+        font-size: 11px;
+        font-weight: 600;
+        color: var(--sc-text-secondary);
+      }
+
+      .det-dup-actions button {
+        background: var(--sc-elevated);
+        border: 1px solid var(--sc-border);
+        color: var(--sc-text-secondary);
+        font-weight: 600;
+      }
+
+      .det-dup-actions button:hover {
+        border-color: var(--sc-border-strong);
+      }
+
+      /* CON-138 — Live | History (335:166-171). Distinct class names, per the CON-142 lesson
+         (a reused bare .seg collided with an unrelated declaration later in this file and
+         silently won by source order) — never share a segmented-control class across features. */
+      .det-view-seg {
+        display: flex;
+        gap: 3px;
+        padding: 3px;
+        margin-bottom: 10px;
+        background: var(--sc-inset);
+        border: 1px solid var(--sc-border);
+        border-radius: 9px;
+      }
+
+      .det-view-seg-btn {
+        flex: 1;
+        padding: 7px 0;
+        border: 0;
+        border-radius: 6px;
+        background: transparent;
+        color: var(--sc-text-secondary);
+        font-weight: 600;
+        font-size: 12px;
+      }
+
+      .det-view-seg-btn.active {
+        background: var(--sc-primary);
+        color: #fff;
+        font-weight: 700;
+      }
+
+      #detections-history-view[hidden] {
+        display: none;
+      }
+
+      .det-history-list {
+        flex: 1;
+        min-height: 0;
+        overflow-y: auto;
+      }
+
+      .det-history-row {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 10px 2px;
+        border-bottom: 1px solid var(--sc-border);
+      }
+
+      .det-history-row:last-child {
+        border-bottom: none;
+      }
+
+      .det-history-body {
+        flex: 1;
+        min-width: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 3px;
+      }
+
+      .det-history-ref {
+        font-size: 14px;
+        font-weight: 700;
+        color: var(--sc-gold);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .det-history-badge {
+        align-self: flex-start;
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: 0.04em;
+        padding: 2px 8px;
+        border-radius: 999px;
+      }
+
+      .det-history-badge.staged {
+        background: var(--sc-preview-soft);
+        border: 1px solid var(--sc-preview-border);
+        color: var(--sc-preview);
+      }
+
+      .det-history-badge.auto {
+        background: var(--sc-info-soft);
+        border: 1px solid var(--sc-info-border);
+        color: var(--sc-info);
+      }
+
+      .det-history-badge.dismissed {
+        background: var(--sc-elevated);
+        border: 1px solid var(--sc-border);
+        color: var(--sc-text-secondary);
+      }
+
+      .det-history-time {
+        flex: none;
+        font-size: 11px;
+        color: var(--sc-text-secondary);
+        font-variant-numeric: tabular-nums;
+      }
+
+      .det-history-restage {
+        flex: none;
+        width: 26px;
+        height: 26px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        background: var(--sc-elevated);
+        border: 1px solid var(--sc-border);
+        border-radius: 999px;
+        color: var(--sc-text-secondary);
+        font-size: 13px;
+        cursor: pointer;
+        padding: 0;
+      }
+
+      .det-history-restage:hover {
+        border-color: var(--sc-border-strong);
+        color: var(--sc-text);
       }
 
       #plan-wrap {

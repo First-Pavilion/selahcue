@@ -1009,8 +1009,31 @@ STUB = r"""
       verses: [[1, "verse one text"], [5, "verse five text"]],
       verse_start: 5, verse_end: null, prev: true, next: true,
     });
-    if (cmd === "approve_detection" || cmd === "dismiss_detection" || cmd === "go_live")
+    // approve_detection stages (dequeues + remembers which reference was staged, mirroring the
+    // real host); go_live commits that remembered reference to live_scripture ONLY when actually
+    // called — Stage alone must never move it (CON-136's on-air card depends on this distinction:
+    // it only claims on-air once view.live_scripture genuinely matches the approved reference).
+    if (cmd === "approve_detection") {
+      var _apDet = (V.detections || []).find(function (x) { return x.id === args.detectionId; });
+      if (_apDet) {
+        V.__lastApprovedRef = _apDet.reference;
+        V.detections = (V.detections || []).filter(function (x) { return x.id !== args.detectionId; });
+      }
       return Promise.resolve(JSON.parse(JSON.stringify(V)));
+    }
+    if (cmd === "dismiss_detection") {
+      V.detections = (V.detections || []).filter(function (x) { return x.id !== args.detectionId; });
+      return Promise.resolve(JSON.parse(JSON.stringify(V)));
+    }
+    if (cmd === "go_live") {
+      if (V.__lastApprovedRef) V.live_scripture = V.__lastApprovedRef;
+      return Promise.resolve(JSON.parse(JSON.stringify(V)));
+    }
+    if (cmd === "clear") {
+      V.live_scripture = null;
+      V.live_free_text = null;
+      return Promise.resolve(JSON.parse(JSON.stringify(V)));
+    }
     // --- Live Console slide picker (LIVE-CONSOLE-PRESENTATION-PLAYBACK-spec §6): the read-only
     // deck-slide bridge + within-item staging the Slides filmstrip drives. deckId 7 = a 3-slide
     // presentation; deckId 999 = a removed deck (available:false → the "presentation missing" state). ---
@@ -2832,6 +2855,14 @@ DRIVER = r"""
         { id: 501, reference: "John 3:16", text: "For God so loved the world", confidence: 95 },
         { id: 502, reference: "Psalm 23:1", text: "The Lord is my shepherd", confidence: 72 },
       ] });
+      // CON-136/137/138 introduce session-persistent state keyed by REFERENCE TEXT (the
+      // duplicate-suppression cooldown, the on-air link). "John 3:16" was just Staged AND
+      // Approved above (id 991, the flow test) — without a clean slate here, THIS section's own
+      // "John 3:16" (id 501) would render as a CON-137 duplicate instead of a normal card. A
+      // reset before every detections-panel section keeps this section (and the ones with their
+      // own reset calls below) independent of test order and of the stock reference strings the
+      // rest of this suite reuses freely.
+      window.__detResetForTest();
       render(detView); // the SAME render() the 1s poll invokes
       var detList = el("detections-list");
       var pills = detList.querySelectorAll(".match-pill");
@@ -2845,6 +2876,236 @@ DRIVER = r"""
          "#3 the newest detection renders at the top (host oldest-first list reversed for display)");
       ok(pills[0].className.indexOf("fuzzy") >= 0 && pills[1].className.indexOf("fuzzy") < 0,
          "R4: pill colour follows its card — newest 72% fuzzy (amber) on top, 95% solid (green) below");
+
+      // === CON-111/116/129/130 — list gap, meta text size, card tint by confidence, the bar ===
+      ok(getComputedStyle(detList).gap === "12px",
+         "CON-111: the detections list uses a 12px card gap (was 4px — cards read as a solid block)");
+      var cards1 = Array.prototype.slice.call(detList.querySelectorAll(".detection"));
+      var confCard = cards1.filter(function (c) { return c.classList.contains("det-confident"); })[0];
+      var fuzzyCard = cards1.filter(function (c) { return c.classList.contains("det-fuzzy"); })[0];
+      ok(!!confCard && !!fuzzyCard,
+         "CON-129: a >=90% detection card is tinted det-confident and a <90% one det-fuzzy");
+      ok(getComputedStyle(confCard).backgroundColor !== getComputedStyle(fuzzyCard).backgroundColor,
+         "CON-129: the confident and fuzzy cards paint DIFFERENT computed background colours (not just a class name)");
+      var confBar = confCard.querySelector(".det-bar-fill"), fuzzyBar = fuzzyCard.querySelector(".det-bar-fill");
+      ok(!!confBar && confBar.style.width === "95%",
+         "CON-130: the confidence bar fill is sized to the match % (95%)");
+      ok(!!fuzzyBar && fuzzyBar.style.width === "72%" && fuzzyBar.classList.contains("fuzzy"),
+         "CON-130: a fuzzy detection's bar fill is amber-classed and sized to its own % (72%)");
+      ok(getComputedStyle(confCard.querySelector(".det-meta")).fontSize === "12px",
+         "CON-116: detection meta text is 12px (was 11px)");
+
+      // === CON-134 — a fuzzy (<90%) card drops the Approve fast-path for Edit, and explains the
+      // missing alternatives list honestly rather than drawing one this build has no data for ===
+      ok(!fuzzyCard.querySelector(".det-approve") && !!fuzzyCard.querySelector(".det-edit"),
+         "CON-134: a low-confidence card offers Edit, not the Approve fast-path to the audience");
+      ok(!!confCard.querySelector(".det-approve") && !confCard.querySelector(".det-edit"),
+         "CON-134: a confident card is unchanged — it still offers Approve, not Edit");
+      ok(/no alternative matches/i.test(fuzzyCard.textContent),
+         "CON-134: the low-confidence card honestly explains no alternatives list is available (none is fabricated)");
+      fuzzyCard.querySelector(".det-edit").click();
+      ok(window.__calls.some(function (c) { return c.cmd === "get_chapter" && c.args && c.args.reference === "Psalm 23:1"; }),
+         "CON-134: Edit opens the reference in the real, already-working Scriptures chapter browser");
+      ok(!window.__calls.some(function (c) { return c.cmd === "dismiss_detection" && c.args.detectionId === 502; }) &&
+         !window.__calls.some(function (c) { return c.cmd === "approve_detection" && c.args.detectionId === 502; }),
+         "CON-134: Edit is non-destructive — it does not dequeue or dismiss the detection");
+
+      // === CON-121 — the empty-state redesign ===
+      window.__detResetForTest();
+      render(Object.assign({}, baseView, { detections: [] }));
+      var emptyIcon = el("detections-empty").querySelector(".fwd-icon");
+      ok(emptyIcon.textContent === "✦", "CON-121: the empty state uses the panel's gold ✦ identity mark (was ✨)");
+      ok(getComputedStyle(emptyIcon).color !== getComputedStyle(el("det-empty-sub")).color,
+         "CON-121: the empty glyph is gold-tinted, a genuinely different computed colour from the muted body copy");
+      ok(parseInt(getComputedStyle(el("det-empty-msg")).fontWeight, 10) >= 700,
+         "CON-121: the empty-state heading is bold, distinguishing it from the body copy below it");
+
+      // === CON-136 — the on-air link: only claims on-air once the host CONFIRMS
+      // view.live_scripture matches, and self-clears the moment reality moves on ===
+      window.__detResetForTest();
+      render(detView);
+      // Seed the MOCK's own V.detections (not just the rendered view) so approve_detection's
+      // handler can resolve which reference id 501 is — the mock looks up the id in V.detections
+      // (mirroring a real host), and render() alone never touches V. Same pattern other sections
+      // of this suite already use directly (e.g. V.items = [...] for the Service Plan tests).
+      V.detections = detView.detections;
+      ok(el("det-onair").hidden, "CON-136: no on-air card before anything is approved");
+      var onAirGoLiveBefore = window.__calls.filter(function (c) { return c.cmd === "go_live"; }).length;
+      var onAirConfCard = Array.prototype.filter.call(el("detections-list").querySelectorAll(".detection"),
+        function (c) { return c.classList.contains("det-confident"); })[0];
+      onAirConfCard.querySelector(".det-approve").click();
+      await sleep(15);
+      ok(window.__calls.filter(function (c) { return c.cmd === "go_live"; }).length > onAirGoLiveBefore,
+         "CON-136 (premise): Approve still calls go_live — CON-120's existing semantics are unchanged");
+      ok(!el("det-onair").hidden && getComputedStyle(el("det-onair")).display !== "none",
+         "CON-136: the on-air card appears once the host confirms John 3:16 is actually live (computed, not just [hidden])");
+      ok(el("det-onair-ref").textContent === "John 3:16" && /ON AIR/.test(el("det-onair").querySelector(".det-onair-pill").textContent),
+         "CON-136: the on-air card names the reference and carries an ON AIR pill");
+      ok(/Live on main output/.test(el("det-onair-meta").textContent),
+         "CON-136: the on-air card states it is live on the main output");
+      // Self-clearing: feed a render() where live_scripture no longer matches (the NEXT poll
+      // after the operator navigated elsewhere) — the card must clear with no further click.
+      render(Object.assign({}, baseView, { live_scripture: "Genesis 1:13" }));
+      ok(el("det-onair").hidden,
+         "CON-136: the card clears the instant view.live_scripture no longer matches — never a stale claim");
+      // Re-arm, then verify auto-clear specifically on blackout (even if live_scripture still
+      // matches). Reset first: the previous Approve above already put "John 3:16" in CON-137's
+      // recentlyResolved cooldown, which would otherwise render this re-detection as a
+      // .det-duplicate card instead of .det-confident (no Approve button to click at all).
+      window.__detResetForTest();
+      render(detView);
+      V.detections = detView.detections; // re-seed — the previous approve_detection filtered it out
+      Array.prototype.filter.call(el("detections-list").querySelectorAll(".detection"),
+        function (c) { return c.classList.contains("det-confident"); })[0].querySelector(".det-approve").click();
+      await sleep(15);
+      ok(!el("det-onair").hidden, "CON-136 (setup): re-armed for the blackout check");
+      render(Object.assign({}, baseView, { live_scripture: "John 3:16", blackout: true }));
+      ok(el("det-onair").hidden, "CON-136: the card clears on blackout even though live_scripture still matches");
+      // Re-arm, then "Next verse" — a LOCAL dismiss that must NOT touch output. Reset first, per
+      // the comment above (the prior re-arm's Approve seeded CON-137's cooldown again).
+      window.__detResetForTest();
+      render(detView);
+      V.detections = detView.detections; // re-seed
+      Array.prototype.filter.call(el("detections-list").querySelectorAll(".detection"),
+        function (c) { return c.classList.contains("det-confident"); })[0].querySelector(".det-approve").click();
+      await sleep(15);
+      var clearCallsBeforeNext = window.__calls.filter(function (c) { return c.cmd === "clear"; }).length;
+      el("det-onair-next").click();
+      ok(el("det-onair").hidden, "CON-136: 'Next verse' dismisses the on-air card");
+      ok(window.__calls.filter(function (c) { return c.cmd === "clear"; }).length === clearCallsBeforeNext,
+         "CON-136: 'Next verse' never invokes clear — the output itself is untouched");
+      // Re-arm, then "Clear output" — invokes the SAME command the emergency footer uses. Reset
+      // first, per the comment above.
+      window.__detResetForTest();
+      render(detView);
+      V.detections = detView.detections; // re-seed
+      Array.prototype.filter.call(el("detections-list").querySelectorAll(".detection"),
+        function (c) { return c.classList.contains("det-confident"); })[0].querySelector(".det-approve").click();
+      await sleep(15);
+      var clearCallsBefore = window.__calls.filter(function (c) { return c.cmd === "clear"; }).length;
+      el("det-onair-clear").click();
+      await sleep(15);
+      ok(window.__calls.filter(function (c) { return c.cmd === "clear"; }).length > clearCallsBefore,
+         "CON-136: 'Clear output' invokes the real clear command (the same one the emergency footer uses)");
+      ok(el("det-onair").hidden, "CON-136: the card clears once the host confirms output is actually cleared");
+
+      // === CON-137 — duplicate suppression + cooldown. Dedicated reference strings (not reused
+      // anywhere else in this suite) so the global, reference-keyed cooldown cannot leak into an
+      // unrelated fixture that happens to reuse "John 3:16"/"Psalm 23:1" within the same 90s
+      // window a real test run executes in. ===
+      window.__detResetForTest();
+      render(Object.assign({}, baseView, { detections: [
+        { id: 601, reference: "Habakkuk 3:19", text: "The Lord God is my strength", confidence: 74 },
+      ] }));
+      el("detections-list").querySelector('[aria-label="Dismiss Habakkuk 3:19"]').click();
+      await sleep(15);
+      ok(window.__calls.some(function (c) { return c.cmd === "dismiss_detection" && c.args.detectionId === 601; }),
+         "CON-137 (setup): Habakkuk 3:19 is Dismissed, seeding the cooldown");
+      // Re-detected shortly after (a new host-assigned id, same reference) — must render
+      // de-emphasised, not as a fresh actionable card.
+      render(Object.assign({}, baseView, { detections: [
+        { id: 602, reference: "Habakkuk 3:19", text: "The Lord God is my strength", confidence: 74 },
+      ] }));
+      var dupCard = el("detections-list").querySelector(".det-duplicate");
+      ok(!!dupCard, "CON-137: a reference re-detected shortly after being handled renders as a DUPLICATE card");
+      ok(!dupCard.querySelector(".det-stage") && !dupCard.querySelector(".det-approve") && !dupCard.querySelector(".det-edit"),
+         "CON-137: the duplicate card offers no Stage/Approve/Edit — only Show anyway / Mute this verse");
+      ok(/Cooldown \d+:\d+ remaining/.test(dupCard.textContent),
+         "CON-137: the duplicate card shows a cooldown countdown");
+      ok(getComputedStyle(dupCard.querySelector(".ref")).color !== "rgb(242, 184, 75)",
+         "CON-137: the duplicate reference uses a de-emphasised ink, not the normal gold reference colour");
+      var showAnywayBtn = Array.prototype.filter.call(dupCard.querySelectorAll("button"),
+        function (b) { return /Show anyway/.test(b.textContent); })[0];
+      showAnywayBtn.click();
+      var freshCard = el("detections-list").querySelector(".detection");
+      ok(freshCard && !freshCard.classList.contains("det-duplicate") && !!freshCard.querySelector('[aria-label="Dismiss Habakkuk 3:19"]'),
+         "CON-137: 'Show anyway' un-suppresses THIS occurrence back into a normal actionable card");
+      // Mute this verse — never renders again, and the host-side entry is dismissed too.
+      render(Object.assign({}, baseView, { detections: [
+        { id: 603, reference: "Zephaniah 3:17", text: "The Lord your God is with you", confidence: 80 },
+      ] }));
+      el("detections-list").querySelector('[aria-label="Dismiss Zephaniah 3:17"]').click();
+      await sleep(15);
+      render(Object.assign({}, baseView, { detections: [
+        { id: 604, reference: "Zephaniah 3:17", text: "The Lord your God is with you", confidence: 80 },
+      ] }));
+      var dupCard2 = el("detections-list").querySelector(".det-duplicate");
+      var muteBtn = Array.prototype.filter.call(dupCard2.querySelectorAll("button"),
+        function (b) { return /Mute this verse/.test(b.textContent); })[0];
+      var dismissCallsBefore = window.__calls.filter(function (c) { return c.cmd === "dismiss_detection"; }).length;
+      muteBtn.click();
+      await sleep(15);
+      ok(window.__calls.filter(function (c) { return c.cmd === "dismiss_detection"; }).length > dismissCallsBefore,
+         "CON-137: 'Mute this verse' dismisses the current occurrence on the host too");
+      render(Object.assign({}, baseView, { detections: [
+        { id: 605, reference: "Zephaniah 3:17", text: "The Lord your God is with you", confidence: 80 },
+      ] }));
+      ok(el("detections-list").children.length === 0 && getComputedStyle(el("detections-empty")).display !== "none",
+         "CON-137: a MUTED reference never renders again — even a brand-new detection id for it stays hidden");
+      ok(window.__calls.some(function (c) { return c.cmd === "dismiss_detection" && c.args.detectionId === 605; }),
+         "CON-137: the muted re-detection is auto-dismissed on the host, not merely hidden client-side");
+
+      // === CON-138 — Live | History: a session-only audit trail, since the host does not
+      // retain a resolved detection once it is dequeued ===
+      window.__detResetForTest();
+      render(Object.assign({}, baseView, { detections: [
+        { id: 701, reference: "Micah 7:8", text: "When I fall, I shall arise", confidence: 91 },
+      ] }));
+      var histBtn = el("det-view-history"), liveBtn = el("det-view-live");
+      ok(el("detections-history-view").hidden && !el("detections-live-view").hidden,
+         "CON-138: the panel opens on Live, not History");
+      histBtn.click();
+      ok(!el("detections-history-view").hidden && el("detections-live-view").hidden &&
+         histBtn.getAttribute("aria-selected") === "true" && liveBtn.getAttribute("aria-selected") === "false",
+         "CON-138: clicking History shows the history view and updates aria-selected");
+      ok(/No detection history yet/.test(el("detections-history-empty").textContent) &&
+         getComputedStyle(el("detections-history-empty")).display !== "none",
+         "CON-138: an empty session shows a clear empty state, not a blank panel");
+      liveBtn.click();
+      el("detections-list").querySelector('[aria-label="Dismiss Micah 7:8"]').click();
+      await sleep(15);
+      histBtn.click();
+      var histRow = el("detections-history-list").querySelector(".det-history-row");
+      ok(!!histRow && /Micah 7:8/.test(histRow.textContent) && /DISMISSED/.test(histRow.textContent),
+         "CON-138: a Dismissed detection appears in History with a DISMISSED badge");
+      ok(getComputedStyle(el("detections-history-empty")).display === "none",
+         "CON-138: the history empty state hides once an entry exists");
+      // Re-stage: jumps to the reference in the real Scriptures browser (never replays a
+      // dequeued detection id the host would refuse) and switches back to Live.
+      var getChapterCallsBefore = window.__calls.filter(function (c) { return c.cmd === "get_chapter"; }).length;
+      histRow.querySelector(".det-history-restage").click();
+      ok(window.__calls.filter(function (c) { return c.cmd === "get_chapter"; }).length > getChapterCallsBefore &&
+         window.__calls[window.__calls.length - 1].args.reference === "Micah 7:8",
+         "CON-138: re-stage opens Micah 7:8 in the Scriptures browser");
+      ok(!el("detections-live-view").hidden, "CON-138: re-stage switches the panel back to Live");
+      // DET_HISTORY_MAX bounds the log so it cannot grow without limit across a long service
+      // (bounded-memory). Dismiss 60 distinct detections, OLDEST (#0) first through NEWEST
+      // (#59) last — recordDetectionOutcome runs synchronously inside each click handler
+      // (before any await, verified above), so push order is exactly this click order
+      // regardless of the mocked host's own async resolution timing; all 60 buttons already
+      // exist from the single render() above, so no re-render is needed between clicks.
+      window.__detResetForTest();
+      var manyDets = [];
+      for (var hi = 0; hi < 60; hi++) {
+        manyDets.push({ id: 8000 + hi, reference: "Nahum 1:7 #" + hi, text: "The Lord is good", confidence: 91 });
+      }
+      render(Object.assign({}, baseView, { detections: manyDets }));
+      ok(el("detections-list").querySelectorAll('[aria-label^="Dismiss "]').length === 60,
+         "CON-138 (setup): all 60 detections rendered with a Dismiss control");
+      for (var hj = 0; hj < 60; hj++) {
+        el("detections-list").querySelector('[aria-label="Dismiss Nahum 1:7 #' + hj + '"]').click();
+      }
+      await sleep(15);
+      histBtn.click();
+      var histRows = el("detections-history-list").querySelectorAll(".det-history-row");
+      ok(histRows.length === 50,
+         "CON-138 (bounded-memory): 60 resolved detections cap the History log at DET_HISTORY_MAX=50, not 60 (" + histRows.length + " rendered)");
+      var histListText = el("detections-history-list").textContent;
+      ok(/Nahum 1:7 #59/.test(histRows[0].textContent) && histListText.indexOf("Nahum 1:7 #0") < 0,
+         "CON-138 (bounded-memory): the OLDEST entries are the ones dropped, not the newest — the log stays useful under the cap");
+      liveBtn.click();
+
+      window.__detResetForTest();
       render(baseView); // restore so the trailing 1s poll stays consistent
 
       // === listen control: a real state machine — the button never sits silently disabled,
@@ -8980,6 +9241,10 @@ right after a generate/save");
       // #det-empty-sub, which JS sets display:none the instant #detections-list is non-empty —
       // so a mid-sermon disclosure (the exact case that matters) was literally unreachable on
       // screen. Reproduced here with a REAL detection row present, not the empty state.
+      // Defensive reset (CON-136/137/138 introduced session-persistent, reference-keyed state
+      // earlier in this suite) — this section must render Psalm 23:1 as a normal detection row
+      // regardless of what any earlier section did with the same stock reference string.
+      window.__detResetForTest();
       render(Object.assign({}, baseView, { detections: [
         { id: 7001, reference: "Psalm 23:1", text: "The Lord is my shepherd", confidence: 90 },
       ] }));
