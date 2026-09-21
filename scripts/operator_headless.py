@@ -627,7 +627,21 @@ if not check_jump_call_site_is_click_only():
 # main was not independently re-investigated here (out of scope for this ticket; the discrepancy is
 # on main already, not introduced by this branch). Bump this again, with the same
 # empirical-not-hand-derived discipline, the next time a check is added or removed.
-EXPECTED_MIN_CHECKS = 1596
+#
+# 1596 -> ?: PR #61 (17tnw2axptb) merged to main at ITS OWN pre-remediation 1589 commit — before
+# Sana's and Quinn's reviews of that same PR forced a real remediation pass (three blocking
+# security findings + a QA bug, 17tnw2axre8; see the CON-137 REDESIGN comment in app.js and the
+# Sana/Quinn-tagged assertions throughout this file for what changed and why). That pass removed
+# the automatic client-side duplicate-cooldown suite (CON-137's original ~9 assertions:
+# .det-duplicate rendering, the cooldown countdown, "Show anyway") and added a larger set of new
+# ones (Mute-on-every-card + its History record/Unmute reverse gear + the once-per-id repeat-
+# dismiss guard, the Edit/re-stage "never stages" checks that actually wait past the 120ms
+# debounce, the whole-chapter on-air narrowing fix, and the confidence-fails-open fix). Because
+# the remediation commit was cut fresh from main and only THEN rebased onto the 1596 line above
+# (a separate, unrelated PR #63 round having landed on main in between), neither branch's own
+# hand-tallied delta is trustworthy in isolation — re-derived the only honest way, per this
+# comment's own repeated lesson, by actually running the fully rebased file.
+EXPECTED_MIN_CHECKS = 1602
 
 
 def find_chrome():
@@ -1039,10 +1053,22 @@ STUB = r"""
     // real host); go_live commits that remembered reference to live_scripture ONLY when actually
     // called — Stage alone must never move it (CON-136's on-air card depends on this distinction:
     // it only claims on-air once view.live_scripture genuinely matches the approved reference).
+    // Quinn's QA review (PR #61, bug 17tnw2axre8): the real host's ApproveDetection handler
+    // (controller.rs's stage_reference_for_detection) narrows a WHOLE-CHAPTER reference (no
+    // verse) to its first verse before staging — "Isaiah 61" goes live as "Isaiah 61:1". This
+    // mock reproduces exactly that so app.js's fix is exercised against the real transformation,
+    // not a hand-picked string: a reference with no ":" names no verse (every reference string
+    // used anywhere in this fixture set follows "Book Chapter:Verse" when a verse is present),
+    // matching the real check closely enough for this purpose (`Reference`'s Display is
+    // "Book Chapter" for a whole chapter, and `parse_one` needs no colon to resolve a verse-only
+    // spoken form — but nothing in this fixture set exercises that, so this heuristic is exact
+    // for every case actually driven through it).
     if (cmd === "approve_detection") {
       var _apDet = (V.detections || []).find(function (x) { return x.id === args.detectionId; });
       if (_apDet) {
-        V.__lastApprovedRef = _apDet.reference;
+        V.__lastApprovedRef = _apDet.reference.indexOf(":") < 0
+          ? _apDet.reference + ":1"
+          : _apDet.reference;
         V.detections = (V.detections || []).filter(function (x) { return x.id !== args.detectionId; });
       }
       return Promise.resolve(JSON.parse(JSON.stringify(V)));
@@ -2929,12 +2955,34 @@ DRIVER = r"""
          "CON-134: a confident card is unchanged — it still offers Approve, not Edit");
       ok(/no alternative matches/i.test(fuzzyCard.textContent),
          "CON-134: the low-confidence card honestly explains no alternatives list is available (none is fabricated)");
+      // Sana's security review (PR #61, blocking finding 1): the ORIGINAL version of this test
+      // asserted immediately after the click, before setCursor's 120ms stageTimer could fire —
+      // so it could not see the exact bug it was meant to guard against. window.__openChapterFor-
+      // Stage's non-range branch arms that timer -> stage_scripture; Edit must use the read-only
+      // window.__openChapterToBrowse instead, which passes stage=false and never arms it. This
+      // now waits PAST 120ms and inspects the FULL call list for both staging commands.
+      var callsBeforeEdit = window.__calls.length;
       fuzzyCard.querySelector(".det-edit").click();
+      await sleep(200); // > setCursor's 120ms stageTimer debounce
       ok(window.__calls.some(function (c) { return c.cmd === "get_chapter" && c.args && c.args.reference === "Psalm 23:1"; }),
          "CON-134: Edit opens the reference in the real, already-working Scriptures chapter browser");
-      ok(!window.__calls.some(function (c) { return c.cmd === "dismiss_detection" && c.args.detectionId === 502; }) &&
-         !window.__calls.some(function (c) { return c.cmd === "approve_detection" && c.args.detectionId === 502; }),
-         "CON-134: Edit is non-destructive — it does not dequeue or dismiss the detection");
+      var callsAfterEdit = window.__calls.slice(callsBeforeEdit);
+      ok(!callsAfterEdit.some(function (c) { return c.cmd === "stage_scripture" || c.cmd === "follow_scripture"; }),
+         "CON-134 (Sana finding 1): Edit never stages — checked well past the 120ms debounce, over the FULL call list, not just approve/dismiss");
+      ok(!callsAfterEdit.some(function (c) { return c.cmd === "dismiss_detection" || c.cmd === "approve_detection"; }),
+         "CON-134: Edit is non-destructive — it does not dequeue or dismiss the detection either");
+      // Sana's non-blocking finding: a MISSING confidence used to fail OPEN into the confident
+      // branch (Approve fast-path) purely because `hasConfidence && …` short-circuits false on
+      // no score at all — an unscored match is at least as uncertain as a known-low one.
+      window.__detResetForTest();
+      render(Object.assign({}, baseView, { detections: [
+        { id: 599, reference: "Nahum 1:7", text: "The Lord is good", translation: "KJV" }, // no confidence field
+      ] }));
+      var noConfCard = el("detections-list").querySelector(".detection");
+      ok(!noConfCard.querySelector(".det-approve") && !!noConfCard.querySelector(".det-edit"),
+         "CON-134 (Sana non-blocking): a detection with NO reported confidence takes the cautious Edit branch, not Approve");
+      ok(!noConfCard.querySelector(".match-pill") && !noConfCard.querySelector(".det-bar-track"),
+         "CON-134 (Sana non-blocking, control): still honest-empty — no fabricated match-% pill or bar for a score that was never reported");
 
       // === CON-121 — the empty-state redesign ===
       window.__detResetForTest();
@@ -2975,9 +3023,7 @@ DRIVER = r"""
       ok(el("det-onair").hidden,
          "CON-136: the card clears the instant view.live_scripture no longer matches — never a stale claim");
       // Re-arm, then verify auto-clear specifically on blackout (even if live_scripture still
-      // matches). Reset first: the previous Approve above already put "John 3:16" in CON-137's
-      // recentlyResolved cooldown, which would otherwise render this re-detection as a
-      // .det-duplicate card instead of .det-confident (no Approve button to click at all).
+      // matches). Reset first (harmless defensive hygiene, matching every other section).
       window.__detResetForTest();
       render(detView);
       V.detections = detView.detections; // re-seed — the previous approve_detection filtered it out
@@ -2987,8 +3033,7 @@ DRIVER = r"""
       ok(!el("det-onair").hidden, "CON-136 (setup): re-armed for the blackout check");
       render(Object.assign({}, baseView, { live_scripture: "John 3:16", blackout: true }));
       ok(el("det-onair").hidden, "CON-136: the card clears on blackout even though live_scripture still matches");
-      // Re-arm, then "Next verse" — a LOCAL dismiss that must NOT touch output. Reset first, per
-      // the comment above (the prior re-arm's Approve seeded CON-137's cooldown again).
+      // Re-arm, then "Next verse" — a LOCAL dismiss that must NOT touch output.
       window.__detResetForTest();
       render(detView);
       V.detections = detView.detections; // re-seed
@@ -3000,8 +3045,7 @@ DRIVER = r"""
       ok(el("det-onair").hidden, "CON-136: 'Next verse' dismisses the on-air card");
       ok(window.__calls.filter(function (c) { return c.cmd === "clear"; }).length === clearCallsBeforeNext,
          "CON-136: 'Next verse' never invokes clear — the output itself is untouched");
-      // Re-arm, then "Clear output" — invokes the SAME command the emergency footer uses. Reset
-      // first, per the comment above.
+      // Re-arm, then "Clear output" — invokes the SAME command the emergency footer uses.
       window.__detResetForTest();
       render(detView);
       V.detections = detView.detections; // re-seed
@@ -3015,61 +3059,111 @@ DRIVER = r"""
          "CON-136: 'Clear output' invokes the real clear command (the same one the emergency footer uses)");
       ok(el("det-onair").hidden, "CON-136: the card clears once the host confirms output is actually cleared");
 
-      // === CON-137 — duplicate suppression + cooldown. Dedicated reference strings (not reused
-      // anywhere else in this suite) so the global, reference-keyed cooldown cannot leak into an
-      // unrelated fixture that happens to reuse "John 3:16"/"Psalm 23:1" within the same 90s
-      // window a real test run executes in. ===
+      // === CON-136 / Quinn's QA review (PR #61, bug 17tnw2axre8): a WHOLE-CHAPTER detection
+      // (e.g. a spoken "Isaiah 61", no verse) never lit the on-air card. controller.rs's
+      // stage_reference_for_detection (the ApproveDetection handler) narrows a bare "Book
+      // Chapter" reference to its first verse before it goes live — d.reference stays
+      // "Isaiah 61" but view.live_scripture reads "Isaiah 61:1" — so a bare === compare could
+      // never match this real, common input shape. The mock's go_live already reproduces this
+      // exact narrowing (see its own comment) so this test exercises the real transformation,
+      // not a hand-picked string. ===
+      window.__detResetForTest();
+      var chapterView = Object.assign({}, baseView, { detections: [
+        { id: 901, reference: "Isaiah 61", text: "The Spirit of the Lord God is upon me", confidence: 93 },
+      ] });
+      render(chapterView);
+      V.detections = chapterView.detections;
+      el("detections-list").querySelector(".det-approve").click();
+      await sleep(15);
+      ok(V.live_scripture === "Isaiah 61:1",
+         "CON-136 (premise): the mock's go_live narrowed the whole-chapter reference to its first verse, exactly like the real host");
+      ok(!el("det-onair").hidden && el("det-onair-ref").textContent === "Isaiah 61",
+         "CON-136 (Quinn, 17tnw2axre8): the on-air card lights for a whole-chapter detection even though live_scripture is the host-narrowed 'Isaiah 61:1'");
+      // It must also SURVIVE the next poll (this is what a bare !== would have broken: the
+      // card lighting once, then immediately self-clearing because live_scripture never equals
+      // the un-narrowed reference on any later render either).
+      render(Object.assign({}, chapterView, { live_scripture: "Isaiah 61:1" }));
+      ok(!el("det-onair").hidden,
+         "CON-136 (Quinn, 17tnw2axre8): the on-air card SURVIVES a later poll — it does not immediately self-clear on the narrowed reference");
+      // Control: a genuinely different live reference still clears it — the narrowing match is
+      // exact (append ":1"), not a fuzzy "starts with" that would paper over a real mismatch.
+      render(Object.assign({}, chapterView, { live_scripture: "Isaiah 62:1" }));
+      ok(el("det-onair").hidden,
+         "CON-136 (Quinn, control): a genuinely different live reference still clears the card — the narrowing match is exact, not fuzzy");
+      window.__detResetForTest();
+      render(baseView);
+
+      // === CON-137, REDESIGNED (Sana's security review, PR #61) — the original build here was
+      // an AUTOMATIC client-side duplicate-cooldown UI. Sana proved the host already dedupes at
+      // the source (selahcue-core::TranscriptEngine's RECENT_DEDUP_WINDOW ring, detection.rs) —
+      // a re-detection of a still-ringed reference is dropped BEFORE it ever reaches
+      // view.detections, so the automatic client UI was near-unreachable in production. It is
+      // removed (no .det-duplicate/.det-dup-* anywhere any more). What remains is genuinely
+      // NOT redundant with the host: an OPERATOR-DIRECTED mute, on every normal card, that the
+      // host's blind automatic ring has no equivalent for. Dedicated reference strings (not
+      // reused elsewhere in this suite) so mutedRefs cannot leak into an unrelated fixture. ===
       window.__detResetForTest();
       render(Object.assign({}, baseView, { detections: [
-        { id: 601, reference: "Habakkuk 3:19", text: "The Lord God is my strength", confidence: 74 },
+        { id: 601, reference: "Habakkuk 3:19", text: "The Lord God is my strength", confidence: 91 },
       ] }));
-      el("detections-list").querySelector('[aria-label="Dismiss Habakkuk 3:19"]').click();
+      var hCard = el("detections-list").querySelector(".detection");
+      var hMuteBtn = hCard.querySelector(".det-mute-btn");
+      ok(!!hMuteBtn, "CON-137: every normal detection card carries a Mute control in its head row — not gated behind any special state");
+      ok(hMuteBtn.getAttribute("aria-label").indexOf("for this service") >= 0 &&
+         hMuteBtn.getAttribute("aria-label").indexOf("undo from History") >= 0,
+         "CON-137: Mute's accessible name states an honest, reversible scope — not an unqualified permanent claim");
+      var dismissCallsBefore601 = window.__calls.filter(function (c) { return c.cmd === "dismiss_detection"; }).length;
+      hMuteBtn.click();
       await sleep(15);
-      ok(window.__calls.some(function (c) { return c.cmd === "dismiss_detection" && c.args.detectionId === 601; }),
-         "CON-137 (setup): Habakkuk 3:19 is Dismissed, seeding the cooldown");
-      // Re-detected shortly after (a new host-assigned id, same reference) — must render
-      // de-emphasised, not as a fresh actionable card.
-      render(Object.assign({}, baseView, { detections: [
-        { id: 602, reference: "Habakkuk 3:19", text: "The Lord God is my strength", confidence: 74 },
-      ] }));
-      var dupCard = el("detections-list").querySelector(".det-duplicate");
-      ok(!!dupCard, "CON-137: a reference re-detected shortly after being handled renders as a DUPLICATE card");
-      ok(!dupCard.querySelector(".det-stage") && !dupCard.querySelector(".det-approve") && !dupCard.querySelector(".det-edit"),
-         "CON-137: the duplicate card offers no Stage/Approve/Edit — only Show anyway / Mute this verse");
-      ok(/Cooldown \d+:\d+ remaining/.test(dupCard.textContent),
-         "CON-137: the duplicate card shows a cooldown countdown");
-      ok(getComputedStyle(dupCard.querySelector(".ref")).color !== "rgb(242, 184, 75)",
-         "CON-137: the duplicate reference uses a de-emphasised ink, not the normal gold reference colour");
-      var showAnywayBtn = Array.prototype.filter.call(dupCard.querySelectorAll("button"),
-        function (b) { return /Show anyway/.test(b.textContent); })[0];
-      showAnywayBtn.click();
-      var freshCard = el("detections-list").querySelector(".detection");
-      ok(freshCard && !freshCard.classList.contains("det-duplicate") && !!freshCard.querySelector('[aria-label="Dismiss Habakkuk 3:19"]'),
-         "CON-137: 'Show anyway' un-suppresses THIS occurrence back into a normal actionable card");
-      // Mute this verse — never renders again, and the host-side entry is dismissed too.
-      render(Object.assign({}, baseView, { detections: [
-        { id: 603, reference: "Zephaniah 3:17", text: "The Lord your God is with you", confidence: 80 },
-      ] }));
-      el("detections-list").querySelector('[aria-label="Dismiss Zephaniah 3:17"]').click();
-      await sleep(15);
-      render(Object.assign({}, baseView, { detections: [
-        { id: 604, reference: "Zephaniah 3:17", text: "The Lord your God is with you", confidence: 80 },
-      ] }));
-      var dupCard2 = el("detections-list").querySelector(".det-duplicate");
-      var muteBtn = Array.prototype.filter.call(dupCard2.querySelectorAll("button"),
-        function (b) { return /Mute this verse/.test(b.textContent); })[0];
-      var dismissCallsBefore = window.__calls.filter(function (c) { return c.cmd === "dismiss_detection"; }).length;
-      muteBtn.click();
-      await sleep(15);
-      ok(window.__calls.filter(function (c) { return c.cmd === "dismiss_detection"; }).length > dismissCallsBefore,
-         "CON-137: 'Mute this verse' dismisses the current occurrence on the host too");
-      render(Object.assign({}, baseView, { detections: [
-        { id: 605, reference: "Zephaniah 3:17", text: "The Lord your God is with you", confidence: 80 },
-      ] }));
+      ok(window.__calls.filter(function (c) { return c.cmd === "dismiss_detection" && c.args.detectionId === 601; }).length === 1,
+         "CON-137: Mute dismisses the current detection on the host");
+      // Sana's blocking finding 2: this used to fire on EVERY render that reached a still-queued
+      // muted id (no cap, no record) — visibly, the panel would read empty while the tab's count
+      // pill still said "1 new". Re-render the SAME still-queued id several times (simulating
+      // poll latency before the host's own view catches up) and prove it is dismissed ONCE.
+      for (var muteRepeat = 0; muteRepeat < 4; muteRepeat++) {
+        render(Object.assign({}, baseView, { detections: [
+          { id: 601, reference: "Habakkuk 3:19", text: "The Lord God is my strength", confidence: 91 },
+        ] }));
+      }
+      ok(window.__calls.filter(function (c) { return c.cmd === "dismiss_detection" && c.args.detectionId === 601; }).length === 1,
+         "CON-137 (Sana finding 2): re-rendering the SAME still-queued muted id 4 more times sends exactly ONE dismiss total, not one per render");
       ok(el("detections-list").children.length === 0 && getComputedStyle(el("detections-empty")).display !== "none",
-         "CON-137: a MUTED reference never renders again — even a brand-new detection id for it stays hidden");
-      ok(window.__calls.some(function (c) { return c.cmd === "dismiss_detection" && c.args.detectionId === 605; }),
-         "CON-137: the muted re-detection is auto-dismissed on the host, not merely hidden client-side");
+         "CON-137: a muted reference never renders as a card — auto-dismissed before it paints");
+      // A genuinely NEW detection id for the same muted reference is real work and must still be
+      // dismissed (and recorded) — the once-per-id guard must not become a once-ever guard.
+      render(Object.assign({}, baseView, { detections: [
+        { id: 602, reference: "Habakkuk 3:19", text: "The Lord God is my strength", confidence: 91 },
+      ] }));
+      ok(window.__calls.some(function (c) { return c.cmd === "dismiss_detection" && c.args.detectionId === 602; }),
+         "CON-137: a genuinely NEW id for the same muted reference is also dismissed (the guard is per-id, not a stuck latch)");
+      render(baseView);
+      // History now carries a real record of the mute — Sana's finding 2 also required this;
+      // the original build had none at all for this path.
+      var histBtnM = el("det-view-history"), liveBtnM = el("det-view-live");
+      histBtnM.click();
+      var muteHistRow = Array.prototype.filter.call(el("detections-history-list").querySelectorAll(".det-history-row"),
+        function (r) { return /Habakkuk 3:19/.test(r.textContent); })[0];
+      ok(!!muteHistRow && /MUTED/.test(muteHistRow.textContent),
+         "CON-137: the mute is recorded in History with a MUTED badge — no more silent, unrecorded auto-dismisses");
+      var unmuteBtn = muteHistRow.querySelector(".det-history-unmute");
+      ok(!!unmuteBtn, "CON-137: the History row for a muted reference offers Unmute — a real reverse gear, not just a corrected copy claim");
+      unmuteBtn.click();
+      // renderDetectionHistory rebuilds the list from scratch (list.innerHTML = ""), so
+      // muteHistRow is now a DETACHED node — re-query the live DOM, not the stale reference.
+      var muteHistRowAfter = Array.prototype.filter.call(el("detections-history-list").querySelectorAll(".det-history-row"),
+        function (r) { return /Habakkuk 3:19/.test(r.textContent); })[0];
+      ok(!!muteHistRowAfter && !muteHistRowAfter.querySelector(".det-history-unmute"),
+         "CON-137: clicking Unmute removes the control immediately (re-rendered from the SAME History record — the row itself still exists as a log entry)");
+      // Unmuting must actually restore normal behaviour — a later re-detection is NOT suppressed.
+      liveBtnM.click();
+      render(Object.assign({}, baseView, { detections: [
+        { id: 603, reference: "Habakkuk 3:19", text: "The Lord God is my strength", confidence: 91 },
+      ] }));
+      ok(!!el("detections-list").querySelector('[aria-label="Dismiss Habakkuk 3:19"]'),
+         "CON-137: after Unmute, a later re-detection of the same reference renders normally again — not silently suppressed forever");
+      window.__detResetForTest();
+      render(baseView);
 
       // === CON-138 — Live | History: a session-only audit trail, since the host does not
       // retain a resolved detection once it is dequeued ===
@@ -3097,12 +3191,18 @@ DRIVER = r"""
       ok(getComputedStyle(el("detections-history-empty")).display === "none",
          "CON-138: the history empty state hides once an entry exists");
       // Re-stage: jumps to the reference in the real Scriptures browser (never replays a
-      // dequeued detection id the host would refuse) and switches back to Live.
-      var getChapterCallsBefore = window.__calls.filter(function (c) { return c.cmd === "get_chapter"; }).length;
+      // dequeued detection id the host would refuse) and switches back to Live. Sana's security
+      // review (PR #61, finding 1) applies here too — this must wait PAST setCursor's 120ms
+      // stageTimer and check the full call list, the same gap that let re-stage silently stage
+      // through window.__openChapterForStage before it was switched to …ToBrowse.
+      var callsBeforeRestage = window.__calls.length;
       histRow.querySelector(".det-history-restage").click();
-      ok(window.__calls.filter(function (c) { return c.cmd === "get_chapter"; }).length > getChapterCallsBefore &&
-         window.__calls[window.__calls.length - 1].args.reference === "Micah 7:8",
+      await sleep(200); // > setCursor's 120ms stageTimer debounce
+      ok(window.__calls.some(function (c) { return c.cmd === "get_chapter" && c.args && c.args.reference === "Micah 7:8"; }),
          "CON-138: re-stage opens Micah 7:8 in the Scriptures browser");
+      var callsAfterRestage = window.__calls.slice(callsBeforeRestage);
+      ok(!callsAfterRestage.some(function (c) { return c.cmd === "stage_scripture" || c.cmd === "follow_scripture"; }),
+         "CON-138 (Sana finding 1): re-stage never stages on its own — checked well past the 120ms debounce, over the full call list");
       ok(!el("detections-live-view").hidden, "CON-138: re-stage switches the panel back to Live");
       // DET_HISTORY_MAX bounds the log so it cannot grow without limit across a long service
       // (bounded-memory). Dismiss 60 distinct detections, OLDEST (#0) first through NEWEST

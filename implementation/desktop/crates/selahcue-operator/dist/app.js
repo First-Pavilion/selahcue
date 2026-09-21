@@ -3399,9 +3399,23 @@
 
       // Called only when the operator STAGES a detection (an explicit confirm) — open the
       // detected verse's FULL chapter in the browser, cursored to the verse, for follow-on
-      // browsing. A bare detection never touches this panel (or Preview/Live).
+      // browsing. A bare detection never touches this panel (or Preview/Live). loadChapter's
+      // default (stage=true, omitted here) is exactly right for this caller.
       window.__openChapterForStage = function (reference) {
         if (reference) loadChapter(reference, null);
+      };
+      // Sana's security review (PR #61) caught that __openChapterForStage is NOT read-only:
+      // loadChapter's non-range branch arms setCursor's 120ms stageTimer -> stage_scripture, and
+      // its range branch invokes stage_scripture immediately, synchronously, with no timer to
+      // cancel at all. CON-134's Edit and CON-138's History re-stage were built on the WRONG
+      // assumption that opening a chapter has no side effect — both were silently staging
+      // content to Preview. This is the genuinely read-only entry point for both: loadChapter's
+      // explicit stage=false suppresses BOTH staging paths, so browsing a reference here can
+      // never move anything onto Preview or Live without a further, explicit operator action
+      // (the same manual stage/double-click-to-live gestures the Scriptures browser always
+      // offers, per its own footnote).
+      window.__openChapterToBrowse = function (reference) {
+        if (reference) loadChapter(reference, null, false);
       };
       let verseCursor = -1;
       let scriptureTimer = null;
@@ -3551,6 +3565,14 @@
         );
         const el = list.children[verseCursor];
         if (el) el.scrollIntoView({ block: "nearest" });
+        // Sana's security review (PR #61): a non-staging call (stage=false — CON-134's Edit,
+        // CON-138's History re-stage) must cancel any timer a PRIOR staging call left pending.
+        // Without this, real race: Stage a verse (arms the 120ms timer), then WITHIN that window
+        // click Edit on a different detection or re-stage from History — the old timer was never
+        // cancelled and fires anyway, staging content neither read-only action asked for.
+        // Unconditional (runs on every call, not only staging ones) so the read-only guarantee
+        // holds regardless of what happened immediately before it.
+        if (!stage) clearTimeout(stageTimer);
         if (stage) {
           if (dblclickBusy) return; // the dblclick flow owns staging right now
           setStatus("");
@@ -3628,7 +3650,12 @@
 
       // cursorVerseNum is a verse NUMBER (not an index): KJV/WEB verse
       // numbering diverges in six chapters, so indexes silently shift verses.
-      async function loadChapter(reference, cursorVerseNum) {
+      // `stage` defaults to true (omitted at every pre-existing call site, all of which rely on
+      // the load-and-stage-as-you-browse behaviour the Scriptures panel's own footnote
+      // describes) — pass stage=false explicitly for a genuinely read-only load
+      // (window.__openChapterToBrowse; see its own comment for why this distinction exists).
+      async function loadChapter(reference, cursorVerseNum, stage) {
+        if (stage === undefined) stage = true;
         try {
           const ch = await invoke("get_chapter", {
             reference,
@@ -3665,17 +3692,21 @@
             return true;
           }
           if (isRange) {
-            // The whole passage stages; the cursor lands without re-staging.
+            // The whole passage stages; the cursor lands without re-staging. Gated on `stage` —
+            // this call has no timer to cancel (unlike the non-range branch below), so the
+            // guard has to sit here, not at the call site.
             setCursor(Math.max(0, idx), false);
-            act(() =>
-              invoke("stage_scripture", {
-                reference:
-                  ch.reference + ":" + ch.verse_start + "-" + ch.verse_end,
-                translation: currentTranslation,
-              })
-            );
+            if (stage) {
+              act(() =>
+                invoke("stage_scripture", {
+                  reference:
+                    ch.reference + ":" + ch.verse_start + "-" + ch.verse_end,
+                  translation: currentTranslation,
+                })
+              );
+            }
           } else {
-            setCursor(Math.max(0, idx), true);
+            setCursor(Math.max(0, idx), stage);
           }
           return true;
         } catch (e) {
@@ -4145,11 +4176,18 @@
         return h12 + ":" + (m < 10 ? "0" : "") + m;
       }
 
-      function fmtCountdown(ms) {
-        const s = Math.max(0, Math.round(ms / 1000));
-        const m = Math.floor(s / 60);
-        const r = s % 60;
-        return m + ":" + (r < 10 ? "0" : "") + r;
+      // Quinn's QA review (PR #61, bug 17tnw2axre8): a WHOLE-CHAPTER detection (e.g. a spoken
+      // "Isaiah 61", no verse) never lit the on-air card, because the host narrows it before it
+      // ever goes live. controller.rs's stage_reference_for_detection (ApproveDetection handler)
+      // appends ":1" to a bare "Book Chapter" reference — "a reference that already names a
+      // verse (or doesn't parse) is returned unchanged" (its own doc comment) — so
+      // view.live_scripture after Approve reads "Isaiah 61:1" while the DETECTION's own
+      // reference (d.reference, from view.detections) is still the raw "Isaiah 61" the operator
+      // approved. A bare `===` compare can therefore never match for this real, common input
+      // shape. This encodes exactly that one documented transformation — not a general fuzzy
+      // match — so it stays exact everywhere the host doesn't narrow anything.
+      function detectionWentLiveAs(reference, liveScripture) {
+        return liveScripture === reference || liveScripture === reference + ":1";
       }
 
       // --- CON-136/CON-137/CON-138 — client-side state layered onto the host-authoritative
@@ -4158,44 +4196,65 @@
       // are untouched) — it only decides how a detection the host already sent renders, and
       // remembers what the operator already did with a reference. Every collection here is
       // bounded (repo convention: no unbounded queues/caches).
-      const DET_COOLDOWN_MS = 90000; // 1:30 — a tuned client default; no host-reported cooldown exists
+      //
+      // CON-137 REDESIGN (Sana's security review, PR #61): the original build here was an
+      // AUTOMATIC client-side "you already saw this" cooldown — a de-emphasised card, a
+      // countdown, "Show anyway" — triggered whenever the SAME reference reappeared shortly
+      // after being Staged/Approved/Dismissed. The PR's own justification for building it
+      // ("no dedup signal exists anywhere in the wire protocol") was WRONG: the host already
+      // dedupes at the source. selahcue-core::TranscriptEngine keeps a bounded ring
+      // (RECENT_DEDUP_WINDOW = 16, detection.rs) of recently-enqueued reference STRINGS and
+      // silently drops a re-detection of one still in that ring — BEFORE it is ever enqueued,
+      // so it never reaches view.detections at all. For the exact scenario this UI was built
+      // for (a preacher re-quoting a verse shortly after first saying it), the host has almost
+      // always already suppressed the second detection by the time it would have reached this
+      // client — the automatic client-side cooldown was therefore near-unreachable in normal
+      // production use, reachable mainly via a harness that bypasses the host or a busy service
+      // that cycles 16+ other distinct references through the ring in between. Shipping it
+      // added real bug surface (the mute-loop below) for a case the host already owns, so the
+      // automatic half of CON-137 is REMOVED here, not just relabelled.
+      //
+      // What stays, because it is NOT redundant with the host: "Mute this verse" is
+      // OPERATOR-DIRECTED, not automatic — an explicit "never show me this reference again this
+      // service" the host has no concept of (its ring is a blind, short, automatic eviction
+      // window with no operator control and no persistence). That is real, distinct value, so
+      // it now lives directly on every normal detection card instead of being gated behind the
+      // removed auto-duplicate state.
       const DET_HISTORY_MAX = 50;    // bounded session audit trail
-      const DET_RESOLVED_MAX = 50;   // defence-in-depth cap; pruned by age on every write regardless
       const DET_MUTED_MAX = 200;     // defence-in-depth cap against a pathological reference set
       let onAirDetection = null;        // {reference, translation, text, approvedAtMs} | null
       let detectionsHistory = [];       // bounded session trail: {id, reference, translation, outcome, resolvedAtMs}
-      // reference -> {at: ms epoch, id: the detection id that WAS resolved}. Keyed by reference
-      // AND id (not reference alone): a duplicate is a NEW detection event re-surfacing a
-      // reference already handled — the SAME id re-appearing (e.g. a host still reporting a
-      // just-Staged item as pending for one more poll before it catches up) is not a duplicate
-      // at all, it is the same pending item, and must stay fully actionable.
-      const recentlyResolved = new Map();
       const mutedRefs = new Set();        // references the operator asked never to see again this service
-      const shownAnyway = new Set();      // detection ids un-suppressed once; pruned to the live queue below
+      // Sana's security review (PR #61): a muted reference used to re-fire dismiss_detection on
+      // EVERY render that reached it, for as long as the host's view kept reporting the same id
+      // — no cap, no record, and a symptom the operator could see ("No scriptures detected yet"
+      // with the tab's count pill still reading "1 new"). Each id is dismissed at most once.
+      // Bounded by SIZE (evict oldest), not by "is this id still in the current queue" — an
+      // earlier version pruned an id the instant it briefly disappeared from view.detections
+      // (which happens almost immediately: right after its own dismiss succeeds), which defeated
+      // the guard for the exact case it exists for — the host reporting the same id again for a
+      // poll or two while it catches up. Remembering it slightly longer than strictly necessary
+      // is harmless (still bounded); forgetting it too early re-opens the repeat-dismiss bug.
+      const DET_MUTED_DISMISS_SENT_MAX = 200;
+      const mutedDismissSent = new Set(); // detection ids already sent a mute-driven dismiss
+      function rememberMutedDismiss(id) {
+        if (mutedDismissSent.size >= DET_MUTED_DISMISS_SENT_MAX) {
+          mutedDismissSent.delete(mutedDismissSent.values().next().value); // bounded — evict oldest
+        }
+        mutedDismissSent.add(id);
+      }
       let detHistoryKey = "";
       let lastDetView = null; // most recent view syncDetOnAir saw, for the "Next verse" local dismiss
 
-      function pruneResolved() {
-        const now = Date.now();
-        for (const [ref, entry] of recentlyResolved) {
-          if (now - entry.at > DET_COOLDOWN_MS) recentlyResolved.delete(ref);
-        }
-        while (recentlyResolved.size > DET_RESOLVED_MAX) {
-          recentlyResolved.delete(recentlyResolved.keys().next().value);
-        }
-      }
-
       // Recorded at CLICK time (optimistic, matching how every other action in this panel
       // already behaves — nothing here waits for a second host round trip to confirm). Feeds
-      // both the duplicate-suppression cooldown (CON-137) and the History log (CON-138).
+      // the History log (CON-138).
       function recordDetectionOutcome(d, outcome) {
-        recentlyResolved.set(d.reference, { at: Date.now(), id: d.id });
-        pruneResolved();
         detectionsHistory.push({
           id: d.id,
           reference: d.reference,
           translation: d.translation || "",
-          outcome, // "staged" | "dismissed" — "auto" is unreachable today (FR-115 disables auto modes)
+          outcome, // "staged" | "dismissed" | "muted" — "auto" is unreachable today (FR-115 disables auto modes)
           resolvedAtMs: Date.now(),
         });
         if (detectionsHistory.length > DET_HISTORY_MAX) {
@@ -4228,7 +4287,9 @@
           const badge = document.createElement("span");
           badge.className = "det-history-badge " + h.outcome;
           badge.textContent =
-            h.outcome === "staged" ? "STAGED" : h.outcome === "auto" ? "AUTO" : "DISMISSED";
+            h.outcome === "staged" ? "STAGED" :
+            h.outcome === "auto" ? "AUTO" :
+            h.outcome === "muted" ? "MUTED" : "DISMISSED";
           body.appendChild(badge);
           row.appendChild(body);
 
@@ -4237,6 +4298,26 @@
           time.textContent = fmtHistoryTime(h.resolvedAtMs);
           row.appendChild(time);
 
+          // Sana's review (PR #61): a mute had no reverse gear short of restarting the app and
+          // losing every other bit of session state with it. This IS the un-mute control —
+          // reusing the History record that already names the exact reference and when it was
+          // muted, rather than a separate "manage muted references" surface. Only offered while
+          // the reference is STILL muted (mutedRefs is the live source of truth; History rows
+          // are a permanent log, so this checks current state at render time, not the outcome).
+          if (h.outcome === "muted" && mutedRefs.has(h.reference)) {
+            const unmute = document.createElement("button");
+            unmute.type = "button";
+            unmute.className = "det-history-unmute";
+            unmute.textContent = "Unmute";
+            unmute.setAttribute("aria-label", "Unmute " + h.reference);
+            unmute.onclick = () => {
+              mutedRefs.delete(h.reference);
+              detHistoryKey = ""; // force a re-render so the Unmute button clears immediately
+              renderDetectionHistory();
+            };
+            row.appendChild(unmute);
+          }
+
           const restage = document.createElement("button");
           restage.type = "button";
           restage.className = "det-history-restage";
@@ -4244,15 +4325,18 @@
           restage.textContent = "↺";
           // A resolved detection's id is already gone from the host's pending queue —
           // re-invoking approve_detection on it would be refused, not replayed. "Re-stage"
-          // instead reuses the SAME real chapter lookup Stage itself calls
-          // (window.__openChapterForStage), so the operator can manually stage/go-live it —
-          // never a fabricated replay of an event that already happened.
+          // instead reuses the real chapter LOOKUP Stage relies on, but through the read-only
+          // entry point (window.__openChapterToBrowse, not …ForStage — Sana's review, PR #61):
+          // it only opens the chapter and positions the cursor, it does NOT itself stage
+          // anything. The operator still takes an explicit further action (stage/double-click)
+          // to actually move it — never an automatic side effect of clicking ↺, and never a
+          // fabricated replay of an event that already happened.
           restage.onclick = () => {
             const liveBtn = document.getElementById("det-view-live");
             if (liveBtn) liveBtn.click();
             const ctab = document.getElementById("ctab-scriptures");
             if (ctab && !ctab.classList.contains("active")) ctab.click();
-            if (window.__openChapterForStage) window.__openChapterForStage(h.reference);
+            if (window.__openChapterToBrowse) window.__openChapterToBrowse(h.reference);
           };
           row.appendChild(restage);
 
@@ -4311,7 +4395,10 @@
         if (!box) return;
         // Never a stale claim — the same field the manual double-click-to-live flow verifies
         // against (app.js, stage_scripture/go_live flow) is the truth here too.
-        if (onAirDetection && (view.blackout || view.live_scripture !== onAirDetection.reference)) {
+        // detectionWentLiveAs, not a bare !==: a whole-chapter reference stays narrowed on every
+        // later poll too (Quinn, bug 17tnw2axre8) — a plain !== would clear the card on the very
+        // next poll after correctly showing it.
+        if (onAirDetection && (view.blackout || !detectionWentLiveAs(onAirDetection.reference, view.live_scripture))) {
           onAirDetection = null;
         }
         box.hidden = !onAirDetection;
@@ -4349,17 +4436,16 @@
         }
       })();
 
-      // Test-only reset for the module-level state above (recentlyResolved/mutedRefs/
-      // shownAnyway/detectionsHistory/onAirDetection are intentionally session-persistent in
-      // production — that IS the feature, CON-137's cooldown has to survive across polls — but a
-      // headless test suite that reuses the same stock reference strings ("John 3:16", etc.)
-      // across unrelated fixtures needs a clean slate between sections. No production code path
-      // calls this; it exists only so scripts/operator_headless.py can isolate test sections.
+      // Test-only reset for the module-level state above (mutedRefs/detectionsHistory/
+      // onAirDetection are intentionally session-persistent in production — that IS the
+      // feature — but a headless test suite that reuses the same stock reference strings
+      // ("John 3:16", etc.) across unrelated fixtures needs a clean slate between sections. No
+      // production code path calls this; it exists only so scripts/operator_headless.py can
+      // isolate test sections.
       window.__detResetForTest = function () {
         onAirDetection = null;
-        recentlyResolved.clear();
         mutedRefs.clear();
-        shownAnyway.clear();
+        mutedDismissSent.clear();
         detectionsHistory = [];
         detHistoryKey = "";
         detectionsKey = "";
@@ -4368,34 +4454,16 @@
       function syncDetections(view) {
         // Newest detection first: the host queues them oldest-first, so reverse for display.
         const dets = (Array.isArray(view.detections) ? view.detections : []).slice().reverse();
-        // shownAnyway is scoped to ids currently in the live queue — once a detection is gone
-        // (staged/approved/dismissed/expired), any "show anyway" override for it is moot. This
-        // is what actually bounds the set; DET_RESOLVED_MAX-style hard caps aren't needed here.
-        const liveIds = new Set(dets.map((d) => d.id));
-        for (const id of shownAnyway) {
-          if (!liveIds.has(id)) shownAnyway.delete(id);
-        }
-        // Confidence is part of the change key so a match-% update re-renders the row. The
-        // cooldown/mute state is client-only, so it cannot be part of the host-derived key —
-        // instead, a coarse 5s time bucket is added ONLY while a tracked reference is actually
-        // in the current queue, so a duplicate card's countdown advances without busting the
-        // change-key (and the DOM rebuild it triggers) on every 1Hz poll in the common case.
-        const activeCooldown = dets.some((d) => {
-          const resolved = recentlyResolved.get(d.reference);
-          return (resolved != null && d.id !== resolved.id) || mutedRefs.has(d.reference);
-        });
-        const key = JSON.stringify([
-          dets.map((d) => [d.id, d.reference, d.text, d.confidence]),
-          activeCooldown ? Math.floor(Date.now() / 5000) : 0,
-        ]);
+        // Confidence is part of the change key so a match-% update re-renders the row.
+        const key = JSON.stringify(dets.map((d) => [d.id, d.reference, d.text, d.confidence]));
         if (key === detectionsKey) return;
         detectionsKey = key;
         const list = document.getElementById("detections-list");
         const empty = document.getElementById("detections-empty");
         if (!list || !empty) return;
         // "N new" count pill in the card header (hidden when none) — counts the RAW host queue,
-        // matching what the host itself considers unactioned (a muted/duplicate item is still
-        // sitting in that queue until dismissed).
+        // matching what the host itself considers unactioned (a muted item is still sitting in
+        // that queue for the one render before its dismiss is sent).
         const count = document.getElementById("detections-count");
         if (count) {
           count.hidden = dets.length === 0;
@@ -4409,23 +4477,18 @@
         let rendered = 0;
         for (const d of dets) {
           // CON-137 — a MUTED reference is auto-dismissed the instant it re-detects: the
-          // operator already said "not this one again". Never rendered at all (not even as a
-          // duplicate card) — repeating the ask would defeat the point of muting it.
+          // operator already said "not this one again". Never rendered at all. Dismissed and
+          // RECORDED at most once per id (Sana, PR #61) — previously this fired on every render
+          // that reached a still-queued muted id, with no audit trail of what happened.
           if (mutedRefs.has(d.reference)) {
-            invoke("dismiss_detection", { detectionId: d.id }).catch(() => {});
+            if (!mutedDismissSent.has(d.id)) {
+              rememberMutedDismiss(d.id);
+              invoke("dismiss_detection", { detectionId: d.id }).catch(() => {});
+              recordDetectionOutcome(d, "muted");
+            }
             continue;
           }
-          const resolved = recentlyResolved.get(d.reference);
-          // A duplicate is a genuinely NEW detection event (a different id) re-surfacing a
-          // reference already handled within the cooldown — the SAME id re-appearing is just
-          // the same pending item, never suppressed.
-          const withinCooldown =
-            resolved != null && d.id !== resolved.id && Date.now() - resolved.at < DET_COOLDOWN_MS;
-          if (withinCooldown && !shownAnyway.has(d.id)) {
-            list.appendChild(buildDuplicateCard(d, resolved.at, view));
-          } else {
-            list.appendChild(buildDetectionCard(d, view));
-          }
+          list.appendChild(buildDetectionCard(d, view));
           rendered++;
         }
         empty.style.display = rendered ? "none" : "";
@@ -4437,7 +4500,15 @@
         row.setAttribute("role", "listitem");
         const hasConfidence = typeof d.confidence === "number";
         const pct = hasConfidence ? Math.max(0, Math.min(100, Math.round(d.confidence))) : null;
-        const fuzzy = hasConfidence && pct < 90;
+        // Sana's security review (PR #61, non-blocking): this used to read
+        // `hasConfidence && pct < 90`, which FAILED OPEN — a detection with NO reported
+        // confidence at all fell through to the CONFIDENT branch (the Approve fast-path to the
+        // audience) purely because `hasConfidence && …` short-circuits false on a missing score.
+        // An unscored match is at least as uncertain as a known-low one, so it takes the same
+        // cautious branch (Edit, not Approve) — `!hasConfidence` alone is enough to route here;
+        // the match-pill and the tint below still render nothing when confidence is genuinely
+        // absent (honest-empty stays honest-empty — this only changes which ACTIONS are safe).
+        const fuzzy = !hasConfidence || pct < 90;
         // CON-129 — card tint by confidence, the same token pair the match-pill already uses.
         if (hasConfidence) row.classList.add(fuzzy ? "det-fuzzy" : "det-confident");
 
@@ -4463,6 +4534,32 @@
           m.textContent = pct + "% MATCH";
           head.appendChild(m);
         }
+        // CON-137 (redesigned, Sana's review PR #61) — operator-directed mute, on every card:
+        // "never show me this reference again this service". Distinct from the host's own
+        // automatic RECENT_DEDUP_WINDOW ring (selahcue-core::TranscriptEngine) — this is
+        // explicit and operator-controlled, the host's is a blind short-lived eviction window;
+        // the two are not redundant. Recorded to History (outcome "muted"), reversible from
+        // there, and future re-detections of this reference are auto-dismissed exactly once
+        // each (see the mutedDismissSent guard in syncDetections).
+        const mute = document.createElement("button");
+        mute.type = "button";
+        mute.className = "det-mute-btn";
+        const muteGlyph = document.createElement("span");
+        muteGlyph.setAttribute("aria-hidden", "true"); // the button's own aria-label carries the name
+        muteGlyph.textContent = "🔇";
+        mute.appendChild(muteGlyph);
+        mute.setAttribute("aria-label", "Mute " + d.reference + " for this service — undo from History");
+        mute.onclick = () => {
+          if (mutedRefs.size >= DET_MUTED_MAX) {
+            mutedRefs.delete(mutedRefs.values().next().value); // bounded — evict oldest first
+          }
+          mutedRefs.add(d.reference);
+          rememberMutedDismiss(d.id); // this id's dismiss + History record happens right here
+          detectionsKey = "";
+          recordDetectionOutcome(d, "muted");
+          act(() => invoke("dismiss_detection", { detectionId: d.id }));
+        };
+        head.appendChild(mute);
         row.appendChild(head);
 
         // CON-130 — the confidence bar: the one non-textual, non-colour cue for match strength.
@@ -4552,10 +4649,14 @@
           // the audience for a match the detector itself is unsure of (334:142 draws only
           // Stage/Edit/Dismiss). Non-destructive: it does not dequeue or dismiss, so the operator
           // can still Stage/Dismiss afterward if the reference turns out to be right after all.
+          // Genuinely non-destructive, not just in name — window.__openChapterToBrowse (NOT
+          // …ForStage) is the read-only entry point: Sana's security review (PR #61) proved that
+          // …ForStage silently stages to Preview (immediately for a verse range, or after
+          // setCursor's 120ms debounce otherwise), which this action must never do on its own.
           const edit = mkAction("Edit", "det-edit", "Look up " + d.reference + " to correct it", () => {
             const ctab = document.getElementById("ctab-scriptures");
             if (ctab && !ctab.classList.contains("active")) ctab.click();
-            if (window.__openChapterForStage) window.__openChapterForStage(d.reference);
+            if (window.__openChapterToBrowse) window.__openChapterToBrowse(d.reference);
           });
           actions.appendChild(edit);
         } else {
@@ -4572,7 +4673,10 @@
                 // CON-136 — only claim on-air once the host confirms THIS reference is what
                 // actually went live (the same verification the manual double-click-to-live
                 // flow already uses at the stage_scripture/go_live call site above).
-                if (v && v.live_scripture === d.reference) {
+                // detectionWentLiveAs, not a bare ===: a whole-chapter detection goes live under
+                // its host-narrowed first verse (Quinn, bug 17tnw2axre8) — see that function's
+                // own comment.
+                if (v && detectionWentLiveAs(d.reference, v.live_scripture)) {
                   onAirDetection = {
                     reference: d.reference,
                     translation: d.translation || "",
@@ -4592,76 +4696,6 @@
           })
         );
         actions.appendChild(dismiss);
-        row.appendChild(actions);
-
-        return row;
-      }
-
-      // CON-137 — the de-emphasised duplicate card (335:140-146). lastResolvedAt is the ms
-      // epoch captured from recentlyResolved as of THIS render; the cooldown text is accurate as
-      // of now and advances again on the next render that reaches this function (see the
-      // activeCooldown 5s bucket in syncDetections).
-      function buildDuplicateCard(d, lastResolvedAt, view) {
-        const row = document.createElement("div");
-        row.className = "detection det-duplicate";
-        row.setAttribute("role", "listitem");
-
-        const head = document.createElement("div");
-        head.className = "detection-head";
-        const ref = document.createElement("span");
-        ref.className = "ref";
-        ref.textContent = d.reference;
-        head.appendChild(ref);
-        const pill = document.createElement("span");
-        pill.className = "det-dup-pill";
-        pill.textContent = "DUPLICATE";
-        head.appendChild(pill);
-        row.appendChild(head);
-
-        const agoS = Math.max(0, Math.round((Date.now() - lastResolvedAt) / 1000));
-        const body = document.createElement("div");
-        body.className = "det-dup-body";
-        body.textContent =
-          "Already shown " + fmtAgo(agoS) + " ago — auto-suppressed to avoid flicker on the output.";
-        row.appendChild(body);
-
-        const remainingMs = Math.max(0, DET_COOLDOWN_MS - (Date.now() - lastResolvedAt));
-        const cooldown = document.createElement("div");
-        cooldown.className = "det-dup-cooldown";
-        const ico = document.createElement("span");
-        ico.setAttribute("aria-hidden", "true");
-        ico.textContent = "⏱";
-        const label = document.createElement("span");
-        label.textContent = "Cooldown " + fmtCountdown(remainingMs) + " remaining";
-        cooldown.appendChild(ico);
-        cooldown.appendChild(label);
-        row.appendChild(cooldown);
-
-        const actions = document.createElement("div");
-        actions.className = "det-dup-actions detection-actions";
-        const showBtn = document.createElement("button");
-        showBtn.type = "button";
-        showBtn.textContent = "Show anyway";
-        showBtn.setAttribute("aria-label", "Show " + d.reference + " anyway, despite the duplicate cooldown");
-        showBtn.onclick = () => {
-          shownAnyway.add(d.id);
-          detectionsKey = ""; // force the next syncDetections to re-evaluate this id
-          syncDetections(view);
-        };
-        const muteBtn = document.createElement("button");
-        muteBtn.type = "button";
-        muteBtn.textContent = "Mute this verse";
-        muteBtn.setAttribute("aria-label", "Mute " + d.reference + " for the rest of this service");
-        muteBtn.onclick = () => {
-          if (mutedRefs.size >= DET_MUTED_MAX) {
-            mutedRefs.delete(mutedRefs.values().next().value); // bounded — evict oldest first
-          }
-          mutedRefs.add(d.reference);
-          detectionsKey = "";
-          act(() => invoke("dismiss_detection", { detectionId: d.id }));
-        };
-        actions.appendChild(showBtn);
-        actions.appendChild(muteBtn);
         row.appendChild(actions);
 
         return row;

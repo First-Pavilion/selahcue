@@ -3448,60 +3448,36 @@
         border-color: var(--sc-border-strong);
       }
 
-      /* CON-137 — duplicate suppression + cooldown (335:140-146). A client-side flicker guard:
-         no "duplicate" signal exists anywhere in the detection wire protocol, so this is built
-         entirely from the operator's own recent Stage/Approve/Dismiss actions (app.js) — never a
-         host contract change. Reference ink is --sc-text-secondary, not the frame's
-         --sc-text-muted @ opacity-85 (3.16:1 at 15px Bold — an A11Y-DEFECT the audit calls out
-         explicitly, §8.5: "build at full opacity with a compliant ink"). */
-      .detection.det-duplicate {
-        background: var(--sc-inset);
-        border-color: var(--sc-border);
-      }
-
-      .detection.det-duplicate .detection-head .ref {
-        color: var(--sc-text-secondary);
-      }
-
-      .det-dup-pill {
+      /* CON-137 (redesigned, Sana's security review PR #61) — the original build here was an
+         automatic client-side duplicate cooldown, but the host already dedupes at the source
+         (selahcue-core::TranscriptEngine's RECENT_DEDUP_WINDOW ring, detection.rs) before a
+         repeat ever reaches this client — that automatic layer was near-unreachable in
+         production and is removed. What remains: an operator-directed mute, a small icon
+         button in every card's head row (not gated behind a duplicate state the host usually
+         already absorbed). */
+      .det-mute-btn {
         flex: none;
-        font-size: 10px;
-        font-weight: 700;
-        letter-spacing: 0.04em;
-        border-radius: 999px;
-        padding: 3px 9px;
-        background: var(--sc-elevated);
-        border: 1px solid var(--sc-border);
-        color: var(--sc-text-secondary);
-      }
-
-      .det-dup-body {
-        font-size: 12px;
-        line-height: 1.35;
-        color: var(--sc-text-secondary);
-      }
-
-      .det-dup-cooldown {
-        display: flex;
+        width: 22px;
+        height: 22px;
+        display: inline-flex;
         align-items: center;
-        gap: 8px;
-        border-radius: 8px;
-        padding: 7px 10px;
-        background: var(--sc-elevated);
+        justify-content: center;
+        padding: 0;
+        margin-left: 2px;
         font-size: 11px;
-        font-weight: 600;
+        line-height: 1;
+        background: transparent;
+        border: 1px solid transparent;
+        border-radius: 999px;
         color: var(--sc-text-secondary);
+        opacity: 0.7;
       }
 
-      .det-dup-actions button {
+      .det-mute-btn:hover,
+      .det-mute-btn:focus-visible {
+        opacity: 1;
         background: var(--sc-elevated);
-        border: 1px solid var(--sc-border);
-        color: var(--sc-text-secondary);
-        font-weight: 600;
-      }
-
-      .det-dup-actions button:hover {
-        border-color: var(--sc-border-strong);
+        border-color: var(--sc-border);
       }
 
       /* CON-138 — Live | History (335:166-171). Distinct class names, per the CON-142 lesson
@@ -3598,6 +3574,30 @@
         background: var(--sc-elevated);
         border: 1px solid var(--sc-border);
         color: var(--sc-text-secondary);
+      }
+
+      /* A muted reference reads distinctly from a plain dismiss — it is a standing suppression,
+         not a one-off — so it borrows the warn token pair rather than the neutral dismissed
+         chip. Added with the un-mute control (Sana's review, PR #61). */
+      .det-history-badge.muted {
+        background: var(--sc-warn-soft);
+        border: 1px solid var(--sc-warn-border);
+        color: var(--sc-warn);
+      }
+
+      .det-history-unmute {
+        flex: none;
+        padding: 4px 10px;
+        font-size: 11px;
+        font-weight: 600;
+        border-radius: 999px;
+        background: var(--sc-elevated);
+        border: 1px solid var(--sc-warn-border);
+        color: var(--sc-warn);
+      }
+
+      .det-history-unmute:hover {
+        border-color: var(--sc-warn);
       }
 
       .det-history-time {
