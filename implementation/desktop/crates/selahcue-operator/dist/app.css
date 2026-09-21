@@ -3360,13 +3360,15 @@
       /* CON-134 — low-confidence detections drop the Approve fast-path (334:142 draws only
          Stage / Edit / Dismiss): an uncertain AI match should not have a one-click route to the
          audience. Edit is real — it opens the reference in the Scriptures browser so the
-         operator can inspect/correct it manually (window.__openChapterForStage, the same call
-         Stage already makes) — but the frame's ALTERNATIVES list (other candidate references
-         with individual scores) is NOT built: no field anywhere in the detection wire protocol
-         carries alternate candidates, and inventing scores the detector never computed would be
-         exactly the kind of fabrication this codebase's "never fabricate" precedent (honest
-         empty/disabled states throughout dist/) forbids. This note explains the sub-line below
-         in place of a list this build cannot honestly draw. */
+         operator can inspect/correct it manually (window.__openChapterToBrowse — a genuinely
+         read-only lookup, NOT the same call Stage makes; Sana's security review, PR #61, found
+         Edit originally reused Stage's own __openChapterForStage, which silently staged the
+         reference the instant Edit was clicked) — but the frame's ALTERNATIVES list (other
+         candidate references with individual scores) is NOT built: no field anywhere in the
+         detection wire protocol carries alternate candidates, and inventing scores the detector
+         never computed would be exactly the kind of fabrication this codebase's "never
+         fabricate" precedent (honest empty/disabled states throughout dist/) forbids. This note
+         explains the sub-line below in place of a list this build cannot honestly draw. */
       .det-alt-note {
         font-size: 11px;
         line-height: 1.4;

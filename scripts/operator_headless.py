@@ -656,7 +656,58 @@ if not check_jump_call_site_is_click_only():
 # History re-stage each with a range reference) plus their setup/premise checks. Mutation-verified
 # (reverted the guard, confirmed exactly those 2 assertions RED, restored). Confirmed by two
 # independent runs (both 1610, 0 FAIL).
-EXPECTED_MIN_CHECKS = 1610
+#
+# 1610 -> 1622: Vera's performance review of PR #64 (P2) found that a REFUSED dismiss_detection
+# for a muted reference was marked "handled" (added to mutedDismissSent) BEFORE the invoke
+# resolved, with the .catch() swallowing the failure — so a failed dismiss was never retried,
+# permanently reproducing the exact visible inconsistency (empty panel, stale count pill) Sana's
+# original PR #61 finding was about. Fixed at both call sites (the auto-dismiss loop in
+# syncDetections, and the manual mute-button click in buildDetectionCard) by un-remembering the id
+# on failure. The FIRST version of that fix was itself incomplete, caught by this file's own new
+# test going RED on the first run after writing it (not just claimed clean): un-remembering the id
+# is not sufficient, because syncDetections bails out at its own top (`if (key === detectionsKey)
+# return;`) whenever the host's view is byte-identical across polls — exactly the "host hasn't
+# caught up" case the retry exists for — so the retry was inert until detectionsKey is ALSO
+# invalidated on failure. A second, subtler gap surfaced the same way when writing the mutation
+# test for the manual-button call site: the button's OWN detectionsKey reset is provably dead
+# code against every test that does not land an intervening poll between the click and its
+# failure — removing that line produced 0 FAIL until a dedicated race test (a one-shot
+# DEFER+reject hook, __dismissDetectionDeferRejectOnce, holds the promise open so a genuinely
+# unrelated render() can land mid-flight) was added to actually exercise it; only then did
+# reverting that line go RED. Sana's follow-up security review of the same PR then found two
+# further real issues in the same area: (finding C) recordDetectionOutcome fired unconditionally
+# BEFORE the invoke settled, writing a false MUTED History row for a mute the host never
+# confirmed, and would have written a SECOND row once a retry later succeeded — moved the record
+# into each call site's success branch so it fires at most once, only once actually confirmed.
+# The first version of THIS test was also incomplete in the same way as the retry test above: a
+# single always-succeeding retry cannot distinguish "recorded on dispatch" from "recorded on
+# confirmed success" for the auto-dismiss loop's own call site, so that mutation passed clean
+# until the test was strengthened to fail the loop's own retry once too (three attempts total:
+# fail, fail, succeed) before it caught it; (finding D) the Unmute button reset detHistoryKey but
+# not detectionsKey, so a still-queued detection for a just-unmuted reference recomputed to the
+# same stored key and never reappeared — fixed by invalidating detectionsKey there too. 12 new
+# assertions across 5 dedicated scenarios (auto-dismiss-loop retry, manual-button retry, the
+# manual-button race, finding C's no-false-row / no-duplicate-row across three real attempts,
+# finding D's post-unmute reappearance), each mutation-verified individually against the
+# STRENGTHENED suite (reverting its own guard turns exactly that scenario's assertions RED,
+# nothing else — re-checked after each test strengthening, not just once at the start). Confirmed
+# by two independent runs (both 1622, 0 FAIL).
+#
+# 1622 -> 1625: same PR #64, Sana's finding B (non-blocking): the setCursor-only clearTimeout
+# above narrows the stage-timer race but does not close it — get_chapter is an async host round
+# trip, and a timer already pending when a read-only load STARTS can still fire mid-fetch on a
+# slow (300ms+) trip, before setCursor(idx, false) ever runs to cancel it. loadChapter now also
+# clears it before the fetch starts (app.js). Reproduced for real with a new one-shot DEFER hook
+# on the get_chapter mock (__getChapterDeferOnce/__getChapterDeferredResolve) that holds the
+# fetch open so a genuinely pre-armed timer (from a real verse click, not a hand-set variable)
+# gets a real chance to fire during the wait — 3 new checks (1 setup + 2 real assertions),
+# mutation-verified (reverting loadChapter's own clearTimeout turned exactly those 2 assertions
+# RED, restored). Also addressed in this same pass, no new checks needed: finding A (the isRange
+# branch's `stage` guard, app.js's loadChapter) was already covered by the existing range-Edit
+# test above and re-confirmed by inspection; finding E (app.css's CON-134 comment block still
+# named the pre-fix window.__openChapterForStage as Edit's call) was a stale-comment correction
+# only. Confirmed by two independent runs (both 1625, 0 FAIL).
+EXPECTED_MIN_CHECKS = 1625
 
 
 def find_chrome():
@@ -1068,21 +1119,34 @@ STUB = r"""
     if (cmd === "get_chapter") {
       var _gcRef = (args && args.reference) ? String(args.reference) : "";
       var _gcRange = /:(\d+)-(\d+)/.exec(_gcRef);
-      if (_gcRange) {
-        var _gcLo = +_gcRange[1], _gcHi = +_gcRange[2];
-        return Promise.resolve({
-          reference: _gcRef.replace(/:.*$/, ""),
-          translation: "KJV", translations: ["KJV"],
-          verses: [[_gcLo, "verse " + _gcLo + " text"], [_gcHi, "verse " + _gcHi + " text"]],
-          verse_start: _gcLo, verse_end: _gcHi, prev: true, next: true,
+      var _gcResp = _gcRange
+        ? (function () {
+            var _gcLo = +_gcRange[1], _gcHi = +_gcRange[2];
+            return {
+              reference: _gcRef.replace(/:.*$/, ""),
+              translation: "KJV", translations: ["KJV"],
+              verses: [[_gcLo, "verse " + _gcLo + " text"], [_gcHi, "verse " + _gcHi + " text"]],
+              verse_start: _gcLo, verse_end: _gcHi, prev: true, next: true,
+            };
+          })()
+        : {
+            reference: _gcRef ? _gcRef.replace(/:.*$/, "") : "Isaiah 61",
+            translation: "KJV", translations: ["KJV"],
+            verses: [[1, "verse one text"], [5, "verse five text"]],
+            verse_start: 5, verse_end: null, prev: true, next: true,
+          };
+      // One-shot DEFER hook (Sana's security review, PR #64, finding B): holds this fetch open
+      // so the driver can prove a stale, already-armed stageTimer does NOT fire while a
+      // read-only load is still in flight — the exact race a slow (300ms+) fetch reopens if the
+      // pending timer is only cleared AFTER this resolves (inside setCursor) rather than before
+      // the fetch even starts.
+      if (window.__getChapterDeferOnce) {
+        window.__getChapterDeferOnce = false;
+        return new Promise(function (res) {
+          window.__getChapterDeferredResolve = function () { res(_gcResp); };
         });
       }
-      return Promise.resolve({
-        reference: _gcRef ? _gcRef.replace(/:.*$/, "") : "Isaiah 61",
-        translation: "KJV", translations: ["KJV"],
-        verses: [[1, "verse one text"], [5, "verse five text"]],
-        verse_start: 5, verse_end: null, prev: true, next: true,
-      });
+      return Promise.resolve(_gcResp);
     }
     // approve_detection stages (dequeues + remembers which reference was staged, mirroring the
     // real host); go_live commits that remembered reference to live_scripture ONLY when actually
@@ -1109,6 +1173,22 @@ STUB = r"""
       return Promise.resolve(JSON.parse(JSON.stringify(V)));
     }
     if (cmd === "dismiss_detection") {
+      // One-shot rejection hook (Vera's review, PR #64, P2): lets the driver prove a FAILED
+      // dismiss (busy host, link blip) is retried on the next poll rather than permanently
+      // "handled" — exercises both call sites (the auto-dismiss loop in syncDetections and the
+      // manual mute-button click in buildDetectionCard).
+      if (window.__dismissDetectionRejectOnce) { window.__dismissDetectionRejectOnce = false; return Promise.reject("simulated host rejection"); }
+      // One-shot DEFER+reject hook: holds the promise open so the driver can land an intervening
+      // poll (a render() call) WHILE this dismiss is still in flight, before finally rejecting
+      // it — reproduces the race where syncDetections's own memoization re-stores detectionsKey
+      // to match the still-queued view during that gap, which would otherwise make a plain
+      // "un-remember the id" retry fix inert once the rejection actually lands.
+      if (window.__dismissDetectionDeferRejectOnce) {
+        window.__dismissDetectionDeferRejectOnce = false;
+        return new Promise(function (_res, rej) {
+          window.__dismissDetectionDeferredReject = function () { rej("simulated host rejection (deferred)"); };
+        });
+      }
       V.detections = (V.detections || []).filter(function (x) { return x.id !== args.detectionId; });
       return Promise.resolve(JSON.parse(JSON.stringify(V)));
     }
@@ -3028,6 +3108,34 @@ DRIVER = r"""
       var callsAfterRangeEdit = window.__calls.slice(callsBeforeRangeEdit);
       ok(!callsAfterRangeEdit.some(function (c) { return c.cmd === "stage_scripture" || c.cmd === "follow_scripture"; }),
          "CON-134 (Sana finding 1, range coverage): Edit never stages a RANGE reference either — the isRange branch's own stage=false guard, not just the single-verse one");
+      // Sana's follow-up security review (PR #64, finding B): setCursor's own clearTimeout only
+      // runs once setCursor itself is reached — but loadChapter's get_chapter fetch sits BEFORE
+      // that call, so a timer already pending when a read-only load STARTS can still fire mid-
+      // fetch on a slow (300ms+) round trip, before setCursor(idx, false) ever gets a chance to
+      // cancel it. Reproduce for real: arm the timer via a live verse click (not a hand-set
+      // variable), then click Edit on a genuinely different detection while forcing its
+      // get_chapter fetch to hang well past 120ms.
+      var stageableVerseRow = el("verse-list").querySelector(".verse");
+      ok(!!stageableVerseRow, "setup: the Scriptures browser has a clickable verse row to arm the stage timer from");
+      var callsBeforeArm = window.__calls.length;
+      stageableVerseRow.click(); // setCursor(i, true, true) — arms the 120ms stageTimer
+      window.__detResetForTest();
+      render(Object.assign({}, baseView, { detections: [
+        { id: 599, reference: "Zephaniah 1:14", text: "The great day of the LORD is near", confidence: 61 },
+      ] }));
+      window.__getChapterDeferOnce = true;
+      el("detections-list").querySelector(".detection").querySelector(".det-edit").click();
+      await waitFor(function () { return window.__calls.some(function (c) { return c.cmd === "get_chapter" && c.args && c.args.reference === "Zephaniah 1:14"; }); });
+      // The fetch is now deliberately held open. Wait well past the 120ms debounce while it is
+      // still pending — before finding B's fix, THIS is exactly where the stale, pre-armed timer
+      // would fire and stage the PRIOR verse, a target neither Edit nor the operator asked for.
+      await sleep(200);
+      ok(!window.__calls.slice(callsBeforeArm).some(function (c) { return c.cmd === "stage_scripture" || c.cmd === "follow_scripture"; }),
+         "CON-134 (Sana finding B): a timer armed BEFORE a read-only Edit load starts does not fire while that load's chapter fetch is still in flight, even past its own 120ms debounce");
+      window.__getChapterDeferredResolve();
+      await sleep(200); // setCursor(idx, false) now runs too — confirm it stays quiet as well
+      ok(!window.__calls.slice(callsBeforeArm).some(function (c) { return c.cmd === "stage_scripture" || c.cmd === "follow_scripture"; }),
+         "CON-134 (Sana finding B): once the deferred fetch resolves and Edit's own setCursor(idx, false) runs, still nothing stages — the window is closed, not just narrowed");
       // Sana's non-blocking finding: a MISSING confidence used to fail OPEN into the confident
       // branch (Approve fast-path) purely because `hasConfidence && …` short-circuits false on
       // no score at all — an unscored match is at least as uncertain as a known-low one.
@@ -3219,6 +3327,187 @@ DRIVER = r"""
       ] }));
       ok(!!el("detections-list").querySelector('[aria-label="Dismiss Habakkuk 3:19"]'),
          "CON-137: after Unmute, a later re-detection of the same reference renders normally again — not silently suppressed forever");
+      window.__detResetForTest();
+      render(baseView);
+
+      // === Vera's performance review (PR #64, P2): a FAILED dismiss_detection must NOT
+      // permanently mark the id "handled". mutedDismissSent is recorded BEFORE the invoke
+      // resolves so the once-per-id guard can stop repeat-fire on the SUCCESS path — but a
+      // rejected invoke (busy host, link blip, refusal) used to leave the id stuck in that set
+      // forever, with no retry: the exact visible inconsistency Sana's original finding was
+      // about (empty panel, stale count pill), now permanent instead of transient. Exercises
+      // BOTH call sites. Dedicated references, unused elsewhere in this suite. ===
+      window.__detResetForTest();
+      render(baseView);
+
+      // Auto-dismiss loop (syncDetections): mute "Obadiah 1:3" via a normal, successful click —
+      // then present a genuinely NEW still-queued id for the same now-muted reference while the
+      // host is forced to reject the dismiss once.
+      render(Object.assign({}, baseView, { detections: [
+        { id: 611, reference: "Obadiah 1:3", text: "As you have done, it shall be done to you", confidence: 91 },
+      ] }));
+      el("detections-list").querySelector(".detection").querySelector(".det-mute-btn").click();
+      await sleep(15);
+      window.__dismissDetectionRejectOnce = true;
+      render(Object.assign({}, baseView, { detections: [
+        { id: 612, reference: "Obadiah 1:3", text: "As you have done, it shall be done to you", confidence: 91 },
+      ] }));
+      await sleep(15);
+      ok(window.__calls.filter(function (c) { return c.cmd === "dismiss_detection" && c.args.detectionId === 612; }).length === 1,
+         "CON-137 (Vera P2, auto-dismiss loop): the first (rejected) dismiss attempt is sent");
+      // Re-present the SAME still-queued id — the host has not caught up, exactly Sana's original
+      // "host is slow" scenario. Before this fix the id was already (wrongly) marked handled and
+      // this would send nothing, leaving the inconsistency permanent.
+      render(Object.assign({}, baseView, { detections: [
+        { id: 612, reference: "Obadiah 1:3", text: "As you have done, it shall be done to you", confidence: 91 },
+      ] }));
+      await sleep(15);
+      ok(window.__calls.filter(function (c) { return c.cmd === "dismiss_detection" && c.args.detectionId === 612; }).length === 2,
+         "CON-137 (Vera P2, auto-dismiss loop): a FAILED dismiss is retried on the next poll, not permanently swallowed");
+      window.__detResetForTest();
+      render(baseView);
+
+      // Manual mute-button click (buildDetectionCard): the click's OWN dismiss round-trip fails.
+      // The mute itself is client-side state the operator asked for and must stick regardless —
+      // but the failed dismiss must be retried, and by the auto-dismiss loop on the next poll
+      // (the card no longer renders once muted, so the button itself gets no second chance).
+      render(Object.assign({}, baseView, { detections: [
+        { id: 621, reference: "Haggai 1:5", text: "Consider your ways", confidence: 91 },
+      ] }));
+      window.__dismissDetectionRejectOnce = true;
+      el("detections-list").querySelector(".detection").querySelector(".det-mute-btn").click();
+      await sleep(15);
+      ok(window.__calls.filter(function (c) { return c.cmd === "dismiss_detection" && c.args.detectionId === 621; }).length === 1,
+         "CON-137 (Vera P2, manual mute button): the button's own dismiss attempt is sent even though it will be rejected");
+      render(Object.assign({}, baseView, { detections: [
+        { id: 621, reference: "Haggai 1:5", text: "Consider your ways", confidence: 91 },
+      ] }));
+      ok(el("detections-list").children.length === 0,
+         "CON-137 (Vera P2, manual mute button): the reference stays muted client-side even though its own dismiss round-trip failed");
+      await sleep(15);
+      ok(window.__calls.filter(function (c) { return c.cmd === "dismiss_detection" && c.args.detectionId === 621; }).length === 2,
+         "CON-137 (Vera P2, manual mute button): the auto-dismiss loop retries the id the button's own failed dismiss left un-cleared — the two call sites' cleanup composes correctly");
+      window.__detResetForTest();
+      render(baseView);
+
+      // Manual mute-button click, THE RACE: an intervening poll (a genuinely unrelated render()
+      // call — same still-queued view) lands WHILE the click's own dismiss is still in flight,
+      // before it finally fails. That intervening render's own pass through syncDetections
+      // re-stores detectionsKey to match this exact still-queued view (mutedDismissSent already
+      // has the id, so it does not double-invoke — but the key gets re-stored as an unconditional
+      // side effect of reaching the top of the function). Un-remembering the id alone would then
+      // be inert: the NEXT identical render recomputes the SAME key the intervening poll just
+      // re-stored and bails before ever reaching the retry logic. Only invalidating detectionsKey
+      // in the catch itself — not relying on whatever the last render happened to leave behind —
+      // survives this ordering.
+      render(Object.assign({}, baseView, { detections: [
+        { id: 661, reference: "Micah 6:8", text: "He hath shewed thee, O man, what is good", confidence: 91 },
+      ] }));
+      window.__dismissDetectionDeferRejectOnce = true;
+      el("detections-list").querySelector(".detection").querySelector(".det-mute-btn").click();
+      await sleep(15); // the click's dismiss is now pending, not yet resolved
+      // The intervening poll: identical still-queued view, host hasn't caught up either.
+      render(Object.assign({}, baseView, { detections: [
+        { id: 661, reference: "Micah 6:8", text: "He hath shewed thee, O man, what is good", confidence: 91 },
+      ] }));
+      ok(window.__calls.filter(function (c) { return c.cmd === "dismiss_detection" && c.args.detectionId === 661; }).length === 1,
+         "CON-137 (Vera P2, manual mute button, race): the intervening poll does not double-fire while the button's own dismiss is still in flight");
+      window.__dismissDetectionDeferredReject();
+      await sleep(15); // now the click's original dismiss actually fails
+      // Re-present the SAME still-queued detection once more — this is the exact render the old,
+      // simpler fix could not recover from, because the intervening poll above had already
+      // re-stored detectionsKey to match it.
+      render(Object.assign({}, baseView, { detections: [
+        { id: 661, reference: "Micah 6:8", text: "He hath shewed thee, O man, what is good", confidence: 91 },
+      ] }));
+      await sleep(15);
+      ok(window.__calls.filter(function (c) { return c.cmd === "dismiss_detection" && c.args.detectionId === 661; }).length === 2,
+         "CON-137 (Vera P2, manual mute button, race): the deferred failure is still retried even though an intervening poll had already re-stored detectionsKey to match the unchanged view");
+      window.__detResetForTest();
+      render(baseView);
+
+      // === Sana's security review (PR #64, finding C): recordDetectionOutcome used to fire
+      // unconditionally BEFORE the dismiss settled, so a REFUSED dismiss still wrote a MUTED row
+      // to the audit trail — a false record, since nothing actually changed on the host — and,
+      // combined with Vera's P2 retry fix, a later successful retry would write a SECOND row for
+      // the very same id. Prove: (a) a rejected attempt writes no row at all, (b) exactly one row
+      // exists once a (retried) attempt actually succeeds — never two. ===
+      window.__detResetForTest();
+      render(baseView);
+      render(Object.assign({}, baseView, { detections: [
+        { id: 641, reference: "Jonah 1:17", text: "The Lord had prepared a great fish", confidence: 91 },
+      ] }));
+      window.__dismissDetectionRejectOnce = true;
+      el("detections-list").querySelector(".detection").querySelector(".det-mute-btn").click();
+      await sleep(15);
+      var histBtnC = el("det-view-history"), liveBtnC = el("det-view-live");
+      histBtnC.click();
+      ok(!Array.prototype.some.call(el("detections-history-list").querySelectorAll(".det-history-row"),
+        function (r) { return /Jonah 1:17/.test(r.textContent); }),
+         "CON-137 (Sana finding C): a REFUSED dismiss writes NO History row — the audit trail must not claim a mute the host never confirmed");
+      liveBtnC.click();
+      // The auto-dismiss loop retries on the next still-queued render of the SAME id — reject
+      // THIS attempt too, so a genuine second failure exercises the auto-dismiss LOOP's own
+      // recordDetectionOutcome placement, not only the button's (a single always-succeeding
+      // retry cannot tell "recorded on dispatch" apart from "recorded on confirmed success").
+      window.__dismissDetectionRejectOnce = true;
+      render(Object.assign({}, baseView, { detections: [
+        { id: 641, reference: "Jonah 1:17", text: "The Lord had prepared a great fish", confidence: 91 },
+      ] }));
+      await sleep(15);
+      histBtnC.click();
+      ok(!Array.prototype.some.call(el("detections-history-list").querySelectorAll(".det-history-row"),
+        function (r) { return /Jonah 1:17/.test(r.textContent); }),
+         "CON-137 (Sana finding C): a SECOND refused attempt, this time via the auto-dismiss loop's own retry, still writes no row — the loop's record must also wait for confirmation, not fire on dispatch");
+      liveBtnC.click();
+      // A THIRD attempt, finally not rejected, succeeds.
+      render(Object.assign({}, baseView, { detections: [
+        { id: 641, reference: "Jonah 1:17", text: "The Lord had prepared a great fish", confidence: 91 },
+      ] }));
+      await sleep(15);
+      histBtnC.click();
+      var jonahRowsC = Array.prototype.filter.call(el("detections-history-list").querySelectorAll(".det-history-row"),
+        function (r) { return /Jonah 1:17/.test(r.textContent); });
+      ok(jonahRowsC.length === 1,
+         "CON-137 (Sana finding C): once a retry actually succeeds, exactly ONE row is written for this id — not a duplicate from either earlier failed attempt");
+      liveBtnC.click();
+      window.__detResetForTest();
+      render(baseView);
+
+      // === Sana's security review (PR #64, finding D): Unmute reset detHistoryKey (so the
+      // History panel's own Unmute button disappeared immediately) but never detectionsKey — so
+      // an unchanged, still-queued detection for the just-unmuted reference recomputed to the
+      // SAME memoization key syncDetections already had stored and was silently skipped forever,
+      // never reappearing in the live panel short of some UNRELATED change perturbing the key. ===
+      window.__detResetForTest();
+      render(baseView);
+      render(Object.assign({}, baseView, { detections: [
+        { id: 651, reference: "Habakkuk 2:4", text: "The just shall live by his faith", confidence: 91 },
+      ] }));
+      el("detections-list").querySelector(".detection").querySelector(".det-mute-btn").click();
+      await sleep(15); // the id-651 dismiss succeeds — mutedRefs now has "Habakkuk 2:4"
+      // A NEW still-open id for the same now-muted reference: auto-dismissed and skipped, but
+      // this is the render call that leaves detectionsKey set to THIS exact dets array's hash —
+      // the precondition finding D's reproduction depends on.
+      render(Object.assign({}, baseView, { detections: [
+        { id: 652, reference: "Habakkuk 2:4", text: "The just shall live by his faith", confidence: 91 },
+      ] }));
+      await sleep(15); // let id 652's own retried dismiss settle before touching History
+      var histBtnD = el("det-view-history"), liveBtnD = el("det-view-live");
+      histBtnD.click();
+      var habRow = Array.prototype.filter.call(el("detections-history-list").querySelectorAll(".det-history-row"),
+        function (r) { return /Habakkuk 2:4/.test(r.textContent); })[0];
+      ok(!!habRow, "sanity: the confirmed mute is recorded in History before testing Unmute");
+      habRow.querySelector(".det-history-unmute").click();
+      liveBtnD.click();
+      // Re-present the EXACT SAME still-queued detection (id 652, unchanged) — the host has not
+      // caught up. Before finding D's fix this recomputes to the identical key syncDetections
+      // already has stored and the card never reappears.
+      render(Object.assign({}, baseView, { detections: [
+        { id: 652, reference: "Habakkuk 2:4", text: "The just shall live by his faith", confidence: 91 },
+      ] }));
+      ok(!!el("detections-list").querySelector('[aria-label="Dismiss Habakkuk 2:4"]'),
+         "CON-137 (Sana finding D): after Unmute, an unchanged still-queued detection reappears — detectionsKey is invalidated alongside detHistoryKey, not left stale");
       window.__detResetForTest();
       render(baseView);
 

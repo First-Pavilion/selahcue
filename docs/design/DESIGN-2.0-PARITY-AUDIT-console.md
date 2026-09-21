@@ -1409,3 +1409,64 @@ own finding also added 2 of those: verse-range regression coverage for the Edit/
 fix, mutation-verified). `EXPECTED_MIN_CHECKS`'s own history comment in the script is the single
 source of truth for this number going forward — this line will not be kept in sync with every
 future bump; read the script, not this document, for the current count.
+
+### Addendum — further PR #64 review (Vera + Sana), same remediation pass
+
+Four independent reviews landed on PR #64 after the addendum above: Cody (PASS, 2 findings, both
+fixed — the verse-range coverage gap folded into the count above, and this document's own stale
+count, corrected above), Quinn (independent re-verification, PASS), Vera (PASS, 2 non-blocking
+findings), and Sana (PASS with Accepted Risk — confirms all 3 blocking findings and Quinn's bug
+above are genuinely closed, plus 5 new findings A–E from her own testing of the shipped fix).
+Verified and fixed the same way as the addendum above: read the corrected `file:line` directly,
+mutation-tested every guard (broken, confirmed the specific assertion(s) went RED and nothing
+else, restored).
+
+**Vera's performance review — P2 (fixed):** a *refused* `dismiss_detection` for a muted reference
+was marked "handled" (`mutedDismissSent`) **before** the invoke resolved, and the `.catch()`
+swallowed the failure with no cleanup — so a failed dismiss was never retried, permanently
+reproducing the exact visible inconsistency (empty panel, stale count pill) finding 2 above was
+about, now persistent instead of transient. Fixed at both call sites (the auto-dismiss loop in
+`syncDetections`, the manual mute-button click in `buildDetectionCard`) by un-remembering the id
+on failure. Writing the mutation test for this surfaced a second, deeper gap in the *first*
+version of the fix: un-remembering the id alone is not sufficient, because `syncDetections` bails
+out at its own top (`if (key === detectionsKey) return;`) whenever the host's view is
+byte-identical across polls — exactly the "host hasn't caught up" case the retry exists for — so
+the retry was inert until `detectionsKey` is *also* invalidated on failure, including against a
+race where an unrelated poll lands between the click and the failure resolving (a dedicated
+DEFER+reject test hook reproduces that ordering for real). **Vera's P1** (an O(K²) History
+rebuild on the mute path) was assessed as genuinely low/non-blocking per her own review and is
+left open, not silently dropped — no ClickUp follow-up filed for it yet.
+
+**Sana's follow-up security review — 5 new findings (A–E), reviewed at PR #64 head `0c7adda`,
+before this addendum's own commits landed:**
+
+- **A (already fixed):** re-verified directly — the `isRange` branch's `stage` guard
+  (`loadChapter`, the range-coverage fix from the Cody finding above) is intact and correctly
+  gated; no further change needed.
+- **B (fixed, non-blocking):** `setCursor`'s `clearTimeout` only runs once `setCursor` itself is
+  reached, but `get_chapter` is an async host round trip — a timer already pending when a
+  read-only load *starts* could still fire mid-fetch on a slow (300ms+) trip, before
+  `setCursor(idx, false)` ever ran to cancel it: narrowed, not closed, exactly as Sana described.
+  `loadChapter` now also clears the timer before the fetch starts. Reproduced for real (not just
+  asserted) with a one-shot DEFER hook on the `get_chapter` mock that holds the fetch open while a
+  genuinely pre-armed timer (from a live verse click) gets a real chance to fire.
+- **C (fixed):** `recordDetectionOutcome(d, "muted")` fired unconditionally, before the dismiss
+  settled — so a refused dismiss still wrote a MUTED History row for a mute the host never
+  confirmed (a false record), and, combined with Vera's P2 retry, a later successful retry would
+  have written a *second* row for the same id. Moved into each call site's success branch so it
+  fires at most once, only once actually confirmed. The first version of this test was itself
+  incomplete in the same shape as the P2 test above — a single always-succeeding retry cannot
+  distinguish "recorded on dispatch" from "recorded on confirmed success" for the auto-dismiss
+  loop's own call site — caught only after strengthening the test to fail that loop's own retry
+  once too (fail, fail, succeed) before the mutation actually went RED.
+- **D (fixed):** the History Unmute button reset `detHistoryKey` but not `detectionsKey`, so a
+  still-queued detection for a just-unmuted reference recomputed to the same stored key and never
+  reappeared in the live panel. Fixed by invalidating `detectionsKey` there too.
+- **E (fixed, cosmetic):** `dist/app.css`'s `CON-134` comment block still named the pre-fix
+  `window.__openChapterForStage` as Edit's call (the exact stale-reference pattern behind blocking
+  finding 1 above) — corrected to name `window.__openChapterToBrowse` and explain why.
+
+**Verification for this addendum:** `scripts/operator_headless.py`, **1625** checks / 0 FAIL,
+confirmed by two independent runs in this worktree. As the correction above already established,
+`EXPECTED_MIN_CHECKS`'s own history comment in the script remains the single source of truth for
+this number going forward.

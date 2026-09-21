@@ -3570,8 +3570,12 @@
         // Without this, real race: Stage a verse (arms the 120ms timer), then WITHIN that window
         // click Edit on a different detection or re-stage from History — the old timer was never
         // cancelled and fires anyway, staging content neither read-only action asked for.
-        // Unconditional (runs on every call, not only staging ones) so the read-only guarantee
-        // holds regardless of what happened immediately before it.
+        // Sana's follow-up review (PR #64, finding B): this alone is narrowed, not closed — it
+        // only runs once setCursor itself is reached, and loadChapter's own get_chapter fetch
+        // (async, 300ms+ is realistic) sits BEFORE this call, so a timer already pending when the
+        // read-only flow started could still fire mid-fetch. loadChapter now clears it too,
+        // before that fetch starts (see its own comment) — this line is the complementary half,
+        // for a staging call that races in while a read-only fetch is already in flight.
         if (!stage) clearTimeout(stageTimer);
         if (stage) {
           if (dblclickBusy) return; // the dblclick flow owns staging right now
@@ -3656,6 +3660,15 @@
       // (window.__openChapterToBrowse; see its own comment for why this distinction exists).
       async function loadChapter(reference, cursorVerseNum, stage) {
         if (stage === undefined) stage = true;
+        // Sana's security review (PR #64, finding B): clearing the pending stage timer only
+        // inside setCursor closed most of the race but left a real window open — get_chapter
+        // below is an async host round trip (300ms+ is realistic), and a PRE-EXISTING pending
+        // timer (armed by an earlier Stage, before this read-only load even started) can still
+        // fire DURING that fetch, before setCursor(idx, false) ever runs to cancel it. Clearing
+        // it here too, before the fetch starts, closes that window instead of merely narrowing
+        // it. setCursor's own clearTimeout(stageTimer) remains for the complementary case: a
+        // stray staging call racing in WHILE this read-only fetch is still in flight.
+        if (!stage) clearTimeout(stageTimer);
         try {
           const ch = await invoke("get_chapter", {
             reference,
@@ -4313,6 +4326,13 @@
             unmute.onclick = () => {
               mutedRefs.delete(h.reference);
               detHistoryKey = ""; // force a re-render so the Unmute button clears immediately
+              // Sana's security review (PR #64, finding D): without also invalidating
+              // detectionsKey, a still-queued detection for this exact reference computes the
+              // SAME key it had while muted (nothing in view.detections changed, only mutedRefs
+              // did) — syncDetections's memoization short-circuits on that unchanged key and the
+              // card never reappears until some unrelated change perturbs the key. Verified live
+              // over repeated polls with an unchanged host view.
+              detectionsKey = "";
               renderDetectionHistory();
             };
             row.appendChild(unmute);
@@ -4483,8 +4503,36 @@
           if (mutedRefs.has(d.reference)) {
             if (!mutedDismissSent.has(d.id)) {
               rememberMutedDismiss(d.id);
-              invoke("dismiss_detection", { detectionId: d.id }).catch(() => {});
-              recordDetectionOutcome(d, "muted");
+              // Vera's performance review (PR #64, P2): recording the id BEFORE the invoke
+              // resolves means a FAILED dismiss (busy host, link blip, refusal) used to leave
+              // the id permanently marked as "handled" with no retry — the exact visible
+              // inconsistency Sana's original finding was about (empty panel, stale count
+              // pill), now persistent instead of transient. On failure, un-remember the id so
+              // the NEXT poll gets a genuine retry; the once-per-id guard still holds on the
+              // success path, which is the only path that matters for the repeat-fire bug.
+              //
+              // Sana's security review (PR #64, finding C): recordDetectionOutcome used to fire
+              // unconditionally, right here, BEFORE the invoke settled — so a refused dismiss
+              // still wrote a MUTED row to the audit trail, claiming a resolution that never
+              // actually reached the host. Worse, once the id is un-remembered on failure, the
+              // NEXT poll's retry re-enters this branch and would write a SECOND row for the
+              // same id. Moving the record into the success branch means the audit trail reports
+              // what actually happened, exactly once, no matter how many attempts it took — this
+              // one outcome genuinely depends on host confirmation, unlike "staged"/"dismissed"
+              // elsewhere in this file, which record the operator's own local action.
+              invoke("dismiss_detection", { detectionId: d.id })
+                .then(() => { recordDetectionOutcome(d, "muted"); })
+                .catch(() => {
+                  mutedDismissSent.delete(d.id);
+                  // Un-remembering the id alone is not enough: this whole function bails out at
+                  // its own top (`if (key === detectionsKey) return;`) whenever the host's view
+                  // is byte-identical to last time — which is exactly the "host hasn't caught up
+                  // yet" case this retry exists for. Without also invalidating detectionsKey, the
+                  // retry is inert: the next poll never even reaches this branch to re-check it.
+                  // Forcing one extra re-evaluation on a failure is a rare, cheap cost — the
+                  // memoization is a perf optimization, not a correctness guarantee.
+                  detectionsKey = "";
+                });
             }
             continue;
           }
@@ -4554,10 +4602,38 @@
             mutedRefs.delete(mutedRefs.values().next().value); // bounded — evict oldest first
           }
           mutedRefs.add(d.reference);
-          rememberMutedDismiss(d.id); // this id's dismiss + History record happens right here
+          rememberMutedDismiss(d.id); // this id's dismiss attempt happens right here; the History
+          // record now waits for confirmation (Sana's finding C, below) rather than firing here.
           detectionsKey = "";
-          recordDetectionOutcome(d, "muted");
-          act(() => invoke("dismiss_detection", { detectionId: d.id }));
+          // Not act() here (Vera's review, PR #64, P2): act() swallows a rejection internally
+          // (console.error only, never re-thrown), so there is no way to un-remember the id on
+          // failure from outside it. A failed dismiss must restore the retry the once-per-id
+          // guard would otherwise permanently deny it — same reasoning as the auto-dismiss path
+          // in syncDetections above.
+          //
+          // recordDetectionOutcome moved out of the synchronous click handler and into .then()
+          // (Sana's security review, PR #64, finding C): recording it optimistically, before the
+          // host confirmed the dismiss, wrote a MUTED row to the audit trail even when the
+          // refusal meant nothing actually changed on the host — and because a refused attempt
+          // un-remembers the id for retry, the following poll's success would have written a
+          // SECOND row for the same id. This is the one outcome that genuinely depends on host
+          // confirmation (unlike "staged"/"dismissed" elsewhere in this file, which record the
+          // operator's own local action and stay optimistic on purpose).
+          invoke("dismiss_detection", { detectionId: d.id })
+            .then((v) => {
+              recordDetectionOutcome(d, "muted");
+              lastRendered = "";
+              render(v);
+            })
+            .catch((e) => {
+              console.error(e);
+              mutedDismissSent.delete(d.id);
+              // Same reasoning as the auto-dismiss loop's catch: if a poll lands between this
+              // click and this failure, syncDetections's own memoization may already have
+              // re-stored detectionsKey to match the still-queued view, in which case clearing
+              // only mutedDismissSent leaves the retry inert. Forcing it here too closes that race.
+              detectionsKey = "";
+            });
         };
         head.appendChild(mute);
         row.appendChild(head);
