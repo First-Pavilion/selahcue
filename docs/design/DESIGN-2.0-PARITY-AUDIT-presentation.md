@@ -1128,7 +1128,7 @@ Out of scope, tracked separately: wiring `PlanItem`/song import/operator UI to p
 
 **Files:** `implementation/desktop/crates/selahcue-present/src/{theme.rs,slide.rs,compose.rs,deck.rs,lib.rs}`,
 `implementation/desktop/crates/selahcue-present/tests/{test_slide.rs,test_compose.rs}`.
-**PR:** (link added once opened).
+**PR:** https://github.com/First-Pavilion/selahcue/pull/59
 
 This closes `OUT-006` (S1) and `OUT-015` (S3) in the totals below.
 
