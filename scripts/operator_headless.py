@@ -601,7 +601,7 @@ if not check_jump_call_site_is_click_only():
 # `SELAHCUE_OPERATOR_DIST` override). Four independent runs across three separate worktrees now
 # agree on 1520; zero runs since have reproduced 1514. The number below is the one every
 # available run actually reports, not the one first written down.
-EXPECTED_MIN_CHECKS = 1544
+EXPECTED_MIN_CHECKS = 1548
 
 
 def find_chrome():
@@ -8735,6 +8735,15 @@ right after a generate/save");
           ok(_lum(wTdHoverBg) <= Math.max.apply(null, wTdStops.map(_lum)),
              "TD-012: hover does not LIGHTEN past the gradient's brightest rest stop — no `filter: brightness()` re-lightening the darkened fill");
         }
+        // Sana (security review, PR #58): the two checks above only ever read `background`, so a
+        // `filter: brightness()` added BACK onto this same hover rule — the exact re-lightening bug
+        // this finding exists to prevent, and exactly what .tb-golive/.timer-start still carry
+        // unmeasured — passed this whole suite silently (proven live: adding it back kept all 1544
+        // checks green). Assert the rule declares no re-lightening filter at all.
+        var wTdHoverFilter = wTdHoverRule ? /(?:^|;)\s*filter\s*:\s*([^;]+)/.exec(wTdHoverRule[1]) : null;
+        ok(!wTdHoverFilter || /^\s*none\s*$/.test(wTdHoverFilter[1]),
+           "TD-012: the hover rule carries no `filter` (found " + (wTdHoverFilter ? wTdHoverFilter[1].trim() : "none") +
+           ") — a brightness() filter stacked on an already-darkened fill would re-lighten it past AA, and the background-only checks above cannot see that");
         ok(_cr([255,255,255,1], _resolve("var(--sc-primary-hover)")) < 4.5,
            "TD-012 (control): --sc-primary-hover itself still measures BELOW AA-normal for white (" + _f(_cr([255,255,255,1], _resolve("var(--sc-primary-hover)"))) + ":1) — the TOKEN VALUE is untouched; only this rule stopped using it");
       }
@@ -8761,9 +8770,27 @@ right after a generate/save");
           ok(_lum(wPsHoverBg) <= Math.max.apply(null, wPsStops.map(_lum)),
              "PSC-005: hover does not LIGHTEN past the gradient's brightest rest stop — no `filter: brightness()` re-lightening the darkened fill");
         }
+        // Same gap Sana found on TD-012 above (PR #58 review): background-only checks miss a
+        // `filter: brightness()` stacked back onto this hover rule. Assert none is declared.
+        var wPsHoverFilter = wPsHoverRule ? /(?:^|;)\s*filter\s*:\s*([^;]+)/.exec(wPsHoverRule[1]) : null;
+        ok(!wPsHoverFilter || /^\s*none\s*$/.test(wPsHoverFilter[1]),
+           "PSC-005: the hover rule carries no `filter` (found " + (wPsHoverFilter ? wPsHoverFilter[1].trim() : "none") +
+           ") — a brightness() filter stacked on an already-darkened fill would re-lighten it past AA, and the background-only checks above cannot see that");
         ok(_cr([255,255,255,1], _resolve("var(--sc-primary-hover)")) < 4.5,
            "PSC-005 (control): --sc-primary-hover itself still measures BELOW AA-normal for white (" + _f(_cr([255,255,255,1], _resolve("var(--sc-primary-hover)"))) + ":1) — the TOKEN VALUE is untouched; only this rule stopped using it");
       }
+      // Vera (performance review, PR #58): moving the hover effect from `filter: brightness()` to
+      // `background: #5a48d0` broke `.ps-start:disabled`'s neutralisation — `filter: none` only ever
+      // cancelled a filter-based hover, and `:disabled`/`:hover` are equal specificity, so without its
+      // OWN `background` a disabled+hovered button visibly flips to the active fill (verified live in
+      // Chromium: old code stayed inert, this branch did not, before the fix below). This headless
+      // page cannot simulate a real `:hover`, so — same technique as the rest of this block — the
+      // disabled rule's own text is checked for a `background` declaration to win the cascade.
+      var wPsDisabledRule = /\.ps-start:disabled,\s*\.ps-start\[aria-disabled="true"\]\s*\{([^}]*)\}/.exec(window.__CSSTEXT || "");
+      ok(!!wPsDisabledRule, "PSC-005 (premise): the .ps-start:disabled rule is present in the shipped app.css");
+      var wPsDisabledBg = wPsDisabledRule ? /background(?:-image)?\s*:\s*([^;]+)/.exec(wPsDisabledRule[1]) : null;
+      ok(!!wPsDisabledBg,
+         "PSC-005: the disabled rule declares its OWN background — without one, `:hover` (equal specificity, later in a real disabled+hover) wins the fill and a disabled button visibly flips to the active colour on hover");
 
       // --- DLM-001: .dl-btn-primary:hover (Download modal primary button) --------------------
       var wDlHoverRule = /\.dl-btn-primary:hover\s*\{([^}]*)\}/.exec(window.__CSSTEXT || "");
