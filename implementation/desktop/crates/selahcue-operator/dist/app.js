@@ -25,6 +25,11 @@
         // DOM nor eats an in-flight Stage/Dismiss click.
         syncTranscript(view);
         syncDetections(view);
+        // CON-136 — the on-air link runs on EVERY poll, independent of syncDetections' own
+        // change-key: it must clear the instant view.live_scripture stops matching, even when
+        // view.detections itself hasn't changed (e.g. a Prev/Next or a blackout is what moved
+        // live content on, not a new detection).
+        syncDetOnAir(view);
         // System & recovery states (Frame G). MUST run before the early-returns below: the
         // change-key at 37-42 covers plan_name/items/themes/saved_themes only, so a host that
         // reports a NEW fault while the plan is unchanged would never reach a sync placed after
@@ -4129,17 +4134,268 @@
         return Math.floor(secs / 3600) + "h";
       }
 
+      // NOT fmtClock (defined earlier at ~line 3194, m:ss FROM A SECONDS COUNT — the run-sheet
+      // duration formatter). This is wall-clock TIME OF DAY from a ms epoch, for a History row's
+      // timestamp — a real name collision here (two functions named fmtClock, the later one
+      // silently winning) previously broke every duration render in the Service Plan panel.
+      function fmtHistoryTime(ms) {
+        const d = new Date(ms);
+        const h12 = ((d.getHours() + 11) % 12) + 1;
+        const m = d.getMinutes();
+        return h12 + ":" + (m < 10 ? "0" : "") + m;
+      }
+
+      function fmtCountdown(ms) {
+        const s = Math.max(0, Math.round(ms / 1000));
+        const m = Math.floor(s / 60);
+        const r = s % 60;
+        return m + ":" + (r < 10 ? "0" : "") + r;
+      }
+
+      // --- CON-136/CON-137/CON-138 — client-side state layered onto the host-authoritative
+      // view.detections, the same pattern detHealth/sttState already use elsewhere in this
+      // file. NONE of this changes what Stage/Approve/Dismiss DO (CON-120's Approve semantics
+      // are untouched) — it only decides how a detection the host already sent renders, and
+      // remembers what the operator already did with a reference. Every collection here is
+      // bounded (repo convention: no unbounded queues/caches).
+      const DET_COOLDOWN_MS = 90000; // 1:30 — a tuned client default; no host-reported cooldown exists
+      const DET_HISTORY_MAX = 50;    // bounded session audit trail
+      const DET_RESOLVED_MAX = 50;   // defence-in-depth cap; pruned by age on every write regardless
+      const DET_MUTED_MAX = 200;     // defence-in-depth cap against a pathological reference set
+      let onAirDetection = null;        // {reference, translation, text, approvedAtMs} | null
+      let detectionsHistory = [];       // bounded session trail: {id, reference, translation, outcome, resolvedAtMs}
+      // reference -> {at: ms epoch, id: the detection id that WAS resolved}. Keyed by reference
+      // AND id (not reference alone): a duplicate is a NEW detection event re-surfacing a
+      // reference already handled — the SAME id re-appearing (e.g. a host still reporting a
+      // just-Staged item as pending for one more poll before it catches up) is not a duplicate
+      // at all, it is the same pending item, and must stay fully actionable.
+      const recentlyResolved = new Map();
+      const mutedRefs = new Set();        // references the operator asked never to see again this service
+      const shownAnyway = new Set();      // detection ids un-suppressed once; pruned to the live queue below
+      let detHistoryKey = "";
+      let lastDetView = null; // most recent view syncDetOnAir saw, for the "Next verse" local dismiss
+
+      function pruneResolved() {
+        const now = Date.now();
+        for (const [ref, entry] of recentlyResolved) {
+          if (now - entry.at > DET_COOLDOWN_MS) recentlyResolved.delete(ref);
+        }
+        while (recentlyResolved.size > DET_RESOLVED_MAX) {
+          recentlyResolved.delete(recentlyResolved.keys().next().value);
+        }
+      }
+
+      // Recorded at CLICK time (optimistic, matching how every other action in this panel
+      // already behaves — nothing here waits for a second host round trip to confirm). Feeds
+      // both the duplicate-suppression cooldown (CON-137) and the History log (CON-138).
+      function recordDetectionOutcome(d, outcome) {
+        recentlyResolved.set(d.reference, { at: Date.now(), id: d.id });
+        pruneResolved();
+        detectionsHistory.push({
+          id: d.id,
+          reference: d.reference,
+          translation: d.translation || "",
+          outcome, // "staged" | "dismissed" — "auto" is unreachable today (FR-115 disables auto modes)
+          resolvedAtMs: Date.now(),
+        });
+        if (detectionsHistory.length > DET_HISTORY_MAX) {
+          detectionsHistory.splice(0, detectionsHistory.length - DET_HISTORY_MAX);
+        }
+        renderDetectionHistory();
+      }
+
+      function renderDetectionHistory() {
+        const list = document.getElementById("detections-history-list");
+        const empty = document.getElementById("detections-history-empty");
+        if (!list || !empty) return;
+        const key = JSON.stringify(detectionsHistory.map((h) => [h.id, h.outcome, h.resolvedAtMs]));
+        if (key === detHistoryKey) return;
+        detHistoryKey = key;
+        list.innerHTML = "";
+        empty.style.display = detectionsHistory.length ? "none" : "";
+        const rows = detectionsHistory.slice().reverse(); // newest first
+        for (const h of rows) {
+          const row = document.createElement("div");
+          row.className = "det-history-row";
+          row.setAttribute("role", "listitem");
+
+          const body = document.createElement("div");
+          body.className = "det-history-body";
+          const ref = document.createElement("div");
+          ref.className = "det-history-ref";
+          ref.textContent = h.reference;
+          body.appendChild(ref);
+          const badge = document.createElement("span");
+          badge.className = "det-history-badge " + h.outcome;
+          badge.textContent =
+            h.outcome === "staged" ? "STAGED" : h.outcome === "auto" ? "AUTO" : "DISMISSED";
+          body.appendChild(badge);
+          row.appendChild(body);
+
+          const time = document.createElement("span");
+          time.className = "det-history-time";
+          time.textContent = fmtHistoryTime(h.resolvedAtMs);
+          row.appendChild(time);
+
+          const restage = document.createElement("button");
+          restage.type = "button";
+          restage.className = "det-history-restage";
+          restage.setAttribute("aria-label", "Jump to " + h.reference + " in the Scriptures browser");
+          restage.textContent = "↺";
+          // A resolved detection's id is already gone from the host's pending queue —
+          // re-invoking approve_detection on it would be refused, not replayed. "Re-stage"
+          // instead reuses the SAME real chapter lookup Stage itself calls
+          // (window.__openChapterForStage), so the operator can manually stage/go-live it —
+          // never a fabricated replay of an event that already happened.
+          restage.onclick = () => {
+            const liveBtn = document.getElementById("det-view-live");
+            if (liveBtn) liveBtn.click();
+            const ctab = document.getElementById("ctab-scriptures");
+            if (ctab && !ctab.classList.contains("active")) ctab.click();
+            if (window.__openChapterForStage) window.__openChapterForStage(h.reference);
+          };
+          row.appendChild(restage);
+
+          list.appendChild(row);
+        }
+      }
+
+      // CON-138 — Live | History. Mirrors wireStageTab's tablist pattern exactly (Home/End +
+      // arrow-key roving tabindex), a distinct class family per the CON-142 lesson (never share
+      // a segmented-control class across features).
+      (function wireDetectionsView() {
+        const liveBtn = document.getElementById("det-view-live");
+        const histBtn = document.getElementById("det-view-history");
+        const liveView = document.getElementById("detections-live-view");
+        const histView = document.getElementById("detections-history-view");
+        if (!liveBtn || !histBtn || !liveView || !histView) return;
+        const show = (onLive) => {
+          liveBtn.classList.toggle("active", onLive);
+          histBtn.classList.toggle("active", !onLive);
+          liveBtn.setAttribute("aria-selected", onLive ? "true" : "false");
+          histBtn.setAttribute("aria-selected", onLive ? "false" : "true");
+          liveBtn.tabIndex = onLive ? 0 : -1;
+          histBtn.tabIndex = onLive ? -1 : 0;
+          liveView.hidden = !onLive;
+          histView.hidden = onLive;
+          if (!onLive) renderDetectionHistory();
+        };
+        liveBtn.onclick = () => show(true);
+        histBtn.onclick = () => show(false);
+        [liveBtn, histBtn].forEach((tab) => {
+          tab.addEventListener("keydown", (e) => {
+            if (e.key === "ArrowRight" || e.key === "ArrowLeft") {
+              e.preventDefault();
+              const toHistory = tab === liveBtn;
+              show(!toHistory);
+              (toHistory ? histBtn : liveBtn).focus();
+            } else if (e.key === "Home") {
+              e.preventDefault();
+              show(true);
+              liveBtn.focus();
+            } else if (e.key === "End") {
+              e.preventDefault();
+              show(false);
+              histBtn.focus();
+            }
+          });
+        });
+      })();
+
+      // CON-136 — the on-air link. Runs on every poll (called from render(), not gated by
+      // detectionsKey): it must clear the instant view.live_scripture stops matching, even when
+      // view.detections itself is unchanged.
+      function syncDetOnAir(view) {
+        lastDetView = view;
+        const box = document.getElementById("det-onair");
+        if (!box) return;
+        // Never a stale claim — the same field the manual double-click-to-live flow verifies
+        // against (app.js, stage_scripture/go_live flow) is the truth here too.
+        if (onAirDetection && (view.blackout || view.live_scripture !== onAirDetection.reference)) {
+          onAirDetection = null;
+        }
+        box.hidden = !onAirDetection;
+        if (!onAirDetection) return;
+        document.getElementById("det-onair-ref").textContent = onAirDetection.reference;
+        const tr = document.getElementById("det-onair-translation");
+        if (tr) {
+          tr.textContent = onAirDetection.translation;
+          tr.style.display = onAirDetection.translation ? "" : "none";
+        }
+        const snip = document.getElementById("det-onair-snippet");
+        if (snip) {
+          snip.textContent = onAirDetection.text;
+          snip.style.display = onAirDetection.text ? "" : "none";
+        }
+        const agoS = Math.max(0, Math.round((Date.now() - onAirDetection.approvedAtMs) / 1000));
+        document.getElementById("det-onair-meta").textContent =
+          "Live on main output · staged " + fmtAgo(agoS) + " ago";
+      }
+      (function wireDetOnAir() {
+        const clearBtn = document.getElementById("det-onair-clear");
+        const nextBtn = document.getElementById("det-onair-next");
+        // Same command the emergency footer's Clear Output button already invokes — not a new
+        // contract, and CON-136's own note: use the canonical #a3283a fill (see the CSS), never
+        // the frame's white-on-#ff4d4d (3.27:1, A11Y-DEFECT).
+        if (clearBtn) clearBtn.onclick = () => act(() => invoke("clear"));
+        // "Next verse" is a LOCAL dismiss only — it never touches output. The operator is done
+        // watching the link, not necessarily done with what's live (the auto-clear in
+        // syncDetOnAir already handles the case where output genuinely moved on).
+        if (nextBtn) {
+          nextBtn.onclick = () => {
+            onAirDetection = null;
+            syncDetOnAir(lastDetView || {});
+          };
+        }
+      })();
+
+      // Test-only reset for the module-level state above (recentlyResolved/mutedRefs/
+      // shownAnyway/detectionsHistory/onAirDetection are intentionally session-persistent in
+      // production — that IS the feature, CON-137's cooldown has to survive across polls — but a
+      // headless test suite that reuses the same stock reference strings ("John 3:16", etc.)
+      // across unrelated fixtures needs a clean slate between sections. No production code path
+      // calls this; it exists only so scripts/operator_headless.py can isolate test sections.
+      window.__detResetForTest = function () {
+        onAirDetection = null;
+        recentlyResolved.clear();
+        mutedRefs.clear();
+        shownAnyway.clear();
+        detectionsHistory = [];
+        detHistoryKey = "";
+        detectionsKey = "";
+      };
+
       function syncDetections(view) {
         // Newest detection first: the host queues them oldest-first, so reverse for display.
         const dets = (Array.isArray(view.detections) ? view.detections : []).slice().reverse();
-        // Confidence is part of the change key so a match-% update re-renders the row.
-        const key = JSON.stringify(dets.map((d) => [d.id, d.reference, d.text, d.confidence]));
+        // shownAnyway is scoped to ids currently in the live queue — once a detection is gone
+        // (staged/approved/dismissed/expired), any "show anyway" override for it is moot. This
+        // is what actually bounds the set; DET_RESOLVED_MAX-style hard caps aren't needed here.
+        const liveIds = new Set(dets.map((d) => d.id));
+        for (const id of shownAnyway) {
+          if (!liveIds.has(id)) shownAnyway.delete(id);
+        }
+        // Confidence is part of the change key so a match-% update re-renders the row. The
+        // cooldown/mute state is client-only, so it cannot be part of the host-derived key —
+        // instead, a coarse 5s time bucket is added ONLY while a tracked reference is actually
+        // in the current queue, so a duplicate card's countdown advances without busting the
+        // change-key (and the DOM rebuild it triggers) on every 1Hz poll in the common case.
+        const activeCooldown = dets.some((d) => {
+          const resolved = recentlyResolved.get(d.reference);
+          return (resolved != null && d.id !== resolved.id) || mutedRefs.has(d.reference);
+        });
+        const key = JSON.stringify([
+          dets.map((d) => [d.id, d.reference, d.text, d.confidence]),
+          activeCooldown ? Math.floor(Date.now() / 5000) : 0,
+        ]);
         if (key === detectionsKey) return;
         detectionsKey = key;
         const list = document.getElementById("detections-list");
         const empty = document.getElementById("detections-empty");
         if (!list || !empty) return;
-        // "N new" count pill in the card header (hidden when none).
+        // "N new" count pill in the card header (hidden when none) — counts the RAW host queue,
+        // matching what the host itself considers unactioned (a muted/duplicate item is still
+        // sitting in that queue until dismissed).
         const count = document.getElementById("detections-count");
         if (count) {
           count.hidden = dets.length === 0;
@@ -4150,109 +4406,265 @@
         // only happens when the operator clicks Stage (an explicit confirm).
         if (window.__rightTabsOnDetections) window.__rightTabsOnDetections(dets.length);
         list.innerHTML = "";
-        empty.style.display = dets.length ? "none" : "";
+        let rendered = 0;
         for (const d of dets) {
-          const row = document.createElement("div");
-          row.className = "detection";
-          row.setAttribute("role", "listitem");
-
-          const head = document.createElement("div");
-          head.className = "detection-head";
-          const ref = document.createElement("span");
-          ref.className = "ref";
-          ref.textContent = d.reference;
-          head.appendChild(ref);
-          // Translation label — WHICH translation the snippet is in (card spec: reference ·
-          // translation · match-%). Honest-empty when the host omits it.
-          if (d.translation) {
-            const tr = document.createElement("span");
-            tr.className = "det-translation";
-            tr.textContent = d.translation;
-            head.appendChild(tr);
+          // CON-137 — a MUTED reference is auto-dismissed the instant it re-detects: the
+          // operator already said "not this one again". Never rendered at all (not even as a
+          // duplicate card) — repeating the ask would defeat the point of muting it.
+          if (mutedRefs.has(d.reference)) {
+            invoke("dismiss_detection", { detectionId: d.id }).catch(() => {});
+            continue;
           }
-          // Match-% pill — ONLY when the host supplied a real confidence (honest-empty
-          // until R4 scoring lands); green when confident, amber tint when fuzzy.
-          if (typeof d.confidence === "number") {
-            const pct = Math.max(0, Math.min(100, Math.round(d.confidence)));
-            const m = document.createElement("span");
-            m.className = "match-pill" + (pct >= 90 ? "" : " fuzzy");
-            m.textContent = pct + "% MATCH";
-            head.appendChild(m);
-          }
-          row.appendChild(head);
-
-          if (d.text) {
-            const snip = document.createElement("div");
-            snip.className = "snippet";
-            snip.textContent = d.text; // untrusted verse text → textContent
-            row.appendChild(snip);
-          }
-
-          // Provenance meta: the spoken phrase (source transcript segment) + "spoken Ns ago".
-          const meta = document.createElement("div");
-          meta.className = "det-meta";
-          const seg =
-            typeof d.source_segment === "number" && Array.isArray(view.transcript)
-              ? view.transcript.find((s) => s.id === d.source_segment)
-              : null;
-          const metaParts = [];
-          if (seg && seg.text) {
-            const phrase = seg.text.length > 48 ? seg.text.slice(0, 48) + "…" : seg.text;
-            metaParts.push("“" + phrase + "”");
+          const resolved = recentlyResolved.get(d.reference);
+          // A duplicate is a genuinely NEW detection event (a different id) re-surfacing a
+          // reference already handled within the cooldown — the SAME id re-appearing is just
+          // the same pending item, never suppressed.
+          const withinCooldown =
+            resolved != null && d.id !== resolved.id && Date.now() - resolved.at < DET_COOLDOWN_MS;
+          if (withinCooldown && !shownAnyway.has(d.id)) {
+            list.appendChild(buildDuplicateCard(d, resolved.at, view));
           } else {
-            metaParts.push("Live transcript");
+            list.appendChild(buildDetectionCard(d, view));
           }
-          if (seg && typeof seg.start_ms === "number") {
-            const nowMs = view.transcript.reduce(
-              (mx, s) => Math.max(mx, s.end_ms || s.start_ms || 0),
-              0
-            );
-            const agoS = Math.max(0, Math.round((nowMs - seg.start_ms) / 1000));
-            metaParts.push("spoken " + fmtAgo(agoS) + " ago");
-          }
-          meta.textContent = metaParts.join(" · "); // untrusted phrase → textContent, never innerHTML
-          row.appendChild(meta);
-
-          const actions = document.createElement("div");
-          actions.className = "detection-actions";
-          // Three operator-confirmed actions (FR-115 — a detection never displays on its own).
-          // approve_detection dequeues + stages the verse in PREVIEW; only GoLive commits to the
-          // audience. So: Stage = review in Preview first; Approve = stage AND go live in one; both
-          // dequeue. Dismiss discards without staging.
-          const mkAction = (label, cls, aria, run) => {
-            const b = document.createElement("button");
-            b.type = "button";
-            if (cls) b.className = cls;
-            b.textContent = label;
-            b.setAttribute("aria-label", aria);
-            b.onclick = run;
-            return b;
-          };
-          const stage = mkAction("Stage", "det-stage", "Stage " + d.reference + " in Preview", () =>
-            act(async () => {
-              const v = await invoke("approve_detection", { detectionId: d.id }); // Preview only
-              if (window.__openChapterForStage) window.__openChapterForStage(d.reference);
-              return v;
-            })
-          );
-          const approve = mkAction("Approve", "det-approve", "Approve " + d.reference + " and show it live", () =>
-            act(async () => {
-              await invoke("approve_detection", { detectionId: d.id }); // stage in Preview
-              const v = await invoke("go_live"); // confirmed → push to the audience output
-              if (window.__openChapterForStage) window.__openChapterForStage(d.reference);
-              return v;
-            })
-          );
-          const dismiss = mkAction("Dismiss", "", "Dismiss " + d.reference, () =>
-            act(() => invoke("dismiss_detection", { detectionId: d.id }))
-          );
-          actions.appendChild(stage);
-          actions.appendChild(approve);
-          actions.appendChild(dismiss);
-          row.appendChild(actions);
-
-          list.appendChild(row);
+          rendered++;
         }
+        empty.style.display = rendered ? "none" : "";
+      }
+
+      function buildDetectionCard(d, view) {
+        const row = document.createElement("div");
+        row.className = "detection";
+        row.setAttribute("role", "listitem");
+        const hasConfidence = typeof d.confidence === "number";
+        const pct = hasConfidence ? Math.max(0, Math.min(100, Math.round(d.confidence))) : null;
+        const fuzzy = hasConfidence && pct < 90;
+        // CON-129 — card tint by confidence, the same token pair the match-pill already uses.
+        if (hasConfidence) row.classList.add(fuzzy ? "det-fuzzy" : "det-confident");
+
+        const head = document.createElement("div");
+        head.className = "detection-head";
+        const ref = document.createElement("span");
+        ref.className = "ref";
+        ref.textContent = d.reference;
+        head.appendChild(ref);
+        // Translation label — WHICH translation the snippet is in (card spec: reference ·
+        // translation · match-%). Honest-empty when the host omits it.
+        if (d.translation) {
+          const tr = document.createElement("span");
+          tr.className = "det-translation";
+          tr.textContent = d.translation;
+          head.appendChild(tr);
+        }
+        // Match-% pill — ONLY when the host supplied a real confidence (honest-empty
+        // until R4 scoring lands); green when confident, amber tint when fuzzy.
+        if (hasConfidence) {
+          const m = document.createElement("span");
+          m.className = "match-pill" + (fuzzy ? " fuzzy" : "");
+          m.textContent = pct + "% MATCH";
+          head.appendChild(m);
+        }
+        row.appendChild(head);
+
+        // CON-130 — the confidence bar: the one non-textual, non-colour cue for match strength.
+        // role="img" + an accessible name carries the same information a sighted operator reads
+        // from the fill width, rather than a bare decorative div a screen reader would skip.
+        if (hasConfidence) {
+          const track = document.createElement("div");
+          track.className = "det-bar-track";
+          track.setAttribute("role", "img");
+          track.setAttribute("aria-label", pct + "% match confidence");
+          const fill = document.createElement("span");
+          fill.className = "det-bar-fill" + (fuzzy ? " fuzzy" : "");
+          fill.style.width = pct + "%";
+          track.appendChild(fill);
+          row.appendChild(track);
+        }
+
+        if (d.text) {
+          const snip = document.createElement("div");
+          snip.className = "snippet";
+          snip.textContent = d.text; // untrusted verse text → textContent
+          row.appendChild(snip);
+        }
+
+        // Provenance meta: the spoken phrase (source transcript segment) + "spoken Ns ago".
+        const meta = document.createElement("div");
+        meta.className = "det-meta";
+        const seg =
+          typeof d.source_segment === "number" && Array.isArray(view.transcript)
+            ? view.transcript.find((s) => s.id === d.source_segment)
+            : null;
+        const metaParts = [];
+        if (seg && seg.text) {
+          const phrase = seg.text.length > 48 ? seg.text.slice(0, 48) + "…" : seg.text;
+          metaParts.push("“" + phrase + "”");
+        } else {
+          metaParts.push("Live transcript");
+        }
+        if (seg && typeof seg.start_ms === "number") {
+          const nowMs = view.transcript.reduce(
+            (mx, s) => Math.max(mx, s.end_ms || s.start_ms || 0),
+            0
+          );
+          const agoS = Math.max(0, Math.round((nowMs - seg.start_ms) / 1000));
+          metaParts.push("spoken " + fmtAgo(agoS) + " ago");
+        }
+        meta.textContent = metaParts.join(" · "); // untrusted phrase → textContent, never innerHTML
+        row.appendChild(meta);
+
+        // CON-134 — a low-confidence match owes the operator an honest explanation for why
+        // there's no ALTERNATIVES list, rather than one this build cannot honestly draw (no
+        // alternate-candidate data exists anywhere in the detection wire protocol — see the CSS
+        // comment on .det-alt-note).
+        if (fuzzy) {
+          const note = document.createElement("div");
+          note.className = "det-alt-note";
+          note.textContent = "No alternative matches available yet — use Edit to find the right verse.";
+          row.appendChild(note);
+        }
+
+        const actions = document.createElement("div");
+        actions.className = "detection-actions";
+        // Operator-confirmed actions (FR-115 — a detection never displays on its own).
+        // approve_detection dequeues + stages the verse in PREVIEW; only GoLive commits to the
+        // audience. So: Stage = review in Preview first; Approve = stage AND go live in one; both
+        // dequeue. Dismiss discards without staging.
+        const mkAction = (label, cls, aria, run) => {
+          const b = document.createElement("button");
+          b.type = "button";
+          if (cls) b.className = cls;
+          b.textContent = label;
+          b.setAttribute("aria-label", aria);
+          b.onclick = run;
+          return b;
+        };
+        const stage = mkAction("Stage", "det-stage", "Stage " + d.reference + " in Preview", () =>
+          act(async () => {
+            const v = await invoke("approve_detection", { detectionId: d.id }); // Preview only
+            if (window.__openChapterForStage) window.__openChapterForStage(d.reference);
+            recordDetectionOutcome(d, "staged");
+            return v;
+          })
+        );
+        actions.appendChild(stage);
+        if (fuzzy) {
+          // CON-134 — Edit replaces Approve for a low-confidence match: no one-click fast path to
+          // the audience for a match the detector itself is unsure of (334:142 draws only
+          // Stage/Edit/Dismiss). Non-destructive: it does not dequeue or dismiss, so the operator
+          // can still Stage/Dismiss afterward if the reference turns out to be right after all.
+          const edit = mkAction("Edit", "det-edit", "Look up " + d.reference + " to correct it", () => {
+            const ctab = document.getElementById("ctab-scriptures");
+            if (ctab && !ctab.classList.contains("active")) ctab.click();
+            if (window.__openChapterForStage) window.__openChapterForStage(d.reference);
+          });
+          actions.appendChild(edit);
+        } else {
+          const approve = mkAction(
+            "Approve",
+            "det-approve",
+            "Approve " + d.reference + " and show it live",
+            () =>
+              act(async () => {
+                await invoke("approve_detection", { detectionId: d.id }); // stage in Preview
+                const v = await invoke("go_live"); // confirmed → push to the audience output
+                if (window.__openChapterForStage) window.__openChapterForStage(d.reference);
+                recordDetectionOutcome(d, "staged");
+                // CON-136 — only claim on-air once the host confirms THIS reference is what
+                // actually went live (the same verification the manual double-click-to-live
+                // flow already uses at the stage_scripture/go_live call site above).
+                if (v && v.live_scripture === d.reference) {
+                  onAirDetection = {
+                    reference: d.reference,
+                    translation: d.translation || "",
+                    text: d.text || "",
+                    approvedAtMs: Date.now(),
+                  };
+                }
+                return v;
+              })
+          );
+          actions.appendChild(approve);
+        }
+        const dismiss = mkAction("Dismiss", "", "Dismiss " + d.reference, () =>
+          act(() => {
+            recordDetectionOutcome(d, "dismissed");
+            return invoke("dismiss_detection", { detectionId: d.id });
+          })
+        );
+        actions.appendChild(dismiss);
+        row.appendChild(actions);
+
+        return row;
+      }
+
+      // CON-137 — the de-emphasised duplicate card (335:140-146). lastResolvedAt is the ms
+      // epoch captured from recentlyResolved as of THIS render; the cooldown text is accurate as
+      // of now and advances again on the next render that reaches this function (see the
+      // activeCooldown 5s bucket in syncDetections).
+      function buildDuplicateCard(d, lastResolvedAt, view) {
+        const row = document.createElement("div");
+        row.className = "detection det-duplicate";
+        row.setAttribute("role", "listitem");
+
+        const head = document.createElement("div");
+        head.className = "detection-head";
+        const ref = document.createElement("span");
+        ref.className = "ref";
+        ref.textContent = d.reference;
+        head.appendChild(ref);
+        const pill = document.createElement("span");
+        pill.className = "det-dup-pill";
+        pill.textContent = "DUPLICATE";
+        head.appendChild(pill);
+        row.appendChild(head);
+
+        const agoS = Math.max(0, Math.round((Date.now() - lastResolvedAt) / 1000));
+        const body = document.createElement("div");
+        body.className = "det-dup-body";
+        body.textContent =
+          "Already shown " + fmtAgo(agoS) + " ago — auto-suppressed to avoid flicker on the output.";
+        row.appendChild(body);
+
+        const remainingMs = Math.max(0, DET_COOLDOWN_MS - (Date.now() - lastResolvedAt));
+        const cooldown = document.createElement("div");
+        cooldown.className = "det-dup-cooldown";
+        const ico = document.createElement("span");
+        ico.setAttribute("aria-hidden", "true");
+        ico.textContent = "⏱";
+        const label = document.createElement("span");
+        label.textContent = "Cooldown " + fmtCountdown(remainingMs) + " remaining";
+        cooldown.appendChild(ico);
+        cooldown.appendChild(label);
+        row.appendChild(cooldown);
+
+        const actions = document.createElement("div");
+        actions.className = "det-dup-actions detection-actions";
+        const showBtn = document.createElement("button");
+        showBtn.type = "button";
+        showBtn.textContent = "Show anyway";
+        showBtn.setAttribute("aria-label", "Show " + d.reference + " anyway, despite the duplicate cooldown");
+        showBtn.onclick = () => {
+          shownAnyway.add(d.id);
+          detectionsKey = ""; // force the next syncDetections to re-evaluate this id
+          syncDetections(view);
+        };
+        const muteBtn = document.createElement("button");
+        muteBtn.type = "button";
+        muteBtn.textContent = "Mute this verse";
+        muteBtn.setAttribute("aria-label", "Mute " + d.reference + " for the rest of this service");
+        muteBtn.onclick = () => {
+          if (mutedRefs.size >= DET_MUTED_MAX) {
+            mutedRefs.delete(mutedRefs.values().next().value); // bounded — evict oldest first
+          }
+          mutedRefs.add(d.reference);
+          detectionsKey = "";
+          act(() => invoke("dismiss_detection", { detectionId: d.id }));
+        };
+        actions.appendChild(showBtn);
+        actions.appendChild(muteBtn);
+        row.appendChild(actions);
+
+        return row;
       }
 
       // Live transcript is audio-based (R3): a Start / Stop listening toggle flips the

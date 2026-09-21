@@ -1272,3 +1272,55 @@ each re-tagged minor here, since the higher-severity half of each finding shippe
 
 Phase D ticket creation should re-check severity per ticket at scoping time rather than trust this
 table's arithmetic to the last digit — it is derived, not re-audited row by row.
+
+---
+
+## Reconciliation — 2026-09-21 (Frame D, Group 3: `CON-111/116/121/129/130/134/136/137/138`)
+
+**Author:** Farah (Frontend). **Scope:** ClickUp `17tnw2axptb` — the nine findings this ticket
+named, all confirmed OPEN by the 2026-09-20 reconciliation above. Verified by reading the
+committed `file:line` directly (not inferred), by running `scripts/operator_headless.py` against
+the branch properly rebased onto `origin/main` (1589 checks, 0 FAIL, including 45 new assertions
+covering these nine ids — the same total Cody's independent trial-merge in PR #61 review
+reported; a first draft of this section understated it as 1541 because the branch had not
+actually been rebased at the time, caught in that same review), and by comparing a live render of
+each new state against its Figma node with `get_screenshot`. Commit: see the PR opened from
+branch `feat/17tnw2axptb-console-detection-states`.
+
+### FIXED
+
+| Finding | Evidence |
+|---|---|
+| `CON-111` | `app.css` `#detections-list.stream { gap: 12px }` — scoped override so the shared `.stream` class (also used by the live-transcript log) keeps its own 4px rhythm. Verified: `getComputedStyle(el("detections-list")).gap === "12px"`. |
+| `CON-116` | `app.css` `.detection .det-meta { font-size: 12px }` (was 11px). The A11Y-DEFECT half of this finding (`--sc-text-muted` at 3.45–4.12:1) is intentionally NOT closed here — it is the cross-platform `--sc-text-tertiary` sweep (§8.4.1, Group 6, blocked on Q9), out of scope for a single-panel ticket. Not silently dropped: flagged in the PR/ticket handoff. |
+| `CON-129` | `app.css` `.detection.det-confident` / `.detection.det-fuzzy` — the card background now tints with the SAME token pair the match-pill already used (`--sc-preview*` / `--sc-warn*`), only when the host supplies a real confidence (honest-empty otherwise, matching the pill's own condition). Verified: computed `backgroundColor` differs between a 95% and a 72% card in the same render. |
+| `CON-130` | `app.js` `buildDetectionCard` renders a `.det-bar-track`/`.det-bar-fill` sized to the match %, confident=green / fuzzy=amber. `role="img"` + an accessible name carries the same information non-visually. Verified: `fill.style.width` matches the detection's `confidence`. |
+| `CON-121` | `index.html`/`app.css`, scoped to `#detections-empty` only (the shared `.fwd-empty`/`.fwd-icon`/`.fwd-msg` classes used by the transcript and slides empty states are untouched): glyph `✨` → the panel's own gold `✦` identity mark at full opacity; `#det-empty-msg` promoted to a 15px bold heading, distinct from the body copy below it. |
+| `CON-136` | `app.js` `syncDetOnAir` + `#det-onair` (static markup, `index.html`). Shown only once the host's own `view.live_scripture` genuinely equals the reference the operator approved — the SAME verification the existing double-click-to-live flow already uses (`app.js`, the `stage_scripture`→`go_live` call site) — and self-clears the instant that stops being true (another Go Live, Prev/Next, or a blackout), never a stale claim. "Clear output" invokes the same `clear` command the emergency footer uses; "Next verse" is a local-only dismiss that never touches output. Ink: the frame's white-on-`#ff4d4d` Clear-output fill (3.27:1, the finding's own A11Y-DEFECT note) is replaced with the canonical `#a3283a` (7.19:1) already shipped for `#blackout`/`#clear-all.armed`, per RISK-205/NFR-204 — not the frame's colour. Mutation-verified: disabling the self-clear check turns exactly the 3 self-clearing assertions RED and nothing else. |
+| `CON-137` | `app.js` `buildDuplicateCard` + a client-side cooldown (`recentlyResolved`, keyed by reference AND the detection id that was resolved — a re-poll of the SAME still-pending id is never treated as a duplicate, only a genuinely NEW detection event for an already-handled reference is). No "duplicate" signal exists anywhere in the detection wire protocol (grepped `implementation/desktop/crates/selahcue-{app,operator,lan}/src`, zero hits for `alternatives`/duplicate-detection fields) — this is built entirely from the operator's own recent Stage/Approve/Dismiss actions, never a host contract change. "Mute this verse" auto-dismisses future re-detections of that reference on the host too, not just client-side. Ink: the frame's de-emphasised reference is `--sc-text-muted` @ opacity-85 (3.16:1 at 15px Bold — an A11Y-DEFECT the original audit calls out explicitly at §8.5, "build at full opacity with a compliant ink"); shipped as `--sc-text-secondary` instead, the same accessible-substitution pattern this file already uses throughout (§8.1). Mutation-verified: dropping the id-distinctness check crashes the PRE-EXISTING Stage→Approve flow test (a real regression, not a hypothetical one) and is caught. |
+| `CON-138` | `index.html`/`app.js` — a `Live \| History` segmented control (`.det-view-seg`, a distinct class family per the `CON-142` lesson: never share a segmented-control class across features) and a session-only, bounded (`DET_HISTORY_MAX=50`) audit trail of Stage/Approve/Dismiss outcomes, since the host does not retain a resolved detection once dequeued — this is an honest session log, not a claim of durable host-side persistence. "↺ re-stage" jumps to the reference via the SAME real chapter lookup Stage itself uses (`window.__openChapterForStage`) rather than replaying a dequeued detection id the host would refuse. Mutation-verified (bounded-memory): disabling the `DET_HISTORY_MAX` trim turns exactly the 2 bounded-memory assertions RED (60 entries render instead of capping at 50) and nothing else. |
+
+**8 findings FIXED.**
+
+### FIXED (partial) — not counted above
+
+| Finding | What shipped | What is still open, and why |
+|---|---|---|
+| `CON-134` | The card-tint (`CON-129`) and confidence-bar (`CON-130`) treatments apply to state 4 (low-confidence) same as any other card. A fuzzy (<90%) card drops the Approve fast-path for **Edit** — real and non-destructive: it opens the reference in the Scriptures browser (the same `window.__openChapterForStage` call Stage already makes) so the operator can inspect/correct it manually, without dequeuing or dismissing the detection. | The **ALTERNATIVES list** itself (multiple candidate references with individual match scores, `334:151-152`) is NOT built. Grepped the whole detection pipeline and wire protocol (`selahcue-app`, `selahcue-operator`, `selahcue-lan`) for `alternatives` or any multi-candidate field — zero hits. No backend data source exists for alternate candidate references; building a list would mean inventing scores the detector never computed, which this codebase's product principle (honest-empty, never-fabricated detection data — the same reasoning behind `CON-135`'s auto-display block and the NDI/Import "later" affordances) forbids. This is a real product/data-model gap, not an effort shortfall — it needs the detection engine to actually surface candidates before a frontend ticket can honestly draw them. A one-line honest sub-line (`.det-alt-note`, "No alternative matches available yet — use Edit to find the right verse.") stands in its place. Flagged as a follow-up needing a product/architecture decision on scope, not scheduled here. |
+
+### Totals (cumulative, this reconciliation + 2026-09-20's)
+
+| | Count |
+|---|---:|
+| Total findings | 179 |
+| FIXED (all reconciliations) | 26 (18 prior + 8 here) |
+| FIXED (partial, not counted) | 1 (`CON-134`, this pass) |
+| SUPERSEDED (owner Q2 decision) | 6 |
+| **OPEN** | **147** (155 − 8) |
+
+The five remaining Frame D states this ticket's own scope note named as already shipped or
+out of scope — `CON-128` (listening, shipped earlier), `CON-139` (provider-unavailable, shipped
+earlier), `CON-135` (auto-display, blocked on Q8/FR-115), `CON-120` (Approve semantics, blocked
+on Q7 — untouched by this batch: Approve still does exactly what it did before), `CON-140`/`CON-141`
+(panel identity mark / header badge variants, never in this ticket's scope) — are unchanged by
+this pass.

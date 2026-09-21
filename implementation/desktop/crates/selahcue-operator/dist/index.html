@@ -457,6 +457,18 @@
                  auto-displays (operator-confirmed, FR-115); empty until the host reports real
                  candidates. The count shows on the tab above. -->
             <section id="detections" aria-label="Detected scriptures">
+          <!-- CON-138 — Live | History. "Live" is the actionable queue below; "History" is a
+               session-only audit trail of what was Staged/Approved/Dismissed (the host does not
+               retain a resolved detection once it is dequeued — nothing to poll for a durable
+               log, so this is client-side and bounded, not a substitute for real host-side
+               persistence). Wired in app.js (wireDetectionsView). -->
+          <div class="det-view-seg" role="tablist" aria-label="Detected scriptures view">
+            <button class="det-view-seg-btn active" id="det-view-live" type="button" role="tab"
+              aria-selected="true" aria-controls="detections-live-view">Live</button>
+            <button class="det-view-seg-btn" id="det-view-history" type="button" role="tab"
+              aria-selected="false" aria-controls="detections-history-view" tabindex="-1">History</button>
+          </div>
+          <div id="detections-live-view" role="tabpanel" aria-labelledby="det-view-live">
           <!-- Detection mode. "Operator confirms" is the only live mode — detections never
                auto-display (FR-115). Auto-stage / auto-approve are honest 'later' options
                (disabled), not wired, so the safety invariant is preserved. -->
@@ -484,13 +496,43 @@
                unreachable on screen. This element is checked on every render regardless of
                #detections-empty's visibility. -->
           <div id="det-engine-note" class="det-engine-note" role="status" hidden></div>
+          <!-- CON-136 — the on-air link. Static markup, JS (syncDetOnAir) fills the text and
+               toggles [hidden]; shown only while view.live_scripture still equals the reference
+               this card approved — see the CSS comment above .detection.det-onair for why. -->
+          <div id="det-onair" class="detection det-onair" hidden role="status">
+            <div class="detection-head">
+              <span class="ref" id="det-onair-ref"></span>
+              <span class="det-translation" id="det-onair-translation"></span>
+              <span class="det-onair-pill"><span class="det-onair-dot" aria-hidden="true"></span>ON AIR</span>
+            </div>
+            <div class="snippet" id="det-onair-snippet"></div>
+            <div class="det-meta" id="det-onair-meta"></div>
+            <div class="detection-actions">
+              <button id="det-onair-clear" type="button" class="det-onair-clear">Clear output</button>
+              <button id="det-onair-next" type="button" class="det-onair-next">Next verse</button>
+            </div>
+          </div>
           <div id="detections-list" class="stream" role="list" aria-label="Scripture detection approval queue"></div>
           <div id="detections-empty" class="fwd-empty">
-            <span class="fwd-icon" aria-hidden="true">✨</span>
+            <span class="fwd-icon" aria-hidden="true">✦</span>
             <span id="det-empty-msg" class="fwd-msg">No scriptures detected yet.</span>
             <span id="det-empty-sub" class="fwd-sub">Scriptures spoken aloud surface here to stage in one tap. Automatic
               detection (R4) never stages or goes live on its own — it stays operator-confirmed (FR-115).</span>
           </div>
+          </div><!-- /detections-live-view -->
+          <!-- CON-138 — the session history log. Populated by renderDetectionHistory (app.js);
+               bounded to DET_HISTORY_MAX entries, cleared on reload (no host persistence to
+               read back — an honest session-only trail, not a claim of a durable audit log). -->
+          <div id="detections-history-view" role="tabpanel" aria-labelledby="det-view-history" hidden>
+            <div id="detections-history-list" class="det-history-list" role="list"
+              aria-label="Detection history"></div>
+            <div id="detections-history-empty" class="fwd-empty">
+              <span class="fwd-icon" aria-hidden="true">↺</span>
+              <span class="fwd-msg">No detection history yet.</span>
+              <span class="fwd-sub">Scriptures you Stage, Approve or Dismiss appear here for this
+                service, with a way to jump back to any of them.</span>
+            </div>
+          </div><!-- /detections-history-view -->
             </section>
           </div><!-- /rpanel-detections -->
         </section><!-- /right-tabs -->
