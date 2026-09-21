@@ -108,15 +108,15 @@ from `docs/design/DESIGN-2.0-PARITY-AUDIT-presentation.md`.
 
 | ID | Mandatory | Criterion | Verifier | Expected result | Evidence | Status |
 |---|---|---|---|---|---|---|
-| C-001 | yes | `Theme` gains an optional `footer` field (an optional RegionStyle), additive | `cargo test -p selahcue-present` (serde round-trip + byte-stability tests) | compiles; built-in theme JSON unchanged (no `footer` key) when unset | test output | PENDING |
-| C-002 | yes | `Slide` gains an optional `song` field (an optional SongAttribution), additive, bounded | `cargo test -p selahcue-present` | compiles; existing `Slide` JSON unchanged when unset; over-bound input rejected by `within_bounds` | test output | PENDING |
-| C-003 | yes | A themed footer renders the CCLI number and author line when both theme.footer and slide.song are set | `cargo test -p selahcue-present --test test_compose` | new test asserts ink present in the footer region | test output | PENDING |
-| C-004 | yes | No footer renders when `theme.footer` is `None` or `slide.song` is `None`/blank | same test file | new test asserts no ink in the (unconfigured) footer area / no layer emitted | test output | PENDING |
-| C-005 | yes | `measure.rs` Key/Hash unchanged (OUT-013 trap avoided) | `git diff` review | `measure.rs` not modified, or diff shows no new shaping attribute | diff | PENDING |
-| C-006 | yes | Full local gate green | `make ci` (single run, worktree-scoped `CARGO_TARGET_DIR`) | exits 0 | terminal output | PENDING |
-| C-007 | yes | Reconciliation entry added for OUT-006/OUT-015 | manual diff review | `docs/design/DESIGN-2.0-PARITY-AUDIT-presentation.md` Reconciliation section updated | file diff | PENDING |
-| C-008 | yes | PR opened against `main`, draft until CI green | `gh pr view` | PR exists, later marked ready | PR URL | PENDING |
-| C-009 | yes | Independent review (Cody/Vera/Sana/Quinn) blocking findings resolved | review pipeline | all four review steps finished | ClickUp/PR comments | PENDING |
+| C-001 | yes | `Theme` gains an optional `footer` field (an optional RegionStyle), additive | `cargo test -p selahcue-present` (serde round-trip + byte-stability tests) | compiles; built-in theme JSON unchanged (no `footer` key) when unset | `no_builtin_theme_or_plain_slide_emits_a_footer_or_song_key`, `theme_footer_and_slide_song_serde_round_trip` — both PASS | PASS |
+| C-002 | yes | `Slide` gains an optional `song` field (an optional SongAttribution), additive, bounded | `cargo test -p selahcue-present` | compiles; existing `Slide` JSON unchanged when unset; over-bound input rejected by `within_bounds` | `song_attribution_within_bounds_rejects_an_over_length_field_and_accepts_a_boundary_one` — PASS | PASS |
+| C-003 | yes | A themed footer renders the CCLI number and author line when both theme.footer and slide.song are set | `cargo test -p selahcue-present --test test_compose` | new test asserts ink present in the footer region | `footer_renders_when_theme_has_a_footer_region_and_slide_has_song_metadata` — PASS | PASS |
+| C-004 | yes | No footer renders when `theme.footer` is `None` or `slide.song` is `None`/blank | same test file | new test asserts no ink in the (unconfigured) footer area / no layer emitted | `footer_does_not_render_when_the_theme_has_no_footer_region`, `footer_does_not_render_when_the_slide_has_no_song_metadata`, `footer_does_not_render_for_blank_song_attribution`, `builtin_themes_still_render_byte_identically_with_no_footer` — all PASS | PASS |
+| C-005 | yes | `measure.rs` Key/Hash unchanged (OUT-013 trap avoided) | `git diff` review | `measure.rs` not modified, or diff shows no new shaping attribute | `git show --stat HEAD` — `measure.rs` absent from the changed-files list | PASS |
+| C-006 | yes | Full local gate green | `make ci` (single run, worktree-scoped `CARGO_TARGET_DIR`) | exits 0 | Full run, single invocation, no concurrent session detected beforehand (`ps aux` clean). Final line: `== local Rust/Flutter gate: ALL GREEN ==`, `[exited with code 0]` | PASS |
+| C-007 | yes | Reconciliation entry added for OUT-006/OUT-015 | manual diff review | `docs/design/DESIGN-2.0-PARITY-AUDIT-presentation.md` Reconciliation section updated | "Update — 2026-09-21" subsection added under "Reconciliation — 2026-09-20", including the Figma-drift finding (see Risks) | PASS |
+| C-008 | yes | PR opened against `main`, draft until CI green | `gh pr view` | PR exists, later marked ready | To be opened as Draft immediately after this evaluation (see ClickUp comment for URL), then marked ready once remote GitHub Actions CI is also green — local `make ci` alone does not cover the 3-OS/GPU matrix or the WebKit smoke (`implementation/desktop/CLAUDE.md`'s "What make ci does not cover") | PENDING |
+| C-009 | yes | Independent review (Cody/Vera/Sana/Quinn) blocking findings resolved | review pipeline | all four review steps finished | Requested at handoff; not yet run at this evaluation — role-level completion (`VERIFIED_COMPLETE` for the whole ticket) is gated on this, but this Goal Contract's own scope (the Rust-compositor model/render change) is otherwise fully verified | PENDING |
 
 ## Verification plan
 
@@ -136,11 +136,35 @@ from `docs/design/DESIGN-2.0-PARITY-AUDIT-presentation.md`.
 - Target criterion: C-001..C-005 (model + compose + tests)
 - Hypothesis: adding `Theme.footer`/`Slide.song` additively and rendering via the existing
   `layout_region` path closes OUT-006/OUT-015 without touching `measure.rs` or `selahcue-gpu`.
-- Change or investigation: implement.
-- Verifier executed: `cargo test -p selahcue-present`
-- Result: (recorded after implementation)
-- New evidence: —
-- Decision: iterate
+- Change or investigation: implemented `Theme.footer`, `SongAttribution`, `Slide.song`,
+  `compose_slide_masked`'s footer render, 17 new tests.
+- Verifier executed: `cargo test -p selahcue-present` (all suites), `cargo clippy -p
+  selahcue-present --all-targets -- -D warnings`, `cargo fmt -p selahcue-present -- --check`,
+  `cargo check --workspace`, `cargo check -p selahcue-app --all-targets`, `cargo check
+  --manifest-path .../selahcue-operator/Cargo.toml`.
+- Result: all green on first implementation pass — no fix-up iteration needed. 17/17 new tests
+  PASS; 0 clippy warnings; fmt clean after one auto-format pass; whole workspace + operator
+  compile clean.
+- New evidence: independently verified against live Figma (file `SYQn5hFY8YVQKm3c6rw0eJ`) that
+  the `208:*` node subtree (the audit's sole citation for `OUT-006`) has been deleted from the
+  file since 2026-08-23 — does not change the hypothesis (the fix stayed geometry-agnostic) but
+  recorded as a finding; follow-up task spawned (`task_235bab3e`).
+- Decision: iterate (C-006/C-007 next)
+
+### Iteration 2
+
+- Target criterion: C-006, C-007 (full gate + reconciliation doc)
+- Hypothesis: the change is workspace-safe (no downstream crate breaks) and the full local gate
+  passes without needing further code changes.
+- Change or investigation: ran `make ci` (checked `ps aux` for a concurrent run first — none
+  found; `CARGO_TARGET_DIR` confirmed unset/local). Wrote the Reconciliation "Update —
+  2026-09-21" entry in `docs/design/DESIGN-2.0-PARITY-AUDIT-presentation.md`.
+- Verifier executed: `make ci` (single run, ~9 minutes, Rust workspace + feature-gated crates +
+  operator + Flutter + toolchain/launch-reachability checks).
+- Result: `== local Rust/Flutter gate: ALL GREEN ==`, exit code 0. No fix-up needed.
+- New evidence: none beyond the green run itself.
+- Decision: handoff (C-008/C-009 — PR + independent review — are the remaining, role-boundary
+  steps: opening/pushing a PR and requesting Cody/Vera/Sana/Quinn review)
 
 ## Risks and rollback
 
