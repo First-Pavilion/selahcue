@@ -116,7 +116,7 @@ from `docs/design/DESIGN-2.0-PARITY-AUDIT-presentation.md`.
 | C-006 | yes | Full local gate green | `make ci` (single run, worktree-scoped `CARGO_TARGET_DIR`) | exits 0 | Full run, single invocation, no concurrent session detected beforehand (`ps aux` clean). Final line: `== local Rust/Flutter gate: ALL GREEN ==`, `[exited with code 0]` | PASS |
 | C-007 | yes | Reconciliation entry added for OUT-006/OUT-015 | manual diff review | `docs/design/DESIGN-2.0-PARITY-AUDIT-presentation.md` Reconciliation section updated | "Update — 2026-09-21" subsection added under "Reconciliation — 2026-09-20", including the Figma-drift finding (see Risks) | PASS |
 | C-008 | yes | PR opened against `main`, draft until CI green | `gh pr view` | PR exists, later marked ready | https://github.com/First-Pavilion/selahcue/pull/59 — opened Draft, all remote GitHub Actions checks passed (`rust`/`operator shell`/`operator shell — release & native-toolchain features` × macos/ubuntu/windows, `launch-smoke` × macos/ubuntu, `dependency audit`, `supply chain`, `workflows`; `api`/`marketing`/`flutter controller` correctly path-filter-skipped, nothing touched), marked ready for review | PASS |
-| C-009 | yes | Independent review (Cody/Vera/Sana/Quinn) blocking findings resolved | review pipeline | all four review steps finished | Requested at handoff; not yet run at this evaluation — role-level completion (`VERIFIED_COMPLETE` for the whole ticket) is gated on this, but this Goal Contract's own scope (the Rust-compositor model/render change) is otherwise fully verified | PENDING |
+| C-009 | yes | Independent review (Cody/Vera/Sana/Quinn) blocking findings resolved | review pipeline | all four review steps finished | All four PASS, no blocking findings, independently confirmed via `gh api repos/First-Pavilion/selahcue/issues/59/comments` (not just the relayed summaries): Cody https://github.com/First-Pavilion/selahcue/pull/59#issuecomment-5760827047, Vera https://github.com/First-Pavilion/selahcue/pull/59#issuecomment-5760848895, Sana https://github.com/First-Pavilion/selahcue/pull/59#issuecomment-5760854234, Quinn https://github.com/First-Pavilion/selahcue/pull/59#issuecomment-5760816352. Two non-blocking follow-ups filed and linked: 17tnw2axr3y (visible=false coverage), 17tnw2axr55 (pre-existing RenameItem length cap). Consolidated report: https://claude.ai/artifact/DnzJr7vUUG6WyYjzvV2yq4. Also verified: a later CI run hit a transient, unrelated `selahcue-data` Windows flake (not this diff); targeted re-run passed clean, all checks green with nothing pending as of this evaluation | PASS |
 
 ## Verification plan
 
@@ -184,14 +184,20 @@ from `docs/design/DESIGN-2.0-PARITY-AUDIT-presentation.md`.
 ## Final evaluation
 
 - Validator command: `python3 ~/.claude/skills/goal/scripts/validate_goal_contract.py docs/delivery/goals/TASK-17tnw2axptk-ccli-attribution.md --completion`
-- Validator result: FAIL as expected — C-009 (independent review) is still PENDING at this point;
-  the validator is re-run once review resolves.
-- Independent verification result: 8/9 mandatory criteria PASS (all implementation, test, and
-  gate criteria). C-009 (Cody/Vera/Sana/Quinn) requested at this evaluation, not yet run.
-- Terminal state: **handoff** — this role's implementation work (model + compose + tests + both
-  local and remote CI) is complete and verified; the ticket is not `VERIFIED_COMPLETE` until the
-  review pipeline (C-009) finishes per the team operating contract. Not `BLOCKED` (nothing is
-  stuck), not `FAILED_LIMIT` (no failed attempts occurred), not `GATE_REVIEW` (no `/build` user
-  gate applies here) — this is the ordinary implementation-role → review-pipeline handoff.
+- Validator result: OK (completion) — 9/9 mandatory criteria PASS.
+- Independent verification result: 9/9 mandatory criteria PASS. C-009 (Cody/Vera/Sana/Quinn)
+  independently confirmed genuine and passing by querying the GitHub API directly rather than
+  trusting relayed summaries — see C-009's evidence for the four comment URLs. Along the way, a
+  relayed claim that a reviewer had left an uncommitted mutation in this worktree was checked and
+  found false (`git status`/`git diff HEAD` showed the worktree already clean); the actual source
+  was Cody's own temporary, self-reverted mutation test in his review process, not a leftover
+  here. Also found and resolved for real: a later CI run's `rust (windows-latest)` failure, a
+  transient WAL-checkpoint timing flake in `selahcue-data` (untouched by this diff) — confirmed
+  transient by re-running the job, which passed clean.
+- Terminal state: **VERIFIED_COMPLETE** — every mandatory criterion PASS, evidence recorded,
+  independent review passed with no blocking findings, validator green (both structural and
+  `--completion` modes). PR #59 is fully green (local `make ci` + remote GitHub Actions, all
+  jobs) and left open, marked ready for review, for the repo owner to merge — this role does not
+  merge its own PR.
 - Remaining failed or blocked criteria: (recorded at completion)
 - ClickUp final evidence comment: (recorded at completion)
