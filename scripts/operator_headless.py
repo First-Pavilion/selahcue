@@ -601,7 +601,7 @@ if not check_jump_call_site_is_click_only():
 # `SELAHCUE_OPERATOR_DIST` override). Four independent runs across three separate worktrees now
 # agree on 1520; zero runs since have reproduced 1514. The number below is the one every
 # available run actually reports, not the one first written down.
-EXPECTED_MIN_CHECKS = 1520
+EXPECTED_MIN_CHECKS = 1544
 
 
 def find_chrome():
