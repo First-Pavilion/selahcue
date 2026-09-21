@@ -42,6 +42,9 @@ All nodes live on page `0:1` of `SYQn5hFY8YVQKm3c6rw0eJ`. Link pattern:
 | 16 | **Desktop — Remote Control · Devices** (QR pair + role assignment) | `359:124` | **desktop app** · pairing + RBAC assignment (FR-086/089/147) |
 | 17 | **Mobile — Navigation & Config** | `363:124` | Flutter — role-scoped bottom tabs + ⓘ session sheet (matches built app) |
 | 18 | **Stage / Confidence Displays** — 3 themes + states (**individual frames**) | `373:133` · `373:159` · `374:128` · `374:151` · `374:166` · `375:128` | engine output · `StageTheme` |
+| 19 | **Transcripts** (2026-09-20; the surface with previously zero Figma coverage — see `TRANSCRIPTS-2.0-HANDOFF.md`) | `1050:2` (section "Transcripts — Design 2.0"; 7 frames: list default/empty/error, detail default, still-recording, consent-preview, edit-mode) | `dist/transcripts.js` + `dist/index.html` `#surface-transcripts` |
+
+Note (2026-09-20): this node map is known to be stale/incomplete beyond row 19's own addition — several already-shipped frames from later sessions (e.g. Settings' full 8-page expansion at `593:124`, the Download modal at `396:124`) are not yet reflected here. Row 19 only adds the Transcripts entry; a full repair of this table is tracked separately, not attempted in this pass.
 
 Sub-nodes worth bookmarking: Console body `312:150`, center `320:200`, right `320:201`; Theme canvas `317:141` / inspector `317:142`; Screens inspector `327:348`; Presentation canvas `329:178` / media `329:179`; Settings content `338:176`; Pre-service sidebar `344:221`.
 
