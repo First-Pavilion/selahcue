@@ -107,6 +107,10 @@ impl NoteProvider for LocalNoteProvider {
             // The scaffold invents nothing and extracts no scriptures at all (86akby820) —
             // there is nothing here to verify.
             scripture_verdicts: Vec::new(),
+            // No "Chapter markers"/"Main points" section exists in this scaffold at all
+            // (86akgqdw0) — there is nothing for `link_timestamps` to find here even once
+            // the operator layer runs it.
+            timestamps: Vec::new(),
         })
     }
 }

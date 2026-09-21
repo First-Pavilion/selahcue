@@ -411,7 +411,11 @@ const FLAT_SECTIONS: &[SectionSpec] = &[
     },
     SectionSpec {
         field: "chapter_markers",
-        heading: "Chapter markers",
+        // 86akgqdw0: reads `selahcue_core::providers::CHAPTER_MARKERS_HEADING` instead of a
+        // local literal — that crate's `link_timestamps` matches chapter-marker items by
+        // this exact heading, and it cannot depend on this crate, so the single definition
+        // lives there.
+        heading: selahcue_core::providers::CHAPTER_MARKERS_HEADING,
         gate: Some(|i| i.chapter_markers),
     },
     SectionSpec {
@@ -440,7 +444,12 @@ const FLAT_SECTIONS: &[SectionSpec] = &[
 ];
 
 /// The heading of the one hierarchical section (FR-122 "points/sub-points").
-pub const OUTLINE_HEADING: &str = "Main points";
+///
+/// Re-exported from `selahcue_core::providers` (86akgqdw0) rather than defined here: that
+/// crate's `link_timestamps` needs the same string to find the outline section, and it
+/// cannot depend on this crate (the dependency runs the other way), so the single
+/// definition lives there and this is the one call site that used to own it.
+pub use selahcue_core::providers::OUTLINE_HEADING;
 
 // ---------------------------------------------------------------------------
 // Request building
@@ -786,6 +795,12 @@ pub fn parse_draft(body: &str, inc: &IncludeInNotes) -> Result<(NoteDraft, Clamp
             // runs one layer up, in `selahcue-operator`, against every provider's output
             // uniformly rather than duplicating it per provider.
             scripture_verdicts: Vec::new(),
+            // Left empty here (86akgqdw0): linking a timestamp needs the transcript's real
+            // segments, which this module never receives — `NoteRequest::transcript` is a
+            // flattened `String` by construction (FR-132). `link_timestamps` runs one layer
+            // up, in `selahcue-operator`, against every provider's output uniformly, exactly
+            // like scripture verification above.
+            timestamps: Vec::new(),
         },
         log,
     ))

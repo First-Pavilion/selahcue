@@ -2025,7 +2025,10 @@ fn build_transcript_detail_view(
     let (draft, scripture_verification_note, ai_generated, ai_label, disclosure, notes_provider) =
         match draft_view {
             Some(view) => {
-                let (draft_json, note) = sermon_note_draft_json(view);
+                // `&t.segments` (86akgqdw0): this transcript's own real segments, already
+                // loaded — the borrow ends with this call, well before `t.segments` (or any
+                // other field of `t`) is read again below.
+                let (draft_json, note) = sermon_note_draft_json(view, &t.segments);
                 (
                     Some(draft_json),
                     note,
@@ -4575,6 +4578,7 @@ mod providers_view_tests {
             scriptures: Vec::new(),
             caveats: Vec::new(),
             scripture_verdicts: Vec::new(),
+            timestamps: Vec::new(),
         };
         let j = draft_json(&draft);
         assert_eq!(j["sections"][0]["points"][0]["text"], "parent");
@@ -4605,6 +4609,7 @@ mod providers_view_tests {
                 heading: "Chapter markers".to_string(),
             }],
             scripture_verdicts: Vec::new(),
+            timestamps: Vec::new(),
         };
         let j = draft_json(&draft);
         assert_eq!(j["sections"][0]["heading"], "Illustrations");
@@ -4630,6 +4635,7 @@ mod providers_view_tests {
             scriptures: Vec::new(),
             caveats: Vec::new(),
             scripture_verdicts: Vec::new(),
+            timestamps: Vec::new(),
         };
         let j = draft_json(&draft);
         assert_eq!(j["sections"][0]["empty_requested"], false);
@@ -4776,6 +4782,7 @@ mod scripture_verification_tests {
             scriptures: vec!["John 3:16".to_string(), "3 John 4:12".to_string()],
             caveats: Vec::new(),
             scripture_verdicts: Vec::new(),
+            timestamps: Vec::new(),
         };
         draft
             .caveats
@@ -4815,6 +4822,7 @@ mod scripture_verification_tests {
             scriptures: Vec::new(),
             caveats: vec![DraftCaveat::ScriptureVerificationIncomplete],
             scripture_verdicts: Vec::new(),
+            timestamps: Vec::new(),
         };
         let j = draft_json(&draft);
         assert_eq!(
@@ -5070,7 +5078,49 @@ fn draft_json(d: &selahcue_core::providers::NoteDraft) -> serde_json::Value {
             "reference": v.reference, "verified": v.verified,
         })).collect::<Vec<_>>(),
         "caveats": caveats_json,
+        // 86akgqdw0 (FR-124): a transcript-derived timestamp for a chapter marker or
+        // (best-effort) outline point, joined to its item by VALUE (`heading` + `text`) —
+        // exactly like `scripture_verdicts` above — never by position. Empty whenever
+        // `link_timestamps` was never run against real segments (the live-tail generation
+        // path, or a draft generated with chapter markers off) — the console must already
+        // tolerate that, the same way it tolerates an empty `scripture_verdicts`.
+        "timestamps": d.timestamps.iter().map(|t| serde_json::json!({
+            "heading": t.heading, "text": t.text, "offset_ms": t.offset_ms,
+        })).collect::<Vec<_>>(),
     })
+}
+
+/// Attach transcript-derived timestamps to `draft`'s chapter markers (and, best-effort, its
+/// outline points) — the ONE call site both `generate_sermon_notes` and
+/// `transcript_generate_notes` route through (86akgqdw0), so the linking behaviour cannot
+/// drift between the two entrypoints. `segments` is empty for the live-tail path (the
+/// operator holds no live segment structure there — see this ticket's Goal Contract for the
+/// documented scope boundary), which `link_timestamps` already handles gracefully (an empty
+/// `timestamps` result, never a panic).
+fn link_note_timestamps(
+    draft: &mut selahcue_core::providers::NoteDraft,
+    segments: &[selahcue_core::transcript::TranscriptSegment],
+) {
+    draft.timestamps = selahcue_core::providers::link_timestamps(&draft.sections, segments);
+}
+
+/// Best-effort read of transcript `id`'s segments, for re-linking timestamps on a
+/// persisted-draft reload/edit-save (`sermon_note_draft_json`'s `timestamps` field,
+/// 86akgqdw0). Any failure (no transcript store configured, no such transcript, a lock
+/// error) degrades to an empty slice — mirroring `notes_generated_for`'s existing "must
+/// never be the reason an otherwise-successful read fails" contract: a persisted draft
+/// still loads and displays correctly with no timestamps at all, which the console already
+/// has to tolerate (a draft generated with chapter markers off, or from the live-tail path,
+/// carries none either).
+fn transcript_segments_for(
+    state: &State<'_, AppState>,
+    transcript_id: i64,
+) -> Vec<selahcue_core::transcript::TranscriptSegment> {
+    with_transcript_db(state, |db| {
+        selahcue_data::transcript_repo::load(db, transcript_id)
+    })
+    .map(|t| t.segments)
+    .unwrap_or_default()
 }
 
 // ---------------------------------------------------------------------------------
@@ -5148,6 +5198,7 @@ mod sections_to_persist_tests {
             scriptures: Vec::new(),
             caveats,
             scripture_verdicts: Vec::new(),
+            timestamps: Vec::new(),
         }
     }
 
@@ -5354,8 +5405,17 @@ fn sections_from_input(input: Vec<NoteSectionInput>) -> Vec<selahcue_core::provi
 /// present only when at least one reference was actually (re-)checked. One return value,
 /// not two separate re-computations, since both come from the same `verify_scriptures`
 /// call — see the doc comment above for why this re-verifies on every load/edit-save.
+///
+/// `segments` (86akgqdw0) is re-linked through [`link_note_timestamps`] on every call, the
+/// same "recompute fresh, never persist" treatment `scripture_verdicts` already gets above
+/// and for the identical reason: the raw material (`sections`) survives every reload, so
+/// there is nothing to gain from persisting a derived value that can be recomputed exactly.
+/// Callers that have no segments to offer (none loaded, or the transcript store is
+/// unavailable) pass an empty slice — `link_timestamps` degrades to an empty `timestamps`
+/// result, never a panic.
 fn sermon_note_draft_json(
     v: &selahcue_lan::protocol::SermonNoteDraftView,
+    segments: &[selahcue_core::transcript::TranscriptSegment],
 ) -> (serde_json::Value, Option<&'static str>) {
     let sections: Vec<NoteSectionInput> =
         serde_json::from_str(&v.sections_json).unwrap_or_default();
@@ -5387,14 +5447,20 @@ fn sermon_note_draft_json(
     // Reuses `draft_json` rather than a second, slightly-different JSON builder — one
     // place knows the wire contract, whether the draft just arrived from a live
     // generation or was reconstructed here from persisted columns.
-    let json = draft_json(&selahcue_core::providers::NoteDraft {
+    let mut draft = selahcue_core::providers::NoteDraft {
         title: v.title.clone(),
         summary: v.summary.clone(),
         sections,
         scriptures,
         caveats,
         scripture_verdicts: verdicts,
-    });
+        // Overwritten immediately below by `link_note_timestamps` — listed here (rather
+        // than `..Default::default()`) so every field of a fresh `NoteDraft` stays visible
+        // at this construction site, matching this function's own existing style.
+        timestamps: Vec::new(),
+    };
+    link_note_timestamps(&mut draft, segments);
+    let json = draft_json(&draft);
     (json, note)
 }
 
@@ -5486,7 +5552,7 @@ mod sermon_note_codec_tests {
             created_at_ms: 1,
             edited_at_ms: 2,
         };
-        let (json, note) = sermon_note_draft_json(&view);
+        let (json, note) = sermon_note_draft_json(&view, &[]);
         assert_eq!(json["sections"], serde_json::json!([]));
         assert_eq!(json["scriptures"], serde_json::json!([]));
         assert!(note.is_none(), "nothing to verify, so no note either");
@@ -5509,7 +5575,7 @@ mod sermon_note_codec_tests {
             created_at_ms: 1,
             edited_at_ms: 2,
         };
-        let (json, note) = sermon_note_draft_json(&view);
+        let (json, note) = sermon_note_draft_json(&view, &[]);
         assert_eq!(json["title"], "A Title");
         assert_eq!(json["summary"], "A summary");
         assert_eq!(json["sections"][0]["heading"], "H");
@@ -5542,12 +5608,68 @@ mod sermon_note_codec_tests {
             created_at_ms: 1,
             edited_at_ms: 2,
         };
-        let (json, _note) = sermon_note_draft_json(&view);
+        let (json, _note) = sermon_note_draft_json(&view, &[]);
         assert_eq!(json["scripture_verdicts"][0]["reference"], "3 John 4:12");
         assert_eq!(json["scripture_verdicts"][0]["verified"], false);
         assert_eq!(
             json["caveats"],
             serde_json::json!([{"kind": "scripture_unverified", "reference": "3 John 4:12"}])
+        );
+    }
+
+    #[test]
+    fn sermon_note_draft_json_re_links_timestamps_fresh_from_the_passed_segments() {
+        // 86akgqdw0: timestamps are never persisted (same treatment as `scripture_verdicts`
+        // above) — this proves the reload path actually recomputes them from whatever
+        // segments the caller passes, not just that the field exists on the wire.
+        let view = selahcue_lan::protocol::SermonNoteDraftView {
+            title: "A Title".to_string(),
+            summary: None,
+            sections_json:
+                r#"[{"heading":"Chapter markers","items":["Opening prayer"],"points":[]}]"#
+                    .to_string(),
+            scriptures_json: "[]".to_string(),
+            ai_generated: true,
+            disclosure: Some("disc".to_string()),
+            provider: "SelahCue AI".to_string(),
+            model: None,
+            created_at_ms: 1,
+            edited_at_ms: 2,
+        };
+        let segments = [selahcue_core::transcript::TranscriptSegment {
+            id: 0,
+            start_ms: 4_200,
+            end_ms: 9_000,
+            text: "Let us open this morning in a word of prayer.".to_string(),
+        }];
+        let (json, _note) = sermon_note_draft_json(&view, &segments);
+        assert_eq!(
+            json["timestamps"],
+            serde_json::json!([{"heading": "Chapter markers", "text": "Opening prayer", "offset_ms": 4_200}])
+        );
+    }
+
+    #[test]
+    fn sermon_note_draft_json_with_no_segments_carries_no_timestamps() {
+        let view = selahcue_lan::protocol::SermonNoteDraftView {
+            title: "A Title".to_string(),
+            summary: None,
+            sections_json:
+                r#"[{"heading":"Chapter markers","items":["Opening prayer"],"points":[]}]"#
+                    .to_string(),
+            scriptures_json: "[]".to_string(),
+            ai_generated: true,
+            disclosure: Some("disc".to_string()),
+            provider: "SelahCue AI".to_string(),
+            model: None,
+            created_at_ms: 1,
+            edited_at_ms: 2,
+        };
+        let (json, _note) = sermon_note_draft_json(&view, &[]);
+        assert_eq!(
+            json["timestamps"],
+            serde_json::json!([]),
+            "no segments to link against must degrade to no timestamps, never a panic"
         );
     }
 }
@@ -5724,11 +5846,16 @@ async fn persist_generated_draft(
                 .stage_sermon_note_regeneration(transcript_id, draft)
                 .await
             {
-                Ok(Some(_)) => PersistOutcome {
-                    transcript_id: Some(transcript_id),
-                    pending_confirmation: true,
-                    previous_draft: Some(sermon_note_draft_json(&existing_view).0),
-                },
+                Ok(Some(_)) => {
+                    // Best-effort (86akgqdw0), same as every other reload path — see
+                    // `transcript_segments_for`'s own doc comment.
+                    let segments = transcript_segments_for(state, transcript_id);
+                    PersistOutcome {
+                        transcript_id: Some(transcript_id),
+                        pending_confirmation: true,
+                        previous_draft: Some(sermon_note_draft_json(&existing_view, &segments).0),
+                    }
+                }
                 Ok(None) => {
                     eprintln!(
                         "selahcue-operator: the host refused to stage the sermon-note regeneration"
@@ -5832,6 +5959,16 @@ async fn generate_sermon_notes(
                 }
                 outcome.draft.scripture_verdicts = verdicts;
             }
+            // 86akgqdw0 (FR-124): the live-tail path has no segment structure to link
+            // against at all — the operator holds no live `TranscriptLog`/segment array in
+            // Rust (the frontend hands this command a pre-flattened `String`). Called with
+            // an empty slice anyway, explicitly, so this scope boundary is visible here
+            // rather than only in a doc comment: `link_timestamps` degrades an empty
+            // `segments` input to an empty `timestamps` result, never a panic. A draft
+            // generated live still gains real timestamps once/if it is later reloaded from
+            // its (by-then-persisted) transcript, via `sermon_note_draft_json`'s fresh
+            // recomputation.
+            link_note_timestamps(&mut outcome.draft, &[]);
             // Best-effort, mirroring `with_providers`'s "persistence failure never blocks the
             // edit" contract: resolve the real transcript id from the HOST (never fabricated),
             // then persist against it. Either step failing (no store configured, host refusal,
@@ -6042,7 +6179,7 @@ async fn transcript_generate_notes(
     };
 
     match run_note_generation(cfg, transcript, &state).await {
-        Ok(outcome) => {
+        Ok(mut outcome) => {
             // FR-123's "the source transcript is unchanged" invariant, RE-VERIFIED rather than
             // assumed from `transcript_db` being a read-only connection: a from-history generate
             // must never persist a draft against a record that no longer matches what was
@@ -6057,6 +6194,13 @@ async fn transcript_generate_notes(
                         .to_string(),
                 );
             }
+            // 86akgqdw0 (FR-124): the ONE entrypoint with real, full-fidelity segment data —
+            // linked against the just-confirmed-unchanged `after.segments`, never `before`'s
+            // (identical content, but `after` is the copy the unchanged-source check just
+            // vouched for). This is the shared `link_note_timestamps` helper
+            // `generate_sermon_notes` also routes through, so the linking behaviour cannot
+            // drift between the two entrypoints.
+            link_note_timestamps(&mut outcome.draft, &after.segments);
 
             let draft = selahcue_lan::protocol::SermonNoteDraftInput {
                 title: outcome.draft.title.clone(),
@@ -6386,11 +6530,16 @@ mod transcript_generate_notes_tests {
 /// `update_sermon_note_draft`, and the FR-129 (86akgqdx8) `confirm_sermon_note_regeneration`/
 /// `discard_sermon_note_regeneration` below — "here is the CURRENT accepted draft", the same
 /// shape every one of those commands returns on success.
+///
+/// `segments` (86akgqdw0) is passed straight through to [`sermon_note_draft_json`] for its own
+/// fresh-recompute-on-every-read timestamp linking — every caller resolves it the same
+/// best-effort way, via [`transcript_segments_for`].
 fn sermon_note_view_ok_json(
     transcript_id: i64,
     view: &selahcue_lan::protocol::SermonNoteDraftView,
+    segments: &[selahcue_core::transcript::TranscriptSegment],
 ) -> serde_json::Value {
-    let (draft, scripture_verification_note) = sermon_note_draft_json(view);
+    let (draft, scripture_verification_note) = sermon_note_draft_json(view, segments);
     serde_json::json!({
         "ok": true,
         "transcript_id": transcript_id,
@@ -6418,7 +6567,10 @@ async fn load_sermon_note_draft(state: State<'_, AppState>) -> Result<serde_json
     };
     match state.backend.load_sermon_note_draft(transcript_id).await {
         Ok(Some(view)) => {
-            let (draft, scripture_verification_note) = sermon_note_draft_json(&view);
+            // Best-effort (86akgqdw0): a segments-read failure here must never block loading
+            // the draft itself — see `transcript_segments_for`'s own doc comment.
+            let segments = transcript_segments_for(&state, transcript_id);
+            let (draft, scripture_verification_note) = sermon_note_draft_json(&view, &segments);
             Ok(serde_json::json!({
                 "ok": true,
                 "transcript_id": transcript_id,
@@ -6484,7 +6636,10 @@ async fn update_sermon_note_draft(
         .await
     {
         Ok(Some(view)) => {
-            let (draft, scripture_verification_note) = sermon_note_draft_json(&view);
+            // Best-effort (86akgqdw0): a segments-read failure here must never block the
+            // edit response itself — see `transcript_segments_for`'s own doc comment.
+            let segments = transcript_segments_for(&state, transcript_id);
+            let (draft, scripture_verification_note) = sermon_note_draft_json(&view, &segments);
             Ok(serde_json::json!({
                 "ok": true,
                 "transcript_id": transcript_id,
@@ -6537,7 +6692,12 @@ async fn confirm_sermon_note_regeneration(
         .await
     {
         Ok(Some(slot)) => match slot.current {
-            Some(view) => Ok(sermon_note_view_ok_json(transcript_id, &view)),
+            // Best-effort (86akgqdw0), same as every other reload path — see
+            // `transcript_segments_for`'s own doc comment.
+            Some(view) => {
+                let segments = transcript_segments_for(&state, transcript_id);
+                Ok(sermon_note_view_ok_json(transcript_id, &view, &segments))
+            }
             None => Ok(serde_json::json!({
                 "ok": false, "error": "refused",
                 "message": "The host has no accepted draft for this transcript.",
@@ -6572,7 +6732,12 @@ async fn discard_sermon_note_regeneration(
         .await
     {
         Ok(Some(slot)) => match slot.current {
-            Some(view) => Ok(sermon_note_view_ok_json(transcript_id, &view)),
+            // Best-effort (86akgqdw0), same as every other reload path — see
+            // `transcript_segments_for`'s own doc comment.
+            Some(view) => {
+                let segments = transcript_segments_for(&state, transcript_id);
+                Ok(sermon_note_view_ok_json(transcript_id, &view, &segments))
+            }
             // No accepted draft at all is an odd state to discard against, but honest rather
             // than fabricated — mirrors `save_sermon_note_draft`'s own "no store configured"
             // shape for an unavailable store.

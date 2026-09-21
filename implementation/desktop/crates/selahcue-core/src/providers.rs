@@ -541,6 +541,399 @@ pub fn verify_scriptures(
     (verdicts, embedded_truncated)
 }
 
+// ---------------------------------------------------------------------------
+// Timestamp linking (86akgqdw0; FR-124)
+// ---------------------------------------------------------------------------
+
+/// The heading of FR-122's chapter-marker section (gated by
+/// [`IncludeInNotes::chapter_markers`]) — the single definition
+/// [`link_timestamps`] matches against. `selahcue_cloud::openai`'s `FLAT_SECTIONS` table
+/// reads this constant instead of its own string literal, so "which heading means chapter
+/// markers" cannot drift between the two crates.
+pub const CHAPTER_MARKERS_HEADING: &str = "Chapter markers";
+
+/// The heading of FR-122's one hierarchical section (points/sub-points). Promoted here from
+/// `selahcue_cloud::openai::OUTLINE_HEADING` (which now re-exports this constant) so
+/// [`link_timestamps`] — which lives in this crate and cannot depend on `selahcue-cloud`,
+/// the dependency runs the other way — has a single definition to match against too.
+pub const OUTLINE_HEADING: &str = "Main points";
+
+/// A transcript timestamp linked to one note item — a chapter marker (always attempted) or,
+/// where a confident match exists, a top-level outline point (best-effort only; no
+/// sub-points) — attached AFTER generation by matching the item's own text against the
+/// transcript's real segments. See [`link_timestamps`].
+///
+/// Matched to its item by VALUE (`heading` + the item's own exact `text`), the same pattern
+/// [`ScriptureVerdict`] uses against `scriptures`/section body text, and for the same
+/// reason: a console reading this list back does not need it to stay in lockstep by
+/// position with `NoteDraft::sections`, and (like `scripture_verdicts`) a duplicate item
+/// text within one section carries one shared timestamp rather than a second entry nothing
+/// could distinguish it from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NoteTimestamp {
+    /// The heading of the section this item belongs to — currently only
+    /// [`CHAPTER_MARKERS_HEADING`] or [`OUTLINE_HEADING`] ever produce one.
+    pub heading: String,
+    /// The note item's own text, exactly as it appears in the section — the join key.
+    pub text: String,
+    /// Offset from the recording's start, in milliseconds. **Never a model estimate**: this
+    /// is always either a real transcript segment's own `start_ms`, or (chapter markers
+    /// only, only when no segment shares any significant word with the marker at all) a
+    /// position interpolated between two real segments' timestamps — see
+    /// [`link_timestamps`]'s "Positional fallback" section. Bounded by
+    /// [`MAX_PLAUSIBLE_OFFSET_MS`].
+    pub offset_ms: u64,
+}
+
+/// Upper bound on transcript segments considered by one [`link_timestamps`] call —
+/// independent of any upstream count, since a STORED transcript's segments are explicitly
+/// UNCAPPED (`selahcue_data::transcript_repo`'s own reason to exist: see that module's doc
+/// comment). A segment past this bound is simply unreachable as a match target; never a
+/// crash, never unbounded work.
+pub const MAX_LINK_SEGMENTS: usize = 5_000;
+
+/// A segment whose own `start_ms` sits at or past this bound is treated as corrupt, not
+/// merely long — no realistic single continuous recording comes anywhere close to half a
+/// day, so a value this large can only be an upstream defect (most plausibly a
+/// negative-to-`u64` wraparound reading a damaged store row). Excluded from matching and
+/// from the positional fallback's span entirely: never clamped into range, never permitted
+/// to win a match or anchor a fallback by default. This is the bound that keeps a malformed
+/// stored segment from ever reaching the console as a "nonsensical jump target" (this
+/// ticket's own adversarial-fixture acceptance criterion).
+pub const MAX_PLAUSIBLE_OFFSET_MS: u64 = 12 * 60 * 60 * 1000; // 12h
+
+/// Items considered per section, per [`link_timestamps`] call — bounds the
+/// O(items x segments) matching cost independent of whatever the caller's own section/point
+/// counts happen to be. This crate cannot assume every caller already respects
+/// `selahcue_cloud::openai`'s own, tighter caps (`MAX_SECTION_ITEMS`/`MAX_POINTS`) — a
+/// degraded/local draft or a hand-built test is not bound by them at all.
+pub const MAX_LINK_ITEMS: usize = 128;
+
+// The premises the bounded-input tests in `tests/test_note_timestamps.rs` rest on, pinned
+// at COMPILE time — the same discipline `selahcue_cloud::openai` already uses for its own
+// caps (see that module's `const _: () = assert!(...)` block).
+const _: () = assert!(
+    MAX_LINK_SEGMENTS < 50_000,
+    "test_note_timestamps feeds MAX_LINK_SEGMENTS + 1 segments to prove the scan cap bites; \
+     raising this past 50_000 makes that test far too slow to run routinely"
+);
+const _: () = assert!(
+    MAX_LINK_ITEMS < 1_000,
+    "test_note_timestamps feeds MAX_LINK_ITEMS + 1 items to prove the item cap bites"
+);
+
+/// A small, hand-picked set of very common English connective words excluded from
+/// timestamp-matching scoring, so a marker text of mostly connective words does not
+/// spuriously "match" every segment that merely contains "the". Deliberately short — good
+/// enough for the coarse containment score [`overlap_score`] computes, not a claim of
+/// linguistic completeness.
+const STOPWORDS: &[&str] = &[
+    "the", "and", "for", "that", "this", "with", "from", "have", "your", "our", "his", "her",
+    "she", "they", "them", "but", "not", "into", "who", "what", "when", "where", "was", "were",
+    "are", "you", "all", "one", "out", "now", "then", "than", "will",
+];
+
+/// Lowercase alphanumeric-run tokens of at least 3 characters, minus [`STOPWORDS`] — the
+/// vocabulary [`overlap_score`] compares. Never panics on adversarial input (arbitrary
+/// Unicode, all-punctuation text, empty strings all degrade to an empty set).
+fn match_words(s: &str) -> std::collections::HashSet<String> {
+    s.to_lowercase()
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| w.len() >= 3 && !STOPWORDS.contains(w))
+        .map(str::to_string)
+        .collect()
+}
+
+/// How well `item_words` is covered by `segment_words` — the fraction of the ITEM's own
+/// significant words that also appear in the segment (containment, not Jaccard), so a short
+/// marker matched against a long segment is not penalised for words the segment has that the
+/// marker does not. `0.0` when `item_words` is empty, rather than dividing by zero.
+fn overlap_score(
+    item_words: &std::collections::HashSet<String>,
+    segment_words: &std::collections::HashSet<String>,
+) -> f64 {
+    if item_words.is_empty() {
+        return 0.0;
+    }
+    item_words.intersection(segment_words).count() as f64 / item_words.len() as f64
+}
+
+/// Find, from `eligible[start..]` (never before `start` — see [`link_timestamps`]'s
+/// monotonic-cursor rationale), the PLAUSIBLE segment (`start_ms <= MAX_PLAUSIBLE_OFFSET_MS`)
+/// with the highest [`overlap_score`] against `item_words`, breaking a tie toward the
+/// EARLIEST such segment (a later index only replaces the current best on a STRICTLY higher
+/// score). `segment_words[i]` must correspond to `eligible[i]` — precomputed once by the
+/// caller so this is never re-tokenized per item (an O(items x segments) re-tokenization of
+/// every segment for every item would be the actual hot spot at this function's own maximum
+/// item AND segment counts). Returns `None` only when there is no PLAUSIBLE segment in range
+/// at all — a real, implausible-filtered segment with a `0.0` score still returns `Some`.
+fn best_match(
+    eligible: &[crate::transcript::TranscriptSegment],
+    segment_words: &[std::collections::HashSet<String>],
+    start: usize,
+    item_words: &std::collections::HashSet<String>,
+) -> Option<(usize, f64)> {
+    let mut best: Option<(usize, f64)> = None;
+    for idx in start..eligible.len() {
+        if eligible[idx].start_ms > MAX_PLAUSIBLE_OFFSET_MS {
+            continue;
+        }
+        let score = overlap_score(item_words, &segment_words[idx]);
+        let better = match best {
+            Some((_, best_score)) => score > best_score,
+            None => true,
+        };
+        if better {
+            best = Some((idx, score));
+        }
+    }
+    best
+}
+
+/// The `(earliest, latest)` `start_ms` among `eligible`'s PLAUSIBLE segments, in scan order
+/// — the span [`link_timestamps`]'s positional fallback interpolates across. `None` when no
+/// segment in `eligible` is plausible at all (including an empty `eligible`), which is the
+/// one case the fallback has nothing safe to derive a position from and must simply not run.
+fn plausible_bounds(eligible: &[crate::transcript::TranscriptSegment]) -> Option<(u64, u64)> {
+    let mut first: Option<u64> = None;
+    let mut last: Option<u64> = None;
+    for s in eligible {
+        if s.start_ms > MAX_PLAUSIBLE_OFFSET_MS {
+            continue;
+        }
+        first.get_or_insert(s.start_ms);
+        last = Some(s.start_ms);
+    }
+    first.zip(last)
+}
+
+/// Fill every still-`None`, non-blank entry of `offsets` (chapter markers only — see
+/// [`link_timestamps`]'s "Positional fallback" doc section) by linear interpolation between
+/// its nearest RESOLVED neighbours, never by ordinal position among only the other unmatched
+/// entries.
+///
+/// `offsets[i]` corresponds to `texts[i]`; a blank (`texts[i].trim().is_empty()`) entry is
+/// skipped entirely — it is not a fallback candidate and, critically, not a neighbour anchor
+/// either, so it can never anchor a nonsensical interpolation for its own actual neighbours.
+///
+/// For each maximal run of consecutive unresolved candidates, the LEFT anchor is the nearest
+/// preceding candidate's own already-resolved offset (a real match from pass 1, or a value
+/// this same function already filled for an earlier run — runs are processed strictly
+/// left-to-right, so an earlier run's fills are always resolved before a later run reads
+/// past them) — or `first` when there is no preceding candidate at all. The RIGHT anchor is
+/// the nearest following candidate's offset, or `last` when there is none. Every point in the
+/// run is then placed at an even fraction of the `[left, right]` interval — `frac =
+/// (position-in-run + 1) / (run length + 1)`, so no fallback point lands exactly ON `left` or
+/// `right`, only strictly between them (or equal, only if `left == right`).
+///
+/// Because every anchor is itself either an existing (monotonic, per [`link_timestamps`]'s
+/// "Matching" pass) real match or a value already proven `>= ` its own left neighbour by this
+/// same interpolation, and every filled value lies in `[left, right]`, the WHOLE returned
+/// `offsets` sequence ends up non-decreasing in item order — matched and fallback-derived
+/// entries alike — never merely each subset non-decreasing on its own. Interpolating against
+/// only the transcript's global `first`/`last` span (an earlier revision's approach) does not
+/// have this property: a marker's ordinal position among *only the other unmatched* markers
+/// says nothing about where an ADJACENT matched marker already landed, and could place a
+/// later marker's fallback offset before an earlier marker's real match.
+fn fill_positional_fallback(offsets: &mut [Option<u64>], texts: &[&str], first: u64, last: u64) {
+    let candidates: Vec<usize> = (0..texts.len())
+        .filter(|&i| !texts[i].trim().is_empty())
+        .collect();
+    let mut c = 0usize;
+    while c < candidates.len() {
+        if offsets[candidates[c]].is_some() {
+            c += 1;
+            continue;
+        }
+        let run_start = c;
+        while c < candidates.len() && offsets[candidates[c]].is_none() {
+            c += 1;
+        }
+        let run_end = c; // exclusive, index into `candidates`
+        let left = if run_start > 0 {
+            offsets[candidates[run_start - 1]]
+                .expect("every candidate before run_start was already resolved by the loop above")
+        } else {
+            first
+        };
+        let right = if run_end < candidates.len() {
+            offsets[candidates[run_end]]
+                .expect("the candidate immediately after this run ended it by being resolved")
+        } else {
+            last
+        };
+        let span = right.saturating_sub(left) as f64;
+        let steps = (run_end - run_start + 1) as f64;
+        for (offset_in_run, pos) in (run_start..run_end).enumerate() {
+            let frac = (offset_in_run + 1) as f64 / steps;
+            offsets[candidates[pos]] = Some(left + (span * frac) as u64);
+        }
+    }
+}
+
+/// Attach a transcript timestamp to each chapter-marker item (always attempted) and each
+/// top-level outline point (best-effort only — see below) by matching the item's own text
+/// against the transcript's real segments (86akgqdw0; FR-124).
+///
+/// # Strategy: post-hoc matched, never model-estimated
+///
+/// This is the strategy decided and documented for this ticket, over asking the model to
+/// estimate a timestamp itself, for two independent reasons. First, the model is never
+/// shown segment boundaries in the first place: [`NoteRequest::transcript`] is a flattened
+/// `String`, by the same FR-132 egress-choke-point design that keeps live audio off the
+/// wire, so there is nothing for the model to estimate FROM without a new prompt field
+/// carrying per-segment timing — a new prompt-injection surface this ticket does not need
+/// to open. Second, even if it were shown timing, trusting a generative model to preserve an
+/// exact number through a summarization pass runs against this codebase's whole established
+/// posture toward model output: see [`verify_scriptures`], which checks a scripture
+/// reference the SAME way — independently, against ground truth this crate already holds,
+/// never by trusting what the provider claims about itself. Matching against the
+/// transcript's real segments needs no prompt change, costs no extra tokens, and reuses the
+/// exact "compute independently, join by value" shape [`ScriptureVerdict`] already
+/// established.
+///
+/// # Matching
+///
+/// For each item (in the order it appears in the draft), eligible segments are scanned in a
+/// single forward pass **starting from where the previous item's match left off** — a
+/// chapter marker or outline point occurs in the order the sermon was preached, so a later
+/// item is never matched to an earlier moment than one already assigned to an earlier item.
+/// This is enforced by construction (the search cursor only advances), not merely expected.
+///
+/// A segment is *eligible* when its own `start_ms` is at or under
+/// [`MAX_PLAUSIBLE_OFFSET_MS`]; at most [`MAX_LINK_SEGMENTS`] segments are ever scanned
+/// regardless of how many the caller supplies (the persisted store's segment count is
+/// explicitly UNCAPPED — see that constant's own doc comment).
+///
+/// # Positional fallback (chapter markers only)
+///
+/// This ticket's Acceptance Criteria say "each marker carries a timestamp" —
+/// unconditionally, not "each marker for which a confident textual match exists". A
+/// model-authored chapter-marker LABEL ("The Prodigal Son Returns") often shares little or
+/// no vocabulary with the actual spoken sentence at that moment, so requiring a positive
+/// word-overlap score for every marker would silently leave many markers unlinked in
+/// ordinary, non-adversarial use — failing the acceptance criterion in the common case, not
+/// just the edge case. So: when a marker's best textual match scores `0.0` against every
+/// eligible remaining segment (or none is eligible at all), it is placed by linear
+/// interpolation **between its nearest already-resolved neighbours** — the previous marker's
+/// own resolved offset (matched or itself already filled by this same fallback) on the left,
+/// and the next marker's own MATCHED offset on the right; the transcript's earliest/latest
+/// eligible `start_ms` stand in only at the true ends (before the first resolved marker, or
+/// after the last). This is deliberately NOT "ordinal position among only the other unmatched
+/// markers" — an earlier revision of this function did exactly that and could place an
+/// unmatched marker BEFORE an earlier, already-matched one (four markers `[M1@5000ms match,
+/// M2 no match, M3@10000ms match, M4 no match]` over a 0..20000ms transcript produced `M1=
+/// 5000, M2=0, M3=10000, M4=20000` — `M2` landing chronologically before `M1`, breaking the
+/// "Matching" section's own monotonic-forward guarantee for the markers that DID match, and
+/// unusable as an exportable, strictly-ordered YouTube chapter list). Interpolating between
+/// real resolved neighbours instead keeps the WHOLE returned list — matched and
+/// fallback-derived alike — non-decreasing in item order, never merely each subset on its
+/// own. This is still "derived from the source transcript" — every fallback offset lies
+/// between two values themselves derived from that transcript (a real match, or the
+/// transcript's own earliest/latest plausible timestamp) — never invented, simply a coarser
+/// derivation than a text match.
+///
+/// Outline points get NO positional fallback: a top-level point is FR-124's explicitly
+/// "ideally"/best-effort half, so a point with no confident textual match is simply left
+/// unlinked (absent from the returned list) rather than assigned a guessed position — the
+/// console must already tolerate an item with no timestamp (true of every item in a draft
+/// generated with chapter markers off, an existing, required case).
+///
+/// # Bounded and total
+///
+/// Never panics on adversarial input: an empty `segments`, a segment with
+/// `start_ms == u64::MAX`, a segment whose `end_ms < start_ms` (this function never reads
+/// `end_ms` at all — a row loaded straight from SQL is not guaranteed to have gone through
+/// [`crate::transcript::TranscriptLog::push`]'s clamp), thousands of segments, or a section
+/// with hundreds of items all degrade gracefully rather than erroring.
+pub fn link_timestamps(
+    sections: &[NoteSection],
+    segments: &[crate::transcript::TranscriptSegment],
+) -> Vec<NoteTimestamp> {
+    let scan_end = segments.len().min(MAX_LINK_SEGMENTS);
+    let eligible = &segments[..scan_end];
+    // Precomputed once, not per item: segment text does not change across items in one
+    // call, so this drops the tokenization cost to O(segments) instead of
+    // O(items x segments) at this function's own maximum item AND segment counts.
+    let segment_words: Vec<std::collections::HashSet<String>> =
+        eligible.iter().map(|s| match_words(&s.text)).collect();
+    let bounds = plausible_bounds(eligible);
+
+    let mut out = Vec::new();
+    let mut seen: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
+
+    for section in sections {
+        let is_chapter_markers = section.heading == CHAPTER_MARKERS_HEADING;
+        let is_outline = section.heading == OUTLINE_HEADING;
+        if !is_chapter_markers && !is_outline {
+            continue;
+        }
+        let texts: Vec<&str> = if is_chapter_markers {
+            section
+                .items()
+                .iter()
+                .map(String::as_str)
+                .take(MAX_LINK_ITEMS)
+                .collect()
+        } else {
+            section
+                .points()
+                .iter()
+                .map(|p| p.text.as_str())
+                .take(MAX_LINK_ITEMS)
+                .collect()
+        };
+        if texts.is_empty() {
+            continue;
+        }
+
+        // Pass 1: a real textual match, monotonic forward cursor.
+        let mut offsets: Vec<Option<u64>> = vec![None; texts.len()];
+        let mut cursor = 0usize;
+        for (i, text) in texts.iter().enumerate() {
+            if text.trim().is_empty() {
+                continue;
+            }
+            let words = match_words(text);
+            if words.is_empty() {
+                continue;
+            }
+            if let Some((idx, score)) = best_match(eligible, &segment_words, cursor, &words) {
+                if score > 0.0 {
+                    offsets[i] = Some(eligible[idx].start_ms);
+                    cursor = idx + 1;
+                }
+            }
+        }
+
+        // Pass 2 (chapter markers only): positional fallback for anything still unmatched,
+        // interpolated between its nearest RESOLVED neighbours (see this function's own doc
+        // comment, "Positional fallback", for why ordinal position among only the other
+        // unmatched markers is the wrong basis — it can place an unmatched marker before an
+        // earlier, already-matched one).
+        if is_chapter_markers {
+            if let Some((first, last)) = bounds {
+                fill_positional_fallback(&mut offsets, texts.as_slice(), first, last);
+            }
+        }
+
+        for (i, offset) in offsets.into_iter().enumerate() {
+            if let Some(offset_ms) = offset {
+                let key = (section.heading.clone(), texts[i].to_string());
+                if seen.insert(key.clone()) {
+                    out.push(NoteTimestamp {
+                        heading: key.0,
+                        text: key.1,
+                        offset_ms,
+                    });
+                }
+            }
+        }
+    }
+
+    out
+}
+
 /// A generated sermon-note draft. Always labelled AI-generated by the UI (FR-123);
 /// never overwrites the source transcript.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -565,6 +958,15 @@ pub struct NoteDraft {
     /// [`DraftCaveat::ScriptureUnverified`] in `caveats`, so a console that only reads the
     /// shared caveat list still sees it.
     pub scripture_verdicts: Vec<ScriptureVerdict>,
+    /// A transcript-derived timestamp for a chapter marker or (best-effort) outline point
+    /// (86akgqdw0; FR-124). Populated by [`link_timestamps`] — never by a `NoteProvider`
+    /// itself, since deriving one needs the transcript's real segments, which no
+    /// `NoteProvider` implementation holds (`NoteRequest::transcript` is a flattened
+    /// `String` by construction, FR-132). Empty for a provider/caller that never linked
+    /// timestamps at all — most notably every `NoteProvider::generate` call site, and the
+    /// live-tail generation path, which has no segment structure to link against (see
+    /// `link_timestamps`'s own doc comment).
+    pub timestamps: Vec<NoteTimestamp>,
 }
 
 /// Why a note generation could not proceed. Stable, actionable, and — importantly —

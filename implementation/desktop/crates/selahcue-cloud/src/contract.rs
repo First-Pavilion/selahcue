@@ -164,6 +164,10 @@ impl NoteDraftDto {
             // is the layer that runs verification today (see `main.rs`), and this contract
             // has no wire field to carry a pre-computed verdict even if it wanted to.
             scripture_verdicts: Vec::new(),
+            // No timestamp-linking equivalent either (86akgqdw0) — same reasoning: the
+            // operator is the layer that runs `link_timestamps`, and this unshipped v1
+            // contract has no wire field for it.
+            timestamps: Vec::new(),
         }
     }
 }

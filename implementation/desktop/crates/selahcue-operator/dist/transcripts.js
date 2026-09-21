@@ -570,8 +570,16 @@
 
   // Test hooks (CLAUDE.md bounded-memory discipline): a per-key Option-returning accessor, never a
   // global counter. `__trAvgRatio` is deleted — there is no more ratio (D1).
-  window.__trRowFor = function (segId) {
+  //
+  // Extracted to a plain local function (86akgqdw0) so `highlightJumpedRow` below — real
+  // production logic, not a test hook — has its own way to find a mounted row without calling
+  // through a `window.__tr*` name whose whole documented purpose is simulating input for the
+  // headless driver.
+  function rowElementFor(segId) {
     return rowsHost.querySelector('.tr-line[data-seg-id="' + segId + '"]') || null;
+  }
+  window.__trRowFor = function (segId) {
+    return rowElementFor(segId);
   };
   window.__trRenderedRowCount = function () { return rowsHost.children.length; };
   window.__trRenderCount = function () { return renderCount; };
@@ -623,6 +631,72 @@
     logEl.scrollTop = Math.max(0, Math.min(max, logEl.scrollTop + deltaPx)); // D5-exempt(test-hook): simulates a wheel tick
     recomputeWindow();
   };
+
+  // ---------- Jump-to-timestamp (86akgqdw0; FR-124; ADR-0026 rev 4) --------------------------
+  // A generated/saved draft's chapter-marker (and, where matched, outline-point) items carry a
+  // real transcript-derived `offset_ms` (`selahcue_core::providers::link_timestamps`, Rust side —
+  // see `timestampFor`/`renderDraftView` below). Clicking one jumps this log to that point. This
+  // is the ONE place in this file a `scrollTop` write is permitted outside the `init`/`test-hook`
+  // classes above (ADR-0026 rev 4, `D5-exempt(jump)`): a deliberate, click-triggered, one-shot
+  // navigation write, issued from a `click` handler and reachable from nowhere else — never from
+  // `scroll`/`wheel`/`keydown`/an animation frame, so it cannot race an in-flight native scroll
+  // animation the way D5 exists to forbid. See that ADR revision for the full argument.
+
+  // `segs` is ordered by `start_ms` ascending (`transcript_repo::load`'s own `ORDER BY ord`,
+  // which `append_segment`'s ord high-water mark keeps monotonic with append order/time). Binary
+  // search returns the LAST segment whose `start_ms <= ms` — the segment CONTAINING `ms` when it
+  // falls inside a real utterance, or the closest one before a silence gap. Returns `-1` only when
+  // `segs` is empty or `ms` is not a finite, non-negative number — the adversarial case this
+  // ticket's own acceptance criterion names (a malformed/out-of-range `offset_ms` from a hand-
+  // crafted or corrupted draft) — never an out-of-bounds index, never a thrown exception.
+  function findSegmentIndexForOffset(ms) {
+    if (!segs.length || typeof ms !== "number" || !isFinite(ms) || ms < 0) return -1;
+    var lo = 0, hi = segs.length - 1, ans = 0;
+    while (lo <= hi) {
+      var mid = (lo + hi) >> 1;
+      if (segs[mid].start_ms <= ms) { ans = mid; lo = mid + 1; }
+      else hi = mid - 1;
+    }
+    return ans;
+  }
+
+  // Jump the log to the segment nearest `ms` and briefly highlight it. Returns `false` — a no-op,
+  // never a crash, never a nonsensical scroll — for anything `findSegmentIndexForOffset` cannot
+  // resolve. A NaN/negative/absurdly-large `ms` degrades to "nothing to jump to" rather than an
+  // arbitrary `scrollTop` write.
+  function jumpToOffsetMs(ms) {
+    var idx = findSegmentIndexForOffset(ms);
+    if (idx < 0) return false;
+    var half = Math.floor(WINDOW_ROWS / 2);
+    var start = Math.max(0, idx - half);
+    var end = Math.min(segs.length, start + WINDOW_ROWS);
+    start = Math.max(0, end - WINDOW_ROWS); // re-clamp start if end got clamped near the tail
+    renderWindow(start, end); // a pure DOM mutation — no scrollTop write, same as any other move
+    // The landing position is ESTIMATE-accurate, not exact, for a row never previously visited
+    // (D1's per-row heights start at an estimate) — the same honest trade ADR-0026 already
+    // records for a big scrollbar-drag jump with no surviving anchor.
+    var target = Math.max(0, Math.min(offsetAt(idx), totalHeight()));
+    logEl.scrollTop = target; // D5-exempt(jump)
+    highlightJumpedRow(segs[idx].id);
+    return true;
+  }
+
+  // Transient landing marker — distinct from `.tr-line-corrected`'s permanent overlay: cleared
+  // eagerly on the NEXT jump (not just overwritten) so a jump to a row no longer mounted (a later
+  // scroll moved the window) never leaves a stale highlight behind.
+  var lastJumpSegId = null;
+  function highlightJumpedRow(segId) {
+    if (lastJumpSegId != null) {
+      var prev = rowElementFor(lastJumpSegId);
+      if (prev) prev.classList.remove("tr-line-jump-target");
+    }
+    lastJumpSegId = segId;
+    var row = rowElementFor(segId);
+    if (row) row.classList.add("tr-line-jump-target");
+  }
+  // Test hook: whether `segId`'s row currently carries the jump-target highlight — the headless
+  // driver has no way to read a computed CSS custom highlight state other than the class itself.
+  window.__trJumpTargetSegId = function () { return lastJumpSegId; };
 
   // ---------- Detected scripture (86akgqdxr; FR-130) — bounded, fixed-row-height window ---------
   // A transcript with a long/oratorical service can persist far more detections than the LIVE
@@ -1011,6 +1085,86 @@
     return v ? v.verified : null;
   }
 
+  // `d.timestamps` (86akgqdw0; FR-124) — a transcript-derived offset for a chapter-marker or
+  // outline-point item, joined by VALUE (`heading` + exact `text`), the same pattern
+  // `scripture_verdicts` above uses against `scriptures`. Returns `null` for anything malformed
+  // (a non-numeric/negative/non-finite `offset_ms` from a hand-crafted or corrupted draft) — the
+  // adversarial case this ticket's own acceptance criterion names — so a bad entry simply renders
+  // as "no timestamp for this item", never a broken badge and never a jump target at all.
+  function timestampFor(d, heading, text) {
+    var stamps = d.timestamps || [];
+    for (var i = 0; i < stamps.length; i++) {
+      var t = stamps[i];
+      if (
+        t && t.heading === heading && t.text === text &&
+        typeof t.offset_ms === "number" && isFinite(t.offset_ms) && t.offset_ms >= 0
+      ) {
+        return t.offset_ms;
+      }
+    }
+    return null;
+  }
+
+  // A clickable timestamp badge for a note item — `fmtTimestamp` (the same h:mm:ss/m:ss format
+  // the transcript log's own per-segment labels use) rather than the export's strict three-
+  // component `HH:MM:SS`, so the on-screen badge reads consistently with the rest of this console.
+  function makeTimestampBtn(ms) {
+    var label = fmtTimestamp(ms);
+    var btn = el("button", "tr-item-ts", label);
+    btn.type = "button";
+    btn.setAttribute("aria-label", "Jump to " + label + " in the transcript");
+    btn.addEventListener("click", function () { jumpToOffsetMs(ms); });
+    return btn;
+  }
+
+  // Always three zero-padded components (`HH:MM:SS`), unlike `fmtTimestamp` above — the
+  // Acceptance Criteria's own literal wording ("well-formed HH:MM:SS Label lines"), read as
+  // authoritative over the ticket's narrative example ("00:00 Intro", which reads as `MM:SS`
+  // shorthand): this is what a QA check verifies against, and every line is unambiguously
+  // well-formed this way regardless of the sermon's length. `null` for anything malformed.
+  function fmtHmsFull(ms) {
+    if (typeof ms !== "number" || !isFinite(ms) || ms < 0) return null;
+    var secs = Math.floor(ms / 1000);
+    var h = Math.floor(secs / 3600);
+    var m = Math.floor((secs % 3600) / 60);
+    var s = secs % 60;
+    return two(h) + ":" + two(m) + ":" + two(s);
+  }
+
+  // `HH:MM:SS Label` lines, one per chapter marker WITH a resolved timestamp, in the section's
+  // own (source) order — a marker with none (an empty transcript, or malformed data) is skipped
+  // rather than given a fabricated `00:00:00`.
+  function chapterMarkerLines(d) {
+    var section = (d.sections || []).filter(function (s) {
+      return s.heading === "Chapter markers";
+    })[0];
+    if (!section) return [];
+    return (section.items || []).map(function (label) {
+      var ms = timestampFor(d, "Chapter markers", label);
+      var hms = ms === null ? null : fmtHmsFull(ms);
+      return hms ? hms + " " + label : null;
+    }).filter(function (line) { return line !== null; });
+  }
+
+  // `null` when there is nothing to copy (no "Chapter markers" section, or none of its items
+  // resolved a timestamp) — the caller renders no button at all rather than a dead one.
+  function copyChapterMarkersBtn(d) {
+    var lines = chapterMarkerLines(d);
+    if (!lines.length) return null;
+    var DEFAULT_LABEL = "Copy chapter markers";
+    var btn = el("button", "tr-copy-chapters-btn", DEFAULT_LABEL);
+    btn.type = "button";
+    btn.addEventListener("click", function () {
+      var text = lines.join("\n");
+      if (!navigator.clipboard || !navigator.clipboard.writeText) return;
+      navigator.clipboard.writeText(text).then(function () {
+        btn.textContent = "Copied!";
+        window.setTimeout(function () { btn.textContent = DEFAULT_LABEL; }, 1500);
+      }, function () {});
+    });
+    return btn;
+  }
+
   function renderDraftHeader(host) {
     var hd = el("div", "pp-gen-hdr");
     hd.setAttribute("role", "status");
@@ -1050,9 +1204,21 @@
         return;
       }
       var ul = el("ul", "pp-gen-list");
-      (s.items || []).forEach(function (it) { ul.appendChild(el("li", null, it)); });
+      // 86akgqdw0 (FR-124): a matching timestamp (chapter markers, or a matched outline point)
+      // renders as a clickable badge BEFORE the item's own text — never replacing it.
+      (s.items || []).forEach(function (it) {
+        var li = el("li", null);
+        var ts = timestampFor(d, s.heading, it);
+        if (ts !== null) li.appendChild(makeTimestampBtn(ts));
+        li.appendChild(document.createTextNode(it));
+        ul.appendChild(li);
+      });
       (s.points || []).forEach(function (pt) {
-        var li = el("li", "pp-gen-point", pt && pt.text ? pt.text : "");
+        var text = pt && pt.text ? pt.text : "";
+        var li = el("li", "pp-gen-point");
+        var ts = timestampFor(d, s.heading, text);
+        if (ts !== null) li.appendChild(makeTimestampBtn(ts));
+        li.appendChild(document.createTextNode(text));
         var subs = (pt && pt.sub_points) || [];
         if (subs.length) {
           var sul = el("ul", "pp-gen-sublist");
@@ -1129,13 +1295,21 @@
     // Editing needs a transcript id to save against — always set here (this panel only ever
     // shows a draft for the currently OPEN transcript, `openId`). Also hidden while a
     // regeneration is pending (FR-129, 86akgqdx8) — see settings.js's identical gate for why.
-    if (currentDraft.transcriptId != null && !currentDraft.pendingConfirmation) {
+    // The copy action (86akgqdw0) needs neither a transcript id nor a host connection, and is
+    // unaffected by a pending regeneration (it only reads `d`, whichever draft is on screen) —
+    // so it renders independently of the Edit button below.
+    var copyBtn = copyChapterMarkersBtn(d);
+    var canEdit = currentDraft.transcriptId != null && !currentDraft.pendingConfirmation;
+    if (canEdit || copyBtn) {
       var actions = el("div", "pp-gen-actions");
-      var editBtn = el("button", "pp-gen-edit-btn", "Edit");
-      editBtn.type = "button";
-      editBtn.id = "tr-gen-edit";
-      editBtn.addEventListener("click", function () { editingDraft = true; renderCurrentDraft(); });
-      actions.appendChild(editBtn);
+      if (copyBtn) actions.appendChild(copyBtn);
+      if (canEdit) {
+        var editBtn = el("button", "pp-gen-edit-btn", "Edit");
+        editBtn.type = "button";
+        editBtn.id = "tr-gen-edit";
+        editBtn.addEventListener("click", function () { editingDraft = true; renderCurrentDraft(); });
+        actions.appendChild(editBtn);
+      }
       r.appendChild(actions);
     }
   }

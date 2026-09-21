@@ -1022,6 +1022,75 @@
       });
   }
 
+  // `d.timestamps` (86akgqdw0; FR-124) — ported unchanged from `transcripts.js`'s own reader
+  // (the same "port a new field to BOTH consoles" discipline this workstream's own history
+  // requires: a caveat/field rendered on one surface and silently missing on the other was a
+  // real bug class here, PR #48). This surface has no transcript-log virtualizer to jump
+  // within, so the timestamp renders as a plain label (see `renderDraftView` below) — never as
+  // a dead, falsely-clickable control.
+  function timestampFor(d, heading, text) {
+    var stamps = d.timestamps || [];
+    for (var i = 0; i < stamps.length; i++) {
+      var t = stamps[i];
+      if (
+        t && t.heading === heading && t.text === text &&
+        typeof t.offset_ms === "number" && isFinite(t.offset_ms) && t.offset_ms >= 0
+      ) {
+        return t.offset_ms;
+      }
+    }
+    return null;
+  }
+
+  function two(n) { return String(n).padStart(2, "0"); }
+
+  // Always three zero-padded components (`HH:MM:SS`) — the same format `transcripts.js` uses
+  // for the "Copy chapter markers" export, matching the Acceptance Criteria's literal wording.
+  // `null` for anything malformed (a non-numeric/negative/non-finite `offset_ms`).
+  function fmtHmsFull(ms) {
+    if (typeof ms !== "number" || !isFinite(ms) || ms < 0) return null;
+    var secs = Math.floor(ms / 1000);
+    var h = Math.floor(secs / 3600);
+    var m = Math.floor((secs % 3600) / 60);
+    var s = secs % 60;
+    return two(h) + ":" + two(m) + ":" + two(s);
+  }
+
+  // A plain, non-interactive timestamp label for a note item — see this file's header comment
+  // on why there is no click/jump behaviour on this surface.
+  function makeTimestampLabel(ms) {
+    return el("span", "pp-item-ts", fmtHmsFull(ms) || "");
+  }
+
+  function chapterMarkerLines(d) {
+    var section = (d.sections || []).filter(function (s) {
+      return s.heading === "Chapter markers";
+    })[0];
+    if (!section) return [];
+    return (section.items || []).map(function (label) {
+      var ms = timestampFor(d, "Chapter markers", label);
+      var hms = ms === null ? null : fmtHmsFull(ms);
+      return hms ? hms + " " + label : null;
+    }).filter(function (line) { return line !== null; });
+  }
+
+  function copyChapterMarkersBtn(d) {
+    var lines = chapterMarkerLines(d);
+    if (!lines.length) return null;
+    var DEFAULT_LABEL = "Copy chapter markers";
+    var btn = el("button", "pp-copy-chapters-btn", DEFAULT_LABEL);
+    btn.type = "button";
+    btn.addEventListener("click", function () {
+      var text = lines.join("\n");
+      if (!navigator.clipboard || !navigator.clipboard.writeText) return;
+      navigator.clipboard.writeText(text).then(function () {
+        btn.textContent = "Copied!";
+        window.setTimeout(function () { btn.textContent = DEFAULT_LABEL; }, 1500);
+      }, function () {});
+    });
+    return btn;
+  }
+
   function renderDraftView(r) {
     var d = currentDraft.draft || {};
     // Both empty-requested strings are suppressed entirely for a degraded (offline
@@ -1049,12 +1118,25 @@
         return;
       }
       var ul = el("ul", "pp-gen-list");
-      (s.items || []).forEach(function (it) { ul.appendChild(el("li", null, it)); });
+      // 86akgqdw0 (FR-124): a matching timestamp (chapter markers, or a matched outline point)
+      // renders as a plain label before the item's own text — see this file's header comment
+      // on why this surface never makes it clickable.
+      (s.items || []).forEach(function (it) {
+        var li = el("li", null);
+        var ts = timestampFor(d, s.heading, it);
+        if (ts !== null) li.appendChild(makeTimestampLabel(ts));
+        li.appendChild(document.createTextNode(it));
+        ul.appendChild(li);
+      });
       // FR-122 points/sub-points. Sub-points render as a NESTED list inside their parent point, so
       // the subordination the backend sent survives to the screen instead of being flattened into
       // one indistinguishable list.
       (s.points || []).forEach(function (pt) {
-        var li = el("li", "pp-gen-point", pt && pt.text ? pt.text : "");
+        var text = pt && pt.text ? pt.text : "";
+        var li = el("li", "pp-gen-point");
+        var ts = timestampFor(d, s.heading, text);
+        if (ts !== null) li.appendChild(makeTimestampLabel(ts));
+        li.appendChild(document.createTextNode(text));
         var subs = (pt && pt.sub_points) || [];
         if (subs.length) {
           var sul = el("ul", "pp-gen-sublist");
@@ -1167,13 +1249,21 @@
     // UNCONFIRMED new draft, and `update_sermon_note_draft` writes straight to the SAVED row —
     // letting the operator "edit" what they are looking at here would silently edit different
     // content than what they can see. Confirm/discard first (the banner above); edit afterward.
-    if (currentDraft.transcriptId != null && !currentDraft.pendingConfirmation) {
+    // The copy action (86akgqdw0) needs neither a transcript id nor a host connection, and is
+    // unaffected by a pending regeneration (it only reads `d`, whichever draft is on screen) —
+    // so it renders independently of the Edit button below.
+    var copyBtn = copyChapterMarkersBtn(d);
+    var canEdit = currentDraft.transcriptId != null && !currentDraft.pendingConfirmation;
+    if (canEdit || copyBtn) {
       var actions = el("div", "pp-gen-actions");
-      var editBtn = el("button", "pp-gen-edit-btn", "Edit");
-      editBtn.type = "button";
-      editBtn.id = "pp-gen-edit";
-      editBtn.addEventListener("click", function () { editingDraft = true; renderCurrentDraft(); });
-      actions.appendChild(editBtn);
+      if (copyBtn) actions.appendChild(copyBtn);
+      if (canEdit) {
+        var editBtn = el("button", "pp-gen-edit-btn", "Edit");
+        editBtn.type = "button";
+        editBtn.id = "pp-gen-edit";
+        editBtn.addEventListener("click", function () { editingDraft = true; renderCurrentDraft(); });
+        actions.appendChild(editBtn);
+      }
       r.appendChild(actions);
     }
   }
