@@ -1080,3 +1080,87 @@ grouping, not a distinct seventh severity slot — so of the six Part-A S1 slots
 
 Three blocking decisions (Q-02, Q-08, Q-10) named in the original audit remain unanswered and still
 gate the bulk of Part A step 2+ and all of Part B step 3+ of the suggested build order.
+
+### Update — 2026-09-21 (Farah, frontend-engineer role / Rust compositor) — `OUT-006` / `OUT-015` FIXED
+
+**Ticket:** ClickUp `17tnw2axptk`, "[Backend] Presentation output: CCLI/attribution model gap
+(OUT-006, OUT-015)".
+
+**What was actually wrong:** confirmed **model-missing**, not just-unwired — before this change,
+`selahcue-present::Theme` carried no footer/attribution region and `Slide` was exactly
+`{ title: String, body: Vec<String> }`; nothing in `selahcue-present` (or anywhere else in the
+desktop workspace outside the unrelated `selahcue-licensing` software-entitlement crate)
+referenced `ccli`/song attribution at all. PRD FR-021 defines the required copyright-metadata
+field set (title, author, ©year, publisher, CCLI#); `Slide.title` already covered title.
+
+**Fix, following the `band`/`font`/`letter_spacing_permille` additive pattern the audit itself
+recommended (Rust Step 2):**
+
+- `Theme.footer: Option<RegionStyle>` (`theme.rs`) — an optional positioned/styled text region,
+  additive with `skip_serializing_if`. Every built-in theme (`classic`, `high-contrast`,
+  `lower-third`) keeps `footer: None`, so their JSON and the
+  `builtin_themes_are_distinct_designs_and_names_round_trip` test stay byte-identical — per-role
+  templates that would set one are `OUT-009`/S8-3d, deliberately out of scope here.
+- `Slide.song: Option<SongAttribution>` (`slide.rs`) — `SongAttribution { author, ccli_number,
+  copyright_year, publisher }`, all `Option<String>`, additive with `skip_serializing_if`, bounded
+  (`MAX_SONG_ATTRIBUTION_FIELD_LEN` chars each, `within_bounds()`) per the repo's no-leak
+  convention. `footer_line()` formats the two fields the Figma `208:135` mock draws — `"CCLI
+  #7115744 · Sinach"`, degrading gracefully when only one is present; `copyright_year`/`publisher`
+  complete FR-021's compliance field set for a future richer footer format.
+- `compose.rs`'s `compose_slide_masked` renders the footer line into `theme.footer` (when set)
+  whenever `slide.footer_line()` returns content, through the SAME `layout_region`/`autofit_layers`
+  path title/body already use — no new text-shaping attribute reaches `measure::measure_word`, so
+  `measure.rs`'s memoization key/hash (the `OUT-013` trap) is untouched. Gated by the existing
+  `LayerMask.text` flag (no new mask category — no Part A/operator-UI change shipped in this
+  ticket, so a new category would be unreachable from the UI regardless). Footer text composes to
+  `Layer::Text`, the same layer kind the GPU compositor already documents skipping (`OUT-012`), so
+  `selahcue-gpu`/the ADR-0015 parity oracle are untouched by this change.
+
+**Evidence:** `cargo test -p selahcue-present` — 17 new tests (10 in `tests/test_slide.rs`, 7 in
+`tests/test_compose.rs`) covering serde round-trip, additive byte-stability (no `footer`/`song` key
+emitted when unset, for every built-in), bounds enforcement, footer-line formatting, and
+composition (renders when both theme+slide are set, does not render when either is absent or the
+song metadata is blank, respects `LayerMask.text`, deterministic, and every built-in theme's
+render output is byte-identical with/without song metadata present on the slide). `cargo clippy -p
+selahcue-present --all-targets -- -D warnings` clean. `make ci` — see the PR for the run.
+Out of scope, tracked separately: wiring `PlanItem`/song import/operator UI to populate
+`SongAttribution` end-to-end, and `OUT-009`'s per-content-role templates.
+
+**Files:** `implementation/desktop/crates/selahcue-present/src/{theme.rs,slide.rs,compose.rs,deck.rs,lib.rs}`,
+`implementation/desktop/crates/selahcue-present/tests/{test_slide.rs,test_compose.rs}`.
+**PR:** (link added once opened).
+
+This closes `OUT-006` (S1) and `OUT-015` (S3) in the totals below.
+
+**Figma drift found while verifying this fix (worth flagging, not blocking):** re-checking the
+live file directly (`get_metadata`/`get_design_context`, file `SYQn5hFY8YVQKm3c6rw0eJ`) turned up
+**zero** nodes with the `208:*` prefix anywhere in the document — frame `208:124` ("Theme
+templates — audience output (S8-3a)") and its children `208:126`/`208:130`/`208:135`/`208:137`,
+the sole Figma citation for `OUT-002` through `OUT-009`/`OUT-016`/`OUT-017` including the literal
+`CCLI #7115744 · Sinach` mock this finding's own evidence quotes, no longer exist at those ids
+(`204:*`, the Theme Designer reference, is also gone). `390:*` — Background — States — is intact
+and unchanged, so this is a targeted removal of that specific frame set, not a file-access
+problem. This does not block or invalidate this ticket's fix: the model stayed additive/generic
+(no built-in theme was wired with a footer; per-role templates matching those frames are
+`OUT-009`, already scoped to build-order Step 3), so it does not depend on the deleted mock's
+exact geometry. It does mean the audit's remaining Part B rows now cite a frame that no longer
+resolves — flagged as a follow-up (a UI/UX Designer re-verification task), not fixed here. Also
+found: a new, apparently undocumented "SONG COPYRIGHT & CCLI" settings-panel design (nodes near
+`584:440`/`592:*`) reading *"a song's copyright details — title, author, © year, publisher,
+CCLI# — in the song editor"* — independent corroboration, from current Figma, of the exact FR-021
+field set `SongAttribution` models here.
+
+### Totals (superseding the 2026-09-20 table above for these two rows)
+
+| | Count |
+|---|---:|
+| Total findings | 80 (63 `PME-` + 17 `OUT-`) |
+| FIXED | 6 (4 from 2026-09-20 + `OUT-006`, `OUT-015`) |
+| SUPERSEDED | 0 |
+| **OPEN** | **74** |
+
+Severity, Part B `S1` row only (the only severity row this update changes — Part A rows and Part B
+`S2`/`S3`/`S4` are unchanged from 2026-09-20 above): **0 open S1 in Part B** (`OUT-006` was the only
+one). `OUT-015` was `S3`; Part B's open `S3` count in the 2026-09-20 table already read 5, which
+already implicitly stood regardless of this fix — not re-tallied here to avoid restating the whole
+Part A + Part B severity matrix from a partial edit.
