@@ -598,21 +598,36 @@ if not check_jump_call_site_is_click_only():
 # reviewers (Quinn, Sana), each in their OWN fresh worktree pinned to the same commit, both
 # independently ran this file and both got 1520 — not 1514 — which is what prompted re-running
 # it a further two times in THIS worktree (1520 both times, `git status` clean throughout, no
-# `SELAHCUE_OPERATOR_DIST` override). Four independent runs across three separate worktrees now
-# agree on 1520; zero runs since have reproduced 1514. The number below is the one every
-# available run actually reports, not the one first written down.
+# `SELAHCUE_OPERATOR_DIST` override). Four independent runs across three separate worktrees
+# agreed on 1520 as the count AT THAT COMMIT; zero runs since have reproduced 1514. The lesson —
+# verify empirically after every change to this file, never hand-derive — still applies, and is
+# exactly what the next two corrections below are each about.
 #
-# Rebased onto origin/main after PR #58 merged (the shared gradient-hover contrast fix,
-# TD-012/PSC-005/DLM-001, which bumped this to 1544) and after this ticket's own 45 new
-# Detected-Scriptures assertions (CON-111/116/121/129/130/134/136/137/138) landed on top. Cody's
-# review of PR #61 caught this constant lagging main by exactly the amount this branch was
-# lagging main (4 commits, including PR #58's own bump commit) — the PR had claimed a rebase
-# that had not actually happened, and 1544 was therefore 45 checks looser than the real merged
-# total. Re-derived the only honest way, by actually running the file against the real rebase:
-# 1589, confirmed by two independent runs in this worktree (both 1589, 0 FAIL, `git status`
-# clean throughout, no `SELAHCUE_OPERATOR_DIST` override) and matching Cody's own independent
-# trial-merge count exactly.
-EXPECTED_MIN_CHECKS = 1589
+# 1520 -> 1544: ClickUp 17tnw2axpt9 (PR #58) added 24 assertions (TD-012/PSC-005/DLM-001 gradient-
+# hover contrast, mirroring the existing PME-005 block).
+# 1544 -> 1548: PR #62, remediating that PR's own review findings, added 4 more (a `filter` guard
+# on the TD-012/PSC-005 hover checks Sana found missing, plus a PSC-005 disabled-state guard Vera's
+# finding required).
+# 1548 -> 1589: unrelated ticket 17tnw2axptb (PR #61) added its own 45 Detected-Scriptures
+# assertions (CON-111/116/121/129/130/134/136/137/138) on top, in parallel. Its branch had claimed
+# a rebase onto main that had not actually happened, so its own copy of this constant read 1544 —
+# 45 checks looser than the real merged total. Cody's review of PR #61 caught the drift; re-derived
+# the only honest way, by actually running the file against the real rebase: 1589, confirmed by two
+# independent runs (both 1589, 0 FAIL) and matching Cody's own independent trial-merge count.
+# 1589 -> 1596: same PR #62, round 2 (rebased onto the by-then-merged main above) — Cody and Vera
+# independently flagged that the PSC-005 disabled-state guard only checked a `background` was
+# DECLARED, not that its VALUE was right (a nonsense `background: red` would have passed). Added 3
+# more checks comparing it against the rest-state rule's own value instead of just its presence,
+# mutation-verified. Hand arithmetic said 1589 + 3 = 1592, but two independent runs against the
+# real rebase both reported 1596. Isolated why rather than writing it off as drift: running
+# origin/main's OWN committed copy of this file, unmodified, reports **1593** — the 1589 that
+# commit itself recorded was already 4 short of what its own code actually produces, before this
+# change added anything. 1593 + 3 (this change's own additions) = 1596, which is exactly what both
+# runs showed — so the number below is fully accounted for, even though the PRE-EXISTING 1589 on
+# main was not independently re-investigated here (out of scope for this ticket; the discrepancy is
+# on main already, not introduced by this branch). Bump this again, with the same
+# empirical-not-hand-derived discipline, the next time a check is added or removed.
+EXPECTED_MIN_CHECKS = 1596
 
 
 def find_chrome():
@@ -9063,6 +9078,23 @@ right after a generate/save");
       var wPsDisabledBg = wPsDisabledRule ? /background(?:-image)?\s*:\s*([^;]+)/.exec(wPsDisabledRule[1]) : null;
       ok(!!wPsDisabledBg,
          "PSC-005: the disabled rule declares its OWN background — without one, `:hover` (equal specificity, later in a real disabled+hover) wins the fill and a disabled button visibly flips to the active colour on hover");
+      // Cody + Vera (PR #62 review): presence alone doesn't prove the VALUE is right — a
+      // nonsense `background: red` would have passed the check above just as well. Compare
+      // against the REST-state rule's own declared background: the disabled state should read
+      // as the same fill (just dimmed by `opacity: .45`), not a different one.
+      // `.ps-start\s*\{` (no selector-list prefix required) is unambiguous here: every OTHER
+      // rule touching this class has something other than whitespace between `.ps-start` and
+      // `{` (`:hover`, `:focus-visible`, `:disabled, .ps-start[...]`), so only the bare
+      // rest-state rule matches.
+      var wPsBaseRule = /\.ps-start\s*\{([^}]*)\}/.exec(window.__CSSTEXT || "");
+      ok(!!wPsBaseRule, "PSC-005 (premise): the rest-state .ps-start rule is present in the shipped app.css");
+      var wPsBaseBg = wPsBaseRule ? /background(?:-image)?\s*:\s*([^;]+)/.exec(wPsBaseRule[1]) : null;
+      ok(!!wPsBaseBg, "PSC-005 (premise): the rest-state rule declares a background, so there is a value to compare the disabled rule against");
+      if (wPsDisabledBg && wPsBaseBg) {
+        ok(wPsDisabledBg[1].trim() === wPsBaseBg[1].trim(),
+           "PSC-005: the disabled rule's background is EXACTLY the rest-state fill (found \"" + wPsDisabledBg[1].trim() +
+           "\" vs rest \"" + wPsBaseBg[1].trim() + "\") — not just any declared value, the one that keeps a disabled button visually inert");
+      }
 
       // --- DLM-001: .dl-btn-primary:hover (Download modal primary button) --------------------
       var wDlHoverRule = /\.dl-btn-primary:hover\s*\{([^}]*)\}/.exec(window.__CSSTEXT || "");
