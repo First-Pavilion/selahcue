@@ -663,6 +663,94 @@ impl selahcue_app::SermonNoteStore for RealSermonNoteStore {
             .ok_or_else(|| "draft vanished immediately after update".to_string())?;
         Ok(sermon_note_view_of(&record))
     }
+
+    /// Stage a freshly (re)generated draft against `transcript_id` WITHOUT replacing the
+    /// currently-accepted draft (FR-129, 86akgqdx8). `Err` if no accepted draft exists yet.
+    fn stage_regeneration(
+        &mut self,
+        transcript_id: i64,
+        draft: &selahcue_lan::protocol::SermonNoteDraftInput,
+    ) -> Result<selahcue_app::RegenerationSlot, String> {
+        let pending = sermon_note_repo::PendingRegeneration {
+            title: draft.title.clone(),
+            summary: draft.summary.clone(),
+            sections_json: draft.sections_json.clone(),
+            scriptures_json: draft.scriptures_json.clone(),
+            ai_generated: draft.ai_generated,
+            disclosure: draft.disclosure.clone(),
+            provider: draft.provider.clone(),
+            model: draft.model.clone(),
+            generated_at_ms: now_ms(),
+        };
+        sermon_note_repo::stage_regeneration(&self.db, transcript_id, &pending)
+            .map_err(|e| e.to_string())?;
+        let record = sermon_note_repo::find_by_transcript(&self.db, transcript_id)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "draft vanished immediately after stage".to_string())?;
+        Ok(regeneration_slot_of(&record))
+    }
+
+    /// Accept the pending regeneration for `transcript_id` (FR-129), replacing the accepted
+    /// draft with it. `Err` if nothing is currently pending, or accepting would silently
+    /// strip the FR-123 AI-generated label (`sermon_note_repo::confirm_regeneration`'s own
+    /// "once AI-generated, always AI-generated" guard).
+    fn confirm_regeneration(
+        &mut self,
+        transcript_id: i64,
+    ) -> Result<selahcue_app::RegenerationSlot, String> {
+        let record = sermon_note_repo::confirm_regeneration(&self.db, transcript_id)
+            .map_err(|e| e.to_string())?;
+        Ok(regeneration_slot_of(&record))
+    }
+
+    /// Discard the pending regeneration for `transcript_id` (FR-129), leaving the accepted
+    /// draft unchanged. Idempotent — never errors for "nothing was pending", INCLUDING the
+    /// edge case of no `sermon_note` row at all for this transcript (86akgqdx8 review, Cody
+    /// — Minor): `sermon_note_repo::discard_regeneration`'s own `UPDATE` is already a no-op
+    /// with zero rows affected in that case, so reading back `None` here is not "the draft
+    /// vanished", it is "there was never one" — an honest `RegenerationSlot::default()`
+    /// (`current: None, pending: None`), not an error the caller has to interpret as a
+    /// refusal.
+    fn discard_regeneration(
+        &mut self,
+        transcript_id: i64,
+    ) -> Result<selahcue_app::RegenerationSlot, String> {
+        sermon_note_repo::discard_regeneration(&self.db, transcript_id)
+            .map_err(|e| e.to_string())?;
+        let record = sermon_note_repo::find_by_transcript(&self.db, transcript_id)
+            .map_err(|e| e.to_string())?;
+        Ok(match record {
+            Some(record) => regeneration_slot_of(&record),
+            None => selahcue_app::RegenerationSlot::default(),
+        })
+    }
+}
+
+/// `sermon_note_repo::SermonNoteRecord` -> the LAN wire "slot" shape
+/// ([`selahcue_app::RegenerationSlot`]) — the regenerate-with-retention sibling of
+/// [`sermon_note_view_of`] just above, additionally surfacing the `pending` regeneration
+/// (if any) as its own [`selahcue_lan::protocol::SermonNoteDraftView`] (FR-129, 86akgqdx8).
+fn regeneration_slot_of(r: &sermon_note_repo::SermonNoteRecord) -> selahcue_app::RegenerationSlot {
+    selahcue_app::RegenerationSlot {
+        current: Some(sermon_note_view_of(r)),
+        pending: r.pending.as_ref().map(|p| {
+            selahcue_lan::protocol::SermonNoteDraftView {
+                title: p.title.clone(),
+                summary: p.summary.clone(),
+                sections_json: p.sections_json.clone(),
+                scriptures_json: p.scriptures_json.clone(),
+                ai_generated: p.ai_generated,
+                disclosure: p.disclosure.clone(),
+                provider: p.provider.clone(),
+                model: p.model.clone(),
+                // A pending regeneration has no separate edit history yet — both
+                // timestamps read as its generation time, mirroring how a freshly
+                // `create`d draft's own `created_at`/`edited_at` start out equal.
+                created_at_ms: p.generated_at_ms,
+                edited_at_ms: p.generated_at_ms,
+            }
+        }),
+    }
 }
 
 /// Wall-clock epoch milliseconds for `sermon_note.created_at`/`edited_at` — this binary's own

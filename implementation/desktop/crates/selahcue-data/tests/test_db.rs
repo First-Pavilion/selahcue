@@ -27,8 +27,9 @@ fn schema_version_is_pinned() {
     // v19 = providers_setting table (Providers & Privacy settings + consent, node 338:124);
     // v20 = transcript + transcript_segment + transcript_correction + detection +
     // transcript_setting tables (86ajtxzrn; FR-130/153/154/137/082);
-    // v21 = sermon_note table (86akgqdv0; FR-123 "editable" half).
-    assert_eq!(migrations::target_version(), 21);
+    // v21 = sermon_note table (86akgqdv0; FR-123 "editable" half);
+    // v22 = sermon_note.pending_* regeneration-retention columns (86akgqdx8; FR-129).
+    assert_eq!(migrations::target_version(), 22);
 }
 
 #[test]
@@ -270,6 +271,91 @@ fn a_pre_theme_database_upgrades_and_gains_the_theme_columns() {
             .unwrap();
         assert_eq!(present, 1, "{col} column present after upgrade");
     }
+}
+
+#[test]
+fn a_pre_pending_regeneration_database_upgrades_and_gains_the_pending_columns() {
+    // A v21 DB (sermon_note exists, but with none of the v22 pending_* regeneration
+    // columns) must upgrade cleanly to v22 — additive columns, so an EXISTING sermon_note
+    // row survives with all its real data intact and the new columns read back NULL (no
+    // regeneration pending), exactly the invariant FR-129 depends on: an app that already
+    // has drafts saved must not lose or corrupt them merely by upgrading.
+    let file = tempfile::NamedTempFile::new().unwrap();
+    let path = file.path().to_path_buf();
+    {
+        let db = Database::open(&path).unwrap();
+        // Seed a real transcript + sermon_note row at the CURRENT (post-migration) schema,
+        // then downgrade — mirrors how a real pre-upgrade database would have one.
+        db.conn()
+            .execute_batch(
+                "INSERT INTO transcript (id, plan_id, label, provider, started_at, ended_at)
+                 VALUES (1, NULL, 'Sunday', 'manual', 1000, 2000);
+                 INSERT INTO sermon_note
+                     (id, transcript_id, title, summary, sections, scriptures, ai_generated,
+                      disclosure, provider, model, created_at, edited_at)
+                 VALUES (1, 1, 'A Title', 'A summary', '[]', '[]', 1, 'disc', 'SelahCue AI', NULL, 5000, 5000);",
+            )
+            .unwrap();
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute_batch(
+            "ALTER TABLE sermon_note DROP COLUMN pending_title;
+             ALTER TABLE sermon_note DROP COLUMN pending_summary;
+             ALTER TABLE sermon_note DROP COLUMN pending_sections;
+             ALTER TABLE sermon_note DROP COLUMN pending_scriptures;
+             ALTER TABLE sermon_note DROP COLUMN pending_ai_generated;
+             ALTER TABLE sermon_note DROP COLUMN pending_disclosure;
+             ALTER TABLE sermon_note DROP COLUMN pending_provider;
+             ALTER TABLE sermon_note DROP COLUMN pending_model;
+             ALTER TABLE sermon_note DROP COLUMN pending_generated_at;
+             PRAGMA user_version = 21;",
+        )
+        .unwrap();
+    }
+    let db = Database::open(&path).unwrap();
+    assert_eq!(
+        db.schema_version().unwrap(),
+        migrations::target_version(),
+        "re-ran the v22 migration"
+    );
+    for col in [
+        "pending_title",
+        "pending_summary",
+        "pending_sections",
+        "pending_scriptures",
+        "pending_ai_generated",
+        "pending_disclosure",
+        "pending_provider",
+        "pending_model",
+        "pending_generated_at",
+    ] {
+        let present: i64 = db
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('sermon_note') WHERE name = ?1",
+                [col],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(present, 1, "sermon_note.{col} column present after upgrade");
+    }
+    // The pre-existing row's own data survives, byte-for-byte, and the new columns read
+    // back NULL (no regeneration pending) — never a fabricated default.
+    let (title, pending_title): (String, Option<String>) = db
+        .conn()
+        .query_row(
+            "SELECT title, pending_title FROM sermon_note WHERE id = 1",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        title, "A Title",
+        "pre-existing row data must survive the upgrade"
+    );
+    assert_eq!(
+        pending_title, None,
+        "a pre-existing row has no pending regeneration after upgrading"
+    );
 }
 
 #[test]

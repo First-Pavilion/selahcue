@@ -12,9 +12,18 @@
 // DATA: `transcript_list` / `transcript_get`, read-only Tauri commands wired to 86ajtxzrn's
 // `transcript_repo`; `transcript_generate_notes` / `note_generation_limits` (86akcffy0) for
 // generation; `update_sermon_note_draft` (86akgqdv0) for editing a saved draft — already generic
-// over `transcriptId`, reused here unchanged, no backend change needed. Nav + ⌘8 live in app.js;
-// this module owns the surface body and is loaded after app.js (same convention as
-// preservice.js/settings.js).
+// over `transcriptId`, reused here unchanged, no backend change needed. `confirm_sermon_note_
+// regeneration` / `discard_sermon_note_regeneration` (FR-129, 86akgqdx8) for the regenerate-with-
+// retention confirm/discard step below. Nav + ⌘8 live in app.js; this module owns the surface body
+// and is loaded after app.js (same convention as preservice.js/settings.js).
+//
+// REGENERATE-WITH-RETENTION (FR-129, 86akgqdx8): generating again on a transcript that already
+// has a saved draft no longer replaces it immediately — `transcript_generate_notes` STAGES the
+// fresh draft (`pending_confirmation: true` + `previous_draft`, the untouched saved one) and this
+// surface shows the SAME confirm/discard banner settings.js does (shared `.pp-gen-regen-*` CSS
+// classes; see that file's header comment for the full behavioural contract this mirrors). Editing
+// is hidden while a regeneration is pending, for the identical reason: the content on screen is
+// the UNCONFIRMED draft, not the saved row `update_sermon_note_draft` would write to.
 //
 // BOUNDED RENDERING (86akcffvt AC3 + 86akgqdxr AC5): a transcript can run to thousands of segments
 // (a multi-hour service) and detect far more scripture references than the live console's own
@@ -1027,6 +1036,7 @@
     var d = currentDraft.draft || {};
     var showEmptyState = !currentDraft.degraded;
     renderDraftHeader(r);
+    renderRegenerationBanner(r);
     if (d.summary) {
       r.appendChild(el("p", "pp-gen-summary", d.summary));
     } else if (showEmptyState && hasEmptySectionCaveat(d, "Summary")) {
@@ -1117,8 +1127,9 @@
       r.appendChild(explainer);
     }
     // Editing needs a transcript id to save against — always set here (this panel only ever
-    // shows a draft for the currently OPEN transcript, `openId`).
-    if (currentDraft.transcriptId != null) {
+    // shows a draft for the currently OPEN transcript, `openId`). Also hidden while a
+    // regeneration is pending (FR-129, 86akgqdx8) — see settings.js's identical gate for why.
+    if (currentDraft.transcriptId != null && !currentDraft.pendingConfirmation) {
       var actions = el("div", "pp-gen-actions");
       var editBtn = el("button", "pp-gen-edit-btn", "Edit");
       editBtn.type = "button";
@@ -1319,6 +1330,9 @@
         degraded: currentDraft.degraded,
         degradedNotice: currentDraft.degradedNotice,
         scriptureVerificationNote: res.scripture_verification_note || null,
+        // Editing is only reachable when nothing was pending (see renderDraftView).
+        pendingConfirmation: false,
+        previousDraft: null,
       };
       editingDraft = false;
       renderCurrentDraft();
@@ -1328,6 +1342,116 @@
       var b = document.getElementById("tr-gen-save");
       if (b) { b.disabled = false; b.removeAttribute("aria-busy"); }
     });
+  }
+
+  // FR-129 (86akgqdx8) — mirrors settings.js's identical trio (see that file for the full
+  // behavioural contract). Shared `.pp-gen-regen-*` CSS classes; `tr-` prefixed element ids
+  // to stay distinct from settings.js's `pp-`-prefixed ones on the same page's other surfaces.
+  var regenActing = false;
+  // See settings.js's identical variable for the full reasoning: a refusal/transport failure on
+  // Confirm/Discard is kept INLINE on the banner, never a whole-region wipe — reopening this
+  // transcript would LOSE the pending state entirely (transcript_get never re-surfaces it), so
+  // there is no "navigate away and back" recovery path on THIS surface at all if the banner
+  // itself is what gets wiped.
+  var regenError = null;
+  function renderRegenerationBanner(host) {
+    if (!currentDraft.pendingConfirmation) return;
+    var prev = currentDraft.previousDraft || {};
+    var banner = el("div", "pp-gen-regen-banner");
+    banner.setAttribute("role", "status");
+    banner.appendChild(el("p", "pp-gen-regen-title", "A new draft has been generated."));
+    banner.appendChild(el("p", "pp-gen-regen-desc",
+      "Your currently saved notes (“" + (prev.title || "Sermon notes") + "”) have " +
+      "not been changed. Use this new draft to replace them, or keep what you already have."));
+    if (regenError) {
+      var err = el("p", "pp-gen-regen-error", regenError);
+      err.setAttribute("role", "alert");
+      banner.appendChild(err);
+    }
+    var actions = el("div", "pp-gen-actions pp-gen-regen-actions");
+    var discardBtn = el("button", "pp-gen-regen-discard", "Keep my current notes");
+    discardBtn.type = "button";
+    discardBtn.id = "tr-gen-regen-discard";
+    discardBtn.addEventListener("click", discardRegeneration);
+    actions.appendChild(discardBtn);
+    var confirmBtn = el("button", "pp-gen-regen-confirm", "Use this draft");
+    confirmBtn.type = "button";
+    confirmBtn.id = "tr-gen-regen-confirm";
+    confirmBtn.addEventListener("click", confirmRegeneration);
+    actions.appendChild(confirmBtn);
+    banner.appendChild(actions);
+    host.appendChild(banner);
+  }
+
+  function applyResolvedRegeneration(res) {
+    regenError = null;
+    currentDraft = {
+      transcriptId: currentDraft.transcriptId,
+      draft: res.draft || {},
+      aiGenerated: !!res.ai_generated,
+      aiLabel: res.ai_label || currentDraft.aiLabel,
+      disclosure: res.disclosure || null,
+      provider: res.provider || currentDraft.provider,
+      degraded: false,
+      degradedNotice: null,
+      scriptureVerificationNote: res.scripture_verification_note || null,
+      pendingConfirmation: false,
+      previousDraft: null,
+    };
+    editingDraft = false;
+    renderCurrentDraft();
+  }
+
+  function confirmRegeneration() {
+    if (regenActing || !currentDraft || currentDraft.transcriptId == null) return;
+    regenActing = true;
+    var btn = document.getElementById("tr-gen-regen-confirm");
+    if (btn) { btn.disabled = true; btn.setAttribute("aria-busy", "true"); }
+    invoke("confirm_sermon_note_regeneration", { transcriptId: currentDraft.transcriptId })
+      .then(function (res) {
+        if (!res || res.ok !== true) {
+          var err = res || {};
+          regenError = err.message || "This draft could not be used to replace your saved notes.";
+          renderCurrentDraft();
+          return;
+        }
+        applyResolvedRegeneration(res);
+      })
+      .catch(function (e) {
+        regenError = String(e && e.message ? e.message : e);
+        renderCurrentDraft();
+      })
+      .then(function () {
+        regenActing = false;
+        var b = document.getElementById("tr-gen-regen-confirm");
+        if (b) { b.disabled = false; b.removeAttribute("aria-busy"); }
+      });
+  }
+
+  function discardRegeneration() {
+    if (regenActing || !currentDraft || currentDraft.transcriptId == null) return;
+    regenActing = true;
+    var btn = document.getElementById("tr-gen-regen-discard");
+    if (btn) { btn.disabled = true; btn.setAttribute("aria-busy", "true"); }
+    invoke("discard_sermon_note_regeneration", { transcriptId: currentDraft.transcriptId })
+      .then(function (res) {
+        if (!res || res.ok !== true) {
+          var err = res || {};
+          regenError = err.message || "This draft could not be discarded.";
+          renderCurrentDraft();
+          return;
+        }
+        applyResolvedRegeneration(res);
+      })
+      .catch(function (e) {
+        regenError = String(e && e.message ? e.message : e);
+        renderCurrentDraft();
+      })
+      .then(function () {
+        regenActing = false;
+        var b = document.getElementById("tr-gen-regen-discard");
+        if (b) { b.disabled = false; b.removeAttribute("aria-busy"); }
+      });
   }
 
   // Renders `currentDraft` (view or edit mode) into `#tr-gen-result` — the ONLY place either mode
@@ -1355,6 +1479,11 @@
         degraded: false,
         degradedNotice: null,
         scriptureVerificationNote: t.scripture_verification_note || null,
+        // FR-129 (86akgqdx8): `transcript_get` always reports the ACCEPTED draft only — a
+        // pending, not-yet-confirmed regeneration does not re-surface its banner here
+        // either (same documented non-goal as settings.js's `loadPersistedDraft`).
+        pendingConfirmation: false,
+        previousDraft: null,
       };
       editingDraft = false;
       notesEmptyEl.hidden = true;
@@ -1372,6 +1501,7 @@
       showGenError(err.error || "malformed", err.message || "Something went wrong.");
       return;
     }
+    regenError = null; // a fresh generate/regenerate attempt clears any prior inline refusal
     currentDraft = {
       transcriptId: (typeof res.transcript_id === "number") ? res.transcript_id : openId,
       draft: res.draft || {},
@@ -1382,11 +1512,17 @@
       degraded: !!res.degraded,
       degradedNotice: res.degraded_notice || null,
       scriptureVerificationNote: res.scripture_verification_note || null,
+      // FR-129 (86akgqdx8): true when a draft already existed for this transcript and the
+      // backend STAGED this fresh one instead of replacing it — `draft` above is the NEW,
+      // not-yet-accepted content; `previousDraft` is the still-saved one, untouched.
+      pendingConfirmation: !!res.pending_confirmation,
+      previousDraft: res.previous_draft || null,
     };
     editingDraft = false;
     notesEmptyEl.hidden = true;
     renderCurrentDraft();
-    // The backend just persisted this draft against `openId` (`sermon_note_repo` — 86akcffy0);
+    // The backend just persisted (or, with a pending regeneration, STAGED — the saved draft
+    // is unaffected either way) against `openId` (`sermon_note_repo` — 86akcffy0/86akgqdx8);
     // reflect that immediately rather than waiting for a future reopen of this same transcript.
     if (openId != null) {
       notesBadge.textContent = "Notes generated";
@@ -1519,13 +1655,17 @@
       "This is the complete transcript stored for this service — every recorded segment, not a " +
       "recent window."));
 
-    // FR-129-adjacent honesty (86akcffy0, Sana security review F2): `notes_generated` is now
-    // real and visible on this same screen — Confirm here silently REPLACES whatever draft
-    // already exists (possibly hand-edited via the Settings panel), so say so before it happens
-    // rather than after.
+    // 86akcffy0 (Sana security review F2), UPDATED for FR-129/86akgqdx8: `notes_generated` is
+    // real and visible on this same screen. Before regenerate-with-retention shipped, Confirm
+    // here silently REPLACED whatever draft already existed — this line used to warn about
+    // that. It no longer does: a fresh draft generated over an existing one is now STAGED, not
+    // applied immediately, and replacing the saved draft needs a separate, explicit accept
+    // step (the confirm/discard banner `renderRegenerationBanner` draws once the draft comes
+    // back) — so this says the true, now much safer thing instead.
     if (generateHasExistingDraft) {
       box.appendChild(el("p", "pp-gen-preview-desc pp-gen-preview-overwrite",
-        "This will REPLACE the sermon notes already generated for this transcript."));
+        "You already have sermon notes saved for this transcript. The new draft will be shown " +
+        "for you to review — your saved notes will not change unless you choose to use it."));
     }
 
     if (willClamp) {

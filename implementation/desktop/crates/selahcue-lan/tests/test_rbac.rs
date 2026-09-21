@@ -421,6 +421,54 @@ fn save_sermon_note_draft_requires_operator_not_merely_transcribe() {
 }
 
 #[test]
+fn regenerate_with_retention_commands_require_operator_not_merely_transcribe() {
+    // FR-129 (86akgqdx8): the regenerate-with-retention trio is the SAME tier as
+    // `SaveSermonNoteDraft` and for the identical reason (see that command's own RBAC
+    // test above and `Permission::SaveSermonNotes`'s doc comment) — a Producer holds
+    // `Transcribe` (and so may Load/Update) but must NOT be able to Stage/Confirm/
+    // Discard a regeneration.
+    let draft = selahcue_lan::protocol::SermonNoteDraftInput {
+        title: "Faith that Endures (regenerated)".into(),
+        summary: None,
+        sections_json: "[]".into(),
+        scriptures_json: "[]".into(),
+        ai_generated: true,
+        disclosure: Some("AI-generated. Check every reference.".into()),
+        provider: "SelahCue AI".into(),
+        model: None,
+    };
+    let cmds = [
+        Command::StageSermonNoteRegeneration {
+            transcript_id: 7,
+            draft,
+        },
+        Command::ConfirmSermonNoteRegeneration { transcript_id: 7 },
+        Command::DiscardSermonNoteRegeneration { transcript_id: 7 },
+    ];
+    for cmd in cmds {
+        assert!(
+            authorize(Role::Operator, &cmd),
+            "operator must be able to {cmd:?}"
+        );
+        assert!(
+            !authorize(Role::Producer, &cmd),
+            "a Producer holds Transcribe but must NOT be able to: {cmd:?}"
+        );
+        assert!(
+            !authorize(Role::Assistant, &cmd),
+            "assistant must NOT: {cmd:?}"
+        );
+        assert!(!authorize(Role::Viewer, &cmd), "viewer must NOT: {cmd:?}");
+        assert_eq!(
+            required_permission(&cmd),
+            Permission::SaveSermonNotes,
+            "regenerate-with-retention commands must require the SAME permission as \
+             SaveSermonNoteDraft, not Transcribe: {cmd:?}"
+        );
+    }
+}
+
+#[test]
 fn approving_or_dismissing_a_detection_is_scripture_staging_privilege() {
     // Approving stages a scripture candidate; dismissing drops one — both are the
     // SearchScripture privilege (Assistant and up), never GoLive.
