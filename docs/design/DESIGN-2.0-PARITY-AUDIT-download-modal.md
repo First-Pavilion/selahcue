@@ -122,6 +122,19 @@ exact copy the handoff specifies. The gaps are narrow and specific:
   documented — see the table above), avoiding the aria-live spam a naive per-tick announcement would
   produce.
 
+## Reconciliation — 2026-09-21
+
+**Author:** Farah (Frontend Engineer). **Scope:** `DLM-001` only, fixed under ClickUp task
+`17tnw2axpt9` ("shared gradient-hover contrast fix", TD-012 / PSC-005 / DLM-001 — the same
+defect found once here and twice more on the Theme Designer and Pre-service surfaces). This
+section is additive; the table above is left as originally written.
+
+### FIXED
+
+| Finding | Evidence |
+|---|---|
+| `DLM-001` | `.dl-btn-primary:hover` (`app.css:5866-5870`): changed from `background: var(--sc-primary-hover)` (**3.78:1**) to a flat `background: #5a48d0; border-color: #5a48d0` (**6.42:1**), matching `.pm-btn-primary:hover` (`app.css:5106`) exactly — rest was already accessible at 4.72:1 (solid `var(--sc-primary)`, unlike TD-012/PSC-005 this button never used a gradient), so only the hover rule needed a fix. Verified by 6 new assertions in `scripts/operator_headless.py` (the `DLM-001` block), mutation-tested. Commit `d8ecf4b`. |
+
 ---
 
 # Open questions

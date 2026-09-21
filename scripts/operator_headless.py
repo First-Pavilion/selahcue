@@ -601,7 +601,7 @@ if not check_jump_call_site_is_click_only():
 # `SELAHCUE_OPERATOR_DIST` override). Four independent runs across three separate worktrees now
 # agree on 1520; zero runs since have reproduced 1514. The number below is the one every
 # available run actually reports, not the one first written down.
-EXPECTED_MIN_CHECKS = 1520
+EXPECTED_MIN_CHECKS = 1544
 
 
 def find_chrome():
@@ -8707,6 +8707,81 @@ right after a generate/save");
         var wOldHover = _resolve("var(--sc-primary-hover)");
         ok(_cr([255,255,255,1], wOldHover) < 4.5,
            "PME-005 (control): --sc-primary-hover itself still measures BELOW AA-normal for white (" + _f(_cr([255,255,255,1], wOldHover)) + ":1) — the TOKEN VALUE is untouched; only this rule stopped using it");
+      }
+
+      // --- TD-012 / PSC-005 / DLM-001: the shared gradient-hover contrast defect, fixed at three
+      // more surfaces with the same darken-not-lighten pattern as .tb-golive and .pm-btn-primary:hover
+      // above. Each button's own hover RULE TEXT is measured (not a simulated :hover pseudo-class,
+      // which this headless page cannot trigger) — same technique as PME-005.
+      // --- TD-012: .td-save-cta (Theme Designer "Save theme") --------------------------------
+      var wTdSave = document.querySelector(".td-save-cta");
+      ok(!!wTdSave, "TD-012 (premise): the Theme Designer Save-theme button exists in the DOM");
+      if (wTdSave) {
+        var wTdStops = _stops(wTdSave);
+        ok(wTdStops.length === 2 && !_same(wTdStops[0], wTdStops[1]),
+           "TD-012 (premise): .td-save-cta really is a TWO-stop gradient, so 'measured at both stops' is not vacuous");
+        wTdStops.forEach(function(s, i){
+          var r = _cr([255,255,255,1], s);
+          ok(r >= 4.5, "TD-012: the Save-theme label clears AA-NORMAL on gradient stop " + (i+1) + " (" + _f(r) + ":1)");
+        });
+        var wTdHoverRule = /\.td-save-cta:hover\s*\{([^}]*)\}/.exec(window.__CSSTEXT || "");
+        ok(!!wTdHoverRule, "TD-012 (premise): the .td-save-cta:hover rule is present in the shipped app.css");
+        var wTdHb = wTdHoverRule ? /background(?:-color)?\s*:\s*([^;]+)/.exec(wTdHoverRule[1]) : null;
+        ok(!!wTdHb, "TD-012 (premise): the hover rule declares a background, so there is a value to measure");
+        if (wTdHb) {
+          var wTdHoverBg = _resolve(wTdHb[1].trim());
+          var wTdHoverR = _cr([255,255,255,1], wTdHoverBg);
+          ok(wTdHoverR >= 4.5, "TD-012: the HOVERED Save-theme button keeps its white label at AA-NORMAL (" + _f(wTdHoverR) + ":1)");
+          ok(_lum(wTdHoverBg) <= Math.max.apply(null, wTdStops.map(_lum)),
+             "TD-012: hover does not LIGHTEN past the gradient's brightest rest stop — no `filter: brightness()` re-lightening the darkened fill");
+        }
+        ok(_cr([255,255,255,1], _resolve("var(--sc-primary-hover)")) < 4.5,
+           "TD-012 (control): --sc-primary-hover itself still measures BELOW AA-normal for white (" + _f(_cr([255,255,255,1], _resolve("var(--sc-primary-hover)"))) + ":1) — the TOKEN VALUE is untouched; only this rule stopped using it");
+      }
+
+      // --- PSC-005: .ps-start (Pre-service "▶ Start service") --------------------------------
+      var wPsStart = el("ps-start");
+      ok(!!wPsStart, "PSC-005 (premise): the Pre-service Start-service button exists in the DOM");
+      if (wPsStart) {
+        var wPsStops = _stops(wPsStart);
+        ok(wPsStops.length === 2 && !_same(wPsStops[0], wPsStops[1]),
+           "PSC-005 (premise): .ps-start really is a TWO-stop gradient, so 'measured at both stops' is not vacuous");
+        wPsStops.forEach(function(s, i){
+          var r = _cr([255,255,255,1], s);
+          ok(r >= 4.5, "PSC-005: the Start-service label clears AA-NORMAL on gradient stop " + (i+1) + " (" + _f(r) + ":1)");
+        });
+        var wPsHoverRule = /\.ps-start:hover\s*\{([^}]*)\}/.exec(window.__CSSTEXT || "");
+        ok(!!wPsHoverRule, "PSC-005 (premise): the .ps-start:hover rule is present in the shipped app.css");
+        var wPsHb = wPsHoverRule ? /background(?:-color)?\s*:\s*([^;]+)/.exec(wPsHoverRule[1]) : null;
+        ok(!!wPsHb, "PSC-005 (premise): the hover rule declares a background, so there is a value to measure");
+        if (wPsHb) {
+          var wPsHoverBg = _resolve(wPsHb[1].trim());
+          var wPsHoverR = _cr([255,255,255,1], wPsHoverBg);
+          ok(wPsHoverR >= 4.5, "PSC-005: the HOVERED Start-service button keeps its white label at AA-NORMAL (" + _f(wPsHoverR) + ":1)");
+          ok(_lum(wPsHoverBg) <= Math.max.apply(null, wPsStops.map(_lum)),
+             "PSC-005: hover does not LIGHTEN past the gradient's brightest rest stop — no `filter: brightness()` re-lightening the darkened fill");
+        }
+        ok(_cr([255,255,255,1], _resolve("var(--sc-primary-hover)")) < 4.5,
+           "PSC-005 (control): --sc-primary-hover itself still measures BELOW AA-normal for white (" + _f(_cr([255,255,255,1], _resolve("var(--sc-primary-hover)"))) + ":1) — the TOKEN VALUE is untouched; only this rule stopped using it");
+      }
+
+      // --- DLM-001: .dl-btn-primary:hover (Download modal primary button) --------------------
+      var wDlHoverRule = /\.dl-btn-primary:hover\s*\{([^}]*)\}/.exec(window.__CSSTEXT || "");
+      ok(!!wDlHoverRule, "DLM-001 (premise): the .dl-btn-primary:hover rule is present in the shipped app.css");
+      var wDlHb = wDlHoverRule ? /background(?:-color)?\s*:\s*([^;]+)/.exec(wDlHoverRule[1]) : null;
+      ok(!!wDlHb, "DLM-001 (premise): the hover rule declares a background, so there is a value to measure");
+      if (wDlHb) {
+        var wDlRestEl = document.querySelector(".dl-btn-primary");
+        ok(!!wDlRestEl, "DLM-001 (premise): the download modal's primary button exists in the DOM");
+        var wDlHoverBg = _resolve(wDlHb[1].trim());
+        var wDlRestBg = wDlRestEl ? _rgba(getComputedStyle(wDlRestEl).backgroundColor) : [0,0,0,1];
+        var wDlHoverR = _cr([255,255,255,1], wDlHoverBg), wDlRestR = _cr([255,255,255,1], wDlRestBg);
+        ok(wDlHoverR >= 4.5, "DLM-001: the HOVERED primary keeps its white label at AA-NORMAL (" + _f(wDlHoverR) + ":1) — hover is a real UI state and WCAG applies to it");
+        ok(_lum(wDlHoverBg) < _lum(wDlRestBg),
+           "DLM-001: hover DARKENS the fill instead of lightening it (rest " + _f(wDlRestR) + ":1 → hover " + _f(wDlHoverR) + ":1), matching the fix already shipped for .pm-btn-primary:hover");
+        var wDlOldHover = _resolve("var(--sc-primary-hover)");
+        ok(_cr([255,255,255,1], wDlOldHover) < 4.5,
+           "DLM-001 (control): --sc-primary-hover itself still measures BELOW AA-normal for white (" + _f(_cr([255,255,255,1], wDlOldHover)) + ":1) — the TOKEN VALUE is untouched; only this rule stopped using it");
       }
 
       // --- PME-014 / PME-015: the two missing topbar primary actions ------------------------

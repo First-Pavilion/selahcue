@@ -145,6 +145,19 @@ this specific weight/size pairing.
   live region so assistive tech registers a change even when the verdict text is unchanged between runs
   — a real, tested consideration, not an oversight.
 
+## Reconciliation — 2026-09-21
+
+**Author:** Farah (Frontend Engineer). **Scope:** `PSC-005` only, fixed under ClickUp task
+`17tnw2axpt9` ("shared gradient-hover contrast fix", TD-012 / PSC-005 / DLM-001 — the same
+defect found once here and twice more on the Theme Designer and Download-modal surfaces). This
+section is additive; the table above is left as originally written.
+
+### FIXED
+
+| Finding | Evidence |
+|---|---|
+| `PSC-005` | `.ps-start` (`app.css:6415-6422`): the rest-state gradient's stops were reversed from `linear-gradient(to right, var(--sc-primary-hover), var(--sc-primary))` to `linear-gradient(to right, var(--sc-primary), #5a48d0)` — measured white-on-stop at **4.72:1 / 6.42:1**, both clearing AA. `:hover` changed from `filter: brightness(1.06)` to a flat `background: #5a48d0` (**6.42:1**) — brightening the darkened gradient's near stop by 6% would have pulled it back to 4.27:1, re-introducing the failure at the state an operator actually hovers into (see the same note in the Theme Designer audit's reconciliation, TD-012). Verified by 9 new assertions in `scripts/operator_headless.py` (the `PSC-005` block), mutation-tested. Commit `d8ecf4b`. |
+
 ---
 
 # Open questions

@@ -245,6 +245,30 @@ in the Presentation audit) by this surface.
 - No green-gradient/white-text pairing (the worst of the four known-alarming pairings, 1.93:1) appears
   anywhere on this surface.
 
+## Reconciliation — 2026-09-21
+
+**Author:** Farah (Frontend Engineer). **Scope:** `TD-012` only, fixed under ClickUp task
+`17tnw2axpt9` ("shared gradient-hover contrast fix", TD-012 / PSC-005 / DLM-001 — the same
+defect found once here and twice more on the Pre-service and Download-modal surfaces). This
+section is additive; the table above is left as originally written.
+
+### FIXED
+
+| Finding | Evidence |
+|---|---|
+| `TD-012` | `.td-save-cta` (`app.css:1217-1236`): the rest-state gradient's stops were reversed from `linear-gradient(90deg, var(--sc-primary-hover), var(--sc-primary))` to `linear-gradient(90deg, var(--sc-primary), #5a48d0)` — measured white-on-stop at **4.72:1 / 6.42:1**, both clearing AA. `:hover` changed from `filter: brightness(1.06)` to a flat `background: #5a48d0` (**6.42:1**) — see the note below on why the filter form was not kept. Verified by 9 new assertions in `scripts/operator_headless.py` (the `TD-012` block), mutation-tested (reverting the CSS locally reproduces the original 3.78:1 FAIL). Commit `d8ecf4b`. |
+
+**Note — a gap found while fixing this, not fixed here.** The established pattern this finding
+was asked to copy (`.tb-golive`/`.timer-start`, `app.css:5002-5007`,
+`CODE-REVIEW-batch-desktop-design2-web1.md` §1) darkens the rest-state gradient the same way but
+keeps `:hover { filter: brightness(1.06); }` unchanged. Recomputing that filter against the
+darkened gradient's near stop (`var(--sc-primary)`, 4.72:1 at rest) gives **4.27:1 on hover** —
+under AA-normal — and no headless check currently measures GO LIVE's or the Service-Timer
+Start's hover state to catch it. `TD-012`/`PSC-005` avoid this by replacing the filter with a
+flat darkened fill instead of copying the filter form literally. The latent `.tb-golive`/
+`.timer-start` hover gap is out of scope for this ticket (already-shipped, reviewed code, not
+one of TD-012/PSC-005/DLM-001) and is flagged as a follow-up rather than touched silently.
+
 ---
 
 # Open questions

@@ -1214,17 +1214,25 @@
         color: var(--sc-text);
       }
 
+      /* TD-012: white on --sc-primary-hover (the gradient's near stop) was 3.78:1, under
+         AA-normal at this 12-13px bold size. Darken instead of lighten, matching the fix
+         already shipped for .tb-golive/.timer-start (app.css:5002-5007) and
+         .pm-btn-primary:hover (app.css:5106): both stops now clear AA (--sc-primary
+         4.72:1, #5a48d0 6.42:1). Hover goes flat #5a48d0 instead of `filter:
+         brightness(1.06)` — brightening the darkened gradient's near stop by 6% would have
+         pulled it back down to 4.27:1, re-introducing the failure at the state users
+         actually hover into. */
       .td-save-cta {
         border: none;
         color: #fff;
         font-weight: 700;
         border-radius: 9px;
         padding: 8px 14px;
-        background: linear-gradient(90deg, var(--sc-primary-hover), var(--sc-primary));
+        background: linear-gradient(90deg, var(--sc-primary), #5a48d0);
       }
 
       .td-save-cta:hover {
-        filter: brightness(1.06);
+        background: #5a48d0;
       }
 
       /* Canvas zone: add-bar (+ zoom) → canvas → templates strip */
@@ -5856,7 +5864,10 @@
       .dl-btn-ghost { border: 1px solid var(--sc-border-strong); background: transparent; color: var(--sc-text); }
       .dl-btn-ghost:hover { background: var(--sc-elevated); }
       .dl-btn-primary { border: 1px solid var(--sc-primary); background: var(--sc-primary); color: #fff; }
-      .dl-btn-primary:hover { background: var(--sc-primary-hover); }
+      /* DLM-001: hovering to --sc-primary-hover measured 3.78:1, under AA-normal — the sixth
+         sighting of the same defect this audit round. Darken instead of lighten, matching
+         .pm-btn-primary:hover (app.css:5106) exactly. */
+      .dl-btn-primary:hover { background: #5a48d0; border-color: #5a48d0; }
       .dl-btn:disabled { opacity: 0.5; cursor: default; }
       .dl-btn:focus-visible { outline: 2px solid var(--sc-primary-hover); outline-offset: 2px; }
       /* Background pill — bottom-right, above the emergency footer; reopens the hidden modal. */
@@ -6401,8 +6412,12 @@
       .ps-review-warn .ps-review-detail { color: var(--sc-warn); }
       .ps-review-block .ps-review-detail { color: var(--sc-live); }
       .ps-spacer { flex: 1 1 auto; min-height: 8px; }
-      .ps-start { background: linear-gradient(to right, var(--sc-primary-hover), var(--sc-primary)); border: none; border-radius: 14px; padding: 17px; font: 700 16px/1 Inter, system-ui, sans-serif; color: #fff; cursor: pointer; width: 100%; }
-      .ps-start:hover { filter: brightness(1.06); }
+      /* PSC-005: white on --sc-primary-hover (the gradient's start stop) was 3.78:1, under
+         AA-normal at 16px bold. Same fix as TD-012/.tb-golive/.pm-btn-primary:hover — darken
+         instead of lighten; hover goes flat #5a48d0 rather than `filter: brightness(1.06)`,
+         which would re-lighten the darkened near stop back under 4.5:1. */
+      .ps-start { background: linear-gradient(to right, var(--sc-primary), #5a48d0); border: none; border-radius: 14px; padding: 17px; font: 700 16px/1 Inter, system-ui, sans-serif; color: #fff; cursor: pointer; width: 100%; }
+      .ps-start:hover { background: #5a48d0; }
       .ps-start:focus-visible { outline: 2px solid var(--sc-primary-hover); outline-offset: 2px; }
       .ps-start:disabled, .ps-start[aria-disabled="true"] { opacity: .45; cursor: not-allowed; filter: none; }
       .ps-rerun { background: var(--sc-elevated); border: 1px solid var(--sc-border); border-radius: 11px; padding: 13px; font: 600 13px/1 Inter, system-ui, sans-serif; color: var(--sc-text-secondary); cursor: pointer; width: 100%; }
