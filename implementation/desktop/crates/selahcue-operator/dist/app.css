@@ -6419,7 +6419,13 @@
       .ps-start { background: linear-gradient(to right, var(--sc-primary), #5a48d0); border: none; border-radius: 14px; padding: 17px; font: 700 16px/1 Inter, system-ui, sans-serif; color: #fff; cursor: pointer; width: 100%; }
       .ps-start:hover { background: #5a48d0; }
       .ps-start:focus-visible { outline: 2px solid var(--sc-primary-hover); outline-offset: 2px; }
-      .ps-start:disabled, .ps-start[aria-disabled="true"] { opacity: .45; cursor: not-allowed; filter: none; }
+      /* Vera (performance review, PR #58): moving the hover effect from `filter: brightness()` to
+         `background: #5a48d0` broke this rule's neutralisation — `filter: none` only ever
+         cancelled a filter-based hover, and `:disabled`/`:hover` are equal specificity, so with no
+         `background` declared here a disabled+hovered button visibly flipped to the hover fill
+         (verified live in Chromium). Pin `background` back to the rest-state fill so hover cannot
+         win it while disabled. */
+      .ps-start:disabled, .ps-start[aria-disabled="true"] { opacity: .45; cursor: not-allowed; filter: none; background: linear-gradient(to right, var(--sc-primary), #5a48d0); }
       .ps-rerun { background: var(--sc-elevated); border: 1px solid var(--sc-border); border-radius: 11px; padding: 13px; font: 600 13px/1 Inter, system-ui, sans-serif; color: var(--sc-text-secondary); cursor: pointer; width: 100%; }
       .ps-rerun:hover { border-color: var(--sc-border-strong); color: var(--sc-text); }
       .ps-rerun:focus-visible { outline: 2px solid var(--sc-primary-hover); outline-offset: 2px; }
