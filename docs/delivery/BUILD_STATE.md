@@ -767,6 +767,30 @@ This is a reconciliation of existing findings, not new remediation — no fixes 
 
 ---
 
+## Transcripts — first Figma design coverage (2026-09-20)
+
+Part of a wider Figma-parity audit/reconciliation engagement (docs + Figma + ClickUp only, no code changes this
+round). A full 79-node enumeration of Figma page `0:1` confirmed Transcripts was the **only** major desktop
+surface with zero Figma coverage anywhere in the file. Uma read `implementation/desktop/crates/selahcue-operator/dist/transcripts.js`
+end-to-end (1605 lines, actively developed this month) plus its `index.html`/`app.js`/`app.css` seams, and
+produced the surface's first design record:
+
+- `docs/design/TRANSCRIPTS-2.0-HANDOFF.md` — states, tokens, copy, accessibility, component inventory, and an
+  explicit note on where the shipped single-column layout diverges from the earlier `UX-FLOWS.md` Flow 11
+  split-pane sketch (RISK-205: code is truth, Figma catches up).
+- Figma section **"Transcripts — Design 2.0"** (`1050:2`, file `SYQn5hFY8YVQKm3c6rw0eJ`, page `0:1`) — 7 frames
+  (list default/empty/error, detail default, still-recording, consent-preview, edit-mode), screenshot-verified.
+- `docs/design/DESIGN-2.0-HANDOFF.md`'s node map updated with the new section (row 19; that doc's other known
+  staleness is untouched — tracked separately).
+- Goal Contract `docs/delivery/goals/TASK-transcripts-design2-spec.md`, `VERIFIED_COMPLETE`.
+
+**Not done in this pass:** no ClickUp task exists yet for this work (pending ClickUp update — see the goal
+contract). Two open product questions are flagged, not decided: whether FR-124 timestamp-linked note navigation
+should be scheduled for this surface, and the 0-segment/mid-resize log edge cases have no distinct visual
+treatment. No `implementation/` file was modified.
+
+---
+
 ## Design 2.0 parity — audit reconciliation + Phase D ClickUp backlog (2026-09-20)
 
 **Audit + tickets only — no application code changed.** Four docs-only draft PRs, none merged yet:
