@@ -31,7 +31,7 @@ pub use deck::{
 pub use health::{fault_tag, OutputHealth};
 pub use present::Presenter;
 pub use qr::{compose_qr, qr_modules};
-pub use slide::Slide;
+pub use slide::{Slide, SongAttribution, MAX_SONG_ATTRIBUTION_FIELD_LEN};
 pub use stage::{
     compose_identify, compose_stage, StageContext, StageDisplay, StageTheme, TimerView, WallClock,
 };
