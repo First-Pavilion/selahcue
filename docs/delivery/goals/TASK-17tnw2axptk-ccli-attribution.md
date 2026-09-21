@@ -115,7 +115,7 @@ from `docs/design/DESIGN-2.0-PARITY-AUDIT-presentation.md`.
 | C-005 | yes | `measure.rs` Key/Hash unchanged (OUT-013 trap avoided) | `git diff` review | `measure.rs` not modified, or diff shows no new shaping attribute | `git show --stat HEAD` — `measure.rs` absent from the changed-files list | PASS |
 | C-006 | yes | Full local gate green | `make ci` (single run, worktree-scoped `CARGO_TARGET_DIR`) | exits 0 | Full run, single invocation, no concurrent session detected beforehand (`ps aux` clean). Final line: `== local Rust/Flutter gate: ALL GREEN ==`, `[exited with code 0]` | PASS |
 | C-007 | yes | Reconciliation entry added for OUT-006/OUT-015 | manual diff review | `docs/design/DESIGN-2.0-PARITY-AUDIT-presentation.md` Reconciliation section updated | "Update — 2026-09-21" subsection added under "Reconciliation — 2026-09-20", including the Figma-drift finding (see Risks) | PASS |
-| C-008 | yes | PR opened against `main`, draft until CI green | `gh pr view` | PR exists, later marked ready | Opened as Draft: https://github.com/First-Pavilion/selahcue/pull/59 — will be marked ready once remote GitHub Actions CI is also green (local `make ci` alone does not cover the 3-OS/GPU matrix or the WebKit smoke); PENDING until then | PENDING |
+| C-008 | yes | PR opened against `main`, draft until CI green | `gh pr view` | PR exists, later marked ready | https://github.com/First-Pavilion/selahcue/pull/59 — opened Draft, all remote GitHub Actions checks passed (`rust`/`operator shell`/`operator shell — release & native-toolchain features` × macos/ubuntu/windows, `launch-smoke` × macos/ubuntu, `dependency audit`, `supply chain`, `workflows`; `api`/`marketing`/`flutter controller` correctly path-filter-skipped, nothing touched), marked ready for review | PASS |
 | C-009 | yes | Independent review (Cody/Vera/Sana/Quinn) blocking findings resolved | review pipeline | all four review steps finished | Requested at handoff; not yet run at this evaluation — role-level completion (`VERIFIED_COMPLETE` for the whole ticket) is gated on this, but this Goal Contract's own scope (the Rust-compositor model/render change) is otherwise fully verified | PENDING |
 
 ## Verification plan
@@ -184,8 +184,14 @@ from `docs/design/DESIGN-2.0-PARITY-AUDIT-presentation.md`.
 ## Final evaluation
 
 - Validator command: `python3 ~/.claude/skills/goal/scripts/validate_goal_contract.py docs/delivery/goals/TASK-17tnw2axptk-ccli-attribution.md --completion`
-- Validator result: (recorded at completion)
-- Independent verification result: (recorded at completion)
-- Terminal state: (recorded at completion)
+- Validator result: FAIL as expected — C-009 (independent review) is still PENDING at this point;
+  the validator is re-run once review resolves.
+- Independent verification result: 8/9 mandatory criteria PASS (all implementation, test, and
+  gate criteria). C-009 (Cody/Vera/Sana/Quinn) requested at this evaluation, not yet run.
+- Terminal state: **handoff** — this role's implementation work (model + compose + tests + both
+  local and remote CI) is complete and verified; the ticket is not `VERIFIED_COMPLETE` until the
+  review pipeline (C-009) finishes per the team operating contract. Not `BLOCKED` (nothing is
+  stuck), not `FAILED_LIMIT` (no failed attempts occurred), not `GATE_REVIEW` (no `/build` user
+  gate applies here) — this is the ordinary implementation-role → review-pipeline handoff.
 - Remaining failed or blocked criteria: (recorded at completion)
 - ClickUp final evidence comment: (recorded at completion)
