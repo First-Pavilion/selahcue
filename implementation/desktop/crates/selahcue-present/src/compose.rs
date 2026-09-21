@@ -1,10 +1,12 @@
 //! Compose a [`Slide`] + [`Theme`] into an engine [`Frame`] (FR-009/FR-010).
 //!
 //! A theme is a slide-design template: a background plus positioned **regions**
-//! (title/reference + body), each with alignment + typography. `compose_slide`
-//! lays the slide's title into the title region and its body lines into the body
-//! region — content is orthogonal to the theme, so re-composing the *same* slide
-//! under a different theme restyles it without loss.
+//! (title/reference + body, plus an optional footer), each with alignment + typography.
+//! `compose_slide` lays the slide's title into the title region and its body lines into the
+//! body region — content is orthogonal to the theme, so re-composing the *same* slide
+//! under a different theme restyles it without loss. When both the theme defines a footer
+//! region and the slide carries song attribution metadata (OUT-006/OUT-015), the CCLI/author
+//! line composes into it the same way.
 
 use crate::slide::Slide;
 use crate::theme::{Background, Band, Element, Fit, RegionStyle, Theme, VAlign};
@@ -631,6 +633,33 @@ pub fn compose_slide_masked(
                 theme.letter_spacing_permille,
             ) {
                 frame.push(layer);
+            }
+        }
+    }
+    // Song licensing/attribution footer (OUT-006/OUT-015): a themed footer region renders the
+    // CCLI-number/author line when the SLIDE carries song metadata AND the THEME defines a
+    // footer region — neither half is sufficient alone, so a theme's footer stays silent for
+    // a slide with no song metadata (e.g. scripture) and a slide's song metadata renders
+    // nothing under a theme with no footer region (per-role templates that always set one are
+    // S8-3d/OUT-009, a later slice). Uses the same [`layout_region`] auto-fit path as
+    // title/body, so it shares their shaping/measurement behaviour exactly (no new attribute
+    // reaches `measure::measure_word`, so its memo key is unaffected).
+    if mask.text {
+        if let Some(footer) = &theme.footer {
+            if footer.visible {
+                if let Some(line) = slide.footer_line() {
+                    for layer in layout_region(
+                        &[line.as_str()],
+                        footer,
+                        width,
+                        height,
+                        theme.font,
+                        theme.weight,
+                        theme.letter_spacing_permille,
+                    ) {
+                        frame.push(layer);
+                    }
+                }
             }
         }
     }

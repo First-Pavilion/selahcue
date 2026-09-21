@@ -174,6 +174,7 @@ impl AuthoredSlide {
         Slide {
             title: String::new(),
             body,
+            song: None,
         }
     }
 }

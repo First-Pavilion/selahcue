@@ -1729,3 +1729,161 @@ fn hiding_the_logo_layer_removes_the_design_element() {
         "logo hidden → the design element is gone"
     );
 }
+
+// --- OUT-006 / OUT-015: song attribution + theme footer (CCLI/attribution model gap). Neither
+// half (a theme's footer region, a slide's song metadata) is sufficient alone; both together
+// compose the CCLI/author line through the SAME autofit path title/body already use. ---
+
+use selahcue_present::{RegionStyle, SongAttribution};
+
+/// A small centred footer region near the bottom of the frame — roughly Figma `208:135`'s
+/// position (y ≈ 911‰, centred, muted ink); the exact geometry is a Step-3/OUT-009 per-role
+/// template decision, out of scope here, so tests build their own region rather than relying
+/// on a built-in.
+fn footer_region() -> RegionStyle {
+    RegionStyle {
+        x_permille: 60,
+        y_permille: 900,
+        w_permille: 880,
+        h_permille: 60,
+        align_h: TextAlign::Center,
+        align_v: VAlign::Middle,
+        size_permille: 24,
+        line_height_permille: 1000,
+        color: Rgba::rgb(154, 164, 178), // legacy textMuted #9AA4B2 (OUT-001)
+        fit: Fit::ShrinkToFit,
+        visible: true,
+    }
+}
+
+fn song(ccli: &str, author: &str) -> SongAttribution {
+    SongAttribution {
+        ccli_number: Some(ccli.to_string()),
+        author: Some(author.to_string()),
+        ..Default::default()
+    }
+}
+
+/// Whether any ink appears anywhere inside `region`.
+fn has_ink_in_region(fb: &FrameBuffer, region: selahcue_engine::scene::Rect) -> bool {
+    has_ink_in(
+        fb,
+        region.x.max(0) as u32,
+        region.y.max(0) as u32,
+        (region.x.max(0) as u32) + region.w,
+        (region.y.max(0) as u32) + region.h,
+    )
+}
+
+#[test]
+fn footer_renders_when_theme_has_a_footer_region_and_slide_has_song_metadata() {
+    let mut theme = Theme::classic();
+    theme.footer = Some(footer_region());
+    let slide = Slide::new("Way Maker", ["Verse line one"]).with_song(song("7115744", "Sinach"));
+    let (w, h) = (400, 200);
+    let fb = render(&compose_slide(&slide, &theme, w, h));
+    assert!(
+        has_ink_in_region(&fb, footer_region().rect(w, h)),
+        "the CCLI/author footer line renders inside the footer region"
+    );
+}
+
+#[test]
+fn footer_does_not_render_when_the_theme_has_no_footer_region() {
+    let theme = Theme::classic(); // footer: None
+    let slide = Slide::new("Way Maker", ["Verse line one"]).with_song(song("7115744", "Sinach"));
+    let (w, h) = (400, 200);
+    let fb = render(&compose_slide(&slide, &theme, w, h));
+    assert!(
+        !has_ink_in_region(&fb, footer_region().rect(w, h)),
+        "no footer region configured on the theme -> nothing draws in that area"
+    );
+}
+
+#[test]
+fn footer_does_not_render_when_the_slide_has_no_song_metadata() {
+    let mut theme = Theme::classic();
+    theme.footer = Some(footer_region());
+    let slide = Slide::new("Way Maker", ["Verse line one"]); // no .with_song(...)
+    let (w, h) = (400, 200);
+    let fb = render(&compose_slide(&slide, &theme, w, h));
+    assert!(
+        !has_ink_in_region(&fb, footer_region().rect(w, h)),
+        "a footer region with no song metadata to show draws nothing"
+    );
+}
+
+#[test]
+fn footer_does_not_render_for_blank_song_attribution() {
+    let mut theme = Theme::classic();
+    theme.footer = Some(footer_region());
+    let slide = Slide::new("Way Maker", ["Verse line one"]).with_song(SongAttribution::default());
+    let (w, h) = (400, 200);
+    let fb = render(&compose_slide(&slide, &theme, w, h));
+    assert!(
+        !has_ink_in_region(&fb, footer_region().rect(w, h)),
+        "song metadata with every field blank draws no footer"
+    );
+}
+
+#[test]
+fn hiding_the_text_layer_also_hides_the_footer() {
+    // The footer is gated by the same Design 2.0 TEXT layer mask as title/body — there is no
+    // separate mask category for it (see the Goal Contract's non-goals: no Part A/operator-UI
+    // change ships in this ticket, so a new mask flag would be unreachable from the UI anyway).
+    let mut theme = Theme::classic();
+    theme.footer = Some(footer_region());
+    let slide = Slide::new("Way Maker", ["Verse line one"]).with_song(song("7115744", "Sinach"));
+    let (w, h) = (400, 200);
+    let shown = render(&compose_slide(&slide, &theme, w, h));
+    let hidden = render(&compose_slide_masked(
+        &slide,
+        &theme,
+        w,
+        h,
+        LayerMask {
+            text: false,
+            ..LayerMask::ALL
+        },
+    ));
+    let region = footer_region().rect(w, h);
+    assert!(
+        has_ink_in_region(&shown, region),
+        "footer renders with the text layer visible"
+    );
+    assert!(
+        !has_ink_in_region(&hidden, region),
+        "hiding the TEXT layer also hides the footer"
+    );
+}
+
+#[test]
+fn footer_composition_is_deterministic() {
+    let mut theme = Theme::classic();
+    theme.footer = Some(footer_region());
+    let slide = Slide::new("Way Maker", ["Verse line one"]).with_song(song("7115744", "Sinach"));
+    let a = render(&compose_slide(&slide, &theme, 320, 180));
+    let b = render(&compose_slide(&slide, &theme, 320, 180));
+    assert_eq!(a.bytes(), b.bytes());
+}
+
+#[test]
+fn builtin_themes_still_render_byte_identically_with_no_footer() {
+    // Backward-compatibility check at the COMPOSE level (not just serde): a slide with song
+    // metadata but a built-in (footer: None) theme renders EXACTLY as it did before this field
+    // existed, because a theme with no footer region draws nothing for it regardless of the
+    // slide's content.
+    let slide_without_song = Slide::new("Way Maker", ["Verse line one"]);
+    let slide_with_song =
+        Slide::new("Way Maker", ["Verse line one"]).with_song(song("7115744", "Sinach"));
+    for name in Theme::BUILTIN_NAMES {
+        let theme = Theme::builtin(name).unwrap();
+        let a = render(&compose_slide(&slide_without_song, &theme, 320, 180));
+        let b = render(&compose_slide(&slide_with_song, &theme, 320, 180));
+        assert_eq!(
+            a.bytes(),
+            b.bytes(),
+            "{name} has no footer region, so song metadata changes nothing"
+        );
+    }
+}

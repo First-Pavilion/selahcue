@@ -375,7 +375,8 @@ impl Background {
 }
 
 /// The audience-output theme: a **background** (solid / gradient / image, 86ajq3225) + a
-/// **title/reference** region and a **body** region. One theme renders both a scripture
+/// **title/reference** region and a **body** region, plus an optional **footer** region for
+/// song licensing attribution (OUT-006/OUT-015). One theme renders both a scripture
 /// (title = the reference line) and a song (title = the song title) consistently. Per-role
 /// templates + per-item override are S8-3d.
 ///
@@ -392,6 +393,19 @@ pub struct Theme {
     /// `None`, and full-screen themes serialize without it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub band: Option<Band>,
+    /// An optional **footer/attribution region** (86ajnx548, OUT-006/OUT-015): a small text
+    /// region for song licensing attribution — a CCLI number and author, e.g. Figma
+    /// `208:135`'s `CCLI #7115744 · Sinach` — distinct from the title/body regions so it
+    /// never competes with the sung content for space. `None` (the default for every current
+    /// built-in) renders nothing, exactly like an absent `band`; a custom/per-role theme
+    /// (S8-3d, OUT-009) opts in by setting one. What text actually fills it comes from the
+    /// content side ([`crate::slide::Slide::song`]), not this region — a theme styles WHERE
+    /// and HOW, never WHAT (the same separation `title`/`body` already keep). Additive and
+    /// backward-compatible: older theme JSON without this field deserializes to `None`, and a
+    /// theme without a footer serializes without the key (pinned built-in fixtures stay
+    /// byte-stable) — the same pattern `band`/`font`/`letter_spacing_permille` already follow.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub footer: Option<RegionStyle>,
     /// The font family to shape ALL of this theme's text with (86ajq6fxt). `None` = the
     /// bundled default (Noto Sans) — deterministic, cross-OS-identical. `Some` selects a
     /// SYSTEM font on the render machine (a missing family falls back to the bundled
@@ -475,6 +489,7 @@ impl Theme {
                 visible: true,
             },
             band: None,
+            footer: None,
             font: None,
             weight: 400,
             letter_spacing_permille: 0,
@@ -514,6 +529,7 @@ impl Theme {
                 visible: true,
             },
             band: None,
+            footer: None,
             font: None,
             weight: 400,
             letter_spacing_permille: 0,
@@ -577,6 +593,7 @@ impl Theme {
                 border: AMBER,
                 border_permille: 5,
             }),
+            footer: None,
             font: None,
             weight: 400,
             letter_spacing_permille: 0,
