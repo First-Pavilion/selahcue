@@ -636,11 +636,15 @@ if not check_jump_call_site_is_click_only():
 # .det-duplicate rendering, the cooldown countdown, "Show anyway") and added a larger set of new
 # ones (Mute-on-every-card + its History record/Unmute reverse gear + the once-per-id repeat-
 # dismiss guard, the Edit/re-stage "never stages" checks that actually wait past the 120ms
-# debounce, the whole-chapter on-air narrowing fix, and the confidence-fails-open fix). Because
-# the remediation commit was cut fresh from main and only THEN rebased onto the 1596 line above
-# (a separate, unrelated PR #63 round having landed on main in between), neither branch's own
-# hand-tallied delta is trustworthy in isolation — re-derived the only honest way, per this
-# comment's own repeated lesson, by actually running the fully rebased file.
+# debounce, the whole-chapter on-air narrowing fix, and the confidence-fails-open fix). PR #61
+# was then merged to main at that PRE-remediation commit (1589) — before this Sana/Quinn pass was
+# pushed, despite both reviews being explicitly BLOCK — so the remediation was cut fresh from
+# main and rebased. That first rebase (onto 1589 + PR #58's own Sana/Vera remediation) measured
+# 1602 by two independent runs. Then, while resolving THIS conflict, a further, separate PR #63
+# round landed on main in between (the 1596 entry immediately above) — because the remediation
+# commit was cut fresh from main and only THEN rebased again onto that later point, neither
+# branch's own hand-tallied delta is trustworthy in isolation. Re-derived the only honest way,
+# per this comment's own repeated lesson: by actually running the fully, finally rebased file.
 EXPECTED_MIN_CHECKS = 1602
 
 
