@@ -788,3 +788,20 @@ produced the surface's first design record:
 contract). Two open product questions are flagged, not decided: whether FR-124 timestamp-linked note navigation
 should be scheduled for this surface, and the 0-segment/mid-resize log edge cases have no distinct visual
 treatment. No `implementation/` file was modified.
+
+---
+
+## Design 2.0 parity — audit reconciliation + Phase D ClickUp backlog (2026-09-20)
+
+**Audit + tickets only — no application code changed.** Four docs-only draft PRs, none merged yet:
+
+- **PR #53** `docs/design2-parity-reconcile` — reconciled the three original Design 2.0 parity audits (console/presentation/stage, 2026-08-23) against current `main`. Of 337 original findings, **259 still open**: console 155/179, presentation 76/80, stage 28/78. Two remediation waves already landed and were verified `file:line` (not inferred from batch docs): `CODE-REVIEW-batch-desktop-design2-web1.md`/`-stage.md`, plus a third wave (`e8100e0`, Frame G recovery states) neither batch doc recorded.
+- **PR #56** `docs/design2-parity-new-surfaces` — six new audits for surfaces never before covered: Theme Designer (`TD-001..012`), Service Plan (`PLN-001..009`), Pre-service Check (`PSC-001..010`), Remote Control · Devices (`RCD-001..009`), Settings (`SET-001..009`, 7 page-level MISSING), Download modal (`DLM-001..008`). 57 findings, 3 blockers.
+- **PR #52** `docs/design2-parity-mobile-audit` — first rigorous, numbered parity audit of the Flutter controller (24 findings, 0 blockers). Cleaner than doc-comment citations suggested: Batch A/B mobile migration already closed most gaps; the honest caveat is coverage depth, not correctness — 7 of 13 surfaces audited via grep/diff-table rather than a full per-element pixel pass.
+- **PR #54** `docs/design2-transcripts-spec` — first Figma coverage for Transcripts (previously the only major desktop surface with zero frames). **Scoping correction to the original plan:** Transcripts is already almost entirely built; the handoff doc was written FROM the live implementation and pushed INTO Figma (RISK-205 pattern), not the other way around. The one real open gap is FR-124 (timestamp-linked note navigation).
+
+**Headline cross-cutting finding:** the three open blockers in PR #56 (`TD-012`, `PSC-005`, `DLM-001`) are the *same* defect — white text on the `--sc-primary-hover` gradient at 3.78:1, failing NFR-020 — already fixed twice elsewhere in the codebase (console `.tb-golive`, presentation `.pm-btn-primary:hover`) with the same darken-on-hover pattern. Tracked as one shared-fix ticket instead of three.
+
+**ClickUp:** searched first, no existing "Design 2.0 parity" epic/story found — new `EPIC — Design 2.0 Parity Closure (Phase D backlog)` (`17tnw2axpt8`) created to hold it, since the findings cut across nearly every existing surface epic rather than fitting one. **23 implementation tickets** (Farah-facing, each sized to one branch/one worktree/one PR) + **8 decision-needed tickets** (owner-only calls, not Farah's or Uma's — page build order, template-count, inline-link-pattern-final, mobile audit-depth investment, a recurring muted-text-token policy, etc.) as children of that epic. Every `INTENTIONAL-DEVIATION`/`A11Y-CONFLICT` verdict (RISK-205/NFR-204 — shipped ink can be right where Figma is stale) is called out explicitly in the relevant ticket so a future fix doesn't regress it backward (console's 9 deviations incl. `BLACKOUT`/`GO LIVE`/primary-gradient ink; stage's TIME-UP pulse `STG-039` and message-chip polarity `STG-071`; mobile/remote's RBAC role-naming). One ticket (`[Frontend] Service Plan: close remaining PLN-### drift`) was linked as `waiting_on` the existing `86ak8467m` rather than duplicating its scope.
+
+Not done here: merging PR #52/53/54/56 (left to the user/reviewers) and any actual implementation (Phase D was audit-round → backlog only).
