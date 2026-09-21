@@ -601,7 +601,18 @@ if not check_jump_call_site_is_click_only():
 # `SELAHCUE_OPERATOR_DIST` override). Four independent runs across three separate worktrees now
 # agree on 1520; zero runs since have reproduced 1514. The number below is the one every
 # available run actually reports, not the one first written down.
-EXPECTED_MIN_CHECKS = 1544
+#
+# Rebased onto origin/main after PR #58 merged (the shared gradient-hover contrast fix,
+# TD-012/PSC-005/DLM-001, which bumped this to 1544) and after this ticket's own 45 new
+# Detected-Scriptures assertions (CON-111/116/121/129/130/134/136/137/138) landed on top. Cody's
+# review of PR #61 caught this constant lagging main by exactly the amount this branch was
+# lagging main (4 commits, including PR #58's own bump commit) — the PR had claimed a rebase
+# that had not actually happened, and 1544 was therefore 45 checks looser than the real merged
+# total. Re-derived the only honest way, by actually running the file against the real rebase:
+# 1589, confirmed by two independent runs in this worktree (both 1589, 0 FAIL, `git status`
+# clean throughout, no `SELAHCUE_OPERATOR_DIST` override) and matching Cody's own independent
+# trial-merge count exactly.
+EXPECTED_MIN_CHECKS = 1589
 
 
 def find_chrome():

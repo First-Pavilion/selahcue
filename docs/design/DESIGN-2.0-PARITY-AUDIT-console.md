@@ -1279,10 +1279,13 @@ table's arithmetic to the last digit — it is derived, not re-audited row by ro
 
 **Author:** Farah (Frontend). **Scope:** ClickUp `17tnw2axptb` — the nine findings this ticket
 named, all confirmed OPEN by the 2026-09-20 reconciliation above. Verified by reading the
-committed `file:line` directly (not inferred), by running `scripts/operator_headless.py` (1541
-checks, 0 FAIL, including 45 new assertions covering these nine ids), and by comparing a live
-render of each new state against its Figma node with `get_screenshot`. Commit: see the PR opened
-from branch `feat/17tnw2axptb-console-detection-states`.
+committed `file:line` directly (not inferred), by running `scripts/operator_headless.py` against
+the branch properly rebased onto `origin/main` (1589 checks, 0 FAIL, including 45 new assertions
+covering these nine ids — the same total Cody's independent trial-merge in PR #61 review
+reported; a first draft of this section understated it as 1541 because the branch had not
+actually been rebased at the time, caught in that same review), and by comparing a live render of
+each new state against its Figma node with `get_screenshot`. Commit: see the PR opened from
+branch `feat/17tnw2axptb-console-detection-states`.
 
 ### FIXED
 
