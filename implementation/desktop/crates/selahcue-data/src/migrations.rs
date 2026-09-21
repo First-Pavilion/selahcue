@@ -333,10 +333,15 @@ const MIGRATIONS: &[&str] = &[
     // transcript invariant shipped already in 86akby7d8/PR #19).
     //
     // One editable draft per transcript: `transcript_id` is UNIQUE. Regenerating a
-    // draft and retaining a prior version (FR-129, 86akgqdx8) is explicitly out of
-    // this ticket's scope — `sermon_note_repo::create` upserts (replaces) the single
-    // row for a transcript rather than keeping history, which is a deliberate
-    // interim behaviour, not an oversight, pending FR-129.
+    // draft and retaining a prior version (FR-129, 86akgqdx8) was explicitly out of
+    // THIS migration's scope when it shipped — `sermon_note_repo::create` upserts
+    // (replaces) the single row for a transcript rather than keeping history, which
+    // was a deliberate interim behaviour, not an oversight, pending FR-129. FR-129
+    // (v21 -> v22, below) has since shipped retention as ADDITIVE `pending_*`
+    // columns on this SAME row rather than a second table — `create`'s own
+    // upsert-replace behaviour described here is UNCHANGED and still exactly what
+    // runs when no draft exists yet (a true first-time generate); see the v21 -> v22
+    // migration comment for how a regenerate against an EXISTING draft differs.
     //
     // `sections` and `scriptures` are opaque JSON TEXT, not normalized child tables —
     // the same "dumb store" shape as `deck.deck_json` (see `deck_repo`): the data
@@ -394,6 +399,55 @@ const MIGRATIONS: &[&str] = &[
         created_at    INTEGER NOT NULL,
         edited_at     INTEGER NOT NULL
     );
+    "#,
+    // v21 -> v22: single-prior-version RETENTION for regenerate (FR-129, 86akgqdx8).
+    //
+    // The decided model (see this ticket's Goal Contract / MR description for the full
+    // reasoning): SINGLE prior version, never a history stack — the PRD's own wording is
+    // "prior version" (singular) — and EXPLICIT-CONFIRM-BEFORE-REPLACE, not
+    // automatic-replace-with-undo — the ticket's scope text says the prior draft is
+    // retained "until the new draft is confirmed/accepted by the operator".
+    //
+    // Nine additive, all-nullable columns hold a NOT-YET-CONFIRMED regenerated draft
+    // ALONGSIDE the currently-accepted one, in the SAME row, rather than a second table or
+    // a history table:
+    //   - The currently-accepted draft keeps living in the existing, unrenamed columns
+    //     (`title`/`summary`/`sections`/`scriptures`/`ai_generated`/`disclosure`/
+    //     `provider`/`model`/`created_at`/`edited_at`) — completely untouched by staging a
+    //     regeneration, which is exactly what makes "the prior draft is retrievable,
+    //     unmodified, immediately after a regenerate is requested" true by construction
+    //     rather than by a second copy that could drift.
+    //   - `pending_*` mirrors every create-time field of a fresh draft (see
+    //     `sermon_note_repo::NewSermonNote`) EXCEPT `edited_at` — a pending regeneration is
+    //     not yet "the" draft, so it has no edit history yet; `pending_generated_at` is its
+    //     create-time stamp, reused for both `created_at` and `edited_at` when it is
+    //     confirmed (mirroring `create`'s own `VALUES (?10, ?10)` for a brand-new row).
+    //   - All nine are NULL together (the default for every pre-v22 row, and the state
+    //     after a fresh `create`/after a `confirm`/after a `discard`) or non-NULL together
+    //     (immediately after a `stage`) — `pending_title` is the single non-nullable-in-a-
+    //     real-draft field this crate treats as the presence sentinel, mirroring how
+    //     `disclosure`'s own NULL-exactly-when-not-`ai_generated` pairing already works one
+    //     column over.
+    //
+    // A second `stage` before the first is confirmed/discarded OVERWRITES the pending
+    // slot outright — there is only one pending-regeneration slot per transcript, matching
+    // the single-prior-version decision above: only the CONFIRMED version is guaranteed
+    // retained, never an intermediate, never-confirmed regeneration attempt.
+    //
+    // No new FK, no new cascade path to design: a `pending_*` set lives and dies with the
+    // `sermon_note` row it sits on (the existing `ON DELETE SET NULL`/detached-note/
+    // `list_detached`/`delete_by_id` machinery for the whole row already covers it — there
+    // is no separate row to leak).
+    r#"
+    ALTER TABLE sermon_note ADD COLUMN pending_title TEXT;
+    ALTER TABLE sermon_note ADD COLUMN pending_summary TEXT;
+    ALTER TABLE sermon_note ADD COLUMN pending_sections TEXT;
+    ALTER TABLE sermon_note ADD COLUMN pending_scriptures TEXT;
+    ALTER TABLE sermon_note ADD COLUMN pending_ai_generated INTEGER;
+    ALTER TABLE sermon_note ADD COLUMN pending_disclosure TEXT;
+    ALTER TABLE sermon_note ADD COLUMN pending_provider TEXT;
+    ALTER TABLE sermon_note ADD COLUMN pending_model TEXT;
+    ALTER TABLE sermon_note ADD COLUMN pending_generated_at INTEGER;
     "#,
 ];
 

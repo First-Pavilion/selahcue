@@ -996,3 +996,87 @@ Widen it to assert **both** halves:
    satisfying it.
 
 Without (2) the guard cannot tell "correctly reinstated" from "deleted again".
+
+---
+
+## Reconciliation — 2026-09-20
+
+**Author:** Uma (UI/UX). **Scope:** re-verify all 80 findings (`PME-001`…`PME-063`,
+`OUT-001`…`OUT-017`) against `main` as of this worktree's base commit (`4b21c39`), docs-only.
+
+### Method
+
+`docs/delivery/CODE-REVIEW-batch-desktop-design2-web1.md` (commit `7c149ea`, 2026-08-23) is the
+**only** remediation batch that names any `PME-###` finding. `git log --since=2026-08-23` for
+`selahcue-present/src/{theme.rs,compose.rs,measure.rs,slide.rs}` — the four files every `OUT-###`
+finding cites — returns **zero commits**; Part B (audience output) is byte-identical to the audit
+date and every `OUT-###` verdict stands unchanged. For Part A (web), any `PME-###` not named in the
+web1 batch's explicit "§7 Scope kept" list or its "§8 Findings raised, not fixed" table was
+re-checked with a direct `grep`/`Read` against the current `dist/` tree rather than assumed unchanged,
+because the web1 batch also touched adjacent CSS (`.seg` rename, the `--sc-*` review block) that could
+plausibly have side-effected a Presentation-surface rule; none did.
+
+### FIXED
+
+| Finding | Evidence |
+|---|---|
+| `PME-001` | LIVE badge now uses the canonical white-text red fill (7.19:1), not `--sc-live` as a fill (3.27:1). `CODE-REVIEW-batch-desktop-design2-web1.md` §3, gate-verified (`operator_headless.py` PME-001 checks, all PASS). |
+| `PME-005` | `.pm-btn-primary:hover` darkens to `#5a48d0` (6.42:1) instead of lightening to `--sc-primary-hover` (3.78:1). Same batch, §4. |
+| `PME-014` | `#pm-present` — a real `▶ Present` control in the Presentation topbar, reachable without ⌘K, dispatching `pmGridGoLive`/`pmPresent` per surface mode. Same batch, §5. |
+| `PME-015` | `#pm-addtoplan` — a real, wired `Add to plan` control with rollback-on-failure and Undo, resolving the audit's own Q-14 in favour of keeping the control (owner-confirmed per the batch doc's §5 citation of `PRESENTATIONS-LIBRARY-spec.md` §2.1). |
+
+**4 findings FIXED**, all in Part A, all S1.
+
+### Explicitly raised but NOT fixed (batch doc's own admission)
+
+- **`PME-055`** — no `Present` item in the library card `⋯` menu. Web1 batch §8: *"The audit pairs it
+  with PME-014; scope was the topbar only. Presenting is now reachable without ⌘K, so the S1 is
+  closed, but the menu item is still missing."* Confirmed **OPEN** — `grep -n "Present" app.js` around
+  the card menu (`app.js:6766-6775` per the batch doc's own citation) shows no such item as of this
+  worktree.
+
+### Re-verified still OPEN (the other named S1s)
+
+- **`PME-043`** (no view-only/permission-gated mode on the Presentation surface) — the only "View
+  only" markup in `dist/` is explicitly scoped to the Service Plan surface (`index.html:1063`,
+  comment: *"frame 612:342"*, a Plan node, not Presentation's `509:124`). **OPEN**, unchanged.
+- **`PME-053`** (no `Start from` radio group in the New-Presentation dialog) — the only "Start from a
+  template" strings in `app.js` (`app.js:7873`, `app.js:8229`) sit in the Service Plan empty-state /
+  plan-lifecycle code (matching `CON-173`'s Q11), not the Presentations-library New dialog. **OPEN**,
+  unchanged.
+- **`PME-058`** (delete-undo copy/behaviour contradiction, Q-08) and **`PME-059`** (no warning when a
+  service plan references the deck being deleted) — `app.js` does carry a general presentation-delete
+  Undo (`app.js:8831`, `app.js:9151`), but neither carries the specific plan-reference warning
+  `PME-059` asks for, and Q-08's copy/behaviour reconciliation is not recorded as decided anywhere in
+  `docs/delivery/` or `docs/design/`. **Both OPEN.**
+
+All remaining `PME-###` (54 more) and every `OUT-###` (17) are **OPEN, unchanged since 2026-08-23** —
+Part B by the zero-commit check above; the remaining Part A items because they sit outside web1's
+five named fixes and its own scope-kept list, and none surfaced in the direct re-check pass either.
+
+### Totals
+
+| | Count |
+|---|---:|
+| Total findings | 80 (63 `PME-` + 17 `OUT-`) |
+| FIXED | 4 |
+| SUPERSEDED | 0 |
+| **OPEN** | **76** |
+
+Open, by severity (from the audit's own summary tables, reduced only by the 4 confirmed FIXED — all
+4 were S1):
+
+| Severity | Originally | Open |
+|---|---:|---:|
+| S1 | 6 (Part A) + 1 (Part B, `OUT-006`) = 7 | 3 (`PME-043, PME-053/PME-058/PME-059` — Part A) + 1 (`OUT-006`) |
+| S2 | 27 (A) + 7 (B) = 34 | 34 (unchanged) |
+| S3 | 21 (A) + 5 (B) = 26 | 26 (unchanged) |
+| S4 | 31 (A) + 5 (B) = 36 | 36 (unchanged) |
+
+(The S1 row: `PME-055` is a **duplicate id-pairing** with `PME-014` in the audit's own "six S1s"
+grouping, not a distinct seventh severity slot — so of the six Part-A S1 slots, two (`PME-001`,
+`PME-014`) are closed and four (`PME-043`, `PME-053`, `PME-058`, `PME-059`) plus the paired
+`PME-055` remain open.)
+
+Three blocking decisions (Q-02, Q-08, Q-10) named in the original audit remain unanswered and still
+gate the bulk of Part A step 2+ and all of Part B step 3+ of the suggested build order.

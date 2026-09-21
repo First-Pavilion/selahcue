@@ -6,7 +6,7 @@
 
 #![allow(clippy::unwrap_used)]
 
-use selahcue_app::{LiveController, SermonNoteStore};
+use selahcue_app::{LiveController, RegenerationSlot, SermonNoteStore};
 use selahcue_core::plan::{ItemKind, ServicePlan};
 use selahcue_lan::protocol::{
     Command, SermonNoteDraftInput, SermonNoteDraftView, SermonNoteEditInput, ServerMessage,
@@ -44,9 +44,14 @@ struct SpyState {
     active_transcript_id: Option<i64>,
     saved: Vec<(i64, SermonNoteDraftInput)>,
     updated: Vec<(i64, SermonNoteEditInput)>,
+    staged: Vec<(i64, SermonNoteDraftInput)>,
     /// The single-slot persisted draft this fake "store" actually holds, keyed by
     /// transcript_id — real enough to make `load_draft` after `save_draft` return something.
     persisted: Option<(i64, SermonNoteDraftView)>,
+    /// The single-slot pending regeneration (FR-129, 86akgqdx8) — mirrors
+    /// `sermon_note_repo`'s real `pending_*` columns closely enough to exercise
+    /// `LiveController`'s dispatch, not a full re-implementation of the repo.
+    pending: Option<(i64, SermonNoteDraftView)>,
     fail_next: bool,
 }
 
@@ -64,8 +69,14 @@ impl SpyStore {
     fn updated_calls(&self) -> Vec<(i64, SermonNoteEditInput)> {
         self.0.lock().unwrap().updated.clone()
     }
+    fn staged_calls(&self) -> Vec<(i64, SermonNoteDraftInput)> {
+        self.0.lock().unwrap().staged.clone()
+    }
     fn fail_next_call(&self) {
         self.0.lock().unwrap().fail_next = true;
+    }
+    fn has_pending(&self) -> bool {
+        self.0.lock().unwrap().pending.is_some()
     }
 }
 
@@ -131,6 +142,80 @@ impl SermonNoteStore for SpyStore {
         };
         s.persisted = Some((transcript_id, updated.clone()));
         Ok(updated)
+    }
+    fn stage_regeneration(
+        &mut self,
+        transcript_id: i64,
+        draft: &SermonNoteDraftInput,
+    ) -> Result<RegenerationSlot, String> {
+        let mut s = self.0.lock().unwrap();
+        if std::mem::take(&mut s.fail_next) {
+            return Err("simulated failure".into());
+        }
+        let Some((id, current)) = s.persisted.clone() else {
+            return Err("no accepted draft exists for this transcript".into());
+        };
+        if id != transcript_id {
+            return Err("no accepted draft exists for this transcript".into());
+        }
+        s.staged.push((transcript_id, draft.clone()));
+        let pending_view = SermonNoteDraftView {
+            title: draft.title.clone(),
+            summary: draft.summary.clone(),
+            sections_json: draft.sections_json.clone(),
+            scriptures_json: draft.scriptures_json.clone(),
+            ai_generated: draft.ai_generated,
+            disclosure: draft.disclosure.clone(),
+            provider: draft.provider.clone(),
+            model: draft.model.clone(),
+            created_at_ms: 3_000,
+            edited_at_ms: 3_000,
+        };
+        s.pending = Some((transcript_id, pending_view.clone()));
+        Ok(RegenerationSlot {
+            current: Some(current),
+            pending: Some(pending_view),
+        })
+    }
+    fn confirm_regeneration(&mut self, transcript_id: i64) -> Result<RegenerationSlot, String> {
+        let mut s = self.0.lock().unwrap();
+        let Some((id, current)) = s.persisted.clone() else {
+            return Err("nothing pending for this transcript".into());
+        };
+        let Some((pending_id, pending)) = s.pending.clone() else {
+            return Err("nothing pending for this transcript".into());
+        };
+        if id != transcript_id || pending_id != transcript_id {
+            return Err("nothing pending for this transcript".into());
+        }
+        // "Once AI-generated, always AI-generated" (mirrors
+        // `sermon_note_repo::confirm_regeneration`'s real guard).
+        if current.ai_generated && !pending.ai_generated {
+            return Err("would remove the AI-generated label".into());
+        }
+        s.persisted = Some((transcript_id, pending.clone()));
+        s.pending = None;
+        Ok(RegenerationSlot {
+            current: Some(pending),
+            pending: None,
+        })
+    }
+    fn discard_regeneration(&mut self, transcript_id: i64) -> Result<RegenerationSlot, String> {
+        let mut s = self.0.lock().unwrap();
+        if s.pending
+            .as_ref()
+            .is_some_and(|(id, _)| *id == transcript_id)
+        {
+            s.pending = None;
+        }
+        Ok(RegenerationSlot {
+            current: s
+                .persisted
+                .as_ref()
+                .filter(|(id, _)| *id == transcript_id)
+                .map(|(_, v)| v.clone()),
+            pending: None,
+        })
     }
 }
 
@@ -455,6 +540,280 @@ fn save_sermon_note_draft_refused_by_the_store_is_denied_not_a_panic() {
 }
 
 // ---------------------------------------------------------------------------------------
+// Regenerate-with-retention (FR-129, 86akgqdx8): `LiveController::apply`'s dispatch for
+// Stage/Confirm/Discard, exercised against the SAME `SpyStore` used above — proving the
+// commands reach the injected store with the exact payload and that the "prior draft
+// survives a failed/refused attempt" acceptance criterion holds AT THIS LAYER (a store
+// failure/refusal never mutates `persisted`).
+// ---------------------------------------------------------------------------------------
+
+#[test]
+fn stage_sermon_note_regeneration_reaches_the_store_and_leaves_the_accepted_draft_untouched() {
+    let mut c = controller();
+    let store = SpyStore::new();
+    c.set_sermon_note_store(Box::new(store.clone()));
+    c.apply(&Command::SaveSermonNoteDraft {
+        transcript_id: 7,
+        draft: sample_draft(),
+    });
+
+    let mut regenerated = sample_draft();
+    regenerated.title = "Regenerated Title".into();
+    let reply = c.apply(&Command::StageSermonNoteRegeneration {
+        transcript_id: 7,
+        draft: regenerated.clone(),
+    });
+    match reply {
+        selahcue_app::ControllerReply::Message(ServerMessage::SermonNoteRegenerationState {
+            transcript_id,
+            current,
+            pending,
+        }) => {
+            assert_eq!(transcript_id, 7);
+            assert_eq!(
+                current.as_ref().unwrap().title,
+                sample_draft().title,
+                "the accepted (prior) draft reported back must be UNCHANGED"
+            );
+            assert_eq!(pending.as_ref().unwrap().title, "Regenerated Title");
+        }
+        other => panic!("expected SermonNoteRegenerationState, got {other:?}"),
+    }
+    assert_eq!(store.staged_calls(), vec![(7, regenerated)]);
+    assert!(store.has_pending());
+}
+
+#[test]
+fn stage_sermon_note_regeneration_with_no_accepted_draft_is_denied() {
+    // Regenerate requires something to regenerate FROM.
+    let mut c = controller();
+    c.set_sermon_note_store(Box::new(SpyStore::new()));
+
+    let reply = c.apply(&Command::StageSermonNoteRegeneration {
+        transcript_id: 7,
+        draft: sample_draft(),
+    });
+    assert!(matches!(
+        reply,
+        selahcue_app::ControllerReply::Deny(selahcue_lan::protocol::DenyReason::BadRequest)
+    ));
+}
+
+#[test]
+fn stage_sermon_note_regeneration_with_an_inconsistent_pairing_is_denied() {
+    // Same FR-123/FR-128 integrity check as Save, applied to the pending draft.
+    let mut c = controller();
+    c.set_sermon_note_store(Box::new(SpyStore::new()));
+    c.apply(&Command::SaveSermonNoteDraft {
+        transcript_id: 7,
+        draft: sample_draft(),
+    });
+
+    let mut bad = sample_draft();
+    bad.ai_generated = true;
+    bad.disclosure = None;
+    let reply = c.apply(&Command::StageSermonNoteRegeneration {
+        transcript_id: 7,
+        draft: bad,
+    });
+    assert!(matches!(
+        reply,
+        selahcue_app::ControllerReply::Deny(selahcue_lan::protocol::DenyReason::BadRequest)
+    ));
+}
+
+#[test]
+fn a_failed_stage_attempt_never_touches_the_accepted_draft() {
+    // Direct proof, at the `LiveController` dispatch layer, of "a transport failure during
+    // regenerate must not lose the prior draft": a store failure during Stage (standing in
+    // for "generation succeeded but persistence failed", or any other refusal) leaves
+    // `save_sermon_note_draft`'s already-persisted content completely alone.
+    let mut c = controller();
+    let store = SpyStore::new();
+    c.set_sermon_note_store(Box::new(store.clone()));
+    c.apply(&Command::SaveSermonNoteDraft {
+        transcript_id: 7,
+        draft: sample_draft(),
+    });
+    store.fail_next_call();
+
+    let reply = c.apply(&Command::StageSermonNoteRegeneration {
+        transcript_id: 7,
+        draft: sample_draft(),
+    });
+    assert!(matches!(
+        reply,
+        selahcue_app::ControllerReply::Deny(selahcue_lan::protocol::DenyReason::BadRequest)
+    ));
+    assert!(
+        !store.has_pending(),
+        "a refused/failed stage must not leave a pending row behind"
+    );
+
+    // The accepted draft is still exactly what it was — reachable via Load, over the SAME
+    // command surface the operator console actually uses to display it.
+    let reload = c.apply(&Command::LoadSermonNoteDraft { transcript_id: 7 });
+    match reload {
+        selahcue_app::ControllerReply::Message(ServerMessage::SermonNoteDraft {
+            draft: Some(view),
+            ..
+        }) => assert_eq!(view.title, sample_draft().title),
+        other => panic!("expected the untouched accepted draft, got {other:?}"),
+    }
+}
+
+#[test]
+fn confirm_sermon_note_regeneration_replaces_the_accepted_draft() {
+    let mut c = controller();
+    let store = SpyStore::new();
+    c.set_sermon_note_store(Box::new(store));
+    c.apply(&Command::SaveSermonNoteDraft {
+        transcript_id: 7,
+        draft: sample_draft(),
+    });
+    let mut regenerated = sample_draft();
+    regenerated.title = "Regenerated Title".into();
+    c.apply(&Command::StageSermonNoteRegeneration {
+        transcript_id: 7,
+        draft: regenerated,
+    });
+
+    let reply = c.apply(&Command::ConfirmSermonNoteRegeneration { transcript_id: 7 });
+    match reply {
+        selahcue_app::ControllerReply::Message(ServerMessage::SermonNoteRegenerationState {
+            transcript_id,
+            current,
+            pending,
+        }) => {
+            assert_eq!(transcript_id, 7);
+            assert_eq!(current.as_ref().unwrap().title, "Regenerated Title");
+            assert!(pending.is_none());
+        }
+        other => panic!("expected SermonNoteRegenerationState, got {other:?}"),
+    }
+
+    // The confirmed content is now what Load returns — single prior version, the old one
+    // is gone.
+    let reload = c.apply(&Command::LoadSermonNoteDraft { transcript_id: 7 });
+    match reload {
+        selahcue_app::ControllerReply::Message(ServerMessage::SermonNoteDraft {
+            draft: Some(view),
+            ..
+        }) => assert_eq!(view.title, "Regenerated Title"),
+        other => panic!("expected the confirmed draft, got {other:?}"),
+    }
+}
+
+#[test]
+fn confirm_sermon_note_regeneration_with_nothing_pending_is_denied() {
+    let mut c = controller();
+    c.set_sermon_note_store(Box::new(SpyStore::new()));
+    c.apply(&Command::SaveSermonNoteDraft {
+        transcript_id: 7,
+        draft: sample_draft(),
+    });
+
+    let reply = c.apply(&Command::ConfirmSermonNoteRegeneration { transcript_id: 7 });
+    assert!(matches!(
+        reply,
+        selahcue_app::ControllerReply::Deny(selahcue_lan::protocol::DenyReason::BadRequest)
+    ));
+}
+
+#[test]
+fn confirm_sermon_note_regeneration_cannot_downgrade_the_ai_generated_label() {
+    // "Once AI-generated, always AI-generated" (PR #33 review, Sana N2), extended to
+    // confirm — the exact scenario a degraded (local-fallback) regenerate produces.
+    let mut c = controller();
+    let store = SpyStore::new();
+    c.set_sermon_note_store(Box::new(store.clone()));
+    c.apply(&Command::SaveSermonNoteDraft {
+        transcript_id: 7,
+        draft: sample_draft(), // ai_generated: true
+    });
+    let mut degraded = sample_draft();
+    degraded.ai_generated = false;
+    degraded.disclosure = None;
+    degraded.title = "Offline outline".into();
+    c.apply(&Command::StageSermonNoteRegeneration {
+        transcript_id: 7,
+        draft: degraded,
+    });
+
+    let reply = c.apply(&Command::ConfirmSermonNoteRegeneration { transcript_id: 7 });
+    assert!(matches!(
+        reply,
+        selahcue_app::ControllerReply::Deny(selahcue_lan::protocol::DenyReason::BadRequest)
+    ));
+    // The accepted draft is untouched, and the pending draft STAYS staged (not silently
+    // dropped) so the operator can still discard it themselves.
+    assert!(store.has_pending());
+    let reload = c.apply(&Command::LoadSermonNoteDraft { transcript_id: 7 });
+    match reload {
+        selahcue_app::ControllerReply::Message(ServerMessage::SermonNoteDraft {
+            draft: Some(view),
+            ..
+        }) => {
+            assert_eq!(view.title, sample_draft().title);
+            assert!(view.ai_generated);
+        }
+        other => panic!("expected the untouched accepted draft, got {other:?}"),
+    }
+}
+
+#[test]
+fn discard_sermon_note_regeneration_leaves_the_accepted_draft_unchanged() {
+    let mut c = controller();
+    let store = SpyStore::new();
+    c.set_sermon_note_store(Box::new(store.clone()));
+    c.apply(&Command::SaveSermonNoteDraft {
+        transcript_id: 7,
+        draft: sample_draft(),
+    });
+    let mut regenerated = sample_draft();
+    regenerated.title = "A regeneration nobody wanted".into();
+    c.apply(&Command::StageSermonNoteRegeneration {
+        transcript_id: 7,
+        draft: regenerated,
+    });
+
+    let reply = c.apply(&Command::DiscardSermonNoteRegeneration { transcript_id: 7 });
+    match reply {
+        selahcue_app::ControllerReply::Message(ServerMessage::SermonNoteRegenerationState {
+            transcript_id,
+            current,
+            pending,
+        }) => {
+            assert_eq!(transcript_id, 7);
+            assert_eq!(current.as_ref().unwrap().title, sample_draft().title);
+            assert!(pending.is_none());
+        }
+        other => panic!("expected SermonNoteRegenerationState, got {other:?}"),
+    }
+    assert!(!store.has_pending());
+}
+
+#[test]
+fn discard_sermon_note_regeneration_with_nothing_pending_is_a_harmless_success_positive_control() {
+    // Idempotent — discarding when nothing was ever staged is not an error.
+    let mut c = controller();
+    c.set_sermon_note_store(Box::new(SpyStore::new()));
+    c.apply(&Command::SaveSermonNoteDraft {
+        transcript_id: 7,
+        draft: sample_draft(),
+    });
+
+    let reply = c.apply(&Command::DiscardSermonNoteRegeneration { transcript_id: 7 });
+    assert!(matches!(
+        reply,
+        selahcue_app::ControllerReply::Message(ServerMessage::SermonNoteRegenerationState {
+            pending: None,
+            ..
+        })
+    ));
+}
+
+// ---------------------------------------------------------------------------------------
 // Regression + positive control: ControllerSnapshot must stay untouched by sermon-note
 // activity (mirrors `controller_snapshot_stays_untouched_by_transcript_activity` in
 // `test_transcript_durability.rs`) — sermon notes are a SEPARATE store, never routed through
@@ -480,6 +839,12 @@ fn controller_snapshot_stays_untouched_by_sermon_note_activity() {
             scriptures_json: "[]".into(),
         },
     });
+    c.apply(&Command::StageSermonNoteRegeneration {
+        transcript_id: 7,
+        draft: sample_draft(),
+    });
+    c.apply(&Command::ConfirmSermonNoteRegeneration { transcript_id: 7 });
+    c.apply(&Command::DiscardSermonNoteRegeneration { transcript_id: 7 });
 
     let after = c.snapshot(now);
     assert_eq!(

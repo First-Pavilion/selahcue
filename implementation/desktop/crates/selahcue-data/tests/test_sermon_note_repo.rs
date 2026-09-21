@@ -14,8 +14,8 @@
 
 use rusqlite::params;
 use selahcue_data::sermon_note_repo::{
-    self, DraftEdit, NewSermonNote, MAX_DISCLOSURE_CHARS, MAX_MODEL_CHARS, MAX_PROVIDER_CHARS,
-    MAX_SECTIONS_JSON_BYTES,
+    self, DraftEdit, NewSermonNote, PendingRegeneration, MAX_DISCLOSURE_CHARS, MAX_MODEL_CHARS,
+    MAX_PROVIDER_CHARS, MAX_SECTIONS_JSON_BYTES,
 };
 use selahcue_data::transcript_repo::{self, NewTranscript};
 use selahcue_data::{DataError, Database};
@@ -636,4 +636,352 @@ fn delete_by_id_for_an_unknown_id_is_a_harmless_no_op() {
     let db = db();
     sermon_note_repo::delete_by_id(&db, 9_999).unwrap();
     sermon_note_repo::delete_by_id(&db, 9_999).unwrap();
+}
+
+// --- Regenerate-with-retention (FR-129, 86akgqdx8) --------------------------------
+//
+// Single prior version, explicit-confirm-before-replace: `stage_regeneration` must
+// never touch the accepted columns; `confirm_regeneration` moves pending onto
+// accepted; `discard_regeneration` clears pending only. The "a transport failure
+// during regenerate never loses the prior draft" acceptance criterion is proven at
+// THIS layer by the simple fact that `stage_regeneration` is the only entry point
+// that can create a pending row, and a caller that never calls it (because
+// generation failed) leaves the accepted draft provably untouched — see
+// `an_unstaged_transcript_has_no_pending_regeneration_and_the_accepted_draft_is_
+// unaffected` below for the direct assertion.
+
+fn sample_pending(generated_at_ms: i64) -> PendingRegeneration {
+    PendingRegeneration {
+        title: "Regenerated: The Faithful Servant".into(),
+        summary: Some("A fresh summary from the regenerate.".into()),
+        sections_json: r#"[{"heading":"New Points","items":["fresh"],"points":[]}]"#.into(),
+        scriptures_json: r#"["Matthew 25:23"]"#.into(),
+        ai_generated: true,
+        disclosure: Some("AI-generated. Check every reference.".into()),
+        provider: "SelahCue AI".into(),
+        model: None,
+        generated_at_ms,
+    }
+}
+
+#[test]
+fn staging_a_regeneration_leaves_the_accepted_draft_completely_untouched() {
+    let db = db();
+    let transcript_id = make_transcript(&db, 1_000);
+    let original = sample_note(transcript_id);
+    sermon_note_repo::create(&db, &original).unwrap();
+
+    sermon_note_repo::stage_regeneration(&db, transcript_id, &sample_pending(9_000)).unwrap();
+
+    let loaded = sermon_note_repo::find_by_transcript(&db, transcript_id)
+        .unwrap()
+        .unwrap();
+    // The PRIOR VERSION — every accepted-column field — is byte-identical to what it
+    // was before staging. This is the direct proof of "the prior draft is retrievable,
+    // unmodified, immediately after a regenerate is requested, before the operator
+    // confirms replacement."
+    assert_eq!(loaded.title, original.title);
+    assert_eq!(loaded.summary, original.summary);
+    assert_eq!(loaded.sections_json, original.sections_json);
+    assert_eq!(loaded.scriptures_json, original.scriptures_json);
+    assert_eq!(loaded.ai_generated, original.ai_generated);
+    assert_eq!(loaded.disclosure, original.disclosure);
+    assert_eq!(loaded.provider, original.provider);
+    assert_eq!(loaded.model, original.model);
+    assert_eq!(loaded.created_at_ms, original.created_at_ms);
+    assert_eq!(loaded.edited_at_ms, original.created_at_ms);
+
+    // The NEW draft is visible as pending, not silently dropped.
+    let pending = loaded
+        .pending
+        .expect("a staged regeneration must be visible as pending");
+    assert_eq!(pending.title, "Regenerated: The Faithful Servant");
+    assert_eq!(pending.generated_at_ms, 9_000);
+}
+
+#[test]
+fn staging_a_regeneration_with_no_existing_draft_is_not_found() {
+    // Regenerate requires something to regenerate FROM — a true first-time generate
+    // goes through `create`, never `stage_regeneration`.
+    let db = db();
+    let transcript_id = make_transcript(&db, 1_000);
+    let err = sermon_note_repo::stage_regeneration(&db, transcript_id, &sample_pending(9_000))
+        .unwrap_err();
+    assert!(matches!(err, DataError::NotFound));
+}
+
+#[test]
+fn a_second_stage_before_confirm_overwrites_the_first_pending_regeneration() {
+    // Single pending slot: only the ACCEPTED draft is guaranteed retained, never an
+    // intermediate, never-confirmed regeneration attempt.
+    //
+    // 86akgqdx8 review (Vera N1): asserting only the LATEST pending title/timestamp proves
+    // last-writer-wins, but would still pass against a history-table implementation that kept
+    // every attempt and merely returned the newest one — it does not prove the "single slot"
+    // part of the design. Repeatedly re-staging and then asserting `sermon_note`'s row COUNT
+    // stays at exactly 1 for this transcript is what actually pins boundedness: a history-table
+    // regression would grow that count, and this loop would catch it on the very next stage.
+    let db = db();
+    let transcript_id = make_transcript(&db, 1_000);
+    sermon_note_repo::create(&db, &sample_note(transcript_id)).unwrap();
+
+    for attempt in 0..5 {
+        let mut pending = sample_pending(9_000 + attempt);
+        pending.title = format!("Regeneration Attempt {attempt}");
+        sermon_note_repo::stage_regeneration(&db, transcript_id, &pending).unwrap();
+
+        let row_count: i64 = db
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM sermon_note WHERE transcript_id = ?1",
+                params![transcript_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            row_count, 1,
+            "staging must overwrite the single pending slot in place, never grow a history \
+             (attempt {attempt})"
+        );
+    }
+
+    let loaded = sermon_note_repo::find_by_transcript(&db, transcript_id)
+        .unwrap()
+        .unwrap();
+    let pending = loaded.pending.unwrap();
+    assert_eq!(pending.title, "Regeneration Attempt 4");
+    assert_eq!(pending.generated_at_ms, 9_004);
+}
+
+#[test]
+fn confirming_a_regeneration_replaces_the_accepted_draft_and_clears_pending() {
+    let db = db();
+    let transcript_id = make_transcript(&db, 1_000);
+    sermon_note_repo::create(&db, &sample_note(transcript_id)).unwrap();
+    sermon_note_repo::stage_regeneration(&db, transcript_id, &sample_pending(9_000)).unwrap();
+
+    let confirmed = sermon_note_repo::confirm_regeneration(&db, transcript_id).unwrap();
+    assert_eq!(confirmed.title, "Regenerated: The Faithful Servant");
+    assert_eq!(confirmed.sections_json, sample_pending(9_000).sections_json);
+    assert_eq!(confirmed.created_at_ms, 9_000);
+    assert_eq!(
+        confirmed.edited_at_ms, 9_000,
+        "a confirmed regeneration is a fresh version: edited_at == created_at"
+    );
+    assert!(
+        confirmed.pending.is_none(),
+        "confirming must clear the pending slot"
+    );
+
+    // Re-read from scratch — not just the return value — to prove it actually persisted.
+    let reloaded = sermon_note_repo::find_by_transcript(&db, transcript_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(reloaded.title, "Regenerated: The Faithful Servant");
+    assert!(reloaded.pending.is_none());
+}
+
+#[test]
+fn confirming_a_downgrade_to_not_ai_generated_is_refused_and_the_accepted_draft_is_untouched() {
+    // "Once AI-generated, always AI-generated" (PR #33 review, Sana N2), extended to
+    // confirm: a degraded (local-fallback) regenerate's pending draft is `ai_generated:
+    // false` — it must stay VISIBLE (staged, not silently dropped) but must never be
+    // confirmable over an already-AI-generated accepted draft.
+    let db = db();
+    let transcript_id = make_transcript(&db, 1_000);
+    let original = sample_note(transcript_id); // ai_generated: true
+    sermon_note_repo::create(&db, &original).unwrap();
+
+    let mut degraded_pending = sample_pending(9_000);
+    degraded_pending.ai_generated = false;
+    degraded_pending.disclosure = None;
+    degraded_pending.provider = "Local (offline)".into();
+    sermon_note_repo::stage_regeneration(&db, transcript_id, &degraded_pending).unwrap();
+
+    let err = sermon_note_repo::confirm_regeneration(&db, transcript_id).unwrap_err();
+    assert!(
+        matches!(err, DataError::Refused(_)),
+        "expected DataError::Refused, got {err:?}"
+    );
+
+    // The accepted draft is completely untouched, and the pending draft is STILL there
+    // (visible, not silently discarded) so the operator can still discard it themselves.
+    let loaded = sermon_note_repo::find_by_transcript(&db, transcript_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(loaded.title, original.title);
+    assert!(loaded.ai_generated);
+    assert_eq!(loaded.created_at_ms, original.created_at_ms);
+    let pending = loaded
+        .pending
+        .expect("the refused pending draft must remain staged");
+    assert!(!pending.ai_generated);
+}
+
+#[test]
+fn confirming_a_degraded_regeneration_over_a_never_ai_generated_draft_is_allowed_positive_control()
+{
+    // Positive control for the guard above: it must not reject EVERY downgrade-shaped
+    // pending draft unconditionally — only one that would strip the label from an
+    // ALREADY AI-generated accepted draft. An accepted draft that was never
+    // AI-generated has no label to protect.
+    let db = db();
+    let transcript_id = make_transcript(&db, 1_000);
+    let mut never_ai = sample_note(transcript_id);
+    never_ai.ai_generated = false;
+    never_ai.disclosure = None;
+    sermon_note_repo::create(&db, &never_ai).unwrap();
+
+    let mut degraded_pending = sample_pending(9_000);
+    degraded_pending.ai_generated = false;
+    degraded_pending.disclosure = None;
+    sermon_note_repo::stage_regeneration(&db, transcript_id, &degraded_pending).unwrap();
+
+    let confirmed = sermon_note_repo::confirm_regeneration(&db, transcript_id).unwrap();
+    assert!(!confirmed.ai_generated);
+    assert_eq!(confirmed.title, "Regenerated: The Faithful Servant");
+}
+
+#[test]
+fn confirming_an_ai_generated_regeneration_over_an_ai_generated_draft_is_allowed_positive_control()
+{
+    // Second positive control: a non-degraded (still AI-generated) regeneration must
+    // confirm normally over an already AI-generated accepted draft — the guard only
+    // blocks an actual downgrade, never a same-or-improved provenance.
+    let db = db();
+    let transcript_id = make_transcript(&db, 1_000);
+    sermon_note_repo::create(&db, &sample_note(transcript_id)).unwrap();
+    sermon_note_repo::stage_regeneration(&db, transcript_id, &sample_pending(9_000)).unwrap();
+
+    let confirmed = sermon_note_repo::confirm_regeneration(&db, transcript_id).unwrap();
+    assert!(confirmed.ai_generated);
+    assert_eq!(confirmed.title, "Regenerated: The Faithful Servant");
+}
+
+#[test]
+fn confirming_with_nothing_pending_is_not_found() {
+    let db = db();
+    let transcript_id = make_transcript(&db, 1_000);
+    sermon_note_repo::create(&db, &sample_note(transcript_id)).unwrap();
+
+    let err = sermon_note_repo::confirm_regeneration(&db, transcript_id).unwrap_err();
+    assert!(matches!(err, DataError::NotFound));
+}
+
+#[test]
+fn discarding_a_pending_regeneration_leaves_the_accepted_draft_unchanged() {
+    let db = db();
+    let transcript_id = make_transcript(&db, 1_000);
+    let original = sample_note(transcript_id);
+    sermon_note_repo::create(&db, &original).unwrap();
+    sermon_note_repo::stage_regeneration(&db, transcript_id, &sample_pending(9_000)).unwrap();
+
+    sermon_note_repo::discard_regeneration(&db, transcript_id).unwrap();
+
+    let loaded = sermon_note_repo::find_by_transcript(&db, transcript_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(loaded.title, original.title);
+    assert_eq!(loaded.created_at_ms, original.created_at_ms);
+    assert!(
+        loaded.pending.is_none(),
+        "discard must clear the pending slot"
+    );
+}
+
+#[test]
+fn discarding_with_nothing_pending_is_a_harmless_no_op() {
+    let db = db();
+    let transcript_id = make_transcript(&db, 1_000);
+    sermon_note_repo::create(&db, &sample_note(transcript_id)).unwrap();
+
+    // Idempotent — no error whether or not anything was pending.
+    sermon_note_repo::discard_regeneration(&db, transcript_id).unwrap();
+    sermon_note_repo::discard_regeneration(&db, transcript_id).unwrap();
+
+    assert!(sermon_note_repo::find_by_transcript(&db, transcript_id)
+        .unwrap()
+        .unwrap()
+        .pending
+        .is_none());
+}
+
+#[test]
+fn discarding_for_a_transcript_with_no_draft_at_all_is_a_harmless_no_op() {
+    let db = db();
+    let transcript_id = make_transcript(&db, 1_000);
+    // No `create` at all — the row does not exist yet.
+    sermon_note_repo::discard_regeneration(&db, transcript_id).unwrap();
+}
+
+#[test]
+fn an_unstaged_draft_has_no_pending_regeneration_and_is_unaffected_by_a_failed_generation_attempt()
+{
+    // Direct proof of the "a transport failure during regenerate must not lose the
+    // prior draft" acceptance criterion, at the repo layer: a caller whose generation
+    // attempt failed simply never calls `stage_regeneration` at all (see
+    // `selahcue-operator`'s `run_note_generation`/`generate_sermon_notes` — the
+    // persistence step is unreachable on an `Err` outcome). The accepted draft is
+    // therefore, by construction, exactly what it was before the attempt.
+    let db = db();
+    let transcript_id = make_transcript(&db, 1_000);
+    let original = sample_note(transcript_id);
+    sermon_note_repo::create(&db, &original).unwrap();
+
+    // Simulates "the regenerate attempt failed before ever staging anything" — no
+    // call to `stage_regeneration` happens on this path.
+
+    let loaded = sermon_note_repo::find_by_transcript(&db, transcript_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(loaded.title, original.title);
+    assert_eq!(loaded.created_at_ms, original.created_at_ms);
+    assert!(loaded.pending.is_none());
+}
+
+#[test]
+fn staging_an_oversized_pending_field_is_refused_and_the_accepted_draft_is_untouched() {
+    let db = db();
+    let transcript_id = make_transcript(&db, 1_000);
+    let original = sample_note(transcript_id);
+    sermon_note_repo::create(&db, &original).unwrap();
+
+    let mut oversized = sample_pending(9_000);
+    oversized.sections_json = "x".repeat(MAX_SECTIONS_JSON_BYTES + 1);
+    let err = sermon_note_repo::stage_regeneration(&db, transcript_id, &oversized).unwrap_err();
+    assert!(matches!(err, DataError::TooLarge(_)));
+
+    let loaded = sermon_note_repo::find_by_transcript(&db, transcript_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(loaded.sections_json, original.sections_json);
+    assert!(
+        loaded.pending.is_none(),
+        "a refused stage must not leave a partial pending row behind"
+    );
+}
+
+#[test]
+fn a_pending_regeneration_survives_a_fresh_database_open_of_the_same_file() {
+    // Durability: the pending slot is a real column, not in-memory state — it must
+    // survive a restart exactly like the accepted draft already does.
+    let file = tempfile::NamedTempFile::new().unwrap();
+    let path = file.path().to_path_buf();
+
+    let transcript_id;
+    {
+        let db = Database::open(&path).unwrap();
+        transcript_id = make_transcript(&db, 1_000);
+        sermon_note_repo::create(&db, &sample_note(transcript_id)).unwrap();
+        sermon_note_repo::stage_regeneration(&db, transcript_id, &sample_pending(9_000)).unwrap();
+    }
+
+    let db = Database::open(&path).unwrap();
+    let loaded = sermon_note_repo::find_by_transcript(&db, transcript_id)
+        .unwrap()
+        .expect("the draft must still be there after a restart");
+    let pending = loaded
+        .pending
+        .expect("the pending regeneration must survive a restart too");
+    assert_eq!(pending.title, "Regenerated: The Faithful Servant");
 }

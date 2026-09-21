@@ -425,6 +425,23 @@ fn every_command_round_trips() {
                 scriptures_json: r#"["Romans 8:28"]"#.into(),
             },
         },
+        // Regenerate-with-retention (FR-129, 86akgqdx8): stage a new draft without
+        // replacing the accepted one, then either confirm or discard it.
+        Command::StageSermonNoteRegeneration {
+            transcript_id: 7,
+            draft: selahcue_lan::protocol::SermonNoteDraftInput {
+                title: "Faith that Endures (regenerated)".into(),
+                summary: Some("A fresh summary.".into()),
+                sections_json: r#"[{"heading":"Points","items":["fresh"],"points":[]}]"#.into(),
+                scriptures_json: r#"["Romans 8:28"]"#.into(),
+                ai_generated: true,
+                disclosure: Some("AI-generated. Check every reference.".into()),
+                provider: "SelahCue AI".into(),
+                model: None,
+            },
+        },
+        Command::ConfirmSermonNoteRegeneration { transcript_id: 7 },
+        Command::DiscardSermonNoteRegeneration { transcript_id: 7 },
     ];
     for c in cmds {
         let json = to_json(&c).unwrap();
@@ -575,6 +592,70 @@ fn sermon_note_server_messages_round_trip() {
         })
         .unwrap(),
         r#"{"event":"sermon_note_draft","transcript_id":7}"#
+    );
+}
+
+/// [`ServerMessage::SermonNoteRegenerationState`] (FR-129, 86akgqdx8) round-trips and
+/// skip-if-nones its two optional fields independently, mirroring the discipline above for
+/// `SermonNoteDraft`. A DEDICATED message, not a reuse of `SermonNoteDraft` — so this test
+/// existing at all, alongside `sermon_note_server_messages_round_trip` staying byte-for-byte
+/// unchanged, is itself the proof that adding regenerate-with-retention did not disturb the
+/// existing Load/Save/Update wire shape.
+#[test]
+fn sermon_note_regeneration_state_round_trips_and_skips_if_none() {
+    use selahcue_lan::protocol::{SermonNoteDraftView, ServerMessage};
+
+    let accepted = SermonNoteDraftView {
+        title: "Faith that Endures".into(),
+        summary: Some("A short summary.".into()),
+        sections_json: r#"[{"heading":"Points","items":["one"],"points":[]}]"#.into(),
+        scriptures_json: r#"["Romans 8:28"]"#.into(),
+        ai_generated: true,
+        disclosure: Some("AI-generated. Check every reference.".into()),
+        provider: "SelahCue AI".into(),
+        model: None,
+        created_at_ms: 1_000,
+        edited_at_ms: 1_000,
+    };
+    let pending = SermonNoteDraftView {
+        title: "Faith that Endures (regenerated)".into(),
+        ..accepted.clone()
+    };
+
+    let msgs = [
+        // Immediately after Stage: both current and pending are populated.
+        ServerMessage::SermonNoteRegenerationState {
+            transcript_id: 7,
+            current: Some(accepted.clone()),
+            pending: Some(pending.clone()),
+        },
+        // Immediately after Confirm/Discard: pending is gone.
+        ServerMessage::SermonNoteRegenerationState {
+            transcript_id: 7,
+            current: Some(accepted.clone()),
+            pending: None,
+        },
+        // The honest (should-not-happen) case: no accepted draft at all.
+        ServerMessage::SermonNoteRegenerationState {
+            transcript_id: 7,
+            current: None,
+            pending: None,
+        },
+    ];
+    for m in msgs {
+        let json = to_json(&m).unwrap();
+        let back: ServerMessage = from_json(&json).unwrap();
+        assert_eq!(back, m, "round-trip failed for {json}");
+    }
+    // Both `current: None` and `pending: None` skip-serialize independently.
+    assert_eq!(
+        to_json(&ServerMessage::SermonNoteRegenerationState {
+            transcript_id: 7,
+            current: None,
+            pending: None,
+        })
+        .unwrap(),
+        r#"{"event":"sermon_note_regeneration_state","transcript_id":7}"#
     );
 }
 

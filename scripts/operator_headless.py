@@ -463,7 +463,32 @@ if not check_d5_no_scrolltop_writes():
 # shape this repo's own CLAUDE.md warns about elsewhere (the Makefile's
 # `RELEASE_UNSAFE_FEATURES` multi-assignment guard). Updated in place from here on, never
 # appended.
-EXPECTED_MIN_CHECKS = 1431
+#
+# 1431 -> 1490: FR-129 (86akgqdx8) regenerate-with-retention. New PP REGEN-*/TR REGEN-* blocks
+# cover: staging leaves the accepted draft retrievable/unchanged; the banner names the
+# still-saved prior draft; Edit is hidden while pending; Discard restores the accepted draft
+# unchanged; Confirm replaces it (single prior version); consent-off still gates a regenerate
+# exactly like a first-time generate; a transport failure during regenerate never loses the
+# prior draft; a degraded regenerate stages and shows its content but cannot be CONFIRMED over
+# an already AI-generated draft ("once AI-generated, always AI-generated", extended from Save to
+# Confirm) — and, discovered live while writing this block, that a refusal on Confirm/Discard
+# must render INLINE on the still-open banner rather than wiping the whole result region, or the
+# Transcripts workspace specifically would have no recovery path back to Discard at all
+# (`transcript_get` never re-surfaces a pending regeneration, unlike settings.js's in-memory
+# `currentDraft`). Also updated the PRE-EXISTING "TR generate (Sana F2)" check, whose premise
+# (Confirm outright REPLACES an existing draft) stopped being true the moment this shipped — the
+# notice now says the accurate, safer thing. Confirmed as the real observed count: a standalone
+# run at this point reported "1490 checks, 0 FAIL" exactly.
+#
+# 1490 -> 1496: 86akgqdx8 four-reviewer gate (Quinn — Low). PP REGEN-4/PP REGEN-5 proved
+# consent-off and transport-failure SPECIFICALLY against a transcript that already has a saved
+# draft (the regenerate scenario); the pre-existing TR consent-off check ("(d)" above) only
+# covers the FIRST-TIME-generate case on this surface, so the same proof was missing for TR's
+# own regenerate path — exactly the "proven on one console, assumed on the other" shape this
+# batch has hit as a real MAJOR bug before. Added TR REGEN-5/TR REGEN-6, mirroring PP REGEN-4/
+# PP REGEN-5 through this surface's own `tr-` wiring. Confirmed as the real observed count: a
+# standalone run at this point reported "1496 checks, 0 FAIL" exactly.
+EXPECTED_MIN_CHECKS = 1496
 
 
 def find_chrome():
@@ -744,7 +769,10 @@ STUB = r"""
   // editable draft per transcript" shape. `null` = nothing persisted yet (the real state before
   // any Generate has ever succeeded, or after `load_sermon_note_draft` finds nothing).
   var SN_TRANSCRIPT_ID = 42;
-  var SN = { draft: null };
+  // `pending` mirrors `sermon_note`'s additive `pending_*` columns (FR-129, 86akgqdx8) — `null`
+  // = no regeneration staged. Deliberately a SEPARATE slot from `draft` (the accepted one),
+  // never merged into it — the whole point of the real schema this mirrors.
+  var SN = { draft: null, pending: null };
   window.__sn = SN; // exposed so the driver can inspect persisted state directly
   window.__TAURI__ = { core: { invoke: function(cmd, args){
     window.__calls.push({cmd:cmd, args:args});
@@ -1253,6 +1281,40 @@ STUB = r"""
         return Promise.resolve(trOkResponse);
       }
       if (tg === "transport") return Promise.reject("network down");
+      if (tg === "regenerate_pending" || tg === "regenerate_pending_degraded") {
+        // FR-129 (86akgqdx8): mirrors the PP `regenerate_pending`/`regenerate_pending_degraded`
+        // branches above — a caller is expected to have already generated a real accepted draft
+        // for `args.id` (e.g. via `window.__trGen = "ok"` first), the real backend's own precondition.
+        var trRegenDegraded = (tg === "regenerate_pending_degraded");
+        var td3 = TR.detail[args.id];
+        var trRegenPreviousView = td3 && td3.draft ? Object.assign({}, td3.draft) : null;
+        var trRegenDraft = trRegenDegraded
+          ? {title:"Offline outline (regenerated)", summary:null,
+             sections:[{heading:"Outline", items:["a placeholder point"], points:[]}], scriptures:[]}
+          : {title:"From-History Sermon (regenerated)",
+             summary:"A revised summary drawn from the complete stored transcript.",
+             sections:[{heading:"Main points", items:["A different point this time"], points:[]}],
+             scriptures:["John 3:16"]};
+        if (td3) {
+          td3.pending = { draft: trRegenDraft, ai_generated: !trRegenDegraded,
+            disclosure: trRegenDegraded ? null : "disc",
+            provider: trRegenDegraded ? "Local (offline)" : "OpenAI" };
+        }
+        return Promise.resolve({
+          ok:true, degraded: trRegenDegraded, provider: trRegenDegraded ? "Local (offline)" : "OpenAI",
+          ai_generated: !trRegenDegraded, ai_label:"AI-generated draft",
+          disclosure: trRegenDegraded ? null : "disc",
+          degraded_notice: trRegenDegraded
+            ? "The AI provider could not be reached, so this is an offline outline built from your transcript — not AI-generated notes. The headings are placeholders for you to fill in. Try again when you are back online."
+            : null,
+          draft: trRegenDraft,
+          transcript_id: args.id,
+          quota:null,
+          clamp: window.__trGenClamp || null,
+          pending_confirmation: true,
+          previous_draft: trRegenPreviousView,
+        });
+      }
       return Promise.resolve({ok:false, error:"not_configured", message:"the SelahCue cloud service is not configured"});
     }
     // Detector liveness (HOST-SIGNAL-WEBVIEW-CONTRACT Tier 1a). All four keys always present.
@@ -1535,6 +1597,43 @@ STUB = r"""
           quota:null
         });
       }
+      // FR-129 (86akgqdx8): regenerate-with-retention. These two branches are DELIBERATELY ISOLATED
+      // from every "g" branch above — none of them check `SN.draft` before overwriting it, which is
+      // intentional (rewriting them to be "realistic" would ripple through every existing PP C-*/SN-*
+      // assertion in this file that assumes generate == immediate replace, none of which is this
+      // ticket's concern to touch). A caller of these two branches is expected to have ALREADY put a
+      // real accepted draft into `SN.draft` (e.g. via `window.__ppGen = "ok"` first) — exactly mirroring
+      // the real backend's own precondition ("regenerate requires something to regenerate from").
+      if (g === "regenerate_pending" || g === "regenerate_pending_degraded") {
+        var regenDegraded = (g === "regenerate_pending_degraded");
+        var regenDraft = regenDegraded
+          ? {title:"Offline outline (regenerated)", summary:null,
+             sections:[{heading:"Outline", items:["a placeholder point"], points:[]}], scriptures:[]}
+          : {title:"Grace That Feeds (regenerated)", summary:"A revised summary on provision and grace.",
+             sections:[{heading:"Main points", items:["A different point this time"], points:[]}],
+             scriptures:["Isaiah 61:5"]};
+        // The PREVIOUS (accepted) draft, exactly as `SN.draft` already holds it — untouched by
+        // staging, mirroring the real `sermon_note_repo::stage_regeneration`'s core guarantee.
+        var regenPreviousView = SN.draft ? Object.assign({}, SN.draft.draft) : null;
+        SN.pending = {
+          transcript_id: SN_TRANSCRIPT_ID, draft: regenDraft,
+          ai_generated: !regenDegraded, disclosure: regenDegraded ? null : "disc",
+          provider: regenDegraded ? "Local (offline)" : "OpenAI",
+        };
+        return Promise.resolve({
+          ok:true, degraded: regenDegraded, provider: SN.pending.provider,
+          ai_generated: SN.pending.ai_generated, ai_label:"AI-generated draft",
+          disclosure: SN.pending.disclosure,
+          degraded_notice: regenDegraded
+            ? "The AI provider could not be reached, so this is an offline outline built from your transcript — not AI-generated notes. The headings are placeholders for you to fill in. Try again when you are back online."
+            : null,
+          draft: regenDraft,
+          transcript_id: SN_TRANSCRIPT_ID,
+          quota:null,
+          pending_confirmation: true,
+          previous_draft: regenPreviousView,
+        });
+      }
       if (g === "quota_exceeded") return Promise.resolve({ok:false, error:"quota_exceeded", message:"monthly limit reached"});
       if (g === "transport") return Promise.reject("network down"); // invoke rejects → onGenerate .catch → transport
       if (g === "malformed") return Promise.resolve({ok:false, error:"malformed", message:"bad response"});
@@ -1637,6 +1736,68 @@ STUB = r"""
         scripture_verification_note: updateReVerified.note,
         draft:snUpdated
       });
+    }
+    // FR-129 (86akgqdx8): regenerate-with-retention confirm/discard. ONE shared handler for
+    // both surfaces — same dual PP (`SN`) / TR (`window.__TR.detail`) branch shape as
+    // `update_sermon_note_draft` just above, for the identical reason (this command is already
+    // transcript-id-generic on the real backend).
+    if (cmd === "confirm_sermon_note_regeneration" || cmd === "discard_sermon_note_regeneration") {
+      var isRegenConfirm = (cmd === "confirm_sermon_note_regeneration");
+      if (SN.draft && SN.draft.transcript_id === args.transcriptId) {
+        if (!SN.pending)
+          return Promise.resolve({ok:false, error:"refused", message:"Nothing is pending for this transcript."});
+        // "Once AI-generated, always AI-generated" — mirrors the real
+        // `sermon_note_repo::confirm_regeneration`'s guard exactly (the case a degraded
+        // regenerate produces): refuse the CONFIRM, but leave the pending draft staged either
+        // way (Discard is unaffected by this guard — it never touches accepted content).
+        if (isRegenConfirm) {
+          if (SN.draft.ai_generated && !SN.pending.ai_generated) {
+            return Promise.resolve({ok:false, error:"refused",
+              message:"Accepting this would remove the AI-generated label from an already AI-generated draft."});
+          }
+          SN.draft = SN.pending;
+        }
+        SN.pending = null;
+        var regenReVerified = mockReVerify(SN.draft.draft.scriptures);
+        var regenViewDraft = Object.assign({}, SN.draft.draft, {
+          scripture_verdicts: regenReVerified.verdicts, caveats: regenReVerified.caveats,
+        });
+        return Promise.resolve({
+          ok:true, transcript_id: SN.draft.transcript_id,
+          ai_generated: SN.draft.ai_generated, ai_label:"AI-generated draft",
+          disclosure: SN.draft.disclosure, provider: SN.draft.provider,
+          scripture_verification_note: regenReVerified.note,
+          draft: regenViewDraft,
+        });
+      }
+      var trDetailForRegen = window.__TR && window.__TR.detail && window.__TR.detail[args.transcriptId];
+      if (trDetailForRegen) {
+        if (!trDetailForRegen.pending)
+          return Promise.resolve({ok:false, error:"refused", message:"Nothing is pending for this transcript."});
+        if (isRegenConfirm) {
+          if (trDetailForRegen.ai_generated && !trDetailForRegen.pending.ai_generated) {
+            return Promise.resolve({ok:false, error:"refused",
+              message:"Accepting this would remove the AI-generated label from an already AI-generated draft."});
+          }
+          trDetailForRegen.draft = trDetailForRegen.pending.draft;
+          trDetailForRegen.ai_generated = trDetailForRegen.pending.ai_generated;
+          trDetailForRegen.disclosure = trDetailForRegen.pending.disclosure;
+          trDetailForRegen.notes_provider = trDetailForRegen.pending.provider;
+        }
+        trDetailForRegen.pending = null;
+        var trRegenReVerified = mockReVerify(trDetailForRegen.draft.scriptures);
+        var trRegenViewDraft = Object.assign({}, trDetailForRegen.draft, {
+          scripture_verdicts: trRegenReVerified.verdicts, caveats: trRegenReVerified.caveats,
+        });
+        return Promise.resolve({
+          ok:true, transcript_id: args.transcriptId,
+          ai_generated: trDetailForRegen.ai_generated, ai_label:"AI-generated draft",
+          disclosure: trDetailForRegen.disclosure, provider: trDetailForRegen.notes_provider,
+          scripture_verification_note: trRegenReVerified.note,
+          draft: trRegenViewDraft,
+        });
+      }
+      return Promise.resolve({ok:false, error:"refused", message:"No accepted draft exists for this transcript."});
     }
     return Promise.resolve(null);
   } },
@@ -4027,6 +4188,146 @@ DRIVER = r"""
       ok(el("tr-detail-notes").classList.contains("tr-notes-on") && /Notes generated/.test(el("tr-detail-notes").textContent),
          "TR generate: a successful generate flips the notes badge immediately, without waiting for a reopen");
 
+      // === FR-129 (86akgqdx8) on the Transcripts workspace: the SAME regenerate-with-retention
+      // contract PP REGEN-* proves above, exercised through THIS surface's own wiring
+      // (transcript_generate_notes / confirm+discard_sermon_note_regeneration, `tr-` prefixed
+      // element ids, shared `.pp-gen-regen-*` CSS classes) — transcript 1 already has a saved
+      // "From-History Sermon" draft from the block just above, consent is ON. Not re-proving
+      // every nuance PP REGEN-* already covers end to end (consent-off, transport-failure) —
+      // those are the SAME shared backend gate/pipeline (see (d) above, which already proves
+      // THIS surface shares the consent gate); this proves TR's OWN banner/edit-gating/confirm/
+      // discard wiring actually works, and that a degraded regenerate cannot downgrade an
+      // already AI-generated draft here either. ================================================
+      window.__trGen = "regenerate_pending";
+      el("tr-generate").click();
+      await sleep(40);
+      el("tr-gen-preview-confirm").click();
+      await sleep(60);
+      var trRegenResult = el("tr-gen-result");
+      ok(/From-History Sermon \(regenerated\)/.test(trRegenResult.textContent),
+         "TR REGEN-1: the freshly regenerated draft's content is shown immediately");
+      var trRegenBanner = trRegenResult.querySelector(".pp-gen-regen-banner");
+      ok(!!trRegenBanner && getComputedStyle(trRegenBanner).display !== "none",
+         "TR REGEN-1: a pending-confirmation banner is rendered (computed display)");
+      ok(/From-History Sermon/.test(trRegenBanner.textContent) && !/\(regenerated\)/.test(trRegenBanner.textContent),
+         "TR REGEN-1: the banner names the STILL-SAVED prior draft's own title");
+      ok(!document.getElementById("tr-gen-edit"),
+         "TR REGEN-1: Edit is hidden while a regeneration is pending, on this surface too");
+      var trPriorStillSaved = window.__TR.detail[1].draft;
+      ok(!!trPriorStillSaved && trPriorStillSaved.title === "From-History Sermon",
+         "TR REGEN-1 (AC): the prior draft is retrievable and UNCHANGED on the host immediately " +
+         "after a regenerate is requested, before the operator confirms replacement");
+
+      // Discard leaves the saved draft exactly as it was.
+      el("tr-gen-regen-discard").click();
+      await sleep(60);
+      var trAfterDiscard = el("tr-gen-result");
+      ok(/From-History Sermon/.test(trAfterDiscard.textContent) && !/regenerated/.test(trAfterDiscard.textContent),
+         "TR REGEN-2: after Discard, the view shows the ORIGINAL saved draft");
+      ok(!trAfterDiscard.querySelector(".pp-gen-regen-banner"),
+         "TR REGEN-2: the pending-confirmation banner is gone after Discard");
+      ok(!!document.getElementById("tr-gen-edit"),
+         "TR REGEN-2: Edit is offered again once nothing is pending");
+
+      // Confirm REPLACES the saved draft — single prior version, so the replaced one is gone.
+      window.__trGen = "regenerate_pending";
+      el("tr-generate").click();
+      await sleep(40);
+      el("tr-gen-preview-confirm").click();
+      await sleep(60);
+      el("tr-gen-regen-confirm").click();
+      await sleep(60);
+      var trAfterConfirm = el("tr-gen-result");
+      ok(/From-History Sermon \(regenerated\)/.test(trAfterConfirm.textContent),
+         "TR REGEN-3: after Confirm, the view shows the NEW draft as the current one");
+      ok(!trAfterConfirm.querySelector(".pp-gen-regen-banner"),
+         "TR REGEN-3: the banner is gone once confirmed");
+      ok(window.__TR.detail[1].draft.title === "From-History Sermon (regenerated)",
+         "TR REGEN-3: the CONFIRMED content is what the host now actually persists for this transcript");
+
+      // A degraded regenerate stages and shows its content, but cannot be CONFIRMED over an
+      // already AI-generated draft — "once AI-generated, always AI-generated" holds on this
+      // surface too, and the refused pending draft remains staged rather than vanishing.
+      window.__trGen = "regenerate_pending_degraded";
+      el("tr-generate").click();
+      await sleep(40);
+      el("tr-gen-preview-confirm").click();
+      await sleep(60);
+      var trRegenDegResult = el("tr-gen-result");
+      ok(/Offline outline \(regenerated\)/.test(trRegenDegResult.textContent) &&
+         !!trRegenDegResult.querySelector(".pp-gen-regen-banner") &&
+         !trRegenDegResult.querySelector(".pp-gen-ai-label"),
+         "TR REGEN-4: a degraded regenerate stages and shows its (unlabelled) content, exactly like the original flow's degraded handling");
+      el("tr-gen-regen-confirm").click();
+      await sleep(60);
+      // The refusal renders INLINE on the still-visible banner — never a whole-region wipe.
+      // This matters MORE here than on settings.js: reopening this transcript would LOSE the
+      // pending state entirely (transcript_get never re-surfaces it), so there is no
+      // "navigate away and back" recovery path if the banner itself were wiped.
+      var trRegenDegAfterRefusal = el("tr-gen-result");
+      ok(/Offline outline \(regenerated\)/.test(trRegenDegAfterRefusal.textContent),
+         "TR REGEN-4: the pending draft's content is STILL shown after the refused confirm");
+      var trRegenDegInlineError = trRegenDegAfterRefusal.querySelector(".pp-gen-regen-error");
+      ok(!!trRegenDegInlineError && trRegenDegInlineError.getAttribute("role") === "alert" &&
+         /AI-generated label/.test(trRegenDegInlineError.textContent),
+         "TR REGEN-4: the refusal reason renders INLINE on the banner, not as a separate message that replaces the draft view");
+      ok(!!document.getElementById("tr-gen-regen-discard") && !!document.getElementById("tr-gen-regen-confirm"),
+         "TR REGEN-4: Confirm/Discard remain reachable after a refused confirm — no dead end");
+      ok(window.__TR.detail[1].draft.title === "From-History Sermon (regenerated)",
+         "TR REGEN-4: the accepted draft is untouched by the refused confirm attempt");
+      ok(!!window.__TR.detail[1].pending,
+         "TR REGEN-4: the refused pending draft remains staged on the host, not silently discarded");
+      el("tr-gen-regen-discard").click();
+      await sleep(60);
+      ok(/From-History Sermon \(regenerated\)/.test(el("tr-gen-result").textContent),
+         "TR REGEN-4: discarding the refused degraded regeneration cleanly restores the accepted draft");
+
+      // TR REGEN-5/6 (Quinn, 86akgqdx8 four-reviewer gate — Low): PP REGEN-4/PP REGEN-5 prove
+      // consent-off and transport-failure SPECIFICALLY against a transcript that ALREADY has a
+      // saved draft (the regenerate scenario) — not just the first-time-generate case (d) above
+      // already covers on this surface. Code inspection shows both consoles share the exact
+      // same `persist_generated_draft`/`transcript_generate_notes` call sites, so this is not
+      // expected to reveal a functional gap — but this batch has hit a real MAJOR bug before
+      // from exactly this shape of "proven on one console, assumed on the other" gap, so it is
+      // proven here explicitly rather than left as an inference from (d) + PP REGEN-4/5.
+      window.__pp.cloud_notes_consent = false;
+      window.__trGen = "regenerate_pending";
+      var trRegenConsentGenCallsBefore = trCall("transcript_generate_notes").length;
+      el("tr-generate").click();
+      await sleep(40);
+      el("tr-gen-preview-confirm").click();
+      await sleep(60);
+      var trRegenConsentOffResult = el("tr-gen-result");
+      ok(trRegenConsentOffResult.getAttribute("role") === "alert" &&
+         /Turn on cloud processing/.test(trRegenConsentOffResult.textContent),
+         "TR REGEN-5: with consent OFF, regenerating a transcript that already has a saved " +
+         "draft is STILL gated exactly like a first-time generate (consent_required)");
+      ok(trCall("transcript_generate_notes").length === trRegenConsentGenCallsBefore + 1,
+         "TR REGEN-5 (sanity): the call reached the backend and was gated there — the client " +
+         "did not merely refuse locally");
+      ok(!/regenerated/.test(trRegenConsentOffResult.textContent),
+         "TR REGEN-5: no draft content of any kind leaked into view — nothing was generated");
+      ok(window.__TR.detail[1].draft.title === "From-History Sermon (regenerated)" &&
+         !window.__TR.detail[1].pending,
+         "TR REGEN-5: the saved draft from REGEN-3 is completely unaffected by the refused " +
+         "attempt, and no pending regeneration was created");
+      window.__pp.cloud_notes_consent = true;
+
+      window.__trGen = "transport";
+      el("tr-generate").click();
+      await sleep(40);
+      el("tr-gen-preview-confirm").click();
+      await sleep(60);
+      var trRegenTransportResult = el("tr-gen-result");
+      ok(trRegenTransportResult.getAttribute("role") === "alert",
+         "TR REGEN-6: a transport failure during regenerate surfaces as an alert, same as a first-time generate");
+      ok(window.__TR.detail[1].draft.title === "From-History Sermon (regenerated)" &&
+         !window.__TR.detail[1].pending,
+         "TR REGEN-6 (AC): a transport failure during regenerate never loses the prior " +
+         "(pre-regenerate) draft, and stages nothing");
+
+      window.__trGen = "ok"; // restore for any later reads
+
       // (f) Switching to a DIFFERENT transcript resets all Generate UI/state — no stale result
       // from transcript 1 leaks into transcript 2's freshly opened detail view. Transcript 2
       // ("Wednesday Bible Study") is the harness's own never-ended fixture (`ended_at_ms: null`)
@@ -4149,17 +4450,25 @@ DRIVER = r"""
          "TR generate (Cody, computed display): the Generate button is genuinely unpainted while its own review step is open");
       el("tr-gen-preview-cancel").click();
 
-      // (j) Sana F2 (Medium): `notes_generated` is real and visible on this very screen —
-      // transcript 1 already has a persisted draft from the earlier "(e)" check (the mock set
-      // `td2.notes_generated = true`). Reopening it and pressing Generate again must warn, before
-      // Confirm, that doing so REPLACES the existing draft — not silently overwrite it.
+      // (j) Sana F2 (Medium), UPDATED for FR-129/86akgqdx8: `notes_generated` is real and
+      // visible on this very screen — transcript 1 already has a persisted draft from the
+      // earlier "(e)" check (the mock set `td2.notes_generated = true`). Before
+      // regenerate-with-retention shipped, this notice warned Confirm would REPLACE the
+      // existing draft outright. It no longer does that — Confirm now STAGES a new draft for
+      // review instead — so the notice now says the true, safer thing: the operator will be
+      // shown the new draft, and the saved one will not change unless they choose to use it.
       ok(el("tr-detail-notes").classList.contains("tr-notes-on"),
          "TR generate F2 (premise): transcript 1 already shows Notes generated from the earlier check");
       el("tr-generate").click();
       await sleep(30);
       var trOverwriteNotice = el("tr-gen-preview").querySelector(".pp-gen-preview-overwrite");
-      ok(!!trOverwriteNotice && getComputedStyle(trOverwriteNotice).display !== "none" && /REPLACE/.test(trOverwriteNotice.textContent),
-         "TR generate (Sana F2): Confirm on a transcript that already has a draft warns it will REPLACE it, before the click that does so");
+      ok(!!trOverwriteNotice && getComputedStyle(trOverwriteNotice).display !== "none" &&
+         /will not change unless you choose to use it/.test(trOverwriteNotice.textContent),
+         "TR generate (Sana F2 / FR-129): pressing Generate again on a transcript that already " +
+         "has a draft tells the operator, before Confirm, that their saved notes will NOT change " +
+         "unless they explicitly choose the new draft");
+      ok(!/REPLACE/.test(trOverwriteNotice.textContent),
+         "TR generate (FR-129 regression): the notice no longer claims an outright replace — that stopped being true when regenerate-with-retention shipped");
       el("tr-gen-preview-cancel").click();
 
       // (k) Sana F3 (Medium): a LATER selection must not let an EARLIER Confirm's result land
@@ -7506,6 +7815,175 @@ right after a generate/save");
          "PP SN-8: a degraded draft's edit view carries no AI-generated label to preserve — it never had one");
       el("pp-gen-edit-cancel").click();
       window.__ppGen = "ok"; await ppGenerateAndConfirm(80); // restore a clean "ok" fixture for later reads
+
+      // === FR-129 (86akgqdx8): regenerate produces a new draft while RETAINING the prior
+      // version until the operator explicitly confirms/discards it (single prior version,
+      // explicit-confirm-before-replace — see the Goal Contract for the full decision). The
+      // mock's `regenerate_pending`/`regenerate_pending_degraded` `window.__ppGen` values are
+      // DELIBERATELY ISOLATED from every other "g" branch (see that branch's own comment) —
+      // this block always sets up its OWN known-fresh "ok" fixture first, never relying on
+      // whatever a prior block left in `SN.draft`. ==========================================
+      window.__ppGen = "ok"; await ppGenerateAndConfirm(80); // known-fresh accepted draft
+      ok(/Grace That Feeds/.test(el("pp-gen-result").textContent) && !/regenerated/.test(el("pp-gen-result").textContent),
+         "PP REGEN-0 (setup): a known accepted draft exists before any regenerate attempt");
+
+      // REGEN-1: pressing Generate again on a transcript that already has a saved draft does
+      // NOT replace it — it STAGES the new draft instead, and the console shows both the new
+      // content and an explicit accept/discard choice.
+      window.__ppGen = "regenerate_pending"; await ppGenerateAndConfirm(80);
+      var regenResult = el("pp-gen-result");
+      ok(/Grace That Feeds \(regenerated\)/.test(regenResult.textContent),
+         "PP REGEN-1: the freshly regenerated draft's content is shown immediately");
+      var regenBanner = regenResult.querySelector(".pp-gen-regen-banner");
+      ok(!!regenBanner && getComputedStyle(regenBanner).display !== "none",
+         "PP REGEN-1: a pending-confirmation banner is rendered (computed display), not just present in markup");
+      ok(regenBanner.getAttribute("role") === "status",
+         "PP REGEN-1: the banner is a polite status, not an alert — nothing has gone wrong");
+      ok(/Grace That Feeds/.test(regenBanner.textContent) && !/\(regenerated\)/.test(regenBanner.textContent),
+         "PP REGEN-1: the banner names the STILL-SAVED prior draft's own title (the one about to " +
+         "possibly be replaced), not the new one — proving the operator can see it was not silently destroyed");
+      ok(!el("pp-gen-edit"),
+         "PP REGEN-1: Edit is hidden while a regeneration is pending — the content on screen is " +
+         "unconfirmed, and Edit would otherwise write to the accepted row while showing different text");
+      var regenConfirmBtn = el("pp-gen-regen-confirm");
+      var regenDiscardBtn = el("pp-gen-regen-discard");
+      ok(!!regenConfirmBtn && getComputedStyle(regenConfirmBtn).display !== "none" &&
+         !!regenDiscardBtn && getComputedStyle(regenDiscardBtn).display !== "none",
+         "PP REGEN-1: both Confirm ('Use this draft') and Discard ('Keep my current notes') are visibly offered");
+
+      // Direct proof the prior draft is RETRIEVABLE, unmodified, right now — not merely that
+      // the banner names it. `load_sermon_note_draft` is the same wire contract SN-2 above
+      // already uses for "what would a restart see right now".
+      var regenPriorStillSaved = await window.__TAURI__.core.invoke("load_sermon_note_draft");
+      ok(!!regenPriorStillSaved && regenPriorStillSaved.ok === true &&
+         regenPriorStillSaved.draft.title === "Grace That Feeds",
+         "PP REGEN-1 (AC): the prior draft is retrievable and UNCHANGED immediately after a " +
+         "regenerate is requested, before the operator confirms replacement");
+
+      // REGEN-2: Discard leaves the saved draft exactly as it was — no change at all.
+      var regenDiscardCallsBefore = ppCall("discard_sermon_note_regeneration").length;
+      regenDiscardBtn.click();
+      await sleep(60);
+      ok(ppCall("discard_sermon_note_regeneration").length === regenDiscardCallsBefore + 1,
+         "PP REGEN-2: Discard calls discard_sermon_note_regeneration");
+      var afterDiscard = el("pp-gen-result");
+      ok(/Grace That Feeds/.test(afterDiscard.textContent) && !/regenerated/.test(afterDiscard.textContent),
+         "PP REGEN-2: after Discard, the view shows the ORIGINAL saved draft, not the discarded one");
+      ok(!afterDiscard.querySelector(".pp-gen-regen-banner"),
+         "PP REGEN-2: the pending-confirmation banner is gone after Discard");
+      ok(!!el("pp-gen-edit") && getComputedStyle(el("pp-gen-edit")).display !== "none",
+         "PP REGEN-2: Edit is offered again once nothing is pending");
+      var regenAfterDiscardLoaded = await window.__TAURI__.core.invoke("load_sermon_note_draft");
+      ok(regenAfterDiscardLoaded.draft.title === "Grace That Feeds",
+         "PP REGEN-2: the persisted draft on the host is STILL the original — Discard changed nothing there");
+
+      // REGEN-3: Confirm REPLACES the saved draft with the new one — single prior version, so
+      // the version it replaces is now gone (not kept as further history).
+      window.__ppGen = "regenerate_pending"; await ppGenerateAndConfirm(80);
+      var regenConfirmCallsBefore = ppCall("confirm_sermon_note_regeneration").length;
+      el("pp-gen-regen-confirm").click();
+      await sleep(60);
+      ok(ppCall("confirm_sermon_note_regeneration").length === regenConfirmCallsBefore + 1,
+         "PP REGEN-3: 'Use this draft' calls confirm_sermon_note_regeneration");
+      var afterConfirm = el("pp-gen-result");
+      ok(/Grace That Feeds \(regenerated\)/.test(afterConfirm.textContent),
+         "PP REGEN-3: after Confirm, the view shows the NEW draft as the current one");
+      ok(!afterConfirm.querySelector(".pp-gen-regen-banner"),
+         "PP REGEN-3: the banner is gone once the regeneration is confirmed — nothing left pending");
+      ok(!!el("pp-gen-edit"),
+         "PP REGEN-3: Edit is offered again on the newly confirmed draft");
+      var regenAfterConfirmLoaded = await window.__TAURI__.core.invoke("load_sermon_note_draft");
+      ok(regenAfterConfirmLoaded.draft.title === "Grace That Feeds (regenerated)",
+         "PP REGEN-3: the CONFIRMED content is what the host now actually persists, re-read fresh " +
+         "over the same wire contract a restart would use — not merely a client-side swap");
+
+      // REGEN-4: consent-off still blocks Regenerate's network call EXACTLY like the original
+      // Generate flow (regression test, not an assumption) — regenerate reuses the exact same
+      // consent-gated generate_sermon_notes command, so this is the same code path SN-*/C-005
+      // already prove for a first-time generate, re-asserted here against a transcript that
+      // ALREADY has a saved draft.
+      window.__pp.cloud_notes_consent = false;
+      document.querySelector('.nav-item[data-surface="settings"]').click();
+      await sleep(60);
+      var regenGenCallsBefore = ppCall("generate_sermon_notes").length;
+      window.__ppGen = "regenerate_pending";
+      await ppGenerateAndConfirm(70);
+      var regenConsentOffResult = el("pp-gen-result");
+      ok(regenConsentOffResult.getAttribute("role") === "alert" &&
+         /Turn on cloud processing/.test(regenConsentOffResult.textContent),
+         "PP REGEN-4: with consent OFF, pressing Generate again on a transcript that already " +
+         "has a saved draft is STILL gated exactly like a first-time Generate (consent_required)");
+      ok(ppCall("generate_sermon_notes").length === regenGenCallsBefore + 1,
+         "PP REGEN-4 (sanity): the call reached the backend and was gated there — the client did " +
+         "not merely refuse locally");
+      ok(!/regenerated/.test(regenConsentOffResult.textContent),
+         "PP REGEN-4: no draft content of any kind leaked into view — nothing was generated");
+      var regenAfterConsentOffLoaded = await window.__TAURI__.core.invoke("load_sermon_note_draft");
+      ok(regenAfterConsentOffLoaded.draft.title === "Grace That Feeds (regenerated)",
+         "PP REGEN-4: the saved draft from REGEN-3 is completely unaffected by the refused attempt");
+      window.__pp.cloud_notes_consent = true;
+      document.querySelector('.nav-item[data-surface="settings"]').click();
+      await sleep(60);
+
+      // REGEN-5: a transport failure during regenerate must not lose the prior draft — same
+      // fallback ladder as a first-time Generate (PP C-005's own "transport" case), re-asserted
+      // here against a transcript that already has a saved draft. `window.__ppGen = "transport"`
+      // makes the mocked invoke() REJECT — the exact same simulated failure PP C-005 uses — so
+      // `generate_sermon_notes` never even returns a value to stage from, and the accepted
+      // draft cannot have been touched by construction (the real backend's own guarantee: see
+      // `an_unstaged_draft_has_no_pending_regeneration_and_is_unaffected_by_a_failed_generation_attempt`
+      // in selahcue-data's own test suite for the persistence-layer half of this same proof).
+      window.__ppGen = "transport"; await ppGenerateAndConfirm(70);
+      var regenTransportResult = el("pp-gen-result");
+      ok(regenTransportResult.getAttribute("role") === "alert",
+         "PP REGEN-5: a transport failure during regenerate surfaces as an alert, same as a first-time Generate");
+      var regenAfterTransportLoaded = await window.__TAURI__.core.invoke("load_sermon_note_draft");
+      ok(regenAfterTransportLoaded.draft.title === "Grace That Feeds (regenerated)",
+         "PP REGEN-5 (AC): a transport failure during regenerate never loses the prior (pre-regenerate) draft");
+
+      // REGEN-6: a DEGRADED (local-fallback) regenerate still stages (never silently refused
+      // outright) and still carries ai_generated:false + a degraded notice, matching the
+      // original flow's degraded handling — but "once AI-generated, always AI-generated" means
+      // it can be VIEWED and DISCARDED, never CONFIRMED over an already AI-generated draft.
+      window.__ppGen = "regenerate_pending_degraded"; await ppGenerateAndConfirm(80);
+      var regenDegResult = el("pp-gen-result");
+      ok(/Offline outline \(regenerated\)/.test(regenDegResult.textContent),
+         "PP REGEN-6: a degraded regenerate still stages and shows its content, exactly like the original flow's degraded handling");
+      ok(!regenDegResult.querySelector(".pp-gen-ai-label"),
+         "PP REGEN-6: the degraded pending draft carries no AI-generated label, same as a first-time degraded draft");
+      var regenDegNotice = regenDegResult.querySelector(".pp-gen-degraded");
+      ok(!!regenDegNotice && /could not be reached/i.test(regenDegNotice.textContent),
+         "PP REGEN-6: the degraded fallback notice renders on a pending regeneration too");
+      var regenDegConfirmCallsBefore = ppCall("confirm_sermon_note_regeneration").length;
+      el("pp-gen-regen-confirm").click();
+      await sleep(60);
+      ok(ppCall("confirm_sermon_note_regeneration").length === regenDegConfirmCallsBefore + 1,
+         "PP REGEN-6 (sanity): the confirm attempt actually reached the backend");
+      // The refusal is kept INLINE on the still-visible banner — never a whole-region wipe,
+      // which would strand the operator with no reachable Discard button on this transcript
+      // (settings.js can recover via settingsActivate()'s currentDraft re-render, but the
+      // Transcripts workspace genuinely cannot — transcript_get never re-surfaces a pending
+      // regeneration; this inline behaviour is shared code, so proving it here proves it there).
+      var regenDegResultAfterRefusal = el("pp-gen-result");
+      ok(/Offline outline \(regenerated\)/.test(regenDegResultAfterRefusal.textContent),
+         "PP REGEN-6: the pending draft's content is STILL shown after the refused confirm — nothing was wiped");
+      var regenDegInlineError = regenDegResultAfterRefusal.querySelector(".pp-gen-regen-error");
+      ok(!!regenDegInlineError && getComputedStyle(regenDegInlineError).display !== "none" &&
+         regenDegInlineError.getAttribute("role") === "alert" &&
+         /AI-generated label/.test(regenDegInlineError.textContent),
+         "PP REGEN-6: the refusal reason renders INLINE on the banner (role=alert), not as a " +
+         "separate message that replaces the draft view");
+      ok(!!el("pp-gen-regen-discard") && !!el("pp-gen-regen-confirm"),
+         "PP REGEN-6: Confirm/Discard remain reachable after a refused confirm — no dead end");
+      var regenDegAfterRefusedLoaded = await window.__TAURI__.core.invoke("load_sermon_note_draft");
+      ok(regenDegAfterRefusedLoaded.draft.title === "Grace That Feeds (regenerated)",
+         "PP REGEN-6: the accepted draft is untouched by the refused confirm attempt");
+      el("pp-gen-regen-discard").click();
+      await sleep(60);
+      ok(/Grace That Feeds \(regenerated\)/.test(el("pp-gen-result").textContent),
+         "PP REGEN-6: discarding the refused degraded regeneration cleanly restores the accepted draft");
+      ok(!el("pp-gen-result").querySelector(".pp-gen-regen-error"),
+         "PP REGEN-6: the inline refusal message is gone once the regeneration is resolved");
 
       // === (F-5 / PERF-3) The review-and-confirm step is real, and an empty/below-minimum
       // transcript is refused before any network call — 86akby7d8 ============================

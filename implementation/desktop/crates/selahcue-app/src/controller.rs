@@ -2477,11 +2477,16 @@ impl LiveController {
             | Command::EndTranscript
             // Sermon-note draft persistence (86akgqdv0) reads/writes a SEPARATE store
             // (`sermon_notes`), never `ControllerSnapshot` or the live/preview state — the
-            // same reasoning as the transcript commands directly above.
+            // same reasoning as the transcript commands directly above. The FR-129
+            // regenerate-with-retention trio (86akgqdx8) touches the SAME separate store
+            // (its `pending_*` slot), so it belongs in this exact same exclusion.
             | Command::GetActiveTranscriptId
             | Command::LoadSermonNoteDraft { .. }
             | Command::SaveSermonNoteDraft { .. }
             | Command::UpdateSermonNoteDraft { .. }
+            | Command::StageSermonNoteRegeneration { .. }
+            | Command::ConfirmSermonNoteRegeneration { .. }
+            | Command::DiscardSermonNoteRegeneration { .. }
             | Command::DismissDetection { .. } => {}
             _ => {
                 self.state_dirty = true;
@@ -3202,6 +3207,63 @@ impl LiveController {
                 }),
                 Err(_) => ControllerReply::Deny(DenyReason::BadRequest),
             },
+            // --- Regenerate-with-retention (FR-129, 86akgqdx8). Single prior version,
+            // explicit-confirm-before-replace: Stage never touches the accepted draft;
+            // Confirm is the only one of the three that does, and enforces the SAME
+            // disclosure-pairing + no-downgrade invariants `SaveSermonNoteDraft` enforces
+            // above, applied to the PENDING draft instead of an inbound Save payload. ---
+            Command::StageSermonNoteRegeneration {
+                transcript_id,
+                draft,
+            } => {
+                // Same FR-123/FR-128 integrity check as `SaveSermonNoteDraft` above — a
+                // pending draft is exactly as capable of an inconsistent pairing as a
+                // fully-formed Save payload, and this is the one place every caller's
+                // request passes through.
+                if !draft.disclosure_pairing_is_consistent() {
+                    return ControllerReply::Deny(DenyReason::BadRequest);
+                }
+                match self.sermon_notes.stage_regeneration(*transcript_id, draft) {
+                    Ok(slot) => {
+                        ControllerReply::Message(ServerMessage::SermonNoteRegenerationState {
+                            transcript_id: *transcript_id,
+                            current: slot.current,
+                            pending: slot.pending,
+                        })
+                    }
+                    Err(_) => ControllerReply::Deny(DenyReason::BadRequest),
+                }
+            }
+            Command::ConfirmSermonNoteRegeneration { transcript_id } => {
+                // The "once AI-generated, always AI-generated" no-downgrade guard lives in
+                // the store implementation (`sermon_note_repo::confirm_regeneration`) — the
+                // ONE place both a real desktop store and this trait's contract can enforce
+                // it, since only the store sees both the accepted and pending rows in the
+                // same read. A refusal here (oversized field, nothing pending, or a would-be
+                // downgrade) is a `Deny`, never a panic.
+                match self.sermon_notes.confirm_regeneration(*transcript_id) {
+                    Ok(slot) => {
+                        ControllerReply::Message(ServerMessage::SermonNoteRegenerationState {
+                            transcript_id: *transcript_id,
+                            current: slot.current,
+                            pending: slot.pending,
+                        })
+                    }
+                    Err(_) => ControllerReply::Deny(DenyReason::BadRequest),
+                }
+            }
+            Command::DiscardSermonNoteRegeneration { transcript_id } => {
+                match self.sermon_notes.discard_regeneration(*transcript_id) {
+                    Ok(slot) => {
+                        ControllerReply::Message(ServerMessage::SermonNoteRegenerationState {
+                            transcript_id: *transcript_id,
+                            current: slot.current,
+                            pending: slot.pending,
+                        })
+                    }
+                    Err(_) => ControllerReply::Deny(DenyReason::BadRequest),
+                }
+            }
             Command::ApproveDetection { detection_id } => {
                 // Approving stages the detected verse in Preview (never auto-live,
                 // FR-115) exactly as a manual StageScripture would, then drops it from

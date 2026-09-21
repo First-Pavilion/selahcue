@@ -57,13 +57,16 @@ pub enum Permission {
     ConfigureOutputs,
     /// Persist (create, or wholesale-replace) a sermon-note draft's full content INCLUDING
     /// its `ai_generated`/`disclosure`/`provider`/`model` provenance (`SaveSermonNoteDraft`
-    /// only — PR #33 review, Sana N2 — Medium). Operator-only: deliberately narrower than
-    /// `Transcribe`, which still governs `LoadSermonNoteDraft`/`UpdateSermonNoteDraft`/
-    /// `GetActiveTranscriptId`. See [`Command`]'s doc on `SaveSermonNoteDraft` for the full
-    /// reasoning — in short, Save is the one command that can attach a label/disclosure to
-    /// NEW content or wholesale-replace an already-persisted (possibly operator-edited)
-    /// draft, and its only legitimate caller today is the operator console's own
-    /// `generate_sermon_notes` flow.
+    /// — PR #33 review, Sana N2 — Medium; also `StageSermonNoteRegeneration`/
+    /// `ConfirmSermonNoteRegeneration`/`DiscardSermonNoteRegeneration`, FR-129, 86akgqdx8,
+    /// the same reasoning extended to the regenerate-with-retention trio). Operator-only:
+    /// deliberately narrower than `Transcribe`, which still governs
+    /// `LoadSermonNoteDraft`/`UpdateSermonNoteDraft`/`GetActiveTranscriptId`. See
+    /// [`Command`]'s doc on `SaveSermonNoteDraft` for the full reasoning — in short, Save is
+    /// the one command that can attach a label/disclosure to NEW content or
+    /// wholesale-replace an already-persisted (possibly operator-edited) draft, and its
+    /// only legitimate caller today is the operator console's own `generate_sermon_notes`
+    /// flow (the same is true of Stage/Confirm/Discard).
     SaveSermonNotes,
 }
 
@@ -153,7 +156,15 @@ pub fn required_permission(cmd: &Command) -> Permission {
         // FABRICATED "AI-generated" draft, or silently discard the operator's own edits, from
         // any Transcribe-tier Producer device. The operator console's own generate flow is the
         // only legitimate caller today.
-        Command::SaveSermonNoteDraft { .. } => SaveSermonNotes,
+        // The FR-129 regenerate-with-retention trio (86akgqdx8) is the SAME tier as Save,
+        // for the same reasoning: Stage attaches new provenance to content the operator has
+        // not reviewed yet, Confirm replaces the accepted draft outright, and Discard is
+        // kept at this tier for consistency with the rest of its own lifecycle even though
+        // it cannot itself alter accepted content — see each command's own doc comment.
+        Command::SaveSermonNoteDraft { .. }
+        | Command::StageSermonNoteRegeneration { .. }
+        | Command::ConfirmSermonNoteRegeneration { .. }
+        | Command::DiscardSermonNoteRegeneration { .. } => SaveSermonNotes,
         Command::GetState
         | Command::GetOperatorState
         | Command::GetConsoleThumbnails { .. }

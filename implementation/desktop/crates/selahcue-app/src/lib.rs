@@ -19,7 +19,7 @@ pub use controller::{
 };
 pub use keymap::{CanonicalAction, KeyPress, Keymap};
 pub use operator::{ItemView, OperatorShell, OperatorView};
-pub use sermon_note_store::{NullSermonNoteStore, SermonNoteStore};
+pub use sermon_note_store::{NullSermonNoteStore, RegenerationSlot, SermonNoteStore};
 pub use transcript_pump::pump_transcript;
 pub use transcript_sink::{
     BatchingTranscriptWriter, EpochClock, MonotonicClock, NullTranscriptSink, SystemEpochClock,

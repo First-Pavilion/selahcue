@@ -21,6 +21,12 @@ pub enum DataError {
     /// write-side counterpart to [`DataError::Corrupt`]'s read-side check. Carries
     /// only the field name and its limit, never the oversized value itself.
     TooLarge(String),
+    /// A write was refused for a POLICY reason, not because anything is missing
+    /// (`NotFound`) or malformed/oversized (`TooLarge`/`Corrupt`) — e.g.
+    /// `sermon_note_repo::confirm_regeneration` refusing to let a pending regeneration
+    /// silently strip the FR-123 AI-generated label from an already-labelled draft
+    /// (86akgqdx8). Carries a short, secret-free reason.
+    Refused(String),
 }
 
 impl fmt::Display for DataError {
@@ -35,6 +41,7 @@ impl fmt::Display for DataError {
                 "database schema v{found} is newer than this build supports (v{supported})"
             ),
             DataError::TooLarge(s) => write!(f, "value too large: {s}"),
+            DataError::Refused(s) => write!(f, "write refused: {s}"),
         }
     }
 }

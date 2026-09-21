@@ -733,3 +733,116 @@ step 2 (engine primitives) or step 4 (tokens); steps 1, 3 and 5 can be verified 
   `tokens::relative_luminance` / `tokens::contrast_ratio`.
 - No implementation file was modified. `selahcue-engine/`, `implementation/mobile/` and
   `selahcue-present/tests/test_present.rs` were not touched.
+
+---
+
+## Reconciliation — 2026-09-20
+
+**Author:** Uma (UI/UX). **Scope:** re-verify all 78 `STG-###` findings against `main` as of this
+worktree's base commit (`4b21c39`), docs-only.
+
+### Method
+
+`docs/delivery/CODE-REVIEW-batch-desktop-design2-stage.md` (2026-08-24, commits `7369f61` and
+follow-ups) is the only remediation batch against `stage.rs`, and it is unusually explicit about
+scope: §3 "STG items closed" lists every finding id it fixed, §5 "Deliberately NOT done" lists every
+finding it left open and why, and §8 "Files changed" states `stage.rs` is the only source file it
+touched (`theme.rs`, `compose.rs`, `measure.rs`, `tokens.rs` explicitly **not** touched by that
+batch). `git log --since=2026-08-23 -- implementation/desktop/crates/selahcue-present/src/stage.rs`
+shows no commit since the batch, so its own "closed"/"not done" lists are the current, live state —
+verified rather than assumed by reading `stage.rs`'s cited constants (`design` module, `StageTheme`
+repoint) directly.
+
+### FIXED
+
+Per the batch doc §3, verified against `stage.rs` directly (type-scale constants now live in a
+`design` module resolved through one seam; `StageTheme::dark()` now points at `tokens::design2` for
+`timer_ok`/`timer_warn`/`timer_alert`/`accent`/`alert_wash`; shapes use the engine's existing
+`Layer::Shape` primitives; nine tracking values applied; the overrun readout wired end to end via
+`TimerView::from_timer`):
+
+**Type sizes (§6.4 substitution table):** `STG-019, 020, 021, 024, 025, 028, 030, 037, 040, 041, 042,
+044, 045, 049, 051, 054, 055, 056, 057, 060, 064, 072` — 22 findings.
+
+**Ink tokens:** `STG-003, 004, 018, 074` — 4 findings. (`STG-076` partial — see Open below.)
+
+**Shapes:** `STG-008, 009, 010, 017, 026, 027, 034, 046, 047, 048, 070` — 11 findings.
+
+**Letter-spacing:** `STG-011` — 1 finding.
+
+**Overrun readout:** `STG-038, 065` — 2 findings.
+
+**Other DRIFT closed in the same code paths:** `STG-013, 035, 062, 063, 066, 067` — 6 findings.
+
+**NFR-020 (MVP-blocking):** `STG-077` (configurable large text, `text_scale_permille`, 750–1750‰
+clamp) and `STG-078` (`StageTheme::high_contrast()`, additive) — 2 findings. These were the headline
+"NFR-020 not met at MVP scope" finding from the audit's own summary; both are now built and
+mutation-verified (batch doc §6, M9).
+
+**Total FIXED: 48 findings**, all mutation-verified per the batch doc §6 (each control broken,
+confirmed RED with siblings running, restored).
+
+### Reclassified INTENTIONAL-DEVIATION (owner-approved, permanent — not gaps)
+
+- **`STG-039`** (the TIME-UP pulse) — the owner chose to **keep** the 0.5 Hz pulse rather than make
+  it static, discharging ARCH-UX-REVIEW-stage5 M4 via measured FR-175 flash-safety evidence instead
+  (batch doc §1: 0/0.5 flashes/sec against a ≤3/≤3 limit, 6× margin). **This reverses the audit's
+  MISSING/DRIFT framing** — it was never rebuilt toward the frame, and per the operating rule stated
+  in the task brief, it must not be. Reclassify from whatever the audit tagged it to
+  `INTENTIONAL-DEVIATION`.
+- **`STG-071`** (the gold-on-white message chip) — the audit's own frame reading is wrong (2.04:1,
+  fails AA at every size); the shipped inversion is 11.19:1 and is now pinned by a dedicated test
+  (`the_production_message_chip_keeps_its_accessible_polarity`). `INTENTIONAL-DEVIATION`, per the
+  batch doc §5.
+
+**2 findings reclassified**, neither counted as open below.
+
+### Confirmed still OPEN (batch doc §5, cross-checked directly)
+
+- **`STG-001, STG-006, STG-007`** (background/panel/chip fills `#08090d`/`#0c0e14`/`#12141c`) — no
+  `design2` token equivalent exists yet; deferred to a token batch. Still literal legacy hexes in
+  `stage.rs` as of this worktree.
+- **`STG-002`** (the stage `muted` ink, `#6b7383` vs the mobile precedent `#a7aebe`) — blocked on
+  audit Q2, unresolved.
+- **`STG-016`** (per-output region toggles) — out of scope per FR-059's "selected outputs only"
+  reading; still MISSING if that reading is ever revisited.
+- **`STG-029, STG-052, STG-058, STG-059, STG-060`** (the `· Sermon` suffix, panel sub-caption, and
+  the two-tone footer's second ink) — need plan-segment-name/segment-end-time data the composer is
+  not given, plus the two-tone footer is itself blocked on Q2. (Note: `STG-060`'s *type size* half was
+  separately closed by the type-scale substitution table above — only its ink/data half is open.)
+- **`STG-031, STG-033`** (TIME-UP band fill `#1c0c0e` and its 100-unit height) — no `design2`
+  equivalent for the fill; the height is content-driven in the frame, not a fixed value to match.
+- **`STG-069`** (the simplified message header) — blocked on audit Q7 (sketch vs. real), unresolved.
+
+**12 findings confirmed OPEN**, all explicitly named as deferred in the batch doc itself and
+re-verified present in `stage.rs` as of this worktree.
+
+### Not otherwise discussed — OPEN, unchanged
+
+The remaining `STG-###` ids (78 − 48 fixed − 2 reclassified − 12 confirmed-open above = 16) are
+per-frame geometry/DRIFT rows from §3 "Per-frame audit" not named in the batch doc's closed or
+deferred lists (e.g. residual pixel-level rows not swept up by the type-scale/shape/tracking
+substitutions). `git log` confirms zero commits to `stage.rs` since the batch, so these stand at
+their original audit verdict, unchanged. They were not individually re-grepped line-by-line in this
+pass; Phase D ticket scoping should do that read before writing a ticket against any of them, since a
+few may already have been incidentally swept up by the type-scale/shape work above without an
+explicit id citation in the batch doc.
+
+### Totals
+
+| | Count |
+|---|---:|
+| Total findings | 78 |
+| FIXED | 48 |
+| Reclassified INTENTIONAL-DEVIATION (owner-approved, not open) | 2 |
+| **OPEN** | **28** |
+
+Open, by severity: the original audit did not tag `STG-###` rows with blocker/major/minor the way the
+console and presentation audits did (its own severity column uses Low/Medium, plus the three
+headline items flagged in prose as more-than-cosmetic). Of the three headline "more than cosmetic"
+findings (§1.1): `STG-039` is now resolved as an owner-approved deviation (not open); `STG-077`/
+`STG-078` (NFR-020) are FIXED; `STG-038`/`STG-065` (overrun readout) are FIXED. **All three of the
+audit's own headline "more than cosmetic" issues are closed.** The 28 open findings are the
+lower-severity residue: 3 fill-token gaps (Low), 1 blocked ink decision (Medium), 1 scope question
+(Medium), 5 data-dependent copy gaps (Low–Medium), 2 fill/height gaps (Low), 1 blocked header
+question (Low), plus 16 unswept per-frame geometry rows not yet individually re-graded.
