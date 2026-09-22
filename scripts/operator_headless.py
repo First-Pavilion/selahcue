@@ -707,7 +707,7 @@ if not check_jump_call_site_is_click_only():
 # test above and re-confirmed by inspection; finding E (app.css's CON-134 comment block still
 # named the pre-fix window.__openChapterForStage as Edit's call) was a stale-comment correction
 # only. Confirmed by two independent runs (both 1625, 0 FAIL).
-EXPECTED_MIN_CHECKS = 1713
+EXPECTED_MIN_CHECKS = 1717
 
 
 def find_chrome():
@@ -10767,6 +10767,39 @@ right after a generate/save");
         ok(el("set-page-network") && !el("set-page-network").hidden,
            "Settings/Security: 'Revoke all paired devices' really navigates to Network & Mobile");
         document.querySelector('.nav-item[data-surface="settings"]').click();
+        setSettingsPage("security");
+
+        // Danger Zone / destructive-control regression guard (Sana's security review of PR #71:
+        // these had zero test coverage at all — mutation-proved by removing `disabled` from the
+        // purge button and observing the WHOLE suite still passed). Matches the same pattern
+        // Storage's equivalent controls already use (asserted across 6 buttons).
+        var secDangerButtons = Array.prototype.filter.call(
+          document.querySelectorAll("#set-page-security .pp-optin-btn"),
+          function(b){ return /Purge & rotate…/.test(b.textContent); }
+        );
+        ok(secDangerButtons.length === 1 && secDangerButtons[0].disabled,
+           "Settings/Security: 'Purge secrets & rotate database key' is honestly disabled — no purge/rotate command exists in this build");
+        var secAppLockToggle = document.querySelector("#set-page-security .pp-toggle.set-inert input");
+        ok(secAppLockToggle && secAppLockToggle.disabled,
+           "Settings/Security: 'Require passphrase on launch' is honestly disabled — not available in this build yet");
+        // The copy contradiction Sana's review caught: the purge row must not claim to
+        // "re-encrypt" a database this build never encrypted in the first place.
+        ok(!/re-encrypts the database/.test(document.getElementById("set-page-security").textContent),
+           "Settings/Security (control): the purge/rotate row does not claim to 're-encrypt' a database — this build has no at-rest encryption to re-encrypt (contradiction Sana's review found, fixed)");
+      }
+
+      // === Settings › Network & Mobile — destructive-control regression guard (SET-009) ===
+      // Same gap class Sana's review found on Security, checked here too rather than only where
+      // it was reported: Regenerate certificate and Revoke all devices had no disabled-state test
+      // coverage either.
+      {
+        setSettingsPage("network");
+        var netDangerButtons = Array.prototype.filter.call(
+          document.querySelectorAll("#set-page-network .pp-optin-btn"),
+          function(b){ return /Regenerate…|Revoke all…/.test(b.textContent); }
+        );
+        ok(netDangerButtons.length === 2 && netDangerButtons.every(function(b){ return b.disabled; }),
+           "Settings/Network SET-009: 'Regenerate certificate' and 'Revoke all devices' are both honestly disabled (" + netDangerButtons.length + " checked) — no cert-regenerate or revoke-all command exists in this build");
       }
 
       // === Settings › Storage & Backups (Figma 583:124 — story 17tnw2axweu, closes SET-006) ===
