@@ -6863,7 +6863,10 @@
 .plan-b-row:hover { border-color: var(--sc-border-strong); }
 .plan-b-row.sel { border-color: var(--sc-primary); background: var(--sc-accent-soft, var(--sc-inset)); }
 .plan-b-row.is-live { border-color: var(--sc-live); }
-.plan-b-row.is-staged { border-color: var(--sc-preview); }
+/* PLN-004 (DESIGN-2.0-PARITY-AUDIT-plan.md): handoff's "Selecting/staging..." line is explicit —
+   "Preview/staged = green/dashed, Live/Program = red/solid" — so only the staged row gets a
+   dashed border; Live stays solid. */
+.plan-b-row.is-staged { border-color: var(--sc-preview); border-style: dashed; }
 /* min-width is a FLOOR, not 0: with flex-basis 0 the title collapsed to 0px whenever the meta's
    nowrap content claimed the row (Quinn P5c / Vera). The floor makes the title the last thing to
    give way — priority under pressure is title > duration > owner. */

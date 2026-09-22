@@ -849,7 +849,18 @@ if not check_jump_call_site_is_click_only():
 # on the same text would have wrongly read the FIRST. Per this constant's own repeated lesson:
 # re-derived empirically, not hand-summed. Three independent runs against the real post-rebase
 # tree all reported 1818, 0 FAIL.
-EXPECTED_MIN_CHECKS = 1818
+#
+# 1818 -> 1821: ClickUp 17tnw2axptt (Service Plan: close PLN-004 — the staged run-sheet row's
+# border was solid; the handoff is explicit that staged is green/dashed and only live is
+# red/solid). Added exactly 3 checks (a non-vacuousness setup check, the dashed-border assertion,
+# and a solid-border control on an unstaged row) right next to the existing C-001 run-sheet
+# fixture. Rebased onto main's own GO-LIVE-HOVER/TIMER-START-HOVER + SET-010 PP-GEN +
+# rule-lookup-lastmatch chain above (1768->1818) after this branch was authored against the
+# earlier 1768 baseline — a real conflict in this exact block, the pattern this comment keeps
+# warning about. Per this constant's own repeatedly-stated discipline, 1821 is read off an actual
+# clean run after resolving, not hand-summed as 1818+3 (even though it happens to match here).
+# Confirmed by two independent clean runs against the real post-rebase tree: 1821, 0 FAIL.
+EXPECTED_MIN_CHECKS = 1821
 
 
 def find_chrome():
@@ -6296,6 +6307,18 @@ DRIVER = r"""
          "SP C-001: a deck-linked item resolves the deck name from the lazily-loaded deck list");
       var mChip = document.querySelector("#plan-b-list .link-missing");
       ok(mChip && /missing/i.test(mChip.textContent), "SP C-001: a deck whose id is gone shows a ⚠ missing chip");
+      // PLN-004 (DESIGN-2.0-PARITY-AUDIT-plan.md): the handoff is explicit — "Preview/staged =
+      // green/dashed, Live/Program = red/solid" — and the staged row's border used to stay solid.
+      // Item 11 above is staged-only (is_staged:true, is_live:false); item 12 is neither, so it is
+      // the control proving the dashed rule is scoped to .is-staged, not a global border reset.
+      var stagedBRow = document.querySelector('#plan-b-list .plan-b-row[data-item-id="11"]');
+      ok(stagedBRow.classList.contains("is-staged") && !stagedBRow.classList.contains("is-live"),
+         "PLN-004 (setup): item 11 is staged-only, so the border-style assertion below is not vacuous");
+      ok(getComputedStyle(stagedBRow).borderTopStyle === "dashed",
+         "PLN-004: a staged run-sheet row's border is dashed, per the handoff — got " + getComputedStyle(stagedBRow).borderTopStyle);
+      var plainBRow = document.querySelector('#plan-b-list .plan-b-row[data-item-id="12"]');
+      ok(getComputedStyle(plainBRow).borderTopStyle === "solid",
+         "PLN-004 (control): a row that is neither live nor staged keeps its ordinary solid border");
       // C-005 inspector: a linked scripture item → chip + Change…/Unlink/Remove.
       document.querySelectorAll("#plan-b-list .plan-b-row")[0].click();
       var insp = el("plan-b-insp");

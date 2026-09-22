@@ -266,3 +266,82 @@ was found:
 No ClickUp task ID was assigned to this audit at authoring time. Recorded per Phase D of the parent
 plan (`docs/delivery/goals/TASK-design2-parity-audit-uncovered-surfaces.md`) — ticket creation and
 linking is out of scope for this docs-only pass.
+
+---
+
+## Reconciliation — 2026-09-22
+
+**Author:** Farah (Frontend). **Scope:** ClickUp `17tnw2axptt` — re-verify all 9 `PLN-###` findings
+against `main` (this worktree's base commit, `0f08778`, `origin/main` tip at the time) and close what
+is genuinely open and not decision- or dependency-blocked. This section is additive; every table
+above is left as originally written — this is the *current* status layered on top.
+
+### Method
+
+1. Re-read every cited `file:line` directly against this worktree's own `dist/app.css`/`dist/app.js`,
+   not the shared checkout — the shared tree carries large uncommitted WIP from concurrent sessions
+   that shifts line numbers (e.g. `.plan-b-row.is-staged` reads at a different line there than in a
+   clean worktree cut from `origin/main`).
+2. Cross-checked the two dependency families this ticket's own description names: the ClickUp
+   `waiting_on` dependency on `86ak8467m` ("Service Plan states") and, transitively, its own backend
+   dependencies `86ajy0hwg`/`86ajy0hxg`; and the consolidated decision ticket `17tnw2axpu4` covering
+   `PLN-OQ-3`/`PLN-OQ-4`/`PLN-OQ-5`.
+3. Computed the WCAG contrast for `PLN-009` directly from the live `--sc-*` token values and
+   corroborated it against the existing automated sweep (`PL AC-46` in `operator_headless.py`, which
+   already includes `.plan-viewonly`/`.plan-viewonly-why` in its ink-contrast site list).
+4. Verified with `python3 scripts/operator_headless.py`: **1771 checks, 0 FAIL** (was 1768 immediately
+   before this ticket's 3 new checks — re-derived from an actual clean run per this file's own
+   `EXPECTED_MIN_CHECKS` discipline, never hand-summed).
+
+### FIXED
+
+| Finding | Evidence |
+|---|---|
+| `PLN-004` | `app.css`: `.plan-b-row.is-staged` now carries `border-style: dashed` alongside its existing `border-color: var(--sc-preview)`; `.plan-b-row.is-live` is untouched (stays solid) — matching the handoff's "Preview/staged = green/dashed, Live/Program = red/solid" line verbatim, not a paraphrase of it. 3 new `operator_headless.py` checks added beside the existing C-001 run-sheet fixture: a non-vacuousness setup check (item 11 is staged-only, not also live), the dashed-border assertion itself, and a solid-border control on an unstaged row (item 12) proving the dashed rule is scoped to `.is-staged` and not a global border reset. All 3 PASS. |
+
+**1 finding FIXED.**
+
+### VERIFIED — no change needed
+
+| Finding | Evidence |
+|---|---|
+| `PLN-009` | The original audit left `.plan-viewonly`'s ink unverified (read at metadata level only). Direct computation: ink `var(--sc-warn)` `#f5a524` on fill `var(--sc-warn-soft)` `#2a2415` (the badge's own solid pill background, not the page ground behind it — the correct pairing per WCAG 1.4.3 for a filled chip) = **7.56:1**, clearing AA-normal (4.5:1) and AAA (7:1) despite the 11px/700 type. Corroborated by the pre-existing automated sweep `PL AC-46`, which already lists `.plan-viewonly`/`.plan-viewonly-why` among its ink-contrast sites and reports "all clear" across both the editor and view-only renders it exercises. No code change required — this closes the finding as verified-passing rather than leaving it an open question. |
+
+**1 finding VERIFIED (no defect found).**
+
+### OPEN — decision-blocked (unchanged; guardrail RISK-205/NFR-204)
+
+| Finding | Why still open |
+|---|---|
+| `PLN-001` / `PLN-002` | `PLN-OQ-4` (inline-in-inspector vs. the two dedicated modal frames) is unresolved — `DECISION — New-surfaces` (`17tnw2axpu4`) is still `planning/todo`. Both patterns are complete, working implementations of the same content; this ticket does not "correct" toward Figma while the product question the audit itself raised is still open. |
+| `PLN-005` | `PLN-OQ-3` (should Section behave as a non-triggerable divider on the builder route, or was the handoff's §3 line aspirational text never meant for this route) is unresolved, same decision ticket. |
+| `PLN-006` | `PLN-OQ-5` (is the drop-position ghost label worth the implementation cost, or was it never actually requested) is unresolved, same decision ticket. |
+
+### OPEN — blocked on a tracked dependency (unchanged)
+
+| Finding | Why still open |
+|---|---|
+| `PLN-007` | Frame 13 (Error → Restore last autosave) is explicitly in scope for `86ak8467m` ("Service Plan states"), which this ticket formally depends on via a ClickUp `waiting_on` link. `86ak8467m` itself cannot complete until its own backend dependency `86ajy0hxg` (autosave slots + restore) ships — confirmed still `planning/todo` as of this reconciliation. Not duplicated here, per this ticket's own description: "this ticket should depend on / point at that existing ticket rather than re-implement it here." |
+| `PLN-008` | Frame 16 (Recovery / crash-loop dialog) is explicitly **out of scope** for `86ak8467m` and is gated on a separate open architecture decision, `86ak846ge` ("should the Resume vs Start-clean choice be deferred to an operator?"), confirmed still `planning/todo` and explicitly marked "Do not implement against this ticket." The blocker is the decision, not a missing wire field. |
+
+### NOT ACTIONED — no spec to correct toward
+
+| Finding | Why |
+|---|---|
+| `PLN-003` | Scored `UNSPECIFIED` in the original audit, not `DRIFT` — the handoff never specifies a palette-button colour, so there is no concrete target to build toward and nothing the code contradicts. Left as-is; it is not named in the decision ticket's open-questions list either. |
+
+### Totals (this reconciliation)
+
+| | Count |
+|---|---:|
+| Total findings | 9 |
+| FIXED | 1 (`PLN-004`) |
+| VERIFIED, no change needed | 1 (`PLN-009`) |
+| OPEN — decision-blocked | 4 (`PLN-001`, `PLN-002`, `PLN-005`, `PLN-006`) |
+| OPEN — dependency-blocked | 2 (`PLN-007`, `PLN-008`) |
+| Not actioned (no spec) | 1 (`PLN-003`) |
+
+Zero findings were closed by guessing at an unresolved product/design decision or by fabricating a
+spec Figma/the handoff never stated. The two genuinely actionable, non-blocked findings (`PLN-004`,
+`PLN-009`) are closed; everything else is exactly where the original audit and the existing ClickUp
+dependency graph already said it would have to stay.
