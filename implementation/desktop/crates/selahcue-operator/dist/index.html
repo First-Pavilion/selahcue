@@ -1218,6 +1218,270 @@
             </section>
           </div>
 
+          <!-- About & Licensing (Design 2.0, Figma 584:124 — story 17tnw2axwer, closes SET-007).
+               Version/platform are read from real host/browser signals where a real signal exists
+               (Tauri's own getVersion(), navigator for platform); everything else this build has
+               no live source for (update check, SBOM/license manifest, song/CCLI editor, external
+               support URLs) renders as a real, labelled, disabled row rather than a fabricated
+               number — see settings-about.js's header comment. Populated + wired by
+               settings-about.js. -->
+          <div id="set-page-about" class="set-page" data-setpage="about" hidden>
+            <div class="pp-wrap">
+              <header class="pp-head">
+                <h1 class="pp-title">About &amp; Licensing</h1>
+                <p class="pp-sub">Version, updates, licences and attributions for this copy of SelahCue.</p>
+              </header>
+
+              <div class="pp-banner pp-banner-ok" role="note">
+                <span class="pp-banner-ico" aria-hidden="true">ⓘ</span>
+                <div class="pp-banner-body">
+                  <p class="pp-banner-title">Version, licences and attributions for this copy of SelahCue.</p>
+                  <p class="pp-banner-text">Checking for updates is the only action here that would use the network — nothing on this page changes what's on the audience screen.</p>
+                </div>
+              </div>
+
+              <section class="pp-section" aria-labelledby="ab-version-h">
+                <h2 id="ab-version-h" class="pp-seclabel">VERSION</h2>
+                <div class="set-row-grid">
+                  <div class="set-row"><div><p class="set-row-t">Version</p></div><span class="set-row-v" id="ab-version">—</span></div>
+                  <div class="set-row"><div><p class="set-row-t">Platform</p></div><span class="set-row-v" id="ab-platform">—</span></div>
+                </div>
+              </section>
+
+              <section class="pp-section" aria-labelledby="ab-updates-h">
+                <h2 id="ab-updates-h" class="pp-seclabel">UPDATES</h2>
+                <div class="set-row">
+                  <div>
+                    <p class="set-row-t">Update status</p>
+                    <p class="set-row-d">Checking for updates isn't available in this build yet.</p>
+                  </div>
+                  <div class="ab-update-actions">
+                    <span class="pp-badge pp-badge-soon">SOON</span>
+                    <button id="ab-check-update" class="pp-optin-btn set-inert" type="button" disabled aria-disabled="true">Check for updates</button>
+                  </div>
+                </div>
+                <p class="set-inert-note">Once available, updates will be signature-verified before they install and a downgrade below the minimum safe version will be refused.</p>
+              </section>
+
+              <section class="pp-section" aria-labelledby="ab-licenses-h">
+                <h2 id="ab-licenses-h" class="pp-seclabel">OPEN-SOURCE LICENSES</h2>
+                <div class="set-row">
+                  <div>
+                    <p class="set-row-t">Third-party components</p>
+                    <p class="set-row-d">A generated component &amp; licence manifest isn't available in this build yet.</p>
+                  </div>
+                  <span class="pp-badge pp-badge-soon">SOON</span>
+                </div>
+              </section>
+
+              <section class="pp-section" aria-labelledby="ab-scripture-h">
+                <h2 id="ab-scripture-h" class="pp-seclabel">SCRIPTURE ATTRIBUTIONS</h2>
+                <div id="ab-scripture-list" class="set-stack" role="list" aria-label="Bundled scripture translations"></div>
+                <div class="set-row">
+                  <div>
+                    <p class="set-row-t">About these attributions</p>
+                    <p class="set-row-d">Public-domain translations are marked as such and need no attribution. Licensed translations (a future release) will show their required attribution here.</p>
+                  </div>
+                </div>
+              </section>
+
+              <section class="pp-section" aria-labelledby="ab-ndi-h">
+                <h2 id="ab-ndi-h" class="pp-seclabel">NDI ATTRIBUTION</h2>
+                <div class="set-row">
+                  <div>
+                    <p class="set-row-t">NDI® is a registered trademark of Vizrt NDI AB.</p>
+                    <p class="set-row-d">Shown because NDI network output support is available in this build.</p>
+                  </div>
+                </div>
+              </section>
+
+              <section class="pp-section" aria-labelledby="ab-codec-h">
+                <h2 id="ab-codec-h" class="pp-seclabel">CODEC &amp; MEDIA NOTICE</h2>
+                <div class="pp-banner pp-banner-ok" role="note">
+                  <span class="pp-banner-ico" aria-hidden="true">▶</span>
+                  <div class="pp-banner-body">
+                    <p class="pp-banner-title">Video and audio play through your operating system's built-in decoders (H.264, HEVC, AAC).</p>
+                    <p class="pp-banner-text">SelahCue bundles no patented codecs.</p>
+                  </div>
+                </div>
+                <div class="set-row">
+                  <div>
+                    <p class="set-row-t">Media SelahCue encodes or exports</p>
+                    <p class="set-row-d">Recording and export aren't in this build yet.</p>
+                  </div>
+                  <span class="pp-badge pp-badge-soon">SOON</span>
+                </div>
+              </section>
+
+              <section class="pp-section" aria-labelledby="ab-ccli-h">
+                <h2 id="ab-ccli-h" class="pp-seclabel">SONG COPYRIGHT &amp; CCLI</h2>
+                <div class="pp-banner pp-banner-ok" role="note">
+                  <span class="pp-banner-ico" aria-hidden="true">♪</span>
+                  <div class="pp-banner-body">
+                    <p class="pp-banner-title">SelahCue bundles no copyrighted lyrics.</p>
+                    <p class="pp-banner-text">A song editor with per-song copyright details (title, author, © year, publisher, CCLI#) isn't in this build yet.</p>
+                  </div>
+                </div>
+              </section>
+
+              <section class="pp-section" aria-labelledby="ab-privacy-h">
+                <h2 id="ab-privacy-h" class="pp-seclabel">PRIVACY &amp; COMPLIANCE</h2>
+                <div class="pp-banner pp-banner-ok" role="note">
+                  <span class="pp-banner-ico" aria-hidden="true">🔒</span>
+                  <div class="pp-banner-body">
+                    <p class="pp-banner-title">SelahCue runs offline by default.</p>
+                    <p class="pp-banner-text">No sermon audio, transcripts, or notes leave this computer unless you turn on a cloud provider in Providers &amp; Privacy.</p>
+                  </div>
+                </div>
+                <div class="set-row">
+                  <div>
+                    <p class="set-row-t">Data Processing Agreement</p>
+                    <p class="set-row-d" id="ab-dpa-note">A DPA and cross-border-transfer disclosure apply when a cloud provider is enabled.</p>
+                  </div>
+                  <span class="pp-badge pp-badge-soon" id="ab-dpa-badge">SOON</span>
+                </div>
+              </section>
+
+              <section class="pp-section" aria-labelledby="ab-support-h">
+                <h2 id="ab-support-h" class="pp-seclabel">SUPPORT &amp; DIAGNOSTICS</h2>
+                <div class="set-row">
+                  <div>
+                    <p class="set-row-t">Export diagnostics</p>
+                    <p class="set-row-d">Redacted bundle — logs, versions, device info. Never includes sermon content. Not in this build yet.</p>
+                  </div>
+                  <span class="pp-badge pp-badge-soon">SOON</span>
+                </div>
+              </section>
+
+              <section class="pp-section" aria-labelledby="ab-credits-h">
+                <h2 id="ab-credits-h" class="pp-seclabel">CREDITS</h2>
+                <div class="set-row"><div><p class="set-row-t">Built by the SelahCue team.</p><p class="set-row-d">Made for the local church.</p></div></div>
+              </section>
+            </div>
+          </div>
+
+          <!-- Appearance (Design 2.0, Figma 581:124 — story 17tnw2axwer, closes SET-004). Default
+               stage theme is REAL (set_stage_template / view.stage_template — the exact command
+               the Presentation surface's own stage-theme picker already uses, id-for-id). Every
+               other control here (density, text size, high-contrast, motion, clock format, brand
+               accent) has no backend command or persistence anywhere in this app yet, so each
+               renders as a real, focusable, disabled control with an honest inline note rather
+               than a toggle that silently forgets your choice — see settings-appearance.js. -->
+          <div id="set-page-appearance" class="set-page" data-setpage="appearance" hidden>
+            <div class="pp-wrap">
+              <header class="pp-head">
+                <h1 class="pp-title">Appearance</h1>
+                <p class="pp-sub">Operator-console look, output legibility, and default slide &amp; stage templates.</p>
+              </header>
+
+              <div class="pp-banner pp-banner-ok" role="note">
+                <span class="pp-banner-ico" aria-hidden="true">◈</span>
+                <div class="pp-banner-body">
+                  <p class="pp-banner-title">SelahCue's console is one dark, high-legibility theme.</p>
+                  <p class="pp-banner-text">"Theme" on this page means a slide- or stage-design template — not a light/dark colour mode.</p>
+                </div>
+              </div>
+
+              <section class="pp-section" aria-labelledby="ap-ui-h">
+                <h2 id="ap-ui-h" class="pp-seclabel">OPERATOR UI</h2>
+                <div class="set-row-grid">
+                  <div class="pp-slider-wrap">
+                    <span class="pp-slider-label" id="ap-density-label">Interface density</span>
+                    <div id="ap-density" class="pp-segmented" role="radiogroup" aria-labelledby="ap-density-label"></div>
+                    <p class="set-inert-note">Not saved yet — coming soon.</p>
+                  </div>
+                  <div class="pp-slider-wrap">
+                    <label class="pp-slider-label" for="ap-textsize">Interface text size (85–150%)</label>
+                    <input id="ap-textsize" class="pp-slider" type="range" min="85" max="150" step="5" value="100" disabled aria-describedby="ap-textsize-note" />
+                    <p class="pp-slider-note" id="ap-textsize-note">100% · Default · not saved yet — coming soon</p>
+                  </div>
+                </div>
+              </section>
+
+              <section class="pp-section" aria-labelledby="ap-contrast-h">
+                <h2 id="ap-contrast-h" class="pp-seclabel">CONTRAST &amp; LEGIBILITY</h2>
+                <div class="pp-slider-wrap">
+                  <span class="pp-slider-label">Stage output preview</span>
+                  <div id="ap-stage-preview" class="ap-stage-preview" aria-hidden="true">
+                    <p class="ap-stage-preview-clock">7:42 PM</p>
+                    <p class="ap-stage-preview-now">Amazing grace, how sweet the sound</p>
+                    <p class="ap-stage-preview-next">NEXT&nbsp;&nbsp;That saved a wretch like me</p>
+                    <div class="ap-stage-preview-spacer"></div>
+                    <div class="ap-stage-preview-timer"><span>SERVICE TIMER</span><span>04:32</span></div>
+                  </div>
+                </div>
+                <div class="set-row">
+                  <div>
+                    <p class="set-row-t">High-contrast stage &amp; confidence theme</p>
+                    <p class="set-row-d">Maximises contrast on stage/confidence output for readability under bright stage lighting. Not saved yet — coming soon.</p>
+                  </div>
+                  <label class="pp-toggle set-inert"><input id="ap-high-contrast" type="checkbox" disabled aria-label="High-contrast stage and confidence theme (not yet available)" /><span class="pp-toggle-knob"></span></label>
+                </div>
+                <div class="pp-slider-wrap">
+                  <label class="pp-slider-label" for="ap-stage-textsize">Stage text size (48–96px-equiv)</label>
+                  <input id="ap-stage-textsize" class="pp-slider" type="range" min="48" max="96" step="4" value="48" disabled aria-describedby="ap-stage-textsize-note" />
+                  <p class="pp-slider-note" id="ap-stage-textsize-note">48px-equiv · Recommended minimum · not saved yet — coming soon</p>
+                </div>
+              </section>
+
+              <section class="pp-section" aria-labelledby="ap-motion-h">
+                <h2 id="ap-motion-h" class="pp-seclabel">MOTION</h2>
+                <div class="set-row">
+                  <div>
+                    <p class="set-row-t">Reduced motion</p>
+                    <p class="set-row-d">Turns transcript shimmer, waveforms, and spinners into static states across the console. Currently follows your system setting (<code>prefers-reduced-motion</code>) — an explicit override isn't saved yet.</p>
+                  </div>
+                  <label class="pp-toggle set-inert"><input id="ap-reduced-motion" type="checkbox" disabled aria-label="Reduced motion override (not yet available — follows system setting)" /><span class="pp-toggle-knob"></span></label>
+                </div>
+              </section>
+
+              <section class="pp-section" aria-labelledby="ap-slide-theme-h">
+                <h2 id="ap-slide-theme-h" class="pp-seclabel">DEFAULT SLIDE THEME</h2>
+                <div class="pp-field">
+                  <label class="pp-field-label" for="ap-slide-theme">Default slide theme</label>
+                  <div class="pp-select-wrap"><select id="ap-slide-theme" class="pp-select" disabled></select></div>
+                </div>
+                <p class="set-inert-note">Shows this build's real slide themes, but there's no separate "default for new decks" setting yet — disabled until there is. Manage themes in the Theme Designer below.</p>
+                <button id="ap-open-theme-designer" class="set-linkrow" type="button">
+                  <span>Open Theme Designer — create or edit slide-design templates</span>
+                  <span class="set-linkrow-arrow" aria-hidden="true">→</span>
+                </button>
+              </section>
+
+              <section class="pp-section" aria-labelledby="ap-stage-theme-h">
+                <h2 id="ap-stage-theme-h" class="pp-seclabel">DEFAULT STAGE THEME</h2>
+                <div id="ap-stage-themes" class="set-stack" role="radiogroup" aria-labelledby="ap-stage-theme-h"></div>
+              </section>
+
+              <section class="pp-section" aria-labelledby="ap-clock-h">
+                <h2 id="ap-clock-h" class="pp-seclabel">STAGE CLOCK</h2>
+                <div class="pp-slider-wrap">
+                  <span class="pp-slider-label" id="ap-clockfmt-label">Stage clock format</span>
+                  <div id="ap-clockfmt" class="pp-segmented" role="radiogroup" aria-labelledby="ap-clockfmt-label"></div>
+                  <p class="set-inert-note">Not saved yet — coming soon.</p>
+                </div>
+              </section>
+
+              <section class="pp-section" aria-labelledby="ap-brand-h">
+                <h2 id="ap-brand-h" class="pp-seclabel">BRAND ACCENT · ADVANCED</h2>
+                <div class="pp-banner pp-banner-ok" role="note">
+                  <span class="pp-banner-ico" aria-hidden="true">🔒</span>
+                  <div class="pp-banner-body">
+                    <p class="pp-banner-title">Broadcast colours are fixed.</p>
+                    <p class="pp-banner-text">Live-red, preview-green, warn-amber, and scripture-gold each carry one meaning and cannot be recoloured.</p>
+                  </div>
+                </div>
+                <div class="set-row">
+                  <div>
+                    <p class="set-row-t">Brand customisation</p>
+                    <p class="set-row-d">Brand accent colour and church logo in the app header ship in a later update; the default indigo accent is used until then.</p>
+                  </div>
+                  <span class="pp-badge pp-badge-soon">COMING SOON</span>
+                </div>
+              </section>
+            </div>
+          </div>
+
           <!-- Shared "coming soon" page for the not-yet-built sections (honest, per match-the-shell). -->
           <div id="set-placeholder" class="set-page set-soon" hidden>
             <div class="set-soon-inner">
@@ -1572,6 +1836,8 @@
   <script src="preservice.js" defer></script>
   <script src="remote.js" defer></script>
   <script src="settings.js" defer></script>
+  <script src="settings-about.js" defer></script>
+  <script src="settings-appearance.js" defer></script>
   <script src="transcripts.js" defer></script>
 </body>
 

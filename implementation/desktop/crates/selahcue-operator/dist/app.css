@@ -7331,7 +7331,8 @@
 
 /* Narrow operator windows: stack the two-column grids so nothing overflows the surface. */
 @media (max-width: 880px) {
-  .pp-trans-grid, .pp-fields, .pp-inc-cols { grid-template-columns: 1fr; }
+  .pp-trans-grid, .pp-fields, .pp-inc-cols, .set-row-grid { grid-template-columns: 1fr; }
+  .set-linkrow-row { flex-direction: column; }
 }
 
 /* --- Providers & Privacy: AI disclosure + FR-122 sub-points (86akby7d8) --------------- */
@@ -7469,6 +7470,97 @@
 
 /* "DEVELOPER KEY" — the throwaway Phase 1 posture stated on the card, not implied. */
 .pp-badge-dev { color: var(--sc-gold); background: var(--sc-gold-soft); border-color: var(--sc-warn-border); }
+
+/* ===== Settings — shared components for the remaining 7 sidebar pages (Design 2.0, Figma
+   618:124 / story 17tnw2axptw). Reuses every .pp- and .set- primitive already proven on the two
+   built pages (Providers & Privacy, Network & Mobile) — see settings.js's header comment for
+   the honesty discipline these inherit. New primitives below are the ones those two pages never
+   needed: a plain info/value row, an external/internal link row, a segmented control, a labelled
+   range slider, and a "not wired to a live control yet" disabled-affordance pattern that extends
+   the existing "Coming in Rn" convention to cover backend-pending (not just roadmap-deferred)
+   controls — see each new page's own JS file for which controls are real vs. inert and why. ===== */
+
+/* A static info/value row — same visual shape as .set-linkcard (title + sub-text left, a value/
+   badge/toggle/button right) but for content that is not a link. Two names for one shape kept
+   deliberately: .set-linkcard implies navigation, .set-row does not, and a reader should be able
+   to tell from the class alone whether clicking does something. */
+/* A plain vertical stack (same shape as .pp-inc-col, deliberately a SEPARATE class — see
+   settings-about.js/settings-appearance.js: a test asserting "exactly 2 .pp-inc-col in
+   #surface-settings" on the Providers page would silently miscount the moment a sibling settings
+   page reused that class for an unrelated list, which is exactly what broke PP C-004 in review
+   here). Never reuse .pp-inc-col outside the Providers & Privacy include-toggle grid it was
+   built for. */
+.set-stack { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+
+.set-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; background: var(--sc-surface); border: 1px solid var(--sc-border); border-radius: 12px; padding: 13px 15px; }
+.set-row-t { margin: 0; font-size: 14px; font-weight: 500; color: var(--sc-text); }
+.set-row-d { margin: 3px 0 0; font-size: 12px; font-weight: 500; color: var(--sc-text-secondary); max-width: 56ch; }
+.set-row-v { font-size: 13px; font-weight: 500; color: var(--sc-text-secondary); white-space: nowrap; flex: none; }
+.set-row-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+
+/* A slim, single-line internal/external link row (purple text, trailing arrow). → = in-app
+   navigation, ↗ = leaves the app (matches the arrow convention already drawn in Figma). */
+.set-linkrow { display: flex; align-items: center; justify-content: space-between; gap: 10px; width: 100%; background: var(--sc-surface); border: 1px solid var(--sc-border); border-radius: 12px; padding: 12px 15px; color: var(--sc-primary-hover); font: inherit; font-size: 13px; font-weight: 600; cursor: pointer; text-align: left; }
+.set-linkrow:hover { background: var(--sc-elevated); }
+.set-linkrow:focus-visible { outline: 2px solid var(--sc-primary-hover); outline-offset: 2px; }
+.set-linkrow-arrow { flex: none; font-size: 14px; }
+.set-linkrow-row { display: flex; gap: 14px; width: 100%; }
+.set-linkrow-row .set-linkrow { flex: 1 0 0; min-width: 0; }
+
+/* A neutral count/status pill for read-only metadata ("247 COMPONENTS", "SHOWN WHEN NDI ON",
+   "UP TO DATE"). Distinct from .pp-badge's private/opt-in/included variants, which all carry a
+   privacy or availability MEANING — this one is purely informational. */
+.pp-badge-neutral { color: var(--sc-text-muted); background: var(--sc-elevated); border-color: var(--sc-border-strong); }
+.pp-badge-soon { color: var(--sc-warn); background: var(--sc-warn-soft); border-color: var(--sc-warn-border); }
+.pp-pill-info-dot { color: var(--sc-info); }
+
+/* A two-way segmented control (Comfortable/Compact density, 12/24-hour clock format). Reuses the
+   .pp-select field-label pattern above it; radiogroup semantics live in the JS that builds it. */
+.pp-segmented { display: flex; gap: 4px; background: var(--sc-inset); border: 1px solid var(--sc-border); border-radius: 10px; padding: 4px; width: 100%; box-sizing: border-box; }
+.pp-segmented-btn { flex: 1 0 0; min-width: 0; text-align: center; padding: 6px 14px; border-radius: 7px; border: 1px solid transparent; background: transparent; color: var(--sc-text-secondary); font: inherit; font-size: 13px; font-weight: 500; cursor: pointer; }
+.pp-segmented-btn.sel { background: var(--sc-elevated); border-color: var(--sc-border-strong); color: var(--sc-text); font-weight: 600; }
+.pp-segmented-btn:focus-visible { outline: 2px solid var(--sc-primary-hover); outline-offset: 2px; }
+.pp-segmented-btn:disabled { cursor: not-allowed; opacity: 0.7; }
+
+/* A labelled native range input, styled to match the design's filled-track slider. A REAL <input
+   type="range"> (not a hand-rolled div-drag), so it is keyboard-operable (arrows, Home/End) and
+   announces its value to a screen reader for free — never trade that away for pixel fidelity. */
+.pp-slider-wrap { display: flex; flex-direction: column; gap: 8px; width: 100%; }
+.pp-slider-label { font-size: 12px; font-weight: 500; color: var(--sc-text-secondary); }
+.pp-slider { -webkit-appearance: none; appearance: none; width: 100%; height: 6px; border-radius: 999px; background: var(--sc-border); outline: none; margin: 5px 0; }
+.pp-slider::-webkit-slider-thumb { -webkit-appearance: none; appearance: none; width: 16px; height: 16px; border-radius: 999px; background: #fff; border: 2px solid var(--sc-primary); cursor: pointer; }
+.pp-slider::-moz-range-thumb { width: 16px; height: 16px; border-radius: 999px; background: #fff; border: 2px solid var(--sc-primary); cursor: pointer; }
+.pp-slider:focus-visible { outline: 2px solid var(--sc-primary-hover); outline-offset: 2px; }
+.pp-slider:disabled { opacity: 0.5; cursor: not-allowed; }
+.pp-slider-note { margin: 0; font-size: 12px; font-weight: 500; color: var(--sc-text-muted); }
+
+/* "Not yet wired to a live control" — the disabled-affordance pattern this batch extends from
+   roadmap-deferred ("Coming in Rn") controls to backend-pending ones (see each page JS file's
+   header comment for the full honesty argument: never a toggle that silently no-ops, never a
+   destructive dialog with no real action behind Confirm). .set-inert marks the CONTROL itself
+   (disabled); .set-inert-note is the short inline reason, styled like the rest of this codebase's
+   "why this is unavailable" copy (pp-radio-foot, pp-quota-cap) — text-muted is correct here
+   because it is genuinely tertiary meta, not essential body copy (NFR-020 gate). */
+.set-inert-note { margin: 4px 0 0; font-size: 11px; font-weight: 500; color: var(--sc-text-muted); }
+.pp-toggle.set-inert { opacity: 0.55; cursor: not-allowed; }
+.pp-toggle.set-inert input { cursor: not-allowed; }
+.pp-optin-btn.set-inert { opacity: 0.55; cursor: not-allowed; }
+.pp-optin-btn.set-inert:hover { background: var(--sc-primary); }
+
+/* About & Licensing — the update-status row's trailing SOON badge + disabled action. */
+.ab-update-actions { display: flex; gap: 10px; align-items: center; flex: none; }
+
+/* Appearance — the mini stage-output preview (581:346). A static, non-interactive facsimile of
+   the real stage output (aria-hidden — it previews nothing live yet, since none of the controls
+   around it are wired to a real preference), built from the same tokens the real stage output
+   uses elsewhere rather than new one-off colours. */
+.ap-stage-preview { display: flex; flex-direction: column; gap: 8px; height: 220px; box-sizing: border-box; padding: 18px 22px; border-radius: 12px; border: 1px solid var(--sc-border); background: #050608; }
+.ap-stage-preview-clock { margin: 0; font-size: 14px; font-weight: 700; color: var(--sc-text-secondary); }
+.ap-stage-preview-now { margin: 0; font-size: 26px; font-weight: 700; color: #fff; line-height: 1.25; }
+.ap-stage-preview-next { margin: 0; font-size: 15px; font-weight: 500; color: var(--sc-text-muted); }
+.ap-stage-preview-spacer { flex: 1 0 0; min-height: 0; }
+.ap-stage-preview-timer { display: flex; align-items: center; justify-content: space-between; padding: 8px 12px; border-radius: 8px; background: var(--sc-preview-soft); border: 1px solid var(--sc-preview-border); color: var(--sc-preview); font-size: 11px; font-weight: 700; letter-spacing: 1px; }
+.ap-stage-preview-timer span:last-child { font-size: 16px; letter-spacing: normal; }
 
 /* ===== Transcripts (86akcffvt / FR-130 core slice) ===================================== */
 /* The surface hosts two full-height sibling views ("list" / "detail"), each toggled via the

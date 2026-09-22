@@ -1350,13 +1350,23 @@
             b.removeAttribute("aria-current");
           }
         });
-        const built = { providers: "set-page-providers", network: "set-page-network" };
+        // 17tnw2axptw: About & Licensing + Appearance (Tier 1 of the 7-page build-out) join the
+        // built map here. General/Scripture/Outputs/Security/Storage still fall through to the
+        // shared placeholder until their own tiers land (PR 2, PR 3).
+        const built = {
+          providers: "set-page-providers",
+          network: "set-page-network",
+          about: "set-page-about",
+          appearance: "set-page-appearance",
+        };
         document.querySelectorAll("#surface-settings .set-page").forEach((p) => {
           p.hidden = true;
         });
         if (built[page]) {
           document.getElementById(built[page]).hidden = false;
           if (page === "providers" && typeof settingsActivate === "function") settingsActivate();
+          if (page === "about" && typeof settingsAboutActivate === "function") settingsAboutActivate();
+          if (page === "appearance" && typeof settingsAppearanceActivate === "function") settingsAppearanceActivate();
         } else {
           document.getElementById("set-placeholder").hidden = false;
           document.getElementById("set-ph-title").textContent = lbl || "Settings";

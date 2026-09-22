@@ -757,7 +757,15 @@ if not check_jump_call_site_is_click_only():
 # settles) proves the timeout is what moves the UI on, not the mock resolving late. Mutation-
 # verified (removing the pmWithTimeout wrapper turns both new assertions RED, restored).
 # Confirmed by two independent runs (both 1676, 0 FAIL).
-EXPECTED_MIN_CHECKS = 1676
+#
+# 1625 -> ?: ClickUp 17tnw2axptw (Settings: About & Licensing + Appearance pages, SET-007/SET-004),
+# authored in parallel on its own branch against the same 1625 baseline as the two entries above
+# and merged into main separately — this branch's own history did not record a comment for its
+# +31 checks (`list_translations` fixture + the new Settings pages' assertions) before merging;
+# recorded retroactively here at merge time instead of left silent. Per this comment block's own
+# repeatedly-stated discipline, the number below is the empirically re-run total after resolving
+# this merge, not a hand sum of the two branches' deltas.
+EXPECTED_MIN_CHECKS = 1707
 
 
 def find_chrome():
@@ -1047,6 +1055,24 @@ STUB = r"""
     window.__calls.push({cmd:cmd, args:args});
     if (cmd === "builtin_themes") return Promise.resolve([{name:"Classic", theme:JSON.parse(JSON.stringify(T))}]);
     if (cmd === "system_fonts") return Promise.resolve(["Arial","Georgia","Helvetica Neue"]);
+    // The real bundled set (selahcue_scripture::Translation::ALL, mirrored — see main.rs's
+    // list_translations): five public-domain translations, none downloadable (all shipped in the
+    // binary). Settings › About & Licensing (17tnw2axwer) reads this for real, so the fixture
+    // must be a real shape, not the generic Promise.resolve(null) fallback every unstubbed
+    // command gets (which would make that page's render path untestable here).
+    // Translation::ALL is SIX entries (selahcue-scripture/src/lib.rs), not five — the fifth
+    // bundled PD translation (DBY) plus Young's Literal Translation (YLT), which is public domain
+    // but NOT bundled (loads from an on-disk cache at runtime, feature `download`) and so is the
+    // one real `downloadable:true` entry this command ever returns today (Cody's review of PR #68
+    // caught the fixture under-counting this at five).
+    if (cmd === "list_translations") return Promise.resolve({translations:[
+      {code:"KJV", name:"King James Version", downloadable:false, available:true},
+      {code:"WEB", name:"World English Bible", downloadable:false, available:true},
+      {code:"ASV", name:"American Standard Version", downloadable:false, available:true},
+      {code:"WEBBE", name:"World English Bible, British Edition", downloadable:false, available:true},
+      {code:"DBY", name:"Darby Translation", downloadable:false, available:true},
+      {code:"YLT", name:"Young's Literal Translation", downloadable:true, available:false}
+    ]});
     // Test hook (mirrors __deckListNullOnce/__pmRejectOnce): force ONE `view()` rejection, so a
     // failed local-state read (e.g. PME-059's plan-reference check in pmLibDelete) can be told
     // apart from a genuinely healthy read reporting "not referenced".
@@ -2259,7 +2285,16 @@ STUB = r"""
     }
     return Promise.resolve(null);
   } },
-  event: { listen: function(name, cb){ (window.__ev[name] = window.__ev[name] || []).push(cb); return Promise.resolve(function(){}); } } };
+  event: { listen: function(name, cb){ (window.__ev[name] = window.__ev[name] || []).push(cb); return Promise.resolve(function(){}); } },
+  // Tauri's own app-info API (Settings › About & Licensing, 17tnw2axwer, reads app.getVersion()
+  // directly — see settings-about.js's header comment for why: it's Tauri's built-in global, not
+  // a command this ticket invented). window.__appVersionAvailable lets a check remove this to
+  // exercise the honest "—" fallback when the global isn't exposed.
+  app: { getVersion: function(){
+    return window.__appVersionAvailable === false
+      ? Promise.reject(new Error("app info unavailable"))
+      : Promise.resolve("0.1.0");
+  } } };
   window.__emit = function(name, payload){ (window.__ev[name] || []).forEach(function(cb){ cb({event:name, payload:payload}); }); };
 </script>
 """
@@ -10650,6 +10685,172 @@ right after a generate/save");
            "G.6: the explanation clears AA-NORMAL on its own warn ground (" + _f(gMc) + ":1) — essential copy, so --sc-text-secondary not the AA-large-only --sc-text-muted");
         ok(/Relink/i.test(el("pm-inspector-body").textContent),
            "G.6: the repair affordance is offered and reads 'Relink…' for a missing asset, not the generic 'Replace…'");
+      }
+
+      // === Settings › About & Licensing (Figma 584:124 — story 17tnw2axwer, closes SET-007) ===
+      {
+        function _luma(rgb){ var s=[rgb[0],rgb[1],rgb[2]].map(function(c){c/=255; return c<=0.03928?c/12.92:Math.pow((c+0.055)/1.055,2.4);}); return 0.2126*s[0]+0.7152*s[1]+0.0722*s[2]; }
+        function _parseRgb(s){ var m=String(s).match(/[-\d.]+/g)||["0","0","0"]; return [+m[0],+m[1],+m[2]]; }
+        function _contrast(fg,bg){ var lf=_luma(_parseRgb(fg)), lb=_luma(_parseRgb(bg)), hi=Math.max(lf,lb), lo=Math.min(lf,lb); return (hi+0.05)/(lo+0.05); }
+
+        document.querySelector('.nav-item[data-surface="settings"]').click();
+        setSettingsPage("about");
+        ok(el("set-page-about") && !el("set-page-about").hidden && el("set-placeholder").hidden,
+           "Settings/About: the real page renders (SET-007 page-level MISSING closed, not the shared placeholder)");
+
+        // Version: real Tauri app.getVersion(), never a fabricated "1.0.0" string.
+        await sleep(40);
+        ok(el("ab-version").textContent === "0.1.0",
+           "Settings/About: Version reads the real app.getVersion() value (\"" + el("ab-version").textContent + "\")");
+        window.__appVersionAvailable = false; // simulate an older/narrower Tauri global
+        window.__resetSettingsAboutForTest();
+        setSettingsPage("about");
+        await sleep(40);
+        ok(el("ab-version").textContent === "—",
+           "Settings/About (control): with no app.getVersion() available it shows the honest \"—\", never a guessed number");
+        window.__appVersionAvailable = true;
+        window.__resetSettingsAboutForTest();
+        setSettingsPage("about");
+        await sleep(40);
+
+        // Platform: derived from navigator, never the Figma mock's static "macOS 15.3 · Apple Silicon".
+        ok(el("ab-platform").textContent.length > 0 && el("ab-platform").textContent !== "—",
+           "Settings/About: Platform is read from the real navigator, not left as the honest-empty default (\"" + el("ab-platform").textContent + "\")");
+
+        // Scripture attributions: real list_translations() data, never the mock's hardcoded
+        // "World English Bible, ASV, KJV, WEBBE, Darby" line.
+        ok(window.__calls.some(function(c){ return c.cmd === "list_translations"; }),
+           "Settings/About: scripture attributions are loaded via the real list_translations() command");
+        var abRows = document.querySelectorAll("#ab-scripture-list .pp-inc-row");
+        ok(abRows.length === 6, "Settings/About: all 6 real translations render as their own row, bundled AND downloadable (" + abRows.length + ")");
+        ok(/King James Version/.test(abRows[0].textContent) && /Public Domain/.test(abRows[0].textContent),
+           "Settings/About: a bundled row names the real translation and its real public-domain licence, not fabricated text");
+        ok(/Young's Literal Translation/.test(abRows[5].textContent) && !/Public Domain/.test(abRows[5].textContent),
+           "Settings/About: the one downloadable (not-yet-installed) translation does NOT get the Public Domain badge its bundled siblings get — the code reads downloadable, not a hardcoded assumption every entry is bundled");
+
+        // Update status: honestly inert — a real, disabled, labelled control, never a fake "UP TO DATE".
+        ok(el("ab-check-update").disabled && el("ab-check-update").getAttribute("aria-disabled") === "true",
+           "Settings/About: 'Check for updates' is a real disabled control (no update mechanism exists yet) — not a live-looking button that would silently no-op");
+        ok(!/UP TO DATE/.test(el("set-page-about").textContent),
+           "Settings/About: no fabricated 'UP TO DATE' status — this build has no update-check mechanism to report one from");
+
+        // DPA row: driven by the REAL providers_view().any_cloud_enabled — flips with real state,
+        // never a static "SHOWN WITH CLOUD" pill regardless of whether cloud is actually on. This
+        // block runs after the earlier Providers & Privacy checks, which toggle these SAME shared
+        // fixture flags — force both to a known false state first rather than assuming whatever
+        // they were left at.
+        window.__pp.cloud_notes_consent = false;
+        window.__pp.cloud_transcription_consent = false;
+        window.__resetSettingsAboutForTest();
+        setSettingsPage("about");
+        await sleep(40);
+        ok(el("ab-dpa-badge").textContent === "NOT SHOWN",
+           "Settings/About (control): DPA row reads NOT SHOWN while no cloud provider is enabled");
+        window.__pp.cloud_notes_consent = true;
+        window.__resetSettingsAboutForTest();
+        setSettingsPage("about");
+        await sleep(40);
+        ok(el("ab-dpa-badge").textContent === "CLOUD ENABLED" && /cloud provider is enabled/.test(el("ab-dpa-note").textContent),
+           "Settings/About: enabling a real cloud provider flips the DPA row to CLOUD ENABLED — driven by data, not a fixed Figma badge");
+        window.__pp.cloud_notes_consent = false; // restore for later PP checks in this same run
+
+        // Contrast (NFR-020): essential row copy uses --sc-text-secondary (AA-normal), never the
+        // AA-large-only --sc-text-muted reserved for genuinely tertiary notes. Contrast against the
+        // row's OWN real computed background (already in rgb()/rgba() form _contrast expects),
+        // never a hand-typed hex guess that could silently drift from the actual token.
+        var abRowD = document.querySelector("#set-page-about .set-row-d");
+        var abRowBg = getComputedStyle(abRowD.closest(".set-row")).backgroundColor;
+        var abRowDc = _contrast(getComputedStyle(abRowD).color, abRowBg);
+        ok(abRowDc >= 4.5, "Settings/About: .set-row-d body copy clears AA-normal on its own row background (" + abRowDc.toFixed(2) + ":1)");
+      }
+
+      // === Settings › Appearance (Figma 581:124 — story 17tnw2axwer, closes SET-004) ===
+      {
+        V.stage_template = "scripture"; // exercise the non-default card being pre-selected
+        document.querySelector('.nav-item[data-surface="settings"]').click();
+        setSettingsPage("appearance");
+        await sleep(40);
+        ok(el("set-page-appearance") && !el("set-page-appearance").hidden && el("set-placeholder").hidden,
+           "Settings/Appearance: the real page renders (SET-004 page-level MISSING closed, not the shared placeholder)");
+
+        // Layout regression guard (Vera's performance review of PR #68): a stray "*/" inside a
+        // CSS comment above .set-stack's definition once silently truncated the comment early,
+        // turning the rest of the prose into an invalid selector and dropping the WHOLE .set-stack
+        // rule — the wiring/contrast checks below all kept passing because none of them reads
+        // layout. This asserts the actual computed style the class exists to produce (a flex
+        // column with a real gap), so a repeat of that exact bug class fails HERE, not silently.
+        var apStageThemesCs = getComputedStyle(el("ap-stage-themes"));
+        ok(apStageThemesCs.display === "flex" && apStageThemesCs.flexDirection === "column" && parseFloat(apStageThemesCs.gap) > 0,
+           "Settings/Appearance: #ap-stage-themes (.set-stack) actually computes as a flex column with a real gap — proves the CSS rule is live, not silently dropped");
+
+        // Default stage theme: REAL — reflects view.stage_template, the exact field/command the
+        // Presentation surface's own stage-theme picker already uses (app.js #stage-themes).
+        var apScr = el("ap-stage-theme-scripture"), apWor = el("ap-stage-theme-worship");
+        ok(apScr && apScr.classList.contains("sel") && apScr.getAttribute("aria-checked") === "true",
+           "Settings/Appearance: the card matching the REAL view.stage_template (scripture) renders selected");
+        ok(apWor && !apWor.classList.contains("sel") && apWor.getAttribute("aria-checked") === "false",
+           "Settings/Appearance (control): the non-active template card is not marked selected");
+        var apCallsBefore = window.__calls.length;
+        apWor.click();
+        await sleep(20);
+        ok(window.__calls.slice(apCallsBefore).some(function(c){ return c.cmd === "set_stage_template" && c.args.template === "worship"; }),
+           "Settings/Appearance: selecting a stage-theme card invokes the REAL set_stage_template(worship) — same command the Presentation surface's picker uses");
+
+        // Keyboard reachability (QA finding on PR #68, ClickUp 17tnw2axwfm): the roving tabIndex
+        // this radiogroup sets up is USELESS without an arrow-key handler moving focus between
+        // the tabIndex=-1 siblings — a keyboard-only operator could reach the selected card and
+        // nothing else. ArrowRight from the now-selected "worship" card must move focus AND
+        // selection to "scripture" (wrapping), exactly like the Providers & Privacy radiogroup's
+        // own onRadioKeydown already does.
+        // Re-query: the click above triggered a full renderStageThemes() rebuild of the host, so
+        // the ORIGINAL apWor node is now detached — focusing it would silently no-op.
+        var apWorNow = el("ap-stage-theme-worship");
+        apWorNow.focus();
+        var apCallsBeforeKey = window.__calls.length;
+        apWorNow.dispatchEvent(new KeyboardEvent("keydown", {key:"ArrowRight", bubbles:true, cancelable:true}));
+        await sleep(20);
+        ok(document.activeElement === el("ap-stage-theme-scripture"),
+           "Settings/Appearance: ArrowRight on the stage-theme radiogroup moves FOCUS to the next card");
+        ok(window.__calls.slice(apCallsBeforeKey).some(function(c){ return c.cmd === "set_stage_template" && c.args.template === "scripture"; }),
+           "Settings/Appearance: ArrowRight also SELECTS the newly-focused card (matches native radiogroup behaviour)");
+        V.stage_template = "worship"; // restore the fixture default for anything after this block
+
+        // Default slide theme: real builtin_themes() names populate the select; left disabled
+        // because there is no distinct "default new-deck theme" field to write to (see
+        // settings-appearance.js's header comment) — never a fabricated "SelahCue Classic" option.
+        ok(window.__calls.some(function(c){ return c.cmd === "builtin_themes"; }),
+           "Settings/Appearance: the slide-theme select is populated from the real builtin_themes() command");
+        var apSlideOpts = Array.prototype.map.call(document.querySelectorAll("#ap-slide-theme option"), function(o){ return o.textContent; });
+        ok(apSlideOpts.indexOf("Classic") !== -1, "Settings/Appearance: the real built-in theme name renders in the select (" + apSlideOpts.join(",") + ")");
+        ok(el("ap-slide-theme").disabled, "Settings/Appearance: the slide-theme select is disabled (informational only — no writable 'default' field exists)");
+
+        // Every control with NO backend command anywhere in this app is a REAL, disabled control —
+        // never one that looks live and silently forgets the choice on the next reload.
+        ["ap-textsize","ap-high-contrast","ap-stage-textsize","ap-reduced-motion"].forEach(function(id){
+          ok(el(id).disabled, "Settings/Appearance: #" + id + " is honestly disabled — no persistence exists for it yet");
+        });
+        var apDensityBtns = document.querySelectorAll("#ap-density .pp-segmented-btn");
+        var apClockBtns = document.querySelectorAll("#ap-clockfmt .pp-segmented-btn");
+        ok(apDensityBtns.length === 2 && Array.prototype.every.call(apDensityBtns, function(b){ return b.disabled; }),
+           "Settings/Appearance: the density segmented control's two options are both honestly disabled");
+        ok(apClockBtns.length === 2 && Array.prototype.every.call(apClockBtns, function(b){ return b.disabled; }),
+           "Settings/Appearance: the stage-clock-format segmented control's two options are both honestly disabled");
+
+        // Theme Designer link-out: a REAL navigation, not a dead row styled like a link.
+        el("ap-open-theme-designer").click();
+        ok(el("surface-theme-designer").classList.contains("active"),
+           "Settings/Appearance: 'Open Theme Designer' really navigates to the Theme Designer surface");
+        document.querySelector('.nav-item[data-surface="settings"]').click();
+        setSettingsPage("appearance");
+        await sleep(20);
+
+        // Contrast (NFR-020): same bar as About above, applied to Appearance's own body copy and
+        // its honest "not saved yet" notes (tertiary — text-muted is the CORRECT token there).
+        // Against the row's own real computed background, same reasoning as the About check.
+        var apRowD = document.querySelector("#set-page-appearance .set-row-d");
+        var apRowBg = getComputedStyle(apRowD.closest(".set-row")).backgroundColor;
+        var apRowDc = _contrast(getComputedStyle(apRowD).color, apRowBg);
+        ok(apRowDc >= 4.5, "Settings/Appearance: .set-row-d body copy clears AA-normal on its own row background (" + apRowDc.toFixed(2) + ":1)");
       }
 
     } catch(e){ R.push("FAIL: exception "+e.message+" @ "+(e.stack||"").split("\n")[1]); }
