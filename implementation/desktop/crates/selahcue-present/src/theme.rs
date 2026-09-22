@@ -11,6 +11,7 @@
 //! and real H+V alignment + per-region size/colour. Gradient/image backgrounds,
 //! per-role templates + per-item override, and multi-weight fonts are later slices.
 
+use crate::tokens::design2;
 use selahcue_engine::scene::{
     FontName, GradientDirection, ImageFit, MediaRef, Rect, Rgba, ShapeKind, TextAlign,
 };
@@ -377,8 +378,10 @@ impl Background {
 /// The audience-output theme: a **background** (solid / gradient / image, 86ajq3225) + a
 /// **title/reference** region and a **body** region, plus an optional **footer** region for
 /// song licensing attribution (OUT-006/OUT-015). One theme renders both a scripture
-/// (title = the reference line) and a song (title = the song title) consistently. Per-role
-/// templates + per-item override are S8-3d.
+/// (title = the reference line) and a song (title = the song title) consistently.
+/// Per-content-role built-ins now exist ([`Theme::scripture_full`], [`Theme::song_center`],
+/// OUT-009); **per-item override** (letting one deck item pick its own theme independent of
+/// the active one) remains S8-3d, a later slice.
 ///
 /// NOTE: `Theme` is `Clone` but NOT `Copy` (it carries a `Vec<Element>` for the Canvas
 /// Editing epic, 86ajq6j2q). `RegionStyle`/`Band`/`FontName` stay `Copy`; `Element` is
@@ -396,9 +399,11 @@ pub struct Theme {
     /// An optional **footer/attribution region** (86ajnx548, OUT-006/OUT-015): a small text
     /// region for song licensing attribution — a CCLI number and author, e.g. Figma
     /// `208:135`'s `CCLI #7115744 · Sinach` — distinct from the title/body regions so it
-    /// never competes with the sung content for space. `None` (the default for every current
-    /// built-in) renders nothing, exactly like an absent `band`; a custom/per-role theme
-    /// (S8-3d, OUT-009) opts in by setting one. What text actually fills it comes from the
+    /// never competes with the sung content for space. `None` (the default for `classic`,
+    /// `high-contrast`, `lower-third`, and `scripture-full` — no CCLI obligation on that
+    /// content) renders nothing, exactly like an absent `band`; [`Theme::song_center`]
+    /// (OUT-009) is the first built-in to set one, and a custom theme opts in the same way.
+    /// What text actually fills it comes from the
     /// content side ([`crate::slide::Slide::song`]), not this region — a theme styles WHERE
     /// and HOW, never WHAT (the same separation `title`/`body` already keep). Additive and
     /// backward-compatible: older theme JSON without this field deserializes to `None`, and a
@@ -437,6 +442,37 @@ const AMBER: Rgba = Rgba {
     b: 60,
     a: 255,
 };
+
+/// The legacy pre-Design-2.0 caption grey (`#9AA4B2`) the audit's `OUT-001` finding
+/// names for this exact frame set — used by [`Theme::song_center`]'s footer so a new
+/// audience-output region stays on the SAME (legacy) palette the rest of this file's
+/// built-ins already use, rather than quietly introducing a Design 2.0 token into the
+/// congregation-facing output ahead of the still-open `Q-09` decision.
+const LEGACY_TEXT_MUTED: Rgba = Rgba {
+    r: 0x9A,
+    g: 0xA4,
+    b: 0xB2,
+    a: 255,
+};
+
+/// The Theme Designer's SOLID-background **preset swatches** (`OUT-010`): Figma
+/// `393:130-135` draws five unlabelled preset chips under a `PRESETS` overline —
+/// independently re-verified still present in the live file (`390:124`'s subtree is
+/// intact) but the five colours themselves are not named anywhere in the frame
+/// (open question `Q-11`). `Q-11`'s own recorded default — *"derive from
+/// `tokens::design2` (base / inset / accent-soft / gold-soft / preview-soft)"* — is
+/// applied verbatim: a five-stop spread across the existing, already-audited Design
+/// 2.0 neutral + accent ramp, introducing no new colour. (This is the Theme Designer
+/// PICKER surface, distinct from the audience-output palette `Q-09` gates — offering a
+/// Design 2.0 preset in a background PICKER does not itself move any built-in's
+/// rendered colour, which is why it does not fold in `Q-09`.)
+pub const BACKGROUND_PRESETS: [Rgba; 5] = [
+    design2::BASE.rgba,
+    design2::INSET.rgba,
+    design2::ACCENT_SOFT.rgba,
+    design2::GOLD_SOFT.rgba,
+    design2::PREVIEW_SOFT.rgba,
+];
 
 impl Theme {
     /// Whether the design element list is within bounds (no-leak): the COUNT is capped by
@@ -601,10 +637,195 @@ impl Theme {
         }
     }
 
+    /// **Scripture — Full** (OUT-002/OUT-003/OUT-009/OUT-016/OUT-017): the first
+    /// **per-content-role** built-in — a full-screen, long-form-reading design distinct
+    /// from [`classic`](Self::classic) by more than colour. `Theme`'s own doc-comment
+    /// scoped "per-role templates" as later (S8-3d) when `classic`/`high-contrast`/
+    /// `lower-third` shipped; this is the first of the two content-role templates the
+    /// audit's Figma frame designed (`208:126` "Scripture — Full", `208:130` "Song —
+    /// Center").
+    ///
+    /// **Evidence note (read before touching the geometry below):** independently
+    /// re-verified against the LIVE Figma file on 2026-09-22 (`get_metadata`,
+    /// `SYQn5hFY8YVQKm3c6rw0eJ`) — node `208:124` and its entire subtree (`208:126`,
+    /// `208:130`, `208:135`, `208:137`) **no longer exist**; this was first flagged by
+    /// the OUT-006/OUT-015 fix (2026-09-21) and is confirmed unchanged here (`390:*`,
+    /// Background — States, is intact and unaffected). The frame's own blocking
+    /// question — Q-10, "are `208:124`'s mock geometries normative or illustrative?" —
+    /// is still unanswered on the `DECISION — Presentation: blocking questions` ClickUp
+    /// task, and its own recorded DEFAULT if unanswered is **"illustrative — the region
+    /// model wins."** With the frame now gone entirely, that default is the only
+    /// resolvable answer: the geometry below follows this crate's own region
+    /// conventions (auto-fit, centred, resolution-independent per-mille), informed by —
+    /// but not claimed to pixel-reconcile against — the audit's historical
+    /// `get_design_context` reads (captured 2026-08-23, before the frame's deletion).
+    /// The **colour** values ARE that historical evidence verbatim (a `get_design_context`
+    /// read is a direct value capture, not a geometry inference), so those are used
+    /// as-recorded. Do **not** treat the geometry as a completed Figma reconciliation —
+    /// if `208:126` is ever redrawn, this needs a fresh audit pass, not a diff against
+    /// these numbers.
+    ///
+    /// The gradient direction is the closest of [`GradientDirection`]'s four fixed
+    /// directions to the audit's recorded 150.59° (under the CSS-angle convention the
+    /// Figma frame itself used — confirmed by `390:172`'s "180° · Vertical" matching
+    /// [`GradientDirection::Vertical`](GradientDirection::Vertical) exactly): `DiagonalDown`
+    /// (135°) is 15.59° off vs. `Vertical`'s 29.41° off. Widening the enum to carry
+    /// arbitrary degrees is deliberately NOT done here — Q-12's own recorded default
+    /// ("four directions are enough") stands unopposed, and the frame that would have
+    /// needed the extra angle no longer exists to argue otherwise (OUT-003/OUT-011).
+    pub fn scripture_full() -> Self {
+        Theme {
+            // #0D1730 → #1B2E5A — the audit's verbatim get_design_context read of
+            // `208:126`'s two-stop gradient (captured before the frame's deletion).
+            background: Background::Gradient(GradientBackground {
+                from: Rgba::rgb(0x0D, 0x17, 0x30),
+                to: Rgba::rgb(0x1B, 0x2E, 0x5A),
+                direction: GradientDirection::DiagonalDown,
+            }),
+            title: RegionStyle {
+                x_permille: 60,
+                y_permille: 170,
+                w_permille: 880,
+                h_permille: 120,
+                align_h: TextAlign::Center,
+                align_v: VAlign::Middle,
+                // Larger + lower than `classic`'s reference (48‰ at y150) — the audit's
+                // own reading of `208:126`/`208:127` recorded a bigger, lower reference
+                // than this crate's existing scripture template; the exact figures (60‰
+                // at y282) are the now-unverifiable mock geometry, so this splits the
+                // difference deliberately rather than claiming to match them.
+                size_permille: 56,
+                line_height_permille: 1150,
+                color: AMBER,
+                fit: Fit::ShrinkToFit,
+                visible: true,
+            },
+            body: RegionStyle {
+                x_permille: 60,
+                y_permille: 330,
+                w_permille: 880,
+                h_permille: 560,
+                align_h: TextAlign::Center,
+                align_v: VAlign::Middle,
+                // Larger than `classic`'s 78‰ — "Full" is a long-form, more prominent
+                // reading design, matching the audit's directional finding (the frame's
+                // body read bigger, 105‰, than the implementation's 78‰) without
+                // claiming pixel parity with a citation that can no longer be checked.
+                size_permille: 86,
+                line_height_permille: 1150,
+                color: Rgba::WHITE,
+                fit: Fit::ShrinkToFit,
+                visible: true,
+            },
+            band: None,
+            footer: None,
+            font: None,
+            weight: 400,
+            letter_spacing_permille: 0,
+            elements: Vec::new(),
+        }
+    }
+
+    /// **Song — Center** (OUT-004/OUT-009): the second per-content-role built-in — a
+    /// lyric-display design with **no visible reference/title region**
+    /// (`title.visible = false`), matching the audit's own `OUT-005` reading of `208:130`:
+    /// *"the Song mock has no reference/title line — the first stanza line starts at the
+    /// top of the text block."* This is a genuine content-role decision, not a Figma
+    /// citation this crate can no longer verify: [`compose_slide_masked`](crate::compose::compose_slide_masked)
+    /// already keys the title/body split on whether the SLIDE has body lines, so a
+    /// hidden title region means a stanza slide shows only the lyric (as the mock
+    /// intended) while a title-only slide (e.g. an intro "Way Maker" slide) still
+    /// renders the song title BIG in the body region — the SAME path every other
+    /// built-in already uses for a title-only slide, unaffected by this theme's `title`
+    /// region at all. See [`scripture_full`](Self::scripture_full) for the note on why
+    /// this template's exact numeric geometry is informed-but-not-pixel-reconciled
+    /// (`208:130` no longer exists in the live Figma file, independently re-verified
+    /// 2026-09-22).
+    ///
+    /// Carries a **footer region** (OUT-006/OUT-015's model, wired to a real built-in
+    /// for the first time) so song licensing/attribution — the CCLI/author line a slide's
+    /// [`SongAttribution`](crate::slide::SongAttribution) supplies — actually renders
+    /// somewhere: Song is the one content role that legally needs it (PRD FR-021); the
+    /// other four built-ins keep `footer: None` (scripture/lower-third/classic/
+    /// high-contrast content has no CCLI obligation).
+    ///
+    /// Body leading (`line_height_permille: 1400`) is looser than `classic`'s 1150,
+    /// giving stanza lines room to breathe — informed by, but deliberately not equal
+    /// to, the audit's historical reading of `208:131-134`'s implied 1417‰ pitch (the
+    /// same now-unverifiable-frame caveat as `scripture_full`).
+    pub fn song_center() -> Self {
+        Theme {
+            // Same navy fill as `classic` — the audit's own reading of `208:130`'s
+            // background (`#080A0F` vs `classic`'s `#080A14`) called the 5-unit delta
+            // informational only (S4); reusing the exact value avoids inventing an
+            // arbitrary near-duplicate colour for a difference the audit itself said
+            // was inconsequential. This template differs from `classic` in layout, not
+            // fill.
+            background: Background::Solid(Rgba::rgb(8, 10, 20)),
+            // Mirrors `classic`'s reference region (unused while `visible: false`, so a
+            // future per-item override that flips it back on behaves sanely).
+            title: RegionStyle {
+                x_permille: 60,
+                y_permille: 150,
+                w_permille: 880,
+                h_permille: 110,
+                align_h: TextAlign::Center,
+                align_v: VAlign::Middle,
+                size_permille: 48,
+                line_height_permille: 1200,
+                color: AMBER,
+                fit: Fit::ShrinkToFit,
+                visible: false,
+            },
+            body: RegionStyle {
+                x_permille: 60,
+                y_permille: 130,
+                w_permille: 880,
+                h_permille: 760,
+                align_h: TextAlign::Center,
+                align_v: VAlign::Middle,
+                size_permille: 92,
+                line_height_permille: 1400,
+                color: Rgba::WHITE,
+                fit: Fit::ShrinkToFit,
+                visible: true,
+            },
+            band: None,
+            footer: Some(RegionStyle {
+                x_permille: 100,
+                y_permille: 910,
+                w_permille: 800,
+                h_permille: 60,
+                align_h: TextAlign::Center,
+                align_v: VAlign::Middle,
+                size_permille: 22,
+                line_height_permille: 1100,
+                // The legacy caption grey the audit's OUT-001 finding names for this
+                // exact frame set (`#9AA4B2`) — deliberately NOT a Design 2.0 token: Q-09
+                // (whether the audience output should move to Design 2.0 gold) is an
+                // explicit, separate, still-open decision this ticket does not fold in,
+                // so nothing new introduced here pre-empts it either.
+                color: LEGACY_TEXT_MUTED,
+                fit: Fit::Clip,
+                visible: true,
+            }),
+            font: None,
+            weight: 400,
+            letter_spacing_permille: 0,
+            elements: Vec::new(),
+        }
+    }
+
     /// The stable names of the built-in themes, in picker order. The active theme
     /// is persisted + sent over the wire by NAME (a fixed set — no unbounded
     /// growth); custom authoring is a later slice.
-    pub const BUILTIN_NAMES: &'static [&'static str] = &["classic", "high-contrast", "lower-third"];
+    pub const BUILTIN_NAMES: &'static [&'static str] = &[
+        "classic",
+        "high-contrast",
+        "lower-third",
+        "scripture-full",
+        "song-center",
+    ];
 
     /// Resolve a built-in theme by its stable name (`None` for an unknown name).
     pub fn builtin(name: &str) -> Option<Theme> {
@@ -612,6 +833,8 @@ impl Theme {
             "classic" => Some(Theme::classic()),
             "high-contrast" => Some(Theme::high_contrast()),
             "lower-third" => Some(Theme::lower_third()),
+            "scripture-full" => Some(Theme::scripture_full()),
+            "song-center" => Some(Theme::song_center()),
             _ => None,
         }
     }

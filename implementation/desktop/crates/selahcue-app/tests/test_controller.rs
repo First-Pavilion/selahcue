@@ -1586,8 +1586,14 @@ fn set_theme_restyles_the_output_and_reports_it_without_losing_content() {
     );
     assert_eq!(
         a.operator_view().themes,
-        vec!["classic", "high-contrast", "lower-third"],
-        "the picker's option list"
+        vec![
+            "classic",
+            "high-contrast",
+            "lower-third",
+            "scripture-full",
+            "song-center",
+        ],
+        "the picker's option list (OUT-009: two per-content-role built-ins added)"
     );
     assert_eq!(
         a.presenter().live_output().bytes(),

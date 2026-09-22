@@ -1427,3 +1427,116 @@ update above); `OUT-009` and `OUT-012`–`OUT-015` are confirmed unaffected; the
 severities but are now flagged as resting on a **frozen 2026-08-23 reading** rather than a live
 citation. This entry was written before this file's most recent totals table (2026-09-22 update
 above, **63 open**) merged; it does not change that count.
+
+### Update — 2026-09-22 (Kenji, backend-engineer role / Rust compositor) — OUT-002/003/004/009/010/011/016/017 FIXED, OUT-007/008 still OPEN (evidence gap)
+
+**Ticket:** ClickUp `17tnw2axptm`, "[Backend] Presentation output: per-role templates +
+lower-third + background model (OUT-002/003/004/007/008/009/010/011/016/017)".
+
+**Independent Figma re-verification (done before writing any code, per the ticket's own
+instruction):** `get_metadata` against the live file (`SYQn5hFY8YVQKm3c6rw0eJ`) confirms the
+2026-09-21 finding and extends it — **`208:124` and its ENTIRE subtree are gone**, not just the
+nodes that update happened to touch: `208:126` (Scripture — Full), `208:130` (Song — Center) AND
+`208:137` (Lower Third — Stream) all return "node ID was not found". `390:124` (Background —
+States) is independently confirmed **intact** — `get_metadata` returned its full subtree,
+including the unlabelled `393:130-135` preset chips (OUT-010) and the `390:172` angle field
+(OUT-011). The `DECISION — Presentation: blocking questions` ClickUp task (`17tnw2axpu1`) is still
+`planning/todo` — Q-10 remains unanswered, so its own recorded default — *"illustrative — the
+region model wins, redraw the mocks from a real render"* — governs, and with the frame now gone
+entirely that default is the only answer left to apply.
+
+**Consequence for scope:** of this ticket's 8 findings that cite `208:*` (`OUT-002/003/004/009/
+016/017` cite `208:126`/`208:130`; `OUT-007/008` cite `208:137`), none can be pixel-reconciled
+against a live frame any more. Splitting them on WHETHER the audit's own historical
+`get_design_context` reads (captured 2026-08-23, before the deletion) are load-bearing for the
+fix:
+
+- **`OUT-002/003/004/009/016/017` — FIXED.** These are the two NEW per-content-role built-ins
+  (OUT-009) and the geometry/gradient/leading questions that only exist once those templates
+  exist. Q-10's default resolves them: the geometry follows this crate's own region model
+  (auto-fit, centred, per-mille), informed by — not pixel-reconciled to — the historical reads;
+  the audit's colour captures (a direct value read, not a geometry inference) ARE used verbatim.
+  Full reasoning and every number's provenance is in the doc comments on `Theme::scripture_full`
+  and `Theme::song_center` (`theme.rs`).
+- **`OUT-011` — FIXED (decision recorded, no code change).** `390:124` is live and unchanged;
+  `390:172` still reads "180° · Vertical", which already maps exactly onto
+  `GradientDirection::Vertical`. Q-12's own recorded default ("four directions are enough")
+  stands unopposed and is applied: the enum is NOT widened to carry arbitrary degrees.
+- **`OUT-007/OUT-008` — left OPEN, NOT fixed.** Unlike the six above, these are proposed
+  corrections to an ALREADY-SHIPPED built-in (`Theme::lower_third`, built explicitly against
+  `208:137` per its own doc-comment) — there is no "build it fresh under Q-10's default" escape
+  hatch here, because the theme already exists and the only remaining question is whether to
+  change its two shipped numbers (band fill/height, reference size) to match a citation that can
+  no longer be checked. Changing shipped, working values to chase an unconfirmable target is
+  exactly the "note it, don't guess" case the ticket's dispatch called out. Left unchanged;
+  flagged below as a follow-up for a UI/UX Designer re-verification pass, not silently dropped.
+
+**What was built (`selahcue-present/src/theme.rs`, additive, following the `band`/`footer`
+pattern — `Option<T>`/new-const, `skip_serializing_if` where applicable, every EXISTING built-in's
+JSON byte-identical):**
+
+- `Theme::scripture_full()` — the first built-in to use the (pre-existing, unused-until-now)
+  gradient background: `#0D1730 → #1B2E5A`, `GradientDirection::DiagonalDown` (closest of the 4
+  fixed directions to the audit's recorded 150.59°). Reference + body both larger and repositioned
+  vs. `classic`, directionally informed by the historical reads.
+- `Theme::song_center()` — `title.visible = false` (OUT-005's own reading: the Song mock has no
+  reference line), a large centred body with looser leading (`line_height_permille: 1400` vs.
+  `classic`'s 1150, OUT-004), and the FIRST built-in to actually set a `footer` region (OUT-009 +
+  OUT-006/OUT-015's model, PR #59) — Song is the one content role with a real CCLI obligation.
+- `Theme::BUILTIN_NAMES` grows from 3 to 5 (`"scripture-full"`, `"song-center"` appended, nothing
+  removed) — every downstream consumer (`selahcue-app::controller`'s `resolve_theme_name`/
+  `set_theme`/`OperatorView.themes`, `selahcue-operator::builtin_themes()`) is driven generically
+  off this list, so both new templates are reachable through the SAME LAN command
+  (`Command::SetTheme`) and Theme Designer preview every existing built-in already uses — no new
+  wiring needed, confirmed by tracing every call site.
+- `theme::BACKGROUND_PRESETS: [Rgba; 5]` (OUT-010) — `tokens::design2::{BASE, INSET, ACCENT_SOFT,
+  GOLD_SOFT, PREVIEW_SOFT}`, exactly Q-11's own recorded default, no new colour introduced.
+- A `LEGACY_TEXT_MUTED` const (`#9AA4B2`) for `song_center`'s footer ink — deliberately the LEGACY
+  palette (matching OUT-001's own citation for this frame set), not a Design 2.0 token: `Q-09`
+  (should the audience output move to Design 2.0 gold) is an explicit, separate, still-open
+  decision this ticket does not fold in, and neither does this.
+
+**Evidence:** `cargo test -p selahcue-present` — all existing tests still pass unchanged after
+updating the two that pinned the OLD 3-name `BUILTIN_NAMES` literal and the OLD "every built-in
+has no footer" assertion (`test_slide.rs::builtin_themes_are_distinct_designs_and_names_round_trip`,
+`test_slide.rs::no_builtin_theme_or_plain_slide_emits_a_footer_or_song_key`,
+`test_compose.rs::builtin_themes_still_render_byte_identically_with_no_footer` — each doc-comment
+already foreshadowed exactly this change). 9 new tests added across `test_slide.rs`/
+`test_compose.rs`: template distinctiveness (not just colour), the 5 presets pairwise-distinct and
+matching `tokens::design2` exactly, song-center's footer round-trips and is the ONE built-in
+exception to the no-footer rule, a mutation-style positive control (song metadata present vs.
+absent DOES change song-center's render, still doesn't change the other four), the
+title-hidden-on-stanza / title-shown-on-title-only-slide behaviour (OUT-005), the gradient's exact
+colours/direction and that it visibly ramps, and a "every built-in composes without panicking at
+several sizes" smoke test. A downstream fixture in `selahcue-app/tests/test_controller.rs`
+(`set_theme_restyles_the_output_and_reports_it_without_losing_content`) also pinned the old 3-name
+`themes` list on the wire view and was updated the same way — found by running that crate's suite
+too, not by grep alone. `cargo clippy -p selahcue-present -p selahcue-app -p selahcue-lan
+--all-targets -- -D warnings` clean. `cargo fmt --check` clean. Full `make ci` — see the PR
+(deferred at write-time: several other sessions had `make ci` running concurrently in this shared
+checkout; run one at a time per `CLAUDE.md`).
+
+**Follow-up recommended, not fixed here:** `OUT-007`/`OUT-008` (lower-third band fill/height and
+reference size) need a UI/UX Designer pass — either confirm there is a successor frame to
+`208:137` the audit missed, or formally close them as "citation lost, no replacement frame; keep
+the shipped values" so they stop reading as open work nobody can action. Wiring the new templates
+into any operator-UI content-role picker (so an operator can actually reach "Scripture — Full"/
+"Song — Center" without hand-typing the theme name over the LAN command) is a Part-A/frontend
+follow-up, out of this backend ticket's scope — consistent with `OUT-006/OUT-015`'s own "model,
+not UI" boundary.
+
+### Totals (superseding the 2026-09-20/09-21/09-22 tables above)
+
+| | Count |
+|---|---:|
+| Total findings | 80 (63 `PME-` + 17 `OUT-`) |
+| FIXED | 25 (17 prior + 8 this update — `OUT-002/003/004/009/010/011/016/017`) |
+| SUPERSEDED | 0 |
+| **OPEN** | **55** |
+
+Part B only (Part A rows and Part B `S4` are unchanged from 2026-09-20 above; this update closes
+6 `S2` (`OUT-002/003/009/011/016/017`) and 2 `S3` (`OUT-004/010`) — the same not-fully-retallied
+convention the 2026-09-21 update used, to avoid restating the whole matrix from a partial edit):
+Part B now has **0 open S1** (unchanged, closed 2026-09-21), its `S2` open count drops by 6, its
+`S3` open count drops by 2. `OUT-007`/`OUT-008` (both `S2`) remain open — the only two Part-B
+findings this update touches without closing.

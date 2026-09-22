@@ -448,7 +448,7 @@ impl OperatorShell {
         self.act(&Command::IdentifyOutputs)
     }
 
-    /// Switch the audience-output theme by built-in name (classic/high-contrast/lower-third).
+    /// Switch the audience-output theme by built-in name (see `Theme::BUILTIN_NAMES`).
     pub fn set_theme(&self, name: &str) -> OperatorView {
         self.act(&Command::SetTheme { name: name.into() })
     }
