@@ -183,3 +183,70 @@ these pages, not as a finding against the current code.
   — flagging rather than asserting.
 - **SET-OQ-4 (product).** SET-008/TTS — DEC-001 is cited as the reason TTS is absent; confirm this
   decision is still current before anyone reads its absence as a bug to fix.
+
+---
+
+# Reconciliation (2026-09-22, Farah — implementation ticket 17tnw2axptw)
+
+All seven page-level `MISSING` findings and the SET-009 component-level gap are closed. Delivered as
+three stacked PRs (branch build order documented on ClickUp 17tnw2axptw's start comment and on the
+decision task 17tnw2axpu3, which was still unanswered at implementation time — build order was the
+implementer's own judgement call per the ticket's explicit fallback instruction, simplest/lowest-risk
+tier first):
+
+| Finding | Page | Figma | PR | Status |
+|---|---|---|---|---|
+| SET-001 | General | `577:126` | #70 (stacked on #68) | Closed |
+| SET-002 | Scripture & Translations | `578:124` | #70 | Closed |
+| SET-003 | Outputs & Displays | `579:124` | #71 (stacked on #70) | Closed |
+| SET-004 | Appearance | `581:124` | #68 | Closed |
+| SET-005 | Security | `582:124` | #71 | Closed |
+| SET-006 | Storage & Backups | `583:124` | #71 | Closed |
+| SET-007 | About & Licensing | `584:124` | #68 | Closed |
+| SET-009 | Network & Mobile LAN-defaults addendum | `580:124` | #71 | Closed |
+
+**SET-OQ-3 answered with evidence, not assumption.** SET-009 asked whether Network & Mobile's
+LAN-defaults scope (server on/off, mDNS, rate limits) was a deliberate deferral behind the Devices
+link-out or a genuine gap. Checked directly against every `#[tauri::command]` registered in
+`selahcue-operator/src/main.rs`'s `generate_handler!` list: no LAN-server, mDNS, cert-regenerate,
+revoke-all, or control-audit command exists anywhere in this app. **Genuine backend gap, not a
+deliberate deferral.** The addendum (PR #71) builds the full designed section set as real, disabled
+controls with honest copy, plus one genuinely real piece: the paired-device summary count from
+`remote_snapshot()` (the same command Remote Control · Devices itself uses).
+
+**A second, unanticipated finding surfaced while building Security (SET-005), not flagged by this
+audit's original pass**: the Figma mock for the Security page (`582:124`) draws at-rest encryption as
+**ON** with a verified badge. The shipped build does **not** encrypt at rest — verified directly against
+`selahcue-operator/Cargo.toml` (no `encryption` feature on the `selahcue-data` path dependency) and
+`main.rs` (calls `Database::open`, never `open_encrypted`). `ADR-0007` already names FR-154/at-rest
+encryption an explicit **R3 acceptance row** — a documented future milestone, not an oversight — so this
+is not a new product decision, only a correction of what the Security page should honestly say about
+today's build. The shipped Security page reads "NOT YET ON" rather than repeating the mock's claim.
+Recorded here since it's exactly the kind of design-vs-shipped discrepancy this audit series exists to
+catch, and this specific one wasn't caught by the original `338:124`/`580:124`-only pass (the other five
+sidebar pages hadn't been built yet at that time, so `582:124` was never diffed against real backend
+behaviour until now).
+
+**Scope discipline applied throughout**: every one of the ~150 individual controls across all seven
+pages was checked against the real command registry before being wired for real or rendered as an
+honest, disabled control with an inline note — never a fabricated value (the Figma mocks' example data:
+device names, disk-usage numbers, audit-log rows, translation lists) and never a live-looking control
+with nothing behind it. Sections the Figma frames themselves mark "COMING SOON" (Outputs' PER-OUTPUT
+CONFIG/OUTPUT HEALTH/TEST PATTERNS/NETWORK OUTPUTS; several Security/Scripture/Appearance rows) render
+that way because the design says so, not as this batch's own judgement.
+
+**Not touched, per the ticket's own explicit instruction**: SET-008 (Providers & Privacy's TTS
+omission, DEC-001) — SET-OQ-4 remains open, owner's call.
+
+**Backend follow-up work this build surfaced** (flagged as candidate tickets, not created here — that's
+outside a frontend ticket's scope):
+- `backup_to`/`backup_to_encrypted`/`integrity_check`/`checkpoint_truncate` already exist as Rust
+  functions in `selahcue-data` but have no Tauri command wrapper (Storage & Backups' Backup Now/Restore/
+  integrity check are all honestly inert pending this).
+- LAN server on/off, mDNS visibility, and rate-limit configuration have no backend at all (SET-009).
+- At-rest encryption (SQLCipher) is architecturally designed (ADR-0007) but not wired into the operator
+  build (`selahcue-operator/Cargo.toml` needs the `encryption` feature, and `main.rs` needs to call
+  `open_encrypted` with a key sourced from the OS secret store).
+- No generic settings/preferences persistence exists for operator-UI-only values (density, text size,
+  reduce-motion override, startup surface choice, language/region) — General and Appearance's remaining
+  inert controls all need this before they can become real.
