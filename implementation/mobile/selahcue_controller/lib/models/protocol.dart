@@ -137,11 +137,14 @@ class TimerSnapshot {
   final bool warn;
   final bool running;
 
-  /// The countdown's full length in seconds (`None` for a count-up timer, or a
-  /// pre-Design-2.0 host that predates this field). Mirrors Rust `TimerSnapshot.
-  /// total_secs` (`protocol.rs`) — the host reports it precisely so Reset (MOB-009)
-  /// knows what to restart the countdown at, even in overrun where
-  /// `remaining + elapsed` no longer equals the original length.
+  /// The countdown's CURRENT TARGET length in seconds (`None` for a count-up
+  /// timer, or a pre-Design-2.0 host that predates this field) — not
+  /// necessarily what it was first started at: ±1:00 and Send-TIME-UP both
+  /// mutate this same host-side value (`selahcue-app`'s `timer_total`) via
+  /// `AdjustTimer`. Mirrors Rust `TimerSnapshot.total_secs` (`protocol.rs`) —
+  /// the host reports it precisely so Reset (MOB-009) knows what to restart
+  /// the countdown at, even in overrun where `remaining + elapsed` no longer
+  /// equals it.
   final int? totalSecs;
 
   const TimerSnapshot({

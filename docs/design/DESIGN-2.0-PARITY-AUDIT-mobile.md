@@ -374,6 +374,59 @@ Built with `SelahGradient.onLiveInk` instead (the same ink `SelahButtonVariant.a
 this exact fill, at a documented 5.31:1) for both the title and the caption — the same class of fix as
 this file's pre-existing lock-note A11Y-FIX, not a new pattern.
 
+**Four-reviewer round (PR #78) — findings addressed same-day, before merge:**
+
+- **Sana (security) — Low, fixed.** `AdjustTimer` had no NEGATIVE RBAC test anywhere in the repo —
+  correctly denied to Assistant/Viewer today only because it shares a match arm with the other timer
+  commands (`rbac.rs:130-134`), with nothing pinning that directly. This PR promotes `AdjustTimer` from
+  a ±1:00 nudge to the mechanism behind forcing TIME UP, so a future arm split that missed it would
+  silently hand a low-privilege role a destructive capability. Added `Command::AdjustTimer` to the
+  denial array in `test_rbac.rs`'s `blackout_timer_and_clear_are_producer_and_up` — mutation-verified
+  live (moved `AdjustTimer` to the `Navigate` arm Assistant already holds, confirmed the new assertion
+  goes RED, restored).
+- **Sana (security) — two behavioural notes, addressed.** (1) `totalSecs` is the countdown's CURRENT
+  target, not the length it was first started at — `total_secs`/`totalSecs` doc comments corrected
+  throughout (`protocol.dart`, `timer_tab.dart`) to stop implying permanence; this is pre-existing
+  ±1:00 behaviour, not new here. (2) Double-tapping Send-TIME-UP could compound two `-remainingSecs`
+  deltas from the same stale snapshot, driving `totalSecs` to 0 and leaving Reset nothing to restart
+  to — fixed with an in-flight guard (`_forcingTimeUp`, mirrors the pre-existing `_starting` guard on
+  Start) and a regression test using a gated fake session to reproduce the race; mutation-verified live.
+- **Cody (code review) — blocking, fixed.** `_SendTimeUpButton`'s `Semantics(excludeSemantics: true)`
+  replaced BOTH child `Text`s' own announcements with a label that carried only the title — a
+  screen-reader user never heard the caption "stage display only — never audience" even though sighted
+  users see it. Folded the caption into the semantic label; added a widget test asserting it reaches
+  the accessibility tree (`tester.ensureSemantics()` + `find.bySemanticsLabel`).
+- **Cody — non-blocking parity-language correction.** The doc comment claimed Reset composes commands
+  "the same way" desktop's Reset button does; Cody correctly noted desktop's handler does a live
+  `invoke("view")` refetch at click time, while mobile reads the same ~1s-polled `TimerSnapshot` every
+  other control on this tab already reads from. Judged as a narrow, self-correcting staleness window
+  (the next poll reconciles the readout), consistent with how Stop/Pause/±1:00 already read state here
+  — not worth a new live-refetch pattern nothing else in this tab uses. Doc comment corrected to state
+  the difference plainly instead of overclaiming exact parity.
+- **Cody — low/polish, fixed.** Reset's `disabledReason` was a single generic string regardless of
+  cause; Send-TIME-UP's below it already distinguished "reconnecting" from "no timer" — made Reset
+  symmetric with it.
+- **Quinn (QA) — Pass, no release-blocking defect.** Independently re-ran every claimed test and
+  diffed the two pinned fixtures byte-for-byte rather than trusting the PR text; confirmed the scope
+  deviation is flagged in three independent places (ClickUp, PR description, this section) and RBAC is
+  genuinely untouched. Flagged two non-blocking coverage gaps: rapid double-tap (now covered — see
+  Sana's note above, which landed the same fix) and Reset from a TIME UP snapshot (the core
+  restart-after-overrun case this ticket exists for) — added a dedicated widget test for the latter
+  rather than leaving it as a named gap.
+- **Vera (performance) — Pass, no blocking findings.** Confirmed the two new controls are cheap (roughly
+  20 extra widget instantiations against a tab already building 60-80, on a once-a-second poll cycle —
+  "immaterial" against a 16.7ms frame budget), the `_maxTimerSecs` ceiling is a genuine compile-time
+  constant (not per-build work, provable because Dart refuses to compile a `static const` from a
+  non-constant expression), and bounded-memory is clean (one new nullable int field, no new
+  queue/cache/log; the only Rust file touched is test-only). Offered three optional, explicitly
+  non-blocking tidy-ups; applied the two free/zero-risk ones (hoisting `_SendTimeUpButton`'s repeated
+  `TextStyle`s to `static final` and its `BorderRadius` to `static const`) since `SelahButton` itself
+  already does the same for its own radius. Separately (not against this PR, filed independently) noted
+  a pre-existing unbounded-buffer question in `session.dart` unrelated to this diff.
+
+All four reviewers passed or had their blocking/Low findings closed same-day. [PR #78's review
+thread](https://github.com/First-Pavilion/selahcue/pull/78) is the full, line-referenced record.
+
 ---
 
 # § Pending ClickUp update

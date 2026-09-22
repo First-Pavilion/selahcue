@@ -217,10 +217,20 @@ fn follow_scripture_is_go_live_privilege_not_search() {
 fn blackout_timer_and_clear_are_producer_and_up() {
     // Clear wipes the live output — an Assistant (who cannot push live) must not
     // be able to clear it (DEC-002 revised).
+    //
+    // `AdjustTimer` (MOB-009, PR #78 review — Sana): it shares this match arm in
+    // `rbac.rs` with every other timer command and so is correctly denied today,
+    // but nothing previously pinned that directly — `operator_can_do_every_command`
+    // only exercises the ALLOW side. This command is no longer just the ±1:00 nudge:
+    // the mobile Timer tab's "Send TIME UP to stage" now drives it with a delta large
+    // enough to force TIME UP, so a future split of this match arm that missed
+    // `AdjustTimer` would silently hand an Assistant/Viewer a destructive capability
+    // with nothing here to catch it.
     for cmd in [
         Command::Blackout { on: true },
         Command::StartTimer { seconds: 60 },
         Command::StopTimer,
+        Command::AdjustTimer { delta_secs: -60 },
         Command::PauseTimer,
         Command::ResumeTimer,
         Command::Clear,

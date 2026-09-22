@@ -4,18 +4,30 @@
 ///
 /// `Reset` and `Send "TIME UP" to stage` (MOB-009) ship WITHOUT any new
 /// `Command` variant — each composes commands the wire already carries, the
-/// same way the desktop operator console's own `Reset` button already does
-/// (`selahcue-operator/dist/app.js`'s `timer-reset` handler, shipped in the
-/// Design 2.0 operator console rewrite, predates this mobile wiring):
+/// same composition the desktop operator console's own `Reset` button already
+/// uses (`selahcue-operator/dist/app.js`'s `timer-reset` handler, shipped in
+/// the Design 2.0 operator console rewrite, predates this mobile wiring). One
+/// real difference from that button, not "exact" parity (PR #78 review —
+/// Cody): the desktop handler does a synchronous `invoke("view")` refetch at
+/// CLICK TIME before computing its total; this Reset reads `totalSecs` from
+/// the same ~1s-polled `TimerSnapshot` every other control on this tab already
+/// reads from, not a fresh fetch. A narrow, self-correcting staleness window
+/// (the next poll reconciles the readout to whatever the host actually did),
+/// consistent with how Stop/Pause/±1:00 already read state on this tab — not
+/// singled out for a live-refetch pattern nothing else here uses.
 ///
-/// * `Reset` restarts the countdown at its ORIGINAL length via the existing
-///   [cmdStartTimer] — the same command the presets and custom-time Start use.
-///   The length comes from `TimerSnapshot.totalSecs` (Rust `total_secs`,
-///   `protocol.rs`), which the host has reported since that same rewrite; this
-///   Dart model just never parsed it until now. Falls back to
+/// * `Reset` restarts the countdown at its CURRENT TARGET length via the
+///   existing [cmdStartTimer] — the same command the presets and custom-time
+///   Start use. The length comes from `TimerSnapshot.totalSecs` (Rust
+///   `total_secs`, `protocol.rs`), which the host has reported since that same
+///   rewrite; this Dart model just never parsed it until now. Falls back to
 ///   `remaining + elapsed` for a pre-total_secs host, matching the desktop
 ///   button's own fallback — `total_secs` is correct in overrun where that sum
-///   no longer equals the original length, elapsed keeps growing past TIME UP.
+///   no longer equals the target, elapsed keeps growing past TIME UP.
+///   "Current target", not the length it was first started at (PR #78 review
+///   — Sana): `totalSecs` is the same field ±1:00 already mutates, so Reset
+///   after any adjustment restores to wherever the operator has since moved
+///   the target — pre-existing ±1:00 behaviour, not new here.
 /// * `Send "TIME UP" to stage` reduces the countdown's remaining time to zero
 ///   via the existing [cmdAdjustTimer]: `AdjustTimer`'s own contract
 ///   ("Clamps at zero (landing in TIME UP)", `protocol.rs`) is exactly the
@@ -23,7 +35,9 @@
 ///   `remainingSecs` lands `elapsed == total` immediately. `time_up` itself
 ///   stays host-COMPUTED (`Timer::is_time_up`); this never invents a
 ///   client-asserted `time_up` field on the wire, it only changes the total the
-///   host already derives that state from.
+///   host already derives that state from. Guarded against a double-tap
+///   compounding two `-remainingSecs` deltas from the same stale snapshot
+///   (`_forcingTimeUp`, PR #78 review — Sana).
 ///
 /// Both stay behind the same `Capability.timer` gate as every other control on
 /// this tab (`AdjustTimer`/`StartTimer` already require RBAC `Permission::
@@ -101,26 +115,50 @@ class _TimerTabState extends State<TimerTab> {
   /// console's own `MAX_TIMER_SECS` clamp on its Reset button (`app.js`).
   static const int _maxTimerSecs = maxCustomHours * 3600 + 59 * 60 + 59;
 
-  /// Restart the countdown at its ORIGINAL length (MOB-009). Prefers the
+  /// Restart the countdown at its CURRENT target length (MOB-009). Prefers the
   /// host's own `totalSecs` — correct even in overrun, where
-  /// `remaining + elapsed` no longer equals the original length (elapsed keeps
-  /// growing past TIME UP). Falls back to `remaining + elapsed` for a host
-  /// that predates the field, matching the desktop button's own fallback.
+  /// `remaining + elapsed` no longer equals that target (elapsed keeps growing
+  /// past TIME UP). Falls back to `remaining + elapsed` for a host that
+  /// predates the field, matching the desktop button's own fallback.
+  ///
+  /// "Current target", not "the length it was first started at" (PR #78
+  /// review — Sana): `totalSecs` is the SAME field ±1:00 already mutates, so a
+  /// Reset after any adjustment — including `_sendTimeUp` below — restores to
+  /// wherever the operator has since moved the target, not the original
+  /// 5:00/10:00/custom value. This is pre-existing ±1:00 behaviour, not new
+  /// here; only the wording risked implying permanence that was never true.
   void _resetTimer(TimerSnapshot t) {
     final total = t.totalSecs ?? ((t.remainingSecs ?? 0) + t.elapsedSecs);
     if (total < 1) return;
     widget.live.act(cmdStartTimer(total.clamp(1, _maxTimerSecs)));
   }
 
+  /// True while a Send-TIME-UP command is on the wire (PR #78 review — Sana).
+  /// `_sendTimeUp` sizes its delta from the CURRENT `remainingSecs` in the
+  /// synced view, so a second tap before the host's Ack updates that view
+  /// would read the SAME stale `remainingSecs` and send a SECOND
+  /// `-remainingSecs` — subtracting it again from a target `adjust_timer`
+  /// already reduced to (about) zero, driving `totalSecs` negative-then-
+  /// clamped-to-0. Once there, `_resetTimer` has nothing to restart to and
+  /// silently no-ops. Mirrors `_starting` above (same class of bug Start had
+  /// before that guard existed).
+  bool _forcingTimeUp = false;
+
   /// Force the countdown into TIME UP right now (MOB-009), by reducing its
   /// remaining time to zero — `AdjustTimer`'s own documented contract already
   /// "clamps at zero (landing in TIME UP)" (`protocol.rs`), so a delta equal
   /// to `-remainingSecs` lands `elapsed == total` on the very next tick.
   /// `time_up` itself stays host-computed; this never asserts it directly.
-  void _sendTimeUp(TimerSnapshot t) {
+  Future<void> _sendTimeUp(TimerSnapshot t) async {
+    if (_forcingTimeUp) return;
     final remaining = t.remainingSecs ?? 0;
     if (remaining < 1) return;
-    widget.live.act(cmdAdjustTimer(-remaining));
+    _forcingTimeUp = true;
+    try {
+      await widget.live.act(cmdAdjustTimer(-remaining));
+    } finally {
+      _forcingTimeUp = false;
+    }
   }
 
   @override
@@ -331,8 +369,13 @@ class _TimerTabState extends State<TimerTab> {
               Expanded(
                 child: SelahButton(
                   label: 'Reset',
-                  semanticLabel: 'Reset to the original duration',
-                  disabledReason: 'unavailable while reconnecting',
+                  semanticLabel: 'Reset to the current target duration',
+                  // Two different reasons Reset cannot fire, named like
+                  // Send-TIME-UP's below (PR #78 review — Cody): syncing is
+                  // the link's, no timer is the operator's.
+                  disabledReason: syncing
+                      ? 'unavailable while reconnecting'
+                      : 'start a timer first',
                   onPressed: canAdjust ? () => _resetTimer(t) : null,
                 ),
               ),
@@ -389,24 +432,40 @@ class _SendTimeUpButton extends StatelessWidget {
 
   bool get _disabled => onPressed == null;
 
+  static const _ink = SelahGradient.onLiveInk;
+  static const _title = 'Send "TIME UP" to stage';
+  static const _caption = 'stage display only — never audience';
+
+  // Every input is a compile-time constant, so this — and the two styles
+  // below — are computed once per app run, not once per rebuild (PR #78
+  // review — Vera, optional tidy-up: `SelahButton` does the same at
+  // `primitives.dart:534` for its own radius).
+  static const _radius = BorderRadius.all(Radius.circular(SelahRadius.row));
+  static final _titleStyle =
+      SelahType.label.copyWith(color: _ink, fontWeight: FontWeight.bold);
+  static final _captionStyle = SelahType.caption.copyWith(color: _ink);
+
   @override
   Widget build(BuildContext context) {
-    const ink = SelahGradient.onLiveInk;
-    const title = 'Send "TIME UP" to stage';
-    const caption = 'stage display only — never audience';
-    final radius = BorderRadius.circular(SelahRadius.row);
+    // `excludeSemantics: true` replaces the two child `Text`s' own announcements
+    // with this single label — the caption MUST be folded in here too, or a
+    // screen-reader user never hears "stage display only, never audience" at
+    // all (PR #78 review — Cody, blocking).
+    final label = _disabled
+        ? '$_title. $_caption. $disabledReason'
+        : '$_title. $_caption';
     return Semantics(
       button: true,
       enabled: !_disabled,
-      label: _disabled ? '$title, $disabledReason' : title,
+      label: label,
       excludeSemantics: true,
       child: Opacity(
         opacity: _disabled ? 0.4 : 1,
         child: Material(
           color: DesignTokens.d2Live,
-          borderRadius: radius,
+          borderRadius: _radius,
           child: InkWell(
-            borderRadius: radius,
+            borderRadius: _radius,
             onTap: onPressed,
             child: Container(
               constraints: const BoxConstraints(minHeight: kSelahMinTouchTarget),
@@ -419,18 +478,9 @@ class _SendTimeUpButton extends StatelessWidget {
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  Text(
-                    title,
-                    style: SelahType.label.copyWith(
-                      color: ink,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
+                  Text(_title, style: _titleStyle),
                   const SizedBox(height: 2),
-                  Text(
-                    caption,
-                    style: SelahType.caption.copyWith(color: ink),
-                  ),
+                  Text(_caption, style: _captionStyle),
                 ],
               ),
             ),
