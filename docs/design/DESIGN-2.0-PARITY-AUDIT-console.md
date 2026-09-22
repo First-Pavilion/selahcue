@@ -1324,3 +1324,149 @@ earlier), `CON-135` (auto-display, blocked on Q8/FR-115), `CON-120` (Approve sem
 on Q7 — untouched by this batch: Approve still does exactly what it did before), `CON-140`/`CON-141`
 (panel identity mark / header badge variants, never in this ticket's scope) — are unchanged by
 this pass.
+
+### Addendum — post-review remediation (Sana + Quinn, PR #61, same day)
+
+Independent review of the PR above found the FIXED table's `CON-136`/`CON-137`/`CON-138` rows
+overstated what had actually shipped, and one row's own justification was factually wrong. This
+addendum corrects the record additively — the rows above are left as originally written (the
+CORRECTION precedent this document already uses for the 1514/1520 check-count history) — rather
+than silently rewritten. All four findings below were verified fixed by reading the corrected
+`file:line` directly, and the guard for each was mutation-tested (broken, confirmed the specific
+assertion went RED and nothing else, restored).
+
+**Sana's security review — 3 blocking findings:**
+
+1. **Edit and History's ↺ silently staged live content**, contradicting the "non-destructive"
+   claim in both rows above. Traced: `window.__openChapterForStage` (what both originally called)
+   reaches `invoke("stage_scripture", …)` via `loadChapter`'s non-range branch (`setCursor`'s
+   120ms `stageTimer`) or immediately for a verse range. The original test for this asserted
+   *before* that timer could fire, so it could not see the bug it existed to catch. Fixed with a
+   genuinely separate, read-only entry point — `window.__openChapterToBrowse` (`loadChapter(ref,
+   null, stage=false)`) — that both Edit and re-stage now call instead; `setCursor` and
+   `loadChapter`'s range branch both honour `stage=false` by never arming or firing the timer.
+   A second, subtler bug surfaced during the fix itself: a *prior* staging call's timer, left
+   pending, was never cancelled by a later `stage=false` call, so the old timer could still fire
+   later and stage stale content regardless of the read-only call's own intent — a real race
+   (Stage a verse, then Edit/re-stage a *different* one within 120ms), not just a test artefact.
+   `setCursor` now cancels any pending timer unconditionally on a `stage=false` call, closing
+   that race too. Both `CON-134`'s and `CON-138`'s FIXED rows above still name the retired
+   `window.__openChapterForStage` for this path — that citation is superseded by this entry.
+2. **"Mute this verse" re-fired `dismiss_detection` on every render that reached a still-queued
+   muted id** (no cap, no History record) and could outlive a single dismiss with no way back
+   short of restarting the app. Fixed: each id is dismissed and recorded (outcome `"muted"`) at
+   most once, guarded by a size-bounded set (`mutedDismissSent`, evict-oldest at 200) — an
+   *earlier* fix attempt pruned that guard by "is this id still in the current queue", which
+   defeated it the instant the id briefly disappeared (right after its own dismiss succeeded);
+   the size-bounded version is what actually shipped. A real reverse gear now exists: the History
+   row for a muted reference carries an **Unmute** button.
+3. **This section's own `CON-137` justification was wrong.** It claimed grepping
+   `selahcue-{app,operator,lan}` found no dedup signal in the wire protocol. A dedup mechanism
+   exists in a fourth crate: `selahcue-core::TranscriptEngine` (`detection.rs`) keeps a bounded
+   ring (`RECENT_DEDUP_WINDOW = 16`) of recently-enqueued reference strings and silently drops a
+   re-detection of one still in that ring — **before** it is ever enqueued, so it never reaches
+   `view.detections` at all. For the scenario `CON-137`'s automatic UI was built for (a preacher
+   re-quoting a verse shortly after first saying it), the host has almost always already
+   suppressed the second detection by the time it would reach the client — Sana's assessment was
+   that the automatic cooldown card was therefore near-unreachable in normal production use.
+   Re-examined the design rather than relabelling the finding: the automatic half of `CON-137`
+   (the de-emphasised duplicate card, the cooldown countdown, "Show anyway") is **removed**, not
+   fixed — `buildDuplicateCard`, `recentlyResolved`, `DET_COOLDOWN_MS` and the `.det-duplicate`/
+   `.det-dup-*` CSS no longer exist. What remains, because it is **not** redundant with the
+   host's automatic ring: "Mute this verse" is **operator-directed** — an explicit, session-long
+   "never show me this again" the host's blind short-lived eviction window has no equivalent
+   for. It now lives on every normal detection card (a small icon button in the head row) instead
+   of being gated behind the removed automatic state. `CON-137`'s FIXED row above should be read
+   as superseded by this entry, not as still describing the shipped mechanism.
+
+**Quinn's QA review — 1 bug (ClickUp `17tnw2axre8`, linked to `17tnw2axptb`):** the on-air card
+never lit for a **whole-chapter** detection (e.g. a spoken "Isaiah 61", no verse). The real host
+(`controller.rs`'s `stage_reference_for_detection`, `ApproveDetection` handler) narrows a bare
+"Book Chapter" reference to its first verse before it goes live — `view.live_scripture` reads
+"Isaiah 61:1" while the detection's own `d.reference` stays "Isaiah 61" — so the bare `===`
+compare `CON-136`'s FIXED row above describes could never match this real, common input shape.
+Fixed with `detectionWentLiveAs(reference, liveScripture)`, which encodes exactly that one
+documented transformation (`liveScripture === reference || liveScripture === reference + ":1"`),
+used both when first claiming on-air and in the self-clear check (a bare `!==` there would have
+cleared the card on the very next poll after correctly showing it — the same bug, mirrored).
+
+**Also fixed, non-blocking (Sana):** a detection with **no reported confidence at all** used to
+fail *open* into the confident branch (the Approve fast-path to the audience) — `hasConfidence &&
+pct < 90` short-circuits false on a missing score, exactly backwards, since an unscored match is
+at least as uncertain as a known-low one. Now `!hasConfidence || pct < 90` — an unscored
+detection takes the same cautious Edit branch a known-low-confidence one does. (The other
+non-blocking item — a dismissed verse reporting as "Already shown" — was mooted by finding 3's
+removal of that whole card type.)
+
+**Verification for this addendum:** `scripts/operator_headless.py`, 1598 checks / 0 FAIL at the
+time this addendum was first written, confirmed by two independent runs in this worktree.
+
+**Correction (Cody's review of the follow-up PR #64):** the number above went stale the same way
+this document's own §"How to read this" already warns against — two further rebases (PR #61
+merging pre-remediation, then a second, unrelated PR landing mid-rebase) each moved the true
+count without this line being revisited. The count as of PR #64's final state is **1610** (Cody's
+own finding also added 2 of those: verse-range regression coverage for the Edit/History staging
+fix, mutation-verified). `EXPECTED_MIN_CHECKS`'s own history comment in the script is the single
+source of truth for this number going forward — this line will not be kept in sync with every
+future bump; read the script, not this document, for the current count.
+
+### Addendum — further PR #64 review (Vera + Sana), same remediation pass
+
+Four independent reviews landed on PR #64 after the addendum above: Cody (PASS, 2 findings, both
+fixed — the verse-range coverage gap folded into the count above, and this document's own stale
+count, corrected above), Quinn (independent re-verification, PASS), Vera (PASS, 2 non-blocking
+findings), and Sana (PASS with Accepted Risk — confirms all 3 blocking findings and Quinn's bug
+above are genuinely closed, plus 5 new findings A–E from her own testing of the shipped fix).
+Verified and fixed the same way as the addendum above: read the corrected `file:line` directly,
+mutation-tested every guard (broken, confirmed the specific assertion(s) went RED and nothing
+else, restored).
+
+**Vera's performance review — P2 (fixed):** a *refused* `dismiss_detection` for a muted reference
+was marked "handled" (`mutedDismissSent`) **before** the invoke resolved, and the `.catch()`
+swallowed the failure with no cleanup — so a failed dismiss was never retried, permanently
+reproducing the exact visible inconsistency (empty panel, stale count pill) finding 2 above was
+about, now persistent instead of transient. Fixed at both call sites (the auto-dismiss loop in
+`syncDetections`, the manual mute-button click in `buildDetectionCard`) by un-remembering the id
+on failure. Writing the mutation test for this surfaced a second, deeper gap in the *first*
+version of the fix: un-remembering the id alone is not sufficient, because `syncDetections` bails
+out at its own top (`if (key === detectionsKey) return;`) whenever the host's view is
+byte-identical across polls — exactly the "host hasn't caught up" case the retry exists for — so
+the retry was inert until `detectionsKey` is *also* invalidated on failure, including against a
+race where an unrelated poll lands between the click and the failure resolving (a dedicated
+DEFER+reject test hook reproduces that ordering for real). **Vera's P1** (an O(K²) History
+rebuild on the mute path) was assessed as genuinely low/non-blocking per her own review and is
+left open, not silently dropped — no ClickUp follow-up filed for it yet.
+
+**Sana's follow-up security review — 5 new findings (A–E), reviewed at PR #64 head `0c7adda`,
+before this addendum's own commits landed:**
+
+- **A (already fixed):** re-verified directly — the `isRange` branch's `stage` guard
+  (`loadChapter`, the range-coverage fix from the Cody finding above) is intact and correctly
+  gated; no further change needed.
+- **B (fixed, non-blocking):** `setCursor`'s `clearTimeout` only runs once `setCursor` itself is
+  reached, but `get_chapter` is an async host round trip — a timer already pending when a
+  read-only load *starts* could still fire mid-fetch on a slow (300ms+) trip, before
+  `setCursor(idx, false)` ever ran to cancel it: narrowed, not closed, exactly as Sana described.
+  `loadChapter` now also clears the timer before the fetch starts. Reproduced for real (not just
+  asserted) with a one-shot DEFER hook on the `get_chapter` mock that holds the fetch open while a
+  genuinely pre-armed timer (from a live verse click) gets a real chance to fire.
+- **C (fixed):** `recordDetectionOutcome(d, "muted")` fired unconditionally, before the dismiss
+  settled — so a refused dismiss still wrote a MUTED History row for a mute the host never
+  confirmed (a false record), and, combined with Vera's P2 retry, a later successful retry would
+  have written a *second* row for the same id. Moved into each call site's success branch so it
+  fires at most once, only once actually confirmed. The first version of this test was itself
+  incomplete in the same shape as the P2 test above — a single always-succeeding retry cannot
+  distinguish "recorded on dispatch" from "recorded on confirmed success" for the auto-dismiss
+  loop's own call site — caught only after strengthening the test to fail that loop's own retry
+  once too (fail, fail, succeed) before the mutation actually went RED.
+- **D (fixed):** the History Unmute button reset `detHistoryKey` but not `detectionsKey`, so a
+  still-queued detection for a just-unmuted reference recomputed to the same stored key and never
+  reappeared in the live panel. Fixed by invalidating `detectionsKey` there too.
+- **E (fixed, cosmetic):** `dist/app.css`'s `CON-134` comment block still named the pre-fix
+  `window.__openChapterForStage` as Edit's call (the exact stale-reference pattern behind blocking
+  finding 1 above) — corrected to name `window.__openChapterToBrowse` and explain why.
+
+**Verification for this addendum:** `scripts/operator_headless.py`, **1625** checks / 0 FAIL,
+confirmed by two independent runs in this worktree. As the correction above already established,
+`EXPECTED_MIN_CHECKS`'s own history comment in the script remains the single source of truth for
+this number going forward.
