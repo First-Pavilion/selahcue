@@ -783,14 +783,14 @@ if not check_jump_call_site_is_click_only():
 # Not hand-summed at all this time, per the lesson recorded immediately above: empirically re-run
 # after resolving instead. Confirmed by a clean run: 1768, 0 FAIL.
 #
-# 1768 -> ?: this branch adds GO-LIVE-HOVER / TIMER-START-HOVER (.tb-golive/.timer-start kept
+# 1768 -> 1788: this branch adds GO-LIVE-HOVER / TIMER-START-HOVER (.tb-golive/.timer-start kept
 # `filter: brightness(1.06)` on :hover after their rest gradient was darkened — the exact
 # regression Sana's PR #58 review flagged as "unmeasured" for these two buttons specifically,
-# see the TD-012 filter-guard comment below). Rebased onto main post-1768 with a real conflict in
-# this exact block (the pattern this comment keeps warning about) — per its own repeated lesson,
-# re-derived empirically after resolving rather than hand-summed. See the run recorded just below
-# this line for the actual number.
-EXPECTED_MIN_CHECKS = 1768
+# including her own filter-guard check pattern, carried over here). Rebased onto main post-1768
+# with a real conflict in this exact block (the pattern this comment keeps warning about) — per
+# its own repeated lesson, re-derived empirically after resolving rather than hand-summed. Three
+# independent runs against the real post-rebase tree all reported 1788, 0 FAIL.
+EXPECTED_MIN_CHECKS = 1788
 
 
 def find_chrome():
