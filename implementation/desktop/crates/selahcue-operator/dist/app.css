@@ -7278,10 +7278,19 @@
 @media (prefers-reduced-motion: reduce) { .pp-toggle-knob, .pp-toggle-knob::after { transition: none; } }
 
 /* Generate button + result region */
-.pp-generate { width: 100%; box-sizing: border-box; display: flex; align-items: center; justify-content: center; gap: 12px; padding: 15px; border: none; border-radius: 13px; background: linear-gradient(90deg, var(--sc-primary-hover), var(--sc-primary)); color: #fff; font: inherit; font-size: 16px; font-weight: 700; cursor: pointer; }
-.pp-generate:hover { filter: brightness(1.06); }
+/* Contrast fix (same class as CON-007/CON-067/TD-012/PSC-005/DLM-001): white on the
+   --sc-primary-hover stop is 3.78:1, under AA-normal for this 16px bold label. Darken the
+   gradient instead of lightening it (test_tokens.rs:727-737's flat-primary/AA-large-hover
+   split), and drop the brightness() hover filter rather than keep it — brightening the
+   now-darker stop back up is the exact gap still open on .tb-golive/.timer-start. */
+.pp-generate { width: 100%; box-sizing: border-box; display: flex; align-items: center; justify-content: center; gap: 12px; padding: 15px; border: none; border-radius: 13px; background: linear-gradient(90deg, var(--sc-primary), #5a48d0); color: #fff; font: inherit; font-size: 16px; font-weight: 700; cursor: pointer; }
+.pp-generate:hover { background: #5a48d0; }
 .pp-generate:focus-visible { outline: 2px solid var(--sc-primary-hover); outline-offset: 2px; }
-.pp-generate[disabled], .pp-generate[aria-busy="true"] { opacity: 0.7; cursor: default; filter: none; }
+/* Sana (PR #60 review): :hover and [disabled]/[aria-busy] are equal specificity, so without its
+   OWN background a disabled+hovered button visibly flips to the active fill — the exact PSC-005
+   trap (scripts/operator_headless.py, .ps-start:disabled) reproduced here. Re-declare the REST
+   gradient explicitly, same fix as .ps-start's disabled rule. */
+.pp-generate[disabled], .pp-generate[aria-busy="true"] { opacity: 0.7; cursor: default; filter: none; background: linear-gradient(90deg, var(--sc-primary), #5a48d0); }
 .pp-gen-result { display: flex; flex-direction: column; gap: 8px; padding: 14px; border-radius: 11px; border: 1px solid var(--sc-border); background: var(--sc-inset); }
 .pp-gen-ok { border-color: var(--sc-preview-border); }
 .pp-gen-hdr { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
@@ -7319,7 +7328,9 @@
 .pp-gen-err { flex-direction: row; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; color: var(--sc-warn); background: var(--sc-warn-soft); border-color: var(--sc-warn-border); font-size: 12px; font-weight: 600; }
 .pp-gen-err-t { font-weight: 700; }
 .pp-optin-btn { font: inherit; font-size: 12px; font-weight: 700; color: #fff; background: var(--sc-primary); border: none; border-radius: 8px; padding: 8px 13px; cursor: pointer; flex: none; }
-.pp-optin-btn:hover { background: var(--sc-primary-hover); }
+/* Same contrast fix as .pm-btn-primary:hover: darken on hover instead of lightening to
+   --sc-primary-hover (3.78:1, fails AA-normal for this 12px bold label). */
+.pp-optin-btn:hover { background: #5a48d0; }
 .pp-optin-btn:focus-visible { outline: 2px solid var(--sc-primary-hover); outline-offset: 2px; }
 
 /* Footnote */
@@ -7345,8 +7356,18 @@
 .pp-gen-preview-cancel:hover { background: var(--sc-inset); }
 .pp-gen-preview-cancel:focus-visible { outline: 2px solid var(--sc-primary-hover); outline-offset: 2px; }
 .pp-gen-preview-confirm { font: inherit; font-size: 12px; font-weight: 700; color: #fff; background: var(--sc-primary); border: none; border-radius: 8px; padding: 9px 15px; cursor: pointer; }
-.pp-gen-preview-confirm:hover { background: var(--sc-primary-hover); }
+/* Same contrast fix as .pm-btn-primary:hover: darken on hover instead of lightening to
+   --sc-primary-hover (3.78:1, fails AA-normal for this 12px bold label). */
+.pp-gen-preview-confirm:hover { background: #5a48d0; }
 .pp-gen-preview-confirm:focus-visible { outline: 2px solid var(--sc-primary-hover); outline-offset: 2px; }
+/* PSC-005 (same trap as .pp-generate[disabled] three lines above and .ps-start:disabled):
+   this class is shared with the edit-draft Save button (settings.js/transcripts.js set
+   disabled + aria-busy while saving), and :hover/[disabled] have equal specificity with no
+   background declared here to win the cascade — a disabled/saving Save would visibly flip to
+   the active hover fill on hover. Re-declare the REST-state flat background explicitly, same
+   fix shape as .ps-start:disabled's sibling .dl-btn-primary case, matching .pp-generate[disabled]'s
+   opacity/cursor for consistency within this block. */
+.pp-gen-preview-confirm[disabled], .pp-gen-preview-confirm[aria-busy="true"] { opacity: 0.7; cursor: default; background: var(--sc-primary); }
 
 /* Narrow operator windows: stack the two-column grids so nothing overflows the surface. */
 @media (max-width: 880px) {

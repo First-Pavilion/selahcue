@@ -790,7 +790,45 @@ if not check_jump_call_site_is_click_only():
 # with a real conflict in this exact block (the pattern this comment keeps warning about) — per
 # its own repeated lesson, re-derived empirically after resolving rather than hand-summed. Three
 # independent runs against the real post-rebase tree all reported 1788, 0 FAIL.
-EXPECTED_MIN_CHECKS = 1788
+#
+# 1768 -> ?: ClickUp SET-010 (sermon-prep Generate panel gradient-hover contrast), authored in
+# parallel on its own branch against the pre-17tnw2axptw baseline (1544) and rebased onto main
+# twice — first onto PR #58 (1520->1544, above), then onto this branch's own PR #68/#70/#71 stack
+# (1544->1768, above) — this entry's starting point is 1768, not either of those. 18 new PP-GEN
+# assertions (.pp-generate/.pp-optin-btn/.pp-gen-preview-confirm gradient-hover contrast,
+# mirroring the existing PME-005/CON-046 pattern). Per this comment block's own repeatedly-stated
+# discipline, not hand-summed — empirically re-run after resolving this rebase instead.
+# Confirmed by a clean run: 1786, 0 FAIL.
+#
+# 1786 -> 1791: Sana's PR #60 review found the exact PSC-005 trap (above) reproduced on
+# .pp-generate[disabled]: moving hover from filter:brightness() to a flat background broke the
+# disabled rule's neutralisation (equal specificity, no background of its own), so a disabled or
+# aria-busy Generate button visibly flipped to the active fill on hover. Fixed the same way as
+# .ps-start:disabled — the disabled rule now re-declares the REST gradient explicitly — and added
+# the same two-check PSC-005 pattern (disabled rule declares its own background; that background
+# is exactly the REST fill). Mutation-verified (reverting the disabled rule's background turns
+# exactly 1 assertion RED, 1790/1 FAIL; a second dependent assertion goes unreachable, matching
+# PSC-005's own `if (wPsDisabledBg && wPsBaseBg)` shape). Confirmed by a clean run: 1791, 0 FAIL.
+#
+# 1791 -> 1796: Cody's PR #60 re-review found the same PSC-005 trap reproduced a third time on
+# .pp-gen-preview-confirm: that class is shared by the transient Confirm button (never disabled)
+# and the edit-draft Save button (settings.js/transcripts.js set disabled + aria-busy="true" while
+# saving), and there was no .pp-gen-preview-confirm[disabled]/[aria-busy="true"] rule at all, so
+# the :hover fill this same PR added had nothing to lose to on a disabled/saving Save. Fixed by
+# re-declaring the REST-state flat background explicitly (flat --sc-primary, not a gradient, so
+# the fix mirrors .ps-start:disabled's flat sibling rather than .pp-generate[disabled]'s two-stop
+# case), with the same opacity/cursor as .pp-generate[disabled] for consistency within this block.
+# Added the same two-check PSC-005 pattern (disabled rule declares its own background; that
+# background is exactly the REST fill). Mutation-verified (reverting the disabled rule's
+# background turns exactly 1 assertion RED, 1795/1 FAIL; the dependent equality assertion goes
+# unreachable, same shape as the two priors above). Confirmed by a clean run: 1796, 0 FAIL.
+#
+# 1796 -> ?: rebased onto main's own GO-LIVE-HOVER/TIMER-START-HOVER fix (1768->1788 above,
+# `.tb-golive`/`.timer-start` — the follow-up this branch's own comments repeatedly deferred to a
+# separate ticket, landed by a peer session while this PR was in review). Real conflict in this
+# exact block again — per this comment's own repeated lesson, re-derived empirically after
+# resolving rather than hand-summed. Confirmed by a clean run: 1816, 0 FAIL.
+EXPECTED_MIN_CHECKS = 1816
 
 
 def find_chrome():
@@ -8562,6 +8600,26 @@ DRIVER = r"""
       ok(!!genRes && !genRes.hidden && genRes.getAttribute("role")==="alert" && /Turn on cloud processing/.test(genRes.textContent),
          "PP C-005: Generate with consent off surfaces a consent_required prompt (role=alert)");
       ok(!!el("pp-optin-retry"), "PP C-005: the consent_required prompt offers a one-click 'Opt in & generate'");
+      // PP-GEN: .pp-optin-btn:hover — same defect class as .pm-btn-primary:hover/CON-007/PME-005.
+      // Checked HERE because #pp-optin-retry only exists transiently, during this consent_required
+      // state — the click below (opting in) removes it again, so a later check point would miss it.
+      (function() {
+        var restBg = _rgba(getComputedStyle(el("pp-optin-retry")).backgroundColor);
+        var hoverRule = /\.pp-optin-btn:hover\s*\{([^}]*)\}/.exec(window.__CSSTEXT || "");
+        ok(!!hoverRule, "PP-GEN (premise): the .pp-optin-btn:hover rule is present in the shipped app.css");
+        var hb = hoverRule ? /background(?:-color)?\s*:\s*([^;]+)/.exec(hoverRule[1]) : null;
+        ok(!!hb, "PP-GEN (premise): the .pp-optin-btn:hover rule declares a background, so there is a value to measure");
+        if (hb) {
+          var hoverBg = _resolve(hb[1].trim());
+          var hoverR = _cr([255,255,255,1], hoverBg);
+          ok(hoverR >= 4.5, "PP-GEN: the HOVERED .pp-optin-btn keeps its white label at AA-NORMAL (" + _f(hoverR) + ":1)");
+          ok(_lum(hoverBg) < _lum(restBg),
+             "PP-GEN: .pp-optin-btn hover DARKENS the fill instead of lightening it, matching .pm-btn-primary:hover");
+        }
+        var oldHover = _resolve("var(--sc-primary-hover)");
+        ok(_cr([255,255,255,1], oldHover) < 4.5,
+           "PP-GEN (control): --sc-primary-hover itself still measures BELOW AA-normal for white (" + _f(_cr([255,255,255,1], oldHover)) + ":1) — the TOKEN VALUE is untouched; only this rule stopped using it");
+      })();
       // Opt in & generate → grants notes consent then retries (through the SAME review-and-confirm
       // gate — opting in mid-flow does not bypass it); the service is not configured → 'coming soon'.
       el("pp-optin-retry").click();
@@ -9339,6 +9397,50 @@ right after a generate/save");
       // before trusting the control below to have caught anything.
       ok(window.scCompletedTranscript === PP_TRANSCRIPT_FIXTURE_ADVANCED,
          "PP F-5 L-1 (premise): the bridge really did advance past what the open preview is showing, while the preview stayed open");
+      // PP-GEN: .pp-gen-preview-confirm:hover — same defect class as .pm-btn-primary:hover/CON-007.
+      // Checked HERE, right before Confirm is clicked, while the review step is genuinely open —
+      // the button is rebuilt fresh on each Generate cycle, so a later check point cannot rely on
+      // finding it still in the DOM.
+      (function() {
+        var confirmEl = el("pp-gen-preview-confirm");
+        var restBg = _rgba(getComputedStyle(confirmEl).backgroundColor);
+        var restR = _cr([255,255,255,1], restBg);
+        ok(restR >= 4.5,
+           "PP-GEN (premise): .pp-gen-preview-confirm REST already clears AA-NORMAL (flat --sc-primary, " + _f(restR) + ":1) — only :hover regresses");
+        var hoverRule = /\.pp-gen-preview-confirm:hover\s*\{([^}]*)\}/.exec(window.__CSSTEXT || "");
+        ok(!!hoverRule, "PP-GEN (premise): the .pp-gen-preview-confirm:hover rule is present in the shipped app.css");
+        var hb = hoverRule ? /background(?:-color)?\s*:\s*([^;]+)/.exec(hoverRule[1]) : null;
+        ok(!!hb, "PP-GEN (premise): the .pp-gen-preview-confirm:hover rule declares a background, so there is a value to measure");
+        if (hb) {
+          var hoverBg = _resolve(hb[1].trim());
+          var hoverR = _cr([255,255,255,1], hoverBg);
+          ok(hoverR >= 4.5, "PP-GEN: the HOVERED .pp-gen-preview-confirm keeps its white label at AA-NORMAL (" + _f(hoverR) + ":1)");
+          ok(_lum(hoverBg) < _lum(restBg),
+             "PP-GEN: .pp-gen-preview-confirm hover DARKENS the fill instead of lightening it, matching .pm-btn-primary:hover");
+        }
+      })();
+      // PSC-005: .pp-gen-preview-confirm[disabled] / [aria-busy="true"] — Cody's PR #60 re-review
+      // found the exact same trap reproduced here: this class is shared by the transient Confirm
+      // button above (never disabled) and the edit-draft Save button (id pp-gen-save/tr-gen-save
+      // in settings.js/transcripts.js, which sets disabled + aria-busy="true" while saving), and
+      // :hover/[disabled] are equal specificity with nothing declared here to make the disabled
+      // rule win. Same two-check technique as .pp-generate[disabled] and .ps-start:disabled above:
+      // the disabled rule must declare its own background, AND that background must be the exact
+      // REST fill — not just any declared value (Cody/Vera's PR #62 finding on PSC-005 itself).
+      var wPpGenConfirmDisabledRule = /\.pp-gen-preview-confirm\[disabled\],\s*\.pp-gen-preview-confirm\[aria-busy="true"\]\s*\{([^}]*)\}/.exec(window.__CSSTEXT || "");
+      ok(!!wPpGenConfirmDisabledRule, "PP-GEN (premise): the .pp-gen-preview-confirm[disabled] rule is present in the shipped app.css");
+      var wPpGenConfirmDisabledBg = wPpGenConfirmDisabledRule ? /background(?:-image)?\s*:\s*([^;]+)/.exec(wPpGenConfirmDisabledRule[1]) : null;
+      ok(!!wPpGenConfirmDisabledBg,
+         "PP-GEN: the .pp-gen-preview-confirm disabled rule declares its OWN background — without one, `:hover` (equal specificity) wins the fill and a disabled/saving button visibly flips to the active colour on hover");
+      var wPpGenConfirmBaseRule = /\.pp-gen-preview-confirm\s*\{([^}]*)\}/.exec(window.__CSSTEXT || "");
+      ok(!!wPpGenConfirmBaseRule, "PP-GEN (premise): the rest-state .pp-gen-preview-confirm rule is present in the shipped app.css");
+      var wPpGenConfirmBaseBg = wPpGenConfirmBaseRule ? /background(?:-image)?\s*:\s*([^;]+)/.exec(wPpGenConfirmBaseRule[1]) : null;
+      ok(!!wPpGenConfirmBaseBg, "PP-GEN (premise): the rest-state rule declares a background, so there is a value to compare the disabled rule against");
+      if (wPpGenConfirmDisabledBg && wPpGenConfirmBaseBg) {
+        ok(wPpGenConfirmDisabledBg[1].trim() === wPpGenConfirmBaseBg[1].trim(),
+           "PP-GEN: the .pp-gen-preview-confirm disabled rule's background is EXACTLY the rest-state fill (found \"" + wPpGenConfirmDisabledBg[1].trim() +
+           "\" vs rest \"" + wPpGenConfirmBaseBg[1].trim() + "\") — not just any declared value, the one that keeps a disabled/saving button visually inert");
+      }
       el("pp-gen-preview-confirm").click();
       await sleep(70);
       var sentCall = ppLast("generate_sermon_notes");
@@ -9844,6 +9946,68 @@ right after a generate/save");
         ok(Math.min.apply(null, wTsBrightened.map(function(s){ return _cr([255,255,255,1], s); })) < 4.5,
            "TIMER-START-HOVER (control): `filter: brightness(1.06)` on the darkened rest gradient still measures BELOW AA-normal through this helper — the fix is a real background change, not a measurement artefact");
       }
+
+      // --- PP-GEN: sermon-prep Generate panel (.pp-generate / .pp-optin-btn /
+      // .pp-gen-preview-confirm) — Providers & Privacy `348:124`; `#tr-generate` in the
+      // Transcripts workspace reuses the same `.pp-generate` class (TRANSCRIPTS-2.0-HANDOFF.md
+      // §"Component primitives"). Same defect class as CON-007/CON-067/PME-005: white text on
+      // --sc-primary-hover (3.78:1) fails AA-normal. Previously unaudited on this surface —
+      // DESIGN-2.0-PARITY-AUDIT-settings.md's A11Y-1 said no gradient defect was found here,
+      // which was wrong; corrected alongside this fix.
+      // .pp-generate REST: a two-stop gradient, like GO LIVE — both stops must be measured.
+      var wPpGen = el("pp-generate");
+      var wPpGenStops = _stops(wPpGen);
+      ok(wPpGenStops.length === 2 && !_same(wPpGenStops[0], wPpGenStops[1]),
+         "PP-GEN (premise): .pp-generate REST really is a two-stop gradient (" + wPpGenStops.length + " stops, distinct), so 'measured at both stops' is not vacuous");
+      var wPpGenWorst = Math.min.apply(null, wPpGenStops.map(function(s){ return _cr([255,255,255,1], s); }));
+      ok(wPpGenWorst >= 4.5,
+         "PP-GEN: .pp-generate REST clears AA-NORMAL on every gradient stop for its 16px bold white label (" + _f(wPpGenWorst) + ":1)");
+      var wPpGenOldStop = _resolve("var(--sc-primary-hover)");
+      ok(_cr([255,255,255,1], wPpGenOldStop) < 4.5,
+         "PP-GEN (control): --sc-primary-hover itself still measures BELOW AA-normal for white (" + _f(_cr([255,255,255,1], wPpGenOldStop)) + ":1) — the token is untouched, only the gradient stopped using it as a stop");
+      // .pp-generate:hover must not reintroduce filter:brightness() — brightening the now-darker
+      // gradient back up is the exact unfixed gap flagged on .tb-golive/.timer-start.
+      var wPpGenHoverRule = /\.pp-generate:hover\s*\{([^}]*)\}/.exec(window.__CSSTEXT || "");
+      ok(!!wPpGenHoverRule, "PP-GEN (premise): the .pp-generate:hover rule is present in the shipped app.css");
+      if (wPpGenHoverRule) {
+        ok(!/filter\s*:\s*brightness/.test(wPpGenHoverRule[1]),
+           "PP-GEN: .pp-generate:hover does NOT use filter:brightness() — that would re-lighten the darkened gradient stop, the exact gap still open on .tb-golive/.timer-start");
+        var wPpGenHb = /background(?:-color)?\s*:\s*([^;]+)/.exec(wPpGenHoverRule[1]);
+        ok(!!wPpGenHb, "PP-GEN (premise): the hover rule declares a background, so there is a value to measure");
+        if (wPpGenHb) {
+          var wPpGenHoverBg = _resolve(wPpGenHb[1].trim());
+          var wPpGenHoverR = _cr([255,255,255,1], wPpGenHoverBg);
+          ok(wPpGenHoverR >= 4.5, "PP-GEN: the HOVERED .pp-generate keeps its white label at AA-NORMAL (" + _f(wPpGenHoverR) + ":1)");
+          ok(_lum(wPpGenHoverBg) <= Math.max.apply(null, wPpGenStops.map(_lum)),
+             "PP-GEN: .pp-generate hover does not lighten past the REST gradient's brightest stop");
+        }
+      }
+      // Sana (PR #60 review): the exact PSC-005 trap (.ps-start:disabled, above) reproduced here —
+      // moving hover from `filter: brightness()` to `background: #5a48d0` broke the disabled rule's
+      // neutralisation, since `:hover`/`[disabled]` are equal specificity and `filter: none` alone
+      // only ever cancelled a filter-based hover. Without its OWN background, a disabled+hovered
+      // button visibly flips to the active fill. Same two-check technique as PSC-005: the disabled
+      // rule must declare its own background, AND that background must be the exact REST fill (not
+      // just any declared value — Cody/Vera's PR #62 finding on PSC-005 itself).
+      var wPpGenDisabledRule = /\.pp-generate\[disabled\],\s*\.pp-generate\[aria-busy="true"\]\s*\{([^}]*)\}/.exec(window.__CSSTEXT || "");
+      ok(!!wPpGenDisabledRule, "PP-GEN (premise): the .pp-generate[disabled] rule is present in the shipped app.css");
+      var wPpGenDisabledBg = wPpGenDisabledRule ? /background(?:-image)?\s*:\s*([^;]+)/.exec(wPpGenDisabledRule[1]) : null;
+      ok(!!wPpGenDisabledBg,
+         "PP-GEN: the disabled rule declares its OWN background — without one, `:hover` (equal specificity) wins the fill and a disabled button visibly flips to the active colour on hover");
+      var wPpGenBaseRule = /\.pp-generate\s*\{([^}]*)\}/.exec(window.__CSSTEXT || "");
+      ok(!!wPpGenBaseRule, "PP-GEN (premise): the rest-state .pp-generate rule is present in the shipped app.css");
+      var wPpGenBaseBg = wPpGenBaseRule ? /background(?:-image)?\s*:\s*([^;]+)/.exec(wPpGenBaseRule[1]) : null;
+      ok(!!wPpGenBaseBg, "PP-GEN (premise): the rest-state rule declares a background, so there is a value to compare the disabled rule against");
+      if (wPpGenDisabledBg && wPpGenBaseBg) {
+        ok(wPpGenDisabledBg[1].trim() === wPpGenBaseBg[1].trim(),
+           "PP-GEN: the disabled rule's background is EXACTLY the rest-state fill (found \"" + wPpGenDisabledBg[1].trim() +
+           "\" vs rest \"" + wPpGenBaseBg[1].trim() + "\") — not just any declared value, the one that keeps a disabled button visually inert");
+      }
+
+      // .pp-optin-btn:hover is checked earlier, at "PP C-005" (`#pp-optin-retry` only exists
+      // transiently during the consent_required state and is gone again by this point in the run).
+      // .pp-gen-preview-confirm:hover is checked earlier too, at "PP F-5" (the button is rebuilt
+      // fresh on each Generate cycle and is not reliably present here).
 
       // --- PME-014 / PME-015: the two missing topbar primary actions ------------------------
       document.querySelector('.nav-item[data-surface="presentation"]').click();
