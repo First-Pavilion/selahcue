@@ -883,14 +883,25 @@ from the prior doc.
   both render as a lighter weight than 700" as the faulty first-cut comment claimed (that comment
   also mis-cited the embolden-synthesis threshold — real code, but in `draw_text`, gated on
   `font.is_none()`, which is never true for chrome; it does not apply to this font at all). So
-  Semi Bold and Medium collapse into Regular here, not as a shortcut, but because rendering the
-  full three-tier hierarchy safely needs a bundled Inter Medium/Semi Bold static face — or an
-  engine change that keeps weight fallback inside the requested family — and this crate has
-  neither. Verified: `chrome_runs_carry_the_designed_font_weight` (mutation-verified against the
-  corrected 400 values) plus a new permanent regression guard,
-  `only_the_two_bundled_inter_weights_are_requested_by_the_stage_composer`, which pins the
-  measured safety property itself so a future change away from `{400, 700}` fails loudly instead
-  of shipping another silent host-dependent font swap
+  Semi Bold and Medium collapse into Regular rather than Bold — not Bold, because a numerically
+  closer weight is not the same as a visually closer one: the design uses the lighter weight so
+  those six roles read as subordinate to the Bold labels, and mapping them to Bold would
+  reintroduce that exact pre-STG-012 defect for them specifically (documented in `stage.rs`'s
+  `design` module). Full three-tier parity safely needs either a bundled Inter Medium/Semi Bold
+  static face or an engine change that keeps weight fallback inside the requested family, and this
+  crate has neither today. Verified: `chrome_runs_carry_the_designed_font_weight`
+  (mutation-verified against the corrected 400 values) plus the real regression guard,
+  `the_stage_composer_emits_only_bundled_inter_weights` (composes every template/state/scale/
+  message combination and asserts every emitted text weight is in `{400, 700}` — zero host
+  dependency, mutation-verified). An earlier cut of this guard instead measured font widths in
+  isolation and could not actually catch a stray call site (caught by Vera, mutation-proved); the
+  isolated-measurement version survives only as `unbundled_inter_weights_still_escape_to_host_faces`,
+  `#[ignore]`d on purpose because its assertions depend on the CI runner's installed fonts (the
+  same class of flake `test_measure.rs`'s `installed_serif` documents this crate being bitten by
+  twice, 86ak643rc) — it is evidence, re-run by hand, not a CI gate. **Follow-up note, so it isn't
+  only a test doc comment:** with that test `#[ignore]`d, nothing fires automatically the day a
+  real Inter Medium/Semi Bold face gets bundled and 500/600 become safe to reintroduce — that is a
+  human-memory item for whoever next touches stage typography, not an automated trigger
   (`crates/selahcue-present/tests/test_stage_parity.rs`).
 
 ### Closed by verification — already fixed incidentally by the 2026-08-24 batch, no code change
