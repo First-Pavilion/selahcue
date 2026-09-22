@@ -881,11 +881,13 @@ if not check_jump_call_site_is_click_only():
 # case-normalized CSSOM, so an uppercase `BACKGROUND-COLOR:`/`BACKGROUND-IMAGE:` declaration would
 # have silently lost to an earlier lowercase one instead of winning the cascade. Both fixed the
 # same way PR #75 fixed the identical pair of gaps for `filter:`: anchored the regex and added the
-# `i` flag — and while resolving this rebase, also migrated the three PP-GEN call sites main's own
-# SET-010 stack added above (`wPpGenHb`/`wPpGenDisabledBg`/`wPpGenBaseBg`) onto the same shared
-# `_lastBackgroundDecl()` helper, since they carried the identical un-hardened pattern this whole
-# fix exists to close. Added `BACKGROUND-REGEX-ANCHOR` (+2) and `BACKGROUND-REGEX-CASE-INSENSITIVE`
-# / `BACKGROUND-IMAGE-REGEX-CASE-INSENSITIVE` (+2) mutation-proof checks. Mutation-tested each fix
+# `i` flag — and while resolving this rebase, also migrated the seven PP-GEN call sites main's own
+# SET-010 stack added above (`wPpGenHb`/`wPpGenDisabledBg`/`wPpGenBaseBg`, `.pp-optin-btn:hover`'s
+# and `.pp-gen-preview-confirm:hover`'s own `hb`, `wPpGenConfirmDisabledBg`/`wPpGenConfirmBaseBg`)
+# onto the same shared `_lastBackgroundDecl()` helper, since they carried the identical
+# un-hardened pattern this whole fix exists to close. Added `BACKGROUND-REGEX-ANCHOR` (+2) and
+# `BACKGROUND-REGEX-CASE-INSENSITIVE` / `BACKGROUND-IMAGE-REGEX-CASE-INSENSITIVE` (+2) mutation-
+# proof checks. Mutation-tested each fix
 # independently: reverting only the anchor reproduced exactly 1 FAIL (`BACKGROUND-REGEX-ANCHOR`'s
 # effect check); reverting only the `i` flag reproduced exactly 2 FAIL (both case-insensitive
 # checks); nothing else regressed in either case; restoring each returned to 0 FAIL. Per this
@@ -8670,7 +8672,7 @@ DRIVER = r"""
         var restBg = _rgba(getComputedStyle(el("pp-optin-retry")).backgroundColor);
         var hoverRule = _lastRule(/\.pp-optin-btn:hover\s*\{([^}]*)\}/, window.__CSSTEXT || "");
         ok(!!hoverRule, "PP-GEN (premise): the .pp-optin-btn:hover rule is present in the shipped app.css");
-        var hb = hoverRule ? /background(?:-color)?\s*:\s*([^;]+)/.exec(hoverRule[1]) : null;
+        var hb = hoverRule ? _lastBackgroundDecl(hoverRule[1]) : null;
         ok(!!hb, "PP-GEN (premise): the .pp-optin-btn:hover rule declares a background, so there is a value to measure");
         if (hb) {
           var hoverBg = _resolve(hb[1].trim());
@@ -9472,7 +9474,7 @@ right after a generate/save");
            "PP-GEN (premise): .pp-gen-preview-confirm REST already clears AA-NORMAL (flat --sc-primary, " + _f(restR) + ":1) — only :hover regresses");
         var hoverRule = _lastRule(/\.pp-gen-preview-confirm:hover\s*\{([^}]*)\}/, window.__CSSTEXT || "");
         ok(!!hoverRule, "PP-GEN (premise): the .pp-gen-preview-confirm:hover rule is present in the shipped app.css");
-        var hb = hoverRule ? /background(?:-color)?\s*:\s*([^;]+)/.exec(hoverRule[1]) : null;
+        var hb = hoverRule ? _lastBackgroundDecl(hoverRule[1]) : null;
         ok(!!hb, "PP-GEN (premise): the .pp-gen-preview-confirm:hover rule declares a background, so there is a value to measure");
         if (hb) {
           var hoverBg = _resolve(hb[1].trim());
@@ -9492,12 +9494,12 @@ right after a generate/save");
       // REST fill — not just any declared value (Cody/Vera's PR #62 finding on PSC-005 itself).
       var wPpGenConfirmDisabledRule = _lastRule(/\.pp-gen-preview-confirm\[disabled\],\s*\.pp-gen-preview-confirm\[aria-busy="true"\]\s*\{([^}]*)\}/, window.__CSSTEXT || "");
       ok(!!wPpGenConfirmDisabledRule, "PP-GEN (premise): the .pp-gen-preview-confirm[disabled] rule is present in the shipped app.css");
-      var wPpGenConfirmDisabledBg = wPpGenConfirmDisabledRule ? /background(?:-image)?\s*:\s*([^;]+)/.exec(wPpGenConfirmDisabledRule[1]) : null;
+      var wPpGenConfirmDisabledBg = wPpGenConfirmDisabledRule ? _lastBackgroundDecl(wPpGenConfirmDisabledRule[1], true) : null;
       ok(!!wPpGenConfirmDisabledBg,
          "PP-GEN: the .pp-gen-preview-confirm disabled rule declares its OWN background — without one, `:hover` (equal specificity) wins the fill and a disabled/saving button visibly flips to the active colour on hover");
       var wPpGenConfirmBaseRule = _lastRule(/\.pp-gen-preview-confirm\s*\{([^}]*)\}/, window.__CSSTEXT || "");
       ok(!!wPpGenConfirmBaseRule, "PP-GEN (premise): the rest-state .pp-gen-preview-confirm rule is present in the shipped app.css");
-      var wPpGenConfirmBaseBg = wPpGenConfirmBaseRule ? /background(?:-image)?\s*:\s*([^;]+)/.exec(wPpGenConfirmBaseRule[1]) : null;
+      var wPpGenConfirmBaseBg = wPpGenConfirmBaseRule ? _lastBackgroundDecl(wPpGenConfirmBaseRule[1], true) : null;
       ok(!!wPpGenConfirmBaseBg, "PP-GEN (premise): the rest-state rule declares a background, so there is a value to compare the disabled rule against");
       if (wPpGenConfirmDisabledBg && wPpGenConfirmBaseBg) {
         ok(wPpGenConfirmDisabledBg[1].trim() === wPpGenConfirmBaseBg[1].trim(),
