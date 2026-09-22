@@ -1028,37 +1028,39 @@ fn weight_of_prefix(frame: &Frame, prefix: &str) -> u16 {
         })
 }
 
-/// The composer hard-coded every chrome run at weight 700 (Bold); Design 2.0 draws the wall
-/// clock Semi Bold (600) and the stanza position / both NEXT lines / the timer-only footer
-/// Medium (500) — three distinct weights against one. Closes STG-012.
-///
-/// The bundled single-weight face only synthesises an embolden above 550
-/// (`selahcue_engine::raster`'s `attrs_for`), so 500 and 600 are visually identical to each
-/// other and this test cannot distinguish them by rendered pixels — it asserts the semantic
-/// `TextStyle::weight` value each run carries, which is what a real multi-weight face (or a
-/// future engine change) would need right already, and which the diff makes correct without
-/// waiting on that.
+/// The composer hard-coded every chrome run at weight 700 (Bold), where Design 2.0 draws
+/// three weights: Bold for labels/readouts, Semi Bold (600) for the wall clock, Medium (500)
+/// for the stanza position, both NEXT lines and the timer-only footer. Closes STG-012 — but
+/// only as far as this crate can safely go: `Family::Name("Inter")` has a bundled face at
+/// exactly 400 and 700 (`selahcue-engine`'s `INTER_BYTES`/`INTER_BOLD_BYTES`), and requesting
+/// any other weight from that family does not fall back to the nearest bundled face — it
+/// falls OUT of the family onto whatever the host has installed. See
+/// `only_the_two_bundled_inter_weights_are_requested_by_the_stage_composer` below for the
+/// measurement that found this and now guards it. So Semi Bold and Medium both render as
+/// **Regular (400)** here, not their nominal Figma weights — the achievable, SAFE slice of
+/// the design's hierarchy with the font this crate actually ships, not "500 and 600 done".
 #[test]
 fn chrome_runs_carry_the_designed_font_weight() {
     let s = STAGE_TEXT_SCALE_DEFAULT;
 
-    // Worship: the wall clock is Semi Bold; the stanza position and the NEXT line are Medium;
-    // everything else checked here (the song title, the timer caption) stays Bold.
+    // Worship: the wall clock, stanza position and NEXT line are all Regular (400) — the
+    // safe stand-in for Semi Bold/Medium (see the test doc comment); the song title and the
+    // timer caption stay Bold (700).
     let ws = compose(StageTemplate::Worship, false, s, None, W, H);
     assert_eq!(
         weight_of(&ws, "10:42 AM"),
-        600,
-        "worship wall clock: Semi Bold"
+        400,
+        "worship wall clock: Regular"
     );
     assert_eq!(
         weight_of(&ws, "Verse 2 of 4"),
-        500,
-        "worship stanza position: Medium"
+        400,
+        "worship stanza position: Regular"
     );
     assert_eq!(
         weight_of_prefix(&ws, "I once was lost"),
-        500,
-        "worship NEXT line: Medium"
+        400,
+        "worship NEXT line: Regular"
     );
     assert_eq!(
         weight_of(&ws, "Amazing Grace"),
@@ -1075,13 +1077,13 @@ fn chrome_runs_carry_the_designed_font_weight() {
     let sc = compose(StageTemplate::Scripture, false, s, None, W, H);
     assert_eq!(
         weight_of(&sc, "10:42 AM"),
-        600,
-        "scripture wall clock: Semi Bold"
+        400,
+        "scripture wall clock: Regular"
     );
     assert_eq!(
         weight_of_prefix(&sc, "Isaiah 61:6"),
-        500,
-        "scripture NEXT line: Medium"
+        400,
+        "scripture NEXT line: Regular"
     );
     assert_eq!(
         weight_of(&sc, "AMAZING GRACE"),
@@ -1090,22 +1092,77 @@ fn chrome_runs_carry_the_designed_font_weight() {
     );
 
     // Timer-only: its header clock is a SEPARATE code path from `header_clock` (STG-055) and
-    // must carry the same Semi Bold weight; its footer (date + time, joined) is Medium.
+    // must carry the same Regular weight; its footer (date + time, joined) is Regular too.
     let tou = compose_timer_only(false, s);
     assert_eq!(
         weight_of(&tou, "10:42 AM"),
-        600,
-        "timer-only header clock: Semi Bold"
+        400,
+        "timer-only header clock: Regular"
     );
     assert_eq!(
         weight_of_prefix(&tou, "Sunday"),
-        500,
-        "timer-only footer: Medium"
+        400,
+        "timer-only footer: Regular"
     );
     assert_eq!(
         weight_of(&tou, "SERVICE TIMER"),
         700,
         "timer-only header label stays Bold"
+    );
+}
+
+/// The regression guard for the finding above. `Family::Name("Inter")` is only bundled at
+/// weight 400 and 700; measured directly against the SAME public API `draw_text` uses
+/// (`selahcue_engine::raster::measure_line_width`, swept 400/500/600/700 at fixed text+px), a
+/// weight of 500 or 600 measures a DIFFERENT width from 400, from 700, and from each other —
+/// i.e. each escapes to its own distinct, host-installed system face, not a face "close
+/// enough" to either bundled one. So this pins the actual safety property `stage.rs`'s
+/// `design::WEIGHT_BOLD`/`WEIGHT_REGULAR` rely on, rather than trusting the two-values-only
+/// convention to hold by inspection. If a future change bundles real Inter Medium/Semi Bold
+/// faces (or the engine starts keeping weight fallback inside the requested family), this
+/// test's premise assertions (not its body) are what should start failing, and that failure
+/// is the signal `stage.rs` can safely reintroduce 500/600.
+#[test]
+fn only_the_two_bundled_inter_weights_are_requested_by_the_stage_composer() {
+    use selahcue_engine::raster::measure_line_width;
+
+    let font = selahcue_engine::scene::FontName::new("Inter").unwrap();
+    let text = "SERVICE TIMER 10:42 AM Verse 2 of 4";
+    let px = 100;
+
+    let w400 = measure_line_width(text, px, Some(&font), 400);
+    let w500 = measure_line_width(text, px, Some(&font), 500);
+    let w600 = measure_line_width(text, px, Some(&font), 600);
+    let w700 = measure_line_width(text, px, Some(&font), 700);
+
+    // Premise: the two bundled faces really do measure differently from each other, or this
+    // test would be unable to tell "escaped the family" from "landed on the bundled face".
+    assert_ne!(
+        w400, w700,
+        "the bundled Regular and Bold Inter faces measure identically"
+    );
+
+    assert_ne!(
+        w500, w400,
+        "weight 500 now measures the same as bundled Inter Regular (400) — if a real Inter \
+         Medium face was bundled, `design::WEIGHT_REGULAR` can be replaced with a proper \
+         Medium constant for the stanza/NEXT/footer roles"
+    );
+    assert_ne!(
+        w500, w700,
+        "weight 500 measures the same as bundled Inter Bold (700) — unexpected; re-check \
+         before treating 500 as safe"
+    );
+    assert_ne!(
+        w600, w400,
+        "weight 600 measures the same as bundled Inter Regular (400) — unexpected; re-check \
+         before treating 600 as safe"
+    );
+    assert_ne!(
+        w600, w700,
+        "weight 600 now measures the same as bundled Inter Bold (700) — if a real Inter Semi \
+         Bold face was bundled, `design::WEIGHT_REGULAR` can be replaced with a proper Semi \
+         Bold constant for the wall-clock roles"
     );
 }
 

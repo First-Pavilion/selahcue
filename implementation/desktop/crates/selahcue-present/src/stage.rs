@@ -499,13 +499,25 @@ mod design {
     /// Runs the design sets no tracking on.
     pub const TRACK_NONE: f64 = 0.0;
 
-    // — Font weight (STG-012). Three distinct values across the frames: Bold for
-    // labels/readouts, Semi Bold for the wall clock, Medium for the stanza position, both
-    // NEXT lines and the timer-only footer. See `line`'s doc comment for what the bundled
-    // single-weight face can actually render of this distinction.
+    // — Font weight (STG-012). The design draws three weights (Bold for labels/readouts,
+    // Semi Bold for the wall clock, Medium for the stanza position, both NEXT lines and the
+    // timer-only footer), but this crate can only safely REQUEST two: `Family::Name("Inter")`
+    // has a bundled face at exactly 400 and 700 (`selahcue-engine/src/raster.rs`'s
+    // `INTER_BYTES`/`INTER_BOLD_BYTES`), and asking that family for anything else does not
+    // fall back to the nearest bundled weight — it falls OUT of the family entirely, onto
+    // whatever the host happens to have installed. Measured directly
+    // (`measure_line_width(text, px, Some(Inter), weight)`, same text/px, weight swept
+    // 400..=700): 400 and 700 land on the two bundled faces as expected, but 500 and 600 each
+    // measure a DIFFERENT width from 400, from 700, and from EACH OTHER — i.e. distinct,
+    // host-dependent system faces, not "close enough to Bold" and not "close enough to
+    // Regular". So Semi Bold and Medium both collapse to Regular here — not because the
+    // difference doesn't matter, but because rendering it safely needs either a bundled
+    // Inter Medium/Semi Bold static face or an engine change that keeps weight fallback
+    // inside the requested family, and this crate has neither today.
     pub const WEIGHT_BOLD: u16 = 700;
-    pub const WEIGHT_SEMIBOLD: u16 = 600;
-    pub const WEIGHT_MEDIUM: u16 = 500;
+    /// Regular — the bundled Inter face used for every chrome role Design 2.0 draws Semi
+    /// Bold or Medium (see the module doc above for why those two collapse into this one).
+    pub const WEIGHT_REGULAR: u16 = 400;
 }
 
 // The premise the elastic bands rest on: the design's own fixed rects leave real space
@@ -518,12 +530,14 @@ const _: () = assert!(design::Y_NEXT_ROW < design::Y_TIMER_BAND);
 const _: () = assert!(design::Y_VERSE + design::H_VERSE < design::Y_SCRIPTURE_NEXT_ROW);
 const _: () = assert!(design::Y_SCRIPTURE_NEXT_ROW < REF_H - design::Y_BOTTOM_MARGIN);
 
-// STG-012's premise: the three weight constants must actually be three DIFFERENT numbers, or
-// `chrome_runs_carry_the_designed_font_weight` would assert real distinctions between values
-// that collapse to the same constant.
-const _: () = assert!(design::WEIGHT_BOLD != design::WEIGHT_SEMIBOLD);
-const _: () = assert!(design::WEIGHT_BOLD != design::WEIGHT_MEDIUM);
-const _: () = assert!(design::WEIGHT_SEMIBOLD != design::WEIGHT_MEDIUM);
+// STG-012's premise: the two weight constants must actually be different numbers, or
+// `chrome_runs_carry_the_designed_font_weight` would assert a distinction between values
+// that collapse to the same constant. Also pins them to the two weights proven safe for the
+// bundled `Inter` family above (400/700) — changing either away from those reintroduces the
+// host-dependent font substitution this batch found and backed out.
+const _: () = assert!(design::WEIGHT_BOLD != design::WEIGHT_REGULAR);
+const _: () = assert!(design::WEIGHT_BOLD == 700);
+const _: () = assert!(design::WEIGHT_REGULAR == 400);
 
 /// Format a whole-second count as `M:SS` for the timer readout.
 fn format_clock(secs: u32) -> String {
@@ -685,13 +699,16 @@ fn stage_font() -> Option<FontName> {
 /// A single line of stage CHROME — labels, the timer readout, the scripture reference, the
 /// message chip. `weight` is a CSS-style numeric weight (STG-012): the design uses three —
 /// **Bold** (700) for labels/readouts, **Semi Bold** (600) for the wall clock, and
-/// **Medium** (500) for the stanza position, both NEXT lines and the timer-only footer.
-/// The bundled single-weight face only synthesises an embolden above 550
-/// (`selahcue_engine::raster::attrs_for`'s doc comment), so 500 and 600 render identically to
-/// each other and distinctly *lighter* than 700 — the achievable slice of the design's
-/// hierarchy with this font, and still the correct semantic value to carry per run. `track` is
-/// letter-spacing in device px (already scaled by [`Metrics::track`]); the design tracks nine
-/// of these runs.
+/// **Medium** (500) for the stanza position, both NEXT lines and the timer-only footer — but
+/// only `design::WEIGHT_BOLD` (700) and `design::WEIGHT_REGULAR` (400) are ever passed here;
+/// see the `design` module's font-weight doc comment for why 600/500 are unsafe to request
+/// with this crate's bundled `Inter` asset (they resolve to a DIFFERENT, host-installed
+/// typeface, not to a lighter Inter). This is **not** the faux-bold embolden path — that one
+/// lives in `selahcue-engine::raster::draw_text` (not `attrs_for`), triggers above weight 550,
+/// and is gated on `font.is_none()`, which is never true here: `line()` always passes
+/// `stage_font()` (`Some("Inter")`), so chrome always takes the real-face path, never the
+/// synthesised-embolden one. `track` is letter-spacing in device px (already scaled by
+/// [`Metrics::track`]); the design tracks nine of these runs.
 ///
 /// Chrome runs go through this path, which pushes a `Layer::Text` **directly** — they never
 /// reach `compose::autofit_layers` and so never reach `measure`'s memo, whose key is
@@ -1002,7 +1019,7 @@ fn header_clock(
         theme.text,
         TextAlign::Right,
         m.track(design::TRACK_NONE),
-        design::WEIGHT_SEMIBOLD,
+        design::WEIGHT_REGULAR,
     );
 }
 
@@ -1159,7 +1176,7 @@ fn compose_worship(
                     theme.muted,
                     TextAlign::Left,
                     m.track(design::TRACK_NONE),
-                    design::WEIGHT_MEDIUM,
+                    design::WEIGHT_REGULAR,
                 );
             }
         }
@@ -1289,7 +1306,7 @@ fn compose_worship(
             theme.muted,
             TextAlign::Left,
             m.track(design::TRACK_NONE),
-            design::WEIGHT_MEDIUM,
+            design::WEIGHT_REGULAR,
         );
     }
 
@@ -1551,7 +1568,7 @@ fn compose_scripture(
             theme.muted,
             TextAlign::Left,
             m.track(design::TRACK_NONE),
-            design::WEIGHT_MEDIUM,
+            design::WEIGHT_REGULAR,
         );
     }
 
@@ -1796,7 +1813,7 @@ fn compose_timer_only(
             theme.text,
             TextAlign::Right,
             m.track(design::TRACK_NONE),
-            design::WEIGHT_SEMIBOLD,
+            design::WEIGHT_REGULAR,
         );
     }
 
@@ -1932,7 +1949,7 @@ fn compose_timer_only(
             if up { theme.muted } else { theme.text },
             TextAlign::Center,
             m.track(design::TRACK_NONE),
-            design::WEIGHT_MEDIUM,
+            design::WEIGHT_REGULAR,
         );
     }
 }

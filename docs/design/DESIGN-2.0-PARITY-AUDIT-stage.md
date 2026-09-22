@@ -869,15 +869,29 @@ from the prior doc.
 - **`STG-012`** (font weight uniformly 700) — the design uses three weights: Bold (700) for
   labels/readouts, Semi Bold (600) for the wall clock (all three templates), Medium (500) for the
   stanza position, both NEXT lines, and the timer-only footer. `line()` now takes an explicit
-  `weight: u16` and every one of its 25 call sites passes the semantically correct
-  `design::WEIGHT_BOLD` / `WEIGHT_SEMIBOLD` / `WEIGHT_MEDIUM`. Note for whoever next touches
-  typography here: the bundled single-weight face only synthesises an embolden above 550
-  (`selahcue_engine::raster::attrs_for`), so 600 and 500 currently render pixel-identical to each
-  other and only distinguishable from 700 — carrying the correct semantic value now is what makes
-  a future multi-weight face (or an engine change) a no-op here instead of a second sweep.
-  Verified: `chrome_runs_carry_the_designed_font_weight`
-  (`crates/selahcue-present/tests/test_stage_parity.rs`), mutation-verified (reverted the wall
-  clock to Bold, confirmed RED with siblings running, restored).
+  `weight: u16`, but **only two values are ever passed**: `design::WEIGHT_BOLD` (700) and
+  `design::WEIGHT_REGULAR` (400) — Semi Bold and Medium both render as Regular. This is a
+  correction from this batch's own first cut, which initially passed literal 600/500 and was
+  caught in review (Sana flagged the doc comment as inverted; Vera then measured the actual
+  rendering and found the real defect underneath it). `Family::Name("Inter")` is bundled at
+  exactly two weights — 400 and 700 (`selahcue-engine`'s `INTER_BYTES`/`INTER_BOLD_BYTES`) — and
+  requesting any other weight from that family does not fall back to the nearest bundled face; it
+  falls OUT of the family entirely, onto whatever the host has installed. Measured directly
+  (`measure_line_width`, same text/px, weight swept 400/500/600/700): 400 and 700 land on the two
+  bundled faces as expected, but 500 and 600 each measure a DIFFERENT width from 400, from 700,
+  and from **each other** — three more distinct, host-dependent system faces, not "500 and 600
+  both render as a lighter weight than 700" as the faulty first-cut comment claimed (that comment
+  also mis-cited the embolden-synthesis threshold — real code, but in `draw_text`, gated on
+  `font.is_none()`, which is never true for chrome; it does not apply to this font at all). So
+  Semi Bold and Medium collapse into Regular here, not as a shortcut, but because rendering the
+  full three-tier hierarchy safely needs a bundled Inter Medium/Semi Bold static face — or an
+  engine change that keeps weight fallback inside the requested family — and this crate has
+  neither. Verified: `chrome_runs_carry_the_designed_font_weight` (mutation-verified against the
+  corrected 400 values) plus a new permanent regression guard,
+  `only_the_two_bundled_inter_weights_are_requested_by_the_stage_composer`, which pins the
+  measured safety property itself so a future change away from `{400, 700}` fails loudly instead
+  of shipping another silent host-dependent font swap
+  (`crates/selahcue-present/tests/test_stage_parity.rs`).
 
 ### Closed by verification — already fixed incidentally by the 2026-08-24 batch, no code change
 
@@ -987,12 +1001,23 @@ happen.
 | Closed — owner decision already recorded | 1 |
 | Closed — editorial resolution | 1 |
 | Closed — superseded / verified non-issue | 6 |
-| **Still open, re-verified genuinely blocked** | **17** |
+| **Still open, re-verified genuinely blocked** | **16** |
 
-13 of the ids this pass triaged closed without a values decision; the 17 that remain open are
-blocked on exactly what the 2026-09-20 reconciliation predicted: four on a cross-surface token
-batch plus one content-driven layout item in the same neighbourhood (`STG-001/006/007/031/033`),
-one on Q2 (`STG-002`), one on scope (`STG-016`), six on data plumbing not yet built (two also on
-Q2), two on unresolved owner questions (Q4, Q7), and one on an architecture choice (`STG-068`).
-None of the ids this pass reviewed needed a value invented on the spot; every open item above
-names the exact decision or dependency it is waiting on.
+13 of the ids this pass triaged closed without a values decision; the 16 that remain open (listed
+above, one bullet group each) are blocked on exactly what the 2026-09-20 reconciliation predicted:
+four on a cross-surface token batch plus one content-driven layout item in the same neighbourhood
+(`STG-001/006/007/031/033`), one on Q2 (`STG-002`), one on scope (`STG-016`), six on data plumbing
+not yet built (`STG-029/036/052/058/059/060`, two of them also on Q2), two on unresolved owner
+questions (Q4 `STG-050`, Q7 `STG-069`), and one on an architecture choice (`STG-068`). None of the
+ids this pass reviewed needed a value invented on the spot; every open item above names the exact
+decision or dependency it is waiting on.
+
+**Note on `STG-060` and why 13 + 16 isn't 28.** `STG-060` (the timer-only footer) is split across
+two states, not double-counted: its **type-size** half was already `FIXED` in the 2026-08-24 batch
+(counted in the original 48), and this pass's "still open" list above carries only its remaining
+**ink/data** half (bundled with `STG-058`/`STG-059` under the two-tone-footer bullet). The
+2026-09-20 reconciliation's own "12 confirmed open" count made the same exclusion implicitly; this
+pass states it explicitly so the arithmetic is checkable rather than approximate — 13 closed this
+pass + 16 still open + 1 finding (`STG-060`) whose two halves land in different buckets accounts
+for the full 28-id scope this ticket was given, without forcing a false single verdict onto a
+finding that genuinely has two.
