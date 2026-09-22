@@ -849,7 +849,26 @@ if not check_jump_call_site_is_click_only():
 # on the same text would have wrongly read the FIRST. Per this constant's own repeated lesson:
 # re-derived empirically, not hand-summed. Three independent runs against the real post-rebase
 # tree all reported 1818, 0 FAIL.
-EXPECTED_MIN_CHECKS = 1818
+#
+# 1818 -> ?: Cody's independent review of PR #75 (comment on that PR) found that
+# PME-005/TD-012/PSC-005/DLM-001/GO-LIVE-HOVER/TIMER-START-HOVER's `background`/`background-image`
+# reads shared the identical bug shape PR #75 fixed for `filter:` — a non-global regex's `.exec()`
+# only ever returns the FIRST declaration, but the CSS cascade applies the LAST when a property
+# repeats. Flagged there as a non-blocking follow-up (lower risk than `filter:` since a duplicate
+# `background:` isn't a documented idiom in this file the way `filter: none` neutralization is),
+# fixed here: all eight call sites now route through one new `_lastBackgroundDecl()` helper —
+# matching global, keeping the last hit — parameterized for the `-color` vs `-image` suffix the
+# two regex shapes needed. Added a `BACKGROUND-REGEX-LASTMATCH` / `BACKGROUND-IMAGE-REGEX-LASTMATCH`
+# mutation-proof check pair (+4) covering both branches of the helper: each feeds a duplicate
+# `background-color:`/`background-image:` declaration through the real shared helper and asserts
+# it resolves to the LAST (winning) value, not the first. Reverting `_lastBackgroundDecl()` to its
+# pre-fix non-global `.exec()` and re-running reproduced exactly those 4 new FAIL and nothing else;
+# restoring returned to 0 FAIL. Rebased onto main's own SET-010 stack (1768->1816 above), then onto
+# main's own PR #76 (`_lastRule()`, the rule-LOOKUP counterpart to this fix's declaration-PARSING
+# focus — 1816->1818 above) — real conflict in this exact block again — per this constant's own
+# repeated lesson, re-derived empirically after resolving rather than hand-summed. Confirmed by a
+# clean run: 1822, 0 FAIL.
+EXPECTED_MIN_CHECKS = 1822
 
 
 def find_chrome():
@@ -9597,6 +9616,24 @@ right after a generate/save");
         while ((m = g.exec(cssText)) !== null) { last = m; }
         return last;
       }
+      // `.exec()` on a non-global regex only ever returns the FIRST match, but the CSS cascade
+      // applies the LAST declaration when a property repeats within one rule (a duplicate
+      // `background:`/`background-color:`/`background-image:` — merge artefact, copy-paste
+      // mistake, future edit — is plausible authored CSS, same as the `filter:` case). Cody
+      // (review of PR #75) found the PME-005/TD-012/PSC-005/DLM-001/GO-LIVE-HOVER/TIMER-START-HOVER
+      // guards below all shared this identical shape for their `background` reads and flagged it
+      // as a non-blocking follow-up; fixed here the same way PR #75 fixed it for `filter:` — match
+      // globally and keep the last hit, the declaration that actually wins the cascade. Two of the
+      // eight call sites (PSC-005's disabled-vs-rest comparison) need the `-image` suffix instead
+      // of `-color`, hence the parameter rather than two near-duplicate helpers.
+      function _lastBackgroundDecl(ruleText, withImage){
+        var re = withImage
+          ? /background(?:-image)?\s*:\s*([^;]+)/g
+          : /background(?:-color)?\s*:\s*([^;]+)/g;
+        var m, last = null;
+        while ((m = re.exec(ruleText)) !== null) { last = m; }
+        return last;
+      }
       // Shorter wait budget than the default 150×20ms. This block sits at the very END of the
       // driver, so every FAILING predicate here spends virtual time that the RESULTS write still
       // needs: at the default budget a handful of real regressions could push the run past
@@ -9731,7 +9768,7 @@ right after a generate/save");
       // --- PME-005: .pm-btn-primary:hover ---------------------------------------------------
       var wHoverRule = _lastRule(/\.pm-btn-primary:hover\s*\{([^}]*)\}/, window.__CSSTEXT || "");
       ok(!!wHoverRule, "PME-005 (premise): the .pm-btn-primary:hover rule is present in the shipped app.css");
-      var wHb = wHoverRule ? /background(?:-color)?\s*:\s*([^;]+)/.exec(wHoverRule[1]) : null;
+      var wHb = wHoverRule ? _lastBackgroundDecl(wHoverRule[1]) : null;
       ok(!!wHb, "PME-005 (premise): the hover rule declares a background, so there is a value to measure");
       if (wHb) {
         var wHoverBg = _resolve(wHb[1].trim());
@@ -9762,7 +9799,7 @@ right after a generate/save");
         });
         var wTdHoverRule = _lastRule(/\.td-save-cta:hover\s*\{([^}]*)\}/, window.__CSSTEXT || "");
         ok(!!wTdHoverRule, "TD-012 (premise): the .td-save-cta:hover rule is present in the shipped app.css");
-        var wTdHb = wTdHoverRule ? /background(?:-color)?\s*:\s*([^;]+)/.exec(wTdHoverRule[1]) : null;
+        var wTdHb = wTdHoverRule ? _lastBackgroundDecl(wTdHoverRule[1]) : null;
         ok(!!wTdHb, "TD-012 (premise): the hover rule declares a background, so there is a value to measure");
         if (wTdHb) {
           var wTdHoverBg = _resolve(wTdHb[1].trim());
@@ -9797,7 +9834,7 @@ right after a generate/save");
         });
         var wPsHoverRule = _lastRule(/\.ps-start:hover\s*\{([^}]*)\}/, window.__CSSTEXT || "");
         ok(!!wPsHoverRule, "PSC-005 (premise): the .ps-start:hover rule is present in the shipped app.css");
-        var wPsHb = wPsHoverRule ? /background(?:-color)?\s*:\s*([^;]+)/.exec(wPsHoverRule[1]) : null;
+        var wPsHb = wPsHoverRule ? _lastBackgroundDecl(wPsHoverRule[1]) : null;
         ok(!!wPsHb, "PSC-005 (premise): the hover rule declares a background, so there is a value to measure");
         if (wPsHb) {
           var wPsHoverBg = _resolve(wPsHb[1].trim());
@@ -9824,7 +9861,7 @@ right after a generate/save");
       // disabled rule's own text is checked for a `background` declaration to win the cascade.
       var wPsDisabledRule = _lastRule(/\.ps-start:disabled,\s*\.ps-start\[aria-disabled="true"\]\s*\{([^}]*)\}/, window.__CSSTEXT || "");
       ok(!!wPsDisabledRule, "PSC-005 (premise): the .ps-start:disabled rule is present in the shipped app.css");
-      var wPsDisabledBg = wPsDisabledRule ? /background(?:-image)?\s*:\s*([^;]+)/.exec(wPsDisabledRule[1]) : null;
+      var wPsDisabledBg = wPsDisabledRule ? _lastBackgroundDecl(wPsDisabledRule[1], true) : null;
       ok(!!wPsDisabledBg,
          "PSC-005: the disabled rule declares its OWN background — without one, `:hover` (equal specificity, later in a real disabled+hover) wins the fill and a disabled button visibly flips to the active colour on hover");
       // Cody + Vera (PR #62 review): presence alone doesn't prove the VALUE is right — a
@@ -9837,7 +9874,7 @@ right after a generate/save");
       // rest-state rule matches.
       var wPsBaseRule = _lastRule(/\.ps-start\s*\{([^}]*)\}/, window.__CSSTEXT || "");
       ok(!!wPsBaseRule, "PSC-005 (premise): the rest-state .ps-start rule is present in the shipped app.css");
-      var wPsBaseBg = wPsBaseRule ? /background(?:-image)?\s*:\s*([^;]+)/.exec(wPsBaseRule[1]) : null;
+      var wPsBaseBg = wPsBaseRule ? _lastBackgroundDecl(wPsBaseRule[1], true) : null;
       ok(!!wPsBaseBg, "PSC-005 (premise): the rest-state rule declares a background, so there is a value to compare the disabled rule against");
       if (wPsDisabledBg && wPsBaseBg) {
         ok(wPsDisabledBg[1].trim() === wPsBaseBg[1].trim(),
@@ -9887,7 +9924,7 @@ right after a generate/save");
       // --- DLM-001: .dl-btn-primary:hover (Download modal primary button) --------------------
       var wDlHoverRule = _lastRule(/\.dl-btn-primary:hover\s*\{([^}]*)\}/, window.__CSSTEXT || "");
       ok(!!wDlHoverRule, "DLM-001 (premise): the .dl-btn-primary:hover rule is present in the shipped app.css");
-      var wDlHb = wDlHoverRule ? /background(?:-color)?\s*:\s*([^;]+)/.exec(wDlHoverRule[1]) : null;
+      var wDlHb = wDlHoverRule ? _lastBackgroundDecl(wDlHoverRule[1]) : null;
       ok(!!wDlHb, "DLM-001 (premise): the hover rule declares a background, so there is a value to measure");
       if (wDlHb) {
         var wDlRestEl = document.querySelector(".dl-btn-primary");
@@ -9926,7 +9963,7 @@ right after a generate/save");
         });
         var wTbGlHoverRule = _lastRule(/\.tb-golive:hover\s*\{([^}]*)\}/, window.__CSSTEXT || "");
         ok(!!wTbGlHoverRule, "GO-LIVE-HOVER (premise): the .tb-golive:hover rule is present in the shipped app.css");
-        var wTbGlHb = wTbGlHoverRule ? /background(?:-color)?\s*:\s*([^;]+)/.exec(wTbGlHoverRule[1]) : null;
+        var wTbGlHb = wTbGlHoverRule ? _lastBackgroundDecl(wTbGlHoverRule[1]) : null;
         ok(!!wTbGlHb, "GO-LIVE-HOVER (premise): the hover rule declares a background, so there is a value to measure — a bare `filter: brightness()` would leave nothing here");
         if (wTbGlHb) {
           var wTbGlHoverBg = _resolve(wTbGlHb[1].trim());
@@ -9962,7 +9999,7 @@ right after a generate/save");
         });
         var wTsHoverRule = _lastRule(/\.timer-start:hover\s*\{([^}]*)\}/, window.__CSSTEXT || "");
         ok(!!wTsHoverRule, "TIMER-START-HOVER (premise): the .timer-start:hover rule is present in the shipped app.css");
-        var wTsHb = wTsHoverRule ? /background(?:-color)?\s*:\s*([^;]+)/.exec(wTsHoverRule[1]) : null;
+        var wTsHb = wTsHoverRule ? _lastBackgroundDecl(wTsHoverRule[1]) : null;
         ok(!!wTsHb, "TIMER-START-HOVER (premise): the hover rule declares a background, so there is a value to measure — a bare `filter: brightness()` would leave nothing here");
         if (wTsHb) {
           var wTsHoverBg = _resolve(wTsHb[1].trim());
@@ -10005,7 +10042,12 @@ right after a generate/save");
       if (wPpGenHoverRule) {
         ok(!/filter\s*:\s*brightness/.test(wPpGenHoverRule[1]),
            "PP-GEN: .pp-generate:hover does NOT use filter:brightness() — that would re-lighten the darkened gradient stop, the exact gap still open on .tb-golive/.timer-start");
-        var wPpGenHb = /background(?:-color)?\s*:\s*([^;]+)/.exec(wPpGenHoverRule[1]);
+        // Rebased onto main's own PR #60 stack, which added this call site after this branch's
+        // own fix was written — routed through the same shared `_lastBackgroundDecl()` helper as
+        // every other background-guard in this file, for the identical reason (see that
+        // helper's own comment above): a non-global `.exec()` here would read the FIRST
+        // `background:`/`background-color:` declaration, not the one the cascade applies.
+        var wPpGenHb = _lastBackgroundDecl(wPpGenHoverRule[1]);
         ok(!!wPpGenHb, "PP-GEN (premise): the hover rule declares a background, so there is a value to measure");
         if (wPpGenHb) {
           var wPpGenHoverBg = _resolve(wPpGenHb[1].trim());
@@ -10024,12 +10066,12 @@ right after a generate/save");
       // just any declared value — Cody/Vera's PR #62 finding on PSC-005 itself).
       var wPpGenDisabledRule = _lastRule(/\.pp-generate\[disabled\],\s*\.pp-generate\[aria-busy="true"\]\s*\{([^}]*)\}/, window.__CSSTEXT || "");
       ok(!!wPpGenDisabledRule, "PP-GEN (premise): the .pp-generate[disabled] rule is present in the shipped app.css");
-      var wPpGenDisabledBg = wPpGenDisabledRule ? /background(?:-image)?\s*:\s*([^;]+)/.exec(wPpGenDisabledRule[1]) : null;
+      var wPpGenDisabledBg = wPpGenDisabledRule ? _lastBackgroundDecl(wPpGenDisabledRule[1], true) : null;
       ok(!!wPpGenDisabledBg,
          "PP-GEN: the disabled rule declares its OWN background — without one, `:hover` (equal specificity) wins the fill and a disabled button visibly flips to the active colour on hover");
       var wPpGenBaseRule = _lastRule(/\.pp-generate\s*\{([^}]*)\}/, window.__CSSTEXT || "");
       ok(!!wPpGenBaseRule, "PP-GEN (premise): the rest-state .pp-generate rule is present in the shipped app.css");
-      var wPpGenBaseBg = wPpGenBaseRule ? /background(?:-image)?\s*:\s*([^;]+)/.exec(wPpGenBaseRule[1]) : null;
+      var wPpGenBaseBg = wPpGenBaseRule ? _lastBackgroundDecl(wPpGenBaseRule[1], true) : null;
       ok(!!wPpGenBaseBg, "PP-GEN (premise): the rest-state rule declares a background, so there is a value to compare the disabled rule against");
       if (wPpGenDisabledBg && wPpGenBaseBg) {
         ok(wPpGenDisabledBg[1].trim() === wPpGenBaseBg[1].trim(),
@@ -10062,6 +10104,33 @@ right after a generate/save");
       var wDupRulePlainFirst = /\.dup-sel:hover\s*\{([^}]*)\}/.exec(wDupRuleCss);
       ok(!!wDupRulePlainFirst && /#111111/.test(wDupRulePlainFirst[1]),
          "RULE-REGEX-LASTMATCH: a plain non-global .exec() would have wrongly read the FIRST (losing) block instead (\"" + (wDupRulePlainFirst ? wDupRulePlainFirst[1].trim() : "") + "\") — proving `_lastRule()`'s global-match fix is what changes the outcome, not a no-op");
+
+      // --- BACKGROUND-REGEX-LASTMATCH / BACKGROUND-IMAGE-REGEX-LASTMATCH: the shared
+      // background-guard above reads the declaration that WINS the CSS cascade, not exec()'s
+      // first match -----------------------------------------------------------------------------
+      // Cody (review of PR #75): a non-global regex's `.exec()` only ever returns the FIRST
+      // match, but the CSS cascade applies the LAST declaration when a property repeats within
+      // one rule — the identical shape of bug PR #75 fixed for `filter:` (`_lastFilterDecl()`
+      // above), flagged there as a non-blocking follow-up for the `background`/`background-image`
+      // guards used by PME-005/TD-012/PSC-005/DLM-001/GO-LIVE-HOVER/TIMER-START-HOVER above. A
+      // rule authored (or merged) with a duplicate `background-color:` — plausible from a merge
+      // artefact, a copy-paste mistake, or a future edit — would have had these guards report the
+      // FIRST value while the browser actually applies the LAST. Run that exact duplicate through
+      // the real shared helper and prove it now returns the winning declaration, not the first.
+      var wDupBgRule = "color:#fff; background-color: #111111; background-color: #5a48d0;";
+      var wDupBg = _lastBackgroundDecl(wDupBgRule);
+      ok(!!wDupBg && wDupBg[1].trim() === "#5a48d0",
+         "BACKGROUND-REGEX-LASTMATCH (premise): a duplicate `background-color:` declaration resolves to the LAST one — the value the cascade actually applies (found \"" + (wDupBg ? wDupBg[1].trim() : "none") + "\")");
+      ok(wDupBg[1].trim() !== "#111111",
+         "BACKGROUND-REGEX-LASTMATCH: the shared background-guard does not resolve to the FIRST declaration (with the old non-global .exec(), this rule would have wrongly resolved to \"#111111\")");
+      // PSC-005's disabled-vs-rest comparison uses the `-image` branch of the same helper — cover
+      // it separately since it is a genuinely different regex, not just a different call site.
+      var wDupBgImgRule = "opacity:.45; background-image: linear-gradient(a); background-image: linear-gradient(b);";
+      var wDupBgImg = _lastBackgroundDecl(wDupBgImgRule, true);
+      ok(!!wDupBgImg && wDupBgImg[1].trim() === "linear-gradient(b)",
+         "BACKGROUND-IMAGE-REGEX-LASTMATCH (premise): a duplicate `background-image:` declaration resolves to the LAST one (found \"" + (wDupBgImg ? wDupBgImg[1].trim() : "none") + "\")");
+      ok(wDupBgImg[1].trim() !== "linear-gradient(a)",
+         "BACKGROUND-IMAGE-REGEX-LASTMATCH: the shared background-guard does not resolve to the FIRST declaration (with the old non-global .exec(), PSC-005's disabled-vs-rest comparison could have wrongly matched or mismatched on a stale first value instead of the one the cascade applies)");
 
       // --- PME-014 / PME-015: the two missing topbar primary actions ------------------------
       document.querySelector('.nav-item[data-surface="presentation"]').click();
