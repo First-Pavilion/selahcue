@@ -1350,9 +1350,11 @@
             b.removeAttribute("aria-current");
           }
         });
-        // 17tnw2axptw: About & Licensing + Appearance (Tier 1) and General + Scripture &
-        // Translations (Tier 2) join the built map here. Outputs/Security/Storage still fall
-        // through to the shared placeholder until Tier 3 lands.
+        // 17tnw2axptw: all 9 sidebar items are now built — About & Licensing + Appearance
+        // (Tier 1), General + Scripture & Translations (Tier 2), Outputs & Displays + Security +
+        // Storage & Backups (Tier 3, this batch's final tier). The placeholder below is now
+        // unreachable from this sidebar but stays as the honest fallback for an unrecognised page
+        // key (defensive — never a blank Settings body).
         const built = {
           providers: "set-page-providers",
           network: "set-page-network",
@@ -1360,6 +1362,9 @@
           appearance: "set-page-appearance",
           general: "set-page-general",
           scripture: "set-page-scripture",
+          outputs: "set-page-outputs",
+          security: "set-page-security",
+          storage: "set-page-storage",
         };
         document.querySelectorAll("#surface-settings .set-page").forEach((p) => {
           p.hidden = true;
@@ -1371,6 +1376,10 @@
           if (page === "appearance" && typeof settingsAppearanceActivate === "function") settingsAppearanceActivate();
           if (page === "general" && typeof settingsGeneralActivate === "function") settingsGeneralActivate();
           if (page === "scripture" && typeof settingsScriptureActivate === "function") settingsScriptureActivate();
+          if (page === "network" && typeof settingsNetworkActivate === "function") settingsNetworkActivate();
+          if (page === "outputs" && typeof settingsOutputsActivate === "function") settingsOutputsActivate();
+          if (page === "security" && typeof settingsSecurityActivate === "function") settingsSecurityActivate();
+          if (page === "storage" && typeof settingsStorageActivate === "function") settingsStorageActivate();
         } else {
           document.getElementById("set-placeholder").hidden = false;
           document.getElementById("set-ph-title").textContent = lbl || "Settings";

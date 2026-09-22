@@ -707,7 +707,7 @@ if not check_jump_call_site_is_click_only():
 # test above and re-confirmed by inspection; finding E (app.css's CON-134 comment block still
 # named the pre-fix window.__openChapterForStage as Edit's call) was a stale-comment correction
 # only. Confirmed by two independent runs (both 1625, 0 FAIL).
-EXPECTED_MIN_CHECKS = 1689
+EXPECTED_MIN_CHECKS = 1713
 
 
 def find_chrome():
@@ -10666,6 +10666,137 @@ right after a generate/save");
         var scRowBg = getComputedStyle(scRowD.closest(".set-row")).backgroundColor;
         var scRowDc = _contrast(getComputedStyle(scRowD).color, scRowBg);
         ok(scRowDc >= 4.5, "Settings/Scripture: .set-row-d body copy clears AA-normal on its own row background (" + scRowDc.toFixed(2) + ":1)");
+      }
+
+      // === Settings › Network & Mobile — SET-009 addendum (story 17tnw2axweu) ===
+      {
+        // Reset the shared __remote fixture to a known state — the earlier Remote Control block
+        // (Frame G aside) already approved/revoked devices against this SAME global, so this
+        // point in the suite cannot assume the pristine two-devices-one-pending fixture.
+        window.__remote.devices = [
+          { device_id: "dev-aa01", name: "Booth iPad", platform: "iPadOS", role: "producer", idle_secs: 3, pinned: false },
+          { device_id: "dev-bb02", name: "Guest tablet", platform: "iPadOS", role: "viewer", idle_secs: 210, pinned: false },
+        ];
+        window.__remote.pending = [
+          { device_id: "dev-cc03", name: "Anna's iPhone", platform: "iOS", fingerprint: "A1 B2 C3 D4", waiting_secs: 8 },
+        ];
+        document.querySelector('.nav-item[data-surface="settings"]').click();
+        setSettingsPage("network");
+        await sleep(40);
+        ok(window.__calls.some(function(c){ return c.cmd === "remote_snapshot"; }),
+           "Settings/Network SET-009: the paired-devices summary is loaded via the real remote_snapshot() command");
+        ok(/2 paired total/.test(el("net-paired-summary").textContent) && /1 online/.test(el("net-paired-summary").textContent) && /1 idle\/offline/.test(el("net-paired-summary").textContent) && /1 pending request/.test(el("net-paired-summary").textContent),
+           "Settings/Network SET-009: the summary reflects REAL device counts, never the Figma mock's fabricated '3 paired total · 2 connected · 1 offline' (\"" + el("net-paired-summary").textContent + "\")");
+        el("net-open-roles").click();
+        ok(el("surface-remote").classList.contains("active"),
+           "Settings/Network SET-009: 'Manage roles & grants' really navigates to the Remote Control surface");
+        document.querySelector('.nav-item[data-surface="settings"]').click();
+        setSettingsPage("network");
+        ["net-advertised-name"].forEach(function(id){
+          ok(el(id).disabled, "Settings/Network SET-009: #" + id + " is honestly disabled — no LAN-defaults backend exists yet");
+        });
+      }
+
+      // === Settings › Outputs & Displays (Figma 579:124 — story 17tnw2axweu, closes SET-003) ===
+      {
+        document.querySelector('.nav-item[data-surface="settings"]').click();
+        setSettingsPage("outputs");
+        await sleep(40);
+        ok(el("set-page-outputs") && !el("set-page-outputs").hidden && el("set-placeholder").hidden,
+           "Settings/Outputs: the real page renders (SET-003 page-level MISSING closed, not the shared placeholder)");
+
+        // Displays: REAL view().displays, never the Figma mock's fabricated "Display 1 — 1920×1080
+        // · 60Hz · Built-in" text.
+        var outRows = document.querySelectorAll("#out-displays-list .set-row");
+        ok(outRows.length === V.displays.length && outRows.length > 0,
+           "Settings/Outputs: every real display renders as its own row (" + outRows.length + " of " + V.displays.length + ")");
+        ok(new RegExp(V.displays[0].name).test(outRows[0].textContent) && outRows[0].textContent.indexOf(String(V.displays[0].width)) !== -1,
+           "Settings/Outputs: a display row names the REAL display and its real resolution, not fabricated numbers");
+
+        // Identify displays: REAL command.
+        var outCallsBefore = window.__calls.length;
+        el("out-identify").click();
+        await sleep(30);
+        ok(window.__calls.slice(outCallsBefore).some(function(c){ return c.cmd === "identify_outputs"; }),
+           "Settings/Outputs: 'Identify' invokes the REAL identify_outputs() command");
+
+        // Manage screens: real navigation.
+        el("out-open-screens").click();
+        ok(el("surface-screens").classList.contains("active"),
+           "Settings/Outputs: 'Manage screens' really navigates to the Screens & Outputs surface");
+        document.querySelector('.nav-item[data-surface="settings"]').click();
+        setSettingsPage("outputs");
+
+        // Whole sections the FIGMA ITSELF marks SOON render that way — not fabricated content.
+        ok(/COMING SOON/.test(el("out-peroutput-h").textContent) && /COMING SOON/.test(el("out-netoutputs-h").textContent),
+           "Settings/Outputs: PER-OUTPUT CONFIG and NETWORK OUTPUTS render as the Figma frame's own SOON sections");
+
+        // Every control with no backend command is honestly disabled.
+        ["out-venue-select","out-audio-device"].forEach(function(id){
+          ok(el(id).disabled, "Settings/Outputs: #" + id + " is honestly disabled — no persistence exists for it yet");
+        });
+      }
+
+      // === Settings › Security (Figma 582:124 — story 17tnw2axweu, closes SET-005) ===
+      {
+        document.querySelector('.nav-item[data-surface="settings"]').click();
+        setSettingsPage("security");
+        await sleep(20);
+        ok(el("set-page-security") && !el("set-page-security").hidden && el("set-placeholder").hidden,
+           "Settings/Security: the real page renders (SET-005 page-level MISSING closed, not the shared placeholder)");
+
+        // CORRECTION vs. the Figma mock: at-rest encryption must NOT read as ON — verified against
+        // the real Cargo.toml/main.rs, not the design mock, which draws it enabled.
+        ok(/NOT YET ON/.test(el("set-page-security").textContent),
+           "Settings/Security: at-rest encryption honestly reads NOT YET ON — the Figma mock's 'ON' badge does not match this build (Cargo.toml has no `encryption` feature; main.rs calls Database::open, not open_encrypted)");
+        ok(!/VERIFIED · ANTI-ROLLBACK ON/.test(el("set-page-security").textContent),
+           "Settings/Security (control): no fabricated 'VERIFIED · ANTI-ROLLBACK ON' update-signature badge — no update mechanism exists in this build to verify anything");
+        ok(!/Sarah.s iPad|FOH Mac/.test(el("set-page-security").textContent),
+           "Settings/Security (control): no fabricated audit-log rows (the Figma mock's 'Sarah's iPad' / 'FOH Mac' entries) — this build has no audit data source");
+
+        // Real link-outs.
+        el("sec-open-providers").click();
+        ok(el("set-page-providers") && !el("set-page-providers").hidden,
+           "Settings/Security: 'Cloud providers & consent' really navigates to Providers & Privacy");
+        setSettingsPage("security");
+        el("sec-open-about").click();
+        ok(el("set-page-about") && !el("set-page-about").hidden,
+           "Settings/Security: 'Manage & install updates' really navigates to About & Licensing");
+        setSettingsPage("security");
+        el("sec-open-network-revoke").click();
+        ok(el("set-page-network") && !el("set-page-network").hidden,
+           "Settings/Security: 'Revoke all paired devices' really navigates to Network & Mobile");
+        document.querySelector('.nav-item[data-surface="settings"]').click();
+      }
+
+      // === Settings › Storage & Backups (Figma 583:124 — story 17tnw2axweu, closes SET-006) ===
+      {
+        setSettingsPage("storage");
+        await sleep(40);
+        ok(el("set-page-storage") && !el("set-page-storage").hidden && el("set-placeholder").hidden,
+           "Settings/Storage: the real page renders (SET-006 page-level MISSING closed, not the shared placeholder)");
+
+        // Disk usage: REAL disk_free() — never the Figma mock's fabricated "38.2 GB free of 256 GB".
+        ok(window.__calls.some(function(c){ return c.cmd === "disk_free"; }),
+           "Settings/Storage: disk usage is loaded via the real disk_free() command");
+        ok(/42\.0 GB free of 500\.0 GB/.test(el("st-disk-usage").textContent),
+           "Settings/Storage: the real fixture's disk_free() numbers render verbatim (\"" + el("st-disk-usage").textContent + "\")");
+
+        // Import/export: real link-out to the Service Plan surface (never a duplicated file-picker).
+        el("st-open-plan").click();
+        ok(el("surface-plan").classList.contains("active"),
+           "Settings/Storage: 'Import or export a service plan' really navigates to the Service Plan surface");
+        document.querySelector('.nav-item[data-surface="settings"]').click();
+        setSettingsPage("storage");
+
+        // Destructive actions with no backend command are honestly disabled, never a live-looking
+        // button with nothing behind it.
+        var stDangerButtons = Array.prototype.filter.call(
+          document.querySelectorAll("#set-page-storage .pp-optin-btn"),
+          function(b){ return /Back up now|Run check|Restore…|Change location…|Clear cache|Export diagnostics…/.test(b.textContent); }
+        );
+        ok(stDangerButtons.length >= 5 && stDangerButtons.every(function(b){ return b.disabled; }),
+           "Settings/Storage: every backup/restore/location/cache/diagnostics action is honestly disabled (" + stDangerButtons.length + " checked) — this build has no backend command behind any of them");
       }
 
     } catch(e){ R.push("FAIL: exception "+e.message+" @ "+(e.stack||"").split("\n")[1]); }
