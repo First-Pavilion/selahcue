@@ -289,17 +289,21 @@ above is left as originally written — this is the *current* status layered on 
 3. Computed the WCAG contrast for `PLN-009` directly from the live `--sc-*` token values and
    corroborated it against the existing automated sweep (`PL AC-46` in `operator_headless.py`, which
    already includes `.plan-viewonly`/`.plan-viewonly-why` in its ink-contrast site list).
-4. Verified with `python3 scripts/operator_headless.py`: **1821 checks, 0 FAIL** (1818 immediately
-   before this ticket's 3 new checks, after rebasing onto `origin/main`'s intervening fixes — a real
-   conflict in `EXPECTED_MIN_CHECKS`'s own history block — re-derived from an actual clean run per
-   that constant's own discipline, never hand-summed; two independent post-rebase runs both read
-   1821, 0 FAIL, matching `EXPECTED_MIN_CHECKS` in `scripts/operator_headless.py`).
+4. Verified with `python3 scripts/operator_headless.py`: **1824 checks, 0 FAIL** (1818 immediately
+   before this ticket's checks, after rebasing onto `origin/main`'s intervening fixes — a real
+   conflict in `EXPECTED_MIN_CHECKS`'s own history block, resolved by re-deriving the count from an
+   actual clean run, never hand-summed; 1821 after this ticket's original 3 PLN-004 checks; 1824
+   after Vera's PR #83 performance review found the fix needed a cascade guard for the
+   live-AND-staged case (below) and 3 more checks were added to prove it — matching
+   `EXPECTED_MIN_CHECKS` in `scripts/operator_headless.py`, confirmed by two independent clean runs,
+   and mutation-verified by reverting the guard and watching exactly the 2 new precedence
+   assertions go red).
 
 ### FIXED
 
 | Finding | Evidence |
 |---|---|
-| `PLN-004` | `app.css`: `.plan-b-row.is-staged` now carries `border-style: dashed` alongside its existing `border-color: var(--sc-preview)`; `.plan-b-row.is-live` is untouched (stays solid) — matching the handoff's "Preview/staged = green/dashed, Live/Program = red/solid" line verbatim, not a paraphrase of it. 3 new `operator_headless.py` checks added beside the existing C-001 run-sheet fixture: a non-vacuousness setup check (item 11 is staged-only, not also live), the dashed-border assertion itself, and a solid-border control on an unstaged row (item 12) proving the dashed rule is scoped to `.is-staged` and not a global border reset. All 3 PASS. |
+| `PLN-004` | `app.css`: `.plan-b-row.is-staged` now carries `border-style: dashed` alongside its existing `border-color: var(--sc-preview)`; `.plan-b-row.is-live` is untouched (stays solid) — matching the handoff's "Preview/staged = green/dashed, Live/Program = red/solid" line verbatim, not a paraphrase of it. 3 `operator_headless.py` checks added beside the existing C-001 run-sheet fixture prove it: a non-vacuousness setup check (item 11 is staged-only, not also live), the dashed-border assertion itself, and a solid-border control on an unstaged row (item 12) proving the dashed rule is scoped to `.is-staged` and not a global border reset. **Precedence fix (Vera, PR #83 performance review):** `Command::GoLive` (`selahcue-app/src/controller.rs`) sets `live_idx = staged_idx` but never clears `staged_idx`, so the item that just went live carries BOTH `is_live` and `is_staged` on every ordinary Go Live — not an edge case. `.is-live`/`.is-staged` have equal CSS specificity and `.is-staged` was declared second, so it won the cascade: the item actually on air rendered with Preview's colour (pre-existing) and, after this PR's own dashed-border change, Preview's *shape* too — worse, not better. Fixed by scoping the staged rule to `.plan-b-row.is-staged:not(.is-live)` so Live always wins an overlap; 3 more checks added in an isolated fixture proving a live+staged row renders solid (not dashed) and the same border colour as a live-only row. Mutation-verified: reverting the `:not(.is-live)` guard turns exactly those 2 new precedence assertions red and nothing else. All 6 checks PASS. |
 
 **1 finding FIXED.**
 

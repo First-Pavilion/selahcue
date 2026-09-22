@@ -860,7 +860,23 @@ if not check_jump_call_site_is_click_only():
 # warning about. Per this constant's own repeatedly-stated discipline, 1821 is read off an actual
 # clean run after resolving, not hand-summed as 1818+3 (even though it happens to match here).
 # Confirmed by two independent clean runs against the real post-rebase tree: 1821, 0 FAIL.
-EXPECTED_MIN_CHECKS = 1821
+#
+# 1821 -> 1824: Vera's PR #83 performance review found a real correctness bug the PLN-004 fix
+# above made WORSE, not a performance regression: Command::GoLive (selahcue-app/src/
+# controller.rs) sets live_idx = staged_idx but never clears staged_idx, so the row that just
+# went live carries BOTH is_live and is_staged classes on every ordinary Go Live — not a
+# contrived case. .is-live/.is-staged had equal CSS specificity and .is-staged was declared
+# second, so it won the cascade: the item actually on air rendered with Preview's colour (a
+# pre-existing bug) and, after this PR's own change, Preview's dashed shape too — worse, not
+# better. Fixed by scoping the staged rule to `:not(.is-live)` so Live always wins an overlap
+# (app.css). Added 3 new checks in an isolated fixture (not the shared C-001 one, to avoid
+# disturbing its own item-count/index assertions): a non-vacuousness setup check proving a
+# live+staged row genuinely carries both classes, the solid-border assertion, and a border-colour
+# control against a live-only row. Mutation-verified by reverting the `:not(.is-live)` guard and
+# re-running: exactly the 2 new assertion checks (border-style and border-colour) went RED, none
+# of the other 1822 checks moved, then restored. Confirmed by two independent clean runs against
+# the real post-fix tree: 1824, 0 FAIL.
+EXPECTED_MIN_CHECKS = 1824
 
 
 def find_chrome():
@@ -6287,6 +6303,24 @@ DRIVER = r"""
       ok(el("dl-modal-title").textContent.indexOf("ready")>=0 && el("dl-modal-ico").classList.contains("is-ready"), "DL(7): a translation reaches Ready in the same dialog");
       window.__dlModal.close();
       ok(dlBack.hidden, "DL(7): the reused dialog closes cleanly");
+      // PLN-004 (Vera, PR #83 review): Command::GoLive (controller.rs) sets live_idx = staged_idx
+      // but never clears staged_idx, so the item that just went live carries BOTH is_live AND
+      // is_staged on every ordinary Go Live — not a contrived edge case. Render a plan with such a
+      // row in ISOLATION (its own fixture, not the shared C-001 one below, so this doesn't disturb
+      // that fixture's own item count/index-based assertions) and prove Live wins the cascade.
+      planRenderBuilder({ plan_name:"Overlap", items:[
+        {id:901, kind:"song", title:"Just Went Live", is_live:true, is_staged:true},
+        {id:902, kind:"song", title:"Was Never Staged", is_live:true, is_staged:false}
+      ] });
+      var liveAndStagedRow = document.querySelector('#plan-b-list .plan-b-row[data-item-id="901"]');
+      ok(liveAndStagedRow.classList.contains("is-live") && liveAndStagedRow.classList.contains("is-staged"),
+         "PLN-004 (setup): a just-went-live row genuinely carries BOTH classes — this is not vacuous");
+      ok(getComputedStyle(liveAndStagedRow).borderTopStyle === "solid",
+         "PLN-004: a row that is BOTH live and staged renders Live's SOLID border, not Preview's dashed one — got " +
+         getComputedStyle(liveAndStagedRow).borderTopStyle);
+      ok(getComputedStyle(liveAndStagedRow).borderTopColor === getComputedStyle(document.querySelector('#plan-b-list .plan-b-row[data-item-id="902"]')).borderTopColor,
+         "PLN-004 (control): a live+staged row's border colour matches a live-only row's — Live wins the colour too, not just the shape");
+
       // C-001 / C-005 read side: render a crafted plan covering every link state (scripture-linked,
       // deck-linked, deck-MISSING, unlinked) and assert the run-sheet chips. planRenderBuilder is a
       // global (top-level fn), driven directly the same way the M1 checks drive render().
