@@ -1308,7 +1308,13 @@ STUB = r"""
     }
     if (cmd === "deck_duplicate") {
       var sd=LIB.decks.filter(function(x){return x.id===args.id;})[0];
-      if (sd){ LIB.decks.push({id:LIB.nextId++, name:libUnique(sd.name+" copy"), slides:sd.slides}); } return Promise.resolve(libView());
+      if (!sd) return Promise.resolve(libView());
+      // Mirrors deck_duplicate's real response shape (main.rs): the copy's own new_id, the same
+      // additive pattern deck_restore already uses for restored_name — PME-053's "Start from →
+      // Duplicate…" flow in the New-presentation dialog needs it to rename + open the copy.
+      var nid = LIB.nextId++;
+      LIB.decks.push({id:nid, name:libUnique(sd.name+" copy"), slides:sd.slides});
+      var v = libView(); v.new_id = nid; return Promise.resolve(v);
     }
     if (cmd === "deck_delete") {
       var wasOpen=(LIB.open===args.id);
@@ -4114,6 +4120,12 @@ DRIVER = r"""
       await sleep(20);
       ok(document.activeElement && document.activeElement.dataset && document.activeElement.dataset.ik === "align-center",
          "PM: focus is RESTORED to the button after its edit re-renders the inspector (WCAG 2.4.3, review #2)");
+      // PME-027: left/centre/right previously read "≡"/"≣"/"≡" — left and right shared the same
+      // glyph, so an operator could not tell which was pressed without reading aria-pressed.
+      var alignBtns = Array.from(el("pm-inspector-body").querySelectorAll("button[aria-label^='Align ']"));
+      var alignGlyphs = alignBtns.map(function(b){ return b.textContent; });
+      ok(alignBtns.length === 3 && new Set(alignGlyphs).size === 3,
+         "PME-027: the three horizontal-align buttons (Left/Centre/Right) all show DISTINCT glyphs (\"" + alignGlyphs.join("\", \"") + "\")");
       // The Layers panel (replacing the old Arrange buttons) lists the slide's elements; Alt+↑ on a
       // layer row raises it in the z-order.
       var layerRow = el("pm-inspector-body").querySelector("#pm-layers .td-layer");
@@ -9988,6 +10000,153 @@ right after a generate/save");
           }
         }
       }
+
+      // --- PME-055: "Present" in the library card \u22ef menu ----------------------------------
+      // PME-014's topbar \u25b6 Present only ever acts on the OPEN deck; this is the OTHER half of
+      // the finding \u2014 presenting a deck straight off its card, without first making it the open
+      // deck in the editor. Deliberately picks a card that is NOT already open, so a pass here
+      // cannot be explained by the button silently riding the topbar's open-deck-only Present.
+      el("pm-deckswitch").click();
+      await wWait(function(){ return !!el("pm-lib-grid").querySelector(".pm-lib-card"); });
+      if (el("pm-lib-q")) { el("pm-lib-q").value = ""; el("pm-lib-q").dispatchEvent(new Event("input", {bubbles:true})); }
+      var wPresCards = Array.prototype.slice.call(el("pm-lib-grid").querySelectorAll(".pm-lib-card"));
+      var wPresCard = wPresCards.filter(function(c){ return !c.classList.contains("open"); })[0] || wPresCards[0];
+      ok(!!wPresCard, "PME-055 (premise): a presentation card exists to test Present on");
+      if (wPresCard) {
+        var wPresDeckId = Number(wPresCard.dataset.id);
+        wPresCard.querySelector(".pm-lib-dots").click();
+        await wWait(function(){ return !!el("pm-lib-menu"); });
+        var wPresMenuItems = Array.prototype.slice.call(el("pm-lib-menu").querySelectorAll("button"));
+        var wPresItem = wPresMenuItems.filter(function(b){ return /^Present$/.test(b.textContent.trim()); })[0];
+        ok(!!wPresItem, "PME-055: the card \u22ef menu carries a 'Present' item (Open \u00b7 Rename\u2026 \u00b7 Duplicate \u00b7 Present \u00b7 \u2014 \u00b7 Delete)");
+        if (wPresItem) {
+          var wDoN = window.__calls.filter(function(c){ return c.cmd === "deck_open" && c.args.id === wPresDeckId; }).length;
+          var wGlN3 = window.__calls.filter(function(c){ return c.cmd === "deck_go_live"; }).length;
+          wPresItem.click();
+          ok(await wWait(function(){ return window.__calls.filter(function(c){ return c.cmd === "deck_open" && c.args.id === wPresDeckId; }).length > wDoN; }),
+             "PME-055: 'Present' opens the CARD'S OWN deck (deck_open), not the deck already open in the editor");
+          ok(await wWait(function(){ return window.__calls.filter(function(c){ return c.cmd === "deck_go_live"; }).length > wGlN3; }),
+             "PME-055: 'Present' actually goes live (deck_go_live) \u2014 not just a navigation to the grid");
+          ok(await wWait(function(){ return !el("pm-grid").hidden; }),
+             "PME-055: 'Present' lands the operator on the slide grid, where the presented slide is visible");
+        }
+      }
+
+      // --- PME-053: "Start from" in the New-presentation dialog -------------------------------
+      // Blank deck / Duplicate an existing presentation / From a template (later, honestly
+      // disabled \u2014 no template model exists yet, PME-052/OUT-009).
+      el("pm-deckswitch").click();
+      await wWait(function(){ return !!el("pm-lib-grid").querySelector(".pm-lib-card"); });
+      if (el("pm-lib-q")) { el("pm-lib-q").value = ""; el("pm-lib-q").dispatchEvent(new Event("input", {bubbles:true})); }
+      el("pm-lib-new").click();
+      await wWait(function(){ return !!el("pm-prompt-input"); });
+      var wSfGroup = document.querySelector(".pm-startfrom");
+      ok(!!wSfGroup && wSfGroup.getAttribute("role") === "radiogroup", "PME-053: the New-presentation dialog carries a 'Start from' radiogroup");
+      var wSfBlank = document.getElementById("pm-startfrom-blank"), wSfDup = document.getElementById("pm-startfrom-dup"), wSfTpl = document.getElementById("pm-startfrom-tpl");
+      ok(!!wSfBlank && wSfBlank.checked, "PME-053: 'Blank deck' is the default selection");
+      ok(!!wSfDup && !wSfDup.disabled, "PME-053: 'Duplicate an existing presentation' is available (the library is non-empty)");
+      ok(!!wSfTpl && wSfTpl.disabled, "PME-053: 'From a template' is an honest disabled 'later' affordance, not a broken live control");
+      var wSfPicker = document.querySelector(".pm-startfrom-picker");
+      ok(!!wSfPicker && wSfPicker.hidden, "PME-053 (premise): the duplicate-source picker starts hidden under the default 'Blank deck' choice");
+      if (wSfDup) {
+        wSfDup.click();
+        ok(!wSfPicker.hidden, "PME-053: choosing 'Duplicate an existing presentation' reveals the deck picker");
+        var wSfRows = wSfPicker.querySelectorAll(".pm-startfrom-picker-row");
+        ok(wSfRows.length === window.__LIB.decks.length, "PME-053: the picker lists one row per existing presentation (" + wSfRows.length + " of " + window.__LIB.decks.length + ")");
+        // Pick a row OTHER than the pre-selected first one, so a pass proves selecting a row
+        // actually changes which deck gets duplicated \u2014 not that the default happened to work.
+        var wSfRow = Array.prototype.slice.call(wSfRows).filter(function(r){ return !r.querySelector("input").checked; })[0] || wSfRows[0];
+        var wSfSrcId = Number(wSfRow.querySelector("input").value);
+        var wSfSrcDeck = window.__LIB.decks.filter(function(d){ return d.id === wSfSrcId; })[0];
+        wSfRow.querySelector("input").click();
+        ok(el("pm-prompt-input").value === (wSfSrcDeck.name + " copy"),
+           "PME-053: the Name field follows the chosen source (\"" + el("pm-prompt-input").value + "\") until the operator types their own");
+        el("pm-prompt-input").value = "My Copied Deck";
+        el("pm-prompt-input").dispatchEvent(new Event("input", {bubbles:true}));
+        var wSfDupN = window.__calls.filter(function(c){ return c.cmd === "deck_duplicate"; }).length;
+        Array.from(document.querySelectorAll(".pm-confirm .pm-btn-primary")).slice(-1)[0].click();
+        ok(await wWait(function(){ return window.__calls.filter(function(c){ return c.cmd === "deck_duplicate"; }).length > wSfDupN; }),
+           "PME-053: confirming 'Duplicate' drives deck_duplicate(the CHOSEN source's id)");
+        var wSfDupCall = window.__calls.filter(function(c){ return c.cmd === "deck_duplicate"; }).slice(-1)[0];
+        ok(!!wSfDupCall && wSfDupCall.args.id === wSfSrcId, "PME-053: deck_duplicate is called with the SELECTED row's id (" + wSfSrcId + "), not the first/default one");
+        // Each step of onConfirm's deck_duplicate -> deck_rename -> deck_open chain is a
+        // separately-awaited invoke; polling (wWait) rather than checking window.__calls
+        // synchronously avoids racing a still-pending later step in the chain.
+        ok(await wWait(function(){ return window.__calls.some(function(c){ return c.cmd === "deck_rename" && c.args.name === "My Copied Deck"; }); }),
+           "PME-053: the typed name renames the COPY (deck_rename), never the original");
+        var wSfRenameCall = window.__calls.filter(function(c){ return c.cmd === "deck_rename" && c.args.name === "My Copied Deck"; }).slice(-1)[0];
+        ok(!!wSfRenameCall && wSfRenameCall.args.id !== wSfSrcId,
+           "PME-053: the rename targets the NEW deck's id, not the source deck's id");
+        // The onConfirm chain is deck_duplicate -> deck_rename -> deck_open, three sequential
+        // awaited invokes; wWait above only proves deck_duplicate fired. Poll for deck_open too
+        // rather than checking window.__calls synchronously, which would race the still-pending
+        // rename/open awaits and fail even when the implementation is correct.
+        ok(await wWait(function(){ return window.__calls.some(function(c){ return c.cmd === "deck_open" && c.args.id === wSfRenameCall.args.id; }); }),
+           "PME-053: 'Create presentation' opens the newly-created copy in the editor");
+        ok(await wWait(function(){ return el("pm-library").hidden; }), "PME-053: the dialog and Library close, landing the operator in the editor on the new deck");
+      }
+
+      // --- PME-059: warn when the deck being deleted is referenced by a service-plan item -----
+      el("pm-deckswitch").click();
+      await wWait(function(){ return !!el("pm-lib-grid").querySelector(".pm-lib-card"); });
+      if (el("pm-lib-q")) { el("pm-lib-q").value = ""; el("pm-lib-q").dispatchEvent(new Event("input", {bubbles:true})); }
+      var wPlanCards = Array.prototype.slice.call(el("pm-lib-grid").querySelectorAll(".pm-lib-card"));
+      ok(wPlanCards.length >= 2, "PME-059 (premise): at least two presentations exist \u2014 one to link from the plan, one as a clean negative control");
+      if (wPlanCards.length >= 2) {
+        var wLinkedCard = wPlanCards[0], wCleanCard = wPlanCards[1];
+        var wLinkedId = Number(wLinkedCard.dataset.id);
+        var wSavedItems = V.items, wSavedPlanName = V.plan_name;
+        V.items = wSavedItems.concat([{id:9001, kind:"slide_group", title:"Sermon slides", is_live:false, is_staged:false, link:{kind:"deck", id: wLinkedId}}]);
+        V.plan_name = "Sunday Service \u2014 Aug 4";
+        wLinkedCard.querySelector(".pm-lib-dots").click();
+        await wWait(function(){ return !!el("pm-lib-menu"); });
+        Array.prototype.slice.call(el("pm-lib-menu").querySelectorAll("button")).filter(function(b){ return /^Delete/.test(b.textContent); })[0].click();
+        ok(await wWait(function(){ return !!document.querySelector(".pm-confirm-warn"); }),
+           "PME-059: deleting a deck the service plan links shows a warning before the operator can confirm");
+        var wWarnLinked = document.querySelector(".pm-confirm-warn");
+        ok(!!wWarnLinked && /Sunday Service \u2014 Aug 4/.test(wWarnLinked.textContent) && /show missing/.test(wWarnLinked.textContent),
+           "PME-059: the warning names the PLAN (\"" + (wWarnLinked ? wWarnLinked.textContent : "") + "\") and states the consequence \u2014 the linked plan item will show missing");
+        var wWarnDlg = document.querySelector('.pm-confirm[role="alertdialog"]');
+        ok(!!wWarnDlg && /pm-confirm-warn/.test(wWarnDlg.getAttribute("aria-describedby") || ""),
+           "PME-059: the warning is wired into the dialog's accessible description, so a screen reader speaks it (WCAG 4.1.2)");
+        wCloseDel();
+        // Negative control: a deck NOT referenced by the plan gets no plan-reference warning \u2014
+        // proves the check above is reading the actual link, not always drawing a warning.
+        wCleanCard.querySelector(".pm-lib-dots").click();
+        await wWait(function(){ return !!el("pm-lib-menu"); });
+        Array.prototype.slice.call(el("pm-lib-menu").querySelectorAll("button")).filter(function(b){ return /^Delete/.test(b.textContent); })[0].click();
+        await wWait(function(){ return !!document.querySelector(".pm-confirm-body"); });
+        var wWarnClean = document.querySelector(".pm-confirm-warn");
+        ok(!wWarnClean || !/show missing/.test(wWarnClean.textContent),
+           "PME-059 (control): a deck NOT referenced by the plan shows no plan-reference warning");
+        wCloseDel();
+        V.items = wSavedItems; V.plan_name = wSavedPlanName;
+      }
+
+      // --- PME-006\u2013011: promote AA-large-only muted text to --sc-text-secondary ------------
+      // Each is essential text under the project's own written policy (app.css review-fixes
+      // block: headings/labels/instructions/empty-states/error text must clear AA-normal;
+      // --sc-text-muted, at 3.79:1 on --sc-surface, is AA-large only). Checked against the
+      // shipped rule text (the same pattern PSC-005/DLM-001 use above), because several of
+      // these selectors only render in states this pass does not drive the UI into.
+      var wMutedFixes = [
+        ["PME-006", ".pm-insp-note"],
+        ["PME-007", ".pm-media-empty"],
+        ["PME-008", ".pm-lib-empty-sub"],
+        ["PME-009", ".pm-grid-hint"],
+        ["PME-010", ".pm-tile-failmsg"],
+        ["PME-011", ".pm-deck-seg-btn"],
+      ];
+      wMutedFixes.forEach(function(pair){
+        var wId = pair[0], wSel = pair[1];
+        var wRe = new RegExp(wSel.replace(/[.]/g, "\\.") + "\\s*\\{([^}]*)\\}");
+        var wM = wRe.exec(window.__CSSTEXT || "");
+        ok(!!wM, wId + " (premise): the " + wSel + " rule is present in the shipped app.css");
+        if (wM) {
+          ok(/--sc-text-secondary/.test(wM[1]) && !/--sc-text-muted/.test(wM[1]),
+             wId + ": " + wSel + " uses --sc-text-secondary (AA-normal, 7.40\u20138.74:1 on surface), not the AA-large-only --sc-text-muted (\"" + wM[1].trim().slice(0, 80) + "\")");
+        }
+      });
 
       // --- \u00a710 case 6 / CON-099, CON-101, CON-102: the engaged BLACKOUT state ------------
       // The bug is that the most destructive state in the product explains nothing: the operator
