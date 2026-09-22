@@ -1292,6 +1292,7 @@ failed local-state read (Sana + Vera, independently). `python3 scripts/operator_
 1672 checks, 0 FAIL after rebasing onto `main`'s `17tnw2axptu` (Pre-service Check parity closure,
 merged during this session) — the counts and evidence paths quoted earlier in this update predate
 that rebase and the three review-remediation commits; this paragraph is the current state.
+
 ---
 
 ## Reconciliation — 2026-09-21 (frame `208:124` is gone from the live file)
@@ -1326,10 +1327,11 @@ every search this session ran, including a literal-string search that would surv
 
 ### What this does and does not invalidate
 
-- **Every geometry/colour value quoted from `208:*`** in `OUT-001` through `OUT-008`, `OUT-016`, and
-  `OUT-017` (e.g. the `150.59°` gradient angle, the `#9AA4B2` captions, the `y 911‰` CCLI footer
-  position) is **no longer independently re-verifiable against the live file** as written. Treat
-  those as a **frozen historical reading from 2026-08-23**, not a live citation — the values may
+- **Every geometry/colour value quoted from `208:*`** in `OUT-001` through `OUT-005`, `OUT-007`,
+  `OUT-008`, `OUT-016`, and `OUT-017` (e.g. the `150.59°` gradient angle, the `#9AA4B2` captions,
+  the `y 911‰` CCLI footer position) — `OUT-006` is excluded here as it is already FIXED, per the
+  update above — is **no longer independently re-verifiable against the live file** as written.
+  Treat those as a **frozen historical reading from 2026-08-23**, not a live citation — the values may
   still be correct, but nothing in the current file can confirm or refute them anymore.
 - **This does not reopen or invalidate `17tnw2axptk`'s shipped fix.** That ticket added
   `Theme.footer` / `Slide.song` fields to `selahcue-present` generically (closing `OUT-006`/
