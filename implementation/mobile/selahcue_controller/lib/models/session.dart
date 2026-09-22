@@ -69,6 +69,19 @@ class SelahSession implements ControllerSession {
   MobileRole get grantedRole => MobileRole.parse(role);
 
   /// Serializes command round-trips (the protocol is lockstep per connection).
+  ///
+  /// Not depth-limited: nothing stops overlapping [command] calls from
+  /// chaining onto this indefinitely. In practice growth is bounded by two
+  /// callers, not by this field — [LiveController.refresh] guards itself
+  /// with `_refreshing` so the 1s poll never queues a second turn, and
+  /// [LiveController.act] callers gate on `syncing`. What is NOT guarded is
+  /// two distinct rapid taps (or a double-fired gesture) against the SAME
+  /// live connection: each queues its own turn and waits up to
+  /// `commandTimeout` for the ones ahead of it, so a burst of N taps against
+  /// a slow/dead host can take up to N × commandTimeout to drain. Flagged
+  /// as a follow-up (needs a depth cap or duplicate-collapse policy on
+  /// [LiveController.act]), not fixed here — investigated alongside
+  /// [StreamQueue._buffer] below.
   Future<void> _turn = Future.value();
 
   SelahSession._(this._ws, this._incoming, this.role);
@@ -205,6 +218,22 @@ class SelahSession implements ControllerSession {
 /// Buffers inbound WebSocket frames for ordered consumption. Correlation is the
 /// caller's job: `command()` discards stale correlated replies; otherwise the
 /// protocol is lockstep (one outstanding request per connection).
+///
+/// `_buffer` has no cap. That is currently safe rather than accidental: the
+/// host (`selahcue-lan`'s `request_loop`, `server.rs`) answers exactly one
+/// frame per frame it receives and never pushes unsolicited — confirmed by
+/// reading `request_loop` (a single `send_json` per loop iteration, no
+/// concurrent writer task) and corroborated by
+/// `implementation/desktop/CODE-REVIEW-batch7e-transport.md`, which already
+/// notes unsolicited server pushes as *future* work, not present behaviour.
+/// `ServerMessage::State`'s "unsolicited or in reply to `GetState`" doc
+/// comment (`selahcue-lan/src/protocol.rs`) describes the wire format's
+/// range, not what this server does today. So every frame that lands here
+/// was requested by this client, and `command()`'s read-until-reply loop
+/// drains at least one per outstanding request — `_buffer` cannot outgrow
+/// the client's own request rate. If the host ever starts pushing
+/// unsolicited state (e.g. to replace 1s polling), this stops holding and
+/// `_buffer` needs a cap + drop-oldest-unsolicited policy before that ships.
 class StreamQueue {
   final List<dynamic> _buffer = [];
   final List<Completer<dynamic>> _waiters = [];
