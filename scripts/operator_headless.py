@@ -828,7 +828,28 @@ if not check_jump_call_site_is_click_only():
 # separate ticket, landed by a peer session while this PR was in review). Real conflict in this
 # exact block again — per this comment's own repeated lesson, re-derived empirically after
 # resolving rather than hand-summed. Confirmed by a clean run: 1816, 0 FAIL.
-EXPECTED_MIN_CHECKS = 1816
+#
+# 1816 -> ?: Sana's independent security review of PR #75 (comment on 17tnw2axweu) found that
+# PR #75 fixed `_lastFilterDecl()` reading only the FIRST `filter:` declaration inside an
+# already-found rule body, but every rule-lookup ABOVE it in this file — the ones that find the
+# RULE BLOCK itself — had the identical bug one level up: a non-global `.exec()` only ever returns
+# the FIRST matching rule block for a selector, while the CSS cascade applies whichever
+# same-specificity block appears LAST. Not currently live (each guarded selector has exactly one
+# real rule today), but the same latent gap as PR #75's, confirmed pre-existing and correctly
+# scoped out of that PR since it spans a much broader set of call sites: .pm-btn-primary:hover,
+# .td-save-cta:hover, .ps-start:hover/:disabled/(base), .dl-btn-primary:hover, .tb-golive:hover,
+# .timer-start:hover, the PME-006-011 muted-text loop, and — rebased onto main's SET-010 PP-GEN
+# block above, landed by a peer session while this branch was in review, real conflict in this
+# exact block again — the SAME bug on the 7 PP-GEN sites that block just added
+# (.pp-optin-btn:hover, .pp-generate:hover/[disabled]/(base), .pp-gen-preview-confirm:hover/
+# [disabled]/(base)). Routed all sixteen sites through one `_lastRule()` helper (matches globally,
+# keeps the last hit — same technique as `_lastFilterDecl()`), and added a RULE-REGEX-LASTMATCH
+# mutation-proof check pair (+2) proving it: a duplicated-selector rule fed through the shared
+# helper correctly resolves to the LAST (cascade-winning) block, while a plain non-global .exec()
+# on the same text would have wrongly read the FIRST. Per this constant's own repeated lesson:
+# re-derived empirically, not hand-summed. Three independent runs against the real post-rebase
+# tree all reported 1818, 0 FAIL.
+EXPECTED_MIN_CHECKS = 1818
 
 
 def find_chrome():
@@ -8605,7 +8626,7 @@ DRIVER = r"""
       // state — the click below (opting in) removes it again, so a later check point would miss it.
       (function() {
         var restBg = _rgba(getComputedStyle(el("pp-optin-retry")).backgroundColor);
-        var hoverRule = /\.pp-optin-btn:hover\s*\{([^}]*)\}/.exec(window.__CSSTEXT || "");
+        var hoverRule = _lastRule(/\.pp-optin-btn:hover\s*\{([^}]*)\}/, window.__CSSTEXT || "");
         ok(!!hoverRule, "PP-GEN (premise): the .pp-optin-btn:hover rule is present in the shipped app.css");
         var hb = hoverRule ? /background(?:-color)?\s*:\s*([^;]+)/.exec(hoverRule[1]) : null;
         ok(!!hb, "PP-GEN (premise): the .pp-optin-btn:hover rule declares a background, so there is a value to measure");
@@ -9407,7 +9428,7 @@ right after a generate/save");
         var restR = _cr([255,255,255,1], restBg);
         ok(restR >= 4.5,
            "PP-GEN (premise): .pp-gen-preview-confirm REST already clears AA-NORMAL (flat --sc-primary, " + _f(restR) + ":1) — only :hover regresses");
-        var hoverRule = /\.pp-gen-preview-confirm:hover\s*\{([^}]*)\}/.exec(window.__CSSTEXT || "");
+        var hoverRule = _lastRule(/\.pp-gen-preview-confirm:hover\s*\{([^}]*)\}/, window.__CSSTEXT || "");
         ok(!!hoverRule, "PP-GEN (premise): the .pp-gen-preview-confirm:hover rule is present in the shipped app.css");
         var hb = hoverRule ? /background(?:-color)?\s*:\s*([^;]+)/.exec(hoverRule[1]) : null;
         ok(!!hb, "PP-GEN (premise): the .pp-gen-preview-confirm:hover rule declares a background, so there is a value to measure");
@@ -9427,12 +9448,12 @@ right after a generate/save");
       // rule win. Same two-check technique as .pp-generate[disabled] and .ps-start:disabled above:
       // the disabled rule must declare its own background, AND that background must be the exact
       // REST fill — not just any declared value (Cody/Vera's PR #62 finding on PSC-005 itself).
-      var wPpGenConfirmDisabledRule = /\.pp-gen-preview-confirm\[disabled\],\s*\.pp-gen-preview-confirm\[aria-busy="true"\]\s*\{([^}]*)\}/.exec(window.__CSSTEXT || "");
+      var wPpGenConfirmDisabledRule = _lastRule(/\.pp-gen-preview-confirm\[disabled\],\s*\.pp-gen-preview-confirm\[aria-busy="true"\]\s*\{([^}]*)\}/, window.__CSSTEXT || "");
       ok(!!wPpGenConfirmDisabledRule, "PP-GEN (premise): the .pp-gen-preview-confirm[disabled] rule is present in the shipped app.css");
       var wPpGenConfirmDisabledBg = wPpGenConfirmDisabledRule ? /background(?:-image)?\s*:\s*([^;]+)/.exec(wPpGenConfirmDisabledRule[1]) : null;
       ok(!!wPpGenConfirmDisabledBg,
          "PP-GEN: the .pp-gen-preview-confirm disabled rule declares its OWN background — without one, `:hover` (equal specificity) wins the fill and a disabled/saving button visibly flips to the active colour on hover");
-      var wPpGenConfirmBaseRule = /\.pp-gen-preview-confirm\s*\{([^}]*)\}/.exec(window.__CSSTEXT || "");
+      var wPpGenConfirmBaseRule = _lastRule(/\.pp-gen-preview-confirm\s*\{([^}]*)\}/, window.__CSSTEXT || "");
       ok(!!wPpGenConfirmBaseRule, "PP-GEN (premise): the rest-state .pp-gen-preview-confirm rule is present in the shipped app.css");
       var wPpGenConfirmBaseBg = wPpGenConfirmBaseRule ? /background(?:-image)?\s*:\s*([^;]+)/.exec(wPpGenConfirmBaseRule[1]) : null;
       ok(!!wPpGenConfirmBaseBg, "PP-GEN (premise): the rest-state rule declares a background, so there is a value to compare the disabled rule against");
@@ -9564,6 +9585,18 @@ right after a generate/save");
         return (m && m.length) ? m.map(_rgba) : [_rgba(cs.backgroundColor)];
       }
       function _same(a,b){ return a[0]===b[0] && a[1]===b[1] && a[2]===b[2]; }
+      // `.exec()` on a non-global regex only ever returns the FIRST matching rule block for a
+      // selector, but the CSS cascade applies whichever same-specificity rule appears LAST in the
+      // stylesheet. A duplicated selector (merge artefact, copy-paste mistake, future edit) is
+      // plausible authored CSS, and every rule-lookup below needs the block that actually wins the
+      // cascade, so match globally and keep the last hit — same fix as PR #75's `_lastFilterDecl()`,
+      // one level up (the rule lookup itself, not a declaration inside an already-found rule).
+      function _lastRule(re, cssText){
+        var flags = (re.flags || "").indexOf("g") === -1 ? (re.flags || "") + "g" : re.flags;
+        var g = new RegExp(re.source, flags), m, last = null;
+        while ((m = g.exec(cssText)) !== null) { last = m; }
+        return last;
+      }
       // Shorter wait budget than the default 150×20ms. This block sits at the very END of the
       // driver, so every FAILING predicate here spends virtual time that the RESULTS write still
       // needs: at the default budget a handful of real regressions could push the run past
@@ -9696,7 +9729,7 @@ right after a generate/save");
          "CON-142 (positive control): `.td-seg button` still styles the designer's segment buttons (the rename moved the rules, it did not drop them)");
 
       // --- PME-005: .pm-btn-primary:hover ---------------------------------------------------
-      var wHoverRule = /\.pm-btn-primary:hover\s*\{([^}]*)\}/.exec(window.__CSSTEXT || "");
+      var wHoverRule = _lastRule(/\.pm-btn-primary:hover\s*\{([^}]*)\}/, window.__CSSTEXT || "");
       ok(!!wHoverRule, "PME-005 (premise): the .pm-btn-primary:hover rule is present in the shipped app.css");
       var wHb = wHoverRule ? /background(?:-color)?\s*:\s*([^;]+)/.exec(wHoverRule[1]) : null;
       ok(!!wHb, "PME-005 (premise): the hover rule declares a background, so there is a value to measure");
@@ -9727,7 +9760,7 @@ right after a generate/save");
           var r = _cr([255,255,255,1], s);
           ok(r >= 4.5, "TD-012: the Save-theme label clears AA-NORMAL on gradient stop " + (i+1) + " (" + _f(r) + ":1)");
         });
-        var wTdHoverRule = /\.td-save-cta:hover\s*\{([^}]*)\}/.exec(window.__CSSTEXT || "");
+        var wTdHoverRule = _lastRule(/\.td-save-cta:hover\s*\{([^}]*)\}/, window.__CSSTEXT || "");
         ok(!!wTdHoverRule, "TD-012 (premise): the .td-save-cta:hover rule is present in the shipped app.css");
         var wTdHb = wTdHoverRule ? /background(?:-color)?\s*:\s*([^;]+)/.exec(wTdHoverRule[1]) : null;
         ok(!!wTdHb, "TD-012 (premise): the hover rule declares a background, so there is a value to measure");
@@ -9762,7 +9795,7 @@ right after a generate/save");
           var r = _cr([255,255,255,1], s);
           ok(r >= 4.5, "PSC-005: the Start-service label clears AA-NORMAL on gradient stop " + (i+1) + " (" + _f(r) + ":1)");
         });
-        var wPsHoverRule = /\.ps-start:hover\s*\{([^}]*)\}/.exec(window.__CSSTEXT || "");
+        var wPsHoverRule = _lastRule(/\.ps-start:hover\s*\{([^}]*)\}/, window.__CSSTEXT || "");
         ok(!!wPsHoverRule, "PSC-005 (premise): the .ps-start:hover rule is present in the shipped app.css");
         var wPsHb = wPsHoverRule ? /background(?:-color)?\s*:\s*([^;]+)/.exec(wPsHoverRule[1]) : null;
         ok(!!wPsHb, "PSC-005 (premise): the hover rule declares a background, so there is a value to measure");
@@ -9789,7 +9822,7 @@ right after a generate/save");
       // Chromium: old code stayed inert, this branch did not, before the fix below). This headless
       // page cannot simulate a real `:hover`, so — same technique as the rest of this block — the
       // disabled rule's own text is checked for a `background` declaration to win the cascade.
-      var wPsDisabledRule = /\.ps-start:disabled,\s*\.ps-start\[aria-disabled="true"\]\s*\{([^}]*)\}/.exec(window.__CSSTEXT || "");
+      var wPsDisabledRule = _lastRule(/\.ps-start:disabled,\s*\.ps-start\[aria-disabled="true"\]\s*\{([^}]*)\}/, window.__CSSTEXT || "");
       ok(!!wPsDisabledRule, "PSC-005 (premise): the .ps-start:disabled rule is present in the shipped app.css");
       var wPsDisabledBg = wPsDisabledRule ? /background(?:-image)?\s*:\s*([^;]+)/.exec(wPsDisabledRule[1]) : null;
       ok(!!wPsDisabledBg,
@@ -9802,7 +9835,7 @@ right after a generate/save");
       // rule touching this class has something other than whitespace between `.ps-start` and
       // `{` (`:hover`, `:focus-visible`, `:disabled, .ps-start[...]`), so only the bare
       // rest-state rule matches.
-      var wPsBaseRule = /\.ps-start\s*\{([^}]*)\}/.exec(window.__CSSTEXT || "");
+      var wPsBaseRule = _lastRule(/\.ps-start\s*\{([^}]*)\}/, window.__CSSTEXT || "");
       ok(!!wPsBaseRule, "PSC-005 (premise): the rest-state .ps-start rule is present in the shipped app.css");
       var wPsBaseBg = wPsBaseRule ? /background(?:-image)?\s*:\s*([^;]+)/.exec(wPsBaseRule[1]) : null;
       ok(!!wPsBaseBg, "PSC-005 (premise): the rest-state rule declares a background, so there is a value to compare the disabled rule against");
@@ -9852,7 +9885,7 @@ right after a generate/save");
          "PSC-009 (cleanup): the blocking fixture is cleared, so pre-service state is not left dirty for anything that runs after this block");
 
       // --- DLM-001: .dl-btn-primary:hover (Download modal primary button) --------------------
-      var wDlHoverRule = /\.dl-btn-primary:hover\s*\{([^}]*)\}/.exec(window.__CSSTEXT || "");
+      var wDlHoverRule = _lastRule(/\.dl-btn-primary:hover\s*\{([^}]*)\}/, window.__CSSTEXT || "");
       ok(!!wDlHoverRule, "DLM-001 (premise): the .dl-btn-primary:hover rule is present in the shipped app.css");
       var wDlHb = wDlHoverRule ? /background(?:-color)?\s*:\s*([^;]+)/.exec(wDlHoverRule[1]) : null;
       ok(!!wDlHb, "DLM-001 (premise): the hover rule declares a background, so there is a value to measure");
@@ -9891,7 +9924,7 @@ right after a generate/save");
           var r = _cr([255,255,255,1], s);
           ok(r >= 4.5, "GO-LIVE-HOVER: the topbar GO LIVE label clears AA-NORMAL on gradient stop " + (i+1) + " (" + _f(r) + ":1)");
         });
-        var wTbGlHoverRule = /\.tb-golive:hover\s*\{([^}]*)\}/.exec(window.__CSSTEXT || "");
+        var wTbGlHoverRule = _lastRule(/\.tb-golive:hover\s*\{([^}]*)\}/, window.__CSSTEXT || "");
         ok(!!wTbGlHoverRule, "GO-LIVE-HOVER (premise): the .tb-golive:hover rule is present in the shipped app.css");
         var wTbGlHb = wTbGlHoverRule ? /background(?:-color)?\s*:\s*([^;]+)/.exec(wTbGlHoverRule[1]) : null;
         ok(!!wTbGlHb, "GO-LIVE-HOVER (premise): the hover rule declares a background, so there is a value to measure — a bare `filter: brightness()` would leave nothing here");
@@ -9927,7 +9960,7 @@ right after a generate/save");
           var r = _cr([255,255,255,1], s);
           ok(r >= 4.5, "TIMER-START-HOVER: the Timer Start label clears AA-NORMAL on gradient stop " + (i+1) + " (" + _f(r) + ":1)");
         });
-        var wTsHoverRule = /\.timer-start:hover\s*\{([^}]*)\}/.exec(window.__CSSTEXT || "");
+        var wTsHoverRule = _lastRule(/\.timer-start:hover\s*\{([^}]*)\}/, window.__CSSTEXT || "");
         ok(!!wTsHoverRule, "TIMER-START-HOVER (premise): the .timer-start:hover rule is present in the shipped app.css");
         var wTsHb = wTsHoverRule ? /background(?:-color)?\s*:\s*([^;]+)/.exec(wTsHoverRule[1]) : null;
         ok(!!wTsHb, "TIMER-START-HOVER (premise): the hover rule declares a background, so there is a value to measure — a bare `filter: brightness()` would leave nothing here");
@@ -9967,7 +10000,7 @@ right after a generate/save");
          "PP-GEN (control): --sc-primary-hover itself still measures BELOW AA-normal for white (" + _f(_cr([255,255,255,1], wPpGenOldStop)) + ":1) — the token is untouched, only the gradient stopped using it as a stop");
       // .pp-generate:hover must not reintroduce filter:brightness() — brightening the now-darker
       // gradient back up is the exact unfixed gap flagged on .tb-golive/.timer-start.
-      var wPpGenHoverRule = /\.pp-generate:hover\s*\{([^}]*)\}/.exec(window.__CSSTEXT || "");
+      var wPpGenHoverRule = _lastRule(/\.pp-generate:hover\s*\{([^}]*)\}/, window.__CSSTEXT || "");
       ok(!!wPpGenHoverRule, "PP-GEN (premise): the .pp-generate:hover rule is present in the shipped app.css");
       if (wPpGenHoverRule) {
         ok(!/filter\s*:\s*brightness/.test(wPpGenHoverRule[1]),
@@ -9989,12 +10022,12 @@ right after a generate/save");
       // button visibly flips to the active fill. Same two-check technique as PSC-005: the disabled
       // rule must declare its own background, AND that background must be the exact REST fill (not
       // just any declared value — Cody/Vera's PR #62 finding on PSC-005 itself).
-      var wPpGenDisabledRule = /\.pp-generate\[disabled\],\s*\.pp-generate\[aria-busy="true"\]\s*\{([^}]*)\}/.exec(window.__CSSTEXT || "");
+      var wPpGenDisabledRule = _lastRule(/\.pp-generate\[disabled\],\s*\.pp-generate\[aria-busy="true"\]\s*\{([^}]*)\}/, window.__CSSTEXT || "");
       ok(!!wPpGenDisabledRule, "PP-GEN (premise): the .pp-generate[disabled] rule is present in the shipped app.css");
       var wPpGenDisabledBg = wPpGenDisabledRule ? /background(?:-image)?\s*:\s*([^;]+)/.exec(wPpGenDisabledRule[1]) : null;
       ok(!!wPpGenDisabledBg,
          "PP-GEN: the disabled rule declares its OWN background — without one, `:hover` (equal specificity) wins the fill and a disabled button visibly flips to the active colour on hover");
-      var wPpGenBaseRule = /\.pp-generate\s*\{([^}]*)\}/.exec(window.__CSSTEXT || "");
+      var wPpGenBaseRule = _lastRule(/\.pp-generate\s*\{([^}]*)\}/, window.__CSSTEXT || "");
       ok(!!wPpGenBaseRule, "PP-GEN (premise): the rest-state .pp-generate rule is present in the shipped app.css");
       var wPpGenBaseBg = wPpGenBaseRule ? /background(?:-image)?\s*:\s*([^;]+)/.exec(wPpGenBaseRule[1]) : null;
       ok(!!wPpGenBaseBg, "PP-GEN (premise): the rest-state rule declares a background, so there is a value to compare the disabled rule against");
@@ -10008,6 +10041,27 @@ right after a generate/save");
       // transiently during the consent_required state and is gone again by this point in the run).
       // .pp-gen-preview-confirm:hover is checked earlier too, at "PP F-5" (the button is rebuilt
       // fresh on each Generate cycle and is not reliably present here).
+
+      // --- RULE-REGEX-LASTMATCH: every rule-lookup above reads the rule block that WINS the CSS
+      // cascade, not exec()'s first match --------------------------------------------------------
+      // Sana (independent security review of PR #75, comment on 17tnw2axweu): PR #75 fixed
+      // `_lastFilterDecl()` reading only the FIRST `filter:` declaration inside an already-found
+      // rule body, but every rule-lookup ABOVE it — .pm-btn-primary:hover, .td-save-cta:hover,
+      // .ps-start:hover/:disabled/(base), .dl-btn-primary:hover, .tb-golive:hover,
+      // .timer-start:hover, and the PME-006-011 muted-text loop below — has the identical bug one
+      // level up: a non-global `.exec()` finding the RULE BLOCK itself. If app.css ever carried a
+      // duplicated selector (merge artefact, copy-paste mistake), the browser applies whichever
+      // same-specificity block appears LAST while these lookups would silently read the FIRST.
+      // Not currently live (each guarded selector has exactly one real rule today), but the same
+      // latent gap PR #75 closed one layer down. Route every lookup through `_lastRule()`, which
+      // matches globally and keeps the last hit — same technique as `_lastFilterDecl()`.
+      var wDupRuleCss = ".dup-sel:hover{background:#111111;} /* merge artefact */ .dup-sel:hover{background:#5a48d0;}";
+      var wDupRule = _lastRule(/\.dup-sel:hover\s*\{([^}]*)\}/, wDupRuleCss);
+      ok(!!wDupRule && /#5a48d0/.test(wDupRule[1]) && !/#111111/.test(wDupRule[1]),
+         "RULE-REGEX-LASTMATCH (premise): a duplicated selector block resolves to the LAST one — the block the cascade actually applies (found \"" + (wDupRule ? wDupRule[1].trim() : "") + "\")");
+      var wDupRulePlainFirst = /\.dup-sel:hover\s*\{([^}]*)\}/.exec(wDupRuleCss);
+      ok(!!wDupRulePlainFirst && /#111111/.test(wDupRulePlainFirst[1]),
+         "RULE-REGEX-LASTMATCH: a plain non-global .exec() would have wrongly read the FIRST (losing) block instead (\"" + (wDupRulePlainFirst ? wDupRulePlainFirst[1].trim() : "") + "\") — proving `_lastRule()`'s global-match fix is what changes the outcome, not a no-op");
 
       // --- PME-014 / PME-015: the two missing topbar primary actions ------------------------
       document.querySelector('.nav-item[data-surface="presentation"]').click();
@@ -10591,7 +10645,7 @@ right after a generate/save");
       wMutedFixes.forEach(function(pair){
         var wId = pair[0], wSel = pair[1];
         var wRe = new RegExp(wSel.replace(/[.]/g, "\\.") + "\\s*\\{([^}]*)\\}");
-        var wM = wRe.exec(window.__CSSTEXT || "");
+        var wM = _lastRule(wRe, window.__CSSTEXT || "");
         ok(!!wM, wId + " (premise): the " + wSel + " rule is present in the shipped app.css");
         if (wM) {
           ok(/--sc-text-secondary/.test(wM[1]) && !/--sc-text-muted/.test(wM[1]),
