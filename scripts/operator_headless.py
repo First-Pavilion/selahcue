@@ -707,7 +707,23 @@ if not check_jump_call_site_is_click_only():
 # test above and re-confirmed by inspection; finding E (app.css's CON-134 comment block still
 # named the pre-fix window.__openChapterForStage as Edit's call) was a stale-comment correction
 # only. Confirmed by two independent runs (both 1625, 0 FAIL).
-EXPECTED_MIN_CHECKS = 1625
+#
+# 1625 -> 1630: ClickUp 17tnw2axptu (Pre-service Check parity closure). The audit
+# (docs/design/DESIGN-2.0-PARITY-AUDIT-preservice.md) flagged `.ps-detail-warn`/`.ps-detail-block`
+# as an UNMEASURED contrast pairing (PSC-009) rather than a scored defect. Independently computed
+# both clear AA-NORMAL against --sc-surface at the row's real 12px/500 weight (8.85:1 / 5.52:1 —
+# the second figure matches PME-004's independently-established figure for the same token pairing
+# exactly), so there was no fix to make — 5 new assertions (2 premises, 2 real measurements, 1
+# cleanup) added to lock the passing state in place on the LIVE DOM instead of leaving it
+# unmeasured. Mutation-verified: temporarily recoloured both rules to --sc-surface (matching the
+# background, forcing ~1.00:1) and confirmed EXACTLY those 2 measurement assertions went RED
+# (1630 checks, 2 FAIL) with nothing else disturbed; restored and re-confirmed clean. The other 8
+# non-PSC-005 findings needed no code change: PSC-001/002/003/008 remain genuinely blocked on the
+# still-open `DECISION — New-surfaces` ClickUp task (17tnw2axpu4, zero comments); PSC-004/006/007
+# were already MATCH/EXTRA/an accepted honesty trade-off per the audit's own verdicts, re-verified
+# against the live Figma frame (344:124) rather than just the doc. Confirmed by two independent
+# runs (both 1630, 0 FAIL).
+EXPECTED_MIN_CHECKS = 1630
 
 
 def find_chrome():
@@ -9563,6 +9579,45 @@ right after a generate/save");
            "PSC-005: the disabled rule's background is EXACTLY the rest-state fill (found \"" + wPsDisabledBg[1].trim() +
            "\" vs rest \"" + wPsBaseBg[1].trim() + "\") — not just any declared value, the one that keeps a disabled button visually inert");
       }
+
+      // --- PSC-009: .ps-detail-warn / .ps-detail-block (Pre-service check-row detail text) -----
+      // The audit (docs/design/DESIGN-2.0-PARITY-AUDIT-preservice.md) flagged this pairing as
+      // UNMEASURED — "worth a direct follow-up measurement" — not as a scored defect. Farah
+      // independently computed it for ClickUp 17tnw2axptu: --sc-warn/--sc-live on --sc-surface
+      // clear AA-NORMAL even at the row's own 12px/500 weight (8.85:1 / 5.52:1), so there is no
+      // fix to make here — this block locks the passing state in place instead of leaving it
+      // unmeasured, same discipline as every other contrast finding in this file. Both classes
+      // recolour `.ps-row-detail` (app.css:6701-6703); the real painted background behind them is
+      // `.ps-card`'s --sc-surface (`.ps-row` itself declares none). Measured on the LIVE DOM, in
+      // real application states (not the raw CSS variables), matching this file's own established
+      // technique for the rest of the PSC-005/TD-012/DLM-001 group above.
+      var wPsCardBg = _rgba(getComputedStyle(document.querySelector(".ps-card")).backgroundColor);
+      // The default warning (missing slide media) is still live from the earlier functional
+      // Pre-service Check block — nothing between there and here mutates pre-service state.
+      var wPsWarnRow = document.querySelector(".ps-detail-warn");
+      ok(!!wPsWarnRow, "PSC-009 (premise): a .ps-detail-warn row is live in the DOM (the default missing-media warning)");
+      if (wPsWarnRow) {
+        var wPsWarnR = _cr(_rgba(getComputedStyle(wPsWarnRow).color), wPsCardBg);
+        ok(wPsWarnR >= 4.5,
+           "PSC-009: .ps-detail-warn (--sc-warn on --sc-surface) clears AA-NORMAL at its real 12px/500 weight (" + _f(wPsWarnR) + ":1) — the audit flagged this pairing as unmeasured, not failing");
+      }
+      // .ps-detail-block only exists once a check is actually BLOCKING — trigger the same disk-low
+      // fixture the functional Pre-service Check block above uses, so the measurement is a real
+      // painted row, not an assertion about the CSS variable's raw value in isolation.
+      window.__psDiskLow = true;
+      el("ps-rerun").click();
+      ok(await wWait(function(){ return !!document.querySelector(".ps-detail-block"); }),
+         "PSC-009 (premise): a .ps-detail-block row appears once a check goes BLOCKING (disk space)");
+      var wPsBlockRow = document.querySelector(".ps-detail-block");
+      if (wPsBlockRow) {
+        var wPsBlockR = _cr(_rgba(getComputedStyle(wPsBlockRow).color), wPsCardBg);
+        ok(wPsBlockR >= 4.5,
+           "PSC-009: .ps-detail-block (--sc-live on --sc-surface) clears AA-NORMAL at its real 12px/500 weight (" + _f(wPsBlockR) + ":1) — matches PME-004's independently-established 5.52:1 figure for the same token pairing (DESIGN-2.0-PARITY-AUDIT-presentation.md)");
+      }
+      window.__psDiskLow = false;
+      el("ps-rerun").click();
+      ok(await wWait(function(){ return el("ps-blocking").textContent === "0"; }),
+         "PSC-009 (cleanup): the blocking fixture is cleared, so pre-service state is not left dirty for anything that runs after this block");
 
       // --- DLM-001: .dl-btn-primary:hover (Download modal primary button) --------------------
       var wDlHoverRule = /\.dl-btn-primary:hover\s*\{([^}]*)\}/.exec(window.__CSSTEXT || "");
