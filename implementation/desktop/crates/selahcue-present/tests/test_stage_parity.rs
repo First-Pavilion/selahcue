@@ -987,6 +987,128 @@ fn tracked_runs_carry_the_designed_letter_spacing() {
     assert_eq!(run(&ws, "12:45").1, 0, "the worship readout is untracked");
 }
 
+// --- STG-012: font weight ------------------------------------------------------------------
+
+/// The `weight` (`TextStyle::weight`) of the chrome run whose text is exactly `needle`.
+fn weight_of(frame: &Frame, needle: &str) -> u16 {
+    frame
+        .layers
+        .iter()
+        .find_map(|l| match l {
+            Layer::Text { text, style, .. } if text == needle => {
+                style.map(|s| s.weight).or(Some(400))
+            }
+            _ => None,
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "no stage run reads {needle:?}. Runs present: {:?}",
+                texts(frame)
+            )
+        })
+}
+
+/// As [`weight_of`], matching on a prefix (a run the composer may ellipsize or compose from
+/// several joined fields — the NEXT lines, the timer-only footer).
+fn weight_of_prefix(frame: &Frame, prefix: &str) -> u16 {
+    frame
+        .layers
+        .iter()
+        .find_map(|l| match l {
+            Layer::Text { text, style, .. } if text.starts_with(prefix) => {
+                style.map(|s| s.weight).or(Some(400))
+            }
+            _ => None,
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "no stage run starts with {prefix:?}. Runs present: {:?}",
+                texts(frame)
+            )
+        })
+}
+
+/// The composer hard-coded every chrome run at weight 700 (Bold); Design 2.0 draws the wall
+/// clock Semi Bold (600) and the stanza position / both NEXT lines / the timer-only footer
+/// Medium (500) — three distinct weights against one. Closes STG-012.
+///
+/// The bundled single-weight face only synthesises an embolden above 550
+/// (`selahcue_engine::raster`'s `attrs_for`), so 500 and 600 are visually identical to each
+/// other and this test cannot distinguish them by rendered pixels — it asserts the semantic
+/// `TextStyle::weight` value each run carries, which is what a real multi-weight face (or a
+/// future engine change) would need right already, and which the diff makes correct without
+/// waiting on that.
+#[test]
+fn chrome_runs_carry_the_designed_font_weight() {
+    let s = STAGE_TEXT_SCALE_DEFAULT;
+
+    // Worship: the wall clock is Semi Bold; the stanza position and the NEXT line are Medium;
+    // everything else checked here (the song title, the timer caption) stays Bold.
+    let ws = compose(StageTemplate::Worship, false, s, None, W, H);
+    assert_eq!(
+        weight_of(&ws, "10:42 AM"),
+        600,
+        "worship wall clock: Semi Bold"
+    );
+    assert_eq!(
+        weight_of(&ws, "Verse 2 of 4"),
+        500,
+        "worship stanza position: Medium"
+    );
+    assert_eq!(
+        weight_of_prefix(&ws, "I once was lost"),
+        500,
+        "worship NEXT line: Medium"
+    );
+    assert_eq!(
+        weight_of(&ws, "Amazing Grace"),
+        700,
+        "song title stays Bold"
+    );
+    assert_eq!(
+        weight_of(&ws, "SERVICE TIMER"),
+        700,
+        "SERVICE TIMER caption stays Bold"
+    );
+
+    // Scripture: same wall-clock/next-line roles, plus a Bold control (the reference).
+    let sc = compose(StageTemplate::Scripture, false, s, None, W, H);
+    assert_eq!(
+        weight_of(&sc, "10:42 AM"),
+        600,
+        "scripture wall clock: Semi Bold"
+    );
+    assert_eq!(
+        weight_of_prefix(&sc, "Isaiah 61:6"),
+        500,
+        "scripture NEXT line: Medium"
+    );
+    assert_eq!(
+        weight_of(&sc, "AMAZING GRACE"),
+        700,
+        "scripture reference stays Bold"
+    );
+
+    // Timer-only: its header clock is a SEPARATE code path from `header_clock` (STG-055) and
+    // must carry the same Semi Bold weight; its footer (date + time, joined) is Medium.
+    let tou = compose_timer_only(false, s);
+    assert_eq!(
+        weight_of(&tou, "10:42 AM"),
+        600,
+        "timer-only header clock: Semi Bold"
+    );
+    assert_eq!(
+        weight_of_prefix(&tou, "Sunday"),
+        500,
+        "timer-only footer: Medium"
+    );
+    assert_eq!(
+        weight_of(&tou, "SERVICE TIMER"),
+        700,
+        "timer-only header label stays Bold"
+    );
+}
+
 /// The `measure` memo's key is `{text, cell, font, weight}` — no tracking. `autofit_layers`
 /// budgets the wrap for tracking on top of that memoised width, so a tracked auto-fit region
 /// is safe *today*; Design 2.0 tracks none of the three regions anyway. This pins the second

@@ -498,6 +498,14 @@ mod design {
     pub const TRACK_GIANT_READOUT: f64 = -4.0;
     /// Runs the design sets no tracking on.
     pub const TRACK_NONE: f64 = 0.0;
+
+    // — Font weight (STG-012). Three distinct values across the frames: Bold for
+    // labels/readouts, Semi Bold for the wall clock, Medium for the stanza position, both
+    // NEXT lines and the timer-only footer. See `line`'s doc comment for what the bundled
+    // single-weight face can actually render of this distinction.
+    pub const WEIGHT_BOLD: u16 = 700;
+    pub const WEIGHT_SEMIBOLD: u16 = 600;
+    pub const WEIGHT_MEDIUM: u16 = 500;
 }
 
 // The premise the elastic bands rest on: the design's own fixed rects leave real space
@@ -509,6 +517,13 @@ const _: () = assert!(design::Y_LYRIC + design::H_LYRIC < design::Y_NEXT_ROW);
 const _: () = assert!(design::Y_NEXT_ROW < design::Y_TIMER_BAND);
 const _: () = assert!(design::Y_VERSE + design::H_VERSE < design::Y_SCRIPTURE_NEXT_ROW);
 const _: () = assert!(design::Y_SCRIPTURE_NEXT_ROW < REF_H - design::Y_BOTTOM_MARGIN);
+
+// STG-012's premise: the three weight constants must actually be three DIFFERENT numbers, or
+// `chrome_runs_carry_the_designed_font_weight` would assert real distinctions between values
+// that collapse to the same constant.
+const _: () = assert!(design::WEIGHT_BOLD != design::WEIGHT_SEMIBOLD);
+const _: () = assert!(design::WEIGHT_BOLD != design::WEIGHT_MEDIUM);
+const _: () = assert!(design::WEIGHT_SEMIBOLD != design::WEIGHT_MEDIUM);
 
 /// Format a whole-second count as `M:SS` for the timer readout.
 fn format_clock(secs: u32) -> String {
@@ -668,9 +683,15 @@ fn stage_font() -> Option<FontName> {
 }
 
 /// A single line of stage CHROME — labels, the timer readout, the scripture reference, the
-/// message chip. All of it is **bold** (weight 700) Inter to match the confidence-monitor
-/// design (Figma 373-375): heavy, legible at a distance. `track` is letter-spacing in
-/// device px (already scaled by [`Metrics::track`]); the design tracks nine of these runs.
+/// message chip. `weight` is a CSS-style numeric weight (STG-012): the design uses three —
+/// **Bold** (700) for labels/readouts, **Semi Bold** (600) for the wall clock, and
+/// **Medium** (500) for the stanza position, both NEXT lines and the timer-only footer.
+/// The bundled single-weight face only synthesises an embolden above 550
+/// (`selahcue_engine::raster::attrs_for`'s doc comment), so 500 and 600 render identically to
+/// each other and distinctly *lighter* than 700 — the achievable slice of the design's
+/// hierarchy with this font, and still the correct semantic value to carry per run. `track` is
+/// letter-spacing in device px (already scaled by [`Metrics::track`]); the design tracks nine
+/// of these runs.
 ///
 /// Chrome runs go through this path, which pushes a `Layer::Text` **directly** — they never
 /// reach `compose::autofit_layers` and so never reach `measure`'s memo, whose key is
@@ -689,6 +710,7 @@ fn line(
     color: Rgba,
     align: TextAlign,
     track: i32,
+    weight: u16,
 ) {
     if text.is_empty() {
         return;
@@ -702,7 +724,7 @@ fn line(
         align,
         font: stage_font(),
         style: Some(TextStyle {
-            weight: 700,
+            weight,
             letter_spacing_px: track,
         }),
     });
@@ -792,6 +814,7 @@ fn chip(
         fg,
         TextAlign::Left,
         track,
+        design::WEIGHT_BOLD,
     );
     w
 }
@@ -979,6 +1002,7 @@ fn header_clock(
         theme.text,
         TextAlign::Right,
         m.track(design::TRACK_NONE),
+        design::WEIGHT_SEMIBOLD,
     );
 }
 
@@ -1120,6 +1144,7 @@ fn compose_worship(
                 theme.text,
                 TextAlign::Left,
                 m.track(design::TRACK_NONE),
+                design::WEIGHT_BOLD,
             );
             // Stanza position after the pill, e.g. "Verse 2 of 4".
             if let Some((i, n)) = ctx.song_position {
@@ -1134,6 +1159,7 @@ fn compose_worship(
                     theme.muted,
                     TextAlign::Left,
                     m.track(design::TRACK_NONE),
+                    design::WEIGHT_MEDIUM,
                 );
             }
         }
@@ -1263,6 +1289,7 @@ fn compose_worship(
             theme.muted,
             TextAlign::Left,
             m.track(design::TRACK_NONE),
+            design::WEIGHT_MEDIUM,
         );
     }
 
@@ -1314,6 +1341,7 @@ fn compose_worship(
             if up { theme.timer_alert } else { theme.muted },
             TextAlign::Left,
             m.track(design::TRACK_1),
+            design::WEIGHT_BOLD,
         );
         // At TIME UP the readout word pulses (the dot + band stay steady).
         let readout_col = if up {
@@ -1353,6 +1381,7 @@ fn compose_worship(
                 theme.timer_alert,
                 TextAlign::Left,
                 m.track(design::TRACK_NONE),
+                design::WEIGHT_BOLD,
             );
             let word_px = m.cell(design::EM_WORSHIP_TIME_UP);
             let word_right = over_x - m.hw(16.0) as i32;
@@ -1366,6 +1395,7 @@ fn compose_worship(
                 readout_col,
                 TextAlign::Right,
                 m.track(design::TRACK_NONE),
+                design::WEIGHT_BOLD,
             );
         } else {
             let px = m.cell(design::EM_TIMER_READOUT);
@@ -1379,6 +1409,7 @@ fn compose_worship(
                 readout_col,
                 TextAlign::Right,
                 m.track(design::TRACK_NONE),
+                design::WEIGHT_BOLD,
             );
         }
     }
@@ -1413,6 +1444,7 @@ fn compose_scripture(
         theme.muted,
         TextAlign::Left,
         m.track(design::TRACK_2),
+        design::WEIGHT_BOLD,
     );
     header_clock(
         frame,
@@ -1435,6 +1467,7 @@ fn compose_scripture(
             theme.accent,
             TextAlign::Left,
             m.track(design::TRACK_1),
+            design::WEIGHT_BOLD,
         );
     }
     let verse: Vec<&str> = current
@@ -1518,6 +1551,7 @@ fn compose_scripture(
             theme.muted,
             TextAlign::Left,
             m.track(design::TRACK_NONE),
+            design::WEIGHT_MEDIUM,
         );
     }
 
@@ -1604,6 +1638,7 @@ fn compose_scripture(
         pill_label_col,
         TextAlign::Left,
         pill_track,
+        design::WEIGHT_BOLD,
     );
 
     // "TIME LEFT" caption + the big readout, centred in the panel.
@@ -1617,6 +1652,7 @@ fn compose_scripture(
         theme.muted,
         TextAlign::Center,
         m.track(design::TRACK_1),
+        design::WEIGHT_BOLD,
     );
     if let Some(t) = timer {
         // "TIME UP" is wider than "M:SS", so it drops to half the readout size to clear the
@@ -1649,6 +1685,7 @@ fn compose_scripture(
             },
             TextAlign::Center,
             track,
+            design::WEIGHT_BOLD,
         );
         // The overrun, under the readout — the panel is the Scripture TIME-UP region, so
         // this is where "how far over" belongs (STG-038's counterpart for this template).
@@ -1663,6 +1700,7 @@ fn compose_scripture(
                 theme.timer_alert,
                 TextAlign::Center,
                 m.track(design::TRACK_NONE),
+                design::WEIGHT_BOLD,
             );
         }
     }
@@ -1744,6 +1782,7 @@ fn compose_timer_only(
         } else {
             design::TRACK_2
         }),
+        design::WEIGHT_BOLD,
     );
     // Header, right: the wall clock (time-of-day), right-aligned to the 40px margin.
     if let Some(c) = clock.filter(|c| !c.time().is_empty()) {
@@ -1757,6 +1796,7 @@ fn compose_timer_only(
             theme.text,
             TextAlign::Right,
             m.track(design::TRACK_NONE),
+            design::WEIGHT_SEMIBOLD,
         );
     }
 
@@ -1773,6 +1813,7 @@ fn compose_timer_only(
             theme.muted,
             TextAlign::Center,
             m.track(design::TRACK_4),
+            design::WEIGHT_BOLD,
         );
     }
 
@@ -1789,6 +1830,7 @@ fn compose_timer_only(
                 time_up_ink(theme, t.elapsed_secs),
                 TextAlign::Center,
                 m.track(design::TRACK_2),
+                design::WEIGHT_BOLD,
             );
             // The `▲ OVER BY m:ss` pill (Figma 374-172) — how far over, not just that.
             let over_px = m.cell(design::EM_TIMER_OVER);
@@ -1830,6 +1872,7 @@ fn compose_timer_only(
                 theme.timer_alert,
                 TextAlign::Left,
                 m.track(design::TRACK_NONE),
+                design::WEIGHT_BOLD,
             );
         }
         Some(t) => {
@@ -1843,6 +1886,7 @@ fn compose_timer_only(
                 t.color(theme),
                 TextAlign::Center,
                 m.track(design::TRACK_GIANT_READOUT),
+                design::WEIGHT_BOLD,
             );
         }
         None => {
@@ -1856,6 +1900,7 @@ fn compose_timer_only(
                 theme.muted,
                 TextAlign::Center,
                 m.track(design::TRACK_GIANT_READOUT),
+                design::WEIGHT_BOLD,
             );
         }
     }
@@ -1887,6 +1932,7 @@ fn compose_timer_only(
             if up { theme.muted } else { theme.text },
             TextAlign::Center,
             m.track(design::TRACK_NONE),
+            design::WEIGHT_MEDIUM,
         );
     }
 }
@@ -1941,6 +1987,7 @@ fn push_message_overlay(
         theme.background,
         TextAlign::Center,
         chip_track,
+        design::WEIGHT_BOLD,
     );
 
     // The message text — bold, LARGE (a production note the speaker cannot miss), auto-fit

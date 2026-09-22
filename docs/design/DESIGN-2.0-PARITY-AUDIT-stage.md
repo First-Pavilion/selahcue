@@ -846,3 +846,153 @@ audit's own headline "more than cosmetic" issues are closed.** The 28 open findi
 lower-severity residue: 3 fill-token gaps (Low), 1 blocked ink decision (Medium), 1 scope question
 (Medium), 5 data-dependent copy gaps (Low–Medium), 2 fill/height gaps (Low), 1 blocked header
 question (Low), plus 16 unswept per-frame geometry rows not yet individually re-graded.
+
+---
+
+## Reconciliation — 2026-09-22 (frontend closure pass)
+
+**Author:** Farah (Frontend Engineer), ClickUp `17tnw2axptq`. **Scope:** individually re-grep the
+16 "unswept" ids the 2026-09-20 reconciliation left un-triaged, re-verify the 12 explicitly
+confirmed-open ids against `stage.rs` as of this ticket's base commit, implement what is genuinely
+tractable, and record exactly why each remaining id is still blocked. `git log -- .../stage.rs`
+between the two reconciliation dates shows no commits, so the 2026-09-20 state is what this pass
+re-verified against — every classification below is a direct read of `stage.rs`, not an inference
+from the prior doc.
+
+### Guardrail honoured
+
+`STG-039` (the TIME-UP pulse) was **not touched**. No other `INTENTIONAL-DEVIATION` verdict
+(`STG-039`, `STG-071`) was revisited either.
+
+### Fixed this batch
+
+- **`STG-012`** (font weight uniformly 700) — the design uses three weights: Bold (700) for
+  labels/readouts, Semi Bold (600) for the wall clock (all three templates), Medium (500) for the
+  stanza position, both NEXT lines, and the timer-only footer. `line()` now takes an explicit
+  `weight: u16` and every one of its 25 call sites passes the semantically correct
+  `design::WEIGHT_BOLD` / `WEIGHT_SEMIBOLD` / `WEIGHT_MEDIUM`. Note for whoever next touches
+  typography here: the bundled single-weight face only synthesises an embolden above 550
+  (`selahcue_engine::raster::attrs_for`), so 600 and 500 currently render pixel-identical to each
+  other and only distinguishable from 700 — carrying the correct semantic value now is what makes
+  a future multi-weight face (or an engine change) a no-op here instead of a second sweep.
+  Verified: `chrome_runs_carry_the_designed_font_weight`
+  (`crates/selahcue-present/tests/test_stage_parity.rs`), mutation-verified (reverted the wall
+  clock to Bold, confirmed RED with siblings running, restored).
+
+### Closed by verification — already fixed incidentally by the 2026-08-24 batch, no code change
+
+Re-grepping `stage.rs` found these already true; the 2026-08-24 batch's own "STG items closed"
+list (§3 of the code-review batch) didn't cite them by id because they were swept up as a
+side-effect of a differently-scoped fix, exactly as the 2026-09-20 reconciliation warned could
+happen.
+
+- **`STG-005`** (warning ink) — `StageTheme::dark().timer_warn` already points at
+  `tokens::design2::WARN` = `#f5a524`, the exact value the audit named as Design 2.0's warn ink.
+- **`STG-023`** (worship NEXT chip radius/shape) — `chip()` already draws through `surface()`
+  with `m.stroke(design::R_CHIP)` (7px), the same shared fix that closed `STG-044`'s shape half.
+- **`STG-032`** (worship TIME-UP band border) — `compose_worship`'s footer band already draws
+  `theme.alert_border` (`design2::LIVE_BORDER` = `#5a2327`, the exact hex the audit specified) at
+  `design::B_TIME_UP_BAND` (2px) when `up`.
+- **`STG-043`**, leading half — `VERSE_LINE_HEIGHT = 1.24` is already applied to the scripture
+  verse region, matching Figma `374:135`'s explicit `leading-[1.24]`. (Its cap-size half is
+  closed below, as superseded.)
+
+### Closed — owner decision already recorded in code, not re-litigated
+
+- **`STG-053`** (Scripture TIME-UP appearance) — `compose_scripture`'s readout carries the
+  comment "Figma draws no Scripture TIME-UP frame, so this keeps the code's approved behaviour
+  (audit Q5)". Q5 was answered during the 2026-08-24 batch; this finding is resolved, not open.
+
+### Closed — editorial resolution (evidence-weight call, not a value trade-off; reversible in one line)
+
+- **`STG-073`** (Scripture TIME-UP region scope, **Q1**) — three Figma sources bear on this:
+  `375:139` says "timer region", `563:156` and `DESIGN-2.0-HANDOFF` §5.11 both say "panel region".
+  The implementation already does "panel" (matches 2 of 3, and §3.8 of this audit already records
+  it as **MATCH** against `563:156`). The audit's own text calls `375:139` "copy-paste from the
+  Worship row". Resolving Q1 as **"panel"** on the weight of evidence — this is an internal-
+  consistency read of three already-live Figma frames, not a values/accessibility trade-off like
+  Q2/Q4/Q7, so it stays within engineering judgement. If the owner reads `375:139` as intentional,
+  this is a one-line revert (no code changes ride on it either way).
+
+### Closed — superseded or verified non-issue, no code change
+
+- **`STG-022`** (worship lyric band geometry vs. the fixed 212px rect) — superseded by the
+  2026-08-24 batch's owner-approved elastic-band redesign (§2.2 of that batch): the fixed rect is
+  now documented as "the two-line case Figma 373:133 was drawn against, not normative geometry"
+  (`stage.rs`'s own comment above `Y_LYRIC`/`H_LYRIC`). The original "cap 22% over" comparison
+  measures against geometry the implementation deliberately no longer uses.
+- **`STG-015`** (`TimerView::progress` unused) — verdict is EXTRA/Low, not a defect. It is a
+  tested, working piece of the domain model (`timer_view_derives_state_from_a_countdown` in
+  `test_stage.rs` asserts it) kept for a future progress bar; removing it forfeits working,
+  covered behaviour for no user-facing gain and isn't what "close the gap" should mean here.
+- **`STG-061`** (idle `"--:--"` state) — UNSPECIFIED only because no Figma frame draws a
+  no-timer state. The placeholder contradicts no authority and is already covered
+  (`idle_monitor_shows_no_timer_colour_and_no_text`, `test_stage.rs`). No action needed.
+- **`STG-014`** (Figma tokens not bound as variables) — an observation about the Figma file's own
+  authoring (`get_variable_defs` returns `{}`), not an implementation gap. No code path addresses
+  it because none could.
+- **`STG-075`** (preset message payloads) — already verdict **MATCH** in the original audit ("no
+  output-side work needed"). Nothing was ever open here.
+- **`STG-076`** (Design 2.0 console token list) — its components are tracked individually as
+  `STG-001`/`STG-002`/`STG-006`/`STG-007` (open, below) and `STG-003`/`STG-004`/`STG-008` (already
+  fixed). No action beyond those.
+
+### Still OPEN — re-verified genuinely blocked, unchanged
+
+- **`STG-001`, `STG-006`, `STG-007`, `STG-031`** (background/panel/chip/TIME-UP-band fills —
+  `#08090d`/`#0c0e14`/`#12141c`/`#1c0c0e`) — confirmed no `design2::MANIFEST` swatch matches any of
+  the four hexes (checked `tokens.rs` directly: `BASE`/`SURFACE`/`ELEVATED`/`INSET` are all
+  *close* neutrals but none is an exact match). Minting one is the four-surface lockstep the
+  original audit's §6.1 Step 4 flags by name (operator `dist/app.css`, the Rust manifest, this
+  struct, and the Flutter `design_tokens.dart`, cross-checked by
+  `design2_palette_is_pinned_across_surfaces`) — genuinely out of scope for a single-crate ticket.
+  **Recommend a dedicated cross-surface token batch** (desktop + mobile + operator UI, one review).
+- **`STG-033`** (worship TIME-UP band height — Figma's `374:159` band is 100px, 7px shorter than
+  the running band's 107px) — re-verified unchanged: `compose_worship` still uses one `band_h`
+  (`0.19·h`) for both states. Left open for the same reason the 2026-08-24 batch left it: the
+  Figma difference is content-driven (the TIME-UP band's content is shorter, so its frame is
+  shorter), not a fixed value the implementation should hard-match — auto-sizing the band to its
+  content is a real layout change for a Low-severity, ~1%-of-frame-height difference, not a value
+  substitution like the rest of this batch.
+- **`STG-002`** (the stage `muted` ink) — **Q2** unresolved: Figma's `#6b7383` (AA-large only) vs.
+  the mobile precedent `#a7aebe` (AA-normal). Both candidates already exist as named `design2`
+  tokens (`TEXT_MUTED`, `TEXT_SECONDARY`), so the only blocker is the owner's choice — this is a
+  design/accessibility trade-off, not a missing-plumbing question, and is not decided here.
+- **`STG-016`** (per-output region toggles) — explicitly out of scope per the FR-059 "selected
+  outputs only" reading already recorded in the 2026-08-24 batch.
+- **`STG-029`, `STG-036`, `STG-052`, `STG-058`, `STG-059`, `STG-060`** (ink/data half) (the
+  `· Sermon` suffix, its TIME-UP counterpart, the scripture panel sub-caption, and the timer-only
+  footer's two-tone ink) — confirmed by reading `selahcue-app::controller` and
+  `selahcue-core::plan`: the active `Timer` carries no link back to the `PlanItem` it belongs to
+  (no segment name, no scheduled end time reaches `TimerView`/`StageContext`). Real cross-crate
+  data plumbing — and likely an operator affordance to name/schedule a segment — genuinely out of
+  scope for this ticket. `STG-058`/`STG-060`'s ink half is additionally blocked on **Q2** (the
+  two-tone footer needs both muted-ink candidates in different roles).
+- **`STG-050`** (scripture pill states beyond ON TIME — `HURRY`, `TIME UP`) — **Q4** unresolved:
+  approve the implementation's invented strings, or supply others.
+- **`STG-069`** (the simplified single-line message header) — **Q7** unresolved: sketch or a real
+  alternate treatment.
+- **`STG-068`** (message-overlay de-emphasis mechanism — a translucent scrim vs. the design's
+  re-rendered, faded-content approach) — a compositing-architecture difference, not a token/data
+  gap: the design's approach means the underlying content must know it's being de-emphasised and
+  re-render itself differently, not just receive an overlay on top. Left as a design/architecture
+  question rather than guessed at.
+
+### Totals (this pass)
+
+| | Count |
+|---|---:|
+| Fixed this batch (code + test) | 1 (`STG-012`) |
+| Closed by verification (already fixed, no code change) | 4 |
+| Closed — owner decision already recorded | 1 |
+| Closed — editorial resolution | 1 |
+| Closed — superseded / verified non-issue | 6 |
+| **Still open, re-verified genuinely blocked** | **17** |
+
+13 of the ids this pass triaged closed without a values decision; the 17 that remain open are
+blocked on exactly what the 2026-09-20 reconciliation predicted: four on a cross-surface token
+batch plus one content-driven layout item in the same neighbourhood (`STG-001/006/007/031/033`),
+one on Q2 (`STG-002`), one on scope (`STG-016`), six on data plumbing not yet built (two also on
+Q2), two on unresolved owner questions (Q4, Q7), and one on an architecture choice (`STG-068`).
+None of the ids this pass reviewed needed a value invented on the spot; every open item above
+names the exact decision or dependency it is waiting on.
