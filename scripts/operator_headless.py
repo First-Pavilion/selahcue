@@ -868,7 +868,30 @@ if not check_jump_call_site_is_click_only():
 # focus — 1816->1818 above) — real conflict in this exact block again — per this constant's own
 # repeated lesson, re-derived empirically after resolving rather than hand-summed. Confirmed by a
 # clean run: 1822, 0 FAIL.
-EXPECTED_MIN_CHECKS = 1822
+#
+# 1822 -> ?: two independent reviewers of the fix above (PR #77) each found a further gap in
+# `_lastBackgroundDecl()`, mirroring the two follow-up findings PR #75's `_lastFilterDecl()`
+# already went through. Sana (security review): switching to a global keep-last loop makes the
+# scan run past the first declaration into text a single `.exec()` never reached, and the helper
+# was missing the leading `(?:^|;)\s*` anchor PR #75's `_lastFilterDecl()` already carries —
+# without it, a `background-image: url('data:image/svg+xml;...)` value (a real shape already in
+# app.css) could have the loop wander into the encoded SVG markup and match a
+# `background:`-looking substring there as a second, later declaration. Cody (code review): the
+# helper's regexes had no `i` flag, and `window.__CSSTEXT` is raw source text, not Chrome's
+# case-normalized CSSOM, so an uppercase `BACKGROUND-COLOR:`/`BACKGROUND-IMAGE:` declaration would
+# have silently lost to an earlier lowercase one instead of winning the cascade. Both fixed the
+# same way PR #75 fixed the identical pair of gaps for `filter:`: anchored the regex and added the
+# `i` flag — and while resolving this rebase, also migrated the three PP-GEN call sites main's own
+# SET-010 stack added above (`wPpGenHb`/`wPpGenDisabledBg`/`wPpGenBaseBg`) onto the same shared
+# `_lastBackgroundDecl()` helper, since they carried the identical un-hardened pattern this whole
+# fix exists to close. Added `BACKGROUND-REGEX-ANCHOR` (+2) and `BACKGROUND-REGEX-CASE-INSENSITIVE`
+# / `BACKGROUND-IMAGE-REGEX-CASE-INSENSITIVE` (+2) mutation-proof checks. Mutation-tested each fix
+# independently: reverting only the anchor reproduced exactly 1 FAIL (`BACKGROUND-REGEX-ANCHOR`'s
+# effect check); reverting only the `i` flag reproduced exactly 2 FAIL (both case-insensitive
+# checks); nothing else regressed in either case; restoring each returned to 0 FAIL. Per this
+# constant's own repeated lesson: re-derived empirically, not hand-summed, after resolving this
+# rebase. Confirmed by a clean run: 1826, 0 FAIL.
+EXPECTED_MIN_CHECKS = 1826
 
 
 def find_chrome():
@@ -9622,14 +9645,30 @@ right after a generate/save");
       // mistake, future edit — is plausible authored CSS, same as the `filter:` case). Cody
       // (review of PR #75) found the PME-005/TD-012/PSC-005/DLM-001/GO-LIVE-HOVER/TIMER-START-HOVER
       // guards below all shared this identical shape for their `background` reads and flagged it
-      // as a non-blocking follow-up; fixed here the same way PR #75 fixed it for `filter:` — match
-      // globally and keep the last hit, the declaration that actually wins the cascade. Two of the
-      // eight call sites (PSC-005's disabled-vs-rest comparison) need the `-image` suffix instead
-      // of `-color`, hence the parameter rather than two near-duplicate helpers.
+      // as a non-blocking follow-up; fixed here the same way PR #75 fixed `filter:` (its own
+      // `_lastFilterDecl()` helper — not present on this branch, since PR #75 is not yet merged;
+      // this is a deliberately independent, analogous helper, not a reuse) — match globally and
+      // keep the last hit, the declaration that actually wins the cascade. Two of the eight call
+      // sites (PSC-005's disabled-vs-rest comparison) need the `-image` suffix instead of
+      // `-color`, hence the parameter rather than two near-duplicate helpers.
+      // Sana (security review, PR #77): switching to a global keep-last loop makes the scan run
+      // past the first declaration into text a single `.exec()` never reached, so the leading
+      // `(?:^|;)\s*` anchor PR #75's `_lastFilterDecl()` already carries matters here too, not
+      // just there — without it, a `background-image: url('data:image/svg+xml;utf8,...')` value
+      // (real shape already in app.css) could have the loop match a `background:`-looking
+      // substring inside the encoded SVG markup and wrongly treat it as the winning declaration.
+      // Anchored the same way; Sana verified this closes the gap without reintroducing
+      // backtracking or hang risk.
+      // Cody (code review, PR #77): CSS property names are case-insensitive per spec — the same
+      // gap Sana found and fixed on PR #75's `_lastFilterDecl()` (`FILTER:` vs `filter:`) applies
+      // identically here. `window.__CSSTEXT` is raw source text, not Chrome's case-normalized
+      // CSSOM, so an uppercase `BACKGROUND-COLOR:`/`BACKGROUND-IMAGE:` declaration would
+      // otherwise silently lose to an earlier lowercase one instead of winning the cascade as the
+      // browser actually applies it. Matched with the `i` flag below.
       function _lastBackgroundDecl(ruleText, withImage){
         var re = withImage
-          ? /background(?:-image)?\s*:\s*([^;]+)/g
-          : /background(?:-color)?\s*:\s*([^;]+)/g;
+          ? /(?:^|;)\s*background(?:-image)?\s*:\s*([^;]+)/gi
+          : /(?:^|;)\s*background(?:-color)?\s*:\s*([^;]+)/gi;
         var m, last = null;
         while ((m = re.exec(ruleText)) !== null) { last = m; }
         return last;
@@ -10110,9 +10149,10 @@ right after a generate/save");
       // first match -----------------------------------------------------------------------------
       // Cody (review of PR #75): a non-global regex's `.exec()` only ever returns the FIRST
       // match, but the CSS cascade applies the LAST declaration when a property repeats within
-      // one rule — the identical shape of bug PR #75 fixed for `filter:` (`_lastFilterDecl()`
-      // above), flagged there as a non-blocking follow-up for the `background`/`background-image`
-      // guards used by PME-005/TD-012/PSC-005/DLM-001/GO-LIVE-HOVER/TIMER-START-HOVER above. A
+      // one rule — the identical shape of bug PR #75 fixed for `filter:` via its own
+      // `_lastFilterDecl()` helper, flagged there as a non-blocking follow-up for the
+      // `background`/`background-image` guards used by
+      // PME-005/TD-012/PSC-005/DLM-001/GO-LIVE-HOVER/TIMER-START-HOVER above. A
       // rule authored (or merged) with a duplicate `background-color:` — plausible from a merge
       // artefact, a copy-paste mistake, or a future edit — would have had these guards report the
       // FIRST value while the browser actually applies the LAST. Run that exact duplicate through
@@ -10131,6 +10171,43 @@ right after a generate/save");
          "BACKGROUND-IMAGE-REGEX-LASTMATCH (premise): a duplicate `background-image:` declaration resolves to the LAST one (found \"" + (wDupBgImg ? wDupBgImg[1].trim() : "none") + "\")");
       ok(wDupBgImg[1].trim() !== "linear-gradient(a)",
          "BACKGROUND-IMAGE-REGEX-LASTMATCH: the shared background-guard does not resolve to the FIRST declaration (with the old non-global .exec(), PSC-005's disabled-vs-rest comparison could have wrongly matched or mismatched on a stale first value instead of the one the cascade applies)");
+
+      // --- BACKGROUND-REGEX-ANCHOR: the shared background-guard does not mistake a
+      // `background:`-looking SUBSTRING inside a declaration's own VALUE for a real declaration
+      // boundary -----------------------------------------------------------------------------
+      // Sana (security review, PR #77): switching `_lastBackgroundDecl()` to a global keep-last
+      // loop makes the scan run past the first declaration into text a single `.exec()` never
+      // reached — so unlike the old per-site single-match code, a
+      // `background-image: url('data:image/svg+xml;...)` value (a real shape already in app.css)
+      // could have the loop wander into the encoded SVG markup and match a `background:`-looking
+      // substring there as if it were a second, later declaration. Run that exact shape through
+      // the real shared helper and prove the anchor (`(?:^|;)\s*` before the property name, the
+      // same anchor PR #75's `_lastFilterDecl()` already carries) keeps it from being fooled.
+      var wBgSvgRule = "background-image: url('data:image/svg+xml;utf8,<svg style=\"background:red\"></svg>');";
+      var wBgSvg = _lastBackgroundDecl(wBgSvgRule, true);
+      ok(!!wBgSvg, "BACKGROUND-REGEX-ANCHOR (premise): the data-URI rule still yields a match for its real background-image declaration");
+      ok(wBgSvg[1].trim().indexOf("url(") === 0 && wBgSvg[1].trim().indexOf("red") === -1,
+         "BACKGROUND-REGEX-ANCHOR: resolves to the real declaration's own value, not the embedded `background:red` inside the SVG markup's `style` attribute — the anchor requires a real `;`/start-of-string immediately before `background`, not just the literal text anywhere in the rule (found \"" + wBgSvg[1].trim() + "\"; with the pre-anchor loop, this rule would have wrongly resolved to \"red\\\"></svg>')\")");
+
+      // --- BACKGROUND-REGEX-CASE-INSENSITIVE / BACKGROUND-IMAGE-REGEX-CASE-INSENSITIVE: the
+      // shared background-guard matches the `background`/`background-image` property name
+      // regardless of its declared case, same as the real CSS cascade --------------------------
+      // Cody (code review, PR #77): CSS property names are case-insensitive per spec — Sana
+      // proved this for `filter:` in PR #75 (Chrome applies `FILTER:` identically to `filter:`)
+      // — but `_lastBackgroundDecl()`'s regexes matched only the lowercase spelling. A rule with
+      // `background-color: #111111; BACKGROUND-COLOR: #5a48d0;` would have had the guard
+      // silently return the FIRST (lowercase) declaration instead of the LAST (winning,
+      // uppercase) one — not a missed match like the `filter:` case (which returned null), but a
+      // wrong VALUE, since the lowercase declaration is still real, syntactically valid CSS the
+      // anchored regex does match; it simply is not the declaration that wins the cascade.
+      var wCiBgRule = "background-color: #111111; BACKGROUND-COLOR: #5a48d0;";
+      var wCiBg = _lastBackgroundDecl(wCiBgRule);
+      ok(!!wCiBg && wCiBg[1].trim() === "#5a48d0",
+         "BACKGROUND-REGEX-CASE-INSENSITIVE: an uppercase `BACKGROUND-COLOR:` declaration is matched and resolves as the LAST (winning) one, not silently defeated by the case mismatch (found \"" + (wCiBg ? wCiBg[1].trim() : "none") + "\")");
+      var wCiBgImgRule = "background-image: linear-gradient(a); BACKGROUND-IMAGE: linear-gradient(b);";
+      var wCiBgImg = _lastBackgroundDecl(wCiBgImgRule, true);
+      ok(!!wCiBgImg && wCiBgImg[1].trim() === "linear-gradient(b)",
+         "BACKGROUND-IMAGE-REGEX-CASE-INSENSITIVE: an uppercase `BACKGROUND-IMAGE:` declaration is matched and resolves as the LAST (winning) one (found \"" + (wCiBgImg ? wCiBgImg[1].trim() : "none") + "\")");
 
       // --- PME-014 / PME-015: the two missing topbar primary actions ------------------------
       document.querySelector('.nav-item[data-surface="presentation"]').click();
