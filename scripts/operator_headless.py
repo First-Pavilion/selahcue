@@ -782,7 +782,15 @@ if not check_jump_call_site_is_click_only():
 # Appearance) — its own pre-merge count of 1717 already included both ancestor branches' checks.
 # Not hand-summed at all this time, per the lesson recorded immediately above: empirically re-run
 # after resolving instead. Confirmed by a clean run: 1768, 0 FAIL.
-EXPECTED_MIN_CHECKS = 1768
+#
+# 1768 -> 1788: this branch adds GO-LIVE-HOVER / TIMER-START-HOVER (.tb-golive/.timer-start kept
+# `filter: brightness(1.06)` on :hover after their rest gradient was darkened — the exact
+# regression Sana's PR #58 review flagged as "unmeasured" for these two buttons specifically,
+# including her own filter-guard check pattern, carried over here). Rebased onto main post-1768
+# with a real conflict in this exact block (the pattern this comment keeps warning about) — per
+# its own repeated lesson, re-derived empirically after resolving rather than hand-summed. Three
+# independent runs against the real post-rebase tree all reported 1788, 0 FAIL.
+EXPECTED_MIN_CHECKS = 1788
 
 
 def find_chrome():
@@ -9758,6 +9766,83 @@ right after a generate/save");
         var wDlOldHover = _resolve("var(--sc-primary-hover)");
         ok(_cr([255,255,255,1], wDlOldHover) < 4.5,
            "DLM-001 (control): --sc-primary-hover itself still measures BELOW AA-normal for white (" + _f(_cr([255,255,255,1], wDlOldHover)) + ":1) — the TOKEN VALUE is untouched; only this rule stopped using it");
+      }
+
+      // --- GO-LIVE-HOVER / TIMER-START-HOVER: .tb-golive/.timer-start kept `filter:
+      // brightness(1.06)` on :hover when their REST gradient was darkened (#10 above,
+      // app.css:5002-5007) to fix white-on-the-light-stop failing AA. Brightening the ALREADY
+      // darkened near stop by 6% pulls it back under AA-normal (4.27:1) — a regression no
+      // existing check measured: CON-046 above measures the '⏎ Enter' key-hint CHIP on this
+      // same button, not the button's own label, and PME-005 measures a different button,
+      // .pm-btn-primary:hover. Same technique as TD-012/PSC-005/DLM-001: measure the parsed
+      // :hover rule text, not a simulated :hover pseudo-class, which this headless page cannot
+      // trigger. Also carries TD-012's own filter-guard check (Sana, PR #58 review) — this is
+      // literally the surface her comment names as still carrying the gap unmeasured.
+      // --- GO-LIVE-HOVER: .tb-golive (topbar "● GO LIVE") ------------------------------------
+      var wTbGl = el("top-golive");
+      ok(!!wTbGl, "GO-LIVE-HOVER (premise): the topbar GO LIVE button exists in the DOM");
+      if (wTbGl) {
+        var wTbGlStops = _stops(wTbGl);
+        ok(wTbGlStops.length === 2 && !_same(wTbGlStops[0], wTbGlStops[1]),
+           "GO-LIVE-HOVER (premise): .tb-golive really is a TWO-stop gradient, so 'measured at both stops' is not vacuous");
+        wTbGlStops.forEach(function(s, i){
+          var r = _cr([255,255,255,1], s);
+          ok(r >= 4.5, "GO-LIVE-HOVER: the topbar GO LIVE label clears AA-NORMAL on gradient stop " + (i+1) + " (" + _f(r) + ":1)");
+        });
+        var wTbGlHoverRule = /\.tb-golive:hover\s*\{([^}]*)\}/.exec(window.__CSSTEXT || "");
+        ok(!!wTbGlHoverRule, "GO-LIVE-HOVER (premise): the .tb-golive:hover rule is present in the shipped app.css");
+        var wTbGlHb = wTbGlHoverRule ? /background(?:-color)?\s*:\s*([^;]+)/.exec(wTbGlHoverRule[1]) : null;
+        ok(!!wTbGlHb, "GO-LIVE-HOVER (premise): the hover rule declares a background, so there is a value to measure — a bare `filter: brightness()` would leave nothing here");
+        if (wTbGlHb) {
+          var wTbGlHoverBg = _resolve(wTbGlHb[1].trim());
+          var wTbGlHoverR = _cr([255,255,255,1], wTbGlHoverBg);
+          ok(wTbGlHoverR >= 4.5, "GO-LIVE-HOVER: the HOVERED topbar GO LIVE button keeps its white label at AA-NORMAL (" + _f(wTbGlHoverR) + ":1)");
+          ok(_lum(wTbGlHoverBg) <= Math.max.apply(null, wTbGlStops.map(_lum)),
+             "GO-LIVE-HOVER: hover does not LIGHTEN past the gradient's brightest rest stop — no `filter: brightness()` re-lightening the darkened fill");
+        }
+        // Sana's TD-012 finding (PR #58 review) applies identically here: the background-only
+        // checks above cannot see a `filter: brightness()` stacked back onto this hover rule.
+        var wTbGlHoverFilter = wTbGlHoverRule ? /(?:^|;)\s*filter\s*:\s*([^;]+)/.exec(wTbGlHoverRule[1]) : null;
+        ok(!wTbGlHoverFilter || /^\s*none\s*$/.test(wTbGlHoverFilter[1]),
+           "GO-LIVE-HOVER: the hover rule carries no `filter` (found " + (wTbGlHoverFilter ? wTbGlHoverFilter[1].trim() : "none") +
+           ") — a brightness() filter stacked on an already-darkened fill would re-lighten it past AA, and the background-only checks above cannot see that");
+        // Control: recomputing the ORIGINAL `filter: brightness(1.06)` against the darkened
+        // rest gradient's own stops must still measure as FAILING through this exact helper —
+        // proves the assertions above are not rubber-stamping a value that was already fine.
+        var wTbGlBrightened = wTbGlStops.map(function(s){ return [Math.min(255,s[0]*1.06), Math.min(255,s[1]*1.06), Math.min(255,s[2]*1.06), s[3]]; });
+        ok(Math.min.apply(null, wTbGlBrightened.map(function(s){ return _cr([255,255,255,1], s); })) < 4.5,
+           "GO-LIVE-HOVER (control): `filter: brightness(1.06)` on the darkened rest gradient still measures BELOW AA-normal through this helper — the fix is a real background change, not a measurement artefact");
+      }
+
+      // --- TIMER-START-HOVER: .timer-start (Service Timer "Start") --------------------------
+      var wTimerStart = el("timer-start-custom");
+      ok(!!wTimerStart, "TIMER-START-HOVER (premise): the Service Timer custom-time Start button exists in the DOM");
+      if (wTimerStart) {
+        var wTsStops = _stops(wTimerStart);
+        ok(wTsStops.length === 2 && !_same(wTsStops[0], wTsStops[1]),
+           "TIMER-START-HOVER (premise): .timer-start really is a TWO-stop gradient, so 'measured at both stops' is not vacuous");
+        wTsStops.forEach(function(s, i){
+          var r = _cr([255,255,255,1], s);
+          ok(r >= 4.5, "TIMER-START-HOVER: the Timer Start label clears AA-NORMAL on gradient stop " + (i+1) + " (" + _f(r) + ":1)");
+        });
+        var wTsHoverRule = /\.timer-start:hover\s*\{([^}]*)\}/.exec(window.__CSSTEXT || "");
+        ok(!!wTsHoverRule, "TIMER-START-HOVER (premise): the .timer-start:hover rule is present in the shipped app.css");
+        var wTsHb = wTsHoverRule ? /background(?:-color)?\s*:\s*([^;]+)/.exec(wTsHoverRule[1]) : null;
+        ok(!!wTsHb, "TIMER-START-HOVER (premise): the hover rule declares a background, so there is a value to measure — a bare `filter: brightness()` would leave nothing here");
+        if (wTsHb) {
+          var wTsHoverBg = _resolve(wTsHb[1].trim());
+          var wTsHoverR = _cr([255,255,255,1], wTsHoverBg);
+          ok(wTsHoverR >= 4.5, "TIMER-START-HOVER: the HOVERED Timer Start button keeps its white label at AA-NORMAL (" + _f(wTsHoverR) + ":1)");
+          ok(_lum(wTsHoverBg) <= Math.max.apply(null, wTsStops.map(_lum)),
+             "TIMER-START-HOVER: hover does not LIGHTEN past the gradient's brightest rest stop — no `filter: brightness()` re-lightening the darkened fill");
+        }
+        var wTsHoverFilter = wTsHoverRule ? /(?:^|;)\s*filter\s*:\s*([^;]+)/.exec(wTsHoverRule[1]) : null;
+        ok(!wTsHoverFilter || /^\s*none\s*$/.test(wTsHoverFilter[1]),
+           "TIMER-START-HOVER: the hover rule carries no `filter` (found " + (wTsHoverFilter ? wTsHoverFilter[1].trim() : "none") +
+           ") — a brightness() filter stacked on an already-darkened fill would re-lighten it past AA, and the background-only checks above cannot see that");
+        var wTsBrightened = wTsStops.map(function(s){ return [Math.min(255,s[0]*1.06), Math.min(255,s[1]*1.06), Math.min(255,s[2]*1.06), s[3]]; });
+        ok(Math.min.apply(null, wTsBrightened.map(function(s){ return _cr([255,255,255,1], s); })) < 4.5,
+           "TIMER-START-HOVER (control): `filter: brightness(1.06)` on the darkened rest gradient still measures BELOW AA-normal through this helper — the fix is a real background change, not a measurement artefact");
       }
 
       // --- PME-014 / PME-015: the two missing topbar primary actions ------------------------

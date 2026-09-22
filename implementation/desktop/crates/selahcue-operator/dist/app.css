@@ -178,8 +178,11 @@
         background: linear-gradient(90deg, var(--sc-primary-hover), var(--sc-primary));
       }
 
+      /* GO LIVE hover: brightening the already-darkened rest gradient (app.css:5002-5007,
+         #10) re-lightens its near stop from 4.72:1 back to 4.27:1 — under AA-normal. Darken
+         instead of lighten, matching the TD-012/PSC-005/DLM-001 pattern (17tnw2axpt9). */
       .tb-golive:hover {
-        filter: brightness(1.06);
+        background: #5a48d0;
         color: #fff;
       }
 
@@ -4565,8 +4568,10 @@
         background: linear-gradient(90deg, var(--sc-primary-hover), var(--sc-primary));
       }
 
+      /* Service Timer Start hover: same defect and fix as .tb-golive above — brightening the
+         darkened rest gradient re-lightens it under AA-normal (17tnw2axpt9). */
       .timer-start:hover {
-        filter: brightness(1.06);
+        background: #5a48d0;
         border: none;
       }
 
