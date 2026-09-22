@@ -7058,6 +7058,12 @@
   display: flex; flex-direction: column; gap: 5px; max-height: 160px; overflow-y: auto;
   margin: 0 0 0 24px; padding-left: 10px; border-left: 2px solid var(--sc-border);
 }
+/* The author `display: flex` above beats the UA `[hidden] { display: none }` in WKWebView (and
+   Chrome) — same trap as .td-bgpanel[hidden] / .td-save-row[hidden] / .td-ctx[hidden] elsewhere
+   in this file. The JS toggles `dupPicker.hidden`, so without this the "Duplicate an existing
+   presentation" deck picker stays visually painted at all times regardless of which Start-from
+   radio is selected (Quinn, PR #69 review — ClickUp 17tnw2axwg9). */
+.pm-startfrom-picker[hidden] { display: none; }
 .pm-startfrom-picker-row {
   display: flex; align-items: center; gap: 8px; padding: 6px 9px; border-radius: 8px;
   border: 1px solid var(--sc-border); background: var(--sc-elevated); cursor: pointer;

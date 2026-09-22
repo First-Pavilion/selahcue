@@ -10047,10 +10047,18 @@ right after a generate/save");
       ok(!!wSfDup && !wSfDup.disabled, "PME-053: 'Duplicate an existing presentation' is available (the library is non-empty)");
       ok(!!wSfTpl && wSfTpl.disabled, "PME-053: 'From a template' is an honest disabled 'later' affordance, not a broken live control");
       var wSfPicker = document.querySelector(".pm-startfrom-picker");
-      ok(!!wSfPicker && wSfPicker.hidden, "PME-053 (premise): the duplicate-source picker starts hidden under the default 'Blank deck' choice");
+      // Check COMPUTED display, not just the DOM `hidden` property: an author `display` rule
+      // (here .pm-startfrom-picker's own `display: flex`) can defeat the [hidden] attribute in
+      // WKWebView/Chrome without an explicit `[hidden] { display: none }` override — the exact
+      // trap .td-bgpanel[hidden] etc. already guard against elsewhere in app.css. Checking only
+      // `.hidden` (the DOM property) passes even when the element is still visually painted, which
+      // is precisely how this shipped broken once already (Quinn, PR #69 review — 17tnw2axwg9).
+      ok(!!wSfPicker && wSfPicker.hidden && getComputedStyle(wSfPicker).display === "none",
+         "PME-053 (premise): the duplicate-source picker starts hidden under the default 'Blank deck' choice (hidden=" + (wSfPicker && wSfPicker.hidden) + ", computed display=" + (wSfPicker && getComputedStyle(wSfPicker).display) + ")");
       if (wSfDup) {
         wSfDup.click();
-        ok(!wSfPicker.hidden, "PME-053: choosing 'Duplicate an existing presentation' reveals the deck picker");
+        ok(!wSfPicker.hidden && getComputedStyle(wSfPicker).display !== "none" && wSfPicker.getClientRects().length > 0,
+           "PME-053: choosing 'Duplicate an existing presentation' reveals the deck picker (computed display=" + getComputedStyle(wSfPicker).display + ", painted rects=" + wSfPicker.getClientRects().length + ")");
         var wSfRows = wSfPicker.querySelectorAll(".pm-startfrom-picker-row");
         ok(wSfRows.length === window.__LIB.decks.length, "PME-053: the picker lists one row per existing presentation (" + wSfRows.length + " of " + window.__LIB.decks.length + ")");
         // Pick a row OTHER than the pre-selected first one, so a pass proves selecting a row
