@@ -9800,6 +9800,23 @@
         try { pmApplyLibrary(await invoke("deck_duplicate", { id: id })); pmLibFocusDeck(id); }
         catch (e) { console.error(e); pmShowError("duplicate the presentation"); }
       }
+      // A bounded wait for a promise that might never settle. `view()` can be a genuine TLS
+      // round-trip on Backend::Remote, and ControlClient::command (selahcue-lan/src/client.rs)
+      // has NO per-request timeout on that path — unlike connect/pair, which do (Vera, PR #69
+      // review round 2). A stalled-but-connected host would otherwise hang the caller forever:
+      // no spinner, no error, clicking Delete does nothing. The timeout lives here, client-side,
+      // until that gap is closed at the source; it changes nothing about a call that settles
+      // normally (the real promise still wins the race, `clearTimeout` cleans up either way).
+      const PM_VIEW_TIMEOUT_MS = 1500;
+      function pmWithTimeout(promise, ms) {
+        return new Promise((resolve, reject) => {
+          const t = setTimeout(() => reject(new Error("timed out")), ms);
+          promise.then(
+            (v) => { clearTimeout(t); resolve(v); },
+            (e) => { clearTimeout(t); reject(e); }
+          );
+        });
+      }
       // "its 12 slides" when the library knows the count, "its slides" when it does not. Never a
       // fabricated number: an unknown count is stated vaguely, not invented precisely.
       function pmSlideCountPhrase(id) {
@@ -9825,7 +9842,7 @@
         let planRefName = null;
         let planRefUnknown = false;
         try {
-          const v = await invoke("view");
+          const v = await pmWithTimeout(invoke("view"), PM_VIEW_TIMEOUT_MS);
           const items = (v && v.items) || [];
           planLinked = items.some((it) => it.link && it.link.kind === "deck" && it.link.id === id);
           // `linked` and `named` are TWO separate facts, checked separately on purpose: a plan

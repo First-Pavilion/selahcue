@@ -746,7 +746,18 @@ if not check_jump_call_site_is_click_only():
 # bound) — the same silent-clean-dialog failure already fixed above, one field over. Mutation-
 # verified (removing the new linked-but-unnamed warning branch turns both assertions RED,
 # restored). Confirmed by two independent runs (both 1674, 0 FAIL).
-EXPECTED_MIN_CHECKS = 1674
+#
+# 1674 -> 1676: same ticket, remediation round 5 — 2 new checks covering Vera's PR #69 review
+# round-2 finding that pmLibDelete's `await invoke("view")` had no timeout: on Backend::Remote,
+# ControlClient::command (selahcue-lan/src/client.rs) has no per-request timeout on this path
+# (unlike connect/pair, which do), so a stalled-but-connected host would hang the whole delete
+# flow forever — no spinner, no error. Added PM_VIEW_TIMEOUT_MS (1500 ms) via a small
+# pmWithTimeout() wrapper; expiry is treated as the same planRefUnknown state the earlier
+# rejection fix already added. New test hook (window.__viewHangOnce, a promise that never
+# settles) proves the timeout is what moves the UI on, not the mock resolving late. Mutation-
+# verified (removing the pmWithTimeout wrapper turns both new assertions RED, restored).
+# Confirmed by two independent runs (both 1676, 0 FAIL).
+EXPECTED_MIN_CHECKS = 1676
 
 
 def find_chrome():
@@ -1041,6 +1052,9 @@ STUB = r"""
     // apart from a genuinely healthy read reporting "not referenced".
     if (cmd === "view") {
       if (window.__viewRejectOnce) { window.__viewRejectOnce = false; return Promise.reject(new Error("view failed")); }
+      // A stalled-but-connected host on Backend::Remote (Vera, PR #69 review round 2): the
+      // promise NEVER settles, so only pmLibDelete's own client-side timeout can move the UI on.
+      if (window.__viewHangOnce) { window.__viewHangOnce = false; return new Promise(function(){}); }
       return Promise.resolve(JSON.parse(JSON.stringify(V)));
     }
     // Service Plan builder (86ajxxuz9): plan mutations + content-link + scripture search.
@@ -10207,6 +10221,23 @@ right after a generate/save");
         var wWarnFailed = document.querySelector(".pm-confirm-warn");
         ok(!!wWarnFailed && /couldn.t check/i.test(wWarnFailed.textContent),
            "Sana + Vera (PR #69): ...and the warning honestly says the check couldn't be completed, not a fabricated \"not referenced\" or a fabricated \"referenced\" (\"" + (wWarnFailed ? wWarnFailed.textContent : "") + "\")");
+        wCloseDel();
+        // Vera (PR #69 review, round 2): a REJECTED view() (above) is one failure mode; a
+        // STALLED-BUT-CONNECTED host on Backend::Remote is another, and ControlClient::command
+        // (selahcue-lan/src/client.rs) has no per-request timeout on this path — unlike
+        // connect/pair, which do. Without a client-side bound, this would hang the whole delete
+        // flow forever: no spinner, no error, nothing. window.__viewHangOnce makes the mock's
+        // view() promise never settle at all; the only way this test can pass is if
+        // pmLibDelete's own PM_VIEW_TIMEOUT_MS actually fires and moves the UI on.
+        window.__viewHangOnce = true;
+        wLinkedCard.querySelector(".pm-lib-dots").click();
+        await wWait(function(){ return !!el("pm-lib-menu"); });
+        Array.prototype.slice.call(el("pm-lib-menu").querySelectorAll("button")).filter(function(b){ return /^Delete/.test(b.textContent); })[0].click();
+        ok(await waitFor(function(){ return !!document.querySelector(".pm-confirm-warn"); }, 100),
+           "Vera (PR #69, round 2): a STALLED (never-resolving) plan-reference check does not hang forever — the client-side timeout fires and the dialog still shows a warning");
+        var wWarnHung = document.querySelector(".pm-confirm-warn");
+        ok(!!wWarnHung && /couldn.t check/i.test(wWarnHung.textContent),
+           "Vera (PR #69, round 2): ...with the same honest \"couldn't check\" copy as a rejected read, not a fabricated verdict");
         wCloseDel();
         // Sana (PR #69 review, round 2): "linked" and "the plan has a reported name" are TWO
         // separate facts that the original fix conflated into one `if` — a genuinely linked deck
