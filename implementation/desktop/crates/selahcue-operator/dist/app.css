@@ -5773,7 +5773,11 @@
       .pm-insp-align { display: inline-flex; gap: 4px; }
       .pm-insp-align button[aria-pressed="true"] { background: var(--sc-primary); border-color: var(--sc-primary); color: #fff; }
       .pm-insp-missing { color: var(--sc-live); font-size: 12px; }
-      .pm-insp-note { font-size: 11px; color: var(--sc-text-muted); }
+      /* PME-006: "Select an element to edit it." is the inspector's EMPTY-STATE copy — the
+         project's own written rule (app.css review-fixes block) names empty states as essential
+         text that must clear AA-normal, not the supplementary-micro-text tier --sc-text-muted
+         (3.79:1) is limited to. */
+      .pm-insp-note { font-size: 11px; color: var(--sc-text-secondary); }
       /* G.6 (347:170) — the missing-media explanation. --sc-text-secondary, not --sc-text-muted:
          this is essential copy (it is what tells the operator the audience is fine), and muted
          is AA-large only. Warn tint matches the frame's #2a2415 / #4a3a15 pairing. */
@@ -5908,7 +5912,9 @@
         flex: 0 0 auto;
       }
       .pm-media-stats.warn { color: var(--sc-live); }
-      .pm-media-empty { grid-column: 1 / -1; padding: 16px 4px; color: var(--sc-text-muted); font-size: 13px; }
+      /* PME-007: "No matching media." is an empty state — essential text per the project's own
+         policy, promoted off the AA-large-only muted tier. */
+      .pm-media-empty { grid-column: 1 / -1; padding: 16px 4px; color: var(--sc-text-secondary); font-size: 13px; }
 
       /* ===== Remaining states: destructive confirms · system loading/error · toast ===== */
 
@@ -6459,7 +6465,8 @@
         color: var(--sc-primary-hover); display: flex; align-items: center; justify-content: center; font-size: 28px;
       }
       .pm-lib-empty-title { font-size: 17px; font-weight: 700; color: var(--sc-text); }
-      .pm-lib-empty-sub { font-size: 13px; color: var(--sc-text-muted); max-width: 340px; }
+      /* PME-008: empty-state body copy — essential text per the project's own policy. */
+      .pm-lib-empty-sub { font-size: 13px; color: var(--sc-text-secondary); max-width: 340px; }
       .pm-lib-error { color: var(--sc-text-secondary); font-size: 14px; }
       /* aria-busy skeleton shimmer on the grid while deck_list loads. */
       .pm-lib-grid[aria-busy="true"] { position: relative; min-height: 240px; }
@@ -6659,8 +6666,12 @@
       .pm-tile.preview { border-color: var(--sc-primary); box-shadow: 0 0 0 2px var(--sc-primary), 0 0 12px var(--sc-accent-soft); }
       .pm-tile-live.prev { background: var(--sc-accent-soft); border-color: var(--sc-primary); color: var(--sc-primary-hover); }
       .pm-tile-fail { display: grid; place-items: center; }
-      .pm-tile-failmsg { color: var(--sc-text-muted); font-size: 12px; }
-      .pm-grid-hint { color: var(--sc-text-muted); font-size: 12px; margin: 0; }
+      /* PME-010: a thumbnail render-failure message is error text — essential, per the project's
+         own policy, not supplementary micro-text. */
+      .pm-tile-failmsg { color: var(--sc-text-secondary); font-size: 12px; }
+      /* PME-009: "Double-click a slide to present it live." is an instruction — essential text
+         per the project's own policy. */
+      .pm-grid-hint { color: var(--sc-text-secondary); font-size: 12px; margin: 0; }
       .pm-grid-empty { display: grid; place-items: center; gap: 12px; padding: 48px 8px; text-align: center; }
       /* Without this guard the author `display: grid` defeats [hidden] in WKWebView, so the
          'no slides yet' box stays visible over a populated deck (`emptyBox.hidden = !empty`
@@ -7028,6 +7039,41 @@
 .plan-tpl-name { color: var(--sc-text); font-size: 13px; font-weight: 600; }
 .plan-tpl-count { color: var(--sc-text-secondary); font-size: 11.5px; }
 
+/* PME-053 — "Start from" (New presentation dialog). Same radio-row shape as .plan-tpl-*
+   above (never a <select> in this flex-parented dialog body — see that block's own comment)
+   with a nested picker for the Duplicate option's deck list. */
+.pm-startfrom { display: flex; flex-direction: column; gap: 6px; margin: 6px 0 4px; }
+.pm-startfrom-row {
+  display: flex; align-items: flex-start; gap: 10px; padding: 9px 11px; border-radius: 9px;
+  border: 1px solid var(--sc-border); background: var(--sc-inset); cursor: pointer;
+}
+.pm-startfrom-row:hover { border-color: var(--sc-border-strong); }
+.pm-startfrom-row:focus-within { outline: 2px solid var(--sc-primary); outline-offset: 1px; }
+.pm-startfrom-row.pm-later { cursor: not-allowed; }
+.pm-startfrom-row input[type="radio"] { margin-top: 2px; }
+.pm-startfrom-txt { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.pm-startfrom-label { color: var(--sc-text); font-size: 13px; font-weight: 600; }
+.pm-startfrom-sub { color: var(--sc-text-secondary); font-size: 11.5px; }
+.pm-startfrom-picker {
+  display: flex; flex-direction: column; gap: 5px; max-height: 160px; overflow-y: auto;
+  margin: 0 0 0 24px; padding-left: 10px; border-left: 2px solid var(--sc-border);
+}
+/* The author `display: flex` above beats the UA `[hidden] { display: none }` in WKWebView (and
+   Chrome) — same trap as .td-bgpanel[hidden] / .td-save-row[hidden] / .td-ctx[hidden] elsewhere
+   in this file. The JS toggles `dupPicker.hidden`, so without this the "Duplicate an existing
+   presentation" deck picker stays visually painted at all times regardless of which Start-from
+   radio is selected (Quinn, PR #69 review — ClickUp 17tnw2axwg9). */
+.pm-startfrom-picker[hidden] { display: none; }
+.pm-startfrom-picker-row {
+  display: flex; align-items: center; gap: 8px; padding: 6px 9px; border-radius: 8px;
+  border: 1px solid var(--sc-border); background: var(--sc-elevated); cursor: pointer;
+}
+.pm-startfrom-picker-row:hover { border-color: var(--sc-border-strong); }
+.pm-startfrom-picker-row:focus-within { outline: 2px solid var(--sc-primary); outline-offset: 1px; }
+.pm-startfrom-picker-txt { display: flex; flex-direction: column; gap: 0; min-width: 0; }
+.pm-startfrom-picker-name { color: var(--sc-text); font-size: 12.5px; font-weight: 600; }
+.pm-startfrom-picker-meta { color: var(--sc-text-secondary); font-size: 11px; }
+
 /* Run-sheet paste (import_plan). */
 .plan-import-text { width: 100%; max-width: none; min-height: 132px; resize: vertical; font-family: inherit; line-height: 1.45; }
 .plan-import-kinds { margin: 0; color: var(--sc-text-secondary); font-size: 11.5px; }
@@ -7040,7 +7086,10 @@
    resolves the column-vs-row layout for the grid cards. */
 .pm-deck-bar { display: flex; justify-content: flex-end; margin-bottom: 8px; }
 .pm-deck-seg { display: inline-flex; border: 1px solid var(--sc-border); border-radius: 8px; overflow: hidden; }
-.pm-deck-seg-btn { background: var(--sc-inset); color: var(--sc-text-muted); border: none; padding: 5px 10px; font-size: 12px; cursor: pointer; }
+/* PME-011: the Grid/List segment labels are interactive control text — UI components need
+   both the ≥3:1 non-text-contrast bar AND their label text at ≥4.5:1, which the AA-large-only
+   muted tier does not clear. */
+.pm-deck-seg-btn { background: var(--sc-inset); color: var(--sc-text-secondary); border: none; padding: 5px 10px; font-size: 12px; cursor: pointer; }
 .pm-deck-seg-btn.on { background: var(--sc-primary); color: #fff; }
 .pm-deck-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; max-height: 300px; overflow-y: auto; }
 .pm-deck-grid.as-list { grid-template-columns: 1fr; }
