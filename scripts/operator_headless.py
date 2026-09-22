@@ -791,7 +791,7 @@ if not check_jump_call_site_is_click_only():
 # its own repeated lesson, re-derived empirically after resolving rather than hand-summed. Three
 # independent runs against the real post-rebase tree all reported 1788, 0 FAIL.
 #
-# 1768 -> ?: ClickUp SET-010 (sermon-prep Generate panel gradient-hover contrast), authored in
+# 1768 -> 1786: ClickUp SET-010 (sermon-prep Generate panel gradient-hover contrast), authored in
 # parallel on its own branch against the pre-17tnw2axptw baseline (1544) and rebased onto main
 # twice — first onto PR #58 (1520->1544, above), then onto this branch's own PR #68/#70/#71 stack
 # (1544->1768, above) — this entry's starting point is 1768, not either of those. 18 new PP-GEN
@@ -823,13 +823,13 @@ if not check_jump_call_site_is_click_only():
 # background turns exactly 1 assertion RED, 1795/1 FAIL; the dependent equality assertion goes
 # unreachable, same shape as the two priors above). Confirmed by a clean run: 1796, 0 FAIL.
 #
-# 1796 -> ?: rebased onto main's own GO-LIVE-HOVER/TIMER-START-HOVER fix (1768->1788 above,
+# 1796 -> 1816: rebased onto main's own GO-LIVE-HOVER/TIMER-START-HOVER fix (1768->1788 above,
 # `.tb-golive`/`.timer-start` — the follow-up this branch's own comments repeatedly deferred to a
 # separate ticket, landed by a peer session while this PR was in review). Real conflict in this
 # exact block again — per this comment's own repeated lesson, re-derived empirically after
 # resolving rather than hand-summed. Confirmed by a clean run: 1816, 0 FAIL.
 #
-# 1816 -> ?: Sana's independent security review of PR #75 (comment on 17tnw2axweu) found that
+# 1816 -> 1818: Sana's independent security review of PR #75 (comment on 17tnw2axweu) found that
 # PR #75 fixed `_lastFilterDecl()` reading only the FIRST `filter:` declaration inside an
 # already-found rule body, but every rule-lookup ABOVE it in this file — the ones that find the
 # RULE BLOCK itself — had the identical bug one level up: a non-global `.exec()` only ever returns
@@ -849,7 +849,42 @@ if not check_jump_call_site_is_click_only():
 # on the same text would have wrongly read the FIRST. Per this constant's own repeated lesson:
 # re-derived empirically, not hand-summed. Three independent runs against the real post-rebase
 # tree all reported 1818, 0 FAIL.
-EXPECTED_MIN_CHECKS = 1818
+#
+# 1788 -> 1790: [PR #75, authored in parallel against the 1788 baseline above] Cody's independent
+# review of PR #74 (comment on 17tnw2axweu) found that the shared filter-guard regex used by
+# TD-012/PSC-005/GO-LIVE-HOVER/TIMER-START-HOVER — all four now routed through one
+# `_lastFilterDecl()` helper — was NOT global, so `.exec()` only ever returned the FIRST `filter:`
+# declaration in a rule's text. The CSS cascade applies the LAST declaration when a property
+# repeats, so a duplicate `filter: none; filter: brightness(1.06);` (a plausible merge artefact)
+# would have had the guard read the harmless `none` and silently miss the re-lightening regression
+# it exists to catch. Fixed by matching globally and keeping the last hit; adds one new
+# FILTER-REGEX-LASTMATCH check pair (+2) proving it. Three independent runs against the real tree
+# all reported 1790, 0 FAIL.
+#
+# 1790 -> 1792: Sana's PR #75 security review found `_lastFilterDecl()`'s regex was still
+# case-sensitive — `FILTER:` (uppercase) bypassed the guard entirely, even though CSS property
+# names are case-insensitive per spec and Chrome applies it identically. Fixed by adding the `i`
+# flag to the property-name match and to the four call sites' `/^\s*none\s*$/` keyword check for a
+# consistent case-insensitive story on both; adds a new FILTER-REGEX-CASE-INSENSITIVE check pair
+# (+2). Mutation-verified (reverting the `i` flag reproduces exactly those 2 FAIL). Sana
+# independently re-checked and confirmed the gap closed. Three independent runs all reported 1792,
+# 0 FAIL.
+#
+# 1818 & 1790 -> ?: PR #75 (1788->1790 above, this commit) rebased onto main post-1818 (PR #60's
+# SET-010 work, then PR #76's `_lastRule()` rule-lookup fix, above) — three real conflicts in this
+# same area: (1) both PR #76 and this branch inserted a "match globally, keep the last hit" helper
+# immediately after `_same()` — kept both as separate functions (`_lastRule()` for a rule block,
+# `_lastFilterDecl()` for a declaration inside one already found), not yet merged into one; (2)
+# both branches inserted a new mutation-proof test block at the identical point right after
+# TIMER-START-HOVER/PP-GEN closes — kept both in sequence (RULE-REGEX-LASTMATCH, then
+# FILTER-REGEX-LASTMATCH); (3) this history comment itself. The four call sites this branch touches
+# (TD-012/PSC-005/GO-LIVE-HOVER/TIMER-START-HOVER's `wXxxHoverFilter` lines) never conflicted with
+# PR #76's rewrite of the RULE-lookup lines just above them (`wXxxHoverRule`) — different lines
+# entirely, auto-merged clean — confirming the two fixes are genuinely complementary, not
+# overlapping. Per this comment's own repeated lesson, re-derived empirically after resolving
+# rather than hand-summed; count TBD until the still-pending case-insensitivity commit (1790->1792
+# above) is also rebased on top.
+EXPECTED_MIN_CHECKS = 1822
 
 
 def find_chrome():
@@ -9597,6 +9632,16 @@ right after a generate/save");
         while ((m = g.exec(cssText)) !== null) { last = m; }
         return last;
       }
+      // `.exec()` on a non-global regex only ever returns the FIRST match, but the CSS cascade
+      // applies the LAST declaration when a property repeats within one rule (a duplicate
+      // `filter:` — merge artefact, copy-paste mistake, future edit — is plausible authored CSS).
+      // The TD-012/PSC-005/GO-LIVE-HOVER/TIMER-START-HOVER filter-guards below all need the
+      // declaration that actually wins the cascade, so match globally and keep the last hit.
+      function _lastFilterDecl(ruleText){
+        var re = /(?:^|;)\s*filter\s*:\s*([^;]+)/g, m, last = null;
+        while ((m = re.exec(ruleText)) !== null) { last = m; }
+        return last;
+      }
       // Shorter wait budget than the default 150×20ms. This block sits at the very END of the
       // driver, so every FAILING predicate here spends virtual time that the RESULTS write still
       // needs: at the default budget a handful of real regressions could push the run past
@@ -9776,7 +9821,7 @@ right after a generate/save");
         // this finding exists to prevent, and exactly what .tb-golive/.timer-start still carry
         // unmeasured — passed this whole suite silently (proven live: adding it back kept all 1544
         // checks green). Assert the rule declares no re-lightening filter at all.
-        var wTdHoverFilter = wTdHoverRule ? /(?:^|;)\s*filter\s*:\s*([^;]+)/.exec(wTdHoverRule[1]) : null;
+        var wTdHoverFilter = wTdHoverRule ? _lastFilterDecl(wTdHoverRule[1]) : null;
         ok(!wTdHoverFilter || /^\s*none\s*$/.test(wTdHoverFilter[1]),
            "TD-012: the hover rule carries no `filter` (found " + (wTdHoverFilter ? wTdHoverFilter[1].trim() : "none") +
            ") — a brightness() filter stacked on an already-darkened fill would re-lighten it past AA, and the background-only checks above cannot see that");
@@ -9808,7 +9853,7 @@ right after a generate/save");
         }
         // Same gap Sana found on TD-012 above (PR #58 review): background-only checks miss a
         // `filter: brightness()` stacked back onto this hover rule. Assert none is declared.
-        var wPsHoverFilter = wPsHoverRule ? /(?:^|;)\s*filter\s*:\s*([^;]+)/.exec(wPsHoverRule[1]) : null;
+        var wPsHoverFilter = wPsHoverRule ? _lastFilterDecl(wPsHoverRule[1]) : null;
         ok(!wPsHoverFilter || /^\s*none\s*$/.test(wPsHoverFilter[1]),
            "PSC-005: the hover rule carries no `filter` (found " + (wPsHoverFilter ? wPsHoverFilter[1].trim() : "none") +
            ") — a brightness() filter stacked on an already-darkened fill would re-lighten it past AA, and the background-only checks above cannot see that");
@@ -9937,7 +9982,7 @@ right after a generate/save");
         }
         // Sana's TD-012 finding (PR #58 review) applies identically here: the background-only
         // checks above cannot see a `filter: brightness()` stacked back onto this hover rule.
-        var wTbGlHoverFilter = wTbGlHoverRule ? /(?:^|;)\s*filter\s*:\s*([^;]+)/.exec(wTbGlHoverRule[1]) : null;
+        var wTbGlHoverFilter = wTbGlHoverRule ? _lastFilterDecl(wTbGlHoverRule[1]) : null;
         ok(!wTbGlHoverFilter || /^\s*none\s*$/.test(wTbGlHoverFilter[1]),
            "GO-LIVE-HOVER: the hover rule carries no `filter` (found " + (wTbGlHoverFilter ? wTbGlHoverFilter[1].trim() : "none") +
            ") — a brightness() filter stacked on an already-darkened fill would re-lighten it past AA, and the background-only checks above cannot see that");
@@ -9971,7 +10016,7 @@ right after a generate/save");
           ok(_lum(wTsHoverBg) <= Math.max.apply(null, wTsStops.map(_lum)),
              "TIMER-START-HOVER: hover does not LIGHTEN past the gradient's brightest rest stop — no `filter: brightness()` re-lightening the darkened fill");
         }
-        var wTsHoverFilter = wTsHoverRule ? /(?:^|;)\s*filter\s*:\s*([^;]+)/.exec(wTsHoverRule[1]) : null;
+        var wTsHoverFilter = wTsHoverRule ? _lastFilterDecl(wTsHoverRule[1]) : null;
         ok(!wTsHoverFilter || /^\s*none\s*$/.test(wTsHoverFilter[1]),
            "TIMER-START-HOVER: the hover rule carries no `filter` (found " + (wTsHoverFilter ? wTsHoverFilter[1].trim() : "none") +
            ") — a brightness() filter stacked on an already-darkened fill would re-lighten it past AA, and the background-only checks above cannot see that");
@@ -10062,6 +10107,25 @@ right after a generate/save");
       var wDupRulePlainFirst = /\.dup-sel:hover\s*\{([^}]*)\}/.exec(wDupRuleCss);
       ok(!!wDupRulePlainFirst && /#111111/.test(wDupRulePlainFirst[1]),
          "RULE-REGEX-LASTMATCH: a plain non-global .exec() would have wrongly read the FIRST (losing) block instead (\"" + (wDupRulePlainFirst ? wDupRulePlainFirst[1].trim() : "") + "\") — proving `_lastRule()`'s global-match fix is what changes the outcome, not a no-op");
+
+      // --- FILTER-REGEX-LASTMATCH: the shared filter-guard above reads the declaration that WINS
+      // the CSS cascade, not exec()'s first match ---------------------------------------------
+      // Cody (PR #74 review): a non-global regex's `.exec()` only ever returns the FIRST match,
+      // but the CSS cascade applies the LAST declaration when a property repeats within one rule.
+      // A rule authored (or merged) with a duplicate `filter:` — e.g.
+      // `filter: none; filter: brightness(1.06);`, plausible from a merge artefact, a copy-paste
+      // mistake, or a future edit — would have had this guard report the harmless FIRST value
+      // (`none`) while the browser actually applies the SECOND (`brightness(1.06)`), exactly the
+      // re-lightening regression TD-012/PSC-005/GO-LIVE-HOVER/TIMER-START-HOVER above exist to
+      // catch. Run that exact duplicate through the real guard predicate they all share and prove
+      // it now correctly rejects it instead of being silently defeated by the leading `none`.
+      var wDupFilterRule = "background:#5a48d0; filter: none; filter: brightness(1.06);";
+      var wDupFilter = _lastFilterDecl(wDupFilterRule);
+      ok(!!wDupFilter && wDupFilter[1].trim() === "brightness(1.06)",
+         "FILTER-REGEX-LASTMATCH (premise): a duplicate `filter:` declaration resolves to the LAST one — the value the cascade actually applies (found \"" + (wDupFilter ? wDupFilter[1].trim() : "none") + "\")");
+      var wDupGuardWouldPass = !wDupFilter || /^\s*none\s*$/.test(wDupFilter[1]);
+      ok(!wDupGuardWouldPass,
+         "FILTER-REGEX-LASTMATCH: the shared filter-guard correctly FAILS this rule — its winning declaration is `filter: brightness(1.06)` even though its FIRST declaration is the harmless `filter: none` (with the old non-global .exec(), this rule would have wrongly PASSED)");
 
       // --- PME-014 / PME-015: the two missing topbar primary actions ------------------------
       document.querySelector('.nav-item[data-surface="presentation"]').click();
