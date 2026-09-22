@@ -456,14 +456,21 @@ class LiveController extends ChangeNotifier {
     // without sending a command. Screens still disable their controls so a dead
     // button never looks live; this is the backstop that makes that cosmetic.
     if (syncing) return CommandOutcome.failed;
-    // The gate this command is about to be judged against. Cheap, local, and
-    // taken before the send so a re-role that landed between two taps is news
-    // the operator gets now rather than one poll later.
-    if (_syncRole()) _notify();
-    // The connection this intent is being formed against.
-    final epoch = _epoch;
+    // Claimed and published before anything else runs — in particular before
+    // [_syncRole]'s own [_notify] below, which calls listeners synchronously.
+    // A listener that reacts to that notification by calling [act] again must
+    // see `_acting` already true, or the guard above would not have seen it
+    // yet either and a second command would slip in through the same
+    // re-entrant call this guard exists to stop.
     _acting = true;
+    _notify();
     try {
+      // The gate this command is about to be judged against. Cheap, local,
+      // and taken before the send so a re-role that landed between two taps
+      // is news the operator gets now rather than one poll later.
+      if (_syncRole()) _notify();
+      // The connection this intent is being formed against.
+      final epoch = _epoch;
       final reply = await _session.command(cmd);
       // The host answered; re-observe the grant before interpreting the answer,
       // so a `forbidden` raised below names the role the operator holds NOW
@@ -511,7 +518,14 @@ class LiveController extends ChangeNotifier {
       await _reconnect();
       return CommandOutcome.failed;
     } finally {
+      // Published on this edge too, not just the rising one: without this a
+      // screen gating its controls on [busy] would see it clear only on the
+      // next 1s poll tick, leaving a control that looks dead for up to a
+      // second after the command it was waiting on already finished — the
+      // same symptom this guard exists to fix, reintroduced on the other
+      // edge.
       _acting = false;
+      _notify();
     }
   }
 
