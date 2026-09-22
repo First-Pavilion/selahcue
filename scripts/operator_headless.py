@@ -707,7 +707,7 @@ if not check_jump_call_site_is_click_only():
 # test above and re-confirmed by inspection; finding E (app.css's CON-134 comment block still
 # named the pre-fix window.__openChapterForStage as Edit's call) was a stale-comment correction
 # only. Confirmed by two independent runs (both 1625, 0 FAIL).
-EXPECTED_MIN_CHECKS = 1655
+EXPECTED_MIN_CHECKS = 1656
 
 
 def find_chrome():
@@ -10415,6 +10415,16 @@ right after a generate/save");
         await sleep(40);
         ok(el("set-page-appearance") && !el("set-page-appearance").hidden && el("set-placeholder").hidden,
            "Settings/Appearance: the real page renders (SET-004 page-level MISSING closed, not the shared placeholder)");
+
+        // Layout regression guard (Vera's performance review of PR #68): a stray "*/" inside a
+        // CSS comment above .set-stack's definition once silently truncated the comment early,
+        // turning the rest of the prose into an invalid selector and dropping the WHOLE .set-stack
+        // rule — the wiring/contrast checks below all kept passing because none of them reads
+        // layout. This asserts the actual computed style the class exists to produce (a flex
+        // column with a real gap), so a repeat of that exact bug class fails HERE, not silently.
+        var apStageThemesCs = getComputedStyle(el("ap-stage-themes"));
+        ok(apStageThemesCs.display === "flex" && apStageThemesCs.flexDirection === "column" && parseFloat(apStageThemesCs.gap) > 0,
+           "Settings/Appearance: #ap-stage-themes (.set-stack) actually computes as a flex column with a real gap — proves the CSS rule is live, not silently dropped");
 
         // Default stage theme: REAL — reflects view.stage_template, the exact field/command the
         // Presentation surface's own stage-theme picker already uses (app.js #stage-themes).

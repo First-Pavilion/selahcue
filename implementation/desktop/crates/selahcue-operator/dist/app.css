@@ -7423,7 +7423,7 @@
 .pp-badge-dev { color: var(--sc-gold); background: var(--sc-gold-soft); border-color: var(--sc-warn-border); }
 
 /* ===== Settings — shared components for the remaining 7 sidebar pages (Design 2.0, Figma
-   618:124 / story 17tnw2axptw). Reuses every .pp-*/.set-* primitive already proven on the two
+   618:124 / story 17tnw2axptw). Reuses every .pp- and .set- primitive already proven on the two
    built pages (Providers & Privacy, Network & Mobile) — see settings.js's header comment for
    the honesty discipline these inherit. New primitives below are the ones those two pages never
    needed: a plain info/value row, an external/internal link row, a segmented control, a labelled
