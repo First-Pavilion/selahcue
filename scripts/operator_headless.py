@@ -916,7 +916,46 @@ if not check_jump_call_site_is_click_only():
 # with the same mechanism. Replaces RULE-REGEX-LASTMATCH with CSSOM-PARSE-01/02, which insert the
 # same kind of adversarial CSS directly into the probe sheet. Confirmed by three independent clean
 # runs against PR #79's own pre-rebase tree: 1819, 0 FAIL.
-EXPECTED_MIN_CHECKS = 1819
+#
+# 1819 -> 1822 (PR #79, still against its own pre-rebase branch, not yet combined with the 1843
+# chain above): Sana's independent PR review of the CSSOM migration above found the new mechanism
+# traded the two closed gaps for a THIRD one it introduced: Chrome drops a whole declaration
+# outright when it cannot parse the value (an unsupported/malformed filter function, or a vendor
+# prefix — `-webkit-backdrop-filter` among them — it does not alias), verified live
+# (`rule.style.cssText` comes back empty), so `__cssFilter` reports NONE for it exactly as if it
+# had never been written — and NONE is the PASSING state every "carries no filter" guard relies
+# on. No CSSOM read can see a declaration the parser discarded; only the raw source text still has
+# it. Added `__cssRawHasFilter()` (built on a new `__cssRawBlock()` primitive) as a
+# belt-and-suspenders backstop scanning `window.__CSSTEXT` for the rule's own block, independent of
+# whether the value parses, and wired it into all five filter guards (TD-012/PSC-005/GO-LIVE-HOVER/
+# TIMER-START-HOVER/PP-GEN) alongside the CSSOM read — neither mechanism alone is sufficient, since
+# the text scan is exactly what cannot see a CSS escape. Same review also found `__cssRule`'s
+# last-match tie-break mirrors SOURCE ORDER only, not the cascade: a duplicate inside an
+# `@media`/`@supports` block that does not currently match could silently outrank one that does
+# (latent today — no guarded selector is duplicated inside a conditional group rule — but a
+# plausible future mistake, since most of this file's own `@media` blocks are
+# `prefers-reduced-motion: reduce`, which never matches in headless Chrome). `_cssFlatten()` now
+# tracks whether every enclosing conditional group rule's condition currently holds and drops a
+# rule under a false one from candidacy. Adds CSSOM-PARSE-03 (the filter backstop; proven
+# mutation-proof by making `__cssRawHasFilter` a no-op and watching exactly that check go red) and
+# CSSOM-PARSE-04 (the `@media` tie-break; proven the same way by removing the media-matching
+# check). Confirmed by three independent clean runs against PR #79's own pre-rebase tree: 1822,
+# 0 FAIL.
+#
+# Rebase-merge (this commit): PR #79's CSSOM migration (the two entries just above, computed
+# against its own 1818 pre-rebase baseline) combined with everything the `main` side of this
+# history had independently landed while PR #79 was in review (Download modal, Service Plan
+# PLN-004 + Vera's live/staged border fix, and the Console blackout-footer/STAGED-pill batch —
+# the 1818 -> 1843 chain above). Per this constant's own repeatedly-demonstrated lesson (the
+# words "re-derived empirically, not hand-summed" appear on nearly every entry above for exactly
+# this reason), this number was NOT assumed to be 1843 + (1822 - 1818) = 1847 just because that
+# arithmetic is available — PR #79 also DELETES checks the `main` chain never saw removed (the 2
+# RULE-REGEX-LASTMATCH checks PR #79's first commit above retires) as well as adding new ones
+# (CSSOM-PARSE-01..04), so a naive sum across two independently-evolved branches is exactly the
+# failure mode this comment block warns against even when — as it turns out here — it happens to
+# land on the same number. Read off three independent clean runs of the actual fully-merged tree
+# instead, all agreeing: 1847, 0 FAIL.
+EXPECTED_MIN_CHECKS = 1847
 
 
 def find_chrome():
@@ -1131,23 +1170,39 @@ CSS_SRC = (
   // cannot be used as an is-this-a-container test; push every rule with its own selectorText
   // AND separately recurse into cssRules whenever it is non-empty, so both a bare @media
   // wrapper and a rule that is itself nested end up correctly represented.
-  function _cssFlatten(rules, out) {
+  //
+  // Sana (security review, PR #79 follow-up, finding 2): source order alone is not the
+  // cascade's tie-break when a duplicate sits inside a conditional group rule — a rule inside
+  // an @media/@supports block that does NOT currently match must not be allowed to win over one
+  // that does, even if it appears later in the file (most of app.css's own @media blocks are
+  // prefers-reduced-motion:reduce, which never matches in headless Chrome — a plausible future
+  // home for a hover override that would otherwise silently win this lookup while the browser
+  // never actually applies it). `ok` tracks whether every enclosing conditional group rule
+  // currently matches; a rule under a false one is walked (so nothing inside it is lost if the
+  // caller ever wants it) but never pushed as a candidate.
+  function _cssFlatten(rules, out, ok) {
     for (var i = 0; i < rules.length; i++) {
       var r = rules[i];
-      if (r.selectorText) { out.push(r); }
-      if (r.cssRules && r.cssRules.length) { _cssFlatten(r.cssRules, out); }
+      var childOk = ok;
+      if (r.media) { childOk = ok && window.matchMedia(r.media.mediaText).matches; }
+      else if (r.conditionText && typeof CSS !== "undefined" && CSS.supports) {
+        childOk = ok && CSS.supports(r.conditionText);
+      }
+      if (r.selectorText && childOk) { out.push(r); }
+      if (r.cssRules && r.cssRules.length) { _cssFlatten(r.cssRules, out, childOk); }
     }
     return out;
   }
   function _cssNormSel(s) {
     return String(s).replace(/\s*,\s*/g, ", ").replace(/\s+/g, " ").trim();
   }
-  // The LAST rule (source order) whose selector matches `sel` once whitespace is normalised —
-  // "last" because that is the cascade's own tie-break for equal specificity, so a selector
-  // declared twice resolves to whichever rule actually wins, not whichever a lookup finds first.
+  // The LAST rule (source order, among those whose enclosing conditions currently match) whose
+  // selector matches `sel` once whitespace is normalised — "last" because that is the cascade's
+  // own tie-break for equal specificity, so a selector declared twice resolves to whichever
+  // rule actually wins, not whichever a lookup finds first.
   window.__cssRule = function(sel) {
     var target = _cssNormSel(sel);
-    var rules = _cssFlatten(probe.sheet.cssRules, []);
+    var rules = _cssFlatten(probe.sheet.cssRules, [], true);
     var match = null;
     for (var i = 0; i < rules.length; i++) {
       if (rules[i].selectorText && _cssNormSel(rules[i].selectorText) === target) match = rules[i];
@@ -1170,6 +1225,34 @@ CSS_SRC = (
   // spelling to the same value a plain `filter:` declaration would report.
   window.__cssFilter = function(rule) {
     return rule ? (rule.style.getPropertyValue("filter") || null) : null;
+  };
+  // Sana (security review, PR #79 follow-up, finding 1): __cssFilter reads real CSSOM, but
+  // Chrome drops a WHOLE declaration outright when it cannot parse the value (an unsupported or
+  // malformed filter function, or a vendor prefix it does not alias — `-webkit-backdrop-filter`
+  // among them) — verified live: `rule.style.cssText` comes back empty, so __cssFilter reports
+  // null exactly as if the declaration had never been written, and null is the PASSING state
+  // for a "carries no filter" guard. No CSSOM read can see a declaration the browser's own
+  // parser discarded; only the raw source text still has it. This is the coarse, deliberately
+  // dumb backstop for that: scan window.__CSSTEXT for the rule's own block — matched globally
+  // and keeping the LAST occurrence, the same tie-break __cssRule uses — for the literal,
+  // case-insensitive substring "filter", independent of whether the declared value parses at
+  // all. It does not replace __cssRule/__cssBg/__cssFilter (those still close the duplicate-rule
+  // and vendor-prefix/escape gaps this file was regexing before), it only re-covers the one
+  // thing reading real CSSOM cannot: a declaration the parser threw away.
+  // The last matching rule's raw declaration text for `sel` (source order, mirroring the same
+  // tie-break __cssRule uses) straight out of window.__CSSTEXT, or null — independent of
+  // whether the browser's parser accepts any of it. The shared primitive `__cssRawHasFilter`
+  // below is built on.
+  window.__cssRawBlock = function(sel) {
+    var escaped = String(sel).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    var re = new RegExp(escaped + "\\s*\\{([^}]*)\\}", "gi");
+    var m, lastBody = null;
+    while ((m = re.exec(window.__CSSTEXT || "")) !== null) { lastBody = m[1]; }
+    return lastBody;
+  };
+  window.__cssRawHasFilter = function(sel) {
+    var body = window.__cssRawBlock(sel);
+    return !!body && /filter\s*:/i.test(body);
   };
 })();
 </script>"""
@@ -9850,6 +9933,47 @@ right after a generate/save");
         ok(!!escFilter && /brightness\(\s*2\s*\)/.test(escFilter),
            "CSSOM-PARSE-02 (CSS escape): a CSS-escaped `f\\69lter:` declaration reads back as `filter` too (got \"" + (escFilter || "none") + "\") — same normalisation, a different spelling");
         probeSheet.deleteRule(escI);
+
+        // Gap 3 (Sana, PR #79 follow-up, finding 1): Chrome drops a WHOLE declaration outright
+        // when it cannot parse the value — an unsupported/malformed filter function, verified
+        // live — so __cssFilter reports NONE for it exactly as if it had never been written, and
+        // NONE is the PASSING state every "carries no filter" guard relies on. First prove Chrome
+        // really does drop it (or this would not be exercising the gap it claims to), then prove
+        // the raw-text backstop (__cssRawHasFilter, defined in CSS_SRC) still sees it.
+        var wRejectSel = ".__cssom_reject_probe__:hover";
+        var wRejectCss = wRejectSel + "{filter:brightness(1.06) not-a-real-css-function();}";
+        var rejectProbe = document.createElement("style");
+        rejectProbe.textContent = wRejectCss;
+        document.head.appendChild(rejectProbe);
+        var wRejectRule = null, wRejectRules = rejectProbe.sheet.cssRules;
+        for (var wRi = 0; wRi < wRejectRules.length; wRi++) {
+          if (wRejectRules[wRi].selectorText === wRejectSel) wRejectRule = wRejectRules[wRi];
+        }
+        var wRejectFilter = __cssFilter(wRejectRule);
+        ok(!!wRejectRule && !wRejectFilter,
+           "CSSOM-PARSE-03 (premise): Chrome's own parser drops a filter: declaration whose value it does not recognise, so __cssFilter alone reports it as carrying NO filter (\"" +
+           (wRejectFilter || "none") + "\") — the exact blind spot the raw-text backstop below exists for");
+        document.head.removeChild(rejectProbe);
+        var wSavedCssText = window.__CSSTEXT;
+        window.__CSSTEXT = wRejectCss;
+        ok(window.__cssRawHasFilter(wRejectSel),
+           "CSSOM-PARSE-03: the raw-text backstop (__cssRawHasFilter) still sees the filter: declaration CSSOM silently dropped — closing the gap a CSSOM-only read leaves open, independent of whether the value parses");
+        window.__CSSTEXT = wSavedCssText;
+
+        // Gap 4 (Sana, PR #79 follow-up, finding 2): source order alone is not the cascade's
+        // tie-break — a duplicate sitting inside an @media block that does NOT currently match
+        // must not win over one that does, even though it appears later in the file. Most of
+        // app.css's own @media blocks are prefers-reduced-motion:reduce, which never matches in
+        // headless Chrome — a plausible future home for exactly this mistake.
+        var mqSel = ".__cssom_mq_probe__";
+        var mqI1 = probeSheet.insertRule(mqSel + "{background:#0000ff;}", probeSheet.cssRules.length);
+        var mqI2 = probeSheet.insertRule("@media (max-width:1px){" + mqSel + "{background:#ff0000;}}", probeSheet.cssRules.length);
+        var mqRule = __cssRule(mqSel);
+        var mqBg = __cssBg(mqRule);
+        ok(!!mqRule && !!mqBg && _same(_resolve(mqBg), [0,0,255,1]),
+           "CSSOM-PARSE-04: a duplicate declared inside an @media block that does NOT match the current environment (max-width:1px) is skipped — __cssRule resolves to the rule the browser actually applies (got \"" +
+           (mqBg || "none") + "\"), not whichever came last in SOURCE ORDER alone");
+        probeSheet.deleteRule(mqI2); probeSheet.deleteRule(mqI1);
       })();
 
       // Shorter wait budget than the default 150×20ms. This block sits at the very END of the
@@ -10034,7 +10158,7 @@ right after a generate/save");
         // __cssFilter (CSSOM-PARSE-02 above), which also catches a re-lightening `-webkit-filter`
         // or CSS-escaped spelling, not just the plain one.
         var wTdHoverFilter = __cssFilter(wTdHoverRule);
-        ok(!wTdHoverFilter || /^\s*none\s*$/.test(wTdHoverFilter),
+        ok((!wTdHoverFilter || /^\s*none\s*$/.test(wTdHoverFilter)) && !window.__cssRawHasFilter(".td-save-cta:hover"),
            "TD-012: the hover rule carries no `filter` (found " + (wTdHoverFilter ? wTdHoverFilter.trim() : "none") +
            ") — a brightness() filter stacked on an already-darkened fill would re-lighten it past AA, and the background-only checks above cannot see that");
         ok(_cr([255,255,255,1], _resolve("var(--sc-primary-hover)")) < 4.5,
@@ -10067,7 +10191,7 @@ right after a generate/save");
         // `filter: brightness()` stacked back onto this hover rule. Assert none is declared —
         // through __cssFilter, so a re-lightening `-webkit-filter` or escaped spelling counts too.
         var wPsHoverFilter = __cssFilter(wPsHoverRule);
-        ok(!wPsHoverFilter || /^\s*none\s*$/.test(wPsHoverFilter),
+        ok((!wPsHoverFilter || /^\s*none\s*$/.test(wPsHoverFilter)) && !window.__cssRawHasFilter(".ps-start:hover"),
            "PSC-005: the hover rule carries no `filter` (found " + (wPsHoverFilter ? wPsHoverFilter.trim() : "none") +
            ") — a brightness() filter stacked on an already-darkened fill would re-lighten it past AA, and the background-only checks above cannot see that");
         ok(_cr([255,255,255,1], _resolve("var(--sc-primary-hover)")) < 4.5,
@@ -10211,7 +10335,7 @@ right after a generate/save");
         // Sana's TD-012 finding (PR #58 review) applies identically here: the background-only
         // checks above cannot see a `filter: brightness()` stacked back onto this hover rule.
         var wTbGlHoverFilter = __cssFilter(wTbGlHoverRule);
-        ok(!wTbGlHoverFilter || /^\s*none\s*$/.test(wTbGlHoverFilter),
+        ok((!wTbGlHoverFilter || /^\s*none\s*$/.test(wTbGlHoverFilter)) && !window.__cssRawHasFilter(".tb-golive:hover"),
            "GO-LIVE-HOVER: the hover rule carries no `filter` (found " + (wTbGlHoverFilter ? wTbGlHoverFilter.trim() : "none") +
            ") — a brightness() filter stacked on an already-darkened fill would re-lighten it past AA, and the background-only checks above cannot see that");
         // Control: recomputing the ORIGINAL `filter: brightness(1.06)` against the darkened
@@ -10245,7 +10369,7 @@ right after a generate/save");
              "TIMER-START-HOVER: hover does not LIGHTEN past the gradient's brightest rest stop — no `filter: brightness()` re-lightening the darkened fill");
         }
         var wTsHoverFilter = __cssFilter(wTsHoverRule);
-        ok(!wTsHoverFilter || /^\s*none\s*$/.test(wTsHoverFilter),
+        ok((!wTsHoverFilter || /^\s*none\s*$/.test(wTsHoverFilter)) && !window.__cssRawHasFilter(".timer-start:hover"),
            "TIMER-START-HOVER: the hover rule carries no `filter` (found " + (wTsHoverFilter ? wTsHoverFilter.trim() : "none") +
            ") — a brightness() filter stacked on an already-darkened fill would re-lighten it past AA, and the background-only checks above cannot see that");
         var wTsBrightened = wTsStops.map(function(s){ return [Math.min(255,s[0]*1.06), Math.min(255,s[1]*1.06), Math.min(255,s[2]*1.06), s[3]]; });
@@ -10277,9 +10401,15 @@ right after a generate/save");
       ok(!!wPpGenHoverRule, "PP-GEN (premise): the .pp-generate:hover rule is present in the shipped app.css");
       if (wPpGenHoverRule) {
         // Read through __cssFilter (not a raw-text scan for "filter:") so a re-lightening
-        // -webkit-filter or CSS-escaped spelling counts as brightness() too, not just the plain one.
+        // -webkit-filter or CSS-escaped spelling counts as brightness() too, not just the plain
+        // one — AND through the raw block text (Sana, PR #79 follow-up, finding 1), since Chrome
+        // drops a filter: declaration outright when it cannot parse the value, which would make
+        // __cssFilter report null (the passing state) for a brightness() call stacked with an
+        // unparseable one.
         var wPpGenHoverFilter = __cssFilter(wPpGenHoverRule);
-        ok(!wPpGenHoverFilter || !/brightness/.test(wPpGenHoverFilter),
+        var wPpGenHoverRawBlock = window.__cssRawBlock(".pp-generate:hover");
+        ok((!wPpGenHoverFilter || !/brightness/.test(wPpGenHoverFilter)) &&
+           !(wPpGenHoverRawBlock && /brightness/i.test(wPpGenHoverRawBlock)),
            "PP-GEN: .pp-generate:hover does NOT use filter:brightness() — that would re-lighten the darkened gradient stop, the exact gap still open on .tb-golive/.timer-start");
         var wPpGenHb = __cssBg(wPpGenHoverRule);
         ok(!!wPpGenHb, "PP-GEN (premise): the hover rule declares a background, so there is a value to measure");
