@@ -41,7 +41,7 @@
   ];
 
   function startupRow(opt) {
-    var row = el("div", "pp-radio-card" + (opt.real ? " sel" : ""));
+    var row = el("div", "pp-radio-card set-inert" + (opt.real ? " sel" : ""));
     row.setAttribute("role", "radio");
     row.setAttribute("aria-checked", opt.real ? "true" : "false");
     row.setAttribute("aria-disabled", "true");
@@ -97,14 +97,19 @@
   }
 
   // ---------- Pre-service check subsystems ----------
-  // This is a LIST of what the real Pre-service Check surface inspects (matches its own sections,
-  // preservice.js), not a claim about a per-subsystem enable/disable switch — no such switch
-  // exists anywhere in this app, so this page doesn't invent one. Purely informational; the
-  // "not saved yet" framing lives once, in the section's own lead paragraph above this list.
+  // The real Pre-service Check surface's own four sections, verbatim from preservice.js's
+  // buildSections() (its literal title strings, "in the Figma order" per that function's own
+  // comment) — not a claim about a per-subsystem enable/disable switch, since no such switch
+  // exists anywhere in this app. A prior version of this list invented a "Pairing" item that
+  // isn't a real distinct check and omitted "Displays & Outputs" — arguably the most
+  // safety-critical section — entirely (Cody + Quinn's independent review findings on PR #70,
+  // ClickUp 17tnw2axwgt). Purely informational; the "not saved yet" framing lives once, in the
+  // section's own lead paragraph above this list.
   var PRESERVICE_SUBSYSTEMS = [
-    "Media", "Audio", "Storage",
-    "Network — LAN reachable for mobile controllers.",
-    "Pairing — paired controllers reachable.",
+    "Displays & Outputs — main, stage, and livestream program outputs.",
+    "Media — slide media presence and motion-background caching.",
+    "Audio — input device and signal levels.",
+    "Storage, Network & Providers — disk space, LAN/remotes, and transcription & AI readiness.",
   ];
 
   function renderPreserviceList() {
@@ -126,14 +131,13 @@
     renderStartup();
     renderShortcuts();
     renderPreserviceList();
-    var openShortcuts = document.getElementById("gn-open-shortcuts");
-    if (openShortcuts && !openShortcuts.dataset.wired) {
-      openShortcuts.dataset.wired = "1";
-      openShortcuts.addEventListener("click", function () {
-        var overlay = document.getElementById("shortcuts");
-        if (overlay) overlay.hidden = false;
-      });
-    }
+    // "Open the full shortcuts overlay" is wired generically by app.js's own
+    // `document.querySelectorAll("[data-open]")` handler (data-open="shortcuts" on the button in
+    // index.html) — it calls the REAL openShortcuts(), which moves focus into the dialog and
+    // enables its Tab-trap, exactly like every other way to open this same dialog. A prior version
+    // of this file set `overlay.hidden = false` directly, which opened the dialog visually but
+    // left keyboard focus behind it, outside the aria-modal="true" region (Cody's review of
+    // PR #70). No JS needed here now — removing the bespoke handler is the fix.
     var manageUpdates = document.getElementById("gn-manage-updates");
     if (manageUpdates && !manageUpdates.dataset.wired) {
       manageUpdates.dataset.wired = "1";

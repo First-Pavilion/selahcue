@@ -7136,6 +7136,15 @@
 .pp-radio-card:hover { border-color: var(--sc-border-strong); }
 .pp-radio-card.sel:hover { border-color: var(--sc-primary-hover); }
 .pp-radio-card:focus-visible { outline: 2px solid var(--sc-primary-hover); outline-offset: 2px; }
+/* A .pp-radio-card with no backend to select it (General → Startup: three options with no
+   persistence anywhere in this app) — drops the pointer cursor and hover highlight the base class
+   always applies, so an inert card no longer LOOKS clickable when nothing happens on click
+   (Quinn's QA review of PR #70: "looks interactive, silently does nothing" — the base class had
+   no disabled-state override, unlike every other inert control in this batch, which uses native
+   `disabled`; a plain <div> radio card has no such attribute to lean on). */
+.pp-radio-card.set-inert { cursor: default; }
+.pp-radio-card.set-inert:hover { border-color: var(--sc-border); }
+.pp-radio-card.set-inert.sel:hover { border-color: var(--sc-primary-hover); }
 .pp-radio-head { display: flex; gap: 11px; align-items: center; width: 100%; }
 .pp-radio-dot { position: relative; width: 20px; height: 20px; border-radius: 999px; border: 1.5px solid var(--sc-border); background: var(--sc-inset); flex: none; }
 .pp-radio-dot.on { border-color: var(--sc-primary); }

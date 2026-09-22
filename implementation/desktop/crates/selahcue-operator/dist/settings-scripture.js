@@ -42,6 +42,13 @@
   // on every load/mutation, never appended (same discipline as settings.js's `view`).
   var installed = [];
   var preferred = "";
+  // In-flight guard for set_preferred_translation — shared by the per-row radio AND the summary
+  // select, since both write through the same command. Without it, two rapid picks (a row click
+  // immediately followed by a select change, or vice versa) could race: whichever response lands
+  // SECOND would win regardless of which the operator picked last, and the radio/select could
+  // briefly disagree while both requests are outstanding (Cody's review of PR #70). Mirrors the
+  // `generating` guard settings.js's Generate button already uses for the same reason.
+  var mutatingPreferred = false;
 
   function badge(cls, text) {
     return el("span", "pp-badge " + cls, text);
@@ -49,8 +56,13 @@
 
   function translationRow(t) {
     var selected = t.code === preferred;
-    var row = el("button", "pp-radio-card" + (selected ? " sel" : ""));
-    row.type = "button";
+    // A <div>, not a <button> — this card's trailing "show in picker" toggle nests a
+    // <label><input>, and HTML5 forbids interactive content inside a <button> (Cody's review of
+    // PR #70: <button><label><input></label></button> is invalid, harmless only while the input
+    // stays disabled). role="radio" + explicit tabIndex/keydown handling (onTranslationsKeydown)
+    // already give this the same operable radiogroup semantics a real <button> would, matching
+    // General's startupRow(), which is a <div> for the same reason.
+    var row = el("div", "pp-radio-card" + (selected ? " sel" : ""));
     row.id = "sc-translation-" + t.code;
     row.setAttribute("role", "radio");
     row.setAttribute("aria-checked", selected ? "true" : "false");
@@ -89,10 +101,12 @@
     row.addEventListener("click", function (e) {
       // The row itself sets the default; the inert toggle inside it must never bubble into that.
       if (e.target === showInput || showToggle.contains(e.target)) return;
-      if (selected) return;
+      if (selected || mutatingPreferred) return;
+      mutatingPreferred = true;
       invoke("set_preferred_translation", { code: t.code }).then(function (view) {
         applyPreferred(view && view.preferred_translation);
-      }).catch(function () { loadTranslations(); }); // resync — no unconfirmed state
+      }).catch(function () { loadTranslations(); }) // resync — no unconfirmed state
+        .then(function () { mutatingPreferred = false; });
     });
     return row;
   }
@@ -161,10 +175,12 @@
 
   function onSelectChange() {
     var sel = document.getElementById("sc-default-select");
-    if (!sel || !sel.value || sel.value === preferred) return;
+    if (!sel || !sel.value || sel.value === preferred || mutatingPreferred) return;
+    mutatingPreferred = true;
     invoke("set_preferred_translation", { code: sel.value }).then(function (view) {
       applyPreferred(view && view.preferred_translation);
-    }).catch(function () { loadTranslations(); });
+    }).catch(function () { loadTranslations(); })
+      .then(function () { mutatingPreferred = false; });
   }
 
   // ---------- inert segmented control (verse-number style) ----------

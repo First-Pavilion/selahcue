@@ -707,7 +707,7 @@ if not check_jump_call_site_is_click_only():
 # test above and re-confirmed by inspection; finding E (app.css's CON-134 comment block still
 # named the pre-fix window.__openChapterForStage as Edit's call) was a stale-comment correction
 # only. Confirmed by two independent runs (both 1625, 0 FAIL).
-EXPECTED_MIN_CHECKS = 1686
+EXPECTED_MIN_CHECKS = 1689
 
 
 def find_chrome():
@@ -10527,6 +10527,14 @@ right after a generate/save");
         ok(gnStartupCards.length === 3 && gnStartupCards[0].classList.contains("sel") &&
            !gnStartupCards[1].classList.contains("sel") && !gnStartupCards[2].classList.contains("sel"),
            "Settings/General: exactly the Live Console startup option renders selected");
+        // Quinn's QA review of PR #70: these cards have no click handler at all (no backend to
+        // persist the choice) but the shared .pp-radio-card base class always applies
+        // cursor:pointer + a hover highlight, so they LOOKED clickable while doing nothing — a
+        // "looks interactive, silently does nothing" defect, unlike every other inert control in
+        // this batch, which uses native `disabled`. A plain <div> radio card has no such
+        // attribute to lean on, so this is a computed-style check instead.
+        ok(getComputedStyle(gnStartupCards[1]).cursor === "default",
+           "Settings/General: an inert (non-selected) startup card computes cursor:default, not the base class's cursor:pointer — it no longer looks clickable");
 
         // Keyboard shortcuts: read LIVE from the app's own #shortcuts overlay, never a hand-typed
         // second copy that could drift from the real bindings.
@@ -10543,6 +10551,13 @@ right after a generate/save");
         el("gn-open-shortcuts").click();
         ok(el("shortcuts").hidden === false,
            "Settings/General: 'Open the full shortcuts overlay' really opens the app's own shortcuts dialog");
+        // Goes through the REAL openShortcuts() (app.js's generic data-open="shortcuts" wiring),
+        // not a bespoke `overlay.hidden = false` — proven by checking the SAME side effect
+        // openShortcuts() itself produces: focus moves to #sc-close, the dialog's Tab-trap anchor
+        // (Cody's review of PR #70: a prior version opened the dialog visually but left focus
+        // behind it, outside the aria-modal region).
+        ok(document.activeElement === el("sc-close"),
+           "Settings/General: opening the shortcuts overlay moves focus into it (via the real openShortcuts(), not a bespoke hidden-flip) — the Tab-trap is live");
         el("sc-close").click();
 
         // Real cross-page navigation.
@@ -10577,6 +10592,8 @@ right after a generate/save");
         ok(scRows.length === 6, "Settings/Scripture: all 6 real translations render as their own card, bundled AND downloadable (" + scRows.length + ")");
         ok(/King James Version/.test(scRows[0].textContent) && /PUBLIC DOMAIN/.test(scRows[0].textContent),
            "Settings/Scripture: each card names the real translation and its real public-domain badge");
+        ok(/Young's Literal Translation/.test(scRows[5].textContent) && !/PUBLIC DOMAIN/.test(scRows[5].textContent),
+           "Settings/Scripture: the one downloadable (not-yet-installed) translation does NOT get the Public Domain badge its bundled siblings get — parity with the equivalent About page check (Cody's review of PR #70 noted this page lacked its own copy)");
 
         // Default translation: real, TWO-WAY-SYNCED with the summary select (handoff §9) — driving
         // either one must move the other, both via the SAME set_preferred_translation the
