@@ -118,8 +118,8 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
 | C-008 | yes | No regression: full headless suite green | `python3 scripts/operator_headless.py` | 0 FAIL | `/tmp/headless_out3.txt` (1662 checks, 0 FAIL) | PASS |
 | C-009 | yes | Rust side (`deck_duplicate`'s additive `new_id`) compiles, lints and passes existing tests | `cargo check`/`cargo clippy -D warnings`/`cargo test` (`selahcue-operator`) | all clean | terminal output, this session | PASS |
 | C-010 | yes | Audit doc Reconciliation section updated for every id closed this session, and PME-043 reclassified as blocked with a routed decision | `Read` the updated doc section | new "Update — 2026-09-22" section present with FIXED list, PME-043 rationale, updated totals | `docs/design/DESIGN-2.0-PARITY-AUDIT-presentation.md` | PASS |
-| C-011 | yes | `make ci` green on the branch before marking the PR ready | `make ci` (one at a time, after checking for concurrent runs) | ALL GREEN | `1667 checks, 0 FAIL` (operator_headless.py step) + `== local Rust/Flutter gate: ALL GREEN ==`, run against final commit `dc639be`/`04cc302` (docs-only after) | PASS |
-| C-012 | yes | Four-reviewer pipeline (Cody/Sana/Vera/Quinn) run, blocking findings remediated | reviewer reports, published as an Artifact | all four reviewers clear | review artifact URL, to be attached at handoff | PENDING |
+| C-011 | yes | `make ci` green on the branch before marking the PR ready | `make ci` (one at a time, after checking for concurrent runs) | ALL GREEN | Final local run against `45e59f4` (post-rebase, post-remediation): `1676 checks, 0 FAIL` (operator_headless.py step) + `== local Rust/Flutter gate: ALL GREEN ==`. Real GitHub Actions CI (`gh run 35695462976`, the full ubuntu/macOS/Windows matrix `make ci` cannot cover locally) completed `conclusion: success` — every job succeeded or was correctly path-filter-skipped (flutter/api/marketing, untouched by this PR), none failed or cancelled | PASS |
+| C-012 | yes | Four-reviewer pipeline (Cody/Sana/Vera/Quinn) run, blocking findings remediated | reviewer reports posted on PR #69 (no Artifact tooling available to Cody/Sana/Vera/Quinn as dispatched; findings + verdicts live as PR review comments instead, referenced by this ledger) | all four reviewers clear | Two full rounds, both against post-remediation commits: round 1 found 1 blocking (Quinn) + several non-blocking; round 2 (post-rebase) all four Pass, with 2 more small fixes (Sana's + Vera's round-2 findings) closed in the same session. Final commit reviewed at least once by all four: `78b7cc4`/`45e59f4` (docs-only between) | PASS |
 | C-013 | no | PME-043 implemented | N/A — routed to `DECISION — Presentation` (`17tnw2axpu1`) instead; no signal exists in this codebase to gate it on, per the audit doc's new Reconciliation entry | see Non-goals and the audit doc | — | NOT_APPLICABLE |
 
 ## Verification plan
@@ -293,10 +293,21 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
 ## Final evaluation
 
 - Validator command: `python3 ~/.claude/skills/goal/scripts/validate_goal_contract.py docs/delivery/goals/TASK-17tnw2axptg-presentation-safety-access.md --completion`
-- Validator result: PENDING (run at handoff, after C-011/C-012 evidence is attached)
-- Independent verification result: PENDING (four-reviewer pipeline, dispatched after PR opens)
-- Terminal state: GATE_REVIEW pending PR/CI + reviewer pipeline; implementation-side criteria
-  (C-001–C-010) are VERIFIED_COMPLETE
-- Remaining failed or blocked criteria: C-011, C-012 (PENDING, not FAILED — sequenced after this
-  contract snapshot); C-013 NOT_APPLICABLE (PME-043, routed to decision)
-- ClickUp final evidence comment: to be posted on `17tnw2axptg` at handoff
+- Validator result: see command output at handoff (run after this final edit)
+- Independent verification result: **complete.** All four reviewers (Cody, Sana, Vera, Quinn)
+  cleared the PR twice — once against the initial implementation, once again against the fully
+  remediated final commit (`45e59f4`) — with every finding (1 blocking, 9 non-blocking across both
+  rounds) fixed and mutation-verified, or explicitly routed elsewhere with the reviewer's own
+  agreement (the thumbnail-cache observation → ClickUp `17tnw2axwve`; the `skipSync` suggestion →
+  no ticket, reviewer's own call). Consolidated report published and linked on the PR and ClickUp:
+  https://claude.ai/artifact/YWX6XiPUCyaKMud3o1S7ig
+- Terminal state: **VERIFIED_COMPLETE** for this role's scope. GitHub Actions CI (`gh run
+  35695462976`, full ubuntu/macOS/Windows matrix) completed `conclusion: success` — every job
+  succeeded or was correctly path-filter-skipped, none failed. The PR itself is not merged (not
+  this role's call per the operating contract — "do not merge it yourself"), so the ticket's
+  ClickUp status reflects `code review`/pending merge, not `complete`.
+- Remaining failed or blocked criteria: none. C-013 (PME-043 implementation) is NOT_APPLICABLE by
+  design, routed to `DECISION — Presentation` (`17tnw2axpu1`) as a fifth question — an
+  owner/architecture decision, not a gap in this role's execution.
+- ClickUp final evidence comment: posted on `17tnw2axptg` (multiple, through the full remediation
+  history); consolidated summary posted alongside this contract's completion.
