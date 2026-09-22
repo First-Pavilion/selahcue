@@ -194,7 +194,7 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
 - Decision: iterate — re-dispatch all four reviewers against the final commit (`dc639be`) before
   claiming C-012 PASS, since none of the four reviews above ran against the post-remediation code.
 
-### Iteration 3 — four-reviewer pipeline round 2, in progress
+### Iteration 3 — four-reviewer pipeline round 2
 
 - Target criterion: C-011 (`make ci` green) and C-012 (fresh review round against `dc639be`).
 - Change or investigation: restarted `make ci` from a clean state (the round-1 background run was
@@ -204,8 +204,74 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
   Dispatched fresh Cody/Sana/Vera/Quinn reviews, each a new isolated worktree pinned to `dc639be`,
   each briefed on exactly what changed since their last pass and asked to re-verify their own
   finding's fix plus do a genuine fresh pass, not a rubber-stamp.
-- Result: pending — both `make ci` and the four reviews are running as of this ledger entry.
-- Decision: iterate (awaiting evidence).
+- Result: `make ci` — **ALL GREEN**, `1667 checks, 0 FAIL` (operator_headless.py step). Reviews:
+  Cody — **Pass**, verified all three fixes by reading code + running the suite; flagged that the
+  branch had drifted 2 commits behind `main` (PR #65 / `17tnw2axptu` merged mid-session) with a
+  real conflict on `scripts/operator_headless.py`'s shared tail (both branches independently bumped
+  `EXPECTED_MIN_CHECKS` from the same 1625 baseline), and that the audit doc/Goal Contract hadn't
+  been updated across remediation rounds. Sana — **Pass**, mutation-confirmed the round-1 fail-open
+  fix; found ONE more gap in the same area (see Iteration 5). Vera — **Pass**, confirmed `view()`'s
+  IPC cost is negligible, re-measured the picker/grid DOM cost, independently reproduced Quinn's
+  `[hidden]` bug via her own benchmark, corroborated Sana's fail-open finding, found the
+  network-round-trip comment error (fixed in `dc639be`), and — in round 2 — found the missing
+  `view()` timeout (see Iteration 6). Quinn — **Pass / QA-clear**, re-verified everything live in a
+  real rendered harness (not just code reading), confirmed no regressions, updated ClickUp bug
+  `17tnw2axwg9` to reflect QA verification herself.
+- Decision: iterate — one real blocker to resolve (the branch-behind/merge-conflict Cody found).
+
+### Iteration 4 — rebase onto `main` (resolves Cody's branch-behind finding)
+
+- Target criterion: C-011 (must be evidence about the branch that will actually merge).
+- Change or investigation: discovered independently via `gh pr view --json mergeable` returning
+  `CONFLICTING` (not just Cody's read of the git graph) before acting — confirmed the branch was 2
+  commits behind `origin/main` (`a5f0d21`, containing `17tnw2axptu`'s `scripts/operator_headless.py`
+  changes). Diffed `9a64417..a5f0d21` against every file this ticket touched: only
+  `scripts/operator_headless.py` overlapped. Rebased (`git rebase origin/main`); resolved 2 conflict
+  hunks, both on the same `EXPECTED_MIN_CHECKS` constant + its preceding comment block, by keeping
+  BOTH branches' new checks and computing the constant from an actual post-rebase run rather than
+  arithmetic or picking a side. Discarded one incidental uncommitted change (`pubspec.lock`, a
+  Flutter dependency-resolution side effect from running `make ci`, unrelated to this ticket) before
+  committing, per the "never commit an incidental side effect" convention.
+- Verifier executed: `python3 scripts/operator_headless.py`, twice independently post-rebase;
+  `cargo check` on `selahcue-operator` post-rebase (confirmed main's advance touched no Rust file
+  this ticket cares about).
+- Result: 1672 checks, 0 FAIL (both runs). `gh pr view --json mergeable` → `MERGEABLE`. Force-pushed
+  (`--force-with-lease`) the rebased branch; PR marked ready for review.
+- Decision: complete for this sub-goal; continue iterating on the remaining reviewer findings.
+
+### Iteration 5 — Sana's round-2 finding: `linked` conflated with `named`
+
+- Target criterion: C-012 (Sana's specific round-2 finding).
+- Change or investigation: `pmLibDelete`'s `if (linked && v.plan_name) planRefName = ...` gave NO
+  warning when a deck was genuinely linked but the plan reported no name — the same silent-clean
+  failure already fixed for a rejected read, one field over. Sana proved it live with a
+  `plan_name=""` fixture. Split `linked` and `named` into separately-checked facts; a linked-but-
+  unnamed plan now degrades to a generic warning instead of showing nothing. Also corrected a
+  factually wrong test comment Sana caught (claimed no `await` between a test hook's flag-set and
+  its consuming click; there is one, it just resolves in ~0 ms).
+- Verifier executed: `python3 scripts/operator_headless.py`, mutation-verified (removing the new
+  branch turns both new assertions RED, restored), twice independently.
+- Result: 1674 checks, 0 FAIL (both runs). Commit `d8468eb`.
+- Decision: complete for this finding.
+
+### Iteration 6 — Vera's round-2 finding: no timeout on `pmLibDelete`'s `view()` read
+
+- Target criterion: C-012 (Vera's specific round-2 finding); also files a follow-up (not a fix) for
+  her thumbnail-cache observation.
+- Change or investigation: `Backend::Remote`'s `ControlClient::command` has no per-request timeout
+  on the `view()` path (unlike connect/pair) — a stalled-but-connected host could hang
+  `pmLibDelete`'s confirm dialog forever. Added `pmWithTimeout()` (1500 ms), treating expiry as the
+  same `planRefUnknown` state. New test hook (`window.__viewHangOnce`, a promise that never
+  settles) proves the CLIENT-SIDE timeout is what unblocks the UI, not the mock resolving late.
+  Filed ClickUp `17tnw2axwve` for the deck-local-slide-id/thumbnail-cache collision Vera flagged as
+  worth tracking (pre-existing, `pmLibPresent` widens its exposure) — not fixed in this ticket, per
+  her own call that it's a separate, non-blocking concern. Declined to file a ticket for the
+  `skipSync` optimization suggestion (her own call: safe, not a correctness issue).
+- Verifier executed: `python3 scripts/operator_headless.py`, mutation-verified (removing the
+  timeout wrapper turns both new assertions RED, restored), twice independently.
+- Result: 1676 checks, 0 FAIL (both runs). Commit `78b7cc4`. Final `make ci` run launched against
+  this commit; result pending as of this ledger entry.
+- Decision: iterate — awaiting the final `make ci` confirmation before declaring C-011/C-012 PASS.
 
 ## Risks and rollback
 
