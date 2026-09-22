@@ -861,29 +861,41 @@ if not check_jump_call_site_is_click_only():
 # FILTER-REGEX-LASTMATCH check pair (+2) proving it. Three independent runs against the real tree
 # all reported 1790, 0 FAIL.
 #
-# 1790 -> 1792: Sana's PR #75 security review found `_lastFilterDecl()`'s regex was still
-# case-sensitive — `FILTER:` (uppercase) bypassed the guard entirely, even though CSS property
-# names are case-insensitive per spec and Chrome applies it identically. Fixed by adding the `i`
-# flag to the property-name match and to the four call sites' `/^\s*none\s*$/` keyword check for a
-# consistent case-insensitive story on both; adds a new FILTER-REGEX-CASE-INSENSITIVE check pair
-# (+2). Mutation-verified (reverting the `i` flag reproduces exactly those 2 FAIL). Sana
-# independently re-checked and confirmed the gap closed. Three independent runs all reported 1792,
-# 0 FAIL.
+# 1790 -> 1792: Sana's independent security review of PR #75 (comment on the PR) found that
+# `_lastFilterDecl()`'s fix above was still case-sensitive: its regex matched only lowercase
+# `filter:`, but CSS property names are case-insensitive per spec and Chrome genuinely applies
+# `FILTER: brightness(1.06)` identically to `filter: brightness(1.06)`. A rule authored (or
+# merged) as `filter: none; FILTER: brightness(1.06);` — the PR's own exact duplicate-declaration
+# scenario, just with the WINNING declaration's property name capitalised instead of its value
+# duplicated — would have had `_lastFilterDecl()` return null (no lowercase match), so every call
+# site's `!decl` short-circuit reported a silent PASS, missing the exact re-lightening regression
+# this whole mechanism exists to catch. Fixed by adding the `i` flag to `_lastFilterDecl()`'s
+# regex; also added `i` to the four call sites' (TD-012/PSC-005/GO-LIVE-HOVER/TIMER-START-HOVER)
+# and FILTER-REGEX-LASTMATCH's own `/^\s*none\s*$/` guard predicate for a consistent
+# case-insensitive story on both the property name and the harmless keyword value, matching real
+# CSS's own case-insensitive keyword handling (Sana's finding was specifically about the property
+# name; the keyword-value change is this fix's own judgment call, made to avoid leaving an
+# inconsistent case story in the same guard). Adds one new FILTER-REGEX-CASE-INSENSITIVE check
+# pair (+2) proving it — reverting the `i` flag on `_lastFilterDecl()`'s regex and re-running
+# reproduces exactly those 2 FAIL (FILTER-REGEX-CASE-INSENSITIVE) and nothing else, then restoring
+# returns to 0 FAIL. Per this constant's own repeated lesson: re-derived empirically, not
+# hand-summed. Three independent runs against the real tree all reported 1792, 0 FAIL.
 #
-# 1818 & 1790 -> ?: PR #75 (1788->1790 above, this commit) rebased onto main post-1818 (PR #60's
-# SET-010 work, then PR #76's `_lastRule()` rule-lookup fix, above) — three real conflicts in this
-# same area: (1) both PR #76 and this branch inserted a "match globally, keep the last hit" helper
-# immediately after `_same()` — kept both as separate functions (`_lastRule()` for a rule block,
-# `_lastFilterDecl()` for a declaration inside one already found), not yet merged into one; (2)
-# both branches inserted a new mutation-proof test block at the identical point right after
-# TIMER-START-HOVER/PP-GEN closes — kept both in sequence (RULE-REGEX-LASTMATCH, then
-# FILTER-REGEX-LASTMATCH); (3) this history comment itself. The four call sites this branch touches
+# 1818 & 1792 -> 1822: PR #75 (1788->1790->1792 above, both commits) rebased onto main post-1818
+# (PR #60's SET-010 work, then PR #76's `_lastRule()` rule-lookup fix, above) — three real
+# conflicts in this same area, across both of this PR's commits: (1) both PR #76 and this branch
+# inserted a "match globally, keep the last hit" helper immediately after `_same()` — kept both as
+# separate functions (`_lastRule()` for a rule block, `_lastFilterDecl()` for a declaration inside
+# one already found); (2) both branches inserted a new mutation-proof test block at the identical
+# point right after TIMER-START-HOVER/PP-GEN closes — kept all three in sequence
+# (RULE-REGEX-LASTMATCH, then FILTER-REGEX-LASTMATCH, then FILTER-REGEX-CASE-INSENSITIVE); (3)
+# this history comment itself, twice. The four call sites this branch touches
 # (TD-012/PSC-005/GO-LIVE-HOVER/TIMER-START-HOVER's `wXxxHoverFilter` lines) never conflicted with
 # PR #76's rewrite of the RULE-lookup lines just above them (`wXxxHoverRule`) — different lines
 # entirely, auto-merged clean — confirming the two fixes are genuinely complementary, not
 # overlapping. Per this comment's own repeated lesson, re-derived empirically after resolving
-# rather than hand-summed; count TBD until the still-pending case-insensitivity commit (1790->1792
-# above) is also rebased on top.
+# rather than hand-summed. Three independent runs against the real post-rebase tree all reported
+# 1822, 0 FAIL.
 EXPECTED_MIN_CHECKS = 1822
 
 
@@ -9637,8 +9649,14 @@ right after a generate/save");
       // `filter:` — merge artefact, copy-paste mistake, future edit — is plausible authored CSS).
       // The TD-012/PSC-005/GO-LIVE-HOVER/TIMER-START-HOVER filter-guards below all need the
       // declaration that actually wins the cascade, so match globally and keep the last hit.
+      // Sana (security review, PR #75): CSS property names are case-insensitive per spec — Chrome
+      // applies `FILTER: brightness(1.06)` identically to `filter: brightness(1.06)` — but this
+      // regex matched only the lowercase spelling, so `filter: none; FILTER: brightness(1.06);`
+      // (the exact duplicate-declaration scenario above, just with the winning declaration's
+      // property name capitalised) made `_lastFilterDecl()` return null and every call site's
+      // `!decl` short-circuit silently PASS. Matched with the `i` flag below.
       function _lastFilterDecl(ruleText){
-        var re = /(?:^|;)\s*filter\s*:\s*([^;]+)/g, m, last = null;
+        var re = /(?:^|;)\s*filter\s*:\s*([^;]+)/gi, m, last = null;
         while ((m = re.exec(ruleText)) !== null) { last = m; }
         return last;
       }
@@ -9822,7 +9840,7 @@ right after a generate/save");
         // unmeasured — passed this whole suite silently (proven live: adding it back kept all 1544
         // checks green). Assert the rule declares no re-lightening filter at all.
         var wTdHoverFilter = wTdHoverRule ? _lastFilterDecl(wTdHoverRule[1]) : null;
-        ok(!wTdHoverFilter || /^\s*none\s*$/.test(wTdHoverFilter[1]),
+        ok(!wTdHoverFilter || /^\s*none\s*$/i.test(wTdHoverFilter[1]),
            "TD-012: the hover rule carries no `filter` (found " + (wTdHoverFilter ? wTdHoverFilter[1].trim() : "none") +
            ") — a brightness() filter stacked on an already-darkened fill would re-lighten it past AA, and the background-only checks above cannot see that");
         ok(_cr([255,255,255,1], _resolve("var(--sc-primary-hover)")) < 4.5,
@@ -9854,7 +9872,7 @@ right after a generate/save");
         // Same gap Sana found on TD-012 above (PR #58 review): background-only checks miss a
         // `filter: brightness()` stacked back onto this hover rule. Assert none is declared.
         var wPsHoverFilter = wPsHoverRule ? _lastFilterDecl(wPsHoverRule[1]) : null;
-        ok(!wPsHoverFilter || /^\s*none\s*$/.test(wPsHoverFilter[1]),
+        ok(!wPsHoverFilter || /^\s*none\s*$/i.test(wPsHoverFilter[1]),
            "PSC-005: the hover rule carries no `filter` (found " + (wPsHoverFilter ? wPsHoverFilter[1].trim() : "none") +
            ") — a brightness() filter stacked on an already-darkened fill would re-lighten it past AA, and the background-only checks above cannot see that");
         ok(_cr([255,255,255,1], _resolve("var(--sc-primary-hover)")) < 4.5,
@@ -9983,7 +10001,7 @@ right after a generate/save");
         // Sana's TD-012 finding (PR #58 review) applies identically here: the background-only
         // checks above cannot see a `filter: brightness()` stacked back onto this hover rule.
         var wTbGlHoverFilter = wTbGlHoverRule ? _lastFilterDecl(wTbGlHoverRule[1]) : null;
-        ok(!wTbGlHoverFilter || /^\s*none\s*$/.test(wTbGlHoverFilter[1]),
+        ok(!wTbGlHoverFilter || /^\s*none\s*$/i.test(wTbGlHoverFilter[1]),
            "GO-LIVE-HOVER: the hover rule carries no `filter` (found " + (wTbGlHoverFilter ? wTbGlHoverFilter[1].trim() : "none") +
            ") — a brightness() filter stacked on an already-darkened fill would re-lighten it past AA, and the background-only checks above cannot see that");
         // Control: recomputing the ORIGINAL `filter: brightness(1.06)` against the darkened
@@ -10017,7 +10035,7 @@ right after a generate/save");
              "TIMER-START-HOVER: hover does not LIGHTEN past the gradient's brightest rest stop — no `filter: brightness()` re-lightening the darkened fill");
         }
         var wTsHoverFilter = wTsHoverRule ? _lastFilterDecl(wTsHoverRule[1]) : null;
-        ok(!wTsHoverFilter || /^\s*none\s*$/.test(wTsHoverFilter[1]),
+        ok(!wTsHoverFilter || /^\s*none\s*$/i.test(wTsHoverFilter[1]),
            "TIMER-START-HOVER: the hover rule carries no `filter` (found " + (wTsHoverFilter ? wTsHoverFilter[1].trim() : "none") +
            ") — a brightness() filter stacked on an already-darkened fill would re-lighten it past AA, and the background-only checks above cannot see that");
         var wTsBrightened = wTsStops.map(function(s){ return [Math.min(255,s[0]*1.06), Math.min(255,s[1]*1.06), Math.min(255,s[2]*1.06), s[3]]; });
@@ -10123,9 +10141,29 @@ right after a generate/save");
       var wDupFilter = _lastFilterDecl(wDupFilterRule);
       ok(!!wDupFilter && wDupFilter[1].trim() === "brightness(1.06)",
          "FILTER-REGEX-LASTMATCH (premise): a duplicate `filter:` declaration resolves to the LAST one — the value the cascade actually applies (found \"" + (wDupFilter ? wDupFilter[1].trim() : "none") + "\")");
-      var wDupGuardWouldPass = !wDupFilter || /^\s*none\s*$/.test(wDupFilter[1]);
+      var wDupGuardWouldPass = !wDupFilter || /^\s*none\s*$/i.test(wDupFilter[1]);
       ok(!wDupGuardWouldPass,
          "FILTER-REGEX-LASTMATCH: the shared filter-guard correctly FAILS this rule — its winning declaration is `filter: brightness(1.06)` even though its FIRST declaration is the harmless `filter: none` (with the old non-global .exec(), this rule would have wrongly PASSED)");
+
+      // --- FILTER-REGEX-CASE-INSENSITIVE: the shared filter-guard matches the `filter` property
+      // name regardless of its declared case, same as the real CSS cascade ---------------------
+      // Sana (security review, PR #75): CSS property names are case-insensitive per spec — Chrome
+      // genuinely applies `FILTER: brightness(1.06)` the same as `filter: brightness(1.06)` — but
+      // `_lastFilterDecl()`'s regex matched only the lowercase spelling. A rule with
+      // `filter: none; FILTER: brightness(1.06);` — this same FILTER-REGEX-LASTMATCH scenario
+      // above, just with the WINNING declaration's property name capitalised instead of its
+      // value duplicated — would have had `_lastFilterDecl()` return null (no lowercase match),
+      // so every call site's `!decl` short-circuit reported a silent PASS, missing the exact
+      // re-lightening regression TD-012/PSC-005/GO-LIVE-HOVER/TIMER-START-HOVER exist to catch.
+      // Run that exact duplicate through the real guard predicate they all share and prove it now
+      // correctly rejects it instead of being silently defeated by the case mismatch.
+      var wDupFilterRuleCI = "background:#5a48d0; filter: none; FILTER: brightness(1.06);";
+      var wDupFilterCI = _lastFilterDecl(wDupFilterRuleCI);
+      ok(!!wDupFilterCI && wDupFilterCI[1].trim() === "brightness(1.06)",
+         "FILTER-REGEX-CASE-INSENSITIVE (premise): an uppercase `FILTER:` declaration is still matched and resolves as the LAST (winning) one (found \"" + (wDupFilterCI ? wDupFilterCI[1].trim() : "none") + "\")");
+      var wDupGuardWouldPassCI = !wDupFilterCI || /^\s*none\s*$/i.test(wDupFilterCI[1]);
+      ok(!wDupGuardWouldPassCI,
+         "FILTER-REGEX-CASE-INSENSITIVE: the shared filter-guard correctly FAILS this rule — its winning declaration is uppercase `FILTER: brightness(1.06)`, not the harmless lowercase `none` (with the case-sensitive regex, `_lastFilterDecl()` would have returned null and the guard's `!decl` short-circuit would have wrongly PASSED)");
 
       // --- PME-014 / PME-015: the two missing topbar primary actions ------------------------
       document.querySelector('.nav-item[data-surface="presentation"]').click();
