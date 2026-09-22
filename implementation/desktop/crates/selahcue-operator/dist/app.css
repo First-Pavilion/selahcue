@@ -4100,6 +4100,34 @@
         color: var(--sc-text);
       }
 
+      /* CON-054 (blocker) — the non-colour half of the staged-verse signal (WCAG 1.4.1).
+         Hidden by default, shown only on .verse.cursor — the same class that drives the
+         tint above, so the pill and the colour always agree. Figma 322:181/182: bg/border/
+         ink are exactly --sc-preview-soft / --sc-preview-border / --sc-preview, so no new
+         colour is introduced. Right-aligned via margin-left: auto to match the frame's
+         trailing placement (x 841 of a 906px row, i.e. flush right); align-self: center
+         keeps it vertically centred if a long verse wraps the row onto multiple lines. */
+      .verse-staged-pill {
+        display: none;
+        flex: none;
+        align-self: center;
+        margin-left: auto;
+        align-items: center;
+        background: var(--sc-preview-soft);
+        border: 1px solid var(--sc-preview-border);
+        color: var(--sc-preview);
+        border-radius: 999px;
+        padding: 3px 8px;
+        font-size: 9px;
+        font-weight: 700;
+        letter-spacing: 0.03em;
+        white-space: nowrap;
+      }
+
+      .verse.cursor .verse-staged-pill {
+        display: inline-flex;
+      }
+
       /* A verse / search hit is a click + DOUBLE-CLICK target (double-click stages it live) —
          the gesture must never text-select the verse. -webkit- prefix is required: Tauri's
          WKWebView engine needs it (plain user-select alone does not suppress the selection). */
@@ -4675,6 +4703,23 @@
         background: #12090b;
       }
 
+      /* CON-098 (blocker) — the ENGAGED-blackout ground (Figma 337:203): #1a0c0c / border
+         var(--sc-live-border) #5a2327, neither a --sc-* token per CON-103/104, kept as
+         local constants alongside #emergency's own #12090b/#3a1a1d for the same reason.
+         A prior pass (see git blame) judged this re-tint skippable because the two GROUNDS
+         measure 1.03:1 on the WCAG relative-luminance ratio — but that ratio is a
+         text-legibility metric and compresses toward 1:1 for any two very-dark colours
+         regardless of hue; it does not answer "is this recolour visible". Re-checked in
+         CIELAB (ticket 17tnw2axpta): deltaE76 ≈ 3.5 for the background alone and ≈ 13.4 for
+         the border shift (#3a1a1d → #5a2327) — the border alone is well past the ~2.3 JND
+         and obviously different to the eye, so the combined re-tint reads as a real, visible
+         state change, not a no-op. Toggled by `#emergency.classList.toggle("blackout", …)`
+         in app.js, same pattern as #live-panel.blackout. */
+      #emergency.blackout {
+        background: #1a0c0c;
+        border-top-color: var(--sc-live-border);
+      }
+
       .emergency-actions {
         display: flex;
         align-items: center;
@@ -4730,12 +4775,12 @@
 
       /* CON-101 — the blackout explanation. The ink is the canonical frame's #e8b4b4 (337:209),
          kept as a DOCUMENTED LOCAL CONSTANT rather than a new token (Q6 resolved this way): the
-         emergency footer already carries two local constants, the #12090b ground and the #3a1a1d
-         border, so this adds no new KIND of thing. Measured 10.86:1 on that ground at 12px — the
-         --sc-text-secondary alternative is 8.83:1, so matching the frame costs nothing here.
-         The frame ALSO re-tints the whole footer to #1a0c0c (CON-098, filed as a blocker). That was
-         measured at 1.03:1 against the shipped #12090b — an invisible change — so the ground is
-         deliberately left alone and CON-098 is closed as a non-issue, not built. */
+         emergency footer already carries local constants for its grounds (#12090b resting,
+         #1a0c0c engaged — see #emergency.blackout above), so this adds no new KIND of thing.
+         Measured 10.86:1 on the resting ground / 10.55:1 on the engaged ground at 12px — the
+         --sc-text-secondary alternative is 8.83:1/8.60:1, so matching the frame costs nothing
+         here. (CON-098's ground re-tint itself, once dismissed as invisible by this same
+         reasoning, now ships — see #emergency.blackout for why that call was reversed.) */
       .blackout-explain {
         flex: 1 1 auto;
         min-width: 0;

@@ -335,6 +335,8 @@
         // neither. The note is general guidance; during a blackout the specific state wins.
         if (bNote) bNote.hidden = !!view.blackout;
         document.getElementById("live-panel").classList.toggle("blackout", view.blackout);
+        // CON-098 (blocker) — the footer bar itself re-tints, not just the button label.
+        document.getElementById("emergency").classList.toggle("blackout", view.blackout);
 
         // Draw the TRUE composited Preview/Live output (86ajtwq28) — a debounced, read-only
         // host readback (rendering never changes what is on air). Only re-render when a
@@ -3610,8 +3612,18 @@
           n.textContent = num;
           const t = document.createElement("span");
           t.textContent = text;
+          // CON-054 (blocker, WCAG 1.4.1) — the staged verse was signalled by the row's
+          // green tint alone (.verse.cursor). This pill is a text indicator that ships
+          // alongside the same class, so it appears exactly when the colour does — a
+          // colour-blind or low-vision operator now has a non-colour signal too.
+          // Geometry/ink from Figma 322:181/182: bg/border/ink are the existing
+          // --sc-preview-* tokens (#10231c / #1c3a2e / #35c08a) verbatim.
+          const staged = document.createElement("span");
+          staged.className = "verse-staged-pill";
+          staged.textContent = "STAGED";
           row.appendChild(n);
           row.appendChild(t);
+          row.appendChild(staged);
           row.onclick = () => setCursor(i, true, true);
           // Double-click = straight to live (owner request 86ajpwcxc): the
           // explicit double gesture is the confirmation, bypassing Preview.
