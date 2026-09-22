@@ -1350,14 +1350,16 @@
             b.removeAttribute("aria-current");
           }
         });
-        // 17tnw2axptw: About & Licensing + Appearance (Tier 1 of the 7-page build-out) join the
-        // built map here. General/Scripture/Outputs/Security/Storage still fall through to the
-        // shared placeholder until their own tiers land (PR 2, PR 3).
+        // 17tnw2axptw: About & Licensing + Appearance (Tier 1) and General + Scripture &
+        // Translations (Tier 2) join the built map here. Outputs/Security/Storage still fall
+        // through to the shared placeholder until Tier 3 lands.
         const built = {
           providers: "set-page-providers",
           network: "set-page-network",
           about: "set-page-about",
           appearance: "set-page-appearance",
+          general: "set-page-general",
+          scripture: "set-page-scripture",
         };
         document.querySelectorAll("#surface-settings .set-page").forEach((p) => {
           p.hidden = true;
@@ -1367,6 +1369,8 @@
           if (page === "providers" && typeof settingsActivate === "function") settingsActivate();
           if (page === "about" && typeof settingsAboutActivate === "function") settingsAboutActivate();
           if (page === "appearance" && typeof settingsAppearanceActivate === "function") settingsAppearanceActivate();
+          if (page === "general" && typeof settingsGeneralActivate === "function") settingsGeneralActivate();
+          if (page === "scripture" && typeof settingsScriptureActivate === "function") settingsScriptureActivate();
         } else {
           document.getElementById("set-placeholder").hidden = false;
           document.getElementById("set-ph-title").textContent = lbl || "Settings";

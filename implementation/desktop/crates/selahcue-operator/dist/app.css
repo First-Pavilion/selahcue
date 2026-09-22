@@ -7185,6 +7185,15 @@
 .pp-radio-card:hover { border-color: var(--sc-border-strong); }
 .pp-radio-card.sel:hover { border-color: var(--sc-primary-hover); }
 .pp-radio-card:focus-visible { outline: 2px solid var(--sc-primary-hover); outline-offset: 2px; }
+/* A .pp-radio-card with no backend to select it (General → Startup: three options with no
+   persistence anywhere in this app) — drops the pointer cursor and hover highlight the base class
+   always applies, so an inert card no longer LOOKS clickable when nothing happens on click
+   (Quinn's QA review of PR #70: "looks interactive, silently does nothing" — the base class had
+   no disabled-state override, unlike every other inert control in this batch, which uses native
+   `disabled`; a plain <div> radio card has no such attribute to lean on). */
+.pp-radio-card.set-inert { cursor: default; }
+.pp-radio-card.set-inert:hover { border-color: var(--sc-border); }
+.pp-radio-card.set-inert.sel:hover { border-color: var(--sc-primary-hover); }
 .pp-radio-head { display: flex; gap: 11px; align-items: center; width: 100%; }
 .pp-radio-dot { position: relative; width: 20px; height: 20px; border-radius: 999px; border: 1.5px solid var(--sc-border); background: var(--sc-inset); flex: none; }
 .pp-radio-dot.on { border-color: var(--sc-primary); }
@@ -7195,6 +7204,11 @@
 .pp-radio-desc { font-size: 12px; font-weight: 500; color: var(--sc-text-secondary); }
 .pp-radio-detail { margin: 0; font-size: 11px; font-weight: 500; color: var(--sc-text-muted); }
 .pp-radio-foot { margin: 0; font-size: 11px; font-weight: 500; color: var(--sc-text-muted); }
+/* A trailing control row inside a .pp-radio-card that is NOT part of the radio selection itself
+   (Scripture & Translations: the per-row "show in picker" toggle sits beside the Default radio,
+   same card, separate concern — settings-scripture.js stops its click from bubbling into the
+   card's own onSelect). */
+.pp-radio-actions { display: flex; align-items: center; gap: 10px; margin-left: 31px; }
 
 /* Amber warning row */
 .pp-warn { display: flex; gap: 8px; align-items: center; padding: 8px 11px; border-radius: 8px; background: var(--sc-warn-soft); border: 1px solid var(--sc-warn-border); color: var(--sc-warn); }
