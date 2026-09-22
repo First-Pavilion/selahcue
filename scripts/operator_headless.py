@@ -707,7 +707,7 @@ if not check_jump_call_site_is_click_only():
 # test above and re-confirmed by inspection; finding E (app.css's CON-134 comment block still
 # named the pre-fix window.__openChapterForStage as Edit's call) was a stale-comment correction
 # only. Confirmed by two independent runs (both 1625, 0 FAIL).
-EXPECTED_MIN_CHECKS = 1652
+EXPECTED_MIN_CHECKS = 1654
 
 
 def find_chrome():
@@ -10420,6 +10420,24 @@ right after a generate/save");
         await sleep(20);
         ok(window.__calls.slice(apCallsBefore).some(function(c){ return c.cmd === "set_stage_template" && c.args.template === "worship"; }),
            "Settings/Appearance: selecting a stage-theme card invokes the REAL set_stage_template(worship) — same command the Presentation surface's picker uses");
+
+        // Keyboard reachability (QA finding on PR #68, ClickUp 17tnw2axwfm): the roving tabIndex
+        // this radiogroup sets up is USELESS without an arrow-key handler moving focus between
+        // the tabIndex=-1 siblings — a keyboard-only operator could reach the selected card and
+        // nothing else. ArrowRight from the now-selected "worship" card must move focus AND
+        // selection to "scripture" (wrapping), exactly like the Providers & Privacy radiogroup's
+        // own onRadioKeydown already does.
+        // Re-query: the click above triggered a full renderStageThemes() rebuild of the host, so
+        // the ORIGINAL apWor node is now detached — focusing it would silently no-op.
+        var apWorNow = el("ap-stage-theme-worship");
+        apWorNow.focus();
+        var apCallsBeforeKey = window.__calls.length;
+        apWorNow.dispatchEvent(new KeyboardEvent("keydown", {key:"ArrowRight", bubbles:true, cancelable:true}));
+        await sleep(20);
+        ok(document.activeElement === el("ap-stage-theme-scripture"),
+           "Settings/Appearance: ArrowRight on the stage-theme radiogroup moves FOCUS to the next card");
+        ok(window.__calls.slice(apCallsBeforeKey).some(function(c){ return c.cmd === "set_stage_template" && c.args.template === "scripture"; }),
+           "Settings/Appearance: ArrowRight also SELECTS the newly-focused card (matches native radiogroup behaviour)");
         V.stage_template = "worship"; // restore the fixture default for anything after this block
 
         // Default slide theme: real builtin_themes() names populate the select; left disabled

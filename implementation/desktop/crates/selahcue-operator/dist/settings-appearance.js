@@ -87,14 +87,24 @@
     return card;
   }
 
+  // Preserves keyboard focus by id across the rebuild below — same discipline as settings.js's
+  // apply() (Providers & Privacy). Without this, a keyboard user who arrows to a new card loses
+  // focus to document.body the moment set_stage_template's response re-renders the host, because
+  // the just-focused node is destroyed and replaced by a new one with the same id (QA finding on
+  // PR #68, ClickUp 17tnw2axwfm, remediation).
   function renderStageThemes(current) {
     var host = document.getElementById("ap-stage-themes");
     if (!host) return;
     var active = current || "worship";
+    var focusId = document.activeElement && host.contains(document.activeElement) && document.activeElement.id;
     host.textContent = "";
     STAGE_TEMPLATES.forEach(function (tpl) {
       host.appendChild(stageThemeCard(tpl, tpl.id === active));
     });
+    if (focusId) {
+      var again = document.getElementById(focusId);
+      if (again && typeof again.focus === "function") again.focus();
+    }
   }
 
   function loadStageTheme() {
@@ -103,6 +113,30 @@
     }).catch(function () {
       renderStageThemes("worship"); // offline-first default (matches app.js's own fallback)
     });
+  }
+
+  // Roving-tabindex arrow-key navigation for the stage-theme radiogroup (APG radiogroup pattern) —
+  // ported from settings.js's onRadioKeydown (Providers & Privacy's #pp-trans radiogroup), which
+  // wires the SAME roving tabIndex this file's stageThemeCard() sets up but was missing this
+  // listener (QA finding on PR #68, ClickUp 17tnw2axwfm): without it, a keyboard-only operator
+  // could Tab to the selected card and nowhere else — the two disabled siblings (tabIndex=-1)
+  // were unreachable.
+  function onStageThemeKeydown(e) {
+    var host = document.getElementById("ap-stage-themes");
+    if (!host) return;
+    var cards = Array.prototype.slice.call(host.querySelectorAll(".pp-radio-card"));
+    var i = cards.indexOf(document.activeElement);
+    if (i < 0) return;
+    if (e.key === "ArrowRight" || e.key === "ArrowDown" || e.key === "ArrowLeft" || e.key === "ArrowUp") {
+      e.preventDefault();
+      var next = (e.key === "ArrowRight" || e.key === "ArrowDown")
+        ? (i + 1) % cards.length : (i - 1 + cards.length) % cards.length;
+      cards[next].focus();
+      cards[next].click();
+    } else if (e.key === " " || e.key === "Enter") {
+      e.preventDefault();
+      cards[i].click();
+    }
   }
 
   // ---------- Default slide theme (real data, no writable "default" field — see header) --------
@@ -136,6 +170,11 @@
     loadSlideThemeNames();
     renderInertSegmented("ap-density", ["Comfortable", "Compact"], 0);
     renderInertSegmented("ap-clockfmt", ["12-hour", "24-hour"], 0);
+    var stageHost = document.getElementById("ap-stage-themes");
+    if (stageHost && !stageHost.dataset.wired) {
+      stageHost.dataset.wired = "1";
+      stageHost.addEventListener("keydown", onStageThemeKeydown);
+    }
     var openTd = document.getElementById("ap-open-theme-designer");
     if (openTd && !openTd.dataset.wired) {
       openTd.dataset.wired = "1";
