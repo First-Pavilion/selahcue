@@ -158,6 +158,55 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
 - Decision: complete (for C-001–C-010); C-011/C-012 pending PR + review pipeline; C-013 marked
   NOT_APPLICABLE with rationale recorded.
 
+### Iteration 2 — four-reviewer pipeline round 1 (C-012)
+
+- Target criterion: C-012 (Cody/Sana/Vera/Quinn review the PR).
+- Change or investigation: dispatched all four reviewers in parallel, each in its own isolated
+  worktree pinned to head `d7fa211`.
+- Result: **Quinn — GATE_REVIEW, one blocking bug.** `.pm-startfrom-picker`'s own `display: flex`
+  (`app.css`) defeated the `[hidden]` attribute in WKWebView/Chrome — the known trap this codebase
+  already guards against in ~6 other places, missed on this new rule. The PME-053 duplicate
+  picker stayed visually painted at all times regardless of which Start-from radio was selected.
+  Filed as ClickUp bug `17tnw2axwg9`. **Cody — pass, 2 non-blocking findings** (a false-positive
+  success toast when a duplicate source vanishes mid-dialog; a stale `EXPECTED_MIN_CHECKS`
+  constant), independently corroborated Quinn's bug. **Sana — pass, no blocking findings** (3
+  non-blocking notes, incl. the `pmLibDelete` fail-open comment/code mismatch below). **Vera —
+  pass, no blocking findings** (measured the picker/grid DOM cost, confirmed `view()`'s IPC cost is
+  negligible; also independently reproduced Quinn's bug via her own benchmark; flagged the same
+  fail-open mismatch Sana found, plus a factually wrong "not a LAN round-trip" comment).
+- Remediation (all on the same branch, new commits):
+  - `d8d0ffe` — Quinn's `[hidden]`/`display:flex` fix + strengthened computed-style assertions.
+    Mutation-verified.
+  - `d382b81` — Cody's two findings (false-positive toast → routes through `pmShowError`; new
+    regression test, mutation-verified; `EXPECTED_MIN_CHECKS` bumped with evidence).
+  - `50fe981` — Sana + Vera's fail-open finding: `pmLibDelete`'s comment promised "fail OPEN on
+    the warning" for a failed `view()` read, but the code left the warning list untouched on
+    failure, reading identically to a genuinely clean "not referenced" result — defeating
+    PME-059's purpose. Added a real third state (`planRefUnknown`) with its own honest warning
+    copy. New test hook (`window.__viewRejectOnce`) + 2 assertions, mutation-verified.
+  - `dc639be` — Vera's comment-accuracy finding (`view()` CAN be a network round-trip via
+    `Backend::Remote`); docs-only, no behaviour change.
+- Verifier executed: `python3 scripts/operator_headless.py`, run twice independently after each
+  remediation commit; mutation-verification (temporarily reverting each fix, confirming the
+  relevant assertion(s) go RED, restoring) for every behavioural fix in this iteration.
+- New evidence: 1667 checks, 0 FAIL (two independent runs at final state); mutation logs for all
+  three behavioural fixes (`[hidden]` guard, false-positive toast, fail-open warning).
+- Decision: iterate — re-dispatch all four reviewers against the final commit (`dc639be`) before
+  claiming C-012 PASS, since none of the four reviews above ran against the post-remediation code.
+
+### Iteration 3 — four-reviewer pipeline round 2, in progress
+
+- Target criterion: C-011 (`make ci` green) and C-012 (fresh review round against `dc639be`).
+- Change or investigation: restarted `make ci` from a clean state (the round-1 background run was
+  killed and discarded — it had been launched before the remediation commits landed and continued
+  running while `app.js`/`app.css`/`operator_headless.py` were being edited in place, so its result
+  would have been evidence about an inconsistent, partially-stale tree rather than any real commit).
+  Dispatched fresh Cody/Sana/Vera/Quinn reviews, each a new isolated worktree pinned to `dc639be`,
+  each briefed on exactly what changed since their last pass and asked to re-verify their own
+  finding's fix plus do a genuine fresh pass, not a rubber-stamp.
+- Result: pending — both `make ci` and the four reviews are running as of this ledger entry.
+- Decision: iterate (awaiting evidence).
+
 ## Risks and rollback
 
 - Risks: PME-043 left unimplemented on a ticket that named it as one of five "safety/access
