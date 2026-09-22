@@ -1470,3 +1470,85 @@ before this addendum's own commits landed:**
 confirmed by two independent runs in this worktree. As the correction above already established,
 `EXPECTED_MIN_CHECKS`'s own history comment in the script remains the single source of truth for
 this number going forward.
+
+## Reconciliation — 2026-09-22 (CON-054, CON-097, CON-098)
+
+**Author:** Farah (Frontend). **Scope:** ClickUp `17tnw2axpta` — the three findings named in that
+ticket, all listed "Confirmed still OPEN" by the 2026-09-20 reconciliation above. Branch
+`fix/17tnw2axpta-blackout-footer-staged-pill-contrast`, cut from `origin/main` at `9a64417`
+(the tip as of this pass — PR #64 had already landed).
+
+### `CON-097` — was already FIXED before the 2026-09-20 reconciliation; that entry was stale
+
+Re-checked directly: `.emergency-ready { border-radius: 999px; … }` (`app.css`) has carried the
+pill radius since commit `7369f612` (2026-08-24), with its own comment citing "§10 case 5" —
+**a full month before** the 2026-09-20 reconciliation pass, and `7369f612` is a confirmed
+ancestor of that reconciliation's own stated base commit (`4b21c39`; `git merge-base
+--is-ancestor 7369f612 4b21c39` exits 0). `git blame` on the rule confirms no later commit ever
+reverted it back to `10px`. The 2026-09-20 entry's "CON-097 stays open" note (in the SUPERSEDED
+table) and this ticket's own brief (which inherited that claim) were both wrong about the code
+state — not a regression, a documentation miss. **No code change made; none was needed.**
+`scripts/operator_headless.py` already carries a positive-control check for this (`"§10 case 5:
+the Offline-ready chip is a PILL"`, measuring rendered radius ≥ half the rendered height, not
+just the declared value) — it was passing before this ticket touched anything.
+
+### `CON-054` — FIXED
+
+The staged verse in the Scriptures panel was signalled by `.verse.cursor`'s colour change alone
+(WCAG 1.4.1). Added a `STAGED` text pill (`app.js`'s `renderChapter`, `app.css`'s
+`.verse-staged-pill`) that ships on the same `.cursor` class the tint already uses, so the two
+signals can never disagree. Geometry/ink taken from a fresh `get_design_context` call on Figma
+`322:181`/`322:182` (not re-derived from the original audit's citation): the pill's `bg`/`border`/
+ink are exactly the existing `--sc-preview-soft` / `--sc-preview-border` / `--sc-preview` tokens,
+so no new colour was introduced. Right-aligned via `margin-left: auto` to match the frame's
+trailing placement (pill at x 841 of a 906px row).
+
+### `CON-098` — FIXED, reversing an undocumented in-code decision not to build it
+
+The emergency-footer container (`#emergency`) never re-tinted on blackout; only the button label
+and explanation line did (shipped earlier, in `7369f612`). That same commit's own CSS comment
+(directly above `.blackout-explain`, predating both reconciliations) had already **explicitly
+decided not to build this**, reasoning that the engaged ground `#1a0c0c` measures only **1.03:1**
+against the resting `#12090b` on the WCAG relative-luminance ratio — "an invisible change" —
+and called the finding "closed as a non-issue". That reasoning is not wrong about the number
+(re-verified independently: 1.0301:1) but is wrong about what the number means: the WCAG ratio
+is a **text-legibility** metric, built to predict whether foreground text is readable against a
+background, and it compresses toward 1:1 for *any* two very-dark colours regardless of hue —
+it does not answer "would a viewer notice this recolour". Re-measured in **CIELAB** (ΔE76, the
+metric for perceptual colour distance) instead: the background shift alone is ΔE76 ≈ 3.5 (past
+the ~2.3 JND), and the border shift (`#3a1a1d` → `#5a2327`, already the existing
+`--sc-live-border` token) is ΔE76 ≈ 13.4 — obviously different to the eye by any standard. Built
+the re-tint as originally specified by the frame (`337:203`): `#emergency.blackout { background:
+#1a0c0c; border-top-color: var(--sc-live-border); }`, toggled by `view.blackout` the same way
+`#live-panel.blackout` already is. The pre-existing "closed as a non-issue" comment block was
+rewritten in place to explain the reversal and point at the new rule, rather than left
+contradicting the code beside it.
+
+Per PRD RISK-205/NFR-204 (shipped ink/contrast as source of truth), this was treated as a
+genuine engineering call rather than a blind "correct toward Figma": the literal frame values
+were re-verified as actually visible before shipping them, not applied on trust. The text
+contrast this footer already carries is unaffected and re-checked: `.blackout-explain`'s
+`#e8b4b4` measures 10.55:1 on the new engaged ground (was 10.86:1 on the resting one) — no
+regression.
+
+### Verification
+
+`scripts/operator_headless.py` — **1637** checks / 0 FAIL (was 1625 before this pass; +12 new
+assertions covering both fixes, `EXPECTED_MIN_CHECKS` updated with its own history comment).
+Both new check groups mutation-verified: breaking `.verse.cursor .verse-staged-pill`'s selector
+turned exactly the STAGED-pill-paint assertion RED; disabling the `#emergency` blackout class
+toggle turned exactly the four re-tint assertions RED (the cleanup assertion still trivially
+passed, as expected); both restored to green. Contrast figures independently recomputed in
+Python (WCAG relative-luminance ratio and CIELAB ΔE76), not taken from either the original audit
+or the in-code comment on trust.
+
+### Totals (cumulative)
+
+| | Count |
+|---|---:|
+| Total findings | 179 |
+| FIXED (all reconciliations) | 28 (26 prior + `CON-054`, `CON-098` here) |
+| Already fixed pre-reconciliation, doc corrected | 1 (`CON-097` — no code change) |
+| FIXED (partial, not counted) | 1 (`CON-134`) |
+| SUPERSEDED (owner Q2 decision) | 6 |
+| **OPEN** | **145** (147 − 2, `CON-054`/`CON-098`; `CON-097` was never really open) |

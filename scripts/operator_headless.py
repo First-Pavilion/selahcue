@@ -707,7 +707,17 @@ if not check_jump_call_site_is_click_only():
 # test above and re-confirmed by inspection; finding E (app.css's CON-134 comment block still
 # named the pre-fix window.__openChapterForStage as Edit's call) was a stale-comment correction
 # only. Confirmed by two independent runs (both 1625, 0 FAIL).
-EXPECTED_MIN_CHECKS = 1625
+#
+# 2026-09-22 (ClickUp 17tnw2axpta, CON-054/CON-098): +12 checks. CON-054 — the staged verse's
+# STAGED pill is actually painted (not just classed) on the cursor row and absent on a sibling
+# row (negative control), states the word STAGED, and clears AA-normal on its own fill (6
+# checks + 1 setup). CON-098 — the emergency footer's computed background AND border genuinely
+# change on a real blackout engage/restore round trip and land on the canonical frame's exact
+# #1a0c0c ground (4 checks + 1 setup/cleanup pair counted once). Both mutation-verified
+# (breaking the CSS selector / disabling the JS toggle turned the corresponding checks RED,
+# restoring them turned the suite green again). Confirmed by two independent runs (both 1637,
+# 0 FAIL).
+EXPECTED_MIN_CHECKS = 1637
 
 
 def find_chrome():
