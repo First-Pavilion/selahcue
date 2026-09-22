@@ -724,21 +724,20 @@ if not check_jump_call_site_is_click_only():
 # against the live Figma frame (344:124) rather than just the doc. Confirmed by two independent
 # runs (both 1630, 0 FAIL).
 #
-# 1630 -> 1672 (pending a fresh post-rebase count; see the confirmation note replacing this one):
-# ClickUp 17tnw2axptg (Presentation web: safety & access essentials), authored in parallel on a
-# separate branch against the pre-17tnw2axptu baseline (1625) and rebased onto main after that
-# ticket landed — this entry's starting point is 1630, not the 1625 these checks were originally
-# counted against. New checks added on that branch, pre-rebase, in three passes: 37 across
-# PME-055/053/059/006-011/027 (this ticket's own implementation); +3 (1 setup + 2 real assertions)
-# for Cody's PR #69 finding that a duplicate source vanishing mid-dialog toasted a false-positive
-# "Presentation duplicated" instead of surfacing the error banner; +2 for Sana + Vera's
-# independently-corroborated PR #69 finding that pmLibDelete's own comment promised "fail OPEN on
-# the warning" for a failed view() read, but the code left the warning list untouched on failure —
-# reading exactly like a clean "not referenced" and defeating PME-059's purpose. All three
-# behavioural fixes were mutation-verified pre-rebase (reverting each turned exactly its own
-# assertion(s) RED, restored). 1630 + 37 + 3 + 2 = 1672 is the arithmetic prediction; replaced
-# below with the actual measured count once the post-rebase suite has been run twice.
-EXPECTED_MIN_CHECKS = 1630  # placeholder pending a fresh post-rebase count; do not trust this value yet
+# 1630 -> 1672: ClickUp 17tnw2axptg (Presentation web: safety & access essentials), authored in
+# parallel on a separate branch against the pre-17tnw2axptu baseline (1625) and rebased onto main
+# after that ticket landed — this entry's starting point is 1630, not the 1625 these checks were
+# originally counted against. New checks added on that branch, pre-rebase, in three passes: 37
+# across PME-055/053/059/006-011/027 (this ticket's own implementation); +3 (1 setup + 2 real
+# assertions) for Cody's PR #69 finding that a duplicate source vanishing mid-dialog toasted a
+# false-positive "Presentation duplicated" instead of surfacing the error banner; +2 for Sana +
+# Vera's independently-corroborated PR #69 finding that pmLibDelete's own comment promised "fail
+# OPEN on the warning" for a failed view() read, but the code left the warning list untouched on
+# failure — reading exactly like a clean "not referenced" and defeating PME-059's purpose. All
+# three behavioural fixes were mutation-verified pre-rebase (reverting each turned exactly its own
+# assertion(s) RED, restored). 1630 + 37 + 3 + 2 = 1672, matching the post-rebase measured count
+# exactly. Confirmed by two independent runs post-rebase (both 1672, 0 FAIL).
+EXPECTED_MIN_CHECKS = 1672
 
 
 def find_chrome():
