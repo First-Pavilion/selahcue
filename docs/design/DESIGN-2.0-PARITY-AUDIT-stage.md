@@ -1003,21 +1003,26 @@ happen.
 | Closed — superseded / verified non-issue | 6 |
 | **Still open, re-verified genuinely blocked** | **16** |
 
-13 of the ids this pass triaged closed without a values decision; the 16 that remain open (listed
-above, one bullet group each) are blocked on exactly what the 2026-09-20 reconciliation predicted:
-four on a cross-surface token batch plus one content-driven layout item in the same neighbourhood
-(`STG-001/006/007/031/033`), one on Q2 (`STG-002`), one on scope (`STG-016`), six on data plumbing
-not yet built (`STG-029/036/052/058/059/060`, two of them also on Q2), two on unresolved owner
-questions (Q4 `STG-050`, Q7 `STG-069`), and one on an architecture choice (`STG-068`). None of the
-ids this pass reviewed needed a value invented on the spot; every open item above names the exact
-decision or dependency it is waiting on.
+**13 ids this pass triaged closed without a values decision** — 1 with a code change
+(`STG-012`) plus the 12 itemised above with none (4 by verification + 1 owner-decision-already-
+recorded + 1 editorial resolution + 6 superseded/non-issue: `1 + 4 + 1 + 1 + 6 = 13`). **The 16
+that remain open** (listed above, one bullet group each) are blocked on exactly what the
+2026-09-20 reconciliation predicted: four on a cross-surface token batch plus one content-driven
+layout item in the same neighbourhood (`STG-001/006/007/031/033`), one on Q2 (`STG-002`), one on
+scope (`STG-016`), six on data plumbing not yet built (`STG-029/036/052/058/059/060`, two of them
+also on Q2), two on unresolved owner questions (Q4 `STG-050`, Q7 `STG-069`), and one on an
+architecture choice (`STG-068`). None of the ids this pass reviewed needed a value invented on the
+spot; every open item above names the exact decision or dependency it is waiting on.
 
-**Note on `STG-060` and why 13 + 16 isn't 28.** `STG-060` (the timer-only footer) is split across
-two states, not double-counted: its **type-size** half was already `FIXED` in the 2026-08-24 batch
-(counted in the original 48), and this pass's "still open" list above carries only its remaining
-**ink/data** half (bundled with `STG-058`/`STG-059` under the two-tone-footer bullet). The
-2026-09-20 reconciliation's own "12 confirmed open" count made the same exclusion implicitly; this
-pass states it explicitly so the arithmetic is checkable rather than approximate — 13 closed this
-pass + 16 still open + 1 finding (`STG-060`) whose two halves land in different buckets accounts
-for the full 28-id scope this ticket was given, without forcing a false single verdict onto a
-finding that genuinely has two.
+**Note on `STG-060`, and why 13 + 16 = 29 rather than the ticket's nominal 28.** `STG-060` (the
+timer-only footer) is split across two states, not double-counted within this pass: its
+**type-size** half was already `FIXED` in the 2026-08-24 batch (part of the original 48, not part
+of this pass's 13), and this pass's "still open" list above carries only its remaining **ink/data**
+half (bundled with `STG-058`/`STG-059` under the two-tone-footer bullet). So `STG-060` contributes
+to neither this pass's 13 nor is it wholly new to the 16 — it is one finding whose two halves
+resolved in two different reconciliation passes. The ticket's "28 open ids" headline already
+carried this same ambiguity before this pass started (the 2026-09-20 section's own "12 confirmed
+open" prose undercounted its 13-id bullet list by the same one, for the same reason — see that
+section above). This pass's own two numbers, 13 and 16, are each independently checkable against
+their bullet lists (`1+4+1+1+6=13`; direct id count in "Still OPEN" = 16) and are the authoritative
+figures; the inherited "28" is not treated as a target to force them to sum to.
