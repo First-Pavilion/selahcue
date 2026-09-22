@@ -849,7 +849,16 @@ if not check_jump_call_site_is_click_only():
 # on the same text would have wrongly read the FIRST. Per this constant's own repeated lesson:
 # re-derived empirically, not hand-summed. Three independent runs against the real post-rebase
 # tree all reported 1818, 0 FAIL.
-EXPECTED_MIN_CHECKS = 1818
+#
+# 1818 -> 1822: ClickUp 17tnw2axptx (Download modal: close remaining DLM-### drift), rebased onto
+# main's own GO-LIVE-HOVER/TIMER-START-HOVER/PP-GEN/RULE-REGEX-LASTMATCH block above (1768->1818,
+# landed by a peer session while this branch was open) — real conflict in this exact block again.
+# Added the DLM-007/DLM-008 block (4 assertions — card + button radius, premise + measurement
+# each) that locks in the geometry fix (card 14->16px, button 8->10px). DLM-002/003/004/006
+# stayed decision-blocked and got no new assertions; DLM-005 needed no code change. Per this
+# comment's own repeated lesson: not hand-summed, re-derived empirically after resolving.
+# Confirmed by a clean run: 1822, 0 FAIL.
+EXPECTED_MIN_CHECKS = 1822
 
 
 def find_chrome():
@@ -9901,6 +9910,23 @@ right after a generate/save");
         var wDlOldHover = _resolve("var(--sc-primary-hover)");
         ok(_cr([255,255,255,1], wDlOldHover) < 4.5,
            "DLM-001 (control): --sc-primary-hover itself still measures BELOW AA-normal for white (" + _f(_cr([255,255,255,1], wDlOldHover)) + ":1) — the TOKEN VALUE is untouched; only this rule stopped using it");
+      }
+
+      // --- DLM-007 / DLM-008: Download modal geometry drift (17tnw2axptx) --------------------
+      // Cosmetic card/button radius drift vs Figma 396:124 — card 14→16, button 8→10. `#dl-modal`
+      // and its buttons are always present in the DOM (only the `.dl-modal-back` wrapper toggles
+      // `hidden`), so computed border-radius is measurable regardless of visibility.
+      var wDlCard = el("dl-modal");
+      ok(!!wDlCard, "DLM-007 (premise): the download modal card exists in the DOM");
+      if (wDlCard) {
+        ok(getComputedStyle(wDlCard).borderRadius === "16px",
+           "DLM-007: .dl-modal card radius matches the Figma spec (16px), found " + getComputedStyle(wDlCard).borderRadius);
+      }
+      var wDlBtn = el("dl-modal-secondary");
+      ok(!!wDlBtn, "DLM-008 (premise): a .dl-btn (Cancel) exists in the DOM to measure");
+      if (wDlBtn) {
+        ok(getComputedStyle(wDlBtn).borderRadius === "10px",
+           "DLM-008: .dl-btn radius matches the Figma spec (10px), found " + getComputedStyle(wDlBtn).borderRadius);
       }
 
       // --- GO-LIVE-HOVER / TIMER-START-HOVER: .tb-golive/.timer-start kept `filter:
