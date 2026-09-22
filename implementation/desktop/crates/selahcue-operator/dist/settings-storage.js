@@ -2,9 +2,11 @@
 // SET-006).
 //
 // Real:
-//   - STORAGE USAGE reads the real disk_free command (available_bytes/total_bytes) — an existing
-//     command that was registered but never called from anywhere in dist/ until this page. Never
-//     the Figma mock's fabricated "38.2 GB free of 256 GB".
+//   - STORAGE USAGE reads the real disk_free command (available_bytes/total_bytes) — already
+//     registered AND already called elsewhere (preservice.js's disk-space check), so this page is
+//     a second caller of an existing command, not the command's first frontend use (an earlier
+//     version of this comment overclaimed that; Cody's review of PR #71 caught it). Never the
+//     Figma mock's fabricated "38.2 GB free of 256 GB".
 //   - Autosave and Crash-loop protection restate behaviour this app ALREADY ships and already
 //     tests (scripts/operator_headless.py's "G.5" session-recovery checks: an autosave failure
 //     shows the host's real reason, and the crash-loop breaker reports a real restart count) —
