@@ -1164,3 +1164,131 @@ Severity, Part B `S1` row only (the only severity row this update changes — Pa
 one). `OUT-015` was `S3`; Part B's open `S3` count in the 2026-09-20 table already read 5, which
 already implicitly stood regardless of this fix — not re-tallied here to avoid restating the whole
 Part A + Part B severity matrix from a partial edit.
+
+### Update — 2026-09-22 (Farah, frontend-engineer role / web) — PME-055/053/059/058/006–011/027
+
+**Ticket:** ClickUp `17tnw2axptg`, "[Frontend] Presentation web: safety & access essentials
+(PME-055/043/053/058/059/005/006-011/027)".
+
+**PME-005 re-confirmed CLOSED, untouched** — the ticket's own brief flagged it as already fixed;
+`app.css`'s `.pm-btn-primary:hover` still darkens to `#5a48d0` (6.42:1), unchanged in this pass.
+
+**FIXED (10 findings):**
+
+- **PME-055** — `pmLibOpenMenu` (`app.js`) gained a `Present` item between `Duplicate` and the
+  divider before `Delete`, matching Figma's `553:128` order. A new `pmLibPresent(id)` opens the
+  card's own deck (`deck_open`), switches to the slide grid, and presents its last-selected slide
+  (or the first, for a never-opened deck) via the SAME `pmGridGoLive` sequencing the grid's own
+  double-click/Enter gesture already uses — deliberately not a second, divergent present path.
+  Closes the "other half" of PME-014/PME-014+055's pairing: an operator can now present straight
+  from the library without first making the deck the open one in the editor.
+- **PME-053** — the New-presentation dialog (`pmLibNew`) gained the `Start from` radio group:
+  **Blank deck** (default) / **Duplicate an existing presentation** (reveals a nested picker) /
+  **From a template** (honestly disabled — no template model exists yet, PME-052/OUT-009, same
+  `pm-later` treatment the toolbar's `▶ Video` tool already uses). The duplicate picker is a
+  **radio list, not a `<select>`** — a flex-parented `<select>` collapses to zero width in
+  WKWebView and the Blink gate cannot see it, per `plan-tpl-list`'s own comment in `app.css`
+  documenting that exact trap for this same dialog. The Name field follows the chosen source
+  (`"<name> copy"`) until the operator types their own, mirroring `planTemplatePlan`'s established
+  `dataset.touched` convention. **Backend:** `deck_duplicate` (`selahcue-operator/src/main.rs`) now
+  additionally returns the copy's own `new_id` — the same additive pattern `deck_restore` already
+  uses for `restored_name` — since nothing else in the response lets a caller identify which deck
+  it just created, and the dialog needs that id to rename and open the copy.
+- **PME-059** — `pmLibDelete` now fetches a fresh `view()` before opening the confirm (never a
+  cached view — a stale "not referenced" is the one wrong answer that matters here) and warns when
+  a service-plan item links the deck being deleted: *"Used in your service plan "‹plan name›" —
+  that plan item will show missing."* Combines with the existing "it's the open deck" warning when
+  both apply. Mutation-verified (disabling the check turned the linked-deck assertion RED and only
+  that one).
+- **PME-058** — **found already fixed**, predating this ticket (commit `3db5398`, 2026-08-07,
+  earlier than even the 2026-09-20 reconciliation's own base commit). Re-verified directly against
+  the shipped `pmLibDelete`: the body names the real slide count via `pmSlideCountPhrase`, never
+  claims the delete "can't be undone" (Q-08's own resolution), and never unconditionally promises
+  "you can undo it" either — Undo is offered via toast **only** when the host's `restorable` list
+  actually contains the deleted deck's id, so the promise is made exactly where it can be kept. An
+  extensive existing headless suite (`scripts/operator_headless.py`, the "PME-058 / Q-08" block)
+  already covers the count/undo/restorable-vs-not/refused-restore cases end to end. The
+  2026-09-20 reconciliation's "OPEN" call appears to have been about the Q-08 *decision* lacking a
+  written record outside the code, not a functional gap — the code and its tests were already
+  correct. No code change made; recorded here as the missing written confirmation.
+- **PME-006…PME-011** — `.pm-insp-note`, `.pm-media-empty`, `.pm-lib-empty-sub`, `.pm-grid-hint`,
+  `.pm-tile-failmsg`, `.pm-deck-seg-btn` promoted from `--sc-text-muted` (AA-large only, 3.79:1 on
+  surface) to `--sc-text-secondary` (7.40–8.74:1) in `app.css`, applying the project's own written
+  "essential text" policy rather than setting a new one — no token value changed, so this is not a
+  four-surface (`OUT-014`) change.
+- **PME-027** — the Text inspector's horizontal-align buttons (`app.js`) no longer share the glyph
+  `≡` for Left and Right (only Centre read as `≣`); they now use `⇤ ⇔ ⇥`, the same distinct glyphs
+  the Theme Designer's own align control (`#td-align`, `index.html`) already ships, rather than
+  inventing a second glyph set for the same concept.
+
+**Not fixed — PME-043, blocked on a product/architecture decision this role cannot make alone.**
+Building a genuine "view-only / permission-gated" state for the Presentation editor requires a
+signal that says *who* is restricted and *why*, and no such signal exists anywhere in this
+codebase today:
+
+- The Plan surface's own view-only mode (`planSyncPermission`/`planIsViewOnly`, `app.js`) is driven
+  by `OperatorStateView.viewer.can_edit` — the host's RBAC verdict for a **remote** LAN-paired
+  controller. That field is real and reusable in principle, but `OperatorStateView` carries no deck
+  content at all (only `live_authored_id`, the id of whichever slide is currently live) — confirmed
+  by reading `selahcue-lan/src/protocol.rs`'s full `OperatorStateView` struct. Decks are
+  architecturally operator-local (`docs/delivery` / this audit's own OUT-notes: "the host has no
+  deck store"), so no remote party ever sees the Presentation editor to be "view-only" in.
+  `selahcue-lan/src/rbac.rs`'s `Role::permissions()` table has no deck-editing permission of any
+  kind, and the mobile controller (`selahcue_controller`) has no deck/presentation screen at all.
+- There is also no **local** operator-role, login, or profile concept anywhere in `app.js` or the
+  Tauri command surface (`grep` for `local_role`/`operatorRole`/`session_role`/`login`/`profile`
+  across `dist/` and `selahcue-operator/src` returns nothing) that could gate the local desktop
+  user's own editing rights, unlike `CANVAS-EDITING-spec.md`'s own §"permission-denied" row, which
+  names "a read-only role (Observer, or an operator without theme-edit rights)" as the trigger —
+  a role model that would have to be invented, not one that already exists to wire up.
+- Building this for real therefore means either fabricating a permission signal that does not
+  correspond to any actual access control (dishonest, and the opposite of this codebase's own
+  "never fake it" convention — see the toolbar's honest disabled `▶ Video` / `pm-later` pattern for
+  how a genuinely deferred control is handled instead), or scaffolding dead UI that can never
+  actually trigger (equally dishonest, and unreachable code a reviewer would rightly flag). Per the
+  frontend-engineer role boundary ("do not change API contracts, product scope, or design intent
+  silently"), this is left to a product/architecture decision rather than invented here.
+- **Recommendation:** add PME-043 to the existing `DECISION — Presentation: blocking questions`
+  ClickUp task (`17tnw2axpu1`, currently scoped to Q-02/Q-08/Q-09/Q-10) as a fifth question: *does
+  the Presentation editor need a view-only mode at all, and if so, gated on what* — a local
+  operator-role/session concept, or something else entirely. The four already-blocking questions
+  there gate the bulk of Part A step 2+ and Part B step 3+ of the suggested build order; this one
+  gates only PME-043 itself.
+
+**Verification:** `python3 scripts/operator_headless.py` — 1662 checks, 0 FAIL (13 new assertions
+across PME-055/053/059/006-011/027, plus the pre-existing PME-058/Q-08 block re-verified
+unchanged). The PME-059 and PME-055 checks were mutation-verified (temporarily disabling each fix
+turned exactly its own assertions RED, nothing else). `cargo check`/`cargo clippy -D warnings`/
+`cargo test` all clean on `selahcue-operator` (163 tests). Full `make ci` run — see the PR.
+
+**Files:** `implementation/desktop/crates/selahcue-operator/dist/{app.js,app.css}`,
+`implementation/desktop/crates/selahcue-operator/src/main.rs`, `scripts/operator_headless.py`.
+
+### Totals (superseding the 2026-09-20/09-21 tables above)
+
+| | Count |
+|---|---:|
+| Total findings | 80 (63 `PME-` + 17 `OUT-`) |
+| FIXED | 17 (6 prior + 10 this update — PME-055/053/059/058/006/007/008/009/010/011/027 is 11 ids, but PME-058 was already-fixed-not-newly-fixed; see note) |
+| SUPERSEDED | 0 |
+| **OPEN** | **63** |
+
+Note on the FIXED count: this update closes 11 finding ids (055, 053, 059, 058, 006–011, 027), but
+`058` was independently verified as having been fixed by an **earlier, unrelated commit**
+(`3db5398`, pre-dating this ticket) rather than by code changed in this pass — it is still counted
+as newly-CONFIRMED-FIXED here because the 2026-09-20 reconciliation had it marked OPEN and this is
+the update that corrects that. `PME-043` remains **OPEN, blocked** (see above) — it is the only S1
+left open on this surface.
+
+**Review-pipeline remediation, PR #69 (2026-09-22, same ticket, no finding-status change):** the
+four-reviewer pipeline (Cody, Sana, Vera, Quinn) found and this session fixed three further
+defects in the code this update introduced — none reopen a `PME-###`/`OUT-###` finding, all are
+implementation bugs in the fix itself, tracked in the PR and the Goal Contract
+(`docs/delivery/goals/TASK-17tnw2axptg-presentation-safety-access.md`) rather than restated here:
+a `[hidden]`/`display: flex` CSS trap that kept the PME-053 duplicate picker always visible
+(Quinn, ClickUp `17tnw2axwg9`); a false-positive success toast when a duplicate source vanishes
+mid-dialog (Cody); and a `pmLibDelete` fail-open comment that didn't match its own code on a
+failed local-state read (Sana + Vera, independently). `python3 scripts/operator_headless.py` —
+1672 checks, 0 FAIL after rebasing onto `main`'s `17tnw2axptu` (Pre-service Check parity closure,
+merged during this session) — the counts and evidence paths quoted earlier in this update predate
+that rebase and the three review-remediation commits; this paragraph is the current state.

@@ -158,6 +158,47 @@ section is additive; the table above is left as originally written.
 |---|---|
 | `PSC-005` | `.ps-start` (`app.css:6415-6422`): the rest-state gradient's stops were reversed from `linear-gradient(to right, var(--sc-primary-hover), var(--sc-primary))` to `linear-gradient(to right, var(--sc-primary), #5a48d0)` — measured white-on-stop at **4.72:1 / 6.42:1**, both clearing AA. `:hover` changed from `filter: brightness(1.06)` to a flat `background: #5a48d0` (**6.42:1**) — brightening the darkened gradient's near stop by 6% would have pulled it back to 4.27:1, re-introducing the failure at the state an operator actually hovers into (see the same note in the Theme Designer audit's reconciliation, TD-012). Verified by 9 new assertions in `scripts/operator_headless.py` (the `PSC-005` block), mutation-tested. Commit `d8ecf4b`. |
 
+## Reconciliation — 2026-09-22
+
+**Author:** Farah (Frontend Engineer). **Scope:** the remaining 9 non-`PSC-005` findings, fixed/closed
+under ClickUp task `17tnw2axptu` ("Pre-service Check: close remaining PSC-### drift"). This section
+is additive; the tables above and the 2026-09-21 reconciliation are left as originally written.
+Verified against current `main` first, not just this doc — `.ps-start` had further, carefully-reviewed
+changes since 2026-09-21 (PR #62/#63, the disabled-hover regression fix) that this pass confirmed do
+not touch any finding below.
+
+### Still blocked — no code change, awaiting a product/design decision
+
+| Finding | Why it's still blocked |
+|---|---|
+| `PSC-001` | `DECISION — New-surfaces: open questions` (ClickUp `17tnw2axpu4`) is still `planning/todo` with **zero comments** — nobody has answered PSC-OQ-2 (is the "Sunday Service · 10:32 AM" readout a real requirement, needing a `service_name`/scheduled-time data source, or mock dressing?). Implementing either answer without the decision would be guessing at scope. |
+| `PSC-002` | Same `17tnw2axpu4` decision, PSC-OQ-1 half (de-scope from MVP vs. build toward the frame's populated mock). No host telemetry for encoder frame-drops exists to build toward even if the answer is "build it" — that is itself further, undecided scope. |
+| `PSC-003` | Same PSC-OQ-1 decision. No host telemetry for motion-background cache state exists yet. |
+| `PSC-008` | Same PSC-OQ-1 decision, applies to the AI-consent half of `checkTranscriptionAi()`. The on-device STT-readiness half of this check has always been real and is unaffected. |
+
+### Verified as no gap — no code change
+
+| Finding | Evidence |
+|---|---|
+| `PSC-004` | Re-verified against the live Figma frame (`344:124`, screenshot re-pulled 2026-09-22): Signal levels is drawn as an at-rest "Healthy · −18 dB peak" pass. `checkAudioLevels()` (`preservice.js:137-144`) staying `pending` at rest is a deliberate, already-documented honesty trade-off, not drift to correct — live dB metering needs an active capture stream, and fabricating a value to match the frame would be exactly the PRD RISK-205/NFR-204 violation this guardrail exists to prevent. Treated as **INTENTIONAL-DEVIATION**; no action. |
+| `PSC-006` | Already scored `MATCH` in the table above, not drift — re-confirmed live (the verdict card reads "Safe to start" / green with 2 warnings present in the current Figma frame, and `renderReadiness()` still implements the same explicit three-tier order the code comment cites). No action needed; included in the ClickUp story's title only because the source audit's own summary line groups it with the surface's remaining findings, not because it is open. |
+| `PSC-007` | Already scored `EXTRA` (a necessary, honestly-built state the single-mock frame has no equivalent for), not a gap. No action needed, same reasoning as `PSC-006`. |
+
+### FIXED — verified via new regression coverage
+
+| Finding | Evidence |
+|---|---|
+| `PSC-009` | The audit flagged `.ps-detail-warn`/`.ps-detail-block` (`app.css:6702-6703`, recolouring `.ps-row-detail` to `--sc-warn`/`--sc-live` on `--sc-surface` at 12px/500 weight) as an **unmeasured** pairing needing a follow-up check, not a scored defect. Independently computed via the WCAG 2.1 relative-luminance formula: `--sc-warn` (`#F5A524`) on `--sc-surface` (`#14161D`) = **8.85:1**; `--sc-live` (`#FF4D4D`) on `--sc-surface` = **5.52:1** — both clear the 4.5:1 AA-normal bar the row's small (non-large) text requires. The `--sc-live`-on-`--sc-surface` figure independently matches `DESIGN-2.0-PARITY-AUDIT-presentation.md`'s PME-004 finding (5.52:1) for the exact same token pairing, corroborating the measurement rather than resting on a single computation. No CSS change was needed — 5 new assertions added to `scripts/operator_headless.py` (the `PSC-009` block) measure the LIVE computed style on real DOM rows in both the default-warning and a triggered-blocking state, locking the passing state in place. Mutation-tested: temporarily recoloured both rules to `--sc-surface` (forcing ~1.00:1) and confirmed exactly those 2 measurement assertions went RED (1630 checks, 2 FAIL), then restored and reconfirmed clean (1630 checks, 0 FAIL, two independent runs). |
+
+### Doc correction
+
+The summary line at the top of this doc reads "**10 numbered findings: PSC-001…PSC-010**", and the
+ClickUp story this reconciliation closes inherited that count in its title. Only `PSC-001` through
+`PSC-009` are ever enumerated anywhere in this document's body — there is no `PSC-010` row, citation,
+or evidence entry. Treating this as a miscount in the original audit rather than a tenth finding that
+went unwritten: there is nothing to search for, and inventing a placeholder finding to match the
+count would be a fabrication this project's own conventions explicitly reject.
+
 ---
 
 # Open questions

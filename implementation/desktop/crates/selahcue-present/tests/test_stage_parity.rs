@@ -987,6 +987,263 @@ fn tracked_runs_carry_the_designed_letter_spacing() {
     assert_eq!(run(&ws, "12:45").1, 0, "the worship readout is untracked");
 }
 
+// --- STG-012: font weight ------------------------------------------------------------------
+
+/// The `weight` (`TextStyle::weight`) of the chrome run whose text is exactly `needle`.
+fn weight_of(frame: &Frame, needle: &str) -> u16 {
+    frame
+        .layers
+        .iter()
+        .find_map(|l| match l {
+            Layer::Text { text, style, .. } if text == needle => {
+                style.map(|s| s.weight).or(Some(400))
+            }
+            _ => None,
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "no stage run reads {needle:?}. Runs present: {:?}",
+                texts(frame)
+            )
+        })
+}
+
+/// As [`weight_of`], matching on a prefix (a run the composer may ellipsize or compose from
+/// several joined fields — the NEXT lines, the timer-only footer).
+fn weight_of_prefix(frame: &Frame, prefix: &str) -> u16 {
+    frame
+        .layers
+        .iter()
+        .find_map(|l| match l {
+            Layer::Text { text, style, .. } if text.starts_with(prefix) => {
+                style.map(|s| s.weight).or(Some(400))
+            }
+            _ => None,
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "no stage run starts with {prefix:?}. Runs present: {:?}",
+                texts(frame)
+            )
+        })
+}
+
+/// The composer hard-coded every chrome run at weight 700 (Bold), where Design 2.0 draws
+/// three weights: Bold for labels/readouts, Semi Bold (600) for the wall clock, Medium (500)
+/// for the stanza position, both NEXT lines and the timer-only footer. Closes STG-012 — but
+/// only as far as this crate can safely go: `Family::Name("Inter")` has a bundled face at
+/// exactly 400 and 700 (`selahcue-engine`'s `INTER_BYTES`/`INTER_BOLD_BYTES`), and requesting
+/// any other weight from that family does not fall back to the nearest bundled face — it
+/// falls OUT of the family onto whatever the host has installed. See
+/// `only_the_two_bundled_inter_weights_are_requested_by_the_stage_composer` below for the
+/// measurement that found this and now guards it. So Semi Bold and Medium both render as
+/// **Regular (400)** here, not their nominal Figma weights — the achievable, SAFE slice of
+/// the design's hierarchy with the font this crate actually ships, not "500 and 600 done".
+#[test]
+fn chrome_runs_carry_the_designed_font_weight() {
+    let s = STAGE_TEXT_SCALE_DEFAULT;
+
+    // Worship: the wall clock, stanza position and NEXT line are all Regular (400) — the
+    // safe stand-in for Semi Bold/Medium (see the test doc comment); the song title and the
+    // timer caption stay Bold (700).
+    let ws = compose(StageTemplate::Worship, false, s, None, W, H);
+    assert_eq!(
+        weight_of(&ws, "10:42 AM"),
+        400,
+        "worship wall clock: Regular"
+    );
+    assert_eq!(
+        weight_of(&ws, "Verse 2 of 4"),
+        400,
+        "worship stanza position: Regular"
+    );
+    assert_eq!(
+        weight_of_prefix(&ws, "I once was lost"),
+        400,
+        "worship NEXT line: Regular"
+    );
+    assert_eq!(
+        weight_of(&ws, "Amazing Grace"),
+        700,
+        "song title stays Bold"
+    );
+    assert_eq!(
+        weight_of(&ws, "SERVICE TIMER"),
+        700,
+        "SERVICE TIMER caption stays Bold"
+    );
+
+    // Scripture: same wall-clock/next-line roles, plus a Bold control (the reference).
+    let sc = compose(StageTemplate::Scripture, false, s, None, W, H);
+    assert_eq!(
+        weight_of(&sc, "10:42 AM"),
+        400,
+        "scripture wall clock: Regular"
+    );
+    assert_eq!(
+        weight_of_prefix(&sc, "Isaiah 61:6"),
+        400,
+        "scripture NEXT line: Regular"
+    );
+    assert_eq!(
+        weight_of(&sc, "AMAZING GRACE"),
+        700,
+        "scripture reference stays Bold"
+    );
+
+    // Timer-only: its header clock is a SEPARATE code path from `header_clock` (STG-055) and
+    // must carry the same Regular weight; its footer (date + time, joined) is Regular too.
+    let tou = compose_timer_only(false, s);
+    assert_eq!(
+        weight_of(&tou, "10:42 AM"),
+        400,
+        "timer-only header clock: Regular"
+    );
+    assert_eq!(
+        weight_of_prefix(&tou, "Sunday"),
+        400,
+        "timer-only footer: Regular"
+    );
+    assert_eq!(
+        weight_of(&tou, "SERVICE TIMER"),
+        700,
+        "timer-only header label stays Bold"
+    );
+}
+
+/// The REAL regression guard for the finding above — composes every template/state/scale/
+/// message combination through the actual `compose_stage` API and asserts every `Layer::Text`
+/// the composer emits carries one of the two weights genuinely safe to request from the
+/// bundled `Inter` family (see the `design` module's font-weight doc comment). This is a
+/// property of THIS CRATE'S CODE (which `u16` constant each `line()` call site passes), not of
+/// the host's installed fonts, so — unlike
+/// [`unbundled_inter_weights_still_escape_to_host_faces`] below — it is safe to run
+/// unconditionally in CI on every OS.
+///
+/// An earlier cut of this batch had a test with this same NAME that instead measured
+/// `measure_line_width` in isolation — it could tell "500/600 are unsafe in general" but could
+/// not tell "the composer still only ever asks for 400/700", so a stray `line(..., 600)` call
+/// anywhere in `stage.rs` would have sailed through it. Caught in review (Vera, mutation-proved
+/// by setting the scripture `"TIME LEFT"` caption — a run no other test names — to 600 and
+/// showing the whole suite stayed green). This version composes real frames and enumerates
+/// every text run's weight, so that specific mutation (or any call site passing a literal
+/// weight outside `{400, 700}`) fails here directly.
+#[test]
+fn the_stage_composer_emits_only_bundled_inter_weights() {
+    use std::collections::BTreeSet;
+
+    let mut seen: BTreeSet<u16> = BTreeSet::new();
+    let mut frames_checked = 0usize;
+    for template in [
+        StageTemplate::Worship,
+        StageTemplate::Scripture,
+        StageTemplate::TimerOnly,
+    ] {
+        for up in [false, true] {
+            for scale in [
+                STAGE_TEXT_SCALE_MIN,
+                STAGE_TEXT_SCALE_DEFAULT,
+                STAGE_TEXT_SCALE_MAX,
+            ] {
+                for msg in [None, Some("WRAP UP · 2 MIN LEFT")] {
+                    let frame = if template == StageTemplate::TimerOnly {
+                        // The timer-only composer has its own helper (a non-song slide) and
+                        // takes no `message` — the overlay is template-agnostic, already
+                        // covered by the worship/scripture branches.
+                        compose_timer_only(up, scale)
+                    } else {
+                        compose(template, up, scale, msg, W, H)
+                    };
+                    for layer in &frame.layers {
+                        if let Layer::Text { style, .. } = layer {
+                            seen.insert(style.map(|s| s.weight).unwrap_or(400));
+                        }
+                    }
+                    frames_checked += 1;
+                }
+            }
+        }
+    }
+
+    // Vacuity guard: a bug that made the composer draw NO text at all (e.g. every branch
+    // returning early) would leave `seen` empty and the assertion below would pass for the
+    // wrong reason — nothing was checked, not "everything checked was fine".
+    assert!(
+        frames_checked >= 30,
+        "only checked {frames_checked} frames — the sweep above is smaller than intended"
+    );
+    assert!(
+        !seen.is_empty(),
+        "no stage frame across {frames_checked} compositions drew any text at all — the \
+         weight assertion below would be vacuous"
+    );
+
+    assert_eq!(
+        seen.into_iter().collect::<Vec<_>>(),
+        vec![400, 700],
+        "the stage composer emitted a text weight outside the two bundled Inter faces \
+         (400/700) — anything else silently escapes onto a host-installed font (see \
+         `design::WEIGHT_BOLD`/`WEIGHT_REGULAR`'s doc comment)"
+    );
+}
+
+/// Evidence, not a CI gate — **`#[ignore]`d on purpose**. `Family::Name("Inter")` is bundled at
+/// exactly weight 400 and 700; measured directly against the SAME public API `draw_text` uses
+/// (`selahcue_engine::raster::measure_line_width`, swept 400/500/600/700 at fixed text+px on
+/// the machine this was authored on), 500 and 600 each measured a DIFFERENT width from 400,
+/// from 700, and from each other — i.e. each escaped the family onto its own distinct,
+/// host-installed face (confirmed independently from source too — cosmic-text 0.12.1's
+/// `Attrs::matches` filters by style/stretch only, ignoring family; family is applied later at
+/// an exact-weight-diff filter, and when nothing matches that filter the family constraint is
+/// dropped entirely and shaping falls through to whatever host face is left).
+///
+/// This is exactly why it is `#[ignore]`d rather than run by default: the specific widths (and
+/// therefore which assertions fire) are a property of what's installed on the machine running
+/// the test, not of this crate's code — the "safe" pair `{400, 700}` is asserted with zero host
+/// dependency by [`the_stage_composer_emits_only_bundled_inter_weights`] above instead. This
+/// crate has shipped exactly this class of "green on the author's OS, red on a sparser CI
+/// runner" test before (`test_measure.rs`'s `installed_serif`, ticket 86ak643rc) and the
+/// standing guidance since is not to gate CI on a host font assumption. Re-run by hand
+/// (`cargo test -p selahcue-present -- --ignored unbundled_inter_weights`) when deciding
+/// whether it is safe to bundle a real Inter Medium/Semi Bold face and retire the `WEIGHT_BOLD`
+/// / `WEIGHT_REGULAR` two-value compromise — a widening of these gaps on that machine is the
+/// signal that 500/600 (or whatever the new faces' real weights are) have become safe.
+#[test]
+#[ignore = "asserts a property of the HOST's installed fonts, not of this crate's code — see \
+            doc comment; run manually, not as a CI gate (86ak643rc precedent)"]
+fn unbundled_inter_weights_still_escape_to_host_faces() {
+    use selahcue_engine::raster::measure_line_width;
+
+    let font = selahcue_engine::scene::FontName::new("Inter").unwrap();
+    let text = "SERVICE TIMER 10:42 AM Verse 2 of 4";
+    let px = 100;
+
+    let w400 = measure_line_width(text, px, Some(&font), 400);
+    let w500 = measure_line_width(text, px, Some(&font), 500);
+    let w600 = measure_line_width(text, px, Some(&font), 600);
+    let w700 = measure_line_width(text, px, Some(&font), 700);
+
+    // Premise: the two bundled faces really do measure differently from each other, or this
+    // test would be unable to tell "escaped the family" from "landed on the bundled face".
+    assert_ne!(
+        w400, w700,
+        "the bundled Regular and Bold Inter faces measure identically on this host"
+    );
+
+    assert_ne!(
+        w500, w400,
+        "on THIS host, weight 500 now measures the same as bundled Inter Regular (400) — if \
+         a real Inter Medium face was bundled, `design::WEIGHT_REGULAR` could be replaced \
+         with a proper Medium constant for the stanza/NEXT/footer roles"
+    );
+    assert_ne!(
+        w600, w700,
+        "on THIS host, weight 600 now measures the same as bundled Inter Bold (700) — if a \
+         real Inter Semi Bold face was bundled, `design::WEIGHT_REGULAR` could be replaced \
+         with a proper Semi Bold constant for the wall-clock roles"
+    );
+}
+
 /// The `measure` memo's key is `{text, cell, font, weight}` — no tracking. `autofit_layers`
 /// budgets the wrap for tracking on top of that memoised width, so a tracked auto-fit region
 /// is safe *today*; Design 2.0 tracks none of the three regions anyway. This pins the second
