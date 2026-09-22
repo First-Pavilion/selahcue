@@ -9812,10 +9812,15 @@
         const inUse = id === pmLibOpenId;
         // PME-059: warn when the deck is linked from a service-plan item — deleting it out from
         // under a plan silently leaves that item showing missing, discovered only on the day
-        // someone opens the run sheet expecting it. `view()` is the SAME local Tauri state read
-        // used everywhere else on this surface (pmGridSyncLive etc.) — not a LAN round-trip —
-        // fetched fresh here rather than from any cached view, because a stale "not referenced"
-        // is the one wrong answer that matters: it would let the delete through silently.
+        // someone opens the run sheet expecting it. `view()` is the SAME Tauri command read used
+        // everywhere else on this surface (pmGridSyncLive etc.) — the invoke() call from THIS
+        // webview is always local IPC, never a network hop itself. But its HOST-SIDE
+        // implementation is not always local: `Backend::Remote` (main.rs) proxies `view()` over a
+        // TLS WebSocket to a separate output-window host whenever a real audience output is
+        // connected, so this can be a genuine network round-trip, not an instant local read
+        // (Vera, PR #69 review — the earlier "not a LAN round-trip" phrasing here was wrong).
+        // Fetched fresh regardless, never from a cached view, because a stale "not referenced" is
+        // the one wrong answer that matters: it would let the delete through silently.
         let planRefName = null;
         let planRefUnknown = false;
         try {
