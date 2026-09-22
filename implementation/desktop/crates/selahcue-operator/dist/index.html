@@ -1483,6 +1483,236 @@
           </div>
 
           <!-- Shared "coming soon" page for the not-yet-built sections (honest, per match-the-shell). -->
+          <!-- General (Design 2.0, Figma 577:126 — story 17tnw2axwet, closes SET-001). The
+               keyboard-shortcuts table mirrors the app's OWN real shortcuts overlay (#shortcuts,
+               pinned by test_keymap.rs) verbatim rather than the Figma mock's different row set
+               (which lists shortcuts — Stage message ⌘M, Undo ⌘Z — this build does not actually
+               bind) — never render a keybinding this app doesn't really have. "On launch, open
+               to" reflects the real shipped default (#surface-console is the active surface on
+               load, index.html:93). Everything else on this page has no backend command anywhere
+               in this app (org identity, startup choice persistence, language/region, shortcut
+               remapping, reduce-motion override, update preferences, pre-service-check config) —
+               each renders as a real, disabled control with an honest note. Populated + wired by
+               settings-general.js. -->
+          <div id="set-page-general" class="set-page" data-setpage="general" hidden>
+            <div class="pp-wrap">
+              <header class="pp-head">
+                <h1 class="pp-title">General</h1>
+                <p class="pp-sub">Workspace identity, startup, language, keyboard, accessibility, and updates.</p>
+              </header>
+
+              <section class="pp-section" aria-labelledby="gn-org-h">
+                <h2 id="gn-org-h" class="pp-seclabel">ORGANISATION IDENTITY</h2>
+                <div class="set-row-grid">
+                  <div class="pp-field">
+                    <label class="pp-field-label" for="gn-org-name">Church / workspace name</label>
+                    <input id="gn-org-name" class="pp-select" type="text" placeholder="Not set" disabled />
+                  </div>
+                  <div class="pp-field">
+                    <span class="pp-field-label">Church logo</span>
+                    <button class="pp-select set-inert" type="button" disabled aria-disabled="true">Upload image…</button>
+                  </div>
+                </div>
+                <p class="set-inert-note">Not saved yet — coming soon.</p>
+              </section>
+
+              <section class="pp-section" aria-labelledby="gn-startup-h">
+                <h2 id="gn-startup-h" class="pp-seclabel">STARTUP</h2>
+                <p class="set-inert-note set-lead">On launch, open to — currently always Live Console (the shipped default); choosing a different one isn't saved yet.</p>
+                <div id="gn-startup-list" class="set-stack" role="radiogroup" aria-labelledby="gn-startup-h"></div>
+              </section>
+
+              <section class="pp-section" aria-labelledby="gn-lang-h">
+                <h2 id="gn-lang-h" class="pp-seclabel">LANGUAGE &amp; REGION</h2>
+                <div class="set-row-grid">
+                  <div class="pp-field">
+                    <label class="pp-field-label" for="gn-lang">Display language</label>
+                    <div class="pp-select-wrap"><select id="gn-lang" class="pp-select" disabled><option>System default</option></select></div>
+                  </div>
+                  <div class="pp-field">
+                    <label class="pp-field-label" for="gn-region">Region &amp; date/time format</label>
+                    <div class="pp-select-wrap"><select id="gn-region" class="pp-select" disabled><option>Use system region</option></select></div>
+                  </div>
+                </div>
+                <p class="set-inert-note">More languages coming soon. UI strings are already externalised for translation.</p>
+              </section>
+
+              <section class="pp-section" aria-labelledby="gn-keys-h">
+                <h2 id="gn-keys-h" class="pp-seclabel">KEYBOARD SHORTCUTS</h2>
+                <p class="set-row-d set-lead">Every core live action works from the keyboard alone. Shown here exactly as this build binds them — remapping isn't available yet; emergency actions (Blackout, Clear) will always stay bindable, never unbindable, once it is.</p>
+                <div id="gn-shortcuts-list" class="set-stack"></div>
+                <button id="gn-open-shortcuts" class="set-linkrow" type="button">
+                  <span>Open the full shortcuts overlay</span>
+                  <span class="set-linkrow-arrow" aria-hidden="true">→</span>
+                </button>
+              </section>
+
+              <section class="pp-section" aria-labelledby="gn-a11y-h">
+                <h2 id="gn-a11y-h" class="pp-seclabel">ACCESSIBILITY</h2>
+                <div class="set-row">
+                  <div>
+                    <p class="set-row-t">Reduce motion (operator UI)</p>
+                    <p class="set-row-d">Mirrors Appearance → Motion — one shared value. Currently follows your system setting; an explicit override isn't saved yet.</p>
+                  </div>
+                  <label class="pp-toggle set-inert"><input id="gn-reduced-motion" type="checkbox" disabled aria-label="Reduce motion override (not yet available — follows system setting)" /><span class="pp-toggle-knob"></span></label>
+                </div>
+              </section>
+
+              <section class="pp-section" aria-labelledby="gn-updates-h">
+                <h2 id="gn-updates-h" class="pp-seclabel">SOFTWARE UPDATES</h2>
+                <div class="pp-banner pp-banner-ok" role="note">
+                  <span class="pp-banner-ico" aria-hidden="true">🔒</span>
+                  <div class="pp-banner-body">
+                    <p class="pp-banner-title">Once available, updates will be signature-verified with anti-rollback protection.</p>
+                    <p class="pp-banner-text">SelahCue will install an update only if its signature verifies and its version is newer than the one you have.</p>
+                  </div>
+                </div>
+                <div class="set-row">
+                  <div><p class="set-row-t">Automatically check for updates</p><p class="set-row-d">Checks in the background. Never interrupts a live service. Not saved yet — coming soon.</p></div>
+                  <label class="pp-toggle set-inert"><input type="checkbox" disabled aria-label="Automatically check for updates (not yet available)" /><span class="pp-toggle-knob"></span></label>
+                </div>
+                <div class="set-row">
+                  <div><p class="set-row-t">Automatically download updates</p><p class="set-row-d">Downloads verified updates so they install faster — you choose when to install. Not saved yet — coming soon.</p></div>
+                  <label class="pp-toggle set-inert"><input type="checkbox" disabled aria-label="Automatically download updates (not yet available)" /><span class="pp-toggle-knob"></span></label>
+                </div>
+                <button id="gn-manage-updates" class="set-linkrow" type="button">
+                  <span>Manage updates (About &amp; Licensing)</span>
+                  <span class="set-linkrow-arrow" aria-hidden="true">→</span>
+                </button>
+              </section>
+
+              <section class="pp-section" aria-labelledby="gn-preservice-h">
+                <h2 id="gn-preservice-h" class="pp-seclabel">PRE-SERVICE CHECK</h2>
+                <p class="set-row-d set-lead">Choose which subsystems the readiness check inspects before a service. Not saved yet — coming soon; the check itself already runs with its own defaults.</p>
+                <div id="gn-preservice-list" class="set-stack"></div>
+                <div class="set-row">
+                  <div><p class="set-row-t">Block start on blocking issues</p><p class="set-row-d">Prevents going live until every blocking check resolves — warnings can be overridden. This is how the check already behaves; there is no override to configure yet.</p></div>
+                  <label class="pp-toggle set-inert"><input type="checkbox" checked disabled aria-label="Block start on blocking issues (always on — not configurable yet)" /><span class="pp-toggle-knob"></span></label>
+                </div>
+                <button id="gn-open-preservice" class="set-linkrow" type="button">
+                  <span>Open Pre-service Check</span>
+                  <span class="set-linkrow-arrow" aria-hidden="true">→</span>
+                </button>
+              </section>
+            </div>
+          </div>
+
+          <!-- Scripture & Translations (Design 2.0, Figma 578:124 — story 17tnw2axwet, closes
+               SET-002). The best-backed of the seven new pages: list_translations,
+               set_preferred_translation, download_translation and cancel_download are all
+               existing, already-shipped commands. Per-row "Default" radio AND the summary select
+               both write through the SAME set_preferred_translation call and stay in sync with
+               each other (handoff §9's "keep the dropdown a reflection of the radio"). Per-row
+               "show in picker" + drag-to-reorder have no backend mutation to call, so they render
+               as real, disabled affordances rather than silently doing nothing on drop/toggle.
+               Populated + wired by settings-scripture.js. -->
+          <div id="set-page-scripture" class="set-page" data-setpage="scripture" hidden>
+            <div class="pp-wrap">
+              <header class="pp-head">
+                <h1 class="pp-title">Scripture &amp; Translations</h1>
+                <p class="pp-sub">Bundled translations, formatting, history, and how scripture is added.</p>
+              </header>
+
+              <section class="pp-section" aria-labelledby="sc-installed-h">
+                <h2 id="sc-installed-h" class="pp-seclabel">INSTALLED TRANSLATIONS</h2>
+                <p class="set-row-d set-lead">◉ sets the default (real) · the show-in-picker toggle and drag-to-reorder aren't saved yet.</p>
+                <div id="sc-translations-list" class="set-stack" role="radiogroup" aria-label="Default translation"></div>
+              </section>
+
+              <section class="pp-section" aria-labelledby="sc-default-h">
+                <h2 id="sc-default-h" class="pp-seclabel">DEFAULT TRANSLATION</h2>
+                <div class="pp-field">
+                  <label class="pp-field-label" for="sc-default-select">Default translation (used when you stage scripture without picking one)</label>
+                  <div class="pp-select-wrap"><select id="sc-default-select" class="pp-select pp-select-gold"></select></div>
+                </div>
+              </section>
+
+              <section class="pp-section" aria-labelledby="sc-format-h">
+                <h2 id="sc-format-h" class="pp-seclabel">PAGINATION &amp; FORMATTING</h2>
+                <div class="set-row-grid">
+                  <div class="pp-field">
+                    <label class="pp-field-label" for="sc-verses-per-slide">Verses per slide (1–10)</label>
+                    <input id="sc-verses-per-slide" class="pp-select" type="text" placeholder="—" disabled />
+                  </div>
+                  <div class="pp-slider-wrap">
+                    <span class="pp-slider-label" id="sc-versenum-label">Verse numbers</span>
+                    <div id="sc-versenum" class="pp-segmented" role="radiogroup" aria-labelledby="sc-versenum-label"></div>
+                  </div>
+                </div>
+                <div class="set-row">
+                  <div><p class="set-row-t">Show reference header</p><p class="set-row-d">Show the passage reference (e.g. "Romans 8:28–30") at the top of each scripture slide. Not saved yet — coming soon.</p></div>
+                  <label class="pp-toggle set-inert"><input type="checkbox" disabled aria-label="Show reference header (not yet available)" /><span class="pp-toggle-knob"></span></label>
+                </div>
+                <p class="set-inert-note">Not saved yet — coming soon.</p>
+              </section>
+
+              <section class="pp-section" aria-labelledby="sc-history-h">
+                <h2 id="sc-history-h" class="pp-seclabel">HISTORY &amp; FAVOURITES</h2>
+                <div class="set-row-grid">
+                  <div class="pp-field">
+                    <label class="pp-field-label" for="sc-history-len">History length (last N references · 0 = off)</label>
+                    <input id="sc-history-len" class="pp-select" type="text" placeholder="—" disabled />
+                  </div>
+                  <div class="pp-field">
+                    <span class="pp-field-label">Recently presented</span>
+                    <button class="pp-select set-inert" type="button" disabled aria-disabled="true">Clear history</button>
+                  </div>
+                </div>
+                <div class="set-row">
+                  <div><p class="set-row-t">Favourites</p><p class="set-row-d">Star references to re-present them in two actions. Not saved yet — coming soon.</p></div>
+                  <span class="set-row-v">— saved</span>
+                </div>
+              </section>
+
+              <section class="pp-section" aria-labelledby="sc-search-h">
+                <h2 id="sc-search-h" class="pp-seclabel">SEARCH</h2>
+                <div class="set-row">
+                  <div><p class="set-row-t">Rebuild keyword index</p><p class="set-row-d">Re-scans bundled translations so keyword search returns complete results. Not available in this build yet.</p></div>
+                  <button class="pp-optin-btn set-inert" type="button" disabled aria-disabled="true">Rebuild</button>
+                </div>
+              </section>
+
+              <section class="pp-section" aria-labelledby="sc-sxs-h">
+                <h2 id="sc-sxs-h" class="pp-seclabel">SIDE-BY-SIDE COMPARISON</h2>
+                <div class="set-row">
+                  <div>
+                    <p class="set-row-t">Compare two translations <span class="pp-badge pp-badge-soon">SOON</span></p>
+                    <p class="set-row-d">Show two translations of the same passage together in a comparison view.</p>
+                  </div>
+                  <label class="pp-toggle set-inert"><input type="checkbox" disabled aria-label="Compare two translations (coming soon)" /><span class="pp-toggle-knob"></span></label>
+                </div>
+              </section>
+
+              <section class="pp-section" aria-labelledby="sc-layouts-h">
+                <h2 id="sc-layouts-h" class="pp-seclabel">CUSTOM SCRIPTURE LAYOUTS</h2>
+                <div class="set-row">
+                  <div><p class="set-row-t">Custom scripture layouts <span class="pp-badge pp-badge-soon">SOON</span></p><p class="set-row-d">Design per-output verse layouts in the Theme Designer, so outputs can show the same live passage differently.</p></div>
+                  <button id="sc-open-theme-designer" class="set-linkrow set-linkrow-inline" type="button">
+                    <span>Open Theme Designer</span><span class="set-linkrow-arrow" aria-hidden="true">→</span>
+                  </button>
+                </div>
+              </section>
+
+              <section class="pp-section" aria-labelledby="sc-add-h">
+                <h2 id="sc-add-h" class="pp-seclabel">ADD A TRANSLATION</h2>
+                <div class="set-row">
+                  <div><p class="set-row-t">Add a translation <span class="pp-badge pp-badge-neutral">ADVANCED</span></p><p class="set-row-d">Import a licensed module or connect a licensed API (API.Bible / ESV). Not available in this build yet — keys belong in Providers &amp; Privacy and the OS secret store, never here.</p></div>
+                </div>
+              </section>
+
+              <section class="pp-section" aria-labelledby="sc-export-h">
+                <h2 id="sc-export-h" class="pp-seclabel">EXPORT LICENSING</h2>
+                <div class="pp-banner pp-banner-ok" role="note">
+                  <span class="pp-banner-ico" aria-hidden="true">⚖</span>
+                  <div class="pp-banner-body">
+                    <p class="pp-banner-title">Exports will honour licensing once export ships.</p>
+                    <p class="pp-banner-text">Licensed translations will be blocked or watermarked per licence; public-domain translations will export freely.</p>
+                  </div>
+                </div>
+              </section>
+            </div>
+          </div>
+
           <div id="set-placeholder" class="set-page set-soon" hidden>
             <div class="set-soon-inner">
               <div class="set-soon-ico" aria-hidden="true">🛠</div>
@@ -1838,6 +2068,8 @@
   <script src="settings.js" defer></script>
   <script src="settings-about.js" defer></script>
   <script src="settings-appearance.js" defer></script>
+  <script src="settings-general.js" defer></script>
+  <script src="settings-scripture.js" defer></script>
   <script src="transcripts.js" defer></script>
 </body>
 

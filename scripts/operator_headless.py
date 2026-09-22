@@ -707,7 +707,7 @@ if not check_jump_call_site_is_click_only():
 # test above and re-confirmed by inspection; finding E (app.css's CON-134 comment block still
 # named the pre-fix window.__openChapterForStage as Edit's call) was a stale-comment correction
 # only. Confirmed by two independent runs (both 1625, 0 FAIL).
-EXPECTED_MIN_CHECKS = 1656
+EXPECTED_MIN_CHECKS = 1686
 
 
 def find_chrome():
@@ -751,6 +751,21 @@ if CHROME is None:
     sys.exit(0)
 
 html = open(os.path.join(DIST, "index.html")).read()
+
+# Settings/General (17tnw2axwet, SET-001) marks "Live Console" as the selected "on launch, open
+# to" startup option — an honest claim only because it's true: #surface-console really does carry
+# `active` at rest in the shipped markup (never asserted against the live DOM inside the browser
+# driver below, since by the time that block runs many earlier checks have already navigated
+# elsewhere, so the live .active class would no longer reflect the boot-time default). Checked
+# here, once, against the pristine source, before Chrome even starts — an INFRA-level precondition
+# a real behavioural check depends on, not a behaviour of the running app itself.
+if 'id="surface-console" class="surface-page active"' not in html:
+    print(
+        "FAIL: Settings/General's 'Live Console is the real startup default' claim no longer "
+        "holds — #surface-console's active class moved (or its markup changed) without updating "
+        "settings-general.js's STARTUP_OPTIONS"
+    )
+    sys.exit(2)
 
 # The real app.css text, handed to the driver as a string. Chrome refuses
 # `document.styleSheets[i].cssRules` for a file:// stylesheet (SecurityError), so a rule that
@@ -10494,6 +10509,146 @@ right after a generate/save");
         var apRowBg = getComputedStyle(apRowD.closest(".set-row")).backgroundColor;
         var apRowDc = _contrast(getComputedStyle(apRowD).color, apRowBg);
         ok(apRowDc >= 4.5, "Settings/Appearance: .set-row-d body copy clears AA-normal on its own row background (" + apRowDc.toFixed(2) + ":1)");
+      }
+
+      // === Settings › General (Figma 577:126 — story 17tnw2axwet, closes SET-001) ===
+      {
+        document.querySelector('.nav-item[data-surface="settings"]').click();
+        setSettingsPage("general");
+        ok(el("set-page-general") && !el("set-page-general").hidden && el("set-placeholder").hidden,
+           "Settings/General: the real page renders (SET-001 page-level MISSING closed, not the shared placeholder)");
+
+        // Startup: "Live Console" is marked selected because that is the REAL shipped default
+        // (index.html's #surface-console carries `active` at rest). The claim itself is checked
+        // at the PYTHON level below (SURFACE_CONSOLE_ACTIVE_AT_BOOT, against the pristine source —
+        // by THIS point in the suite many earlier checks have navigated away, so the live DOM's
+        // current .active class no longer reflects the app's boot-time default).
+        var gnStartupCards = document.querySelectorAll("#gn-startup-list .pp-radio-card");
+        ok(gnStartupCards.length === 3 && gnStartupCards[0].classList.contains("sel") &&
+           !gnStartupCards[1].classList.contains("sel") && !gnStartupCards[2].classList.contains("sel"),
+           "Settings/General: exactly the Live Console startup option renders selected");
+
+        // Keyboard shortcuts: read LIVE from the app's own #shortcuts overlay, never a hand-typed
+        // second copy that could drift from the real bindings.
+        var realShortcutRows = document.querySelectorAll("#shortcuts .sc-row").length;
+        var gnShortcutRows = document.querySelectorAll("#gn-shortcuts-list .set-row").length;
+        ok(realShortcutRows > 0 && gnShortcutRows === realShortcutRows,
+           "Settings/General: the shortcuts table renders exactly the real #shortcuts overlay's row count (" + gnShortcutRows + " of " + realShortcutRows + ")");
+        ok(/Blackout the output/.test(document.getElementById("gn-shortcuts-list").textContent) &&
+           /Command palette/.test(document.getElementById("gn-shortcuts-list").textContent),
+           "Settings/General: real shortcut descriptions render verbatim (not the Figma mock's different row set — no 'Stage message'/'Undo' rows this build doesn't bind)");
+        ok(!/Stage message|Undo\b/.test(document.getElementById("gn-shortcuts-list").textContent),
+           "Settings/General (control): the Figma mock's un-bound shortcuts (Stage message ⌘M, Undo ⌘Z) do NOT appear — this page never renders a keybinding the app doesn't really have");
+        ok(el("shortcuts").hidden !== false, "Settings/General (control): the real shortcuts overlay starts hidden");
+        el("gn-open-shortcuts").click();
+        ok(el("shortcuts").hidden === false,
+           "Settings/General: 'Open the full shortcuts overlay' really opens the app's own shortcuts dialog");
+        el("sc-close").click();
+
+        // Real cross-page navigation.
+        el("gn-manage-updates").click();
+        ok(el("set-page-about") && !el("set-page-about").hidden,
+           "Settings/General: 'Manage updates' really navigates to About & Licensing");
+        setSettingsPage("general");
+        el("gn-open-preservice").click();
+        ok(el("surface-preservice").classList.contains("active"),
+           "Settings/General: 'Open Pre-service Check' really navigates to the Pre-service Check surface");
+        document.querySelector('.nav-item[data-surface="settings"]').click();
+        setSettingsPage("general");
+
+        // Every control with no backend command is honestly disabled.
+        ["gn-org-name","gn-lang","gn-region","gn-reduced-motion"].forEach(function(id){
+          ok(el(id).disabled, "Settings/General: #" + id + " is honestly disabled — no persistence exists for it yet");
+        });
+      }
+
+      // === Settings › Scripture & Translations (Figma 578:124 — story 17tnw2axwet, closes SET-002) ===
+      {
+        document.querySelector('.nav-item[data-surface="settings"]').click();
+        setSettingsPage("scripture");
+        await sleep(40);
+        ok(el("set-page-scripture") && !el("set-page-scripture").hidden && el("set-placeholder").hidden,
+           "Settings/Scripture: the real page renders (SET-002 page-level MISSING closed, not the shared placeholder)");
+
+        // Installed translations: real list_translations() data.
+        ok(window.__calls.some(function(c){ return c.cmd === "list_translations"; }),
+           "Settings/Scripture: the installed-translations list is loaded via the real list_translations() command");
+        var scRows = document.querySelectorAll("#sc-translations-list .pp-radio-card");
+        ok(scRows.length === 6, "Settings/Scripture: all 6 real translations render as their own card, bundled AND downloadable (" + scRows.length + ")");
+        ok(/King James Version/.test(scRows[0].textContent) && /PUBLIC DOMAIN/.test(scRows[0].textContent),
+           "Settings/Scripture: each card names the real translation and its real public-domain badge");
+
+        // Default translation: real, TWO-WAY-SYNCED with the summary select (handoff §9) — driving
+        // either one must move the other, both via the SAME set_preferred_translation the
+        // Providers & Privacy panel already uses. This block runs after the earlier Providers &
+        // Privacy checks, which already changed this SAME shared fixture's preferred_translation
+        // (PP C-003 sets it to WEB) — force it back to the fixture's original KJV first rather
+        // than assuming whatever the suite left it at.
+        window.__pp.preferred_translation = "KJV";
+        setSettingsPage("scripture");
+        await sleep(40);
+        ok(document.getElementById("sc-translation-KJV").classList.contains("sel"),
+           "Settings/Scripture (control): KJV (the fixture's real preferred_translation) renders selected before any interaction");
+        ok(document.getElementById("sc-default-select").value === "KJV",
+           "Settings/Scripture (control): the summary select starts in sync with the radio's real default");
+        var scCallsBefore = window.__calls.length;
+        document.getElementById("sc-translation-ASV").click();
+        await sleep(30);
+        ok(window.__calls.slice(scCallsBefore).some(function(c){ return c.cmd === "set_preferred_translation" && c.args.code === "ASV"; }),
+           "Settings/Scripture: clicking a translation card invokes the REAL set_preferred_translation(ASV)");
+        ok(document.getElementById("sc-translation-ASV").classList.contains("sel") &&
+           !document.getElementById("sc-translation-KJV").classList.contains("sel"),
+           "Settings/Scripture: the radio list re-renders from the backend-confirmed default, not an optimistic guess");
+        ok(document.getElementById("sc-default-select").value === "ASV",
+           "Settings/Scripture: the summary select followed the radio's change — one shared value, not two");
+        // Drive it the OTHER direction: changing the select must move the radio too.
+        var scSel = document.getElementById("sc-default-select");
+        scSel.value = "WEB";
+        scSel.dispatchEvent(new Event("change"));
+        await sleep(30);
+        ok(document.getElementById("sc-translation-WEB").classList.contains("sel"),
+           "Settings/Scripture: changing the summary select moves the radio's selection too — confirmed two-way sync");
+
+        // Keyboard reachability on this SECOND new radiogroup in this batch (proactively covered
+        // this time rather than caught by review, per the standing requirement from ClickUp
+        // 17tnw2axwfm).
+        document.getElementById("sc-translation-WEB").focus();
+        var scCallsBeforeKey = window.__calls.length;
+        document.getElementById("sc-translation-WEB").dispatchEvent(new KeyboardEvent("keydown", {key:"ArrowRight", bubbles:true, cancelable:true}));
+        await sleep(30);
+        ok(window.__calls.slice(scCallsBeforeKey).some(function(c){ return c.cmd === "set_preferred_translation"; }),
+           "Settings/Scripture: ArrowRight on the translations radiogroup selects the next card — keyboard-reachable, not just clickable");
+
+        // The per-row "show in picker" toggle is real but genuinely inert (no backend field) —
+        // clicking it must NOT accidentally trigger the card's own onSelect (set_preferred_translation).
+        var scShowToggle = document.querySelector("#sc-translations-list .pp-toggle.set-inert input");
+        ok(scShowToggle && scShowToggle.disabled,
+           "Settings/Scripture: the per-row 'show in picker' toggle is honestly disabled — not configurable yet");
+
+        // Every other control with no backend command is honestly disabled — never a fake Rebuild/
+        // Clear-history button that would look actionable and do nothing.
+        ["sc-verses-per-slide","sc-history-len"].forEach(function(id){
+          ok(el(id).disabled, "Settings/Scripture: #" + id + " is honestly disabled — no persistence exists for it yet");
+        });
+        var scSegBtns = document.querySelectorAll("#sc-versenum .pp-segmented-btn");
+        ok(scSegBtns.length === 3 && Array.prototype.every.call(scSegBtns, function(b){ return b.disabled; }),
+           "Settings/Scripture: the verse-numbers segmented control's three options are all honestly disabled");
+
+        // Theme Designer link-out: a REAL navigation.
+        document.getElementById("sc-open-theme-designer").click();
+        ok(el("surface-theme-designer").classList.contains("active"),
+           "Settings/Scripture: 'Open Theme Designer' really navigates to the Theme Designer surface");
+        document.querySelector('.nav-item[data-surface="settings"]').click();
+
+        // Contrast (NFR-020).
+        // Scoped to a .set-row-d that is actually INSIDE a .set-row — the page's first .set-row-d
+        // by document order is the Installed Translations section's lead paragraph, which sits
+        // directly in the section (no enclosing .set-row), so an unscoped query would hand
+        // .closest(".set-row") a null and throw before this check ever ran.
+        var scRowD = document.querySelector("#set-page-scripture .set-row .set-row-d");
+        var scRowBg = getComputedStyle(scRowD.closest(".set-row")).backgroundColor;
+        var scRowDc = _contrast(getComputedStyle(scRowD).color, scRowBg);
+        ok(scRowDc >= 4.5, "Settings/Scripture: .set-row-d body copy clears AA-normal on its own row background (" + scRowDc.toFixed(2) + ":1)");
       }
 
     } catch(e){ R.push("FAIL: exception "+e.message+" @ "+(e.stack||"").split("\n")[1]); }

@@ -7146,6 +7146,11 @@
 .pp-radio-desc { font-size: 12px; font-weight: 500; color: var(--sc-text-secondary); }
 .pp-radio-detail { margin: 0; font-size: 11px; font-weight: 500; color: var(--sc-text-muted); }
 .pp-radio-foot { margin: 0; font-size: 11px; font-weight: 500; color: var(--sc-text-muted); }
+/* A trailing control row inside a .pp-radio-card that is NOT part of the radio selection itself
+   (Scripture & Translations: the per-row "show in picker" toggle sits beside the Default radio,
+   same card, separate concern — settings-scripture.js stops its click from bubbling into the
+   card's own onSelect). */
+.pp-radio-actions { display: flex; align-items: center; gap: 10px; margin-left: 31px; }
 
 /* Amber warning row */
 .pp-warn { display: flex; gap: 8px; align-items: center; padding: 8px 11px; border-radius: 8px; background: var(--sc-warn-soft); border: 1px solid var(--sc-warn-border); color: var(--sc-warn); }
