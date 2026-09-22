@@ -717,7 +717,25 @@ if not check_jump_call_site_is_click_only():
 # (breaking the CSS selector / disabling the JS toggle turned the corresponding checks RED,
 # restoring them turned the suite green again). Confirmed by two independent runs (both 1637,
 # 0 FAIL).
-EXPECTED_MIN_CHECKS = 1637
+#
+# 2026-09-22, same ClickUp ticket, Cody's code review of PR #66: +3 checks (net; the CON-054
+# block was rewritten, not appended to). Cody found live that the STAGED pill from the entry
+# above was gated on `.verse.cursor` — which moves for every browse gesture, INCLUDING the
+# deliberately read-only ones (Edit on a low-confidence detection, History's re-stage) that pass
+# stage=false specifically so nothing is staged (Sana's PR #61 finding was about the same class
+# of mistake for a different control). A pill gated on it could paint STAGED for a verse that
+# was only ever browsed. Fixed by gating the pill on a NEW `.is-staged` class, toggled only from
+# the host's own `staged_scripture` readback (`syncStagedPill()` in app.js, driven by
+# `syncChrome` on every poll — the same field the Preview panel already trusts), leaving the
+# pre-existing, out-of-scope `.cursor` tint alone. The rewritten CON-054 block reproduces Cody's
+# exact scenario (browse via `window.__openChapterToBrowse`, assert no pill; then a real
+# `render()` with `staged_scripture` set, assert the pill appears; then cleared again, assert it
+# disappears) instead of merely re-asserting the old (wrong) premise. Mutation-verified twice:
+# reverting the CSS selector to `.verse.cursor` turns exactly the browse-reproduction check RED;
+# mutating the JS comparison to always-true turns exactly the negative-control check RED (the
+# sibling, non-staged row wrongly gets the pill too). Confirmed by two independent runs (both
+# 1640, 0 FAIL).
+EXPECTED_MIN_CHECKS = 1640
 
 
 def find_chrome():
@@ -3147,33 +3165,51 @@ DRIVER = r"""
       ok(!window.__calls.slice(callsBeforeArm).some(function (c) { return c.cmd === "stage_scripture" || c.cmd === "follow_scripture"; }),
          "CON-134 (Sana finding B): once the deferred fetch resolves and Edit's own setCursor(idx, false) runs, still nothing stages — the window is closed, not just narrowed");
 
-      // === CON-054 (blocker, WCAG 1.4.1) — the staged verse's non-colour signal. A fresh,
-      // deterministic chapter load (not the stale verse-list content left over from the race
-      // test above) exercises window.__openChapterForStage directly — the real entry point
-      // staging a detection uses in production — and waits for its async get_chapter round
-      // trip to actually resolve before inspecting the DOM. The console surface itself was
-      // last switched away to theme-designer a few tests back, so switch back first —
-      // otherwise the panel is hidden and getClientRects() would read empty for reasons that
-      // have nothing to do with the pill.
+      // === CON-054 (blocker, WCAG 1.4.1) — the staged verse's non-colour signal, gated on the
+      // HOST's own staged_scripture readback (Cody's review of PR #66, remediated): the browse
+      // cursor (.verse.cursor) moves for every navigation gesture, INCLUDING the deliberately
+      // read-only ones (Edit on a low-confidence detection, History's re-stage) that pass
+      // stage=false specifically so nothing is staged. Cody reproduced live that gating the
+      // literal "STAGED" text on .cursor alone made the pill lie for exactly those flows. This
+      // reproduces his exact scenario directly — window.__openChapterToBrowse (stage=false, the
+      // same entry point Edit/History use) must move the cursor WITHOUT painting the pill — then
+      // proves the pill turns on only once a real host readback (driven through render(), not
+      // poked at the class) confirms the SAME verse, and turns off again once the host says so.
+      // The console surface itself was last switched away to theme-designer a few tests back, so
+      // switch back first — otherwise the panel is hidden and getClientRects() would read empty
+      // for reasons that have nothing to do with the pill.
       document.querySelector('.nav-item[data-surface="console"]').click();
-      window.__openChapterForStage("Isaiah 61:5");
+      render(Object.assign({}, baseView, { staged_scripture: null, staged_index: null }));
+      window.__openChapterToBrowse("Isaiah 61:5"); // stage=false — the real Edit/History entry point
       await waitFor(function () { return !!el("verse-list").querySelector(".verse.cursor"); });
       var vRows = el("verse-list").querySelectorAll(".verse");
       ok(vRows.length === 2, "CON-054 (setup): the fixture chapter renders both its verses");
       var vCursorRow = el("verse-list").querySelector(".verse.cursor");
       var vPill = vCursorRow.querySelector(".verse-staged-pill");
+      ok(!vCursorRow.classList.contains("is-staged") &&
+         (!vPill || getComputedStyle(vPill).display === "none" || vPill.getClientRects().length === 0),
+         "CON-054 (Cody's finding, reproduced + fixed): browsing a verse via the READ-ONLY __openChapterToBrowse path moves the cursor but paints no STAGED pill — nothing was ever staged");
+      // Now the host confirms — via a real render(), the same path syncChrome/setPanel already
+      // trust for the Preview panel, never by poking the class directly.
+      render(Object.assign({}, baseView, { staged_scripture: "Isaiah 61:5", staged_index: null }));
+      ok(vCursorRow.classList.contains("is-staged"), "CON-054 (setup): the host's staged_scripture readback now matches this row");
+      vPill = vCursorRow.querySelector(".verse-staged-pill");
       ok(!!vPill && getComputedStyle(vPill).display !== "none" && vPill.getClientRects().length > 0,
-         "CON-054: the staged verse row paints a STAGED pill (computed display, not just the class)");
+         "CON-054: once the HOST confirms, the staged verse row paints a STAGED pill (computed display, not just the class)");
       ok(vPill.textContent.trim() === "STAGED",
          "CON-054: the pill states the word STAGED — a non-colour signal alongside the row's green tint (WCAG 1.4.1)");
       var vOtherRow = Array.prototype.filter.call(vRows, function (r) { return r !== vCursorRow; })[0];
       ok(!!vOtherRow, "CON-054 (setup): a second, non-staged verse row exists to serve as a negative control");
       var vOtherPill = vOtherRow.querySelector(".verse-staged-pill");
-      ok(!!vOtherPill && getComputedStyle(vOtherPill).display === "none",
-         "CON-054 (negative control): a verse that is NOT staged paints no STAGED pill — the colour and the text always agree");
+      ok(!vOtherRow.classList.contains("is-staged") && !!vOtherPill && getComputedStyle(vOtherPill).display === "none",
+         "CON-054 (negative control): a DIFFERENT verse that is not the host's staged_scripture paints no STAGED pill");
       var vPillCs = getComputedStyle(vPill);
       var vPillR = _cr(_rgba(vPillCs.color), _rgba(vPillCs.backgroundColor));
       ok(vPillR >= 4.5, "CON-054: the STAGED pill's label clears AA-normal on its own fill (" + _f(vPillR) + ":1)");
+      // De-stage (e.g. Clear/blackout on the host) — the pill must be reactive, not sticky.
+      render(Object.assign({}, baseView, { staged_scripture: null, staged_index: null }));
+      ok(!vCursorRow.classList.contains("is-staged"),
+         "CON-054: once the host reports nothing staged, the pill is removed again — it is not sticky once painted");
 
       // Sana's non-blocking finding: a MISSING confidence used to fail OPEN into the confident
       // branch (Approve fast-path) purely because `hasConfidence && …` short-circuits false on

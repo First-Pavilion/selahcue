@@ -1496,12 +1496,32 @@ just the declared value) — it was passing before this ticket touched anything.
 
 The staged verse in the Scriptures panel was signalled by `.verse.cursor`'s colour change alone
 (WCAG 1.4.1). Added a `STAGED` text pill (`app.js`'s `renderChapter`, `app.css`'s
-`.verse-staged-pill`) that ships on the same `.cursor` class the tint already uses, so the two
-signals can never disagree. Geometry/ink taken from a fresh `get_design_context` call on Figma
+`.verse-staged-pill`). Geometry/ink taken from a fresh `get_design_context` call on Figma
 `322:181`/`322:182` (not re-derived from the original audit's citation): the pill's `bg`/`border`/
 ink are exactly the existing `--sc-preview-soft` / `--sc-preview-border` / `--sc-preview` tokens,
 so no new colour was introduced. Right-aligned via `margin-left: auto` to match the frame's
 trailing placement (pill at x 841 of a 906px row).
+
+**Amendment (Cody's code review of PR #66):** the first cut of this fix gated the pill on the
+same `.cursor` class as the pre-existing colour tint, on the theory that "it appears exactly when
+the colour does". Cody reproduced live that `.cursor` is set unconditionally by `setCursor`
+regardless of its `stage` argument — it means "the browse cursor is here", not "the host
+confirmed this is staged" — and that the app's own read-only browse entry point
+(`window.__openChapterToBrowse`, `stage=false`, used by Edit on a low-confidence detection and by
+History's re-stage specifically so browsing never stages anything) still moves the cursor. Gating
+a literal `STAGED` text claim on it therefore painted that claim on a row that was never staged —
+a real accuracy regression, and the same category of mistake Sana's PR #61 finding was about for
+a different control (an operator being told something happened when it did not). Fixed by adding
+a separate `.is-staged` class, toggled only from the host's own `staged_scripture` readback
+(`syncStagedPill()`, driven by `syncChrome` on every poll — the same field the Preview panel
+already trusts), leaving the pre-existing `.cursor` tint untouched (a real but separate,
+non-blocking gap Cody named as out of scope: the green tint can still show on a merely-browsed
+row, it just can no longer also claim STAGED in text). `scripts/operator_headless.py`'s CON-054
+block was rewritten, not just extended, to reproduce Cody's exact scenario as a regression guard
+(browse via `__openChapterToBrowse`, assert no pill; a real `render()` confirms `staged_scripture`
+matches, assert the pill appears; cleared again, assert it disappears) — mutation-verified twice
+(reverting the CSS selector to `.cursor`, and mutating the JS match to always-true, each turn
+exactly the check built to catch that mistake RED).
 
 ### `CON-098` — FIXED, reversing an undocumented in-code decision not to build it
 
@@ -1533,13 +1553,17 @@ regression.
 
 ### Verification
 
-`scripts/operator_headless.py` — **1637** checks / 0 FAIL (was 1625 before this pass; +12 new
-assertions covering both fixes, `EXPECTED_MIN_CHECKS` updated with its own history comment).
-Both new check groups mutation-verified: breaking `.verse.cursor .verse-staged-pill`'s selector
-turned exactly the STAGED-pill-paint assertion RED; disabling the `#emergency` blackout class
-toggle turned exactly the four re-tint assertions RED (the cleanup assertion still trivially
-passed, as expected); both restored to green. Contrast figures independently recomputed in
-Python (WCAG relative-luminance ratio and CIELAB ΔE76), not taken from either the original audit
+`scripts/operator_headless.py` — **1640** checks / 0 FAIL (was 1625 before this pass; +12 from
+the initial CON-054/CON-098 fixes, then CON-054's block was rewritten net +3 during Cody's review
+remediation below — see that amendment — `EXPECTED_MIN_CHECKS` updated each time with its own
+history comment). All new check groups mutation-verified: breaking `.verse.cursor
+.verse-staged-pill`'s selector turned exactly the STAGED-pill-paint assertion RED; disabling the
+`#emergency` blackout class toggle turned exactly the four re-tint assertions RED (the cleanup
+assertion still trivially passed, as expected); after the CON-054 amendment, reverting the pill's
+gating to `.cursor` turned exactly the browse-reproduction check RED, and mutating the host-match
+comparison to always-true turned exactly the negative-control check RED. All restored to green.
+Contrast figures independently recomputed in Python (WCAG relative-luminance ratio and CIELAB
+ΔE76), not taken from either the original audit
 or the in-code comment on trust.
 
 ### Totals (cumulative)

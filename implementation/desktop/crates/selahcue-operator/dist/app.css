@@ -4101,12 +4101,21 @@
       }
 
       /* CON-054 (blocker) — the non-colour half of the staged-verse signal (WCAG 1.4.1).
-         Hidden by default, shown only on .verse.cursor — the same class that drives the
-         tint above, so the pill and the colour always agree. Figma 322:181/182: bg/border/
-         ink are exactly --sc-preview-soft / --sc-preview-border / --sc-preview, so no new
-         colour is introduced. Right-aligned via margin-left: auto to match the frame's
-         trailing placement (x 841 of a 906px row, i.e. flush right); align-self: center
-         keeps it vertically centred if a long verse wraps the row onto multiple lines. */
+         Hidden by default, shown only on .verse.is-staged — a class syncStagedPill() (app.js)
+         toggles from the HOST's own staged_scripture readback, deliberately NOT .verse.cursor
+         above. Cody's review of PR #66: .cursor moves for every browse gesture, including the
+         deliberately read-only ones (Edit on a low-confidence detection, History's re-stage)
+         that pass stage=false specifically so nothing is staged — gating a literal "STAGED"
+         text claim on it would assert something false in exactly the case those flows exist to
+         keep honest (Sana's PR #61 finding was about the same kind of mistake for a different
+         control). The pre-existing green tint above still rides on .cursor, unchanged — a real
+         but separate, non-blocking gap Cody named as out of scope for this PR: a row can still
+         be tinted while genuinely only browsed, it just can no longer also claim STAGED in text.
+         Figma 322:181/182: bg/border/ink are exactly --sc-preview-soft / --sc-preview-border /
+         --sc-preview, so no new colour is introduced. Right-aligned via margin-left: auto to
+         match the frame's trailing placement (x 841 of a 906px row, i.e. flush right);
+         align-self: center keeps it vertically centred if a long verse wraps onto multiple
+         lines. */
       .verse-staged-pill {
         display: none;
         flex: none;
@@ -4124,7 +4133,7 @@
         white-space: nowrap;
       }
 
-      .verse.cursor .verse-staged-pill {
+      .verse.is-staged .verse-staged-pill {
         display: inline-flex;
       }
 
