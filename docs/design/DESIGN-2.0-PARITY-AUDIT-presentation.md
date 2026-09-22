@@ -1279,3 +1279,16 @@ Note on the FIXED count: this update closes 11 finding ids (055, 053, 059, 058, 
 as newly-CONFIRMED-FIXED here because the 2026-09-20 reconciliation had it marked OPEN and this is
 the update that corrects that. `PME-043` remains **OPEN, blocked** (see above) — it is the only S1
 left open on this surface.
+
+**Review-pipeline remediation, PR #69 (2026-09-22, same ticket, no finding-status change):** the
+four-reviewer pipeline (Cody, Sana, Vera, Quinn) found and this session fixed three further
+defects in the code this update introduced — none reopen a `PME-###`/`OUT-###` finding, all are
+implementation bugs in the fix itself, tracked in the PR and the Goal Contract
+(`docs/delivery/goals/TASK-17tnw2axptg-presentation-safety-access.md`) rather than restated here:
+a `[hidden]`/`display: flex` CSS trap that kept the PME-053 duplicate picker always visible
+(Quinn, ClickUp `17tnw2axwg9`); a false-positive success toast when a duplicate source vanishes
+mid-dialog (Cody); and a `pmLibDelete` fail-open comment that didn't match its own code on a
+failed local-state read (Sana + Vera, independently). `python3 scripts/operator_headless.py` —
+1672 checks, 0 FAIL after rebasing onto `main`'s `17tnw2axptu` (Pre-service Check parity closure,
+merged during this session) — the counts and evidence paths quoted earlier in this update predate
+that rebase and the three review-remediation commits; this paragraph is the current state.
