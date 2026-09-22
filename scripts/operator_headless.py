@@ -723,7 +723,21 @@ if not check_jump_call_site_is_click_only():
 # were already MATCH/EXTRA/an accepted honesty trade-off per the audit's own verdicts, re-verified
 # against the live Figma frame (344:124) rather than just the doc. Confirmed by two independent
 # runs (both 1630, 0 FAIL).
-EXPECTED_MIN_CHECKS = 1630
+#
+# 1630 -> RESOLVED_TOTAL: ClickUp 17tnw2axptg (Presentation web: safety & access essentials),
+# authored in parallel on a separate branch against the pre-17tnw2axptu baseline (1625) and
+# rebased onto main after that ticket landed (which is why this entry's starting point is 1630,
+# not the 1625 these checks were originally counted against). New checks added on that branch,
+# pre-rebase: 37 across PME-055/053/059/006-011/027 (this ticket's own implementation); +3 (1
+# setup + 2 real assertions) for Cody's PR #69 finding that a duplicate source vanishing
+# mid-dialog toasted a false-positive "Presentation duplicated" instead of surfacing the error
+# banner; +2 for Sana + Vera's independently-corroborated PR #69 finding that pmLibDelete's "fail
+# OPEN on the warning" comment didn't match the code on a failed view() read. All three
+# behavioural fixes were mutation-verified pre-rebase (reverting each turned exactly its own
+# assertion(s) RED, restored). Recomputed post-rebase against main's own +5 (17tnw2axptu's
+# PSC-009 block, above) — see RESOLVED_TOTAL and the confirmation note this placeholder is
+# replaced with once the post-rebase suite has actually been run twice.
+EXPECTED_MIN_CHECKS = 1630  # placeholder pending a fresh post-rebase count; do not trust this value yet
 
 
 def find_chrome():
@@ -10092,6 +10106,36 @@ right after a generate/save");
         ok(await wWait(function(){ return window.__calls.some(function(c){ return c.cmd === "deck_open" && c.args.id === wSfRenameCall.args.id; }); }),
            "PME-053: 'Create presentation' opens the newly-created copy in the editor");
         ok(await wWait(function(){ return el("pm-library").hidden; }), "PME-053: the dialog and Library close, landing the operator in the editor on the new deck");
+      }
+
+      // --- Cody (PR #69 review): a duplicate source that vanishes mid-dialog must not toast a
+      // false "Presentation duplicated" success. deck_duplicate is a no-op when its source id no
+      // longer resolves (another action deleted it between the picker rendering and Create being
+      // pressed) — no new_id comes back, so nothing was actually created, and the flow must route
+      // through the same failure path every other create failure in this dialog already uses.
+      el("pm-deckswitch").click();
+      await wWait(function(){ return !!el("pm-lib-grid").querySelector(".pm-lib-card"); });
+      if (el("pm-lib-q")) { el("pm-lib-q").value = ""; el("pm-lib-q").dispatchEvent(new Event("input", {bubbles:true})); }
+      el("pm-lib-new").click();
+      await wWait(function(){ return !!el("pm-prompt-input"); });
+      var wVanDup = document.getElementById("pm-startfrom-dup");
+      ok(!!wVanDup && !wVanDup.disabled, "Cody (PR #69) (premise): a duplicate source is selectable to test the vanished-mid-dialog case");
+      if (wVanDup && !wVanDup.disabled) {
+        wVanDup.click();
+        var wVanRow = document.querySelector(".pm-startfrom-picker .pm-startfrom-picker-row input");
+        var wVanSrcId = Number(wVanRow.value);
+        wVanRow.click();
+        // The race itself: another action removes the chosen source from the library between
+        // selecting it here and pressing Create.
+        window.__LIB.decks = window.__LIB.decks.filter(function(d){ return d.id !== wVanSrcId; });
+        Array.from(document.querySelectorAll(".pm-confirm .pm-btn-primary")).slice(-1)[0].click();
+        ok(await wWait(function(){ return !el("pm-error").hidden; }),
+           "Cody (PR #69): a duplicate source that vanished mid-dialog surfaces the error banner, not a false-positive success toast");
+        // Checked by TEXT, not by the toast's `hidden` state, so this cannot pass merely because
+        // an unrelated earlier toast in this long-running script happens to still be showing.
+        ok(!/duplicated/i.test(el("pm-toast").textContent || ""),
+           "Cody (PR #69): ...and never claims \"Presentation duplicated\" over a request that created nothing (\"" + (el("pm-toast").textContent || "").slice(0, 40) + "\")");
+        if (el("pm-error-dismiss") && !el("pm-error").hidden) el("pm-error-dismiss").click();
       }
 
       // --- PME-059: warn when the deck being deleted is referenced by a service-plan item -----

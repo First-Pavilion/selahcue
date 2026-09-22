@@ -9571,7 +9571,12 @@
                 const lv = await invoke("deck_duplicate", { id: dupSourceId });
                 pmApplyLibrary(lv);
                 const newId = lv && lv.new_id != null ? lv.new_id : null;
-                if (newId == null) { pmToast("Presentation duplicated"); return; } // source vanished mid-dialog
+                // The source deck vanished mid-dialog (deleted by another action between the
+                // picker rendering and Create being pressed) — deck_duplicate is a no-op then and
+                // nothing was actually created. "Presentation duplicated" would be a false-positive
+                // success toast over a request that did nothing; route through the same failure
+                // path the catch block below already uses for every other create failure.
+                if (newId == null) { pmShowError("create the presentation"); return; }
                 const trimmed = (name || "").trim();
                 if (trimmed) pmApplyLibrary(await invoke("deck_rename", { id: newId, name: trimmed }));
                 const dv = await invoke("deck_open", { id: newId });
