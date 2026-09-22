@@ -137,12 +137,20 @@ class TimerSnapshot {
   final bool warn;
   final bool running;
 
+  /// The countdown's full length in seconds (`None` for a count-up timer, or a
+  /// pre-Design-2.0 host that predates this field). Mirrors Rust `TimerSnapshot.
+  /// total_secs` (`protocol.rs`) — the host reports it precisely so Reset (MOB-009)
+  /// knows what to restart the countdown at, even in overrun where
+  /// `remaining + elapsed` no longer equals the original length.
+  final int? totalSecs;
+
   const TimerSnapshot({
     required this.remainingSecs,
     required this.elapsedSecs,
     required this.timeUp,
     required this.warn,
     required this.running,
+    this.totalSecs,
   });
 
   static TimerSnapshot fromJson(Map<String, dynamic> j) => TimerSnapshot(
@@ -151,6 +159,7 @@ class TimerSnapshot {
         timeUp: j['time_up'] as bool? ?? false,
         warn: j['warn'] as bool? ?? false,
         running: j['running'] as bool? ?? false,
+        totalSecs: j['total_secs'] as int?,
       );
 }
 

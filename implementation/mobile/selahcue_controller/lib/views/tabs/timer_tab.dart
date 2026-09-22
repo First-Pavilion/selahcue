@@ -1,16 +1,33 @@
 /// Timer tab — a big readout with its state chip, presets, an HH:MM:SS custom
-/// time, and live ±1:00 / Pause / Stop. Design 2.0 (Figma `343:169`, `356:139`).
+/// time, and live ±1:00 / Pause / Reset / Stop / Send "TIME UP" to stage.
+/// Design 2.0 (Figma `343:169`, `356:139`).
 ///
-/// Two controls the frame draws are **not here, and not drawn dead**: `Reset`
-/// and `Send "TIME UP" to stage`. Neither is a client-side omission —
-/// `selahcue-lan/src/protocol.rs` carries `StartTimer` / `StopTimer` /
-/// `AdjustTimer` / `PauseTimer` / `ResumeTimer` and nothing else, and
-/// `TimerSnapshot` has no original-duration field, so this device could not even
-/// compute what Reset would restore. `time_up` is host-computed state, not a
-/// command a phone can push. Both need new protocol variants plus a
-/// cross-language fixture update — an owner decision, not a mobile one. Until
-/// then the tab says so in words (see `_DeferredControlsNote`), because a button
-/// that sends nothing during a service is the worst of the three options.
+/// `Reset` and `Send "TIME UP" to stage` (MOB-009) ship WITHOUT any new
+/// `Command` variant — each composes commands the wire already carries, the
+/// same way the desktop operator console's own `Reset` button already does
+/// (`selahcue-operator/dist/app.js`'s `timer-reset` handler, shipped in the
+/// Design 2.0 operator console rewrite, predates this mobile wiring):
+///
+/// * `Reset` restarts the countdown at its ORIGINAL length via the existing
+///   [cmdStartTimer] — the same command the presets and custom-time Start use.
+///   The length comes from `TimerSnapshot.totalSecs` (Rust `total_secs`,
+///   `protocol.rs`), which the host has reported since that same rewrite; this
+///   Dart model just never parsed it until now. Falls back to
+///   `remaining + elapsed` for a pre-total_secs host, matching the desktop
+///   button's own fallback — `total_secs` is correct in overrun where that sum
+///   no longer equals the original length, elapsed keeps growing past TIME UP.
+/// * `Send "TIME UP" to stage` reduces the countdown's remaining time to zero
+///   via the existing [cmdAdjustTimer]: `AdjustTimer`'s own contract
+///   ("Clamps at zero (landing in TIME UP)", `protocol.rs`) is exactly the
+///   forced-overrun this control needs — a negative delta equal to
+///   `remainingSecs` lands `elapsed == total` immediately. `time_up` itself
+///   stays host-COMPUTED (`Timer::is_time_up`); this never invents a
+///   client-asserted `time_up` field on the wire, it only changes the total the
+///   host already derives that state from.
+///
+/// Both stay behind the same `Capability.timer` gate as every other control on
+/// this tab (`AdjustTimer`/`StartTimer` already require RBAC `Permission::
+/// Timer` — `rbac.rs` — so no server-side RBAC change was needed either).
 library;
 
 import 'package:flutter/material.dart';
@@ -74,6 +91,36 @@ class _TimerTabState extends State<TimerTab> {
     // still holds what was typed, which is the state a retry needs.
     _custom.clear();
     FocusScope.of(context).unfocus();
+  }
+
+  /// The highest seconds value this device will ever send for a countdown —
+  /// the same 23:59:59 ceiling [CustomTimeWell] enforces on typed entry
+  /// (`maxCustomHours`), applied here too as defence-in-depth: a host-reported
+  /// `totalSecs` is host data, not user input, but Reset still must never
+  /// forward an unbounded value to [cmdStartTimer]. Mirrors the desktop
+  /// console's own `MAX_TIMER_SECS` clamp on its Reset button (`app.js`).
+  static const int _maxTimerSecs = maxCustomHours * 3600 + 59 * 60 + 59;
+
+  /// Restart the countdown at its ORIGINAL length (MOB-009). Prefers the
+  /// host's own `totalSecs` — correct even in overrun, where
+  /// `remaining + elapsed` no longer equals the original length (elapsed keeps
+  /// growing past TIME UP). Falls back to `remaining + elapsed` for a host
+  /// that predates the field, matching the desktop button's own fallback.
+  void _resetTimer(TimerSnapshot t) {
+    final total = t.totalSecs ?? ((t.remainingSecs ?? 0) + t.elapsedSecs);
+    if (total < 1) return;
+    widget.live.act(cmdStartTimer(total.clamp(1, _maxTimerSecs)));
+  }
+
+  /// Force the countdown into TIME UP right now (MOB-009), by reducing its
+  /// remaining time to zero — `AdjustTimer`'s own documented contract already
+  /// "clamps at zero (landing in TIME UP)" (`protocol.rs`), so a delta equal
+  /// to `-remainingSecs` lands `elapsed == total` on the very next tick.
+  /// `time_up` itself stays host-computed; this never asserts it directly.
+  void _sendTimeUp(TimerSnapshot t) {
+    final remaining = t.remainingSecs ?? 0;
+    if (remaining < 1) return;
+    widget.live.act(cmdAdjustTimer(-remaining));
   }
 
   @override
@@ -264,6 +311,9 @@ class _TimerTabState extends State<TimerTab> {
             ],
           ),
           const SizedBox(height: SelahSpace.sm),
+          // Pause | Reset | Stop — three-across per the frame (`356:151`), Reset
+          // added between the two pre-existing buttons rather than appended, so
+          // the row keeps the frame's exact order.
           Row(
             children: [
               Expanded(
@@ -280,6 +330,15 @@ class _TimerTabState extends State<TimerTab> {
               const SizedBox(width: SelahSpace.sm),
               Expanded(
                 child: SelahButton(
+                  label: 'Reset',
+                  semanticLabel: 'Reset to the original duration',
+                  disabledReason: 'unavailable while reconnecting',
+                  onPressed: canAdjust ? () => _resetTimer(t) : null,
+                ),
+              ),
+              const SizedBox(width: SelahSpace.sm),
+              Expanded(
+                child: SelahButton(
                   label: 'Stop',
                   variant: SelahButtonVariant.danger,
                   disabledReason: 'unavailable while reconnecting',
@@ -290,59 +349,94 @@ class _TimerTabState extends State<TimerTab> {
               ),
             ],
           ),
-          const SizedBox(height: SelahSpace.lg),
-          const _DeferredControlsNote(),
+          const SizedBox(height: SelahSpace.sm),
+          _SendTimeUpButton(
+            // Nothing left to force once TIME UP is already showing — disabled
+            // rather than a silent no-op tap (spec: uniform disabled-with-reason).
+            // `canAdjust` already promotes `t` to non-null here (it is
+            // `hasTimer && !syncing`, and `hasTimer` is `t != null`).
+            onPressed: (canAdjust && !t.timeUp)
+                ? () => _sendTimeUp(t)
+                : null,
+            disabledReason: syncing
+                ? 'unavailable while reconnecting'
+                : t == null
+                ? 'start a timer first'
+                : 'already at time up',
+          ),
         ],
       ],
     );
   }
 }
 
-/// The two frame controls that have no wire command, said in words.
+/// Full-width "Send TIME UP to stage" (frame `356:158`) — a solid `d2Live`
+/// block with a bold title + a muted caption, which [SelahButton] has no shape
+/// for (single line only), so this is its own small button rather than a
+/// stretch of that widget.
 ///
-/// This is the honest middle between the two dishonest options: drawing them
-/// (an operator taps `Reset` mid-service and nothing happens, with no way to
-/// tell that from a dropped link) and omitting them silently (the next person to
-/// build from the frame reintroduces them, and the operator who knows the
-/// desktop has them wonders why the phone does not). It is deliberately NOT
-/// tappable — there is nothing behind it to reach.
-class _DeferredControlsNote extends StatelessWidget {
-  const _DeferredControlsNote();
+/// Caption colour is NOT the frame's literal `#6b7383` (`d2TextMuted`): that is
+/// ~1.5:1 on solid `d2Live` (`#ff4d4d`) — nowhere near AA even for large text.
+/// `SelahGradient.onLiveInk` (the SAME ink `SelahButtonVariant.alarm` already
+/// uses on this exact fill, documented there at 5.31:1) covers both lines —
+/// the same A11Y-FIX class as this file's lock-note (`d2TextMuted` avoided at
+/// :336 for the identical reason).
+class _SendTimeUpButton extends StatelessWidget {
+  final VoidCallback? onPressed;
+  final String disabledReason;
+
+  const _SendTimeUpButton({required this.onPressed, required this.disabledReason});
+
+  bool get _disabled => onPressed == null;
 
   @override
-  Widget build(BuildContext context) => Container(
-    constraints: const BoxConstraints(minHeight: kSelahMinTouchTarget),
-    padding: const EdgeInsets.symmetric(
-      horizontal: SelahSpace.md,
-      vertical: SelahSpace.sm,
-    ),
-    decoration: BoxDecoration(
-      color: DesignTokens.d2Inset,
-      borderRadius: BorderRadius.circular(SelahRadius.row),
-      border: Border.all(color: DesignTokens.d2Border),
-    ),
-    child: Row(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        const Icon(
-          Icons.info_outline,
-          size: 16,
-          color: DesignTokens.d2TextSecondary,
-        ),
-        const SizedBox(width: SelahSpace.xs),
-        Expanded(
-          child: Text(
-            // A11Y-FIX (spec §6.2 item 3): `d2TextSecondary`, never the frame's
-            // `d2TextMuted`, which is 3.96:1 on this well.
-            'Reset and the stage “TIME UP” cue aren’t here yet — the desktop '
-            'has no command for either, so this app would have nothing to '
-            'send. They arrive with the host.',
-            style: SelahType.caption.copyWith(
-              color: DesignTokens.d2TextSecondary,
+  Widget build(BuildContext context) {
+    const ink = SelahGradient.onLiveInk;
+    const title = 'Send "TIME UP" to stage';
+    const caption = 'stage display only — never audience';
+    final radius = BorderRadius.circular(SelahRadius.row);
+    return Semantics(
+      button: true,
+      enabled: !_disabled,
+      label: _disabled ? '$title, $disabledReason' : title,
+      excludeSemantics: true,
+      child: Opacity(
+        opacity: _disabled ? 0.4 : 1,
+        child: Material(
+          color: DesignTokens.d2Live,
+          borderRadius: radius,
+          child: InkWell(
+            borderRadius: radius,
+            onTap: onPressed,
+            child: Container(
+              constraints: const BoxConstraints(minHeight: kSelahMinTouchTarget),
+              width: double.infinity,
+              alignment: Alignment.center,
+              padding: const EdgeInsets.symmetric(
+                horizontal: SelahSpace.md,
+                vertical: SelahSpace.sm,
+              ),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    title,
+                    style: SelahType.label.copyWith(
+                      color: ink,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    caption,
+                    style: SelahType.caption.copyWith(color: ink),
+                  ),
+                ],
+              ),
             ),
           ),
         ),
-      ],
-    ),
-  );
+      ),
+    );
+  }
 }

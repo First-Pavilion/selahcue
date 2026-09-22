@@ -192,7 +192,7 @@ frames are wrong and the shipped code is intentionally right. Re-checked this se
 | # | Item | Verdict | Sev | Source |
 |---|---|---|---|---|
 | — | HH:MM:SS custom-time well replaces the old minutes-only field | **FIXED** | — | `timer_tab.dart:219` uses `CustomTimeWell`; `custom_time_well.dart` full file audited (see §7) | **[verified]** |
-| **MOB-009** | `Reset` / `Send "TIME UP" to stage"` | **MISSING**, deliberate | **S2** | `timer_tab.dart:1-15` doc comment: no wire-protocol `Command` variant exists for either (`selahcue-lan/src/protocol.rs` — not independently re-read this session, taken from the doc comment and `CODE-REVIEW-batch-mobile-design2-b.md`'s "Not built" section, itself citing the same file). A non-tappable note states this in words rather than a dead button or a silent drop. Re-flagged here as its own numbered item because "documented as deferred" is not the same as "resolved" — an owner decision on the protocol addition is still outstanding. |
+| **MOB-009** | `Reset` / `Send "TIME UP" to stage"` | **FIXED** (2026-09-22, ticket 17tnw2axpty) | — | Both built, WITHOUT a new `Command` variant: `Reset` composes the existing `start_timer` with the host's `total_secs` (`timer_tab.dart:104-113`); `Send "TIME UP" to stage` composes the existing `adjust_timer` with a delta equal to `-remainingSecs`, landing the countdown in TIME UP via `AdjustTimer`'s own documented clamp-at-zero behaviour (`timer_tab.dart:115-124`). Mirrors the desktop operator console's own Reset button (`selahcue-operator/dist/app.js`'s `timer-reset` handler), which already used this exact composition. See Reconciliation. |
 | — | PAUSED = warn chip (not neutral) | MATCH | — | `timer_tab.dart:119-120` comment + surrounding code implements this explicitly per spec §4.6 | **[verified]** |
 | — | Lock-note copy uses `d2TextSecondary`, not `d2TextMuted` | **FIXED** (A11Y) | — | `timer_tab.dart:336` — the `d2TextMuted` reference is inside a **comment** citing the 3.96:1 failure as the reason it is NOT used; grep confirms zero live `d2TextMuted` usage in this file | **[verified]** |
 
@@ -312,13 +312,67 @@ Read in full this session.
   palette member, four-surface lockstep change) vs. the `Color.lerp` workaround. Not traced into
   `primitives.dart` this session — whether the workaround or the real token is what `SelahTone.info`
   currently resolves to is unconfirmed. Owner: design + `test_tokens.rs` maintainer.
-- **Q-04 — MOB-009 (Timer `Reset`/`TIME UP`).** Needs new `Command` variants in
-  `selahcue-lan/src/protocol.rs`, a `TimerSnapshot` original-duration field, and the cross-language
-  fixture update in `protocol_test.dart` ↔ `test_protocol.rs` (CLAUDE.md's own pinned-fixture rule).
-  Blocking for the last two rows of spec §4.6. Owner: backend + product.
+- **Q-04 — MOB-009 (Timer `Reset`/`TIME UP`). ANSWERED 2026-09-22 — see Reconciliation below.**
+  This question assumed new `Command` variants were required; they were not. The
+  `TimerSnapshot` original-duration field it also asked for had ALREADY shipped
+  (`total_secs`, desktop-only) since the Design 2.0 operator console rewrite that predates this
+  audit — the gap was that the Dart client never parsed it, not that the Rust wire lacked it.
 - **Q-05 — MOB-001.** A one-line doc-comment fix (`controller_view.dart:2`, `363:124` → `363:133`).
   Not blocking; flagged for the next mobile touch to this file rather than justifying its own
   ticket.
+
+---
+
+# § Reconciliation — 2026-09-22 (Mika, implementation ticket 17tnw2axpty)
+
+**MOB-009 closed. Q-04's premise was wrong: no new wire-protocol `Command` was needed for either
+control.** The ticket (and this audit's Q-04) inherited its scope from `CODE-REVIEW-batch-mobile-
+design2-b.md`'s "Not built" section, written when `TimerSnapshot` genuinely had no original-duration
+field on EITHER side of the wire. Between that batch review and this ticket, the Design 2.0 operator
+console rewrite (commit `c109193`) added `TimerSnapshot.total_secs` (+ `paused`) to the Rust struct
+AND shipped the desktop console's own `Reset` button — but only on the desktop side. The Dart
+`TimerSnapshot` model, the cross-language pinned fixtures, and the mobile Timer tab were never
+updated to match, so the gap this ticket describes was real on mobile, just not for the reason
+recorded: the field existed, the client just didn't read it.
+
+Verified directly (not assumed) before implementing:
+
+- `git log -S"total_secs" -- selahcue-lan/src/protocol.rs` and `git log -S"timer-reset" --
+  selahcue-operator/dist/app.js` both land on `c109193`, confirming `total_secs` and the desktop
+  Reset button shipped together, desktop-only, and predate this ticket.
+- `selahcue-operator/dist/app.js`'s `timer-reset` handler (`:3385-3414`) already composes `start_timer`
+  with `total_secs` (falling back to `remaining_secs + elapsed_secs` for an older host) — proving this
+  composition is not a new idea invented for mobile, it is the SAME control already shipped, reviewed,
+  and running in production on the other client.
+- `Timer::adjust` (`selahcue-core/src/timer.rs:53-64`) and its own doc comment — "Reducing below the
+  elapsed lands the timer in TIME UP on the next read" — confirm `AdjustTimer` already produces exactly
+  the forced-overrun `Send "TIME UP" to stage` needs; `is_time_up` (`:135-140`) is `elapsed >= duration`,
+  so driving `duration` down to `elapsed` (a delta of `-remainingSecs`) lands it there deterministically.
+- `rbac.rs:130-134` — `StartTimer`/`AdjustTimer`/`StopTimer`/`PauseTimer`/`ResumeTimer` all require the
+  SAME `Permission::Timer`, which the mobile Timer tab already gates its whole controls block on
+  (`widget.live.can(Capability.timer)`). No RBAC change, no 7-role concept, nothing beyond the existing
+  4-role model this ticket's guardrail asked not to expand.
+
+**What actually shipped** (both sides, in lockstep per CLAUDE.md's pinned-fixture rule):
+
+| Change | File |
+|---|---|
+| `TimerSnapshot.totalSecs` added, parses `total_secs` | `lib/models/protocol.dart` |
+| `Reset` + `Send "TIME UP" to stage` controls, full doc-comment rewrite | `lib/views/tabs/timer_tab.dart` |
+| Pinned fixture: `total_secs` round-trip (`to_json` populated shape + `from_json` against the SAME string the Dart test parses) | `selahcue-lan/tests/test_protocol.rs` (`timer_snapshot_total_secs_is_a_pinned_wire_shape_for_reset_and_time_up`) |
+| Mirrored fixture + assertion | `test/models/protocol_test.dart` |
+| Widget tests: Reset uses `totalSecs`, falls back to `remaining+elapsed` without it, Send-TIME-UP sends the right delta, disabled once already at TIME UP, both hidden for a Viewer | `test/views/timer_tab_test.dart` |
+
+**No `selahcue-lan/src/protocol.rs` edit in this PR** — deliberately. `Command` is unchanged; only the
+Dart model gained a field the Rust wire already sent. This is narrower than the ticket's own stated
+scope ("New `Command` variants... for Reset and Send-TIME-UP"); flagged in the ClickUp start comment
+and PR description rather than silently substituted, so the ticket owner can object before merge.
+
+**A11Y note on the new control.** The frame's own `Send "TIME UP" to stage` caption colour
+(`#6b7383`/`d2TextMuted`) on the frame's solid `#ff4d4d`/`d2Live` fill is ~1.5:1 — nowhere near AA.
+Built with `SelahGradient.onLiveInk` instead (the same ink `SelahButtonVariant.alarm` already uses on
+this exact fill, at a documented 5.31:1) for both the title and the caption — the same class of fix as
+this file's pre-existing lock-note A11Y-FIX, not a new pattern.
 
 ---
 

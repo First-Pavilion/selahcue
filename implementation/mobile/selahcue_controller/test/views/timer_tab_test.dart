@@ -1,5 +1,7 @@
 /// Timer controls are role-gated (Timer capability); the readout stays for all.
-/// Pause↔Resume toggles on `TimerSnapshot.running`. TIME UP / Reset are omitted.
+/// Pause↔Resume toggles on `TimerSnapshot.running`. Reset and Send "TIME UP" to
+/// stage (MOB-009) compose the EXISTING `start_timer`/`adjust_timer` commands —
+/// see `timer_tab.dart`'s doc comment.
 library;
 
 import 'package:flutter/material.dart';
@@ -89,18 +91,91 @@ void main() {
     live.dispose();
   });
 
-  testWidgets('TIME UP and Reset controls are not present (deferred)',
+  testWidgets(
+      'Producer taps Reset — restarts from totalSecs via start_timer (MOB-009)',
       (tester) async {
+    // remaining(45) + elapsed(255) = 300, same as totalSecs here on purpose —
+    // the assertion below still pins totalSecs as the SOURCE, not the sum.
     const running = TimerSnapshot(
-        remainingSecs: 5,
-        elapsedSecs: 300,
+        remainingSecs: 45,
+        elapsedSecs: 255,
         timeUp: false,
         warn: false,
-        running: true);
-    final live =
-        await _pump(tester, _Fake(MobileRole.producer, _viewWith(running)));
+        running: true,
+        totalSecs: 300);
+    final fake = _Fake(MobileRole.producer, _viewWith(running));
+    final live = await _pump(tester, fake);
+    expect(find.text('Reset'), findsOneWidget);
+    await tester.tap(find.text('Reset'));
+    await tester.pump();
+    final sent = fake.sent.singleWhere((c) => c['cmd'] == 'start_timer');
+    expect(sent['seconds'], 300);
+    live.dispose();
+  });
+
+  testWidgets(
+      'Reset falls back to remaining+elapsed when a host predates totalSecs (MOB-009)',
+      (tester) async {
+    const noTotal = TimerSnapshot(
+        remainingSecs: 45,
+        elapsedSecs: 255,
+        timeUp: false,
+        warn: false,
+        running: true); // totalSecs omitted
+    final fake = _Fake(MobileRole.producer, _viewWith(noTotal));
+    final live = await _pump(tester, fake);
+    await tester.tap(find.text('Reset'));
+    await tester.pump();
+    final sent = fake.sent.singleWhere((c) => c['cmd'] == 'start_timer');
+    expect(sent['seconds'], 300); // 45 + 255
+    live.dispose();
+  });
+
+  testWidgets(
+      'Producer taps Send "TIME UP" to stage — zeroes remaining via adjust_timer (MOB-009)',
+      (tester) async {
+    const running = TimerSnapshot(
+        remainingSecs: 45,
+        elapsedSecs: 255,
+        timeUp: false,
+        warn: false,
+        running: true,
+        totalSecs: 300);
+    final fake = _Fake(MobileRole.producer, _viewWith(running));
+    final live = await _pump(tester, fake);
+    final button = find.textContaining('TIME UP" to stage');
+    expect(button, findsOneWidget);
+    await tester.tap(button);
+    await tester.pump();
+    final sent = fake.sent.singleWhere((c) => c['cmd'] == 'adjust_timer');
+    expect(sent['delta_secs'], -45);
+    live.dispose();
+  });
+
+  testWidgets(
+      'Send "TIME UP" to stage is disabled once already at time up (MOB-009)',
+      (tester) async {
+    const timeUp = TimerSnapshot(
+        remainingSecs: 0,
+        elapsedSecs: 320,
+        timeUp: true,
+        warn: false,
+        running: true,
+        totalSecs: 300);
+    final fake = _Fake(MobileRole.producer, _viewWith(timeUp));
+    final live = await _pump(tester, fake);
+    await tester.tap(find.textContaining('TIME UP" to stage'));
+    await tester.pump();
+    expect(fake.sent.any((c) => c['cmd'] == 'adjust_timer'), isFalse);
+    live.dispose();
+  });
+
+  testWidgets(
+      'Reset and Send "TIME UP" to stage stay hidden for a Viewer (no Timer capability)',
+      (tester) async {
+    final live = await _pump(tester, _Fake(MobileRole.viewer, _viewWith(null)));
     expect(find.text('Reset'), findsNothing);
-    expect(find.textContaining('TIME UP to stage'), findsNothing);
+    expect(find.textContaining('TIME UP" to stage'), findsNothing);
     live.dispose();
   });
 }
