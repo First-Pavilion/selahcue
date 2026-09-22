@@ -289,9 +289,11 @@ above is left as originally written — this is the *current* status layered on 
 3. Computed the WCAG contrast for `PLN-009` directly from the live `--sc-*` token values and
    corroborated it against the existing automated sweep (`PL AC-46` in `operator_headless.py`, which
    already includes `.plan-viewonly`/`.plan-viewonly-why` in its ink-contrast site list).
-4. Verified with `python3 scripts/operator_headless.py`: **1771 checks, 0 FAIL** (was 1768 immediately
-   before this ticket's 3 new checks — re-derived from an actual clean run per this file's own
-   `EXPECTED_MIN_CHECKS` discipline, never hand-summed).
+4. Verified with `python3 scripts/operator_headless.py`: **1821 checks, 0 FAIL** (1818 immediately
+   before this ticket's 3 new checks, after rebasing onto `origin/main`'s intervening fixes — a real
+   conflict in `EXPECTED_MIN_CHECKS`'s own history block — re-derived from an actual clean run per
+   that constant's own discipline, never hand-summed; two independent post-rebase runs both read
+   1821, 0 FAIL, matching `EXPECTED_MIN_CHECKS` in `scripts/operator_headless.py`).
 
 ### FIXED
 
