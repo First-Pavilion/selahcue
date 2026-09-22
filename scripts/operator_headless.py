@@ -707,7 +707,7 @@ if not check_jump_call_site_is_click_only():
 # test above and re-confirmed by inspection; finding E (app.css's CON-134 comment block still
 # named the pre-fix window.__openChapterForStage as Edit's call) was a stale-comment correction
 # only. Confirmed by two independent runs (both 1625, 0 FAIL).
-EXPECTED_MIN_CHECKS = 1654
+EXPECTED_MIN_CHECKS = 1655
 
 
 def find_chrome():
@@ -1002,12 +1002,18 @@ STUB = r"""
     // binary). Settings › About & Licensing (17tnw2axwer) reads this for real, so the fixture
     // must be a real shape, not the generic Promise.resolve(null) fallback every unstubbed
     // command gets (which would make that page's render path untestable here).
+    // Translation::ALL is SIX entries (selahcue-scripture/src/lib.rs), not five — the fifth
+    // bundled PD translation (DBY) plus Young's Literal Translation (YLT), which is public domain
+    // but NOT bundled (loads from an on-disk cache at runtime, feature `download`) and so is the
+    // one real `downloadable:true` entry this command ever returns today (Cody's review of PR #68
+    // caught the fixture under-counting this at five).
     if (cmd === "list_translations") return Promise.resolve({translations:[
       {code:"KJV", name:"King James Version", downloadable:false, available:true},
       {code:"WEB", name:"World English Bible", downloadable:false, available:true},
       {code:"ASV", name:"American Standard Version", downloadable:false, available:true},
       {code:"WEBBE", name:"World English Bible, British Edition", downloadable:false, available:true},
-      {code:"DBY", name:"Darby Translation", downloadable:false, available:true}
+      {code:"DBY", name:"Darby Translation", downloadable:false, available:true},
+      {code:"YLT", name:"Young's Literal Translation", downloadable:true, available:false}
     ]});
     if (cmd === "view") return Promise.resolve(JSON.parse(JSON.stringify(V)));
     // Service Plan builder (86ajxxuz9): plan mutations + content-link + scripture search.
@@ -10359,9 +10365,11 @@ right after a generate/save");
         ok(window.__calls.some(function(c){ return c.cmd === "list_translations"; }),
            "Settings/About: scripture attributions are loaded via the real list_translations() command");
         var abRows = document.querySelectorAll("#ab-scripture-list .pp-inc-row");
-        ok(abRows.length === 5, "Settings/About: all 5 bundled translations render as their own row (" + abRows.length + ")");
+        ok(abRows.length === 6, "Settings/About: all 6 real translations render as their own row, bundled AND downloadable (" + abRows.length + ")");
         ok(/King James Version/.test(abRows[0].textContent) && /Public Domain/.test(abRows[0].textContent),
-           "Settings/About: each row names the real translation and its real (public-domain) licence, not fabricated text");
+           "Settings/About: a bundled row names the real translation and its real public-domain licence, not fabricated text");
+        ok(/Young's Literal Translation/.test(abRows[5].textContent) && !/Public Domain/.test(abRows[5].textContent),
+           "Settings/About: the one downloadable (not-yet-installed) translation does NOT get the Public Domain badge its bundled siblings get — the code reads downloadable, not a hardcoded assumption every entry is bundled");
 
         // Update status: honestly inert — a real, disabled, labelled control, never a fake "UP TO DATE".
         ok(el("ab-check-update").disabled && el("ab-check-update").getAttribute("aria-disabled") === "true",
