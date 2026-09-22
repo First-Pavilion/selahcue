@@ -9817,19 +9817,26 @@
         // fetched fresh here rather than from any cached view, because a stale "not referenced"
         // is the one wrong answer that matters: it would let the delete through silently.
         let planRefName = null;
+        let planRefUnknown = false;
         try {
           const v = await invoke("view");
           const items = (v && v.items) || [];
           const linked = items.some((it) => it.link && it.link.kind === "deck" && it.link.id === id);
           if (linked && v.plan_name) planRefName = v.plan_name;
         } catch (e) {
-          // Couldn't check — fail OPEN on the warning (never claim "not referenced" from a
-          // failed read) but don't block the delete flow itself on this secondary check.
+          // Couldn't check — fail OPEN on the WARNING, not just on the delete flow. The comment
+          // above always said "never claim 'not referenced' from a failed read", but the code
+          // used to leave `planRefName` at its default `null` and add nothing here — which reads
+          // EXACTLY like a clean "checked, definitely not referenced" to the code below, the one
+          // wrong answer PME-059 exists to prevent (Sana + Vera, PR #69 review). `planRefUnknown`
+          // is a real third state, not a silent collapse into "clear".
           console.error(e);
+          planRefUnknown = true;
         }
         const warnings = [];
         if (inUse) warnings.push("It’s the presentation you have open — deleting it switches the editor to another.");
         if (planRefName) warnings.push("Used in your service plan “" + planRefName + "” — that plan item will show missing.");
+        else if (planRefUnknown) warnings.push("Couldn’t check whether this presentation is used in your service plan — check before deleting.");
         pmConfirm({
           title: "Delete “" + (name || "Untitled presentation") + "”?",
           // PME-058: name the SLIDE COUNT — "its slides" understates what is about to go. The count

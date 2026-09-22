@@ -724,19 +724,20 @@ if not check_jump_call_site_is_click_only():
 # against the live Figma frame (344:124) rather than just the doc. Confirmed by two independent
 # runs (both 1630, 0 FAIL).
 #
-# 1630 -> RESOLVED_TOTAL: ClickUp 17tnw2axptg (Presentation web: safety & access essentials),
-# authored in parallel on a separate branch against the pre-17tnw2axptu baseline (1625) and
-# rebased onto main after that ticket landed (which is why this entry's starting point is 1630,
-# not the 1625 these checks were originally counted against). New checks added on that branch,
-# pre-rebase: 37 across PME-055/053/059/006-011/027 (this ticket's own implementation); +3 (1
-# setup + 2 real assertions) for Cody's PR #69 finding that a duplicate source vanishing
-# mid-dialog toasted a false-positive "Presentation duplicated" instead of surfacing the error
-# banner; +2 for Sana + Vera's independently-corroborated PR #69 finding that pmLibDelete's "fail
-# OPEN on the warning" comment didn't match the code on a failed view() read. All three
+# 1630 -> 1672 (pending a fresh post-rebase count; see the confirmation note replacing this one):
+# ClickUp 17tnw2axptg (Presentation web: safety & access essentials), authored in parallel on a
+# separate branch against the pre-17tnw2axptu baseline (1625) and rebased onto main after that
+# ticket landed — this entry's starting point is 1630, not the 1625 these checks were originally
+# counted against. New checks added on that branch, pre-rebase, in three passes: 37 across
+# PME-055/053/059/006-011/027 (this ticket's own implementation); +3 (1 setup + 2 real assertions)
+# for Cody's PR #69 finding that a duplicate source vanishing mid-dialog toasted a false-positive
+# "Presentation duplicated" instead of surfacing the error banner; +2 for Sana + Vera's
+# independently-corroborated PR #69 finding that pmLibDelete's own comment promised "fail OPEN on
+# the warning" for a failed view() read, but the code left the warning list untouched on failure —
+# reading exactly like a clean "not referenced" and defeating PME-059's purpose. All three
 # behavioural fixes were mutation-verified pre-rebase (reverting each turned exactly its own
-# assertion(s) RED, restored). Recomputed post-rebase against main's own +5 (17tnw2axptu's
-# PSC-009 block, above) — see RESOLVED_TOTAL and the confirmation note this placeholder is
-# replaced with once the post-rebase suite has actually been run twice.
+# assertion(s) RED, restored). 1630 + 37 + 3 + 2 = 1672 is the arithmetic prediction; replaced
+# below with the actual measured count once the post-rebase suite has been run twice.
 EXPECTED_MIN_CHECKS = 1630  # placeholder pending a fresh post-rebase count; do not trust this value yet
 
 
@@ -1027,7 +1028,13 @@ STUB = r"""
     window.__calls.push({cmd:cmd, args:args});
     if (cmd === "builtin_themes") return Promise.resolve([{name:"Classic", theme:JSON.parse(JSON.stringify(T))}]);
     if (cmd === "system_fonts") return Promise.resolve(["Arial","Georgia","Helvetica Neue"]);
-    if (cmd === "view") return Promise.resolve(JSON.parse(JSON.stringify(V)));
+    // Test hook (mirrors __deckListNullOnce/__pmRejectOnce): force ONE `view()` rejection, so a
+    // failed local-state read (e.g. PME-059's plan-reference check in pmLibDelete) can be told
+    // apart from a genuinely healthy read reporting "not referenced".
+    if (cmd === "view") {
+      if (window.__viewRejectOnce) { window.__viewRejectOnce = false; return Promise.reject(new Error("view failed")); }
+      return Promise.resolve(JSON.parse(JSON.stringify(V)));
+    }
     // Service Plan builder (86ajxxuz9): plan mutations + content-link + scripture search.
     // Each returns a fresh OperatorView (byte-cloned) so the builder re-render never aliases V;
     // set_item_content is a PLAN edit (never a live-control command — the invariant check relies
@@ -10171,6 +10178,22 @@ right after a generate/save");
         var wWarnClean = document.querySelector(".pm-confirm-warn");
         ok(!wWarnClean || !/show missing/.test(wWarnClean.textContent),
            "PME-059 (control): a deck NOT referenced by the plan shows no plan-reference warning");
+        wCloseDel();
+        // Sana + Vera (PR #69 review): a FAILED view() read must not collapse into the same
+        // "no warning" shape as a genuinely clean read — that would let a delete through
+        // silently on exactly the failure this check exists to survive. window.__viewRejectOnce
+        // is consumed synchronously by pmLibDelete's own first `await invoke("view")` (the click
+        // below sets the flag and fires the click back-to-back, with no `await` in between, so
+        // the app's own 1 Hz view() poll cannot race in and consume it first).
+        window.__viewRejectOnce = true;
+        wLinkedCard.querySelector(".pm-lib-dots").click();
+        await wWait(function(){ return !!el("pm-lib-menu"); });
+        Array.prototype.slice.call(el("pm-lib-menu").querySelectorAll("button")).filter(function(b){ return /^Delete/.test(b.textContent); })[0].click();
+        ok(await wWait(function(){ return !!document.querySelector(".pm-confirm-warn"); }),
+           "Sana + Vera (PR #69): a FAILED plan-reference check still shows a warning — fails OPEN, never silently reading as \"not referenced\"");
+        var wWarnFailed = document.querySelector(".pm-confirm-warn");
+        ok(!!wWarnFailed && /couldn.t check/i.test(wWarnFailed.textContent),
+           "Sana + Vera (PR #69): ...and the warning honestly says the check couldn't be completed, not a fabricated \"not referenced\" or a fabricated \"referenced\" (\"" + (wWarnFailed ? wWarnFailed.textContent : "") + "\")");
         wCloseDel();
         V.items = wSavedItems; V.plan_name = wSavedPlanName;
       }
