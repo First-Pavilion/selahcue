@@ -1111,19 +1111,107 @@ fn chrome_runs_carry_the_designed_font_weight() {
     );
 }
 
-/// The regression guard for the finding above. `Family::Name("Inter")` is only bundled at
-/// weight 400 and 700; measured directly against the SAME public API `draw_text` uses
-/// (`selahcue_engine::raster::measure_line_width`, swept 400/500/600/700 at fixed text+px), a
-/// weight of 500 or 600 measures a DIFFERENT width from 400, from 700, and from each other —
-/// i.e. each escapes to its own distinct, host-installed system face, not a face "close
-/// enough" to either bundled one. So this pins the actual safety property `stage.rs`'s
-/// `design::WEIGHT_BOLD`/`WEIGHT_REGULAR` rely on, rather than trusting the two-values-only
-/// convention to hold by inspection. If a future change bundles real Inter Medium/Semi Bold
-/// faces (or the engine starts keeping weight fallback inside the requested family), this
-/// test's premise assertions (not its body) are what should start failing, and that failure
-/// is the signal `stage.rs` can safely reintroduce 500/600.
+/// The REAL regression guard for the finding above — composes every template/state/scale/
+/// message combination through the actual `compose_stage` API and asserts every `Layer::Text`
+/// the composer emits carries one of the two weights genuinely safe to request from the
+/// bundled `Inter` family (see the `design` module's font-weight doc comment). This is a
+/// property of THIS CRATE'S CODE (which `u16` constant each `line()` call site passes), not of
+/// the host's installed fonts, so — unlike
+/// [`unbundled_inter_weights_still_escape_to_host_faces`] below — it is safe to run
+/// unconditionally in CI on every OS.
+///
+/// An earlier cut of this batch had a test with this same NAME that instead measured
+/// `measure_line_width` in isolation — it could tell "500/600 are unsafe in general" but could
+/// not tell "the composer still only ever asks for 400/700", so a stray `line(..., 600)` call
+/// anywhere in `stage.rs` would have sailed through it. Caught in review (Vera, mutation-proved
+/// by setting the scripture `"TIME LEFT"` caption — a run no other test names — to 600 and
+/// showing the whole suite stayed green). This version composes real frames and enumerates
+/// every text run's weight, so that specific mutation (or any call site passing a literal
+/// weight outside `{400, 700}`) fails here directly.
 #[test]
-fn only_the_two_bundled_inter_weights_are_requested_by_the_stage_composer() {
+fn the_stage_composer_emits_only_bundled_inter_weights() {
+    use std::collections::BTreeSet;
+
+    let mut seen: BTreeSet<u16> = BTreeSet::new();
+    let mut frames_checked = 0usize;
+    for template in [
+        StageTemplate::Worship,
+        StageTemplate::Scripture,
+        StageTemplate::TimerOnly,
+    ] {
+        for up in [false, true] {
+            for scale in [
+                STAGE_TEXT_SCALE_MIN,
+                STAGE_TEXT_SCALE_DEFAULT,
+                STAGE_TEXT_SCALE_MAX,
+            ] {
+                for msg in [None, Some("WRAP UP · 2 MIN LEFT")] {
+                    let frame = if template == StageTemplate::TimerOnly {
+                        // The timer-only composer has its own helper (a non-song slide) and
+                        // takes no `message` — the overlay is template-agnostic, already
+                        // covered by the worship/scripture branches.
+                        compose_timer_only(up, scale)
+                    } else {
+                        compose(template, up, scale, msg, W, H)
+                    };
+                    for layer in &frame.layers {
+                        if let Layer::Text { style, .. } = layer {
+                            seen.insert(style.map(|s| s.weight).unwrap_or(400));
+                        }
+                    }
+                    frames_checked += 1;
+                }
+            }
+        }
+    }
+
+    // Vacuity guard: a bug that made the composer draw NO text at all (e.g. every branch
+    // returning early) would leave `seen` empty and the assertion below would pass for the
+    // wrong reason — nothing was checked, not "everything checked was fine".
+    assert!(
+        frames_checked >= 30,
+        "only checked {frames_checked} frames — the sweep above is smaller than intended"
+    );
+    assert!(
+        !seen.is_empty(),
+        "no stage frame across {frames_checked} compositions drew any text at all — the \
+         weight assertion below would be vacuous"
+    );
+
+    assert_eq!(
+        seen.into_iter().collect::<Vec<_>>(),
+        vec![400, 700],
+        "the stage composer emitted a text weight outside the two bundled Inter faces \
+         (400/700) — anything else silently escapes onto a host-installed font (see \
+         `design::WEIGHT_BOLD`/`WEIGHT_REGULAR`'s doc comment)"
+    );
+}
+
+/// Evidence, not a CI gate — **`#[ignore]`d on purpose**. `Family::Name("Inter")` is bundled at
+/// exactly weight 400 and 700; measured directly against the SAME public API `draw_text` uses
+/// (`selahcue_engine::raster::measure_line_width`, swept 400/500/600/700 at fixed text+px on
+/// the machine this was authored on), 500 and 600 each measured a DIFFERENT width from 400,
+/// from 700, and from each other — i.e. each escaped the family onto its own distinct,
+/// host-installed face (confirmed independently from source too — cosmic-text 0.12.1's
+/// `Attrs::matches` filters by style/stretch only, ignoring family; family is applied later at
+/// an exact-weight-diff filter, and when nothing matches that filter the family constraint is
+/// dropped entirely and shaping falls through to whatever host face is left).
+///
+/// This is exactly why it is `#[ignore]`d rather than run by default: the specific widths (and
+/// therefore which assertions fire) are a property of what's installed on the machine running
+/// the test, not of this crate's code — the "safe" pair `{400, 700}` is asserted with zero host
+/// dependency by [`the_stage_composer_emits_only_bundled_inter_weights`] above instead. This
+/// crate has shipped exactly this class of "green on the author's OS, red on a sparser CI
+/// runner" test before (`test_measure.rs`'s `installed_serif`, ticket 86ak643rc) and the
+/// standing guidance since is not to gate CI on a host font assumption. Re-run by hand
+/// (`cargo test -p selahcue-present -- --ignored unbundled_inter_weights`) when deciding
+/// whether it is safe to bundle a real Inter Medium/Semi Bold face and retire the `WEIGHT_BOLD`
+/// / `WEIGHT_REGULAR` two-value compromise — a widening of these gaps on that machine is the
+/// signal that 500/600 (or whatever the new faces' real weights are) have become safe.
+#[test]
+#[ignore = "asserts a property of the HOST's installed fonts, not of this crate's code — see \
+            doc comment; run manually, not as a CI gate (86ak643rc precedent)"]
+fn unbundled_inter_weights_still_escape_to_host_faces() {
     use selahcue_engine::raster::measure_line_width;
 
     let font = selahcue_engine::scene::FontName::new("Inter").unwrap();
@@ -1139,30 +1227,20 @@ fn only_the_two_bundled_inter_weights_are_requested_by_the_stage_composer() {
     // test would be unable to tell "escaped the family" from "landed on the bundled face".
     assert_ne!(
         w400, w700,
-        "the bundled Regular and Bold Inter faces measure identically"
+        "the bundled Regular and Bold Inter faces measure identically on this host"
     );
 
     assert_ne!(
         w500, w400,
-        "weight 500 now measures the same as bundled Inter Regular (400) — if a real Inter \
-         Medium face was bundled, `design::WEIGHT_REGULAR` can be replaced with a proper \
-         Medium constant for the stanza/NEXT/footer roles"
-    );
-    assert_ne!(
-        w500, w700,
-        "weight 500 measures the same as bundled Inter Bold (700) — unexpected; re-check \
-         before treating 500 as safe"
-    );
-    assert_ne!(
-        w600, w400,
-        "weight 600 measures the same as bundled Inter Regular (400) — unexpected; re-check \
-         before treating 600 as safe"
+        "on THIS host, weight 500 now measures the same as bundled Inter Regular (400) — if \
+         a real Inter Medium face was bundled, `design::WEIGHT_REGULAR` could be replaced \
+         with a proper Medium constant for the stanza/NEXT/footer roles"
     );
     assert_ne!(
         w600, w700,
-        "weight 600 now measures the same as bundled Inter Bold (700) — if a real Inter Semi \
-         Bold face was bundled, `design::WEIGHT_REGULAR` can be replaced with a proper Semi \
-         Bold constant for the wall-clock roles"
+        "on THIS host, weight 600 now measures the same as bundled Inter Bold (700) — if a \
+         real Inter Semi Bold face was bundled, `design::WEIGHT_REGULAR` could be replaced \
+         with a proper Semi Bold constant for the wall-clock roles"
     );
 }
 

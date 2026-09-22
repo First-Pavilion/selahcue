@@ -514,6 +514,17 @@ mod design {
     // difference doesn't matter, but because rendering it safely needs either a bundled
     // Inter Medium/Semi Bold static face or an engine change that keeps weight fallback
     // inside the requested family, and this crate has neither today.
+    //
+    // Why Regular and not Bold, given 600 (Semi Bold) is numerically CLOSER to 700 than to
+    // 400 — a real question, raised in review, answered here so it is a decision and not an
+    // accident. Numeric distance between weight VALUES does not track visual distance once
+    // the only two achievable outcomes are "looks like Regular" and "looks like Bold": the
+    // design puts the wall clock, stanza position and NEXT lines at a LIGHTER weight than the
+    // Bold labels/readouts specifically so they read as visually subordinate to them. Mapping
+    // those roles to `WEIGHT_BOLD` would render them IDENTICAL to the Bold labels — the exact
+    // pre-STG-012 defect (uniform Bold) reintroduced for six roles, not a closer approximation
+    // of Semi Bold/Medium. `WEIGHT_REGULAR` overshoots how much lighter, but preserves the
+    // qualitative hierarchy the design is using weight for; `WEIGHT_BOLD` would erase it.
     pub const WEIGHT_BOLD: u16 = 700;
     /// Regular — the bundled Inter face used for every chrome role Design 2.0 draws Semi
     /// Bold or Medium (see the module doc above for why those two collapse into this one).
