@@ -3136,6 +3136,35 @@ DRIVER = r"""
       await sleep(200); // setCursor(idx, false) now runs too — confirm it stays quiet as well
       ok(!window.__calls.slice(callsBeforeArm).some(function (c) { return c.cmd === "stage_scripture" || c.cmd === "follow_scripture"; }),
          "CON-134 (Sana finding B): once the deferred fetch resolves and Edit's own setCursor(idx, false) runs, still nothing stages — the window is closed, not just narrowed");
+
+      // === CON-054 (blocker, WCAG 1.4.1) — the staged verse's non-colour signal. A fresh,
+      // deterministic chapter load (not the stale verse-list content left over from the race
+      // test above) exercises window.__openChapterForStage directly — the real entry point
+      // staging a detection uses in production — and waits for its async get_chapter round
+      // trip to actually resolve before inspecting the DOM. The console surface itself was
+      // last switched away to theme-designer a few tests back, so switch back first —
+      // otherwise the panel is hidden and getClientRects() would read empty for reasons that
+      // have nothing to do with the pill.
+      document.querySelector('.nav-item[data-surface="console"]').click();
+      window.__openChapterForStage("Isaiah 61:5");
+      await waitFor(function () { return !!el("verse-list").querySelector(".verse.cursor"); });
+      var vRows = el("verse-list").querySelectorAll(".verse");
+      ok(vRows.length === 2, "CON-054 (setup): the fixture chapter renders both its verses");
+      var vCursorRow = el("verse-list").querySelector(".verse.cursor");
+      var vPill = vCursorRow.querySelector(".verse-staged-pill");
+      ok(!!vPill && getComputedStyle(vPill).display !== "none" && vPill.getClientRects().length > 0,
+         "CON-054: the staged verse row paints a STAGED pill (computed display, not just the class)");
+      ok(vPill.textContent.trim() === "STAGED",
+         "CON-054: the pill states the word STAGED — a non-colour signal alongside the row's green tint (WCAG 1.4.1)");
+      var vOtherRow = Array.prototype.filter.call(vRows, function (r) { return r !== vCursorRow; })[0];
+      ok(!!vOtherRow, "CON-054 (setup): a second, non-staged verse row exists to serve as a negative control");
+      var vOtherPill = vOtherRow.querySelector(".verse-staged-pill");
+      ok(!!vOtherPill && getComputedStyle(vOtherPill).display === "none",
+         "CON-054 (negative control): a verse that is NOT staged paints no STAGED pill — the colour and the text always agree");
+      var vPillCs = getComputedStyle(vPill);
+      var vPillR = _cr(_rgba(vPillCs.color), _rgba(vPillCs.backgroundColor));
+      ok(vPillR >= 4.5, "CON-054: the STAGED pill's label clears AA-normal on its own fill (" + _f(vPillR) + ":1)");
+
       // Sana's non-blocking finding: a MISSING confidence used to fail OPEN into the confident
       // branch (Approve fast-path) purely because `hasConfidence && …` short-circuits false on
       // no score at all — an unscored match is at least as uncertain as a known-low one.
@@ -9994,6 +10023,37 @@ right after a generate/save");
          "CON-102: a second activation still sends on:false — the control is not a disguised toggle");
       ok(!el("blackout-explain") || el("blackout-explain").hidden,
          "CON-102: the audience is NOT re-blacked by pressing Restore twice");
+
+      // --- CON-098 (blocker): the emergency-footer CONTAINER itself re-tints on blackout,
+      // not just the button label/explanation. A prior pass judged the Figma re-tint
+      // invisible using the WCAG relative-luminance ratio between the two grounds (1.03:1) —
+      // that ratio is a text-legibility metric and compresses toward 1:1 for any two very-dark
+      // colours regardless of hue, so it does not actually answer "is this visible". Re-checked
+      // in CIELAB (ticket 17tnw2axpta): deltaE76 ~3.5 for the background and ~13.4 for the
+      // border shift — past the ~2.3 JND, so the re-tint is real. State is restored by the
+      // block above, so this starts from the resting ground, engages via the real command
+      // path (never by poking the view), and restores again so later checks in this suite see
+      // the resting footer, not an engaged one. ---
+      var wEmFoot = el("emergency");
+      ok(!wEmFoot.classList.contains("blackout"),
+         "CON-098 (control): with output live the footer carries no re-tint class");
+      var wRestBg = getComputedStyle(wEmFoot).backgroundColor;
+      var wRestBorder = getComputedStyle(wEmFoot).borderTopColor;
+      wBoBtn.click(); // engage via the real command path
+      ok(await wWait(function(){ return wEmFoot.classList.contains("blackout"); }),
+         "CON-098 (setup): engaging blackout adds the re-tint class to the real #emergency element");
+      var wEngBg = getComputedStyle(wEmFoot).backgroundColor;
+      var wEngBorder = getComputedStyle(wEmFoot).borderTopColor;
+      ok(wEngBg !== wRestBg,
+         "CON-098: the footer's computed background genuinely changes on blackout (" + wRestBg + " -> " + wEngBg + ")");
+      ok(wEngBorder !== wRestBorder,
+         "CON-098: the footer's computed border colour changes too, not just the background (" + wRestBorder + " -> " + wEngBorder + ")");
+      ok(wEngBg === "rgb(26, 12, 12)",
+         "CON-098: the engaged ground is exactly the canonical frame's #1a0c0c (337:203), not an approximation");
+      var wRes2 = el("restore-output");
+      wRes2.click();
+      ok(await wWait(function(){ return !wEmFoot.classList.contains("blackout"); }),
+         "CON-098: restoring output un-tints the footer again (cleanup — later checks expect the resting footer)");
 
       // --- §10 case 5: the emergency-ready chip is the canonical frame's PILL --------------
       // Asserting the declared radius alone would pass on an element nobody paints, and "999px"
