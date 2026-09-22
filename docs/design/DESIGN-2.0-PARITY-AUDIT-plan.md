@@ -272,9 +272,12 @@ linking is out of scope for this docs-only pass.
 ## Reconciliation — 2026-09-22
 
 **Author:** Farah (Frontend). **Scope:** ClickUp `17tnw2axptt` — re-verify all 9 `PLN-###` findings
-against `main` (this worktree's base commit, `0f08778`, `origin/main` tip at the time) and close what
-is genuinely open and not decision- or dependency-blocked. This section is additive; every table
-above is left as originally written — this is the *current* status layered on top.
+against `main` and close what is genuinely open and not decision- or dependency-blocked. This
+section is additive; every table above is left as originally written — this is the *current* status
+layered on top. (This worktree started at `0f08778`; a real conflict in `EXPECTED_MIN_CHECKS`'s own
+history block during rebase — see Method step 4 — means the branch's actual, current base is
+`eb67b33`, `origin/main` tip as of the PLN-004 precedence fix below; both SHAs are real commits on
+`main`, cited here to avoid pointing a future reader at the wrong one, per Sana's PR #83 review.)
 
 ### Method
 
