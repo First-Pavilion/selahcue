@@ -1292,3 +1292,138 @@ failed local-state read (Sana + Vera, independently). `python3 scripts/operator_
 1672 checks, 0 FAIL after rebasing onto `main`'s `17tnw2axptu` (Pre-service Check parity closure,
 merged during this session) — the counts and evidence paths quoted earlier in this update predate
 that rebase and the three review-remediation commits; this paragraph is the current state.
+
+---
+
+## Reconciliation — 2026-09-21 (frame `208:124` is gone from the live file)
+
+**Author:** Uma (UI/UX). **Scope:** while implementing ClickUp `17tnw2axptk` (OUT-006/OUT-015, the
+CCLI/attribution model gap), a re-verification of this audit's Figma citations against the live file
+`SYQn5hFY8YVQKm3c6rw0eJ` found that frame `208:124` — cited by `OUT-001`, `OUT-002`, `OUT-003`,
+`OUT-004`, `OUT-005`, `OUT-006`, `OUT-007`, `OUT-008`, `OUT-016`, `OUT-017`, and the "Part B
+Suggested build order" — no longer exists. This entry independently re-derives that finding (it does
+not merely restate a prior session's numbers) and records what is and is not still trustworthy.
+
+### Method
+
+- `get_metadata(fileKey=SYQn5hFY8YVQKm3c6rw0eJ, nodeId=208:124)` returns *"The provided node ID was
+  not found in the file."* Same result for `208:135` (the CCLI footer node) in an earlier pass this
+  session.
+- `get_metadata(fileKey=SYQn5hFY8YVQKm3c6rw0eJ, nodeId=390:124)` — the audit's other Part B
+  citation ("Background — States (Design 2.0)") — returns its full 51-node subtree intact, and it
+  matches this doc's own citations exactly: `393:127` is still `#0E1016`, `393:130`-`393:135` are
+  still the five unlabelled preset chips (`OUT-010`), and `390:172`-`390:174` still read
+  `180° · Vertical` (`OUT-011`). This rules out a fileKey/access problem — the file is reachable and
+  at least one Part B frame from the same audit resolves cleanly.
+- A full-page dump (`get_metadata`, `nodeId=0:1`, 2,483,513-character XML payload, saved and grepped
+  rather than read inline) contains **zero** `id="208:...\"` nodes and **zero** `id="204:...\"` nodes
+  anywhere in the file. Text search across the same dump for the literal mock strings `Sinach`,
+  `7115744`, and `Theme templates` (the frame's own name) also returns **zero** hits. The three
+  matches on the bare word `Song` are unrelated Service Plan nodes (`Opening Song` / `Closing Song`
+  planning-item labels under `606:*`/`608:*`/`610:*`), not the `208:130` "Song — Center" mock.
+
+This confirms the frame was not renamed or renumbered to a nearby id — it is absent from the file by
+every search this session ran, including a literal-string search that would survive an id change.
+
+### What this does and does not invalidate
+
+- **Every geometry/colour value quoted from `208:*`** in `OUT-001` through `OUT-005`, `OUT-007`,
+  `OUT-008`, `OUT-016`, and `OUT-017` (e.g. the `150.59°` gradient angle, the `#9AA4B2` captions,
+  the `y 911‰` CCLI footer position) — `OUT-006` is excluded here as it is already FIXED, per the
+  update above — is **no longer independently re-verifiable against the live file** as written.
+  Treat those as a **frozen historical reading from 2026-08-23**, not a live citation — the values may
+  still be correct, but nothing in the current file can confirm or refute them anymore.
+- **This does not reopen or invalidate `17tnw2axptk`'s shipped fix.** That ticket added
+  `Theme.footer` / `Slide.song` fields to `selahcue-present` generically (closing `OUT-006`/
+  `OUT-015` at the model level) without wiring a footer into any built-in theme or committing to
+  `208:126`/`208:130`/`208:137`'s exact per-role pixel values — that per-role wiring is `OUT-009`,
+  already a later, separate build-order step. A frame disappearing before that later step is reached
+  does not touch work already merged.
+- **It does block Part B "Suggested build order" Step 3 onward** ("per-role templates … after
+  Q-10", line 922 of this doc as originally written): `OUT-002`/`OUT-003`/`OUT-016`/`OUT-017`
+  (Scripture — Full geometry/gradient), `OUT-004` (Song stanza leading), `OUT-005` (Song's absent
+  title region), `OUT-007` (Lower Third band fill), and `OUT-008` (Lower Third reference size) all
+  cite pixel values read from a frame that can no longer be opened, screenshotted, or measured again.
+  Anyone picking up that step is now working from a written record, not a design file — the next
+  design pass on these templates needs either a redraw or an owner decision that the frozen readings
+  above are good enough to build from as-is.
+- **`OUT-009`** (the template *set* mismatch — `BUILTIN_NAMES` vs. the frame implying `classic`,
+  `high-contrast` *and* `lower-third` need distinct visual voices) is a **structural** finding about
+  what exists in code vs. what the frame implied existing; it does not depend on any single geometry
+  value and stands unaffected.
+- **`OUT-012` through `OUT-015`** cite code (`selahcue-gpu`, `measure_word`, `Slide`), not `208:*`
+  geometry, and are unaffected by this finding.
+
+### No replacement found
+
+This session searched for whatever now represents the audience-output theme-template design intent
+(Scripture/Song/Lower-Third mocks) and found **none**:
+
+- No frame anywhere in the file is named anything resembling "Theme templates", "audience output",
+  or "S8-3a" (searched the full-page dump; zero hits).
+- No frame contains the mock's own reference content (`Sinach`, `7115744`) under any id.
+- The only Design-2.0-era frame that touches theme *backgrounds* is `390:124` ("Background — States"),
+  which is a **Theme Designer control-panel** mock (solid/gradient/image pickers, presets, an angle
+  field) — it was already in scope as the audit's Part B reference-only citation (`317:124`/
+  `204:124`, background reference), not a replacement for the audience-facing Scripture/Song/Lower-
+  Third output mocks. It shows how an operator *configures* a background, not what the congregation
+  sees rendered.
+
+There is no clean 1:1 replacement. The most defensible reading is that the `208:*` mock was deleted
+with nothing put in its place, not renamed or merged.
+
+### A deleted mock is itself evidence toward Q-10
+
+This doc's own **Q-10** asks: *"Are `208:124`'s mock geometries **normative**, or illustrative? …
+Illustrative — the region model wins; redraw the mocks from a real render."* (line 828 of this doc as
+originally written). The suggested build order is explicit that Step 3+ (per-role templates) does
+not proceed until Q-10 is answered (line 911: *"Q-10 is answered — every geometry row in that frame
+depends on it."*).
+
+The mock now being gone is not itself an answer to Q-10, but it is a data point worth surfacing to
+product/design ownership rather than silently left stale: **the audit's own suggested resolution for
+Q-10 was already "redraw the mocks from a real render"** — i.e. treat `208:124` as disposable
+reference art, not a frozen spec. Its disappearance is consistent with that resolution (someone may
+already be treating it as illustrative and moved on) but could equally be an accidental deletion
+during unrelated Figma housekeeping. This session found no comment, branch history, or FigJam note
+inside the file explaining the removal — only its absence. Flagging this explicitly, as the task
+requested, rather than assuming either explanation: **Q-10 should be put to product/design ownership
+now, with "the reference mock no longer exists" as an added fact in the decision, before Part B Step
+3 work starts.**
+
+### Settings · About & Licensing CCLI cluster — already tracked, not orphaned
+
+Separately, this session found a live, intact cluster of nodes under `584:124` ("Settings · About &
+Licensing — Design 2.0") and its per-state variants `592:127`/`592:371`/`592:622`/`592:872`/
+`592:1130` ("Settings · About · State — Checking for updates / Update available / Update check error
+/ Conditional rows shown / Permission (reduced)"), each containing a repeated section titled
+`SONG COPYRIGHT & CCLI` / `Manage song copyright & CCLI numbers` / `How CCLI reporting works`, with
+body copy: *"Add each song's copyright details — title, author, © year, publisher, CCLI# — in the
+song editor."* This matches PRD **FR-021**'s field set exactly (title, author, ©year, publisher,
+CCLI#).
+
+This is **not** undocumented: `docs/design/SETTINGS-2.0-HANDOFF.md` §4.8 ("About & Licensing —
+`584:124`", line 99) already cites this exact frame and its five state nodes verbatim, including the
+"conditional-rows-shown (NDI/cloud/CCLI active) `592:872`" state. So the *panel surface* is tracked
+and current — this is not the same gap as `208:*`.
+
+What is **not** covered by any citation found in `docs/design/` is the actual **input form** — the
+title/author/©year/publisher/CCLI# entry fields themselves, inside the song editor, that this
+Settings panel's copy points to ("in the song editor"). `docs/design/UX-STATE-MATRIX.md` (the Editor
+surface, "Populated" row) mentions "copyright-metadata fields for songs (FR-021)" narratively, with
+no frame/node citation, and `docs/design/SONG-GROUPS-HOTKEYS-spec.md` does not mention CCLI or
+copyright at all. **Flag, not a fix:** the INPUT side of FR-021 (the concrete editor fields, their
+layout, validation, and empty/error states) reads as under-specified relative to the Settings panel
+that links to it, and may be worth its own product/design ticket — complementing the OUTPUT-side
+model ticket `17tnw2axptk` already shipped in `selahcue-present`. This session did not create that
+ticket; ClickUp ticket creation was out of scope for this pass.
+
+### Totals
+
+No finding changes verdict or severity in this entry — this is a **citation-currency** correction,
+not a re-scored re-verification. `OUT-006` and `OUT-015` are already FIXED (per the 2026-09-21
+update above); `OUT-009` and `OUT-012`–`OUT-015` are confirmed unaffected; the remaining
+`OUT-001`–`OUT-005`, `OUT-007`, `OUT-008`, `OUT-016`, `OUT-017` keep their existing verdicts/
+severities but are now flagged as resting on a **frozen 2026-08-23 reading** rather than a live
+citation. This entry was written before this file's most recent totals table (2026-09-22 update
+above, **63 open**) merged; it does not change that count.
