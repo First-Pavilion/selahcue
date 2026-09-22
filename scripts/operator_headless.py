@@ -707,7 +707,75 @@ if not check_jump_call_site_is_click_only():
 # test above and re-confirmed by inspection; finding E (app.css's CON-134 comment block still
 # named the pre-fix window.__openChapterForStage as Edit's call) was a stale-comment correction
 # only. Confirmed by two independent runs (both 1625, 0 FAIL).
-EXPECTED_MIN_CHECKS = 1689
+#
+# 1625 -> 1630: ClickUp 17tnw2axptu (Pre-service Check parity closure). The audit
+# (docs/design/DESIGN-2.0-PARITY-AUDIT-preservice.md) flagged `.ps-detail-warn`/`.ps-detail-block`
+# as an UNMEASURED contrast pairing (PSC-009) rather than a scored defect. Independently computed
+# both clear AA-NORMAL against --sc-surface at the row's real 12px/500 weight (8.85:1 / 5.52:1 —
+# the second figure matches PME-004's independently-established figure for the same token pairing
+# exactly), so there was no fix to make — 5 new assertions (2 premises, 2 real measurements, 1
+# cleanup) added to lock the passing state in place on the LIVE DOM instead of leaving it
+# unmeasured. Mutation-verified: temporarily recoloured both rules to --sc-surface (matching the
+# background, forcing ~1.00:1) and confirmed EXACTLY those 2 measurement assertions went RED
+# (1630 checks, 2 FAIL) with nothing else disturbed; restored and re-confirmed clean. The other 8
+# non-PSC-005 findings needed no code change: PSC-001/002/003/008 remain genuinely blocked on the
+# still-open `DECISION — New-surfaces` ClickUp task (17tnw2axpu4, zero comments); PSC-004/006/007
+# were already MATCH/EXTRA/an accepted honesty trade-off per the audit's own verdicts, re-verified
+# against the live Figma frame (344:124) rather than just the doc. Confirmed by two independent
+# runs (both 1630, 0 FAIL).
+#
+# 1630 -> 1672: ClickUp 17tnw2axptg (Presentation web: safety & access essentials), authored in
+# parallel on a separate branch against the pre-17tnw2axptu baseline (1625) and rebased onto main
+# after that ticket landed — this entry's starting point is 1630, not the 1625 these checks were
+# originally counted against. New checks added on that branch, pre-rebase, in three passes: 37
+# across PME-055/053/059/006-011/027 (this ticket's own implementation); +3 (1 setup + 2 real
+# assertions) for Cody's PR #69 finding that a duplicate source vanishing mid-dialog toasted a
+# false-positive "Presentation duplicated" instead of surfacing the error banner; +2 for Sana +
+# Vera's independently-corroborated PR #69 finding that pmLibDelete's own comment promised "fail
+# OPEN on the warning" for a failed view() read, but the code left the warning list untouched on
+# failure — reading exactly like a clean "not referenced" and defeating PME-059's purpose. All
+# three behavioural fixes were mutation-verified pre-rebase (reverting each turned exactly its own
+# assertion(s) RED, restored). 1630 + 37 + 3 + 2 = 1672, matching the post-rebase measured count
+# exactly.
+#
+# 1672 -> 1674: same ticket, remediation round 4 — 2 new checks covering Sana's PR #69 review
+# round-2 finding that pmLibDelete's plan-reference check conflated "the deck is linked" with
+# "the plan has a reported name": `if (linked && v.plan_name) planRefName = ...` gave NO warning
+# at all when a deck was genuinely linked but the plan reported no name (reachable via
+# Backend::Remote loading a ServicePlan built through from_parts, which applies no non-empty-name
+# bound) — the same silent-clean-dialog failure already fixed above, one field over. Mutation-
+# verified (removing the new linked-but-unnamed warning branch turns both assertions RED,
+# restored). Confirmed by two independent runs (both 1674, 0 FAIL).
+#
+# 1674 -> 1676: same ticket, remediation round 5 — 2 new checks covering Vera's PR #69 review
+# round-2 finding that pmLibDelete's `await invoke("view")` had no timeout: on Backend::Remote,
+# ControlClient::command (selahcue-lan/src/client.rs) has no per-request timeout on this path
+# (unlike connect/pair, which do), so a stalled-but-connected host would hang the whole delete
+# flow forever — no spinner, no error. Added PM_VIEW_TIMEOUT_MS (1500 ms) via a small
+# pmWithTimeout() wrapper; expiry is treated as the same planRefUnknown state the earlier
+# rejection fix already added. New test hook (window.__viewHangOnce, a promise that never
+# settles) proves the timeout is what moves the UI on, not the mock resolving late. Mutation-
+# verified (removing the pmWithTimeout wrapper turns both new assertions RED, restored).
+# Confirmed by two independent runs (both 1676, 0 FAIL).
+#
+# 1625 -> ?: ClickUp 17tnw2axptw (Settings: About & Licensing + Appearance pages, SET-007/SET-004),
+# authored in parallel on its own branch against the same 1625 baseline as the two entries above
+# and merged into main separately — this branch's own history did not record a comment for its
+# +31 checks (`list_translations` fixture + the new Settings pages' assertions) before merging;
+# recorded retroactively here at merge time instead of left silent. Per this comment block's own
+# repeatedly-stated discipline, the number below is the empirically re-run total after resolving
+# this merge, not a hand sum of the two branches' deltas.
+#
+# 1625 -> ?: ClickUp 17tnw2axptw (Settings: General + Scripture & Translations pages, SET-001/
+# SET-002), authored as PR #70, genuinely stacked on the About & Licensing + Appearance branch
+# above (not independently branched from 1625) — its own pre-merge count of 1689 already included
+# that branch's +31 (plus a remediation round for Cody's and Quinn's PR #70 review findings on top).
+# A first resolution attempt hand-summed 1625 + main's 82 + this branch's naive (1689-1625=64) and
+# got 1771 — wrong, by exactly 31, because that arithmetic double-counted the shared +31 both
+# branches carry. This constant's own history has made the same category of mistake before for the
+# same reason (see the 1596 and 1605 entries above); the fix is the same each time — empirically
+# re-run, don't hand-derive. Confirmed by a clean run: 1740, 0 FAIL.
+EXPECTED_MIN_CHECKS = 1740
 
 
 def find_chrome():
@@ -1030,7 +1098,16 @@ STUB = r"""
       {code:"DBY", name:"Darby Translation", downloadable:false, available:true},
       {code:"YLT", name:"Young's Literal Translation", downloadable:true, available:false}
     ]});
-    if (cmd === "view") return Promise.resolve(JSON.parse(JSON.stringify(V)));
+    // Test hook (mirrors __deckListNullOnce/__pmRejectOnce): force ONE `view()` rejection, so a
+    // failed local-state read (e.g. PME-059's plan-reference check in pmLibDelete) can be told
+    // apart from a genuinely healthy read reporting "not referenced".
+    if (cmd === "view") {
+      if (window.__viewRejectOnce) { window.__viewRejectOnce = false; return Promise.reject(new Error("view failed")); }
+      // A stalled-but-connected host on Backend::Remote (Vera, PR #69 review round 2): the
+      // promise NEVER settles, so only pmLibDelete's own client-side timeout can move the UI on.
+      if (window.__viewHangOnce) { window.__viewHangOnce = false; return new Promise(function(){}); }
+      return Promise.resolve(JSON.parse(JSON.stringify(V)));
+    }
     // Service Plan builder (86ajxxuz9): plan mutations + content-link + scripture search.
     // Each returns a fresh OperatorView (byte-cloned) so the builder re-render never aliases V;
     // set_item_content is a PLAN edit (never a live-control command — the invariant check relies
@@ -1325,7 +1402,13 @@ STUB = r"""
     }
     if (cmd === "deck_duplicate") {
       var sd=LIB.decks.filter(function(x){return x.id===args.id;})[0];
-      if (sd){ LIB.decks.push({id:LIB.nextId++, name:libUnique(sd.name+" copy"), slides:sd.slides}); } return Promise.resolve(libView());
+      if (!sd) return Promise.resolve(libView());
+      // Mirrors deck_duplicate's real response shape (main.rs): the copy's own new_id, the same
+      // additive pattern deck_restore already uses for restored_name — PME-053's "Start from →
+      // Duplicate…" flow in the New-presentation dialog needs it to rename + open the copy.
+      var nid = LIB.nextId++;
+      LIB.decks.push({id:nid, name:libUnique(sd.name+" copy"), slides:sd.slides});
+      var v = libView(); v.new_id = nid; return Promise.resolve(v);
     }
     if (cmd === "deck_delete") {
       var wasOpen=(LIB.open===args.id);
@@ -4140,6 +4223,12 @@ DRIVER = r"""
       await sleep(20);
       ok(document.activeElement && document.activeElement.dataset && document.activeElement.dataset.ik === "align-center",
          "PM: focus is RESTORED to the button after its edit re-renders the inspector (WCAG 2.4.3, review #2)");
+      // PME-027: left/centre/right previously read "≡"/"≣"/"≡" — left and right shared the same
+      // glyph, so an operator could not tell which was pressed without reading aria-pressed.
+      var alignBtns = Array.from(el("pm-inspector-body").querySelectorAll("button[aria-label^='Align ']"));
+      var alignGlyphs = alignBtns.map(function(b){ return b.textContent; });
+      ok(alignBtns.length === 3 && new Set(alignGlyphs).size === 3,
+         "PME-027: the three horizontal-align buttons (Left/Centre/Right) all show DISTINCT glyphs (\"" + alignGlyphs.join("\", \"") + "\")");
       // The Layers panel (replacing the old Arrange buttons) lists the slide's elements; Alt+↑ on a
       // layer row raises it in the z-order.
       var layerRow = el("pm-inspector-body").querySelector("#pm-layers .td-layer");
@@ -9606,6 +9695,45 @@ right after a generate/save");
            "\" vs rest \"" + wPsBaseBg[1].trim() + "\") — not just any declared value, the one that keeps a disabled button visually inert");
       }
 
+      // --- PSC-009: .ps-detail-warn / .ps-detail-block (Pre-service check-row detail text) -----
+      // The audit (docs/design/DESIGN-2.0-PARITY-AUDIT-preservice.md) flagged this pairing as
+      // UNMEASURED — "worth a direct follow-up measurement" — not as a scored defect. Farah
+      // independently computed it for ClickUp 17tnw2axptu: --sc-warn/--sc-live on --sc-surface
+      // clear AA-NORMAL even at the row's own 12px/500 weight (8.85:1 / 5.52:1), so there is no
+      // fix to make here — this block locks the passing state in place instead of leaving it
+      // unmeasured, same discipline as every other contrast finding in this file. Both classes
+      // recolour `.ps-row-detail` (app.css:6701-6703); the real painted background behind them is
+      // `.ps-card`'s --sc-surface (`.ps-row` itself declares none). Measured on the LIVE DOM, in
+      // real application states (not the raw CSS variables), matching this file's own established
+      // technique for the rest of the PSC-005/TD-012/DLM-001 group above.
+      var wPsCardBg = _rgba(getComputedStyle(document.querySelector(".ps-card")).backgroundColor);
+      // The default warning (missing slide media) is still live from the earlier functional
+      // Pre-service Check block — nothing between there and here mutates pre-service state.
+      var wPsWarnRow = document.querySelector(".ps-detail-warn");
+      ok(!!wPsWarnRow, "PSC-009 (premise): a .ps-detail-warn row is live in the DOM (the default missing-media warning)");
+      if (wPsWarnRow) {
+        var wPsWarnR = _cr(_rgba(getComputedStyle(wPsWarnRow).color), wPsCardBg);
+        ok(wPsWarnR >= 4.5,
+           "PSC-009: .ps-detail-warn (--sc-warn on --sc-surface) clears AA-NORMAL at its real 12px/500 weight (" + _f(wPsWarnR) + ":1) — the audit flagged this pairing as unmeasured, not failing");
+      }
+      // .ps-detail-block only exists once a check is actually BLOCKING — trigger the same disk-low
+      // fixture the functional Pre-service Check block above uses, so the measurement is a real
+      // painted row, not an assertion about the CSS variable's raw value in isolation.
+      window.__psDiskLow = true;
+      el("ps-rerun").click();
+      ok(await wWait(function(){ return !!document.querySelector(".ps-detail-block"); }),
+         "PSC-009 (premise): a .ps-detail-block row appears once a check goes BLOCKING (disk space)");
+      var wPsBlockRow = document.querySelector(".ps-detail-block");
+      if (wPsBlockRow) {
+        var wPsBlockR = _cr(_rgba(getComputedStyle(wPsBlockRow).color), wPsCardBg);
+        ok(wPsBlockR >= 4.5,
+           "PSC-009: .ps-detail-block (--sc-live on --sc-surface) clears AA-NORMAL at its real 12px/500 weight (" + _f(wPsBlockR) + ":1) — matches PME-004's independently-established 5.52:1 figure for the same token pairing (DESIGN-2.0-PARITY-AUDIT-presentation.md)");
+      }
+      window.__psDiskLow = false;
+      el("ps-rerun").click();
+      ok(await wWait(function(){ return el("ps-blocking").textContent === "0"; }),
+         "PSC-009 (cleanup): the blocking fixture is cleared, so pre-service state is not left dirty for anything that runs after this block");
+
       // --- DLM-001: .dl-btn-primary:hover (Download modal primary button) --------------------
       var wDlHoverRule = /\.dl-btn-primary:hover\s*\{([^}]*)\}/.exec(window.__CSSTEXT || "");
       ok(!!wDlHoverRule, "DLM-001 (premise): the .dl-btn-primary:hover rule is present in the shipped app.css");
@@ -9975,6 +10103,245 @@ right after a generate/save");
           }
         }
       }
+
+      // --- PME-055: "Present" in the library card \u22ef menu ----------------------------------
+      // PME-014's topbar \u25b6 Present only ever acts on the OPEN deck; this is the OTHER half of
+      // the finding \u2014 presenting a deck straight off its card, without first making it the open
+      // deck in the editor. Deliberately picks a card that is NOT already open, so a pass here
+      // cannot be explained by the button silently riding the topbar's open-deck-only Present.
+      el("pm-deckswitch").click();
+      await wWait(function(){ return !!el("pm-lib-grid").querySelector(".pm-lib-card"); });
+      if (el("pm-lib-q")) { el("pm-lib-q").value = ""; el("pm-lib-q").dispatchEvent(new Event("input", {bubbles:true})); }
+      var wPresCards = Array.prototype.slice.call(el("pm-lib-grid").querySelectorAll(".pm-lib-card"));
+      var wPresCard = wPresCards.filter(function(c){ return !c.classList.contains("open"); })[0] || wPresCards[0];
+      ok(!!wPresCard, "PME-055 (premise): a presentation card exists to test Present on");
+      if (wPresCard) {
+        var wPresDeckId = Number(wPresCard.dataset.id);
+        wPresCard.querySelector(".pm-lib-dots").click();
+        await wWait(function(){ return !!el("pm-lib-menu"); });
+        var wPresMenuItems = Array.prototype.slice.call(el("pm-lib-menu").querySelectorAll("button"));
+        var wPresItem = wPresMenuItems.filter(function(b){ return /^Present$/.test(b.textContent.trim()); })[0];
+        ok(!!wPresItem, "PME-055: the card \u22ef menu carries a 'Present' item (Open \u00b7 Rename\u2026 \u00b7 Duplicate \u00b7 Present \u00b7 \u2014 \u00b7 Delete)");
+        if (wPresItem) {
+          var wDoN = window.__calls.filter(function(c){ return c.cmd === "deck_open" && c.args.id === wPresDeckId; }).length;
+          var wGlN3 = window.__calls.filter(function(c){ return c.cmd === "deck_go_live"; }).length;
+          wPresItem.click();
+          ok(await wWait(function(){ return window.__calls.filter(function(c){ return c.cmd === "deck_open" && c.args.id === wPresDeckId; }).length > wDoN; }),
+             "PME-055: 'Present' opens the CARD'S OWN deck (deck_open), not the deck already open in the editor");
+          ok(await wWait(function(){ return window.__calls.filter(function(c){ return c.cmd === "deck_go_live"; }).length > wGlN3; }),
+             "PME-055: 'Present' actually goes live (deck_go_live) \u2014 not just a navigation to the grid");
+          ok(await wWait(function(){ return !el("pm-grid").hidden; }),
+             "PME-055: 'Present' lands the operator on the slide grid, where the presented slide is visible");
+        }
+      }
+
+      // --- PME-053: "Start from" in the New-presentation dialog -------------------------------
+      // Blank deck / Duplicate an existing presentation / From a template (later, honestly
+      // disabled \u2014 no template model exists yet, PME-052/OUT-009).
+      el("pm-deckswitch").click();
+      await wWait(function(){ return !!el("pm-lib-grid").querySelector(".pm-lib-card"); });
+      if (el("pm-lib-q")) { el("pm-lib-q").value = ""; el("pm-lib-q").dispatchEvent(new Event("input", {bubbles:true})); }
+      el("pm-lib-new").click();
+      await wWait(function(){ return !!el("pm-prompt-input"); });
+      var wSfGroup = document.querySelector(".pm-startfrom");
+      ok(!!wSfGroup && wSfGroup.getAttribute("role") === "radiogroup", "PME-053: the New-presentation dialog carries a 'Start from' radiogroup");
+      var wSfBlank = document.getElementById("pm-startfrom-blank"), wSfDup = document.getElementById("pm-startfrom-dup"), wSfTpl = document.getElementById("pm-startfrom-tpl");
+      ok(!!wSfBlank && wSfBlank.checked, "PME-053: 'Blank deck' is the default selection");
+      ok(!!wSfDup && !wSfDup.disabled, "PME-053: 'Duplicate an existing presentation' is available (the library is non-empty)");
+      ok(!!wSfTpl && wSfTpl.disabled, "PME-053: 'From a template' is an honest disabled 'later' affordance, not a broken live control");
+      var wSfPicker = document.querySelector(".pm-startfrom-picker");
+      // Check COMPUTED display, not just the DOM `hidden` property: an author `display` rule
+      // (here .pm-startfrom-picker's own `display: flex`) can defeat the [hidden] attribute in
+      // WKWebView/Chrome without an explicit `[hidden] { display: none }` override — the exact
+      // trap .td-bgpanel[hidden] etc. already guard against elsewhere in app.css. Checking only
+      // `.hidden` (the DOM property) passes even when the element is still visually painted, which
+      // is precisely how this shipped broken once already (Quinn, PR #69 review — 17tnw2axwg9).
+      ok(!!wSfPicker && wSfPicker.hidden && getComputedStyle(wSfPicker).display === "none",
+         "PME-053 (premise): the duplicate-source picker starts hidden under the default 'Blank deck' choice (hidden=" + (wSfPicker && wSfPicker.hidden) + ", computed display=" + (wSfPicker && getComputedStyle(wSfPicker).display) + ")");
+      if (wSfDup) {
+        wSfDup.click();
+        ok(!wSfPicker.hidden && getComputedStyle(wSfPicker).display !== "none" && wSfPicker.getClientRects().length > 0,
+           "PME-053: choosing 'Duplicate an existing presentation' reveals the deck picker (computed display=" + getComputedStyle(wSfPicker).display + ", painted rects=" + wSfPicker.getClientRects().length + ")");
+        var wSfRows = wSfPicker.querySelectorAll(".pm-startfrom-picker-row");
+        ok(wSfRows.length === window.__LIB.decks.length, "PME-053: the picker lists one row per existing presentation (" + wSfRows.length + " of " + window.__LIB.decks.length + ")");
+        // Pick a row OTHER than the pre-selected first one, so a pass proves selecting a row
+        // actually changes which deck gets duplicated \u2014 not that the default happened to work.
+        var wSfRow = Array.prototype.slice.call(wSfRows).filter(function(r){ return !r.querySelector("input").checked; })[0] || wSfRows[0];
+        var wSfSrcId = Number(wSfRow.querySelector("input").value);
+        var wSfSrcDeck = window.__LIB.decks.filter(function(d){ return d.id === wSfSrcId; })[0];
+        wSfRow.querySelector("input").click();
+        ok(el("pm-prompt-input").value === (wSfSrcDeck.name + " copy"),
+           "PME-053: the Name field follows the chosen source (\"" + el("pm-prompt-input").value + "\") until the operator types their own");
+        el("pm-prompt-input").value = "My Copied Deck";
+        el("pm-prompt-input").dispatchEvent(new Event("input", {bubbles:true}));
+        var wSfDupN = window.__calls.filter(function(c){ return c.cmd === "deck_duplicate"; }).length;
+        Array.from(document.querySelectorAll(".pm-confirm .pm-btn-primary")).slice(-1)[0].click();
+        ok(await wWait(function(){ return window.__calls.filter(function(c){ return c.cmd === "deck_duplicate"; }).length > wSfDupN; }),
+           "PME-053: confirming 'Duplicate' drives deck_duplicate(the CHOSEN source's id)");
+        var wSfDupCall = window.__calls.filter(function(c){ return c.cmd === "deck_duplicate"; }).slice(-1)[0];
+        ok(!!wSfDupCall && wSfDupCall.args.id === wSfSrcId, "PME-053: deck_duplicate is called with the SELECTED row's id (" + wSfSrcId + "), not the first/default one");
+        // Each step of onConfirm's deck_duplicate -> deck_rename -> deck_open chain is a
+        // separately-awaited invoke; polling (wWait) rather than checking window.__calls
+        // synchronously avoids racing a still-pending later step in the chain.
+        ok(await wWait(function(){ return window.__calls.some(function(c){ return c.cmd === "deck_rename" && c.args.name === "My Copied Deck"; }); }),
+           "PME-053: the typed name renames the COPY (deck_rename), never the original");
+        var wSfRenameCall = window.__calls.filter(function(c){ return c.cmd === "deck_rename" && c.args.name === "My Copied Deck"; }).slice(-1)[0];
+        ok(!!wSfRenameCall && wSfRenameCall.args.id !== wSfSrcId,
+           "PME-053: the rename targets the NEW deck's id, not the source deck's id");
+        // The onConfirm chain is deck_duplicate -> deck_rename -> deck_open, three sequential
+        // awaited invokes; wWait above only proves deck_duplicate fired. Poll for deck_open too
+        // rather than checking window.__calls synchronously, which would race the still-pending
+        // rename/open awaits and fail even when the implementation is correct.
+        ok(await wWait(function(){ return window.__calls.some(function(c){ return c.cmd === "deck_open" && c.args.id === wSfRenameCall.args.id; }); }),
+           "PME-053: 'Create presentation' opens the newly-created copy in the editor");
+        ok(await wWait(function(){ return el("pm-library").hidden; }), "PME-053: the dialog and Library close, landing the operator in the editor on the new deck");
+      }
+
+      // --- Cody (PR #69 review): a duplicate source that vanishes mid-dialog must not toast a
+      // false "Presentation duplicated" success. deck_duplicate is a no-op when its source id no
+      // longer resolves (another action deleted it between the picker rendering and Create being
+      // pressed) — no new_id comes back, so nothing was actually created, and the flow must route
+      // through the same failure path every other create failure in this dialog already uses.
+      el("pm-deckswitch").click();
+      await wWait(function(){ return !!el("pm-lib-grid").querySelector(".pm-lib-card"); });
+      if (el("pm-lib-q")) { el("pm-lib-q").value = ""; el("pm-lib-q").dispatchEvent(new Event("input", {bubbles:true})); }
+      el("pm-lib-new").click();
+      await wWait(function(){ return !!el("pm-prompt-input"); });
+      var wVanDup = document.getElementById("pm-startfrom-dup");
+      ok(!!wVanDup && !wVanDup.disabled, "Cody (PR #69) (premise): a duplicate source is selectable to test the vanished-mid-dialog case");
+      if (wVanDup && !wVanDup.disabled) {
+        wVanDup.click();
+        var wVanRow = document.querySelector(".pm-startfrom-picker .pm-startfrom-picker-row input");
+        var wVanSrcId = Number(wVanRow.value);
+        wVanRow.click();
+        // The race itself: another action removes the chosen source from the library between
+        // selecting it here and pressing Create.
+        window.__LIB.decks = window.__LIB.decks.filter(function(d){ return d.id !== wVanSrcId; });
+        Array.from(document.querySelectorAll(".pm-confirm .pm-btn-primary")).slice(-1)[0].click();
+        ok(await wWait(function(){ return !el("pm-error").hidden; }),
+           "Cody (PR #69): a duplicate source that vanished mid-dialog surfaces the error banner, not a false-positive success toast");
+        // Checked by TEXT, not by the toast's `hidden` state, so this cannot pass merely because
+        // an unrelated earlier toast in this long-running script happens to still be showing.
+        ok(!/duplicated/i.test(el("pm-toast").textContent || ""),
+           "Cody (PR #69): ...and never claims \"Presentation duplicated\" over a request that created nothing (\"" + (el("pm-toast").textContent || "").slice(0, 40) + "\")");
+        if (el("pm-error-dismiss") && !el("pm-error").hidden) el("pm-error-dismiss").click();
+      }
+
+      // --- PME-059: warn when the deck being deleted is referenced by a service-plan item -----
+      el("pm-deckswitch").click();
+      await wWait(function(){ return !!el("pm-lib-grid").querySelector(".pm-lib-card"); });
+      if (el("pm-lib-q")) { el("pm-lib-q").value = ""; el("pm-lib-q").dispatchEvent(new Event("input", {bubbles:true})); }
+      var wPlanCards = Array.prototype.slice.call(el("pm-lib-grid").querySelectorAll(".pm-lib-card"));
+      ok(wPlanCards.length >= 2, "PME-059 (premise): at least two presentations exist \u2014 one to link from the plan, one as a clean negative control");
+      if (wPlanCards.length >= 2) {
+        var wLinkedCard = wPlanCards[0], wCleanCard = wPlanCards[1];
+        var wLinkedId = Number(wLinkedCard.dataset.id);
+        var wSavedItems = V.items, wSavedPlanName = V.plan_name;
+        V.items = wSavedItems.concat([{id:9001, kind:"slide_group", title:"Sermon slides", is_live:false, is_staged:false, link:{kind:"deck", id: wLinkedId}}]);
+        V.plan_name = "Sunday Service \u2014 Aug 4";
+        wLinkedCard.querySelector(".pm-lib-dots").click();
+        await wWait(function(){ return !!el("pm-lib-menu"); });
+        Array.prototype.slice.call(el("pm-lib-menu").querySelectorAll("button")).filter(function(b){ return /^Delete/.test(b.textContent); })[0].click();
+        ok(await wWait(function(){ return !!document.querySelector(".pm-confirm-warn"); }),
+           "PME-059: deleting a deck the service plan links shows a warning before the operator can confirm");
+        var wWarnLinked = document.querySelector(".pm-confirm-warn");
+        ok(!!wWarnLinked && /Sunday Service \u2014 Aug 4/.test(wWarnLinked.textContent) && /show missing/.test(wWarnLinked.textContent),
+           "PME-059: the warning names the PLAN (\"" + (wWarnLinked ? wWarnLinked.textContent : "") + "\") and states the consequence \u2014 the linked plan item will show missing");
+        var wWarnDlg = document.querySelector('.pm-confirm[role="alertdialog"]');
+        ok(!!wWarnDlg && /pm-confirm-warn/.test(wWarnDlg.getAttribute("aria-describedby") || ""),
+           "PME-059: the warning is wired into the dialog's accessible description, so a screen reader speaks it (WCAG 4.1.2)");
+        wCloseDel();
+        // Negative control: a deck NOT referenced by the plan gets no plan-reference warning \u2014
+        // proves the check above is reading the actual link, not always drawing a warning.
+        wCleanCard.querySelector(".pm-lib-dots").click();
+        await wWait(function(){ return !!el("pm-lib-menu"); });
+        Array.prototype.slice.call(el("pm-lib-menu").querySelectorAll("button")).filter(function(b){ return /^Delete/.test(b.textContent); })[0].click();
+        await wWait(function(){ return !!document.querySelector(".pm-confirm-body"); });
+        var wWarnClean = document.querySelector(".pm-confirm-warn");
+        ok(!wWarnClean || !/show missing/.test(wWarnClean.textContent),
+           "PME-059 (control): a deck NOT referenced by the plan shows no plan-reference warning");
+        wCloseDel();
+        // Sana + Vera (PR #69 review): a FAILED view() read must not collapse into the same
+        // "no warning" shape as a genuinely clean read — that would let a delete through
+        // silently on exactly the failure this check exists to survive. window.__viewRejectOnce
+        // is consumed by pmLibDelete's own first `await invoke("view")`, triggered by the Delete
+        // click below. There IS an `await wWait(...)` between setting the flag and that click
+        // (Sana, PR #69 review round 2 — an earlier version of this comment wrongly claimed none)
+        // — but the menu it waits for is built synchronously by the ⋯ click just before it, so
+        // `wWait`'s very first check (before any real sleep) already sees it and resolves on that
+        // same microtask turn: effectively 0 ms of wall-clock time, nowhere near the app's 1 Hz
+        // view() poll's 1000 ms interval, so the poll has no practical chance to consume the flag
+        // first.
+        window.__viewRejectOnce = true;
+        wLinkedCard.querySelector(".pm-lib-dots").click();
+        await wWait(function(){ return !!el("pm-lib-menu"); });
+        Array.prototype.slice.call(el("pm-lib-menu").querySelectorAll("button")).filter(function(b){ return /^Delete/.test(b.textContent); })[0].click();
+        ok(await wWait(function(){ return !!document.querySelector(".pm-confirm-warn"); }),
+           "Sana + Vera (PR #69): a FAILED plan-reference check still shows a warning — fails OPEN, never silently reading as \"not referenced\"");
+        var wWarnFailed = document.querySelector(".pm-confirm-warn");
+        ok(!!wWarnFailed && /couldn.t check/i.test(wWarnFailed.textContent),
+           "Sana + Vera (PR #69): ...and the warning honestly says the check couldn't be completed, not a fabricated \"not referenced\" or a fabricated \"referenced\" (\"" + (wWarnFailed ? wWarnFailed.textContent : "") + "\")");
+        wCloseDel();
+        // Vera (PR #69 review, round 2): a REJECTED view() (above) is one failure mode; a
+        // STALLED-BUT-CONNECTED host on Backend::Remote is another, and ControlClient::command
+        // (selahcue-lan/src/client.rs) has no per-request timeout on this path — unlike
+        // connect/pair, which do. Without a client-side bound, this would hang the whole delete
+        // flow forever: no spinner, no error, nothing. window.__viewHangOnce makes the mock's
+        // view() promise never settle at all; the only way this test can pass is if
+        // pmLibDelete's own PM_VIEW_TIMEOUT_MS actually fires and moves the UI on.
+        window.__viewHangOnce = true;
+        wLinkedCard.querySelector(".pm-lib-dots").click();
+        await wWait(function(){ return !!el("pm-lib-menu"); });
+        Array.prototype.slice.call(el("pm-lib-menu").querySelectorAll("button")).filter(function(b){ return /^Delete/.test(b.textContent); })[0].click();
+        ok(await waitFor(function(){ return !!document.querySelector(".pm-confirm-warn"); }, 100),
+           "Vera (PR #69, round 2): a STALLED (never-resolving) plan-reference check does not hang forever — the client-side timeout fires and the dialog still shows a warning");
+        var wWarnHung = document.querySelector(".pm-confirm-warn");
+        ok(!!wWarnHung && /couldn.t check/i.test(wWarnHung.textContent),
+           "Vera (PR #69, round 2): ...with the same honest \"couldn't check\" copy as a rejected read, not a fabricated verdict");
+        wCloseDel();
+        // Sana (PR #69 review, round 2): "linked" and "the plan has a reported name" are TWO
+        // separate facts that the original fix conflated into one `if` — a genuinely linked deck
+        // whose plan reports no name (reachable via Backend::Remote loading a ServicePlan built
+        // through from_parts, which applies no non-empty-name bound) got NO warning at all, the
+        // same silent-clean-dialog failure one field over from the bug already fixed above.
+        V.items = wSavedItems.concat([{id:9002, kind:"slide_group", title:"Sermon slides", is_live:false, is_staged:false, link:{kind:"deck", id: wLinkedId}}]);
+        V.plan_name = "";
+        wLinkedCard.querySelector(".pm-lib-dots").click();
+        await wWait(function(){ return !!el("pm-lib-menu"); });
+        Array.prototype.slice.call(el("pm-lib-menu").querySelectorAll("button")).filter(function(b){ return /^Delete/.test(b.textContent); })[0].click();
+        ok(await wWait(function(){ return !!document.querySelector(".pm-confirm-warn"); }),
+           "Sana (PR #69, round 2): a deck genuinely linked from a plan that reports NO name still shows a warning — \"linked\" and \"named\" are checked separately");
+        var wWarnUnnamed = document.querySelector(".pm-confirm-warn");
+        ok(!!wWarnUnnamed && /show missing/.test(wWarnUnnamed.textContent) && !/“”/.test(wWarnUnnamed.textContent),
+           "Sana (PR #69, round 2): ...and it degrades to the generic \"Used in your service plan\" wording rather than printing an empty-quoted plan name (\"" + (wWarnUnnamed ? wWarnUnnamed.textContent : "") + "\")");
+        wCloseDel();
+        V.items = wSavedItems; V.plan_name = wSavedPlanName;
+      }
+
+      // --- PME-006\u2013011: promote AA-large-only muted text to --sc-text-secondary ------------
+      // Each is essential text under the project's own written policy (app.css review-fixes
+      // block: headings/labels/instructions/empty-states/error text must clear AA-normal;
+      // --sc-text-muted, at 3.79:1 on --sc-surface, is AA-large only). Checked against the
+      // shipped rule text (the same pattern PSC-005/DLM-001 use above), because several of
+      // these selectors only render in states this pass does not drive the UI into.
+      var wMutedFixes = [
+        ["PME-006", ".pm-insp-note"],
+        ["PME-007", ".pm-media-empty"],
+        ["PME-008", ".pm-lib-empty-sub"],
+        ["PME-009", ".pm-grid-hint"],
+        ["PME-010", ".pm-tile-failmsg"],
+        ["PME-011", ".pm-deck-seg-btn"],
+      ];
+      wMutedFixes.forEach(function(pair){
+        var wId = pair[0], wSel = pair[1];
+        var wRe = new RegExp(wSel.replace(/[.]/g, "\\.") + "\\s*\\{([^}]*)\\}");
+        var wM = wRe.exec(window.__CSSTEXT || "");
+        ok(!!wM, wId + " (premise): the " + wSel + " rule is present in the shipped app.css");
+        if (wM) {
+          ok(/--sc-text-secondary/.test(wM[1]) && !/--sc-text-muted/.test(wM[1]),
+             wId + ": " + wSel + " uses --sc-text-secondary (AA-normal, 7.40\u20138.74:1 on surface), not the AA-large-only --sc-text-muted (\"" + wM[1].trim().slice(0, 80) + "\")");
+        }
+      });
 
       // --- \u00a710 case 6 / CON-099, CON-101, CON-102: the engaged BLACKOUT state ------------
       // The bug is that the most destructive state in the product explains nothing: the operator

@@ -2649,11 +2649,22 @@ async fn deck_rename(
 
 /// Duplicate a presentation into an independent "<name> copy" → returns the `LibraryView` (the copy
 /// is added to the library; the editor stays on the current deck).
+///
+/// The response also carries the copy's own id as `new_id` (present only when `id` resolved to a
+/// real deck), the same additive pattern `deck_restore` already uses for `restored_name`: the copy
+/// is minted a FRESH id (`DeckLibrary::duplicate`), so a caller that wants to act on the new deck
+/// specifically (PME-053's "New presentation → Start from → Duplicate…", which renames the copy to
+/// whatever the operator typed and opens it) cannot infer it from `id` and has no other way to learn
+/// it from this response.
 #[tauri::command]
 async fn deck_duplicate(id: u64, state: State<'_, AppState>) -> Result<serde_json::Value, String> {
     with_deck_and_library(&state, |ws, lib| {
-        lib.duplicate(DeckId(id));
-        library_view(lib, ws.open_deck().id())
+        let new_id = lib.duplicate(DeckId(id)).map(|d| d.id().0);
+        let mut view = library_view(lib, ws.open_deck().id());
+        if let (Some(new_id), Some(obj)) = (new_id, view.as_object_mut()) {
+            obj.insert("new_id".into(), serde_json::Value::from(new_id));
+        }
+        view
     })
 }
 
