@@ -736,8 +736,17 @@ if not check_jump_call_site_is_click_only():
 # failure — reading exactly like a clean "not referenced" and defeating PME-059's purpose. All
 # three behavioural fixes were mutation-verified pre-rebase (reverting each turned exactly its own
 # assertion(s) RED, restored). 1630 + 37 + 3 + 2 = 1672, matching the post-rebase measured count
-# exactly. Confirmed by two independent runs post-rebase (both 1672, 0 FAIL).
-EXPECTED_MIN_CHECKS = 1672
+# exactly.
+#
+# 1672 -> 1674: same ticket, remediation round 4 — 2 new checks covering Sana's PR #69 review
+# round-2 finding that pmLibDelete's plan-reference check conflated "the deck is linked" with
+# "the plan has a reported name": `if (linked && v.plan_name) planRefName = ...` gave NO warning
+# at all when a deck was genuinely linked but the plan reported no name (reachable via
+# Backend::Remote loading a ServicePlan built through from_parts, which applies no non-empty-name
+# bound) — the same silent-clean-dialog failure already fixed above, one field over. Mutation-
+# verified (removing the new linked-but-unnamed warning branch turns both assertions RED,
+# restored). Confirmed by two independent runs (both 1674, 0 FAIL).
+EXPECTED_MIN_CHECKS = 1674
 
 
 def find_chrome():
@@ -10181,9 +10190,14 @@ right after a generate/save");
         // Sana + Vera (PR #69 review): a FAILED view() read must not collapse into the same
         // "no warning" shape as a genuinely clean read — that would let a delete through
         // silently on exactly the failure this check exists to survive. window.__viewRejectOnce
-        // is consumed synchronously by pmLibDelete's own first `await invoke("view")` (the click
-        // below sets the flag and fires the click back-to-back, with no `await` in between, so
-        // the app's own 1 Hz view() poll cannot race in and consume it first).
+        // is consumed by pmLibDelete's own first `await invoke("view")`, triggered by the Delete
+        // click below. There IS an `await wWait(...)` between setting the flag and that click
+        // (Sana, PR #69 review round 2 — an earlier version of this comment wrongly claimed none)
+        // — but the menu it waits for is built synchronously by the ⋯ click just before it, so
+        // `wWait`'s very first check (before any real sleep) already sees it and resolves on that
+        // same microtask turn: effectively 0 ms of wall-clock time, nowhere near the app's 1 Hz
+        // view() poll's 1000 ms interval, so the poll has no practical chance to consume the flag
+        // first.
         window.__viewRejectOnce = true;
         wLinkedCard.querySelector(".pm-lib-dots").click();
         await wWait(function(){ return !!el("pm-lib-menu"); });
@@ -10193,6 +10207,22 @@ right after a generate/save");
         var wWarnFailed = document.querySelector(".pm-confirm-warn");
         ok(!!wWarnFailed && /couldn.t check/i.test(wWarnFailed.textContent),
            "Sana + Vera (PR #69): ...and the warning honestly says the check couldn't be completed, not a fabricated \"not referenced\" or a fabricated \"referenced\" (\"" + (wWarnFailed ? wWarnFailed.textContent : "") + "\")");
+        wCloseDel();
+        // Sana (PR #69 review, round 2): "linked" and "the plan has a reported name" are TWO
+        // separate facts that the original fix conflated into one `if` — a genuinely linked deck
+        // whose plan reports no name (reachable via Backend::Remote loading a ServicePlan built
+        // through from_parts, which applies no non-empty-name bound) got NO warning at all, the
+        // same silent-clean-dialog failure one field over from the bug already fixed above.
+        V.items = wSavedItems.concat([{id:9002, kind:"slide_group", title:"Sermon slides", is_live:false, is_staged:false, link:{kind:"deck", id: wLinkedId}}]);
+        V.plan_name = "";
+        wLinkedCard.querySelector(".pm-lib-dots").click();
+        await wWait(function(){ return !!el("pm-lib-menu"); });
+        Array.prototype.slice.call(el("pm-lib-menu").querySelectorAll("button")).filter(function(b){ return /^Delete/.test(b.textContent); })[0].click();
+        ok(await wWait(function(){ return !!document.querySelector(".pm-confirm-warn"); }),
+           "Sana (PR #69, round 2): a deck genuinely linked from a plan that reports NO name still shows a warning — \"linked\" and \"named\" are checked separately");
+        var wWarnUnnamed = document.querySelector(".pm-confirm-warn");
+        ok(!!wWarnUnnamed && /show missing/.test(wWarnUnnamed.textContent) && !/“”/.test(wWarnUnnamed.textContent),
+           "Sana (PR #69, round 2): ...and it degrades to the generic \"Used in your service plan\" wording rather than printing an empty-quoted plan name (\"" + (wWarnUnnamed ? wWarnUnnamed.textContent : "") + "\")");
         wCloseDel();
         V.items = wSavedItems; V.plan_name = wSavedPlanName;
       }

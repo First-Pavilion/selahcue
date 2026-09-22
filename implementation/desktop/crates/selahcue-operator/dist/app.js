@@ -9821,13 +9821,20 @@
         // (Vera, PR #69 review — the earlier "not a LAN round-trip" phrasing here was wrong).
         // Fetched fresh regardless, never from a cached view, because a stale "not referenced" is
         // the one wrong answer that matters: it would let the delete through silently.
+        let planLinked = false;
         let planRefName = null;
         let planRefUnknown = false;
         try {
           const v = await invoke("view");
           const items = (v && v.items) || [];
-          const linked = items.some((it) => it.link && it.link.kind === "deck" && it.link.id === id);
-          if (linked && v.plan_name) planRefName = v.plan_name;
+          planLinked = items.some((it) => it.link && it.link.kind === "deck" && it.link.id === id);
+          // `linked` and `named` are TWO separate facts, checked separately on purpose: a plan
+          // with no reported name (Backend::Remote can load a ServicePlan built via from_parts,
+          // which applies no non-empty bound — selahcue-desktop/main.rs, selahcue-data's
+          // plan_repo.rs) is still a plan, and the deck is still genuinely linked. Collapsing
+          // "linked but unnamed" into the same branch as "not linked" was the same silent-clean
+          // bug PME-059 exists to prevent, one field over (Sana, PR #69 review round 2).
+          if (planLinked && v.plan_name) planRefName = v.plan_name;
         } catch (e) {
           // Couldn't check — fail OPEN on the WARNING, not just on the delete flow. The comment
           // above always said "never claim 'not referenced' from a failed read", but the code
@@ -9841,6 +9848,9 @@
         const warnings = [];
         if (inUse) warnings.push("It’s the presentation you have open — deleting it switches the editor to another.");
         if (planRefName) warnings.push("Used in your service plan “" + planRefName + "” — that plan item will show missing.");
+        // Genuinely linked, but the host reported no plan name — never the "It's the deck you
+        // have open" case, which is why this is its own branch rather than folded into `inUse`.
+        else if (planLinked) warnings.push("Used in your service plan — that plan item will show missing.");
         else if (planRefUnknown) warnings.push("Couldn’t check whether this presentation is used in your service plan — check before deleting.");
         pmConfirm({
           title: "Delete “" + (name || "Untitled presentation") + "”?",
