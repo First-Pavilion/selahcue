@@ -7,9 +7,14 @@
 //! theme restyles content without losing it** (the S8-3a spec:
 //! `docs/design/THEME-MODEL-spec.md`).
 //!
-//! MVP cut (this batch): a **solid** background, the single bundled font family,
-//! and real H+V alignment + per-region size/colour. Gradient/image backgrounds,
-//! per-role templates + per-item override, and multi-weight fonts are later slices.
+//! MVP cut (the original batch): a **solid** background, the single bundled font
+//! family, and real H+V alignment + per-region size/colour. Since then: gradient/image
+//! backgrounds and multi-weight fonts shipped (86ajq3225); a footer/attribution region
+//! shipped (OUT-006/OUT-015); and two of five built-ins are now genuinely
+//! **per-content-role** templates — [`Theme::scripture_full`] (the first to use a
+//! gradient) and [`Theme::song_center`] (the first to use a footer) — OUT-009.
+//! **Per-item override** (one deck item picking its own theme independent of the
+//! active one) remains a later slice.
 
 use crate::tokens::design2;
 use selahcue_engine::scene::{
@@ -753,6 +758,16 @@ impl Theme {
     /// giving stanza lines room to breathe — informed by, but deliberately not equal
     /// to, the audit's historical reading of `208:131-134`'s implied 1417‰ pitch (the
     /// same now-unverifiable-frame caveat as `scripture_full`).
+    ///
+    /// `title` and `body` are geometrically **non-overlapping**, independent of either
+    /// region's `visible` flag — not merely "title is hidden today so it doesn't
+    /// matter". The Theme Designer's own `tdToggleVisible` (`dist/app.js`, wired to a
+    /// per-region eye-icon in its LAYERS panel) flips a region's `visible` bit LIVE and
+    /// is reachable today, not a future feature (caught in code review of the first cut
+    /// of this theme, which nested `title` entirely inside the enlarged `body` region —
+    /// invisible only because `visible: false` happened to be set, not because the
+    /// geometry was actually sound; see `song_center_title_and_body_regions_never_overlap_even_if_title_is_shown`
+    /// in `tests/test_slide.rs`).
     pub fn song_center() -> Self {
         Theme {
             // Same navy fill as `classic` — the audit's own reading of `208:130`'s
@@ -762,11 +777,13 @@ impl Theme {
             // was inconsequential. This template differs from `classic` in layout, not
             // fill.
             background: Background::Solid(Rgba::rgb(8, 10, 20)),
-            // Mirrors `classic`'s reference region (unused while `visible: false`, so a
-            // future per-item override that flips it back on behaves sanely).
+            // A small band at the TOP, its own region distinct from `body` — unused
+            // while `visible: false` (OUT-005), but geometrically safe if a future
+            // per-item override (or today's Theme Designer eye-icon toggle) re-enables
+            // it: it never shares a pixel row with `body` below.
             title: RegionStyle {
                 x_permille: 60,
-                y_permille: 150,
+                y_permille: 60,
                 w_permille: 880,
                 h_permille: 110,
                 align_h: TextAlign::Center,
@@ -779,9 +796,9 @@ impl Theme {
             },
             body: RegionStyle {
                 x_permille: 60,
-                y_permille: 130,
+                y_permille: 190,
                 w_permille: 880,
-                h_permille: 760,
+                h_permille: 700,
                 align_h: TextAlign::Center,
                 align_v: VAlign::Middle,
                 size_permille: 92,

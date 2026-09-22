@@ -1501,14 +1501,15 @@ updating the two that pinned the OLD 3-name `BUILTIN_NAMES` literal and the OLD 
 has no footer" assertion (`test_slide.rs::builtin_themes_are_distinct_designs_and_names_round_trip`,
 `test_slide.rs::no_builtin_theme_or_plain_slide_emits_a_footer_or_song_key`,
 `test_compose.rs::builtin_themes_still_render_byte_identically_with_no_footer` — each doc-comment
-already foreshadowed exactly this change). 9 new tests added across `test_slide.rs`/
+already foreshadowed exactly this change). 8 new tests added across `test_slide.rs`/
 `test_compose.rs`: template distinctiveness (not just colour), the 5 presets pairwise-distinct and
 matching `tokens::design2` exactly, song-center's footer round-trips and is the ONE built-in
 exception to the no-footer rule, a mutation-style positive control (song metadata present vs.
 absent DOES change song-center's render, still doesn't change the other four), the
 title-hidden-on-stanza / title-shown-on-title-only-slide behaviour (OUT-005), the gradient's exact
-colours/direction and that it visibly ramps, and a "every built-in composes without panicking at
-several sizes" smoke test. A downstream fixture in `selahcue-app/tests/test_controller.rs`
+colours/direction and that it visibly ramps, a "every built-in composes without panicking at
+several sizes" smoke test, and (added in the remediation below) a title/body non-overlap
+regression guard. A downstream fixture in `selahcue-app/tests/test_controller.rs`
 (`set_theme_restyles_the_output_and_reports_it_without_losing_content`) also pinned the old 3-name
 `themes` list on the wire view and was updated the same way — found by running that crate's suite
 too, not by grep alone. `cargo clippy -p selahcue-present -p selahcue-app -p selahcue-lan
@@ -1524,6 +1525,25 @@ into any operator-UI content-role picker (so an operator can actually reach "Scr
 "Song — Center" without hand-typing the theme name over the LAN command) is a Part-A/frontend
 follow-up, out of this backend ticket's scope — consistent with `OUT-006/OUT-015`'s own "model,
 not UI" boundary.
+
+**Review-pipeline remediation, same PR (2026-09-22, no finding-status change):** Cody's code
+review found and reproduced a real bug in the fix above, not a `PME-###`/`OUT-###` finding —
+`song_center()`'s first cut set `title.visible = false` but left the title REGION GEOMETRY
+(`y 150‰, h 110‰`) nested entirely inside the enlarged body region (`y 130‰, h 760‰`); the
+"behaves sanely if re-enabled" doc comment framed this as hypothetical, but the Theme Designer's
+own per-region eye-icon (`tdToggleVisible`, `dist/app.js`, wired to `tdTheme[r.region].visible`)
+flips a region's `visible` flag LIVE today, so the overlap was reachable, not speculative. Fixed
+by moving `title` to its own non-overlapping band (`y 60‰, h 110‰`) and `body` to start below it
+(`y 190‰, h 700‰` — a 60‰ reduction from 760, still far larger than `classic`'s 560); added
+`song_center_title_and_body_regions_never_overlap_even_if_title_is_shown` (mutation-verified
+against the original geometry: confirmed RED, then restored) and corrected two doc nits Cody also
+raised (the test-count claim above, and `theme.rs`'s top-of-file module doc, which still described
+the pre-this-PR "later slices" state). Vera's independent performance review passed with no
+blockers, and separately flagged (not a regression from this PR, so not fixed here): the ticket's
+own "Verification" line overstates ADR-0015 SSIM-parity-oracle coverage for a `Layer::Gradient`
+scene (the oracle only exercises `Layer::Fill`, per `OUT-012`, already documented above), and a
+pre-existing, unrelated `measure.rs` stats-counter under-report (`MeasureCacheStats::misses`
+misses events on the &gt;128-byte early-return path) — tracked as follow-ups below, not fixed here.
 
 ### Totals (superseding the 2026-09-20/09-21/09-22 tables above)
 

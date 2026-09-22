@@ -170,6 +170,33 @@ fn background_presets_are_five_distinct_design2_tokens() {
     );
 }
 
+#[test]
+fn song_center_title_and_body_regions_never_overlap_even_if_title_is_shown() {
+    // Regression (Cody, code review of PR #80): the first cut of `song_center()` set
+    // `title.visible = false` and left the REGION GEOMETRY overlapping `body` entirely —
+    // invisible only because the flag happened to be false, not because the rects were
+    // actually sound. The Theme Designer's own `tdToggleVisible` (`dist/app.js`, wired to a
+    // per-region eye-icon in its LAYERS panel via `tdTheme[r.region].visible = ...`) flips a
+    // region's `visible` bit LIVE today — not a hypothetical future feature — so a theme
+    // whose geometry only "works" while a flag stays false is a live bug waiting for a click.
+    // Assert the RECTS themselves never overlap, independent of either region's `visible`.
+    // Realistic output sizes only: at a degenerate size (a handful of pixels) the per-mille→
+    // pixel mapping itself rounds distinct regions down to the same row, which is a property
+    // of integer quantization at sizes no real output uses, not the geometry bug this guards.
+    let theme = Theme::builtin("song-center").unwrap();
+    for (w, h) in [(1920u32, 1080u32), (1280, 720), (400, 200)] {
+        let title = theme.title.rect(w, h);
+        let body = theme.body.rect(w, h);
+        let title_bottom = title.y + title.h as i32;
+        let body_top = body.y;
+        assert!(
+            title_bottom <= body_top,
+            "at {w}x{h}: title (ends at y={title_bottom}) must not extend into body \
+             (starts at y={body_top}) — regardless of either region's `visible` flag"
+        );
+    }
+}
+
 // --- OUT-006 / OUT-015: song attribution + theme footer (CCLI/attribution model gap) ---
 
 #[test]
