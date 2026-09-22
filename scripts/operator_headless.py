@@ -9644,21 +9644,20 @@ right after a generate/save");
         while ((m = g.exec(cssText)) !== null) { last = m; }
         return last;
       }
-      // `.exec()` on a non-global regex only ever returns the FIRST match, but the CSS cascade
-      // applies the LAST declaration when a property repeats within one rule (a duplicate
-      // `filter:` — merge artefact, copy-paste mistake, future edit — is plausible authored CSS).
+      // `_lastFilterDecl` needs the LAST `filter:` declaration inside an already-found rule body —
+      // the identical "match globally, keep the last hit" mechanism as `_lastRule()` above, just
+      // one level down (a declaration within a rule, not a rule within a stylesheet). Reuses
+      // `_lastRule()` instead of duplicating its loop (merge cleanup, PR #75 rebased onto PR #76).
       // The TD-012/PSC-005/GO-LIVE-HOVER/TIMER-START-HOVER filter-guards below all need the
-      // declaration that actually wins the cascade, so match globally and keep the last hit.
-      // Sana (security review, PR #75): CSS property names are case-insensitive per spec — Chrome
-      // applies `FILTER: brightness(1.06)` identically to `filter: brightness(1.06)` — but this
-      // regex matched only the lowercase spelling, so `filter: none; FILTER: brightness(1.06);`
-      // (the exact duplicate-declaration scenario above, just with the winning declaration's
-      // property name capitalised) made `_lastFilterDecl()` return null and every call site's
-      // `!decl` short-circuit silently PASS. Matched with the `i` flag below.
+      // declaration that actually wins the cascade against a duplicate `filter:` (merge artefact,
+      // copy-paste mistake, future edit — plausible authored CSS). Matched with the `i` flag: Sana
+      // (security review, PR #75) found CSS property names are case-insensitive per spec — Chrome
+      // applies `FILTER: brightness(1.06)` identically to `filter: brightness(1.06)` — so
+      // `filter: none; FILTER: brightness(1.06);` (the winning declaration's property name
+      // capitalised) must still resolve to the LAST (winning) declaration, not return null and let
+      // every call site's `!decl` short-circuit silently PASS.
       function _lastFilterDecl(ruleText){
-        var re = /(?:^|;)\s*filter\s*:\s*([^;]+)/gi, m, last = null;
-        while ((m = re.exec(ruleText)) !== null) { last = m; }
-        return last;
+        return _lastRule(/(?:^|;)\s*filter\s*:\s*([^;]+)/i, ruleText);
       }
       // Shorter wait budget than the default 150×20ms. This block sits at the very END of the
       // driver, so every FAILING predicate here spends virtual time that the RESULTS write still
