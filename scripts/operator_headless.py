@@ -955,7 +955,50 @@ if not check_jump_call_site_is_click_only():
 # failure mode this comment block warns against even when — as it turns out here — it happens to
 # land on the same number. Read off three independent clean runs of the actual fully-merged tree
 # instead, all agreeing: 1847, 0 FAIL.
-EXPECTED_MIN_CHECKS = 1847
+#
+# Rebase #2 (this commit): PR #72 landed on `main` (as an exact-match gate: `if count !=
+# EXPECTED_MIN_CHECKS`, replacing the old `<` floor a few lines below this constant) while this
+# branch's first rebase-merge above was still open for review — three more commits ahead. Picked
+# up cleanly: PR #72's own diff touches only the comparison operator and its surrounding comment,
+# not this history block, so it auto-merged with no conflict here. Re-ran anyway per this
+# constant's own standing rule (never assume a clean rebase means the count is still right): three
+# more independent clean runs, all still 1847, 0 FAIL — the count itself did not move, only the
+# gate got strictly less forgiving (this file's own review round on this rebase used exactly that
+# stricter gate to catch that the branch was stale in the first place, three commits behind
+# `main`, before this rebase).
+#
+# 1847 -> 1852: Sana's independent re-review of this rebased branch (round 2) found the CSSOM
+# migration's own follow-up fix (the 1819 -> 1822 entry above) traded its two closed gaps for
+# three smaller new ones. Two were addressed here (the third, NEW-2, is a pre-existing gap on
+# `main` too — not a regression — and is tracked as a follow-up instead of blocking this branch):
+# NEW-1 (Medium) — `__cssRawBlock()`/`__cssRawHasFilter()` scan raw CSS TEXT and have no notion
+# that a comment isn't code, proven both directions on shapes this file's own comments already
+# use (a trailing historical comment shaped like `<selector> { ... }` became the "last match" and
+# masked a real, currently-unparseable `filter:` declaration in the rule above it; a comment
+# merely documenting a removed filter, with no real rule at all, tripped a false FAIL). Fixed by
+# stripping `/* ... */` comments before scanning — the same property every regex this file used
+# before the CSSOM migration already had, restored here for the one part of the migration that is
+# still a text scan. Adds CSSOM-PARSE-05 (+3: the premise, the false-green case, the false-red
+# guard). NEW-3 (Low) — a check that only calls `__cssRawHasFilter` in isolation pins the
+# PRIMITIVE, not the WIRING: Sana proved live that deleting the `&& !window.__cssRawHasFilter(...)`
+# conjunct from all five real filter guards left every check (CSSOM-PARSE-03 included) green,
+# since nothing then routed through the primitive at all. Fixed by moving the composed
+# CSSOM-plus-raw-text predicate into two shared functions (`__cssFilterGuardOk` for
+# TD-012/PSC-005/GO-LIVE-HOVER/TIMER-START-HOVER's "no filter, or exactly none" shape;
+# `__cssNoBrightnessFilter` for PP-GEN's narrower "no re-lightening brightness()" shape, per
+# Cody's PR #79 round-1 note that this site's intent was always narrower than its siblings') that
+# all five real call sites now call instead of inlining their own copy of the expression — there
+# is no longer a separate per-call-site conjunct to silently drop without visibly deleting the
+# call to a shared function, and pinning that function directly is therefore a guarantee about
+# what the real guards evaluate. Adds CSSOM-PARSE-06 (+2). Mutation-tested each fix independently:
+# reverting only the comment-strip reproduced exactly the 2 CSSOM-PARSE-05 comment-shape checks
+# FAIL (its premise check still passed) and nothing else; reverting only the shared-helper's
+# backstop conjunct reproduced exactly 1 FAIL (CSSOM-PARSE-06's first assertion) and nothing else;
+# restoring each returned to 0 FAIL. Per this constant's own repeated lesson: re-derived
+# empirically, not hand-summed (1847 + 3 + 2 = 1852 checks out here, but that arithmetic was
+# verified against three independent clean runs, not assumed from it). All three reported:
+# 1852 checks, 0 FAIL.
+EXPECTED_MIN_CHECKS = 1852
 
 
 def find_chrome():
@@ -1243,16 +1286,56 @@ CSS_SRC = (
   // tie-break __cssRule uses) straight out of window.__CSSTEXT, or null — independent of
   // whether the browser's parser accepts any of it. The shared primitive `__cssRawHasFilter`
   // below is built on.
+  //
+  // Sana (security review, PR #79 follow-up round 2, finding NEW-1): this is a raw TEXT scan, so
+  // it has no idea a CSS comment isn't code. Proven both directions on the real file's own
+  // pre-existing prose (app.css already documents old rules in comments that read exactly like
+  // this, e.g. the TD-012/.tb-golive/.pm-btn-primary:hover history note): (a) a historical
+  // comment mentioning a `<selector> { ... }` shape AFTER the real rule becomes the "last match"
+  // and can mask a genuine, currently-unparseable `filter:` sitting in the real rule right above
+  // it — the exact silent-pass this backstop exists to prevent, reopened by a comment; (b) a bare
+  // comment mentioning a selector's filter with no `{`/`}` at all (like app.css's own prose) can
+  // still be walked into if a later edit ever adds the brace shape, and even short of that, a
+  // comment merely mentioning "filter:" near an unrelated selector risks a false FAIL. Strip CSS
+  // comments before scanning — the one property that makes a dumb text scan safe against a
+  // stylesheet's own prose, which was true of every regex this file used before the CSSOM
+  // migration and must stay true of this deliberately-dumb backstop too.
+  function _cssStripComments(text) {
+    return String(text || "").replace(/\/\*[\s\S]*?\*\//g, "");
+  }
   window.__cssRawBlock = function(sel) {
     var escaped = String(sel).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     var re = new RegExp(escaped + "\\s*\\{([^}]*)\\}", "gi");
     var m, lastBody = null;
-    while ((m = re.exec(window.__CSSTEXT || "")) !== null) { lastBody = m[1]; }
+    while ((m = re.exec(_cssStripComments(window.__CSSTEXT))) !== null) { lastBody = m[1]; }
     return lastBody;
   };
   window.__cssRawHasFilter = function(sel) {
     var body = window.__cssRawBlock(sel);
     return !!body && /filter\s*:/i.test(body);
+  };
+  // Sana (security review, PR #79 follow-up round 2, finding NEW-3): a check that only calls
+  // __cssRawHasFilter directly pins the PRIMITIVE, not the WIRING — it stays green even if a
+  // call site's `ok(...)` predicate is edited to drop its `&& !window.__cssRawHasFilter(...)`
+  // conjunct, since nothing then routes through the primitive at all. Proven live: deleting that
+  // conjunct from all five filter guards left every check (including CSSOM-PARSE-03) green.
+  // Fix: the composed CSSOM+raw-text predicate lives in exactly ONE place (here), and all five
+  // real guards below call it instead of inlining their own copy of the expression. There is no
+  // longer a separate "call site conjunct" to silently drop without visibly deleting the call to
+  // this function — and the mutation-proof check on this function directly is therefore a
+  // guarantee about what the real guards evaluate, not a parallel copy of it.
+  // TD-012/PSC-005/GO-LIVE-HOVER/TIMER-START-HOVER's shape: no filter at all, or exactly `none`.
+  window.__cssFilterGuardOk = function(sel, rule) {
+    var filterVal = __cssFilter(rule);
+    return (!filterVal || /^\s*none\s*$/.test(filterVal)) && !window.__cssRawHasFilter(sel);
+  };
+  // PP-GEN's own narrower shape (Cody, PR #79 review round 1): only a re-lightening `brightness`
+  // filter is disqualifying, not "any filter at all" — a faithful migration of this site's
+  // pre-existing intent, not something this fix changes.
+  window.__cssNoBrightnessFilter = function(sel, rule) {
+    var filterVal = __cssFilter(rule);
+    var rawBlock = window.__cssRawBlock(sel);
+    return (!filterVal || !/brightness/.test(filterVal)) && !(rawBlock && /brightness/i.test(rawBlock));
   };
 })();
 </script>"""
@@ -9974,6 +10057,37 @@ right after a generate/save");
            "CSSOM-PARSE-04: a duplicate declared inside an @media block that does NOT match the current environment (max-width:1px) is skipped — __cssRule resolves to the rule the browser actually applies (got \"" +
            (mqBg || "none") + "\"), not whichever came last in SOURCE ORDER alone");
         probeSheet.deleteRule(mqI2); probeSheet.deleteRule(mqI1);
+
+        // Gap 5 (Sana, PR #79 follow-up round 2, finding NEW-1): __cssRawBlock/__cssRawHasFilter
+        // are a raw TEXT scan and have no idea a CSS comment is not code — proven both directions
+        // on shapes this file's own comments already carry (e.g. app.css documents old rules in
+        // prose that reads exactly like a selector block).
+        ok(!!wRejectRule && !wRejectFilter, "CSSOM-PARSE-05 (premise, reuses Gap 3's fixture): the adversarial rule above still carries an unparseable filter: that CSSOM alone cannot see");
+        window.__CSSTEXT = wRejectCss + "\n/* Historical note, kept for context: " + wRejectSel +
+          " { background: var(--sc-primary-hover); } before the AA fix. */";
+        ok(window.__cssRawHasFilter(wRejectSel),
+           "CSSOM-PARSE-05: a trailing CSS comment that itself contains a `<selector> { ... }` shape does not mask the REAL rule's unparseable filter: declaration above it — without stripping comments first, the comment's own fake block (no `filter` inside it) would become the \"last match\" and silently hide the real one");
+        var wCmtOnlySel = ".__cssom_cmtonly_probe__:hover";
+        window.__CSSTEXT = "/* Historical note: " + wCmtOnlySel + " { filter: brightness(1.06); } was the old rule, removed for AA. */";
+        ok(!window.__cssRawHasFilter(wCmtOnlySel),
+           "CSSOM-PARSE-05 (false-red guard): a CSS comment that only DOCUMENTS a removed filter, with no real rule for the selector at all, does not itself trip the raw-text backstop");
+        window.__CSSTEXT = wSavedCssText;
+
+        // Gap 6 (Sana, PR #79 follow-up round 2, finding NEW-3): CSSOM-PARSE-03 above pins the
+        // __cssRawHasFilter PRIMITIVE, not the WIRING — proven live that deleting the
+        // `&& !window.__cssRawHasFilter(...)` conjunct from all five real filter guards left every
+        // check (CSSOM-PARSE-03 included) green, since nothing then called the primitive at all.
+        // The five real guards below now call __cssFilterGuardOk/__cssNoBrightnessFilter instead of
+        // inlining their own copy of the composed expression, so there is exactly one place left
+        // that could silently drop the backstop — pin THAT function directly, reusing the same
+        // CSSOM-drops-it fixture as Gap 3/5, so a regression here is a regression in exactly what
+        // every real call site evaluates, not a parallel copy of it.
+        window.__CSSTEXT = wRejectCss;
+        ok(!__cssFilterGuardOk(wRejectSel, wRejectRule),
+           "CSSOM-PARSE-06: __cssFilterGuardOk (what TD-012/PSC-005/GO-LIVE-HOVER/TIMER-START-HOVER actually call) correctly reports the guard as FAILING for a filter: declaration CSSOM alone cannot see — proving the raw-text backstop is wired into the shared function every real call site uses, not just callable in isolation");
+        ok(!__cssNoBrightnessFilter(wRejectSel, wRejectRule),
+           "CSSOM-PARSE-06 (PP-GEN shape): __cssNoBrightnessFilter (what the PP-GEN guard actually calls) correctly reports FAILING for the same fixture — a brightness() filter stacked with a value Chrome's parser rejects outright");
+        window.__CSSTEXT = wSavedCssText;
       })();
 
       // Shorter wait budget than the default 150×20ms. This block sits at the very END of the
@@ -10158,7 +10272,7 @@ right after a generate/save");
         // __cssFilter (CSSOM-PARSE-02 above), which also catches a re-lightening `-webkit-filter`
         // or CSS-escaped spelling, not just the plain one.
         var wTdHoverFilter = __cssFilter(wTdHoverRule);
-        ok((!wTdHoverFilter || /^\s*none\s*$/.test(wTdHoverFilter)) && !window.__cssRawHasFilter(".td-save-cta:hover"),
+        ok(__cssFilterGuardOk(".td-save-cta:hover", wTdHoverRule),
            "TD-012: the hover rule carries no `filter` (found " + (wTdHoverFilter ? wTdHoverFilter.trim() : "none") +
            ") — a brightness() filter stacked on an already-darkened fill would re-lighten it past AA, and the background-only checks above cannot see that");
         ok(_cr([255,255,255,1], _resolve("var(--sc-primary-hover)")) < 4.5,
@@ -10191,7 +10305,7 @@ right after a generate/save");
         // `filter: brightness()` stacked back onto this hover rule. Assert none is declared —
         // through __cssFilter, so a re-lightening `-webkit-filter` or escaped spelling counts too.
         var wPsHoverFilter = __cssFilter(wPsHoverRule);
-        ok((!wPsHoverFilter || /^\s*none\s*$/.test(wPsHoverFilter)) && !window.__cssRawHasFilter(".ps-start:hover"),
+        ok(__cssFilterGuardOk(".ps-start:hover", wPsHoverRule),
            "PSC-005: the hover rule carries no `filter` (found " + (wPsHoverFilter ? wPsHoverFilter.trim() : "none") +
            ") — a brightness() filter stacked on an already-darkened fill would re-lighten it past AA, and the background-only checks above cannot see that");
         ok(_cr([255,255,255,1], _resolve("var(--sc-primary-hover)")) < 4.5,
@@ -10335,7 +10449,7 @@ right after a generate/save");
         // Sana's TD-012 finding (PR #58 review) applies identically here: the background-only
         // checks above cannot see a `filter: brightness()` stacked back onto this hover rule.
         var wTbGlHoverFilter = __cssFilter(wTbGlHoverRule);
-        ok((!wTbGlHoverFilter || /^\s*none\s*$/.test(wTbGlHoverFilter)) && !window.__cssRawHasFilter(".tb-golive:hover"),
+        ok(__cssFilterGuardOk(".tb-golive:hover", wTbGlHoverRule),
            "GO-LIVE-HOVER: the hover rule carries no `filter` (found " + (wTbGlHoverFilter ? wTbGlHoverFilter.trim() : "none") +
            ") — a brightness() filter stacked on an already-darkened fill would re-lighten it past AA, and the background-only checks above cannot see that");
         // Control: recomputing the ORIGINAL `filter: brightness(1.06)` against the darkened
@@ -10369,7 +10483,7 @@ right after a generate/save");
              "TIMER-START-HOVER: hover does not LIGHTEN past the gradient's brightest rest stop — no `filter: brightness()` re-lightening the darkened fill");
         }
         var wTsHoverFilter = __cssFilter(wTsHoverRule);
-        ok((!wTsHoverFilter || /^\s*none\s*$/.test(wTsHoverFilter)) && !window.__cssRawHasFilter(".timer-start:hover"),
+        ok(__cssFilterGuardOk(".timer-start:hover", wTsHoverRule),
            "TIMER-START-HOVER: the hover rule carries no `filter` (found " + (wTsHoverFilter ? wTsHoverFilter.trim() : "none") +
            ") — a brightness() filter stacked on an already-darkened fill would re-lighten it past AA, and the background-only checks above cannot see that");
         var wTsBrightened = wTsStops.map(function(s){ return [Math.min(255,s[0]*1.06), Math.min(255,s[1]*1.06), Math.min(255,s[2]*1.06), s[3]]; });
@@ -10406,10 +10520,7 @@ right after a generate/save");
         // drops a filter: declaration outright when it cannot parse the value, which would make
         // __cssFilter report null (the passing state) for a brightness() call stacked with an
         // unparseable one.
-        var wPpGenHoverFilter = __cssFilter(wPpGenHoverRule);
-        var wPpGenHoverRawBlock = window.__cssRawBlock(".pp-generate:hover");
-        ok((!wPpGenHoverFilter || !/brightness/.test(wPpGenHoverFilter)) &&
-           !(wPpGenHoverRawBlock && /brightness/i.test(wPpGenHoverRawBlock)),
+        ok(__cssNoBrightnessFilter(".pp-generate:hover", wPpGenHoverRule),
            "PP-GEN: .pp-generate:hover does NOT use filter:brightness() — that would re-lighten the darkened gradient stop, the exact gap still open on .tb-golive/.timer-start");
         var wPpGenHb = __cssBg(wPpGenHoverRule);
         ok(!!wPpGenHb, "PP-GEN (premise): the hover rule declares a background, so there is a value to measure");
