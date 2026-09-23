@@ -175,6 +175,11 @@ class _TimerTabState extends State<TimerTab> {
     final disabledReason =
         syncing ? 'unavailable while reconnecting' : 'sending…';
     final canAdjust = hasTimer && !disabled;
+    // Adjust/Pause/Resume/Stop have a THIRD reason to be inert: no timer
+    // exists yet. Reusing [disabledReason] there announced "sending…" or
+    // "unavailable while reconnecting" even when neither was true and the
+    // real reason was simply that there is nothing to adjust.
+    final timerControlReason = disabled ? disabledReason : 'no timer running';
     final String readout;
     final Color readoutColor;
     final String chip;
@@ -328,7 +333,7 @@ class _TimerTabState extends State<TimerTab> {
                 child: SelahButton(
                   label: '− 1:00',
                   semanticLabel: 'Subtract one minute',
-                  disabledReason: disabledReason,
+                  disabledReason: timerControlReason,
                   onPressed: canAdjust
                       ? () => widget.live.act(cmdAdjustTimer(-60))
                       : null,
@@ -339,7 +344,7 @@ class _TimerTabState extends State<TimerTab> {
                 child: SelahButton(
                   label: '+ 1:00',
                   semanticLabel: 'Add one minute',
-                  disabledReason: disabledReason,
+                  disabledReason: timerControlReason,
                   onPressed: canAdjust
                       ? () => widget.live.act(cmdAdjustTimer(60))
                       : null,
@@ -356,7 +361,7 @@ class _TimerTabState extends State<TimerTab> {
               Expanded(
                 child: SelahButton(
                   label: (t?.running ?? false) ? 'Pause' : 'Resume',
-                  disabledReason: disabledReason,
+                  disabledReason: timerControlReason,
                   onPressed: (t == null || disabled)
                       ? null
                       : () => widget.live.act(
@@ -383,7 +388,7 @@ class _TimerTabState extends State<TimerTab> {
                 child: SelahButton(
                   label: 'Stop',
                   variant: SelahButtonVariant.danger,
-                  disabledReason: disabledReason,
+                  disabledReason: timerControlReason,
                   onPressed: canAdjust
                       ? () => widget.live.act(cmdStopTimer())
                       : null,

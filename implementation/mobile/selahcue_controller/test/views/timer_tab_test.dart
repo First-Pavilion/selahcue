@@ -296,6 +296,28 @@ void main() {
   });
 
   testWidgets(
+      'Stop/Pause/Adjust announce "no timer running" when that is the actual '
+      'reason, not "sending…" or "unavailable while reconnecting"',
+      (tester) async {
+    final handle = tester.ensureSemantics();
+    final live = await _pump(tester, _Fake(MobileRole.producer, _viewWith(null)));
+    // Neither syncing nor busy — the only reason these are disabled is that
+    // no timer exists yet (17tnw2ay2pq review: Cody + Sana).
+    expect(live.syncing, isFalse);
+    expect(live.busy, isFalse);
+
+    expect(find.bySemanticsLabel('Resume, no timer running'), findsOneWidget);
+    expect(find.bySemanticsLabel('Stop, no timer running'), findsOneWidget);
+    expect(find.bySemanticsLabel('Subtract one minute, no timer running'),
+        findsOneWidget);
+    expect(
+        find.bySemanticsLabel('Add one minute, no timer running'), findsOneWidget);
+
+    handle.dispose();
+    live.dispose();
+  });
+
+  testWidgets(
       'the preset and Pause controls are disabled while a command is in flight',
       (tester) async {
     final handle = tester.ensureSemantics();
@@ -365,6 +387,35 @@ void main() {
     await tester.pump(const Duration(milliseconds: 60));
     expect(live.busy, isFalse);
 
+    live.dispose();
+  });
+
+  testWidgets(
+      'a burst of taps on Start with no frame between them still sends '
+      'exactly one start_timer', (tester) async {
+    // The tightest version of the race the removed local `_starting` guard
+    // used to protect against: the widget tree has not yet rebuilt to
+    // reflect `busy`, so if anything here still relied on a RENDERED
+    // disabled state (rather than act()'s own synchronous guard) to prevent
+    // a duplicate dispatch, this would catch it. 17tnw2ay2pq review (Vera,
+    // Quinn) each independently verified this by hand; this makes it a
+    // permanent regression test.
+    final fake = _Fake(MobileRole.producer, _viewWith(null));
+    final live = await _pumpPolled(tester, fake);
+
+    await tester.enterText(find.byType(TextField).last, '5');
+    await tester.pump();
+
+    fake.commandGate = Completer<void>();
+    await tester.tap(find.text('Start'));
+    await tester.tap(find.text('Start'));
+    await tester.tap(find.text('Start'));
+    await tester.pump();
+
+    expect(fake.sent.where((c) => c['cmd'] == 'start_timer').length, 1);
+
+    fake.commandGate!.complete();
+    await tester.pump(const Duration(milliseconds: 60));
     live.dispose();
   });
 }
