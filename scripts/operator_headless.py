@@ -708,34 +708,196 @@ if not check_jump_call_site_is_click_only():
 # named the pre-fix window.__openChapterForStage as Edit's call) was a stale-comment correction
 # only. Confirmed by two independent runs (both 1625, 0 FAIL).
 #
-# 2026-09-22 (ClickUp 17tnw2axpta, CON-054/CON-098): +12 checks. CON-054 — the staged verse's
-# STAGED pill is actually painted (not just classed) on the cursor row and absent on a sibling
-# row (negative control), states the word STAGED, and clears AA-normal on its own fill (6
-# checks + 1 setup). CON-098 — the emergency footer's computed background AND border genuinely
-# change on a real blackout engage/restore round trip and land on the canonical frame's exact
-# #1a0c0c ground (4 checks + 1 setup/cleanup pair counted once). Both mutation-verified
-# (breaking the CSS selector / disabling the JS toggle turned the corresponding checks RED,
-# restoring them turned the suite green again). Confirmed by two independent runs (both 1637,
-# 0 FAIL).
+# 1625 -> 1630: ClickUp 17tnw2axptu (Pre-service Check parity closure). The audit
+# (docs/design/DESIGN-2.0-PARITY-AUDIT-preservice.md) flagged `.ps-detail-warn`/`.ps-detail-block`
+# as an UNMEASURED contrast pairing (PSC-009) rather than a scored defect. Independently computed
+# both clear AA-NORMAL against --sc-surface at the row's real 12px/500 weight (8.85:1 / 5.52:1 —
+# the second figure matches PME-004's independently-established figure for the same token pairing
+# exactly), so there was no fix to make — 5 new assertions (2 premises, 2 real measurements, 1
+# cleanup) added to lock the passing state in place on the LIVE DOM instead of leaving it
+# unmeasured. Mutation-verified: temporarily recoloured both rules to --sc-surface (matching the
+# background, forcing ~1.00:1) and confirmed EXACTLY those 2 measurement assertions went RED
+# (1630 checks, 2 FAIL) with nothing else disturbed; restored and re-confirmed clean. The other 8
+# non-PSC-005 findings needed no code change: PSC-001/002/003/008 remain genuinely blocked on the
+# still-open `DECISION — New-surfaces` ClickUp task (17tnw2axpu4, zero comments); PSC-004/006/007
+# were already MATCH/EXTRA/an accepted honesty trade-off per the audit's own verdicts, re-verified
+# against the live Figma frame (344:124) rather than just the doc. Confirmed by two independent
+# runs (both 1630, 0 FAIL).
 #
-# 2026-09-22, same ClickUp ticket, Cody's code review of PR #66: +3 checks (net; the CON-054
-# block was rewritten, not appended to). Cody found live that the STAGED pill from the entry
-# above was gated on `.verse.cursor` — which moves for every browse gesture, INCLUDING the
-# deliberately read-only ones (Edit on a low-confidence detection, History's re-stage) that pass
-# stage=false specifically so nothing is staged (Sana's PR #61 finding was about the same class
-# of mistake for a different control). A pill gated on it could paint STAGED for a verse that
-# was only ever browsed. Fixed by gating the pill on a NEW `.is-staged` class, toggled only from
-# the host's own `staged_scripture` readback (`syncStagedPill()` in app.js, driven by
-# `syncChrome` on every poll — the same field the Preview panel already trusts), leaving the
-# pre-existing, out-of-scope `.cursor` tint alone. The rewritten CON-054 block reproduces Cody's
-# exact scenario (browse via `window.__openChapterToBrowse`, assert no pill; then a real
-# `render()` with `staged_scripture` set, assert the pill appears; then cleared again, assert it
-# disappears) instead of merely re-asserting the old (wrong) premise. Mutation-verified twice:
-# reverting the CSS selector to `.verse.cursor` turns exactly the browse-reproduction check RED;
-# mutating the JS comparison to always-true turns exactly the negative-control check RED (the
-# sibling, non-staged row wrongly gets the pill too). Confirmed by two independent runs (both
-# 1640, 0 FAIL).
-EXPECTED_MIN_CHECKS = 1640
+# 1630 -> 1672: ClickUp 17tnw2axptg (Presentation web: safety & access essentials), authored in
+# parallel on a separate branch against the pre-17tnw2axptu baseline (1625) and rebased onto main
+# after that ticket landed — this entry's starting point is 1630, not the 1625 these checks were
+# originally counted against. New checks added on that branch, pre-rebase, in three passes: 37
+# across PME-055/053/059/006-011/027 (this ticket's own implementation); +3 (1 setup + 2 real
+# assertions) for Cody's PR #69 finding that a duplicate source vanishing mid-dialog toasted a
+# false-positive "Presentation duplicated" instead of surfacing the error banner; +2 for Sana +
+# Vera's independently-corroborated PR #69 finding that pmLibDelete's own comment promised "fail
+# OPEN on the warning" for a failed view() read, but the code left the warning list untouched on
+# failure — reading exactly like a clean "not referenced" and defeating PME-059's purpose. All
+# three behavioural fixes were mutation-verified pre-rebase (reverting each turned exactly its own
+# assertion(s) RED, restored). 1630 + 37 + 3 + 2 = 1672, matching the post-rebase measured count
+# exactly.
+#
+# 1672 -> 1674: same ticket, remediation round 4 — 2 new checks covering Sana's PR #69 review
+# round-2 finding that pmLibDelete's plan-reference check conflated "the deck is linked" with
+# "the plan has a reported name": `if (linked && v.plan_name) planRefName = ...` gave NO warning
+# at all when a deck was genuinely linked but the plan reported no name (reachable via
+# Backend::Remote loading a ServicePlan built through from_parts, which applies no non-empty-name
+# bound) — the same silent-clean-dialog failure already fixed above, one field over. Mutation-
+# verified (removing the new linked-but-unnamed warning branch turns both assertions RED,
+# restored). Confirmed by two independent runs (both 1674, 0 FAIL).
+#
+# 1674 -> 1676: same ticket, remediation round 5 — 2 new checks covering Vera's PR #69 review
+# round-2 finding that pmLibDelete's `await invoke("view")` had no timeout: on Backend::Remote,
+# ControlClient::command (selahcue-lan/src/client.rs) has no per-request timeout on this path
+# (unlike connect/pair, which do), so a stalled-but-connected host would hang the whole delete
+# flow forever — no spinner, no error. Added PM_VIEW_TIMEOUT_MS (1500 ms) via a small
+# pmWithTimeout() wrapper; expiry is treated as the same planRefUnknown state the earlier
+# rejection fix already added. New test hook (window.__viewHangOnce, a promise that never
+# settles) proves the timeout is what moves the UI on, not the mock resolving late. Mutation-
+# verified (removing the pmWithTimeout wrapper turns both new assertions RED, restored).
+# Confirmed by two independent runs (both 1676, 0 FAIL).
+#
+# 1625 -> ?: ClickUp 17tnw2axptw (Settings: About & Licensing + Appearance pages, SET-007/SET-004),
+# authored in parallel on its own branch against the same 1625 baseline as the two entries above
+# and merged into main separately — this branch's own history did not record a comment for its
+# +31 checks (`list_translations` fixture + the new Settings pages' assertions) before merging;
+# recorded retroactively here at merge time instead of left silent. Per this comment block's own
+# repeatedly-stated discipline, the number below is the empirically re-run total after resolving
+# this merge, not a hand sum of the two branches' deltas.
+#
+# 1625 -> ?: ClickUp 17tnw2axptw (Settings: General + Scripture & Translations pages, SET-001/
+# SET-002), authored as PR #70, genuinely stacked on the About & Licensing + Appearance branch
+# above (not independently branched from 1625) — its own pre-merge count of 1689 already included
+# that branch's +31 (plus a remediation round for Cody's and Quinn's PR #70 review findings on top).
+# A first resolution attempt hand-summed 1625 + main's 82 + this branch's naive (1689-1625=64) and
+# got 1771 — wrong, by exactly 31, because that arithmetic double-counted the shared +31 both
+# branches carry. This constant's own history has made the same category of mistake before for the
+# same reason (see the 1596 and 1605 entries above); the fix is the same each time — empirically
+# re-run, don't hand-derive. Confirmed by a clean run: 1740, 0 FAIL.
+#
+# 1625 -> ?: ClickUp 17tnw2axptw (Settings: Outputs & Displays + Security + Storage & Backups +
+# SET-009, SET-003/SET-005/SET-006/SET-009), authored as PR #71, genuinely stacked on the General
+# + Scripture & Translations branch above (which is itself stacked on About & Licensing +
+# Appearance) — its own pre-merge count of 1717 already included both ancestor branches' checks.
+# Not hand-summed at all this time, per the lesson recorded immediately above: empirically re-run
+# after resolving instead. Confirmed by a clean run: 1768, 0 FAIL.
+#
+# 1768 -> 1788: this branch adds GO-LIVE-HOVER / TIMER-START-HOVER (.tb-golive/.timer-start kept
+# `filter: brightness(1.06)` on :hover after their rest gradient was darkened — the exact
+# regression Sana's PR #58 review flagged as "unmeasured" for these two buttons specifically,
+# including her own filter-guard check pattern, carried over here). Rebased onto main post-1768
+# with a real conflict in this exact block (the pattern this comment keeps warning about) — per
+# its own repeated lesson, re-derived empirically after resolving rather than hand-summed. Three
+# independent runs against the real post-rebase tree all reported 1788, 0 FAIL.
+#
+# 1768 -> ?: ClickUp SET-010 (sermon-prep Generate panel gradient-hover contrast), authored in
+# parallel on its own branch against the pre-17tnw2axptw baseline (1544) and rebased onto main
+# twice — first onto PR #58 (1520->1544, above), then onto this branch's own PR #68/#70/#71 stack
+# (1544->1768, above) — this entry's starting point is 1768, not either of those. 18 new PP-GEN
+# assertions (.pp-generate/.pp-optin-btn/.pp-gen-preview-confirm gradient-hover contrast,
+# mirroring the existing PME-005/CON-046 pattern). Per this comment block's own repeatedly-stated
+# discipline, not hand-summed — empirically re-run after resolving this rebase instead.
+# Confirmed by a clean run: 1786, 0 FAIL.
+#
+# 1786 -> 1791: Sana's PR #60 review found the exact PSC-005 trap (above) reproduced on
+# .pp-generate[disabled]: moving hover from filter:brightness() to a flat background broke the
+# disabled rule's neutralisation (equal specificity, no background of its own), so a disabled or
+# aria-busy Generate button visibly flipped to the active fill on hover. Fixed the same way as
+# .ps-start:disabled — the disabled rule now re-declares the REST gradient explicitly — and added
+# the same two-check PSC-005 pattern (disabled rule declares its own background; that background
+# is exactly the REST fill). Mutation-verified (reverting the disabled rule's background turns
+# exactly 1 assertion RED, 1790/1 FAIL; a second dependent assertion goes unreachable, matching
+# PSC-005's own `if (wPsDisabledBg && wPsBaseBg)` shape). Confirmed by a clean run: 1791, 0 FAIL.
+#
+# 1791 -> 1796: Cody's PR #60 re-review found the same PSC-005 trap reproduced a third time on
+# .pp-gen-preview-confirm: that class is shared by the transient Confirm button (never disabled)
+# and the edit-draft Save button (settings.js/transcripts.js set disabled + aria-busy="true" while
+# saving), and there was no .pp-gen-preview-confirm[disabled]/[aria-busy="true"] rule at all, so
+# the :hover fill this same PR added had nothing to lose to on a disabled/saving Save. Fixed by
+# re-declaring the REST-state flat background explicitly (flat --sc-primary, not a gradient, so
+# the fix mirrors .ps-start:disabled's flat sibling rather than .pp-generate[disabled]'s two-stop
+# case), with the same opacity/cursor as .pp-generate[disabled] for consistency within this block.
+# Added the same two-check PSC-005 pattern (disabled rule declares its own background; that
+# background is exactly the REST fill). Mutation-verified (reverting the disabled rule's
+# background turns exactly 1 assertion RED, 1795/1 FAIL; the dependent equality assertion goes
+# unreachable, same shape as the two priors above). Confirmed by a clean run: 1796, 0 FAIL.
+#
+# 1796 -> ?: rebased onto main's own GO-LIVE-HOVER/TIMER-START-HOVER fix (1768->1788 above,
+# `.tb-golive`/`.timer-start` — the follow-up this branch's own comments repeatedly deferred to a
+# separate ticket, landed by a peer session while this PR was in review). Real conflict in this
+# exact block again — per this comment's own repeated lesson, re-derived empirically after
+# resolving rather than hand-summed. Confirmed by a clean run: 1816, 0 FAIL.
+#
+# 1816 -> ?: Sana's independent security review of PR #75 (comment on 17tnw2axweu) found that
+# PR #75 fixed `_lastFilterDecl()` reading only the FIRST `filter:` declaration inside an
+# already-found rule body, but every rule-lookup ABOVE it in this file — the ones that find the
+# RULE BLOCK itself — had the identical bug one level up: a non-global `.exec()` only ever returns
+# the FIRST matching rule block for a selector, while the CSS cascade applies whichever
+# same-specificity block appears LAST. Not currently live (each guarded selector has exactly one
+# real rule today), but the same latent gap as PR #75's, confirmed pre-existing and correctly
+# scoped out of that PR since it spans a much broader set of call sites: .pm-btn-primary:hover,
+# .td-save-cta:hover, .ps-start:hover/:disabled/(base), .dl-btn-primary:hover, .tb-golive:hover,
+# .timer-start:hover, the PME-006-011 muted-text loop, and — rebased onto main's SET-010 PP-GEN
+# block above, landed by a peer session while this branch was in review, real conflict in this
+# exact block again — the SAME bug on the 7 PP-GEN sites that block just added
+# (.pp-optin-btn:hover, .pp-generate:hover/[disabled]/(base), .pp-gen-preview-confirm:hover/
+# [disabled]/(base)). Routed all sixteen sites through one `_lastRule()` helper (matches globally,
+# keeps the last hit — same technique as `_lastFilterDecl()`), and added a RULE-REGEX-LASTMATCH
+# mutation-proof check pair (+2) proving it: a duplicated-selector rule fed through the shared
+# helper correctly resolves to the LAST (cascade-winning) block, while a plain non-global .exec()
+# on the same text would have wrongly read the FIRST. Per this constant's own repeated lesson:
+# re-derived empirically, not hand-summed. Three independent runs against the real post-rebase
+# tree all reported 1818, 0 FAIL.
+#
+# 1818 -> 1822: ClickUp 17tnw2axptx (Download modal: close remaining DLM-### drift), rebased onto
+# main's own GO-LIVE-HOVER/TIMER-START-HOVER/PP-GEN/RULE-REGEX-LASTMATCH block above (1768->1818,
+# landed by a peer session while this branch was open) — real conflict in this exact block again.
+# Added the DLM-007/DLM-008 block (4 assertions — card + button radius, premise + measurement
+# each) that locks in the geometry fix (card 14->16px, button 8->10px). DLM-002/003/004/006
+# stayed decision-blocked and got no new assertions; DLM-005 needed no code change. Per this
+# comment's own repeated lesson: not hand-summed, re-derived empirically after resolving.
+# Confirmed by a clean run: 1822, 0 FAIL.
+#
+# 1822 -> ?: ClickUp 17tnw2axptt (Service Plan: close PLN-004 — the staged run-sheet row's
+# border was solid; the handoff is explicit that staged is green/dashed and only live is
+# red/solid). Added exactly 3 checks (a non-vacuousness setup check, the dashed-border assertion,
+# and a solid-border control on an unstaged row) right next to the existing C-001 run-sheet
+# fixture. Rebased onto main's own GO-LIVE-HOVER/TIMER-START-HOVER + SET-010 PP-GEN +
+# rule-lookup-lastmatch chain above (1768->1818) after this branch was authored against the
+# earlier 1768 baseline — a real conflict in this exact block, the pattern this comment keeps
+# warning about. Per this constant's own repeatedly-stated discipline, 1821 is read off an actual
+# clean run after resolving, not hand-summed as 1818+3 (even though it happens to match here).
+# Confirmed by two independent clean runs against the real post-rebase tree: 1821, 0 FAIL.
+#
+# 1821 -> 1824: Vera's PR #83 performance review found a real correctness bug the PLN-004 fix
+# above made WORSE, not a performance regression: Command::GoLive (selahcue-app/src/
+# controller.rs) sets live_idx = staged_idx but never clears staged_idx, so the row that just
+# went live carries BOTH is_live and is_staged classes on every ordinary Go Live — not a
+# contrived case. .is-live/.is-staged had equal CSS specificity and .is-staged was declared
+# second, so it won the cascade: the item actually on air rendered with Preview's colour (a
+# pre-existing bug) and, after this PR's own change, Preview's dashed shape too — worse, not
+# better. Fixed by scoping the staged rule to `:not(.is-live)` so Live always wins an overlap
+# (app.css). Added 3 new checks in an isolated fixture (not the shared C-001 one, to avoid
+# disturbing its own item-count/index assertions): a non-vacuousness setup check proving a
+# live+staged row genuinely carries both classes, the solid-border assertion, and a border-colour
+# control against a live-only row. Mutation-verified by reverting the `:not(.is-live)` guard and
+# re-running: exactly the 2 new assertion checks (border-style and border-colour) went RED, none
+# of the other 1822 checks moved, then restored. Confirmed by two independent clean runs against
+# the real post-fix tree: 1824, 0 FAIL against this branch's own baseline (1818, pre-Download-
+# modal-merge). Re-derived below against the actual merged tree instead of trusting that number.
+#
+# 1828 -> ?: ClickUp 17tnw2axpta (Console: blackout footer + STAGED-pill contrast, PR #66),
+# authored back near the 1625 baseline (well before this file's history above existed in its
+# current form) and now finally rebased in. Own contribution: CON-054 (a real STAGED pill,
+# rewritten mid-review after Cody found the first version gated on `.verse.cursor` — which moves
+# for every browse gesture including the deliberately read-only ones — to instead gate on the
+# host's own `staged_scripture` readback via a new `syncStagedPill()`) and CON-098 (the emergency
+# footer's background/border genuinely re-tint on a real blackout engage/restore round trip).
+# Both mutation-verified at authoring time. Per this constant's own repeated lesson: re-derived
+# empirically below, not hand-summed against this branch's own long-stale prior count (1640).
+# Confirmed by a clean run: 1843, 0 FAIL.
+EXPECTED_MIN_CHECKS = 1843
 
 
 def find_chrome():
@@ -779,6 +941,21 @@ if CHROME is None:
     sys.exit(0)
 
 html = open(os.path.join(DIST, "index.html")).read()
+
+# Settings/General (17tnw2axwet, SET-001) marks "Live Console" as the selected "on launch, open
+# to" startup option — an honest claim only because it's true: #surface-console really does carry
+# `active` at rest in the shipped markup (never asserted against the live DOM inside the browser
+# driver below, since by the time that block runs many earlier checks have already navigated
+# elsewhere, so the live .active class would no longer reflect the boot-time default). Checked
+# here, once, against the pristine source, before Chrome even starts — an INFRA-level precondition
+# a real behavioural check depends on, not a behaviour of the running app itself.
+if 'id="surface-console" class="surface-page active"' not in html:
+    print(
+        "FAIL: Settings/General's 'Live Console is the real startup default' claim no longer "
+        "holds — #surface-console's active class moved (or its markup changed) without updating "
+        "settings-general.js's STARTUP_OPTIONS"
+    )
+    sys.exit(2)
 
 # The real app.css text, handed to the driver as a string. Chrome refuses
 # `document.styleSheets[i].cssRules` for a file:// stylesheet (SecurityError), so a rule that
@@ -1025,7 +1202,34 @@ STUB = r"""
     window.__calls.push({cmd:cmd, args:args});
     if (cmd === "builtin_themes") return Promise.resolve([{name:"Classic", theme:JSON.parse(JSON.stringify(T))}]);
     if (cmd === "system_fonts") return Promise.resolve(["Arial","Georgia","Helvetica Neue"]);
-    if (cmd === "view") return Promise.resolve(JSON.parse(JSON.stringify(V)));
+    // The real bundled set (selahcue_scripture::Translation::ALL, mirrored — see main.rs's
+    // list_translations): five public-domain translations, none downloadable (all shipped in the
+    // binary). Settings › About & Licensing (17tnw2axwer) reads this for real, so the fixture
+    // must be a real shape, not the generic Promise.resolve(null) fallback every unstubbed
+    // command gets (which would make that page's render path untestable here).
+    // Translation::ALL is SIX entries (selahcue-scripture/src/lib.rs), not five — the fifth
+    // bundled PD translation (DBY) plus Young's Literal Translation (YLT), which is public domain
+    // but NOT bundled (loads from an on-disk cache at runtime, feature `download`) and so is the
+    // one real `downloadable:true` entry this command ever returns today (Cody's review of PR #68
+    // caught the fixture under-counting this at five).
+    if (cmd === "list_translations") return Promise.resolve({translations:[
+      {code:"KJV", name:"King James Version", downloadable:false, available:true},
+      {code:"WEB", name:"World English Bible", downloadable:false, available:true},
+      {code:"ASV", name:"American Standard Version", downloadable:false, available:true},
+      {code:"WEBBE", name:"World English Bible, British Edition", downloadable:false, available:true},
+      {code:"DBY", name:"Darby Translation", downloadable:false, available:true},
+      {code:"YLT", name:"Young's Literal Translation", downloadable:true, available:false}
+    ]});
+    // Test hook (mirrors __deckListNullOnce/__pmRejectOnce): force ONE `view()` rejection, so a
+    // failed local-state read (e.g. PME-059's plan-reference check in pmLibDelete) can be told
+    // apart from a genuinely healthy read reporting "not referenced".
+    if (cmd === "view") {
+      if (window.__viewRejectOnce) { window.__viewRejectOnce = false; return Promise.reject(new Error("view failed")); }
+      // A stalled-but-connected host on Backend::Remote (Vera, PR #69 review round 2): the
+      // promise NEVER settles, so only pmLibDelete's own client-side timeout can move the UI on.
+      if (window.__viewHangOnce) { window.__viewHangOnce = false; return new Promise(function(){}); }
+      return Promise.resolve(JSON.parse(JSON.stringify(V)));
+    }
     // Service Plan builder (86ajxxuz9): plan mutations + content-link + scripture search.
     // Each returns a fresh OperatorView (byte-cloned) so the builder re-render never aliases V;
     // set_item_content is a PLAN edit (never a live-control command — the invariant check relies
@@ -1320,7 +1524,13 @@ STUB = r"""
     }
     if (cmd === "deck_duplicate") {
       var sd=LIB.decks.filter(function(x){return x.id===args.id;})[0];
-      if (sd){ LIB.decks.push({id:LIB.nextId++, name:libUnique(sd.name+" copy"), slides:sd.slides}); } return Promise.resolve(libView());
+      if (!sd) return Promise.resolve(libView());
+      // Mirrors deck_duplicate's real response shape (main.rs): the copy's own new_id, the same
+      // additive pattern deck_restore already uses for restored_name — PME-053's "Start from →
+      // Duplicate…" flow in the New-presentation dialog needs it to rename + open the copy.
+      var nid = LIB.nextId++;
+      LIB.decks.push({id:nid, name:libUnique(sd.name+" copy"), slides:sd.slides});
+      var v = libView(); v.new_id = nid; return Promise.resolve(v);
     }
     if (cmd === "deck_delete") {
       var wasOpen=(LIB.open===args.id);
@@ -2222,7 +2432,16 @@ STUB = r"""
     }
     return Promise.resolve(null);
   } },
-  event: { listen: function(name, cb){ (window.__ev[name] = window.__ev[name] || []).push(cb); return Promise.resolve(function(){}); } } };
+  event: { listen: function(name, cb){ (window.__ev[name] = window.__ev[name] || []).push(cb); return Promise.resolve(function(){}); } },
+  // Tauri's own app-info API (Settings › About & Licensing, 17tnw2axwer, reads app.getVersion()
+  // directly — see settings-about.js's header comment for why: it's Tauri's built-in global, not
+  // a command this ticket invented). window.__appVersionAvailable lets a check remove this to
+  // exercise the honest "—" fallback when the global isn't exposed.
+  app: { getVersion: function(){
+    return window.__appVersionAvailable === false
+      ? Promise.reject(new Error("app info unavailable"))
+      : Promise.resolve("0.1.0");
+  } } };
   window.__emit = function(name, payload){ (window.__ev[name] || []).forEach(function(cb){ cb({event:name, payload:payload}); }); };
 </script>
 """
@@ -4173,6 +4392,12 @@ DRIVER = r"""
       await sleep(20);
       ok(document.activeElement && document.activeElement.dataset && document.activeElement.dataset.ik === "align-center",
          "PM: focus is RESTORED to the button after its edit re-renders the inspector (WCAG 2.4.3, review #2)");
+      // PME-027: left/centre/right previously read "≡"/"≣"/"≡" — left and right shared the same
+      // glyph, so an operator could not tell which was pressed without reading aria-pressed.
+      var alignBtns = Array.from(el("pm-inspector-body").querySelectorAll("button[aria-label^='Align ']"));
+      var alignGlyphs = alignBtns.map(function(b){ return b.textContent; });
+      ok(alignBtns.length === 3 && new Set(alignGlyphs).size === 3,
+         "PME-027: the three horizontal-align buttons (Left/Centre/Right) all show DISTINCT glyphs (\"" + alignGlyphs.join("\", \"") + "\")");
       // The Layers panel (replacing the old Arrange buttons) lists the slide's elements; Alt+↑ on a
       // layer row raises it in the z-order.
       var layerRow = el("pm-inspector-body").querySelector("#pm-layers .td-layer");
@@ -6146,6 +6371,24 @@ DRIVER = r"""
       ok(el("dl-modal-title").textContent.indexOf("ready")>=0 && el("dl-modal-ico").classList.contains("is-ready"), "DL(7): a translation reaches Ready in the same dialog");
       window.__dlModal.close();
       ok(dlBack.hidden, "DL(7): the reused dialog closes cleanly");
+      // PLN-004 (Vera, PR #83 review): Command::GoLive (controller.rs) sets live_idx = staged_idx
+      // but never clears staged_idx, so the item that just went live carries BOTH is_live AND
+      // is_staged on every ordinary Go Live — not a contrived edge case. Render a plan with such a
+      // row in ISOLATION (its own fixture, not the shared C-001 one below, so this doesn't disturb
+      // that fixture's own item count/index-based assertions) and prove Live wins the cascade.
+      planRenderBuilder({ plan_name:"Overlap", items:[
+        {id:901, kind:"song", title:"Just Went Live", is_live:true, is_staged:true},
+        {id:902, kind:"song", title:"Was Never Staged", is_live:true, is_staged:false}
+      ] });
+      var liveAndStagedRow = document.querySelector('#plan-b-list .plan-b-row[data-item-id="901"]');
+      ok(liveAndStagedRow.classList.contains("is-live") && liveAndStagedRow.classList.contains("is-staged"),
+         "PLN-004 (setup): a just-went-live row genuinely carries BOTH classes — this is not vacuous");
+      ok(getComputedStyle(liveAndStagedRow).borderTopStyle === "solid",
+         "PLN-004: a row that is BOTH live and staged renders Live's SOLID border, not Preview's dashed one — got " +
+         getComputedStyle(liveAndStagedRow).borderTopStyle);
+      ok(getComputedStyle(liveAndStagedRow).borderTopColor === getComputedStyle(document.querySelector('#plan-b-list .plan-b-row[data-item-id="902"]')).borderTopColor,
+         "PLN-004 (control): a live+staged row's border colour matches a live-only row's — Live wins the colour too, not just the shape");
+
       // C-001 / C-005 read side: render a crafted plan covering every link state (scripture-linked,
       // deck-linked, deck-MISSING, unlinked) and assert the run-sheet chips. planRenderBuilder is a
       // global (top-level fn), driven directly the same way the M1 checks drive render().
@@ -6166,6 +6409,18 @@ DRIVER = r"""
          "SP C-001: a deck-linked item resolves the deck name from the lazily-loaded deck list");
       var mChip = document.querySelector("#plan-b-list .link-missing");
       ok(mChip && /missing/i.test(mChip.textContent), "SP C-001: a deck whose id is gone shows a ⚠ missing chip");
+      // PLN-004 (DESIGN-2.0-PARITY-AUDIT-plan.md): the handoff is explicit — "Preview/staged =
+      // green/dashed, Live/Program = red/solid" — and the staged row's border used to stay solid.
+      // Item 11 above is staged-only (is_staged:true, is_live:false); item 12 is neither, so it is
+      // the control proving the dashed rule is scoped to .is-staged, not a global border reset.
+      var stagedBRow = document.querySelector('#plan-b-list .plan-b-row[data-item-id="11"]');
+      ok(stagedBRow.classList.contains("is-staged") && !stagedBRow.classList.contains("is-live"),
+         "PLN-004 (setup): item 11 is staged-only, so the border-style assertion below is not vacuous");
+      ok(getComputedStyle(stagedBRow).borderTopStyle === "dashed",
+         "PLN-004: a staged run-sheet row's border is dashed, per the handoff — got " + getComputedStyle(stagedBRow).borderTopStyle);
+      var plainBRow = document.querySelector('#plan-b-list .plan-b-row[data-item-id="12"]');
+      ok(getComputedStyle(plainBRow).borderTopStyle === "solid",
+         "PLN-004 (control): a row that is neither live nor staged keeps its ordinary solid border");
       // C-005 inspector: a linked scripture item → chip + Change…/Unlink/Remove.
       document.querySelectorAll("#plan-b-list .plan-b-row")[0].click();
       var insp = el("plan-b-insp");
@@ -8491,6 +8746,26 @@ DRIVER = r"""
       ok(!!genRes && !genRes.hidden && genRes.getAttribute("role")==="alert" && /Turn on cloud processing/.test(genRes.textContent),
          "PP C-005: Generate with consent off surfaces a consent_required prompt (role=alert)");
       ok(!!el("pp-optin-retry"), "PP C-005: the consent_required prompt offers a one-click 'Opt in & generate'");
+      // PP-GEN: .pp-optin-btn:hover — same defect class as .pm-btn-primary:hover/CON-007/PME-005.
+      // Checked HERE because #pp-optin-retry only exists transiently, during this consent_required
+      // state — the click below (opting in) removes it again, so a later check point would miss it.
+      (function() {
+        var restBg = _rgba(getComputedStyle(el("pp-optin-retry")).backgroundColor);
+        var hoverRule = _lastRule(/\.pp-optin-btn:hover\s*\{([^}]*)\}/, window.__CSSTEXT || "");
+        ok(!!hoverRule, "PP-GEN (premise): the .pp-optin-btn:hover rule is present in the shipped app.css");
+        var hb = hoverRule ? /background(?:-color)?\s*:\s*([^;]+)/.exec(hoverRule[1]) : null;
+        ok(!!hb, "PP-GEN (premise): the .pp-optin-btn:hover rule declares a background, so there is a value to measure");
+        if (hb) {
+          var hoverBg = _resolve(hb[1].trim());
+          var hoverR = _cr([255,255,255,1], hoverBg);
+          ok(hoverR >= 4.5, "PP-GEN: the HOVERED .pp-optin-btn keeps its white label at AA-NORMAL (" + _f(hoverR) + ":1)");
+          ok(_lum(hoverBg) < _lum(restBg),
+             "PP-GEN: .pp-optin-btn hover DARKENS the fill instead of lightening it, matching .pm-btn-primary:hover");
+        }
+        var oldHover = _resolve("var(--sc-primary-hover)");
+        ok(_cr([255,255,255,1], oldHover) < 4.5,
+           "PP-GEN (control): --sc-primary-hover itself still measures BELOW AA-normal for white (" + _f(_cr([255,255,255,1], oldHover)) + ":1) — the TOKEN VALUE is untouched; only this rule stopped using it");
+      })();
       // Opt in & generate → grants notes consent then retries (through the SAME review-and-confirm
       // gate — opting in mid-flow does not bypass it); the service is not configured → 'coming soon'.
       el("pp-optin-retry").click();
@@ -9268,6 +9543,50 @@ right after a generate/save");
       // before trusting the control below to have caught anything.
       ok(window.scCompletedTranscript === PP_TRANSCRIPT_FIXTURE_ADVANCED,
          "PP F-5 L-1 (premise): the bridge really did advance past what the open preview is showing, while the preview stayed open");
+      // PP-GEN: .pp-gen-preview-confirm:hover — same defect class as .pm-btn-primary:hover/CON-007.
+      // Checked HERE, right before Confirm is clicked, while the review step is genuinely open —
+      // the button is rebuilt fresh on each Generate cycle, so a later check point cannot rely on
+      // finding it still in the DOM.
+      (function() {
+        var confirmEl = el("pp-gen-preview-confirm");
+        var restBg = _rgba(getComputedStyle(confirmEl).backgroundColor);
+        var restR = _cr([255,255,255,1], restBg);
+        ok(restR >= 4.5,
+           "PP-GEN (premise): .pp-gen-preview-confirm REST already clears AA-NORMAL (flat --sc-primary, " + _f(restR) + ":1) — only :hover regresses");
+        var hoverRule = _lastRule(/\.pp-gen-preview-confirm:hover\s*\{([^}]*)\}/, window.__CSSTEXT || "");
+        ok(!!hoverRule, "PP-GEN (premise): the .pp-gen-preview-confirm:hover rule is present in the shipped app.css");
+        var hb = hoverRule ? /background(?:-color)?\s*:\s*([^;]+)/.exec(hoverRule[1]) : null;
+        ok(!!hb, "PP-GEN (premise): the .pp-gen-preview-confirm:hover rule declares a background, so there is a value to measure");
+        if (hb) {
+          var hoverBg = _resolve(hb[1].trim());
+          var hoverR = _cr([255,255,255,1], hoverBg);
+          ok(hoverR >= 4.5, "PP-GEN: the HOVERED .pp-gen-preview-confirm keeps its white label at AA-NORMAL (" + _f(hoverR) + ":1)");
+          ok(_lum(hoverBg) < _lum(restBg),
+             "PP-GEN: .pp-gen-preview-confirm hover DARKENS the fill instead of lightening it, matching .pm-btn-primary:hover");
+        }
+      })();
+      // PSC-005: .pp-gen-preview-confirm[disabled] / [aria-busy="true"] — Cody's PR #60 re-review
+      // found the exact same trap reproduced here: this class is shared by the transient Confirm
+      // button above (never disabled) and the edit-draft Save button (id pp-gen-save/tr-gen-save
+      // in settings.js/transcripts.js, which sets disabled + aria-busy="true" while saving), and
+      // :hover/[disabled] are equal specificity with nothing declared here to make the disabled
+      // rule win. Same two-check technique as .pp-generate[disabled] and .ps-start:disabled above:
+      // the disabled rule must declare its own background, AND that background must be the exact
+      // REST fill — not just any declared value (Cody/Vera's PR #62 finding on PSC-005 itself).
+      var wPpGenConfirmDisabledRule = _lastRule(/\.pp-gen-preview-confirm\[disabled\],\s*\.pp-gen-preview-confirm\[aria-busy="true"\]\s*\{([^}]*)\}/, window.__CSSTEXT || "");
+      ok(!!wPpGenConfirmDisabledRule, "PP-GEN (premise): the .pp-gen-preview-confirm[disabled] rule is present in the shipped app.css");
+      var wPpGenConfirmDisabledBg = wPpGenConfirmDisabledRule ? /background(?:-image)?\s*:\s*([^;]+)/.exec(wPpGenConfirmDisabledRule[1]) : null;
+      ok(!!wPpGenConfirmDisabledBg,
+         "PP-GEN: the .pp-gen-preview-confirm disabled rule declares its OWN background — without one, `:hover` (equal specificity) wins the fill and a disabled/saving button visibly flips to the active colour on hover");
+      var wPpGenConfirmBaseRule = _lastRule(/\.pp-gen-preview-confirm\s*\{([^}]*)\}/, window.__CSSTEXT || "");
+      ok(!!wPpGenConfirmBaseRule, "PP-GEN (premise): the rest-state .pp-gen-preview-confirm rule is present in the shipped app.css");
+      var wPpGenConfirmBaseBg = wPpGenConfirmBaseRule ? /background(?:-image)?\s*:\s*([^;]+)/.exec(wPpGenConfirmBaseRule[1]) : null;
+      ok(!!wPpGenConfirmBaseBg, "PP-GEN (premise): the rest-state rule declares a background, so there is a value to compare the disabled rule against");
+      if (wPpGenConfirmDisabledBg && wPpGenConfirmBaseBg) {
+        ok(wPpGenConfirmDisabledBg[1].trim() === wPpGenConfirmBaseBg[1].trim(),
+           "PP-GEN: the .pp-gen-preview-confirm disabled rule's background is EXACTLY the rest-state fill (found \"" + wPpGenConfirmDisabledBg[1].trim() +
+           "\" vs rest \"" + wPpGenConfirmBaseBg[1].trim() + "\") — not just any declared value, the one that keeps a disabled/saving button visually inert");
+      }
       el("pp-gen-preview-confirm").click();
       await sleep(70);
       var sentCall = ppLast("generate_sermon_notes");
@@ -9391,6 +9710,18 @@ right after a generate/save");
         return (m && m.length) ? m.map(_rgba) : [_rgba(cs.backgroundColor)];
       }
       function _same(a,b){ return a[0]===b[0] && a[1]===b[1] && a[2]===b[2]; }
+      // `.exec()` on a non-global regex only ever returns the FIRST matching rule block for a
+      // selector, but the CSS cascade applies whichever same-specificity rule appears LAST in the
+      // stylesheet. A duplicated selector (merge artefact, copy-paste mistake, future edit) is
+      // plausible authored CSS, and every rule-lookup below needs the block that actually wins the
+      // cascade, so match globally and keep the last hit — same fix as PR #75's `_lastFilterDecl()`,
+      // one level up (the rule lookup itself, not a declaration inside an already-found rule).
+      function _lastRule(re, cssText){
+        var flags = (re.flags || "").indexOf("g") === -1 ? (re.flags || "") + "g" : re.flags;
+        var g = new RegExp(re.source, flags), m, last = null;
+        while ((m = g.exec(cssText)) !== null) { last = m; }
+        return last;
+      }
       // Shorter wait budget than the default 150×20ms. This block sits at the very END of the
       // driver, so every FAILING predicate here spends virtual time that the RESULTS write still
       // needs: at the default budget a handful of real regressions could push the run past
@@ -9523,7 +9854,7 @@ right after a generate/save");
          "CON-142 (positive control): `.td-seg button` still styles the designer's segment buttons (the rename moved the rules, it did not drop them)");
 
       // --- PME-005: .pm-btn-primary:hover ---------------------------------------------------
-      var wHoverRule = /\.pm-btn-primary:hover\s*\{([^}]*)\}/.exec(window.__CSSTEXT || "");
+      var wHoverRule = _lastRule(/\.pm-btn-primary:hover\s*\{([^}]*)\}/, window.__CSSTEXT || "");
       ok(!!wHoverRule, "PME-005 (premise): the .pm-btn-primary:hover rule is present in the shipped app.css");
       var wHb = wHoverRule ? /background(?:-color)?\s*:\s*([^;]+)/.exec(wHoverRule[1]) : null;
       ok(!!wHb, "PME-005 (premise): the hover rule declares a background, so there is a value to measure");
@@ -9554,7 +9885,7 @@ right after a generate/save");
           var r = _cr([255,255,255,1], s);
           ok(r >= 4.5, "TD-012: the Save-theme label clears AA-NORMAL on gradient stop " + (i+1) + " (" + _f(r) + ":1)");
         });
-        var wTdHoverRule = /\.td-save-cta:hover\s*\{([^}]*)\}/.exec(window.__CSSTEXT || "");
+        var wTdHoverRule = _lastRule(/\.td-save-cta:hover\s*\{([^}]*)\}/, window.__CSSTEXT || "");
         ok(!!wTdHoverRule, "TD-012 (premise): the .td-save-cta:hover rule is present in the shipped app.css");
         var wTdHb = wTdHoverRule ? /background(?:-color)?\s*:\s*([^;]+)/.exec(wTdHoverRule[1]) : null;
         ok(!!wTdHb, "TD-012 (premise): the hover rule declares a background, so there is a value to measure");
@@ -9589,7 +9920,7 @@ right after a generate/save");
           var r = _cr([255,255,255,1], s);
           ok(r >= 4.5, "PSC-005: the Start-service label clears AA-NORMAL on gradient stop " + (i+1) + " (" + _f(r) + ":1)");
         });
-        var wPsHoverRule = /\.ps-start:hover\s*\{([^}]*)\}/.exec(window.__CSSTEXT || "");
+        var wPsHoverRule = _lastRule(/\.ps-start:hover\s*\{([^}]*)\}/, window.__CSSTEXT || "");
         ok(!!wPsHoverRule, "PSC-005 (premise): the .ps-start:hover rule is present in the shipped app.css");
         var wPsHb = wPsHoverRule ? /background(?:-color)?\s*:\s*([^;]+)/.exec(wPsHoverRule[1]) : null;
         ok(!!wPsHb, "PSC-005 (premise): the hover rule declares a background, so there is a value to measure");
@@ -9616,7 +9947,7 @@ right after a generate/save");
       // Chromium: old code stayed inert, this branch did not, before the fix below). This headless
       // page cannot simulate a real `:hover`, so — same technique as the rest of this block — the
       // disabled rule's own text is checked for a `background` declaration to win the cascade.
-      var wPsDisabledRule = /\.ps-start:disabled,\s*\.ps-start\[aria-disabled="true"\]\s*\{([^}]*)\}/.exec(window.__CSSTEXT || "");
+      var wPsDisabledRule = _lastRule(/\.ps-start:disabled,\s*\.ps-start\[aria-disabled="true"\]\s*\{([^}]*)\}/, window.__CSSTEXT || "");
       ok(!!wPsDisabledRule, "PSC-005 (premise): the .ps-start:disabled rule is present in the shipped app.css");
       var wPsDisabledBg = wPsDisabledRule ? /background(?:-image)?\s*:\s*([^;]+)/.exec(wPsDisabledRule[1]) : null;
       ok(!!wPsDisabledBg,
@@ -9629,7 +9960,7 @@ right after a generate/save");
       // rule touching this class has something other than whitespace between `.ps-start` and
       // `{` (`:hover`, `:focus-visible`, `:disabled, .ps-start[...]`), so only the bare
       // rest-state rule matches.
-      var wPsBaseRule = /\.ps-start\s*\{([^}]*)\}/.exec(window.__CSSTEXT || "");
+      var wPsBaseRule = _lastRule(/\.ps-start\s*\{([^}]*)\}/, window.__CSSTEXT || "");
       ok(!!wPsBaseRule, "PSC-005 (premise): the rest-state .ps-start rule is present in the shipped app.css");
       var wPsBaseBg = wPsBaseRule ? /background(?:-image)?\s*:\s*([^;]+)/.exec(wPsBaseRule[1]) : null;
       ok(!!wPsBaseBg, "PSC-005 (premise): the rest-state rule declares a background, so there is a value to compare the disabled rule against");
@@ -9639,8 +9970,47 @@ right after a generate/save");
            "\" vs rest \"" + wPsBaseBg[1].trim() + "\") — not just any declared value, the one that keeps a disabled button visually inert");
       }
 
+      // --- PSC-009: .ps-detail-warn / .ps-detail-block (Pre-service check-row detail text) -----
+      // The audit (docs/design/DESIGN-2.0-PARITY-AUDIT-preservice.md) flagged this pairing as
+      // UNMEASURED — "worth a direct follow-up measurement" — not as a scored defect. Farah
+      // independently computed it for ClickUp 17tnw2axptu: --sc-warn/--sc-live on --sc-surface
+      // clear AA-NORMAL even at the row's own 12px/500 weight (8.85:1 / 5.52:1), so there is no
+      // fix to make here — this block locks the passing state in place instead of leaving it
+      // unmeasured, same discipline as every other contrast finding in this file. Both classes
+      // recolour `.ps-row-detail` (app.css:6701-6703); the real painted background behind them is
+      // `.ps-card`'s --sc-surface (`.ps-row` itself declares none). Measured on the LIVE DOM, in
+      // real application states (not the raw CSS variables), matching this file's own established
+      // technique for the rest of the PSC-005/TD-012/DLM-001 group above.
+      var wPsCardBg = _rgba(getComputedStyle(document.querySelector(".ps-card")).backgroundColor);
+      // The default warning (missing slide media) is still live from the earlier functional
+      // Pre-service Check block — nothing between there and here mutates pre-service state.
+      var wPsWarnRow = document.querySelector(".ps-detail-warn");
+      ok(!!wPsWarnRow, "PSC-009 (premise): a .ps-detail-warn row is live in the DOM (the default missing-media warning)");
+      if (wPsWarnRow) {
+        var wPsWarnR = _cr(_rgba(getComputedStyle(wPsWarnRow).color), wPsCardBg);
+        ok(wPsWarnR >= 4.5,
+           "PSC-009: .ps-detail-warn (--sc-warn on --sc-surface) clears AA-NORMAL at its real 12px/500 weight (" + _f(wPsWarnR) + ":1) — the audit flagged this pairing as unmeasured, not failing");
+      }
+      // .ps-detail-block only exists once a check is actually BLOCKING — trigger the same disk-low
+      // fixture the functional Pre-service Check block above uses, so the measurement is a real
+      // painted row, not an assertion about the CSS variable's raw value in isolation.
+      window.__psDiskLow = true;
+      el("ps-rerun").click();
+      ok(await wWait(function(){ return !!document.querySelector(".ps-detail-block"); }),
+         "PSC-009 (premise): a .ps-detail-block row appears once a check goes BLOCKING (disk space)");
+      var wPsBlockRow = document.querySelector(".ps-detail-block");
+      if (wPsBlockRow) {
+        var wPsBlockR = _cr(_rgba(getComputedStyle(wPsBlockRow).color), wPsCardBg);
+        ok(wPsBlockR >= 4.5,
+           "PSC-009: .ps-detail-block (--sc-live on --sc-surface) clears AA-NORMAL at its real 12px/500 weight (" + _f(wPsBlockR) + ":1) — matches PME-004's independently-established 5.52:1 figure for the same token pairing (DESIGN-2.0-PARITY-AUDIT-presentation.md)");
+      }
+      window.__psDiskLow = false;
+      el("ps-rerun").click();
+      ok(await wWait(function(){ return el("ps-blocking").textContent === "0"; }),
+         "PSC-009 (cleanup): the blocking fixture is cleared, so pre-service state is not left dirty for anything that runs after this block");
+
       // --- DLM-001: .dl-btn-primary:hover (Download modal primary button) --------------------
-      var wDlHoverRule = /\.dl-btn-primary:hover\s*\{([^}]*)\}/.exec(window.__CSSTEXT || "");
+      var wDlHoverRule = _lastRule(/\.dl-btn-primary:hover\s*\{([^}]*)\}/, window.__CSSTEXT || "");
       ok(!!wDlHoverRule, "DLM-001 (premise): the .dl-btn-primary:hover rule is present in the shipped app.css");
       var wDlHb = wDlHoverRule ? /background(?:-color)?\s*:\s*([^;]+)/.exec(wDlHoverRule[1]) : null;
       ok(!!wDlHb, "DLM-001 (premise): the hover rule declares a background, so there is a value to measure");
@@ -9657,6 +10027,183 @@ right after a generate/save");
         ok(_cr([255,255,255,1], wDlOldHover) < 4.5,
            "DLM-001 (control): --sc-primary-hover itself still measures BELOW AA-normal for white (" + _f(_cr([255,255,255,1], wDlOldHover)) + ":1) — the TOKEN VALUE is untouched; only this rule stopped using it");
       }
+
+      // --- DLM-007 / DLM-008: Download modal geometry drift (17tnw2axptx) --------------------
+      // Cosmetic card/button radius drift vs Figma 396:124 — card 14→16, button 8→10. `#dl-modal`
+      // and its buttons are always present in the DOM (only the `.dl-modal-back` wrapper toggles
+      // `hidden`), so computed border-radius is measurable regardless of visibility.
+      var wDlCard = el("dl-modal");
+      ok(!!wDlCard, "DLM-007 (premise): the download modal card exists in the DOM");
+      if (wDlCard) {
+        ok(getComputedStyle(wDlCard).borderRadius === "16px",
+           "DLM-007: .dl-modal card radius matches the Figma spec (16px), found " + getComputedStyle(wDlCard).borderRadius);
+      }
+      var wDlBtn = el("dl-modal-secondary");
+      ok(!!wDlBtn, "DLM-008 (premise): a .dl-btn (Cancel) exists in the DOM to measure");
+      if (wDlBtn) {
+        ok(getComputedStyle(wDlBtn).borderRadius === "10px",
+           "DLM-008: .dl-btn radius matches the Figma spec (10px), found " + getComputedStyle(wDlBtn).borderRadius);
+      }
+
+      // --- GO-LIVE-HOVER / TIMER-START-HOVER: .tb-golive/.timer-start kept `filter:
+      // brightness(1.06)` on :hover when their REST gradient was darkened (#10 above,
+      // app.css:5002-5007) to fix white-on-the-light-stop failing AA. Brightening the ALREADY
+      // darkened near stop by 6% pulls it back under AA-normal (4.27:1) — a regression no
+      // existing check measured: CON-046 above measures the '⏎ Enter' key-hint CHIP on this
+      // same button, not the button's own label, and PME-005 measures a different button,
+      // .pm-btn-primary:hover. Same technique as TD-012/PSC-005/DLM-001: measure the parsed
+      // :hover rule text, not a simulated :hover pseudo-class, which this headless page cannot
+      // trigger. Also carries TD-012's own filter-guard check (Sana, PR #58 review) — this is
+      // literally the surface her comment names as still carrying the gap unmeasured.
+      // --- GO-LIVE-HOVER: .tb-golive (topbar "● GO LIVE") ------------------------------------
+      var wTbGl = el("top-golive");
+      ok(!!wTbGl, "GO-LIVE-HOVER (premise): the topbar GO LIVE button exists in the DOM");
+      if (wTbGl) {
+        var wTbGlStops = _stops(wTbGl);
+        ok(wTbGlStops.length === 2 && !_same(wTbGlStops[0], wTbGlStops[1]),
+           "GO-LIVE-HOVER (premise): .tb-golive really is a TWO-stop gradient, so 'measured at both stops' is not vacuous");
+        wTbGlStops.forEach(function(s, i){
+          var r = _cr([255,255,255,1], s);
+          ok(r >= 4.5, "GO-LIVE-HOVER: the topbar GO LIVE label clears AA-NORMAL on gradient stop " + (i+1) + " (" + _f(r) + ":1)");
+        });
+        var wTbGlHoverRule = _lastRule(/\.tb-golive:hover\s*\{([^}]*)\}/, window.__CSSTEXT || "");
+        ok(!!wTbGlHoverRule, "GO-LIVE-HOVER (premise): the .tb-golive:hover rule is present in the shipped app.css");
+        var wTbGlHb = wTbGlHoverRule ? /background(?:-color)?\s*:\s*([^;]+)/.exec(wTbGlHoverRule[1]) : null;
+        ok(!!wTbGlHb, "GO-LIVE-HOVER (premise): the hover rule declares a background, so there is a value to measure — a bare `filter: brightness()` would leave nothing here");
+        if (wTbGlHb) {
+          var wTbGlHoverBg = _resolve(wTbGlHb[1].trim());
+          var wTbGlHoverR = _cr([255,255,255,1], wTbGlHoverBg);
+          ok(wTbGlHoverR >= 4.5, "GO-LIVE-HOVER: the HOVERED topbar GO LIVE button keeps its white label at AA-NORMAL (" + _f(wTbGlHoverR) + ":1)");
+          ok(_lum(wTbGlHoverBg) <= Math.max.apply(null, wTbGlStops.map(_lum)),
+             "GO-LIVE-HOVER: hover does not LIGHTEN past the gradient's brightest rest stop — no `filter: brightness()` re-lightening the darkened fill");
+        }
+        // Sana's TD-012 finding (PR #58 review) applies identically here: the background-only
+        // checks above cannot see a `filter: brightness()` stacked back onto this hover rule.
+        var wTbGlHoverFilter = wTbGlHoverRule ? /(?:^|;)\s*filter\s*:\s*([^;]+)/.exec(wTbGlHoverRule[1]) : null;
+        ok(!wTbGlHoverFilter || /^\s*none\s*$/.test(wTbGlHoverFilter[1]),
+           "GO-LIVE-HOVER: the hover rule carries no `filter` (found " + (wTbGlHoverFilter ? wTbGlHoverFilter[1].trim() : "none") +
+           ") — a brightness() filter stacked on an already-darkened fill would re-lighten it past AA, and the background-only checks above cannot see that");
+        // Control: recomputing the ORIGINAL `filter: brightness(1.06)` against the darkened
+        // rest gradient's own stops must still measure as FAILING through this exact helper —
+        // proves the assertions above are not rubber-stamping a value that was already fine.
+        var wTbGlBrightened = wTbGlStops.map(function(s){ return [Math.min(255,s[0]*1.06), Math.min(255,s[1]*1.06), Math.min(255,s[2]*1.06), s[3]]; });
+        ok(Math.min.apply(null, wTbGlBrightened.map(function(s){ return _cr([255,255,255,1], s); })) < 4.5,
+           "GO-LIVE-HOVER (control): `filter: brightness(1.06)` on the darkened rest gradient still measures BELOW AA-normal through this helper — the fix is a real background change, not a measurement artefact");
+      }
+
+      // --- TIMER-START-HOVER: .timer-start (Service Timer "Start") --------------------------
+      var wTimerStart = el("timer-start-custom");
+      ok(!!wTimerStart, "TIMER-START-HOVER (premise): the Service Timer custom-time Start button exists in the DOM");
+      if (wTimerStart) {
+        var wTsStops = _stops(wTimerStart);
+        ok(wTsStops.length === 2 && !_same(wTsStops[0], wTsStops[1]),
+           "TIMER-START-HOVER (premise): .timer-start really is a TWO-stop gradient, so 'measured at both stops' is not vacuous");
+        wTsStops.forEach(function(s, i){
+          var r = _cr([255,255,255,1], s);
+          ok(r >= 4.5, "TIMER-START-HOVER: the Timer Start label clears AA-NORMAL on gradient stop " + (i+1) + " (" + _f(r) + ":1)");
+        });
+        var wTsHoverRule = _lastRule(/\.timer-start:hover\s*\{([^}]*)\}/, window.__CSSTEXT || "");
+        ok(!!wTsHoverRule, "TIMER-START-HOVER (premise): the .timer-start:hover rule is present in the shipped app.css");
+        var wTsHb = wTsHoverRule ? /background(?:-color)?\s*:\s*([^;]+)/.exec(wTsHoverRule[1]) : null;
+        ok(!!wTsHb, "TIMER-START-HOVER (premise): the hover rule declares a background, so there is a value to measure — a bare `filter: brightness()` would leave nothing here");
+        if (wTsHb) {
+          var wTsHoverBg = _resolve(wTsHb[1].trim());
+          var wTsHoverR = _cr([255,255,255,1], wTsHoverBg);
+          ok(wTsHoverR >= 4.5, "TIMER-START-HOVER: the HOVERED Timer Start button keeps its white label at AA-NORMAL (" + _f(wTsHoverR) + ":1)");
+          ok(_lum(wTsHoverBg) <= Math.max.apply(null, wTsStops.map(_lum)),
+             "TIMER-START-HOVER: hover does not LIGHTEN past the gradient's brightest rest stop — no `filter: brightness()` re-lightening the darkened fill");
+        }
+        var wTsHoverFilter = wTsHoverRule ? /(?:^|;)\s*filter\s*:\s*([^;]+)/.exec(wTsHoverRule[1]) : null;
+        ok(!wTsHoverFilter || /^\s*none\s*$/.test(wTsHoverFilter[1]),
+           "TIMER-START-HOVER: the hover rule carries no `filter` (found " + (wTsHoverFilter ? wTsHoverFilter[1].trim() : "none") +
+           ") — a brightness() filter stacked on an already-darkened fill would re-lighten it past AA, and the background-only checks above cannot see that");
+        var wTsBrightened = wTsStops.map(function(s){ return [Math.min(255,s[0]*1.06), Math.min(255,s[1]*1.06), Math.min(255,s[2]*1.06), s[3]]; });
+        ok(Math.min.apply(null, wTsBrightened.map(function(s){ return _cr([255,255,255,1], s); })) < 4.5,
+           "TIMER-START-HOVER (control): `filter: brightness(1.06)` on the darkened rest gradient still measures BELOW AA-normal through this helper — the fix is a real background change, not a measurement artefact");
+      }
+
+      // --- PP-GEN: sermon-prep Generate panel (.pp-generate / .pp-optin-btn /
+      // .pp-gen-preview-confirm) — Providers & Privacy `348:124`; `#tr-generate` in the
+      // Transcripts workspace reuses the same `.pp-generate` class (TRANSCRIPTS-2.0-HANDOFF.md
+      // §"Component primitives"). Same defect class as CON-007/CON-067/PME-005: white text on
+      // --sc-primary-hover (3.78:1) fails AA-normal. Previously unaudited on this surface —
+      // DESIGN-2.0-PARITY-AUDIT-settings.md's A11Y-1 said no gradient defect was found here,
+      // which was wrong; corrected alongside this fix.
+      // .pp-generate REST: a two-stop gradient, like GO LIVE — both stops must be measured.
+      var wPpGen = el("pp-generate");
+      var wPpGenStops = _stops(wPpGen);
+      ok(wPpGenStops.length === 2 && !_same(wPpGenStops[0], wPpGenStops[1]),
+         "PP-GEN (premise): .pp-generate REST really is a two-stop gradient (" + wPpGenStops.length + " stops, distinct), so 'measured at both stops' is not vacuous");
+      var wPpGenWorst = Math.min.apply(null, wPpGenStops.map(function(s){ return _cr([255,255,255,1], s); }));
+      ok(wPpGenWorst >= 4.5,
+         "PP-GEN: .pp-generate REST clears AA-NORMAL on every gradient stop for its 16px bold white label (" + _f(wPpGenWorst) + ":1)");
+      var wPpGenOldStop = _resolve("var(--sc-primary-hover)");
+      ok(_cr([255,255,255,1], wPpGenOldStop) < 4.5,
+         "PP-GEN (control): --sc-primary-hover itself still measures BELOW AA-normal for white (" + _f(_cr([255,255,255,1], wPpGenOldStop)) + ":1) — the token is untouched, only the gradient stopped using it as a stop");
+      // .pp-generate:hover must not reintroduce filter:brightness() — brightening the now-darker
+      // gradient back up is the exact unfixed gap flagged on .tb-golive/.timer-start.
+      var wPpGenHoverRule = _lastRule(/\.pp-generate:hover\s*\{([^}]*)\}/, window.__CSSTEXT || "");
+      ok(!!wPpGenHoverRule, "PP-GEN (premise): the .pp-generate:hover rule is present in the shipped app.css");
+      if (wPpGenHoverRule) {
+        ok(!/filter\s*:\s*brightness/.test(wPpGenHoverRule[1]),
+           "PP-GEN: .pp-generate:hover does NOT use filter:brightness() — that would re-lighten the darkened gradient stop, the exact gap still open on .tb-golive/.timer-start");
+        var wPpGenHb = /background(?:-color)?\s*:\s*([^;]+)/.exec(wPpGenHoverRule[1]);
+        ok(!!wPpGenHb, "PP-GEN (premise): the hover rule declares a background, so there is a value to measure");
+        if (wPpGenHb) {
+          var wPpGenHoverBg = _resolve(wPpGenHb[1].trim());
+          var wPpGenHoverR = _cr([255,255,255,1], wPpGenHoverBg);
+          ok(wPpGenHoverR >= 4.5, "PP-GEN: the HOVERED .pp-generate keeps its white label at AA-NORMAL (" + _f(wPpGenHoverR) + ":1)");
+          ok(_lum(wPpGenHoverBg) <= Math.max.apply(null, wPpGenStops.map(_lum)),
+             "PP-GEN: .pp-generate hover does not lighten past the REST gradient's brightest stop");
+        }
+      }
+      // Sana (PR #60 review): the exact PSC-005 trap (.ps-start:disabled, above) reproduced here —
+      // moving hover from `filter: brightness()` to `background: #5a48d0` broke the disabled rule's
+      // neutralisation, since `:hover`/`[disabled]` are equal specificity and `filter: none` alone
+      // only ever cancelled a filter-based hover. Without its OWN background, a disabled+hovered
+      // button visibly flips to the active fill. Same two-check technique as PSC-005: the disabled
+      // rule must declare its own background, AND that background must be the exact REST fill (not
+      // just any declared value — Cody/Vera's PR #62 finding on PSC-005 itself).
+      var wPpGenDisabledRule = _lastRule(/\.pp-generate\[disabled\],\s*\.pp-generate\[aria-busy="true"\]\s*\{([^}]*)\}/, window.__CSSTEXT || "");
+      ok(!!wPpGenDisabledRule, "PP-GEN (premise): the .pp-generate[disabled] rule is present in the shipped app.css");
+      var wPpGenDisabledBg = wPpGenDisabledRule ? /background(?:-image)?\s*:\s*([^;]+)/.exec(wPpGenDisabledRule[1]) : null;
+      ok(!!wPpGenDisabledBg,
+         "PP-GEN: the disabled rule declares its OWN background — without one, `:hover` (equal specificity) wins the fill and a disabled button visibly flips to the active colour on hover");
+      var wPpGenBaseRule = _lastRule(/\.pp-generate\s*\{([^}]*)\}/, window.__CSSTEXT || "");
+      ok(!!wPpGenBaseRule, "PP-GEN (premise): the rest-state .pp-generate rule is present in the shipped app.css");
+      var wPpGenBaseBg = wPpGenBaseRule ? /background(?:-image)?\s*:\s*([^;]+)/.exec(wPpGenBaseRule[1]) : null;
+      ok(!!wPpGenBaseBg, "PP-GEN (premise): the rest-state rule declares a background, so there is a value to compare the disabled rule against");
+      if (wPpGenDisabledBg && wPpGenBaseBg) {
+        ok(wPpGenDisabledBg[1].trim() === wPpGenBaseBg[1].trim(),
+           "PP-GEN: the disabled rule's background is EXACTLY the rest-state fill (found \"" + wPpGenDisabledBg[1].trim() +
+           "\" vs rest \"" + wPpGenBaseBg[1].trim() + "\") — not just any declared value, the one that keeps a disabled button visually inert");
+      }
+
+      // .pp-optin-btn:hover is checked earlier, at "PP C-005" (`#pp-optin-retry` only exists
+      // transiently during the consent_required state and is gone again by this point in the run).
+      // .pp-gen-preview-confirm:hover is checked earlier too, at "PP F-5" (the button is rebuilt
+      // fresh on each Generate cycle and is not reliably present here).
+
+      // --- RULE-REGEX-LASTMATCH: every rule-lookup above reads the rule block that WINS the CSS
+      // cascade, not exec()'s first match --------------------------------------------------------
+      // Sana (independent security review of PR #75, comment on 17tnw2axweu): PR #75 fixed
+      // `_lastFilterDecl()` reading only the FIRST `filter:` declaration inside an already-found
+      // rule body, but every rule-lookup ABOVE it — .pm-btn-primary:hover, .td-save-cta:hover,
+      // .ps-start:hover/:disabled/(base), .dl-btn-primary:hover, .tb-golive:hover,
+      // .timer-start:hover, and the PME-006-011 muted-text loop below — has the identical bug one
+      // level up: a non-global `.exec()` finding the RULE BLOCK itself. If app.css ever carried a
+      // duplicated selector (merge artefact, copy-paste mistake), the browser applies whichever
+      // same-specificity block appears LAST while these lookups would silently read the FIRST.
+      // Not currently live (each guarded selector has exactly one real rule today), but the same
+      // latent gap PR #75 closed one layer down. Route every lookup through `_lastRule()`, which
+      // matches globally and keeps the last hit — same technique as `_lastFilterDecl()`.
+      var wDupRuleCss = ".dup-sel:hover{background:#111111;} /* merge artefact */ .dup-sel:hover{background:#5a48d0;}";
+      var wDupRule = _lastRule(/\.dup-sel:hover\s*\{([^}]*)\}/, wDupRuleCss);
+      ok(!!wDupRule && /#5a48d0/.test(wDupRule[1]) && !/#111111/.test(wDupRule[1]),
+         "RULE-REGEX-LASTMATCH (premise): a duplicated selector block resolves to the LAST one — the block the cascade actually applies (found \"" + (wDupRule ? wDupRule[1].trim() : "") + "\")");
+      var wDupRulePlainFirst = /\.dup-sel:hover\s*\{([^}]*)\}/.exec(wDupRuleCss);
+      ok(!!wDupRulePlainFirst && /#111111/.test(wDupRulePlainFirst[1]),
+         "RULE-REGEX-LASTMATCH: a plain non-global .exec() would have wrongly read the FIRST (losing) block instead (\"" + (wDupRulePlainFirst ? wDupRulePlainFirst[1].trim() : "") + "\") — proving `_lastRule()`'s global-match fix is what changes the outcome, not a no-op");
 
       // --- PME-014 / PME-015: the two missing topbar primary actions ------------------------
       document.querySelector('.nav-item[data-surface="presentation"]').click();
@@ -10008,6 +10555,245 @@ right after a generate/save");
           }
         }
       }
+
+      // --- PME-055: "Present" in the library card \u22ef menu ----------------------------------
+      // PME-014's topbar \u25b6 Present only ever acts on the OPEN deck; this is the OTHER half of
+      // the finding \u2014 presenting a deck straight off its card, without first making it the open
+      // deck in the editor. Deliberately picks a card that is NOT already open, so a pass here
+      // cannot be explained by the button silently riding the topbar's open-deck-only Present.
+      el("pm-deckswitch").click();
+      await wWait(function(){ return !!el("pm-lib-grid").querySelector(".pm-lib-card"); });
+      if (el("pm-lib-q")) { el("pm-lib-q").value = ""; el("pm-lib-q").dispatchEvent(new Event("input", {bubbles:true})); }
+      var wPresCards = Array.prototype.slice.call(el("pm-lib-grid").querySelectorAll(".pm-lib-card"));
+      var wPresCard = wPresCards.filter(function(c){ return !c.classList.contains("open"); })[0] || wPresCards[0];
+      ok(!!wPresCard, "PME-055 (premise): a presentation card exists to test Present on");
+      if (wPresCard) {
+        var wPresDeckId = Number(wPresCard.dataset.id);
+        wPresCard.querySelector(".pm-lib-dots").click();
+        await wWait(function(){ return !!el("pm-lib-menu"); });
+        var wPresMenuItems = Array.prototype.slice.call(el("pm-lib-menu").querySelectorAll("button"));
+        var wPresItem = wPresMenuItems.filter(function(b){ return /^Present$/.test(b.textContent.trim()); })[0];
+        ok(!!wPresItem, "PME-055: the card \u22ef menu carries a 'Present' item (Open \u00b7 Rename\u2026 \u00b7 Duplicate \u00b7 Present \u00b7 \u2014 \u00b7 Delete)");
+        if (wPresItem) {
+          var wDoN = window.__calls.filter(function(c){ return c.cmd === "deck_open" && c.args.id === wPresDeckId; }).length;
+          var wGlN3 = window.__calls.filter(function(c){ return c.cmd === "deck_go_live"; }).length;
+          wPresItem.click();
+          ok(await wWait(function(){ return window.__calls.filter(function(c){ return c.cmd === "deck_open" && c.args.id === wPresDeckId; }).length > wDoN; }),
+             "PME-055: 'Present' opens the CARD'S OWN deck (deck_open), not the deck already open in the editor");
+          ok(await wWait(function(){ return window.__calls.filter(function(c){ return c.cmd === "deck_go_live"; }).length > wGlN3; }),
+             "PME-055: 'Present' actually goes live (deck_go_live) \u2014 not just a navigation to the grid");
+          ok(await wWait(function(){ return !el("pm-grid").hidden; }),
+             "PME-055: 'Present' lands the operator on the slide grid, where the presented slide is visible");
+        }
+      }
+
+      // --- PME-053: "Start from" in the New-presentation dialog -------------------------------
+      // Blank deck / Duplicate an existing presentation / From a template (later, honestly
+      // disabled \u2014 no template model exists yet, PME-052/OUT-009).
+      el("pm-deckswitch").click();
+      await wWait(function(){ return !!el("pm-lib-grid").querySelector(".pm-lib-card"); });
+      if (el("pm-lib-q")) { el("pm-lib-q").value = ""; el("pm-lib-q").dispatchEvent(new Event("input", {bubbles:true})); }
+      el("pm-lib-new").click();
+      await wWait(function(){ return !!el("pm-prompt-input"); });
+      var wSfGroup = document.querySelector(".pm-startfrom");
+      ok(!!wSfGroup && wSfGroup.getAttribute("role") === "radiogroup", "PME-053: the New-presentation dialog carries a 'Start from' radiogroup");
+      var wSfBlank = document.getElementById("pm-startfrom-blank"), wSfDup = document.getElementById("pm-startfrom-dup"), wSfTpl = document.getElementById("pm-startfrom-tpl");
+      ok(!!wSfBlank && wSfBlank.checked, "PME-053: 'Blank deck' is the default selection");
+      ok(!!wSfDup && !wSfDup.disabled, "PME-053: 'Duplicate an existing presentation' is available (the library is non-empty)");
+      ok(!!wSfTpl && wSfTpl.disabled, "PME-053: 'From a template' is an honest disabled 'later' affordance, not a broken live control");
+      var wSfPicker = document.querySelector(".pm-startfrom-picker");
+      // Check COMPUTED display, not just the DOM `hidden` property: an author `display` rule
+      // (here .pm-startfrom-picker's own `display: flex`) can defeat the [hidden] attribute in
+      // WKWebView/Chrome without an explicit `[hidden] { display: none }` override — the exact
+      // trap .td-bgpanel[hidden] etc. already guard against elsewhere in app.css. Checking only
+      // `.hidden` (the DOM property) passes even when the element is still visually painted, which
+      // is precisely how this shipped broken once already (Quinn, PR #69 review — 17tnw2axwg9).
+      ok(!!wSfPicker && wSfPicker.hidden && getComputedStyle(wSfPicker).display === "none",
+         "PME-053 (premise): the duplicate-source picker starts hidden under the default 'Blank deck' choice (hidden=" + (wSfPicker && wSfPicker.hidden) + ", computed display=" + (wSfPicker && getComputedStyle(wSfPicker).display) + ")");
+      if (wSfDup) {
+        wSfDup.click();
+        ok(!wSfPicker.hidden && getComputedStyle(wSfPicker).display !== "none" && wSfPicker.getClientRects().length > 0,
+           "PME-053: choosing 'Duplicate an existing presentation' reveals the deck picker (computed display=" + getComputedStyle(wSfPicker).display + ", painted rects=" + wSfPicker.getClientRects().length + ")");
+        var wSfRows = wSfPicker.querySelectorAll(".pm-startfrom-picker-row");
+        ok(wSfRows.length === window.__LIB.decks.length, "PME-053: the picker lists one row per existing presentation (" + wSfRows.length + " of " + window.__LIB.decks.length + ")");
+        // Pick a row OTHER than the pre-selected first one, so a pass proves selecting a row
+        // actually changes which deck gets duplicated \u2014 not that the default happened to work.
+        var wSfRow = Array.prototype.slice.call(wSfRows).filter(function(r){ return !r.querySelector("input").checked; })[0] || wSfRows[0];
+        var wSfSrcId = Number(wSfRow.querySelector("input").value);
+        var wSfSrcDeck = window.__LIB.decks.filter(function(d){ return d.id === wSfSrcId; })[0];
+        wSfRow.querySelector("input").click();
+        ok(el("pm-prompt-input").value === (wSfSrcDeck.name + " copy"),
+           "PME-053: the Name field follows the chosen source (\"" + el("pm-prompt-input").value + "\") until the operator types their own");
+        el("pm-prompt-input").value = "My Copied Deck";
+        el("pm-prompt-input").dispatchEvent(new Event("input", {bubbles:true}));
+        var wSfDupN = window.__calls.filter(function(c){ return c.cmd === "deck_duplicate"; }).length;
+        Array.from(document.querySelectorAll(".pm-confirm .pm-btn-primary")).slice(-1)[0].click();
+        ok(await wWait(function(){ return window.__calls.filter(function(c){ return c.cmd === "deck_duplicate"; }).length > wSfDupN; }),
+           "PME-053: confirming 'Duplicate' drives deck_duplicate(the CHOSEN source's id)");
+        var wSfDupCall = window.__calls.filter(function(c){ return c.cmd === "deck_duplicate"; }).slice(-1)[0];
+        ok(!!wSfDupCall && wSfDupCall.args.id === wSfSrcId, "PME-053: deck_duplicate is called with the SELECTED row's id (" + wSfSrcId + "), not the first/default one");
+        // Each step of onConfirm's deck_duplicate -> deck_rename -> deck_open chain is a
+        // separately-awaited invoke; polling (wWait) rather than checking window.__calls
+        // synchronously avoids racing a still-pending later step in the chain.
+        ok(await wWait(function(){ return window.__calls.some(function(c){ return c.cmd === "deck_rename" && c.args.name === "My Copied Deck"; }); }),
+           "PME-053: the typed name renames the COPY (deck_rename), never the original");
+        var wSfRenameCall = window.__calls.filter(function(c){ return c.cmd === "deck_rename" && c.args.name === "My Copied Deck"; }).slice(-1)[0];
+        ok(!!wSfRenameCall && wSfRenameCall.args.id !== wSfSrcId,
+           "PME-053: the rename targets the NEW deck's id, not the source deck's id");
+        // The onConfirm chain is deck_duplicate -> deck_rename -> deck_open, three sequential
+        // awaited invokes; wWait above only proves deck_duplicate fired. Poll for deck_open too
+        // rather than checking window.__calls synchronously, which would race the still-pending
+        // rename/open awaits and fail even when the implementation is correct.
+        ok(await wWait(function(){ return window.__calls.some(function(c){ return c.cmd === "deck_open" && c.args.id === wSfRenameCall.args.id; }); }),
+           "PME-053: 'Create presentation' opens the newly-created copy in the editor");
+        ok(await wWait(function(){ return el("pm-library").hidden; }), "PME-053: the dialog and Library close, landing the operator in the editor on the new deck");
+      }
+
+      // --- Cody (PR #69 review): a duplicate source that vanishes mid-dialog must not toast a
+      // false "Presentation duplicated" success. deck_duplicate is a no-op when its source id no
+      // longer resolves (another action deleted it between the picker rendering and Create being
+      // pressed) — no new_id comes back, so nothing was actually created, and the flow must route
+      // through the same failure path every other create failure in this dialog already uses.
+      el("pm-deckswitch").click();
+      await wWait(function(){ return !!el("pm-lib-grid").querySelector(".pm-lib-card"); });
+      if (el("pm-lib-q")) { el("pm-lib-q").value = ""; el("pm-lib-q").dispatchEvent(new Event("input", {bubbles:true})); }
+      el("pm-lib-new").click();
+      await wWait(function(){ return !!el("pm-prompt-input"); });
+      var wVanDup = document.getElementById("pm-startfrom-dup");
+      ok(!!wVanDup && !wVanDup.disabled, "Cody (PR #69) (premise): a duplicate source is selectable to test the vanished-mid-dialog case");
+      if (wVanDup && !wVanDup.disabled) {
+        wVanDup.click();
+        var wVanRow = document.querySelector(".pm-startfrom-picker .pm-startfrom-picker-row input");
+        var wVanSrcId = Number(wVanRow.value);
+        wVanRow.click();
+        // The race itself: another action removes the chosen source from the library between
+        // selecting it here and pressing Create.
+        window.__LIB.decks = window.__LIB.decks.filter(function(d){ return d.id !== wVanSrcId; });
+        Array.from(document.querySelectorAll(".pm-confirm .pm-btn-primary")).slice(-1)[0].click();
+        ok(await wWait(function(){ return !el("pm-error").hidden; }),
+           "Cody (PR #69): a duplicate source that vanished mid-dialog surfaces the error banner, not a false-positive success toast");
+        // Checked by TEXT, not by the toast's `hidden` state, so this cannot pass merely because
+        // an unrelated earlier toast in this long-running script happens to still be showing.
+        ok(!/duplicated/i.test(el("pm-toast").textContent || ""),
+           "Cody (PR #69): ...and never claims \"Presentation duplicated\" over a request that created nothing (\"" + (el("pm-toast").textContent || "").slice(0, 40) + "\")");
+        if (el("pm-error-dismiss") && !el("pm-error").hidden) el("pm-error-dismiss").click();
+      }
+
+      // --- PME-059: warn when the deck being deleted is referenced by a service-plan item -----
+      el("pm-deckswitch").click();
+      await wWait(function(){ return !!el("pm-lib-grid").querySelector(".pm-lib-card"); });
+      if (el("pm-lib-q")) { el("pm-lib-q").value = ""; el("pm-lib-q").dispatchEvent(new Event("input", {bubbles:true})); }
+      var wPlanCards = Array.prototype.slice.call(el("pm-lib-grid").querySelectorAll(".pm-lib-card"));
+      ok(wPlanCards.length >= 2, "PME-059 (premise): at least two presentations exist \u2014 one to link from the plan, one as a clean negative control");
+      if (wPlanCards.length >= 2) {
+        var wLinkedCard = wPlanCards[0], wCleanCard = wPlanCards[1];
+        var wLinkedId = Number(wLinkedCard.dataset.id);
+        var wSavedItems = V.items, wSavedPlanName = V.plan_name;
+        V.items = wSavedItems.concat([{id:9001, kind:"slide_group", title:"Sermon slides", is_live:false, is_staged:false, link:{kind:"deck", id: wLinkedId}}]);
+        V.plan_name = "Sunday Service \u2014 Aug 4";
+        wLinkedCard.querySelector(".pm-lib-dots").click();
+        await wWait(function(){ return !!el("pm-lib-menu"); });
+        Array.prototype.slice.call(el("pm-lib-menu").querySelectorAll("button")).filter(function(b){ return /^Delete/.test(b.textContent); })[0].click();
+        ok(await wWait(function(){ return !!document.querySelector(".pm-confirm-warn"); }),
+           "PME-059: deleting a deck the service plan links shows a warning before the operator can confirm");
+        var wWarnLinked = document.querySelector(".pm-confirm-warn");
+        ok(!!wWarnLinked && /Sunday Service \u2014 Aug 4/.test(wWarnLinked.textContent) && /show missing/.test(wWarnLinked.textContent),
+           "PME-059: the warning names the PLAN (\"" + (wWarnLinked ? wWarnLinked.textContent : "") + "\") and states the consequence \u2014 the linked plan item will show missing");
+        var wWarnDlg = document.querySelector('.pm-confirm[role="alertdialog"]');
+        ok(!!wWarnDlg && /pm-confirm-warn/.test(wWarnDlg.getAttribute("aria-describedby") || ""),
+           "PME-059: the warning is wired into the dialog's accessible description, so a screen reader speaks it (WCAG 4.1.2)");
+        wCloseDel();
+        // Negative control: a deck NOT referenced by the plan gets no plan-reference warning \u2014
+        // proves the check above is reading the actual link, not always drawing a warning.
+        wCleanCard.querySelector(".pm-lib-dots").click();
+        await wWait(function(){ return !!el("pm-lib-menu"); });
+        Array.prototype.slice.call(el("pm-lib-menu").querySelectorAll("button")).filter(function(b){ return /^Delete/.test(b.textContent); })[0].click();
+        await wWait(function(){ return !!document.querySelector(".pm-confirm-body"); });
+        var wWarnClean = document.querySelector(".pm-confirm-warn");
+        ok(!wWarnClean || !/show missing/.test(wWarnClean.textContent),
+           "PME-059 (control): a deck NOT referenced by the plan shows no plan-reference warning");
+        wCloseDel();
+        // Sana + Vera (PR #69 review): a FAILED view() read must not collapse into the same
+        // "no warning" shape as a genuinely clean read — that would let a delete through
+        // silently on exactly the failure this check exists to survive. window.__viewRejectOnce
+        // is consumed by pmLibDelete's own first `await invoke("view")`, triggered by the Delete
+        // click below. There IS an `await wWait(...)` between setting the flag and that click
+        // (Sana, PR #69 review round 2 — an earlier version of this comment wrongly claimed none)
+        // — but the menu it waits for is built synchronously by the ⋯ click just before it, so
+        // `wWait`'s very first check (before any real sleep) already sees it and resolves on that
+        // same microtask turn: effectively 0 ms of wall-clock time, nowhere near the app's 1 Hz
+        // view() poll's 1000 ms interval, so the poll has no practical chance to consume the flag
+        // first.
+        window.__viewRejectOnce = true;
+        wLinkedCard.querySelector(".pm-lib-dots").click();
+        await wWait(function(){ return !!el("pm-lib-menu"); });
+        Array.prototype.slice.call(el("pm-lib-menu").querySelectorAll("button")).filter(function(b){ return /^Delete/.test(b.textContent); })[0].click();
+        ok(await wWait(function(){ return !!document.querySelector(".pm-confirm-warn"); }),
+           "Sana + Vera (PR #69): a FAILED plan-reference check still shows a warning — fails OPEN, never silently reading as \"not referenced\"");
+        var wWarnFailed = document.querySelector(".pm-confirm-warn");
+        ok(!!wWarnFailed && /couldn.t check/i.test(wWarnFailed.textContent),
+           "Sana + Vera (PR #69): ...and the warning honestly says the check couldn't be completed, not a fabricated \"not referenced\" or a fabricated \"referenced\" (\"" + (wWarnFailed ? wWarnFailed.textContent : "") + "\")");
+        wCloseDel();
+        // Vera (PR #69 review, round 2): a REJECTED view() (above) is one failure mode; a
+        // STALLED-BUT-CONNECTED host on Backend::Remote is another, and ControlClient::command
+        // (selahcue-lan/src/client.rs) has no per-request timeout on this path — unlike
+        // connect/pair, which do. Without a client-side bound, this would hang the whole delete
+        // flow forever: no spinner, no error, nothing. window.__viewHangOnce makes the mock's
+        // view() promise never settle at all; the only way this test can pass is if
+        // pmLibDelete's own PM_VIEW_TIMEOUT_MS actually fires and moves the UI on.
+        window.__viewHangOnce = true;
+        wLinkedCard.querySelector(".pm-lib-dots").click();
+        await wWait(function(){ return !!el("pm-lib-menu"); });
+        Array.prototype.slice.call(el("pm-lib-menu").querySelectorAll("button")).filter(function(b){ return /^Delete/.test(b.textContent); })[0].click();
+        ok(await waitFor(function(){ return !!document.querySelector(".pm-confirm-warn"); }, 100),
+           "Vera (PR #69, round 2): a STALLED (never-resolving) plan-reference check does not hang forever — the client-side timeout fires and the dialog still shows a warning");
+        var wWarnHung = document.querySelector(".pm-confirm-warn");
+        ok(!!wWarnHung && /couldn.t check/i.test(wWarnHung.textContent),
+           "Vera (PR #69, round 2): ...with the same honest \"couldn't check\" copy as a rejected read, not a fabricated verdict");
+        wCloseDel();
+        // Sana (PR #69 review, round 2): "linked" and "the plan has a reported name" are TWO
+        // separate facts that the original fix conflated into one `if` — a genuinely linked deck
+        // whose plan reports no name (reachable via Backend::Remote loading a ServicePlan built
+        // through from_parts, which applies no non-empty-name bound) got NO warning at all, the
+        // same silent-clean-dialog failure one field over from the bug already fixed above.
+        V.items = wSavedItems.concat([{id:9002, kind:"slide_group", title:"Sermon slides", is_live:false, is_staged:false, link:{kind:"deck", id: wLinkedId}}]);
+        V.plan_name = "";
+        wLinkedCard.querySelector(".pm-lib-dots").click();
+        await wWait(function(){ return !!el("pm-lib-menu"); });
+        Array.prototype.slice.call(el("pm-lib-menu").querySelectorAll("button")).filter(function(b){ return /^Delete/.test(b.textContent); })[0].click();
+        ok(await wWait(function(){ return !!document.querySelector(".pm-confirm-warn"); }),
+           "Sana (PR #69, round 2): a deck genuinely linked from a plan that reports NO name still shows a warning — \"linked\" and \"named\" are checked separately");
+        var wWarnUnnamed = document.querySelector(".pm-confirm-warn");
+        ok(!!wWarnUnnamed && /show missing/.test(wWarnUnnamed.textContent) && !/“”/.test(wWarnUnnamed.textContent),
+           "Sana (PR #69, round 2): ...and it degrades to the generic \"Used in your service plan\" wording rather than printing an empty-quoted plan name (\"" + (wWarnUnnamed ? wWarnUnnamed.textContent : "") + "\")");
+        wCloseDel();
+        V.items = wSavedItems; V.plan_name = wSavedPlanName;
+      }
+
+      // --- PME-006\u2013011: promote AA-large-only muted text to --sc-text-secondary ------------
+      // Each is essential text under the project's own written policy (app.css review-fixes
+      // block: headings/labels/instructions/empty-states/error text must clear AA-normal;
+      // --sc-text-muted, at 3.79:1 on --sc-surface, is AA-large only). Checked against the
+      // shipped rule text (the same pattern PSC-005/DLM-001 use above), because several of
+      // these selectors only render in states this pass does not drive the UI into.
+      var wMutedFixes = [
+        ["PME-006", ".pm-insp-note"],
+        ["PME-007", ".pm-media-empty"],
+        ["PME-008", ".pm-lib-empty-sub"],
+        ["PME-009", ".pm-grid-hint"],
+        ["PME-010", ".pm-tile-failmsg"],
+        ["PME-011", ".pm-deck-seg-btn"],
+      ];
+      wMutedFixes.forEach(function(pair){
+        var wId = pair[0], wSel = pair[1];
+        var wRe = new RegExp(wSel.replace(/[.]/g, "\\.") + "\\s*\\{([^}]*)\\}");
+        var wM = _lastRule(wRe, window.__CSSTEXT || "");
+        ok(!!wM, wId + " (premise): the " + wSel + " rule is present in the shipped app.css");
+        if (wM) {
+          ok(/--sc-text-secondary/.test(wM[1]) && !/--sc-text-muted/.test(wM[1]),
+             wId + ": " + wSel + " uses --sc-text-secondary (AA-normal, 7.40\u20138.74:1 on surface), not the AA-large-only --sc-text-muted (\"" + wM[1].trim().slice(0, 80) + "\")");
+        }
+      });
 
       // --- \u00a710 case 6 / CON-099, CON-101, CON-102: the engaged BLACKOUT state ------------
       // The bug is that the most destructive state in the product explains nothing: the operator
@@ -10407,6 +11193,493 @@ right after a generate/save");
            "G.6: the explanation clears AA-NORMAL on its own warn ground (" + _f(gMc) + ":1) — essential copy, so --sc-text-secondary not the AA-large-only --sc-text-muted");
         ok(/Relink/i.test(el("pm-inspector-body").textContent),
            "G.6: the repair affordance is offered and reads 'Relink…' for a missing asset, not the generic 'Replace…'");
+      }
+
+      // === Settings › About & Licensing (Figma 584:124 — story 17tnw2axwer, closes SET-007) ===
+      {
+        function _luma(rgb){ var s=[rgb[0],rgb[1],rgb[2]].map(function(c){c/=255; return c<=0.03928?c/12.92:Math.pow((c+0.055)/1.055,2.4);}); return 0.2126*s[0]+0.7152*s[1]+0.0722*s[2]; }
+        function _parseRgb(s){ var m=String(s).match(/[-\d.]+/g)||["0","0","0"]; return [+m[0],+m[1],+m[2]]; }
+        function _contrast(fg,bg){ var lf=_luma(_parseRgb(fg)), lb=_luma(_parseRgb(bg)), hi=Math.max(lf,lb), lo=Math.min(lf,lb); return (hi+0.05)/(lo+0.05); }
+
+        document.querySelector('.nav-item[data-surface="settings"]').click();
+        setSettingsPage("about");
+        ok(el("set-page-about") && !el("set-page-about").hidden && el("set-placeholder").hidden,
+           "Settings/About: the real page renders (SET-007 page-level MISSING closed, not the shared placeholder)");
+
+        // Version: real Tauri app.getVersion(), never a fabricated "1.0.0" string.
+        await sleep(40);
+        ok(el("ab-version").textContent === "0.1.0",
+           "Settings/About: Version reads the real app.getVersion() value (\"" + el("ab-version").textContent + "\")");
+        window.__appVersionAvailable = false; // simulate an older/narrower Tauri global
+        window.__resetSettingsAboutForTest();
+        setSettingsPage("about");
+        await sleep(40);
+        ok(el("ab-version").textContent === "—",
+           "Settings/About (control): with no app.getVersion() available it shows the honest \"—\", never a guessed number");
+        window.__appVersionAvailable = true;
+        window.__resetSettingsAboutForTest();
+        setSettingsPage("about");
+        await sleep(40);
+
+        // Platform: derived from navigator, never the Figma mock's static "macOS 15.3 · Apple Silicon".
+        ok(el("ab-platform").textContent.length > 0 && el("ab-platform").textContent !== "—",
+           "Settings/About: Platform is read from the real navigator, not left as the honest-empty default (\"" + el("ab-platform").textContent + "\")");
+
+        // Scripture attributions: real list_translations() data, never the mock's hardcoded
+        // "World English Bible, ASV, KJV, WEBBE, Darby" line.
+        ok(window.__calls.some(function(c){ return c.cmd === "list_translations"; }),
+           "Settings/About: scripture attributions are loaded via the real list_translations() command");
+        var abRows = document.querySelectorAll("#ab-scripture-list .pp-inc-row");
+        ok(abRows.length === 6, "Settings/About: all 6 real translations render as their own row, bundled AND downloadable (" + abRows.length + ")");
+        ok(/King James Version/.test(abRows[0].textContent) && /Public Domain/.test(abRows[0].textContent),
+           "Settings/About: a bundled row names the real translation and its real public-domain licence, not fabricated text");
+        ok(/Young's Literal Translation/.test(abRows[5].textContent) && !/Public Domain/.test(abRows[5].textContent),
+           "Settings/About: the one downloadable (not-yet-installed) translation does NOT get the Public Domain badge its bundled siblings get — the code reads downloadable, not a hardcoded assumption every entry is bundled");
+
+        // Update status: honestly inert — a real, disabled, labelled control, never a fake "UP TO DATE".
+        ok(el("ab-check-update").disabled && el("ab-check-update").getAttribute("aria-disabled") === "true",
+           "Settings/About: 'Check for updates' is a real disabled control (no update mechanism exists yet) — not a live-looking button that would silently no-op");
+        ok(!/UP TO DATE/.test(el("set-page-about").textContent),
+           "Settings/About: no fabricated 'UP TO DATE' status — this build has no update-check mechanism to report one from");
+
+        // DPA row: driven by the REAL providers_view().any_cloud_enabled — flips with real state,
+        // never a static "SHOWN WITH CLOUD" pill regardless of whether cloud is actually on. This
+        // block runs after the earlier Providers & Privacy checks, which toggle these SAME shared
+        // fixture flags — force both to a known false state first rather than assuming whatever
+        // they were left at.
+        window.__pp.cloud_notes_consent = false;
+        window.__pp.cloud_transcription_consent = false;
+        window.__resetSettingsAboutForTest();
+        setSettingsPage("about");
+        await sleep(40);
+        ok(el("ab-dpa-badge").textContent === "NOT SHOWN",
+           "Settings/About (control): DPA row reads NOT SHOWN while no cloud provider is enabled");
+        window.__pp.cloud_notes_consent = true;
+        window.__resetSettingsAboutForTest();
+        setSettingsPage("about");
+        await sleep(40);
+        ok(el("ab-dpa-badge").textContent === "CLOUD ENABLED" && /cloud provider is enabled/.test(el("ab-dpa-note").textContent),
+           "Settings/About: enabling a real cloud provider flips the DPA row to CLOUD ENABLED — driven by data, not a fixed Figma badge");
+        window.__pp.cloud_notes_consent = false; // restore for later PP checks in this same run
+
+        // Contrast (NFR-020): essential row copy uses --sc-text-secondary (AA-normal), never the
+        // AA-large-only --sc-text-muted reserved for genuinely tertiary notes. Contrast against the
+        // row's OWN real computed background (already in rgb()/rgba() form _contrast expects),
+        // never a hand-typed hex guess that could silently drift from the actual token.
+        var abRowD = document.querySelector("#set-page-about .set-row-d");
+        var abRowBg = getComputedStyle(abRowD.closest(".set-row")).backgroundColor;
+        var abRowDc = _contrast(getComputedStyle(abRowD).color, abRowBg);
+        ok(abRowDc >= 4.5, "Settings/About: .set-row-d body copy clears AA-normal on its own row background (" + abRowDc.toFixed(2) + ":1)");
+      }
+
+      // === Settings › Appearance (Figma 581:124 — story 17tnw2axwer, closes SET-004) ===
+      {
+        V.stage_template = "scripture"; // exercise the non-default card being pre-selected
+        document.querySelector('.nav-item[data-surface="settings"]').click();
+        setSettingsPage("appearance");
+        await sleep(40);
+        ok(el("set-page-appearance") && !el("set-page-appearance").hidden && el("set-placeholder").hidden,
+           "Settings/Appearance: the real page renders (SET-004 page-level MISSING closed, not the shared placeholder)");
+
+        // Layout regression guard (Vera's performance review of PR #68): a stray "*/" inside a
+        // CSS comment above .set-stack's definition once silently truncated the comment early,
+        // turning the rest of the prose into an invalid selector and dropping the WHOLE .set-stack
+        // rule — the wiring/contrast checks below all kept passing because none of them reads
+        // layout. This asserts the actual computed style the class exists to produce (a flex
+        // column with a real gap), so a repeat of that exact bug class fails HERE, not silently.
+        var apStageThemesCs = getComputedStyle(el("ap-stage-themes"));
+        ok(apStageThemesCs.display === "flex" && apStageThemesCs.flexDirection === "column" && parseFloat(apStageThemesCs.gap) > 0,
+           "Settings/Appearance: #ap-stage-themes (.set-stack) actually computes as a flex column with a real gap — proves the CSS rule is live, not silently dropped");
+
+        // Default stage theme: REAL — reflects view.stage_template, the exact field/command the
+        // Presentation surface's own stage-theme picker already uses (app.js #stage-themes).
+        var apScr = el("ap-stage-theme-scripture"), apWor = el("ap-stage-theme-worship");
+        ok(apScr && apScr.classList.contains("sel") && apScr.getAttribute("aria-checked") === "true",
+           "Settings/Appearance: the card matching the REAL view.stage_template (scripture) renders selected");
+        ok(apWor && !apWor.classList.contains("sel") && apWor.getAttribute("aria-checked") === "false",
+           "Settings/Appearance (control): the non-active template card is not marked selected");
+        var apCallsBefore = window.__calls.length;
+        apWor.click();
+        await sleep(20);
+        ok(window.__calls.slice(apCallsBefore).some(function(c){ return c.cmd === "set_stage_template" && c.args.template === "worship"; }),
+           "Settings/Appearance: selecting a stage-theme card invokes the REAL set_stage_template(worship) — same command the Presentation surface's picker uses");
+
+        // Keyboard reachability (QA finding on PR #68, ClickUp 17tnw2axwfm): the roving tabIndex
+        // this radiogroup sets up is USELESS without an arrow-key handler moving focus between
+        // the tabIndex=-1 siblings — a keyboard-only operator could reach the selected card and
+        // nothing else. ArrowRight from the now-selected "worship" card must move focus AND
+        // selection to "scripture" (wrapping), exactly like the Providers & Privacy radiogroup's
+        // own onRadioKeydown already does.
+        // Re-query: the click above triggered a full renderStageThemes() rebuild of the host, so
+        // the ORIGINAL apWor node is now detached — focusing it would silently no-op.
+        var apWorNow = el("ap-stage-theme-worship");
+        apWorNow.focus();
+        var apCallsBeforeKey = window.__calls.length;
+        apWorNow.dispatchEvent(new KeyboardEvent("keydown", {key:"ArrowRight", bubbles:true, cancelable:true}));
+        await sleep(20);
+        ok(document.activeElement === el("ap-stage-theme-scripture"),
+           "Settings/Appearance: ArrowRight on the stage-theme radiogroup moves FOCUS to the next card");
+        ok(window.__calls.slice(apCallsBeforeKey).some(function(c){ return c.cmd === "set_stage_template" && c.args.template === "scripture"; }),
+           "Settings/Appearance: ArrowRight also SELECTS the newly-focused card (matches native radiogroup behaviour)");
+        V.stage_template = "worship"; // restore the fixture default for anything after this block
+
+        // Default slide theme: real builtin_themes() names populate the select; left disabled
+        // because there is no distinct "default new-deck theme" field to write to (see
+        // settings-appearance.js's header comment) — never a fabricated "SelahCue Classic" option.
+        ok(window.__calls.some(function(c){ return c.cmd === "builtin_themes"; }),
+           "Settings/Appearance: the slide-theme select is populated from the real builtin_themes() command");
+        var apSlideOpts = Array.prototype.map.call(document.querySelectorAll("#ap-slide-theme option"), function(o){ return o.textContent; });
+        ok(apSlideOpts.indexOf("Classic") !== -1, "Settings/Appearance: the real built-in theme name renders in the select (" + apSlideOpts.join(",") + ")");
+        ok(el("ap-slide-theme").disabled, "Settings/Appearance: the slide-theme select is disabled (informational only — no writable 'default' field exists)");
+
+        // Every control with NO backend command anywhere in this app is a REAL, disabled control —
+        // never one that looks live and silently forgets the choice on the next reload.
+        ["ap-textsize","ap-high-contrast","ap-stage-textsize","ap-reduced-motion"].forEach(function(id){
+          ok(el(id).disabled, "Settings/Appearance: #" + id + " is honestly disabled — no persistence exists for it yet");
+        });
+        var apDensityBtns = document.querySelectorAll("#ap-density .pp-segmented-btn");
+        var apClockBtns = document.querySelectorAll("#ap-clockfmt .pp-segmented-btn");
+        ok(apDensityBtns.length === 2 && Array.prototype.every.call(apDensityBtns, function(b){ return b.disabled; }),
+           "Settings/Appearance: the density segmented control's two options are both honestly disabled");
+        ok(apClockBtns.length === 2 && Array.prototype.every.call(apClockBtns, function(b){ return b.disabled; }),
+           "Settings/Appearance: the stage-clock-format segmented control's two options are both honestly disabled");
+
+        // Theme Designer link-out: a REAL navigation, not a dead row styled like a link.
+        el("ap-open-theme-designer").click();
+        ok(el("surface-theme-designer").classList.contains("active"),
+           "Settings/Appearance: 'Open Theme Designer' really navigates to the Theme Designer surface");
+        document.querySelector('.nav-item[data-surface="settings"]').click();
+        setSettingsPage("appearance");
+        await sleep(20);
+
+        // Contrast (NFR-020): same bar as About above, applied to Appearance's own body copy and
+        // its honest "not saved yet" notes (tertiary — text-muted is the CORRECT token there).
+        // Against the row's own real computed background, same reasoning as the About check.
+        var apRowD = document.querySelector("#set-page-appearance .set-row-d");
+        var apRowBg = getComputedStyle(apRowD.closest(".set-row")).backgroundColor;
+        var apRowDc = _contrast(getComputedStyle(apRowD).color, apRowBg);
+        ok(apRowDc >= 4.5, "Settings/Appearance: .set-row-d body copy clears AA-normal on its own row background (" + apRowDc.toFixed(2) + ":1)");
+      }
+
+      // === Settings › General (Figma 577:126 — story 17tnw2axwet, closes SET-001) ===
+      {
+        document.querySelector('.nav-item[data-surface="settings"]').click();
+        setSettingsPage("general");
+        ok(el("set-page-general") && !el("set-page-general").hidden && el("set-placeholder").hidden,
+           "Settings/General: the real page renders (SET-001 page-level MISSING closed, not the shared placeholder)");
+
+        // Startup: "Live Console" is marked selected because that is the REAL shipped default
+        // (index.html's #surface-console carries `active` at rest). The claim itself is checked
+        // at the PYTHON level below (SURFACE_CONSOLE_ACTIVE_AT_BOOT, against the pristine source —
+        // by THIS point in the suite many earlier checks have navigated away, so the live DOM's
+        // current .active class no longer reflects the app's boot-time default).
+        var gnStartupCards = document.querySelectorAll("#gn-startup-list .pp-radio-card");
+        ok(gnStartupCards.length === 3 && gnStartupCards[0].classList.contains("sel") &&
+           !gnStartupCards[1].classList.contains("sel") && !gnStartupCards[2].classList.contains("sel"),
+           "Settings/General: exactly the Live Console startup option renders selected");
+        // Quinn's QA review of PR #70: these cards have no click handler at all (no backend to
+        // persist the choice) but the shared .pp-radio-card base class always applies
+        // cursor:pointer + a hover highlight, so they LOOKED clickable while doing nothing — a
+        // "looks interactive, silently does nothing" defect, unlike every other inert control in
+        // this batch, which uses native `disabled`. A plain <div> radio card has no such
+        // attribute to lean on, so this is a computed-style check instead.
+        ok(getComputedStyle(gnStartupCards[1]).cursor === "default",
+           "Settings/General: an inert (non-selected) startup card computes cursor:default, not the base class's cursor:pointer — it no longer looks clickable");
+
+        // Keyboard shortcuts: read LIVE from the app's own #shortcuts overlay, never a hand-typed
+        // second copy that could drift from the real bindings.
+        var realShortcutRows = document.querySelectorAll("#shortcuts .sc-row").length;
+        var gnShortcutRows = document.querySelectorAll("#gn-shortcuts-list .set-row").length;
+        ok(realShortcutRows > 0 && gnShortcutRows === realShortcutRows,
+           "Settings/General: the shortcuts table renders exactly the real #shortcuts overlay's row count (" + gnShortcutRows + " of " + realShortcutRows + ")");
+        ok(/Blackout the output/.test(document.getElementById("gn-shortcuts-list").textContent) &&
+           /Command palette/.test(document.getElementById("gn-shortcuts-list").textContent),
+           "Settings/General: real shortcut descriptions render verbatim (not the Figma mock's different row set — no 'Stage message'/'Undo' rows this build doesn't bind)");
+        ok(!/Stage message|Undo\b/.test(document.getElementById("gn-shortcuts-list").textContent),
+           "Settings/General (control): the Figma mock's un-bound shortcuts (Stage message ⌘M, Undo ⌘Z) do NOT appear — this page never renders a keybinding the app doesn't really have");
+        ok(el("shortcuts").hidden !== false, "Settings/General (control): the real shortcuts overlay starts hidden");
+        el("gn-open-shortcuts").click();
+        ok(el("shortcuts").hidden === false,
+           "Settings/General: 'Open the full shortcuts overlay' really opens the app's own shortcuts dialog");
+        // Goes through the REAL openShortcuts() (app.js's generic data-open="shortcuts" wiring),
+        // not a bespoke `overlay.hidden = false` — proven by checking the SAME side effect
+        // openShortcuts() itself produces: focus moves to #sc-close, the dialog's Tab-trap anchor
+        // (Cody's review of PR #70: a prior version opened the dialog visually but left focus
+        // behind it, outside the aria-modal region).
+        ok(document.activeElement === el("sc-close"),
+           "Settings/General: opening the shortcuts overlay moves focus into it (via the real openShortcuts(), not a bespoke hidden-flip) — the Tab-trap is live");
+        el("sc-close").click();
+
+        // Real cross-page navigation.
+        el("gn-manage-updates").click();
+        ok(el("set-page-about") && !el("set-page-about").hidden,
+           "Settings/General: 'Manage updates' really navigates to About & Licensing");
+        setSettingsPage("general");
+        el("gn-open-preservice").click();
+        ok(el("surface-preservice").classList.contains("active"),
+           "Settings/General: 'Open Pre-service Check' really navigates to the Pre-service Check surface");
+        document.querySelector('.nav-item[data-surface="settings"]').click();
+        setSettingsPage("general");
+
+        // Every control with no backend command is honestly disabled.
+        ["gn-org-name","gn-lang","gn-region","gn-reduced-motion"].forEach(function(id){
+          ok(el(id).disabled, "Settings/General: #" + id + " is honestly disabled — no persistence exists for it yet");
+        });
+      }
+
+      // === Settings › Scripture & Translations (Figma 578:124 — story 17tnw2axwet, closes SET-002) ===
+      {
+        document.querySelector('.nav-item[data-surface="settings"]').click();
+        setSettingsPage("scripture");
+        await sleep(40);
+        ok(el("set-page-scripture") && !el("set-page-scripture").hidden && el("set-placeholder").hidden,
+           "Settings/Scripture: the real page renders (SET-002 page-level MISSING closed, not the shared placeholder)");
+
+        // Installed translations: real list_translations() data.
+        ok(window.__calls.some(function(c){ return c.cmd === "list_translations"; }),
+           "Settings/Scripture: the installed-translations list is loaded via the real list_translations() command");
+        var scRows = document.querySelectorAll("#sc-translations-list .pp-radio-card");
+        ok(scRows.length === 6, "Settings/Scripture: all 6 real translations render as their own card, bundled AND downloadable (" + scRows.length + ")");
+        ok(/King James Version/.test(scRows[0].textContent) && /PUBLIC DOMAIN/.test(scRows[0].textContent),
+           "Settings/Scripture: each card names the real translation and its real public-domain badge");
+        ok(/Young's Literal Translation/.test(scRows[5].textContent) && !/PUBLIC DOMAIN/.test(scRows[5].textContent),
+           "Settings/Scripture: the one downloadable (not-yet-installed) translation does NOT get the Public Domain badge its bundled siblings get — parity with the equivalent About page check (Cody's review of PR #70 noted this page lacked its own copy)");
+
+        // Default translation: real, TWO-WAY-SYNCED with the summary select (handoff §9) — driving
+        // either one must move the other, both via the SAME set_preferred_translation the
+        // Providers & Privacy panel already uses. This block runs after the earlier Providers &
+        // Privacy checks, which already changed this SAME shared fixture's preferred_translation
+        // (PP C-003 sets it to WEB) — force it back to the fixture's original KJV first rather
+        // than assuming whatever the suite left it at.
+        window.__pp.preferred_translation = "KJV";
+        setSettingsPage("scripture");
+        await sleep(40);
+        ok(document.getElementById("sc-translation-KJV").classList.contains("sel"),
+           "Settings/Scripture (control): KJV (the fixture's real preferred_translation) renders selected before any interaction");
+        ok(document.getElementById("sc-default-select").value === "KJV",
+           "Settings/Scripture (control): the summary select starts in sync with the radio's real default");
+        var scCallsBefore = window.__calls.length;
+        document.getElementById("sc-translation-ASV").click();
+        await sleep(30);
+        ok(window.__calls.slice(scCallsBefore).some(function(c){ return c.cmd === "set_preferred_translation" && c.args.code === "ASV"; }),
+           "Settings/Scripture: clicking a translation card invokes the REAL set_preferred_translation(ASV)");
+        ok(document.getElementById("sc-translation-ASV").classList.contains("sel") &&
+           !document.getElementById("sc-translation-KJV").classList.contains("sel"),
+           "Settings/Scripture: the radio list re-renders from the backend-confirmed default, not an optimistic guess");
+        ok(document.getElementById("sc-default-select").value === "ASV",
+           "Settings/Scripture: the summary select followed the radio's change — one shared value, not two");
+        // Drive it the OTHER direction: changing the select must move the radio too.
+        var scSel = document.getElementById("sc-default-select");
+        scSel.value = "WEB";
+        scSel.dispatchEvent(new Event("change"));
+        await sleep(30);
+        ok(document.getElementById("sc-translation-WEB").classList.contains("sel"),
+           "Settings/Scripture: changing the summary select moves the radio's selection too — confirmed two-way sync");
+
+        // Keyboard reachability on this SECOND new radiogroup in this batch (proactively covered
+        // this time rather than caught by review, per the standing requirement from ClickUp
+        // 17tnw2axwfm).
+        document.getElementById("sc-translation-WEB").focus();
+        var scCallsBeforeKey = window.__calls.length;
+        document.getElementById("sc-translation-WEB").dispatchEvent(new KeyboardEvent("keydown", {key:"ArrowRight", bubbles:true, cancelable:true}));
+        await sleep(30);
+        ok(window.__calls.slice(scCallsBeforeKey).some(function(c){ return c.cmd === "set_preferred_translation"; }),
+           "Settings/Scripture: ArrowRight on the translations radiogroup selects the next card — keyboard-reachable, not just clickable");
+
+        // The per-row "show in picker" toggle is real but genuinely inert (no backend field) —
+        // clicking it must NOT accidentally trigger the card's own onSelect (set_preferred_translation).
+        var scShowToggle = document.querySelector("#sc-translations-list .pp-toggle.set-inert input");
+        ok(scShowToggle && scShowToggle.disabled,
+           "Settings/Scripture: the per-row 'show in picker' toggle is honestly disabled — not configurable yet");
+
+        // Every other control with no backend command is honestly disabled — never a fake Rebuild/
+        // Clear-history button that would look actionable and do nothing.
+        ["sc-verses-per-slide","sc-history-len"].forEach(function(id){
+          ok(el(id).disabled, "Settings/Scripture: #" + id + " is honestly disabled — no persistence exists for it yet");
+        });
+        var scSegBtns = document.querySelectorAll("#sc-versenum .pp-segmented-btn");
+        ok(scSegBtns.length === 3 && Array.prototype.every.call(scSegBtns, function(b){ return b.disabled; }),
+           "Settings/Scripture: the verse-numbers segmented control's three options are all honestly disabled");
+
+        // Theme Designer link-out: a REAL navigation.
+        document.getElementById("sc-open-theme-designer").click();
+        ok(el("surface-theme-designer").classList.contains("active"),
+           "Settings/Scripture: 'Open Theme Designer' really navigates to the Theme Designer surface");
+        document.querySelector('.nav-item[data-surface="settings"]').click();
+
+        // Contrast (NFR-020).
+        // Scoped to a .set-row-d that is actually INSIDE a .set-row — the page's first .set-row-d
+        // by document order is the Installed Translations section's lead paragraph, which sits
+        // directly in the section (no enclosing .set-row), so an unscoped query would hand
+        // .closest(".set-row") a null and throw before this check ever ran.
+        var scRowD = document.querySelector("#set-page-scripture .set-row .set-row-d");
+        var scRowBg = getComputedStyle(scRowD.closest(".set-row")).backgroundColor;
+        var scRowDc = _contrast(getComputedStyle(scRowD).color, scRowBg);
+        ok(scRowDc >= 4.5, "Settings/Scripture: .set-row-d body copy clears AA-normal on its own row background (" + scRowDc.toFixed(2) + ":1)");
+      }
+
+      // === Settings › Network & Mobile — SET-009 addendum (story 17tnw2axweu) ===
+      {
+        // Reset the shared __remote fixture to a known state — the earlier Remote Control block
+        // (Frame G aside) already approved/revoked devices against this SAME global, so this
+        // point in the suite cannot assume the pristine two-devices-one-pending fixture.
+        window.__remote.devices = [
+          { device_id: "dev-aa01", name: "Booth iPad", platform: "iPadOS", role: "producer", idle_secs: 3, pinned: false },
+          { device_id: "dev-bb02", name: "Guest tablet", platform: "iPadOS", role: "viewer", idle_secs: 210, pinned: false },
+        ];
+        window.__remote.pending = [
+          { device_id: "dev-cc03", name: "Anna's iPhone", platform: "iOS", fingerprint: "A1 B2 C3 D4", waiting_secs: 8 },
+        ];
+        document.querySelector('.nav-item[data-surface="settings"]').click();
+        setSettingsPage("network");
+        await sleep(40);
+        ok(window.__calls.some(function(c){ return c.cmd === "remote_snapshot"; }),
+           "Settings/Network SET-009: the paired-devices summary is loaded via the real remote_snapshot() command");
+        ok(/2 paired total/.test(el("net-paired-summary").textContent) && /1 online/.test(el("net-paired-summary").textContent) && /1 idle\/offline/.test(el("net-paired-summary").textContent) && /1 pending request/.test(el("net-paired-summary").textContent),
+           "Settings/Network SET-009: the summary reflects REAL device counts, never the Figma mock's fabricated '3 paired total · 2 connected · 1 offline' (\"" + el("net-paired-summary").textContent + "\")");
+        el("net-open-roles").click();
+        ok(el("surface-remote").classList.contains("active"),
+           "Settings/Network SET-009: 'Manage roles & grants' really navigates to the Remote Control surface");
+        document.querySelector('.nav-item[data-surface="settings"]').click();
+        setSettingsPage("network");
+        ["net-advertised-name"].forEach(function(id){
+          ok(el(id).disabled, "Settings/Network SET-009: #" + id + " is honestly disabled — no LAN-defaults backend exists yet");
+        });
+      }
+
+      // === Settings › Outputs & Displays (Figma 579:124 — story 17tnw2axweu, closes SET-003) ===
+      {
+        document.querySelector('.nav-item[data-surface="settings"]').click();
+        setSettingsPage("outputs");
+        await sleep(40);
+        ok(el("set-page-outputs") && !el("set-page-outputs").hidden && el("set-placeholder").hidden,
+           "Settings/Outputs: the real page renders (SET-003 page-level MISSING closed, not the shared placeholder)");
+
+        // Displays: REAL view().displays, never the Figma mock's fabricated "Display 1 — 1920×1080
+        // · 60Hz · Built-in" text.
+        var outRows = document.querySelectorAll("#out-displays-list .set-row");
+        ok(outRows.length === V.displays.length && outRows.length > 0,
+           "Settings/Outputs: every real display renders as its own row (" + outRows.length + " of " + V.displays.length + ")");
+        ok(new RegExp(V.displays[0].name).test(outRows[0].textContent) && outRows[0].textContent.indexOf(String(V.displays[0].width)) !== -1,
+           "Settings/Outputs: a display row names the REAL display and its real resolution, not fabricated numbers");
+
+        // Identify displays: REAL command.
+        var outCallsBefore = window.__calls.length;
+        el("out-identify").click();
+        await sleep(30);
+        ok(window.__calls.slice(outCallsBefore).some(function(c){ return c.cmd === "identify_outputs"; }),
+           "Settings/Outputs: 'Identify' invokes the REAL identify_outputs() command");
+
+        // Manage screens: real navigation.
+        el("out-open-screens").click();
+        ok(el("surface-screens").classList.contains("active"),
+           "Settings/Outputs: 'Manage screens' really navigates to the Screens & Outputs surface");
+        document.querySelector('.nav-item[data-surface="settings"]').click();
+        setSettingsPage("outputs");
+
+        // Whole sections the FIGMA ITSELF marks SOON render that way — not fabricated content.
+        ok(/COMING SOON/.test(el("out-peroutput-h").textContent) && /COMING SOON/.test(el("out-netoutputs-h").textContent),
+           "Settings/Outputs: PER-OUTPUT CONFIG and NETWORK OUTPUTS render as the Figma frame's own SOON sections");
+
+        // Every control with no backend command is honestly disabled.
+        ["out-venue-select","out-audio-device"].forEach(function(id){
+          ok(el(id).disabled, "Settings/Outputs: #" + id + " is honestly disabled — no persistence exists for it yet");
+        });
+      }
+
+      // === Settings › Security (Figma 582:124 — story 17tnw2axweu, closes SET-005) ===
+      {
+        document.querySelector('.nav-item[data-surface="settings"]').click();
+        setSettingsPage("security");
+        await sleep(20);
+        ok(el("set-page-security") && !el("set-page-security").hidden && el("set-placeholder").hidden,
+           "Settings/Security: the real page renders (SET-005 page-level MISSING closed, not the shared placeholder)");
+
+        // CORRECTION vs. the Figma mock: at-rest encryption must NOT read as ON — verified against
+        // the real Cargo.toml/main.rs, not the design mock, which draws it enabled.
+        ok(/NOT YET ON/.test(el("set-page-security").textContent),
+           "Settings/Security: at-rest encryption honestly reads NOT YET ON — the Figma mock's 'ON' badge does not match this build (Cargo.toml has no `encryption` feature; main.rs calls Database::open, not open_encrypted)");
+        ok(!/VERIFIED · ANTI-ROLLBACK ON/.test(el("set-page-security").textContent),
+           "Settings/Security (control): no fabricated 'VERIFIED · ANTI-ROLLBACK ON' update-signature badge — no update mechanism exists in this build to verify anything");
+        ok(!/Sarah.s iPad|FOH Mac/.test(el("set-page-security").textContent),
+           "Settings/Security (control): no fabricated audit-log rows (the Figma mock's 'Sarah's iPad' / 'FOH Mac' entries) — this build has no audit data source");
+
+        // Real link-outs.
+        el("sec-open-providers").click();
+        ok(el("set-page-providers") && !el("set-page-providers").hidden,
+           "Settings/Security: 'Cloud providers & consent' really navigates to Providers & Privacy");
+        setSettingsPage("security");
+        el("sec-open-about").click();
+        ok(el("set-page-about") && !el("set-page-about").hidden,
+           "Settings/Security: 'Manage & install updates' really navigates to About & Licensing");
+        setSettingsPage("security");
+        el("sec-open-network-revoke").click();
+        ok(el("set-page-network") && !el("set-page-network").hidden,
+           "Settings/Security: 'Revoke all paired devices' really navigates to Network & Mobile");
+        document.querySelector('.nav-item[data-surface="settings"]').click();
+        setSettingsPage("security");
+
+        // Danger Zone / destructive-control regression guard (Sana's security review of PR #71:
+        // these had zero test coverage at all — mutation-proved by removing `disabled` from the
+        // purge button and observing the WHOLE suite still passed). Matches the same pattern
+        // Storage's equivalent controls already use (asserted across 6 buttons).
+        var secDangerButtons = Array.prototype.filter.call(
+          document.querySelectorAll("#set-page-security .pp-optin-btn"),
+          function(b){ return /Purge & rotate…/.test(b.textContent); }
+        );
+        ok(secDangerButtons.length === 1 && secDangerButtons[0].disabled,
+           "Settings/Security: 'Purge secrets & rotate database key' is honestly disabled — no purge/rotate command exists in this build");
+        var secAppLockToggle = document.querySelector("#set-page-security .pp-toggle.set-inert input");
+        ok(secAppLockToggle && secAppLockToggle.disabled,
+           "Settings/Security: 'Require passphrase on launch' is honestly disabled — not available in this build yet");
+        // The copy contradiction Sana's review caught: the purge row must not claim to
+        // "re-encrypt" a database this build never encrypted in the first place.
+        ok(!/re-encrypts the database/.test(document.getElementById("set-page-security").textContent),
+           "Settings/Security (control): the purge/rotate row does not claim to 're-encrypt' a database — this build has no at-rest encryption to re-encrypt (contradiction Sana's review found, fixed)");
+      }
+
+      // === Settings › Network & Mobile — destructive-control regression guard (SET-009) ===
+      // Same gap class Sana's review found on Security, checked here too rather than only where
+      // it was reported: Regenerate certificate and Revoke all devices had no disabled-state test
+      // coverage either.
+      {
+        setSettingsPage("network");
+        var netDangerButtons = Array.prototype.filter.call(
+          document.querySelectorAll("#set-page-network .pp-optin-btn"),
+          function(b){ return /Regenerate…|Revoke all…/.test(b.textContent); }
+        );
+        ok(netDangerButtons.length === 2 && netDangerButtons.every(function(b){ return b.disabled; }),
+           "Settings/Network SET-009: 'Regenerate certificate' and 'Revoke all devices' are both honestly disabled (" + netDangerButtons.length + " checked) — no cert-regenerate or revoke-all command exists in this build");
+      }
+
+      // === Settings › Storage & Backups (Figma 583:124 — story 17tnw2axweu, closes SET-006) ===
+      {
+        setSettingsPage("storage");
+        await sleep(40);
+        ok(el("set-page-storage") && !el("set-page-storage").hidden && el("set-placeholder").hidden,
+           "Settings/Storage: the real page renders (SET-006 page-level MISSING closed, not the shared placeholder)");
+
+        // Disk usage: REAL disk_free() — never the Figma mock's fabricated "38.2 GB free of 256 GB".
+        ok(window.__calls.some(function(c){ return c.cmd === "disk_free"; }),
+           "Settings/Storage: disk usage is loaded via the real disk_free() command");
+        ok(/42\.0 GB free of 500\.0 GB/.test(el("st-disk-usage").textContent),
+           "Settings/Storage: the real fixture's disk_free() numbers render verbatim (\"" + el("st-disk-usage").textContent + "\")");
+
+        // Import/export: real link-out to the Service Plan surface (never a duplicated file-picker).
+        el("st-open-plan").click();
+        ok(el("surface-plan").classList.contains("active"),
+           "Settings/Storage: 'Import or export a service plan' really navigates to the Service Plan surface");
+        document.querySelector('.nav-item[data-surface="settings"]').click();
+        setSettingsPage("storage");
+
+        // Destructive actions with no backend command are honestly disabled, never a live-looking
+        // button with nothing behind it.
+        var stDangerButtons = Array.prototype.filter.call(
+          document.querySelectorAll("#set-page-storage .pp-optin-btn"),
+          function(b){ return /Back up now|Run check|Restore…|Change location…|Clear cache|Export diagnostics…/.test(b.textContent); }
+        );
+        ok(stDangerButtons.length >= 5 && stDangerButtons.every(function(b){ return b.disabled; }),
+           "Settings/Storage: every backup/restore/location/cache/diagnostics action is honestly disabled (" + stDangerButtons.length + " checked) — this build has no backend command behind any of them");
       }
 
     } catch(e){ R.push("FAIL: exception "+e.message+" @ "+(e.stack||"").split("\n")[1]); }

@@ -1216,9 +1216,967 @@
                 <button id="set-open-remote" class="pm-btn-primary" type="button">Manage devices ▶</button>
               </div>
             </section>
+
+            <!-- SET-009 addendum (story 17tnw2axweu): LAN-defaults scope Figma 580:124 draws for
+                 this page (server on/off, mDNS, rate limits, cert regenerate, revoke-all, audit,
+                 roles). Confirmed by direct read of every #[tauri::command] registered in
+                 selahcue-operator/src/main.rs's generate_handler! list: none of it exists yet —
+                 no LAN-server, mDNS, rate-limit, cert-regenerate, revoke-all, or control-audit
+                 command anywhere in this app. This answers SET-OQ-3: a genuine backend gap, not a
+                 deliberate deferral behind the Devices link-out (recorded on the decision task,
+                 17tnw2axpu3). Paired-device COUNTS are real (remote_snapshot); the roles link-out
+                 is real (Remote Control already supports per-device roles); everything else here
+                 is a real, disabled control with an honest note. -->
+            <section class="pp-section" aria-labelledby="set-net-lan-h">
+              <h2 id="set-net-lan-h" class="pp-seclabel">LAN CONTROL SERVER</h2>
+              <div class="set-row">
+                <div><p class="set-row-t">Enable mobile control</p><p class="set-row-d">Let paired phones and tablets control this desktop over your local network. Not configurable yet — the server is always on when the app runs.</p></div>
+                <label class="pp-toggle set-inert"><input type="checkbox" checked disabled aria-label="Enable mobile control (always on — not configurable yet)" /><span class="pp-toggle-knob"></span></label>
+              </div>
+              <div class="pp-field">
+                <label class="pp-field-label" for="net-advertised-name">Advertised name</label>
+                <input id="net-advertised-name" class="pp-select" type="text" placeholder="Not available yet" disabled />
+              </div>
+            </section>
+
+            <section class="pp-section" aria-labelledby="set-net-discovery-h">
+              <h2 id="set-net-discovery-h" class="pp-seclabel">DISCOVERY</h2>
+              <div class="set-row">
+                <div><p class="set-row-t">Advertise on the network (mDNS)</p><p class="set-row-d">Let mobile apps find this desktop automatically. Not configurable yet.</p></div>
+                <label class="pp-toggle set-inert"><input type="checkbox" checked disabled aria-label="Advertise on the network (not configurable yet)" /><span class="pp-toggle-knob"></span></label>
+              </div>
+              <div class="pp-banner pp-banner-ok" role="note">
+                <span class="pp-banner-ico" aria-hidden="true">ⓘ</span>
+                <div class="pp-banner-body">
+                  <p class="pp-banner-title">On networks that block multicast, automatic discovery won't work.</p>
+                  <p class="pp-banner-text">Pair by scanning the QR code on the desktop instead — see Remote Control · Devices.</p>
+                </div>
+              </div>
+            </section>
+
+            <section class="pp-section" aria-labelledby="set-net-sec-h">
+              <h2 id="set-net-sec-h" class="pp-seclabel">SECURITY &amp; TRANSPORT</h2>
+              <div class="set-row">
+                <div><p class="set-row-t">Host certificate fingerprint</p><p class="set-row-d">Shown during device pairing (Remote Control · Devices), not here yet.</p></div>
+                <span class="set-row-v">—</span>
+              </div>
+              <div class="set-row">
+                <div><p class="set-row-t">Regenerate certificate</p><p class="set-row-d">Would create a new host identity and unpair every device. Not available in this build yet.</p></div>
+                <button class="pp-optin-btn set-inert" type="button" disabled aria-disabled="true">Regenerate…</button>
+              </div>
+            </section>
+
+            <section class="pp-section" aria-labelledby="set-net-paired-h">
+              <h2 id="set-net-paired-h" class="pp-seclabel">PAIRED DEVICES</h2>
+              <div class="set-row">
+                <div><p class="set-row-t">Paired devices</p><p class="set-row-d" id="net-paired-summary">—</p></div>
+              </div>
+              <div class="set-row">
+                <div><p class="set-row-t">Revoke all devices</p><p class="set-row-d">Would immediately drop every paired device mid-session. Not available in this build yet — revoke devices one at a time on Remote Control · Devices.</p></div>
+                <button class="pp-optin-btn set-inert" type="button" disabled aria-disabled="true">Revoke all…</button>
+              </div>
+            </section>
+
+            <section class="pp-section" aria-labelledby="set-net-roles-h">
+              <h2 id="set-net-roles-h" class="pp-seclabel">ROLES &amp; GRANTS</h2>
+              <button id="net-open-roles" class="set-linkrow" type="button">
+                <span>Manage roles &amp; grants — assign a role per device</span>
+                <span class="set-linkrow-arrow" aria-hidden="true">→</span>
+              </button>
+              <div class="set-row">
+                <div><p class="set-row-t">Time-boxed grants <span class="pp-badge pp-badge-soon">SOON</span></p><p class="set-row-d">Auto-expire a device's access at a set time or at end of service.</p></div>
+                <label class="pp-toggle set-inert"><input type="checkbox" disabled aria-label="Time-boxed grants (coming soon)" /><span class="pp-toggle-knob"></span></label>
+              </div>
+            </section>
+
+            <section class="pp-section" aria-labelledby="set-net-rate-h">
+              <h2 id="set-net-rate-h" class="pp-seclabel">RATE LIMITS · ADVANCED</h2>
+              <div class="set-row-grid">
+                <div class="set-row"><div><p class="set-row-t">Per-device command limit</p><p class="set-row-d">Not shown yet — enforced server-side regardless.</p></div><span class="set-row-v">—</span></div>
+                <div class="set-row"><div><p class="set-row-t">Global command limit</p><p class="set-row-d">Not shown yet — enforced server-side regardless.</p></div><span class="set-row-v">—</span></div>
+              </div>
+            </section>
+
+            <section class="pp-section" aria-labelledby="set-net-audit-h">
+              <h2 id="set-net-audit-h" class="pp-seclabel">AUDIT</h2>
+              <div class="set-row">
+                <div><p class="set-row-t">Control audit log</p><p class="set-row-d">Every command, role change, and revoke — not available in this build yet.</p></div>
+                <span class="pp-badge pp-badge-soon">SOON</span>
+              </div>
+            </section>
+
+            <section class="pp-section" aria-labelledby="set-net-preview-h">
+              <h2 id="set-net-preview-h" class="pp-seclabel">PREVIEW STREAMING · ADVANCED</h2>
+              <div class="pp-field">
+                <label class="pp-field-label" for="net-preview-quality">Preview quality on mobile</label>
+                <div class="pp-select-wrap"><select id="net-preview-quality" class="pp-select" disabled><option>Not available yet</option></select></div>
+              </div>
+            </section>
+          </div>
+
+          <!-- About & Licensing (Design 2.0, Figma 584:124 — story 17tnw2axwer, closes SET-007).
+               Version/platform are read from real host/browser signals where a real signal exists
+               (Tauri's own getVersion(), navigator for platform); everything else this build has
+               no live source for (update check, SBOM/license manifest, song/CCLI editor, external
+               support URLs) renders as a real, labelled, disabled row rather than a fabricated
+               number — see settings-about.js's header comment. Populated + wired by
+               settings-about.js. -->
+          <div id="set-page-about" class="set-page" data-setpage="about" hidden>
+            <div class="pp-wrap">
+              <header class="pp-head">
+                <h1 class="pp-title">About &amp; Licensing</h1>
+                <p class="pp-sub">Version, updates, licences and attributions for this copy of SelahCue.</p>
+              </header>
+
+              <div class="pp-banner pp-banner-ok" role="note">
+                <span class="pp-banner-ico" aria-hidden="true">ⓘ</span>
+                <div class="pp-banner-body">
+                  <p class="pp-banner-title">Version, licences and attributions for this copy of SelahCue.</p>
+                  <p class="pp-banner-text">Checking for updates is the only action here that would use the network — nothing on this page changes what's on the audience screen.</p>
+                </div>
+              </div>
+
+              <section class="pp-section" aria-labelledby="ab-version-h">
+                <h2 id="ab-version-h" class="pp-seclabel">VERSION</h2>
+                <div class="set-row-grid">
+                  <div class="set-row"><div><p class="set-row-t">Version</p></div><span class="set-row-v" id="ab-version">—</span></div>
+                  <div class="set-row"><div><p class="set-row-t">Platform</p></div><span class="set-row-v" id="ab-platform">—</span></div>
+                </div>
+              </section>
+
+              <section class="pp-section" aria-labelledby="ab-updates-h">
+                <h2 id="ab-updates-h" class="pp-seclabel">UPDATES</h2>
+                <div class="set-row">
+                  <div>
+                    <p class="set-row-t">Update status</p>
+                    <p class="set-row-d">Checking for updates isn't available in this build yet.</p>
+                  </div>
+                  <div class="ab-update-actions">
+                    <span class="pp-badge pp-badge-soon">SOON</span>
+                    <button id="ab-check-update" class="pp-optin-btn set-inert" type="button" disabled aria-disabled="true">Check for updates</button>
+                  </div>
+                </div>
+                <p class="set-inert-note">Once available, updates will be signature-verified before they install and a downgrade below the minimum safe version will be refused.</p>
+              </section>
+
+              <section class="pp-section" aria-labelledby="ab-licenses-h">
+                <h2 id="ab-licenses-h" class="pp-seclabel">OPEN-SOURCE LICENSES</h2>
+                <div class="set-row">
+                  <div>
+                    <p class="set-row-t">Third-party components</p>
+                    <p class="set-row-d">A generated component &amp; licence manifest isn't available in this build yet.</p>
+                  </div>
+                  <span class="pp-badge pp-badge-soon">SOON</span>
+                </div>
+              </section>
+
+              <section class="pp-section" aria-labelledby="ab-scripture-h">
+                <h2 id="ab-scripture-h" class="pp-seclabel">SCRIPTURE ATTRIBUTIONS</h2>
+                <div id="ab-scripture-list" class="set-stack" role="list" aria-label="Bundled scripture translations"></div>
+                <div class="set-row">
+                  <div>
+                    <p class="set-row-t">About these attributions</p>
+                    <p class="set-row-d">Public-domain translations are marked as such and need no attribution. Licensed translations (a future release) will show their required attribution here.</p>
+                  </div>
+                </div>
+              </section>
+
+              <section class="pp-section" aria-labelledby="ab-ndi-h">
+                <h2 id="ab-ndi-h" class="pp-seclabel">NDI ATTRIBUTION</h2>
+                <div class="set-row">
+                  <div>
+                    <p class="set-row-t">NDI® is a registered trademark of Vizrt NDI AB.</p>
+                    <p class="set-row-d">Shown because NDI network output support is available in this build.</p>
+                  </div>
+                </div>
+              </section>
+
+              <section class="pp-section" aria-labelledby="ab-codec-h">
+                <h2 id="ab-codec-h" class="pp-seclabel">CODEC &amp; MEDIA NOTICE</h2>
+                <div class="pp-banner pp-banner-ok" role="note">
+                  <span class="pp-banner-ico" aria-hidden="true">▶</span>
+                  <div class="pp-banner-body">
+                    <p class="pp-banner-title">Video and audio play through your operating system's built-in decoders (H.264, HEVC, AAC).</p>
+                    <p class="pp-banner-text">SelahCue bundles no patented codecs.</p>
+                  </div>
+                </div>
+                <div class="set-row">
+                  <div>
+                    <p class="set-row-t">Media SelahCue encodes or exports</p>
+                    <p class="set-row-d">Recording and export aren't in this build yet.</p>
+                  </div>
+                  <span class="pp-badge pp-badge-soon">SOON</span>
+                </div>
+              </section>
+
+              <section class="pp-section" aria-labelledby="ab-ccli-h">
+                <h2 id="ab-ccli-h" class="pp-seclabel">SONG COPYRIGHT &amp; CCLI</h2>
+                <div class="pp-banner pp-banner-ok" role="note">
+                  <span class="pp-banner-ico" aria-hidden="true">♪</span>
+                  <div class="pp-banner-body">
+                    <p class="pp-banner-title">SelahCue bundles no copyrighted lyrics.</p>
+                    <p class="pp-banner-text">A song editor with per-song copyright details (title, author, © year, publisher, CCLI#) isn't in this build yet.</p>
+                  </div>
+                </div>
+              </section>
+
+              <section class="pp-section" aria-labelledby="ab-privacy-h">
+                <h2 id="ab-privacy-h" class="pp-seclabel">PRIVACY &amp; COMPLIANCE</h2>
+                <div class="pp-banner pp-banner-ok" role="note">
+                  <span class="pp-banner-ico" aria-hidden="true">🔒</span>
+                  <div class="pp-banner-body">
+                    <p class="pp-banner-title">SelahCue runs offline by default.</p>
+                    <p class="pp-banner-text">No sermon audio, transcripts, or notes leave this computer unless you turn on a cloud provider in Providers &amp; Privacy.</p>
+                  </div>
+                </div>
+                <div class="set-row">
+                  <div>
+                    <p class="set-row-t">Data Processing Agreement</p>
+                    <p class="set-row-d" id="ab-dpa-note">A DPA and cross-border-transfer disclosure apply when a cloud provider is enabled.</p>
+                  </div>
+                  <span class="pp-badge pp-badge-soon" id="ab-dpa-badge">SOON</span>
+                </div>
+              </section>
+
+              <section class="pp-section" aria-labelledby="ab-support-h">
+                <h2 id="ab-support-h" class="pp-seclabel">SUPPORT &amp; DIAGNOSTICS</h2>
+                <div class="set-row">
+                  <div>
+                    <p class="set-row-t">Export diagnostics</p>
+                    <p class="set-row-d">Redacted bundle — logs, versions, device info. Never includes sermon content. Not in this build yet.</p>
+                  </div>
+                  <span class="pp-badge pp-badge-soon">SOON</span>
+                </div>
+              </section>
+
+              <section class="pp-section" aria-labelledby="ab-credits-h">
+                <h2 id="ab-credits-h" class="pp-seclabel">CREDITS</h2>
+                <div class="set-row"><div><p class="set-row-t">Built by the SelahCue team.</p><p class="set-row-d">Made for the local church.</p></div></div>
+              </section>
+            </div>
+          </div>
+
+          <!-- Appearance (Design 2.0, Figma 581:124 — story 17tnw2axwer, closes SET-004). Default
+               stage theme is REAL (set_stage_template / view.stage_template — the exact command
+               the Presentation surface's own stage-theme picker already uses, id-for-id). Every
+               other control here (density, text size, high-contrast, motion, clock format, brand
+               accent) has no backend command or persistence anywhere in this app yet, so each
+               renders as a real, focusable, disabled control with an honest inline note rather
+               than a toggle that silently forgets your choice — see settings-appearance.js. -->
+          <div id="set-page-appearance" class="set-page" data-setpage="appearance" hidden>
+            <div class="pp-wrap">
+              <header class="pp-head">
+                <h1 class="pp-title">Appearance</h1>
+                <p class="pp-sub">Operator-console look, output legibility, and default slide &amp; stage templates.</p>
+              </header>
+
+              <div class="pp-banner pp-banner-ok" role="note">
+                <span class="pp-banner-ico" aria-hidden="true">◈</span>
+                <div class="pp-banner-body">
+                  <p class="pp-banner-title">SelahCue's console is one dark, high-legibility theme.</p>
+                  <p class="pp-banner-text">"Theme" on this page means a slide- or stage-design template — not a light/dark colour mode.</p>
+                </div>
+              </div>
+
+              <section class="pp-section" aria-labelledby="ap-ui-h">
+                <h2 id="ap-ui-h" class="pp-seclabel">OPERATOR UI</h2>
+                <div class="set-row-grid">
+                  <div class="pp-slider-wrap">
+                    <span class="pp-slider-label" id="ap-density-label">Interface density</span>
+                    <div id="ap-density" class="pp-segmented" role="radiogroup" aria-labelledby="ap-density-label"></div>
+                    <p class="set-inert-note">Not saved yet — coming soon.</p>
+                  </div>
+                  <div class="pp-slider-wrap">
+                    <label class="pp-slider-label" for="ap-textsize">Interface text size (85–150%)</label>
+                    <input id="ap-textsize" class="pp-slider" type="range" min="85" max="150" step="5" value="100" disabled aria-describedby="ap-textsize-note" />
+                    <p class="pp-slider-note" id="ap-textsize-note">100% · Default · not saved yet — coming soon</p>
+                  </div>
+                </div>
+              </section>
+
+              <section class="pp-section" aria-labelledby="ap-contrast-h">
+                <h2 id="ap-contrast-h" class="pp-seclabel">CONTRAST &amp; LEGIBILITY</h2>
+                <div class="pp-slider-wrap">
+                  <span class="pp-slider-label">Stage output preview</span>
+                  <div id="ap-stage-preview" class="ap-stage-preview" aria-hidden="true">
+                    <p class="ap-stage-preview-clock">7:42 PM</p>
+                    <p class="ap-stage-preview-now">Amazing grace, how sweet the sound</p>
+                    <p class="ap-stage-preview-next">NEXT&nbsp;&nbsp;That saved a wretch like me</p>
+                    <div class="ap-stage-preview-spacer"></div>
+                    <div class="ap-stage-preview-timer"><span>SERVICE TIMER</span><span>04:32</span></div>
+                  </div>
+                </div>
+                <div class="set-row">
+                  <div>
+                    <p class="set-row-t">High-contrast stage &amp; confidence theme</p>
+                    <p class="set-row-d">Maximises contrast on stage/confidence output for readability under bright stage lighting. Not saved yet — coming soon.</p>
+                  </div>
+                  <label class="pp-toggle set-inert"><input id="ap-high-contrast" type="checkbox" disabled aria-label="High-contrast stage and confidence theme (not yet available)" /><span class="pp-toggle-knob"></span></label>
+                </div>
+                <div class="pp-slider-wrap">
+                  <label class="pp-slider-label" for="ap-stage-textsize">Stage text size (48–96px-equiv)</label>
+                  <input id="ap-stage-textsize" class="pp-slider" type="range" min="48" max="96" step="4" value="48" disabled aria-describedby="ap-stage-textsize-note" />
+                  <p class="pp-slider-note" id="ap-stage-textsize-note">48px-equiv · Recommended minimum · not saved yet — coming soon</p>
+                </div>
+              </section>
+
+              <section class="pp-section" aria-labelledby="ap-motion-h">
+                <h2 id="ap-motion-h" class="pp-seclabel">MOTION</h2>
+                <div class="set-row">
+                  <div>
+                    <p class="set-row-t">Reduced motion</p>
+                    <p class="set-row-d">Turns transcript shimmer, waveforms, and spinners into static states across the console. Currently follows your system setting (<code>prefers-reduced-motion</code>) — an explicit override isn't saved yet.</p>
+                  </div>
+                  <label class="pp-toggle set-inert"><input id="ap-reduced-motion" type="checkbox" disabled aria-label="Reduced motion override (not yet available — follows system setting)" /><span class="pp-toggle-knob"></span></label>
+                </div>
+              </section>
+
+              <section class="pp-section" aria-labelledby="ap-slide-theme-h">
+                <h2 id="ap-slide-theme-h" class="pp-seclabel">DEFAULT SLIDE THEME</h2>
+                <div class="pp-field">
+                  <label class="pp-field-label" for="ap-slide-theme">Default slide theme</label>
+                  <div class="pp-select-wrap"><select id="ap-slide-theme" class="pp-select" disabled></select></div>
+                </div>
+                <p class="set-inert-note">Shows this build's real slide themes, but there's no separate "default for new decks" setting yet — disabled until there is. Manage themes in the Theme Designer below.</p>
+                <button id="ap-open-theme-designer" class="set-linkrow" type="button">
+                  <span>Open Theme Designer — create or edit slide-design templates</span>
+                  <span class="set-linkrow-arrow" aria-hidden="true">→</span>
+                </button>
+              </section>
+
+              <section class="pp-section" aria-labelledby="ap-stage-theme-h">
+                <h2 id="ap-stage-theme-h" class="pp-seclabel">DEFAULT STAGE THEME</h2>
+                <div id="ap-stage-themes" class="set-stack" role="radiogroup" aria-labelledby="ap-stage-theme-h"></div>
+              </section>
+
+              <section class="pp-section" aria-labelledby="ap-clock-h">
+                <h2 id="ap-clock-h" class="pp-seclabel">STAGE CLOCK</h2>
+                <div class="pp-slider-wrap">
+                  <span class="pp-slider-label" id="ap-clockfmt-label">Stage clock format</span>
+                  <div id="ap-clockfmt" class="pp-segmented" role="radiogroup" aria-labelledby="ap-clockfmt-label"></div>
+                  <p class="set-inert-note">Not saved yet — coming soon.</p>
+                </div>
+              </section>
+
+              <section class="pp-section" aria-labelledby="ap-brand-h">
+                <h2 id="ap-brand-h" class="pp-seclabel">BRAND ACCENT · ADVANCED</h2>
+                <div class="pp-banner pp-banner-ok" role="note">
+                  <span class="pp-banner-ico" aria-hidden="true">🔒</span>
+                  <div class="pp-banner-body">
+                    <p class="pp-banner-title">Broadcast colours are fixed.</p>
+                    <p class="pp-banner-text">Live-red, preview-green, warn-amber, and scripture-gold each carry one meaning and cannot be recoloured.</p>
+                  </div>
+                </div>
+                <div class="set-row">
+                  <div>
+                    <p class="set-row-t">Brand customisation</p>
+                    <p class="set-row-d">Brand accent colour and church logo in the app header ship in a later update; the default indigo accent is used until then.</p>
+                  </div>
+                  <span class="pp-badge pp-badge-soon">COMING SOON</span>
+                </div>
+              </section>
+            </div>
           </div>
 
           <!-- Shared "coming soon" page for the not-yet-built sections (honest, per match-the-shell). -->
+          <!-- General (Design 2.0, Figma 577:126 — story 17tnw2axwet, closes SET-001). The
+               keyboard-shortcuts table mirrors the app's OWN real shortcuts overlay (#shortcuts,
+               pinned by test_keymap.rs) verbatim rather than the Figma mock's different row set
+               (which lists shortcuts — Stage message ⌘M, Undo ⌘Z — this build does not actually
+               bind) — never render a keybinding this app doesn't really have. "On launch, open
+               to" reflects the real shipped default (#surface-console is the active surface on
+               load, index.html:93). Everything else on this page has no backend command anywhere
+               in this app (org identity, startup choice persistence, language/region, shortcut
+               remapping, reduce-motion override, update preferences, pre-service-check config) —
+               each renders as a real, disabled control with an honest note. Populated + wired by
+               settings-general.js. -->
+          <div id="set-page-general" class="set-page" data-setpage="general" hidden>
+            <div class="pp-wrap">
+              <header class="pp-head">
+                <h1 class="pp-title">General</h1>
+                <p class="pp-sub">Workspace identity, startup, language, keyboard, accessibility, and updates.</p>
+              </header>
+
+              <section class="pp-section" aria-labelledby="gn-org-h">
+                <h2 id="gn-org-h" class="pp-seclabel">ORGANISATION IDENTITY</h2>
+                <div class="set-row-grid">
+                  <div class="pp-field">
+                    <label class="pp-field-label" for="gn-org-name">Church / workspace name</label>
+                    <input id="gn-org-name" class="pp-select" type="text" placeholder="Not set" disabled />
+                  </div>
+                  <div class="pp-field">
+                    <span class="pp-field-label">Church logo</span>
+                    <button class="pp-select set-inert" type="button" disabled aria-disabled="true">Upload image…</button>
+                  </div>
+                </div>
+                <p class="set-inert-note">Not saved yet — coming soon.</p>
+              </section>
+
+              <section class="pp-section" aria-labelledby="gn-startup-h">
+                <h2 id="gn-startup-h" class="pp-seclabel">STARTUP</h2>
+                <p class="set-inert-note set-lead">On launch, open to — currently always Live Console (the shipped default); choosing a different one isn't saved yet.</p>
+                <div id="gn-startup-list" class="set-stack" role="radiogroup" aria-labelledby="gn-startup-h"></div>
+              </section>
+
+              <section class="pp-section" aria-labelledby="gn-lang-h">
+                <h2 id="gn-lang-h" class="pp-seclabel">LANGUAGE &amp; REGION</h2>
+                <div class="set-row-grid">
+                  <div class="pp-field">
+                    <label class="pp-field-label" for="gn-lang">Display language</label>
+                    <div class="pp-select-wrap"><select id="gn-lang" class="pp-select" disabled><option>System default</option></select></div>
+                  </div>
+                  <div class="pp-field">
+                    <label class="pp-field-label" for="gn-region">Region &amp; date/time format</label>
+                    <div class="pp-select-wrap"><select id="gn-region" class="pp-select" disabled><option>Use system region</option></select></div>
+                  </div>
+                </div>
+                <p class="set-inert-note">More languages coming soon. UI strings are already externalised for translation.</p>
+              </section>
+
+              <section class="pp-section" aria-labelledby="gn-keys-h">
+                <h2 id="gn-keys-h" class="pp-seclabel">KEYBOARD SHORTCUTS</h2>
+                <p class="set-row-d set-lead">Every core live action works from the keyboard alone. Shown here exactly as this build binds them — remapping isn't available yet; emergency actions (Blackout, Clear) will always stay bindable, never unbindable, once it is.</p>
+                <div id="gn-shortcuts-list" class="set-stack"></div>
+                <button id="gn-open-shortcuts" class="set-linkrow" type="button" data-open="shortcuts">
+                  <span>Open the full shortcuts overlay</span>
+                  <span class="set-linkrow-arrow" aria-hidden="true">→</span>
+                </button>
+              </section>
+
+              <section class="pp-section" aria-labelledby="gn-a11y-h">
+                <h2 id="gn-a11y-h" class="pp-seclabel">ACCESSIBILITY</h2>
+                <div class="set-row">
+                  <div>
+                    <p class="set-row-t">Reduce motion (operator UI)</p>
+                    <p class="set-row-d">Mirrors Appearance → Motion — one shared value. Currently follows your system setting; an explicit override isn't saved yet.</p>
+                  </div>
+                  <label class="pp-toggle set-inert"><input id="gn-reduced-motion" type="checkbox" disabled aria-label="Reduce motion override (not yet available — follows system setting)" /><span class="pp-toggle-knob"></span></label>
+                </div>
+              </section>
+
+              <section class="pp-section" aria-labelledby="gn-updates-h">
+                <h2 id="gn-updates-h" class="pp-seclabel">SOFTWARE UPDATES</h2>
+                <div class="pp-banner pp-banner-ok" role="note">
+                  <span class="pp-banner-ico" aria-hidden="true">🔒</span>
+                  <div class="pp-banner-body">
+                    <p class="pp-banner-title">Once available, updates will be signature-verified with anti-rollback protection.</p>
+                    <p class="pp-banner-text">SelahCue will install an update only if its signature verifies and its version is newer than the one you have.</p>
+                  </div>
+                </div>
+                <div class="set-row">
+                  <div><p class="set-row-t">Automatically check for updates</p><p class="set-row-d">Checks in the background. Never interrupts a live service. Not saved yet — coming soon.</p></div>
+                  <label class="pp-toggle set-inert"><input type="checkbox" disabled aria-label="Automatically check for updates (not yet available)" /><span class="pp-toggle-knob"></span></label>
+                </div>
+                <div class="set-row">
+                  <div><p class="set-row-t">Automatically download updates</p><p class="set-row-d">Downloads verified updates so they install faster — you choose when to install. Not saved yet — coming soon.</p></div>
+                  <label class="pp-toggle set-inert"><input type="checkbox" disabled aria-label="Automatically download updates (not yet available)" /><span class="pp-toggle-knob"></span></label>
+                </div>
+                <button id="gn-manage-updates" class="set-linkrow" type="button">
+                  <span>Manage updates (About &amp; Licensing)</span>
+                  <span class="set-linkrow-arrow" aria-hidden="true">→</span>
+                </button>
+              </section>
+
+              <section class="pp-section" aria-labelledby="gn-preservice-h">
+                <h2 id="gn-preservice-h" class="pp-seclabel">PRE-SERVICE CHECK</h2>
+                <p class="set-row-d set-lead">Choose which subsystems the readiness check inspects before a service. Not saved yet — coming soon; the check itself already runs with its own defaults.</p>
+                <div id="gn-preservice-list" class="set-stack"></div>
+                <div class="set-row">
+                  <div><p class="set-row-t">Block start on blocking issues</p><p class="set-row-d">Prevents going live until every blocking check resolves — warnings can be overridden. This is how the check already behaves; there is no override to configure yet.</p></div>
+                  <label class="pp-toggle set-inert"><input type="checkbox" checked disabled aria-label="Block start on blocking issues (always on — not configurable yet)" /><span class="pp-toggle-knob"></span></label>
+                </div>
+                <button id="gn-open-preservice" class="set-linkrow" type="button">
+                  <span>Open Pre-service Check</span>
+                  <span class="set-linkrow-arrow" aria-hidden="true">→</span>
+                </button>
+              </section>
+            </div>
+          </div>
+
+          <!-- Scripture & Translations (Design 2.0, Figma 578:124 — story 17tnw2axwet, closes
+               SET-002). The best-backed of the seven new pages: list_translations,
+               set_preferred_translation, download_translation and cancel_download are all
+               existing, already-shipped commands. Per-row "Default" radio AND the summary select
+               both write through the SAME set_preferred_translation call and stay in sync with
+               each other (handoff §9's "keep the dropdown a reflection of the radio"). Per-row
+               "show in picker" + drag-to-reorder have no backend mutation to call, so they render
+               as real, disabled affordances rather than silently doing nothing on drop/toggle.
+               Populated + wired by settings-scripture.js. -->
+          <div id="set-page-scripture" class="set-page" data-setpage="scripture" hidden>
+            <div class="pp-wrap">
+              <header class="pp-head">
+                <h1 class="pp-title">Scripture &amp; Translations</h1>
+                <p class="pp-sub">Bundled translations, formatting, history, and how scripture is added.</p>
+              </header>
+
+              <section class="pp-section" aria-labelledby="sc-installed-h">
+                <h2 id="sc-installed-h" class="pp-seclabel">INSTALLED TRANSLATIONS</h2>
+                <p class="set-row-d set-lead">◉ sets the default (real) · the show-in-picker toggle and drag-to-reorder aren't saved yet.</p>
+                <div id="sc-translations-list" class="set-stack" role="radiogroup" aria-label="Default translation"></div>
+              </section>
+
+              <section class="pp-section" aria-labelledby="sc-default-h">
+                <h2 id="sc-default-h" class="pp-seclabel">DEFAULT TRANSLATION</h2>
+                <div class="pp-field">
+                  <label class="pp-field-label" for="sc-default-select">Default translation (used when you stage scripture without picking one)</label>
+                  <div class="pp-select-wrap"><select id="sc-default-select" class="pp-select pp-select-gold"></select></div>
+                </div>
+              </section>
+
+              <section class="pp-section" aria-labelledby="sc-format-h">
+                <h2 id="sc-format-h" class="pp-seclabel">PAGINATION &amp; FORMATTING</h2>
+                <div class="set-row-grid">
+                  <div class="pp-field">
+                    <label class="pp-field-label" for="sc-verses-per-slide">Verses per slide (1–10)</label>
+                    <input id="sc-verses-per-slide" class="pp-select" type="text" placeholder="—" disabled />
+                  </div>
+                  <div class="pp-slider-wrap">
+                    <span class="pp-slider-label" id="sc-versenum-label">Verse numbers</span>
+                    <div id="sc-versenum" class="pp-segmented" role="radiogroup" aria-labelledby="sc-versenum-label"></div>
+                  </div>
+                </div>
+                <div class="set-row">
+                  <div><p class="set-row-t">Show reference header</p><p class="set-row-d">Show the passage reference (e.g. "Romans 8:28–30") at the top of each scripture slide. Not saved yet — coming soon.</p></div>
+                  <label class="pp-toggle set-inert"><input type="checkbox" disabled aria-label="Show reference header (not yet available)" /><span class="pp-toggle-knob"></span></label>
+                </div>
+                <p class="set-inert-note">Not saved yet — coming soon.</p>
+              </section>
+
+              <section class="pp-section" aria-labelledby="sc-history-h">
+                <h2 id="sc-history-h" class="pp-seclabel">HISTORY &amp; FAVOURITES</h2>
+                <div class="set-row-grid">
+                  <div class="pp-field">
+                    <label class="pp-field-label" for="sc-history-len">History length (last N references · 0 = off)</label>
+                    <input id="sc-history-len" class="pp-select" type="text" placeholder="—" disabled />
+                  </div>
+                  <div class="pp-field">
+                    <span class="pp-field-label">Recently presented</span>
+                    <button class="pp-select set-inert" type="button" disabled aria-disabled="true">Clear history</button>
+                  </div>
+                </div>
+                <div class="set-row">
+                  <div><p class="set-row-t">Favourites</p><p class="set-row-d">Star references to re-present them in two actions. Not saved yet — coming soon.</p></div>
+                  <span class="set-row-v">— saved</span>
+                </div>
+              </section>
+
+              <section class="pp-section" aria-labelledby="sc-search-h">
+                <h2 id="sc-search-h" class="pp-seclabel">SEARCH</h2>
+                <div class="set-row">
+                  <div><p class="set-row-t">Rebuild keyword index</p><p class="set-row-d">Re-scans bundled translations so keyword search returns complete results. Not available in this build yet.</p></div>
+                  <button class="pp-optin-btn set-inert" type="button" disabled aria-disabled="true">Rebuild</button>
+                </div>
+              </section>
+
+              <section class="pp-section" aria-labelledby="sc-sxs-h">
+                <h2 id="sc-sxs-h" class="pp-seclabel">SIDE-BY-SIDE COMPARISON</h2>
+                <div class="set-row">
+                  <div>
+                    <p class="set-row-t">Compare two translations <span class="pp-badge pp-badge-soon">SOON</span></p>
+                    <p class="set-row-d">Show two translations of the same passage together in a comparison view.</p>
+                  </div>
+                  <label class="pp-toggle set-inert"><input type="checkbox" disabled aria-label="Compare two translations (coming soon)" /><span class="pp-toggle-knob"></span></label>
+                </div>
+              </section>
+
+              <section class="pp-section" aria-labelledby="sc-layouts-h">
+                <h2 id="sc-layouts-h" class="pp-seclabel">CUSTOM SCRIPTURE LAYOUTS</h2>
+                <div class="set-row">
+                  <div><p class="set-row-t">Custom scripture layouts <span class="pp-badge pp-badge-soon">SOON</span></p><p class="set-row-d">Design per-output verse layouts in the Theme Designer, so outputs can show the same live passage differently.</p></div>
+                  <button id="sc-open-theme-designer" class="set-linkrow set-linkrow-inline" type="button">
+                    <span>Open Theme Designer</span><span class="set-linkrow-arrow" aria-hidden="true">→</span>
+                  </button>
+                </div>
+              </section>
+
+              <section class="pp-section" aria-labelledby="sc-add-h">
+                <h2 id="sc-add-h" class="pp-seclabel">ADD A TRANSLATION</h2>
+                <div class="set-row">
+                  <div><p class="set-row-t">Add a translation <span class="pp-badge pp-badge-neutral">ADVANCED</span></p><p class="set-row-d">Import a licensed module or connect a licensed API (API.Bible / ESV). Not available in this build yet — keys belong in Providers &amp; Privacy and the OS secret store, never here.</p></div>
+                </div>
+              </section>
+
+              <section class="pp-section" aria-labelledby="sc-export-h">
+                <h2 id="sc-export-h" class="pp-seclabel">EXPORT LICENSING</h2>
+                <div class="pp-banner pp-banner-ok" role="note">
+                  <span class="pp-banner-ico" aria-hidden="true">⚖</span>
+                  <div class="pp-banner-body">
+                    <p class="pp-banner-title">Exports will honour licensing once export ships.</p>
+                    <p class="pp-banner-text">Licensed translations will be blocked or watermarked per licence; public-domain translations will export freely.</p>
+                  </div>
+                </div>
+              </section>
+            </div>
+          </div>
+
+          <!-- Outputs & Displays (Design 2.0, Figma 579:124 — story 17tnw2axweu, closes SET-003).
+               Real: DISPLAYS list (view().displays/outputs — never the Figma mock's fabricated
+               "Display 1 — 1920×1080 · 60Hz Built-in"), "Identify displays" (identify_outputs,
+               an existing command). "Manage screens" links to the existing Screens & Outputs
+               surface per the handoff's own "don't duplicate live per-screen assignment" IA rule.
+               PER-OUTPUT CONFIG / OUTPUT HEALTH / TEST PATTERNS / NETWORK OUTPUTS are whole
+               sections the FIGMA ITSELF marks SOON — not this batch's own judgement call.
+               Everything else (venue profiles, audio device, stage/confidence region defaults)
+               has no backend command anywhere in this app. Populated + wired by
+               settings-outputs.js. -->
+          <div id="set-page-outputs" class="set-page" data-setpage="outputs" hidden>
+            <div class="pp-wrap">
+              <header class="pp-head">
+                <h1 class="pp-title">Outputs &amp; Displays</h1>
+                <p class="pp-sub">This page sets the defaults every venue reuses.</p>
+              </header>
+              <button id="out-open-screens" class="set-linkrow" type="button">
+                <span>Manage screens</span><span class="set-linkrow-arrow" aria-hidden="true">→</span>
+              </button>
+
+              <section class="pp-section" aria-labelledby="out-venue-h">
+                <h2 id="out-venue-h" class="pp-seclabel">VENUE PROFILES</h2>
+                <div class="pp-field">
+                  <label class="pp-field-label" for="out-venue-select">Active venue profile</label>
+                  <div class="pp-select-wrap"><select id="out-venue-select" class="pp-select" disabled><option>Not available yet</option></select></div>
+                </div>
+                <p class="set-inert-note">Saving, creating, renaming and deleting venue profiles isn't available in this build yet.</p>
+              </section>
+
+              <section class="pp-section" aria-labelledby="out-displays-h">
+                <h2 id="out-displays-h" class="pp-seclabel">DISPLAYS</h2>
+                <div id="out-displays-list" class="set-stack"></div>
+                <div class="set-row-grid">
+                  <div class="pp-slider-wrap">
+                    <span class="pp-slider-label" id="out-winmode-label">Default window mode</span>
+                    <div id="out-winmode" class="pp-segmented" role="radiogroup" aria-labelledby="out-winmode-label"></div>
+                    <p class="set-inert-note">Not saved yet — coming soon.</p>
+                  </div>
+                  <div class="set-row">
+                    <div><p class="set-row-t">Identify displays</p><p class="set-row-d">Flashes each display's name and number so you can tell them apart.</p></div>
+                    <button id="out-identify" class="pp-optin-btn" type="button">Identify</button>
+                  </div>
+                </div>
+              </section>
+
+              <section class="pp-section" aria-labelledby="out-audio-h">
+                <h2 id="out-audio-h" class="pp-seclabel">AUDIO</h2>
+                <div class="pp-field">
+                  <label class="pp-field-label" for="out-audio-device">Audio output device</label>
+                  <div class="pp-select-wrap"><select id="out-audio-device" class="pp-select" disabled><option>Not available yet</option></select></div>
+                </div>
+                <p class="set-inert-note">Playback device — never used for transcription capture. Not configurable yet.</p>
+              </section>
+
+              <section class="pp-section" aria-labelledby="out-stage-h">
+                <h2 id="out-stage-h" class="pp-seclabel">STAGE / CONFIDENCE DEFAULTS</h2>
+                <div class="pp-banner pp-banner-ok" role="note">
+                  <span class="pp-banner-ico" aria-hidden="true">◱</span>
+                  <div class="pp-banner-body">
+                    <p class="pp-banner-title">The audience never sees Next, timers, TIME UP, or stage messages by default.</p>
+                  </div>
+                </div>
+                <div id="out-stage-regions" class="set-stack"></div>
+              </section>
+
+              <section class="pp-section" aria-labelledby="out-timeup-h">
+                <h2 id="out-timeup-h" class="pp-seclabel">TIME UP SAFETY</h2>
+                <div class="pp-banner pp-banner-ok" role="note">
+                  <span class="pp-banner-ico" aria-hidden="true">🔒</span>
+                  <div class="pp-banner-body">
+                    <p class="pp-banner-title">Audience outputs are excluded from TIME UP by default.</p>
+                    <p class="pp-banner-text">Showing TIME UP to the audience needs an explicit per-output selection each time — this is a fixed safety invariant, not a setting.</p>
+                  </div>
+                </div>
+                <div class="set-row">
+                  <div><p class="set-row-t">Default TIME UP target</p><p class="set-row-d">Stage / confidence only — audience excluded.</p></div>
+                  <span class="pp-badge pp-badge-neutral">LOCKED · STAGE ONLY</span>
+                </div>
+                <div class="set-row">
+                  <div><p class="set-row-t">Flash the TIME UP words</p><p class="set-row-d">Default is solid inverted (static high-contrast), not flashing. When flashing is on, output is capped at ≤3 flashes/sec within a small safe area — enforced by the flash-rate analyzer, always on.</p></div>
+                  <label class="pp-toggle set-inert"><input type="checkbox" disabled aria-label="Flash the TIME UP words (not configurable yet)" /><span class="pp-toggle-knob"></span></label>
+                </div>
+              </section>
+
+              <section class="pp-section" aria-labelledby="out-peroutput-h">
+                <h2 id="out-peroutput-h" class="pp-seclabel">PER-OUTPUT CONFIG <span class="pp-badge pp-badge-soon">COMING SOON</span></h2>
+                <p class="set-inert-note set-lead">Each output will be able to show a different layout of the same live state: safe area, frame rate, delay, mirror, rotate, crop, scale.</p>
+              </section>
+
+              <section class="pp-section" aria-labelledby="out-health-h">
+                <h2 id="out-health-h" class="pp-seclabel">OUTPUT HEALTH <span class="pp-badge pp-badge-soon">COMING SOON</span></h2>
+                <p class="set-inert-note set-lead">Dropped-frame warning threshold and a per-output health readout will land here.</p>
+              </section>
+
+              <section class="pp-section" aria-labelledby="out-testpattern-h">
+                <h2 id="out-testpattern-h" class="pp-seclabel">TEST PATTERNS <span class="pp-badge pp-badge-soon">COMING SOON</span></h2>
+                <p class="set-inert-note set-lead">Sending a calibration test pattern to a chosen output will land here.</p>
+              </section>
+
+              <section class="pp-section" aria-labelledby="out-netoutputs-h">
+                <h2 id="out-netoutputs-h" class="pp-seclabel">NETWORK OUTPUTS <span class="pp-badge pp-badge-soon">COMING SOON</span></h2>
+                <p class="set-inert-note set-lead">NDI, browser-source, and alpha lower-third outputs will land here. NDI® is a registered trademark of Vizrt Group (ndi.video).</p>
+              </section>
+
+              <section class="pp-section" aria-labelledby="out-motion-h">
+                <h2 id="out-motion-h" class="pp-seclabel">REDUCED MOTION</h2>
+                <div class="set-row">
+                  <div><p class="set-row-t">Reduced motion (audience-facing &amp; network outputs)</p><p class="set-row-d">Turns off decorative motion on audience-facing outputs. Seizure-safety caps stay on regardless. Operator-UI motion is set on General. Not configurable yet.</p></div>
+                  <label class="pp-toggle set-inert"><input type="checkbox" disabled aria-label="Reduced motion for outputs (not configurable yet)" /><span class="pp-toggle-knob"></span></label>
+                </div>
+              </section>
+            </div>
+          </div>
+
+          <!-- Security (Design 2.0, Figma 582:124 — story 17tnw2axweu, closes SET-005).
+               CORRECTION vs. the Figma mock: at-rest encryption is NOT on in this build. The
+               mock's "ON" badge is the design's final-state depiction; the shipped default is
+               plain SQLite (selahcue-operator/Cargo.toml has no `encryption` feature on
+               selahcue-data, and main.rs calls Database::open, never open_encrypted). ADR-0007
+               names FR-154/at-rest encryption an explicit R3 acceptance row — this is a documented
+               future milestone, not a bug, and this page says so honestly rather than repeating
+               the mock's "ON" claim. Same correction applied to "Signed updates" (no update
+               mechanism exists yet — see About & Licensing) and the audit log (no real command or
+               data — never the mock's fabricated "Sarah's iPad / FOH Mac" rows). Real: the
+               "Cloud providers & consent" and "Revoke all paired devices" link-outs (real
+               navigation to pages that actually have that content). Populated + wired by
+               settings-security.js. -->
+          <div id="set-page-security" class="set-page" data-setpage="security" hidden>
+            <div class="pp-wrap">
+              <header class="pp-head">
+                <h1 class="pp-title">Security</h1>
+                <p class="pp-sub">Encryption, secrets, audit, and destructive controls for this SelahCue host.</p>
+              </header>
+
+              <section class="pp-section" aria-labelledby="sec-atrest-h">
+                <h2 id="sec-atrest-h" class="pp-seclabel">AT-REST ENCRYPTION</h2>
+                <div class="set-row">
+                  <div><p class="set-row-t">At-rest encryption</p><p class="set-row-d">Service plans, library, transcripts, and captured audio are not encrypted in the database yet in this build.</p></div>
+                  <span class="pp-badge pp-badge-neutral">NOT YET ON</span>
+                </div>
+                <div class="set-row">
+                  <div><p class="set-row-t">Key source</p><p class="set-row-d">Where the database encryption key will come from, once encryption ships.</p></div>
+                  <span class="set-row-v">Planned: OS secret store</span>
+                </div>
+                <p class="set-inert-note">At-rest encryption (SQLCipher, ADR-0007) is a planned release milestone, not yet in this build.</p>
+              </section>
+
+              <section class="pp-section" aria-labelledby="sec-secrets-h">
+                <h2 id="sec-secrets-h" class="pp-seclabel">SECRET STORAGE</h2>
+                <div class="pp-banner pp-banner-ok" role="note">
+                  <span class="pp-banner-ico" aria-hidden="true">✓</span>
+                  <div class="pp-banner-body">
+                    <p class="pp-banner-title">Provider account tokens are never written in plaintext or to logs.</p>
+                  </div>
+                </div>
+                <button id="sec-open-providers" class="set-linkrow" type="button">
+                  <span>Cloud providers &amp; consent — off by default, managed on Providers &amp; Privacy</span>
+                  <span class="set-linkrow-arrow" aria-hidden="true">→</span>
+                </button>
+              </section>
+
+              <section class="pp-section" aria-labelledby="sec-applock-h">
+                <h2 id="sec-applock-h" class="pp-seclabel">APP LOCK · ADVANCED</h2>
+                <div class="set-row">
+                  <div><p class="set-row-t">Require passphrase on launch</p><p class="set-row-d">Ask for a vault passphrase each time SelahCue starts. Not available in this build yet.</p></div>
+                  <label class="pp-toggle set-inert"><input type="checkbox" disabled aria-label="Require passphrase on launch (not available yet)" /><span class="pp-toggle-knob"></span></label>
+                </div>
+              </section>
+
+              <section class="pp-section" aria-labelledby="sec-audit-h">
+                <h2 id="sec-audit-h" class="pp-seclabel">AUDIT LOG</h2>
+                <div class="set-row">
+                  <div><p class="set-row-t">Append-only control audit</p><p class="set-row-d">Device, role, action, time, and result for every live-control and consent change. Not available in this build yet.</p></div>
+                  <button class="pp-optin-btn set-inert" type="button" disabled aria-disabled="true">Export log</button>
+                </div>
+                <p class="set-inert-note">No audit entries to show — this build has no control-audit source yet.</p>
+              </section>
+
+              <section class="pp-section" aria-labelledby="sec-updates-h">
+                <h2 id="sec-updates-h" class="pp-seclabel">SIGNED UPDATES</h2>
+                <div class="set-row">
+                  <div><p class="set-row-t">Update signature verification</p><p class="set-row-d">Once available, updates will install only if their signature verifies; downgrades below the minimum version will be refused.</p></div>
+                  <span class="pp-badge pp-badge-soon">SOON</span>
+                </div>
+                <button id="sec-open-about" class="set-linkrow" type="button">
+                  <span>Manage &amp; install updates in About &amp; Licensing</span>
+                  <span class="set-linkrow-arrow" aria-hidden="true">→</span>
+                </button>
+              </section>
+
+              <section class="pp-section" aria-labelledby="sec-model-h">
+                <h2 id="sec-model-h" class="pp-seclabel">AI MODEL INTEGRITY</h2>
+                <div class="set-row">
+                  <div><p class="set-row-t">Verify local AI models before load <span class="pp-badge pp-badge-soon">SOON</span></p><p class="set-row-d">Check each model's pinned hash/signature before loading; refuse to load on mismatch.</p></div>
+                  <label class="pp-toggle set-inert"><input type="checkbox" disabled aria-label="Verify local AI models before load (coming soon)" /><span class="pp-toggle-knob"></span></label>
+                </div>
+              </section>
+
+              <section class="pp-section" aria-labelledby="sec-recording-h">
+                <h2 id="sec-recording-h" class="pp-seclabel">CONGREGATION RECORDING</h2>
+                <div class="set-row">
+                  <div><p class="set-row-t">Show recording-disclosure notice <span class="pp-badge pp-badge-soon">SOON</span></p><p class="set-row-d">Display a notice that service audio may be recorded. Administrator-only.</p></div>
+                  <label class="pp-toggle set-inert"><input type="checkbox" disabled aria-label="Show recording-disclosure notice (coming soon)" /><span class="pp-toggle-knob"></span></label>
+                </div>
+              </section>
+
+              <section class="pp-section" aria-labelledby="sec-retention-h">
+                <h2 id="sec-retention-h" class="pp-seclabel">DATA RETENTION &amp; DELETION</h2>
+                <div class="set-row">
+                  <div><p class="set-row-t">Purge raw audio after (days · transcripts &amp; notes kept)</p><p class="set-row-d">Not configurable yet.</p></div>
+                  <span class="set-row-v">—</span>
+                </div>
+                <div class="set-row">
+                  <div><p class="set-row-t">Recordings &amp; transcripts</p><p class="set-row-d">Retention and reliable deletion aren't available in this build yet.</p></div>
+                  <span class="pp-badge pp-badge-soon">SOON</span>
+                </div>
+              </section>
+
+              <section class="pp-section" aria-labelledby="sec-privacy-h">
+                <h2 id="sec-privacy-h" class="pp-seclabel">PRIVACY &amp; CONSENT</h2>
+                <button id="sec-open-privacy-policy" class="set-linkrow set-inert" type="button" disabled aria-disabled="true">
+                  <span>Privacy policy &amp; data disclosures — not available in this build yet</span>
+                </button>
+              </section>
+
+              <section class="pp-section" aria-labelledby="sec-danger-h">
+                <h2 id="sec-danger-h" class="pp-seclabel">DANGER ZONE</h2>
+                <button id="sec-open-network-revoke" class="set-linkrow" type="button">
+                  <span>Revoke all paired devices — managed on Network &amp; Mobile</span>
+                  <span class="set-linkrow-arrow" aria-hidden="true">→</span>
+                </button>
+                <div class="set-row">
+                  <div><p class="set-row-t">Purge secrets &amp; rotate database key</p><p class="set-row-d">Would clear stored secrets and generate a new database key. At-rest encryption isn't on in this build yet (see AT-REST ENCRYPTION above), so there's no encrypted database to re-encrypt — not available in this build yet.</p></div>
+                  <button class="pp-optin-btn set-inert" type="button" disabled aria-disabled="true">Purge &amp; rotate…</button>
+                </div>
+              </section>
+            </div>
+          </div>
+
+          <!-- Storage & Backups (Design 2.0, Figma 583:124 — story 17tnw2axweu, closes SET-006).
+               Real: STORAGE USAGE (disk_free — an existing, previously-unused command), Autosave
+               and Crash-loop protection (already-shipped, already headless-tested behaviour — see
+               scripts/operator_headless.py's "G.5" session-recovery checks — restated here, not
+               re-derived). backup_to/backup_to_encrypted/integrity_check/checkpoint_truncate
+               already exist as Rust functions in selahcue-data but are NOT wired as Tauri
+               commands yet (flagged as a backend follow-up, not silently added here) — Backup Now/
+               Run integrity check/Restore render as real, disabled controls, never a fake destructive
+               action. Populated + wired by settings-storage.js. -->
+          <div id="set-page-storage" class="set-page" data-setpage="storage" hidden>
+            <div class="pp-wrap">
+              <header class="pp-head">
+                <h1 class="pp-title">Storage &amp; Backups</h1>
+                <p class="pp-sub">Back up your data, verify its integrity, and control where it lives — offline, on this computer.</p>
+              </header>
+              <div class="pp-banner pp-banner-ok" role="note">
+                <span class="pp-banner-ico" aria-hidden="true">💾</span>
+                <div class="pp-banner-body">
+                  <p class="pp-banner-title">Your data stays on this computer.</p>
+                  <p class="pp-banner-text">SelahCue is offline-first. Nothing leaves this machine unless you export it.</p>
+                </div>
+              </div>
+
+              <section class="pp-section" aria-labelledby="st-backup-h">
+                <h2 id="st-backup-h" class="pp-seclabel">BACKUP NOW</h2>
+                <div class="set-row-grid">
+                  <div class="set-row">
+                    <div><p class="set-row-t">Back up now</p><p class="set-row-d">Writes a crash-safe copy of your database. Not available in this build yet.</p></div>
+                    <button class="pp-optin-btn set-inert" type="button" disabled aria-disabled="true">Back up now</button>
+                  </div>
+                  <div class="set-row">
+                    <div><p class="set-row-t">Run integrity check</p><p class="set-row-d">Not available in this build yet.</p></div>
+                    <button class="pp-optin-btn set-inert" type="button" disabled aria-disabled="true">Run check</button>
+                  </div>
+                </div>
+                <div class="set-row">
+                  <div><p class="set-row-t">Last backup</p><p class="set-row-d">Timestamp and verification result of the most recent backup.</p></div>
+                  <span class="set-row-v">Never backed up</span>
+                </div>
+              </section>
+
+              <section class="pp-section" aria-labelledby="st-enc-h">
+                <h2 id="st-enc-h" class="pp-seclabel">BACKUP ENCRYPTION</h2>
+                <div class="set-row">
+                  <div><p class="set-row-t">Encrypt backups <span class="pp-badge pp-badge-soon">SOON</span></p><p class="set-row-d">Backups will use authenticated encryption once available.</p></div>
+                  <label class="pp-toggle set-inert"><input type="checkbox" disabled aria-label="Encrypt backups (coming soon)" /><span class="pp-toggle-knob"></span></label>
+                </div>
+              </section>
+
+              <section class="pp-section" aria-labelledby="st-auto-h">
+                <h2 id="st-auto-h" class="pp-seclabel">AUTOMATIC BACKUPS</h2>
+                <div class="set-row-grid">
+                  <div class="pp-field">
+                    <label class="pp-field-label" for="st-schedule">Backup schedule</label>
+                    <div class="pp-select-wrap"><select id="st-schedule" class="pp-select" disabled><option>Off</option></select></div>
+                  </div>
+                  <div class="pp-field">
+                    <label class="pp-field-label" for="st-copies">Copies to keep</label>
+                    <input id="st-copies" class="pp-select" type="text" placeholder="—" disabled />
+                  </div>
+                </div>
+                <div class="set-row">
+                  <div><p class="set-row-t">Verify each backup by test-restore <span class="pp-badge pp-badge-soon">SOON</span></p><p class="set-row-d">Confirms every scheduled backup can actually be restored.</p></div>
+                  <label class="pp-toggle set-inert"><input type="checkbox" disabled aria-label="Verify each backup by test-restore (coming soon)" /><span class="pp-toggle-knob"></span></label>
+                </div>
+              </section>
+
+              <section class="pp-section" aria-labelledby="st-restore-h">
+                <h2 id="st-restore-h" class="pp-seclabel">RESTORE</h2>
+                <div class="set-row">
+                  <div><p class="set-row-t">Restore from a backup file</p><p class="set-row-d">Replaces ALL current data with the selected backup — current data cannot be recovered afterwards. Not available in this build yet.</p></div>
+                  <button class="pp-optin-btn set-inert" type="button" disabled aria-disabled="true">Restore…</button>
+                </div>
+              </section>
+
+              <section class="pp-section" aria-labelledby="st-location-h">
+                <h2 id="st-location-h" class="pp-seclabel">DATA LOCATION</h2>
+                <div class="set-row">
+                  <div><p class="set-row-t">Data folder</p><p class="set-row-d">Your database, media, and backups. Changing it isn't available in this build yet.</p></div>
+                  <button class="pp-optin-btn set-inert" type="button" disabled aria-disabled="true">Change location…</button>
+                </div>
+              </section>
+
+              <section class="pp-section" aria-labelledby="st-usage-h">
+                <h2 id="st-usage-h" class="pp-seclabel">STORAGE USAGE</h2>
+                <div class="set-row">
+                  <div><p class="set-row-t">Disk usage</p></div>
+                  <span class="set-row-v" id="st-disk-usage">—</span>
+                </div>
+                <div class="pp-field">
+                  <label class="pp-field-label" for="st-warn-below">Warn me below</label>
+                  <input id="st-warn-below" class="pp-select" type="text" placeholder="—" disabled />
+                </div>
+              </section>
+
+              <section class="pp-section" aria-labelledby="st-cache-h">
+                <h2 id="st-cache-h" class="pp-seclabel">MEDIA CACHE</h2>
+                <div class="set-row">
+                  <div><p class="set-row-t">Media cache limit (max 1 GB · LRU) <span class="pp-badge pp-badge-soon">SOON</span></p><p class="set-row-d">Bounded cache evicts least-recently-used media; originals untouched.</p></div>
+                  <button class="pp-optin-btn set-inert" type="button" disabled aria-disabled="true">Clear cache</button>
+                </div>
+              </section>
+
+              <section class="pp-section" aria-labelledby="st-reliability-h">
+                <h2 id="st-reliability-h" class="pp-seclabel">RELIABILITY</h2>
+                <div class="set-row">
+                  <div><p class="set-row-t">Autosave</p><p class="set-row-d">Always on. At most 5 seconds of work is lost on a forced shutdown.</p></div>
+                  <span class="pp-badge pp-badge-neutral">ON · SAVES WITHIN 5s</span>
+                </div>
+                <div class="set-row">
+                  <div><p class="set-row-t">Crash-loop protection</p><p class="set-row-d">After repeated crashes in quick succession, SelahCue stops auto-resuming and asks whether to resume the last session or start clean — your previous session is preserved either way.</p></div>
+                  <span class="pp-badge pp-badge-neutral">ALWAYS ON</span>
+                </div>
+                <div class="set-row">
+                  <div><p class="set-row-t">Support bundle <span class="pp-badge pp-badge-soon">SOON</span></p><p class="set-row-d">Redacted bundle — never includes secrets, keys, or transcripts.</p></div>
+                  <button class="pp-optin-btn set-inert" type="button" disabled aria-disabled="true">Export diagnostics…</button>
+                </div>
+              </section>
+
+              <section class="pp-section" aria-labelledby="st-io-h">
+                <h2 id="st-io-h" class="pp-seclabel">IMPORT / EXPORT</h2>
+                <button id="st-open-plan" class="set-linkrow" type="button">
+                  <span>Import or export a service plan — on the Service Plan surface</span>
+                  <span class="set-linkrow-arrow" aria-hidden="true">→</span>
+                </button>
+              </section>
+            </div>
+          </div>
+
           <div id="set-placeholder" class="set-page set-soon" hidden>
             <div class="set-soon-inner">
               <div class="set-soon-ico" aria-hidden="true">🛠</div>
@@ -1572,6 +2530,14 @@
   <script src="preservice.js" defer></script>
   <script src="remote.js" defer></script>
   <script src="settings.js" defer></script>
+  <script src="settings-about.js" defer></script>
+  <script src="settings-appearance.js" defer></script>
+  <script src="settings-general.js" defer></script>
+  <script src="settings-scripture.js" defer></script>
+  <script src="settings-network.js" defer></script>
+  <script src="settings-outputs.js" defer></script>
+  <script src="settings-security.js" defer></script>
+  <script src="settings-storage.js" defer></script>
   <script src="transcripts.js" defer></script>
 </body>
 

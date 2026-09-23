@@ -1368,13 +1368,36 @@
             b.removeAttribute("aria-current");
           }
         });
-        const built = { providers: "set-page-providers", network: "set-page-network" };
+        // 17tnw2axptw: all 9 sidebar items are now built — About & Licensing + Appearance
+        // (Tier 1), General + Scripture & Translations (Tier 2), Outputs & Displays + Security +
+        // Storage & Backups (Tier 3, this batch's final tier). The placeholder below is now
+        // unreachable from this sidebar but stays as the honest fallback for an unrecognised page
+        // key (defensive — never a blank Settings body).
+        const built = {
+          providers: "set-page-providers",
+          network: "set-page-network",
+          about: "set-page-about",
+          appearance: "set-page-appearance",
+          general: "set-page-general",
+          scripture: "set-page-scripture",
+          outputs: "set-page-outputs",
+          security: "set-page-security",
+          storage: "set-page-storage",
+        };
         document.querySelectorAll("#surface-settings .set-page").forEach((p) => {
           p.hidden = true;
         });
         if (built[page]) {
           document.getElementById(built[page]).hidden = false;
           if (page === "providers" && typeof settingsActivate === "function") settingsActivate();
+          if (page === "about" && typeof settingsAboutActivate === "function") settingsAboutActivate();
+          if (page === "appearance" && typeof settingsAppearanceActivate === "function") settingsAppearanceActivate();
+          if (page === "general" && typeof settingsGeneralActivate === "function") settingsGeneralActivate();
+          if (page === "scripture" && typeof settingsScriptureActivate === "function") settingsScriptureActivate();
+          if (page === "network" && typeof settingsNetworkActivate === "function") settingsNetworkActivate();
+          if (page === "outputs" && typeof settingsOutputsActivate === "function") settingsOutputsActivate();
+          if (page === "security" && typeof settingsSecurityActivate === "function") settingsSecurityActivate();
+          if (page === "storage" && typeof settingsStorageActivate === "function") settingsStorageActivate();
         } else {
           document.getElementById("set-placeholder").hidden = false;
           document.getElementById("set-ph-title").textContent = lbl || "Settings";
@@ -9519,6 +9542,10 @@
         const first = item("Open", () => pmLibOpen(deck.id));
         item("Rename…", () => pmLibRename(deck.id, deck.name));
         item("Duplicate", () => pmLibDuplicate(deck.id));
+        // PME-055/PME-014: the topbar `▶ Present` control (built for the OPEN deck) covers half
+        // of "present a deck" — this closes the other half, presenting a deck straight off its
+        // library card without first opening it in the editor.
+        item("Present", () => pmLibPresent(deck.id));
         const div = document.createElement("div"); div.className = "pm-lib-menu-div"; menu.appendChild(div);
         item("Delete", () => pmLibDelete(deck.id, deck.name), true);
         document.body.appendChild(menu);
@@ -9547,18 +9574,123 @@
         if (!t) t = pmEl("pm-lib-q") || pmEl("pm-lib-new");
         if (t) t.focus();
       }
+      // PME-053 — "Start from": Blank deck / Duplicate an existing presentation / From a
+      // template (later, honest disabled affordance — no template model exists yet, PME-052/
+      // OUT-009). Mirrors planTemplatePlan's radiogroup-with-picker pattern (the Name field
+      // follows the chosen source until the operator types their own, via the same
+      // `dataset.touched` convention) rather than inventing a second one.
       function pmLibNew() {
+        const decks = (pmLibDecks || []).slice().sort((a, b) => (a.name || "").toLowerCase().localeCompare((b.name || "").toLowerCase()));
+        let startFrom = "blank";
+        let dupSourceId = decks.length ? decks[0].id : null;
+        let nameInput = null;
         pmPrompt({
           title: "New presentation", label: "Name", value: "Untitled presentation", confirmLabel: "Create presentation",
+          body: (extra, input) => {
+            nameInput = input;
+            input.oninput = () => { input.dataset.touched = "1"; };
+            const group = document.createElement("div");
+            group.className = "pm-startfrom";
+            group.setAttribute("role", "radiogroup");
+            group.setAttribute("aria-label", "Start from");
+            // A flex-parented <select> collapses to zero width in WKWebView and the Blink gate
+            // cannot see it (the same trap plan-tpl-list's own comment above already documents
+            // for this exact dialog) — so the deck picker is a nested radio list, not a <select>.
+            const dupPicker = document.createElement("div");
+            dupPicker.className = "pm-startfrom-picker";
+            dupPicker.setAttribute("role", "radiogroup");
+            dupPicker.setAttribute("aria-label", "Presentation to copy");
+            dupPicker.hidden = true;
+            const followSource = (d) => { if (d && nameInput && !nameInput.dataset.touched) nameInput.value = d.name + " copy"; };
+            decks.forEach((d, i) => {
+              const rid = "pm-startfrom-src-" + i;
+              const r = document.createElement("label");
+              r.className = "pm-startfrom-picker-row";
+              r.htmlFor = rid;
+              const radio = document.createElement("input");
+              radio.type = "radio"; radio.name = "pm-startfrom-src"; radio.id = rid; radio.value = String(d.id);
+              radio.checked = i === 0;
+              radio.onchange = () => { dupSourceId = d.id; followSource(d); };
+              const txt = document.createElement("span"); txt.className = "pm-startfrom-picker-txt";
+              const nm = document.createElement("span"); nm.className = "pm-startfrom-picker-name"; nm.textContent = d.name || "Untitled presentation";
+              const ct = document.createElement("span"); ct.className = "pm-startfrom-picker-meta"; ct.textContent = (d.slides || 0) + ((d.slides === 1) ? " slide" : " slides");
+              txt.appendChild(nm); txt.appendChild(ct);
+              r.appendChild(radio); r.appendChild(txt);
+              dupPicker.appendChild(r);
+            });
+            const row = (id, label, sub, checked, disabled, reasonTitle) => {
+              const r = document.createElement("label");
+              r.className = "pm-startfrom-row" + (disabled ? " pm-later" : "");
+              r.htmlFor = id;
+              if (disabled && reasonTitle) r.title = reasonTitle;
+              const radio = document.createElement("input");
+              radio.type = "radio"; radio.name = "pm-startfrom"; radio.id = id; radio.value = id;
+              radio.checked = checked; if (disabled) radio.disabled = true;
+              radio.onchange = () => {
+                startFrom = id === "pm-startfrom-dup" ? "duplicate" : "blank";
+                dupPicker.hidden = startFrom !== "duplicate";
+                if (startFrom === "duplicate") followSource(decks.find((d) => d.id === dupSourceId));
+                else if (!nameInput.dataset.touched) nameInput.value = "Untitled presentation";
+              };
+              const txt = document.createElement("span"); txt.className = "pm-startfrom-txt";
+              const nm = document.createElement("span"); nm.className = "pm-startfrom-label"; nm.textContent = label;
+              const sb = document.createElement("span"); sb.className = "pm-startfrom-sub"; sb.textContent = sub;
+              txt.appendChild(nm); txt.appendChild(sb);
+              r.appendChild(radio); r.appendChild(txt);
+              return r;
+            };
+            group.appendChild(row("pm-startfrom-blank", "Blank deck", "One empty slide, ready to edit.", true, false));
+            group.appendChild(row("pm-startfrom-dup", "Duplicate an existing presentation", "Copy slides + theme from another deck.", false, decks.length === 0, decks.length === 0 ? "No presentations exist yet to duplicate." : null));
+            group.appendChild(dupPicker);
+            group.appendChild(row("pm-startfrom-tpl", "From a template", "Themed starters (sermon, song, liturgy) — a later increment.", false, true, "Themed starters are a later increment."));
+            extra.appendChild(group);
+          },
           onConfirm: async (name) => {
-            try { const dv = await invoke("deck_new", { name: name }); pmDv = dv; renderPresentation(dv); pmHideLibrary(); pmToast("Presentation created"); }
-            catch (e) { console.error(e); pmShowError("create the presentation"); }
+            try {
+              if (startFrom === "duplicate" && dupSourceId != null) {
+                // deck_duplicate returns the copy's own new_id (present whenever dupSourceId
+                // resolved) — read it straight off the raw response, since pmApplyLibrary only
+                // caches the fields the library grid renders (decks/open/persistent/restorable).
+                const lv = await invoke("deck_duplicate", { id: dupSourceId });
+                pmApplyLibrary(lv);
+                const newId = lv && lv.new_id != null ? lv.new_id : null;
+                // The source deck vanished mid-dialog (deleted by another action between the
+                // picker rendering and Create being pressed) — deck_duplicate is a no-op then and
+                // nothing was actually created. "Presentation duplicated" would be a false-positive
+                // success toast over a request that did nothing; route through the same failure
+                // path the catch block below already uses for every other create failure.
+                if (newId == null) { pmShowError("create the presentation"); return; }
+                const trimmed = (name || "").trim();
+                if (trimmed) pmApplyLibrary(await invoke("deck_rename", { id: newId, name: trimmed }));
+                const dv = await invoke("deck_open", { id: newId });
+                pmDv = dv; renderPresentation(dv); pmHideLibrary(); pmToast("Presentation created");
+              } else {
+                const dv = await invoke("deck_new", { name: name });
+                pmDv = dv; renderPresentation(dv); pmHideLibrary(); pmToast("Presentation created");
+              }
+            } catch (e) { console.error(e); pmShowError("create the presentation"); }
           },
         });
       }
       async function pmLibOpen(id) {
         try { const dv = await invoke("deck_open", { id: id }); pmDv = dv; pmSetMode("grid"); pmRenderGrid(dv); }
         catch (e) { console.error(e); pmShowError("open the presentation"); }
+      }
+      // PME-055: "Present" straight from the library card menu — opens the deck (same as
+      // pmLibOpen), lands in the slide GRID so the operator sees what is about to go out, and
+      // presents its last-selected slide (or the first, for a deck never opened before). Reuses
+      // pmGridGoLive rather than duplicating its select-then-go-live sequencing, so this stays
+      // the SAME host round-trip (deck_select_slide, then deck_go_live) the grid's own
+      // double-click/Enter present gesture uses — never a second, divergent "present" path.
+      async function pmLibPresent(id) {
+        let dv;
+        try { dv = await invoke("deck_open", { id: id }); }
+        catch (e) { console.error(e); pmShowError("open the presentation"); return; }
+        pmDv = dv; pmSetMode("grid"); pmRenderGrid(dv);
+        const slides = dv.slides || [];
+        if (!slides.length) return; // an empty deck has nothing to present; grid shows its own empty state
+        const target = dv.selected != null ? dv.selected : slides[0].id;
+        await pmGridGoLive(target);
       }
 
       // --- Slide GRID (Design 2.0 browse/present mode) ---------------------------------------------
@@ -9751,6 +9883,23 @@
         try { pmApplyLibrary(await invoke("deck_duplicate", { id: id })); pmLibFocusDeck(id); }
         catch (e) { console.error(e); pmShowError("duplicate the presentation"); }
       }
+      // A bounded wait for a promise that might never settle. `view()` can be a genuine TLS
+      // round-trip on Backend::Remote, and ControlClient::command (selahcue-lan/src/client.rs)
+      // has NO per-request timeout on that path — unlike connect/pair, which do (Vera, PR #69
+      // review round 2). A stalled-but-connected host would otherwise hang the caller forever:
+      // no spinner, no error, clicking Delete does nothing. The timeout lives here, client-side,
+      // until that gap is closed at the source; it changes nothing about a call that settles
+      // normally (the real promise still wins the race, `clearTimeout` cleans up either way).
+      const PM_VIEW_TIMEOUT_MS = 1500;
+      function pmWithTimeout(promise, ms) {
+        return new Promise((resolve, reject) => {
+          const t = setTimeout(() => reject(new Error("timed out")), ms);
+          promise.then(
+            (v) => { clearTimeout(t); resolve(v); },
+            (e) => { clearTimeout(t); reject(e); }
+          );
+        });
+      }
       // "its 12 slides" when the library knows the count, "its slides" when it does not. Never a
       // fabricated number: an unknown count is stated vaguely, not invented precisely.
       function pmSlideCountPhrase(id) {
@@ -9759,8 +9908,50 @@
         if (n === null) return "its slides";
         return "its " + n + (n === 1 ? " slide" : " slides");
       }
-      function pmLibDelete(id, name) {
+      async function pmLibDelete(id, name) {
         const inUse = id === pmLibOpenId;
+        // PME-059: warn when the deck is linked from a service-plan item — deleting it out from
+        // under a plan silently leaves that item showing missing, discovered only on the day
+        // someone opens the run sheet expecting it. `view()` is the SAME Tauri command read used
+        // everywhere else on this surface (pmGridSyncLive etc.) — the invoke() call from THIS
+        // webview is always local IPC, never a network hop itself. But its HOST-SIDE
+        // implementation is not always local: `Backend::Remote` (main.rs) proxies `view()` over a
+        // TLS WebSocket to a separate output-window host whenever a real audience output is
+        // connected, so this can be a genuine network round-trip, not an instant local read
+        // (Vera, PR #69 review — the earlier "not a LAN round-trip" phrasing here was wrong).
+        // Fetched fresh regardless, never from a cached view, because a stale "not referenced" is
+        // the one wrong answer that matters: it would let the delete through silently.
+        let planLinked = false;
+        let planRefName = null;
+        let planRefUnknown = false;
+        try {
+          const v = await pmWithTimeout(invoke("view"), PM_VIEW_TIMEOUT_MS);
+          const items = (v && v.items) || [];
+          planLinked = items.some((it) => it.link && it.link.kind === "deck" && it.link.id === id);
+          // `linked` and `named` are TWO separate facts, checked separately on purpose: a plan
+          // with no reported name (Backend::Remote can load a ServicePlan built via from_parts,
+          // which applies no non-empty bound — selahcue-desktop/main.rs, selahcue-data's
+          // plan_repo.rs) is still a plan, and the deck is still genuinely linked. Collapsing
+          // "linked but unnamed" into the same branch as "not linked" was the same silent-clean
+          // bug PME-059 exists to prevent, one field over (Sana, PR #69 review round 2).
+          if (planLinked && v.plan_name) planRefName = v.plan_name;
+        } catch (e) {
+          // Couldn't check — fail OPEN on the WARNING, not just on the delete flow. The comment
+          // above always said "never claim 'not referenced' from a failed read", but the code
+          // used to leave `planRefName` at its default `null` and add nothing here — which reads
+          // EXACTLY like a clean "checked, definitely not referenced" to the code below, the one
+          // wrong answer PME-059 exists to prevent (Sana + Vera, PR #69 review). `planRefUnknown`
+          // is a real third state, not a silent collapse into "clear".
+          console.error(e);
+          planRefUnknown = true;
+        }
+        const warnings = [];
+        if (inUse) warnings.push("It’s the presentation you have open — deleting it switches the editor to another.");
+        if (planRefName) warnings.push("Used in your service plan “" + planRefName + "” — that plan item will show missing.");
+        // Genuinely linked, but the host reported no plan name — never the "It's the deck you
+        // have open" case, which is why this is its own branch rather than folded into `inUse`.
+        else if (planLinked) warnings.push("Used in your service plan — that plan item will show missing.");
+        else if (planRefUnknown) warnings.push("Couldn’t check whether this presentation is used in your service plan — check before deleting.");
         pmConfirm({
           title: "Delete “" + (name || "Untitled presentation") + "”?",
           // PME-058: name the SLIDE COUNT — "its slides" understates what is about to go. The count
@@ -9782,7 +9973,7 @@
           // otherwise afterwards would be the same lie pointed the other way. The promise is made
           // where it can be verified — the toast, gated on the host's own `restorable` list.
           body: "This removes the presentation and " + pmSlideCountPhrase(id) + " from your library.",
-          warning: inUse ? "It’s the presentation you have open — deleting it switches the editor to another." : null,
+          warning: warnings.length ? warnings.join(" ") : null,
           confirmLabel: "Delete",
           onConfirm: async () => {
             try {
@@ -10165,7 +10356,12 @@
           body.appendChild(pmInspRow("Font", pmFontSelect(el.font, (v) => pmUpdate(idx, { font: v || null }))));
           body.appendChild(pmInspRow("Weight", pmSelect([["400", "Regular"], ["700", "Bold"]], D.weight, (v) => pmUpdate(idx, { weight: parseInt(v, 10) }))));
           const align = document.createElement("span"); align.className = "pm-insp-align";
-          [["left", "≡"], ["center", "≣"], ["right", "≡"]].forEach(([val, gl]) => { const b = document.createElement("button"); b.type = "button"; b.className = "pm-insp-ctrl"; b.dataset.ik = "align-" + val; b.textContent = gl; b.setAttribute("aria-label", "Align " + val); b.setAttribute("aria-pressed", D.alignH === val ? "true" : "false"); b.onclick = () => pmUpdate(idx, { align_h: val }); align.appendChild(b); });
+          // PME-027: left and right previously shared the glyph "≡" (only Center read as
+          // "≣"), so the two horizontal-align buttons were visually indistinguishable — an
+          // operator could not tell which was pressed without reading the aria-pressed state.
+          // Reuses the same distinct left/centre/right glyphs the Theme Designer's own align
+          // control already ships (#td-align, index.html) rather than inventing a new set.
+          [["left", "⇤"], ["center", "⇔"], ["right", "⇥"]].forEach(([val, gl]) => { const b = document.createElement("button"); b.type = "button"; b.className = "pm-insp-ctrl"; b.dataset.ik = "align-" + val; b.textContent = gl; b.setAttribute("aria-label", "Align " + val); b.setAttribute("aria-pressed", D.alignH === val ? "true" : "false"); b.onclick = () => pmUpdate(idx, { align_h: val }); align.appendChild(b); });
           body.appendChild(pmInspRow("Align", align));
           body.appendChild(pmInspRow("V-align", pmSelect([["top", "Top"], ["middle", "Middle"], ["bottom", "Bottom"]], D.alignV, (v) => pmUpdate(idx, { align_v: v }))));
           body.appendChild(pmInspRow("Colour", pmColor(el.color, (c) => pmUpdate(idx, { color: c }))));
