@@ -5,7 +5,16 @@
 /// is superseded. `refresh()` already guards this shape with `_refreshing`;
 /// `act()` had no equivalent, so a double-tap (misfire, or an impatient tap
 /// against a slow link) queued a second command behind the first instead of
-/// being rejected immediately.
+/// being rejected immediately (17tnw2ay2kk).
+///
+/// That fix closed the gap for a BARE `act()` call, but review of it found the
+/// same gap still open one level up: `selectAndGoLive` and
+/// `stageScriptureAndGoLive` each send two commands with a state read
+/// (`_confirmedView`) between them, and used to release the guard as soon as
+/// their FIRST command settled — leaving the window around the read, and
+/// their own second command, unguarded. A tap landing there queued its own
+/// turn and could reach the host BETWEEN the gesture's two commands. This
+/// file's later tests cover that compound-gesture case.
 library;
 
 import 'dart:async';
@@ -37,6 +46,21 @@ class _GatingSession implements ControllerSession {
   /// blip mid-command.
   bool throwOnCommand = false;
 
+  /// Set by the test to hold a specific `operatorState()` call open, so it can
+  /// observe/act while a gesture is between its two commands rather than only
+  /// while its first command is still on the wire. Gating by CALL NUMBER
+  /// (1-based, via [operatorStateGateOnCall]) rather than gating every call is
+  /// essential here: [LiveController.act] itself already ends with a
+  /// `refresh()` that reads `operatorState()` (call #1 in a compound
+  /// gesture's first command) — a gate on every call would block THAT read
+  /// too and never let the test reach the real, previously-unguarded window
+  /// around [LiveController]'s `_confirmedView` read (call #2). An earlier
+  /// draft of this fake gated unconditionally and silently exercised only the
+  /// existing single-command guard, not the compound-gesture gap under test.
+  Completer<void>? operatorStateGate;
+  int operatorStateGateOnCall = -1;
+  int operatorStateCalls = 0;
+
   @override
   Future<ServerMessage> command(Map<String, dynamic> cmd) async {
     commandCount++;
@@ -51,7 +75,13 @@ class _GatingSession implements ControllerSession {
   }
 
   @override
-  Future<OperatorStateView> operatorState() async => view;
+  Future<OperatorStateView> operatorState() async {
+    operatorStateCalls++;
+    if (operatorStateCalls == operatorStateGateOnCall) {
+      await operatorStateGate!.future;
+    }
+    return view;
+  }
 
   @override
   Future<void> close() async {}
@@ -62,6 +92,28 @@ OperatorStateView _emptyView() => const OperatorStateView(
       items: [],
       liveIndex: null,
       stagedIndex: null,
+      blackout: false,
+      timer: null,
+    );
+
+const _planItemId = 7;
+
+/// A one-item plan; `staged` picks whether the host reports that item as
+/// staged in Preview — the condition [LiveController.selectAndGoLive]'s
+/// second (go-live) command is gated on.
+OperatorStateView _planView({required bool staged}) => OperatorStateView(
+      planName: 'Sunday',
+      items: const [
+        PlanItemView(
+          id: _planItemId,
+          kind: 'song',
+          title: 'Amazing Grace',
+          isLive: false,
+          isStaged: false,
+        ),
+      ],
+      liveIndex: null,
+      stagedIndex: staged ? 0 : null,
       blackout: false,
       timer: null,
     );
@@ -211,6 +263,102 @@ void main() {
 
     session.gate!.complete();
     await first;
+  });
+
+  test(
+      'a second act() cannot interleave its command between selectAndGoLive\'s '
+      'stage and its own go-live', () async {
+    // Reproduces the gap review found: `act()`'s own `_acting` guard closed
+    // reentrancy for a BARE double-tap (17tnw2ay2kk), but `selectAndGoLive`
+    // used to release `_acting` as soon as its first command (`select_item`)
+    // settled — leaving the window around its `_confirmedView` read, and its
+    // own second command (`go_live`), completely unguarded. A tap landing in
+    // that window queued its own turn on `SelahSession._turn` and could reach
+    // the host BETWEEN the gesture's two commands.
+    final session = _GatingSession(_planView(staged: true));
+    final live = LiveController(session: session, stored: _stored);
+    addTearDown(live.dispose);
+    await _synced(live);
+
+    // Hold the confirming state-read open so the test can act while
+    // selectAndGoLive is between its two commands. Counted relative to the
+    // baseline AFTER the constructor's own initial refresh() (already spent
+    // by `_synced`), not from zero — the next call is act()'s OWN trailing
+    // refresh() for `select_item`, which must NOT be gated (that would just
+    // re-exercise act()'s existing single-command guard); the one after that
+    // is `_confirmedView`'s read — the previously-unguarded window.
+    final baseline = session.operatorStateCalls;
+    session.operatorStateGate = Completer<void>();
+    session.operatorStateGateOnCall = baseline + 2;
+
+    final gesture = live.selectAndGoLive(_planItemId);
+    await pumpEventQueue();
+    expect(session.sent, ['select_item'],
+        reason: 'baseline: the stage command reached the host and settled');
+    expect(live.busy, isTrue,
+        reason: 'the WHOLE gesture must read as busy, not just its first '
+            'command — otherwise a screen gating controls on `busy` would '
+            'wrongly re-enable them mid-gesture');
+
+    // The interloper — must not queue behind the gesture's own commands.
+    // Bounded by an explicit timeout: without the fix this call would await
+    // the same unreleased gate the gesture's next command is waiting behind.
+    final interloperOutcome =
+        await live.act(cmdGoLive()).timeout(const Duration(seconds: 2));
+    expect(interloperOutcome, CommandOutcome.failed,
+        reason: 'a command must be rejected outright while a compound '
+            'gesture holds `_acting`, not queued behind it');
+    expect(session.sent, ['select_item'],
+        reason: 'the interloper must never reach the host while the '
+            'gesture is still between its own two commands');
+
+    // Release the confirming read; the gesture completes on its own.
+    session.operatorStateGate!.complete();
+    await gesture;
+
+    expect(session.sent, ['select_item', 'go_live'],
+        reason: 'the gesture\'s two commands must land in order with '
+            'nothing interleaved between them');
+    expect(live.busy, isFalse);
+
+    // Now that nothing is in flight, a fresh command goes through normally.
+    final after = await live.act(cmdPrevious());
+    expect(after, CommandOutcome.applied);
+  });
+
+  test(
+      'a second selectAndGoLive cannot interleave with a stageScriptureAndGoLive '
+      'already in flight', () async {
+    final session = _GatingSession(_planView(staged: true));
+    final live = LiveController(session: session, stored: _stored);
+    addTearDown(live.dispose);
+    await _synced(live);
+
+    final baseline = session.operatorStateCalls;
+    session.operatorStateGate = Completer<void>();
+    session.operatorStateGateOnCall = baseline + 2;
+    final gesture = live.stageScriptureAndGoLive('Romans 8:28');
+    await pumpEventQueue();
+    expect(session.sent, ['stage_scripture']);
+    expect(live.busy, isTrue);
+
+    // A second compound gesture, not just a bare act() — the same guard must
+    // reject it too. The guard check is synchronous (before any await), so
+    // this resolves immediately; the timeout is a clean-failure backstop in
+    // case a regression makes it queue instead.
+    await live.selectAndGoLive(_planItemId).timeout(const Duration(seconds: 2));
+    expect(session.sent, ['stage_scripture'],
+        reason: 'the second gesture must never send its own command while '
+            'the first is still in flight');
+
+    session.operatorStateGate!.complete();
+    await gesture;
+    expect(session.sent, ['stage_scripture'],
+        reason: 'stageScriptureAndGoLive\'s go-live half only fires when '
+            'the confirmed view reports the SAME reference staged — this '
+            'fake\'s fixed view has no stagedScripture set, so it correctly '
+            'does not fire; the point of this test is the absence of an '
+            'interleaved command, not this particular outcome');
   });
 
   test(
