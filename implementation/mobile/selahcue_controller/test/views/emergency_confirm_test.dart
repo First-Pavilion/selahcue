@@ -357,6 +357,47 @@ void main() {
   });
 
   testWidgets(
+      'Un-blackout is disabled while a command is in flight, same as '
+      'Blackout (Quinn, 17tnw2ay2pq review — the recovery direction was the '
+      'one branch nobody asserted)', (tester) async {
+    final handle = tester.ensureSemantics();
+    final fake = _Fake(blackout: true);
+    final live = await _pumpPolledStrip(tester, fake);
+    expect(live.busy, isFalse, reason: 'baseline');
+
+    // An unrelated control sends a command that has not come back yet.
+    fake.commandGate = Completer<void>();
+    unawaited(live.act(cmdNext()));
+    await tester.pump();
+    expect(live.busy, isTrue, reason: 'an unrelated command is in flight');
+
+    // Un-blackout runs through the same `_guarded()` gate as Blackout — it
+    // must disable and announce why, exactly like every other control this
+    // PR gates, even though it is the one-tap recovery direction.
+    expect(find.bySemanticsLabel('Un-blackout, sending…'), findsOneWidget,
+        reason: 'the recovery control must not look tappable while a '
+            'command is on the wire');
+
+    // A tap while busy must be a genuine no-op.
+    final sentBefore = fake.sent.length;
+    await tester.tap(find.text('■ UN-BLACKOUT'), warnIfMissed: false);
+    await tester.pump();
+    expect(fake.sent.length, sentBefore,
+        reason: 'a disabled recovery control must not send anything');
+
+    fake.commandGate!.complete();
+    await tester.pump(const Duration(milliseconds: 60));
+    expect(live.busy, isFalse,
+        reason: 'busy must clear once the unrelated command settles');
+    expect(find.bySemanticsLabel('Un-blackout'), findsOneWidget,
+        reason: 'the recovery control re-enables once busy clears — the '
+            'operator is never left unable to restore the audience screen');
+
+    handle.dispose();
+    live.dispose();
+  });
+
+  testWidgets(
       'an armed BLACKOUT survives an UNRELATED command overlapping the '
       'confirm window, instead of silently expiring (17tnw2ay2pq review, '
       'Sana)', (tester) async {

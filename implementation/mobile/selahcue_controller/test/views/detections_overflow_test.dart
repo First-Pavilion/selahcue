@@ -441,6 +441,21 @@ void main() {
     fake.commandGate!.complete();
     await tester.pump(const Duration(milliseconds: 60));
     expect(live.busy, isFalse);
+    // Every sibling busy test added in this PR (live_tab, plan_tab,
+    // scripture_tab, timer_tab, emergency_confirm) re-fetches the widget
+    // after busy clears and asserts it is enabled again — this one stopped
+    // short of that. `_DetectionsViewState.build()` recomputes `gated` fresh
+    // on every rebuild inside the same `ListenableBuilder` pattern used
+    // everywhere else, so this closes the coverage gap for consistency
+    // (Quinn, 17tnw2ay2pq review).
+    final approveAfter = tester.widget<SelahButton>(
+        find.widgetWithText(SelahButton, 'Approve').first);
+    expect(approveAfter.onPressed, isNotNull,
+        reason: 'Approve re-enables once busy clears');
+    final rejectAfter = tester.widget<SelahButton>(
+        find.widgetWithText(SelahButton, 'Reject').first);
+    expect(rejectAfter.onPressed, isNotNull,
+        reason: 'Reject re-enables once busy clears');
 
     live.dispose();
   });
