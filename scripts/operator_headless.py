@@ -608,12 +608,14 @@ if not check_jump_call_site_is_click_only():
 # 1544 -> 1548: PR #62, remediating that PR's own review findings, added 4 more (a `filter` guard
 # on the TD-012/PSC-005 hover checks Sana found missing, plus a PSC-005 disabled-state guard Vera's
 # finding required).
-# 1548 -> 1589: unrelated ticket 17tnw2axptb (PR #61) added its own 45 Detected-Scriptures
-# assertions (CON-111/116/121/129/130/134/136/137/138) on top, in parallel. Its branch had claimed
-# a rebase onto main that had not actually happened, so its own copy of this constant read 1544 —
-# 45 checks looser than the real merged total. Cody's review of PR #61 caught the drift; re-derived
-# the only honest way, by actually running the file against the real rebase: 1589, confirmed by two
-# independent runs (both 1589, 0 FAIL) and matching Cody's own independent trial-merge count.
+# 1548 -> 1593: unrelated ticket 17tnw2axptb (PR #61) added its own 45 Detected-Scriptures
+# assertions (CON-111/116/121/129/130/134/136/137/138) on top, in parallel (1548 + 45 = 1593).
+# Its branch had claimed a rebase onto main that had not actually happened, so its own copy of
+# this constant read 1544 — 45 checks looser than the real merged total. Cody's review of PR #61
+# caught the drift; re-derived the only honest way, by actually running the file against the real
+# rebase, and confirmed by two independent runs matching Cody's own independent trial-merge count.
+# The commit that landed this recorded the constant as **1589**, not 1593 — a merge-resolution
+# artifact (see the 1589 -> 1596 entry below), not what the arithmetic above actually gives.
 # 1589 -> 1596: same PR #62, round 2 (rebased onto the by-then-merged main above) — Cody and Vera
 # independently flagged that the PSC-005 disabled-state guard only checked a `background` was
 # DECLARED, not that its VALUE was right (a nonsense `background: red` would have passed). Added 3
@@ -11745,13 +11747,23 @@ try:
     print(body)
     fails = [line for line in body.splitlines() if line.startswith("FAIL")]
     print("\n=== %d checks, %d FAIL ===" % (count, len(fails)))
-    # Guard against the suite silently SHRINKING: a driver regression / early return that
-    # runs FEWER checks would otherwise report 0 FAIL and pass. Bump EXPECTED_MIN_CHECKS
-    # when you add checks; never lower it to hide a lost one.
-    if count < EXPECTED_MIN_CHECKS:
+    # Guard against the suite count DRIFTING in either direction: a `<` floor only ever
+    # catches SHRINKING (a driver regression / early return running fewer checks). It never
+    # catches GROWING past the recorded value, which lets EXPECTED_MIN_CHECKS drift stale-low
+    # with no red build to catch it — this has happened three times (1514/1520, 1544/1589,
+    # 1589/1593), each caught only by a human/reviewer noticing an oddity, never by this gate.
+    # The third time (17tnw2axpt9, PR #63) root-caused to a merge commit (00f9a50) keeping one
+    # parallel branch's own recorded EXPECTED_MIN_CHECKS instead of re-deriving it after both
+    # branches' new checks were combined. An exact match forces every branch that adds/removes
+    # a check to conflict on this constant during rebase and re-derive it explicitly — that
+    # friction is the point; it's what was skipped at the merge that caused drift #3.
+    # Bump EXPECTED_MIN_CHECKS to the new count when you add or remove a check — always by
+    # actually running the suite, never by hand arithmetic (see the log above this constant).
+    if count != EXPECTED_MIN_CHECKS:
         print(
-            "FAIL: only %d checks ran; expected >= %d (the suite must not silently shrink)"
-            % (count, EXPECTED_MIN_CHECKS)
+            "FAIL: %d checks ran; expected exactly %d (bump me to %d if this is a real "
+            "add/remove — never hand-derive; re-run and use the measured count)"
+            % (count, EXPECTED_MIN_CHECKS, count)
         )
         sys.exit(4)
     sys.exit(1 if fails else 0)
