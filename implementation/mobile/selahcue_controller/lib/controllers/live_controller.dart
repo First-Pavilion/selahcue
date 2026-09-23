@@ -232,16 +232,22 @@ class LiveController extends ChangeNotifier {
   /// and the connection banner already explains that state.
   bool get rejected => _rejected;
 
-  /// True while a command sent through [act] is still in flight.
+  /// True while a command — or a whole compound gesture ([selectAndGoLive],
+  /// [stageScriptureAndGoLive]) — is still in flight.
   ///
-  /// [act] refuses to start a second command while this is true (see its
-  /// guard) rather than queueing one behind the other on
-  /// `SelahSession._turn` — a burst of taps against a slow/dead host would
-  /// otherwise each wait up to `commandTimeout` for the ones ahead of it, so
-  /// the app looks hung for tens of seconds with no feedback even though every
-  /// queued command eventually resolves. Exposed so a screen can also disable
-  /// its controls while a command is outstanding, mirroring how it already
-  /// disables them for [syncing].
+  /// [act], [selectAndGoLive] and [stageScriptureAndGoLive] all share this ONE
+  /// flag and refuse to start while it is already true (see each one's guard),
+  /// rather than queueing behind whatever is in flight on `SelahSession._turn`
+  /// — a burst of taps against a slow/dead host would otherwise each wait up
+  /// to `commandTimeout` for the ones ahead of it, so the app looks hung for
+  /// tens of seconds with no feedback even though every queued command
+  /// eventually resolves. The compound gestures hold this claim for their
+  /// FULL duration (every internal command plus the read between them), not
+  /// just their first command — a narrower claim left the gap between their
+  /// two commands unguarded, and a second tap landing there could interleave
+  /// its own command with the gesture's own two on the wire. Exposed so a
+  /// screen can also disable its controls while any of this is outstanding,
+  /// mirroring how it already disables them for [syncing].
   bool get busy => _acting;
 
   void dismissError() {
@@ -337,8 +343,14 @@ class LiveController extends ChangeNotifier {
   /// result can predate the command; and refresh silently reconnects, whereas a
   /// go-live guard must treat "unknown" as *no*, not as *retry*.
   ///
-  /// Bounded: one extra round-trip per operator gesture at most, and the session
-  /// serialises command turns internally — no queue, no backlog, no growth.
+  /// Bounded: one extra round-trip per operator gesture at most. This has no
+  /// single-flight guard of its own — it relies entirely on its caller having
+  /// already claimed `_acting` for the gesture's full duration ([selectAndGoLive],
+  /// [stageScriptureAndGoLive]). That was not always true: `_acting` used to be
+  /// released as soon as the gesture's FIRST command settled, leaving this read
+  /// unguarded for the rest of the gesture — a second tap in that window queued
+  /// its own turn on `SelahSession._turn`, and could land it on the wire between
+  /// this gesture's two commands. Never call this without `_acting` already true.
   Future<OperatorStateView?> _confirmedView(int epoch) async {
     if (_disposed || _revoked || _reconnecting || _epoch != epoch) return null;
     try {
@@ -369,29 +381,57 @@ class LiveController extends ChangeNotifier {
   /// we stop — a missed go-live costs one more tap, a wrong one reaches the
   /// congregation (86ajxwcft).
   Future<void> selectAndGoLive(int itemId) async {
-    final epoch = _epoch;
-    if (await act(cmdSelectItem(itemId)) != CommandOutcome.applied) return;
-    final v = await _confirmedView(epoch);
-    if (v == null) return;
-    final idx = v.items.indexWhere((it) => it.id == itemId);
-    if (idx >= 0 && v.stagedIndex == idx) {
-      await act(cmdGoLive());
+    if (_disposed || _revoked) return;
+    // Claims `_acting` for the WHOLE gesture (both commands AND the
+    // [_confirmedView] read between them), not just one command at a time —
+    // see [act] and [_sendCommand]. A plain [act] call in between would see
+    // this claim and reject itself, exactly like a double-tap on [act] does.
+    if (_acting) return;
+    if (syncing) return;
+    _acting = true;
+    _notify();
+    try {
+      final epoch = _epoch;
+      if (await _sendCommand(cmdSelectItem(itemId)) !=
+          CommandOutcome.applied) {
+        return;
+      }
+      final v = await _confirmedView(epoch);
+      if (v == null) return;
+      final idx = v.items.indexWhere((it) => it.id == itemId);
+      if (idx >= 0 && v.stagedIndex == idx) {
+        await _sendCommand(cmdGoLive());
+      }
+    } finally {
+      _acting = false;
+      _notify();
     }
   }
 
   /// Stage a scripture reference and, only if it landed in Preview, send it
   /// live in one action. `translation` stages the verse in the browsed text.
-  /// Same two-part proof as [selectAndGoLive].
+  /// Same two-part proof, and the same single `_acting` claim spanning the
+  /// whole gesture, as [selectAndGoLive].
   Future<void> stageScriptureAndGoLive(String reference,
       {String? translation}) async {
-    final epoch = _epoch;
-    final outcome =
-        await act(cmdStageScripture(reference, translation: translation));
-    if (outcome != CommandOutcome.applied) return;
-    final v = await _confirmedView(epoch);
-    if (v == null) return;
-    if (v.stagedScripture == reference) {
-      await act(cmdGoLive());
+    if (_disposed || _revoked) return;
+    if (_acting) return;
+    if (syncing) return;
+    _acting = true;
+    _notify();
+    try {
+      final epoch = _epoch;
+      final outcome = await _sendCommand(
+          cmdStageScripture(reference, translation: translation));
+      if (outcome != CommandOutcome.applied) return;
+      final v = await _confirmedView(epoch);
+      if (v == null) return;
+      if (v.stagedScripture == reference) {
+        await _sendCommand(cmdGoLive());
+      }
+    } finally {
+      _acting = false;
+      _notify();
     }
   }
 
@@ -434,7 +474,57 @@ class LiveController extends ChangeNotifier {
     // via [_rejected] — like the [syncing] pre-flight refusal below, this
     // command never reached the wire, so it was never "rejected" as
     // MOBILE-2.0-SPEC §4.12 uses that word.
+    //
+    // [selectAndGoLive] and [stageScriptureAndGoLive] claim this SAME flag for
+    // their WHOLE compound gesture, not just each inner command, and call
+    // [_sendCommand] directly instead of this method once they hold it — see
+    // there for why. Without that, the gap between a compound gesture's own
+    // two commands was exactly as unguarded as a bare double-tap used to be:
+    // 17tnw2ay2kk closed it here; a follow-up closed it for the compound
+    // gestures too, after review proved an interleaved command could land ON
+    // THE WIRE between a gesture's stage and its go-live.
     if (_acting) return CommandOutcome.failed;
+    if (syncing) return CommandOutcome.failed;
+    // Claimed and published before anything else runs — in particular before
+    // [_syncRole]'s own [_notify] below, which calls listeners synchronously.
+    // A listener that reacts to that notification by calling [act] again must
+    // see `_acting` already true, or the guard above would not have seen it
+    // yet either and a second command would slip in through the same
+    // re-entrant call this guard exists to stop.
+    _acting = true;
+    _notify();
+    try {
+      return await _sendCommand(cmd);
+    } finally {
+      // Published on this edge too, not just the rising one: without this a
+      // screen gating its controls on [busy] would see it clear only on the
+      // next 1s poll tick, leaving a control that looks dead for up to a
+      // second after the command it was waiting on already finished — the
+      // same symptom this guard exists to fix, reintroduced on the other
+      // edge.
+      _acting = false;
+      _notify();
+    }
+  }
+
+  /// The body of [act] — everything EXCEPT claiming/releasing `_acting`.
+  ///
+  /// [act] itself is the thin single-command wrapper: guard, claim, call this,
+  /// release. [selectAndGoLive] and [stageScriptureAndGoLive] call this
+  /// directly, for BOTH of their internal commands, having already claimed
+  /// `_acting` once for the whole gesture — calling [act] a second time there
+  /// would just see its own claim and reject itself.
+  ///
+  /// Never call this without `_acting` already true. It has no guard of its
+  /// own by design: guarding is the caller's job, because the caller is the
+  /// one who knows how many commands its gesture needs under one claim.
+  ///
+  /// [syncing] IS still checked in here, every call — unlike the single-flight
+  /// guard, it can flip true partway through a multi-command gesture (e.g. a
+  /// reconnect triggered by [_confirmedView]'s own `SessionException`), and
+  /// the second command must see that live, not a snapshot from before the
+  /// gesture started.
+  Future<CommandOutcome> _sendCommand(Map<String, dynamic> cmd) async {
     // Refuse outright until we can prove what is on the audience screen — see
     // [syncing]: either the link is down, or it is back but the snapshot we hold
     // still describes the pre-disconnect world. Both mean the same thing for an
@@ -456,14 +546,6 @@ class LiveController extends ChangeNotifier {
     // without sending a command. Screens still disable their controls so a dead
     // button never looks live; this is the backstop that makes that cosmetic.
     if (syncing) return CommandOutcome.failed;
-    // Claimed and published before anything else runs — in particular before
-    // [_syncRole]'s own [_notify] below, which calls listeners synchronously.
-    // A listener that reacts to that notification by calling [act] again must
-    // see `_acting` already true, or the guard above would not have seen it
-    // yet either and a second command would slip in through the same
-    // re-entrant call this guard exists to stop.
-    _acting = true;
-    _notify();
     try {
       // The gate this command is about to be judged against. Cheap, local,
       // and taken before the send so a re-role that landed between two taps
@@ -517,15 +599,6 @@ class LiveController extends ChangeNotifier {
       _rejected = true;
       await _reconnect();
       return CommandOutcome.failed;
-    } finally {
-      // Published on this edge too, not just the rising one: without this a
-      // screen gating its controls on [busy] would see it clear only on the
-      // next 1s poll tick, leaving a control that looks dead for up to a
-      // second after the command it was waiting on already finished — the
-      // same symptom this guard exists to fix, reintroduced on the other
-      // edge.
-      _acting = false;
-      _notify();
     }
   }
 
