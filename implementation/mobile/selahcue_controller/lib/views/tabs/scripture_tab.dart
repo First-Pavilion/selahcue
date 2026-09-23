@@ -187,6 +187,13 @@ class _ScriptureTabState extends State<ScriptureTab> {
     final current = options.contains(_translation)
         ? _translation
         : options.first;
+    // A stage/go-live command is still on the wire — a tap must not accept a
+    // second one while it is unresolved (17tnw2ay2pq, follow-up to the
+    // act()-level guard in 17tnw2ay2kk). This tab does not gate on `syncing`
+    // (act() already backstops that, see live_controller.dart's own note),
+    // but `busy` clears in well under `commandTimeout`, so it is worth
+    // surfacing here rather than leaving every tap silently dropped.
+    final busy = widget.live.busy;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -275,7 +282,7 @@ class _ScriptureTabState extends State<ScriptureTab> {
             color: DesignTokens.d2Primary,
           ),
         if (_chapter != null) _chapterNav(_chapter!),
-        Expanded(child: _body(view)),
+        Expanded(child: _body(view, busy)),
         Padding(
           padding: const EdgeInsets.fromLTRB(
             SelahSpace.gutter,
@@ -284,7 +291,9 @@ class _ScriptureTabState extends State<ScriptureTab> {
             SelahSpace.md,
           ),
           child: Text(
-            'Tap a verse to stage · double-tap to send live',
+            busy
+                ? 'Sending… controls are disabled until the command finishes.'
+                : 'Tap a verse to stage · double-tap to send live',
             style: SelahType.caption.copyWith(
               color: DesignTokens.d2TextSecondary,
             ),
@@ -335,7 +344,7 @@ class _ScriptureTabState extends State<ScriptureTab> {
     ),
   );
 
-  Widget _body(OperatorStateView? view) {
+  Widget _body(OperatorStateView? view, bool busy) {
     final ch = _chapter;
     if (ch != null) {
       return ListView.separated(
@@ -356,13 +365,13 @@ class _ScriptureTabState extends State<ScriptureTab> {
             verse: v,
             staged: staged,
             live: live,
-            onTap: () => _stageVerse(v),
-            onDoubleTap: () => _liveVerse(v),
+            onTap: busy ? null : () => _stageVerse(v),
+            onDoubleTap: busy ? null : () => _liveVerse(v),
           );
         },
       );
     }
-    if (_fetchFailed) return _fallback();
+    if (_fetchFailed) return _fallback(busy);
     return Center(
       child: Padding(
         padding: const EdgeInsets.all(SelahSpace.section),
@@ -376,7 +385,7 @@ class _ScriptureTabState extends State<ScriptureTab> {
   }
 
   /// Old-host / bad-reference fallback: stage the typed reference directly.
-  Widget _fallback() => Center(
+  Widget _fallback(bool busy) => Center(
     child: Padding(
       padding: const EdgeInsets.all(SelahSpace.gutter),
       child: Column(
@@ -396,26 +405,32 @@ class _ScriptureTabState extends State<ScriptureTab> {
             children: [
               SelahButton(
                 label: 'Stage',
-                onPressed: () {
-                  final ref = _ctrl.text.trim();
-                  if (ref.isEmpty) return;
-                  widget.live.act(
-                    cmdStageScripture(ref, translation: _translation),
-                  );
-                },
+                disabledReason: 'sending…',
+                onPressed: busy
+                    ? null
+                    : () {
+                        final ref = _ctrl.text.trim();
+                        if (ref.isEmpty) return;
+                        widget.live.act(
+                          cmdStageScripture(ref, translation: _translation),
+                        );
+                      },
               ),
               const SizedBox(width: SelahSpace.sm),
               SelahButton(
                 label: 'Live',
                 variant: SelahButtonVariant.success,
-                onPressed: () {
-                  final ref = _ctrl.text.trim();
-                  if (ref.isEmpty) return;
-                  widget.live.stageScriptureAndGoLive(
-                    ref,
-                    translation: _translation,
-                  );
-                },
+                disabledReason: 'sending…',
+                onPressed: busy
+                    ? null
+                    : () {
+                        final ref = _ctrl.text.trim();
+                        if (ref.isEmpty) return;
+                        widget.live.stageScriptureAndGoLive(
+                          ref,
+                          translation: _translation,
+                        );
+                      },
               ),
             ],
           ),
@@ -611,8 +626,8 @@ class _VerseRow extends StatelessWidget {
   final VerseView verse;
   final bool staged;
   final bool live;
-  final VoidCallback onTap;
-  final VoidCallback onDoubleTap;
+  final VoidCallback? onTap;
+  final VoidCallback? onDoubleTap;
   const _VerseRow({
     required this.verse,
     required this.staged,

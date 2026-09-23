@@ -439,7 +439,10 @@ class _EmergencyStripState extends State<EmergencyStrip> {
     Map<String, dynamic> Function() intent, {
     bool immediate = false,
   }) {
-    if (widget.live.syncing) return null; // disabled: state is unknown
+    // Disabled while state is unknown (syncing) or while a command this
+    // strip (or any other control) sent is still on the wire (busy) — a tap
+    // that lands here must not look live while it would only be dropped.
+    if (widget.live.syncing || widget.live.busy) return null;
     return () {
       final armed = _armed;
       // An existing arm wins over [immediate]. If the host moved while this
@@ -466,6 +469,11 @@ class _EmergencyStripState extends State<EmergencyStrip> {
     final canClear = live.can(Capability.clearLive);
     final armedBlackout = _armed?.which == _Armed.blackout;
     final armedClear = _armed?.which == _Armed.clear;
+    // Reconnecting is the more urgent/informative reason when both are true
+    // (busy alone clears on its own in well under commandTimeout; a drop
+    // does not).
+    final disabledReason =
+        live.syncing ? 'unavailable while reconnecting' : 'sending…';
 
     return Container(
       decoration: const BoxDecoration(
@@ -501,7 +509,7 @@ class _EmergencyStripState extends State<EmergencyStrip> {
                     : blackout
                     ? 'Un-blackout'
                     : 'Blackout',
-                disabledReason: 'unavailable while reconnecting',
+                disabledReason: disabledReason,
                 // The `aria-pressed` equivalent: the engaged state is announced,
                 // not only drawn (spec §6.3).
                 toggled: blackout,
@@ -530,7 +538,7 @@ class _EmergencyStripState extends State<EmergencyStrip> {
                 glyph: '✕',
                 label: armedClear ? 'CONFIRM CLEAR' : 'CLEAR ALL',
                 semanticLabel: armedClear ? 'Confirm clear all' : 'Clear all',
-                disabledReason: 'unavailable while reconnecting',
+                disabledReason: disabledReason,
                 haptic: true,
                 variant: armedClear
                     ? SelahButtonVariant.alarm
