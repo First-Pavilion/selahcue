@@ -37,7 +37,7 @@ pub use stage::{
 };
 pub use theme::{
     Background, Band, Element, Fit, GradientBackground, ImageBackground, RegionStyle, Theme,
-    VAlign, MAX_ELEMENTS, MAX_TEXT_ELEMENT_LEN,
+    VAlign, BACKGROUND_PRESETS, MAX_ELEMENTS, MAX_TEXT_ELEMENT_LEN,
 };
 pub use tokens::{contrast_ratio, SemanticToken, LIVE, NEUTRAL, PREVIEW, WARN};
 pub use trash::{DeckTrash, MAX_TRASH_BYTES, MAX_TRASH_ENTRIES};

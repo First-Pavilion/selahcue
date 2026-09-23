@@ -392,23 +392,33 @@ void main() {
     expect(controller.dispose, returnsNormally);
   });
 
-  testWidgets('the deferred timer controls are explained, not drawn', (
-    tester,
-  ) async {
+  testWidgets(
+      'Reset and Send "TIME UP" to stage are real controls now (MOB-009), not prose',
+      (tester) async {
     final live = await _pumpTab(tester, _Fake());
 
-    // `Reset` and the stage TIME UP cue have no wire command. The tab says so
-    // in prose, and the prose is not a control: no button, no gesture.
-    expect(find.textContaining('no command for either'), findsOneWidget);
-    final note = find.ancestor(
-      of: find.textContaining('no command for either'),
-      matching: find.byWidgetPredicate(
-        (w) => w is InkWell || w is GestureDetector || w is SelahButton,
-      ),
+    // MOB-009: both now compose EXISTING wire commands (`start_timer` /
+    // `adjust_timer`) instead of being explained in prose — see
+    // `timer_tab.dart`'s doc comment for the composition, and
+    // `timer_tab_test.dart` for their tap behaviour (this harness's `_Fake`
+    // always reports `timer: null`, so both are disabled here, not tapped).
+    expect(find.text('Reset'), findsOneWidget);
+    expect(find.textContaining('TIME UP" to stage'), findsOneWidget);
+
+    final resetButton = find.ancestor(
+      of: find.text('Reset'),
+      matching: find.byWidgetPredicate((w) => w is SelahButton),
     );
-    expect(note, findsNothing,
-        reason: 'an explanation must not be tappable — there is nothing behind '
-            'it to reach');
+    expect(resetButton, findsOneWidget,
+        reason: 'Reset must be a real control now, not an inert note');
+
+    final timeUpButton = find.ancestor(
+      of: find.textContaining('TIME UP" to stage'),
+      matching: find.byWidgetPredicate((w) => w is InkWell),
+    );
+    expect(timeUpButton, findsOneWidget,
+        reason:
+            'Send "TIME UP" to stage must be a real control now, not an inert note');
 
     live.dispose();
   });

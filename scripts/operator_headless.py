@@ -851,7 +851,55 @@ if not check_jump_call_site_is_click_only():
 # on the same text would have wrongly read the FIRST. Per this constant's own repeated lesson:
 # re-derived empirically, not hand-summed. Three independent runs against the real post-rebase
 # tree all reported 1818, 0 FAIL.
-EXPECTED_MIN_CHECKS = 1818
+#
+# 1818 -> 1822: ClickUp 17tnw2axptx (Download modal: close remaining DLM-### drift), rebased onto
+# main's own GO-LIVE-HOVER/TIMER-START-HOVER/PP-GEN/RULE-REGEX-LASTMATCH block above (1768->1818,
+# landed by a peer session while this branch was open) — real conflict in this exact block again.
+# Added the DLM-007/DLM-008 block (4 assertions — card + button radius, premise + measurement
+# each) that locks in the geometry fix (card 14->16px, button 8->10px). DLM-002/003/004/006
+# stayed decision-blocked and got no new assertions; DLM-005 needed no code change. Per this
+# comment's own repeated lesson: not hand-summed, re-derived empirically after resolving.
+# Confirmed by a clean run: 1822, 0 FAIL.
+#
+# 1822 -> ?: ClickUp 17tnw2axptt (Service Plan: close PLN-004 — the staged run-sheet row's
+# border was solid; the handoff is explicit that staged is green/dashed and only live is
+# red/solid). Added exactly 3 checks (a non-vacuousness setup check, the dashed-border assertion,
+# and a solid-border control on an unstaged row) right next to the existing C-001 run-sheet
+# fixture. Rebased onto main's own GO-LIVE-HOVER/TIMER-START-HOVER + SET-010 PP-GEN +
+# rule-lookup-lastmatch chain above (1768->1818) after this branch was authored against the
+# earlier 1768 baseline — a real conflict in this exact block, the pattern this comment keeps
+# warning about. Per this constant's own repeatedly-stated discipline, 1821 is read off an actual
+# clean run after resolving, not hand-summed as 1818+3 (even though it happens to match here).
+# Confirmed by two independent clean runs against the real post-rebase tree: 1821, 0 FAIL.
+#
+# 1821 -> 1824: Vera's PR #83 performance review found a real correctness bug the PLN-004 fix
+# above made WORSE, not a performance regression: Command::GoLive (selahcue-app/src/
+# controller.rs) sets live_idx = staged_idx but never clears staged_idx, so the row that just
+# went live carries BOTH is_live and is_staged classes on every ordinary Go Live — not a
+# contrived case. .is-live/.is-staged had equal CSS specificity and .is-staged was declared
+# second, so it won the cascade: the item actually on air rendered with Preview's colour (a
+# pre-existing bug) and, after this PR's own change, Preview's dashed shape too — worse, not
+# better. Fixed by scoping the staged rule to `:not(.is-live)` so Live always wins an overlap
+# (app.css). Added 3 new checks in an isolated fixture (not the shared C-001 one, to avoid
+# disturbing its own item-count/index assertions): a non-vacuousness setup check proving a
+# live+staged row genuinely carries both classes, the solid-border assertion, and a border-colour
+# control against a live-only row. Mutation-verified by reverting the `:not(.is-live)` guard and
+# re-running: exactly the 2 new assertion checks (border-style and border-colour) went RED, none
+# of the other 1822 checks moved, then restored. Confirmed by two independent clean runs against
+# the real post-fix tree: 1824, 0 FAIL against this branch's own baseline (1818, pre-Download-
+# modal-merge). Re-derived below against the actual merged tree instead of trusting that number.
+#
+# 1828 -> ?: ClickUp 17tnw2axpta (Console: blackout footer + STAGED-pill contrast, PR #66),
+# authored back near the 1625 baseline (well before this file's history above existed in its
+# current form) and now finally rebased in. Own contribution: CON-054 (a real STAGED pill,
+# rewritten mid-review after Cody found the first version gated on `.verse.cursor` — which moves
+# for every browse gesture including the deliberately read-only ones — to instead gate on the
+# host's own `staged_scripture` readback via a new `syncStagedPill()`) and CON-098 (the emergency
+# footer's background/border genuinely re-tint on a real blackout engage/restore round trip).
+# Both mutation-verified at authoring time. Per this constant's own repeated lesson: re-derived
+# empirically below, not hand-summed against this branch's own long-stale prior count (1640).
+# Confirmed by a clean run: 1843, 0 FAIL.
+EXPECTED_MIN_CHECKS = 1843
 
 
 def find_chrome():
@@ -3337,6 +3385,53 @@ DRIVER = r"""
       await sleep(200); // setCursor(idx, false) now runs too — confirm it stays quiet as well
       ok(!window.__calls.slice(callsBeforeArm).some(function (c) { return c.cmd === "stage_scripture" || c.cmd === "follow_scripture"; }),
          "CON-134 (Sana finding B): once the deferred fetch resolves and Edit's own setCursor(idx, false) runs, still nothing stages — the window is closed, not just narrowed");
+
+      // === CON-054 (blocker, WCAG 1.4.1) — the staged verse's non-colour signal, gated on the
+      // HOST's own staged_scripture readback (Cody's review of PR #66, remediated): the browse
+      // cursor (.verse.cursor) moves for every navigation gesture, INCLUDING the deliberately
+      // read-only ones (Edit on a low-confidence detection, History's re-stage) that pass
+      // stage=false specifically so nothing is staged. Cody reproduced live that gating the
+      // literal "STAGED" text on .cursor alone made the pill lie for exactly those flows. This
+      // reproduces his exact scenario directly — window.__openChapterToBrowse (stage=false, the
+      // same entry point Edit/History use) must move the cursor WITHOUT painting the pill — then
+      // proves the pill turns on only once a real host readback (driven through render(), not
+      // poked at the class) confirms the SAME verse, and turns off again once the host says so.
+      // The console surface itself was last switched away to theme-designer a few tests back, so
+      // switch back first — otherwise the panel is hidden and getClientRects() would read empty
+      // for reasons that have nothing to do with the pill.
+      document.querySelector('.nav-item[data-surface="console"]').click();
+      render(Object.assign({}, baseView, { staged_scripture: null, staged_index: null }));
+      window.__openChapterToBrowse("Isaiah 61:5"); // stage=false — the real Edit/History entry point
+      await waitFor(function () { return !!el("verse-list").querySelector(".verse.cursor"); });
+      var vRows = el("verse-list").querySelectorAll(".verse");
+      ok(vRows.length === 2, "CON-054 (setup): the fixture chapter renders both its verses");
+      var vCursorRow = el("verse-list").querySelector(".verse.cursor");
+      var vPill = vCursorRow.querySelector(".verse-staged-pill");
+      ok(!vCursorRow.classList.contains("is-staged") &&
+         (!vPill || getComputedStyle(vPill).display === "none" || vPill.getClientRects().length === 0),
+         "CON-054 (Cody's finding, reproduced + fixed): browsing a verse via the READ-ONLY __openChapterToBrowse path moves the cursor but paints no STAGED pill — nothing was ever staged");
+      // Now the host confirms — via a real render(), the same path syncChrome/setPanel already
+      // trust for the Preview panel, never by poking the class directly.
+      render(Object.assign({}, baseView, { staged_scripture: "Isaiah 61:5", staged_index: null }));
+      ok(vCursorRow.classList.contains("is-staged"), "CON-054 (setup): the host's staged_scripture readback now matches this row");
+      vPill = vCursorRow.querySelector(".verse-staged-pill");
+      ok(!!vPill && getComputedStyle(vPill).display !== "none" && vPill.getClientRects().length > 0,
+         "CON-054: once the HOST confirms, the staged verse row paints a STAGED pill (computed display, not just the class)");
+      ok(vPill.textContent.trim() === "STAGED",
+         "CON-054: the pill states the word STAGED — a non-colour signal alongside the row's green tint (WCAG 1.4.1)");
+      var vOtherRow = Array.prototype.filter.call(vRows, function (r) { return r !== vCursorRow; })[0];
+      ok(!!vOtherRow, "CON-054 (setup): a second, non-staged verse row exists to serve as a negative control");
+      var vOtherPill = vOtherRow.querySelector(".verse-staged-pill");
+      ok(!vOtherRow.classList.contains("is-staged") && !!vOtherPill && getComputedStyle(vOtherPill).display === "none",
+         "CON-054 (negative control): a DIFFERENT verse that is not the host's staged_scripture paints no STAGED pill");
+      var vPillCs = getComputedStyle(vPill);
+      var vPillR = _cr(_rgba(vPillCs.color), _rgba(vPillCs.backgroundColor));
+      ok(vPillR >= 4.5, "CON-054: the STAGED pill's label clears AA-normal on its own fill (" + _f(vPillR) + ":1)");
+      // De-stage (e.g. Clear/blackout on the host) — the pill must be reactive, not sticky.
+      render(Object.assign({}, baseView, { staged_scripture: null, staged_index: null }));
+      ok(!vCursorRow.classList.contains("is-staged"),
+         "CON-054: once the host reports nothing staged, the pill is removed again — it is not sticky once painted");
+
       // Sana's non-blocking finding: a MISSING confidence used to fail OPEN into the confident
       // branch (Approve fast-path) purely because `hasConfidence && …` short-circuits false on
       // no score at all — an unscored match is at least as uncertain as a known-low one.
@@ -6278,6 +6373,24 @@ DRIVER = r"""
       ok(el("dl-modal-title").textContent.indexOf("ready")>=0 && el("dl-modal-ico").classList.contains("is-ready"), "DL(7): a translation reaches Ready in the same dialog");
       window.__dlModal.close();
       ok(dlBack.hidden, "DL(7): the reused dialog closes cleanly");
+      // PLN-004 (Vera, PR #83 review): Command::GoLive (controller.rs) sets live_idx = staged_idx
+      // but never clears staged_idx, so the item that just went live carries BOTH is_live AND
+      // is_staged on every ordinary Go Live — not a contrived edge case. Render a plan with such a
+      // row in ISOLATION (its own fixture, not the shared C-001 one below, so this doesn't disturb
+      // that fixture's own item count/index-based assertions) and prove Live wins the cascade.
+      planRenderBuilder({ plan_name:"Overlap", items:[
+        {id:901, kind:"song", title:"Just Went Live", is_live:true, is_staged:true},
+        {id:902, kind:"song", title:"Was Never Staged", is_live:true, is_staged:false}
+      ] });
+      var liveAndStagedRow = document.querySelector('#plan-b-list .plan-b-row[data-item-id="901"]');
+      ok(liveAndStagedRow.classList.contains("is-live") && liveAndStagedRow.classList.contains("is-staged"),
+         "PLN-004 (setup): a just-went-live row genuinely carries BOTH classes — this is not vacuous");
+      ok(getComputedStyle(liveAndStagedRow).borderTopStyle === "solid",
+         "PLN-004: a row that is BOTH live and staged renders Live's SOLID border, not Preview's dashed one — got " +
+         getComputedStyle(liveAndStagedRow).borderTopStyle);
+      ok(getComputedStyle(liveAndStagedRow).borderTopColor === getComputedStyle(document.querySelector('#plan-b-list .plan-b-row[data-item-id="902"]')).borderTopColor,
+         "PLN-004 (control): a live+staged row's border colour matches a live-only row's — Live wins the colour too, not just the shape");
+
       // C-001 / C-005 read side: render a crafted plan covering every link state (scripture-linked,
       // deck-linked, deck-MISSING, unlinked) and assert the run-sheet chips. planRenderBuilder is a
       // global (top-level fn), driven directly the same way the M1 checks drive render().
@@ -6298,6 +6411,18 @@ DRIVER = r"""
          "SP C-001: a deck-linked item resolves the deck name from the lazily-loaded deck list");
       var mChip = document.querySelector("#plan-b-list .link-missing");
       ok(mChip && /missing/i.test(mChip.textContent), "SP C-001: a deck whose id is gone shows a ⚠ missing chip");
+      // PLN-004 (DESIGN-2.0-PARITY-AUDIT-plan.md): the handoff is explicit — "Preview/staged =
+      // green/dashed, Live/Program = red/solid" — and the staged row's border used to stay solid.
+      // Item 11 above is staged-only (is_staged:true, is_live:false); item 12 is neither, so it is
+      // the control proving the dashed rule is scoped to .is-staged, not a global border reset.
+      var stagedBRow = document.querySelector('#plan-b-list .plan-b-row[data-item-id="11"]');
+      ok(stagedBRow.classList.contains("is-staged") && !stagedBRow.classList.contains("is-live"),
+         "PLN-004 (setup): item 11 is staged-only, so the border-style assertion below is not vacuous");
+      ok(getComputedStyle(stagedBRow).borderTopStyle === "dashed",
+         "PLN-004: a staged run-sheet row's border is dashed, per the handoff — got " + getComputedStyle(stagedBRow).borderTopStyle);
+      var plainBRow = document.querySelector('#plan-b-list .plan-b-row[data-item-id="12"]');
+      ok(getComputedStyle(plainBRow).borderTopStyle === "solid",
+         "PLN-004 (control): a row that is neither live nor staged keeps its ordinary solid border");
       // C-005 inspector: a linked scripture item → chip + Change…/Unlink/Remove.
       document.querySelectorAll("#plan-b-list .plan-b-row")[0].click();
       var insp = el("plan-b-insp");
@@ -9905,6 +10030,23 @@ right after a generate/save");
            "DLM-001 (control): --sc-primary-hover itself still measures BELOW AA-normal for white (" + _f(_cr([255,255,255,1], wDlOldHover)) + ":1) — the TOKEN VALUE is untouched; only this rule stopped using it");
       }
 
+      // --- DLM-007 / DLM-008: Download modal geometry drift (17tnw2axptx) --------------------
+      // Cosmetic card/button radius drift vs Figma 396:124 — card 14→16, button 8→10. `#dl-modal`
+      // and its buttons are always present in the DOM (only the `.dl-modal-back` wrapper toggles
+      // `hidden`), so computed border-radius is measurable regardless of visibility.
+      var wDlCard = el("dl-modal");
+      ok(!!wDlCard, "DLM-007 (premise): the download modal card exists in the DOM");
+      if (wDlCard) {
+        ok(getComputedStyle(wDlCard).borderRadius === "16px",
+           "DLM-007: .dl-modal card radius matches the Figma spec (16px), found " + getComputedStyle(wDlCard).borderRadius);
+      }
+      var wDlBtn = el("dl-modal-secondary");
+      ok(!!wDlBtn, "DLM-008 (premise): a .dl-btn (Cancel) exists in the DOM to measure");
+      if (wDlBtn) {
+        ok(getComputedStyle(wDlBtn).borderRadius === "10px",
+           "DLM-008: .dl-btn radius matches the Figma spec (10px), found " + getComputedStyle(wDlBtn).borderRadius);
+      }
+
       // --- GO-LIVE-HOVER / TIMER-START-HOVER: .tb-golive/.timer-start kept `filter:
       // brightness(1.06)` on :hover when their REST gradient was darkened (#10 above,
       // app.css:5002-5007) to fix white-on-the-light-stop failing AA. Brightening the ALREADY
@@ -10715,6 +10857,37 @@ right after a generate/save");
          "CON-102: a second activation still sends on:false — the control is not a disguised toggle");
       ok(!el("blackout-explain") || el("blackout-explain").hidden,
          "CON-102: the audience is NOT re-blacked by pressing Restore twice");
+
+      // --- CON-098 (blocker): the emergency-footer CONTAINER itself re-tints on blackout,
+      // not just the button label/explanation. A prior pass judged the Figma re-tint
+      // invisible using the WCAG relative-luminance ratio between the two grounds (1.03:1) —
+      // that ratio is a text-legibility metric and compresses toward 1:1 for any two very-dark
+      // colours regardless of hue, so it does not actually answer "is this visible". Re-checked
+      // in CIELAB (ticket 17tnw2axpta): deltaE76 ~3.5 for the background and ~13.4 for the
+      // border shift — past the ~2.3 JND, so the re-tint is real. State is restored by the
+      // block above, so this starts from the resting ground, engages via the real command
+      // path (never by poking the view), and restores again so later checks in this suite see
+      // the resting footer, not an engaged one. ---
+      var wEmFoot = el("emergency");
+      ok(!wEmFoot.classList.contains("blackout"),
+         "CON-098 (control): with output live the footer carries no re-tint class");
+      var wRestBg = getComputedStyle(wEmFoot).backgroundColor;
+      var wRestBorder = getComputedStyle(wEmFoot).borderTopColor;
+      wBoBtn.click(); // engage via the real command path
+      ok(await wWait(function(){ return wEmFoot.classList.contains("blackout"); }),
+         "CON-098 (setup): engaging blackout adds the re-tint class to the real #emergency element");
+      var wEngBg = getComputedStyle(wEmFoot).backgroundColor;
+      var wEngBorder = getComputedStyle(wEmFoot).borderTopColor;
+      ok(wEngBg !== wRestBg,
+         "CON-098: the footer's computed background genuinely changes on blackout (" + wRestBg + " -> " + wEngBg + ")");
+      ok(wEngBorder !== wRestBorder,
+         "CON-098: the footer's computed border colour changes too, not just the background (" + wRestBorder + " -> " + wEngBorder + ")");
+      ok(wEngBg === "rgb(26, 12, 12)",
+         "CON-098: the engaged ground is exactly the canonical frame's #1a0c0c (337:203), not an approximation");
+      var wRes2 = el("restore-output");
+      wRes2.click();
+      ok(await wWait(function(){ return !wEmFoot.classList.contains("blackout"); }),
+         "CON-098: restoring output un-tints the footer again (cleanup — later checks expect the resting footer)");
 
       // --- §10 case 5: the emergency-ready chip is the canonical frame's PILL --------------
       // Asserting the declared radius alone would pass on an element nobody paints, and "999px"

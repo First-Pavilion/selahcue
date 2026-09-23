@@ -559,7 +559,7 @@ impl ScreenRegistry {
     }
 }
 
-/// Resolve a theme NAME to a `Theme`: a built-in (classic/high-contrast/lower-third)
+/// Resolve a theme NAME to a `Theme`: a built-in (`Theme::BUILTIN_NAMES`)
 /// first, else a SAVED-library name (its canonical JSON). `None` for an unknown name
 /// (86ajq69ft). A **free** fn (takes the library map, not `&self`) so a caller can
 /// re-resolve overrides while holding a mutable borrow of another controller field

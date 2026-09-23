@@ -155,6 +155,29 @@ void main() {
     expect(v.stagedIndex, isNull);
     expect(v.timer!.remainingSecs, 90);
     expect(v.timer!.running, isTrue);
+    // A pre-total_secs host omits the field entirely; the model must not invent one.
+    expect(v.timer!.totalSecs, isNull);
+  });
+
+  test(
+      'operator_state timer parses total_secs for Reset (Rust fixture, MOB-009)',
+      () {
+    // Pinned by the Rust twin `timer_snapshot_total_secs_is_a_pinned_wire_shape_for_reset_and_time_up`
+    // (test_protocol.rs) — the EXACT string that test also deserializes. `total_secs` is what
+    // the Reset control (timer_tab.dart) restarts the countdown at; this proves the Dart model
+    // actually reads it rather than silently dropping an additive field it does not know about.
+    const fixture =
+        '{"event":"operator_state","view":{"plan_name":"Sunday","items":'
+        '[{"id":1,"kind":"song","title":"Opening","is_live":true,"is_staged":false}],'
+        '"live_index":0,"staged_index":null,"blackout":false,'
+        '"timer":{"remaining_secs":90,"elapsed_secs":30,"time_up":false,"warn":false,'
+        '"running":true,"total_secs":300}}}';
+    final m =
+        ServerMessage.fromJson(jsonDecode(fixture) as Map<String, dynamic>);
+    expect(m, isA<OperatorState>());
+    final v = (m as OperatorState).view;
+    expect(v.timer!.remainingSecs, 90);
+    expect(v.timer!.totalSecs, 300);
   });
 
   test('unknown events degrade gracefully', () {

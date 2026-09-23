@@ -1386,6 +1386,63 @@ fn wire_fixtures_are_stable_for_cross_language_clients() {
     }
 }
 
+#[test]
+fn timer_snapshot_total_secs_is_a_pinned_wire_shape_for_reset_and_time_up() {
+    // MOB-009: the mobile `Reset` control composes the EXISTING `start_timer` command with the
+    // host's own `total_secs` (rather than a new `reset_timer` command) — exactly how the
+    // desktop operator console's own Reset button already works (`selahcue-operator/dist/
+    // app.js`'s `timer-reset` handler). `total_secs`/`paused` landed with the Design 2.0
+    // operator console (desktop-only at the time) and were never mirrored into the Dart
+    // client's `TimerSnapshot` or into this pinned fixture; this test (and its Dart twin in
+    // `protocol_test.dart`) close that gap so a field the desktop has reported for a while is
+    // now contract-locked for the client that has started reading it.
+    use selahcue_lan::protocol::TimerSnapshot;
+
+    // to_json: the POPULATED shape. `paused` is skip-if-false, so it stays absent here.
+    assert_eq!(
+        to_json(&TimerSnapshot {
+            remaining_secs: Some(90),
+            elapsed_secs: 30,
+            time_up: false,
+            warn: false,
+            running: true,
+            paused: false,
+            total_secs: Some(300),
+        })
+        .unwrap(),
+        r#"{"remaining_secs":90,"elapsed_secs":30,"time_up":false,"warn":false,"running":true,"total_secs":300}"#
+    );
+    // Paused mid-countdown: `paused` now serializes too (skip-if-false only omits it when
+    // false — it is not "omitted therefore assumed false").
+    assert_eq!(
+        to_json(&TimerSnapshot {
+            remaining_secs: Some(90),
+            elapsed_secs: 30,
+            time_up: false,
+            warn: false,
+            running: false,
+            paused: true,
+            total_secs: Some(300),
+        })
+        .unwrap(),
+        r#"{"remaining_secs":90,"elapsed_secs":30,"time_up":false,"warn":false,"running":false,"paused":true,"total_secs":300}"#
+    );
+
+    // The SAME string the Dart `TimerSnapshot.fromJson` test parses
+    // (`operator_state timer parses total_secs for Reset (Rust fixture)` in
+    // `protocol_test.dart`) — this is the fixture Reset actually reads `total_secs` from.
+    let fixture = r#"{"event":"operator_state","view":{"plan_name":"Sunday","items":[{"id":1,"kind":"song","title":"Opening","is_live":true,"is_staged":false}],"live_index":0,"staged_index":null,"blackout":false,"timer":{"remaining_secs":90,"elapsed_secs":30,"time_up":false,"warn":false,"running":true,"total_secs":300}}}"#;
+    let state: ServerMessage = from_json(fixture).unwrap();
+    match state {
+        ServerMessage::OperatorState { view } => {
+            let timer = view.timer.expect("fixture carries a timer");
+            assert_eq!(timer.remaining_secs, Some(90));
+            assert_eq!(timer.total_secs, Some(300));
+        }
+        other => panic!("expected operator_state, got {other:?}"),
+    }
+}
+
 // --- Songs: additive PlanItemView slide fields + AddItem content (S8-1) ---
 
 #[test]
