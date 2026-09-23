@@ -72,30 +72,39 @@ class SelahSession implements ControllerSession {
   ///
   /// Not depth-limited by this field itself: nothing stops overlapping
   /// [command] calls from chaining onto this indefinitely, so the bound has
-  /// to come from the callers. It does: every command-issuing flow in the
-  /// app guards itself against re-entry before it will queue a turn —
-  /// [LiveController.refresh] with `_refreshing` (the 1s poll never queues a
-  /// second turn), [LiveController.act] with `_acting` (17tnw2ay2kk, closing
-  /// the exact gap this file used to flag as an open follow-up: a double-tap
-  /// or a burst of impatient taps against a slow/dead host used to each
-  /// queue their own turn and wait up to `commandTimeout` for the ones ahead
-  /// of it — regression-tested in `live_controller_reentrancy_test.dart`),
-  /// and the scripture chapter fetch with a caller-side `_loading` flag in
-  /// `ScriptureTab` (the one screen that calls [LiveController.fetchChapter]
-  /// directly, mirroring how [_confirmedView] is bounded by the gesture that
-  /// calls it rather than by a guard of its own).
+  /// to come from the callers. It does: the app has exactly three independent
+  /// single-flight domains that guard against queuing a turn —
   ///
-  /// Those guards are each single-flight *within* their own flow, not
-  /// mutually exclusive *across* flows — `act()` does not check
+  ///  - `LiveController.refresh()`, guarded by `_refreshing` (the 1s poll
+  ///    never queues a second turn).
+  ///  - `LiveController.act()`, `.selectAndGoLive()` and
+  ///    `.stageScriptureAndGoLive()`, all sharing ONE `_acting` claim. This
+  ///    used to be narrower and wrong in two stages, both found by review of
+  ///    this same investigation: first `act()` alone had no guard at all
+  ///    (17tnw2ay2kk closed that — a double-tap or a burst of impatient taps
+  ///    against a slow/dead host used to each queue their own turn and wait
+  ///    up to `commandTimeout` for the ones ahead of it). Then the compound
+  ///    gestures were found to release `_acting` after their FIRST internal
+  ///    command, leaving the read between their two commands (and their
+  ///    second command itself) unguarded — a second tap in that window could
+  ///    land its own command on the wire BETWEEN a gesture's stage and its
+  ///    go-live, proven live during review. `_acting` now spans a gesture's
+  ///    full duration, not just its first command — see
+  ///    `live_controller_reentrancy_test.dart`.
+  ///  - The scripture chapter fetch, guarded caller-side by a `_loading` flag
+  ///    in `ScriptureTab` (the one screen that calls `fetchChapter` directly).
+  ///
+  /// Those three domains are each single-flight *within* themselves, not
+  /// mutually exclusive *across* each other — `act()` does not check
   /// `_refreshing` and `refresh()` does not check `_acting`, so a poll tick
   /// and an in-flight command (and, separately, a chapter fetch) can
   /// genuinely overlap. So the real bound on `_turn`'s chain depth is the
-  /// small, fixed number of distinct command-issuing flows the app has
-  /// (three today), not the size of any unbounded input like tap rate or
-  /// keystrokes — a materially different, and much smaller, worst case than
-  /// this file originally recorded. If a new flow calls [command] without
-  /// its own single-flight guard, that changes — investigated alongside
-  /// [StreamQueue._buffer] below.
+  /// small, fixed number of domains the app has (three today), not the size
+  /// of any unbounded input like tap rate or keystrokes — a materially
+  /// different, and much smaller, worst case than this file originally
+  /// recorded. If a new call site reaches `command()` without joining one of
+  /// these three domains (or adding a fourth), that changes — investigated
+  /// alongside `StreamQueue._buffer` below.
   Future<void> _turn = Future.value();
 
   SelahSession._(this._ws, this._incoming, this.role);
@@ -233,21 +242,50 @@ class SelahSession implements ControllerSession {
 /// caller's job: `command()` discards stale correlated replies; otherwise the
 /// protocol is lockstep (one outstanding request per connection).
 ///
-/// `_buffer` has no cap. That is currently safe rather than accidental: the
-/// host (`selahcue-lan`'s `request_loop`, `server.rs`) answers exactly one
+/// `_buffer` has no cap. **This is safe against today's host IMPLEMENTATION,
+/// not against the untrusted LAN peer the architecture actually posits** — the
+/// distinction matters and the rest of this comment is precise about it.
+///
+/// Post-pairing (`request_loop`, `server.rs`), the host answers exactly one
 /// frame per frame it receives and never pushes unsolicited — confirmed by
-/// reading `request_loop` (a single `send_json` per loop iteration, no
-/// concurrent writer task) and corroborated by
+/// reading `request_loop` itself (a single `send_json` per loop iteration, no
+/// concurrent writer task; `ws` is a `&mut` held exclusively by the loop, so a
+/// second writer isn't just absent, it can't compile) and corroborated by
 /// `implementation/desktop/CODE-REVIEW-batch7e-transport.md`, which already
 /// notes unsolicited server pushes as *future* work, not present behaviour.
 /// `ServerMessage::State`'s "unsolicited or in reply to `GetState`" doc
 /// comment (`selahcue-lan/src/protocol.rs`) describes the wire format's
-/// range, not what this server does today. So every frame that lands here
-/// was requested by this client, and `command()`'s read-until-reply loop
-/// drains at least one per outstanding request — `_buffer` cannot outgrow
-/// the client's own request rate. If the host ever starts pushing
-/// unsolicited state (e.g. to replace 1s polling), this stops holding and
-/// `_buffer` needs a cap + drop-oldest-unsolicited policy before that ships.
+/// range, not what this server does today. (Scoped to *post-pairing*
+/// deliberately: the PAIRING handshake genuinely sends two frames for one —
+/// `Parked` then a terminal `Granted`/`Rejected` — but that is bounded by a
+/// different, already-reasoned-about mechanism: a single-shot park capped by
+/// `PAIRING_PARK_TIMEOUT`, not a repeating one-request-many-replies pattern,
+/// and `pair()` above loops until the terminal frame rather than treating the
+/// first reply as final.)
+///
+/// What actually prevents pile-up from a late reply is NOT primarily the
+/// per-frame `request_id` discard in `command()` — only `Ack`/`Denied` carry
+/// one; `OperatorState`/`ErrorMessage`/`ChapterResult` don't, so a late reply
+/// to a timed-out `operatorState()`/`fetchChapter()` call is accepted as the
+/// NEXT command's reply, not discarded. What actually bounds it is the
+/// teardown invariant `command()`'s own doc comment states: a
+/// [SessionException] (e.g. a timeout) means the WHOLE session — this
+/// `StreamQueue` included — gets torn down and reconnected, not retried on
+/// the same socket. That is what stops a bursty-timeout pattern from
+/// accumulating stale entries here.
+///
+/// So: **the no-cap design is safe only as long as (a) the current host
+/// implementation's one-reply-per-request behaviour holds, AND (b) every
+/// caller keeps the teardown invariant.** Two things reopen this, not one —
+/// add a cap + drop-oldest policy if EITHER becomes false:
+///  - the host starts pushing unsolicited state (e.g. to replace 1s polling), or
+///  - a peer holding the pinned TLS key — the pin authenticates WHO, not WHAT
+///    it sends, and this repo's own architecture treats the LAN control plane
+///    as untrusted — sends frames faster than this client's own request rate
+///    calls for. `StreamQueue.listen` below never pauses its subscription and
+///    imposes no per-frame size cap or rate limit of its own, so today that
+///    growth path is bounded only by the honesty of whoever holds the key,
+///    not by anything in this file.
 class StreamQueue {
   final List<dynamic> _buffer = [];
   final List<Completer<dynamic>> _waiters = [];

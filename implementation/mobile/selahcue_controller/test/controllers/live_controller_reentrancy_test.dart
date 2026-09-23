@@ -46,11 +46,20 @@ class _GatingSession implements ControllerSession {
   /// blip mid-command.
   bool throwOnCommand = false;
 
-  /// Set by the test to hold `operatorState()` (the [_confirmedView] read
-  /// inside a compound gesture) open, so it can observe/act while a gesture
-  /// is between its two commands rather than only while its first command is
-  /// still on the wire.
+  /// Set by the test to hold a specific `operatorState()` call open, so it can
+  /// observe/act while a gesture is between its two commands rather than only
+  /// while its first command is still on the wire. Gating by CALL NUMBER
+  /// (1-based, via [operatorStateGateOnCall]) rather than gating every call is
+  /// essential here: [LiveController.act] itself already ends with a
+  /// `refresh()` that reads `operatorState()` (call #1 in a compound
+  /// gesture's first command) — a gate on every call would block THAT read
+  /// too and never let the test reach the real, previously-unguarded window
+  /// around [LiveController]'s `_confirmedView` read (call #2). An earlier
+  /// draft of this fake gated unconditionally and silently exercised only the
+  /// existing single-command guard, not the compound-gesture gap under test.
   Completer<void>? operatorStateGate;
+  int operatorStateGateOnCall = -1;
+  int operatorStateCalls = 0;
 
   @override
   Future<ServerMessage> command(Map<String, dynamic> cmd) async {
@@ -67,8 +76,10 @@ class _GatingSession implements ControllerSession {
 
   @override
   Future<OperatorStateView> operatorState() async {
-    final g = operatorStateGate;
-    if (g != null) await g.future;
+    operatorStateCalls++;
+    if (operatorStateCalls == operatorStateGateOnCall) {
+      await operatorStateGate!.future;
+    }
     return view;
   }
 
@@ -270,8 +281,15 @@ void main() {
     await _synced(live);
 
     // Hold the confirming state-read open so the test can act while
-    // selectAndGoLive is between its two commands.
+    // selectAndGoLive is between its two commands. Counted relative to the
+    // baseline AFTER the constructor's own initial refresh() (already spent
+    // by `_synced`), not from zero — the next call is act()'s OWN trailing
+    // refresh() for `select_item`, which must NOT be gated (that would just
+    // re-exercise act()'s existing single-command guard); the one after that
+    // is `_confirmedView`'s read — the previously-unguarded window.
+    final baseline = session.operatorStateCalls;
     session.operatorStateGate = Completer<void>();
+    session.operatorStateGateOnCall = baseline + 2;
 
     final gesture = live.selectAndGoLive(_planItemId);
     await pumpEventQueue();
@@ -316,7 +334,9 @@ void main() {
     addTearDown(live.dispose);
     await _synced(live);
 
+    final baseline = session.operatorStateCalls;
     session.operatorStateGate = Completer<void>();
+    session.operatorStateGateOnCall = baseline + 2;
     final gesture = live.stageScriptureAndGoLive('Romans 8:28');
     await pumpEventQueue();
     expect(session.sent, ['stage_scripture']);
