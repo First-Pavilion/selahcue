@@ -886,7 +886,18 @@ if not check_jump_call_site_is_click_only():
 # of the other 1822 checks moved, then restored. Confirmed by two independent clean runs against
 # the real post-fix tree: 1824, 0 FAIL against this branch's own baseline (1818, pre-Download-
 # modal-merge). Re-derived below against the actual merged tree instead of trusting that number.
-EXPECTED_MIN_CHECKS = 1828
+#
+# 1828 -> ?: ClickUp 17tnw2axpta (Console: blackout footer + STAGED-pill contrast, PR #66),
+# authored back near the 1625 baseline (well before this file's history above existed in its
+# current form) and now finally rebased in. Own contribution: CON-054 (a real STAGED pill,
+# rewritten mid-review after Cody found the first version gated on `.verse.cursor` — which moves
+# for every browse gesture including the deliberately read-only ones — to instead gate on the
+# host's own `staged_scripture` readback via a new `syncStagedPill()`) and CON-098 (the emergency
+# footer's background/border genuinely re-tint on a real blackout engage/restore round trip).
+# Both mutation-verified at authoring time. Per this constant's own repeated lesson: re-derived
+# empirically below, not hand-summed against this branch's own long-stale prior count (1640).
+# Confirmed by a clean run: 1843, 0 FAIL.
+EXPECTED_MIN_CHECKS = 1843
 
 
 def find_chrome():
@@ -3372,6 +3383,53 @@ DRIVER = r"""
       await sleep(200); // setCursor(idx, false) now runs too — confirm it stays quiet as well
       ok(!window.__calls.slice(callsBeforeArm).some(function (c) { return c.cmd === "stage_scripture" || c.cmd === "follow_scripture"; }),
          "CON-134 (Sana finding B): once the deferred fetch resolves and Edit's own setCursor(idx, false) runs, still nothing stages — the window is closed, not just narrowed");
+
+      // === CON-054 (blocker, WCAG 1.4.1) — the staged verse's non-colour signal, gated on the
+      // HOST's own staged_scripture readback (Cody's review of PR #66, remediated): the browse
+      // cursor (.verse.cursor) moves for every navigation gesture, INCLUDING the deliberately
+      // read-only ones (Edit on a low-confidence detection, History's re-stage) that pass
+      // stage=false specifically so nothing is staged. Cody reproduced live that gating the
+      // literal "STAGED" text on .cursor alone made the pill lie for exactly those flows. This
+      // reproduces his exact scenario directly — window.__openChapterToBrowse (stage=false, the
+      // same entry point Edit/History use) must move the cursor WITHOUT painting the pill — then
+      // proves the pill turns on only once a real host readback (driven through render(), not
+      // poked at the class) confirms the SAME verse, and turns off again once the host says so.
+      // The console surface itself was last switched away to theme-designer a few tests back, so
+      // switch back first — otherwise the panel is hidden and getClientRects() would read empty
+      // for reasons that have nothing to do with the pill.
+      document.querySelector('.nav-item[data-surface="console"]').click();
+      render(Object.assign({}, baseView, { staged_scripture: null, staged_index: null }));
+      window.__openChapterToBrowse("Isaiah 61:5"); // stage=false — the real Edit/History entry point
+      await waitFor(function () { return !!el("verse-list").querySelector(".verse.cursor"); });
+      var vRows = el("verse-list").querySelectorAll(".verse");
+      ok(vRows.length === 2, "CON-054 (setup): the fixture chapter renders both its verses");
+      var vCursorRow = el("verse-list").querySelector(".verse.cursor");
+      var vPill = vCursorRow.querySelector(".verse-staged-pill");
+      ok(!vCursorRow.classList.contains("is-staged") &&
+         (!vPill || getComputedStyle(vPill).display === "none" || vPill.getClientRects().length === 0),
+         "CON-054 (Cody's finding, reproduced + fixed): browsing a verse via the READ-ONLY __openChapterToBrowse path moves the cursor but paints no STAGED pill — nothing was ever staged");
+      // Now the host confirms — via a real render(), the same path syncChrome/setPanel already
+      // trust for the Preview panel, never by poking the class directly.
+      render(Object.assign({}, baseView, { staged_scripture: "Isaiah 61:5", staged_index: null }));
+      ok(vCursorRow.classList.contains("is-staged"), "CON-054 (setup): the host's staged_scripture readback now matches this row");
+      vPill = vCursorRow.querySelector(".verse-staged-pill");
+      ok(!!vPill && getComputedStyle(vPill).display !== "none" && vPill.getClientRects().length > 0,
+         "CON-054: once the HOST confirms, the staged verse row paints a STAGED pill (computed display, not just the class)");
+      ok(vPill.textContent.trim() === "STAGED",
+         "CON-054: the pill states the word STAGED — a non-colour signal alongside the row's green tint (WCAG 1.4.1)");
+      var vOtherRow = Array.prototype.filter.call(vRows, function (r) { return r !== vCursorRow; })[0];
+      ok(!!vOtherRow, "CON-054 (setup): a second, non-staged verse row exists to serve as a negative control");
+      var vOtherPill = vOtherRow.querySelector(".verse-staged-pill");
+      ok(!vOtherRow.classList.contains("is-staged") && !!vOtherPill && getComputedStyle(vOtherPill).display === "none",
+         "CON-054 (negative control): a DIFFERENT verse that is not the host's staged_scripture paints no STAGED pill");
+      var vPillCs = getComputedStyle(vPill);
+      var vPillR = _cr(_rgba(vPillCs.color), _rgba(vPillCs.backgroundColor));
+      ok(vPillR >= 4.5, "CON-054: the STAGED pill's label clears AA-normal on its own fill (" + _f(vPillR) + ":1)");
+      // De-stage (e.g. Clear/blackout on the host) — the pill must be reactive, not sticky.
+      render(Object.assign({}, baseView, { staged_scripture: null, staged_index: null }));
+      ok(!vCursorRow.classList.contains("is-staged"),
+         "CON-054: once the host reports nothing staged, the pill is removed again — it is not sticky once painted");
+
       // Sana's non-blocking finding: a MISSING confidence used to fail OPEN into the confident
       // branch (Approve fast-path) purely because `hasConfidence && …` short-circuits false on
       // no score at all — an unscored match is at least as uncertain as a known-low one.
@@ -10797,6 +10855,37 @@ right after a generate/save");
          "CON-102: a second activation still sends on:false — the control is not a disguised toggle");
       ok(!el("blackout-explain") || el("blackout-explain").hidden,
          "CON-102: the audience is NOT re-blacked by pressing Restore twice");
+
+      // --- CON-098 (blocker): the emergency-footer CONTAINER itself re-tints on blackout,
+      // not just the button label/explanation. A prior pass judged the Figma re-tint
+      // invisible using the WCAG relative-luminance ratio between the two grounds (1.03:1) —
+      // that ratio is a text-legibility metric and compresses toward 1:1 for any two very-dark
+      // colours regardless of hue, so it does not actually answer "is this visible". Re-checked
+      // in CIELAB (ticket 17tnw2axpta): deltaE76 ~3.5 for the background and ~13.4 for the
+      // border shift — past the ~2.3 JND, so the re-tint is real. State is restored by the
+      // block above, so this starts from the resting ground, engages via the real command
+      // path (never by poking the view), and restores again so later checks in this suite see
+      // the resting footer, not an engaged one. ---
+      var wEmFoot = el("emergency");
+      ok(!wEmFoot.classList.contains("blackout"),
+         "CON-098 (control): with output live the footer carries no re-tint class");
+      var wRestBg = getComputedStyle(wEmFoot).backgroundColor;
+      var wRestBorder = getComputedStyle(wEmFoot).borderTopColor;
+      wBoBtn.click(); // engage via the real command path
+      ok(await wWait(function(){ return wEmFoot.classList.contains("blackout"); }),
+         "CON-098 (setup): engaging blackout adds the re-tint class to the real #emergency element");
+      var wEngBg = getComputedStyle(wEmFoot).backgroundColor;
+      var wEngBorder = getComputedStyle(wEmFoot).borderTopColor;
+      ok(wEngBg !== wRestBg,
+         "CON-098: the footer's computed background genuinely changes on blackout (" + wRestBg + " -> " + wEngBg + ")");
+      ok(wEngBorder !== wRestBorder,
+         "CON-098: the footer's computed border colour changes too, not just the background (" + wRestBorder + " -> " + wEngBorder + ")");
+      ok(wEngBg === "rgb(26, 12, 12)",
+         "CON-098: the engaged ground is exactly the canonical frame's #1a0c0c (337:203), not an approximation");
+      var wRes2 = el("restore-output");
+      wRes2.click();
+      ok(await wWait(function(){ return !wEmFoot.classList.contains("blackout"); }),
+         "CON-098: restoring output un-tints the footer again (cleanup — later checks expect the resting footer)");
 
       // --- §10 case 5: the emergency-ready chip is the canonical frame's PILL --------------
       // Asserting the declared radius alone would pass on an element nobody paints, and "999px"

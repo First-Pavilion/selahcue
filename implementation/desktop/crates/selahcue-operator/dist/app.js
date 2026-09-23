@@ -3,6 +3,17 @@
       let confirmDelete = null; // item id in the two-click delete confirm state
       let lastRendered = "";    // skip DOM rebuilds when nothing changed
       let resetInFlight = false; // guards Timer Reset against a double-fire (the 1s poll re-enables the button)
+      // Cody's review of PR (CON-054 remediation): the HOST's own readback of what is actually
+      // staged, not the client-side browse cursor. `.verse.cursor` (set unconditionally by
+      // setCursor regardless of its `stage` argument) means "browser cursor is here", not
+      // "the host confirmed this is staged" — a real gap Sana's PR #61 finding was about for a
+      // different control (Edit/History silently staging), reproduced live here by Cody: Edit's
+      // read-only __openChapterToBrowse path (stage=false, no stage_scripture ever sent) still
+      // moves the cursor, so a pill gated on .cursor alone would assert STAGED for a row that was
+      // only ever browsed. Kept separately from .cursor (which still drives the pre-existing,
+      // out-of-scope green tint) so the new STAGED text label can never say something the host
+      // has not actually confirmed.
+      let lastStagedScripture = null;
 
       function render(view) {
         // Chrome (emergency footer, LIVE chip, timer, blackout) syncs on EVERY
@@ -236,6 +247,11 @@
           "staged",
           "Nothing staged"
         );
+        // CON-054 remediation (Cody's review): the verse-row STAGED pill rides on the host's
+        // OWN staged_scripture readback — the same field the Preview panel above already
+        // trusts — never on the browse cursor. Runs on every poll, same as the panel sync.
+        lastStagedScripture = view.staged_scripture || null;
+        syncStagedPill();
         // A deck slide presented via the authored-slide path (the Live Console slide picker's Go
         // Live) sets live_authored_id and clears live_index — reflect it on the Live panel (the real
         // slide is on the canvas), titled by the staged presentation, so it isn't shown as idle.
@@ -335,6 +351,8 @@
         // neither. The note is general guidance; during a blackout the specific state wins.
         if (bNote) bNote.hidden = !!view.blackout;
         document.getElementById("live-panel").classList.toggle("blackout", view.blackout);
+        // CON-098 (blocker) — the footer bar itself re-tints, not just the button label.
+        document.getElementById("emergency").classList.toggle("blackout", view.blackout);
 
         // Draw the TRUE composited Preview/Live output (86ajtwq28) — a debounced, read-only
         // host readback (rendering never changes what is on air). Only re-render when a
@@ -3566,6 +3584,28 @@
         return currentChapter.reference + ":" + v[0];
       }
 
+      // CON-054 remediation (Cody's review of PR #66) — toggles `.is-staged` on whichever verse
+      // row's own reference matches the HOST's `staged_scripture` readback (`lastStagedScripture`,
+      // kept in sync by syncChrome on every poll), never on `.cursor`. `.cursor` moves for every
+      // browse gesture, including the deliberately read-only ones (Edit on a low-confidence
+      // detection, History's re-stage) that pass stage=false specifically so nothing is staged —
+      // gating the STAGED text pill on it would have the pill lie in exactly the case those flows
+      // exist to keep honest. Safe to call with no chapter loaded (`#verse-list` is then empty) and
+      // safe to call before the first poll ever lands (`lastStagedScripture` starts null, so no
+      // row matches). A staged VERSE RANGE (e.g. "Isaiah 61:5-7") does not exactly equal any single
+      // row's own reference, so no row claims the pill for a range either — conservative, not a
+      // regression: this UI does not highlight a whole staged range today.
+      function syncStagedPill() {
+        const list = document.getElementById("verse-list");
+        if (!list) return;
+        Array.prototype.forEach.call(list.children, (row) => {
+          row.classList.toggle(
+            "is-staged",
+            !!lastStagedScripture && row.dataset.ref === lastStagedScripture
+          );
+        });
+      }
+
       const setStatus = (msg) => {
         document.getElementById("scrip-status").textContent = msg || "";
       };
@@ -3628,13 +3668,29 @@
           const row = document.createElement("div");
           row.className = "verse";
           row.setAttribute("role", "option");
+          // Own reference, in the exact format stage_scripture/staged_scripture use elsewhere
+          // in this file (matches verseRef(i)) — syncStagedPill compares this against the
+          // host's own readback, never the browse cursor. See its own comment for why.
+          row.dataset.ref = currentChapter.reference + ":" + num;
           const n = document.createElement("span");
           n.className = "vnum";
           n.textContent = num;
           const t = document.createElement("span");
           t.textContent = text;
+          // CON-054 (blocker, WCAG 1.4.1) — the staged verse was signalled by the row's
+          // green tint alone (.verse.cursor). This pill is a text indicator, shown only
+          // once the HOST confirms this verse is actually staged (.is-staged, toggled by
+          // syncStagedPill — never .cursor, which also moves for read-only browsing) — a
+          // colour-blind or low-vision operator now has a non-colour signal too, and it is
+          // never a false claim about a verse that was only ever browsed to.
+          // Geometry/ink from Figma 322:181/182: bg/border/ink are the existing
+          // --sc-preview-* tokens (#10231c / #1c3a2e / #35c08a) verbatim.
+          const staged = document.createElement("span");
+          staged.className = "verse-staged-pill";
+          staged.textContent = "STAGED";
           row.appendChild(n);
           row.appendChild(t);
+          row.appendChild(staged);
           row.onclick = () => setCursor(i, true, true);
           // Double-click = straight to live (owner request 86ajpwcxc): the
           // explicit double gesture is the confirmation, bypassing Preview.
@@ -3673,6 +3729,10 @@
           };
           list.appendChild(row);
         });
+        // Freshly built rows carry no .is-staged yet — sync immediately against the last known
+        // host readback so there is no flash of "nothing staged" (or worse, a stale claim on
+        // the wrong row) before the next 1s poll's syncChrome call would otherwise catch it up.
+        syncStagedPill();
       }
 
       // cursorVerseNum is a verse NUMBER (not an index): KJV/WEB verse
