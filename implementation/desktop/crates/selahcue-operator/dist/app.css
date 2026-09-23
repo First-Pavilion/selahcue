@@ -6131,7 +6131,9 @@
         max-height: 100%;
         background: var(--sc-surface);
         border: 1px solid var(--sc-border);
-        border-radius: 14px;
+        /* DLM-007: Figma spec 396:124 names card radius 16 (was 14). Cosmetic, no INTENTIONAL-
+           DEVIATION verdict recorded against it — 17tnw2axptx. */
+        border-radius: 16px;
         padding: 20px;
         box-shadow: 0 24px 60px rgba(0, 0, 0, 0.6);
       }
@@ -6204,7 +6206,9 @@
       .dl-btn {
         min-height: 40px; /* ≥40px hit target */
         padding: 8px 16px;
-        border-radius: 8px;
+        /* DLM-008: Figma spec 396:124 names button radius 10 (was 8). Cosmetic, no INTENTIONAL-
+           DEVIATION verdict recorded against it — 17tnw2axptx. */
+        border-radius: 10px;
         font: inherit;
         font-weight: 600;
         cursor: pointer;

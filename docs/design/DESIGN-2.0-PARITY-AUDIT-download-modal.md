@@ -135,6 +135,40 @@ section is additive; the table above is left as originally written.
 |---|---|
 | `DLM-001` | `.dl-btn-primary:hover` (`app.css:5866-5870`): changed from `background: var(--sc-primary-hover)` (**3.78:1**) to a flat `background: #5a48d0; border-color: #5a48d0` (**6.42:1**), matching `.pm-btn-primary:hover` (`app.css:5106`) exactly — rest was already accessible at 4.72:1 (solid `var(--sc-primary)`, unlike TD-012/PSC-005 this button never used a gradient), so only the hover rule needed a fix. Verified by 6 new assertions in `scripts/operator_headless.py` (the `DLM-001` block), mutation-tested. Commit `d8ecf4b`. |
 
+## Reconciliation — 2026-09-22
+
+**Author:** Farah (Frontend Engineer). **Scope:** the 7 non-`DLM-001` findings, under ClickUp
+task `17tnw2axptx`. Re-verified every row above against current `main` first — all still matched
+what this doc records; nothing had been incidentally touched by the `DLM-001` work beyond
+`DLM-001` itself. This section is additive.
+
+### FIXED
+
+| Finding | Evidence |
+|---|---|
+| `DLM-007` | `.dl-modal` card radius (`app.css`): `14px` → `16px`, matching the Figma spec exactly. No INTENTIONAL-DEVIATION verdict was recorded against it, so corrected toward Figma. Locked in by 2 new assertions in `scripts/operator_headless.py` (the `DLM-007` block, computed-style measurement on the live `#dl-modal` node). |
+| `DLM-008` | `.dl-btn` radius (`app.css`): `8px` → `10px`, matching the Figma spec exactly. Same rationale and same treatment as `DLM-007`. Locked in by 2 new assertions (the `DLM-008` block). |
+
+### NO CODE CHANGE — reclassified INTENTIONAL-DEVIATION
+
+| Finding | Reasoning |
+|---|---|
+| `DLM-005` | Re-read against the live code: the verifying-state copy says "corrupted or tampered **file**", where the handoff/Figma say "**model**". The audit's own analysis (line 96 above) already concludes the code's generalisation is *more* correct than the spec it was checked against — `renderVerifying()` is genuinely shared between the Whisper-model download and the Bible-translation-reuse case (state 7), where "model" would misdescribe a translation file. "Correcting" this toward Figma would reintroduce a wrong word for one of the two callers. Reclassified **INTENTIONAL-DEVIATION**, matching `PSC-004`'s precedent exactly (a `DRIFT` finding where the code's own honesty/correctness trade-off outranks the spec it was checked against, formally reclassified rather than left as open drift) — not `PSC-006`/`PSC-007`, which were never `DRIFT` to begin with (scored `MATCH`/`EXTRA`). No code change, no follow-up needed — the handoff doc is the stale artefact here, not the code. |
+
+### DECISION-BLOCKED — left untouched this round
+
+| Finding | Blocked on | Status checked |
+|---|---|---|
+| `DLM-002` | `DECISION — Cross-surface: second-tier "muted-but-essential" text token policy` (`17tnw2axpu6`) | `planning/todo`, no comments — unresolved as of 2026-09-22 |
+| `DLM-003` | same as `DLM-002` | same |
+| `DLM-004` | `DECISION — New-surfaces: open questions` (`17tnw2axpu4`) — is the `~{eta} left` estimate a real requirement or illustrative mock content? | `planning/todo`, no comments — unresolved as of 2026-09-22 |
+| `DLM-006` | same decision task as `DLM-004` — should Offline get its own neutral/grey icon tone? | same |
+
+These four remain genuinely open and are intentionally out of scope for this ticket per its own
+description (`17tnw2axptx`), which explicitly defers them to the linked DECISION tasks rather than
+letting an implementation ticket make the product/a11y-token call unilaterally. Re-run this section
+once either DECISION task gets a resolution.
+
 ---
 
 # Open questions
