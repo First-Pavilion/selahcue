@@ -355,4 +355,109 @@ void main() {
     handle.dispose();
     live.dispose();
   });
+
+  testWidgets(
+      'an armed BLACKOUT survives an UNRELATED command overlapping the '
+      'confirm window, instead of silently expiring (17tnw2ay2pq review, '
+      'Sana)', (tester) async {
+    final handle = tester.ensureSemantics();
+    final fake = _Fake();
+    final live = await _pumpPolledStrip(tester, fake);
+
+    // Arm BLACKOUT — no command sent yet.
+    await tester.tap(find.bySemanticsLabel('Blackout'));
+    await tester.pump();
+    expect(find.bySemanticsLabel('Confirm blackout'), findsOneWidget);
+
+    // A command from a DIFFERENT control — anywhere else in the app — starts
+    // and parks in flight. Before the fix, the 3s disarm timer kept running
+    // regardless, so the confirm window could lapse while it was inert.
+    fake.commandGate = Completer<void>();
+    unawaited(live.act(cmdNext()));
+    await tester.pump();
+    expect(live.busy, isTrue, reason: 'an unrelated command is now in flight');
+
+    // The confirming tap lands while busy — `_guarded` makes it a genuine
+    // no-op (the arm must survive this, not fire and not vanish). The
+    // control is disabled by `busy`, same as any other control, so its
+    // semantics label carries the disabled-reason suffix.
+    await tester.tap(find.bySemanticsLabel('Confirm blackout, sending…'),
+        warnIfMissed: false);
+    await tester.pump();
+    expect(fake.sent, isNot(contains('blackout')),
+        reason: 'the tap could not land while busy — nothing was sent');
+
+    // Let the ORIGINAL 3-second confirm window fully elapse while busy is
+    // still true. With the old behaviour the arm silently reverted here.
+    await tester.pump(const Duration(seconds: 4));
+    expect(find.bySemanticsLabel('Confirm blackout, sending…'), findsOneWidget,
+        reason: 'the arm must survive the window elapsing while paused for '
+            'busy — the operator confirmed nothing because they COULD not, '
+            'not because they chose not to');
+
+    // The unrelated command finally settles — busy clears, and the paused
+    // window resumes with whatever time was left.
+    fake.commandGate!.complete();
+    await tester.pump(const Duration(milliseconds: 60));
+    expect(live.busy, isFalse);
+    expect(find.bySemanticsLabel('Confirm blackout'), findsOneWidget,
+        reason: 'still armed once busy clears — the arm was never lost');
+
+    // A genuine confirm tap, now that the control is live again, fires it.
+    await tester.tap(find.bySemanticsLabel('Confirm blackout'));
+    await tester.pump(const Duration(milliseconds: 60));
+    expect(fake.sent, contains('blackout'),
+        reason: 'the operator can still complete the confirm they started');
+
+    handle.dispose();
+    live.dispose();
+  });
+
+  testWidgets(
+      'a pause-then-resume grants only the time that was left, not a fresh '
+      'window, and the arm still expires once that runs out', (tester) async {
+    final handle = tester.ensureSemantics();
+    final fake = _Fake();
+    // Default `EmergencyStrip.confirmWindow` is 3s.
+    final live = await _pumpPolledStrip(tester, fake);
+
+    await tester.tap(find.bySemanticsLabel('Blackout'));
+    await tester.pump();
+
+    // Spend 2 of the 3 seconds BEFORE busy ever starts — only ~1s of budget
+    // is left by the time the pause below begins.
+    await tester.pump(const Duration(milliseconds: 2000));
+    expect(find.bySemanticsLabel('Confirm blackout'), findsOneWidget,
+        reason: 'still armed with ~1s of its window left');
+
+    // Busy now holds for far longer than the ~1s that remains — a genuine
+    // pause must not let this erode the budget at all, no matter how long
+    // it lasts, or the operator would never get a fair shot at confirming a
+    // control that happened to arm just before something else got busy.
+    fake.commandGate = Completer<void>();
+    unawaited(live.act(cmdNext()));
+    await tester.pump();
+    await tester.pump(const Duration(seconds: 5));
+    expect(find.bySemanticsLabel('Confirm blackout, sending…'), findsOneWidget,
+        reason: 'still paused — busy has not cleared yet');
+
+    fake.commandGate!.complete();
+    await tester.pump(const Duration(milliseconds: 60));
+    // Resumed: still armed, with roughly the ~1s that was left — NOT a
+    // fresh 3s window (a resume that reset the budget would let a stream of
+    // unrelated busy edges keep this armed forever, which would hollow out
+    // the accidental-tap protection, 86ajxx4x8).
+    expect(find.bySemanticsLabel('Confirm blackout'), findsOneWidget,
+        reason: 'resumed with only the leftover budget, not reset to 3s');
+
+    // That leftover budget still runs out on its own.
+    await tester.pump(const Duration(milliseconds: 1200));
+    expect(find.bySemanticsLabel('Confirm blackout'), findsNothing,
+        reason: 'the leftover ~1s must still expire once it is spent');
+    expect(find.bySemanticsLabel('Blackout'), findsOneWidget);
+    expect(fake.sent, isNot(contains('blackout')));
+
+    handle.dispose();
+    live.dispose();
+  });
 }

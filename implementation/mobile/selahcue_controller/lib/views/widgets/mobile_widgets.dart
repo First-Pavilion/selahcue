@@ -431,6 +431,30 @@ class _EmergencyStripState extends State<EmergencyStrip> {
   _Arm? _armed;
   Timer? _disarm;
 
+  /// How much of the confirm window is left. Ticks down by [_tick] on every
+  /// firing of [_disarm] rather than being derived from a wall-clock
+  /// deadline: a `DateTime.now()`-based deadline *looks* equivalent but is
+  /// not, because `Timer` and `DateTime.now()` do not share a clock under
+  /// test — `tester.pump(duration)` advances the former without moving the
+  /// latter, so a deadline computed at arm time would still read as in the
+  /// future long after the simulated window had elapsed. Ticking down in
+  /// lockstep with the same `Timer` mechanism that fires expiry keeps both
+  /// on one clock, real or simulated — and means a pause-for-busy (below)
+  /// can only shorten the operator's remaining window, never grant a fresh
+  /// one, since it is a countdown rather than a moving target.
+  Duration? _remaining;
+
+  static const _tick = Duration(milliseconds: 100);
+
+  /// True while the countdown is paused because [LiveController.busy] is
+  /// true — this strip's own confirming tap, or any other control's, could
+  /// not land right now anyway, so the window must not spend itself while
+  /// the control is inert (17tnw2ay2pq review, Sana: without this, an armed
+  /// BLACKOUT that a command from ANY other control happens to overlap is
+  /// silently discarded — the 3s timer fires anyway, the arm is gone, and
+  /// nothing tells the operator the confirm was lost).
+  bool _pausedForBusy = false;
+
   @override
   void dispose() {
     _disarm?.cancel();
@@ -439,28 +463,61 @@ class _EmergencyStripState extends State<EmergencyStrip> {
 
   void _arm(_Armed which, Map<String, dynamic> cmd) {
     _disarm?.cancel();
+    _pausedForBusy = false;
     setState(() => _armed = _Arm(which, cmd));
-    _disarm = Timer(widget.confirmWindow, () {
-      if (mounted) setState(() => _armed = null);
+    _remaining = widget.confirmWindow;
+    _startTicking();
+  }
+
+  void _startTicking() {
+    _disarm = Timer.periodic(_tick, (_) {
+      _remaining = _remaining! - _tick;
+      if (_remaining! <= Duration.zero) _expireArm();
     });
+  }
+
+  void _expireArm() {
+    _disarm?.cancel();
+    _disarm = null;
+    _remaining = null;
+    _pausedForBusy = false;
+    if (mounted) setState(() => _armed = null);
   }
 
   void _fire(Map<String, dynamic> cmd) {
     _disarm?.cancel();
+    _disarm = null;
+    _remaining = null;
+    _pausedForBusy = false;
     setState(() => _armed = null);
     widget.live.act(cmd);
   }
 
-  // NOTE (17tnw2ay2pq review, Sana — blocking finding 1): an armed control
-  // here is silently discarded if `LiveController.busy` becomes true (from
-  // ANY control, not just this strip) during the confirm window — the
-  // `_disarm` Timer above keeps running regardless, so the confirming tap
-  // lands on an inert button and the arm expires with no indication to the
-  // operator. This is being fixed in a concurrent session
-  // ("Fix emergency strip arm window eaten by busy") to avoid two sessions
-  // editing this exact arm/disarm mechanism at once — see that fix for the
-  // pause/resume-around-busy remediation. Do not re-fix here without
-  // checking that session's outcome first.
+  /// Pauses/resumes the confirm-window countdown around [LiveController.busy]
+  /// edges. Called at the top of every [build] — every real call site hosts
+  /// this widget inside a `ListenableBuilder` on [LiveController], so a
+  /// rebuild happens on every `busy` edge, not just the next 1s poll — so
+  /// this is the one place that needs to notice the edge; nothing else has
+  /// to poll for it.
+  void _syncDisarmWithBusy() {
+    if (_armed == null) return;
+    final busy = widget.live.busy;
+    if (busy && !_pausedForBusy) {
+      _pausedForBusy = true;
+      _disarm?.cancel();
+      _disarm = null;
+    } else if (!busy && _pausedForBusy) {
+      _pausedForBusy = false;
+      if (_remaining! <= Duration.zero) {
+        // The original window fully elapsed while paused — disarm now
+        // rather than never, but off this build: setState is not allowed
+        // while build() is still running.
+        WidgetsBinding.instance.addPostFrameCallback((_) => _expireArm());
+      } else {
+        _startTicking();
+      }
+    }
+  }
 
   /// One tap arms, the next fires **the command that was armed**. [intent] is
   /// evaluated at tap time — it is what this gesture means to the operator
@@ -492,6 +549,7 @@ class _EmergencyStripState extends State<EmergencyStrip> {
 
   @override
   Widget build(BuildContext context) {
+    _syncDisarmWithBusy();
     final live = widget.live;
     final blackout = live.blackout;
     // Each emergency action is role-gated: blackout → Blackout cap,
