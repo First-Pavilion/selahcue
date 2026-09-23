@@ -900,30 +900,47 @@ if not check_jump_call_site_is_click_only():
 # empirically below, not hand-summed against this branch's own long-stale prior count (1640).
 # Confirmed by a clean run: 1843, 0 FAIL.
 #
-# 1843 -> ?: 17tnw2axptc (CON-156/157/158/161/162/163/172/173/176/177 — console recovery &
-# reliability states, PR #85), originally authored back near the 1818 baseline (before the
-# 17tnw2axpta CON-054/CON-098 block immediately above had landed) and now rebased in — a real
-# conflict in this exact block again, the pattern this comment keeps warning about. Added coverage
-# for the NDI rejection/unavailable messages (CON-156/157/158, including a real set_ndi_output
-# mock — previously a no-op stub, now genuinely mutates V.screens[].config so the client-side
-# duplicate-name refusal can be tested against it), the blackout-state monitor-pill re-tint
-# (CON-161, plus the CON-162 divergence control proving Preview's own surface is never painted
-# black), and the console's scoped empty-plan state (CON-172/173). Re-derived empirically, not
-# hand-summed, after two real debugging detours this constant's own history already warns about:
-# (1) a memoization-key omission (view.ndi_available was not part of renderOutputs' rebuild key,
-# so a host-reported change to it alone never re-rendered the inspector — CON-158 FAILed until
-# fixed), and (2) the newly-real set_ndi_output mock leaving "main"/"stream" genuinely broadcasting
-# after the NDI block, which leaked into Pre-service Check's own NDI readiness probe
-# (preservice.js:96-106) and flipped its passed-count in an unrelated, later check — fixed by
-# resetting both screens' NDI config at the end of the NDI block. At authoring time (against the
-# pre-rebase 1818 baseline) this was confirmed by two independent clean runs: 1853, 0 FAIL — that
-# number is superseded by the re-derivation below, run against the real post-rebase tree rather
-# than hand-summed as 1843 + 35.
+# 1818 -> 1853: 17tnw2axptc (CON-156/157/158/161/162/163/172/173/176/177 — console recovery &
+# reliability states, PR #85), authored on its own branch against the 1818 baseline, independently
+# of and concurrently with the 17tnw2axpta CON-054/CON-098 work immediately above (PR #66) — the
+# two branches did not know about each other. Added coverage for the NDI rejection/unavailable
+# messages (CON-156/157/158, including a real set_ndi_output mock — previously a no-op stub, now
+# genuinely mutates V.screens[].config so the client-side duplicate-name refusal can be tested
+# against it), the blackout-state monitor-pill re-tint (CON-161, plus the CON-162 divergence
+# control proving Preview's own surface is never painted black), and the console's scoped
+# empty-plan state (CON-172/173). Re-derived empirically, not hand-summed, after two real
+# debugging detours this constant's own history already warns about: (1) a memoization-key
+# omission (view.ndi_available was not part of renderOutputs' rebuild key, so a host-reported
+# change to it alone never re-rendered the inspector — CON-158 FAILed until fixed), and (2) the
+# newly-real set_ndi_output mock leaving "main"/"stream" genuinely broadcasting after the NDI
+# block, which leaked into Pre-service Check's own NDI readiness probe (preservice.js:96-106) and
+# flipped its passed-count in an unrelated, later check — fixed by resetting both screens' NDI
+# config at the end of the NDI block. Confirmed by two independent clean runs against this
+# branch's own pre-rebase tree: 1853, 0 FAIL.
 #
-# 1843 -> ?: rebase of PR #85 onto current origin/main (2026-09-23) — resolving the conflict in
-# this exact block for the third time in its own history, per the pattern this comment keeps
-# warning about. Re-derived empirically against the real post-rebase tree, not hand-summed.
-EXPECTED_MIN_CHECKS = 1843
+# 1853 -> 1858: PR #85 review remediation (Cody, Code Reviewer), authored on the same branch,
+# still against its own 1818-baseline lineage, before this branch had ever been rebased onto the
+# concurrent PR #66 work above. commitNdi mirrored 2 of the host's 3 refusal rules (empty name,
+# duplicate name) but not ndi_name_valid's control-character/length check, so a pasted name with a
+# stray control character still hit the exact silent-revert failure mode this PR exists to close —
+# added the third check (+3: refused-client-side, message shown, toggle stays unchecked) and a
+# role=status check on the signal line (+1, a second finding from the same review: the div's job
+# changed from passive status to active validation feedback, so it needs an announced live region
+# or a refusal is silent to screen readers). Separately, the CON-173 empty-state's "Import —
+# coming soon" button was found to mislabel a shipped capability (the Service Plan surface's real
+# "Import a run sheet…" importer) as unbuilt — the two existing assertions for it were REPLACED
+# (not added to) with corrected ones once the copy/behaviour was fixed to route to the real
+# importer, which is why the net change here is +5 rather than +7. Every new/changed assertion
+# mutation-tested (broken, confirmed RED, restored) before this number was re-derived. Confirmed
+# by two independent clean runs against this branch's own pre-rebase tree: 1858, 0 FAIL.
+#
+# 1843 / 1858 -> ?: rebase of PR #85 (ending at 1858 on its own, pre-rebase lineage above) onto
+# current origin/main (ending at 1843 via PR #66's CON-054/CON-098 work) — 2026-09-23. The two
+# lineages' own totals do not simply add (both were counted from the same 1818 ancestor along
+# divergent paths), so per this constant's own repeatedly-stated discipline the merged count is
+# read off an actual clean run against the real post-rebase tree, not hand-summed as 1843 + 40 or
+# any other arithmetic shortcut.
+EXPECTED_MIN_CHECKS = 1858
 
 
 def find_chrome():
@@ -4280,6 +4297,11 @@ DRIVER = r"""
       ok(/NDI OUTPUT/.test(insp2.textContent), "inspector: an audience feed shows an NDI OUTPUT section");
       var ndiName = insp2.querySelector('input[aria-label="NDI source name for stream"]');
       ok(!!ndiName, "inspector: NDI section has a source-name input");
+      // Cody's PR #85 review, finding 5 — the signal line now carries active validation
+      // feedback (CON-156/157/158), not just a passive status, so it needs an announced live
+      // region or a refusal is silent to screen-reader users.
+      ok(insp2.querySelector(".scr-signal").getAttribute("role") === "status",
+         "inspector: the NDI signal/status line is role=status, so a refusal is announced, not just shown");
       ndiName.value = "Test NDI"; ndiName.dispatchEvent(new Event("change"));
       insp2.querySelector('input[aria-label="Broadcast stream as an NDI source"]').click();
       ok(window.__calls.some(function(c){
@@ -4313,6 +4335,19 @@ DRIVER = r"""
       ok(/Enter a source name before enabling NDI/.test(insp3.querySelector(".scr-signal").textContent),
          "CON-156: the exact Figma-spec rejection message renders — 'Enter a source name before enabling NDI'");
       ok(!mainNdiToggle.checked, "CON-156 (control): the toggle never shows checked for a refused enable");
+
+      // Cody's PR #85 review, finding 1 — a non-empty but INVALID name (e.g. pasted with a
+      // stray control character) must be refused client-side too, mirroring ndi_name_valid
+      // exactly (LiveController, controller.rs) — not just the empty-name and duplicate-name
+      // rules. maxLength=64 stops most of this at the keyboard, never a paste.
+      mainNdiName.value = "BadName"; mainNdiName.dispatchEvent(new Event("change"));
+      var callsBeforeInvalid = window.__calls.length;
+      mainNdiToggle.click();
+      ok(window.__calls.length === callsBeforeInvalid,
+         "CON-156 (control-char): a name with a control character fires NO set_ndi_output round trip (refused client-side)");
+      ok(insp3.querySelector(".scr-signal").textContent.indexOf("isn't valid") >= 0,
+         "CON-156 (control-char): an invalid name shows an explanation instead of a silent revert");
+      ok(!mainNdiToggle.checked, "CON-156 (control-char, control): the toggle never shows checked for a refused enable");
 
       // CON-157 — enabling with a name ANOTHER already-enabled screen is broadcasting is
       // refused CLIENT-SIDE too, naming the real conflict (stream is genuinely broadcasting
@@ -11860,8 +11895,15 @@ right after a generate/save");
          "CON-173: the '+ Add first item' action renders with the Figma spec's exact label");
       ok(!planAddBtn.disabled, "CON-173: '+ Add first item' is a REAL, enabled action — not a disabled placeholder");
       var planImportBtn = document.querySelector(".plan-console-empty-import");
-      ok(!!planImportBtn && planImportBtn.disabled && planImportBtn.textContent.indexOf("coming soon") >= 0,
-         "CON-173: 'Import' keeps this project's already-established honest treatment for a control with no backend today — disabled and says so, never a live no-op (matches the Service Plan surface's own 'Import — coming soon' decision)");
+      // Cody's PR #85 review: the Service Plan surface's primary Import ("Import a run
+      // sheet…" -> planImportPlan) is a REAL, working importer, not unbuilt — only the
+      // separate "Import a plan bundle…" control is. This button must not claim otherwise.
+      ok(!!planImportBtn && !planImportBtn.disabled && planImportBtn.textContent.trim() === "Import a run sheet…",
+         "CON-173: 'Import' names and links to the REAL Service Plan importer — never claims a shipped capability is 'coming soon'");
+      planImportBtn.click();
+      ok(document.getElementById("surface-plan").classList.contains("active"),
+         "CON-173: 'Import a run sheet…' really navigates to the Service Plan surface, where the real importer lives — not a dead click");
+      document.querySelector('.nav-item[data-surface="console"]').click();
       planAddBtn.click();
       ok(document.getElementById("surface-plan").classList.contains("active"),
          "CON-173: '+ Add first item' really navigates to the Service Plan surface, where the real add-item palette lives — not a dead click");

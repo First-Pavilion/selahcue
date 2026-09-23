@@ -1557,6 +1557,16 @@ impl LiveController {
     /// audience-class screen; a bounded, printable (no control-char) name; a non-empty name
     /// when enabling; and NAME UNIQUENESS across every OTHER enabled NDI screen (two live NDI
     /// sources must not share a name). Persists via the shared output-config store.
+    ///
+    /// Deliberately does **not** consult `self.ndi_available`: that field is this host's own
+    /// build-time report of whether it can transmit at all (CON-158), advisory for the console
+    /// UI, never an enforced precondition here. Sana's PR #85 review flagged this explicitly —
+    /// a client is allowed to enable NDI on a build that cannot transmit it (the config is
+    /// still valid and persists; nothing is broadcast until a build with the `ndi` feature runs
+    /// it). An Operator is already permitted to configure outputs regardless of what this
+    /// specific host can currently do with them, matching every other per-screen output setting
+    /// in this file (orientation, scale-fit, mirror, …), none of which are gated on the current
+    /// process's own capabilities either.
     fn set_ndi_output(&mut self, screen: &str, name: &str, enabled: bool) -> ControllerReply {
         // Audience-class only — never the stage confidence monitor or an unknown id.
         if !self

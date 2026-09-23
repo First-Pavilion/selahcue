@@ -322,3 +322,111 @@ fn storage_and_session_health_survive_the_wire_round_trip() {
     assert!(se.restored);
     assert_eq!(se.autosave_error.as_deref(), Some("autosave failed"));
 }
+
+// --- NDI availability (CON-158, 17tnw2axptc) ------------------------------------------------
+//
+// Same shape as storage/session health above, and for the same reason: `ndi_available` had
+// exhaustive coverage in the headless JS suite (which drives a hand-written stub), but nothing
+// exercised the REAL Rust producer — `LiveController::set_ndi_available`, the `From` impls, or
+// the wire byte shape (Cody's + Sana's independent PR #85 review findings). A test against a
+// hand-built `OperatorView`/`OperatorStateView` would pass even if the setter were never wired
+// to `operator_view()` at all, which is exactly the defect class this file's own header warns
+// about.
+
+#[test]
+fn a_controller_no_host_set_ndi_available_on_reports_it_as_unknown_not_unavailable() {
+    let v = live_controller().operator_view();
+    assert_eq!(
+        v.ndi_available, None,
+        "the stand-alone/Local shell never calls set_ndi_available (no real output host), so \
+         the honest answer is 'unknown' — never a fabricated 'unavailable'"
+    );
+}
+
+#[test]
+fn ndi_available_reported_by_the_host_reaches_the_view_and_changes_it() {
+    let mut c = live_controller();
+    c.set_ndi_available(true);
+    let healthy = c.operator_view().ndi_available;
+    assert_eq!(healthy, Some(true));
+
+    c.set_ndi_available(false);
+    let unavailable = c.operator_view().ndi_available;
+    assert_ne!(
+        unavailable, healthy,
+        "a changed report must change the view — an unchanged view means the setter is wired \
+         at one end only"
+    );
+    assert_eq!(unavailable, Some(false));
+}
+
+/// `Some(true)`, `Some(false)` and `None` must all be distinguishable on the wire — the exact
+/// three-way rule `unknown_health_and_healthy_health_are_different_on_the_wire` above already
+/// pins for `output_health`. Collapsing any two of these would let "cannot transmit" and
+/// "cannot say" render as the same state to the console.
+#[test]
+fn ndi_available_true_false_and_unknown_are_all_different_on_the_wire() {
+    let mut c = live_controller();
+    c.set_ndi_available(true);
+    let available: OperatorStateView = c.operator_view().into();
+    assert_eq!(available.ndi_available, Some(true));
+
+    let mut unavailable = available.clone();
+    unavailable.ndi_available = Some(false);
+
+    let mut unknown = available.clone();
+    unknown.ndi_available = None; // what an older host, or the Local shell, sends
+
+    let available_json = to_json(&ServerMessage::OperatorState {
+        view: available.clone(),
+    })
+    .unwrap();
+    let unavailable_json = to_json(&ServerMessage::OperatorState {
+        view: unavailable.clone(),
+    })
+    .unwrap();
+    let unknown_json = to_json(&ServerMessage::OperatorState { view: unknown }).unwrap();
+
+    assert_ne!(available_json, unavailable_json);
+    assert_ne!(available_json, unknown_json);
+    assert_ne!(unavailable_json, unknown_json);
+
+    // Pin the actual bytes, not just "they differ" — a rename or a type change (e.g. to a
+    // string) would still make three DIFFERENT strings while silently breaking every real
+    // client's field-name/type assumption.
+    assert!(
+        available_json.contains(r#""ndi_available":true"#),
+        "got: {available_json}"
+    );
+    assert!(
+        unavailable_json.contains(r#""ndi_available":false"#),
+        "got: {unavailable_json}"
+    );
+    assert!(
+        !unknown_json.contains("ndi_available"),
+        "an unreported host must stay byte-identical to a pre-CON-158 frame; got: {unknown_json}"
+    );
+}
+
+#[test]
+fn ndi_available_survives_the_wire_round_trip_both_ways() {
+    for reported in [true, false] {
+        let mut c = live_controller();
+        c.set_ndi_available(reported);
+
+        let wire: OperatorStateView = c.operator_view().into();
+        let json = to_json(&ServerMessage::OperatorState { view: wire }).unwrap();
+        let parsed: ServerMessage = selahcue_lan::protocol::from_json(&json).unwrap();
+        let ServerMessage::OperatorState { view } = parsed else {
+            panic!("expected an operator_state frame");
+        };
+        let back: selahcue_app::OperatorView = view.into();
+
+        assert_eq!(
+            back.ndi_available,
+            Some(reported),
+            "ndi_available={reported} must survive the wire round trip, or the remote console \
+             stays blind to it"
+        );
+    }
+}

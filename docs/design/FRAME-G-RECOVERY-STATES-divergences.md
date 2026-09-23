@@ -128,15 +128,19 @@ warns that repairing the deck does **not** repair what is already on air — eve
 routes through `with_deck` and never presents, which is correct under FR-012 and precisely why the
 operator must re-push.
 
-**Audit correction (17tnw2axptc, 2026-09-22):** this divergence already closes `CON-176` (the
-per-asset "is missing" warning — `.pm-insp-miss`, `app.js`, the `if (el.missing)` block above) and
+**Audit correction (17tnw2axptc, 2026-09-22; commit attribution corrected 2026-09-23 per Cody's
+PR #85 review):** this divergence already closes `CON-176` (the per-asset "is missing" warning —
+`.pm-insp-miss`, `app.js`, the `if (el.missing)` block above, shipped in `e8100e0`, 2026-08-25) and
 `CON-177` (the recovery action — `Relink…`/`Replace…`, one combined control rather than the
-frame's two, dataset `ik="replace"`). Both shipped in this same commit (`e8100e0`, 2026-08-25),
-predating the 2026-09-20 reconciliation by nearly a month; that reconciliation's "confirmed still
-OPEN" pass re-grepped for the frame's literal strings ("is missing — showing background only",
-"Locate file") and missed the functional equivalent sitting right next to `CON-175`'s own already-
-credited fix. Verified directly against `main` by reading the current `file:line`, not inferred
-from either document. No code change — the fix already exists; only the two documents were wrong.
+frame's two, dataset `ik="replace"`). `CON-177`'s button predates `CON-176`'s warning text: `git
+blame` shows it from `3db53987` (2026-08-07, "Remote Control surface" — an unrelated commit that
+happened to also touch this line), not `e8100e0`. Both were in place well before the 2026-09-20
+reconciliation, which is what matters for the correction's own verdict; that reconciliation's
+"confirmed still OPEN" pass re-grepped for the frame's literal strings ("is missing — showing
+background only", "Locate file") and missed the functional equivalent sitting right next to
+`CON-175`'s own already-credited fix. Verified directly against `main` by reading the current
+`file:line` and `git blame`, not inferred from either document. No code change — the fix already
+exists; only the two documents were wrong.
 
 ## Divergence 7 — both monitors "go black" (`346:140`/`346:147`)
 

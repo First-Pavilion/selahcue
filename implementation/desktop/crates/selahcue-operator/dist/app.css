@@ -3748,9 +3748,9 @@
         background: #5a48d0;
       }
 
-      /* Import has no working path today (no importer exists yet) — an honest, disabled
-         control that says so, never a live button that does nothing on click. Matches the
-         Service Plan surface's own "Import — coming soon" treatment (CON-173). */
+      /* A real, enabled secondary action — the Service Plan surface's "Import a run sheet…"
+         (planImportPlan) is a working importer, not a "coming soon" placeholder (Cody's PR #85
+         review). This button just routes there, the same way "+ Add first item" does. */
       .plan-console-empty-import {
         flex: 1;
         font-size: 13px;

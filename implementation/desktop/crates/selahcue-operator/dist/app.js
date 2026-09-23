@@ -82,11 +82,15 @@
         // CON-172/173 (Frame G.4, node 347:128) — the console's own compact empty state. The
         // full Service Plan SURFACE has its own larger, permission-aware empty state
         // (planRenderList below); this is the small sidebar card, so it stays to the frame's
-        // two-action layout rather than duplicating that machinery. "+ Add first item" is a
-        // real action (switches to the Service Plan surface, where the item palette lives —
-        // there is no local palette in this sidebar to focus instead); "Import" stays the
-        // project's already-established honest treatment for a control that is not buildable
-        // today (CON-173) — a disabled, explained button, never a live no-op.
+        // two-action layout rather than duplicating that machinery. Both actions route to the
+        // Service Plan surface — this sidebar has no palette or importer of its own to trigger
+        // directly. "Import" used to read "coming soon" here, which Cody's PR #85 review
+        // correctly called a mislabel: the Service Plan surface's primary Import
+        // ("Import a run sheet…" → planImportPlan) is real and working for an operator with
+        // edit permission; only the SEPARATE "Import a plan bundle…" control is genuinely
+        // unbuilt (its own honest disabled treatment lives on that surface, untouched by this
+        // ticket). So this button now names and links to the real capability instead of
+        // claiming it does not exist.
         if (!view.items.length) {
           const empty = document.createElement("div");
           empty.className = "plan-console-empty";
@@ -114,8 +118,8 @@
           const importBtn = document.createElement("button");
           importBtn.type = "button";
           importBtn.className = "plan-console-empty-import";
-          importBtn.disabled = true;
-          importBtn.textContent = "Import — coming soon";
+          importBtn.textContent = "Import a run sheet…";
+          importBtn.onclick = () => showSurface("plan");
           acts.appendChild(importBtn);
           empty.appendChild(acts);
           plan.appendChild(empty);
@@ -1272,23 +1276,41 @@
           nameLab.setAttribute("for", nameId); nameInput.id = nameId;
 
           const st = document.createElement("div"); st.className = "scr-signal";
+          // Cody's PR #85 review: this div's job changed from a passive status line to also
+          // carrying active validation feedback (CON-156/157/158) — pair it with a live region
+          // so a screen-reader user actually hears the refusal, not just sees a colour/text
+          // change. `setSignal` mutates this SAME node in place (never recreated mid-edit), so
+          // the announcement fires on every real change and only on a real change.
+          st.setAttribute("role", "status");
           const setSignal = (variant, text) => {
             st.className = "scr-signal scr-signal-" + variant;
             st.textContent = text;
           };
 
+          // Mirrors `ndi_name_valid` (selahcue-app/src/controller.rs) exactly: a bounded,
+          // control-character-free name. `nameInput.maxLength = 64` above stops most of this at
+          // the keyboard, but does not stop a PASTE from carrying a control character — Cody's
+          // PR #85 review found this was the one host refusal rule commitNdi did not mirror, so
+          // a pasted name with a stray control character still hit the silent-revert path this
+          // whole change exists to close.
+          const ndiNameValid = (name) => name.length <= 64 && !/[\x00-\x1f\x7f-\x9f]/.test(name);
+
           // Commit the name + a target enabled state atomically to the host — but first,
-          // CON-156/157: check the SAME two rules the host itself enforces
-          // (`LiveController::set_ndi_output`) before spending a round trip on a call we
-          // already know will be refused. This is not a guess at the host's behaviour — it is
-          // the exact rule, so the message it shows is always true of what the host will do:
-          // a non-empty name to enable, and no OTHER currently-enabled NDI screen already
-          // claiming that name. Previously a rejection reverted the toggle with no explanation
-          // at all (the comment here used to read "...so the control never lies" — true, but
-          // silent is not the same as honest).
+          // CON-156/157: check the SAME rules the host itself enforces
+          // (`LiveController::set_ndi_output`), in the SAME order, before spending a round trip
+          // on a call we already know will be refused. This is not a guess at the host's
+          // behaviour — it is the exact rule, so the message it shows is always true of what
+          // the host will do: a valid (bounded, printable) name; a non-empty name to enable;
+          // and no OTHER currently-enabled NDI screen already claiming that name. Previously a
+          // rejection reverted the toggle with no explanation at all (the comment here used to
+          // read "...so the control never lies" — true, but silent is not the same as honest).
           const commitNdi = (enabled) => {
             nameInput.classList.remove("mismatch");
             const name = nameInput.value.trim();
+            if (!ndiNameValid(name)) {
+              setSignal("warn", "⚠ That source name isn't valid — remove any control characters");
+              return;
+            }
             if (enabled && !name) {
               setSignal("warn", "⚠ Enter a source name before enabling NDI");
               return;
