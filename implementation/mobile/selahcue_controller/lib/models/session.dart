@@ -70,17 +70,31 @@ class SelahSession implements ControllerSession {
 
   /// Serializes command round-trips (the protocol is lockstep per connection).
   ///
-  /// Not depth-limited: nothing stops overlapping [command] calls from
-  /// chaining onto this indefinitely. In practice growth is bounded by two
-  /// callers, not by this field — [LiveController.refresh] guards itself
-  /// with `_refreshing` so the 1s poll never queues a second turn, and
-  /// [LiveController.act] callers gate on `syncing`. What is NOT guarded is
-  /// two distinct rapid taps (or a double-fired gesture) against the SAME
-  /// live connection: each queues its own turn and waits up to
-  /// `commandTimeout` for the ones ahead of it, so a burst of N taps against
-  /// a slow/dead host can take up to N × commandTimeout to drain. Flagged
-  /// as a follow-up (needs a depth cap or duplicate-collapse policy on
-  /// [LiveController.act]), not fixed here — investigated alongside
+  /// Not depth-limited by this field itself: nothing stops overlapping
+  /// [command] calls from chaining onto this indefinitely, so the bound has
+  /// to come from the callers. It does: every command-issuing flow in the
+  /// app guards itself against re-entry before it will queue a turn —
+  /// [LiveController.refresh] with `_refreshing` (the 1s poll never queues a
+  /// second turn), [LiveController.act] with `_acting` (17tnw2ay2kk, closing
+  /// the exact gap this file used to flag as an open follow-up: a double-tap
+  /// or a burst of impatient taps against a slow/dead host used to each
+  /// queue their own turn and wait up to `commandTimeout` for the ones ahead
+  /// of it — regression-tested in `live_controller_reentrancy_test.dart`),
+  /// and the scripture chapter fetch with a caller-side `_loading` flag in
+  /// `ScriptureTab` (the one screen that calls [LiveController.fetchChapter]
+  /// directly, mirroring how [_confirmedView] is bounded by the gesture that
+  /// calls it rather than by a guard of its own).
+  ///
+  /// Those guards are each single-flight *within* their own flow, not
+  /// mutually exclusive *across* flows — `act()` does not check
+  /// `_refreshing` and `refresh()` does not check `_acting`, so a poll tick
+  /// and an in-flight command (and, separately, a chapter fetch) can
+  /// genuinely overlap. So the real bound on `_turn`'s chain depth is the
+  /// small, fixed number of distinct command-issuing flows the app has
+  /// (three today), not the size of any unbounded input like tap rate or
+  /// keystrokes — a materially different, and much smaller, worst case than
+  /// this file originally recorded. If a new flow calls [command] without
+  /// its own single-flight guard, that changes — investigated alongside
   /// [StreamQueue._buffer] below.
   Future<void> _turn = Future.value();
 
