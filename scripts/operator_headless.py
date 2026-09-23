@@ -1243,6 +1243,15 @@ CSS_SRC = (
   // selector matches `sel` once whitespace is normalised — "last" because that is the cascade's
   // own tie-break for equal specificity, so a selector declared twice resolves to whichever
   // rule actually wins, not whichever a lookup finds first.
+  //
+  // Vera (performance review, PR #79): do NOT memoize this function's `_cssFlatten` call. She
+  // measured it, built both an obvious cache (keyed on nothing, invalidated never) and a
+  // length-keyed one, and both silently break mutation coverage: the naive cache breaks
+  // CSSOM-PARSE-01/02(x2)/04 outright, and the length-keyed one still breaks CSSOM-PARSE-02's
+  // CSS-escape case via ABA — `probeSheet.insertRule`/`deleteRule`/`insertRule` (exactly what
+  // several checks below do) can restore the rule COUNT while the CONTENTS differ, so a
+  // length-keyed cache reuses a stale flatten. The ~13ms this function costs per full suite run
+  // is not worth silently disabling the checks that justify this file's entire CSSOM migration.
   window.__cssRule = function(sel) {
     var target = _cssNormSel(sel);
     var rules = _cssFlatten(probe.sheet.cssRules, [], true);
