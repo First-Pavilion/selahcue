@@ -74,6 +74,27 @@ class ConnectionBanner extends StatelessWidget {
         ),
       );
     }
+    // A command any control on screen sent is still on the wire. Every gated
+    // control already greys out (`disabledReason`), but that reason only ever
+    // reaches the `Semantics` label — a sighted operator watching the screen
+    // rather than listening to it sees nothing else change, on EVERY screen
+    // this banner sits above, including the one where that matters most: the
+    // emergency strip. Without this branch the banner fell through to
+    // [SizedBox.shrink] while busy, which is exactly what let an armed-but-
+    // inert BLACKOUT confirm go unexplained (17tnw2ay2pq review, Sana).
+    if (live.busy) {
+      return _Bar(
+        tone: SelahTone.warn,
+        child: Text(
+          'Sending… your taps aren’t being sent yet',
+          textAlign: TextAlign.center,
+          style: SelahType.caption.copyWith(
+            fontWeight: FontWeight.w600,
+            color: SelahToneStyle.of(SelahTone.warn).ink,
+          ),
+        ),
+      );
+    }
     // A role refusal that raised the sheet is already being explained there, in
     // full, with a way out. Repeating it as a red strip would make the operator
     // dismiss one refusal twice and read it once — so the richer surface owns
@@ -430,6 +451,17 @@ class _EmergencyStripState extends State<EmergencyStrip> {
     widget.live.act(cmd);
   }
 
+  // NOTE (17tnw2ay2pq review, Sana — blocking finding 1): an armed control
+  // here is silently discarded if `LiveController.busy` becomes true (from
+  // ANY control, not just this strip) during the confirm window — the
+  // `_disarm` Timer above keeps running regardless, so the confirming tap
+  // lands on an inert button and the arm expires with no indication to the
+  // operator. This is being fixed in a concurrent session
+  // ("Fix emergency strip arm window eaten by busy") to avoid two sessions
+  // editing this exact arm/disarm mechanism at once — see that fix for the
+  // pause/resume-around-busy remediation. Do not re-fix here without
+  // checking that session's outcome first.
+
   /// One tap arms, the next fires **the command that was armed**. [intent] is
   /// evaluated at tap time — it is what this gesture means to the operator
   /// looking at the button right now. [immediate] skips the arming step for
@@ -469,9 +501,13 @@ class _EmergencyStripState extends State<EmergencyStrip> {
     final canClear = live.can(Capability.clearLive);
     final armedBlackout = _armed?.which == _Armed.blackout;
     final armedClear = _armed?.which == _Armed.clear;
-    // Reconnecting is the more urgent/informative reason when both are true
-    // (busy alone clears on its own in well under commandTimeout; a drop
-    // does not).
+    // Reconnecting is the more urgent/informative reason when both are true:
+    // it means the link is down or unproven, open-ended until a reconnect.
+    // busy is at least bounded, but not "well under" a single commandTimeout
+    // — act() awaits the command's own round trip AND the refresh() that
+    // follows it, so it can span roughly two commandTimeout windows (and
+    // session.dart's read loop has no single hard cap beyond that; Sana,
+    // 17tnw2ay2pq review).
     final disabledReason =
         live.syncing ? 'unavailable while reconnecting' : 'sending…';
 
