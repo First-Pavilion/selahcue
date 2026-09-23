@@ -149,9 +149,10 @@ pub enum Command {
     MoveItem { item_id: u64, to: u32 },
     /// Rename a plan item (Operator only).
     RenameItem { item_id: u64, title: String },
-    /// Switch the audience-output theme by its stable built-in name
-    /// (`"classic"`/`"high-contrast"`/`"lower-third"`). Restyles Preview + Live
-    /// without changing content; an unknown name is rejected. Operator-only.
+    /// Switch the audience-output theme by its stable built-in name (`selahcue_present::
+    /// Theme::BUILTIN_NAMES` — `"classic"`/`"high-contrast"`/`"lower-third"`/
+    /// `"scripture-full"`/`"song-center"`). Restyles Preview + Live without changing
+    /// content; an unknown name is rejected. Operator-only.
     SetTheme { name: String },
     /// Apply a CUSTOM audience theme authored in the Theme Designer. `theme_json`
     /// is a serialized `selahcue-present::Theme` (opaque to the wire — this layer

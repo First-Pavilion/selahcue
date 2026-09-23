@@ -1870,13 +1870,15 @@ fn footer_composition_is_deterministic() {
 #[test]
 fn builtin_themes_still_render_byte_identically_with_no_footer() {
     // Backward-compatibility check at the COMPOSE level (not just serde): a slide with song
-    // metadata but a built-in (footer: None) theme renders EXACTLY as it did before this field
-    // existed, because a theme with no footer region draws nothing for it regardless of the
-    // slide's content.
+    // metadata but a built-in with NO footer region renders EXACTLY as it did before this
+    // field existed, because a theme with no footer region draws nothing for it regardless of
+    // the slide's content. `song-center` (OUT-009) is the one built-in that intentionally
+    // breaks this — see `song_center_renders_a_footer_line_when_the_slide_carries_song_metadata`
+    // below, its positive-control pair.
     let slide_without_song = Slide::new("Way Maker", ["Verse line one"]);
     let slide_with_song =
         Slide::new("Way Maker", ["Verse line one"]).with_song(song("7115744", "Sinach"));
-    for name in Theme::BUILTIN_NAMES {
+    for name in ["classic", "high-contrast", "lower-third", "scripture-full"] {
         let theme = Theme::builtin(name).unwrap();
         let a = render(&compose_slide(&slide_without_song, &theme, 320, 180));
         let b = render(&compose_slide(&slide_with_song, &theme, 320, 180));
@@ -1885,5 +1887,112 @@ fn builtin_themes_still_render_byte_identically_with_no_footer() {
             b.bytes(),
             "{name} has no footer region, so song metadata changes nothing"
         );
+    }
+}
+
+// --- OUT-002/004/009/016/017: per-content-role built-ins at the compose level ---
+
+#[test]
+fn song_center_renders_a_footer_line_when_the_slide_carries_song_metadata() {
+    // Positive control, pairing with `builtin_themes_still_render_byte_identically_with_no_footer`
+    // above: unlike the other four built-ins, song-center's render DOES change when song
+    // metadata is added — the footer it ships with (OUT-009) actually draws something.
+    let theme = Theme::builtin("song-center").unwrap();
+    let footer = theme.footer.expect("song-center has a footer region");
+    let slide_without_song = Slide::new("Way Maker", ["Verse line one"]);
+    let slide_with_song =
+        Slide::new("Way Maker", ["Verse line one"]).with_song(song("7115744", "Sinach"));
+    let (w, h) = (400, 200);
+    let a = render(&compose_slide(&slide_without_song, &theme, w, h));
+    let b = render(&compose_slide(&slide_with_song, &theme, w, h));
+    assert_ne!(
+        a.bytes(),
+        b.bytes(),
+        "song-center's render changes when song metadata is present"
+    );
+    assert!(
+        !has_ink_in_region(&a, footer.rect(w, h)),
+        "no song metadata -> nothing in the footer region"
+    );
+    assert!(
+        has_ink_in_region(&b, footer.rect(w, h)),
+        "song metadata present -> the CCLI/author line draws in the footer region"
+    );
+}
+
+#[test]
+fn song_center_hides_the_title_region_on_a_stanza_slide_but_shows_it_big_on_a_title_only_slide() {
+    // OUT-005/OUT-009: `title.visible = false` means a STANZA slide (body non-empty) shows no
+    // reference line — but `compose_slide_masked` keys a title-only slide's rendering on
+    // `theme.body.visible`, not `theme.title.visible` (see `compose.rs`), so an intro/title-only
+    // song slide is UNAFFECTED by this theme's hidden title region and still shows the song
+    // title, big, in the body region — exactly like every other built-in.
+    let theme = Theme::builtin("song-center").unwrap();
+    let (w, h) = (400, 200);
+
+    let stanza_slide = Slide::new("Way Maker", ["Even when I don't see it, You're working"]);
+    let stanza = render(&compose_slide(&stanza_slide, &theme, w, h));
+    assert!(
+        !has_ink_in_region(&stanza, theme.title.rect(w, h)),
+        "a stanza slide draws nothing in the (hidden) title region"
+    );
+
+    let title_only_slide = Slide::title("Way Maker");
+    let title_only = render(&compose_slide(&title_only_slide, &theme, w, h));
+    assert!(
+        has_ink_in_region(&title_only, theme.body.rect(w, h)),
+        "a title-only slide still shows the song title, big, in the body region"
+    );
+}
+
+#[test]
+fn scripture_full_gradient_background_ramps_and_composes_deterministically() {
+    // OUT-002: scripture-full is the first built-in to use a gradient background at all.
+    let theme = Theme::builtin("scripture-full").unwrap();
+    let Background::Gradient(g) = &theme.background else {
+        panic!(
+            "scripture-full must have a gradient background, got {:?}",
+            theme.background
+        );
+    };
+    // The audit's verbatim `get_design_context` read of `208:126` (captured before the frame's
+    // deletion — see the doc comment on `Theme::scripture_full`).
+    assert_eq!(g.from, Rgba::rgb(0x0D, 0x17, 0x30));
+    assert_eq!(g.to, Rgba::rgb(0x1B, 0x2E, 0x5A));
+    assert_eq!(g.direction, GradientDirection::DiagonalDown);
+
+    let (w, h) = (320, 180);
+    let fb = render(&compose_slide(&Slide::title(""), &theme, w, h));
+    let top_left = fb.pixel(0, 0).unwrap();
+    let bottom_right = fb.pixel(w - 1, h - 1).unwrap();
+    assert!(
+        (bottom_right.r as i32 - top_left.r as i32) > 5,
+        "the diagonal-down gradient is lighter at the bottom-right than the top-left"
+    );
+
+    // Determinism, matching every other background-kind test in this file.
+    let fb2 = render(&compose_slide(&Slide::title(""), &theme, w, h));
+    assert_eq!(fb.bytes(), fb2.bytes());
+}
+
+#[test]
+fn every_builtin_theme_composes_without_panicking_at_several_sizes() {
+    // A general regression guard for the two NEW built-ins (and a cheap one for the existing
+    // three): every built-in, at a range of sizes including tiny/odd ones, composes a real
+    // slide without panicking. Mirrors the "never panics" pattern already established for the
+    // stage composer (`test_stage.rs`/`test_stage_parity.rs`).
+    let slide = Slide::new(
+        "Isaiah 61:5",
+        [
+            "And strangers shall stand and feed your flocks,",
+            "and your vinedressers.",
+        ],
+    )
+    .with_song(song("7115744", "Sinach"));
+    for name in Theme::BUILTIN_NAMES {
+        let theme = Theme::builtin(name).unwrap();
+        for (w, h) in [(1u32, 1u32), (7, 3), (320, 180), (1920, 1080)] {
+            let _ = render(&compose_slide(&slide, &theme, w, h));
+        }
     }
 }
