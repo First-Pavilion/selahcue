@@ -130,6 +130,11 @@ pub struct OperatorView {
     pub storage: Option<StorageHealthView>,
     /// The host's session-recovery state. `None` = not reported by this host.
     pub session: Option<SessionHealthView>,
+    /// Whether the connected host can actually transmit NDI (a build-time fact of the process
+    /// driving the real output, `video_sink::TRANSMIT_AVAILABLE`). `None` = not reported — the
+    /// in-process/Local shell (no real output) or an older host — and must render as *unknown*,
+    /// never as unavailable (CON-158).
+    pub ndi_available: Option<bool>,
     /// The plan's publish / hand-off state (FR-006) — the version label, the draft/published
     /// distinction, and the "Plan updated · Review changes" badge. `None` = not reported.
     pub publish: Option<PublishStateView>,
@@ -854,6 +859,7 @@ impl From<OperatorView> for OperatorStateView {
             output_health: v.output_health,
             storage: v.storage,
             session: v.session,
+            ndi_available: v.ndi_available,
             publish: v.publish,
             viewer: v.viewer,
             plan_templates: v.plan_templates,
@@ -891,6 +897,7 @@ impl From<OperatorStateView> for OperatorView {
             output_health: v.output_health,
             storage: v.storage,
             session: v.session,
+            ndi_available: v.ndi_available,
             publish: v.publish,
             // Carried straight through from the wire: on the remote path the HOST stamped this
             // with the authenticated session's role, and re-deriving it here from anything the

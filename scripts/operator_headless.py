@@ -899,6 +899,30 @@ if not check_jump_call_site_is_click_only():
 # Both mutation-verified at authoring time. Per this constant's own repeated lesson: re-derived
 # empirically below, not hand-summed against this branch's own long-stale prior count (1640).
 # Confirmed by a clean run: 1843, 0 FAIL.
+#
+# 1843 -> ?: 17tnw2axptc (CON-156/157/158/161/162/163/172/173/176/177 — console recovery &
+# reliability states, PR #85), originally authored back near the 1818 baseline (before the
+# 17tnw2axpta CON-054/CON-098 block immediately above had landed) and now rebased in — a real
+# conflict in this exact block again, the pattern this comment keeps warning about. Added coverage
+# for the NDI rejection/unavailable messages (CON-156/157/158, including a real set_ndi_output
+# mock — previously a no-op stub, now genuinely mutates V.screens[].config so the client-side
+# duplicate-name refusal can be tested against it), the blackout-state monitor-pill re-tint
+# (CON-161, plus the CON-162 divergence control proving Preview's own surface is never painted
+# black), and the console's scoped empty-plan state (CON-172/173). Re-derived empirically, not
+# hand-summed, after two real debugging detours this constant's own history already warns about:
+# (1) a memoization-key omission (view.ndi_available was not part of renderOutputs' rebuild key,
+# so a host-reported change to it alone never re-rendered the inspector — CON-158 FAILed until
+# fixed), and (2) the newly-real set_ndi_output mock leaving "main"/"stream" genuinely broadcasting
+# after the NDI block, which leaked into Pre-service Check's own NDI readiness probe
+# (preservice.js:96-106) and flipped its passed-count in an unrelated, later check — fixed by
+# resetting both screens' NDI config at the end of the NDI block. At authoring time (against the
+# pre-rebase 1818 baseline) this was confirmed by two independent clean runs: 1853, 0 FAIL — that
+# number is superseded by the re-derivation below, run against the real post-rebase tree rather
+# than hand-summed as 1843 + 35.
+#
+# 1843 -> ?: rebase of PR #85 onto current origin/main (2026-09-23) — resolving the conflict in
+# this exact block for the third time in its own history, per the pattern this comment keeps
+# warning about. Re-derived empirically against the real post-rebase tree, not hand-summed.
 EXPECTED_MIN_CHECKS = 1843
 
 
@@ -1110,7 +1134,7 @@ STUB = r"""
     // missing key. The nested counters DO skip at zero, which is why `output_health` here is
     // {held:false} with no holds/recoveries: that is the exact byte shape
     // test_health_view.rs:177 pins for a healthy controller.
-    output_health:{held:false}, storage:null, session:null,
+    output_health:{held:false}, storage:null, session:null, ndi_available:null,
     screens:[
       {screen:"main", role:"main", enabled:true, deletable:false, theme:null},
       {screen:"stage", role:"stage", enabled:true, deletable:false, theme:null}
@@ -1334,6 +1358,18 @@ STUB = r"""
     }
     if (cmd === "remove_screen") {
       V.screens = V.screens.filter(function(s){ return !(s.screen === args.screen && s.deletable); });
+      return Promise.resolve(JSON.parse(JSON.stringify(V)));
+    }
+    // CON-156/157/158: a real mutation (mirrors LiveController::set_ndi_output), not a bare
+    // Promise.resolve(V) — so a test can drive a screen into an ENABLED, NAMED NDI state and
+    // then assert the client-side duplicate-name refusal against it for real, the same way
+    // set_screen_enabled/add_screen above do for their own fields.
+    if (cmd === "set_ndi_output") {
+      V.screens.forEach(function(s){
+        if (s.screen === args.screen) {
+          s.config = Object.assign({}, s.config, {ndi_enabled: args.enabled, ndi_name: args.name});
+        }
+      });
       return Promise.resolve(JSON.parse(JSON.stringify(V)));
     }
     if (cmd === "set_custom_theme") return Promise.resolve({});
@@ -4251,6 +4287,96 @@ DRIVER = r"""
              && c.args.name === "Test NDI" && c.args.enabled === true;
          }),
          "inspector: NDI name + broadcast toggle → set_ndi_output(screen=stream, name, enabled=true)");
+      await waitFor(function(){ return /Broadcasting NDI · Test NDI/.test(insp2.textContent); });
+      ok(/Broadcasting NDI · Test NDI/.test(insp2.textContent),
+         "inspector: stream settles into the confirmed broadcasting state (the mock now really persists it, like set_screen_enabled does)");
+
+      // === CON-156/157/158 (Frame F states 4/5/6, node 462:194) — NDI rejection/unavailable
+      // messages. Previously a rejected enable reverted the toggle with NO explanation at all;
+      // these assert the exact Figma-spec copy now renders, driven by the SAME rule the host
+      // itself enforces (LiveController::set_ndi_output), not a guess at it. ===
+      var mainCard = rowFor("main");
+      Array.from(mainCard.querySelectorAll("button")).filter(function(b){ return b.textContent === "Configure"; })[0].click();
+      await waitFor(function(){ return /NDI OUTPUT/.test(document.getElementById("screens-inspector").textContent); });
+      var insp3 = document.getElementById("screens-inspector");
+      var mainNdiName = insp3.querySelector('input[aria-label="NDI source name for main"]');
+      var mainNdiToggle = insp3.querySelector('input[aria-label="Broadcast main as an NDI source"]');
+      ok(!!mainNdiName && mainNdiName.value === "", "inspector: main's NDI source name starts empty");
+
+      // CON-156 — enabling with an empty name is refused CLIENT-SIDE: no round trip at all
+      // (the host would refuse it too, so nothing is lost by not asking), and the exact
+      // Figma-spec message renders instead of a silent revert.
+      var callsBeforeEmpty = window.__calls.length;
+      mainNdiToggle.click();
+      ok(window.__calls.length === callsBeforeEmpty,
+         "CON-156: enabling NDI with an empty name fires NO set_ndi_output round trip (refused client-side)");
+      ok(/Enter a source name before enabling NDI/.test(insp3.querySelector(".scr-signal").textContent),
+         "CON-156: the exact Figma-spec rejection message renders — 'Enter a source name before enabling NDI'");
+      ok(!mainNdiToggle.checked, "CON-156 (control): the toggle never shows checked for a refused enable");
+
+      // CON-157 — enabling with a name ANOTHER already-enabled screen is broadcasting is
+      // refused CLIENT-SIDE too, naming the real conflict (stream is genuinely broadcasting
+      // "Test NDI" from the check above — not a fabricated example).
+      mainNdiName.value = "Test NDI"; mainNdiName.dispatchEvent(new Event("change"));
+      var callsBeforeDup = window.__calls.length;
+      mainNdiToggle.click();
+      ok(window.__calls.length === callsBeforeDup,
+         "CON-157: enabling with an already-claimed name fires NO set_ndi_output round trip (refused client-side)");
+      ok(insp3.querySelector(".scr-signal").textContent.indexOf('"Test NDI" is already broadcasting on another output') >= 0,
+         "CON-157: the exact Figma-spec rejection message renders, naming the real conflicting source");
+      ok(mainNdiName.classList.contains("mismatch"),
+         "CON-157: the source-name field gets the same warn/mismatch border .scr-select.mismatch already uses");
+
+      // CON-157 (control) — the refusal is name-specific, not a blanket block: a genuinely
+      // unique name commits normally.
+      mainNdiName.value = "Main Feed"; mainNdiName.dispatchEvent(new Event("change"));
+      mainNdiToggle.click();
+      ok(window.__calls.some(function(c){
+           return c.cmd === "set_ndi_output" && c.args.screen === "main"
+             && c.args.name === "Main Feed" && c.args.enabled === true;
+         }),
+         "CON-157 (control): a genuinely unique name commits normally — the refusal targets the conflict, not NDI as a whole");
+      ok(!mainNdiName.classList.contains("mismatch"),
+         "CON-157 (control): the mismatch border clears once the name no longer conflicts");
+
+      // CON-158 (blocker) — the connected host reports it cannot transmit NDI at all
+      // (view.ndi_available === false, e.g. selahcue-desktop built without --features ndi).
+      // The control must be disabled outright and say why, never silently offer a broken
+      // toggle; the section's own copy stays fully legible (CON-160 precedent — dim/disable
+      // the control, never the explanation).
+      V.ndi_available = false;
+      await waitFor(function(){ return /NDI runtime unavailable/.test(document.getElementById("screens-inspector").textContent); });
+      var insp4 = document.getElementById("screens-inspector");
+      ok(insp4.textContent.indexOf("NDI runtime unavailable — build with the ndi feature to broadcast") >= 0,
+         "CON-158: the exact Figma-spec message renders when the host reports NDI unavailable");
+      ok(insp4.querySelector('input[aria-label="Broadcast main as an NDI source"]').disabled,
+         "CON-158: the broadcast toggle is disabled outright when this build cannot transmit NDI");
+      ok(insp4.querySelector('input[aria-label="NDI source name for main"]').disabled,
+         "CON-158: the source-name field is disabled too — nothing to type toward a control that cannot work");
+      var ndiSectionTitle = Array.from(insp4.querySelectorAll(".scr-isection-title"))
+        .filter(function(t){ return t.textContent === "NDI OUTPUT"; })[0];
+      ok(!!ndiSectionTitle && getComputedStyle(ndiSectionTitle).opacity === "1",
+         "CON-158 (CON-160 precedent): the section's own title stays at full legibility — only the CONTROLS are disabled, never the explanation");
+
+      // CON-158 (control) — an ABSENT report (unknown: Local/demo, or an older host) must
+      // never render as unavailable. Restores the fixture for every check after this one.
+      V.ndi_available = null;
+      await waitFor(function(){
+        var i = document.getElementById("screens-inspector");
+        return i && i.textContent.indexOf("NDI runtime unavailable") < 0;
+      });
+      var insp5 = document.getElementById("screens-inspector");
+      ok(!insp5.querySelector('input[aria-label="Broadcast main as an NDI source"]').disabled,
+         "CON-158 (control): ndi_available reverting to unknown (null) re-enables the control — absent must never render as unavailable");
+
+      // Restore: the set_ndi_output mock above (CON-156/157/158) is a REAL mutation, unlike the
+      // rest of this file's earlier no-op stub for it, so "stream" and "main" are genuinely left
+      // broadcasting at this point. Reset both, so that state does not leak into a later fixture
+      // that assumes no screen is on the air — in particular Pre-service Check's own NDI
+      // readiness probe (preservice.js:96-106), which reads view.screens[].config for real and
+      // would otherwise start reporting NDI "ok" instead of "off" purely as a side effect of an
+      // earlier, unrelated check.
+      V.screens.forEach(function(s){ if (s.config) { s.config.ndi_enabled = false; s.config.ndi_name = ""; } });
 
       // === Presentation & Media surface (Design 2.0, node 329:124) ===
       var pmNav = document.querySelector('.nav-item[data-surface="presentation"]');
@@ -10812,6 +10938,13 @@ right after a generate/save");
          "CON-102 (control): with output live the Restore control is unpainted and out of the tab order");
       ok(el("blackout-label").textContent.trim() === "BLACKOUT",
          "CON-099: with output live the button reads BLACKOUT (the action), not the state");
+      // CON-161 controls: neither monitor pill carries the blackout re-tint before one is engaged.
+      var wPrevPill = el("preview-pill"), wLivePill = el("live-pill");
+      ok(!!wPrevPill && !!wLivePill, "CON-161: both monitor pills exist");
+      ok(!wPrevPill.classList.contains("blackout") && !wLivePill.classList.contains("blackout"),
+         "CON-161 (control): with output live neither pill carries the blackout re-tint");
+      ok(el("preview-pill-status").textContent.trim() === "STAGED" && el("live-pill-status").textContent.trim() === "ON AIR",
+         "CON-161 (control): pill status text reads normally before a blackout");
       // (b) engage it through the REAL command path, not by poking the view.
       wBoBtn.click();
       ok(await wWait(function(){ return !wExp.hidden; }), "CON-101 (setup): engaging blackout via the real command renders the engaged state");
@@ -10826,6 +10959,24 @@ right after a generate/save");
          "CON-101: the explanation is announced to assistive tech (role=status), not a silent visual-only cue");
       ok(el("blackout-label").textContent.trim() === "BLACKED OUT",
          "CON-099: engaged, the button states the STATE in words (non-colour, WCAG 1.4.1)");
+      // CON-161 — both monitor pills flag the blackout, not just the Live panel's own marker.
+      ok(wPrevPill.classList.contains("blackout"),
+         "CON-161: the PREVIEW pill re-tints during a blackout too, not just Live's own marker");
+      ok(wLivePill.classList.contains("blackout"), "CON-161: the LIVE pill also carries the blackout re-tint");
+      ok(el("preview-pill-status").textContent.trim() === "AUDIENCE DARK",
+         "CON-161: the Preview pill's STATUS TEXT changes too, not colour alone (WCAG 1.4.1)");
+      ok(el("live-pill-status").textContent.trim() === "BLACK",
+         "CON-161: the Live pill reads 'LIVE · BLACK' per the Figma spec (346:144)");
+      var wPrevPillCs = getComputedStyle(wPrevPill);
+      var wPrevPillR = _cr(_rgba(wPrevPillCs.color), _rgba(wPrevPillCs.backgroundColor));
+      ok(wPrevPillR >= 4.5, "CON-161: the re-tinted Preview pill text clears AA-normal (" + _f(wPrevPillR) + ":1) — the same --sc-live-soft/--sc-live pairing the Live pill already ships at rest, no new pairing introduced");
+      // CON-162 documented divergence (FRAME-G-RECOVERY-STATES-divergences.md #7): Preview's own
+      // SURFACE (the real staged content) is left untouched — blackout only blanks the
+      // audience/Live output (present.rs's own blackout() doc comment), so painting Preview's
+      // monitor black would misstate what the operator is actually looking at. Only the pill
+      // (a status echo, never a content claim) reflects it.
+      ok(!document.getElementById("preview-panel").classList.contains("blackout"),
+         "CON-162 (documented divergence): Preview's own surface is never painted black — only its pill echoes the blackout state");
       ok(document.querySelector("#emergency .note").hidden,
          "CON-101: the general footer note yields its slot, so the bar carries one sentence not two");
       // Contrast of the explanation, measured composited against the footer's REAL ground.
@@ -10848,6 +10999,10 @@ right after a generate/save");
       var wLast = window.__calls.filter(function(c){ return c.cmd === "blackout"; }).pop();
       ok(wLast.args && wLast.args.on === false, "CON-102: Restore sends blackout{on:false} — it restores, never toggles");
       ok(await wWait(function(){ return wExp.hidden; }), "CON-102: restoring clears the engaged state");
+      ok(await wWait(function(){ return !wPrevPill.classList.contains("blackout") && !wLivePill.classList.contains("blackout"); }),
+         "CON-161: both pills revert once blackout clears");
+      ok(el("live-pill-status").textContent.trim() === "ON AIR" && el("preview-pill-status").textContent.trim() === "STAGED",
+         "CON-161: both pills' status text reverts to normal ('ON AIR' / 'STAGED')");
       ok(document.activeElement === wBoBtn,
          "CON-102: focus lands on the BLACKOUT button after Restore disappears, not on <body> (WCAG 2.4.3)");
       // Press it again while output is already live: it must STILL mean restore, never re-black.
@@ -11684,6 +11839,39 @@ right after a generate/save");
            "Settings/Storage: every backup/restore/location/cache/diagnostics action is honestly disabled (" + stDangerButtons.length + " checked) — this build has no backend command behind any of them");
       }
 
+      // === CON-172/173 (Frame G.4, node 347:128) — the console's own scoped empty-plan state.
+      // Runs LAST: it is destructive to V.items, and this file has no dedicated sync helper for
+      // the plan list (unlike __syncSlides), so it rides the real 1 Hz poll like every other
+      // direct-V-mutation check in this file — restored immediately after so nothing downstream
+      // depends on plan contents.
+      document.querySelector('.nav-item[data-surface="console"]').click();
+      var planItemsBackup = V.items.slice();
+      V.items = [];
+      await wWait(function(){ return !!document.querySelector("#plan .plan-console-empty"); });
+      var planEmpty = document.querySelector("#plan .plan-console-empty");
+      ok(!!planEmpty, "CON-172: the console's #plan column renders a SCOPED empty state when the plan has no items (previously blank)");
+      ok(planEmpty.textContent.indexOf("Your plan is empty") >= 0,
+         "CON-172: the empty-state heading matches the Figma spec verbatim — 'Your plan is empty'");
+      ok(planEmpty.textContent.indexOf("Add a song, scripture, or slide to build your order of service.") >= 0,
+         "CON-172: the empty-state body copy matches the Figma spec verbatim");
+      ok(!!planEmpty.querySelector(".plan-console-empty-icon"), "CON-172: the icon tile renders");
+      var planAddBtn = document.querySelector(".plan-console-empty-add");
+      ok(!!planAddBtn && planAddBtn.textContent.trim() === "+ Add first item",
+         "CON-173: the '+ Add first item' action renders with the Figma spec's exact label");
+      ok(!planAddBtn.disabled, "CON-173: '+ Add first item' is a REAL, enabled action — not a disabled placeholder");
+      var planImportBtn = document.querySelector(".plan-console-empty-import");
+      ok(!!planImportBtn && planImportBtn.disabled && planImportBtn.textContent.indexOf("coming soon") >= 0,
+         "CON-173: 'Import' keeps this project's already-established honest treatment for a control with no backend today — disabled and says so, never a live no-op (matches the Service Plan surface's own 'Import — coming soon' decision)");
+      planAddBtn.click();
+      ok(document.getElementById("surface-plan").classList.contains("active"),
+         "CON-173: '+ Add first item' really navigates to the Service Plan surface, where the real add-item palette lives — not a dead click");
+      // restore
+      document.querySelector('.nav-item[data-surface="console"]').click();
+      V.items = planItemsBackup;
+      await wWait(function(){ return !document.querySelector("#plan .plan-console-empty"); });
+      ok(!document.querySelector("#plan .plan-console-empty") && document.querySelectorAll("#plan .item").length === planItemsBackup.length,
+         "CON-172 (control): restoring items clears the empty state and the normal plan list renders again");
+
     } catch(e){ R.push("FAIL: exception "+e.message+" @ "+(e.stack||"").split("\n")[1]); }
     el("__r").textContent = "RESULTS\n"+R.join("\n")+"\nDONE("+R.length+")";
   }
@@ -11732,7 +11920,17 @@ try:
              # whole point of holds/recoveries being counters), so it spends ~1s of virtual
              # time per assertion pair and cannot be made cheaper without testing something
              # weaker than the real poll path.
-             "--virtual-time-budget=60000", "--dump-dom", "file://" + path],
+             # Raised again to 75000 for CON-156/157/158/161/172/173 (17tnw2axptc): the NDI
+             # runtime-unavailable/restore-to-unknown pair and the console empty-plan
+             # add/restore pair are each two more real 1 Hz-poll round trips, all landing
+             # BEFORE the already wait-heavy Frame G recovery block above — without the extra
+             # headroom the run reached check ~1725 (mid-G.3) and then genuinely ran out of
+             # virtual time, which surfaced as "NO RESULTS BLOCK" (an infra failure) rather
+             # than any named FAIL, exactly the failure mode this comment block already warns
+             # about. Confirmed empirically: a debug build that writes PROGRESS every 25
+             # checks showed the run stalled inside the pre-existing G.3 edges-across-polls
+             # section, not inside anything new.
+             "--virtual-time-budget=75000", "--dump-dom", "file://" + path],
             capture_output=True, text=True, encoding="utf-8", errors="replace",
             timeout=90).stdout
     except subprocess.TimeoutExpired:

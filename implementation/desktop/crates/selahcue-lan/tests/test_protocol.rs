@@ -696,6 +696,7 @@ fn transcript_and_detection_view_fields_are_additive() {
         output_health: None,
         storage: None,
         session: None,
+        ndi_available: None,
         detections: vec![DetectionView {
             id: 4,
             reference: "John 3:16".into(),
@@ -944,6 +945,7 @@ fn wire_fixtures_are_stable_for_cross_language_clients() {
         output_health: None,
         storage: None,
         session: None,
+        ndi_available: None,
         detections: vec![],
         summary: None,
         // Publish/hand-off (FR-006) + starter templates (FR-005) absent: the pinned
@@ -994,6 +996,7 @@ fn wire_fixtures_are_stable_for_cross_language_clients() {
         }),
         storage: None,
         session: None,
+        ndi_available: None,
         summary: None,
         // Publish/hand-off (FR-006) + starter templates (FR-005) absent: the pinned
         // bytes below are UNCHANGED, which is the proof these fields are additive.
@@ -1041,6 +1044,7 @@ fn wire_fixtures_are_stable_for_cross_language_clients() {
         }),
         storage: None,
         session: None,
+        ndi_available: None,
         summary: None,
         // Publish/hand-off (FR-006) + starter templates (FR-005) absent: the pinned
         // bytes below are UNCHANGED, which is the proof these fields are additive.
@@ -1103,6 +1107,7 @@ fn wire_fixtures_are_stable_for_cross_language_clients() {
         output_health: None,
         storage: None,
         session: None,
+        ndi_available: None,
         detections: vec![],
         summary: None,
         // Publish/hand-off (FR-006) + starter templates (FR-005) absent: the pinned
@@ -1156,6 +1161,7 @@ fn wire_fixtures_are_stable_for_cross_language_clients() {
         output_health: None,
         storage: None,
         session: None,
+        ndi_available: None,
         detections: vec![],
         summary: None,
         // Publish/hand-off (FR-006) + starter templates (FR-005) absent: the pinned
@@ -1200,6 +1206,7 @@ fn wire_fixtures_are_stable_for_cross_language_clients() {
         output_health: None,
         storage: None,
         session: None,
+        ndi_available: None,
         detections: vec![],
         summary: None,
         // Publish/hand-off (FR-006) + starter templates (FR-005) absent: the pinned
@@ -1250,6 +1257,7 @@ fn wire_fixtures_are_stable_for_cross_language_clients() {
         output_health: None,
         storage: None,
         session: None,
+        ndi_available: None,
         detections: vec![],
         summary: None,
         // Publish/hand-off (FR-006) + starter templates (FR-005) absent: the pinned

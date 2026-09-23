@@ -2137,6 +2137,10 @@ impl App {
                 crash_rapid_launches,
                 store.last_save_error(),
             );
+            // CON-158: a build fact, never a runtime condition, so it is set once here and
+            // never revisited (unlike storage/session health, which the host re-reports as
+            // conditions change).
+            c.set_ndi_available(video_sink::TRANSMIT_AVAILABLE);
             // Load the user config (the saved-theme library + the per-screen theme map)
             // BEFORE restoring the session, so a per-item / per-screen override that
             // references a SAVED theme resolves as content is re-staged (86ajq69ft). The

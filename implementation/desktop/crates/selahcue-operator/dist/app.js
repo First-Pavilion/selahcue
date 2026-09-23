@@ -79,6 +79,48 @@
 
         const plan = document.getElementById("plan");
         plan.innerHTML = "";
+        // CON-172/173 (Frame G.4, node 347:128) — the console's own compact empty state. The
+        // full Service Plan SURFACE has its own larger, permission-aware empty state
+        // (planRenderList below); this is the small sidebar card, so it stays to the frame's
+        // two-action layout rather than duplicating that machinery. "+ Add first item" is a
+        // real action (switches to the Service Plan surface, where the item palette lives —
+        // there is no local palette in this sidebar to focus instead); "Import" stays the
+        // project's already-established honest treatment for a control that is not buildable
+        // today (CON-173) — a disabled, explained button, never a live no-op.
+        if (!view.items.length) {
+          const empty = document.createElement("div");
+          empty.className = "plan-console-empty";
+          const icon = document.createElement("div");
+          icon.className = "plan-console-empty-icon";
+          icon.setAttribute("aria-hidden", "true");
+          icon.textContent = "☰";
+          empty.appendChild(icon);
+          const h = document.createElement("div");
+          h.className = "plan-console-empty-h";
+          h.textContent = "Your plan is empty";
+          empty.appendChild(h);
+          const sub = document.createElement("p");
+          sub.className = "plan-console-empty-sub";
+          sub.textContent = "Add a song, scripture, or slide to build your order of service.";
+          empty.appendChild(sub);
+          const acts = document.createElement("div");
+          acts.className = "plan-console-empty-acts";
+          const addBtn = document.createElement("button");
+          addBtn.type = "button";
+          addBtn.className = "plan-console-empty-add";
+          addBtn.textContent = "+ Add first item";
+          addBtn.onclick = () => showSurface("plan");
+          acts.appendChild(addBtn);
+          const importBtn = document.createElement("button");
+          importBtn.type = "button";
+          importBtn.className = "plan-console-empty-import";
+          importBtn.disabled = true;
+          importBtn.textContent = "Import — coming soon";
+          acts.appendChild(importBtn);
+          empty.appendChild(acts);
+          plan.appendChild(empty);
+          return;
+        }
         view.items.forEach((it, i) => {
           const row = document.createElement("div");
           row.className =
@@ -353,6 +395,19 @@
         document.getElementById("live-panel").classList.toggle("blackout", view.blackout);
         // CON-098 (blocker) — the footer bar itself re-tints, not just the button label.
         document.getElementById("emergency").classList.toggle("blackout", view.blackout);
+        // CON-161 — both monitor pills flag a blackout, not just the Live panel's own marker.
+        // Preview's pixels are unaffected (blackout only blanks the audience/Live output, per
+        // present.rs's blackout() doc comment), so its pill is a STATUS echo, never a claim that
+        // its content went dark — the surface itself is deliberately left untouched (see
+        // FRAME-G-RECOVERY-STATES-divergences.md, Divergence 7).
+        const previewPill = document.getElementById("preview-pill");
+        if (previewPill) previewPill.classList.toggle("blackout", view.blackout);
+        const livePill = document.getElementById("live-pill");
+        if (livePill) livePill.classList.toggle("blackout", view.blackout);
+        const previewPillStatus = document.getElementById("preview-pill-status");
+        if (previewPillStatus) previewPillStatus.textContent = view.blackout ? "AUDIENCE DARK" : "STAGED";
+        const livePillStatus = document.getElementById("live-pill-status");
+        if (livePillStatus) livePillStatus.textContent = view.blackout ? "BLACK" : "ON AIR";
 
         // Draw the TRUE composited Preview/Live output (86ajtwq28) — a debounced, read-only
         // host readback (rendering never changes what is on air). Only re-render when a
@@ -635,7 +690,10 @@
         if (!registry.some((s) => s.screen === selectedScreen)) {
           selectedScreen = registry[0] ? registry[0].screen : null;
         }
-        const key = JSON.stringify([outs, displays, themes, activeTheme, view.screen_themes || [], view.saved_themes || [], registry, selectedScreen]);
+        // CON-158: ndi_available is part of the key too — otherwise a host-reported change to
+        // it (unavailable <-> unknown/available) would never rebuild the inspector, since it is
+        // the only tracked-view field none of the others above would change alongside it.
+        const key = JSON.stringify([outs, displays, themes, activeTheme, view.screen_themes || [], view.saved_themes || [], registry, selectedScreen, view.ndi_available]);
         if (key === outputsKey) return; // pickers are interactive: rebuild only on change
         const list = document.getElementById("screens-list");
         // Physical output (display assignment + format + telemetry) is keyed by role.
@@ -1062,13 +1120,16 @@
           row.appendChild(lab); row.appendChild(val);
           return row;
         };
-        // A label-left / toggle-right row with optimistic revert.
-        const toggleRow = (labelText, ariaLabel, checked, onChange) => {
+        // A label-left / toggle-right row with optimistic revert. `disabled` (CON-158) keeps
+        // the label at full legibility — only the control itself is disabled, per the
+        // `.scr-card.screen-disabled` precedent (dim/disable the control, never the copy).
+        const toggleRow = (labelText, ariaLabel, checked, onChange, disabled) => {
           const row = document.createElement("div"); row.className = "scr-irow";
           const lab = document.createElement("label"); lab.className = "scr-irow-label"; lab.textContent = labelText;
           const tog = document.createElement("label"); tog.className = "scr-toggle";
           const cb = document.createElement("input"); cb.type = "checkbox"; cb.checked = checked;
           cb.setAttribute("aria-label", ariaLabel);
+          cb.disabled = !!disabled;
           cb.onchange = () => { const want = cb.checked; cb.checked = checked; onChange(want); };
           const knob = document.createElement("span"); knob.className = "scr-toggle-knob";
           tog.appendChild(cb); tog.appendChild(knob);
@@ -1190,6 +1251,13 @@
         // set together; the host validates the name + uniqueness. ---
         if (audience) {
           const ndi = section("NDI OUTPUT");
+          // CON-158: `view.ndi_available` is the connected host's real, build-time report of
+          // whether it can transmit NDI at all (`video_sink::TRANSMIT_AVAILABLE`, wired through
+          // `OperatorView`/`OperatorStateView`). `false` is a reported fault — disable the
+          // control and say why. `true` or absent (Local/demo, or an older host) behaves exactly
+          // as before: absent must never render as unavailable (the same three-way rule as
+          // `output_health`/`storage`/`session`).
+          const ndiUnavailable = view.ndi_available === false;
           const nameRow = document.createElement("div"); nameRow.className = "scr-irow";
           const nameLab = document.createElement("label"); nameLab.className = "scr-irow-label";
           nameLab.textContent = "Source name";
@@ -1199,31 +1267,63 @@
           nameInput.maxLength = 64;
           nameInput.placeholder = "e.g. SelahCue Program";
           nameInput.setAttribute("aria-label", "NDI source name for " + s.screen);
+          nameInput.disabled = ndiUnavailable;
           const nameId = "scr-ndi-name-" + s.screen;
           nameLab.setAttribute("for", nameId); nameInput.id = nameId;
-          // Commit the name + a target enabled state atomically to the host.
+
+          const st = document.createElement("div"); st.className = "scr-signal";
+          const setSignal = (variant, text) => {
+            st.className = "scr-signal scr-signal-" + variant;
+            st.textContent = text;
+          };
+
+          // Commit the name + a target enabled state atomically to the host — but first,
+          // CON-156/157: check the SAME two rules the host itself enforces
+          // (`LiveController::set_ndi_output`) before spending a round trip on a call we
+          // already know will be refused. This is not a guess at the host's behaviour — it is
+          // the exact rule, so the message it shows is always true of what the host will do:
+          // a non-empty name to enable, and no OTHER currently-enabled NDI screen already
+          // claiming that name. Previously a rejection reverted the toggle with no explanation
+          // at all (the comment here used to read "...so the control never lies" — true, but
+          // silent is not the same as honest).
           const commitNdi = (enabled) => {
+            nameInput.classList.remove("mismatch");
             const name = nameInput.value.trim();
+            if (enabled && !name) {
+              setSignal("warn", "⚠ Enter a source name before enabling NDI");
+              return;
+            }
+            if (enabled) {
+              const claimedBy = registry.find((other) =>
+                other.screen !== s.screen && cfgOf(other).ndi_enabled && cfgOf(other).ndi_name === name
+              );
+              if (claimedBy) {
+                nameInput.classList.add("mismatch");
+                setSignal("warn", "⚠ \"" + name + "\" is already broadcasting on another output");
+                return;
+              }
+            }
             act(() => invoke("set_ndi_output", { screen: s.screen, name, enabled }));
           };
           nameInput.onchange = () => commitNdi(cfg.ndi_enabled);
           nameRow.appendChild(nameLab); nameRow.appendChild(nameInput);
           ndi.appendChild(nameRow);
           // Broadcast toggle — reads the (possibly just-edited) name; enabling with an empty
-          // name is rejected by the host and reverts, so the control never lies.
+          // or already-claimed name is refused above, and by the host besides, so the control
+          // never lies. Disabled outright (CON-158) when this build cannot transmit at all.
           ndi.appendChild(toggleRow(
             "Broadcast as NDI", "Broadcast " + s.screen + " as an NDI source",
             cfg.ndi_enabled,
-            (on) => commitNdi(on)
+            (on) => commitNdi(on),
+            ndiUnavailable
           ));
-          // Honest status: broadcasting (with the source name) or off.
-          const st = document.createElement("div"); st.className = "scr-signal";
-          if (cfg.ndi_enabled && cfg.ndi_name) {
-            st.classList.add("scr-signal-ok");
-            st.textContent = "● Broadcasting NDI · " + cfg.ndi_name;
+          // Honest status: runtime unavailable, broadcasting (with the source name), or off.
+          if (ndiUnavailable) {
+            setSignal("warn", "⚠ NDI runtime unavailable — build with the ndi feature to broadcast");
+          } else if (cfg.ndi_enabled && cfg.ndi_name) {
+            setSignal("ok", "● Broadcasting NDI · " + cfg.ndi_name);
           } else {
-            st.classList.add("scr-signal-neutral");
-            st.textContent = "NDI off — set a source name and enable to broadcast on the network";
+            setSignal("neutral", "NDI off — set a source name and enable to broadcast on the network");
           }
           ndi.appendChild(st);
           insp.appendChild(ndi); insp.appendChild(divider());

@@ -1136,6 +1136,14 @@ pub struct OperatorStateView {
     /// The host's session-recovery state. `None` = this host does not report it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session: Option<SessionHealthView>,
+    /// Whether this host can actually transmit NDI (a build-time fact of the process driving
+    /// the real output — `video_sink::TRANSMIT_AVAILABLE`, never a runtime toggle). `None` =
+    /// this host does not report it (an older host, or a peer with no compositor), and a client
+    /// must render that as *unknown* — never as unavailable (CON-158; same three-way rule as
+    /// `output_health`). Omitted on the wire when `None`, so the pinned v2 fixtures stay
+    /// byte-identical.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ndi_available: Option<bool>,
     /// Plan-level roll-up (counts, assigned, planned total) for the Plan Summary panel.
     /// `None` = this host does not report it; omitted on the wire then, so the pinned v2
     /// fixtures stay byte-identical and an older client is unaffected.

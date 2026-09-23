@@ -2372,6 +2372,17 @@
         outline-offset: 2px;
       }
 
+      /* CON-158: a disabled toggle (this build cannot transmit NDI at all) must look
+         disabled, not merely fail to respond — the knob is the only visible part, so the
+         `:disabled` state has to reach it through the sibling combinator. */
+      .scr-toggle input:disabled {
+        cursor: not-allowed;
+      }
+
+      .scr-toggle input:disabled + .scr-toggle-knob {
+        opacity: 0.5;
+      }
+
       /* Stage-card thumbnail chips */
       .stage-chips {
         display: flex;
@@ -2509,7 +2520,20 @@
         outline-offset: 1px;
       }
 
+      /* CON-158: matches .pp-select:disabled's existing treatment elsewhere in this file. */
+      .scr-input:disabled {
+        opacity: 0.6;
+        cursor: default;
+      }
+
       .scr-select.mismatch {
+        border-color: var(--sc-warn);
+        color: var(--sc-warn);
+      }
+
+      /* CON-157: the NDI source-name field gains the same warn border the select above uses
+         when the host would refuse it as already claimed by another output. */
+      .scr-input.mismatch {
         border-color: var(--sc-warn);
         color: var(--sc-warn);
       }
@@ -3658,6 +3682,82 @@
         gap: 8px;
       }
 
+      /* CON-172/173 (Frame G.4, node 347:128) — the console's own compact empty-plan state.
+         Distinct from .plan-empty (the full Service Plan SURFACE's larger, permission-aware
+         empty state): this is a small sidebar card, so it keeps the frame's simpler two-action
+         layout. Essential copy uses --sc-text-secondary, not --sc-text-muted (3.79:1, AA-large
+         only) — the same fix already applied to .pm-insp-note/.pm-insp-miss elsewhere in this
+         file, because this text is what tells the operator what to do next, not a caption. */
+      .plan-console-empty {
+        text-align: center;
+        padding: 26px 12px;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 10px;
+      }
+
+      .plan-console-empty-icon {
+        width: 54px;
+        height: 52px;
+        border-radius: 14px;
+        background: var(--sc-inset);
+        border: 1px solid var(--sc-border);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 22px;
+        font-weight: 700;
+        color: var(--sc-text-secondary);
+      }
+
+      .plan-console-empty-h {
+        font-size: 15px;
+        font-weight: 700;
+        color: var(--sc-text-secondary);
+      }
+
+      .plan-console-empty-sub {
+        margin: 0;
+        font-size: 12px;
+        font-weight: 500;
+        line-height: 1.4;
+        color: var(--sc-text-secondary);
+        max-width: 260px;
+      }
+
+      .plan-console-empty-acts {
+        display: flex;
+        gap: 9px;
+        width: 100%;
+        margin-top: 4px;
+      }
+
+      .plan-console-empty-add {
+        flex: 1;
+        border: none;
+        border-radius: 10px;
+        padding: 11px 0;
+        font-size: 13px;
+        font-weight: 700;
+        color: #fff;
+        background: var(--sc-primary);
+      }
+
+      .plan-console-empty-add:hover {
+        background: #5a48d0;
+      }
+
+      /* Import has no working path today (no importer exists yet) — an honest, disabled
+         control that says so, never a live button that does nothing on click. Matches the
+         Service Plan surface's own "Import — coming soon" treatment (CON-173). */
+      .plan-console-empty-import {
+        flex: 1;
+        font-size: 13px;
+        font-weight: 600;
+        color: var(--sc-text-secondary);
+      }
+
       /* Plan item = a Design 2.0 rounded card: title + inline status pill above, a
          colour-coded kind badge below. */
       .item {
@@ -4212,6 +4312,18 @@
       }
 
       .panel-pill.live {
+        background: var(--sc-live-soft);
+        border-color: var(--sc-live-border);
+        color: var(--sc-live);
+      }
+
+      /* CON-161: both monitor pills re-tint to the same live-red during a blackout — the
+         Preview pill included, even though Preview's own content is unaffected (blackout only
+         blanks the audience/Live output). This is a status echo ("the audience output is
+         dark"), not a claim about what either panel is rendering; app.js also swaps the status
+         TEXT (not colour alone) so it stays a two-channel signal. Equal specificity to
+         .panel-pill.preview, so source order after it is what lets this win. */
+      .panel-pill.blackout {
         background: var(--sc-live-soft);
         border-color: var(--sc-live-border);
         color: var(--sc-live);
