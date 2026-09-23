@@ -934,13 +934,17 @@ if not check_jump_call_site_is_click_only():
 # mutation-tested (broken, confirmed RED, restored) before this number was re-derived. Confirmed
 # by two independent clean runs against this branch's own pre-rebase tree: 1858, 0 FAIL.
 #
-# 1843 / 1858 -> ?: rebase of PR #85 (ending at 1858 on its own, pre-rebase lineage above) onto
-# current origin/main (ending at 1843 via PR #66's CON-054/CON-098 work) — 2026-09-23. The two
-# lineages' own totals do not simply add (both were counted from the same 1818 ancestor along
-# divergent paths), so per this constant's own repeatedly-stated discipline the merged count is
-# read off an actual clean run against the real post-rebase tree, not hand-summed as 1843 + 40 or
-# any other arithmetic shortcut.
-EXPECTED_MIN_CHECKS = 1858
+# 1843 / 1858 -> 1883: rebase of PR #85 (ending at 1858 on its own, pre-rebase lineage above) onto
+# current origin/main (ending at 1843 via PR #66's CON-054/CON-098 work, itself since overtaken by
+# further unrelated PRs merged to main — Settings/Network, Outputs, Storage and Security page
+# coverage among them, none of which touched this exact conflict block and so merged cleanly)
+# — 2026-09-23. The two known lineages' own totals do not simply add (both were counted from the
+# same 1818 ancestor along divergent paths, and main picked up still more checks neither lineage
+# ever saw), so per this constant's own repeatedly-stated discipline the merged count is read off
+# an actual clean run against the real post-rebase tree, not hand-summed as 1843 + 40 or any other
+# arithmetic shortcut. Confirmed by two independent clean runs against the real post-rebase tree:
+# 1883, 0 FAIL.
+EXPECTED_MIN_CHECKS = 1883
 
 
 def find_chrome():
