@@ -134,6 +134,7 @@ class LiveController extends ChangeNotifier {
   bool _rejected = false;
   bool _reconnecting = false;
   bool _refreshing = false;
+  bool _acting = false;
   bool _disposed = false;
   bool _revoked = false;
   Timer? _poll;
@@ -230,6 +231,18 @@ class LiveController extends ChangeNotifier {
   /// was already inert did not have an action "rejected", it simply never fired,
   /// and the connection banner already explains that state.
   bool get rejected => _rejected;
+
+  /// True while a command sent through [act] is still in flight.
+  ///
+  /// [act] refuses to start a second command while this is true (see its
+  /// guard) rather than queueing one behind the other on
+  /// `SelahSession._turn` — a burst of taps against a slow/dead host would
+  /// otherwise each wait up to `commandTimeout` for the ones ahead of it, so
+  /// the app looks hung for tens of seconds with no feedback even though every
+  /// queued command eventually resolves. Exposed so a screen can also disable
+  /// its controls while a command is outstanding, mirroring how it already
+  /// disables them for [syncing].
+  bool get busy => _acting;
 
   void dismissError() {
     _denial = null;
@@ -411,6 +424,17 @@ class LiveController extends ChangeNotifier {
   /// what let a compound gesture go live on a stale premise (86ajxwcft).
   Future<CommandOutcome> act(Map<String, dynamic> cmd) async {
     if (_disposed || _revoked) return CommandOutcome.failed;
+    // Refuse a second command while one is still in flight, the same shape
+    // [refresh] already guards with `_refreshing`. Without this, a double-tap
+    // (a misfire, or an impatient tap against a slow link) queues a second
+    // command behind the first on `SelahSession._turn` instead of being
+    // rejected: each queued command then waits up to `commandTimeout` for the
+    // ones ahead of it, so a burst of N taps can take up to N x
+    // commandTimeout to drain before the operator gets any feedback. Not set
+    // via [_rejected] — like the [syncing] pre-flight refusal below, this
+    // command never reached the wire, so it was never "rejected" as
+    // MOBILE-2.0-SPEC §4.12 uses that word.
+    if (_acting) return CommandOutcome.failed;
     // Refuse outright until we can prove what is on the audience screen — see
     // [syncing]: either the link is down, or it is back but the snapshot we hold
     // still describes the pre-disconnect world. Both mean the same thing for an
@@ -432,13 +456,21 @@ class LiveController extends ChangeNotifier {
     // without sending a command. Screens still disable their controls so a dead
     // button never looks live; this is the backstop that makes that cosmetic.
     if (syncing) return CommandOutcome.failed;
-    // The gate this command is about to be judged against. Cheap, local, and
-    // taken before the send so a re-role that landed between two taps is news
-    // the operator gets now rather than one poll later.
-    if (_syncRole()) _notify();
-    // The connection this intent is being formed against.
-    final epoch = _epoch;
+    // Claimed and published before anything else runs — in particular before
+    // [_syncRole]'s own [_notify] below, which calls listeners synchronously.
+    // A listener that reacts to that notification by calling [act] again must
+    // see `_acting` already true, or the guard above would not have seen it
+    // yet either and a second command would slip in through the same
+    // re-entrant call this guard exists to stop.
+    _acting = true;
+    _notify();
     try {
+      // The gate this command is about to be judged against. Cheap, local,
+      // and taken before the send so a re-role that landed between two taps
+      // is news the operator gets now rather than one poll later.
+      if (_syncRole()) _notify();
+      // The connection this intent is being formed against.
+      final epoch = _epoch;
       final reply = await _session.command(cmd);
       // The host answered; re-observe the grant before interpreting the answer,
       // so a `forbidden` raised below names the role the operator holds NOW
@@ -485,6 +517,15 @@ class LiveController extends ChangeNotifier {
       _rejected = true;
       await _reconnect();
       return CommandOutcome.failed;
+    } finally {
+      // Published on this edge too, not just the rising one: without this a
+      // screen gating its controls on [busy] would see it clear only on the
+      // next 1s poll tick, leaving a control that looks dead for up to a
+      // second after the command it was waiting on already finished — the
+      // same symptom this guard exists to fix, reintroduced on the other
+      // edge.
+      _acting = false;
+      _notify();
     }
   }
 
