@@ -380,6 +380,15 @@ class LiveController extends ChangeNotifier {
   /// that same connection* still shows this item in Preview. Anything less and
   /// we stop — a missed go-live costs one more tap, a wrong one reaches the
   /// congregation (86ajxwcft).
+  ///
+  /// [busy] is NOT held for this whole gesture — only [act] sets it, and the
+  /// `_confirmedView` fetch in between does not go through [act]. So a
+  /// UI-gated control (including the emergency strip) that reads [busy]
+  /// genuinely re-enables in the gap between the stage and the go-live, even
+  /// though this gesture is still in flight. Whether a compound gesture
+  /// should hold the gate for its whole duration is an open product decision,
+  /// not settled here — see the follow-up ticket linked from 17tnw2ay2pq
+  /// (Sana's review of the UI-gating PR, non-blocking finding 5).
   Future<void> selectAndGoLive(int itemId) async {
     if (_disposed || _revoked) return;
     // Claims `_acting` for the WHOLE gesture (both commands AND the

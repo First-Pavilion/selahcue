@@ -176,7 +176,10 @@ class _TimerTabState extends State<TimerTab> {
     final syncing = widget.live.syncing;
     // A command any of these controls sent is still on the wire — the same
     // reason [syncing] already goes inert (FR-097), just narrower: it clears
-    // in well under `commandTimeout` rather than needing a reconnect.
+    // once the in-flight command's own round trip (and the refresh() that
+    // follows it — together up to roughly two commandTimeout windows, not
+    // "well under" one; see session.dart) resolves, rather than needing a
+    // reconnect.
     final busy = widget.live.busy;
     final disabled = syncing || busy;
     final disabledReason =
