@@ -32,11 +32,17 @@ class PlanTab extends StatelessWidget {
     // Staging into an unknown host state is exactly the tap that later goes live
     // on a stale premise, so the list goes inert while we re-sync (FR-097).
     final syncing = live.syncing;
-    final canStage = live.can(Capability.navigate) && !syncing;
-    final canGoLive = live.can(Capability.goLive) && !syncing;
+    // A command any row's tap/double-tap sent is still on the wire — a row
+    // must not accept a second stage while the first is unresolved, the same
+    // reason [syncing] already goes inert (FR-097).
+    final busy = live.busy;
+    final canStage = live.can(Capability.navigate) && !syncing && !busy;
+    final canGoLive = live.can(Capability.goLive) && !syncing && !busy;
     final hint = syncing
         ? 'Syncing live state… controls are disabled until this device is back '
               'in step with the desktop.'
+        : busy
+        ? 'Sending… controls are disabled until the command finishes.'
         : !live.can(Capability.navigate)
         ? 'Read-only — your role can view the plan but not stage it.'
         : live.can(Capability.goLive)

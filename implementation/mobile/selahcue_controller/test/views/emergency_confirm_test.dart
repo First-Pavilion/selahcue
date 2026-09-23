@@ -38,6 +38,10 @@ class _Fake implements ControllerSession {
   /// When set, the state fetch parks — socket back, truth not yet re-read.
   Completer<void>? gate;
 
+  /// When set, `command()` parks before replying — a command reached the
+  /// host but its acknowledgement hasn't landed yet.
+  Completer<void>? commandGate;
+
   @override
   final MobileRole grantedRole = MobileRole.producer;
 
@@ -46,6 +50,8 @@ class _Fake implements ControllerSession {
     if (dead) throw const SessionException('down');
     sent.add(cmd['cmd'] as String);
     sentCmds.add(cmd);
+    final g = commandGate;
+    if (g != null) await g.future;
     return const Ack(1);
   }
 
@@ -301,6 +307,50 @@ void main() {
     expect(find.text('■ CONFIRM BLACKOUT'), findsNothing,
         reason: 'a disabled control must not even arm');
     expect(fake.sent, isEmpty);
+
+    handle.dispose();
+    live.dispose();
+  });
+
+  testWidgets('emergency controls are disabled while a command is in flight',
+      (tester) async {
+    final handle = tester.ensureSemantics();
+    final fake = _Fake();
+    final live = await _pumpPolledStrip(tester, fake);
+    expect(live.busy, isFalse, reason: 'baseline');
+
+    // Arm and confirm — the confirming tap sends `blackout`, held in flight
+    // by the gate so the test can observe the strip while it is outstanding.
+    fake.commandGate = Completer<void>();
+    await tester.tap(find.bySemanticsLabel('Blackout'));
+    await tester.pump();
+    await tester.tap(find.bySemanticsLabel('Confirm blackout'));
+    await tester.pump();
+
+    expect(live.busy, isTrue,
+        reason: 'the confirming tap sent blackout, still in flight');
+    // _fire() disarms immediately, so the label reverts to BLACKOUT (the
+    // host has not acknowledged yet) — but it must render disabled, not live.
+    expect(find.bySemanticsLabel('Blackout, sending…'), findsOneWidget,
+        reason: 'a control must not look tappable while its own command is '
+            'still on the wire (17tnw2ay2pq, follow-up to 86ajxx4x8)');
+
+    // A tap while busy must be a genuine no-op, not a second arm/fire.
+    final sentBefore = fake.sent.length;
+    await tester.tap(find.text('■ BLACKOUT'));
+    await tester.pump();
+    expect(fake.sent.length, sentBefore,
+        reason: 'a disabled control must not even arm');
+
+    fake.commandGate!.complete();
+    await tester.pump(const Duration(milliseconds: 60));
+    expect(live.busy, isFalse,
+        reason: 'busy must clear once the command settles');
+    // The fake host never actually applied the blackout (only recorded that
+    // it was sent), so the label is still BLACKOUT — what matters here is
+    // that it is enabled again, i.e. carries no disabled-reason suffix.
+    expect(find.bySemanticsLabel('Blackout'), findsOneWidget,
+        reason: 'the control re-enables once busy clears');
 
     handle.dispose();
     live.dispose();
