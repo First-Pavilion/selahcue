@@ -418,4 +418,42 @@ void main() {
     await tester.pump(const Duration(milliseconds: 60));
     live.dispose();
   });
+
+  testWidgets(
+      'Reset and Send "TIME UP" to stage are also disabled while a command '
+      'is in flight (17tnw2ay2pq, rebased onto MOB-009)', (tester) async {
+    final handle = tester.ensureSemantics();
+    const running = TimerSnapshot(
+        remainingSecs: 45,
+        elapsedSecs: 255,
+        timeUp: false,
+        warn: false,
+        running: true,
+        totalSecs: 300);
+    final fake = _Fake(MobileRole.producer, _viewWith(running));
+    final live = await _pumpPolled(tester, fake);
+    expect(live.busy, isFalse, reason: 'baseline');
+
+    fake.commandGate = Completer<void>();
+    await tester.tap(find.text('Pause'));
+    await tester.pump();
+
+    expect(live.busy, isTrue, reason: 'pause_timer is now in flight');
+    expect(find.bySemanticsLabel('Reset to the current target duration, sending…'),
+        findsOneWidget,
+        reason: 'Reset must disable together with every other control gated '
+            'the same way, not just the one that was tapped');
+    expect(
+        find.bySemanticsLabel(
+            'Send "TIME UP" to stage. stage display only — never audience. sending…'),
+        findsOneWidget);
+
+    fake.commandGate!.complete();
+    await tester.pump(const Duration(milliseconds: 60));
+    expect(live.busy, isFalse);
+    expect(find.text('Reset'), findsOneWidget);
+
+    handle.dispose();
+    live.dispose();
+  });
 }

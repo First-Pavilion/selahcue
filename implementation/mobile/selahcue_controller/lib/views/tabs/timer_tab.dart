@@ -133,8 +133,15 @@ class _TimerTabState extends State<TimerTab> {
   /// `-remainingSecs` — subtracting it again from a target `adjust_timer`
   /// already reduced to (about) zero, driving `totalSecs` negative-then-
   /// clamped-to-0. Once there, `_resetTimer` has nothing to restart to and
-  /// silently no-ops. Mirrors `_starting` above (same class of bug Start had
-  /// before that guard existed).
+  /// silently no-ops.
+  ///
+  /// Same class of bug the custom Start button had before `LiveController.act()`
+  /// grew its own re-entrancy guard (17tnw2ay2pq): that button's analogous local
+  /// flag (`_starting`) was since removed as redundant with `act()`'s guard plus
+  /// this tab's `busy`-gated `onPressed`s. Left as-is here rather than
+  /// second-guessing PR #78's own review outside this ticket's scope — the two
+  /// guards are provably equivalent, so removing this one is a follow-up, not a
+  /// correctness gap.
   bool _forcingTimeUp = false;
 
   /// Force the countdown into TIME UP right now (MOB-009), by reducing its
@@ -374,12 +381,11 @@ class _TimerTabState extends State<TimerTab> {
                 child: SelahButton(
                   label: 'Reset',
                   semanticLabel: 'Reset to the current target duration',
-                  // Two different reasons Reset cannot fire, named like
-                  // Send-TIME-UP's below (PR #78 review — Cody): syncing is
-                  // the link's, no timer is the operator's.
-                  disabledReason: syncing
-                      ? 'unavailable while reconnecting'
-                      : 'start a timer first',
+                  // Three reasons Reset cannot fire, named like Send-TIME-UP's
+                  // below: syncing or a command in flight are the link's (17tnw2ay2pq,
+                  // follow-up to PR #78 review — Cody), no timer is the operator's.
+                  disabledReason:
+                      disabled ? disabledReason : 'start a timer first',
                   onPressed: canAdjust ? () => _resetTimer(t) : null,
                 ),
               ),
@@ -405,8 +411,11 @@ class _TimerTabState extends State<TimerTab> {
             onPressed: (canAdjust && !t.timeUp)
                 ? () => _sendTimeUp(t)
                 : null,
-            disabledReason: syncing
-                ? 'unavailable while reconnecting'
+            // Four reasons this cannot fire: syncing/busy are the link's
+            // (17tnw2ay2pq, follow-up to PR #78 review — Sana/Cody), no timer
+            // and already-at-time-up are the operator's.
+            disabledReason: disabled
+                ? disabledReason
                 : t == null
                 ? 'start a timer first'
                 : 'already at time up',
