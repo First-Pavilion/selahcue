@@ -2174,6 +2174,35 @@
         border-color: transparent;
       }
 
+      /* CON-089 (global chord `F`): the selected output's preview, enlarged to fill the console
+         window. z-index 60 matches #app-menu's own layer — well below the palette/confirm-dialog/
+         download-modal layers (150/200), so opening one of those from fullscreen mode still works.
+         Controls are hidden rather than laid out over the canvas — this is an inspection view, not
+         a second copy of the card chrome. */
+      .scr-card-fullscreen {
+        position: fixed;
+        inset: 0;
+        z-index: 60;
+        margin: 0;
+        padding: 0;
+        border: none;
+        border-radius: 0;
+        box-shadow: none;
+        background: #000;
+        cursor: default;
+      }
+      .scr-card-fullscreen .scr-thumb {
+        height: 100%;
+        border-radius: 0;
+      }
+      .scr-card-fullscreen .scr-card-namerow,
+      .scr-card-fullscreen .scr-card-metarow {
+        display: none;
+      }
+      body.scr-fullscreen-active {
+        overflow: hidden;
+      }
+
       /* A screen that is OFF dims its PREVIEW THUMBNAIL ONLY — the thumbnail is the thing that
          would have shown a picture, so "nothing is being output" belongs there. The CONTROLS
          must not dim: under window semantics a closed card is the only route back to an open
