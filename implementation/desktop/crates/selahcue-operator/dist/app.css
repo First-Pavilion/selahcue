@@ -2178,10 +2178,23 @@
          window. z-index 60 matches #app-menu's own layer — well below the palette/confirm-dialog/
          download-modal layers (150/200), so opening one of those from fullscreen mode still works.
          Controls are hidden rather than laid out over the canvas — this is an inspection view, not
-         a second copy of the card chrome. */
+         a second copy of the card chrome.
+
+         Cody's review (17tnw2axptd) caught a HIGH-severity finding here: `inset: 0` made this a
+         TRUE full-viewport overlay, and a position:fixed element always paints above non-positioned
+         in-flow content regardless of z-index (header has no `position` set, so it competes on
+         PAINT ORDER, not z-index — the 60 vs 150/200 comparison above was the wrong axis entirely).
+         That silently covered and click-intercepted the topbar's GLOBAL transport (GO LIVE/Prev/
+         Next/Blackout/app-menu — "always reachable, on every surface", index.html's own header
+         comment) for as long as fullscreen was up. `top: 64px` / `bottom: 56px` stop the overlay
+         short of BOTH the topbar (header { height: 64px }, app.css:85) and the emergency footer
+         (#emergency { height: 56px }, app.css:4851) — the exact same "never trap live output"
+         precedent `.dl-modal-back` already sets for the emergency footer (`inset: 0 0 56px 0`,
+         below), extended here to the topbar too since THIS overlay, unlike the download modal, can
+         be opened with the topbar still needed (a live service in progress). */
       .scr-card-fullscreen {
         position: fixed;
-        inset: 0;
+        inset: 64px 0 56px 0;
         z-index: 60;
         margin: 0;
         padding: 0;

@@ -700,6 +700,15 @@
         if (!registry.some((s) => s.screen === selectedScreen)) {
           selectedScreen = registry[0] ? registry[0].screen : null;
         }
+        // CON-089 (Vera's performance review, 17tnw2axptd): the fullscreened output needs the
+        // SAME reconciliation — if the host drops the screen while its preview is fullscreen
+        // (deleted, or an older/newer host stops reporting it), exitOutputFullscreen() would
+        // otherwise never run, leaving body.scr-fullscreen-active (and its overflow:hidden) stuck
+        // with no card left to show. F/Escape/navigating away all still recover it, but this
+        // closes the gap at the source, the same place selectedScreen's own drop is handled.
+        if (fullscreenOutput && !registry.some((s) => s.screen === fullscreenOutput)) {
+          exitOutputFullscreen();
+        }
         // CON-158: ndi_available is part of the key too — otherwise a host-reported change to
         // it (unavailable <-> unknown/available) would never rebuild the inspector, since it is
         // the only tracked-view field none of the others above would change alongside it.
@@ -1062,6 +1071,12 @@
         if (card) card.classList.remove("scr-card-fullscreen");
         document.body.classList.remove("scr-fullscreen-active");
         fullscreenOutput = null;
+        // Cody's review (17tnw2axptd): entry announced via #route-status but exit didn't — a
+        // screen-reader user pressing F/Escape to leave got no confirmation. A navigation-triggered
+        // exit (showSurface's own cleanup call) immediately overwrites this with its own "Now on: …"
+        // route announcement right after, which is the more relevant message for that path.
+        const route = document.getElementById("route-status");
+        if (route) route.textContent = "Exited fullscreen preview.";
       }
 
       // A per-SCREEN Theme picker (86ajq321k): sets THIS screen's theme (not the global) and
@@ -5951,15 +5966,22 @@
           (ref || "").replace(/\s+\d+(:\d+([-–]\d+)?)?$/, "").trim();
         function scriptureHitPreview(q) {
           if (scripturePreviewQuery !== q || !scripturePreviewHits || !scripturePreviewHits.length) return undefined;
-          const books = [];
+          // Collect every DISTINCT book across ALL hits before deciding what to show — the
+          // trailing "…" must answer "are there more distinct books than the 3 shown", never "are
+          // there more raw hits than shown books" (Quinn's QA review, 17tnw2axptd: the backend's
+          // scripture_search can return several verses from the SAME book — e.g. a common word
+          // hitting 5 verses all in Romans — and the old early-break-at-3-then-compare-to-hit-count
+          // logic showed a false "…" for that case even though no further book existed to reveal).
+          // scripture_search is itself capped (a handful of hits), so scanning all of them is cheap.
+          const allBooks = [];
           for (const hit of scripturePreviewHits) {
             const book = scriptureBookFromRef(hit && hit.reference);
-            if (book && !books.includes(book)) books.push(book);
-            if (books.length >= 3) break;
+            if (book && !allBooks.includes(book)) allBooks.push(book);
           }
-          if (!books.length) return undefined;
-          const more = scripturePreviewHits.length > books.length;
-          return books.join(" · ") + (more ? "…" : "");
+          if (!allBooks.length) return undefined;
+          const shown = allBooks.slice(0, 3);
+          const more = allBooks.length > shown.length;
+          return shown.join(" · ") + (more ? "…" : "");
         }
         async function fetchScripturePreview(q) {
           const gen = ++scripturePreviewGen;
