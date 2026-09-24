@@ -3037,10 +3037,20 @@ def main() -> int:
             print(line)
     print(f"\n=== {len(SCENARIOS)} scenarios, {total} checks, {len(fails)} FAIL ===")
 
-    if total < EXPECTED_MIN_CHECKS:
+    # Guard against the suite count DRIFTING in either direction: a `<` floor only ever
+    # catches SHRINKING (a driver regression / early return running fewer checks). It never
+    # catches GROWING past the recorded value, which lets EXPECTED_MIN_CHECKS drift stale-low
+    # with no red build to catch it -- the same bug class that hit scripts/operator_headless.py
+    # three times before its own gate was made exact (see that file's history above its own
+    # EXPECTED_MIN_CHECKS). An exact match forces every branch that adds/removes a check to
+    # conflict on this constant during rebase and re-derive it explicitly.
+    # Bump EXPECTED_MIN_CHECKS to the new count when you add or remove a check -- always by
+    # actually running the suite, never by hand arithmetic (see the log above this constant).
+    if total != EXPECTED_MIN_CHECKS:
         print(
-            f"FAIL: only {total} checks ran; expected >= {EXPECTED_MIN_CHECKS} "
-            "(the suite must not silently shrink)"
+            f"FAIL: {total} checks ran; expected exactly {EXPECTED_MIN_CHECKS} (bump me to "
+            f"{total} if this is a real add/remove -- never hand-derive; re-run and use the "
+            "measured count)"
         )
         return 4
     return 1 if fails else 0
