@@ -74,12 +74,13 @@ window.__V = V;
 
 fails = []
 checks = []
-# The floor exists for the same reason operator_headless.py has one: this probe drives five
+# This gate exists for the same reason operator_headless.py has one: this probe drives five
 # states in sequence, so anything that throws part-way through — a renamed id, a WebKit-only
 # layout change — silently stops the run, and a shorter run that reports "0 FAIL" is the most
 # convincing wrong answer available. An earlier version of this line printed a HARDCODED 5
 # while eighteen assertions ran, so the summary could not have noticed thirteen of them
-# disappearing. Raise it when assertions are added.
+# disappearing. It is an EXACT match, not a floor: bump it when assertions are added or
+# removed, so both a shrink and a silent drift are caught (see the gate below).
 EXPECTED_MIN_CHECKS = 18
 
 
@@ -228,10 +229,20 @@ with sync_playwright() as pw:
 
     b.close()
 
-if len(checks) < EXPECTED_MIN_CHECKS:
+# Guard against the check count DRIFTING in either direction: a `<` floor only ever catches
+# SHRINKING (a driver regression / early return running fewer checks). It never catches
+# GROWING past the recorded value, which lets EXPECTED_MIN_CHECKS drift stale-low with no red
+# run to catch it -- the same bug class that hit scripts/operator_headless.py three times
+# before its own gate was made exact (see that file's history above its own
+# EXPECTED_MIN_CHECKS). An exact match forces every branch that adds/removes a check to
+# conflict on this constant during rebase and re-derive it explicitly.
+# Bump EXPECTED_MIN_CHECKS to the new count when you add or remove a check -- always by
+# actually running the probe, never by hand arithmetic.
+if len(checks) != EXPECTED_MIN_CHECKS:
     fails.append(
-        "only %d checks ran; expected >= %d (the probe must not silently shrink)"
-        % (len(checks), EXPECTED_MIN_CHECKS)
+        "%d checks ran; expected exactly %d (bump me to %d if this is a real add/remove "
+        "-- never hand-derive; re-run and use the measured count)"
+        % (len(checks), EXPECTED_MIN_CHECKS, len(checks))
     )
     print("FAIL: " + fails[-1])
 
