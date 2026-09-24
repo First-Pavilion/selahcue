@@ -1103,8 +1103,9 @@ if not check_jump_call_site_is_click_only():
 # nothing else new. The two lineages' totals do NOT simply add (both counted from the same 1892
 # ancestor along divergent paths) — per this constant's own repeated discipline, the merged count
 # is read off an actual clean run against the real post-rebase tree, not hand-summed as
-# 1897 + 42 or any other arithmetic shortcut.
-EXPECTED_MIN_CHECKS = 0  # placeholder — replaced with the real measured count before this lands
+# 1897 + 42 or any other arithmetic shortcut. Confirmed by a clean run against the real
+# post-rebase tree: 1939 checks, 0 FAIL.
+EXPECTED_MIN_CHECKS = 1939
 
 
 def find_chrome():
