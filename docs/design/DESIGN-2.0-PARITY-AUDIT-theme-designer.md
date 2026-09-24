@@ -269,6 +269,13 @@ flat darkened fill instead of copying the filter form literally. The latent `.tb
 `.timer-start` hover gap is out of scope for this ticket (already-shipped, reviewed code, not
 one of TD-012/PSC-005/DLM-001) and is flagged as a follow-up rather than touched silently.
 
+**Update — 2026-09-24.** This gap is now closed. `.tb-golive`/`.timer-start` hover was fixed in
+commit `c30bd9d` / [PR #74](https://github.com/First-Pavilion/selahcue/pull/74) (merged
+2026-09-22), replacing `filter: brightness(1.06)` with a flat `background: #5a48d0` (**6.42:1**)
+on both selectors and adding `GO-LIVE-HOVER`/`TIMER-START-HOVER` assertions to
+`scripts/operator_headless.py`. Tracked as ClickUp `17tnw2axr2w`; independently re-verified
+(1892 checks, 0 FAIL, mutation-tested, `make ci` green) on 2026-09-24.
+
 ---
 
 # Open questions
