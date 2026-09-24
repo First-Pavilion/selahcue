@@ -281,6 +281,21 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
   pending against `df539ee` (their findings, once in, need re-verification against `4838c1b` too if
   they touch overlapping code).
 
+### Iteration 6 — `make ci` round 3
+
+- Target criterion: C-008 (re-confirm on the latest head after round-2/3 remediation).
+- Change or investigation: re-launched `make ci` fresh against `4838c1b` (a docs-only commit,
+  `60d9a0b`, landed on top while this ran — no code difference, evidence still applies to the code
+  under review).
+- Result: **`make ci` — `ALL GREEN`.** Real GitHub Actions CI (`gh pr checks 92`, head confirmed
+  `60d9a0b`): every job `pass` except `rust (windows-latest)`, still `pending` at last check;
+  `api`/`flutter controller`/`marketing` correctly path-filter-skipped.
+- New evidence: `/tmp/make_ci_run3.log` (`== local Rust/Flutter gate: ALL GREEN ==`); `gh pr checks
+  92` output (this ledger).
+- Decision: iterate — awaiting `rust (windows-latest)` to finish (no reason to expect a
+  platform-specific failure; this diff is pure JS + Python test harness, no Rust source changed)
+  and Sana's round-3 verdict plus Vera/Quinn's round-2 verdicts before C-008/C-009 can PASS.
+
 ### Iteration 4 — `make ci` + four-reviewer pipeline round 2
 
 - Target criterion: C-008, C-009.
