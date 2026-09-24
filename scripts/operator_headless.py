@@ -1107,9 +1107,13 @@ if not check_jump_call_site_is_click_only():
 #     (its `open` field is computed live from ws.open_deck().id() on every call) instead of
 #     trusting the tracked value. +2 checks (a premise + the actual collision-freedom assertion).
 # Every behavioural fix in this round is mutation-verified (revert the fix, confirm the RIGHT
-# assertion(s) go RED with no collateral failures, restore). This constant is re-measured for real
-# against the fully rebased tree immediately below — not carried forward by arithmetic.
-EXPECTED_MIN_CHECKS = 1911
+# assertion(s) go RED with no collateral failures, restore).
+#
+# 1911 -> 1916: rebased onto 17tnw2axptr's 1897 baseline (see above), whose +5 and this branch's
+# own +19 (9+5+5, see above) touch disjoint areas of this file — re-measured for real post-rebase
+# by two independent clean runs, both agreeing: 1916 checks, 0 FAIL. Confirms, not assumes, that
+# the sum was the right combined total.
+EXPECTED_MIN_CHECKS = 1916
 
 
 def find_chrome():
