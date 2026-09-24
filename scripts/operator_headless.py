@@ -1113,7 +1113,20 @@ if not check_jump_call_site_is_click_only():
 # own +19 (9+5+5, see above) touch disjoint areas of this file — re-measured for real post-rebase
 # by two independent clean runs, both agreeing: 1916 checks, 0 FAIL. Confirms, not assumes, that
 # the sum was the right combined total.
-EXPECTED_MIN_CHECKS = 1916
+#
+# 1916 -> 1918 (17tnw2axwve, PR #92 review round 2, Sana): +2 new checks for a FIFTH JS entry
+# point to an authored-slide present that round 1's fix missed — pmPresent() (the editor-mode
+# "▶ Present", reached from the topbar via pmPresentFromTopbar AND the ⌘K command palette's
+# editor-mode "Present slide") did not record pmLiveAuthoredDeckId at all, reproducing round-1
+# Finding 1's exact failure mode (no ring, no transport bar) via a path round 1 never covered.
+# Sana also proved the OBVIOUS fix (pmLiveAuthoredDeckId = pmGridDeckId) is actively WRONG here —
+# pmGridDeckId is only ever written by pmRenderGrid, so it can be stale in the editor (e.g. after
+# "+ New presentation", which never calls it) and would record ownership for the wrong deck
+# entirely. Fixed with the same deck_list ground-truth pattern the "Done" handler already uses.
+# Mutation-verified twice: reverting to "record nothing" and reverting to the specific wrong fix
+# (pmGridDeckId) BOTH turn exactly the new ring-check RED, nothing else — measured by two
+# independent clean runs, both agreeing: 1918 checks, 0 FAIL.
+EXPECTED_MIN_CHECKS = 1918
 
 
 def find_chrome():
@@ -11420,14 +11433,33 @@ right after a generate/save");
       var wCollNewDeckId = window.__LIB.open;
       ok(wCollNewDeckId != null && wCollNewDeckId !== wCollDeckY && wCollNewDeckId !== wCollDeckX,
          "17tnw2axwve (premise): '+ New presentation' opened a genuinely NEW deck (id " + wCollNewDeckId + "), distinct from Deck Y");
+
+      // pmPresent() ownership staleness (Sana, PR #92 review round 2 — the fifth JS entry point to
+      // an authored-slide present, missed in round 1's fix): the EDITOR's own "▶ Present" (topbar,
+      // pmPresentFromTopbar → pmPresent when pmMode==="editor"; the ⌘K command palette's editor-
+      // mode "Present slide" calls the identical pmPresent()) did not record pmLiveAuthoredDeckId
+      // at all. MUST fire here, still inside the editor for this genuinely-new deck, whose
+      // pmGridDeckId is stale at Deck Y (the earlier wCollOpenById(wCollDeckY) never having been
+      // superseded by a pmRenderGrid call for this deck) — the exact precondition that makes the
+      // bug reachable and that the shared "Done" click below (already correctly deck_list-grounded)
+      // must NOT be allowed to paper over by running first.
+      var wCollPresentBtn = el("pm-present");
+      ok(!!wCollPresentBtn && !wCollPresentBtn.hidden, "17tnw2axwve (premise): the topbar '▶ Present' control is reachable while the new deck is open in the editor");
+      var wCollGlN0 = window.__calls.filter(function(c){ return c.cmd === "deck_go_live"; }).length;
+      if (wCollPresentBtn) wCollPresentBtn.click();
+      await wWait(function(){ return window.__calls.filter(function(c){ return c.cmd === "deck_go_live"; }).length > wCollGlN0; });
+      await sleep(60);
+
       var wCollN4 = wCollRenderCalls();
-      if (el("pm-done")) el("pm-done").click(); // editor → grid
+      if (el("pm-done")) el("pm-done").click(); // editor → grid (ONE shared transition for both checks below)
       await wWait(function(){ return !el("pm-grid").hidden && !!el("pm-grid-tiles").querySelector('.pm-tile[data-id="1"]'); });
-      await wWait(function(){ return wCollRenderCalls() > wCollN4; }); // a genuinely new deck must MISS the cache
-      await sleep(30);
+      await wWait(function(){ return wCollRenderCalls() > wCollN4; }); // a genuinely new deck must MISS the thumbnail cache
+      await sleep(80); // also lets pmGridSyncLive's async view() round-trip resolve for the ring check below
       var wCollNewDeckPixel = wCollTilePixel(1);
       ok(wCollNewDeckPixel != null && wCollNewDeckPixel !== wCollPixelYForNewCheck,
          "17tnw2axwve: after '+ New presentation' (Blank deck, lands straight in the editor) and Done, the new deck's tile 1 shows ITS OWN thumbnail, not Deck Y's stale cached one (new=" + wCollNewDeckPixel + ", Y=" + wCollPixelYForNewCheck + ")");
+      ok(!!el("pm-grid-tiles").querySelector(".pm-tile.live"),
+         "17tnw2axwve: presenting from the EDITOR's topbar '▶ Present' (pmPresent, reached from pmPresentFromTopbar AND the ⌘K palette) while pmGridDeckId was stale still correctly rings the genuinely-open deck's own tile, not silently showing no ring at all");
 
       // --- 17tnw2axwve (bounded memory): the deck-scoped key widened pmThumbCache's KEY SPACE from
       // "every slide id" to "every (deck, slide) pair ever visited this session". The cap must

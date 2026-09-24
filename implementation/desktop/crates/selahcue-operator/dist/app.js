@@ -9915,15 +9915,34 @@
       // separate path to the SAME live_authored_id that never touches DeckWorkspace at all.
       //
       // pmLiveAuthoredDeckId instead tracks ownership purely from actions THIS client itself
-      // observed succeed (pmGridGoLive/pmGridDelta below, and the two present_plan_deck_slide call
-      // sites), and is cleared whenever host truth (live_authored_id) says nothing authored is live
-      // at all — so it survives an ordinary deck switch away-and-back (view() still confirms it)
-      // and correctly reflects a plan-driven present too, closing both gaps Sana/Quinn found.
-      // Residual, accepted limitation: this is purely client-side state, so it resets on a plain
-      // page reload (not just a full operator process restart) and cannot see a live-authored
-      // slide driven by ANOTHER operator console instance (Backend::Remote) — both fail CLOSED
-      // (no ring shown) rather than open (a wrong ring shown). Fully closing this needs the host to
-      // carry deck identity on the wire (tracked as a linked follow-up, ClickUp 17tnw2ayevf).
+      // observed succeed. That is every JS entry point that can reach one of the three Rust
+      // mechanisms which set live_authored (traced exhaustively, not assumed — every call site of
+      // Presenter::present_authored): the grid's own pmGridGoLive/pmGridDelta below; the editor's
+      // pmPresent() (reached from BOTH the topbar's ▶ Present via pmPresentFromTopbar AND the ⌘K
+      // command palette's editor-mode "Present slide" — round 2, Sana found this fifth entry point
+      // missing the same bookkeeping, round-1 Finding 1's exact failure mode); and the Service Plan
+      // / Live Console surface's two present_plan_deck_slide call sites (goLive(), stageSlide()).
+      // pmLiveAuthoredDeckId is cleared whenever host truth (live_authored_id) says nothing
+      // authored is live at all — so it survives an ordinary deck switch away-and-back (view()
+      // still confirms it) and correctly reflects a plan-driven present too.
+      //
+      // Residual, accepted limitation (scope corrected round 2, Sana — the original framing here
+      // understated it): this is purely client-side state, so it resets on a plain page reload
+      // (not just a full operator process restart). More importantly, it cannot see a live-authored
+      // slide presented by any OTHER GoLive-privileged peer over the LAN protocol —
+      // PresentAuthoredSlide requires only the GoLive permission (selahcue-lan/src/rbac.rs), which
+      // BOTH the Operator and Producer roles hold, not just "another operator console"; no shipped
+      // client exercises this today (the mobile Flutter controller has no deck data to build a
+      // PresentAuthoredSlide payload from), but the wire-level surface is real. This does NOT
+      // uniformly fail closed: if a foreign peer presents a DIFFERENT deck's slide while this
+      // client is still parked on the deck it last legitimately drove live, live_authored_id goes
+      // non-null again, this client's clear-on-null branch above never fires, and the stale
+      // pmLiveAuthoredDeckId can then WRONGLY re-validate a match — a false-positive ring on the
+      // parked deck's tile of the same id, i.e. fails OPEN in that specific scenario. This exact
+      // failure mode already exists on `main` with no gating at all (every deck's tiles, not just
+      // the parked one, were exposed) — this change narrows the window rather than closing it.
+      // Fully closing this needs the host to carry deck identity on the wire (tracked as a linked
+      // follow-up, ClickUp 17tnw2ayevf).
       let pmLiveAuthoredDeckId = null;
       function pmGridAnnounce(msg) { const r = pmEl("pm-grid-live-region"); if (r) r.textContent = msg; }
       function pmGridTiles() { const g = pmEl("pm-grid-tiles"); return g ? Array.prototype.slice.call(g.querySelectorAll(".pm-tile")) : []; }
@@ -10217,6 +10236,15 @@
       // the output; a failure (e.g. no output window) surfaces the error banner via pAct.
       async function pmPresent() {
         if (await pAct(() => invoke("deck_go_live"), "present the slide")) {
+          // pmGridDeckId is NOT reliable ground truth here — it is only ever written by
+          // pmRenderGrid, and the EDITOR can be showing a deck that never went through the grid
+          // at all ("+ New presentation" lands straight in the editor, bypassing it entirely; see
+          // the "Done" handler's identical reasoning below). Sana proved live (17tnw2axwve round
+          // 2, via window.__pmGridDebug.deckId()) that trusting pmGridDeckId here can record
+          // ownership for the WRONG deck — worse than the missing ring this is fixing, a false-
+          // positive ring on whichever unrelated deck the grid last happened to render. Ask
+          // deck_list for ground truth instead, exactly like the "Done" handler does.
+          try { const lv = await invoke("deck_list"); if (lv && lv.open != null) pmLiveAuthoredDeckId = lv.open; } catch (e) {}
           pmToast("Now presenting on the audience output");
         }
       }
