@@ -1063,7 +1063,20 @@ if not check_jump_call_site_is_click_only():
 # endpoint (1852 or 1883), their sum, or their difference: it was read off real runs of the
 # actual fully-merged tree. Confirmed by two independent clean runs against the real post-merge
 # tree, both agreeing: 1892 checks, 0 FAIL.
-EXPECTED_MIN_CHECKS = 1892
+# 1892 -> 1897: ClickUp 17tnw2axptr (Theme Designer TD-### drift closure). Of the 11 open
+# findings audited, only TD-010 (the Typography section's text-colour swatch showing a static
+# "Text colour" label instead of the live value) was a genuine, non-blocked gap — TD-001/002
+# (save-theme)/003-009/012 were confirmed already matching/intentional/already-fixed on the live
+# tree, and TD-002 (templates)/TD-011 (region alignment) are blocked on the still-open decision
+# ticket 17tnw2axpu4 (TD-OQ-3/TD-OQ-4) and were deliberately left untouched. The TD-010 fix (a
+# live #td-color-hex readout, mirroring the already-shipped #td-bg-hex pattern) added 5
+# assertions: a DOM premise, a model-commit premise, a live-on-input check, a region-switch
+# re-sync check, and a control proving the readout isn't a frozen/stale label. Mutation-tested:
+# reverting the three fix files (app.css/app.js/index.html, test script unchanged) reproduces a
+# clean single FAIL on the premise check (1893 checks, 1 FAIL, no aborting exception — the
+# premise-guarded block is skipped rather than dereferencing a null element); restoring reproduces
+# 1897 checks, 0 FAIL. Measured directly off real runs, not hand-summed.
+EXPECTED_MIN_CHECKS = 1897
 
 
 def find_chrome():
@@ -2999,6 +3012,35 @@ DRIVER = r"""
       ok(applied().body.size_permille === 140, "typography: out-of-range SIZE clamps the model (50% → 140)");
       el("td-size").dispatchEvent(new Event("change"));
       ok(el("td-size").value === "14.0", "typography: SIZE field repopulates to the clamped value on change");
+
+      // TD-010 (Design 2.0 parity, 17tnw2axptr): the text-colour swatch only showed the FIELD
+      // label ("Text colour") with no reflection of the CURRENT value — an operator had to open
+      // the OS colour picker to find out what colour was already set. Fixed by reflecting the
+      // live hex value in #td-color-hex, mirroring the #td-bg-hex pattern already shipped for
+      // the BACKGROUND section (tdBgReflect).
+      var tdColorHex = el("td-color-hex");
+      var tdColorCell = el("td-color").closest(".td-colorcell");
+      ok(!!tdColorHex && !!tdColorCell && tdColorCell.contains(tdColorHex),
+         "TD-010 (premise): #td-color-hex exists inside the same .td-colorcell as the swatch");
+      if (tdColorHex) {
+        el("td-color").value = "#3355ff"; el("td-color").dispatchEvent(new Event("input"));
+        ok(applied().body.color.r===0x33 && applied().body.color.g===0x55 && applied().body.color.b===0xff,
+           "TD-010 (premise): the colour input actually committed to the model, so the readout below isn't decorative");
+        ok(tdColorHex.textContent === "#3355FF",
+           "TD-010: the hex readout updates LIVE on input, not just on the next full sync (" + tdColorHex.textContent + ")");
+        // Selecting a DIFFERENT region must re-sync the readout to THAT region's own stored colour —
+        // the gap a naive "set once on the input event" fix would leave (a stale label from whichever
+        // region was last dragged, not the one now selected).
+        el("td-layers").querySelector('.td-layer[data-region="title"]').click();
+        var tdTitleHex = "#" + [applied().title.color.r, applied().title.color.g, applied().title.color.b]
+          .map(function(v){ return v.toString(16).padStart(2, "0"); }).join("").toUpperCase();
+        ok(tdColorHex.textContent === tdTitleHex,
+           "TD-010: switching the selected region re-syncs the hex readout to THAT region's colour (" +
+           tdColorHex.textContent + " vs expected " + tdTitleHex + ")");
+        ok(tdColorHex.textContent !== "#3355FF",
+           "TD-010 (control): the readout actually changed away from the previous region's value — proves this isn't a frozen/stale label");
+        el("td-layers").querySelector('.td-layer[data-region="body"]').click(); // restore for tests below
+      }
 
       // C-001: Add Shape → an element on tdTheme.elements, inspector shows, selection is element.
       addShape();

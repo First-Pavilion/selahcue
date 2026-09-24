@@ -1878,6 +1878,18 @@
         cursor: pointer;
       }
 
+      /* TD-010: live hex readout for the current text colour, right-aligned in the cell —
+         same visual language (12px/600/uppercase/tabular-nums) as the BACKGROUND section's
+         #td-bg-hex, so the operator can read the value without opening the picker. */
+      .td-colorcell-hex {
+        margin-left: auto;
+        font-size: 12px;
+        font-weight: 600;
+        color: var(--sc-text-secondary);
+        text-transform: uppercase;
+        font-variant-numeric: tabular-nums;
+      }
+
       .td-swatch2 {
         display: grid;
         grid-template-columns: 1fr 1fr;
