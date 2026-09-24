@@ -128,6 +128,44 @@ warns that repairing the deck does **not** repair what is already on air — eve
 routes through `with_deck` and never presents, which is correct under FR-012 and precisely why the
 operator must re-push.
 
+**Audit correction (17tnw2axptc, 2026-09-22; commit attribution corrected 2026-09-23 per Cody's
+PR #85 review):** this divergence already closes `CON-176` (the per-asset "is missing" warning —
+`.pm-insp-miss`, `app.js`, the `if (el.missing)` block above, shipped in `e8100e0`, 2026-08-25) and
+`CON-177` (the recovery action — `Relink…`/`Replace…`, one combined control rather than the
+frame's two, dataset `ik="replace"`). `CON-177`'s button predates `CON-176`'s warning text: `git
+blame` shows it from `3db53987` (2026-08-07, "Remote Control surface" — an unrelated commit that
+happened to also touch this line), not `e8100e0`. Both were in place well before the 2026-09-20
+reconciliation, which is what matters for the correction's own verdict; that reconciliation's
+"confirmed still OPEN" pass re-grepped for the frame's literal strings ("is missing — showing
+background only", "Locate file") and missed the functional equivalent sitting right next to
+`CON-175`'s own already-credited fix. Verified directly against `main` by reading the current
+`file:line` and `git blame`, not inferred from either document. No code change — the fix already
+exists; only the two documents were wrong.
+
+## Divergence 7 — both monitors "go black" (`346:140`/`346:147`)
+
+**Frame:** `346:140` and `346:147` draw BOTH the Preview and Live monitor surfaces as solid black
+rectangles with a centred `— BLACK —` marker during a blackout (`CON-162`).
+
+**Why not:** blackout is audience-only. `Presenter::blackout` (`selahcue-present/src/present.rs`)
+is documented as toggling "the audience output to black" — Preview keeps showing the real staged
+content throughout, because the operator must be able to see and prepare what happens next while
+the audience is dark. Painting the Preview monitor black would misstate what the operator is
+actually looking at: a fabrication through a truthful-looking surface, exactly the failure mode
+this whole document's rule exists to rule out. It is also the wrong UX — an operator staring at a
+black Preview panel has no way to judge what pressing Restore will reveal.
+
+**Shipped:** `CON-161`'s fix instead re-tints **both** monitor pills (`.panel-pill.preview` /
+`.panel-pill.live`) to the live-red palette during a blackout, and swaps each pill's status text
+(`PREVIEW · AUDIENCE DARK`, `LIVE · BLACK`) — a status echo that says "the audience output is
+dark" without claiming either panel's pixel content changed. The Live panel's own existing
+`#live-black` marker (`BLACKOUT — OUTPUT DARK`, already shipped, unrelated to this divergence)
+is untouched. Preview's surface itself carries no `.blackout` class and no marker at all — its
+content is real and current throughout. `CON-163` (the frame's `#3a3a3a`-on-black marker
+contrast, 1.85:1) is moot under this treatment: no new low-contrast marker was introduced: the
+pill re-tint reuses `--sc-live` on `--sc-live-soft`, the same pairing `.panel-pill.live` already
+ships at rest.
+
 ## The connection pill
 
 Built last, on a new read-only `link_status` command. It removes three fabrications:

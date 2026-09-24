@@ -261,6 +261,13 @@ pub struct LiveController {
     /// The host's session-recovery state ([`set_session_health`](Self::set_session_health)).
     /// `None` until the host reports.
     session_health: Option<SessionHealthView>,
+    /// Whether THIS host can actually transmit NDI (`video_sink::TRANSMIT_AVAILABLE`, a build
+    /// constant of the process driving the real output — `selahcue-desktop`, never this crate).
+    /// `None` until that host reports it ([`set_ndi_available`](Self::set_ndi_available)) — an
+    /// in-process/Local console (no real output) never calls the setter, so it stays `None` and
+    /// a client must render that as *unknown*, never as unavailable (CON-158's own three-way
+    /// rule: reported problem → fault, reported healthy → healthy, absent → unknown).
+    ndi_available: Option<bool>,
     /// A tiny rolling window of the most recent transcript segments, joined and fed to the
     /// fuzzy quote matcher — so a paraphrase spoken across an utterance boundary ("…and
     /// strangers shall" / "feed your flock") is still matched, not just single-segment quotes.
@@ -886,6 +893,7 @@ impl LiveController {
             transcript: TranscriptEngine::new(),
             storage_health: None,
             session_health: None,
+            ndi_available: None,
             recent_texts: std::collections::VecDeque::new(),
             partial: None,
             transcript_sink: Box::new(NullTranscriptSink),
@@ -1549,6 +1557,16 @@ impl LiveController {
     /// audience-class screen; a bounded, printable (no control-char) name; a non-empty name
     /// when enabling; and NAME UNIQUENESS across every OTHER enabled NDI screen (two live NDI
     /// sources must not share a name). Persists via the shared output-config store.
+    ///
+    /// Deliberately does **not** consult `self.ndi_available`: that field is this host's own
+    /// build-time report of whether it can transmit at all (CON-158), advisory for the console
+    /// UI, never an enforced precondition here. Sana's PR #85 review flagged this explicitly —
+    /// a client is allowed to enable NDI on a build that cannot transmit it (the config is
+    /// still valid and persists; nothing is broadcast until a build with the `ndi` feature runs
+    /// it). An Operator is already permitted to configure outputs regardless of what this
+    /// specific host can currently do with them, matching every other per-screen output setting
+    /// in this file (orientation, scale-fit, mirror, …), none of which are gated on the current
+    /// process's own capabilities either.
     fn set_ndi_output(&mut self, screen: &str, name: &str, enabled: bool) -> ControllerReply {
         // Audience-class only — never the stage confidence monitor or an unknown id.
         if !self
@@ -2079,6 +2097,17 @@ impl LiveController {
         });
     }
 
+    /// Report whether THIS host can actually transmit NDI (`video_sink::TRANSMIT_AVAILABLE`, a
+    /// build-time constant of the `selahcue-desktop` process). Called once at host startup —
+    /// unlike storage/session health this never changes at runtime, so there is no reset path.
+    ///
+    /// CON-158: without this the console could not tell a build that never had NDI compiled in
+    /// from a build that has it but simply isn't broadcasting yet, so it offered a toggle that
+    /// could not possibly work and said nothing about why.
+    pub fn set_ndi_available(&mut self, available: bool) {
+        self.ndi_available = Some(available);
+    }
+
     /// Report a fault against the LIVE audience output (NFR-024).
     ///
     /// The host owns the real backend, so it is the only layer that learns a surface was
@@ -2340,6 +2369,9 @@ impl LiveController {
             // is the honest answer there: nothing is autosaving, so there is nothing to report.
             storage: self.storage_health.clone(),
             session: self.session_health.clone(),
+            // `None` on a controller no real output host set it on (the stand-alone operator
+            // shell) — CON-158's three-way rule again: unknown must never render as unavailable.
+            ndi_available: self.ndi_available,
             // The bounded recent transcript tail (oldest first) — the log is already
             // capped; this trims the wire payload further.
             transcript: self

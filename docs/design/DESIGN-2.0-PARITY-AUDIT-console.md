@@ -1576,3 +1576,158 @@ or the in-code comment on trust.
 | FIXED (partial, not counted) | 1 (`CON-134`) |
 | SUPERSEDED (owner Q2 decision) | 6 |
 | **OPEN** | **145** (147 − 2, `CON-054`/`CON-098`; `CON-097` was never really open) |
+
+---
+
+## Reconciliation — 2026-09-22 (`CON-156/157/158/161/162/163/172/173/176/177`)
+
+**Author:** Farah (Frontend). **Scope:** ClickUp `17tnw2axptc` — the ten findings this ticket
+named, all confirmed OPEN by the 2026-09-20 reconciliation above. Per that ticket's own brief,
+current state was re-verified against `main` directly (`git log`, `grep`, reading the cited
+`file:line`) before treating anything as open — two of the ten turned out to already be closed.
+
+### FIXED
+
+| Finding | Evidence |
+|---|---|
+| `CON-156` | `app.js`'s `commitNdi` (NDI OUTPUT inspector section) now refuses client-side, before any round trip, when `enabled && !name.trim()` — the exact rule `LiveController::set_ndi_output` (`selahcue-app/src/controller.rs`) enforces host-side — and renders `"⚠ Enter a source name before enabling NDI"` via `.scr-signal-warn`. Previously the toggle reverted with no message at all. |
+| `CON-157` | The same `commitNdi` also checks the registry (`view.screens[].config`, already visible to the console) for another currently-enabled screen already claiming the trimmed name, before any round trip — the identical uniqueness rule the host enforces. Renders `"⚠ "<name>" is already broadcasting on another output"` and adds `.scr-input.mismatch` (mirrors the existing `.scr-select.mismatch` pattern) to the field border. |
+| `CON-158` (blocker) | New `ndi_available: Option<bool>` threaded end to end: `video_sink::TRANSMIT_AVAILABLE` (`selahcue-desktop`, a build-time `cfg!(feature = "ndi")` constant) → `LiveController::set_ndi_available` (`selahcue-app/src/controller.rs`, called once at host startup) → `OperatorView`/`OperatorStateView` (`selahcue-app/src/operator.rs`, `selahcue-lan/src/protocol.rs`) → `app.js`'s NDI section, which disables the toggle and the name field and renders `"⚠ NDI runtime unavailable — build with the ndi feature to broadcast"` (`.scr-signal-warn`) only when the host explicitly reports `false`. `None` (Local/demo shell, or an older host) renders exactly as before — the same three-way rule `output_health`/`storage`/`session` already use: reported problem → fault, reported healthy → healthy, absent → unknown, never either of the other two. The section's own title stays at full opacity (`CON-160` precedent — dim/disable the control, never the explanation). |
+| `CON-161` | `index.html`'s `#preview-pill`/`#live-pill` gain a `.blackout`-driven re-tint (`app.css`, reusing the existing `--sc-live`/`--sc-live-soft`/`--sc-live-border` pairing `.panel-pill.live` already ships at rest — no new colour pairing, no new contrast risk) and a status-text swap (`PREVIEW · STAGED` → `PREVIEW · AUDIENCE DARK`; `LIVE · ON AIR` → `LIVE · BLACK`, matching `346:144`), driven by `app.js`'s `render()` alongside the existing `#live-panel.classList.toggle("blackout", …)` line. Colour is never the only signal (WCAG 1.4.1) — the text changes too. |
+| `CON-172` | `app.js`'s plan-list builder (`#plan`) now renders a scoped empty state (icon tile, "Your plan is empty", the exact Figma body copy) when `view.items.length === 0` — previously the column was left entirely blank. Distinct from `.plan-empty` (the full Service Plan surface's own larger, permission-aware empty state), which is untouched. |
+| `CON-173` | Both empty-state actions are real, enabled controls that switch to the Service Plan surface (`showSurface("plan")`, this sidebar has no palette or importer of its own to trigger directly): `"+ Add first item"`, and `"Import a run sheet…"` — corrected 2026-09-23 (Cody's PR #85 review) from an initial `"Import — coming soon"` that wrongly implied the Service Plan surface's own primary Import is unbuilt. It is not: `plan-empty-import`/`planImportPlan` is a real, working run-sheet importer for an operator with edit permission — only the *separate* "Import a plan bundle…" control is genuinely unbuilt, and keeps its own honest disabled treatment on that surface, untouched by this ticket. |
+| `CON-176` (audit correction — no code change) | `app.js`'s `.pm-insp-miss` block (Presentation & Media inspector, image element) already states the per-asset missing-media warning — `"The slide still composes without it — the audience sees the background, never an error. Relinking fixes the deck; re-push the slide to change what is already on air."` Shipped in commit `e8100e0` (2026-08-25), documented as Divergence 6 in `FRAME-G-RECOVERY-STATES-divergences.md` — which this ticket's own brief named as required reading before treating anything as open. The 2026-09-20 reconciliation's "confirmed still OPEN" line for this id re-grepped for the frame's literal string and missed the functional equivalent sitting two lines from `CON-175`'s own already-credited fix in the same file. Corrected here; `FRAME-G-RECOVERY-STATES-divergences.md` now names `CON-176` explicitly under Divergence 6. |
+| `CON-177` (audit correction — no code change) | The same block's `"Relink…"`/`"Replace…"` button (`dataset.ik="replace"`, `pmStartReplace(idx)`) is the shipped recovery action — one combined control rather than the frame's two separate buttons, the same "fewer, real controls beat matching the frame's control count" pattern this document already accepts elsewhere. Same correction as `CON-176`, but a different commit: `git blame` (Cody's PR #85 review, 2026-09-23) shows this button predates `CON-176`'s warning text — `3db53987` (2026-08-07), not `e8100e0` — an unrelated commit that happened to also touch this line. Both were in place well before the 2026-09-20 reconciliation, which is what the correction's verdict turns on. |
+
+**8 findings FIXED** (6 new code changes + 2 audit corrections for already-shipped code).
+
+### Divergence / moot — not counted as FIXED-to-spec, but closed
+
+| Finding | Disposition |
+|---|---|
+| `CON-162` | **Documented divergence** (`FRAME-G-RECOVERY-STATES-divergences.md`, new Divergence 7), not built to the frame's literal "both monitors go solid black" — `Presenter::blackout` (`selahcue-present/src/present.rs`) is audience-only by design; Preview keeps showing real, current staged content throughout a blackout, so painting its monitor black would be a fabrication, not an honest signal. `CON-161`'s pill re-tint is the shipped, honest equivalent (a status echo, never a content claim). Per the guardrail (RISK-205/NFR-204, and this ticket's own brief), this is a deliberate divergence, not a gap — do not "fix" it back toward the literal frame. |
+| `CON-163` | **Moot.** The frame's own accessibility defect (`#3a3a3a` on black, 1.85:1) never entered the codebase, because `CON-162` was not built to the literal frame — there is no live `— BLACK —` marker on the Preview panel to measure. The Live panel's pre-existing `#live-black` marker (unrelated to this ticket) already uses white text, far above the floor. |
+
+### Confirmed still OPEN (unaffected by this pass — re-grepped, not assumed)
+
+All other findings named `MISSING`/`DRIFT`/`EXTRA`/`UNSPECIFIED`/`A11Y-DEFECT` in the original audit
+and not listed above are unchanged by this ticket, including every Frame D/E/F/H item this ticket's
+scope did not name.
+
+### Totals (cumulative, all reconciliations)
+
+| | Count |
+|---|---:|
+| Total findings | 179 |
+| FIXED (all reconciliations) | 34 (26 prior + 8 here) |
+| FIXED (partial, not counted) | 1 (`CON-134`, 2026-09-21) |
+| SUPERSEDED (owner Q2 decision) | 6 |
+| Divergence / moot (not counted as FIXED, but closed) | 2 (`CON-162`, `CON-163`) |
+| **OPEN** | **137** (147 − 10) |
+
+### Verification
+
+`scripts/operator_headless.py` — **1853 checks, 0 FAIL** (`EXPECTED_MIN_CHECKS` raised 1818 → 1853;
+see that constant's own history comment for the two real debugging detours behind the delta — a
+`renderOutputs` memoization-key omission that made `CON-158` initially FAIL for real, and a
+newly-real `set_ndi_output` test mock leaking broadcasting state into Pre-service Check's own NDI
+readiness probe). Confirmed by two independent clean runs.
+
+Every new control was mutation-verified (broken, confirmed the specific assertion(s) went RED and
+nothing else, restored):
+
+| Mutation | Result |
+|---|---|
+| `renderOutputs`'s memoization key drops `view.ndi_available` | 3 FAIL (`CON-158`) |
+| `commitNdi`'s empty-name guard disabled | 2 FAIL (`CON-156`) |
+| `commitNdi`'s duplicate-name guard disabled | 3 FAIL (`CON-157`) |
+| Preview pill's `.blackout` toggle hard-coded to `false` | 1 FAIL (`CON-161`) |
+| `#plan`'s empty-state branch disabled | suite shrinks below `EXPECTED_MIN_CHECKS` + 1 cascading exception (`CON-172`) |
+
+### Addendum — post-review remediation (Cody, Sana; PR #85, 2026-09-23)
+
+Independent four-reviewer round on PR #85. **Sana (security): pass, 2 low/non-blocking findings,
+addressed below though neither was blocking.** **Vera (performance): pass, no blocking findings.**
+**Cody (code review): 2 Medium findings called out as worth fixing before merge, 1 Medium
+non-blocking, 2 Low** — all four addressed here; nothing found broke a functional requirement.
+
+**Cody, Medium (fix before merge) — `commitNdi` mirrored 2 of the host's 3 refusal rules.** It
+checked empty-name and duplicate-name but not `ndi_name_valid`'s control-character/length rule
+(`selahcue-app/src/controller.rs`), so a pasted name carrying a control character (`maxLength=64`
+stops this at the keyboard, never a paste) still hit the exact silent-revert failure mode this PR
+exists to close. **Fixed:** a third client-side check, `ndiNameValid`, mirroring the host rule
+exactly, in the SAME order the host itself checks (validity, then empty-when-enabling, then
+uniqueness). Mutation-verified: disabling it turns exactly 2 assertions RED.
+
+**Cody, Medium (fix before merge) — the CON-173 empty-state's "Import — coming soon" mislabeled a
+shipped capability.** The Service Plan surface's primary Import (`plan-empty-import` →
+`planImportPlan`, "Import a run sheet…") is a real, working importer for an operator with edit
+permission; only the *separate* "Import a plan bundle…" control is genuinely unbuilt. **Fixed:**
+the button now reads "Import a run sheet…" and routes to the Service Plan surface (same
+navigation pattern as "+ Add first item" — this sidebar has no importer of its own to trigger
+directly). The `CON-172/173` row above and `docs/design/FRAME-G-RECOVERY-STATES-divergences.md`
+are unaffected by this correction (`CON-176/177` never depended on this button). Mutation-verified:
+reverting to the old copy/disabled state turns exactly 2 assertions RED.
+
+**Cody, Medium (non-blocking) + Sana, Low (non-blocking) — `ndi_available`'s populated wire shape
+(`Some(true)`/`Some(false)`) was untested; only `None` was.** This crate has an established
+precedent for exactly this field shape (`test_health_view.rs`, covering
+`output_health`/`storage`/`session`) that the original PR did not extend to `ndi_available`,
+despite repeatedly citing that pattern. **Fixed:** four new tests in `test_health_view.rs` —
+`set_ndi_available` reaching `operator_view()` and changing it; `Some(true)`/`Some(false)`/`None`
+each producing distinct, byte-pinned wire JSON (mirrors `unknown_health_and_healthy_health_are_
+different_on_the_wire`); and a round-trip test for both `true` and `false`. Mutation-verified:
+reverting `set_ndi_available` to a no-op turns exactly 3 of the 4 new tests RED (the fourth,
+`a_controller_no_host_set_ndi_available_on_reports_it_as_unknown_not_unavailable`, correctly stays
+green — it asserts the pre-setter `None` state, which a no-op setter does not disturb).
+
+**Sana, Low (non-blocking) — `set_ndi_output` doesn't consult `ndi_available`, so a client could
+enable NDI on a build that cannot transmit it.** No permission is crossed (an Operator may already
+configure outputs regardless of this host's own current capability, same as every other per-screen
+setting). Sana offered two equally-acceptable resolutions; **took the lighter one:** a doc comment
+on `set_ndi_output` stating explicitly that `ndi_available` is advisory for the console UI and
+deliberately not an enforced precondition there, so a future reader does not assume otherwise.
+
+**Cody, Low — the divergences doc misattributed `CON-177`'s commit.** `git blame` shows the
+`Relink…`/`Replace…` button predates `CON-176`'s warning text: `3db53987` (2026-08-07, an
+unrelated "Remote Control surface" commit that happened to also touch this line), not `e8100e0`.
+**Fixed:** citation corrected in both design docs; the correction's own verdict is unchanged (both
+predate the 2026-09-20 reconciliation either way).
+
+**Verification:** `scripts/operator_headless.py` 1853 → 1858 checks, 0 FAIL (two independent clean
+runs; see `EXPECTED_MIN_CHECKS`'s own history comment). `cargo test -p selahcue-app --test
+test_health_view`: 18/18 pass (4 new). Scoped `clippy -D warnings`/`fmt --check` clean on every
+touched crate. Every new/changed control mutation-verified per the log above.
+
+---
+
+## Rebase reconciliation — 2026-09-23 (merging the two independent 2026-09-22 passes)
+
+**Author:** Farah (Frontend), during PR #85's rebase onto current `origin/main`. **Context:** the
+`CON-054`/`CON-097`/`CON-098` reconciliation (ticket `17tnw2axpta`, merged to `main` via PR #66)
+and the `CON-156`/`157`/`158`/`161`/`162`/`163`/`172`/`173`/`176`/`177` reconciliation (this
+ticket, `17tnw2axptc`, PR #85) were both authored on 2026-09-22 on branches cut before the other
+landed — neither was aware of the other's concurrent change, so each computed its own "cumulative"
+totals against the same prior baseline (26 FIXED, 147 OPEN) rather than against each other's
+result. Rebasing PR #85 onto `main` (which already carries PR #66) surfaces both totals tables as
+a genuine conflict, not a mechanical one: hand-summing either table as "cumulative" without
+checking the other would double-omit the other ticket's findings. The two tickets' finding IDs do
+not overlap, so the true merged state is additive:
+
+| | Count |
+|---|---:|
+| Total findings | 179 |
+| FIXED (all reconciliations) | 36 (26 prior + `CON-054`/`CON-098`, PR #66 + 8 here, PR #85) |
+| Already fixed pre-reconciliation, doc corrected | 1 (`CON-097` — no code change) |
+| FIXED (partial, not counted) | 1 (`CON-134`) |
+| SUPERSEDED (owner Q2 decision) | 6 |
+| Divergence / moot (not counted as FIXED, but closed) | 2 (`CON-162`, `CON-163`) |
+| **OPEN** | **133** (179 − 36 − 1 − 1 − 6 − 2) |
+
+Both reconciliation sections above are left exactly as each author wrote them — a first-person
+historical record of that pass's own reasoning at the time — and this entry is the single source
+of truth for the combined total going forward, the same convention `EXPECTED_MIN_CHECKS`'s own
+history comment in `scripts/operator_headless.py` uses for its check-count history. The actual
+`scripts/operator_headless.py` check count after this rebase's merge (which also had its own
+`EXPECTED_MIN_CHECKS` conflict, resolved the same way — re-run, not hand-summed) is recorded in
+that script's own history comment, not restated here.
