@@ -43,7 +43,8 @@ Exit codes:
     0  all checks passed (or Chrome absent and not required)
     1  one or more checks FAILED
     2  infrastructure problem (no dist, a STALE dist, Chrome timeout, no results block)
-    4  the suite silently shrank — fewer checks ran than expected
+    4  the check count drifted from EXPECTED_MIN_CHECKS — shrank (fewer checks ran than
+       expected) or grew past it (the constant is stale-low and needs bumping)
 """
 
 from __future__ import annotations
@@ -2935,7 +2936,7 @@ def main() -> int:
         server.shutdown()
 
     # The cross-scenario half of the suite. Counted into `total` like any other check, so
-    # losing a group trips the EXPECTED_MIN_CHECKS floor rather than passing quietly.
+    # losing a group trips the EXPECTED_MIN_CHECKS gate rather than passing quietly.
     def compare(label: str, scenarios: list[str], facets: tuple[str, ...]) -> int:
         """One string-equality check per facet. Returns how many checks it ran."""
         ran = 0
@@ -3005,7 +3006,7 @@ def main() -> int:
     # only runs when the page is showing rate-limit copy, so a change that stopped those
     # states rendering — or stopped the markers matching — would silently retire the check
     # and every gate would stay green. Counted, and counted into `total`, so losing it trips
-    # the floor as well as failing here.
+    # the EXPECTED_MIN_CHECKS gate as well as failing here.
     scanned = {
         line.split("[", 1)[1].split("]", 1)[0]
         for line in body
