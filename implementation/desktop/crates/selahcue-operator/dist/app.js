@@ -2043,6 +2043,9 @@
         tdSel.setAttribute("aria-label", "Selected region — drag to move, handles to resize");
         const r = tdTheme[tdRegion];
         document.getElementById("td-color").value = tdHex(r.color);
+        // TD-010: reflect the current value as text, not just the swatch fill — see index.html.
+        const colorHex = document.getElementById("td-color-hex");
+        if (colorHex) colorHex.textContent = tdHex(r.color).toUpperCase();
         // Design 2.0: SIZE is a % of height (size_permille/10), LINE a multiplier
         // (line_height_permille/1000) — number fields, not sliders.
         document.getElementById("td-size").value = (r.size_permille / 10).toFixed(1);
@@ -2612,7 +2615,14 @@
       document.getElementById("td-bg-img-pick").onclick = tdPickBgImage;
       const tdDropzone = document.getElementById("td-bg-dropzone");
       if (tdDropzone) tdDropzone.onclick = tdPickBgImage;
-      document.getElementById("td-color").oninput = (e) => { if (!tdTheme) return; tdTheme[tdRegion].color = tdRgb(e.target.value); tdPreview(); };
+      document.getElementById("td-color").oninput = (e) => {
+        if (!tdTheme) return;
+        tdTheme[tdRegion].color = tdRgb(e.target.value);
+        tdPreview();
+        // TD-010: keep the hex readout live while dragging the picker, not just on next tdSync().
+        const colorHex = document.getElementById("td-color-hex");
+        if (colorHex) colorHex.textContent = e.target.value.toUpperCase();
+      };
       // SIZE % → size_permille (×10); LINE multiplier → line_height_permille (×1000). Bounded to
       // the field's range. A BLANK or non-numeric field is ignored (no commit) so clearing it to
       // retype can't snap the theme to the min (Number("") is 0 — guard the raw string). `change`

@@ -885,8 +885,11 @@
                   aria-label="Letter spacing, em (tracking between glyphs)" /></div>
             </div>
             <div class="td-row2 td-colorrow">
+              <!-- TD-010: the swatch alone didn't say what the current colour IS (an operator had
+                   to open the picker to find out); a live hex readout closes that gap, matching
+                   the pattern already shipped for the BACKGROUND section (#td-bg-hex). -->
               <label class="td-colorcell"><input type="color" id="td-color" aria-label="Text colour" /><span>Text
-                  colour</span></label>
+                  colour</span><span class="td-colorcell-hex" id="td-color-hex">#FFFFFF</span></label>
             </div>
             <div class="td-fieldlabel" id="td-lbl-fit">Fit</div>
             <div class="td-seg" id="td-fit" role="group" aria-labelledby="td-lbl-fit">

@@ -276,6 +276,51 @@ on both selectors and adding `GO-LIVE-HOVER`/`TIMER-START-HOVER` assertions to
 `scripts/operator_headless.py`. Tracked as ClickUp `17tnw2axr2w`; independently re-verified
 (1892 checks, 0 FAIL, mutation-tested, `make ci` green) on 2026-09-24.
 
+## Reconciliation — 2026-09-24
+
+**Author:** Farah (Frontend Engineer). **Scope:** the remaining 11 findings (`TD-001`–`TD-011`),
+fixed/verified/blocked under ClickUp task `17tnw2axptr` ("close remaining TD-### drift"). This
+section is additive; the tables above are left as originally written. Every finding was
+re-verified live against the current tree (and, where the original table cited an approximate
+box size rather than exact CSS, against a fresh `get_design_context` read of the cited Figma
+node) before being classified below — none were assumed closed from the table text alone.
+
+### CLOSED — already matching, no code change (audit's original read superseded)
+
+| Finding | Evidence |
+|---|---|
+| `TD-001` | The `⧉ Duplicate` button's padding/radius were read as "close but not identical" against Figma's fixed 82×31 box, an eyeball estimate. A fresh `get_design_context` read of node `317:134` returns the exact authored values — `padding: 8px 13px; border-radius: 9px`, fill `#1c1f28`, border `#262a34`, label `#a7aebe` — which match `.td-header-actions button:not(.td-save-cta)` (`app.css:1206-1213`) and the `--sc-elevated`/`--sc-border`/`--sc-text-secondary` tokens (`app.css:31-36`) exactly. There is no drift to fix; the ⧉ glyph + tooltip remain the audit's own already-recorded EXTRA. |
+| `TD-002` (Save-theme topbar cross-reference, the S2 "DRIFT in the frame" note pointing at TD-012) | Resolved as part of the already-merged TD-012 fix above: `.td-save-cta` now uses the darkened, AA-passing gradient (`app.css:1228-1239`), which the TD-012 reconciliation already documents as the deliberate, permanent choice (gradient kept, darkened rather than flattened). No separate action was owed here. |
+| `TD-009` | Re-confirmed MATCH (already documented as exceeding the equivalent Presentation-surface control) — `#td-bg-hex`/`tdBgReflect()` (`app.js:2537-2549`) unchanged and working. |
+
+### CLOSED — intentional scope, no code change (EXTRA verdicts re-confirmed)
+
+`TD-003` (zoom control, frontend-only preview scale — better than the spec it's compared against),
+`TD-004` (Scripture add button, honest disabled "later" affordance), `TD-005` (Scriptures/Slides
+tab pair, Slides honestly disabled), `TD-006` (New/Import/Export — New live, Import/Export
+honestly disabled), `TD-007` (saved themes + two-click delete, a materially needed capability the
+frame predates), `TD-008` (collapse/expand chevron). All re-confirmed present and unchanged in the
+live tree; none of these are defects to "fix toward" a frame that itself doesn't draw them.
+
+### FIXED
+
+| Finding | Evidence |
+|---|---|
+| `TD-010` | The Typography section's text-colour swatch (`.td-colorcell`, `index.html:839-845`) showed only the static field label "Text colour" — an operator had to open the OS colour picker to learn the current value at all, unlike Figma's `325:178-180` which shows the resolved colour's name. Fixed by adding a live hex readout (`#td-color-hex`) inside the same `.td-colorcell`, mirroring the already-shipped `#td-bg-hex` pattern from the BACKGROUND section rather than inventing a colour-name lookup for arbitrary hex values (consistent with the project's "never fake it" convention — an exact hex value is always true; a nearest-named-colour guess would not be, for any value off the five swatches Figma happens to name). Wired in two places in `app.js`: `tdSync()` (full resync on region/selection change) and the `#td-color` `oninput` handler (live update while dragging the picker, before the next full sync). Verified by 5 new assertions in `scripts/operator_headless.py` (the `TD-010` block: DOM premise, model-commit premise, live-on-input, region-switch re-sync, and a control proving the readout isn't a frozen/stale label from the previously-selected region) — mutation-tested (reverting the three fix files locally reproduces a clean single FAIL on the premise check, 1893 checks/1 FAIL, no aborting exception; restoring reproduces 1897 checks/0 FAIL). |
+
+### BLOCKED — unresolved product/design decision, not implemented
+
+| Finding | Blocked on | Why |
+|---|---|---|
+| `TD-002` (Templates strip 3-vs-5 count/naming) | `17tnw2axpu4` — `TD-OQ-3` | The decision ticket explicitly names this finding and is still `planning/todo` as of this pass. Building toward either the 5-name Figma mock or correcting the Figma mock to the shipped 3 is a product/owner call, not an engineering one — not guessed here. |
+| `TD-011` (region-level text alignment, MISSING) | `17tnw2axpu4` — `TD-OQ-4` | Same decision ticket, still unresolved: whether regions are meant to always inherit a fixed alignment (UNSPECIFIED-by-design) or this is a real gap to build. Element-level alignment (`#td-el-text-align`) is unaffected and already exists; only the region-level control is withheld pending this call. |
+
+`TD-012` remains out of scope for this pass (already fixed and closed under `17tnw2axpt9`, per
+this ticket's own description).
+
+**Net for this pass: one finding fixed (`TD-010`), nine reconfirmed as already-closed or
+intentional with no code change, two left explicitly open pending `17tnw2axpu4`.**
+
 ---
 
 # Open questions
