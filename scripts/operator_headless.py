@@ -1095,6 +1095,44 @@ if not check_jump_call_site_is_click_only():
 # checks still running (no aborting exception); restoring reproduces 1901 checks, 0 FAIL.
 # Measured directly off real runs, not hand-summed.
 EXPECTED_MIN_CHECKS = 1901
+#
+# 17tnw2axptd (CON-079/080/087/089 — Console: navigation & global controls): added 33 checks —
+# the Scriptures nav item + chord reshuffle (CON-079/080, markup + behavioural chord-derivation
+# proofs), the command palette's SCRIPTURES hit-preview sub-line (CON-087), and the in-console
+# output-fullscreen chord `F` (CON-089, including its Stage-card no-op positive control and its
+# navigate-away cleanup). Measured by an actual clean run against the real post-change tree:
+# 1892 + 33 = 1925 checks, 0 FAIL.
+#
+# Same ticket, review-remediation round: Cody's code review (HIGH) and Sana's security review
+# (blocking) independently caught the same real defect — `.scr-card-fullscreen`'s `inset: 0`
+# painted over the topbar's always-reachable global transport AND the emergency footer, regardless
+# of z-index, because position:fixed always wins paint order against non-positioned in-flow
+# content. Quinn's QA pass independently found both that AND a second real bug in CON-087's
+# "more books exist" truncation logic. Fixed both; added 9 more checks: 4 topbar/footer
+# elementFromPoint hit-tests (the control the class/computed-position checks alone couldn't catch
+# — Cody's own suggested control), 1 exit-announcement check (Cody's non-blocking note), 1
+# multi-book "no false …" preview check (Quinn's bug, new stub fixture), and Vera's performance
+# review's LOW-1 (fullscreened-output-deleted-while-fullscreen cleanup) got its own 2-check setup/
+# assertion pair. 1925 + 9 = 1934 checks, 0 FAIL on this branch's own pre-rebase tree — measured,
+# not hand-derived.
+#
+# 1897 & 1934 -> ?: rebase of this branch (17tnw2axptd) onto origin/main after 17tnw2axptr
+# (ending 1897 above) merged first. `git log origin/main ^HEAD -- scripts/operator_headless.py`
+# before resolving this conflict showed exactly 17tnw2axptr's own commit touching this file and
+# nothing else new. The two lineages' totals do NOT simply add (both counted from the same 1892
+# ancestor along divergent paths) — per this constant's own repeated discipline, the merged count
+# is read off an actual clean run against the real post-rebase tree, not hand-summed as
+# 1897 + 42 or any other arithmetic shortcut. Confirmed by a clean run against the real
+# post-rebase tree: 1939 checks, 0 FAIL.
+EXPECTED_MIN_CHECKS = 1939
+#
+# 1901 & 1939 -> 1943: rebase of 17tnw2axptd-surface-transcripts-id-specificity (PR #94, ending
+# 1901 above) onto origin/main after 17tnw2axptd (ending 1939 above, a different ticket sharing a
+# similar branch name prefix) merged first. Both lineages counted from the same 1892/1897 ancestor
+# along divergent paths, so per this constant's own repeated discipline the merged total is read
+# off an actual clean run against the real post-rebase tree, never hand-summed. Confirmed by two
+# independent clean runs against the real post-rebase tree: 1943 checks, 0 FAIL.
+EXPECTED_MIN_CHECKS = 1943
 
 
 def find_chrome():
@@ -1633,8 +1671,22 @@ STUB = r"""
     // through to `Promise.resolve(null)`, so the engaged blackout state could never be exercised
     // end to end — the driver could only fake it by poking V directly.
     if (cmd === "blackout") { V.blackout = !!(args && args.on); return Promise.resolve(JSON.parse(JSON.stringify(V))); }
-    if (cmd === "scripture_search")
+    if (cmd === "scripture_search") {
+      // CON-087 fixture (Quinn's QA review, 17tnw2axptd): a query whose hits cluster in the SAME
+      // handful of books — the real backend (selahcue-scripture) returns up to several
+      // keyword-matched VERSES with no per-book dedup, so multiple hits sharing a book is a real,
+      // common shape, not an edge case. Proves scriptureHitPreview's "…" means "more DISTINCT
+      // books exist", not "more raw hits than shown books" (5 hits, only 2 distinct books here).
+      if (args && args.query === "love")
+        return Promise.resolve([
+          {reference:"Romans 8:35", text:"Who shall separate us from the love of Christ?"},
+          {reference:"Romans 8:37", text:"we are more than conquerors through him that loved us"},
+          {reference:"Romans 8:39", text:"nor any other creature, shall be able to separate us from the love of God"},
+          {reference:"1 John 4:8", text:"He that loveth not knoweth not God; for God is love"},
+          {reference:"1 John 4:16", text:"God is love; and he that dwelleth in love dwelleth in God"}
+        ]);
       return Promise.resolve([{reference:"Romans 8:28", text:"And we know that all things work together for good"}]);
+    }
     if (cmd === "preview_theme") return Promise.resolve({rgba: btoa("\x00\x00\x00\xff"), w:1, h:1});
     // FR-138 / 86ak0qmzv: pick_image now returns a tagged outcome, not a bare path. Tests can
     // override the next outcome via window.__pickImageNextOutcome (e.g. a validation refusal)
@@ -4768,6 +4820,130 @@ DRIVER = r"""
       // earlier, unrelated check.
       V.screens.forEach(function(s){ if (s.config) { s.config.ndi_enabled = false; s.config.ndi_name = ""; } });
 
+      // === CON-089 (Design 2.0 global chord `F`, Figma 337:174 "Fullscreen selected output"):
+      //     an in-console fullscreen of the SELECTED output's already-live preview canvas — never
+      //     the physical-output "Go fullscreen" button below in the inspector (fs.disabled — that
+      //     stays gated on NDI/SDI hardware delivery this repo does not build). ===
+      rowFor("lower-third").click();
+      ok(rowFor("lower-third").classList.contains("scr-card-selected"), "CON-089 (setup): the lower-third card is selected");
+      ok(!rowFor("lower-third").classList.contains("scr-card-fullscreen") && !document.body.classList.contains("scr-fullscreen-active"),
+         "CON-089 (control): not fullscreen before F is pressed — proves the next assertion isn't vacuously already-true");
+      document.dispatchEvent(new KeyboardEvent("keydown", {key:"f", bubbles:true}));
+      ok(rowFor("lower-third").classList.contains("scr-card-fullscreen") && document.body.classList.contains("scr-fullscreen-active"),
+         "CON-089: F fullscreens the selected output's preview inside the console");
+      ok(getComputedStyle(rowFor("lower-third")).position === "fixed",
+         "CON-089: the fullscreen card is COMPUTED position:fixed (WKWebView-safe — a class rule alone can be defeated there)");
+      // Cody's review (17tnw2axptd, HIGH): `inset: 0` made the fullscreen overlay paint OVER the
+      // topbar's global transport (GO LIVE/Prev/Next/Blackout — "always reachable, on every
+      // surface") regardless of z-index, because a position:fixed element always wins paint order
+      // against non-positioned in-flow content (the header has no `position` set at all — the
+      // z-index-vs-palette/dialog comment above was comparing the wrong axis). Quinn's independent
+      // QA pass found the SAME root cause also covered the emergency footer (Blackout/Clear),
+      // against this file's own `.dl-modal-back` "never trap live output" precedent. The class/
+      // computed-position checks above prove the overlay EXISTS; they do not prove anything is
+      // still CLICKABLE underneath it — that needs a real hit-test at the actual screen point.
+      //
+      // A PRE-EXISTING, unrelated leak this new coordinate-based hit-test is the first check in
+      // this file to actually notice: two Theme Designer test setups far earlier (search
+      // 'tdSurf2.style.display="block"' / 'surf.style.display="block"') force an INLINE display
+      // style on #surface-theme-designer as a defensive belt-and-suspenders for getComputedStyle,
+      // and never clear it. An inline style beats ANY class selector regardless of specificity, so
+      // once #surface-theme-designer.classList loses "active" (normal navigation, class-only), the
+      // element stays display:block forever after — invisible to every EXISTING check here because
+      // none of them hit-tests real screen coordinates, only classes/computed-display of the
+      // element they already expect to be showing. Reset it before trusting elementFromPoint below;
+      // the real fix (stop leaking the inline style at its source) is tracked as a follow-up, not
+      // silently folded into this ticket's diff.
+      //
+      // A SECOND, unrelated pre-existing leak, this time in app.css itself (not just this test
+      // driver) — found independently by Sana's security review (17tnw2axptd, finding O1) while
+      // building the exact same kind of hit-test this block needed: `#surface-transcripts.
+      // surface-pad { display: flex }` (app.css) is an ID selector, so it OUTRANKS
+      // `.surface-page.active`'s class-only specificity regardless of whether `.active` is
+      // present — the Transcripts surface is therefore permanently display:flex and covers the
+      // emergency footer on EVERY surface, at all times, confirmed present at this ticket's own
+      // parent commit (8c2d3d3) and so genuinely out of this diff's scope (tracked as a follow-up,
+      // not fixed here). Neutralised the same defensive way as the Theme Designer leak above, so
+      // THIS check proves what it owns — the fullscreen overlay's own footer clearance — without
+      // being contaminated by a bug this ticket doesn't own.
+      document.getElementById("surface-theme-designer").style.display = "";
+      document.getElementById("surface-transcripts").style.display = "none";
+      var hitTest = function(id){
+        var el = document.getElementById(id);
+        var r = el.getBoundingClientRect();
+        var hit = document.elementFromPoint(r.left + r.width/2, r.top + r.height/2);
+        return hit === el || el.contains(hit);
+      };
+      ok(hitTest("top-golive"), "CON-089: the topbar's GO LIVE button is still the REAL hit-test target while fullscreen is active (not painted over)");
+      ok(hitTest("top-prev") && hitTest("top-next") && hitTest("top-blackout"),
+         "CON-089: the topbar's Previous/Next/Blackout buttons are all still hit-testable while fullscreen is active");
+      ok(hitTest("app-menu-btn"), "CON-089: the app-menu (hamburger) button is still hit-testable while fullscreen is active");
+      ok(hitTest("blackout") && hitTest("clear-all"),
+         "CON-089: the emergency footer's Blackout/Clear Output buttons are still hit-testable while fullscreen is active (never trap live output, matching .dl-modal-back's own precedent)");
+      document.getElementById("surface-transcripts").style.display = ""; // let normal CSS decide again for later checks
+      document.dispatchEvent(new KeyboardEvent("keydown", {key:"f", bubbles:true}));
+      ok(!rowFor("lower-third").classList.contains("scr-card-fullscreen") && !document.body.classList.contains("scr-fullscreen-active"),
+         "CON-089: pressing F again exits fullscreen (toggle, not a one-way door)");
+      ok(el("route-status").textContent === "Exited fullscreen preview.",
+         "CON-089 (Cody's review): exiting fullscreen announces via #route-status too, not just entry");
+
+      // Escape exits it too, and takes priority over whatever Escape would otherwise do.
+      document.dispatchEvent(new KeyboardEvent("keydown", {key:"f", bubbles:true}));
+      ok(rowFor("lower-third").classList.contains("scr-card-fullscreen"), "CON-089 (setup): fullscreen re-armed for the Escape check");
+      document.dispatchEvent(new KeyboardEvent("keydown", {key:"Escape", bubbles:true}));
+      ok(!rowFor("lower-third").classList.contains("scr-card-fullscreen") && !document.body.classList.contains("scr-fullscreen-active"),
+         "CON-089: Escape exits the fullscreen preview");
+
+      // Positive control: the Stage card has NO preview canvas (Current/Next/Timer chips only) —
+      // selecting it and pressing F must be an honest no-op, never a fake fullscreen of non-preview
+      // content. This is the check that would catch the guard going dead (e.g. `!cv` dropped).
+      rowFor("stage").click();
+      ok(rowFor("stage").classList.contains("scr-card-selected"), "CON-089 (setup): the Stage card is selected");
+      document.dispatchEvent(new KeyboardEvent("keydown", {key:"f", bubbles:true}));
+      ok(!rowFor("stage").classList.contains("scr-card-fullscreen") && !document.body.classList.contains("scr-fullscreen-active"),
+         "CON-089 (control): F on the selected Stage card is an honest no-op (no preview canvas to fullscreen)");
+
+      // F means nothing outside Screens & Outputs — the Live Console has no "selected output".
+      document.querySelector('.nav-item[data-surface="console"]').click();
+      document.dispatchEvent(new KeyboardEvent("keydown", {key:"f", bubbles:true}));
+      ok(!document.body.classList.contains("scr-fullscreen-active"),
+         "CON-089: F on a surface with no 'selected output' concept (Live Console) is a no-op");
+
+      // Navigating away from Screens & Outputs while fullscreen is active always leaves a clean
+      // state — never a stuck overlay a later, unrelated visit to the surface silently resumes.
+      document.querySelector('.nav-item[data-surface="screens"]').click();
+      rowFor("main").click();
+      document.dispatchEvent(new KeyboardEvent("keydown", {key:"f", bubbles:true}));
+      ok(rowFor("main").classList.contains("scr-card-fullscreen"), "CON-089 (setup): fullscreen re-armed before navigating away");
+      document.querySelector('.nav-item[data-surface="console"]').click();
+      ok(!document.body.classList.contains("scr-fullscreen-active"),
+         "CON-089: navigating away from Screens & Outputs clears the fullscreen state");
+      document.querySelector('.nav-item[data-surface="screens"]').click();
+      ok(!rowFor("main").classList.contains("scr-card-fullscreen"),
+         "CON-089: returning to Screens & Outputs does not resume the old fullscreen card");
+
+      // Vera's performance review (17tnw2axptd, LOW-1): if the host DROPS the fullscreened output
+      // (deleted, or an older/newer host stops reporting it), renderOutputs' registry
+      // reconciliation must clean up fullscreenOutput the same way it already does selectedScreen
+      // — never a stuck body.scr-fullscreen-active with no card left to show it on. A throwaway
+      // virtual feed, isolated from every other fixture screen this file's other checks depend on.
+      var beforeIds = Array.from(document.querySelectorAll('#screens-list .screen-row')).map(function(c){ return c.dataset.screen; });
+      addFeed("stream");
+      await waitFor(function(){ return document.querySelectorAll('#screens-list .screen-row').length > beforeIds.length; });
+      var newFeedId = Array.from(document.querySelectorAll('#screens-list .screen-row'))
+        .map(function(c){ return c.dataset.screen; })
+        .filter(function(id){ return beforeIds.indexOf(id) === -1; })[0];
+      rowFor(newFeedId).click();
+      document.dispatchEvent(new KeyboardEvent("keydown", {key:"f", bubbles:true}));
+      ok(document.body.classList.contains("scr-fullscreen-active"), "CON-089 (setup): fullscreen armed on the throwaway feed before deleting it");
+      rowFor(newFeedId).querySelector('.screen-delete').click();
+      await waitFor(function(){ return !rowFor(newFeedId); });
+      ok(!rowFor(newFeedId), "CON-089 (setup): the throwaway feed is gone from the registry");
+      ok(!document.body.classList.contains("scr-fullscreen-active"),
+         "CON-089 (Vera's review): deleting the fullscreened output while it's fullscreen cleans up the state (no stuck overlay)");
+
+      rowFor("main").click(); // leave selection on the default screen for anything after this block
+
       // === Presentation & Media surface (Design 2.0, node 329:124) ===
       var pmNav = document.querySelector('.nav-item[data-surface="presentation"]');
       ok(!!pmNav && pmNav.getAttribute("aria-disabled") !== "true", "PM: the Presentation nav item is ACTIVATED (not a disabled 'later' affordance)");
@@ -5072,11 +5248,41 @@ DRIVER = r"""
       ok(document.querySelector("#cmd-list .cmd-item").textContent.indexOf("Go Live") >= 0, "Palette: Go Live is the first ACTIONS item");
       var pItems = Array.from(document.querySelectorAll("#cmd-list .cmd-item")).map(function(li){ return li.textContent; });
       ok(pItems.some(function(t){ return /Go to Presentation/.test(t) && /⌘2/.test(t); }), "Palette: NAVIGATE mirrors 'Go to Presentation' with its ⌘2 badge");
-      ok(["Live Console","Presentation","Theme Designer","Screens & Outputs","Service Plan","Transcript & Notes","Settings"].every(function(n){ return pItems.some(function(t){ return t.indexOf("Go to "+n) >= 0; }); }), "Palette: NAVIGATE lists all seven top-level app menu items");
+      ok(["Live Console","Scriptures","Presentation","Theme Designer","Screens & Outputs","Service Plan","Transcript & Notes","Settings"].every(function(n){ return pItems.some(function(t){ return t.indexOf("Go to "+n) >= 0; }); }), "Palette: NAVIGATE lists all eight top-level app menu items (CON-079 adds Scriptures)");
+      ok(pItems.some(function(t){ return /Go to Scriptures/.test(t) && /⌘6/.test(t); }), "CON-079/080: NAVIGATE mirrors 'Go to Scriptures' with its ⌘6 badge");
+      ok(pItems.some(function(t){ return /Go to Transcript/.test(t) && /⌘7/.test(t); }), "CON-080: NAVIGATE mirrors 'Go to Transcript & Notes' with its shifted ⌘7 badge");
+      ok(pItems.some(function(t){ return /Go to Settings/.test(t) && /⌘,/.test(t); }), "CON-080: NAVIGATE mirrors 'Go to Settings' with its ⌘, badge (no longer a menu-order digit)");
       el("cmd-input").value = "grace"; el("cmd-input").dispatchEvent(new Event("input"));
       ok(Array.from(document.querySelectorAll("#cmd-list .cmd-group")).some(function(g){ return g.textContent === "SCRIPTURES"; }) &&
          Array.from(document.querySelectorAll("#cmd-list .cmd-item")).some(function(li){ return /Search "grace" in Bible/.test(li.textContent); }),
          "Palette: a typed query adds a SCRIPTURES 'Search … in Bible' entry");
+      // CON-087 (Figma 336:262-269): the SCRIPTURES row grows a MUTED HIT PREVIEW sub-line once
+      // the debounced scripture_search resolves for this exact query ("John · Revelation…" in the
+      // spec). Assert the BEFORE state too (positive control) so this can't pass vacuously against
+      // a sub-line that was already there for some unrelated reason.
+      var findScRow = function(){ return Array.from(document.querySelectorAll("#cmd-list .cmd-item")).find(function(li){ return /Search "grace" in Bible/.test(li.textContent); }); };
+      var scRow0 = findScRow();
+      ok(!!scRow0 && !scRow0.querySelector(".cmd-item-sub"),
+         "CON-087 (control): before the debounced preview resolves, the SCRIPTURES row has no hit-preview sub-line yet");
+      await waitFor(function(){ var r = findScRow(); return r && r.querySelector(".cmd-item-sub"); });
+      var scRow1 = findScRow();
+      var scSub = scRow1 && scRow1.querySelector(".cmd-item-sub");
+      ok(!!scSub && scSub.textContent === "Romans",
+         "CON-087: the SCRIPTURES row's hit preview resolves to the matched book name (\"Romans\" from the stub's Romans 8:28 hit) — the Figma-spec muted sub-line");
+      ok(window.__calls.some(function(c){ return c.cmd === "scripture_search" && c.args.query === "grace"; }),
+         "CON-087: the preview is driven by a REAL scripture_search(query) call, not a hardcoded string");
+      // Quinn's QA review (17tnw2axptd): a SECOND query whose 5 hits cluster in only 2 DISTINCT
+      // books (see the "love" fixture in the scripture_search stub above) — proves the "…" means
+      // "more books exist beyond the ones shown", not "more raw hits than shown books". The bug:
+      // the old logic broke book-collection at 3 THEN compared the (possibly truncated) book count
+      // to the RAW hit count, so 5 hits in just 2 books still showed a false "…".
+      el("cmd-input").value = "love"; el("cmd-input").dispatchEvent(new Event("input"));
+      var findLoveRow = function(){ return Array.from(document.querySelectorAll("#cmd-list .cmd-item")).find(function(li){ return /Search "love" in Bible/.test(li.textContent); }); };
+      await waitFor(function(){ var r = findLoveRow(); return r && r.querySelector(".cmd-item-sub"); });
+      var loveRow = findLoveRow();
+      var loveSub = loveRow && loveRow.querySelector(".cmd-item-sub");
+      ok(!!loveSub && loveSub.textContent === "Romans · 1 John",
+         "CON-087: 5 hits clustered in only 2 distinct books show BOTH books with NO trailing … (fixed 'more' logic — every real book is already shown)");
       window.__cmdPalette.closeAll();
 
       // --- Global presentation search (⌘/Ctrl+S) — a dedicated modal over `deck_search` that
@@ -6799,6 +7005,69 @@ DRIVER = r"""
          && getComputedStyle(el("surface-preservice")).overflowY === "hidden",
          "Pre-service: while active, #surface-preservice.surface-pad.active still applies its page "
          + "overrides (padding 0, overflow hidden)");
+
+      // === CON-079/080 (Design 2.0 App Navigation, Figma 336:180-187): the Scriptures nav item +
+      //     the chord reshuffle (Transcript & Notes ⌘6→⌘7, Settings ⌘7→⌘,). The app's ⌘1-⌘8 chords
+      //     are DERIVED from #app-menu's live DOM order (not hardcoded per item), so most of this
+      //     is a genuine behavioural proof of the derivation, not just markup. ===
+      var scripturesNav = document.querySelector('.nav-item[data-surface="console"][data-focus="scriptures"]');
+      ok(!!scripturesNav, "CON-079: the Scriptures nav item exists (console surface, focus=scriptures)");
+      ok(scripturesNav && scripturesNav.querySelector(".nav-ico").textContent === "✦",
+         "CON-079: Scriptures carries the ✦ icon (Figma 336:180-187)");
+      ok(scripturesNav && scripturesNav.querySelector(".nav-t").textContent === "Scriptures"
+         // Collapse internal whitespace — the markup wraps the subtitle across lines like its
+         // siblings do (e.g. "Screens &\n Outputs"), which raw textContent would otherwise carry.
+         && scripturesNav.querySelector(".nav-d").textContent.replace(/\s+/g, " ").trim() === "Browse & stage the Bible",
+         "CON-079: Scriptures' title + subtitle match the Figma copy exactly");
+      ok(scripturesNav && scripturesNav.querySelector(".nav-key").textContent === "⌘6",
+         "CON-080: Scriptures carries the ⌘6 chord badge");
+      var transcriptNav = document.querySelector('.nav-item[data-focus="transcript"]');
+      ok(transcriptNav && transcriptNav.querySelector(".nav-key").textContent === "⌘7",
+         "CON-080: Transcript & Notes' chord badge shifted from ⌘6 to ⌘7");
+      var settingsNav = document.querySelector('.nav-item[data-surface="settings"]');
+      ok(settingsNav && settingsNav.querySelector(".nav-key").textContent === "⌘,",
+         "CON-080: Settings' chord badge is ⌘, (no longer a menu-order digit)");
+      ok(settingsNav && settingsNav.dataset.nodigit === "true",
+         "CON-080: Settings opts out of the ⌘1-8 digit derivation via data-nodigit");
+
+      // CON-080 behaviour: ⌘6 must open SCRIPTURES SPECIFICALLY, not merely "some surface changed" —
+      // proved against the ADVERSE starting condition of Slides being the active content tab (a
+      // staged presentation auto-surfaces it), so this can only pass if ⌘6 actively switches back.
+      var __con80ItemsBak = V.items.slice(), __con80StagedBak = V.staged_index, __con80ScrBak = V.staged_scripture;
+      // A fully self-contained fixture (never read from V.items[0]'s prior shape — by this point
+      // in the run many earlier sections have mutated it, and this block only needs SOME valid
+      // item at index 0 to keep the item list well-formed, not whatever survived until now).
+      V.items = [{id:900, kind:"scripture", title:"CON-080 placeholder", is_live:false, is_staged:false}, {id:97, kind:"slide_group", title:"CON-080 fixture", is_live:false, is_staged:true, slide_count:2, slide_index:0, staged_slide_index:0, link:{kind:"deck", id:97, slide_count:2}}];
+      V.staged_index = 1; V.staged_scripture = null;
+      window.__syncSlides(JSON.parse(JSON.stringify(V)));
+      await waitFor(function(){ return window.__activeContentTab === "slides"; });
+      ok(window.__activeContentTab === "slides", "CON-080 (setup): Slides is the active content tab before pressing ⌘6 — an adverse starting condition");
+      document.querySelector('.nav-item[data-surface="plan"]').click();
+      ok(el("surface-plan").classList.contains("active"), "CON-080 (setup): navigated to Service Plan before the chord");
+      document.dispatchEvent(new KeyboardEvent("keydown", {key:"6", metaKey:true, bubbles:true}));
+      ok(el("surface-console").classList.contains("active"), "CON-080: ⌘6 routes to the Live Console (Scriptures' surface)");
+      ok(el("ctab-scriptures").getAttribute("aria-selected") === "true" && getComputedStyle(el("scriptures")).display !== "none",
+         "CON-079/080: ⌘6 opens SCRIPTURES specifically — switches OFF Slides even though Slides was the active tab (a real tab-switch, not just scrollIntoView on a hidden panel)");
+      V.items = __con80ItemsBak; V.staged_index = __con80StagedBak; V.staged_scripture = __con80ScrBak;
+      window.__syncSlides(JSON.parse(JSON.stringify(V)));
+
+      // CON-080 behaviour: ⌘7 (shifted from ⌘6) opens the console AND scrolls #transcript into
+      // view — spy on scrollIntoView narrowly (patched + restored within these few lines only,
+      // never left in place for any other check in this file).
+      document.querySelector('.nav-item[data-surface="plan"]').click();
+      var __sivOrig = Element.prototype.scrollIntoView, __sivIds = [];
+      Element.prototype.scrollIntoView = function(){ __sivIds.push(this.id); return __sivOrig.apply(this, arguments); };
+      document.dispatchEvent(new KeyboardEvent("keydown", {key:"7", metaKey:true, bubbles:true}));
+      Element.prototype.scrollIntoView = __sivOrig;
+      ok(el("surface-console").classList.contains("active") && __sivIds.indexOf("transcript") >= 0,
+         "CON-080: ⌘7 (shifted from ⌘6) opens the Live Console and scrolls #transcript into view (Transcript & Notes' data-focus target)");
+
+      // CON-080 behaviour: ⌘, routes to Settings (⌘8 → Transcripts saved is already covered,
+      // unchanged, by the pre-existing 'TR: ⌘8 routes to Transcripts' check above).
+      document.querySelector('.nav-item[data-surface="plan"]').click();
+      ok(!el("surface-settings").classList.contains("active"), "CON-080 (setup): not on Settings before the ⌘, chord");
+      document.dispatchEvent(new KeyboardEvent("keydown", {key:",", metaKey:true, bubbles:true}));
+      ok(el("surface-settings").classList.contains("active"), "CON-080: ⌘, routes to Settings (moved off the ⌘1-8 digit sequence)");
 
       // === Remote Control (Figma 359:124) — now reached from Settings › Network & Mobile (it left the
       // top-nav, Figma 336:124), not a top-level nav item: pair/approve/role/revoke ===
