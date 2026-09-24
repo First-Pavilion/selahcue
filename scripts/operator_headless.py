@@ -1076,7 +1076,15 @@ if not check_jump_call_site_is_click_only():
 # clean single FAIL on the premise check (1893 checks, 1 FAIL, no aborting exception — the
 # premise-guarded block is skipped rather than dereferencing a null element); restoring reproduces
 # 1897 checks, 0 FAIL. Measured directly off real runs, not hand-summed.
-EXPECTED_MIN_CHECKS = 1897
+#
+# 1897 -> 1901 (17tnw2axwve, rebased onto the 1897 baseline above): +9 new checks for the
+# deck-scoped pmThumbCache / LIVE-ring fix (two decks sharing a local slide id, switched via both
+# pmLibOpen and pmLibPresent). This branch's own checks were originally measured at 1901 against a
+# pre-17tnw2axptr baseline (1892 + 9); after rebasing onto 17tnw2axptr's +5, the combined total is
+# NOT assumed to be either chain's endpoint, their sum by arithmetic, or any other derivation — per
+# this constant's own repeated lesson (see the merge-conflict resolution note above it) — it is
+# re-measured for real immediately below.
+EXPECTED_MIN_CHECKS = 1901
 
 
 def find_chrome():
@@ -1879,7 +1887,22 @@ STUB = r"""
     }
     if (cmd === "deck_open") {
       var od=LIB.decks.filter(function(x){return x.id===args.id;})[0];
-      if (od){ LIB.open=od.id; D.name=od.name; D.count=od.slides; } return Promise.resolve(dClone());
+      if (od){
+        // Real host semantics (deck_workspace.rs::load_deck): switching to a DIFFERENT deck resets
+        // the editing session — fresh selection (first slide), Live cleared. Reopening the SAME
+        // already-open deck is a no-op (deck_workspace.rs::deck_open's early return). Mirrored here
+        // ONLY for a deck that carries its own `.content` array — opt-in, set by a fixture that
+        // needs REAL per-deck slide data (17tnw2axwve's cross-deck collision check below) — so
+        // every other deck_open call keeps the pre-existing (content-blind) behaviour and none of
+        // this suite's other checks change.
+        if (od.content && LIB.open !== od.id) {
+          D.slides = JSON.parse(JSON.stringify(od.content));
+          D.selected = D.slides.length ? D.slides[0].id : null;
+          D.live = null;
+        }
+        LIB.open=od.id; D.name=od.name; D.count=od.slides;
+      }
+      return Promise.resolve(dClone());
     }
     if (cmd === "deck_rename") {
       var rd=LIB.decks.filter(function(x){return x.id===args.id;})[0];
@@ -2305,8 +2328,20 @@ STUB = r"""
       var rv=libView(); rv.restored_name=back.name;
       return Promise.resolve(rv);
     }
-    if (cmd === "render_deck_slide")
-      return Promise.resolve({available:true, frame:{w:2, h:1, rgba: btoa("\x33\x2b\x5a\xff\x1a\x1d\x27\xff")}});
+    if (cmd === "render_deck_slide") {
+      // Vary the rendered pixel by (currently-open deck, requested slide id) so a stale-cache
+      // collision across decks sharing a local slide id is actually detectable by CONTENT, not
+      // just by an id match (17tnw2axwve). render_deck_slide is itself deck-BLIND on the real host
+      // (no deck-id argument — it renders whichever deck is currently open), mirrored here via
+      // LIB.open. Both "pixels" in the 2x1 frame are identical so a cache-hit redraw (which scales
+      // the cached 2x1 image up into whatever size the tile's canvas currently is) reads back a
+      // flat, unambiguous colour at any sample point — no interpolation edge case.
+      var rdR = (37 + LIB.open * 41 + args.id * 7) % 256;
+      var rdG = (91 + LIB.open * 23 + args.id * 13) % 256;
+      var rdB = (17 + LIB.open * 11 + args.id * 53) % 256;
+      var rdPx = String.fromCharCode(rdR, rdG, rdB, 255);
+      return Promise.resolve({available:true, frame:{w:2, h:1, rgba: btoa(rdPx + rdPx)}});
+    }
     if (cmd === "deck_add_slide") {
       var nid = D.slides.length + 1;
       D.slides.push({id:nid, n:nid, lines:["Empty slide"], kind:"text"});
@@ -11181,6 +11216,124 @@ right after a generate/save");
              "PME-055: 'Present' lands the operator on the slide grid, where the presented slide is visible");
         }
       }
+
+      // --- 17tnw2axwve: deck-scoped pmThumbCache / LIVE ring — cross-deck local-slide-id
+      // collision --------------------------------------------------------------------------------
+      // Slide ids are DECK-LOCAL (each deck numbers its own slides from scratch —
+      // selahcue-present::deck.rs) — two decks routinely share a local id (both fixture decks
+      // below use "1"). Before the fix, pmThumbCache keyed purely by the bare slide id and
+      // pmGridSyncLive matched the LIVE ring purely against view().live_authored_id (also a bare
+      // id), so switching decks could paint the WRONG deck's cached thumbnail or ring the WRONG
+      // deck's tile as live. Snapshots and fully restores D / window.__LIB / V.live_authored_id
+      // around itself so nothing leaks into the PME-053 block (which reads
+      // window.__LIB.decks.length directly) or anything that runs after it.
+      var wCollSnapD = JSON.parse(JSON.stringify(D));
+      var wCollSnapLib = JSON.parse(JSON.stringify(window.__LIB));
+      var wCollSnapLive = V.live_authored_id;
+      var wCollDeckX = 70001, wCollDeckY = 70002;
+      window.__LIB.decks.push({id: wCollDeckX, name: "Collision Deck X", slides: 1,
+        content: [{id: 1, n: 1, lines: ["Deck X — Slide One"], kind: "text"}]});
+      window.__LIB.decks.push({id: wCollDeckY, name: "Collision Deck Y", slides: 1,
+        content: [{id: 1, n: 1, lines: ["Deck Y — Slide One"], kind: "text"}]});
+      var wCollGoToLibrary = async function(){
+        el("pm-deckswitch").click();
+        await wWait(function(){ return !!el("pm-lib-grid").querySelector(".pm-lib-card"); });
+        if (el("pm-lib-q")) { el("pm-lib-q").value = ""; el("pm-lib-q").dispatchEvent(new Event("input", {bubbles:true})); }
+      };
+      var wCollOpenById = function(deckId){
+        var card = el("pm-lib-grid").querySelector('.pm-lib-card[data-id="' + deckId + '"]');
+        if (card) card.querySelector(".pm-lib-open").click();
+        return !!card;
+      };
+      var wCollPresentById = async function(deckId){
+        var card = el("pm-lib-grid").querySelector('.pm-lib-card[data-id="' + deckId + '"]');
+        if (!card) return false;
+        card.querySelector(".pm-lib-dots").click();
+        await wWait(function(){ return !!el("pm-lib-menu"); });
+        var items = Array.prototype.slice.call(el("pm-lib-menu").querySelectorAll("button"));
+        var presentItem = items.filter(function(b){ return /^Present$/.test(b.textContent.trim()); })[0];
+        if (!presentItem) return false;
+        presentItem.click();
+        return true;
+      };
+      var wCollTilePixel = function(slideId){
+        var tile = el("pm-grid-tiles") && el("pm-grid-tiles").querySelector('.pm-tile[data-id="' + slideId + '"]');
+        var cv = tile && tile.querySelector("canvas");
+        return cv ? Array.prototype.join.call(cv.getContext("2d").getImageData(0, 0, 1, 1).data, ",") : null;
+      };
+      // Counts only GRID per-tile thumbnail fetches (a real numeric slide id), never the EDITOR's
+      // own single-slide canvas preview (pmRenderCanvas calls render_deck_slide with id:null on
+      // EVERY successful deck action via pAct/renderPresentation, entirely unrelated to
+      // pmThumbCache) — conflating the two would make a genuine grid cache-hit look like a miss
+      // whenever a go-live (pmGridGoLive, which pmLibPresent triggers) fires in the same step.
+      var wCollRenderCalls = function(){ return window.__calls.filter(function(c){ return c.cmd === "render_deck_slide" && c.args && c.args.id != null; }).length; };
+
+      // Open Deck X fresh: its slide-1 thumbnail must render via a genuine render_deck_slide call.
+      await wCollGoToLibrary();
+      var wCollN0 = wCollRenderCalls();
+      ok(wCollOpenById(wCollDeckX), "17tnw2axwve (premise): Deck X's library card is reachable");
+      await wWait(function(){ return !el("pm-grid").hidden && !!el("pm-grid-tiles").querySelector('.pm-tile[data-id="1"]'); });
+      await wWait(function(){ return wCollRenderCalls() > wCollN0; });
+      await sleep(30);
+      var wCollPixelX = wCollTilePixel(1);
+      ok(wCollPixelX != null, "17tnw2axwve (premise): Deck X's tile 1 renders a thumbnail");
+
+      // Switch to Deck Y via the plain "Open" affordance (pmLibOpen) — a fresh deck, so slide 1
+      // must render via ITS OWN render_deck_slide call and show ITS OWN colour, not Deck X's.
+      await wCollGoToLibrary();
+      var wCollN1 = wCollRenderCalls();
+      wCollOpenById(wCollDeckY);
+      await wWait(function(){ return !el("pm-grid").hidden && !!el("pm-grid-tiles").querySelector('.pm-tile[data-id="1"]'); });
+      await wWait(function(){ return wCollRenderCalls() > wCollN1; });
+      await sleep(30);
+      var wCollPixelY = wCollTilePixel(1);
+      ok(wCollPixelY != null && wCollPixelY !== wCollPixelX,
+         "17tnw2axwve: switching to Deck Y (pmLibOpen) shows Deck Y's OWN slide-1 thumbnail, not Deck X's stale cached one (X=" + wCollPixelX + ", Y=" + wCollPixelY + ")");
+
+      // Switch BACK to Deck X via the card menu's "Present" action (pmLibPresent — the OTHER
+      // deck-switch path) — must be a genuine cache HIT (no new render_deck_slide call) showing
+      // Deck X's own correct colour again, proving option (b)'s benefit as well as correctness.
+      await wCollGoToLibrary();
+      var wCollN2 = wCollRenderCalls();
+      var wCollPresentOk = await wCollPresentById(wCollDeckX);
+      ok(wCollPresentOk, "17tnw2axwve (premise): Deck X's card carries a working 'Present' menu item");
+      await wWait(function(){ return !el("pm-grid").hidden && !!el("pm-grid-tiles").querySelector('.pm-tile[data-id="1"]'); });
+      await sleep(60);
+      var wCollN3 = wCollRenderCalls();
+      var wCollPixelXAgain = wCollTilePixel(1);
+      ok(wCollN3 === wCollN2,
+         "17tnw2axwve: switching back to Deck X (pmLibPresent) hits the thumbnail cache — no new render_deck_slide call (option (b): a deck-scoped key, not clear-on-switch, preserves already-fetched thumbnails)");
+      ok(wCollPixelXAgain === wCollPixelX,
+         "17tnw2axwve: the cache-hit thumbnail for Deck X's slide 1 is still Deck X's own colour, not Deck Y's (got " + wCollPixelXAgain + ")");
+
+      // LIVE-ring collision: pmLibPresent above already presented Deck X's slide 1 live; confirm its
+      // own tile shows the ring, then switch (plain Open — no present) to Deck Y and confirm Deck
+      // Y's OWN slide-1 tile does NOT inherit a false LIVE ring for Deck X's actually-live slide,
+      // despite the colliding local id.
+      ok(!!el("pm-grid-tiles").querySelector(".pm-tile.live"), "17tnw2axwve (premise): Deck X's slide 1 is presented live (its own tile rings) after Present");
+      await wCollGoToLibrary();
+      wCollOpenById(wCollDeckY);
+      await wWait(function(){ return !el("pm-grid").hidden && !!el("pm-grid-tiles").querySelector('.pm-tile[data-id="1"]'); });
+      await sleep(80); // let pmGridSyncLive's async view() round-trip resolve
+      ok(!el("pm-grid-tiles").querySelector(".pm-tile.live"),
+         "17tnw2axwve: Deck Y's tile 1 does NOT show a false LIVE ring for Deck X's actually-live slide 1, despite the colliding local id");
+
+      // Positive control: the gate suppresses a false CROSS-deck match, not the ring mechanism
+      // itself — presenting Deck Y's OWN slide 1 must still correctly ring it.
+      var wCollTileY1 = el("pm-grid-tiles").querySelector('.pm-tile[data-id="1"]');
+      wCollTileY1.dispatchEvent(new MouseEvent("dblclick", {bubbles:true}));
+      await wWait(function(){ return el("pm-grid-tiles").querySelector(".pm-tile.live"); });
+      ok(!!el("pm-grid-tiles").querySelector(".pm-tile.live"),
+         "17tnw2axwve (control): presenting Deck Y's OWN slide 1 afterward still correctly rings it — the ring gate suppresses a false cross-deck match, not the ring mechanism itself");
+
+      // Restore D / window.__LIB / V.live_authored_id so nothing leaks into PME-053 or any later check.
+      Object.assign(D, JSON.parse(JSON.stringify(wCollSnapD)));
+      window.__LIB.decks = wCollSnapLib.decks;
+      window.__LIB.open = wCollSnapLib.open;
+      window.__LIB.nextId = wCollSnapLib.nextId;
+      window.__LIB.persistent = wCollSnapLib.persistent;
+      window.__LIB.trash = wCollSnapLib.trash;
+      V.live_authored_id = wCollSnapLive;
 
       // --- PME-053: "Start from" in the New-presentation dialog -------------------------------
       // Blank deck / Duplicate an existing presentation / From a template (later, honestly

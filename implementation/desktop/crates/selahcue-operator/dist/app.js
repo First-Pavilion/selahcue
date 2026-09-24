@@ -9805,7 +9805,7 @@
         });
       }
       async function pmLibOpen(id) {
-        try { const dv = await invoke("deck_open", { id: id }); pmDv = dv; pmSetMode("grid"); pmRenderGrid(dv); }
+        try { const dv = await invoke("deck_open", { id: id }); pmDv = dv; pmSetMode("grid"); pmRenderGrid(dv, id); }
         catch (e) { console.error(e); pmShowError("open the presentation"); }
       }
       // PME-055: "Present" straight from the library card menu — opens the deck (same as
@@ -9818,7 +9818,7 @@
         let dv;
         try { dv = await invoke("deck_open", { id: id }); }
         catch (e) { console.error(e); pmShowError("open the presentation"); return; }
-        pmDv = dv; pmSetMode("grid"); pmRenderGrid(dv);
+        pmDv = dv; pmSetMode("grid"); pmRenderGrid(dv, id);
         const slides = dv.slides || [];
         if (!slides.length) return; // an empty deck has nothing to present; grid shows its own empty state
         const target = dv.selected != null ? dv.selected : slides[0].id;
@@ -9827,9 +9827,18 @@
 
       // --- Slide GRID (Design 2.0 browse/present mode) ---------------------------------------------
       const PM_THUMB_MAX = 60;             // bounded thumbnail cache (no unbounded growth)
-      const pmThumbCache = new Map();      // slideId -> dataURL
-      function pmThumbPut(id, url) {
-        pmThumbCache.set(id, url);
+      // Keyed by "deckId:slideId", NOT the bare slide id: slide ids are deck-LOCAL (each deck
+      // numbers its own slides starting fresh — selahcue-present::deck.rs), so two different decks
+      // routinely reuse the same local id. A bare-id key let deck B's tile silently paint deck A's
+      // cached thumbnail after a fast switch via pmLibOpen/pmLibPresent (17tnw2axwve). deckId is
+      // threaded through explicitly (closed over per-tile at render time — see pmRenderGrid) rather
+      // than read from a mutable "current deck" global at fetch-resolution time, so a lazy
+      // (IntersectionObserver-deferred) fetch that resolves after a LATER deck switch still tags
+      // its result under the deck it was actually fetched FOR.
+      const pmThumbCache = new Map();      // "deckId:slideId" -> dataURL
+      function pmThumbKey(deckId, id) { return deckId + ":" + id; }
+      function pmThumbPut(deckId, id, url) {
+        pmThumbCache.set(pmThumbKey(deckId, id), url);
         while (pmThumbCache.size > PM_THUMB_MAX) pmThumbCache.delete(pmThumbCache.keys().next().value);
       }
       function pmThumbFail(cv) {
@@ -9837,22 +9846,26 @@
         t.classList.add("pm-tile-fail");
         const s = document.createElement("span"); s.className = "pm-tile-failmsg"; s.textContent = "⚠ Can't preview"; t.appendChild(s);
       }
-      async function pmThumb(id, cv) {
+      async function pmThumb(deckId, id, cv) {
         if (!cv) return;
-        if (pmThumbCache.has(id)) {
+        const key = pmThumbKey(deckId, id);
+        if (pmThumbCache.has(key)) {
           const im = new Image();
           im.onload = () => { try { cv.getContext("2d").drawImage(im, 0, 0, cv.width, cv.height); } catch (e) {} };
-          im.src = pmThumbCache.get(id);
+          im.src = pmThumbCache.get(key);
           return;
         }
         try {
           const r = await invoke("render_deck_slide", { id: id, maxW: 320, maxH: 180 });
-          if (r && r.available && r.frame && blitFrame(cv, r.frame)) pmThumbPut(id, cv.toDataURL());
+          if (r && r.available && r.frame && blitFrame(cv, r.frame)) pmThumbPut(deckId, id, cv.toDataURL());
           else pmThumbFail(cv); // missing media / no frame → honest "can't preview" tile (not a silent blank)
         } catch (e) { pmThumbFail(cv); }
       }
       let pmGridCursor = null;             // selected slide id (safe — never touches live)
       let pmGridLiveId = null;             // HOST-truth live authored slide id (drives ring/transport)
+      let pmGridDeckId = null;             // id of the deck currently rendered in the grid (17tnw2axwve
+                                            // — deck-scopes the thumbnail cache; DeckView carries no
+                                            // own id, so pmRenderGrid's callers track it explicitly)
       function pmGridAnnounce(msg) { const r = pmEl("pm-grid-live-region"); if (r) r.textContent = msg; }
       function pmGridTiles() { const g = pmEl("pm-grid-tiles"); return g ? Array.prototype.slice.call(g.querySelectorAll(".pm-tile")) : []; }
       function pmGridSelect(id, focus) {
@@ -9893,6 +9906,20 @@
           if (n) n.setAttribute("aria-disabled", "true");
           return;
         }
+        // live_authored_id is a bare (deck-LOCAL) slide id with no deck id on the wire, so it
+        // cannot alone say whether the live slide belongs to the deck currently open in the grid —
+        // two decks routinely share local id 1, and deck_open never touches Live, so a plain id
+        // match could ring the wrong deck's tile after a fast switch (17tnw2axwve). Gate it on
+        // pmDv.live, the deck-session-scoped annotation the host ALREADY returns on every DeckView
+        // (deck_workspace.rs: reset to null on every real deck switch via load_deck, set only by a
+        // go_live/go_live_delta issued for the CURRENTLY open deck) — a match is honoured only when
+        // both agree, which a stale cross-deck id collision cannot produce. Accepted residual: right
+        // after an operator PROCESS restart (not a page reload — DeckWorkspace itself is fresh),
+        // pmDv.live starts null even for a deck genuinely still live, so the ring stays hidden until
+        // the operator next drives Present/transport for it — fails closed, never shows a false
+        // ring. Tracked for a full fix (adding deck id to the wire) as a linked follow-up.
+        const deckLiveId = (pmDv && pmDv.live != null) ? pmDv.live : null;
+        if (liveId != null && deckLiveId !== liveId) liveId = null;
         pmGridLiveId = liveId;
         const tiles = pmGridTiles();
         const tp = pmEl("pm-transport"); if (tp) tp.hidden = liveId == null;
@@ -9931,8 +9958,14 @@
         if (badge) { badge.hidden = connected; if (!connected) badge.textContent = "Preview only — no audience output"; }
         pmGridAnnounce((blackedOut ? "Blacked out; pending slide " : (connected ? "Now live: slide " : "Preview only — slide ")) + (idx + 1) + " of " + ids.length);
       }
-      function pmRenderGrid(dv) {
+      // deckId (the SECOND arg) is the id of the deck `dv` belongs to. DeckView itself carries no
+      // `id` field (only the LIBRARY card list does), so every caller that actually SWITCHES decks
+      // (pmLibOpen/pmLibPresent) passes its own already-known `id` explicitly; the editor→grid
+      // "Done" handler, which never switches decks, passes the last-tracked pmGridDeckId back. This
+      // id is what deck-scopes the thumbnail cache (pmThumbKey) below — never omit it.
+      function pmRenderGrid(dv, deckId) {
         pmDv = dv;
+        pmGridDeckId = deckId;
         const nm = pmEl("pm-grid-name"); if (nm) nm.textContent = dv.name || "Presentation";
         const ct = pmEl("pm-grid-count"); if (ct) ct.textContent = "· " + (dv.count || 0) + " slides";
         const tiles = pmEl("pm-grid-tiles"); if (!tiles) return;
@@ -9942,7 +9975,7 @@
         const emptyBox = pmEl("pm-grid-empty"); if (emptyBox) emptyBox.hidden = !empty;
         tiles.hidden = empty;
         const io = ("IntersectionObserver" in window)
-          ? new IntersectionObserver((es) => { es.forEach((e) => { if (e.isIntersecting) { io.unobserve(e.target); pmThumb(Number(e.target.dataset.id), e.target.querySelector("canvas")); } }); })
+          ? new IntersectionObserver((es) => { es.forEach((e) => { if (e.isIntersecting) { io.unobserve(e.target); pmThumb(deckId, Number(e.target.dataset.id), e.target.querySelector("canvas")); } }); })
           : null;
         slides.forEach((s, i) => {
           const tile = document.createElement("div"); tile.className = "pm-tile"; tile.dataset.id = String(s.id);
@@ -9956,7 +9989,7 @@
           tiles.appendChild(tile);
           // Eager-render the initial batch (first fold); lazy-load the rest via the observer. This
           // keeps visible thumbnails immediate (and headless-testable) while staying bounded.
-          if (io && i >= 12) io.observe(tile); else pmThumb(id, cv);
+          if (io && i >= 12) io.observe(tile); else pmThumb(deckId, id, cv);
         });
         pmGridSelect(dv.selected != null ? dv.selected : (slides[0] && slides[0].id), false);
         pmGridSyncLive();
@@ -10851,7 +10884,7 @@
       // --- wire the static controls (they exist at load; #surface-presentation is in the DOM) ---
       (function wirePresentation() {
         pmEl("pm-add-slide").onclick = pmAddSlide;
-        if (pmEl("pm-done")) pmEl("pm-done").onclick = () => { pmSetMode("grid"); pmRenderGrid(pmDv); }; // editor → grid
+        if (pmEl("pm-done")) pmEl("pm-done").onclick = () => { pmSetMode("grid"); pmRenderGrid(pmDv, pmGridDeckId); }; // editor → grid, same deck
         pmEl("pm-undo").onclick = pmUndo;
         pmEl("pm-redo").onclick = pmRedo;
         pmEl("pm-import").onclick = pmImportImage;
