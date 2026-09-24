@@ -127,8 +127,8 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
 | C-005 | yes | `pmThumbCache` stays bounded at `PM_THUMB_MAX` entries total regardless of how many distinct decks are visited (not per-deck) | Vera's independent review + a per-key bounded-memory check per this repo's own bar (not a global counter), mutation-verified, independently re-confirmed by round-2 review | cache size never exceeds `PM_THUMB_MAX`; Vera confirms in her review | Round 1: no such test existed — Vera (blocking). She wrote and mutation-verified `window.__pmGridDebug` + a 5-assertion check (70 distinct (deck,slide) pairs vs cap 60), applied verbatim in round 2. `/tmp/headless_final_postrebase.txt`. Round-2 confirmation from Vera pending (tracked under C-009) | PENDING |
 | C-006 | yes | `EXPECTED_MIN_CHECKS` reflects a real measured run, never hand-summed | `python3 scripts/operator_headless.py` final run | constant equals the printed count exactly | `scripts/operator_headless.py` — bumped to 1916 (post-rebase onto `main`'s PR #93, which independently bumped it too; combined total re-measured for real, not assumed by arithmetic), matching two independent clean runs (`/tmp/headless_postrebase2.txt`, `/tmp/headless_postrebase3.txt`) before the constant was edited, then a third confirming run after (`/tmp/headless_final_postrebase.txt`) | PASS |
 | C-007 | yes | Full headless suite green (no regression to any pre-existing check) | `python3 scripts/operator_headless.py` | 0 FAIL | `/tmp/headless_final_postrebase.txt` — exit 0, 1916 checks, 0 FAIL | PASS |
-| C-008 | yes | `make ci` green on the branch | `make ci` (one at a time; check for concurrent sessions first) | ALL GREEN | Round-1 background run discarded (started before remediation landed — inconsistent tree, per this repo's own established practice for exactly this situation). Re-launched fresh against `b3ebfd6`; result pending | PENDING |
-| C-009 | yes | Four-reviewer pipeline run, blocking findings remediated and re-verified | reviewer reports, each own worktree pinned to head SHA; consolidated report published as a shareable Artifact | all four clear; report linked on PR + ClickUp | Round 1 (`7118567`): Sana 2 blocking, Cody 1 blocking, Vera 2 blocking, Quinn 1 blocking — all real, all remediated (see Iteration 3). Round 2 against `b3ebfd6` dispatched; result pending | PENDING |
+| C-008 | yes | `make ci` green on the branch | `make ci` (one at a time; check for concurrent sessions first) + real GitHub Actions CI | ALL GREEN | Local `make ci` against `b3ebfd6`: `== local Rust/Flutter gate: ALL GREEN ==` (`/tmp/make_ci_run2.log`). Real CI (`gh pr checks 92` against confirmed current head `df539ee`): every applicable job `pass` across the full ubuntu/macOS/Windows matrix (`rust`, `operator shell`, `operator shell — release & native-toolchain features`, `launch-smoke`, dependency audit, supply chain, workflow lint); `api`/`flutter controller`/`marketing` correctly path-filter-skipped (no changes in those areas) | PASS |
+| C-009 | yes | Four-reviewer pipeline run, blocking findings remediated and re-verified | reviewer reports, each own worktree pinned to head SHA; consolidated report published as a shareable Artifact | all four clear; report linked on PR + ClickUp | Round 1 (`7118567`): Sana 2 blocking, Cody 1 blocking, Vera 2 blocking, Quinn 1 blocking — all real, all remediated (see Iteration 3). Round 2 against `df539ee`: **Cody — Pass, no blocking findings** (independently re-verified both fixes, own mutation tests, own repro attempts, traced the Rust side independently, confirmed real CI green). Sana/Vera/Quinn round 2 in progress | PENDING |
 | C-010 | yes | PR opened against `main`, Draft initially, citing the ticket with a before/after repro; not self-merged | `gh pr view` | PR exists, Draft→Ready only once C-009 clears, base=`main`, body cites `17tnw2axwve` | PR #92: https://github.com/First-Pavilion/selahcue/pull/92 (Draft, base=main, head=`fix/17tnw2axwve-thumb-cache-collision`). Opening criterion satisfied; the Draft→Ready flip is a separate, later action gated on C-009 | PASS |
 | C-011 | no | Follow-up ClickUp ticket(s) filed for the two accepted residual limitations (cold-boot ring gap; `render_deck_slide` deck-blind race) | `clickup_create_task` / task URL | tickets exist, linked from this one and from the PR | https://app.clickup.com/t/17tnw2ayevf (cold-boot ring gap), https://app.clickup.com/t/17tnw2ayevg (render_deck_slide race) — both subtasks of `17tnw2axwve`, linked on PR #92 | PASS |
 
@@ -232,6 +232,21 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
   C-009 PASS; `make ci` re-launched fresh against this commit (the round-1 background run was
   discarded — started before this remediation landed, would have been evidence about an
   inconsistent tree, per this repo's own established practice for exactly this situation).
+
+### Iteration 4 — `make ci` + four-reviewer pipeline round 2
+
+- Target criterion: C-008, C-009.
+- Change or investigation: re-launched `make ci` fresh against `b3ebfd6` after discarding the
+  stale round-1 background run; dispatched all four reviewers for a genuine round-2 pass (not a
+  rubber-stamp) against `df539ee`, each a fresh worktree.
+- Result (in progress): `make ci` — `ALL GREEN`. Real GitHub Actions CI independently confirmed
+  green across the full matrix (`gh pr checks 92`, cross-checked the head SHA matched). Cody round
+  2 — **Pass, no blocking findings**, with independent mutation verification of both fixes, an
+  independent Rust-side trace confirming the redesign's premises, and independent confirmation of
+  real CI. Sana/Vera/Quinn round 2 still running.
+- New evidence: `/tmp/make_ci_run2.log`; `gh pr checks 92` output (this ledger); Cody's PR comment
+  https://github.com/First-Pavilion/selahcue/pull/92#issuecomment-5809754897.
+- Decision: iterate — awaiting Sana/Vera/Quinn round 2 before C-009 can PASS.
 
 ## Risks and rollback
 
