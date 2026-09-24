@@ -6876,7 +6876,7 @@
       .pm-tp-btn[aria-disabled="true"] { opacity: .4; pointer-events: none; }
 
       /* ===== Pre-service Check surface (Design 2.0, Figma 344:124 / story 86ajp0az9) ===== */
-      #surface-preservice.surface-pad { padding: 0; overflow: hidden; }
+      #surface-preservice.surface-pad.active { padding: 0; overflow: hidden; }
       .ps-wrap { display: flex; height: 100%; min-height: 0; }
       .ps-main { flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; gap: 20px; padding: 24px 28px; overflow-y: auto; }
       .ps-lead { display: flex; flex-direction: column; gap: 4px; }
@@ -7802,7 +7802,7 @@
    the detail view's #tr-detail-log is its OWN scroll container so the bounded-window
    virtualizer's scrollTop math is meaningful), so it opts out of .surface-pad's page-level
    scroll the same way #surface-preservice already does. */
-#surface-transcripts.surface-pad {
+#surface-transcripts.surface-pad.active {
   padding: 0;
   overflow: hidden;
   display: flex;

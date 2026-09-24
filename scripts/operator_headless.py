@@ -1075,8 +1075,26 @@ if not check_jump_call_site_is_click_only():
 # reverting the three fix files (app.css/app.js/index.html, test script unchanged) reproduces a
 # clean single FAIL on the premise check (1893 checks, 1 FAIL, no aborting exception — the
 # premise-guarded block is skipped rather than dereferencing a null element); restoring reproduces
-# 1897 checks, 0 FAIL. Measured directly off real runs, not hand-summed.
-EXPECTED_MIN_CHECKS = 1897
+# 1897 checks, 0 FAIL.
+# 1897 -> 1901: ClickUp 17tnw2axptd follow-up (Cody/Sana review, finding O1) — the
+# `#surface-transcripts.surface-pad` ID+class selector's (1,1,0) specificity beat
+# `.surface-page.active`'s (0,2,0) unconditionally, so `display: flex` never actually turned
+# off; fixed by requiring `.active` in the selector too (`#surface-transcripts.surface-pad.active`).
+# A grep sweep (`grep -n '^#surface-[a-z-]*\.surface-p'`) found one sibling with the same
+# pattern, `#surface-preservice.surface-pad` (harmless in practice — it never set `display`,
+# only padding/overflow, so it never produced a visible bug) — fixed the same way. Added 4
+# checks: a regression guard on transcripts proving COMPUTED display is "none" once inactive
+# (the actual bug an `.active` classList check alone cannot catch — display:none is the
+# property the un-gated selector broke); a regression guard on preservice proving padding
+# falls back to `.surface-pad`'s base (22px) once inactive instead of the un-gated selector's
+# forced 0 (display:none here was ALREADY true either way, so asserting display would have been
+# vacuous — proven by first drafting it that way and watching it pass under the reverted CSS);
+# and 2 controls proving each surface's page-specific layout overrides still land while
+# genuinely active. Mutation-tested: reverting just the CSS fix (app.css only, test script
+# unchanged) reproduces two clean FAILs — one per surface's inactive-state guard — with 1901
+# checks still running (no aborting exception); restoring reproduces 1901 checks, 0 FAIL.
+# Measured directly off real runs, not hand-summed.
+EXPECTED_MIN_CHECKS = 1901
 
 
 def find_chrome():
@@ -5344,6 +5362,17 @@ DRIVER = r"""
       document.querySelector('.nav-item[data-surface="transcripts"]').click();
       ok(el("surface-transcripts").classList.contains("active") && getComputedStyle(el("surface-transcripts")).display !== "none",
          "TR: the nav item opens the Transcripts surface (computed display, WKWebView-safe)");
+      // Regression guard (17tnw2axptd Cody/Sana review): #surface-transcripts.surface-pad
+      // must stay GATED on .active so the ID selector's specificity can't beat
+      // .surface-page{display:none} unconditionally. Proves the page-specific layout
+      // overrides still land while genuinely active, not just that display isn't "none".
+      var trActiveCs = getComputedStyle(el("surface-transcripts"));
+      ok(trActiveCs.display === "flex" && trActiveCs.flexDirection === "column"
+         && trActiveCs.paddingTop === "0px" && trActiveCs.overflowY === "hidden",
+         "TR: while active, #surface-transcripts.surface-pad.active still applies its page overrides "
+         + "(display:flex column, padding 0, overflow hidden) — got display=" + trActiveCs.display
+         + " flexDirection=" + trActiveCs.flexDirection + " paddingTop=" + trActiveCs.paddingTop
+         + " overflowY=" + trActiveCs.overflowY);
       await waitFor(function(){ return el("tr-list").querySelectorAll(".tr-card").length >= 3; });
       ok(el("tr-list").querySelectorAll(".tr-card").length === 3, "TR: transcript_list renders one card per transcript");
       ok(el("tr-empty").hidden && getComputedStyle(el("tr-empty")).display === "none", "TR: the empty state is hidden (computed display) while transcripts exist");
@@ -5362,6 +5391,18 @@ DRIVER = r"""
       // ⌘8 (menu-order ⌘1–8, raised from ⌘1–7 by this ticket): away then back.
       document.querySelector('.nav-item[data-surface="console"]').click();
       ok(!el("surface-transcripts").classList.contains("active"), "TR (setup): navigated away from Transcripts");
+      // The actual regression guard (17tnw2axptd Cody/Sana review, finding O1): before the fix,
+      // `#surface-transcripts.surface-pad { display: flex; ... }` combined an ID with a class —
+      // specificity (1,1,0) — which beats `.surface-page.active { display: block }` (0,2,0)
+      // UNCONDITIONALLY, so the surface stayed display:flex even with .active removed, covering
+      // whatever sits underneath it (including the always-reachable #emergency footer, per
+      // Farah's document.elementFromPoint hit-testing). classList not containing "active" is not
+      // enough to prove this — it's the COMPUTED style an ID-specificity bug can override that
+      // must be asserted (WKWebView-safe, same discipline as every other computed-display check
+      // in this file).
+      ok(getComputedStyle(el("surface-transcripts")).display === "none",
+         "TR: the surface is actually hidden by COMPUTED display once inactive (not just missing "
+         + ".active) — got display=" + getComputedStyle(el("surface-transcripts")).display);
       document.dispatchEvent(new KeyboardEvent("keydown", {key:"8", metaKey:true, bubbles:true}));
       ok(el("surface-transcripts").classList.contains("active"), "TR: ⌘8 routes to Transcripts (menu-order ⌘1–8 map)");
       await waitFor(function(){ return el("tr-list").querySelectorAll(".tr-card").length >= 3; });
@@ -6735,6 +6776,29 @@ DRIVER = r"""
       document.dispatchEvent(new KeyboardEvent("keydown", {key:"K", metaKey:true, shiftKey:true, bubbles:true}));
       ok(el("surface-preservice").classList.contains("active"),
          "Pre-service: ⌘⇧K jumps to the surface (now reached from the Settings sidebar)");
+      // Regression guard for the SAME ID+class specificity pattern found by sweeping app.css
+      // during the 17tnw2axptd transcripts fix: `#surface-preservice.surface-pad` used to omit
+      // `.active`, so its (1,1,0) specificity beat `.surface-pad`'s own base padding/overflow
+      // (0,1,0) UNCONDITIONALLY. This rule never sets `display`, so — unlike transcripts — the
+      // bug never became a visible "always shown" defect (display:none from .surface-page still
+      // hides it); asserting display==="none" here would therefore be VACUOUS (proven by mutation
+      // test: reverting the .active gate left that assertion passing). The property the gate
+      // actually controls is padding/overflow leaking outside the active state, so that's what's
+      // asserted: while inactive, computed padding must fall back to .surface-pad's own base
+      // (22px 28px), not the page-specific override (0) the un-gated ID selector would force.
+      document.querySelector('.nav-item[data-surface="console"]').click();
+      var psInactiveCs = getComputedStyle(el("surface-preservice"));
+      ok(!el("surface-preservice").classList.contains("active")
+         && psInactiveCs.display === "none" && psInactiveCs.paddingTop === "22px",
+         "Pre-service: once inactive, padding falls back to .surface-pad's base (22px), not the "
+         + "page override that an un-gated #surface-preservice.surface-pad ID selector would force "
+         + "unconditionally — got display=" + psInactiveCs.display + " paddingTop=" + psInactiveCs.paddingTop);
+      document.dispatchEvent(new KeyboardEvent("keydown", {key:"K", metaKey:true, shiftKey:true, bubbles:true}));
+      ok(el("surface-preservice").classList.contains("active")
+         && getComputedStyle(el("surface-preservice")).paddingTop === "0px"
+         && getComputedStyle(el("surface-preservice")).overflowY === "hidden",
+         "Pre-service: while active, #surface-preservice.surface-pad.active still applies its page "
+         + "overrides (padding 0, overflow hidden)");
 
       // === Remote Control (Figma 359:124) — now reached from Settings › Network & Mobile (it left the
       // top-nav, Figma 336:124), not a top-level nav item: pair/approve/role/revoke ===
