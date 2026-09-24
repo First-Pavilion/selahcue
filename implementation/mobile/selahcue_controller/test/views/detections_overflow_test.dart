@@ -9,6 +9,8 @@
 /// fixed-height banner, so the tab's children are all bounded again.
 library;
 
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -35,6 +37,10 @@ class _Fake implements ControllerSession {
 
   final List<Map<String, dynamic>> sent = [];
 
+  /// When set, `command()` parks before replying — a command reached the
+  /// host but its acknowledgement hasn't landed yet.
+  Completer<void>? commandGate;
+
   _Fake({required this.role, required this.state});
 
   @override
@@ -44,6 +50,8 @@ class _Fake implements ControllerSession {
   Future<ServerMessage> command(Map<String, dynamic> cmd) async {
     if (dead) throw const SessionException('dead');
     sent.add(cmd);
+    final g = commandGate;
+    if (g != null) await g.future;
     return const Ack(1);
   }
 
@@ -395,6 +403,61 @@ void main() {
     // The reconnect loop sleeps 2s between attempts; let that timer retire so
     // the binding does not report it as pending.
     await tester.pump(const Duration(seconds: 3));
+  });
+
+  testWidgets(
+      'Approve/Reject are disabled while a command is in flight, not just '
+      'while reconnecting', (tester) async {
+    _phone(tester);
+    final fake = _Fake(role: MobileRole.producer, state: _viewWith(2));
+    final live = await _pumpTab(tester, fake);
+
+    await tester.tap(find.text('2 verses need approval'));
+    await tester.pumpAndSettle();
+    expect(live.busy, isFalse, reason: 'baseline');
+
+    fake.commandGate = Completer<void>();
+    await tester.tap(find.text('Approve').first);
+    await tester.pump();
+
+    expect(live.busy, isTrue, reason: 'approve_detection is now in flight');
+    final approve = tester.widget<SelahButton>(
+        find.widgetWithText(SelahButton, 'Approve').first);
+    expect(approve.onPressed, isNull,
+        reason: '17tnw2ay2pq, follow-up to 17tnw2ay2kk — a silent no-op is '
+            'worse than a greyed button');
+    final reject = tester.widget<SelahButton>(
+        find.widgetWithText(SelahButton, 'Reject').first);
+    expect(reject.onPressed, isNull,
+        reason: 'every control gated the same way must disable together');
+
+    final before = fake.sent.length;
+    await tester.tap(find.text('Approve').first, warnIfMissed: false);
+    await tester.pump();
+    expect(fake.sent.length, before,
+        reason: 'no second command may be sent while the first is still '
+            'in flight');
+
+    fake.commandGate!.complete();
+    await tester.pump(const Duration(milliseconds: 60));
+    expect(live.busy, isFalse);
+    // Every sibling busy test added in this PR (live_tab, plan_tab,
+    // scripture_tab, timer_tab, emergency_confirm) re-fetches the widget
+    // after busy clears and asserts it is enabled again — this one stopped
+    // short of that. `_DetectionsViewState.build()` recomputes `gated` fresh
+    // on every rebuild inside the same `ListenableBuilder` pattern used
+    // everywhere else, so this closes the coverage gap for consistency
+    // (Quinn, 17tnw2ay2pq review).
+    final approveAfter = tester.widget<SelahButton>(
+        find.widgetWithText(SelahButton, 'Approve').first);
+    expect(approveAfter.onPressed, isNotNull,
+        reason: 'Approve re-enables once busy clears');
+    final rejectAfter = tester.widget<SelahButton>(
+        find.widgetWithText(SelahButton, 'Reject').first);
+    expect(rejectAfter.onPressed, isNotNull,
+        reason: 'Reject re-enables once busy clears');
+
+    live.dispose();
   });
 
   testWidgets('the banner grows with the text scale instead of clipping, and '

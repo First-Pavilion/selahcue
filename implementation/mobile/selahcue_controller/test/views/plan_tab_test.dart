@@ -1,6 +1,8 @@
 /// The Plan tab is role-gated: staging needs Navigate. Viewer is read-only.
 library;
 
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:selahcue_controller/controllers/live_controller.dart';
@@ -9,15 +11,23 @@ import 'package:selahcue_controller/models/rbac.dart';
 import 'package:selahcue_controller/models/session.dart';
 import 'package:selahcue_controller/models/stored_session.dart';
 import 'package:selahcue_controller/views/tabs/plan_tab.dart';
+import 'package:selahcue_controller/views/widgets/primitives.dart';
 
 class _Fake implements ControllerSession {
   @override
   final MobileRole grantedRole;
   final List<Map<String, dynamic>> sent = [];
   _Fake(this.grantedRole);
+
+  /// When set, `command()` parks before replying — a command reached the
+  /// host but its acknowledgement hasn't landed yet.
+  Completer<void>? commandGate;
+
   @override
   Future<ServerMessage> command(Map<String, dynamic> cmd) async {
     sent.add(cmd);
+    final g = commandGate;
+    if (g != null) await g.future;
     return const Ack(1);
   }
 
@@ -50,6 +60,24 @@ Future<LiveController> _pump(WidgetTester tester, _Fake fake) async {
   return live;
 }
 
+/// Same, but rebuilt on every controller notification — i.e. on every 1s
+/// poll and every `busy` edge, the way `ControllerView` really hosts the tab.
+Future<LiveController> _pumpPolled(WidgetTester tester, _Fake fake) async {
+  final live = LiveController(session: fake, stored: _stored);
+  await tester.pumpWidget(MaterialApp(
+    home: Scaffold(
+      body: ListenableBuilder(
+        listenable: live,
+        builder: (_, _) => PlanTab(live: live),
+      ),
+    ),
+  ));
+  for (var i = 0; i < 4; i++) {
+    await tester.pump(const Duration(milliseconds: 60));
+  }
+  return live;
+}
+
 void main() {
   testWidgets('Producer taps an item to stage it', (tester) async {
     final fake = _Fake(MobileRole.producer);
@@ -70,6 +98,37 @@ void main() {
     await tester.pump();
     expect(fake.sent.any((c) => c['cmd'] == 'select_item'), isFalse);
     expect(find.textContaining('Read-only'), findsOneWidget);
+    live.dispose();
+  });
+
+  testWidgets('staging is disabled while a command is in flight',
+      (tester) async {
+    final fake = _Fake(MobileRole.producer);
+    final live = await _pumpPolled(tester, fake);
+    expect(live.busy, isFalse, reason: 'baseline');
+
+    fake.commandGate = Completer<void>();
+    await tester.tap(find.text('Opening'));
+    // The row has both onTap + onDoubleTap, so single-tap disambiguation
+    // waits for the double-tap timer before onTap actually fires.
+    await tester.pump(const Duration(milliseconds: 400));
+    await tester.pump();
+
+    expect(live.busy, isTrue, reason: 'select_item is now in flight');
+    final row = tester.widget<SelahListRow>(find.byType(SelahListRow));
+    expect(row.onTap, isNull,
+        reason: 'a row must not accept a new stage while a command is '
+            'still on the wire (17tnw2ay2pq, follow-up to 17tnw2ay2kk)');
+    expect(row.onDoubleTap, isNull);
+    expect(find.textContaining('Sending'), findsOneWidget);
+
+    fake.commandGate!.complete();
+    await tester.pump(const Duration(milliseconds: 60));
+    expect(live.busy, isFalse);
+    final rowAfter = tester.widget<SelahListRow>(find.byType(SelahListRow));
+    expect(rowAfter.onTap, isNotNull,
+        reason: 'and re-enables once busy clears');
+
     live.dispose();
   });
 }

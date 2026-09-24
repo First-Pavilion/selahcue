@@ -114,9 +114,14 @@ class _DetectionsViewState extends State<DetectionsView> {
           final live = widget.live;
           final detections = live.view?.detections ?? const <DetectionView>[];
           // Controls stay disabled until we can prove what is on the audience
-          // screen right now (FR-097) — a silent no-op is worse than a greyed
-          // button, so the banner above says why.
-          final gated = live.syncing;
+          // screen right now (FR-097), and while a command any card already
+          // sent is still on the wire (17tnw2ay2pq, follow-up to the
+          // act()-level guard in 17tnw2ay2kk) — a silent no-op is worse than
+          // a greyed button, so the banner above says why.
+          final syncing = live.syncing;
+          final gated = syncing || live.busy;
+          final gatedReason =
+              syncing ? 'unavailable while reconnecting' : 'sending…';
           return Scaffold(
             backgroundColor: DesignTokens.d2Base,
             appBar: AppBar(
@@ -187,6 +192,7 @@ class _DetectionsViewState extends State<DetectionsView> {
                                         detection: detections[i],
                                         live: live,
                                         gated: gated,
+                                        gatedReason: gatedReason,
                                       ),
                               ),
                       ),
@@ -285,14 +291,18 @@ class _DetectionCard extends StatelessWidget {
   final DetectionView detection;
   final LiveController live;
 
-  /// Live state is unknown (reconnecting, or not yet re-read) — actions are
-  /// disabled and say so.
+  /// Live state is unknown (reconnecting, or not yet re-read), or a command
+  /// is already in flight — actions are disabled and say so.
   final bool gated;
+
+  /// Why, when [gated] is true — read by the button's disabled announcement.
+  final String gatedReason;
 
   const _DetectionCard({
     required this.detection,
     required this.live,
     required this.gated,
+    required this.gatedReason,
   });
 
   void _act(BuildContext context, Map<String, dynamic> cmd) {
@@ -315,6 +325,7 @@ class _DetectionCard extends StatelessWidget {
       semanticLabel: 'Approve ${d.reference}',
       filled: true,
       gated: gated,
+      gatedReason: gatedReason,
       onPressed: () => _act(context, cmdApproveDetection(d.id)),
     );
     final reject = _ActionButton(
@@ -322,6 +333,7 @@ class _DetectionCard extends StatelessWidget {
       semanticLabel: 'Reject ${d.reference}',
       filled: false,
       gated: gated,
+      gatedReason: gatedReason,
       onPressed: () => _act(context, cmdDismissDetection(d.id)),
     );
 
@@ -442,6 +454,7 @@ class _ActionButton extends StatelessWidget {
   final String semanticLabel;
   final bool filled;
   final bool gated;
+  final String gatedReason;
   final VoidCallback onPressed;
 
   const _ActionButton({
@@ -449,6 +462,7 @@ class _ActionButton extends StatelessWidget {
     required this.semanticLabel,
     required this.filled,
     required this.gated,
+    required this.gatedReason,
     required this.onPressed,
   });
 
@@ -462,7 +476,7 @@ class _ActionButton extends StatelessWidget {
     return SelahButton(
       label: label,
       semanticLabel: semanticLabel,
-      disabledReason: 'unavailable while reconnecting',
+      disabledReason: gatedReason,
       variant: filled
           ? SelahButtonVariant.success
           : SelahButtonVariant.secondary,
