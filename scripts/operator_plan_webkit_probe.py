@@ -74,12 +74,13 @@ window.__V = V;
 
 fails = []
 checks = []
-# The floor exists for the same reason operator_headless.py has one: this probe drives five
+# This gate exists for the same reason operator_headless.py has one: this probe drives five
 # states in sequence, so anything that throws part-way through — a renamed id, a WebKit-only
 # layout change — silently stops the run, and a shorter run that reports "0 FAIL" is the most
 # convincing wrong answer available. An earlier version of this line printed a HARDCODED 5
 # while eighteen assertions ran, so the summary could not have noticed thirteen of them
-# disappearing. Raise it when assertions are added.
+# disappearing. It is an EXACT match, not a floor: bump it when assertions are added or
+# removed, so both a shrink and a silent drift are caught (see the gate below).
 EXPECTED_MIN_CHECKS = 18
 
 
