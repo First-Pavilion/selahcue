@@ -2,6 +2,8 @@
 /// goLive → GO LIVE. Viewer sees read-only cards only.
 library;
 
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:selahcue_controller/controllers/live_controller.dart';
@@ -15,8 +17,18 @@ class _Fake implements ControllerSession {
   @override
   final MobileRole grantedRole;
   _Fake(this.grantedRole);
+
+  /// When set, `command()` parks before replying — a command reached the
+  /// host but its acknowledgement hasn't landed yet.
+  Completer<void>? commandGate;
+
   @override
-  Future<ServerMessage> command(Map<String, dynamic> cmd) async => const Ack(1);
+  Future<ServerMessage> command(Map<String, dynamic> cmd) async {
+    final g = commandGate;
+    if (g != null) await g.future;
+    return const Ack(1);
+  }
+
   @override
   Future<OperatorStateView> operatorState() async => const OperatorStateView(
         planName: 'Sunday',
@@ -37,6 +49,24 @@ Future<LiveController> _pump(WidgetTester tester, MobileRole role) async {
   final live = LiveController(session: _Fake(role), stored: _stored);
   await tester
       .pumpWidget(MaterialApp(home: Scaffold(body: LiveTab(live: live))));
+  for (var i = 0; i < 4; i++) {
+    await tester.pump(const Duration(milliseconds: 60));
+  }
+  return live;
+}
+
+/// Same, but rebuilt on every controller notification — i.e. on every 1s
+/// poll and every `busy` edge, the way `ControllerView` really hosts the tab.
+Future<LiveController> _pumpPolled(WidgetTester tester, _Fake fake) async {
+  final live = LiveController(session: fake, stored: _stored);
+  await tester.pumpWidget(MaterialApp(
+    home: Scaffold(
+      body: ListenableBuilder(
+        listenable: live,
+        builder: (_, _) => LiveTab(live: live),
+      ),
+    ),
+  ));
   for (var i = 0; i < 4; i++) {
     await tester.pump(const Duration(milliseconds: 60));
   }
@@ -96,6 +126,36 @@ void main() {
     expect(find.text('GO LIVE'), findsNothing);
     expect(find.bySemanticsLabel('Next item'), findsNothing);
     expect(find.bySemanticsLabel('Previous item'), findsNothing);
+    handle.dispose();
+    live.dispose();
+  });
+
+  testWidgets('transport is disabled while a command is in flight',
+      (tester) async {
+    final handle = tester.ensureSemantics();
+    final fake = _Fake(MobileRole.producer);
+    final live = await _pumpPolled(tester, fake);
+    expect(live.busy, isFalse, reason: 'baseline');
+
+    fake.commandGate = Completer<void>();
+    await tester.tap(find.text('GO LIVE'));
+    await tester.pump();
+
+    expect(live.busy, isTrue);
+    expect(find.bySemanticsLabel('Go live, sending…'), findsOneWidget,
+        reason: 'a control must not look tappable while its own command is '
+            'still on the wire (17tnw2ay2pq, follow-up to 17tnw2ay2kk)');
+    expect(find.bySemanticsLabel('Next item, sending…'), findsOneWidget,
+        reason: 'every control gated the same way must disable together, '
+            'not just the one that was tapped');
+    expect(find.bySemanticsLabel('Previous item, sending…'), findsOneWidget);
+
+    fake.commandGate!.complete();
+    await tester.pump(const Duration(milliseconds: 60));
+    expect(live.busy, isFalse);
+    expect(find.bySemanticsLabel('Go live'), findsOneWidget,
+        reason: 'and re-enables once busy clears');
+
     handle.dispose();
     live.dispose();
   });

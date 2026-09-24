@@ -81,6 +81,12 @@ class LiveTab extends StatelessWidget {
     // it is momentarily untrustworthy (FR-097, COMPONENT-SPECS §12). Role gating
     // below still HIDES, which is a different thing.
     final syncing = live.syncing;
+    // Disabled while state is unknown (syncing) or while a command any of
+    // these controls sent is still on the wire (busy) — a control must not
+    // look tappable while a tap on it would only be dropped.
+    final disabled = syncing || live.busy;
+    final disabledReason =
+        syncing ? 'unavailable while reconnecting' : 'sending…';
     final canNavigate = live.can(Capability.navigate);
     final canGoLive = live.can(Capability.goLive);
     final Widget? transport = (canNavigate || canGoLive)
@@ -93,9 +99,9 @@ class LiveTab extends StatelessWidget {
                     label: '',
                     icon: Icons.chevron_left,
                     semanticLabel: 'Previous item',
-                    disabledReason: 'unavailable while reconnecting',
+                    disabledReason: disabledReason,
                     height: 54,
-                    onPressed: syncing ? null : () => live.act(cmdPrevious()),
+                    onPressed: disabled ? null : () => live.act(cmdPrevious()),
                   ),
                 ),
                 const SizedBox(width: SelahSpace.xs),
@@ -105,14 +111,14 @@ class LiveTab extends StatelessWidget {
                   child: SelahButton(
                     label: 'GO LIVE',
                     semanticLabel: 'Go live',
-                    disabledReason: 'unavailable while reconnecting',
+                    disabledReason: disabledReason,
                     variant: SelahButtonVariant.success,
                     height: 54,
                     // An audience-affecting commit — one of the three places
                     // haptics fire (spec §6.7).
                     haptic: true,
                     textStyle: SelahType.cta,
-                    onPressed: syncing ? null : () => live.act(cmdGoLive()),
+                    onPressed: disabled ? null : () => live.act(cmdGoLive()),
                   ),
                 )
               else
@@ -125,9 +131,9 @@ class LiveTab extends StatelessWidget {
                     label: '',
                     icon: Icons.chevron_right,
                     semanticLabel: 'Next item',
-                    disabledReason: 'unavailable while reconnecting',
+                    disabledReason: disabledReason,
                     height: 54,
-                    onPressed: syncing ? null : () => live.act(cmdNext()),
+                    onPressed: disabled ? null : () => live.act(cmdNext()),
                   ),
                 ),
               ],

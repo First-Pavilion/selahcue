@@ -71,11 +71,6 @@ class _TimerTabState extends State<TimerTab> {
     super.dispose();
   }
 
-  /// True while a start is on the wire. The well keeps its digits until the
-  /// host has answered, so without this the Start button (and the keyboard's
-  /// done key, which lands here too) could fire the same duration twice.
-  bool _starting = false;
-
   /// Start the typed duration, and clear the well **only once the host has
   /// accepted it**.
   ///
@@ -87,17 +82,15 @@ class _TimerTabState extends State<TimerTab> {
   /// on screen tying the two together. `act()` returns [CommandOutcome]
   /// precisely so a caller can tell an acknowledged command from a lost one
   /// (86ajxwcft); this is a caller that has to.
+  ///
+  /// No local re-entrancy guard here: `act()` itself now refuses a second
+  /// command while one is in flight (`LiveController._acting`), and the Start
+  /// button's `onPressed`/the well's `onSubmitted` are gated on
+  /// [LiveController.busy] below — a local flag would only duplicate both.
   Future<void> _startCustom() async {
-    if (_starting) return;
     final seconds = _custom.totalSeconds;
     if (seconds < 1) return;
-    _starting = true;
-    final CommandOutcome outcome;
-    try {
-      outcome = await widget.live.act(cmdStartTimer(seconds));
-    } finally {
-      _starting = false;
-    }
+    final outcome = await widget.live.act(cmdStartTimer(seconds));
     if (!mounted || outcome != CommandOutcome.applied) return;
     // Only now: the duration is running on the host, so the digits have done
     // their job and the next start should be a deliberate re-entry. The
@@ -140,8 +133,15 @@ class _TimerTabState extends State<TimerTab> {
   /// `-remainingSecs` — subtracting it again from a target `adjust_timer`
   /// already reduced to (about) zero, driving `totalSecs` negative-then-
   /// clamped-to-0. Once there, `_resetTimer` has nothing to restart to and
-  /// silently no-ops. Mirrors `_starting` above (same class of bug Start had
-  /// before that guard existed).
+  /// silently no-ops.
+  ///
+  /// Same class of bug the custom Start button had before `LiveController.act()`
+  /// grew its own re-entrancy guard (17tnw2ay2pq): that button's analogous local
+  /// flag (`_starting`) was since removed as redundant with `act()`'s guard plus
+  /// this tab's `busy`-gated `onPressed`s. Left as-is here rather than
+  /// second-guessing PR #78's own review outside this ticket's scope — the two
+  /// guards are provably equivalent, so removing this one is a follow-up, not a
+  /// correctness gap.
   bool _forcingTimeUp = false;
 
   /// Force the countdown into TIME UP right now (MOB-009), by reducing its
@@ -174,7 +174,22 @@ class _TimerTabState extends State<TimerTab> {
     // showing, and the global "Syncing live state…" banner says it is stale —
     // blanking it would tell the operator less, not more.
     final syncing = widget.live.syncing;
-    final canAdjust = hasTimer && !syncing;
+    // A command any of these controls sent is still on the wire — the same
+    // reason [syncing] already goes inert (FR-097), just narrower: it clears
+    // once the in-flight command's own round trip (and the refresh() that
+    // follows it — together up to roughly two commandTimeout windows, not
+    // "well under" one; see session.dart) resolves, rather than needing a
+    // reconnect.
+    final busy = widget.live.busy;
+    final disabled = syncing || busy;
+    final disabledReason =
+        syncing ? 'unavailable while reconnecting' : 'sending…';
+    final canAdjust = hasTimer && !disabled;
+    // Adjust/Pause/Resume/Stop have a THIRD reason to be inert: no timer
+    // exists yet. Reusing [disabledReason] there announced "sending…" or
+    // "unavailable while reconnecting" even when neither was true and the
+    // real reason was simply that there is nothing to adjust.
+    final timerControlReason = disabled ? disabledReason : 'no timer running';
     final String readout;
     final Color readoutColor;
     final String chip;
@@ -269,8 +284,8 @@ class _TimerTabState extends State<TimerTab> {
                   label: '5:00',
                   icon: Icons.timer_outlined,
                   semanticLabel: 'Start a five minute timer',
-                  disabledReason: 'unavailable while reconnecting',
-                  onPressed: syncing
+                  disabledReason: disabledReason,
+                  onPressed: disabled
                       ? null
                       : () => widget.live.act(cmdStartTimer(300)),
                 ),
@@ -281,8 +296,8 @@ class _TimerTabState extends State<TimerTab> {
                   label: '10:00',
                   icon: Icons.timer_outlined,
                   semanticLabel: 'Start a ten minute timer',
-                  disabledReason: 'unavailable while reconnecting',
-                  onPressed: syncing
+                  disabledReason: disabledReason,
+                  onPressed: disabled
                       ? null
                       : () => widget.live.act(cmdStartTimer(600)),
                 ),
@@ -303,21 +318,20 @@ class _TimerTabState extends State<TimerTab> {
                 Expanded(
                   child: CustomTimeWell(
                     controller: _custom,
-                    enabled: !syncing,
-                    onSubmitted: syncing ? null : _startCustom,
+                    enabled: !disabled,
+                    onSubmitted: disabled ? null : _startCustom,
                   ),
                 ),
                 const SizedBox(width: SelahSpace.sm),
                 SelahButton(
                   label: 'Start',
                   variant: SelahButtonVariant.primary,
-                  // Two different reasons a start cannot happen, and the
+                  // Three different reasons a start cannot happen, and the
                   // announcement says which: an empty well is the operator's
-                  // turn, a re-sync is the link's.
-                  disabledReason: syncing
-                      ? 'unavailable while reconnecting'
-                      : 'set a time first',
-                  onPressed: (syncing || _custom.isEmpty) ? null : _startCustom,
+                  // turn, a re-sync or an in-flight command is the link's.
+                  disabledReason:
+                      disabled ? disabledReason : 'set a time first',
+                  onPressed: (disabled || _custom.isEmpty) ? null : _startCustom,
                 ),
               ],
             ),
@@ -329,7 +343,7 @@ class _TimerTabState extends State<TimerTab> {
                 child: SelahButton(
                   label: '− 1:00',
                   semanticLabel: 'Subtract one minute',
-                  disabledReason: 'unavailable while reconnecting',
+                  disabledReason: timerControlReason,
                   onPressed: canAdjust
                       ? () => widget.live.act(cmdAdjustTimer(-60))
                       : null,
@@ -340,7 +354,7 @@ class _TimerTabState extends State<TimerTab> {
                 child: SelahButton(
                   label: '+ 1:00',
                   semanticLabel: 'Add one minute',
-                  disabledReason: 'unavailable while reconnecting',
+                  disabledReason: timerControlReason,
                   onPressed: canAdjust
                       ? () => widget.live.act(cmdAdjustTimer(60))
                       : null,
@@ -357,8 +371,8 @@ class _TimerTabState extends State<TimerTab> {
               Expanded(
                 child: SelahButton(
                   label: (t?.running ?? false) ? 'Pause' : 'Resume',
-                  disabledReason: 'unavailable while reconnecting',
-                  onPressed: (t == null || syncing)
+                  disabledReason: timerControlReason,
+                  onPressed: (t == null || disabled)
                       ? null
                       : () => widget.live.act(
                           t.running ? cmdPauseTimer() : cmdResumeTimer(),
@@ -370,12 +384,11 @@ class _TimerTabState extends State<TimerTab> {
                 child: SelahButton(
                   label: 'Reset',
                   semanticLabel: 'Reset to the current target duration',
-                  // Two different reasons Reset cannot fire, named like
-                  // Send-TIME-UP's below (PR #78 review — Cody): syncing is
-                  // the link's, no timer is the operator's.
-                  disabledReason: syncing
-                      ? 'unavailable while reconnecting'
-                      : 'start a timer first',
+                  // Three reasons Reset cannot fire, named like Send-TIME-UP's
+                  // below: syncing or a command in flight are the link's (17tnw2ay2pq,
+                  // follow-up to PR #78 review — Cody), no timer is the operator's.
+                  disabledReason:
+                      disabled ? disabledReason : 'start a timer first',
                   onPressed: canAdjust ? () => _resetTimer(t) : null,
                 ),
               ),
@@ -384,7 +397,7 @@ class _TimerTabState extends State<TimerTab> {
                 child: SelahButton(
                   label: 'Stop',
                   variant: SelahButtonVariant.danger,
-                  disabledReason: 'unavailable while reconnecting',
+                  disabledReason: timerControlReason,
                   onPressed: canAdjust
                       ? () => widget.live.act(cmdStopTimer())
                       : null,
@@ -401,8 +414,11 @@ class _TimerTabState extends State<TimerTab> {
             onPressed: (canAdjust && !t.timeUp)
                 ? () => _sendTimeUp(t)
                 : null,
-            disabledReason: syncing
-                ? 'unavailable while reconnecting'
+            // Four reasons this cannot fire: syncing/busy are the link's
+            // (17tnw2ay2pq, follow-up to PR #78 review — Sana/Cody), no timer
+            // and already-at-time-up are the operator's.
+            disabledReason: disabled
+                ? disabledReason
                 : t == null
                 ? 'start a timer first'
                 : 'already at time up',

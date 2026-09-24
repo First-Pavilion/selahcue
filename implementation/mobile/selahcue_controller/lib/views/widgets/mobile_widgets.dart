@@ -74,6 +74,27 @@ class ConnectionBanner extends StatelessWidget {
         ),
       );
     }
+    // A command any control on screen sent is still on the wire. Every gated
+    // control already greys out (`disabledReason`), but that reason only ever
+    // reaches the `Semantics` label — a sighted operator watching the screen
+    // rather than listening to it sees nothing else change, on EVERY screen
+    // this banner sits above, including the one where that matters most: the
+    // emergency strip. Without this branch the banner fell through to
+    // [SizedBox.shrink] while busy, which is exactly what let an armed-but-
+    // inert BLACKOUT confirm go unexplained (17tnw2ay2pq review, Sana).
+    if (live.busy) {
+      return _Bar(
+        tone: SelahTone.warn,
+        child: Text(
+          'Sending… your taps aren’t being sent yet',
+          textAlign: TextAlign.center,
+          style: SelahType.caption.copyWith(
+            fontWeight: FontWeight.w600,
+            color: SelahToneStyle.of(SelahTone.warn).ink,
+          ),
+        ),
+      );
+    }
     // A role refusal that raised the sheet is already being explained there, in
     // full, with a way out. Repeating it as a red strip would make the operator
     // dismiss one refusal twice and read it once — so the richer surface owns
@@ -410,6 +431,30 @@ class _EmergencyStripState extends State<EmergencyStrip> {
   _Arm? _armed;
   Timer? _disarm;
 
+  /// How much of the confirm window is left. Ticks down by [_tick] on every
+  /// firing of [_disarm] rather than being derived from a wall-clock
+  /// deadline: a `DateTime.now()`-based deadline *looks* equivalent but is
+  /// not, because `Timer` and `DateTime.now()` do not share a clock under
+  /// test — `tester.pump(duration)` advances the former without moving the
+  /// latter, so a deadline computed at arm time would still read as in the
+  /// future long after the simulated window had elapsed. Ticking down in
+  /// lockstep with the same `Timer` mechanism that fires expiry keeps both
+  /// on one clock, real or simulated — and means a pause-for-busy (below)
+  /// can only shorten the operator's remaining window, never grant a fresh
+  /// one, since it is a countdown rather than a moving target.
+  Duration? _remaining;
+
+  static const _tick = Duration(milliseconds: 100);
+
+  /// True while the countdown is paused because [LiveController.busy] is
+  /// true — this strip's own confirming tap, or any other control's, could
+  /// not land right now anyway, so the window must not spend itself while
+  /// the control is inert (17tnw2ay2pq review, Sana: without this, an armed
+  /// BLACKOUT that a command from ANY other control happens to overlap is
+  /// silently discarded — the 3s timer fires anyway, the arm is gone, and
+  /// nothing tells the operator the confirm was lost).
+  bool _pausedForBusy = false;
+
   @override
   void dispose() {
     _disarm?.cancel();
@@ -418,16 +463,60 @@ class _EmergencyStripState extends State<EmergencyStrip> {
 
   void _arm(_Armed which, Map<String, dynamic> cmd) {
     _disarm?.cancel();
+    _pausedForBusy = false;
     setState(() => _armed = _Arm(which, cmd));
-    _disarm = Timer(widget.confirmWindow, () {
-      if (mounted) setState(() => _armed = null);
+    _remaining = widget.confirmWindow;
+    _startTicking();
+  }
+
+  void _startTicking() {
+    _disarm = Timer.periodic(_tick, (_) {
+      _remaining = _remaining! - _tick;
+      if (_remaining! <= Duration.zero) _expireArm();
     });
+  }
+
+  void _expireArm() {
+    _disarm?.cancel();
+    _disarm = null;
+    _remaining = null;
+    _pausedForBusy = false;
+    if (mounted) setState(() => _armed = null);
   }
 
   void _fire(Map<String, dynamic> cmd) {
     _disarm?.cancel();
+    _disarm = null;
+    _remaining = null;
+    _pausedForBusy = false;
     setState(() => _armed = null);
     widget.live.act(cmd);
+  }
+
+  /// Pauses/resumes the confirm-window countdown around [LiveController.busy]
+  /// edges. Called at the top of every [build] — every real call site hosts
+  /// this widget inside a `ListenableBuilder` on [LiveController], so a
+  /// rebuild happens on every `busy` edge, not just the next 1s poll — so
+  /// this is the one place that needs to notice the edge; nothing else has
+  /// to poll for it.
+  void _syncDisarmWithBusy() {
+    if (_armed == null) return;
+    final busy = widget.live.busy;
+    if (busy && !_pausedForBusy) {
+      _pausedForBusy = true;
+      _disarm?.cancel();
+      _disarm = null;
+    } else if (!busy && _pausedForBusy) {
+      _pausedForBusy = false;
+      if (_remaining! <= Duration.zero) {
+        // The original window fully elapsed while paused — disarm now
+        // rather than never, but off this build: setState is not allowed
+        // while build() is still running.
+        WidgetsBinding.instance.addPostFrameCallback((_) => _expireArm());
+      } else {
+        _startTicking();
+      }
+    }
   }
 
   /// One tap arms, the next fires **the command that was armed**. [intent] is
@@ -439,7 +528,10 @@ class _EmergencyStripState extends State<EmergencyStrip> {
     Map<String, dynamic> Function() intent, {
     bool immediate = false,
   }) {
-    if (widget.live.syncing) return null; // disabled: state is unknown
+    // Disabled while state is unknown (syncing) or while a command this
+    // strip (or any other control) sent is still on the wire (busy) — a tap
+    // that lands here must not look live while it would only be dropped.
+    if (widget.live.syncing || widget.live.busy) return null;
     return () {
       final armed = _armed;
       // An existing arm wins over [immediate]. If the host moved while this
@@ -457,6 +549,7 @@ class _EmergencyStripState extends State<EmergencyStrip> {
 
   @override
   Widget build(BuildContext context) {
+    _syncDisarmWithBusy();
     final live = widget.live;
     final blackout = live.blackout;
     // Each emergency action is role-gated: blackout → Blackout cap,
@@ -466,6 +559,15 @@ class _EmergencyStripState extends State<EmergencyStrip> {
     final canClear = live.can(Capability.clearLive);
     final armedBlackout = _armed?.which == _Armed.blackout;
     final armedClear = _armed?.which == _Armed.clear;
+    // Reconnecting is the more urgent/informative reason when both are true:
+    // it means the link is down or unproven, open-ended until a reconnect.
+    // busy is at least bounded, but not "well under" a single commandTimeout
+    // — act() awaits the command's own round trip AND the refresh() that
+    // follows it, so it can span roughly two commandTimeout windows (and
+    // session.dart's read loop has no single hard cap beyond that; Sana,
+    // 17tnw2ay2pq review).
+    final disabledReason =
+        live.syncing ? 'unavailable while reconnecting' : 'sending…';
 
     return Container(
       decoration: const BoxDecoration(
@@ -501,7 +603,7 @@ class _EmergencyStripState extends State<EmergencyStrip> {
                     : blackout
                     ? 'Un-blackout'
                     : 'Blackout',
-                disabledReason: 'unavailable while reconnecting',
+                disabledReason: disabledReason,
                 // The `aria-pressed` equivalent: the engaged state is announced,
                 // not only drawn (spec §6.3).
                 toggled: blackout,
@@ -530,7 +632,7 @@ class _EmergencyStripState extends State<EmergencyStrip> {
                 glyph: '✕',
                 label: armedClear ? 'CONFIRM CLEAR' : 'CLEAR ALL',
                 semanticLabel: armedClear ? 'Confirm clear all' : 'Clear all',
-                disabledReason: 'unavailable while reconnecting',
+                disabledReason: disabledReason,
                 haptic: true,
                 variant: armedClear
                     ? SelahButtonVariant.alarm
