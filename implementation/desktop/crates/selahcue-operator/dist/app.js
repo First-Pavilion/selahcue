@@ -608,6 +608,12 @@
       let outputsPending = null; // deferred view while a picker has focus
       let selectedScreen = null; // the output shown in the inspector (defaults to the first)
       let lastOutputsView = null; // stashed so a card-select can re-render the inspector alone
+      // CON-089 (Design 2.0 global chord `F`): the output whose live preview canvas is currently
+      // shown fullscreen INSIDE the console, or null. This is an operator-local inspection view of
+      // data already rendered by scheduleScreenPreviews — it fabricates no new capability and is
+      // distinct from the DEVICE section's "Go fullscreen" button below (fs.disabled — driving a
+      // REAL physical output, which stays gated on NDI/SDI hardware delivery).
+      let fullscreenOutput = null;
 
       // Display name for a screen id/role (built-in or a virtual "Stream 2" feed).
       function screenDisplayName(s) {
@@ -694,6 +700,15 @@
         if (!registry.some((s) => s.screen === selectedScreen)) {
           selectedScreen = registry[0] ? registry[0].screen : null;
         }
+        // CON-089 (Vera's performance review, 17tnw2axptd): the fullscreened output needs the
+        // SAME reconciliation — if the host drops the screen while its preview is fullscreen
+        // (deleted, or an older/newer host stops reporting it), exitOutputFullscreen() would
+        // otherwise never run, leaving body.scr-fullscreen-active (and its overflow:hidden) stuck
+        // with no card left to show. F/Escape/navigating away all still recover it, but this
+        // closes the gap at the source, the same place selectedScreen's own drop is handled.
+        if (fullscreenOutput && !registry.some((s) => s.screen === fullscreenOutput)) {
+          exitOutputFullscreen();
+        }
         // CON-158: ndi_available is part of the key too — otherwise a host-reported change to
         // it (unavailable <-> unknown/available) would never rebuild the inspector, since it is
         // the only tracked-view field none of the others above would change alongside it.
@@ -778,7 +793,8 @@
           const o = outByRole[s.role]; // the physical output for main/stage (if any)
           const card = document.createElement("div");
           card.className = "screen-row scr-card" + (s.enabled ? "" : " screen-disabled")
-            + (s.screen === selectedScreen ? " scr-card-selected" : "");
+            + (s.screen === selectedScreen ? " scr-card-selected" : "")
+            + (s.screen === fullscreenOutput ? " scr-card-fullscreen" : "");
           card.dataset.screen = s.screen;
 
           // (1) Preview thumbnail — a live canvas for Audience screens (86ajq321k); the Stage
@@ -1017,6 +1033,50 @@
           // key, so the next poll reconciles the grid on its own only if the data changed.
           renderInspector(view, registry, outByRole, screenThemes, view.themes || []);
         }
+      }
+
+      // Display name for a screen id from the last known registry (falls back to the raw id —
+      // e.g. before the first outputs poll has landed).
+      function screenNameFor(id) {
+        const view = lastOutputsView;
+        const registry = (view && view.screens && view.screens.length) ? view.screens : [];
+        const s = registry.find((r) => r.screen === id);
+        return s ? screenDisplayName(s) : id;
+      }
+
+      // CON-089 (global chord `F`): toggle the in-console fullscreen preview for the SELECTED
+      // output. No-ops unless the Screens & Outputs surface is active (the only place "selected
+      // output" is meaningful) and the selection has a real preview canvas — the Stage card
+      // renders Current/Next/Timer chips, not a canvas, so selecting it and pressing F is an
+      // honest no-op rather than a fake fullscreen of non-preview content.
+      function toggleOutputFullscreen() {
+        const surf = document.getElementById("surface-screens");
+        if (!surf || !surf.classList.contains("active")) return;
+        if (fullscreenOutput) { exitOutputFullscreen(); return; }
+        if (!selectedScreen) return;
+        const list = document.getElementById("screens-list");
+        const card = list && list.querySelector('.scr-card[data-screen="' + selectedScreen + '"]');
+        const cv = card && card.querySelector("canvas.screen-preview");
+        if (!card || !cv) return;
+        fullscreenOutput = selectedScreen;
+        card.classList.add("scr-card-fullscreen");
+        document.body.classList.add("scr-fullscreen-active");
+        const route = document.getElementById("route-status");
+        if (route) route.textContent = "Fullscreen preview: " + screenNameFor(selectedScreen) + ". Press F or Escape to exit.";
+      }
+      function exitOutputFullscreen() {
+        if (!fullscreenOutput) return;
+        const list = document.getElementById("screens-list");
+        const card = list && list.querySelector('.scr-card[data-screen="' + fullscreenOutput + '"]');
+        if (card) card.classList.remove("scr-card-fullscreen");
+        document.body.classList.remove("scr-fullscreen-active");
+        fullscreenOutput = null;
+        // Cody's review (17tnw2axptd): entry announced via #route-status but exit didn't — a
+        // screen-reader user pressing F/Escape to leave got no confirmation. A navigation-triggered
+        // exit (showSurface's own cleanup call) immediately overwrites this with its own "Now on: …"
+        // route announcement right after, which is the more relevant message for that path.
+        const route = document.getElementById("route-status");
+        if (route) route.textContent = "Exited fullscreen preview.";
       }
 
       // A per-SCREEN Theme picker (86ajq321k): sets THIS screen's theme (not the global) and
@@ -1435,6 +1495,9 @@
       }
       function showSurface(name) {
         if (name === "theme-designer") ensureThemeDesignerLoaded();
+        // CON-089: navigating away from Screens & Outputs always leaves a clean fullscreen-preview
+        // state — never a stuck overlay a later, unrelated "screens" visit would silently resume.
+        if (name !== "screens") exitOutputFullscreen();
         APP_SURFACES.forEach((s) => {
           const el = document.getElementById("surface-" + s);
           if (el) el.classList.toggle("active", s === name);
@@ -1559,6 +1622,14 @@
         if (it.getAttribute("aria-disabled") === "true" || !it.dataset.surface) return;
         showSurface(it.dataset.surface);
         const focusSel = it.dataset.focus;
+        // CON-079: "Scriptures" shares the console surface with the content-source tabs
+        // (Scriptures | Slides), and Slides can be the one showing (auto-surfaced whenever a
+        // presentation is staged — window.__syncSlides). A plain scrollIntoView on a `hidden`
+        // panel is a silent no-op, so switch tabs first — same mechanism the command palette's
+        // own "Search in Bible" action already uses below.
+        if (focusSel === "scriptures" && typeof window.__selectContentTab === "function") {
+          window.__selectContentTab("scriptures", true);
+        }
         if (focusSel) {
           const el = document.getElementById(focusSel);
           if (el && el.scrollIntoView) el.scrollIntoView({ block: "nearest" });
@@ -4081,6 +4152,14 @@
         // B must not strobe) — but held ARROWS legitimately traverse the verse
         // list (staging trails the cursor, so no wire burst).
         if (e.repeat && !(e.key === "ArrowUp" || e.key === "ArrowDown")) return;
+        // CON-089: exiting the fullscreen output preview always wins over whatever Escape would
+        // otherwise do (double-tap clear-all, closing a modal) — the conventional fullscreen-
+        // viewer UX, and checked first so nothing below can shadow it.
+        if (fullscreenOutput && e.key === "Escape") {
+          e.preventDefault();
+          exitOutputFullscreen();
+          return;
+        }
         const mod = e.ctrlKey || e.metaKey;
         // Emergency chords pierce everything, including text fields (§3):
         // Ctrl/Cmd+Shift+B = blackout, Ctrl/Cmd+Shift+. = clear all. Matched by
@@ -4158,6 +4237,19 @@
             return;
           }
         }
+        // CON-080: Settings carries the fixed ⌘/Ctrl+, chord (macOS "Preferences" convention)
+        // rather than a menu-order digit — it opts out of the ⌘1–8 derivation above via
+        // data-nodigit, so this is the only way to reach it by keyboard shortcut.
+        if (mod && !e.shiftKey && !e.altKey && e.key === ",") {
+          const settingsItem = navItems.find((it) => it.dataset.surface === "settings");
+          if (settingsItem) {
+            e.preventDefault();
+            disarm();
+            closeAppMenu();
+            navGo(settingsItem);
+            return;
+          }
+        }
         // (Presentation now carries ⌘2 as a normal menu-order digit — no separate ⌘⇧P chord.)
         // ⌘/Ctrl+⇧+R opens Settings › Network & Mobile (Remote Control left the top-nav — Figma
         // 336:124; its surface is reached from there via "Manage devices").
@@ -4194,6 +4286,22 @@
         if (isMenuOpen()) {
           if (e.key !== "Escape") disarm();
           return;
+        }
+        // CON-089 (global chord `F`, Figma 337:174): fullscreen the SELECTED output's console-
+        // local preview. Placed here (outside the console-only guard below) because its target —
+        // Screens & Outputs' "selected output" — is a DIFFERENT surface than the console; mirrors
+        // F10's placement, not the console-scoped transport keys' (b/Backspace/etc. further down).
+        // Guarded against typing fields the same way those keys are, and against ⌘F/Ctrl+F so the
+        // browser-style "find" muscle-memory chord is never hijacked.
+        if ((e.key === "f" || e.key === "F") && !mod && !e.altKey) {
+          const t = e.target || {};
+          const typing = t.tagName === "INPUT" || t.tagName === "SELECT" || t.tagName === "TEXTAREA" || t.isContentEditable;
+          if (!typing) {
+            e.preventDefault();
+            disarm();
+            toggleOutputFullscreen();
+            return;
+          }
         }
         // Delete / Backspace removes the SELECTED element in the element editors (Theme Designer /
         // Presentation) — regardless of which sub-control holds focus, as long as the operator is
@@ -5801,7 +5909,7 @@
           }
           cmds.push({ section: "ACTIONS", label: "Keyboard shortcuts", ico: "⌨", run: () => openShortcuts() });
           // NAVIGATE — the whole top-level app menu, mirrored with each item's real icon + ⌘ badge
-          // (read from the menu DOM, so it stays in sync with the ⌘1–⌘7 order automatically).
+          // (read from the menu DOM, so it stays in sync with the ⌘1–⌘8 order automatically).
           navItems.forEach((it) => {
             if (!it.dataset.surface || it.getAttribute("aria-disabled") === "true") return;
             const t = it.querySelector(".nav-t");
@@ -5822,11 +5930,16 @@
           // from the palette, and surface its ⌘⇧K shortcut.
           cmds.push({ section: "NAVIGATE", label: "Go to Pre-service Check", ico: "✓", sub: "⌘⇧K", run: () => showSurface("preservice") });
           // SCRIPTURES — a live Bible lookup for the typed query, reusing the console's scripture_search.
+          // CON-087 (Figma 336:262-269): the row also carries a MUTED HIT PREVIEW sub-line (e.g.
+          // "John · Revelation…") once the debounced search below resolves for this exact query —
+          // scriptureHitPreview() returns undefined until then, so the row still works immediately,
+          // just without the preview text for the first ~250ms of a new query.
           if (q) {
             cmds.push({
               section: "SCRIPTURES",
               label: 'Search "' + q + '" in Bible',
               ico: "✦",
+              sub: scriptureHitPreview(q),
               run: () => {
                 showSurface("console");
                 if (typeof window.__selectContentTab === "function") window.__selectContentTab("scriptures", true);
@@ -5838,6 +5951,52 @@
           return cmds;
         };
         const SECTION_ORDER = ["ACTIONS", "NAVIGATE", "SCRIPTURES"];
+
+        // --- CON-087 hit-preview cache: bounded to the single MOST RECENT resolved query, exactly
+        // the shape of the console's own scriptureGen/scriptureHits debounce (app.js, scripture-q
+        // oninput) — one in-flight generation counter, one query's hits, never an unbounded map
+        // keyed by keystroke history. ---
+        let scripturePreviewQuery = null;
+        let scripturePreviewHits = null;
+        let scripturePreviewGen = 0;
+        let paletteScriptureTimer = null;
+        // A hit's `.reference` (e.g. "1 John 3:16") minus its trailing " <chapter>[:<verse>[-<verse>]]"
+        // — the book name portion the Figma preview shows ("John · Revelation…").
+        const scriptureBookFromRef = (ref) =>
+          (ref || "").replace(/\s+\d+(:\d+([-–]\d+)?)?$/, "").trim();
+        function scriptureHitPreview(q) {
+          if (scripturePreviewQuery !== q || !scripturePreviewHits || !scripturePreviewHits.length) return undefined;
+          // Collect every DISTINCT book across ALL hits before deciding what to show — the
+          // trailing "…" must answer "are there more distinct books than the 3 shown", never "are
+          // there more raw hits than shown books" (Quinn's QA review, 17tnw2axptd: the backend's
+          // scripture_search can return several verses from the SAME book — e.g. a common word
+          // hitting 5 verses all in Romans — and the old early-break-at-3-then-compare-to-hit-count
+          // logic showed a false "…" for that case even though no further book existed to reveal).
+          // scripture_search is itself capped (a handful of hits), so scanning all of them is cheap.
+          const allBooks = [];
+          for (const hit of scripturePreviewHits) {
+            const book = scriptureBookFromRef(hit && hit.reference);
+            if (book && !allBooks.includes(book)) allBooks.push(book);
+          }
+          if (!allBooks.length) return undefined;
+          const shown = allBooks.slice(0, 3);
+          const more = allBooks.length > shown.length;
+          return shown.join(" · ") + (more ? "…" : "");
+        }
+        async function fetchScripturePreview(q) {
+          const gen = ++scripturePreviewGen;
+          try {
+            const hits = await invoke("scripture_search", { query: q, translation: currentTranslation });
+            if (gen !== scripturePreviewGen) return; // superseded by a newer query — drop silently
+            scripturePreviewQuery = q;
+            scripturePreviewHits = hits;
+            // Only repaint if the palette is still open on this SAME query — a repaint into a
+            // closed palette or a since-edited input would be a stale, confusing flash.
+            if (!palette.hidden && input.value.trim() === q) render();
+          } catch (e) {
+            // The preview is optional — the SCRIPTURES row itself still works with no sub-line.
+          }
+        }
 
         let filtered = [];
         let active = 0;
@@ -5930,9 +6089,16 @@
           if (!modalOpen()) opener = document.activeElement;
           switching = true; closeAppMenu(); closeShortcuts(); switching = false;
           palette.hidden = false;
+          // A fresh session never resumes a previous query's stale preview.
+          clearTimeout(paletteScriptureTimer);
+          scripturePreviewQuery = null; scripturePreviewHits = null;
           active = 0; input.value = ""; render(); input.focus();
         }
-        function closePalette() { palette.hidden = true; restoreFocus(); }
+        function closePalette() {
+          palette.hidden = true;
+          clearTimeout(paletteScriptureTimer); // never fire a preview fetch into a closed palette
+          restoreFocus();
+        }
         function openShortcuts() {
           if (!modalOpen()) opener = document.activeElement;
           switching = true; closeAppMenu(); closePalette(); switching = false;
@@ -5940,7 +6106,16 @@
         }
         function closeShortcuts() { if (shortcuts) shortcuts.hidden = true; restoreFocus(); }
 
-        input.addEventListener("input", () => { active = 0; render(); });
+        input.addEventListener("input", () => {
+          active = 0; render();
+          // CON-087: debounce the hit-preview fetch (250ms, same interval as the console's own
+          // scripture-q search) — never fire a host round trip per keystroke.
+          const q = input.value.trim();
+          clearTimeout(paletteScriptureTimer);
+          if (q && q !== scripturePreviewQuery) {
+            paletteScriptureTimer = setTimeout(() => fetchScripturePreview(q), 250);
+          }
+        });
         input.addEventListener("keydown", (e) => {
           if (e.key === "ArrowDown") { e.preventDefault(); active = Math.min(filtered.length - 1, active + 1); paint(); }
           else if (e.key === "ArrowUp") { e.preventDefault(); active = Math.max(0, active - 1); paint(); }

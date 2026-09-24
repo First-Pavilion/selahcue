@@ -48,16 +48,29 @@
         <button class="nav-item" role="menuitem" tabindex="-1" data-surface="plan" accesskey="5"><span class="nav-ico"
             aria-hidden="true">☰</span><span class="nav-txt"><span class="nav-t">Service Plan</span><span
               class="nav-d">Order of service</span></span><span class="nav-key">⌘5</span></button>
+        <!-- Scriptures (CON-079/080, Design 2.0 Figma 336:180-187): deep-links to the console's
+             existing Scriptures content-source tab (#scriptures / #ctab-scriptures — already built,
+             already the default active tab). Inserting it HERE, before Transcript & Notes, shifts
+             every ⌘N chord after it by one — the global keydown handler derives ⌘1-⌘8 from this
+             menu's live DOM order (see the "Global ⌘/Ctrl+1–8" block in app.js), so no chord-index
+             code changes; only the markup order + the Settings data-nodigit below do. -->
+        <button class="nav-item" role="menuitem" tabindex="-1" data-surface="console" data-focus="scriptures"
+          accesskey="6"><span class="nav-ico" aria-hidden="true">✦</span><span class="nav-txt"><span
+              class="nav-t">Scriptures</span><span class="nav-d">Browse &amp; stage the
+              Bible</span></span><span class="nav-key">⌘6</span></button>
         <button class="nav-item" role="menuitem" tabindex="-1" data-surface="console" data-focus="transcript"
-          accesskey="6"><span class="nav-ico" aria-hidden="true">◎</span><span class="nav-txt"><span
+          accesskey="7"><span class="nav-ico" aria-hidden="true">◎</span><span class="nav-txt"><span
               class="nav-t">Transcript &amp; Notes</span><span class="nav-d">Live transcript · in
-              Console</span></span><span class="nav-key">⌘6</span></button>
+              Console</span></span><span class="nav-key">⌘7</span></button>
         <div class="menu-div" role="separator"></div>
-        <button class="nav-item" role="menuitem" tabindex="-1" data-surface="settings" accesskey="7"><span
+        <!-- Settings (CON-080) carries the fixed ⌘, chord rather than a menu-order digit — it is
+             excluded from the ⌘1–⌘8 digit derivation via data-nodigit so Transcripts (saved) below
+             can keep ⌘8 with no other markup change. -->
+        <button class="nav-item" role="menuitem" tabindex="-1" data-surface="settings" data-nodigit="true"><span
             class="nav-ico" aria-hidden="true">⚙</span><span class="nav-txt"><span class="nav-t">Settings</span><span
-              class="nav-d">Providers · privacy · network</span></span><span class="nav-key">⌘7</span></button>
+              class="nav-d">Providers · privacy · network</span></span><span class="nav-key">⌘,</span></button>
         <!-- Transcripts (86akcffvt / FR-130 core slice): every saved transcript, read-only. Distinct
-             from "Transcript & Notes" above (⌘6), which deep-links to the LIVE transcript while a
+             from "Transcript & Notes" above (⌘7), which deep-links to the LIVE transcript while a
              service is running — this opens saved history after the fact. -->
         <button class="nav-item" role="menuitem" tabindex="-1" data-surface="transcripts" accesskey="8"><span
             class="nav-ico" aria-hidden="true">▥</span><span class="nav-txt"><span class="nav-t">Transcripts</span><span
@@ -2492,6 +2505,14 @@
         <div class="sc-row">
           <dt><kbd>⌘1</kbd>–<kbd>8</kbd></dt>
           <dd>Jump to a section</dd>
+        </div>
+        <div class="sc-row">
+          <dt><kbd>⌘,</kbd></dt>
+          <dd>Settings</dd>
+        </div>
+        <div class="sc-row">
+          <dt><kbd>F</kbd></dt>
+          <dd>Fullscreen the selected output's preview (Screens &amp; Outputs)</dd>
         </div>
         <div class="sc-row">
           <dt><kbd>⌘⇧K</kbd></dt>
