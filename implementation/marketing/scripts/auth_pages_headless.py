@@ -43,7 +43,8 @@ Exit codes:
     0  all checks passed (or Chrome absent and not required)
     1  one or more checks FAILED
     2  infrastructure problem (no dist, a STALE dist, Chrome timeout, no results block)
-    4  the suite silently shrank — fewer checks ran than expected
+    4  the check count drifted from EXPECTED_MIN_CHECKS — shrank (fewer checks ran than
+       expected) or grew past it (the constant is stale-low and needs bumping)
 """
 
 from __future__ import annotations
@@ -2935,7 +2936,7 @@ def main() -> int:
         server.shutdown()
 
     # The cross-scenario half of the suite. Counted into `total` like any other check, so
-    # losing a group trips the EXPECTED_MIN_CHECKS floor rather than passing quietly.
+    # losing a group trips the EXPECTED_MIN_CHECKS gate rather than passing quietly.
     def compare(label: str, scenarios: list[str], facets: tuple[str, ...]) -> int:
         """One string-equality check per facet. Returns how many checks it ran."""
         ran = 0
@@ -3005,7 +3006,7 @@ def main() -> int:
     # only runs when the page is showing rate-limit copy, so a change that stopped those
     # states rendering — or stopped the markers matching — would silently retire the check
     # and every gate would stay green. Counted, and counted into `total`, so losing it trips
-    # the floor as well as failing here.
+    # the EXPECTED_MIN_CHECKS gate as well as failing here.
     scanned = {
         line.split("[", 1)[1].split("]", 1)[0]
         for line in body
@@ -3037,10 +3038,20 @@ def main() -> int:
             print(line)
     print(f"\n=== {len(SCENARIOS)} scenarios, {total} checks, {len(fails)} FAIL ===")
 
-    if total < EXPECTED_MIN_CHECKS:
+    # Guard against the suite count DRIFTING in either direction: a `<` floor only ever
+    # catches SHRINKING (a driver regression / early return running fewer checks). It never
+    # catches GROWING past the recorded value, which lets EXPECTED_MIN_CHECKS drift stale-low
+    # with no red build to catch it -- the same bug class that hit scripts/operator_headless.py
+    # three times before its own gate was made exact (see that file's history above its own
+    # EXPECTED_MIN_CHECKS). An exact match forces every branch that adds/removes a check to
+    # conflict on this constant during rebase and re-derive it explicitly.
+    # Bump EXPECTED_MIN_CHECKS to the new count when you add or remove a check -- always by
+    # actually running the suite, never by hand arithmetic (see the log above this constant).
+    if total != EXPECTED_MIN_CHECKS:
         print(
-            f"FAIL: only {total} checks ran; expected >= {EXPECTED_MIN_CHECKS} "
-            "(the suite must not silently shrink)"
+            f"FAIL: {total} checks ran; expected exactly {EXPECTED_MIN_CHECKS} (bump me to "
+            f"{total} if this is a real add/remove -- never hand-derive; re-run and use the "
+            "measured count)"
         )
         return 4
     return 1 if fails else 0
