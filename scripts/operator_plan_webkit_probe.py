@@ -228,10 +228,20 @@ with sync_playwright() as pw:
 
     b.close()
 
-if len(checks) < EXPECTED_MIN_CHECKS:
+# Guard against the check count DRIFTING in either direction: a `<` floor only ever catches
+# SHRINKING (a driver regression / early return running fewer checks). It never catches
+# GROWING past the recorded value, which lets EXPECTED_MIN_CHECKS drift stale-low with no red
+# run to catch it -- the same bug class that hit scripts/operator_headless.py three times
+# before its own gate was made exact (see that file's history above its own
+# EXPECTED_MIN_CHECKS). An exact match forces every branch that adds/removes a check to
+# conflict on this constant during rebase and re-derive it explicitly.
+# Bump EXPECTED_MIN_CHECKS to the new count when you add or remove a check -- always by
+# actually running the probe, never by hand arithmetic.
+if len(checks) != EXPECTED_MIN_CHECKS:
     fails.append(
-        "only %d checks ran; expected >= %d (the probe must not silently shrink)"
-        % (len(checks), EXPECTED_MIN_CHECKS)
+        "%d checks ran; expected exactly %d (bump me to %d if this is a real add/remove "
+        "-- never hand-derive; re-run and use the measured count)"
+        % (len(checks), EXPECTED_MIN_CHECKS, len(checks))
     )
     print("FAIL: " + fails[-1])
 
