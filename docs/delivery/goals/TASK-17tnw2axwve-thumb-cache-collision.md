@@ -129,8 +129,8 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
 | C-007 | yes | Full headless suite green (no regression to any pre-existing check) | `python3 scripts/operator_headless.py` | 0 FAIL | `/tmp/headless_final_clean.txt` — exit 0, 1901 checks, 0 FAIL | PASS |
 | C-008 | yes | `make ci` green on the branch | `make ci` (one at a time; check for concurrent sessions first) | ALL GREEN | terminal output (this ledger) | PENDING |
 | C-009 | yes | Four-reviewer pipeline run, blocking findings remediated and re-verified | reviewer reports, each own worktree pinned to head SHA; consolidated report published as a shareable Artifact | all four clear; report linked on PR + ClickUp | PR comments + Artifact URL | PENDING |
-| C-010 | yes | PR opened against `main`, Draft initially, citing the ticket with a before/after repro; not self-merged | `gh pr view` | PR exists, Draft→Ready only once C-009 clears, base=`main`, body cites `17tnw2axwve` | PR URL/number | PENDING |
-| C-011 | no | Follow-up ClickUp ticket(s) filed for the two accepted residual limitations (cold-boot ring gap; `render_deck_slide` deck-blind race) | `clickup_create_task` / task URL | tickets exist, linked from this one and from the PR | ClickUp URLs | PENDING |
+| C-010 | yes | PR opened against `main`, Draft initially, citing the ticket with a before/after repro; not self-merged | `gh pr view` | PR exists, Draft→Ready only once C-009 clears, base=`main`, body cites `17tnw2axwve` | PR #92: https://github.com/First-Pavilion/selahcue/pull/92 (Draft, base=main, head=`fix/17tnw2axwve-thumb-cache-collision`) | PASS (opened; Ready-flip pending C-009) |
+| C-011 | no | Follow-up ClickUp ticket(s) filed for the two accepted residual limitations (cold-boot ring gap; `render_deck_slide` deck-blind race) | `clickup_create_task` / task URL | tickets exist, linked from this one and from the PR | https://app.clickup.com/t/17tnw2ayevf (cold-boot ring gap), https://app.clickup.com/t/17tnw2ayevg (render_deck_slide race) — both subtasks of `17tnw2axwve`, linked on PR #92 | PASS |
 
 ## Verification plan
 
