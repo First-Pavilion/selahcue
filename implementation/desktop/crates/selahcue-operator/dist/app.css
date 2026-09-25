@@ -100,6 +100,7 @@
         position: relative;
       }
 
+      /* CON-005: pl-8/pr-12/py-7 per Figma 312:127. */
       .logo-pill {
         display: flex;
         align-items: center;
@@ -108,7 +109,7 @@
         border: 1px solid var(--sc-border);
         color: var(--sc-text);
         border-radius: 10px;
-        padding: 2px 10px 2px 8px;
+        padding: 7px 12px 7px 8px;
         font-weight: 700;
         font-size: 14px;
         cursor: pointer;
@@ -118,9 +119,10 @@
         border-color: var(--sc-primary);
       }
 
+      /* CON-006: size-44 per Figma 312:128. */
       .logo-mark {
-        width: 40px;
-        height: 40px;
+        width: 44px;
+        height: 44px;
         object-fit: contain;
         display: inline-block;
         flex: none;
@@ -434,17 +436,22 @@
         margin: 6px 4px;
       }
 
+      /* CON-082: gap-12, py-11/px-13 per Figma 336:140. Sub-label size/colour (.nav-d, below)
+         is left at --sc-text-secondary/11px rather than the frame's muted/10px: that combo is
+         an A11Y-DEFECT in the frame (3.79:1) and this repo's standing rule (RISK-205/NFR-204)
+         is shipped contrast wins over a stale frame — closing the size alone without the colour
+         would just shrink already-marginal text. */
       .nav-item {
         display: flex;
         align-items: center;
-        gap: 11px;
+        gap: 12px;
         width: 100%;
         text-align: left;
         background: none;
         border: none;
         color: var(--sc-text);
         border-radius: 10px;
-        padding: 9px 11px;
+        padding: 11px 13px;
         cursor: pointer;
       }
 
@@ -463,9 +470,10 @@
         box-shadow: inset 3px 0 0 var(--sc-primary);
       }
 
+      /* CON-082: width 26 (height stays 30) per Figma 336:141. */
       .nav-ico {
         flex: none;
-        width: 30px;
+        width: 26px;
         height: 30px;
         border-radius: 8px;
         display: inline-flex;
@@ -477,9 +485,13 @@
         color: var(--sc-text-secondary);
       }
 
+      /* CON-083: icon tile border + fill per Figma 336:140 (bg rgba(110,92,240,.2), border
+         #7e6eff). The row's own background/rail bar are left as-is — they are not drawn by the
+         frame at all, so replacing them is a bigger component change than a geometry nudge. */
       .nav-item[aria-current="page"] .nav-ico {
         color: var(--sc-primary-hover);
-        border-color: var(--sc-primary);
+        background: rgba(110, 92, 240, 0.2);
+        border-color: var(--sc-primary-hover);
       }
 
       .nav-txt {
@@ -2560,7 +2572,9 @@
         font: inherit;
         font-size: 12px;
         font-weight: 600;
-        max-width: 60%;
+        /* CON-153: 196px per Figma 462:197 — max-width (not a hard width) so the field still
+           shrinks gracefully at the column's 320px minimum instead of overflowing it. */
+        max-width: 196px;
         min-width: 0;
       }
 
@@ -2609,10 +2623,14 @@
         font-size: 13px;
       }
 
+      /* CON-155 (typography only): 12px per Figma 462:184. The frame draws this as a bare text
+         line with no fill/border at all; the chip treatment here is left in place as an existing,
+         intentional affordance (a status chip reads better than plain text for NDI state) —
+         removing it is a bigger component change than a geometry nudge. */
       .scr-signal {
         border-radius: 9px;
         padding: 10px 12px;
-        font-size: 11px;
+        font-size: 12px;
         font-weight: 600;
         border: 1px solid transparent;
       }
@@ -2655,10 +2673,11 @@
       }
 
       /* Each zone stacks its panels vertically and never overflows the row. */
+      /* CON-003: 14px per Figma 320:124/320:200/320:201 (every column). */
       .zone {
         display: flex;
         flex-direction: column;
-        gap: 12px;
+        gap: 14px;
         min-height: 0;
         min-width: 0;
       }
@@ -2667,9 +2686,10 @@
       /* align-items: flex-start (NOT the default stretch) so each panel's aspect-ratio:16/9
          governs its height — a stretched flex item gets an explicit cross-size that OVERRIDES
          aspect-ratio, collapsing the panel to a short strip (owner refine #7-fix). */
+      /* CON-034: gap-14 per Figma 322:124. */
       .obs-row {
         display: flex;
-        gap: 10px;
+        gap: 14px;
         flex: none;
         align-items: flex-start;
       }
@@ -2699,6 +2719,12 @@
         text-transform: uppercase;
       }
 
+      /* CON-022: px-13/py-15 per Figma 320:186 — scoped to the transcript card only, not the
+         shared .fwd-panel (the right-tabs container zeroes its own padding separately). */
+      #transcript {
+        padding: 15px 13px;
+      }
+
       /* --- Design 2.0 shared card chrome: a header row (uppercase label + optional count
              pill) used by every console card (plan, transcript, timer, detections, scriptures). */
       .card-head {
@@ -2718,6 +2744,20 @@
         text-transform: uppercase;
       }
 
+      /* CON-023: "· On-device" — 11px Medium, non-uppercase, per Figma 445:124. The only signal
+         in the console that STT is local (NFR-018); sits inside the h2 so it stays visually next
+         to the title instead of being pushed flush-right by .fwd-head h2's flex:1. */
+      .fwd-head-sub {
+        display: inline-block;
+        margin-left: 6px;
+        font-size: 11px;
+        font-weight: 500;
+        letter-spacing: normal;
+        text-transform: none;
+        color: var(--sc-text-secondary);
+      }
+
+      /* CON-014: px-8 per Figma 320:128. */
       .count-pill {
         flex: none;
         background: var(--sc-elevated);
@@ -2725,7 +2765,7 @@
         font-size: 11px;
         font-weight: 500;
         border-radius: 999px;
-        padding: 2px 9px;
+        padding: 2px 8px;
       }
 
       .count-pill[hidden] {
@@ -2774,17 +2814,24 @@
       .stage-theme.active { border-color: var(--accent); border-width: 2px; padding: 9px 10px;
         background: rgba(110,92,240,.13); }
       .stage-theme:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-      .stage-tile { width: 30px; height: 30px; border-radius: 8px; flex: 0 0 auto; }
+      /* CON-146: 32x32 per Figma 563:140. */
+      .stage-tile { width: 32px; height: 32px; border-radius: 8px; flex: 0 0 auto; }
       .tile-worship { background: #6e5cf0; }
       .tile-scripture { background: #f2b84b; }
       .tile-timer { background: #4aa3ff; }
-      .stage-theme-txt { display: flex; flex-direction: column; gap: 2px; flex: 1 1 auto; min-width: 0; }
+      /* CON-147: gap-3 per Figma 563:141. */
+      .stage-theme-txt { display: flex; flex-direction: column; gap: 3px; flex: 1 1 auto; min-width: 0; }
       .stage-theme-txt strong { font-size: 14px; font-weight: 600; }
       .stage-theme-txt span { font-size: 12px; color: var(--muted); }
-      .stage-theme-tu { display: flex; flex-direction: column; align-items: flex-end; gap: 2px;
+      /* CON-148: gap-4 per Figma 563:145-147; region ink migrated to the Design 2.0 tokens
+         (--sc-gold/--sc-live) the legacy --warn-ink/--live-ink vars were standing in for. The
+         pill background behind "TIME UP" itself is left for a follow-up — the glyph and the
+         "timer region" sub-label share one text node with no element to hang a chip on without
+         a markup change, which is out of scope for a CSS-only geometry pass. */
+      .stage-theme-tu { display: flex; flex-direction: column; align-items: flex-end; gap: 4px;
         font-size: 9px; font-weight: 700; letter-spacing: .4px; color: var(--muted); white-space: nowrap; }
-      .stage-theme-tu small { font-size: 10px; font-weight: 600; color: var(--warn-ink); }
-      .stage-theme-tu.up small { color: var(--live-ink); }
+      .stage-theme-tu small { font-size: 10px; font-weight: 600; color: var(--sc-gold); }
+      .stage-theme-tu.up small { color: var(--sc-live); }
       .stage-presets { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
       .stage-preset { padding: 6px 11px; border: 1px solid var(--line); border-radius: 999px;
         background: var(--sc-inset); color: var(--muted); font: inherit; font-size: 11px;
@@ -2806,6 +2853,8 @@
       .stage-msg-send:focus-visible, .stage-msg-clear:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
       .stage-msg-active { margin-top: 8px; font-size: 12px; font-weight: 600; color: var(--warn-ink); }
       .stage-msg-active[hidden] { display: none; }
+      /* CON-105: 13px per Figma 431:130/431:134 (adjudicating frame, 430:124). CON-106: pb-13
+         (top stays 15) per Figma 431:129. */
       .rtab {
         flex: 1;
         appearance: none;
@@ -2815,10 +2864,10 @@
         margin-bottom: -1px; /* overlap the tabbar's 1px divider for a clean single underline */
         color: var(--sc-text-muted);
         font: inherit;
-        font-size: 14px;
+        font-size: 13px;
         font-weight: 500;
         line-height: 1;
-        padding: 15px 10px;
+        padding: 15px 10px 13px;
         display: flex;
         align-items: center;
         justify-content: center;
@@ -2833,21 +2882,24 @@
         font-weight: 600;
         border-bottom-color: var(--sc-primary);
       }
-      /* The unactioned-detection badge on the tab is primary-tinted (Figma 430:124). */
+      /* CON-107: opaque #1b1a3a / #9e91f7 ink / px-7 per Figma 431:135-136 (the unactioned-
+         detection badge on the tab; adjudicating frame 430:124). */
       .rtab .count-pill {
-        background: rgba(110, 92, 240, 0.22);
-        color: #b7abff;
+        background: #1b1a3a;
+        color: #9e91f7;
         font-weight: 600;
+        padding: 2px 7px;
       }
       .rtab:focus-visible {
         outline: 2px solid var(--sc-primary);
         outline-offset: -2px;
       }
+      /* CON-108: pt-14/pb-16/px-16 per Figma 431:138. */
       .rpanel {
         flex: 1;
         min-height: 0;
         overflow-y: auto;
-        padding: 15px;
+        padding: 14px 16px 16px;
       }
       .rpanel[hidden] {
         display: none;
@@ -2987,11 +3039,12 @@
          declaration was the one leaking `gap: 8px` / `align-items: baseline` / `font-size: 12px`
          onto the Timer|Stage control, while itself inheriting that control's inset background,
          border, 9px radius and 12px bottom margin. Renamed so neither can reach the other. */
+      /* CON-025: 13px per Figma 320:192 (finalised transcript line). */
       .tr-seg {
         display: flex;
         gap: 8px;
         align-items: baseline;
-        font-size: 12px;
+        font-size: 13px;
         line-height: 1.35;
       }
 
@@ -3003,7 +3056,7 @@
       }
 
       .tr-seg-text {
-        color: var(--text);
+        color: var(--sc-text-secondary);
         word-break: break-word;
       }
 
@@ -3140,18 +3193,19 @@
       }
 
       /* REC chip — shown only while listening (audio-based STT, R3). */
+      /* CON-024: gap-6/py-4/pl-9/pr-10, weight 700 (Bold), no tracking, per Figma 320:189-191. */
       .rec-chip {
         display: inline-flex;
         align-items: center;
-        gap: 5px;
+        gap: 6px;
         flex: none;
         background: var(--live);
         color: #fff;
         font-size: 10px;
-        font-weight: 800;
-        letter-spacing: .08em;
+        font-weight: 700;
+        letter-spacing: 0;
         border-radius: 999px;
-        padding: 2px 8px;
+        padding: 4px 10px 4px 9px;
       }
 
       /* The author display above beats the UA [hidden] rule — restore it so the chip
@@ -3161,8 +3215,8 @@
       }
 
       .rec-chip .rec-dot {
-        width: 6px;
-        height: 6px;
+        width: 7px;
+        height: 7px;
         border-radius: 50%;
         background: #fff;
         animation: rec-pulse 1.4s ease-in-out infinite;
@@ -3186,13 +3240,14 @@
         margin-top: 8px;
       }
 
+      /* CON-029: px-15/py-11 per Figma 383:124. */
       .listen-btn {
         width: 100%;
         display: inline-flex;
         align-items: center;
         justify-content: center;
         gap: 6px;
-        padding: 8px 10px;
+        padding: 11px 15px;
         font-size: 12px;
         font-weight: 600;
       }
@@ -3271,13 +3326,16 @@
         color: var(--sc-text-muted);
       }
 
+      /* CON-109 (typography only): 13px Medium #a7aebe per Figma 431:141. The bare-row/no-
+         chrome part of this finding (removing .det-mode-row's box fill+border) is left for a
+         follow-up — that is a component redesign, not a mechanical geometry nudge. */
       #detection-mode {
         flex: 1;
         min-width: 0;
         font: inherit;
-        font-size: 12px;
-        font-weight: 600;
-        color: var(--sc-text);
+        font-size: 13px;
+        font-weight: 500;
+        color: var(--sc-text-secondary);
         background: transparent;
         border: none;
         cursor: pointer;
@@ -3345,12 +3403,13 @@
         color: var(--sc-text-muted);
       }
 
+      /* CON-115: 13px / 2-line clamp per Figma 432:129 (h-32 ~= two 13px/1.4 lines). */
       .detection .snippet {
-        font-size: 12px;
+        font-size: 13px;
         color: var(--sc-text-secondary);
         line-height: 1.4;
         display: -webkit-box;
-        -webkit-line-clamp: 3;
+        -webkit-line-clamp: 2;
         -webkit-box-orient: vertical;
         overflow: hidden;
       }
@@ -3369,11 +3428,12 @@
         gap: 8px;
       }
 
+      /* CON-117: px-12/py-8, rounded-9, 13px per Figma 432:131. */
       .detection-actions button {
         flex: 1;
-        padding: 9px 6px;
-        font-size: 12px;
-        border-radius: 8px;
+        padding: 8px 12px;
+        font-size: 13px;
+        border-radius: 9px;
       }
 
       /* Stage = the primary accept (into Preview) — indigo brand fill (Figma 323:170). */
@@ -3829,12 +3889,13 @@
         border-color: var(--sc-border-strong);
       }
 
+      /* CON-016: gap-8 per Figma 320:148 (flex-col gap between title and kind badge). */
       .item .main {
         flex: 1;
         min-width: 0;
         display: flex;
         flex-direction: column;
-        gap: 6px;
+        gap: 8px;
       }
 
       .item .title {
@@ -3908,7 +3969,8 @@
         gap: 6px;
         font-size: 10px;
         font-weight: 700;
-        padding: 4px 10px 4px 9px;
+        /* CON-018: py-5 per Figma 320:133/320:142. */
+        padding: 5px 10px 5px 9px;
         border-radius: 999px;
         letter-spacing: .04em;
         border: 1px solid transparent;
@@ -4150,11 +4212,12 @@
       }
       .slides-empty { flex: 1; }
 
+      /* CON-048: gap-12 per Figma 322:160. */
       #scriptures {
         flex: 1;
         display: flex;
         flex-direction: column;
-        gap: 11px;
+        gap: 12px;
         min-height: 0;
         border: 1px solid var(--sc-border);
         border-radius: 16px;
@@ -4162,6 +4225,7 @@
         padding: 15px;
       }
 
+      /* CON-049: px-11 per Figma 322:163. */
       .scrip-head select {
         font: inherit;
         font-size: 12px;
@@ -4170,7 +4234,7 @@
         background: var(--sc-inset);
         border: 1px solid var(--sc-border);
         border-radius: 8px;
-        padding: 8px 10px;
+        padding: 8px 11px;
       }
 
       .scrip-head input {
@@ -4217,13 +4281,14 @@
         color: var(--sc-text);
       }
 
+      /* CON-052: gap-12 per Figma 322:175→322:178 (step 50-38). */
       #verse-list {
         flex: 1;
         overflow-y: auto;
         min-height: 0;
         display: flex;
         flex-direction: column;
-        gap: 8px;
+        gap: 12px;
       }
 
       /* Verse row = a Design 2.0 card; gold verse number; the staged verse tints green. */
@@ -4244,9 +4309,11 @@
         border-color: var(--sc-border-strong);
       }
 
+      /* CON-053: 12px per Figma 322:176 (otherwise inherits .verse's 13px). */
       .verse .vnum {
         color: var(--sc-gold);
         font-weight: 700;
+        font-size: 12px;
         min-width: 20px;
         text-align: left;
       }
@@ -4340,15 +4407,16 @@
         gap: 8px;
       }
 
+      /* CON-035: pl-10/pr-11/py-5, no tracking, per Figma 322:127/322:129. */
       .panel-pill {
         display: inline-flex;
         align-items: center;
         gap: 7px;
         font-size: 11px;
         font-weight: 700;
-        letter-spacing: .02em;
+        letter-spacing: 0;
         border-radius: 999px;
-        padding: 5px 11px;
+        padding: 5px 11px 5px 10px;
         border: 1px solid transparent;
       }
 
@@ -4389,6 +4457,7 @@
         font-weight: 500;
       }
 
+      /* CON-037: gap-14, pt-24/pb-20/px-26 per Figma 322:131. */
       .outpanel .surface {
         aspect-ratio: 16 / 9;
         max-height: 32vh;
@@ -4400,8 +4469,8 @@
         flex-direction: column;
         align-items: flex-start;
         justify-content: center;
-        gap: 12px;
-        padding: 22px 24px;
+        gap: 14px;
+        padding: 24px 26px 20px;
         text-align: left;
         position: relative;
       }
@@ -4518,8 +4587,12 @@
         flex: none;
       }
 
+      /* CON-042: Previous/Next hug their content (flex: none, per Figma 322:148/322:156's fixed
+         152/148px widths); button.golive is the only flex-grow item so it absorbs the row's
+         remaining space, matching the frame's ~65%-width primary instead of the old equal
+         1:2:1 split that left GO LIVE 144px narrower than designed. */
       .golive-row button {
-        flex: 1;
+        flex: none;
         padding: 15px 18px;
         font-size: 14px;
         border-radius: 13px;
@@ -4529,8 +4602,11 @@
         gap: 10px;
       }
 
+      /* CON-043: Previous/Next label weight 600 (SemiBold) / ink #a7aebe per Figma 322:149/322:157.
+         button.golive .gl-label (below) overrides both back for the primary action. */
       .golive-row .gl-label {
-        font-weight: 700;
+        font-weight: 600;
+        color: var(--sc-text-secondary);
       }
 
       button {
@@ -4570,8 +4646,11 @@
 
       /* The primary GO LIVE — the bright Design 2.0 broadcast-green gradient (Figma 322:152),
          dark ink for AA on the light fill. Also used for detection "Stage". */
+      /* CON-042: flex:1 is the row's only grow item now (see .golive-row button above), so GO
+         LIVE takes the slack Previous/Next no longer claim. CON-044(size): 16px per Figma 322:153. */
       button.golive {
-        flex: 2;
+        flex: 1;
+        font-size: 16px;
         border: none;
         color: #06231a;
         background: linear-gradient(90deg, #3ed39a, #28a579);
@@ -4584,6 +4663,7 @@
 
       button.golive .gl-label {
         color: #06231a;
+        font-weight: 700;
       }
 
       /* Key hints on token-filled buttons (CON-046). Measured COMPOSITED — the translucent
@@ -4683,10 +4763,19 @@
         color: var(--sc-live);
       }
 
+      /* CON-065 (review remediation, Sana/Vera): the live-item-title prefix this element now
+         carries is unbounded text (an imported run-sheet title, not authored by this UI) — clamp
+         it the same way the sibling .item .title (app.css:3901) already clamps plan-item titles,
+         or a long title grows this element to hundreds/thousands of px tall and pushes the
+         "SET A CUSTOM TIME" controls off the visible Service Timer panel. Vera reproduced this
+         with a realistic 110-char imported title, not just a pathological one. */
       .timer-sub {
         margin-top: 4px;
         font-size: 12px;
         color: var(--sc-text-muted);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
       }
 
       .timer-custom-label {
@@ -4749,6 +4838,11 @@
         border-radius: 4px;
       }
 
+      /* CON-066/125 (copy only, "HRS" -> "HOURS" in index.html): the finding's other half —
+         font-weight 400 here vs the frame's 700 Bold, and var(--sc-text-muted)'s 3.96:1 at this
+         9px size, an A11Y-DEFECT where BOTH the frame and the code fail NFR-020 — is deliberately
+         left open. Bumping weight alone would not fix the contrast, and --sc-text-muted itself is
+         the open, repo-wide sweep (79 small-type call sites), not something to patch per-site. */
       .hms-cap {
         font-size: 9px;
         color: var(--sc-text-muted);
@@ -5033,8 +5127,9 @@
         display: none;
       }
 
+      /* CON-085: 520px per Figma 336:209. */
       .cmd-box {
-        width: min(560px, 92vw);
+        width: min(520px, 92vw);
         max-height: 70vh;
         display: flex;
         flex-direction: column;

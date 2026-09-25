@@ -1199,6 +1199,66 @@ EXPECTED_MIN_CHECKS = 1943
 # total is read off an actual clean run against the real post-rebase tree, never hand-summed.
 # Confirmed by two independent clean runs against the real post-rebase tree: 1964 checks, 0 FAIL.
 EXPECTED_MIN_CHECKS = 1964
+#
+# 17tnw2axptf (Console: geometry + copy polish batch, ~45 minor CON-### ids) — added 38 checks:
+# full coverage on all 7 copy items (CON-023, 051, 065 x3 incl. its no-live-item fallback and a
+# restore control, 066/125, 072 x2, 081, 140 x2), a real rendered-width comparison for CON-042
+# (the one visually significant fix in the batch — a flex-split bug is invisible to a
+# computed-style diff, so this measures actual getBoundingClientRect() widths instead), and a
+# representative cross-section of the pure-CSS geometry/token fixes (CON-003, 006, 024 x3, 082
+# x3, 083 x2, 105, 106, 107 x2, 117 x2, 146, 147, 148 x3, 153) — not literally all ~37 geometry
+# ids, which are covered by eyeballing the CSS diff in review per this file's own stated policy
+# for large mechanical batches. Measured on this branch's own pre-rebase tree (base 1939 above):
+# 1939 + 38 = 1977 checks, 0 FAIL.
+#
+# 1943 & 1977 -> 1981: rebase of this branch onto origin/main after 17tnw2axptd-surface-
+# transcripts-id-specificity (PR #94, ending 1943 above) merged first. Both lineages counted from
+# the same 1939 ancestor along divergent paths, so per this constant's own repeated discipline the
+# merged total is read off an actual clean run against the real post-rebase tree, never
+# hand-summed — 1943 + 38 = 1981 arithmetically agrees here only because neither lineage touched
+# the other's checks, which the measured run confirms rather than assumes. Confirmed by a clean
+# run against the real post-rebase tree: 1981 checks, 0 FAIL. (Superseded by the next entry below
+# — origin/main moved again, past PR #94, before this branch opened its PR.)
+#
+# 1964 & 1981 -> 2002: second rebase of this branch (17tnw2axptf, ending 1981 above, a lineage
+# through PR #94's 1943) onto origin/main after 17tnw2axwve (PR #92, ending 1964 above, a
+# different lineage through the same 1939/1943 ancestors) merged first. `git log origin/main
+# ^HEAD -- scripts/operator_headless.py` before resolving this conflict showed 17tnw2axwve's
+# review-round-2 fix (+2, 1916->1918 above) and its own prior rebase (1960->1964) as the only new
+# commits touching this file — this branch's own 38 checks (1943->1981) are still this branch's
+# alone. Both lineages counted from the same 1939/1943 ancestors along divergent paths, so per
+# this constant's own repeated discipline the merged total is read off an actual clean run
+# against the real post-rebase tree, never hand-summed — measured first, which is how the
+# arithmetic (1964 + 38 = 2002) was confirmed to agree rather than assumed to. Confirmed by a
+# clean run against the real post-rebase tree: 2002 checks, 0 FAIL.
+EXPECTED_MIN_CHECKS = 2002
+#
+# 17tnw2axptf, four-reviewer round remediation (Sana + Vera, corroborated independently): the
+# CON-065 live-item-title prefix on #timer-sub had no length clamp, unlike the sibling .item
+# .title (app.css:3901) which already clamps plan-item titles the same way. A long imported
+# run-sheet title (Vera reproduced with a realistic 110-char one, not just a pathological string)
+# grew #timer-sub from ~17px to hundreds/thousands of px tall, pushing the "SET A CUSTOM TIME"
+# controls off the visible Service Timer panel. Fixed with the same white-space/overflow/
+# text-overflow clamp .item .title already uses. Added 3 checks, all real rendered-DOM
+# assertions rather than a computed-style diff on the CSS rule (per this file's own CON-042
+# precedent — a layout bug like this one is invisible to a diff on the declaration alone): (1)
+# #timer-sub stays single-line height with the long-title fixture; (2) scrollWidth > clientWidth
+# — a positive control proving the fixture is genuinely wider than its box, so (1) isn't a vacuous
+# pass because the string happened to already fit; (3) textContent still holds the FULL
+# untruncated string, proving the clamp is CSS-only paint-time clipping, not a JS/DOM truncation
+# that would silently lose data. Mutation-verified: reverting just the CSS fix (app.css only,
+# test script unchanged) reproduces two clean FAILs on checks (1) and (2) — height grows to 67.2px
+# and scrollWidth==clientWidth (320==320, the text wrapped instead of clipping, which is exactly
+# the bug) — with 2005 checks still running (no aborting exception); restoring reproduces 2005
+# checks, 0 FAIL. Also fixed in the same pass: a pre-existing test-harness ordering issue this
+# new check exposed (not a product bug) — an earlier scenario elsewhere in this file leaves the
+# right column on the "Detected Scriptures" rtab and/or the Timer|Stage seg-stage sub-tab, which
+# made #stab-timer (the ancestor of #timer-sub) `display: none`; the new checks now explicitly
+# click #rtab-timer and #seg-timer and wait for both before reading geometry, which the
+# pre-existing CON-065 checks above them never needed since they only read textContent (updates
+# regardless of visibility). Measured directly off real runs, not hand-summed: 2002 + 3 = 2005
+# checks, 0 FAIL.
+EXPECTED_MIN_CHECKS = 2005
 
 
 def find_chrome():
@@ -13033,6 +13093,276 @@ right after a generate/save");
       await wWait(function(){ return !document.querySelector("#plan .plan-console-empty"); });
       ok(!document.querySelector("#plan .plan-console-empty") && document.querySelectorAll("#plan .item").length === planItemsBackup.length,
          "CON-172 (control): restoring items clears the empty state and the normal plan list renders again");
+
+      // ==========================================================================================
+      // 17tnw2axptf — Console geometry + copy polish (CON-### ids from
+      // docs/design/DESIGN-2.0-PARITY-AUDIT-console.md). A batch of ~45 small geometry/copy
+      // fixes: padding/gap/size/font-size tweaks, a handful of colour-token substitutions, 7
+      // genuine copy/markup changes, and one new piece of dynamic behaviour (CON-065's
+      // #timer-sub live-item prefix). Full coverage on every copy item below (cheap, and copy
+      // regressions are easy to silently reintroduce); a representative cross-section of the
+      // pure-CSS geometry fixes (not literally all ~30 — see the ticket/PR for the rest); and
+      // CON-042, the one VISUALLY significant fix in the batch (GO LIVE rendered 144px narrower
+      // than designed), gets a real rendered-width comparison rather than a computed-style diff,
+      // since a flex-split bug like that one is invisible to a diff on the CSS rule alone.
+      // ==========================================================================================
+
+      // --- CON-023: a new "· On-device" sub-label beside the Live Transcript panel's heading ---
+      var con023Sub = document.querySelector("#transcript .fwd-head-sub");
+      ok(!!con023Sub && con023Sub.textContent === "· On-device",
+         "CON-023: the Live Transcript panel heading carries a new \"· On-device\" sub-label — got " +
+         (con023Sub ? JSON.stringify(con023Sub.textContent) : "(missing)"));
+
+      // --- CON-051: #chapter-ref now reads "Ref · Trans" (middle dot), not the old "Ref (Trans)" ---
+      document.querySelector('.nav-item[data-surface="console"]').click();
+      window.__openChapterToBrowse("Isaiah 61:5"); // stage=false — the same fixture CON-054 exercises
+      await waitFor(function(){ return el("chapter-ref").textContent.indexOf("Isaiah 61") === 0; });
+      ok(el("chapter-ref").textContent === "Isaiah 61 · KJV",
+         "CON-051: #chapter-ref uses the 'Ref · Trans' middle-dot format (was 'Ref (Trans)', e.g. the old \"Isaiah 61 (KJV)\") — got \"" + el("chapter-ref").textContent + "\"");
+
+      // --- CON-065: #timer-sub is prefixed with the LIVE plan item's title; falls back to the
+      // plain text when no item is live. This is genuinely new dynamic behaviour (not just a
+      // copy edit), so both branches get a real behavioural check, riding the real 1 Hz poll
+      // like every other direct-V-mutation check in this file (no dedicated sync helper for the
+      // plan list, unlike __syncSlides). ---
+      var con065Backup = V.items.slice();
+      V.items = [{id:9001, kind:"song", title:"Amazing Grace", is_live:true, is_staged:false}];
+      await wWait(function(){ return el("timer-sub").textContent.indexOf("Amazing Grace") === 0; });
+      ok(el("timer-sub").textContent === "Amazing Grace · Counts down to 00:00",
+         "CON-065: #timer-sub is prefixed with the live plan item's title + ' · ' — got \"" + el("timer-sub").textContent + "\"");
+
+      // --- CON-065 (review remediation, Sana/Vera): the live-item title is imported text, not
+      // authored by this UI, so it is unbounded length. Before this fix #timer-sub had no clamp
+      // (unlike the sibling .item .title, app.css:3901), so a long title grew this element from
+      // ~17px to hundreds/thousands of px tall, pushing the "SET A CUSTOM TIME" controls off the
+      // visible Service Timer panel. Vera reproduced this with a realistic 110-char imported
+      // run-sheet title, not just a pathological one — this fixture matches that length. Three
+      // real, rendered-DOM assertions, not a computed-style diff on the CSS rule alone: (1) the
+      // element stays single-line height, so the clamp is genuinely engaging, not just declared;
+      // (2) scrollWidth > clientWidth proves the text is actually LONGER than its box (a vacuous
+      // pass if the fixture string happened to already fit); (3) textContent still holds the
+      // FULL untruncated string — text-overflow:ellipsis is a paint-time clip, not a JS/DOM
+      // truncation, and a future refactor that started slicing the string in app.js would be a
+      // real, worse regression (losing data, not just clipping its display) this control also
+      // catches. ---
+      // An earlier scenario elsewhere in this file leaves the right column on the "Detected
+      // Scriptures" rtab and/or the "Stage" seg-timer/seg-stage sub-tab (the Timer|Stage toggle
+      // nested INSIDE rpanel-timer, #seg-timer/#seg-stage -> #stab-timer/#stab-stage), so
+      // #stab-timer (the ancestor of #timer-sub) can be `display: none` and every geometry read
+      // below would be a false 0. Switch back to Service Timer at both levels first — the
+      // pre-existing CON-065 checks above this didn't need to, since they only read textContent,
+      // which updates regardless of visibility.
+      el("rtab-timer").click();
+      el("seg-timer").click();
+      await wWait(function(){
+        return !el("rpanel-timer").hidden && getComputedStyle(el("stab-timer")).display !== "none";
+      });
+      var con065LongTitle = "Sunday Morning Worship Service — Combined Communion & Baptism " +
+        "Celebration with Guest Speaker Pastor Johnson (Imported Run Sheet)";
+      V.items = [{id:9003, kind:"song", title:con065LongTitle, is_live:true, is_staged:false}];
+      await wWait(function(){ return el("timer-sub").textContent.indexOf(con065LongTitle) === 0; });
+      var con065SubEl = el("timer-sub");
+      var con065SubH = con065SubEl.getBoundingClientRect().height;
+      ok(con065SubH > 0 && con065SubH < 24,
+         "CON-065: a long (110-char) imported plan-item title keeps #timer-sub single-line (height=" +
+         con065SubH.toFixed(1) + "px) — before this fix it grew to hundreds/thousands of px and pushed " +
+         "the custom-time controls off the panel");
+      ok(con065SubEl.scrollWidth > con065SubEl.clientWidth,
+         "CON-065 (premise): the long-title fixture is actually wider than #timer-sub's box (scrollW=" +
+         con065SubEl.scrollWidth + " clientW=" + con065SubEl.clientWidth + ") — proves the clamp is " +
+         "genuinely engaged here, not a vacuous pass because the string happened to fit");
+      ok(con065SubEl.textContent.indexOf(con065LongTitle) === 0,
+         "CON-065 (control): the ellipsis clamp is CSS-only — #timer-sub's textContent still holds the " +
+         "FULL untruncated title, not a JS-sliced copy");
+
+      V.items = [{id:9002, kind:"song", title:"Not Live", is_live:false, is_staged:true}];
+      await wWait(function(){ return el("timer-sub").textContent === "Counts down to 00:00"; });
+      ok(el("timer-sub").textContent === "Counts down to 00:00",
+         "CON-065: with a non-empty plan but NO live item, #timer-sub falls back to the plain 'Counts down to 00:00' (not stuck on the previous live item's title)");
+      V.items = con065Backup;
+      await wWait(function(){ return document.querySelectorAll("#plan .item").length === con065Backup.length; });
+      ok(document.querySelectorAll("#plan .item").length === con065Backup.length,
+         "CON-065 (control): restoring the real plan items clears the throwaway fixture");
+
+      // --- CON-066/125: the Hours timer unit's cap reads "HOURS" (was "HRS"); Minutes ("MIN")
+      // and Seconds ("SEC") are UNCHANGED ---
+      var hmsCaps = document.querySelectorAll(".hms-cap");
+      ok(hmsCaps.length === 3 && hmsCaps[0].textContent === "HOURS",
+         "CON-066/125: the Hours timer unit's cap reads 'HOURS' (was 'HRS') — got \"" + (hmsCaps[0] && hmsCaps[0].textContent) + "\"");
+      ok(hmsCaps[1].textContent === "MIN" && hmsCaps[2].textContent === "SEC",
+         "CON-066/125 (control): Minutes ('MIN') and Seconds ('SEC') caps are UNCHANGED — only Hours was renamed");
+
+      // --- CON-072: #clear-all lost its leading "✕ " glyph; the trailing Esc-Esc key chip stays ---
+      var clearAllBtn = el("clear-all");
+      ok(clearAllBtn.firstChild.textContent.trim() === "Clear Output",
+         "CON-072: #clear-all's visible label starts directly with 'Clear Output' (no leading '✕ ' glyph) — got \"" + clearAllBtn.firstChild.textContent.trim() + "\"");
+      ok(!!clearAllBtn.querySelector(".key") && /Esc\s*Esc/.test(clearAllBtn.querySelector(".key").textContent),
+         "CON-072 (control): the trailing 'Esc Esc' key chip is UNCHANGED, still present");
+
+      // --- CON-081: the nav menu's Transcript & Notes sub-label copy changed ---
+      var con081NavD = document.querySelector('.nav-item[data-surface="console"][data-focus="transcript"] .nav-d');
+      var con081NavDText = con081NavD ? con081NavD.textContent.replace(/\s+/g, " ").trim() : "";
+      ok(!!con081NavD && con081NavDText === "Live transcript + sermon AI",
+         "CON-081: the nav menu's Transcript & Notes sub-label now reads 'Live transcript + sermon AI' (was 'Live transcript · in Console') — got " +
+         JSON.stringify(con081NavDText));
+
+      // --- CON-140: the Detected Scriptures tab now carries a ✦ det-star glyph before its label
+      // (reusing a previously dead .det-star CSS rule that had no producer in app.js/index.html) ---
+      var detStar = document.querySelector("#rtab-detections .det-star");
+      ok(!!detStar && detStar.textContent === "✦" && detStar.getAttribute("aria-hidden") === "true",
+         "CON-140: #rtab-detections now carries a <span class=\"det-star\"> ✦ glyph before its label");
+      ok(el("rtab-detections").textContent.indexOf("✦") >= 0 &&
+         el("rtab-detections").textContent.indexOf("✦") < el("rtab-detections").textContent.indexOf("Detected Scriptures"),
+         "CON-140: the ✦ glyph renders BEFORE the 'Detected Scriptures' label text");
+
+      // --- CON-042 (the ONE visually significant fix in this batch): GO LIVE was rendering
+      // 144px narrower than designed — Previous/Next/GO LIVE used to split the row 1:2:1
+      // (flex:1/2/1, so GO LIVE was only ~2x either neighbour's width). Previous/Next now hug
+      // their own content (flex:none) and GO LIVE is the row's only flex-grow item (flex:1),
+      // absorbing the remaining slack. Asserted against the ACTUAL rendered widths, not the CSS
+      // rule — a flex-split bug like this one would be invisible to a computed-style diff.
+      // This headless run's viewport (~756px) is narrower than the Figma reference frame, and
+      // .golive-row sits inside the 3-zone console layout — too cramped for flex:1 to have any
+      // real slack to absorb, which would make the fixed-vs-grown comparison meaningless (GO
+      // LIVE would render at its own text-content minimum regardless of which fix is in place).
+      // Force the row to a deterministic, comfortably-wide container (700px, matching the
+      // Figma frame's own scale) so the flex-grow mechanics this fix actually changed are what
+      // the assertion measures — restored immediately after. ---
+      document.querySelector('.nav-item[data-surface="console"]').click();
+      var con042Row = el("prev").parentElement;
+      var con042RowOldWidth = con042Row.style.width;
+      con042Row.style.width = "700px";
+      var con042PrevW = el("prev").getBoundingClientRect().width;
+      var con042GoLiveW = el("golive").getBoundingClientRect().width;
+      var con042NextW = el("next").getBoundingClientRect().width;
+      con042Row.style.width = con042RowOldWidth;
+      ok(con042PrevW > 0 && con042GoLiveW > 0 && con042NextW > 0,
+         "CON-042 (premise): all three GO LIVE row buttons render with real, nonzero width at a 700px row (prev=" +
+         con042PrevW.toFixed(0) + "px, golive=" + con042GoLiveW.toFixed(0) + "px, next=" + con042NextW.toFixed(0) + "px)");
+      ok(con042GoLiveW > (con042PrevW + con042NextW),
+         "CON-042: GO LIVE (" + con042GoLiveW.toFixed(0) + "px) is now wider than Previous+Next COMBINED (" +
+         con042PrevW.toFixed(0) + "px + " + con042NextW.toFixed(0) + "px) — the old 1:2:1 split made it only ~2x either neighbour, 144px narrower than the Figma spec");
+      // A tight absolute px tolerance here was cross-OS flaky (CI review, 17tnw2axptf): Ubuntu's
+      // headless Chrome renders "Previous"/"Next" a few px narrower/wider than macOS's build of
+      // the same engine (149 vs 141 on Ubuntu CI, an 8px gap, vs 148/144 — 4px — on macOS), so a
+      // <4px absolute bound was measuring font-metric noise, not this control's actual intent.
+      // The intent is "Prev/Next didn't get asymmetrically distorted by the fix" — e.g. the fix
+      // accidentally stealing width from only one neighbour, which is a proportionally much
+      // bigger effect than a few px of cross-platform text-metric variance. A relative bound
+      // scales with the buttons' own size instead of guessing a fixed px figure that has to
+      // survive every OS's font renderer.
+      var con042Asymmetry = Math.abs(con042PrevW - con042NextW) / Math.max(con042PrevW, con042NextW);
+      ok(con042Asymmetry < 0.1,
+         "CON-042 (control): Previous and Next still hug roughly equal content widths (" +
+         con042PrevW.toFixed(0) + "px vs " + con042NextW.toFixed(0) + "px, " +
+         (con042Asymmetry * 100).toFixed(1) + "% apart) — only GO LIVE grew, the row didn't just uniformly resize");
+
+      // --- Representative sample of the pure-CSS geometry/token fixes (padding, gap, size,
+      // font-size, and colour-token substitutions) — not the full ~30, which are covered by
+      // eyeballing the CSS diff in review; these are the ones most likely to silently regress. ---
+
+      // CON-003: .zone gap 12px -> 14px.
+      var con003Cs = getComputedStyle(document.querySelector(".zone"));
+      ok(con003Cs.gap === "14px" || con003Cs.rowGap === "14px",
+         "CON-003: .zone gap is 14px (was 12px) — got " + (con003Cs.gap || con003Cs.rowGap));
+
+      // CON-006: .logo-mark 40x40 -> 44x44.
+      var con006Cs = getComputedStyle(document.querySelector(".logo-mark"));
+      ok(con006Cs.width === "44px" && con006Cs.height === "44px",
+         "CON-006: .logo-mark is 44x44 (was 40x40) — got " + con006Cs.width + "x" + con006Cs.height);
+
+      // CON-024: .rec-chip gap-6/weight-700/no-tracking (was gap-5/weight-800/.08em tracking);
+      // padding 4px 10px 4px 9px (was 2px 8px uniform); .rec-dot 7x7 (was 6x6). Geometry +
+      // typography only — no colour token changes on this rule.
+      var con024Cs = getComputedStyle(el("transcript-rec"));
+      ok(con024Cs.columnGap === "6px" && con024Cs.fontWeight === "700" && con024Cs.letterSpacing === "normal",
+         "CON-024: .rec-chip is gap-6/weight-700/no-tracking (was gap-5/weight-800/.08em tracking) — got gap " +
+         con024Cs.columnGap + ", weight " + con024Cs.fontWeight + ", tracking " + con024Cs.letterSpacing);
+      ok(con024Cs.paddingTop === "4px" && con024Cs.paddingRight === "10px" && con024Cs.paddingBottom === "4px" && con024Cs.paddingLeft === "9px",
+         "CON-024: .rec-chip padding is 4px 10px 4px 9px (was 2px 8px uniform) — got " +
+         con024Cs.paddingTop + " " + con024Cs.paddingRight + " " + con024Cs.paddingBottom + " " + con024Cs.paddingLeft);
+      var con024DotCs = getComputedStyle(document.querySelector("#transcript-rec .rec-dot"));
+      ok(con024DotCs.width === "7px" && con024DotCs.height === "7px",
+         "CON-024: .rec-chip .rec-dot is 7x7 (was 6x6) — got " + con024DotCs.width + "x" + con024DotCs.height);
+
+      // CON-082: .nav-item gap 11->12, padding 9px 11px -> 11px 13px; .nav-ico width 30->26
+      // (height stays 30).
+      var con082Item = document.querySelector('.nav-item[data-surface="console"]');
+      var con082Cs = getComputedStyle(con082Item);
+      ok(con082Cs.columnGap === "12px",
+         "CON-082: .nav-item gap is 12px (was 11px) — got " + con082Cs.columnGap);
+      ok(con082Cs.paddingTop === "11px" && con082Cs.paddingLeft === "13px",
+         "CON-082: .nav-item padding is 11px 13px (was 9px 11px) — got top " + con082Cs.paddingTop + ", left " + con082Cs.paddingLeft);
+      var con082IcoCs = getComputedStyle(con082Item.querySelector(".nav-ico"));
+      ok(con082IcoCs.width === "26px" && con082IcoCs.height === "30px",
+         "CON-082: .nav-ico is 26 wide x 30 tall (width was 30, height unchanged) — got " + con082IcoCs.width + "x" + con082IcoCs.height);
+
+      // CON-083: the ACTIVE nav item's .nav-ico gets a token-substituted border-color and a new
+      // background tint (previously it inherited the base .nav-ico's --sc-inset background with
+      // no override, only the border-color differed).
+      ok(con082Item.getAttribute("aria-current") === "page",
+         "CON-083 (premise): the default Console nav item is the active (aria-current) one, so its .nav-ico exercises the override");
+      ok(con082IcoCs.borderColor === "rgb(126, 110, 255)",
+         "CON-083: the active nav item's .nav-ico border-color is --sc-primary-hover #7e6eff (was --sc-primary #6e5cf0) — got " + con082IcoCs.borderColor);
+      ok(con082IcoCs.backgroundColor === "rgba(110, 92, 240, 0.2)",
+         "CON-083: the active nav item's .nav-ico now gets its own rgba(110, 92, 240, 0.2) background tint (previously no override — it inherited the base .nav-ico's --sc-inset fill) — got " + con082IcoCs.backgroundColor);
+
+      // CON-105/106: .rtab font-size 14->13; padding 15px 10px -> 15px 10px 13px (bottom only).
+      var con105Cs = getComputedStyle(el("rtab-timer"));
+      ok(con105Cs.fontSize === "13px",
+         "CON-105: .rtab font-size is 13px (was 14px) — got " + con105Cs.fontSize);
+      ok(con105Cs.paddingTop === "15px" && con105Cs.paddingLeft === "10px" && con105Cs.paddingBottom === "13px",
+         "CON-106: .rtab padding is 15px 10px 13px (bottom was 10px, now 13px) — got top " +
+         con105Cs.paddingTop + ", left " + con105Cs.paddingLeft + ", bottom " + con105Cs.paddingBottom);
+
+      // CON-107: .rtab .count-pill — opaque background/ink token substitution + its own
+      // padding override (previously had none, inheriting the base .count-pill rule).
+      var con107Cs = getComputedStyle(el("detections-count"));
+      ok(con107Cs.backgroundColor === "rgb(27, 26, 58)" && con107Cs.color === "rgb(158, 145, 247)",
+         "CON-107: .rtab .count-pill is opaque #1b1a3a bg / #9e91f7 ink (was translucent rgba(110,92,240,.22) bg / #b7abff ink) — got bg " +
+         con107Cs.backgroundColor + ", ink " + con107Cs.color);
+      ok(con107Cs.paddingTop === "2px" && con107Cs.paddingLeft === "7px",
+         "CON-107: .rtab .count-pill now carries its own 2px 7px padding (previously had no override, inheriting the base .count-pill rule) — got top " +
+         con107Cs.paddingTop + ", left " + con107Cs.paddingLeft);
+
+      // CON-117: .detection-actions button padding/font-size/border-radius.
+      var con117Cs = getComputedStyle(document.querySelector("#det-onair .detection-actions button"));
+      ok(con117Cs.paddingTop === "8px" && con117Cs.paddingLeft === "12px",
+         "CON-117: .detection-actions button padding is 8px 12px (was 9px 6px) — got top " + con117Cs.paddingTop + ", left " + con117Cs.paddingLeft);
+      ok(con117Cs.fontSize === "13px" && con117Cs.borderRadius === "9px",
+         "CON-117: .detection-actions button is font-size 13px / radius 9px (was 12px / 8px) — got fontSize " + con117Cs.fontSize + ", radius " + con117Cs.borderRadius);
+
+      // CON-146/147/148: the Timer|Stage presets list — tile size, label gap, and the TIME UP
+      // sub-label's colour-token migration off the legacy --warn-ink/--live-ink variables.
+      var con146Cs = getComputedStyle(document.querySelector(".stage-tile"));
+      ok(con146Cs.width === "32px" && con146Cs.height === "32px",
+         "CON-146: .stage-tile is 32x32 (was 30x30) — got " + con146Cs.width + "x" + con146Cs.height);
+      var con147Cs = getComputedStyle(document.querySelector(".stage-theme-txt"));
+      ok(con147Cs.rowGap === "3px",
+         "CON-147: .stage-theme-txt gap is 3px (was 2px) — got " + con147Cs.rowGap);
+      var con148Tus = document.querySelectorAll(".stage-theme-tu");
+      var con148Cs = getComputedStyle(con148Tus[0]);
+      ok(con148Cs.rowGap === "4px",
+         "CON-148: .stage-theme-tu gap is 4px (was 2px) — got " + con148Cs.rowGap);
+      ok(getComputedStyle(con148Tus[0].querySelector("small")).color === "rgb(242, 184, 75)",
+         "CON-148: a resting .stage-theme-tu small's ink is --sc-gold #f2b84b (was --warn-ink #f2b53c) — got " +
+         getComputedStyle(con148Tus[0].querySelector("small")).color);
+      var con148Up = document.querySelector(".stage-theme-tu.up");
+      ok(!!con148Up && getComputedStyle(con148Up.querySelector("small")).color === "rgb(255, 77, 77)",
+         "CON-148: a '.up' .stage-theme-tu small's ink is --sc-live #ff4d4d (was --live-ink #ef4444) — got " +
+         (con148Up ? getComputedStyle(con148Up.querySelector("small")).color : "(missing .up element)"));
+
+      // CON-153: .scr-input max-width 60% -> 196px (the NDI source-name field, Screens & Outputs
+      // › Configure › NDI OUTPUT — the only place this class is used).
+      document.querySelector('.nav-item[data-surface="screens"]').click();
+      var con153Card = rowFor("main");
+      Array.from(con153Card.querySelectorAll("button")).filter(function(b){ return b.textContent === "Configure"; })[0].click();
+      await waitFor(function(){ return /NDI OUTPUT/.test(document.getElementById("screens-inspector").textContent); });
+      var con153Input = document.getElementById("screens-inspector").querySelector(".scr-input");
+      ok(!!con153Input && getComputedStyle(con153Input).maxWidth === "196px",
+         "CON-153: .scr-input (NDI source name) max-width is 196px (was 60%) — got " +
+         (con153Input ? getComputedStyle(con153Input).maxWidth : "(missing)"));
+      document.querySelector('.nav-item[data-surface="console"]').click();
 
     } catch(e){ R.push("FAIL: exception "+e.message+" @ "+(e.stack||"").split("\n")[1]); }
     el("__r").textContent = "RESULTS\n"+R.join("\n")+"\nDONE("+R.length+")";

@@ -123,6 +123,10 @@
           acts.appendChild(importBtn);
           empty.appendChild(acts);
           plan.appendChild(empty);
+          // CON-065: no items means no live item — reset the timer sub-line's plan-item
+          // prefix rather than leaving it stuck on whatever was live before the plan emptied.
+          const emptyTimerSub = document.getElementById("timer-sub");
+          if (emptyTimerSub) emptyTimerSub.textContent = "Counts down to 00:00";
           return;
         }
         view.items.forEach((it, i) => {
@@ -232,6 +236,15 @@
           plan.appendChild(row);
         });
 
+        // CON-065: "<plan item> · Counts down to 00:00" per Figma 323:132/434:145 — prefix the
+        // timer sub-line with the currently-live plan item's title. No live item: falls back to
+        // the plain "Counts down to 00:00" the markup already carries.
+        const timerSub = document.getElementById("timer-sub");
+        if (timerSub) {
+          const liveItem = view.items.find((it) => it.is_live);
+          timerSub.textContent =
+            (liveItem ? liveItem.title + " · " : "") + "Counts down to 00:00";
+        }
       }
 
       function setPanel(which, item, capText, idleText) {
@@ -3875,8 +3888,9 @@
       }
 
       function renderChapter() {
+        // CON-051: "Isaiah 61 · KJV" (middle-dot separator) per Figma 322:172.
         document.getElementById("chapter-ref").textContent =
-          currentChapter.reference + " (" + currentChapter.translation + ")";
+          currentChapter.reference + " · " + currentChapter.translation;
         document.getElementById("ch-prev").disabled = !currentChapter.prev;
         document.getElementById("ch-next").disabled = !currentChapter.next;
         const list = document.getElementById("verse-list");
