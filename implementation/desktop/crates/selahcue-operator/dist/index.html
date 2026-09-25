@@ -2360,6 +2360,27 @@
         </span>
       </div>
 
+      <!-- RCD-008 (17tnw2axptv): with no output window connected, pairing/device data can't be
+           loaded — this used to render as a silent empty state, indistinguishable from "nothing
+           is paired yet". Mirrors Pre-service Check's own verdict pattern (preservice.js), so the
+           underlying signal agrees across surfaces (now link_status(), not host_connected() — see
+           remote.js).
+           Body copy corrected (Vera, PR #98 review round 3): main.rs's own link_status doc comment
+           is explicit that NOTHING re-dials — build_backend() runs once at operator startup, and a
+           dropped link never recovers without a console restart, matching app.js's own #rcv-link
+           card's established "No automatic reconnect — restart the console to reconnect." copy for
+           the exact same underlying fact. The banner used to claim it "updates automatically once
+           it connects", which is never true for either condition that shows it (no host at all, or
+           a host that was linked and dropped) — an operator who believed that would wait instead of
+           restarting. -->
+      <div id="rc-host-banner" class="pp-banner pp-banner-warn" role="status" hidden>
+        <span class="pp-banner-ico" aria-hidden="true">⚠</span>
+        <div class="pp-banner-body">
+          <p class="pp-banner-title">No output window connected</p>
+          <p class="pp-banner-text">Pairing and paired-device data need a live connection to the output window. Nothing has failed, but this won't clear on its own — start the output window, then restart the operator console to reconnect.</p>
+        </div>
+      </div>
+
       <div class="rc-cols">
         <!-- LEFT — Pair a device -->
         <aside class="rc-pair" aria-label="Pair a device">

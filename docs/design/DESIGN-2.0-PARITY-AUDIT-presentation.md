@@ -1545,21 +1545,89 @@ scene (the oracle only exercises `Layer::Fill`, per `OUT-012`, already documente
 pre-existing, unrelated `measure.rs` stats-counter under-report (`MeasureCacheStats::misses`
 misses events on the &gt;128-byte early-return path) — tracked as follow-ups below, not fixed here.
 
+### Update — 2026-09-25 (Uma, ui-ux-designer role) — OUT-007/OUT-008 CLOSED (citation lost, no replacement frame; RISK-205 applies)
+
+**Ticket:** ClickUp `17tnw2ay2p5`, "[Design] Presentation output: re-verify OUT-007/OUT-008
+(lower-third band fill/height, reference size) — citation frame 208:137 deleted." Raised by Kenji's
+`17tnw2axptm` (2026-09-22 update above), which deliberately left `OUT-007`/`OUT-008` open rather than
+edit shipped, working values against an unconfirmable citation.
+
+**Independent re-verification (third pass, after the 2026-09-21 and 2026-09-22 sessions above):**
+
+1. `get_metadata(fileKey=SYQn5hFY8YVQKm3c6rw0eJ, nodeId=208:137)` and `nodeId=208:124` both still
+   return "The provided node ID was not found in the file" — confirmed first-hand, not taken on the
+   prior sessions' word alone.
+2. Checked `965:124` (the RISK-205 "Figma catch-up" section — where this project's own established
+   pattern says new/updated Design 2.0 frames land, per `SCREEN-STATUS-spec.md`,
+   `ATTENTION-BADGES-spec.md`, etc.) directly: its full subtree (333K-character dump) contains no
+   "lower third", "CCLI", "Sinach", "7115744", "audience output", or "stream" content that is the
+   audience-facing lower-third template. The only "Stream" hits there are an unrelated
+   operator-console **Screens & Outputs** status row/listitem — a different surface entirely.
+3. Ran one further full-file sweep (a fresh `get_metadata` dump of page `0:1`, ~2.49M characters,
+   independent of the two prior sessions' dumps) grepping a broadened term set — `lower.?third`,
+   `keyed`, `translucent`, `band`, `overlay`, `broadcast`, `reference line`, `S8-3a`/`S8-3d`,
+   `Sinach`, `7115744`, `Scripture — Full`, `Song — Center`, the old node id — and enumerated all 63
+   top-level frame names. "Lower third" gets 25 hits; every one falls into three categories, none of
+   them a redrawn audience-output mock: (a) a config row / theme dropdown value on the Screens
+   settings page (`217:124`), no visual design attached; (b) an operator-console output-status card
+   and layer-visibility toggle inside "Screens & Outputs — Design 2.0" (`327:124`) — a name/title
+   preview only, no scripture/amber banding; (c) disabled "NETWORK OUTPUTS (COMING SOON)" toggle
+   rows with no mockup. Zero hits for "keyed", "translucent", "reference line", "S8-3a"/"S8-3d",
+   "Sinach", the old node id, "Scripture — Full", or "Song — Center". Theme Designer's own five named
+   templates (Worship, Gradient, Midnight, Sunrise, Minimal — `DESIGN-2.0-PARITY-AUDIT-theme-designer.md`
+   `TD-002`) have no Lower Third design among them either. No top-level frame is named anything
+   resembling "Theme templates", "audience output", or "S8-3a".
+4. Swept `docs/design/*.md` for every other "lower-third"/"lower third" mention in the repo
+   (`COMPONENT-SPECS.md`, `DESIGN-2.0-HANDOFF.md`, `NAV-IA-spec.md`, `MOBILE-2.0-SPEC.md`,
+   `THEME-MODEL-spec.md`, `UX-FLOWS.md`, `UX-STATE-MATRIX.md`): all are narrative/conceptual
+   references to the lower-third *feature*, none cite pixel geometry, fill opacity, or a Figma node
+   other than the deleted `208:137` for this template's exact values.
+
+**Three independent sessions (2026-09-21, 2026-09-22, 2026-09-24/25), using different search
+strategies each time, now agree: the `208:124` subtree has no successor anywhere in the current
+file.** The most defensible reading remains the 2026-09-21 entry's own: the mock was deleted with
+nothing put in its place, not renamed or merged.
+
+**Sanity check for a citation-independent defect (there is none):** re-read `OUT-007`/`OUT-008`
+against the shipped `Theme::lower_third()` on their own terms, not against the dead frame. Band fill
+`rgba(0,0,0,150)` and title/body sizes `40‰`/`62‰` are internally consistent with the theme's own
+documented intent (`theme.rs:581-589`: "the reference \[amber, smaller\] above the body \[white,
+larger\]" — a small attribution label over the main readable line, the same hierarchy a caption or a
+broadcast lower-third conventionally uses) and are covered by existing passing tests
+(`test_compose.rs::lower_third_renders_a_full_width_band_not_left_only`,
+`::hiding_the_lower_third_layer_removes_the_band_but_keeps_text`,
+`test_slide.rs` body-position assertion). No accessibility or functional problem was found
+independent of the (now unconfirmable) Figma pixel values. There is nothing to fix but the citation.
+
+**Resolution — per PRD RISK-205** ("Design 2.0 Figma frames lag the shipped console… Uma designs
+from the live console + tokens, Figma updated after"), the same principle `17tnw2axptm` already
+applied when it deliberately left these two values unchanged: with no live Figma spec reachable for
+this template, **the shipped implementation is canonical.** `OUT-007` and `OUT-008` are now
+**CLOSED — citation lost, no replacement frame found; shipped values stand as the de facto spec.**
+No code change. (The unlabelled "Band rect" height-drift row immediately above `OUT-007` in the
+`208:137` table, which cites the same dead frame for the same band geometry, closes on the identical
+basis.) The `theme.rs` doc-comments for `Theme::lower_third()` were updated (comment-only, no value
+change) to record that `208-137` no longer resolves and that RISK-205 governs, matching the evidence
+note already present on `Theme::scripture_full()`/`Theme::song_center()` for the same reason.
+
+**Not reopened, not touched:** `OUT-009` (template-set mismatch) and `OUT-012`–`OUT-015` (GPU
+compositor, measure-cache trap, `Slide` model) are unaffected — none of them depend on `208:137`'s
+geometry. `OUT-002`/`OUT-003`/`OUT-004`/`OUT-005`/`OUT-016`/`OUT-017` were already closed by the
+2026-09-22 update above under the same RISK-205 reasoning and are not revisited here.
+
+**Files:** `docs/design/DESIGN-2.0-PARITY-AUDIT-presentation.md` (this update),
+`implementation/desktop/crates/selahcue-present/src/theme.rs` (doc-comment only, no behaviour
+change — verified by `cargo test -p selahcue-present` passing unchanged).
+
 ### Totals (superseding the 2026-09-20/09-21/09-22 tables above)
 
 | | Count |
 |---|---:|
 | Total findings | 80 (63 `PME-` + 17 `OUT-`) |
-| FIXED | 25 (17 prior + 8 this update — `OUT-002/003/004/009/010/011/016/017`) |
+| FIXED | 25 (17 prior + 8 the 2026-09-22 update — `OUT-002/003/004/009/010/011/016/017`) |
+| CLOSED (citation lost, RISK-205 — shipped values stand) | 2 (`OUT-007`, `OUT-008`, this update) |
 | SUPERSEDED | 0 |
-| **OPEN** | **55** |
-
-Part B only (Part A rows and Part B `S4` are unchanged from 2026-09-20 above; this update closes
-6 `S2` (`OUT-002/003/009/011/016/017`) and 2 `S3` (`OUT-004/010`) — the same not-fully-retallied
-convention the 2026-09-21 update used, to avoid restating the whole matrix from a partial edit):
-Part B now has **0 open S1** (unchanged, closed 2026-09-21), its `S2` open count drops by 6, its
-`S3` open count drops by 2. `OUT-007`/`OUT-008` (both `S2`) remain open — the only two Part-B
-findings this update touches without closing.
+| **OPEN** | **53** |
 
 ### Update — 2026-09-25 (Uma, ui-ux-designer role) — OUT-007/OUT-008 CLOSED (citation lost, no code change)
 
@@ -1614,15 +1682,12 @@ documented host-font-property test, see its own doc comment); direct read of `th
 `Theme::lower_third()`, `classic()`, `high_contrast()`, `scripture_full()`; direct read of
 `test_compose.rs`'s lower-third test block. No Rust changed — docs-only.
 
-### Totals (superseding the 2026-09-22 table above)
-
-| | Count |
-|---|---:|
-| Total findings | 80 (63 `PME-` + 17 `OUT-`) |
-| FIXED | 27 (25 prior + 2 this update — `OUT-007`, `OUT-008`, closed not implemented) |
-| SUPERSEDED | 0 |
-| **OPEN** | **53** |
-
-Part B only: this update closes the 2 remaining open Part-B `S2` findings (`OUT-007`/`OUT-008`).
-Part B now has **0 open S1, 0 open S2** findings from the `208:*` citation set; the unlabelled band-
-height drift row (`208:139`, never `OUT`-numbered) is closed the same way for the same reason.
+Part B only: this update closes the remaining 2 open Part-B `S2` findings that cite `208:137`
+(`OUT-007`, `OUT-008`) by the citation-lost/RISK-205 route above — corroborated independently by
+both the broadened Figma term-sweep and this session's `cargo test` run — not by pixel-matching a
+live frame. Part B's open `S2` count drops by 2 from the 2026-09-22 table, and now has **0 open S1,
+0 open S2** findings from the `208:*` citation set; the unlabelled band-height drift row (`208:139`,
+never `OUT`-numbered) is closed the same way for the same reason. Findings this update does **not**
+touch, still open: `OUT-012` (GPU compositor fill-only, S2, scoped/documented) and the informational
+`OUT-013`/`OUT-014` rows (measure-cache trap, four-surface token lockstep) — none of these ever
+depended on `208:137` geometry, so they are unaffected by this citation finding.

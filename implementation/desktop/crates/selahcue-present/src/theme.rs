@@ -587,6 +587,19 @@ impl Theme {
     /// Short-form by design: the band fits ~2 lines at the design size, so a long
     /// (e.g. 6-line) verse switched into it **shrinks to fit** the band
     /// (`Fit::ShrinkToFit`, the default) rather than dropping lines.
+    ///
+    /// **Evidence note (2026-09-25):** `208-137` no longer exists in the live Figma
+    /// file (`SYQn5hFY8YVQKm3c6rw0eJ`) — confirmed independently by three sessions
+    /// (2026-09-21, 2026-09-22, 2026-09-25), with no successor frame found anywhere
+    /// in the file across all three searches. The parity audit's `OUT-007`/`OUT-008`
+    /// (band fill/height and reference-line size vs. the frame's frozen 2026-08-23
+    /// reading) are therefore **CLOSED**, per PRD RISK-205 ("shipped code is truth,
+    /// Figma catches up, not the reverse"): the geometry below is the canonical spec
+    /// going forward, not a pending reconciliation against a citation that can no
+    /// longer be opened, screenshotted, or measured. See
+    /// `docs/design/DESIGN-2.0-PARITY-AUDIT-presentation.md`, Reconciliation
+    /// "Update — 2026-09-25", ClickUp `17tnw2ay2p5`. Do not treat a future `208:*`-style
+    /// citation as live without re-verifying it first.
     pub fn lower_third() -> Self {
         Theme {
             // Dark backdrop stands in for the keyed video on opaque outputs + the
@@ -624,7 +637,9 @@ impl Theme {
                 w_permille: 940,
                 h_permille: 300,
                 // Translucent darkening panel; the amber border is what delineates
-                // the bar over a dark backdrop (matches 208-137).
+                // the bar over a dark backdrop (drawn to match 208-137's intent;
+                // that frame no longer exists in Figma — see the evidence note on
+                // Self::lower_third above, OUT-007/OUT-008 CLOSED per RISK-205).
                 fill: Rgba {
                     r: 0,
                     g: 0,
