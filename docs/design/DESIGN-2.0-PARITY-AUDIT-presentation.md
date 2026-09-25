@@ -650,10 +650,10 @@ this is the one template built directly against its frame.
 
 | # | Component | Figma spec (converted) | Implemented | Verdict | Sev |
 |---|---|---|---|---|---|
-| — | Band rect | `208:139`: x **27 ‰**, y **661 ‰**, w **945 ‰**, h **258 ‰**, r8 | `theme.rs:568-579` (`band`): `x 30‰ y 660‰ w 940‰ h 300‰` | MATCH on x/y/w; DRIFT on height (+42 ‰) | S3 |
-| **OUT-007** | Band fill | `#05080D` at **90 % opacity** — a near-black tinted panel | `Rgba { r: 0, g: 0, b: 0, a: 150 }` (`theme.rs:571-576`) = pure black at **59 %** | DRIFT — noticeably more transparent, and untinted | S2 |
-| — | Band border | 1 px `#F2B53C` on a 248-tall mock = **4 ‰** | `border: AMBER`, `border_permille: 5` (`theme.rs:577-578`) | MATCH | — |
-| **OUT-008** | Reference line size | `208:140`: **16 px bold** = **65 ‰**, `#F2B53C`, at y **706 ‰** | `theme.rs:538-551` `title`: `size_permille: 40`, `y 688‰`, `align_h: Left`, `align_v: Middle` | DRIFT — the reference renders at **40 ‰ where the frame draws 65 ‰** (roughly 60 % of the drawn size), so the reference reads much smaller than the body instead of matching it | S2 |
+| — | Band rect (height) | ~~`208:139`: x **27 ‰**, y **661 ‰**, w **945 ‰**, h **258 ‰**, r8~~ — **citation `208:137`/`208:139` deleted, no successor frame exists anywhere in the file (confirmed by full page-metadata sweep, all 63 top-level frames)** | `theme.rs`'s `Theme::lower_third()` (`band`): `x 30‰ y 660‰ w 940‰ h 300‰` | **CLOSED — code is canonical per RISK-205** (shipped code is source of truth once Figma has no live spec to catch up to; the frozen 2026-08-23 height reading can no longer be confirmed against anything, so it is not actionable). Re-verified internally consistent: the band fully contains `title`/`body` (no overlap, no overflow) and `cargo test -p selahcue-present` passes (`test_compose.rs::lower_third_renders_a_full_width_band_not_left_only` pixel-asserts the band geometry directly) | S3 → closed |
+| **OUT-007** | Band fill | ~~`#05080D` at **90 % opacity**~~ — **citation `208:137` deleted, no successor frame exists in the file; code is canonical per RISK-205** | `Rgba { r: 0, g: 0, b: 0, a: 150 }` (`theme.rs`, `Theme::lower_third()`) = pure black at **59 %** | **CLOSED — citation lost, no replacement frame; shipped values kept per RISK-205.** The frozen 2026-08-23 reading (90 % tinted near-black) cannot be re-pulled or reconciled against a live frame; there is no unconfirmable-target chase to make here (2026-09-22 update's own "note it, don't guess" call). Internally consistent: `theme_band_serde_is_additive_and_backward_compatible` + the full-width-band render test both pass | S2 → closed |
+| — | Band border | 1 px `#F2B53C` on a 248-tall mock = **4 ‰** | `border: AMBER`, `border_permille: 5` (`theme.rs`) | MATCH | — |
+| **OUT-008** | Reference line size | ~~`208:140`: **16 px bold** = **65 ‰**~~ — **citation `208:137`/`208:140` deleted, no successor frame exists in the file; code is canonical per RISK-205** | `theme.rs`, `Theme::lower_third()` `title`: `size_permille: 40`, `y 688‰`, `align_h: Left`, `align_v: Middle` | **CLOSED — citation lost, no replacement frame; shipped values kept per RISK-205.** The frozen 2026-08-23 reading (65 ‰, matching the body) cannot be re-pulled or reconciled against a live frame. Internally consistent: the reference (title) region sits inside the band, above the body, does not overlap it, and renders at a smaller-than-body size consistent with a "reference line" role across every other built-in theme in this file (`classic`, `high-contrast`, `scripture-full` all size their title smaller than their body) | S2 → closed |
 | — | Body line size | `208:141`: 16 px semibold white = **65 ‰**, y **794 ‰** | `theme.rs:552-566` `body`: `size_permille: 62`, `y 762‰`, `align_h: Left`, `align_v: Top` | MATCH (±3 ‰) | — |
 | — | Background behind the band | `#051A0F` — the mock's stand-in for keyed video, with the caption "(transparent / keyed over live video)" (`208:138`) | `Background::Solid(Rgba::rgb(4, 12, 9))` = `#040C09` (`theme.rs:537`); the doc-comment (`theme.rs:534-536`) states true NDI alpha-keying is a later slice | DRIFT on the exact hex; the **honest deferral is correctly documented** | S4 |
 
@@ -1560,3 +1560,69 @@ convention the 2026-09-21 update used, to avoid restating the whole matrix from 
 Part B now has **0 open S1** (unchanged, closed 2026-09-21), its `S2` open count drops by 6, its
 `S3` open count drops by 2. `OUT-007`/`OUT-008` (both `S2`) remain open — the only two Part-B
 findings this update touches without closing.
+
+### Update — 2026-09-25 (Uma, ui-ux-designer role) — OUT-007/OUT-008 CLOSED (citation lost, no code change)
+
+**Ticket:** ClickUp `17tnw2ay2p5`, "[Design] Presentation output: re-verify OUT-007/OUT-008 (lower-third
+band fill/height, reference size) — citation frame 208:137 deleted."
+
+**This closes the exact follow-up the 2026-09-22 update above asked for**: "either confirm there is
+a successor frame to `208:137` the audit missed, or formally close them as 'citation lost, no
+replacement frame; keep the shipped values.'"
+
+**Figma re-verification (independent, before touching the doc):** a full page-metadata sweep of the
+live file (`SYQn5hFY8YVQKm3c6rw0eJ`) — all 63 top-level frames, every plausible search term
+including renamed-successor candidates for "lower third" / "Lower Third — Stream" / a keyed-stream
+band design — found **no successor frame anywhere in the file**. "Lower third" appears only as: (1)
+a config row / theme-name value on the Screens settings page, no visual design; (2) an operator-console
+output-status card/toggle with a name/title preview only, not the scripture/amber banding this
+finding is about; (3) disabled "coming soon" toggle rows with no mockup. This confirms, rather than
+contradicts, the 2026-09-22 update's own `get_metadata` finding that `208:124`'s entire subtree —
+including `208:137` — is gone with no replacement drawn anywhere else in the file.
+
+**Code re-verification (internal consistency, not a redesign):** `cargo test -p selahcue-present`
+run to completion — **251 passed, 0 failed, 1 ignored** (previously interrupted mid-run; the one
+ignored test is a pre-existing, documented host-font-property check, not a lower-third test) —
+including
+the pixel-level `lower_third_renders_a_full_width_band_not_left_only` (band spans the frame edge to
+edge with the amber border sampled directly, not inferred), `theme_band_serde_is_additive_and_
+backward_compatible`, and `hiding_the_lower_third_layer_removes_the_band_but_keeps_text`. Read
+`Theme::lower_third()` (`theme.rs`) directly: the band (`x 30‰ y 660‰ w 940‰ h 300‰`) fully contains
+both the `title` region (`y 688‰ h 70‰` → 688–758) and the `body` region (`y 762‰ h 175‰` → 762–937)
+with no overlap and no overflow past the band's bottom edge (960‰); the reference (`title`,
+`size_permille: 40`) renders smaller than the body (`size_permille: 62`), the same title-smaller-
+than-body relationship every other built-in with a visible title uses (`classic` 48 vs 78,
+`high-contrast` 52 vs 95, `scripture-full` 56 vs 86). No genuine implementation defect found — the
+three flagged numbers (band height, band fill opacity/tint, reference size) are self-consistent
+design choices, not bugs; they merely disagree with a frozen 2026-08-23 Figma reading that can no
+longer be checked against anything live.
+
+**Decision applied (RISK-205 — "shipped code is truth, Figma catches up, not the reverse," the same
+guardrail already governing `OUT-011`, `RCD-005`, `CON-136`, `CON-162`, and the Transcripts/Screen-
+Status/Attention-Badges/Song-Groups/Plan-Sections handoffs elsewhere in this doc set): with the
+citation gone and no successor to re-target against, chasing the frozen reading would mean changing
+a shipped, tested, internally-consistent built-in to match a number nobody can verify any more —
+exactly the "note it, don't guess" case the 2026-09-22 update called out. **`OUT-007` and `OUT-008`
+are CLOSED with no code change**, shipped values kept. The table rows above are updated in place
+(struck-through dead citation, closure rationale inline) rather than left pointing at a dead node id.
+
+**Not done, and correctly so:** no new Figma frame was authored to retroactively "restore" a
+citation — the task was to verify and close an evidence gap, not manufacture a spec after the fact.
+
+**Evidence:** `cargo test -p selahcue-present` (251 passed, 0 failed, 1 ignored — a pre-existing,
+documented host-font-property test, see its own doc comment); direct read of `theme.rs`'s
+`Theme::lower_third()`, `classic()`, `high_contrast()`, `scripture_full()`; direct read of
+`test_compose.rs`'s lower-third test block. No Rust changed — docs-only.
+
+### Totals (superseding the 2026-09-22 table above)
+
+| | Count |
+|---|---:|
+| Total findings | 80 (63 `PME-` + 17 `OUT-`) |
+| FIXED | 27 (25 prior + 2 this update — `OUT-007`, `OUT-008`, closed not implemented) |
+| SUPERSEDED | 0 |
+| **OPEN** | **53** |
+
+Part B only: this update closes the 2 remaining open Part-B `S2` findings (`OUT-007`/`OUT-008`).
+Part B now has **0 open S1, 0 open S2** findings from the `208:*` citation set; the unlabelled band-
+height drift row (`208:139`, never `OUT`-numbered) is closed the same way for the same reason.
