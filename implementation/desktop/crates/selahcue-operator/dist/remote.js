@@ -347,7 +347,11 @@
   // command, invoke() rejects and this reads as "not connected" too (never a silent guess).
   function syncHostBanner(connected) {
     var banner = document.getElementById("rc-host-banner");
-    if (banner) banner.hidden = connected !== false;
+    // Fail SAFE, not open: only an explicit `true` hides the warning. Both existing call sites
+    // already pass a strict boolean (`r === true` / `false`), so this is behaviorally identical
+    // for them — but a future caller forwarding a raw, non-normalized value (undefined, null)
+    // now shows the banner instead of silently hiding it (Sana, security review round 1).
+    if (banner) banner.hidden = connected === true;
   }
   function checkHostConnection() {
     return invoke("host_connected")
