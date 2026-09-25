@@ -1285,6 +1285,46 @@ EXPECTED_MIN_CHECKS = 2005
 # 2005 + 2 or any other arithmetic shortcut. Confirmed by two independent clean runs against the
 # real post-rebase tree: 2007 checks, 0 FAIL.
 EXPECTED_MIN_CHECKS = 2007
+#
+# 2007 -> 2012 (17tnw2aynar, PR #100 four-reviewer round remediation — Cody + Quinn + Vera, all
+# independently reachable from the same root cause): +5 new checks.
+#   - Vera (High, F1, blocker): the superseded early-return handed the caller the shared CACHE
+#     (`planDecks || []`) rather than the newest request's own answer. Two of the four call sites
+#     consume planLoadDecks()'s RETURN VALUE directly — planDeckBody's picker and the
+#     "+ New presentation" flow's before/after diff — so a superseded caller could receive a
+#     stale pre-request (or cold-cache empty) snapshot even though the shared planDecks was
+#     already correct, regressing both call sites versus `main` in the *ordinary*
+#     older-resolves-first interleaving (not the exotic one the original race-guard check
+#     covered), reachable via `⌘1`-`⌘8`/`⌘K` even with the deck-link modal open (its trap only
+#     absorbs Escape/Tab). Cody independently found the same root cause (Medium) from the
+#     deck_new angle alone. Fixed per Vera's validated remedy: track the most recently ISSUED
+#     call's own promise (`planDecksLatest`) and hand a superseded caller THAT instead of the
+#     cache, so every caller — whichever generation it issued — resolves to the true latest
+#     answer; `planLoadDecks` returns a promise that adopts the newest one on supersession,
+#     chaining correctly through any number of further supersessions. +2 checks: a fixture
+#     premise and the real assertion (older-resolves-first, asserting the RETURN VALUE, mirroring
+#     the "+ New presentation" before/after diff at a real call site — the exact surface F1
+#     regressed and the original race-guard check could not catch since it only asserted the
+#     module-level cache).
+#   - Quinn (non-blocking): the catch/failure-path generation guard was unexercised — isolated
+#     mutation of only that line produced 0 FAIL under the original race-guard check. Reproduced
+#     directly: a stale (superseded) request's invoke REJECTS after a newer request has already
+#     succeeded — the stale failure must not clobber the good result. +3 checks: two fixture
+#     premises (both requests reached the host; the newer success lands before the stale failure
+#     arrives) and the real assertion (planDecks is not nulled by the stale failure). The
+#     `__deckListManualQueue` mock hook gained a `rej` callback per queued entry to make this
+#     reachable. Mutation-verified TWICE, each in isolation with siblings running, per this file's
+#     own discipline — not just once: (1) reverting F1's fix alone (the success-path guard back
+#     to returning the cache) reproduces exactly one clean FAIL, the F1 check, 2012 checks still
+#     running; (2) removing the catch-path guard alone reproduces exactly one clean FAIL, the
+#     catch-path check, 2012 checks still running — the first attempt at this second mutation
+#     surfaced 2 COLLATERAL failures in the unrelated SP3 AC-9 checks further down this file,
+#     because the catch-path test's own cleanup did not resync `planDecks` after deliberately
+#     leaving it nulled; fixed by adding one plain, non-overlapping `await planLoadDecks()` resync
+#     at the end of that test block, re-verified clean (no collateral) after the fix. Both
+#     mutations restored, reconfirmed 2012 checks, 0 FAIL. Confirmed by two independent clean runs
+#     against the real tree: 2012 checks, 0 FAIL. Measured directly off real runs, not hand-summed.
+EXPECTED_MIN_CHECKS = 2012
 
 
 def find_chrome():
@@ -2084,10 +2124,11 @@ STUB = r"""
       // pool task with independent IPC-return jitter, so two in-flight deck_list calls have no
       // guaranteed resolve order relative to issue order. The snapshot (libView()) is captured
       // NOW, at invoke time, mirroring a real host that answers with the library state as of
-      // when it received the request.
+      // when it received the request. Each queued entry also carries `rej`, so the driver can
+      // make a specific in-flight call FAIL instead of succeed (exercises the catch-path guard).
       if (window.__deckListManualQueue) {
         var snap = libView();
-        return new Promise(function(res){ window.__deckListManualQueue.push({res: res, view: snap}); });
+        return new Promise(function(res, rej){ window.__deckListManualQueue.push({res: res, rej: rej, view: snap}); });
       }
       return Promise.resolve(libView());
     }
@@ -8199,6 +8240,51 @@ DRIVER = r"""
       ok(Array.isArray(planDecks) && planDecks.some(function(d){ return d.id === 4001; }),
          "planLoadDecks race guard: the newer request's data wins even though its response resolved first and the older request's stale response arrived after it");
       window.__LIB.decks.pop(); // remove the race fixture deck — restore the stable 3-deck library for later checks
+      // --- F1 (Vera, PR #100 review): a superseded call's RETURN VALUE must carry the newest ----
+      // request's real answer, not a stale snapshot of the shared cache. Two call sites consume
+      // the return value directly — planDeckBody's picker (`const decks = await planLoadDecks()`)
+      // and the "+ New presentation" flow's before/after diff — so returning the pre-request cache
+      // to a superseded caller silently breaks both: the picker renders empty, and deck_new's diff
+      // finds no new deck, treating a REAL successful creation as a failure. The race-guard check
+      // above only covers newer-resolves-first; this is the ordinary interleaving it misses:
+      // OLDER resolves first while a NEWER request is still outstanding.
+      window.__deckListManualQueue = [];
+      var f1BeforeIds = window.__LIB.decks.map(function(d){ return d.id; });
+      var f1Older = planLoadDecks(); // request #1 — issued first (mirrors "+ New presentation"'s post-deck_new load)
+      window.__LIB.decks.push({id: 4002, name: "F1 guard — created after request #1 issued", slides: 1});
+      var f1Newer = planLoadDecks(); // request #2 — issued second, still outstanding when #1 resolves
+      ok(window.__deckListManualQueue.length === 2,
+         "planLoadDecks F1 guard: both overlapping requests reached the host (fixture premise)");
+      window.__deckListManualQueue[0].res(window.__deckListManualQueue[0].view); // OLDER resolves FIRST
+      window.__deckListManualQueue[1].res(window.__deckListManualQueue[1].view); // NEWER resolves too, so the adopted chain can settle
+      var f1OlderResult = await f1Older;
+      await f1Newer;
+      var f1Created = f1OlderResult.filter(function(d){ return f1BeforeIds.indexOf(d.id) < 0; })[0];
+      ok(!!f1Created && f1Created.id === 4002,
+         "planLoadDecks F1 guard: a superseded call's return value carries the newest request's real answer, not a stale pre-request cache snapshot (got ids " + JSON.stringify(f1OlderResult.map(function(d){return d.id;})) + ")");
+      window.__deckListManualQueue = null;
+      window.__LIB.decks.pop();
+      // --- Quinn (PR #100 review): the catch-path generation guard was unexercised — mutating -----
+      // only that line produced 0 FAIL. Reproduce directly: a STALE (superseded) request's
+      // invoke REJECTS after a newer request has already succeeded — the stale failure must not
+      // clobber the good result.
+      window.__deckListManualQueue = [];
+      var catchOlder = planLoadDecks(); // request #1 — issued first, will FAIL
+      window.__LIB.decks.push({id: 4003, name: "Catch-path guard — newer success", slides: 1});
+      var catchNewer = planLoadDecks(); // request #2 — issued second, will SUCCEED
+      ok(window.__deckListManualQueue.length === 2,
+         "planLoadDecks catch-path guard: both overlapping requests reached the host (fixture premise)");
+      window.__deckListManualQueue[1].res(window.__deckListManualQueue[1].view); // newer SUCCEEDS first
+      await catchNewer;
+      ok(Array.isArray(planDecks) && planDecks.some(function(d){ return d.id === 4003; }),
+         "planLoadDecks catch-path guard: the newer request's successful load lands before checking the stale failure (fixture premise)");
+      window.__deckListManualQueue[0].rej("simulated stale host rejection"); // older's STALE response is a FAILURE, arriving after
+      await catchOlder;
+      window.__deckListManualQueue = null;
+      ok(Array.isArray(planDecks) && planDecks.some(function(d){ return d.id === 4003; }),
+         "planLoadDecks catch-path guard: a stale, late-arriving FAILURE does not null out a newer successful load");
+      window.__LIB.decks.pop();
+      await planLoadDecks(); // plain, non-overlapping resync — leaves planDecks correct for later checks regardless of this block's own outcome (mutation-safe cleanup)
       planRenderBuilder(missView);
       planRenderBuilder(sumView);
       ok(sumRowValue("Missing content") === "0" && !document.querySelector("#plan-b-insp .plan-sum-warn"),

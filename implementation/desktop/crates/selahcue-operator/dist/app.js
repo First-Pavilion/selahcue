@@ -7259,26 +7259,46 @@
       // let a response (success or failure) write planDecks when no newer request has been issued
       // since — a stale, late-arriving response becomes a no-op instead of a silent overwrite.
       let planDecksGen = 0;
-      async function planLoadDecks() {
+      // Review follow-up (17tnw2aynar — Cody Finding 1 / Vera F1): planDecksGen is shared across
+      // all 4 call sites, but planDeckBody's picker (:8185, below) and its "New presentation" flow
+      // (:~8301, below) consume planLoadDecks()'s RETURN VALUE, not just its planDecks side effect.
+      // Before the guard existed, a superseded call's own response was still the return value — the
+      // write and the return happened synchronously with no intervening await, so a caller always
+      // got back exactly its own fresh answer. Returning `planDecks || []` on supersession broke
+      // that: at the moment a superseded call resumes, the shared cache can still hold the
+      // PRE-request snapshot (or `[]` on a cold cache) if the request that superseded it hasn't
+      // resolved yet — so a caller whose own answer was genuinely accurate (e.g. "yes, deck_new
+      // really did create a deck") could see a stale/empty result and silently no-op. Track the
+      // most recently ISSUED call's own promise and hand a superseded caller THAT instead of the
+      // cache, so it always receives the newest available answer rather than a stale snapshot. A
+      // generation only ever defers to a strictly newer one, and `await`ing a returned promise
+      // flattens automatically, so this chains correctly through any number of supersessions with
+      // no cycle risk.
+      let planDecksLatest = null;
+      function planLoadDecks() {
         const gen = ++planDecksGen;
-        try {
-          const r = await invoke("deck_list");
-          if (gen !== planDecksGen) return planDecks || []; // superseded by a newer request — discard this stale response
-          // A response without a real decks ARRAY is UNKNOWN, not "loaded and empty". `|| []`
-          // here defeated the catch branch below: a host that answers deck_list with null (an
-          // older host, or one where the command is not implemented) read as an empty library,
-          // so EVERY deck-linked item was flagged "⚠ presentation missing" and counted in the
-          // Plan Summary. Only a genuine array means the library was actually read.
-          planDecks = r && Array.isArray(r.decks) ? r.decks : null;
-        } catch (e) {
-          console.error(e);
-          if (gen !== planDecksGen) return planDecks || []; // superseded — a newer request's outcome must not be clobbered by a stale failure
-          // Load FAILED — stay UNRESOLVED (null), not empty. planLinkChip only shows "⚠ missing"
-          // when planDecks is a loaded list lacking the id; leaving it null renders the generic
-          // chip instead of falsely flagging every deck-linked item as missing on a transient error.
-          planDecks = null;
-        }
-        return planDecks || [];
+        const p = (async () => {
+          try {
+            const r = await invoke("deck_list");
+            if (gen !== planDecksGen) return planDecksLatest; // superseded — hand back the newest request's own answer, not the cache
+            // A response without a real decks ARRAY is UNKNOWN, not "loaded and empty". `|| []`
+            // here defeated the catch branch below: a host that answers deck_list with null (an
+            // older host, or one where the command is not implemented) read as an empty library,
+            // so EVERY deck-linked item was flagged "⚠ presentation missing" and counted in the
+            // Plan Summary. Only a genuine array means the library was actually read.
+            planDecks = r && Array.isArray(r.decks) ? r.decks : null;
+          } catch (e) {
+            console.error(e);
+            if (gen !== planDecksGen) return planDecksLatest; // superseded — a newer request's outcome must not be clobbered by a stale failure
+            // Load FAILED — stay UNRESOLVED (null), not empty. planLinkChip only shows "⚠ missing"
+            // when planDecks is a loaded list lacking the id; leaving it null renders the generic
+            // chip instead of falsely flagging every deck-linked item as missing on a transient error.
+            planDecks = null;
+          }
+          return planDecks || [];
+        })();
+        planDecksLatest = p; // recorded synchronously, before any await — always points at the latest ISSUED call by the time a superseded one resumes
+        return p;
       }
       function planDeckName(id) {
         if (!planDecks) return null;
