@@ -342,9 +342,18 @@
   }
 
   // ---------- host-connection banner (RCD-008) ----------
-  // Reuses the SAME host_connected() signal Pre-service Check already renders a verdict from
-  // (preservice.js) — outside the Tauri shell, or with an older host that doesn't expose the
-  // command, invoke() rejects and this reads as "not connected" too (never a silent guess).
+  // Polls link_status (Tier 2 control-link state), NOT host_connected — Vera's performance review
+  // (PR #98) found host_connected is a one-shot boolean over Backend::is_remote(), set once in
+  // .setup() and never updated (main.rs: Backend has no interior mutability, build_backend() never
+  // re-dials, AppState.backend is an immutable field). Polling it every 3s was a functional dead
+  // end: the banner could show at boot and then NEVER change for the rest of the session, and it
+  // could never react to a real mid-service disconnect. link_status IS genuinely live — app.js's
+  // own #rcv-link control-link-loss card already polls it the same way (see currentLinkState()) —
+  // driven by the real per-poll outcome of the 1Hz `view()` call (main.rs's `view` command records
+  // link_error on every call). "connected" is the only state that hides the banner; "local" (no
+  // host at all — the stand-alone/demo backend) and "disconnected" (a host that WAS linked and
+  // dropped) both mean "pairing/device data can't be trusted right now", matching the banner's own
+  // copy in index.html.
   function syncHostBanner(connected) {
     var banner = document.getElementById("rc-host-banner");
     // Fail SAFE, not open: only an explicit `true` hides the warning. Both existing call sites
@@ -354,13 +363,32 @@
     if (banner) banner.hidden = connected === true;
   }
   function checkHostConnection() {
-    return invoke("host_connected")
-      .then(function (r) { syncHostBanner(r === true); })
+    return invoke("link_status")
+      .then(function (r) { syncHostBanner(!!r && r.state === "connected"); })
       .catch(function () { syncHostBanner(false); });
   }
   // Test-only hook (mirrors window.__resetSettingsAboutForTest/__resetSermonNoteDraftForTest):
   // lets a headless driver force an immediate recheck instead of waiting out the real 3s poll.
   window.__rcRecheckHostForTest = checkHostConnection;
+
+  // ---------- link poll (single bounded interval, visible-surface only) ----------
+  // Vera's review also found this interval had no visibility guard anywhere in the bundle (unlike
+  // preservice.js's own tick(), which only does its work while `root.classList.contains("active")`
+  // — the established pattern for a surface-scoped background poll in this codebase). Mirrors that
+  // exact pattern: the timer itself is unconditional and cheap (one closure call every 3s for the
+  // whole app lifetime), but the real work — loadSnapshot() and checkHostConnection() — only runs
+  // while this surface is the one on screen.
+  var pollTimer = null;
+  function rcPoll() {
+    if (!root.classList.contains("active")) return;
+    loadSnapshot();
+    checkHostConnection();
+  }
+  // Test-only hook (mirrors __rcRecheckHostForTest): lets a headless driver invoke the interval's
+  // own callback directly, so the visibility guard above can be proven WITHOUT waiting out a real
+  // 3s tick — call it while this surface is inactive and confirm no remote_snapshot/link_status
+  // call follows.
+  window.__rcPollForTest = rcPoll;
 
   // ---------- init ----------
   var nc = document.getElementById("rc-newcode");
@@ -372,5 +400,5 @@
   if (!cdTimer) cdTimer = setInterval(tickCountdown, 1000);
   // Poll for new pair attempts AND recheck the host link (bounded single interval — the banner
   // above needs to clear on its own once the output window comes up, with no manual refresh).
-  setInterval(function () { loadSnapshot(); checkHostConnection(); }, 3000);
+  if (!pollTimer) pollTimer = setInterval(rcPoll, 3000);
 })();

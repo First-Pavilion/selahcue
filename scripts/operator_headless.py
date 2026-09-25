@@ -1260,7 +1260,39 @@ EXPECTED_MIN_CHECKS = 1964
 # repeated discipline the merged total is read off an actual clean run against the real post-rebase
 # tree, never hand-summed as 1946 + 25 or any other arithmetic shortcut. Confirmed by three
 # independent clean runs against the real post-rebase tree, all agreeing: 1971 checks, 0 FAIL.
-EXPECTED_MIN_CHECKS = 1971
+#
+# 1971 -> 1976: PR #98 review remediation (Vera, performance review round 1). F1 (High, real
+# functional bug, not merely a performance concern): RCD-008's banner polled host_connected(),
+# which is Backend::is_remote() — a `matches!` over a plain, non-interior-mutable field set once in
+# .setup() (main.rs) and never updated (build_backend() never re-dials) — so the polled value could
+# never change for the life of the process; the banner could show at boot and then never clear even
+# once the real host connected, and could never react to a genuine mid-service disconnect. Repointed
+# at link_status() instead — the same genuinely-live Tier 2 control-link signal app.js's own
+# #rcv-link card already polls (driven by the real per-call outcome of the 1Hz `view()` poll,
+# main.rs) — connected when state==="connected", not connected for "local" or "disconnected" alike
+# (both mean pairing/device data can't be trusted right now, matching the banner's own copy). No
+# new checks from F1 alone: the existing RCD-008 assertions were rewritten in place to exercise the
+# corrected code path (STUB's host_connected() reverted to its pre-existing simple form; a NEW
+# dedicated one-shot hook, __rcLinkDownOnce, drives link_status() instead — kept separate from the
+# pre-existing __link override an unrelated G.2 control-link-loss scenario owns for the rest of the
+# run, the same cross-test-corruption lesson this constant's own history already recorded once for
+# this exact ticket). F3 (Medium, bundled with F1 since it touches the same interval): the 3s poll
+# had no visibility guard anywhere in the bundle, unlike preservice.js's own established
+# tick()/root.classList.contains("active") pattern for a surface-scoped background poll — added,
+# mirroring that pattern exactly, plus a new __rcPollForTest hook (mirrors __rcRecheckHostForTest)
+# so the guard is tested by calling the interval's own callback directly rather than waiting out a
+# real 3s tick. +5 assertions: 2 setup premises (the hook exists; the surface is genuinely inactive)
+# + 1 for the guard blocking real work while inactive + 1 setup (navigating back re-activates the
+# surface) + 1 positive control proving the SAME poll call does its real work once active again (so
+# "no work while inactive" is the guard, not a dead mechanism — the "control catches a copy, not
+# the real predicate" trap this repo's own CLAUDE.md names explicitly). Every new/changed assertion
+# mutation-tested: reverting link_status back to host_connected reproduces host_connected's dead-
+# poll behavior (banner never actually changes on the second recheck once __rcLinkDownOnce's single
+# flip is exhausted — the OLD assertions would have kept passing against that bug, which is exactly
+# why this was a real F1 and not a false alarm); removing the rcPoll visibility guard turns the new
+# F3 "no work while inactive" assertion RED; restoring both turns the whole file green again.
+# Confirmed by three independent clean runs against the real tree: 1976 checks, 0 FAIL each time.
+EXPECTED_MIN_CHECKS = 1976
 
 
 def find_chrome():
@@ -1843,18 +1875,24 @@ STUB = r"""
     }
     if (cmd === "remote_new_code")
       return Promise.resolve({code:"AB12CD34", fingerprint:"A1 B2 C3 D4", expires_in_secs:120});
-    // One-shot hook (mirrors __pmRejectOnce/__deckListNullOnce): forces exactly the NEXT
-    // host_connected() answer to "not connected", self-consuming so it can never leak into an
-    // unrelated caller later in the run (RCD-008, 17tnw2axptv) — deliberately separate from
-    // __psNoHost, which Pre-service Check owns for its own scenario.
-    if (cmd === "host_connected") {
-      if (window.__rcHostDownOnce) { window.__rcHostDownOnce = false; return Promise.resolve(false); }
-      return Promise.resolve(!window.__psNoHost); // a real output window (unless the test says otherwise)
-    }
+    if (cmd === "host_connected") return Promise.resolve(!window.__psNoHost); // a real output window (unless the test says otherwise)
   // Tier 2 control-link state. Defaults to a healthy remote link; __link overrides it.
   // Returning `null` here would exercise the "older shell" path instead, which the driver
   // covers separately by deleting the override.
-  if (cmd === "link_status") return Promise.resolve(window.__link || {state:"connected", epoch:1, attempts:0, last_error:null});
+  //
+  // One-shot hook (mirrors __pmRejectOnce/__deckListNullOnce): forces exactly the NEXT
+  // link_status() answer to "disconnected", self-consuming so it can never leak into an unrelated
+  // caller later in the run (RCD-008, 17tnw2axptv). Deliberately its OWN flag, separate from
+  // __link (which an existing, unrelated G.2 control-link-loss scenario owns for the whole rest of
+  // the run) — reusing a shared "global for the whole run" override here would risk exactly the
+  // cross-test corruption this file's own history already warns about (see __psNoHost vs
+  // __rcHostDownOnce above this fix). RCD-008 originally polled host_connected() — a one-shot
+  // boolean that can never change after boot (Vera, PR #98 performance review) — and now polls
+  // link_status() instead, the same genuinely-live signal app.js's #rcv-link card already uses.
+  if (cmd === "link_status") {
+    if (window.__rcLinkDownOnce) { window.__rcLinkDownOnce = false; return Promise.resolve({state:"disconnected", epoch:1, attempts:0, last_error:"simulated host disconnect"}); }
+    return Promise.resolve(window.__link || {state:"connected", epoch:1, attempts:0, last_error:null});
+  }
     if (cmd === "stt_ready") return Promise.resolve(window.__psStt || {ready:true, state:"ready", model:"Small", detail:"On-device model ready"});
     if (cmd === "audio_input") return Promise.resolve(window.__psAudio || {available:true, state:"ok", name:"Focusrite Scarlett 2i2", channels:2, detail:"Focusrite Scarlett 2i2 · 2 ch"});
     if (cmd === "disk_free")
@@ -7300,42 +7338,80 @@ DRIVER = r"""
          "RCD-009: the Viewer role pill clears AA-normal on --sc-elevated (" + _f(rcViewerCr) + ":1) — promoted from --sc-text-muted's 3.45:1 to --sc-text-secondary");
 
       // RCD-008: with no output window connected, the surface used to render a silent empty
-      // state indistinguishable from "nothing is paired yet". Reuses host_connected() — the
-      // SAME signal Pre-service Check already renders a verdict from — via a DEDICATED one-shot
-      // hook (__rcHostDownOnce, mirrors __pmRejectOnce/__deckListNullOnce), deliberately kept
-      // separate from Pre-service's own __psNoHost: sharing that flag here was tried first and,
-      // although nothing in this surface or its own mock reads it beyond host_connected(),
-      // toggling it mid-run corrupted an unrelated, much-earlier-resolved boot value
-      // (Service Plan's cached planDeckName(2)) elsewhere in the suite — a real cross-test blast
-      // radius from reusing a "global for the whole run" flag for a second, unrelated scenario.
-      // The one-shot hook self-consumes on the very next host_connected() call, so nothing needs
-      // manual restoring and no other test's timing/state can be perturbed by it.
+      // state indistinguishable from "nothing is paired yet". Polls link_status — the Tier 2
+      // control-link signal app.js's own #rcv-link card already renders a verdict from — via a
+      // DEDICATED one-shot hook (__rcLinkDownOnce, mirrors __pmRejectOnce/__deckListNullOnce),
+      // deliberately its own flag, separate from the existing __link override an unrelated G.2
+      // control-link-loss scenario owns for the rest of the run: reusing a "global for the whole
+      // run" flag for a second, unrelated scenario is exactly the class of cross-test corruption
+      // this file's own history already warns about (an earlier version of this same fix shared
+      // Pre-service Check's __psNoHost and corrupted an unrelated, much-earlier-resolved boot
+      // value — Service Plan's cached planDeckName(2) — elsewhere in the suite). The one-shot hook
+      // self-consumes on the very next link_status() call, so nothing needs manual restoring and
+      // no other test's timing/state can be perturbed by it.
+      //
+      // NOTE: this originally polled host_connected() (mirroring Pre-service Check), not
+      // link_status(). Vera's performance review (PR #98) found that wrong: host_connected() is
+      // Backend::is_remote(), a `matches!` over a plain, non-interior-mutable field set ONCE in
+      // .setup() (main.rs) — build_backend() never re-dials, so the value can never change for the
+      // life of the process. Polling it every 3s was a functional dead end: the banner could show
+      // at boot and then never clear even once the SAME real host connected (contradicting its own
+      // "updates automatically once it connects" copy), and could never react to a genuine
+      // mid-service disconnect. link_status() IS real and dynamic (driven by the 1Hz `view()`
+      // poll's own per-call success/failure, main.rs), so this now exercises behavior that can
+      // actually happen in production, not just in this test's own simulation.
       //
       // Drives the check via remote.js's own __rcRecheckHostForTest hook (its comment: "lets a
       // headless driver force an immediate recheck instead of waiting out the real 3s poll")
       // rather than waiting out the real setInterval(…, 3000) — found live while finishing this
-      // ticket's interrupted work: the original version of this check instead did
+      // ticket's interrupted work: an earlier version of this check instead did
       // `await waitFor(function(){ return !el("rc-host-banner").hidden; }, 250)` against the real
       // 3s poll, budgeted at 250*20ms = 5000ms — a margin that depends on wall-clock alignment
       // (how much of the current 3s cycle had already elapsed) and machine load, not a fixed
       // property of the code under test; mutation-testing an UNRELATED check elsewhere in this same
       // run made this one flip FAIL on an otherwise-correct tree, purely from the shift in overall
       // page timing. Awaiting the hook directly removes the real-time dependency entirely — this
-      // still exercises the exact same syncHostBanner()/host_connected() code path, just without
-      // the driver having to wait out real seconds to prove it.
+      // still exercises the exact same syncHostBanner()/checkHostConnection() code path, just
+      // without the driver having to wait out real seconds to prove it.
       ok(el("rc-host-banner") && el("rc-host-banner").hidden,
          "RCD-008 setup: the no-host banner starts hidden while the host is connected");
-      window.__rcHostDownOnce = true;
+      window.__rcLinkDownOnce = true;
       ok(typeof window.__rcRecheckHostForTest === "function",
          "RCD-008 setup: remote.js exposes __rcRecheckHostForTest (its own documented headless-driver hook)");
       await window.__rcRecheckHostForTest();
       ok(!el("rc-host-banner").hidden && getComputedStyle(el("rc-host-banner")).display !== "none",
-         "RCD-008: losing the host connection shows the 'No output window connected' banner (computed display, not just the attr)");
+         "RCD-008: losing the host link shows the 'No output window connected' banner (computed display, not just the attr)");
       ok(/No output window connected/.test(el("rc-host-banner").textContent),
          "RCD-008: the banner names the real condition, matching Pre-service Check's own wording");
       await window.__rcRecheckHostForTest();
       ok(el("rc-host-banner").hidden && getComputedStyle(el("rc-host-banner")).display === "none",
-         "RCD-008: the banner clears once the host reconnects and the surface rechecks — no manual refresh needed");
+         "RCD-008: the banner clears once the host link recovers and the surface rechecks — no manual refresh needed");
+
+      // F3 (Vera, PR #98 performance review): the 3s poll had no visibility guard anywhere in the
+      // bundle, unlike preservice.js's own tick()/root.classList.contains("active") pattern (the
+      // established convention for a surface-scoped background poll in this codebase). Tested via
+      // a new __rcPollForTest hook (mirrors __rcRecheckHostForTest) rather than waiting out a real
+      // 3s tick, for the same real-time-dependency reason the RCD-008 checks above call the
+      // recheck hook directly instead of waitFor-ing the real interval.
+      var rcCallsBeforeInactive = window.__calls.length;
+      document.querySelector('.nav-item[data-surface="console"]').click();
+      ok(!el("surface-remote").classList.contains("active"),
+         "RCD-008/F3 setup: the Remote Control surface is no longer the active one");
+      ok(typeof window.__rcPollForTest === "function",
+         "RCD-008/F3 setup: remote.js exposes __rcPollForTest (its own documented headless-driver hook)");
+      window.__rcPollForTest();
+      ok(window.__calls.slice(rcCallsBeforeInactive).every(function(c){ return c.cmd !== "remote_snapshot" && c.cmd !== "link_status"; }),
+         "RCD-008/F3: the 3s poll's real work (remote_snapshot + link_status) does not run while the surface is inactive");
+      document.querySelector('.nav-item[data-surface="settings"]').click();
+      setSettingsPage("network");
+      el("net-open-roles").click();
+      ok(el("surface-remote").classList.contains("active"),
+         "RCD-008/F3 (control): navigating back to Remote Control re-activates the surface");
+      var rcCallsBeforeActive = window.__calls.length;
+      window.__rcPollForTest();
+      ok(window.__calls.slice(rcCallsBeforeActive).some(function(c){ return c.cmd === "remote_snapshot"; }) &&
+         window.__calls.slice(rcCallsBeforeActive).some(function(c){ return c.cmd === "link_status"; }),
+         "RCD-008/F3 (control): the SAME poll call genuinely does its real work once the surface is active again — 'inactive' above was the guard, not a dead mechanism");
 
       document.querySelector('.nav-item[data-surface="console"]').click();
       document.dispatchEvent(new KeyboardEvent("keydown", {key:"R", metaKey:true, shiftKey:true, bubbles:true}));
