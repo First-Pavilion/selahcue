@@ -1266,11 +1266,16 @@ fn a_bundled_inter_face_wins_the_family_tie_break_over_a_later_impostor() {
          the tie-break below"
     );
 
-    // THE GUARD: bundled Inter loaded FIRST, impostor pushed SECOND — the exact shape of
-    // `build_system_fs` (bundled loads, then `load_system_fonts()`). Mutation-verified: see
-    // ticket 86ak7kkfv for the recorded evidence of loading them in the opposite order.
+    // THE GUARD: the REAL `load_bundled_system_faces` (the exact production function
+    // `build_system_fs` calls before `load_system_fonts()`) loads the bundled faces first,
+    // then the impostor is pushed SECOND to stand in for whatever `load_system_fonts()`
+    // would later find on a real machine. Because this calls production code directly, a
+    // regression that reorders or drops the bundled Inter load inside
+    // `load_bundled_system_faces` itself — not just inside this test's own fixture — turns
+    // this RED. Mutation-verified: see ticket 86ak7kkfv for the recorded evidence of
+    // reordering the real function and this test failing.
     let mut contested = Database::new();
-    contested.load_font_data(BUNDLED_INTER.to_vec());
+    selahcue_engine::raster::load_bundled_system_faces(&mut contested);
     contested.push_face_info(impostor_face());
     let contested_width = shaped_width(contested, PROBE_TEXT);
 
