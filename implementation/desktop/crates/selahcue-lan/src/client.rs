@@ -55,6 +55,23 @@ impl ControlClient {
     /// the device never hangs up before the operator has decided (else it would burn the code).
     const PAIR_TIMEOUT: Duration = Duration::from_secs(150);
 
+    /// How long [`command`](Self::command) waits for a reply once the connection is already
+    /// established.
+    ///
+    /// Unlike [`CONNECT_TIMEOUT`](Self::CONNECT_TIMEOUT), this bounds a REQUEST over an
+    /// already-open socket, not the dial itself — and until this constant existed, nothing did:
+    /// `recv_json` had no deadline at all. A half-open connection (Wi-Fi drops, the host machine
+    /// sleeps, a switch reboots) is TCP-silent — no RST, no FIN — so a caller waiting on this
+    /// reply would hang for however long the OS takes to notice (minutes, on macOS/Linux
+    /// defaults). That is precisely the outage shape a reconnect loop exists to recover from
+    /// (86ak4xxwm Tier 2a review, Vera P-3): every poll blocked meant the poll never returned,
+    /// so the link's own liveness check — the poll failing — could never fire, and the
+    /// reconnect path was never even reached. Two seconds is generous for a LAN request/response
+    /// (this repo's own handshake timeout budgets far less per phase) and, critically, must stay
+    /// short enough that a caller polling on some regular cadence (e.g. the operator console's
+    /// 1 Hz `view` poll) gets an answer well inside one tick.
+    const COMMAND_TIMEOUT: Duration = Duration::from_secs(2);
+
     /// Establish the pinned-TLS WebSocket transport (no authentication yet).
     async fn establish(
         addr: SocketAddr,
@@ -176,12 +193,20 @@ impl ControlClient {
         self.role
     }
 
-    /// Send a command and await the operator's reply.
+    /// Send a command and await the operator's reply. Bounded by [`COMMAND_TIMEOUT`](Self::COMMAND_TIMEOUT)
+    /// so a half-open connection (the peer vanished without closing the socket) surfaces as an
+    /// error a caller can act on — e.g. retry — instead of hanging indefinitely.
     pub async fn command(&mut self, command: Command) -> Result<ServerMessage, TransportError> {
         let id = self.next_id;
         self.next_id = self.next_id.wrapping_add(1);
-        send_json(&mut self.ws, &Request::new(id, command)).await?;
-        recv_json(&mut self.ws).await
+        let exchange = async {
+            send_json(&mut self.ws, &Request::new(id, command)).await?;
+            recv_json(&mut self.ws).await
+        };
+        match tokio::time::timeout(Self::COMMAND_TIMEOUT, exchange).await {
+            Ok(result) => result,
+            Err(_) => Err(TransportError::Protocol("command timed out".into())),
+        }
     }
 
     /// Close the connection cleanly.

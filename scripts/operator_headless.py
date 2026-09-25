@@ -5045,7 +5045,12 @@ DRIVER = r"""
       await waitFor(function(){ return /NO SIGNAL/.test(pillOf("stage")); });
       ok(/NO SIGNAL/.test(pillOf("stage")),
          "fabrication #2 (positive control): a REPORTED no_signal still reads NO SIGNAL — the fix narrows the branch, it does not remove it (pill=" + pillOf("stage") + ")");
-      V.outputs = [];
+      // Restore the harness's own default fixture (QA finding, PR #101: leaving this `[]`
+      // dropped `main`'s outputs entry for every check running afterward in this same page
+      // session — including the CON-089 fullscreen hit-test block and the Pre-service
+      // readiness-count block much later in this file — turning a scoped positive control into
+      // a silent global state leak).
+      V.outputs = [{role:"main", assigned:true, assigned_key:"d1", display:"Main", width:1920, height:1080}];
 
       // === CLOSE-BUTTON PATH: closing the output window with its own OS close button changes
       // `enabled` on the HOST with no operator interaction in this webview. Mutate the host view

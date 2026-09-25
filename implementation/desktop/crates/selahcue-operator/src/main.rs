@@ -1330,31 +1330,103 @@ async fn audio_input() -> AudioInputReply {
 
 #[tauri::command]
 async fn view(state: State<'_, AppState>) -> Result<OperatorView, String> {
+    view_body(&state, read_endpoint).await
+}
+
+/// `view`'s real body, against a bare `&AppState`. Split out so a test can drive the EXACT
+/// sequence production uses — reconnect call included — instead of a hand-reconstructed copy.
+/// The endpoint lookup is injected for the same reason [`maybe_reconnect_from`] takes one: a
+/// test proving the real reconnect fires must not depend on the shared OS-temp-dir file every
+/// other process on the machine also reads/writes (`endpoint_file_path`'s own doc). Production
+/// calls the one-line wrapper above with the real `read_endpoint`.
+///
+/// An earlier version of this function was itself the bug: it called `record_link_outcome` then
+/// immediately `maybe_reconnect`, and the test that was supposed to guard it called
+/// `record_link_outcome` and `maybe_reconnect_from` directly rather than through this shared
+/// body — so it passed even with the real call sequence broken (independently found and proven
+/// by all four reviewers on 86ak4xxwm's review round: Cody, Vera P-2, Sana S-2). Any future
+/// change here is covered by `link_reconnect_tests::a_dropped_link_really_reconnects_and_the_view_really_changes`,
+/// which now calls exactly this function in a loop, the same way the webview's 1 Hz poll does.
+async fn view_body(
+    state: &AppState,
+    endpoint_source: impl Fn() -> Option<Endpoint>,
+) -> Result<OperatorView, String> {
     // The 1 Hz view poll is the console's only regular traffic over the control link, so it is
     // also the only place the link's liveness is observable — and, since Tier 2a, the only place
     // a real reconnect attempt gets a chance to run. Record the outcome so `link_status` reports
     // what actually happened, then (Remote only) drive the real backoff-paced re-dial loop.
     let r = state.backend.view().await;
     if state.backend.is_remote() {
-        record_link_outcome(&state, r.as_ref().err());
-        maybe_reconnect(&state).await;
+        record_poll_outcome(state, r.as_ref().err());
+        maybe_reconnect_from(state, endpoint_source).await;
     }
     r
 }
 
-/// Feed one poll's outcome into the real `LinkStatus` state machine and, on failure, schedule
-/// the next automatic attempt per its own backoff table. A poisoned lock degrades to doing
-/// nothing this tick rather than panicking the whole console over one stalled mutex.
-fn record_link_outcome(state: &AppState, err: Option<&String>) {
+/// Feed one POLL's outcome into the real `LinkStatus` state machine.
+///
+/// A poll failure only ever STARTS the backoff sequence (`Connected`/`Local` → `Reconnecting`,
+/// exactly once) — it must never touch an ALREADY-scheduled deadline. The first version of this
+/// function unconditionally rewrote `link_next_attempt` on every call, including a routine poll
+/// against a link already known to be down. Since `view_body` calls `record_poll_outcome` then
+/// `maybe_reconnect` back to back on every tick, that meant the deadline this tick just set was
+/// always checked microseconds after being set — never due — and the NEXT tick's poll failure
+/// overwrote it again before it could ever age past its own backoff. The reconnect path could
+/// not fire, ever (proven independently by all four reviewers on 86ak4xxwm's review round, each
+/// replaying the real sequence against the real `LinkStatus`: 0 re-dials over dozens of
+/// simulated 1 Hz polls). Once genuinely reconnecting, only a REAL dial attempt
+/// (`maybe_reconnect_from`'s own `connect_remote` call, via `record_dial_failure` below) is
+/// allowed to advance `attempts`/the schedule — which is also what makes `attempts` count actual
+/// re-dials instead of every failing poll (Sana S-4: the poll-driven version reported `attempts`
+/// climbing past `MAX_RECONNECT_ATTEMPTS` with zero real dials made).
+fn record_poll_outcome(state: &AppState, err: Option<&String>) {
     let Ok(mut status) = state.link_status.lock() else {
         return;
     };
     match err {
-        None => status.observe_success(),
-        Some(e) => status.observe_failure(e),
+        None => {
+            status.observe_success();
+            drop(status);
+            if let Ok(mut slot) = state.link_next_attempt.lock() {
+                *slot = None;
+            }
+        }
+        Some(e) => {
+            if !matches!(
+                status.state(),
+                selahcue_lan::LinkState::Connected | selahcue_lan::LinkState::Local
+            ) {
+                // Already reconnecting, or the breaker has given up: this poll is confirming
+                // what is already known, not a new attempt. Leave whatever schedule is already
+                // pending untouched — this is the fix for the bug the doc comment above
+                // describes.
+                return;
+            }
+            status.observe_failure(e);
+            schedule_next_attempt(state, &status);
+        }
     }
+}
+
+/// Record a REAL dial attempt's failure (`maybe_reconnect_from`'s own `connect_remote` call) —
+/// distinct from [`record_poll_outcome`]: unlike a routine poll, this must always advance
+/// `attempts` and reschedule, even though the state is already `Reconnecting` (which is exactly
+/// the state `record_poll_outcome` refuses to touch further). This poll-vs-dial split is what
+/// makes `attempts` mean "real re-dials made", not "polls received while down" (Sana S-4).
+fn record_dial_failure(state: &AppState, err: &str) {
+    let Ok(mut status) = state.link_status.lock() else {
+        return;
+    };
+    status.observe_failure(err);
+    schedule_next_attempt(state, &status);
+}
+
+/// Sets `link_next_attempt` from `status`'s own backoff table. The only two call sites allowed
+/// to move the schedule forward: the first poll failure ([`record_poll_outcome`]) and a failed
+/// dial attempt ([`record_dial_failure`]) — never a routine poll against an already-known-down
+/// link.
+fn schedule_next_attempt(state: &AppState, status: &selahcue_lan::LinkStatus) {
     let next = status.next_backoff();
-    drop(status);
     if let Ok(mut slot) = state.link_next_attempt.lock() {
         *slot = next.map(|d| std::time::Instant::now() + d);
     }
@@ -1366,15 +1438,11 @@ fn record_link_outcome(state: &AppState, err: Option<&String>) {
 /// actually recovers the link without an operator restarting the console, up to the state
 /// machine's own `MAX_RECONNECT_ATTEMPTS` bound (after which it reports `Disconnected` and this
 /// function has nothing left to schedule).
-async fn maybe_reconnect(state: &AppState) {
-    maybe_reconnect_from(state, read_endpoint).await;
-}
-
-/// [`maybe_reconnect`], but the endpoint lookup is injected rather than always reading the
-/// shared OS-temp-dir file `read_endpoint` uses. Production calls the two-line wrapper above;
-/// tests inject a fixed test endpoint so they can prove a real re-dial happens without racing
-/// every other process on the machine over one global path (`endpoint_file_path`'s own doc: the
-/// output window and operator shell agree on it by convention, not per-test isolation).
+///
+/// `endpoint_source` is injected rather than hard-coded to `read_endpoint` for the same reason
+/// [`view_body`] injects it: a test proving a real re-dial fires must not depend on the shared
+/// OS-temp-dir file every other process on the machine also reads/writes. Production always
+/// calls this via `view_body(&state, read_endpoint)`.
 async fn maybe_reconnect_from(state: &AppState, endpoint_source: impl Fn() -> Option<Endpoint>) {
     let due = {
         let Ok(mut slot) = state.link_next_attempt.lock() else {
@@ -1394,10 +1462,12 @@ async fn maybe_reconnect_from(state: &AppState, endpoint_source: impl Fn() -> Op
         return;
     }
     let Some(ep) = endpoint_source() else {
-        // No endpoint file at all — the output window is gone, not merely unreachable. Nothing
-        // to redial against; the state machine's own attempt/backoff bookkeeping already
-        // advanced in `record_link_outcome`, so this just declines to burn an attempt on a
-        // connect that cannot possibly succeed.
+        // No endpoint file at all — the output window is gone, not merely unreachable. This
+        // still counts as a failed dial attempt (not a free pass): without that, once the first
+        // poll failure schedules the one and only deadline `record_poll_outcome` will ever set,
+        // nothing would ever reschedule another attempt, and the console would sit in
+        // "Reconnecting…" forever with no dial ever tried again and no honest give-up either.
+        record_dial_failure(state, "no output window endpoint found");
         return;
     };
     match connect_remote(&ep).await {
@@ -1408,7 +1478,7 @@ async fn maybe_reconnect_from(state: &AppState, endpoint_source: impl Fn() -> Op
             }
         }
         Err(e) => {
-            record_link_outcome(state, Some(&e));
+            record_dial_failure(state, &e);
         }
     }
 }
@@ -1514,9 +1584,20 @@ mod link_reconnect_tests {
     /// reports `reconnecting` (never a static "disconnected" the console cannot recover from
     /// without a restart), and once the backoff elapses and a real host comes back — on a
     /// DIFFERENT address, exactly as a restarted output window would advertise — the operator's
-    /// own `view()` really reflects the new host's state. Nothing here is asserted against
-    /// `LinkStatus`'s internals directly; every check goes through the same `link_status`/`view`
-    /// Tauri commands the webview polls.
+    /// own `view()` really reflects the new host's state.
+    ///
+    /// Drives the REAL `view_body` — the exact function `view` delegates to — in a loop, the
+    /// same call pattern the webview's 1 Hz poll uses. An earlier version of this test called
+    /// `record_link_outcome`/`maybe_reconnect_from` directly instead, and PASSED even after the
+    /// real call site inside `view`/`view_body` was deleted entirely (independently reproduced
+    /// by all four reviewers on 86ak4xxwm's review round — Cody, Vera P-2, Sana S-2). That gap,
+    /// not only the scheduling bug it was hiding (Vera P-1 / Sana S-1 / Cody, also independently
+    /// reproduced: the previous version of `record_link_outcome` rewrote `link_next_attempt` on
+    /// every poll, so a deadline set this tick was always checked microseconds later — never
+    /// due — is what this rewrite closes. No fixed-duration sleep gates an assertion here
+    /// either (the previous version's `sleep(50ms)` after `shutdown_background()` — which
+    /// explicitly does not wait for tasks to stop — was a flake risk under CI load, per Vera's
+    /// and Sana's review); both waits below are bounded polls for the real condition.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn a_dropped_link_really_reconnects_and_the_view_really_changes() {
         let (addr1, pin1, server1) = spawn_server("Original Service");
@@ -1524,76 +1605,91 @@ mod link_reconnect_tests {
             .await
             .expect("connect to first server");
         let state = state_with_remote(remote);
+        // Never actually consulted while nothing is due (see the `view_body`/`maybe_reconnect_from`
+        // doc comments) — used for the phases below that must not touch the shared endpoint file.
+        let no_endpoint = || None;
 
         // 1. Healthy: the real poll succeeds and link_status says so.
-        let v1 = view_for_test(&state).await.expect("first view succeeds");
+        let v1 = view_body(&state, no_endpoint)
+            .await
+            .expect("first view succeeds");
         assert_eq!(v1.plan_name, "Original Service");
         assert_eq!(link_status_reply(&state).state, "connected");
 
         // 2. Kill the real server — a genuine dropped socket (every task the server's runtime
         //    owns, including the already-accepted connection's handler, is dropped), not a
-        //    simulated error.
+        //    simulated error. Bounded wait-for-condition: poll the real `view_body` until it
+        //    genuinely observes the drop, rather than betting on a fixed sleep duration.
         server1.shutdown_background();
-        // Give the shutdown a moment to actually close the connection.
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        let mut saw_failure = false;
+        for _ in 0..100 {
+            if view_body(&state, no_endpoint).await.is_err() {
+                saw_failure = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert!(
+            saw_failure,
+            "poll against a dead socket must eventually fail (waited 5s)"
+        );
 
-        // 3. The next real poll fails, and link_status must say `reconnecting` — not a static
-        //    `disconnected` — because an automatic attempt really is now scheduled.
-        let err = view_for_test(&state).await;
-        assert!(err.is_err(), "poll against a dead socket must fail");
+        // 3. link_status must say `reconnecting` — not a static `disconnected` — because an
+        //    automatic attempt really is now scheduled. `attempts == 1`: exactly one POLL
+        //    detected the drop; no DIAL has been attempted yet (Sana S-4 — `attempts` must count
+        //    real re-dials, not every poll against a link already known to be down).
         let status = link_status_reply(&state);
         assert_eq!(
             status.state, "reconnecting",
             "a dropped link with attempts remaining must report reconnecting, not a dead end"
         );
-        assert_eq!(status.attempts, 1);
+        assert_eq!(
+            status.attempts, 1,
+            "one poll observed the drop; no dial has been attempted yet"
+        );
 
         // 4. Stand up a SECOND real server on a DIFFERENT address with DIFFERENT content — the
-        //    honest shape of "the output window restarted" — and let the scheduled backoff
-        //    elapse for real.
+        //    honest shape of "the output window restarted".
         let (addr2, pin2, server2) = spawn_server("Recovered Service");
-        // `next_backoff` indexes by attempts ALREADY made (1 after the one failure above), i.e.
-        // it is the delay before the *next* (second) attempt — `BACKOFF_MS[1]` = 500ms, not the
-        // first slot's 250ms. Sleep past it for real rather than reaching into `LinkStatus`.
-        tokio::time::sleep(Duration::from_millis(600)).await;
-
-        maybe_reconnect_from(&state, move || {
+        let second_server = move || {
             Some(Endpoint {
                 addr: addr2.to_string(),
                 pin: pin2.to_hex(),
                 device: "producer".into(),
                 token: "tok-prod".into(),
             })
-        })
-        .await;
+        };
 
-        // 5. The reconnect must be REAL: link_status flips back to connected, AND a fresh view()
-        //    call returns the SECOND server's own state — proving the swap actually happened,
-        //    not merely that the state label changed.
-        let post = link_status_reply(&state);
-        assert_eq!(
-            post.state, "connected",
-            "last_error = {:?}",
-            post.last_error
+        // 5. Drive the REAL `view_body` sequence in a loop until the real backoff elapses and a
+        //    re-dial actually fires and succeeds. Bounded well past the state machine's own
+        //    `MAX_RECONNECT_ATTEMPTS` give-up point, so a regression fails the assertion below
+        //    rather than hanging.
+        let mut reconnected = false;
+        for _ in 0..100 {
+            let _ = view_body(&state, second_server).await;
+            if link_status_reply(&state).state == "connected" {
+                reconnected = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        assert!(
+            reconnected,
+            "the real view_body sequence never reconnected within 10s — last_error = {:?}",
+            link_status_reply(&state).last_error
         );
-        let v2 = view_for_test(&state).await.expect("view after reconnect");
+
+        // 6. The reconnect must be REAL: a fresh view() call returns the SECOND server's own
+        //    data — proving the swap actually happened, not merely that the state label changed.
+        let v2 = view_body(&state, second_server)
+            .await
+            .expect("view after reconnect");
         assert_eq!(v2.plan_name, "Recovered Service");
 
         // A `Runtime` cannot drop itself from inside an async context (it needs to block the
         // dropping thread), so shut both down explicitly rather than letting the test fn's end
         // do it implicitly.
         server2.shutdown_background();
-    }
-
-    /// The `view` Tauri command's real body (see `view`), against a bare `&AppState` — its logic
-    /// only ever touches `&AppState`, and `record_link_outcome`/`maybe_reconnect_from` are the
-    /// actual production functions, not a re-implementation for the test.
-    async fn view_for_test(state: &AppState) -> Result<OperatorView, String> {
-        let r = state.backend.view().await;
-        if state.backend.is_remote() {
-            record_link_outcome(state, r.as_ref().err());
-        }
-        r
     }
 }
 
@@ -1626,12 +1722,19 @@ fn link_status(state: State<'_, AppState>) -> LinkStatusReply {
 /// [`link_status`]'s body, taking a bare `&AppState` so tests can call it directly without
 /// standing up a `tauri::State` wrapper around a throwaway app handle.
 fn link_status_reply(state: &AppState) -> LinkStatusReply {
-    // A poisoned lock must not manufacture a disconnection: fall back to the healthy reading
-    // that matches how the backend was built (Remote only exists because connect_remote worked).
+    // A poisoned lock must not manufacture EITHER a disconnection or a false "connected" — a
+    // mutex poison here says nothing about the link, it says another thread panicked while
+    // holding it. Reporting a static "connected" (the original version of this fallback) is a
+    // fabrication in exactly the sense this ticket exists to remove: a green pill asserted from
+    // no evidence at all (security review, Sana S-5). `"unknown"` is deliberately NOT one of
+    // `LinkState::tag()`'s four values — the webview's `paintConnPill`/`currentLinkState`
+    // already treat any unrecognised state string as unknown ("Checking…"), the exact honest
+    // fallback an older/newer version skew would also hit, so this reuses that path rather than
+    // inventing a new one.
     let Ok(status) = state.link_status.lock() else {
         return LinkStatusReply {
-            state: selahcue_lan::LinkState::Connected.tag(),
-            epoch: 1,
+            state: "unknown",
+            epoch: 0,
             attempts: 0,
             last_error: None,
         };
@@ -3853,16 +3956,75 @@ fn endpoint_file_path() -> std::path::PathBuf {
     std::env::temp_dir().join("selahcue-operator-endpoint.json")
 }
 
+/// Longest the endpoint descriptor file is trusted to be. It is four short strings of JSON —
+/// real ones are under 300 bytes — so this is generous headroom, not a working limit; its job
+/// is bounding `read_to_string` against a file an unprivileged local writer controls (security
+/// review, Sana S-3: "cap the read... no size limit on a file an attacker controls").
+const MAX_ENDPOINT_FILE_LEN: u64 = 4096;
+
+/// Read and validate the endpoint descriptor file, applying the checks pinned TLS itself cannot
+/// (security review, Sana S-3):
+///
+/// - **Mode `0600` (Unix only).** Before Tier 2a, this file was read exactly once, at process
+///   startup — a narrow window. The reconnect loop re-reads it for the whole life of the
+///   session, turning a locally-writable path into a standing target: on a multi-user machine
+///   `temp_dir()` (e.g. `/tmp`) is typically world-writable, so another local account could
+///   pre-create the file while no real host is running. `selahcue-desktop`'s own writer already
+///   sets `0600` (`write_endpoint`, matching this exact `set_permissions`/`Permissions::from_mode`
+///   pattern) — refusing anything else here is the read-side half of that same contract. This
+///   alone is the actual boundary: the OS already refuses `read_to_string` on a `0600` file this
+///   process does not own (a differently-owned `0600` planted file is unreadable to us
+///   regardless of any check we add), so the exposure this closes is specifically a file some
+///   other local account made WORLD- or GROUP-readable so our process even could read it.
+/// - **Bounded read.** `MAX_ENDPOINT_FILE_LEN` caps the read itself, not just the parsed result.
+///
+/// **Not implemented: pin continuity across reconnects.** An earlier draft of this fix required
+/// a reconnect's pin to match the one the console originally attached to. That is unsound here:
+/// `selahcue-desktop::run_server` generates a FRESH `SelfSigned` identity (and a fresh random
+/// token) on every process start — nothing about this system persists a stable identity across
+/// a restart, by design. A pin-continuity check would therefore refuse the exact scenario this
+/// feature exists to recover — the output window crashing and restarting — indistinguishably
+/// from an actual attack, defeating Tier 2a entirely. The mode check above is the fix that
+/// matches the real trust boundary (same local user), without that self-defeat.
 fn read_endpoint() -> Option<Endpoint> {
-    let data = std::fs::read_to_string(endpoint_file_path()).ok()?;
+    let path = endpoint_file_path();
+    let meta = std::fs::metadata(&path).ok()?;
+    if meta.len() > MAX_ENDPOINT_FILE_LEN {
+        eprintln!(
+            "SelahCue operator: endpoint descriptor at {} exceeds {MAX_ENDPOINT_FILE_LEN} bytes — refusing to read it.",
+            path.display()
+        );
+        return None;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = meta.permissions().mode() & 0o777;
+        if mode != 0o600 {
+            eprintln!(
+                "SelahCue operator: endpoint descriptor at {} is not mode 0600 (found {:o}) — refusing to trust it.",
+                path.display(),
+                mode
+            );
+            return None;
+        }
+    }
+    let data = std::fs::read_to_string(&path).ok()?;
     serde_json::from_str(&data).ok()
 }
 
+/// Parse, validate and dial an [`Endpoint`]. Enforces loopback-only — this descriptor is a
+/// same-machine convenience file, not a remote pairing credential, and nothing upstream
+/// otherwise restricts `ep.addr` to loopback, so a substituted descriptor could point the
+/// console at an off-box service (security review, Sana S-3).
 async fn connect_remote(ep: &Endpoint) -> Result<RemoteOperator, String> {
     let addr: SocketAddr = ep
         .addr
         .parse()
         .map_err(|_| format!("bad addr: {}", ep.addr))?;
+    if !addr.ip().is_loopback() {
+        return Err("endpoint address is not loopback — refusing to dial".to_string());
+    }
     let pin = CertPin::from_hex(&ep.pin).ok_or_else(|| "bad pin".to_string())?;
     RemoteOperator::connect(addr, "localhost", pin, &ep.device, &ep.token)
         .await
