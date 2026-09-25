@@ -60,8 +60,8 @@
               Bible</span></span><span class="nav-key">⌘6</span></button>
         <button class="nav-item" role="menuitem" tabindex="-1" data-surface="console" data-focus="transcript"
           accesskey="7"><span class="nav-ico" aria-hidden="true">◎</span><span class="nav-txt"><span
-              class="nav-t">Transcript &amp; Notes</span><span class="nav-d">Live transcript · in
-              Console</span></span><span class="nav-key">⌘7</span></button>
+              class="nav-t">Transcript &amp; Notes</span><span class="nav-d">Live transcript + sermon
+              AI</span></span><span class="nav-key">⌘7</span></button>
         <div class="menu-div" role="separator"></div>
         <!-- Settings (CON-080) carries the fixed ⌘, chord rather than a menu-order digit — it is
              excluded from the ⌘1–⌘8 digit derivation via data-nodigit so Transcripts (saved) below
@@ -124,7 +124,7 @@
              reports real segments. -->
         <section id="transcript" class="fwd-panel" aria-label="Live transcript">
           <div class="fwd-head card-head">
-            <h2>Live Transcript</h2>
+            <h2>Live Transcript<span class="fwd-head-sub">· On-device</span></h2>
             <!-- Recording indicator — shown only while listening. Live transcript is
                  audio-based (R3): the listen control below drives the on-device STT source,
                  and recognised lines stream into #transcript-log (never fabricated).
@@ -370,7 +370,8 @@
             <button class="rtab active" id="rtab-timer" type="button" role="tab" aria-selected="true"
               aria-controls="rpanel-timer">Service Timer</button>
             <button class="rtab" id="rtab-detections" type="button" role="tab" aria-selected="false"
-              aria-controls="rpanel-detections" tabindex="-1">Detected Scriptures <span class="count-pill"
+              aria-controls="rpanel-detections" tabindex="-1"><span class="det-star"
+                aria-hidden="true">✦</span> Detected Scriptures <span class="count-pill"
                 id="detections-count" hidden></span></button>
           </div>
           <div class="rpanel" id="rpanel-timer" role="tabpanel" aria-labelledby="rtab-timer">
@@ -400,7 +401,7 @@
           <div class="timer-custom-row">
             <div class="hms" role="group" aria-label="Custom time — hours, minutes, seconds">
               <span class="hms-unit"><input id="timer-hh" type="number" min="0" max="23" inputmode="numeric" value="0"
-                  aria-label="Hours" /><span class="hms-cap">HRS</span></span>
+                  aria-label="Hours" /><span class="hms-cap">HOURS</span></span>
               <span class="hms-colon" aria-hidden="true">:</span>
               <span class="hms-unit"><input id="timer-mm" type="number" min="0" max="59" inputmode="numeric" value="5"
                   aria-label="Minutes" /><span class="hms-cap">MIN</span></span>
@@ -2422,7 +2423,7 @@
     <div class="emergency-actions">
       <button id="blackout" aria-pressed="false" aria-label="Blackout the audience output">■ <span
           id="blackout-label">BLACKOUT</span><span class="key">B</span></button>
-      <button id="clear-all" aria-label="Clear all live layers (double-Escape)">✕ Clear Output<span class="key">Esc
+      <button id="clear-all" aria-label="Clear all live layers (double-Escape)">Clear Output<span class="key">Esc
           Esc</span></button>
       <!-- CON-102 (blocker): a dedicated way BACK. Restoring live output currently requires knowing
            that BLACKOUT is a toggle — nothing on screen says so. Present only while output is black. -->
