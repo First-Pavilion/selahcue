@@ -1096,6 +1096,57 @@ if not check_jump_call_site_is_click_only():
 # Measured directly off real runs, not hand-summed.
 EXPECTED_MIN_CHECKS = 1901
 #
+# 1897 -> 1901 (17tnw2axwve, rebased onto the 1897 baseline above): +9 new checks for the
+# deck-scoped pmThumbCache / LIVE-ring fix (two decks sharing a local slide id, switched via both
+# pmLibOpen and pmLibPresent). This branch's own checks were originally measured at 1901 against a
+# pre-17tnw2axptr baseline (1892 + 9); after rebasing onto 17tnw2axptr's +5, the combined total is
+# NOT assumed to be either chain's endpoint, their sum by arithmetic, or any other derivation — per
+# this constant's own repeated lesson (see the merge-conflict resolution note above it).
+#
+# 1901 -> 1906 (17tnw2axwve, PR #92 review round 1, Vera): +5 new checks — a bounded-memory test
+# for pmThumbCache was missing (root CLAUDE.md requires one for changed buffering code); Vera wrote
+# it (window.__pmGridDebug inspection hook + a check driving 70 distinct (deck, slide) pairs
+# against the PM_THUMB_MAX=60 cap), mutation-verified in her own isolated review worktree before
+# this session applied it here.
+#
+# 1906 -> 1911 (17tnw2axwve, PR #92 review round 1, Sana + Cody + Vera + Quinn): +5 new checks for
+# two further gaps all four reviewers independently found in round 1 and this session fixed for
+# real (not deferred):
+#   - The LIVE-ring gate was redesigned from dv.live (DeckWorkspace.live — deck-EDITING-session
+#     scoped, reset by deck_workspace.rs::load_deck on every real deck switch, including switching
+#     BACK to a still-genuinely-live deck; also never set at all by a plan-driven present) to
+#     pmLiveAuthoredDeckId, tracking deck ownership purely from actions this client itself observed
+#     succeed. +3 checks: the A→B→A same-session revisit (the routine case the old design broke),
+#     the Service-Plan/Live-Console cross-surface present, and re-sequencing the existing
+#     cross-deck-collision check so it still runs cleanly alongside the new ones.
+#   - The "Done" (editor→grid) handler trusted a possibly-stale pmGridDeckId whenever the open deck
+#     changed via a path that never calls pmRenderGrid ("+ New presentation", duplicate, or the
+#     host auto-switching away from a just-deleted open deck) — silently resurrecting the exact
+#     thumbnail collision this ticket exists to close. Fixed by asking deck_list for ground truth
+#     (its `open` field is computed live from ws.open_deck().id() on every call) instead of
+#     trusting the tracked value. +2 checks (a premise + the actual collision-freedom assertion).
+# Every behavioural fix in this round is mutation-verified (revert the fix, confirm the RIGHT
+# assertion(s) go RED with no collateral failures, restore).
+#
+# 1911 -> 1916: rebased onto 17tnw2axptr's 1897 baseline (see above), whose +5 and this branch's
+# own +19 (9+5+5, see above) touch disjoint areas of this file — re-measured for real post-rebase
+# by two independent clean runs, both agreeing: 1916 checks, 0 FAIL. Confirms, not assumes, that
+# the sum was the right combined total.
+#
+# 1916 -> 1918 (17tnw2axwve, PR #92 review round 2, Sana): +2 new checks for a FIFTH JS entry
+# point to an authored-slide present that round 1's fix missed — pmPresent() (the editor-mode
+# "▶ Present", reached from the topbar via pmPresentFromTopbar AND the ⌘K command palette's
+# editor-mode "Present slide") did not record pmLiveAuthoredDeckId at all, reproducing round-1
+# Finding 1's exact failure mode (no ring, no transport bar) via a path round 1 never covered.
+# Sana also proved the OBVIOUS fix (pmLiveAuthoredDeckId = pmGridDeckId) is actively WRONG here —
+# pmGridDeckId is only ever written by pmRenderGrid, so it can be stale in the editor (e.g. after
+# "+ New presentation", which never calls it) and would record ownership for the wrong deck
+# entirely. Fixed with the same deck_list ground-truth pattern the "Done" handler already uses.
+# Mutation-verified twice: reverting to "record nothing" and reverting to the specific wrong fix
+# (pmGridDeckId) BOTH turn exactly the new ring-check RED, nothing else — measured by two
+# independent clean runs, both agreeing: 1918 checks, 0 FAIL.
+EXPECTED_MIN_CHECKS = 1918
+#
 # 17tnw2axptd (CON-079/080/087/089 — Console: navigation & global controls): added 33 checks —
 # the Scriptures nav item + chord reshuffle (CON-079/080, markup + behavioural chord-derivation
 # proofs), the command palette's SCRIPTURES hit-preview sub-line (CON-087), and the in-console
@@ -1126,6 +1177,13 @@ EXPECTED_MIN_CHECKS = 1901
 # post-rebase tree: 1939 checks, 0 FAIL.
 EXPECTED_MIN_CHECKS = 1939
 #
+# 1918 & 1939 -> 1960: rebase of 17tnw2axwve (ending 1918 above) onto origin/main after 17tnw2axptd
+# (ending 1939 above) merged first. Both lineages counted from the same 1892/1897 ancestor along
+# divergent paths, so per this constant's own repeated discipline the merged total is read off an
+# actual clean run against the real post-rebase tree, never hand-summed. Confirmed by two
+# independent clean runs against the real post-rebase tree: 1960 checks, 0 FAIL.
+EXPECTED_MIN_CHECKS = 1960
+#
 # 1901 & 1939 -> 1943: rebase of 17tnw2axptd-surface-transcripts-id-specificity (PR #94, ending
 # 1901 above) onto origin/main after 17tnw2axptd (ending 1939 above, a different ticket sharing a
 # similar branch name prefix) merged first. Both lineages counted from the same 1892/1897 ancestor
@@ -1133,6 +1191,14 @@ EXPECTED_MIN_CHECKS = 1939
 # off an actual clean run against the real post-rebase tree, never hand-summed. Confirmed by two
 # independent clean runs against the real post-rebase tree: 1943 checks, 0 FAIL.
 EXPECTED_MIN_CHECKS = 1943
+#
+# 1960 & 1943 -> 1964: rebase of 17tnw2axwve (ending 1960 above, its own count already merging
+# 17tnw2axptd's 1939) onto origin/main after PR #94 (ending 1943 above, a small +4 on top of the
+# same 1939 ancestor via a different branch) merged first. Both lineages counted from the same
+# 1939 ancestor along divergent paths, so per this constant's own repeated discipline the merged
+# total is read off an actual clean run against the real post-rebase tree, never hand-summed.
+# Confirmed by two independent clean runs against the real post-rebase tree: 1964 checks, 0 FAIL.
+EXPECTED_MIN_CHECKS = 1964
 
 
 def find_chrome():
@@ -1949,7 +2015,22 @@ STUB = r"""
     }
     if (cmd === "deck_open") {
       var od=LIB.decks.filter(function(x){return x.id===args.id;})[0];
-      if (od){ LIB.open=od.id; D.name=od.name; D.count=od.slides; } return Promise.resolve(dClone());
+      if (od){
+        // Real host semantics (deck_workspace.rs::load_deck): switching to a DIFFERENT deck resets
+        // the editing session — fresh selection (first slide), Live cleared. Reopening the SAME
+        // already-open deck is a no-op (deck_workspace.rs::deck_open's early return). Mirrored here
+        // ONLY for a deck that carries its own `.content` array — opt-in, set by a fixture that
+        // needs REAL per-deck slide data (17tnw2axwve's cross-deck collision check below) — so
+        // every other deck_open call keeps the pre-existing (content-blind) behaviour and none of
+        // this suite's other checks change.
+        if (od.content && LIB.open !== od.id) {
+          D.slides = JSON.parse(JSON.stringify(od.content));
+          D.selected = D.slides.length ? D.slides[0].id : null;
+          D.live = null;
+        }
+        LIB.open=od.id; D.name=od.name; D.count=od.slides;
+      }
+      return Promise.resolve(dClone());
     }
     if (cmd === "deck_rename") {
       var rd=LIB.decks.filter(function(x){return x.id===args.id;})[0];
@@ -2375,8 +2456,20 @@ STUB = r"""
       var rv=libView(); rv.restored_name=back.name;
       return Promise.resolve(rv);
     }
-    if (cmd === "render_deck_slide")
-      return Promise.resolve({available:true, frame:{w:2, h:1, rgba: btoa("\x33\x2b\x5a\xff\x1a\x1d\x27\xff")}});
+    if (cmd === "render_deck_slide") {
+      // Vary the rendered pixel by (currently-open deck, requested slide id) so a stale-cache
+      // collision across decks sharing a local slide id is actually detectable by CONTENT, not
+      // just by an id match (17tnw2axwve). render_deck_slide is itself deck-BLIND on the real host
+      // (no deck-id argument — it renders whichever deck is currently open), mirrored here via
+      // LIB.open. Both "pixels" in the 2x1 frame are identical so a cache-hit redraw (which scales
+      // the cached 2x1 image up into whatever size the tile's canvas currently is) reads back a
+      // flat, unambiguous colour at any sample point — no interpolation edge case.
+      var rdR = (37 + LIB.open * 41 + args.id * 7) % 256;
+      var rdG = (91 + LIB.open * 23 + args.id * 13) % 256;
+      var rdB = (17 + LIB.open * 11 + args.id * 53) % 256;
+      var rdPx = String.fromCharCode(rdR, rdG, rdB, 255);
+      return Promise.resolve({available:true, frame:{w:2, h:1, rgba: btoa(rdPx + rdPx)}});
+    }
     if (cmd === "deck_add_slide") {
       var nid = D.slides.length + 1;
       D.slides.push({id:nid, n:nid, lines:["Empty slide"], kind:"text"});
@@ -11514,6 +11607,267 @@ right after a generate/save");
              "PME-055: 'Present' lands the operator on the slide grid, where the presented slide is visible");
         }
       }
+
+      // --- 17tnw2axwve: deck-scoped pmThumbCache / LIVE ring — cross-deck local-slide-id
+      // collision --------------------------------------------------------------------------------
+      // Slide ids are DECK-LOCAL (each deck numbers its own slides from scratch —
+      // selahcue-present::deck.rs) — two decks routinely share a local id (both fixture decks
+      // below use "1"). Before the fix, pmThumbCache keyed purely by the bare slide id and
+      // pmGridSyncLive matched the LIVE ring purely against view().live_authored_id (also a bare
+      // id), so switching decks could paint the WRONG deck's cached thumbnail or ring the WRONG
+      // deck's tile as live. Snapshots and fully restores D / window.__LIB / V.live_authored_id
+      // around itself so nothing leaks into the PME-053 block (which reads
+      // window.__LIB.decks.length directly) or anything that runs after it.
+      var wCollSnapD = JSON.parse(JSON.stringify(D));
+      var wCollSnapLib = JSON.parse(JSON.stringify(window.__LIB));
+      var wCollSnapLive = V.live_authored_id;
+      var wCollSnapLiveIndex = V.live_index;
+      var wCollSnapConsoleDeckPreview = window.__consoleDeckPreview || null;
+      var wCollDeckX = 70001, wCollDeckY = 70002;
+      window.__LIB.decks.push({id: wCollDeckX, name: "Collision Deck X", slides: 1,
+        content: [{id: 1, n: 1, lines: ["Deck X — Slide One"], kind: "text"}]});
+      window.__LIB.decks.push({id: wCollDeckY, name: "Collision Deck Y", slides: 1,
+        content: [{id: 1, n: 1, lines: ["Deck Y — Slide One"], kind: "text"}]});
+      var wCollGoToLibrary = async function(){
+        el("pm-deckswitch").click();
+        await wWait(function(){ return !!el("pm-lib-grid").querySelector(".pm-lib-card"); });
+        if (el("pm-lib-q")) { el("pm-lib-q").value = ""; el("pm-lib-q").dispatchEvent(new Event("input", {bubbles:true})); }
+      };
+      var wCollOpenById = function(deckId){
+        var card = el("pm-lib-grid").querySelector('.pm-lib-card[data-id="' + deckId + '"]');
+        if (card) card.querySelector(".pm-lib-open").click();
+        return !!card;
+      };
+      var wCollPresentById = async function(deckId){
+        var card = el("pm-lib-grid").querySelector('.pm-lib-card[data-id="' + deckId + '"]');
+        if (!card) return false;
+        card.querySelector(".pm-lib-dots").click();
+        await wWait(function(){ return !!el("pm-lib-menu"); });
+        var items = Array.prototype.slice.call(el("pm-lib-menu").querySelectorAll("button"));
+        var presentItem = items.filter(function(b){ return /^Present$/.test(b.textContent.trim()); })[0];
+        if (!presentItem) return false;
+        presentItem.click();
+        return true;
+      };
+      var wCollTilePixel = function(slideId){
+        var tile = el("pm-grid-tiles") && el("pm-grid-tiles").querySelector('.pm-tile[data-id="' + slideId + '"]');
+        var cv = tile && tile.querySelector("canvas");
+        return cv ? Array.prototype.join.call(cv.getContext("2d").getImageData(0, 0, 1, 1).data, ",") : null;
+      };
+      // Counts only GRID per-tile thumbnail fetches (a real numeric slide id), never the EDITOR's
+      // own single-slide canvas preview (pmRenderCanvas calls render_deck_slide with id:null on
+      // EVERY successful deck action via pAct/renderPresentation, entirely unrelated to
+      // pmThumbCache) — conflating the two would make a genuine grid cache-hit look like a miss
+      // whenever a go-live (pmGridGoLive, which pmLibPresent triggers) fires in the same step.
+      var wCollRenderCalls = function(){ return window.__calls.filter(function(c){ return c.cmd === "render_deck_slide" && c.args && c.args.id != null; }).length; };
+
+      // Open Deck X fresh: its slide-1 thumbnail must render via a genuine render_deck_slide call.
+      await wCollGoToLibrary();
+      var wCollN0 = wCollRenderCalls();
+      ok(wCollOpenById(wCollDeckX), "17tnw2axwve (premise): Deck X's library card is reachable");
+      await wWait(function(){ return !el("pm-grid").hidden && !!el("pm-grid-tiles").querySelector('.pm-tile[data-id="1"]'); });
+      await wWait(function(){ return wCollRenderCalls() > wCollN0; });
+      await sleep(30);
+      var wCollPixelX = wCollTilePixel(1);
+      ok(wCollPixelX != null, "17tnw2axwve (premise): Deck X's tile 1 renders a thumbnail");
+
+      // Switch to Deck Y via the plain "Open" affordance (pmLibOpen) — a fresh deck, so slide 1
+      // must render via ITS OWN render_deck_slide call and show ITS OWN colour, not Deck X's.
+      await wCollGoToLibrary();
+      var wCollN1 = wCollRenderCalls();
+      wCollOpenById(wCollDeckY);
+      await wWait(function(){ return !el("pm-grid").hidden && !!el("pm-grid-tiles").querySelector('.pm-tile[data-id="1"]'); });
+      await wWait(function(){ return wCollRenderCalls() > wCollN1; });
+      await sleep(30);
+      var wCollPixelY = wCollTilePixel(1);
+      ok(wCollPixelY != null && wCollPixelY !== wCollPixelX,
+         "17tnw2axwve: switching to Deck Y (pmLibOpen) shows Deck Y's OWN slide-1 thumbnail, not Deck X's stale cached one (X=" + wCollPixelX + ", Y=" + wCollPixelY + ")");
+
+      // Switch BACK to Deck X via the card menu's "Present" action (pmLibPresent — the OTHER
+      // deck-switch path) — must be a genuine cache HIT (no new render_deck_slide call) showing
+      // Deck X's own correct colour again, proving option (b)'s benefit as well as correctness.
+      await wCollGoToLibrary();
+      var wCollN2 = wCollRenderCalls();
+      var wCollPresentOk = await wCollPresentById(wCollDeckX);
+      ok(wCollPresentOk, "17tnw2axwve (premise): Deck X's card carries a working 'Present' menu item");
+      await wWait(function(){ return !el("pm-grid").hidden && !!el("pm-grid-tiles").querySelector('.pm-tile[data-id="1"]'); });
+      await sleep(60);
+      var wCollN3 = wCollRenderCalls();
+      var wCollPixelXAgain = wCollTilePixel(1);
+      ok(wCollN3 === wCollN2,
+         "17tnw2axwve: switching back to Deck X (pmLibPresent) hits the thumbnail cache — no new render_deck_slide call (option (b): a deck-scoped key, not clear-on-switch, preserves already-fetched thumbnails)");
+      ok(wCollPixelXAgain === wCollPixelX,
+         "17tnw2axwve: the cache-hit thumbnail for Deck X's slide 1 is still Deck X's own colour, not Deck Y's (got " + wCollPixelXAgain + ")");
+
+      // LIVE-ring collision: pmLibPresent above already presented Deck X's slide 1 live; confirm its
+      // own tile shows the ring, then switch (plain Open — no present) to Deck Y and confirm Deck
+      // Y's OWN slide-1 tile does NOT inherit a false LIVE ring for Deck X's actually-live slide,
+      // despite the colliding local id.
+      ok(!!el("pm-grid-tiles").querySelector(".pm-tile.live"), "17tnw2axwve (premise): Deck X's slide 1 is presented live (its own tile rings) after Present");
+      await wCollGoToLibrary();
+      wCollOpenById(wCollDeckY);
+      await wWait(function(){ return !el("pm-grid").hidden && !!el("pm-grid-tiles").querySelector('.pm-tile[data-id="1"]'); });
+      await sleep(80); // let pmGridSyncLive's async view() round-trip resolve
+      ok(!el("pm-grid-tiles").querySelector(".pm-tile.live"),
+         "17tnw2axwve: Deck Y's tile 1 does NOT show a false LIVE ring for Deck X's actually-live slide 1, despite the colliding local id");
+
+      // A→B→A regression (Sana + Quinn, PR #92 review round 1): switching BACK to Deck X (plain
+      // Open, no re-present) must still show its LIVE ring — X never stopped being the actually-
+      // live deck, only the grid's VIEW moved away and back. The FIRST attempt at this fix gated
+      // the ring on dv.live (DeckWorkspace.live), which deck_workspace.rs::load_deck resets on
+      // EVERY real deck switch — including switching back — so it broke the single most routine
+      // operator action (glance at another deck, come back), not just a rare cold-boot edge case
+      // as first assumed. This is the check that would have caught that.
+      await wCollGoToLibrary();
+      wCollOpenById(wCollDeckX);
+      await wWait(function(){ return !el("pm-grid").hidden && !!el("pm-grid-tiles").querySelector('.pm-tile[data-id="1"]'); });
+      await sleep(80); // let pmGridSyncLive's async view() round-trip resolve
+      ok(!!el("pm-grid-tiles").querySelector(".pm-tile.live"),
+         "17tnw2axwve: switching BACK to Deck X (plain Open, no re-present) still shows its LIVE ring — X never stopped being live, only the view moved away and back (A→B→A)");
+
+      // Positive control: the gate suppresses a false CROSS-deck match, not the ring mechanism
+      // itself — presenting Deck Y's OWN slide 1 must still correctly ring it.
+      await wCollGoToLibrary();
+      wCollOpenById(wCollDeckY);
+      await wWait(function(){ return !el("pm-grid").hidden && !!el("pm-grid-tiles").querySelector('.pm-tile[data-id="1"]'); });
+      var wCollTileY1 = el("pm-grid-tiles").querySelector('.pm-tile[data-id="1"]');
+      wCollTileY1.dispatchEvent(new MouseEvent("dblclick", {bubbles:true}));
+      await wWait(function(){ return el("pm-grid-tiles").querySelector(".pm-tile.live"); });
+      ok(!!el("pm-grid-tiles").querySelector(".pm-tile.live"),
+         "17tnw2axwve (control): presenting Deck Y's OWN slide 1 afterward still correctly rings it — the ring gate suppresses a false cross-deck match, not the ring mechanism itself");
+
+      // Cross-surface (Sana, PR #92 review round 1): a deck slide presented from the Service Plan /
+      // Live Console surface (present_plan_deck_slide, main.rs — a SECOND, entirely separate path
+      // to live_authored_id that never touches DeckWorkspace.live at all) must be recognised by the
+      // Presentation grid's LIVE ring too. window.__consoleDeckPreview is the real app.js-owned
+      // state the console's goLive() reads (set for real by its own staging render path elsewhere
+      // in this suite, e.g. the "SP:" block above) — set directly here to drive goLive() itself
+      // (the actual code this ticket's round-1 fix touched) via a real click, without re-deriving
+      // the full Service Plan staging UI flow.
+      window.__consoleDeckPreview = { deckId: wCollDeckX, slideId: 1 };
+      var wCollCpN0 = window.__calls.filter(function(c){ return c.cmd === "present_plan_deck_slide"; }).length;
+      el("golive").click();
+      await wWait(function(){ return window.__calls.filter(function(c){ return c.cmd === "present_plan_deck_slide"; }).length > wCollCpN0; });
+      await sleep(60);
+      await wCollGoToLibrary();
+      wCollOpenById(wCollDeckX);
+      await wWait(function(){ return !el("pm-grid").hidden && !!el("pm-grid-tiles").querySelector('.pm-tile[data-id="1"]'); });
+      await sleep(80);
+      ok(!!el("pm-grid-tiles").querySelector(".pm-tile.live"),
+         "17tnw2axwve: a deck slide presented from the Service Plan / Live Console (present_plan_deck_slide) is recognised by the Presentation grid's LIVE ring too — not just grid-driven presents");
+
+      // pmGridDeckId staleness at the deck-CREATE path (Sana + Cody + Vera, PR #92 review round 1,
+      // independently found and reproduced live by all three): "+ New presentation" → Blank deck
+      // (app.js pmNewDeck) lands STRAIGHT IN THE EDITOR, bypassing pmRenderGrid entirely — the only
+      // place pmGridDeckId was previously written. The "Done" handler then rendered the BRAND-NEW
+      // deck's grid keyed under whatever deck the grid last showed. Cody proved this is not
+      // hypothetical: reproduced live with zero new render_deck_slide fetches and the new deck's
+      // tile byte-identical to a different deck's cached tile. DeckView carries no id field
+      // (deck_workspace.rs), so this can't be fixed by threading an id through pmNewDeck's own two
+      // branches alone (confirmed: the mock's deck_new response, like the real one, has no id) — the
+      // fix instead makes "Done" ask deck_list for ground truth (its `open` field is computed live
+      // from ws.open_deck().id() on every call).
+      await wCollGoToLibrary();
+      wCollOpenById(wCollDeckY); // leaves pmGridDeckId = wCollDeckY, a KNOWN, different deck
+      await wWait(function(){ return !el("pm-grid").hidden && !!el("pm-grid-tiles").querySelector('.pm-tile[data-id="1"]'); });
+      await sleep(30);
+      var wCollPixelYForNewCheck = wCollTilePixel(1);
+      ok(wCollPixelYForNewCheck != null, "17tnw2axwve (premise): Deck Y's tile 1 has a cached thumbnail going into the deck-create staleness check");
+      await wCollGoToLibrary();
+      el("pm-lib-new").click();
+      await wWait(function(){ return !!el("pm-prompt-input"); });
+      el("pm-prompt-input").value = "Blank Deck For Staleness Check";
+      Array.from(document.querySelectorAll(".pm-confirm .pm-btn-primary")).slice(-1)[0].click();
+      await wWait(function(){ return el("pm-library").hidden; }); // lands in the EDITOR, not the grid
+      var wCollNewDeckId = window.__LIB.open;
+      ok(wCollNewDeckId != null && wCollNewDeckId !== wCollDeckY && wCollNewDeckId !== wCollDeckX,
+         "17tnw2axwve (premise): '+ New presentation' opened a genuinely NEW deck (id " + wCollNewDeckId + "), distinct from Deck Y");
+
+      // pmPresent() ownership staleness (Sana, PR #92 review round 2 — the fifth JS entry point to
+      // an authored-slide present, missed in round 1's fix): the EDITOR's own "▶ Present" (topbar,
+      // pmPresentFromTopbar → pmPresent when pmMode==="editor"; the ⌘K command palette's editor-
+      // mode "Present slide" calls the identical pmPresent()) did not record pmLiveAuthoredDeckId
+      // at all. MUST fire here, still inside the editor for this genuinely-new deck, whose
+      // pmGridDeckId is stale at Deck Y (the earlier wCollOpenById(wCollDeckY) never having been
+      // superseded by a pmRenderGrid call for this deck) — the exact precondition that makes the
+      // bug reachable and that the shared "Done" click below (already correctly deck_list-grounded)
+      // must NOT be allowed to paper over by running first.
+      var wCollPresentBtn = el("pm-present");
+      ok(!!wCollPresentBtn && !wCollPresentBtn.hidden, "17tnw2axwve (premise): the topbar '▶ Present' control is reachable while the new deck is open in the editor");
+      var wCollGlN0 = window.__calls.filter(function(c){ return c.cmd === "deck_go_live"; }).length;
+      if (wCollPresentBtn) wCollPresentBtn.click();
+      await wWait(function(){ return window.__calls.filter(function(c){ return c.cmd === "deck_go_live"; }).length > wCollGlN0; });
+      await sleep(60);
+
+      var wCollN4 = wCollRenderCalls();
+      if (el("pm-done")) el("pm-done").click(); // editor → grid (ONE shared transition for both checks below)
+      await wWait(function(){ return !el("pm-grid").hidden && !!el("pm-grid-tiles").querySelector('.pm-tile[data-id="1"]'); });
+      await wWait(function(){ return wCollRenderCalls() > wCollN4; }); // a genuinely new deck must MISS the thumbnail cache
+      await sleep(80); // also lets pmGridSyncLive's async view() round-trip resolve for the ring check below
+      var wCollNewDeckPixel = wCollTilePixel(1);
+      ok(wCollNewDeckPixel != null && wCollNewDeckPixel !== wCollPixelYForNewCheck,
+         "17tnw2axwve: after '+ New presentation' (Blank deck, lands straight in the editor) and Done, the new deck's tile 1 shows ITS OWN thumbnail, not Deck Y's stale cached one (new=" + wCollNewDeckPixel + ", Y=" + wCollPixelYForNewCheck + ")");
+      ok(!!el("pm-grid-tiles").querySelector(".pm-tile.live"),
+         "17tnw2axwve: presenting from the EDITOR's topbar '▶ Present' (pmPresent, reached from pmPresentFromTopbar AND the ⌘K palette) while pmGridDeckId was stale still correctly rings the genuinely-open deck's own tile, not silently showing no ring at all");
+
+      // --- 17tnw2axwve (bounded memory): the deck-scoped key widened pmThumbCache's KEY SPACE from
+      // "every slide id" to "every (deck, slide) pair ever visited this session". The cap must
+      // still be GLOBAL — PM_THUMB_MAX total entries across all decks — never per-deck, and never
+      // decks x PM_THUMB_MAX. Drive strictly MORE distinct (deck, slide) pairs than the cap through
+      // the real UI and assert the entity (entry count) plus a NAMED key evicted / a NAMED key
+      // retained. Per-key accessor (window.__pmGridDebug.cached), never a global counter.
+      var wBmDecks = [], wBmPerDeck = 10, wBmBase = 71000;
+      var wBmCap = window.__pmGridDebug.max();
+      var wBmNeeded = Math.ceil((wBmCap + 1) / wBmPerDeck);   // enough decks to strictly EXCEED the cap
+      for (var wBmI = 0; wBmI < wBmNeeded; wBmI++) {
+        var wBmId = wBmBase + wBmI, wBmContent = [];
+        // All wBmPerDeck slides sit inside pmRenderGrid's eager first fold (i < 12), so every one
+        // is really fetched and really cached — no IntersectionObserver dependence.
+        for (var wBmS = 1; wBmS <= wBmPerDeck; wBmS++) wBmContent.push({id: wBmS, n: wBmS, lines: ["D" + wBmId + " S" + wBmS], kind: "text"});
+        wBmDecks.push(wBmId);
+        window.__LIB.decks.push({id: wBmId, name: "Bounded Deck " + wBmI, slides: wBmPerDeck, content: wBmContent});
+      }
+      var wBmPairs = wBmNeeded * wBmPerDeck;
+      // Pin the premise: if PM_THUMB_MAX ever grows past what this block drives, the bound
+      // assertion below would pass vacuously (nothing would ever be evicted). Fail loudly instead.
+      ok(wBmPairs > wBmCap,
+         "17tnw2axwve (bounded memory, premise): this check drives " + wBmPairs + " distinct (deck, slide) pairs, strictly MORE than the PM_THUMB_MAX cap of " + wBmCap + " — so the cap is genuinely exercised and the bound assertion is not vacuous");
+      for (var wBmJ = 0; wBmJ < wBmDecks.length; wBmJ++) {
+        await wCollGoToLibrary();
+        wCollOpenById(wBmDecks[wBmJ]);
+        await wWait(function(){ return !el("pm-grid").hidden && el("pm-grid-tiles").querySelectorAll(".pm-tile").length === wBmPerDeck; });
+        await sleep(40);
+      }
+      var wBmFirstDeck = wBmDecks[0], wBmLastDeck = wBmDecks[wBmDecks.length - 1];
+      // Non-vacuity: the cache really was populated by this walk — assert a NAMED recent key is
+      // present BEFORE asserting the bound, so "size <= cap" cannot pass because nothing got in.
+      ok(window.__pmGridDebug.cached(wBmLastDeck, wBmPerDeck) !== null,
+         "17tnw2axwve (bounded memory, premise): the most recently visited deck's last slide IS cached after the walk — the cache was actually populated, so the bound below is not passing on an empty map");
+      ok(window.__pmGridDebug.size() <= wBmCap,
+         "17tnw2axwve (bounded memory): after visiting " + wBmDecks.length + " DISTINCT decks (" + wBmPairs + " distinct (deck, slide) pairs), pmThumbCache holds " + window.__pmGridDebug.size() + " entries — bounded GLOBALLY at PM_THUMB_MAX=" + wBmCap + ", not per-deck and not decks x cap");
+      ok(window.__pmGridDebug.cached(wBmFirstDeck, 1) === null,
+         "17tnw2axwve (bounded memory): the FIRST-visited deck's slide 1 was evicted — the oldest entries are the ones dropped, i.e. eviction really happened rather than the walk merely fitting under the cap");
+      // Positive control: the cap evicts, it does not disable the cache. A deck visited most
+      // recently must still be a genuine HIT (no fresh render_deck_slide) when reopened.
+      await wCollGoToLibrary();
+      var wBmN0 = wCollRenderCalls();
+      wCollOpenById(wBmLastDeck);
+      await wWait(function(){ return !el("pm-grid").hidden && el("pm-grid-tiles").querySelectorAll(".pm-tile").length === wBmPerDeck; });
+      await sleep(60);
+      ok(wCollRenderCalls() === wBmN0,
+         "17tnw2axwve (bounded memory, control): reopening the most recently visited deck still HITS the cache with no new render_deck_slide call — the cap evicts old entries, it does not render the cache dead");
+
+      // Restore D / window.__LIB / V.live_authored_id / V.live_index / window.__consoleDeckPreview
+      // so nothing leaks into PME-053 or any later check.
+      Object.assign(D, JSON.parse(JSON.stringify(wCollSnapD)));
+      window.__LIB.decks = wCollSnapLib.decks;
+      window.__LIB.open = wCollSnapLib.open;
+      window.__LIB.nextId = wCollSnapLib.nextId;
+      window.__LIB.persistent = wCollSnapLib.persistent;
+      window.__LIB.trash = wCollSnapLib.trash;
+      V.live_authored_id = wCollSnapLive;
+      V.live_index = wCollSnapLiveIndex;
+      window.__consoleDeckPreview = wCollSnapConsoleDeckPreview;
 
       // --- PME-053: "Start from" in the New-presentation dialog -------------------------------
       // Blank deck / Duplicate an existing presentation / From a template (later, honestly

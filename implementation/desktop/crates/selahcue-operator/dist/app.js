@@ -3463,7 +3463,21 @@
         // present) rather than the plan-item go_live (which would show only the item title).
         const dp = window.__consoleDeckPreview;
         if (dp && dp.slideId != null) {
-          act(() => invoke("present_plan_deck_slide", { deckId: dp.deckId, slideId: dp.slideId }));
+          // Not routed through act() — that swallows a rejection internally with no way for this
+          // caller to tell success from failure, and the Presentation grid's LIVE ring
+          // (pmLiveAuthoredDeckId, 17tnw2axwve) must only record this deck as live on a CONFIRMED
+          // present, never optimistically. Mirrors act()'s own success-path behaviour otherwise
+          // (invalidate the render cache, then render the fresh view) so this stays byte-identical
+          // to the pre-existing user-visible behaviour on both success and failure.
+          const targetDeckId = dp.deckId;
+          (async () => {
+            try {
+              lastRendered = "";
+              const v = await invoke("present_plan_deck_slide", { deckId: dp.deckId, slideId: dp.slideId });
+              pmLiveAuthoredDeckId = targetDeckId;
+              render(v);
+            } catch (e) { console.error(e); }
+          })();
         } else {
           act(() => invoke("go_live"));
         }
@@ -5651,7 +5665,18 @@
             // Go Live routes the ACTUAL deck slide to the audience output via the authored-slide
             // present path (the same mechanism the deck editor uses) — NOT the plan-item go_live,
             // which would composite only the item title (the host has no deck pixels).
-            act(() => invoke("present_plan_deck_slide", { deckId: S.deckId, slideId: slide.slide_id }));
+            // Not routed through act() — see the identical reasoning at the other
+            // present_plan_deck_slide call site (goLive(), above): pmLiveAuthoredDeckId must only
+            // record this deck as live on a CONFIRMED present.
+            const targetDeckId = S.deckId;
+            (async () => {
+              try {
+                lastRendered = "";
+                const v = await invoke("present_plan_deck_slide", { deckId: S.deckId, slideId: slide.slide_id });
+                pmLiveAuthoredDeckId = targetDeckId;
+                render(v);
+              } catch (e) { console.error(e); }
+            })();
           } else {
             act(() => invoke("select_slide", { itemId: S.itemId, slideIndex: i })); // Preview only (FR-012)
           }
@@ -9980,7 +10005,7 @@
         });
       }
       async function pmLibOpen(id) {
-        try { const dv = await invoke("deck_open", { id: id }); pmDv = dv; pmSetMode("grid"); pmRenderGrid(dv); }
+        try { const dv = await invoke("deck_open", { id: id }); pmDv = dv; pmSetMode("grid"); pmRenderGrid(dv, id); }
         catch (e) { console.error(e); pmShowError("open the presentation"); }
       }
       // PME-055: "Present" straight from the library card menu — opens the deck (same as
@@ -9993,7 +10018,7 @@
         let dv;
         try { dv = await invoke("deck_open", { id: id }); }
         catch (e) { console.error(e); pmShowError("open the presentation"); return; }
-        pmDv = dv; pmSetMode("grid"); pmRenderGrid(dv);
+        pmDv = dv; pmSetMode("grid"); pmRenderGrid(dv, id);
         const slides = dv.slides || [];
         if (!slides.length) return; // an empty deck has nothing to present; grid shows its own empty state
         const target = dv.selected != null ? dv.selected : slides[0].id;
@@ -10002,32 +10027,98 @@
 
       // --- Slide GRID (Design 2.0 browse/present mode) ---------------------------------------------
       const PM_THUMB_MAX = 60;             // bounded thumbnail cache (no unbounded growth)
-      const pmThumbCache = new Map();      // slideId -> dataURL
-      function pmThumbPut(id, url) {
-        pmThumbCache.set(id, url);
+      // Keyed by "deckId:slideId", NOT the bare slide id: slide ids are deck-LOCAL (each deck
+      // numbers its own slides starting fresh — selahcue-present::deck.rs), so two different decks
+      // routinely reuse the same local id. A bare-id key let deck B's tile silently paint deck A's
+      // cached thumbnail after a fast switch via pmLibOpen/pmLibPresent (17tnw2axwve). deckId is
+      // threaded through explicitly (closed over per-tile at render time — see pmRenderGrid) rather
+      // than read from a mutable "current deck" global at fetch-resolution time, so a lazy
+      // (IntersectionObserver-deferred) fetch that resolves after a LATER deck switch still tags
+      // its result under the deck it was actually fetched FOR.
+      const pmThumbCache = new Map();      // "deckId:slideId" -> dataURL
+      function pmThumbKey(deckId, id) { return deckId + ":" + id; }
+      function pmThumbPut(deckId, id, url) {
+        pmThumbCache.set(pmThumbKey(deckId, id), url);
         while (pmThumbCache.size > PM_THUMB_MAX) pmThumbCache.delete(pmThumbCache.keys().next().value);
       }
+      // Inspection hook (bounded-memory verification) — mirrors window.__slidesDebug for the
+      // sibling filmstrip cache. `cached` is a PER-KEY, null-returning accessor (not a global
+      // counter), so a test can assert a NAMED (deck, slide) key present/absent rather than a
+      // proxy; `size`/`max` expose the entity (entry count) and its cap so the premise "more
+      // pairs were driven than the cap" can be pinned in the test instead of hard-coded.
+      window.__pmGridDebug = {
+        size: () => pmThumbCache.size,
+        max: () => PM_THUMB_MAX,
+        deckId: () => pmGridDeckId,
+        cached: (deckId, id) => { const k = pmThumbKey(deckId, id); return pmThumbCache.has(k) ? pmThumbCache.get(k) : null; },
+      };
       function pmThumbFail(cv) {
         const t = cv && cv.parentElement; if (!t || t.querySelector(".pm-tile-failmsg")) return;
         t.classList.add("pm-tile-fail");
         const s = document.createElement("span"); s.className = "pm-tile-failmsg"; s.textContent = "⚠ Can't preview"; t.appendChild(s);
       }
-      async function pmThumb(id, cv) {
+      async function pmThumb(deckId, id, cv) {
         if (!cv) return;
-        if (pmThumbCache.has(id)) {
+        const key = pmThumbKey(deckId, id);
+        if (pmThumbCache.has(key)) {
           const im = new Image();
           im.onload = () => { try { cv.getContext("2d").drawImage(im, 0, 0, cv.width, cv.height); } catch (e) {} };
-          im.src = pmThumbCache.get(id);
+          im.src = pmThumbCache.get(key);
           return;
         }
         try {
           const r = await invoke("render_deck_slide", { id: id, maxW: 320, maxH: 180 });
-          if (r && r.available && r.frame && blitFrame(cv, r.frame)) pmThumbPut(id, cv.toDataURL());
+          if (r && r.available && r.frame && blitFrame(cv, r.frame)) pmThumbPut(deckId, id, cv.toDataURL());
           else pmThumbFail(cv); // missing media / no frame → honest "can't preview" tile (not a silent blank)
         } catch (e) { pmThumbFail(cv); }
       }
       let pmGridCursor = null;             // selected slide id (safe — never touches live)
       let pmGridLiveId = null;             // HOST-truth live authored slide id (drives ring/transport)
+      let pmGridDeckId = null;             // id of the deck currently rendered in the grid (17tnw2axwve
+                                            // — deck-scopes the thumbnail cache; DeckView carries no
+                                            // own id, so pmRenderGrid's callers track it explicitly)
+      // Which deck id this CLIENT has actually observed being driven live via an authored-slide
+      // present (17tnw2axwve, Sana's PR #92 review round 1). Deliberately NOT derived from the
+      // host's dv.live annotation (DeckWorkspace.live) — that field is deck-EDITING-session-scoped:
+      // deck_workspace.rs::load_deck resets it to null on every real deck switch, including
+      // switching BACK to a deck that is still genuinely the one on the real audience output, so it
+      // means "has THIS console driven go-live for THIS deck since it was last loaded", not "is
+      // this deck the one actually live" — gating the ring on it suppressed the ring after the most
+      // routine operator action (glance at another deck, come back), not just a rare cold-boot edge
+      // case as first assumed. It also never gets set at all by a deck slide presented from the
+      // Service Plan / Live Console surface (present_plan_deck_slide, main.rs) — a second, entirely
+      // separate path to the SAME live_authored_id that never touches DeckWorkspace at all.
+      //
+      // pmLiveAuthoredDeckId instead tracks ownership purely from actions THIS client itself
+      // observed succeed. That is every JS entry point that can reach one of the three Rust
+      // mechanisms which set live_authored (traced exhaustively, not assumed — every call site of
+      // Presenter::present_authored): the grid's own pmGridGoLive/pmGridDelta below; the editor's
+      // pmPresent() (reached from BOTH the topbar's ▶ Present via pmPresentFromTopbar AND the ⌘K
+      // command palette's editor-mode "Present slide" — round 2, Sana found this fifth entry point
+      // missing the same bookkeeping, round-1 Finding 1's exact failure mode); and the Service Plan
+      // / Live Console surface's two present_plan_deck_slide call sites (goLive(), stageSlide()).
+      // pmLiveAuthoredDeckId is cleared whenever host truth (live_authored_id) says nothing
+      // authored is live at all — so it survives an ordinary deck switch away-and-back (view()
+      // still confirms it) and correctly reflects a plan-driven present too.
+      //
+      // Residual, accepted limitation (scope corrected round 2, Sana — the original framing here
+      // understated it): this is purely client-side state, so it resets on a plain page reload
+      // (not just a full operator process restart). More importantly, it cannot see a live-authored
+      // slide presented by any OTHER GoLive-privileged peer over the LAN protocol —
+      // PresentAuthoredSlide requires only the GoLive permission (selahcue-lan/src/rbac.rs), which
+      // BOTH the Operator and Producer roles hold, not just "another operator console"; no shipped
+      // client exercises this today (the mobile Flutter controller has no deck data to build a
+      // PresentAuthoredSlide payload from), but the wire-level surface is real. This does NOT
+      // uniformly fail closed: if a foreign peer presents a DIFFERENT deck's slide while this
+      // client is still parked on the deck it last legitimately drove live, live_authored_id goes
+      // non-null again, this client's clear-on-null branch above never fires, and the stale
+      // pmLiveAuthoredDeckId can then WRONGLY re-validate a match — a false-positive ring on the
+      // parked deck's tile of the same id, i.e. fails OPEN in that specific scenario. This exact
+      // failure mode already exists on `main` with no gating at all (every deck's tiles, not just
+      // the parked one, were exposed) — this change narrows the window rather than closing it.
+      // Fully closing this needs the host to carry deck identity on the wire (tracked as a linked
+      // follow-up, ClickUp 17tnw2ayevf).
+      let pmLiveAuthoredDeckId = null;
       function pmGridAnnounce(msg) { const r = pmEl("pm-grid-live-region"); if (r) r.textContent = msg; }
       function pmGridTiles() { const g = pmEl("pm-grid-tiles"); return g ? Array.prototype.slice.call(g.querySelectorAll(".pm-tile")) : []; }
       function pmGridSelect(id, focus) {
@@ -10048,16 +10139,17 @@
         // atomic deck_go_live_delta instead.
         if (!(await pAct(() => invoke("deck_select_slide", { id: id }), "select the slide"))) { await pmGridSyncLive(); return; }
         pmGridCursor = id;
-        await pAct(() => invoke("deck_go_live"), "present the slide"); // failure → pAct shows the error banner; the ring stays host-truth
+        // failure → pAct shows the error banner; pmLiveAuthoredDeckId (and so the ring) stays as-is
+        if (await pAct(() => invoke("deck_go_live"), "present the slide")) pmLiveAuthoredDeckId = pmGridDeckId;
         await pmGridSyncLive();
       }
       // Advance the LIVE slide by delta (−1 prev / +1 next) atomically — ◀▶ transport + live arrows.
       async function pmGridDelta(delta) {
-        await pAct(() => invoke("deck_go_live_delta", { delta: delta }), "advance the live slide");
+        if (await pAct(() => invoke("deck_go_live_delta", { delta: delta }), "advance the live slide")) pmLiveAuthoredDeckId = pmGridDeckId;
         await pmGridSyncLive();
       }
-      // Ring the LIVE slide from HOST truth (view().live_authored_id — the deck-local annotation can
-      // go stale when the console drives plan content) and drive the transport bar.
+      // Ring the LIVE slide from HOST truth (view().live_authored_id) gated on client-OBSERVED deck
+      // ownership (pmLiveAuthoredDeckId), and drive the transport bar.
       async function pmGridSyncLive() {
         let v = null, liveId = null;
         try { v = await invoke("view"); liveId = (v && v.live_authored_id != null) ? v.live_authored_id : null; }
@@ -10067,6 +10159,19 @@
           if (p) p.setAttribute("aria-disabled", "true");
           if (n) n.setAttribute("aria-disabled", "true");
           return;
+        }
+        // live_authored_id is a bare (deck-LOCAL) slide id with no deck id on the wire, so it
+        // cannot alone say whether the live slide belongs to the deck currently open in the grid —
+        // two decks routinely share local id 1, and deck_open never touches Live, so a plain id
+        // match could ring the wrong deck's tile after a fast switch (17tnw2axwve). Gate it on
+        // pmLiveAuthoredDeckId (declared above, with the full reasoning for why it — not dv.live —
+        // is the right signal) instead: cleared the moment host truth says nothing authored is
+        // live, so a stale value can never validate a match once Live has genuinely moved away from
+        // an authored slide.
+        if (liveId == null) {
+          pmLiveAuthoredDeckId = null;
+        } else if (pmLiveAuthoredDeckId !== pmGridDeckId) {
+          liveId = null;
         }
         pmGridLiveId = liveId;
         const tiles = pmGridTiles();
@@ -10106,8 +10211,14 @@
         if (badge) { badge.hidden = connected; if (!connected) badge.textContent = "Preview only — no audience output"; }
         pmGridAnnounce((blackedOut ? "Blacked out; pending slide " : (connected ? "Now live: slide " : "Preview only — slide ")) + (idx + 1) + " of " + ids.length);
       }
-      function pmRenderGrid(dv) {
+      // deckId (the SECOND arg) is the id of the deck `dv` belongs to. DeckView itself carries no
+      // `id` field (only the LIBRARY card list does), so every caller that actually SWITCHES decks
+      // (pmLibOpen/pmLibPresent) passes its own already-known `id` explicitly; the editor→grid
+      // "Done" handler, which never switches decks, passes the last-tracked pmGridDeckId back. This
+      // id is what deck-scopes the thumbnail cache (pmThumbKey) below — never omit it.
+      function pmRenderGrid(dv, deckId) {
         pmDv = dv;
+        pmGridDeckId = deckId;
         const nm = pmEl("pm-grid-name"); if (nm) nm.textContent = dv.name || "Presentation";
         const ct = pmEl("pm-grid-count"); if (ct) ct.textContent = "· " + (dv.count || 0) + " slides";
         const tiles = pmEl("pm-grid-tiles"); if (!tiles) return;
@@ -10117,7 +10228,7 @@
         const emptyBox = pmEl("pm-grid-empty"); if (emptyBox) emptyBox.hidden = !empty;
         tiles.hidden = empty;
         const io = ("IntersectionObserver" in window)
-          ? new IntersectionObserver((es) => { es.forEach((e) => { if (e.isIntersecting) { io.unobserve(e.target); pmThumb(Number(e.target.dataset.id), e.target.querySelector("canvas")); } }); })
+          ? new IntersectionObserver((es) => { es.forEach((e) => { if (e.isIntersecting) { io.unobserve(e.target); pmThumb(deckId, Number(e.target.dataset.id), e.target.querySelector("canvas")); } }); })
           : null;
         slides.forEach((s, i) => {
           const tile = document.createElement("div"); tile.className = "pm-tile"; tile.dataset.id = String(s.id);
@@ -10131,7 +10242,7 @@
           tiles.appendChild(tile);
           // Eager-render the initial batch (first fold); lazy-load the rest via the observer. This
           // keeps visible thumbnails immediate (and headless-testable) while staying bounded.
-          if (io && i >= 12) io.observe(tile); else pmThumb(id, cv);
+          if (io && i >= 12) io.observe(tile); else pmThumb(deckId, id, cv);
         });
         pmGridSelect(dv.selected != null ? dv.selected : (slides[0] && slides[0].id), false);
         pmGridSyncLive();
@@ -10300,6 +10411,15 @@
       // the output; a failure (e.g. no output window) surfaces the error banner via pAct.
       async function pmPresent() {
         if (await pAct(() => invoke("deck_go_live"), "present the slide")) {
+          // pmGridDeckId is NOT reliable ground truth here — it is only ever written by
+          // pmRenderGrid, and the EDITOR can be showing a deck that never went through the grid
+          // at all ("+ New presentation" lands straight in the editor, bypassing it entirely; see
+          // the "Done" handler's identical reasoning below). Sana proved live (17tnw2axwve round
+          // 2, via window.__pmGridDebug.deckId()) that trusting pmGridDeckId here can record
+          // ownership for the WRONG deck — worse than the missing ring this is fixing, a false-
+          // positive ring on whichever unrelated deck the grid last happened to render. Ask
+          // deck_list for ground truth instead, exactly like the "Done" handler does.
+          try { const lv = await invoke("deck_list"); if (lv && lv.open != null) pmLiveAuthoredDeckId = lv.open; } catch (e) {}
           pmToast("Now presenting on the audience output");
         }
       }
@@ -11026,7 +11146,20 @@
       // --- wire the static controls (they exist at load; #surface-presentation is in the DOM) ---
       (function wirePresentation() {
         pmEl("pm-add-slide").onclick = pmAddSlide;
-        if (pmEl("pm-done")) pmEl("pm-done").onclick = () => { pmSetMode("grid"); pmRenderGrid(pmDv); }; // editor → grid
+        if (pmEl("pm-done")) pmEl("pm-done").onclick = async () => {
+          // The open deck can have changed via a path that never touched pmGridDeckId — "+ New
+          // presentation" (Blank or Duplicate, app.js ~9787-9791) and the host auto-switching away
+          // from a just-deleted open deck (~10136) both land in the EDITOR directly and update pmDv
+          // without ever calling pmRenderGrid. DeckView itself carries no id field (deck_workspace.rs
+          // ::view()), so trusting the last-tracked pmGridDeckId here silently resurrected the exact
+          // cross-deck thumbnail collision this fix exists to close (Sana + Cody, PR #92 review).
+          // Ask the library view for ground truth instead: deck_list's `open` field is computed live
+          // from ws.open_deck().id() on every call, so it can never be stale.
+          let deckId = pmGridDeckId;
+          try { const lv = await invoke("deck_list"); if (lv && lv.open != null) deckId = lv.open; } catch (e) {}
+          pmSetMode("grid");
+          pmRenderGrid(pmDv, deckId);
+        }; // editor → grid
         pmEl("pm-undo").onclick = pmUndo;
         pmEl("pm-redo").onclick = pmRedo;
         pmEl("pm-import").onclick = pmImportImage;
