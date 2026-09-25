@@ -119,9 +119,12 @@ fn build_system_fs() -> FontSystem {
     // resolves to the bundled faces, not a machine-installed Inter) — the stage/confidence
     // typeface. Both weights are bundled so `(Inter, 700)` has an exact face and never falls
     // back to a system monospace once system fonts are in the DB. Unlike Noto Sans above, the
-    // ORDER IS LOAD-BEARING here and nothing tests it: a machine-installed Inter may be v3 or
-    // v4, and Inter 4.0 changed default metrics, so if a system Inter won the tie-break the
-    // stage/confidence advances would move on that host alone.
+    // ORDER IS LOAD-BEARING here: a machine-installed Inter may be v3 or v4, and Inter 4.0
+    // changed default metrics, so if a system Inter won the tie-break the stage/confidence
+    // advances would move on that host alone. Pinned by
+    // `a_bundled_inter_face_wins_the_family_tie_break_over_a_later_impostor` in
+    // `tests/test_raster.rs` (86ak7kkfv), which builds an equivalent database directly and
+    // fails if this load order stops deciding the tie-break.
     db.load_font_data(INTER_BYTES.to_vec());
     db.load_font_data(INTER_BOLD_BYTES.to_vec());
     db.load_system_fonts();
