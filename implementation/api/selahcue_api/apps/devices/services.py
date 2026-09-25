@@ -6,7 +6,7 @@ import secrets
 from dataclasses import dataclass
 
 from django.conf import settings
-from django.contrib.auth.hashers import check_password, make_password
+from django.contrib.auth.hashers import check_password
 from django.core.exceptions import ValidationError
 from django.db import transaction
 from django.db.models import Q
@@ -95,6 +95,28 @@ def _fingerprint(value: str) -> str:
     ).hexdigest()
 
 
+def _device_token_hash(value: str) -> str:
+    """At-rest hash for `DeviceToken.token_hash` (86ak69u8u, same ruling as DEC-013's
+    `_credential_token_hash` for the adjacent credential-token mint).
+
+    NOT `make_password`. `_generate_full_token` is CSPRNG-generated high-entropy material
+    (`secrets.choice` over `KEY_ALPHABET`), so there is no low-entropy deficit for PBKDF2 to
+    compensate for — it only adds ~430ms of write-time cost for a column that is never read
+    back: `authenticate_device_token` verifies via `token_fingerprint` + `hmac.compare_digest`
+    and never calls `check_password` against this column.
+
+    It also costs security, not just time: a PBKDF2 column stores its salt beside the hash
+    and is offline-testable from a DB leak alone, whereas a keyed HMAC is not testable at all
+    without SECRET_KEY. Same pepper as `_fingerprint`, under a DISTINCT LABEL so this column
+    is not an exact copy of `token_fingerprint` — a column that merely repeated the lookup key
+    would confirm nothing.
+
+    The column stays (ADR-0022 retains it; no migration) — only what is written into it
+    changes.
+    """
+    return _fingerprint(f"device-token-hash:{value}")
+
+
 def _generate_full_token() -> str:
     groups = [
         "".join(secrets.choice(KEY_ALPHABET) for _ in range(TOKEN_GROUP_SIZE))
@@ -147,7 +169,7 @@ def _new_device_token(device: Device, license_key: AppLicenseKey) -> tuple[Devic
         token_prefix=prefix,
         token_suffix=suffix,
         masked_token=masked,
-        token_hash=make_password(full_token),
+        token_hash=_device_token_hash(full_token),
         token_fingerprint=_fingerprint(full_token),
         status=DeviceTokenStatus.ACTIVE,
         issued_at=timezone.now(),
