@@ -267,6 +267,14 @@ fn item_content_codec_round_trips_every_variant() {
             slide_count: None,
             label: None,
         },
+        // A REAL label — no case here exercised the codec with a non-empty label at all
+        // (86ak84d1e), so the only thing standing between a deck label and the database
+        // went unverified with a value in it.
+        ItemContent::Deck {
+            deck_id: 9,
+            slide_count: Some(12),
+            label: Some("Welcome Slides".into()),
+        },
         ItemContent::Media { media_id: 7 },
     ];
     for c in cases {

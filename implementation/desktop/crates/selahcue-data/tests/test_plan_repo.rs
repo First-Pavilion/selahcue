@@ -312,7 +312,12 @@ fn round_trips_a_linked_content_reference() {
     // ADR-0020 follow-up: a plan item's linked content (scripture ref / deck / media)
     // persists + reloads; an unlinked item reloads as `None`. Full PlanItem equality
     // (incl. the new `content` field) covers it.
-    use selahcue_core::plan::ItemContent;
+    //
+    // 86ak84d1e: the scripture link's `verse_numbers` and the deck link's `label` were only
+    // ever exercised here as `None` — the codec is the only thing between either field and
+    // the database, and nothing proved a REAL value of either survives a real SQLite
+    // round-trip (as opposed to the pure in-memory codec test in `selahcue-core`).
+    use selahcue_core::plan::{ItemContent, VerseNumbers};
     let db = Database::open_in_memory().unwrap();
     let mut p = ServicePlan::new("Linked");
     let scr = p.add_item(ItemKind::Scripture, "Romans");
@@ -325,7 +330,7 @@ fn round_trips_a_linked_content_reference() {
             reference: "Romans 8:28-30".into(),
             translation: Some("WEB".into()),
             verses_per_slide: Some(2),
-            verse_numbers: None,
+            verse_numbers: Some(VerseNumbers::Inline),
         }),
     )
     .unwrap();
@@ -333,8 +338,8 @@ fn round_trips_a_linked_content_reference() {
         deck,
         Some(ItemContent::Deck {
             deck_id: 17,
-            slide_count: None,
-            label: None,
+            slide_count: Some(12),
+            label: Some("Welcome Slides".into()),
         }),
     )
     .unwrap();

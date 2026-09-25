@@ -4619,6 +4619,41 @@ fn a_scripture_linked_item_stages_its_verses_and_surfaces_the_link() {
 }
 
 #[test]
+fn a_client_supplied_link_status_is_never_echoed_back() {
+    // 86ak84d1e: `ContentLinkView.status` travels in BOTH directions — the host emits it on
+    // `operator_view`, and a client sends the same struct type back on `SetItemContent`.
+    // Nothing pinned that the host recomputes its own answer rather than trusting the one a
+    // peer claims. A regression that "helpfully" passed `link.status` straight through would
+    // restore exactly the absent-equals-fine failure this field exists to prevent, over the
+    // untrusted LAN path — and every other test in the suite would stay green.
+    let (mut c, ids) = controller();
+    for claimed in ["resolved", "missing"] {
+        let reply = c.apply(&Command::SetItemContent {
+            item_id: ids[0],
+            link: Some(ContentLinkView {
+                kind: "deck".into(),
+                reference: None,
+                translation: None,
+                verses_per_slide: None,
+                id: Some(17),
+                slide_count: None,
+                verse_numbers: None,
+                status: Some(claimed.into()),
+                label: None,
+            }),
+        });
+        assert!(matches!(reply, ControllerReply::Ack));
+        let link = c.operator_view().items[0].link.clone().expect("deck link");
+        assert_eq!(
+            link.status.as_deref(),
+            Some("unknown"),
+            "the host must report its OWN resolution, not the client's claimed {claimed:?} — \
+             this process has no deck library, so a deck link is always Unknown here"
+        );
+    }
+}
+
+#[test]
 fn operator_view_surfaces_item_owner_and_planned_duration() {
     // The domain already stored owner/planned_secs; the operator view now surfaces them on the
     // run-sheet row (FR-004). Unassigned/unplanned items pass through as `None` (byte-stable).
