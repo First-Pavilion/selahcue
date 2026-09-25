@@ -1335,7 +1335,20 @@ EXPECTED_MIN_CHECKS = 1964
 # for a purely cosmetic reason with no correctness/security value, which this codebase's own
 # "no unjustified... broad refactor" discipline argues against. Confirmed by three independent
 # clean runs against the real tree: 1980 checks, 0 FAIL each time.
-EXPECTED_MIN_CHECKS = 1980
+# 1980 -> 1982: PR #98 review remediation (Quinn, QA review — her original d3f4193 pass flagged
+# this as a low coverage gap, addressed once the round reconvened at the final head). The RCD-008
+# checks above only ever exercised link_status() RESOLVING to "disconnected" (via __rcLinkDownOnce)
+# — checkHostConnection()'s own .catch() branch, the path a real "opened outside the Tauri shell"
+# or an older host missing the command takes (remote.js's own invoke() wrapper always rejects when
+# INVOKE is absent), had no coverage at all. Added a dedicated one-shot REJECT hook
+# (__rcLinkRejectOnce, mirrors __sicRejectOnce/__planRejectOnce), kept deliberately separate from
+# __rcLinkDownOnce so a reject-path test can never be confused with (or accidentally exercise) the
+# resolved-disconnected path instead. +2 assertions: the banner shows on a genuine rejection, and a
+# cleanup assertion restoring it to hidden. Mutation-tested: removing the reject hook (falling
+# through to the healthy default) turns exactly the new "shows on rejection" assertion RED, no
+# collateral failures; restoring turns the file green again. Confirmed by three independent clean
+# runs against the real tree: 1982 checks, 0 FAIL each time.
+EXPECTED_MIN_CHECKS = 1982
 
 
 def find_chrome():
@@ -1934,6 +1947,13 @@ STUB = r"""
   // link_status() instead, the same genuinely-live signal app.js's #rcv-link card already uses.
   if (cmd === "link_status") {
     if (window.__rcLinkDownOnce) { window.__rcLinkDownOnce = false; return Promise.resolve({state:"disconnected", epoch:1, attempts:0, last_error:"simulated host disconnect"}); }
+    // One-shot REJECT hook (mirrors __sicRejectOnce/__planRejectOnce), separate from the resolved-
+    // "disconnected" hook above: exercises checkHostConnection()'s .catch() branch specifically —
+    // the path a real "opened outside the Tauri shell" or "older host missing this command" takes
+    // (remote.js's own invoke() wrapper always rejects when INVOKE is absent) — distinct from a
+    // real host explicitly reporting "disconnected" (Quinn, PR #98 QA review: the resolved-false
+    // path had coverage, the reject path did not).
+    if (window.__rcLinkRejectOnce) { window.__rcLinkRejectOnce = false; return Promise.reject(new Error("no host connection")); }
     return Promise.resolve(window.__link || {state:"connected", epoch:1, attempts:0, last_error:null});
   }
     if (cmd === "stt_ready") return Promise.resolve(window.__psStt || {ready:true, state:"ready", model:"Small", detail:"On-device model ready"});
@@ -7429,6 +7449,20 @@ DRIVER = r"""
       await window.__rcRecheckHostForTest();
       ok(el("rc-host-banner").hidden && getComputedStyle(el("rc-host-banner")).display === "none",
          "RCD-008: the banner clears once the host link recovers and the surface rechecks — no manual refresh needed");
+
+      // Reject path (Quinn, PR #98 QA review): the checks above only exercise link_status()
+      // RESOLVING to "disconnected" — checkHostConnection()'s .catch() branch (remote.js's own
+      // invoke() wrapper always rejects when opened outside the Tauri shell, or an older host
+      // missing the command would reject too) had no coverage. A dedicated one-shot reject hook,
+      // separate from __rcLinkDownOnce (the resolved-disconnected hook above), so this can't be
+      // confused with a host that genuinely answered "disconnected".
+      window.__rcLinkRejectOnce = true;
+      await window.__rcRecheckHostForTest();
+      ok(!el("rc-host-banner").hidden && getComputedStyle(el("rc-host-banner")).display !== "none",
+         "RCD-008: a rejected link_status() call (opened outside the shell / older host) also shows the banner, not just an explicit 'disconnected' answer");
+      await window.__rcRecheckHostForTest();
+      ok(el("rc-host-banner").hidden && getComputedStyle(el("rc-host-banner")).display === "none",
+         "RCD-008 cleanup: the host link is healthy again after the reject-path check");
 
       // F3 (Vera, PR #98 performance review): the 3s poll had no visibility guard anywhere in the
       // bundle, unlike preservice.js's own tick()/root.classList.contains("active") pattern (the
