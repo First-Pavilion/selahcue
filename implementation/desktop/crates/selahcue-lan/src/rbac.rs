@@ -168,7 +168,10 @@ pub fn required_permission(cmd: &Command) -> Permission {
         Command::GetState
         | Command::GetOperatorState
         | Command::GetConsoleThumbnails { .. }
-        | Command::GetScreenFrame { .. } => Monitor,
+        | Command::GetScreenFrame { .. }
+        // Listing the autosave-slot history (FR-005; 86ajy0hxg) is read-only — same tier as any
+        // other state read. RESTORING a slot is a separate, EditPlan-tier command below.
+        | Command::ListAutosaveSlots => Monitor,
         Command::AddItem { .. }
         | Command::RemoveItem { .. }
         | Command::MoveItem { .. }
@@ -189,7 +192,22 @@ pub fn required_permission(cmd: &Command) -> Permission {
         | Command::NewPlan { .. }
         | Command::TemplatePlan { .. }
         | Command::DuplicatePlan { .. }
-        | Command::ImportPlan { .. } => EditPlan,
+        | Command::ImportPlan { .. }
+        // Item Undo/Redo (86ajy0hxg) reverse/replay a plan edit — the same EditPlan privilege
+        // as the edits themselves; no role may undo a change it could not have made.
+        | Command::UndoPlan
+        | Command::RedoPlan
+        // Restoring an autosave slot (FR-005) or the crash-loop preserved session (FR-169) both
+        // wholesale-replace the plan/session state — at least as consequential as any other
+        // plan-lifecycle action in this arm (NewPlan/ImportPlan), so the SAME EditPlan
+        // privilege, Operator-only. No new `Permission` variant: every one of these five is
+        // Operator-only in effect already (every candidate tier in this table below Operator
+        // lacks EditPlan), so a dedicated "ManageSession" permission would not change a single
+        // role's verdict — it would only grow the table's surface for no observable behaviour
+        // change.
+        | Command::RestoreAutosave { .. }
+        | Command::Resume
+        | Command::StartClean => EditPlan,
         Command::IdentifyOutputs
         | Command::AssignOutput { .. }
         | Command::SetTheme { .. }

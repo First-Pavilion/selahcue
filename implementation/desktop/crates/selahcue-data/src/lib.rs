@@ -15,12 +15,16 @@
 //!   configurable retention (86ajtxzrn; FR-130/153/154/137/082).
 //! - [`sermon_note_repo`] — generated sermon-note draft persistence + editing
 //!   (86akgqdv0; FR-123 "editable" half).
+//! - [`autosave_repo`] — bounded autosave-SLOT history (FR-005 "last-3" restore
+//!   points; ticket 86ajy0hxg), a sibling of [`session_repo`]'s continuously
+//!   refreshed singleton crash-recovery row.
 //!
 //! At-rest encryption (FR-154) is behind the `encryption` feature: it compiles
 //! SQLCipher and exposes [`EncryptionKey`] plus [`Database::open_encrypted`].
 
 #![forbid(unsafe_code)]
 
+pub mod autosave_repo;
 mod db;
 pub mod deck_repo;
 mod error;

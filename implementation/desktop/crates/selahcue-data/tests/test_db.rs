@@ -29,7 +29,8 @@ fn schema_version_is_pinned() {
     // transcript_setting tables (86ajtxzrn; FR-130/153/154/137/082);
     // v21 = sermon_note table (86akgqdv0; FR-123 "editable" half);
     // v22 = sermon_note.pending_* regeneration-retention columns (86akgqdx8; FR-129).
-    assert_eq!(migrations::target_version(), 22);
+    // v23 = autosave_slot table (FR-005 "last-3" bounded autosave-slot history; 86ajy0hxg).
+    assert_eq!(migrations::target_version(), 23);
 }
 
 #[test]
@@ -56,6 +57,7 @@ fn a_pre_saved_theme_database_upgrades_and_gains_the_saved_theme_table() {
              DROP TABLE transcript;
              DROP TABLE transcript_setting;
              DROP TABLE sermon_note;
+             DROP TABLE autosave_slot;
              ALTER TABLE plan_item DROP COLUMN content_ref;
              PRAGMA user_version = 10;",
         )
@@ -102,6 +104,7 @@ fn a_pre_screen_theme_database_upgrades_and_gains_the_screen_theme_table() {
              DROP TABLE transcript;
              DROP TABLE transcript_setting;
              DROP TABLE sermon_note;
+             DROP TABLE autosave_slot;
              ALTER TABLE plan_item DROP COLUMN content_ref;
              PRAGMA user_version = 11;",
         )
@@ -148,6 +151,7 @@ fn a_pre_registry_database_upgrades_and_gains_the_screen_table() {
              DROP TABLE transcript;
              DROP TABLE transcript_setting;
              DROP TABLE sermon_note;
+             DROP TABLE autosave_slot;
              ALTER TABLE plan_item DROP COLUMN content_ref;
              PRAGMA user_version = 12;",
         )
@@ -200,6 +204,7 @@ fn a_pre_per_item_theme_database_upgrades_and_gains_the_plan_item_theme_column()
              DROP TABLE transcript;
              DROP TABLE transcript_setting;
              DROP TABLE sermon_note;
+             DROP TABLE autosave_slot;
              ALTER TABLE plan_item DROP COLUMN content_ref;
              PRAGMA user_version = 9;",
         )
@@ -249,6 +254,7 @@ fn a_pre_theme_database_upgrades_and_gains_the_theme_columns() {
              DROP TABLE transcript;
              DROP TABLE transcript_setting;
              DROP TABLE sermon_note;
+             DROP TABLE autosave_slot;
              ALTER TABLE plan_item DROP COLUMN content_ref;
              PRAGMA user_version = 7;",
         )
@@ -307,6 +313,7 @@ fn a_pre_pending_regeneration_database_upgrades_and_gains_the_pending_columns() 
              ALTER TABLE sermon_note DROP COLUMN pending_provider;
              ALTER TABLE sermon_note DROP COLUMN pending_model;
              ALTER TABLE sermon_note DROP COLUMN pending_generated_at;
+             DROP TABLE autosave_slot;
              PRAGMA user_version = 21;",
         )
         .unwrap();
@@ -356,6 +363,39 @@ fn a_pre_pending_regeneration_database_upgrades_and_gains_the_pending_columns() 
         pending_title, None,
         "a pre-existing row has no pending regeneration after upgrading"
     );
+}
+
+/// A v22 DB (no `autosave_slot` table) must upgrade cleanly to v23 — a fresh table, so an
+/// existing store simply starts with an empty autosave-slot history (FR-005 "last-3";
+/// 86ajy0hxg).
+#[test]
+fn a_pre_autosave_slot_database_upgrades_and_gains_the_autosave_slot_table() {
+    let file = tempfile::NamedTempFile::new().unwrap();
+    let path = file.path().to_path_buf();
+    {
+        let _ = Database::open(&path).unwrap();
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute_batch(
+            "DROP TABLE autosave_slot;
+             PRAGMA user_version = 22;",
+        )
+        .unwrap();
+    }
+    let db = Database::open(&path).unwrap();
+    assert_eq!(
+        db.schema_version().unwrap(),
+        migrations::target_version(),
+        "re-ran the v23 migration"
+    );
+    let present: i64 = db
+        .conn()
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'autosave_slot'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(present, 1, "autosave_slot table present after upgrade");
 }
 
 #[test]

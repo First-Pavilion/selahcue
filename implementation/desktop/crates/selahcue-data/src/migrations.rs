@@ -449,6 +449,41 @@ const MIGRATIONS: &[&str] = &[
     ALTER TABLE sermon_note ADD COLUMN pending_model TEXT;
     ALTER TABLE sermon_note ADD COLUMN pending_generated_at INTEGER;
     "#,
+    // v22 -> v23: bounded autosave-SLOT history (FR-005 "last-3"; ticket 86ajy0hxg).
+    //
+    // `session_state` (v1) stays exactly what it always was: a SINGLETON row, continuously
+    // overwritten, that crash recovery restores from on every launch. This table is a sibling,
+    // not a replacement — a bounded RING of distinct earlier restore points (`autosave_repo`
+    // enforces the count via prune-after-insert), so "restore the last autosave" (FR-005) has
+    // more than the single most-recent instant to offer when THAT instant turns out to be the
+    // state the operator wants to get away from (a failed open, a bad edit). Mirrors
+    // `session_state`'s columns exactly, plus `saved_at_ms` (when this restore point was
+    // captured) and an optional `label`. A fresh table, so no existing row's shape changes.
+    r#"
+    CREATE TABLE autosave_slot (
+        id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+        saved_at_ms        INTEGER NOT NULL,
+        label              TEXT,
+        plan_id            INTEGER REFERENCES service_plan(id) ON DELETE SET NULL,
+        live_idx           INTEGER,
+        staged_idx         INTEGER,
+        plan_cursor        INTEGER,
+        blackout           INTEGER NOT NULL DEFAULT 0,
+        timer_total_secs   INTEGER,
+        timer_elapsed_secs INTEGER,
+        timer_running      INTEGER,
+        live_scripture     TEXT,
+        staged_scripture   TEXT,
+        live_free_text     TEXT,
+        live_slide         INTEGER,
+        staged_slide       INTEGER,
+        cursor_slide       INTEGER,
+        live_free_body     TEXT,
+        theme              TEXT,
+        custom_theme       TEXT
+    );
+    CREATE INDEX idx_autosave_slot_saved_at ON autosave_slot(saved_at_ms);
+    "#,
 ];
 
 /// The schema version this build expects (== `MIGRATIONS.len()`).

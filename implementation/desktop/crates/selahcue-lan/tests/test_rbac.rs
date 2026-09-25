@@ -287,6 +287,8 @@ fn viewer_can_only_monitor() {
             max_h: 54
         }
     ));
+    // Listing the autosave-slot history (FR-005; 86ajy0hxg) is read-only, same tier.
+    assert!(authorize(Role::Viewer, &Command::ListAutosaveSlots));
     // Everything else is denied.
     for cmd in navigate_cmds() {
         assert!(!authorize(Role::Viewer, &cmd), "viewer nav {cmd:?}");
@@ -665,6 +667,15 @@ fn plan_edit_cmds() -> Vec<Command> {
             name: "Imported".into(),
             items: vec![],
         },
+        // Item Undo/Redo (86ajy0hxg) reverse/replay a plan edit — same EditPlan privilege.
+        Command::UndoPlan,
+        Command::RedoPlan,
+        // Restoring an autosave slot (FR-005) or the crash-loop preserved session (FR-169;
+        // 86ajy0hxg) both wholesale-replace plan/session state — same EditPlan privilege as
+        // every other plan-lifecycle action in this list.
+        Command::RestoreAutosave { slot: 1 },
+        Command::Resume,
+        Command::StartClean,
     ]
 }
 
