@@ -977,8 +977,13 @@
 
       // The status pill for a card (Design 2.0 §STATUS PILL): honest — CLOSED when a windowed
       // screen has no output window; LIVE only when the physical output is presenting;
-      // CONNECTED when assigned; READY for a composed virtual feed; NO SIGNAL when a physical
-      // role has no display.
+      // CONNECTED when assigned; READY for a composed virtual feed; NO SIGNAL only when the
+      // host has actually REPORTED a signal loss; UNKNOWN — never NO SIGNAL — when the host
+      // simply hasn't reported telemetry for this role at all (HOST-SIGNAL-INVENTORY.md
+      // fabrication #2: this branch used to fabricate a hard fault for merely-absent
+      // telemetry, e.g. before the host's first poll reply, indistinguishable from a genuine
+      // "no_signal" report; the footer elsewhere in this file already got this right for the
+      // same underlying data — this pill did not).
       function statusPillFor(s, o) {
         const pill = document.createElement("span"); pill.className = "scr-pill";
         let variant = "ready", label = "READY";
@@ -990,9 +995,21 @@
             // fault: it is a deliberate operator state, and the toggle re-opens the window.
             variant = "closed"; label = "CLOSED";
           } else if (o && o.assigned && o.signal === "healthy") { variant = "live"; label = "LIVE"; }
+          else if (o && o.signal === "no_signal") {
+            // A REPORTED fault — the host actually said so — and it must win over a stale
+            // `assigned` flag: an assignment can predate the display going dark, so checking
+            // `assigned` FIRST (the previous order) made a genuinely reported fault read as
+            // "CONNECTED" whenever a display had ever been assigned. Matches `syncOutputState`
+            // elsewhere in this file, which already checks the reported signal before assigned.
+            variant = "warning"; label = "NO SIGNAL";
+          } else if (o && o.signal === "degraded") { variant = "warning"; label = "DEGRADED"; }
           else if (o && o.assigned) { variant = "connected"; label = "CONNECTED"; }
-          else if (o && o.signal === "degraded") { variant = "warning"; label = "DEGRADED"; }
-          else { variant = "warning"; label = "NO SIGNAL"; }
+          else {
+            // Nothing was reported either way: no `o` at all (host hasn't sent outputs yet),
+            // or `o.signal` is absent/unrecognised and nothing is assigned. Tri-state, never
+            // bi-state — this is "unknown", not "no signal".
+            variant = "unknown"; label = "UNKNOWN";
+          }
         } else {
           // A virtual audience feed composes + previews; if it broadcasts NDI, surface that.
           const cfg = cfgOf(s);

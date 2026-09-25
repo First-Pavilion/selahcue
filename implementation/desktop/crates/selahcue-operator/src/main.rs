@@ -127,6 +127,16 @@ impl Backend {
             Backend::Local(s) => Ok(s.view()),
         }
     }
+
+    /// Swap in a freshly (re)connected client after the old one dropped. A no-op on `Local`:
+    /// the demo backend has no link to replace. `Remote`'s client sits behind a `Mutex` that
+    /// already exists for every other command, so replacing its contents needs no change to
+    /// `AppState.backend`'s own type — only the reconnect loop in [`view`] calls this.
+    async fn replace_remote(&self, fresh: RemoteOperator) {
+        if let Backend::Remote(m) = self {
+            *m.lock().await = fresh;
+        }
+    }
     async fn next(&self) -> Result<OperatorView, String> {
         match self {
             Backend::Remote(m) => m.lock().await.next().await.map_err(|e| e.to_string()),
@@ -1046,16 +1056,20 @@ struct AppState {
     /// The SelahCue account/session token store (FR-134): OS keychain in a `cloud-live` build,
     /// in-memory otherwise. Never a user-pasted third-party key.
     secrets: Box<dyn selahcue_cloud::SecretStore + Send + Sync>,
-    /// The last observed outcome of a call over the control link (`Remote` backend only).
+    /// The control link's real state (Tier 2a): the pure backoff/attempt-count state machine
+    /// from `selahcue_lan::link`, driven by actual connect attempts made from [`view`]. A
+    /// `Local` backend never leaves [`selahcue_lan::LinkState::Local`] — `LinkStatus`'s own
+    /// `observe_*` methods no-op there, so this cannot drift into claiming a link that was
+    /// never wanted.
+    link_status: Mutex<selahcue_lan::LinkStatus>,
+    /// Wall-clock deadline for the next automatic reconnect attempt, or `None` when none is
+    /// scheduled (nothing to reconnect, or the breaker in `link_status` has given up).
     ///
-    /// `None` = the last call succeeded, or none has been made yet — and for a `Remote` backend
-    /// that is honest at boot, because `build_backend` only produces `Remote` when
-    /// `connect_remote` actually established the link. `Some(err)` = the last call failed, and
-    /// carries the host's own reason.
-    ///
-    /// This is an OBSERVATION, not a retry state machine. Nothing in this shell re-dials, so a
-    /// failure means the link is down and stays down — see [`link_status`].
-    link_error: Mutex<Option<String>>,
+    /// Lives here rather than in `selahcue_lan::link` because "when" is real-clock IO the
+    /// pure crate deliberately does not own (its own doc: dialling belongs to the shell) —
+    /// mirrors `selahcue-desktop`'s manual window-retry gesture, which is also real-clock
+    /// state kept in the shell around a decision made elsewhere.
+    link_next_attempt: Mutex<Option<std::time::Instant>>,
 }
 
 /// Reply to the Remote Control device commands: the host's paired devices + pending requests.
@@ -1317,23 +1331,270 @@ async fn audio_input() -> AudioInputReply {
 #[tauri::command]
 async fn view(state: State<'_, AppState>) -> Result<OperatorView, String> {
     // The 1 Hz view poll is the console's only regular traffic over the control link, so it is
-    // also the only place the link's liveness is observable. Record the outcome so `link_status`
-    // reports what actually happened rather than a static "is this a remote build" boolean.
+    // also the only place the link's liveness is observable — and, since Tier 2a, the only place
+    // a real reconnect attempt gets a chance to run. Record the outcome so `link_status` reports
+    // what actually happened, then (Remote only) drive the real backoff-paced re-dial loop.
     let r = state.backend.view().await;
     if state.backend.is_remote() {
-        if let Ok(mut slot) = state.link_error.lock() {
-            *slot = match &r {
-                Ok(_) => None,
-                // Bound the retained reason the same way the wire does, so a pathological
-                // transport error cannot grow this field without limit.
-                Err(e) => Some(selahcue_lan::protocol::truncate_for_wire(
-                    e,
-                    selahcue_lan::protocol::MAX_ERROR_TEXT_LEN,
-                )),
-            };
-        }
+        record_link_outcome(&state, r.as_ref().err());
+        maybe_reconnect(&state).await;
     }
     r
+}
+
+/// Feed one poll's outcome into the real `LinkStatus` state machine and, on failure, schedule
+/// the next automatic attempt per its own backoff table. A poisoned lock degrades to doing
+/// nothing this tick rather than panicking the whole console over one stalled mutex.
+fn record_link_outcome(state: &AppState, err: Option<&String>) {
+    let Ok(mut status) = state.link_status.lock() else {
+        return;
+    };
+    match err {
+        None => status.observe_success(),
+        Some(e) => status.observe_failure(e),
+    }
+    let next = status.next_backoff();
+    drop(status);
+    if let Ok(mut slot) = state.link_next_attempt.lock() {
+        *slot = next.map(|d| std::time::Instant::now() + d);
+    }
+}
+
+/// Attempt one real re-dial if the pure state machine's own backoff says it is due. This is
+/// what makes `LinkState::Reconnecting` true only when an attempt genuinely is scheduled — the
+/// exact biconditional the fabricated "Reconnecting…" label used to violate — and it is what
+/// actually recovers the link without an operator restarting the console, up to the state
+/// machine's own `MAX_RECONNECT_ATTEMPTS` bound (after which it reports `Disconnected` and this
+/// function has nothing left to schedule).
+async fn maybe_reconnect(state: &AppState) {
+    maybe_reconnect_from(state, read_endpoint).await;
+}
+
+/// [`maybe_reconnect`], but the endpoint lookup is injected rather than always reading the
+/// shared OS-temp-dir file `read_endpoint` uses. Production calls the two-line wrapper above;
+/// tests inject a fixed test endpoint so they can prove a real re-dial happens without racing
+/// every other process on the machine over one global path (`endpoint_file_path`'s own doc: the
+/// output window and operator shell agree on it by convention, not per-test isolation).
+async fn maybe_reconnect_from(state: &AppState, endpoint_source: impl Fn() -> Option<Endpoint>) {
+    let due = {
+        let Ok(mut slot) = state.link_next_attempt.lock() else {
+            return;
+        };
+        match *slot {
+            Some(at) if std::time::Instant::now() >= at => {
+                // Clear the schedule before attempting: a slow connect must not leave a stale
+                // deadline that a later poll reads as "still due" and fires again concurrently.
+                *slot = None;
+                true
+            }
+            _ => false,
+        }
+    };
+    if !due {
+        return;
+    }
+    let Some(ep) = endpoint_source() else {
+        // No endpoint file at all — the output window is gone, not merely unreachable. Nothing
+        // to redial against; the state machine's own attempt/backoff bookkeeping already
+        // advanced in `record_link_outcome`, so this just declines to burn an attempt on a
+        // connect that cannot possibly succeed.
+        return;
+    };
+    match connect_remote(&ep).await {
+        Ok(fresh) => {
+            state.backend.replace_remote(fresh).await;
+            if let Ok(mut status) = state.link_status.lock() {
+                status.observe_success();
+            }
+        }
+        Err(e) => {
+            record_link_outcome(state, Some(&e));
+        }
+    }
+}
+
+/// Tier 2a end to end: a real dropped socket is really reconnected, driven by the real
+/// `selahcue_lan::link::LinkStatus` backoff state machine — not a copy of its logic re-asserted
+/// here (that trap is called out in `implementation/desktop/CLAUDE.md`'s bounded-memory-test
+/// section: a control that re-derives the predicate instead of consuming the real one survives
+/// mutation of the real one). Every assertion below reads `link_status()`/`state.backend.view()`,
+/// the exact producer→view path the console's poll uses.
+#[cfg(test)]
+mod link_reconnect_tests {
+    use super::*;
+    use selahcue_app::{handler_for, LiveController};
+    use selahcue_core::plan::{ItemKind, ServicePlan};
+    use selahcue_lan::session::{DeviceId, SessionRegistry, SessionToken};
+    use selahcue_lan::{ControlServer, Role, SelfSigned};
+    use selahcue_present::Theme;
+    use std::time::{Duration, Instant as StdInstant};
+    use tokio::net::TcpListener;
+    use tokio::sync::Mutex as AsyncMutex;
+
+    /// Stand up one real, pinned-TLS `ControlServer` on loopback with a single pre-paired
+    /// Producer session, backed by a `LiveController` over `plan_name`. Returns the listening
+    /// address, the pin, and the dedicated [`tokio::runtime::Runtime`] it runs on.
+    ///
+    /// It gets its OWN runtime, not a `tokio::spawn` on the test's runtime: `ControlServer::run`
+    /// spawns one further detached task per accepted connection (`server.rs`), so aborting only
+    /// the outer accept-loop `JoinHandle` leaves an already-established connection's handler
+    /// running — the socket stays alive and the test cannot produce the real drop it needs.
+    /// `Runtime::shutdown_background` drops every task the runtime owns, accepted connections
+    /// included, which is what an actual crashed/killed output-window process looks like from
+    /// the operator's side.
+    ///
+    /// Built with NO calls into an ambient async runtime (`block_on` on a fresh `Runtime`
+    /// panics — "cannot start a runtime from within a runtime" — when called from this test's
+    /// own `#[tokio::test]` task): every setup step here is synchronous, and only the accept
+    /// loop itself is handed to the new runtime via `Runtime::spawn`, which merely schedules a
+    /// task and needs no entered context on the calling thread.
+    fn spawn_server(plan_name: &str) -> (SocketAddr, CertPin, tokio::runtime::Runtime) {
+        let identity = SelfSigned::generate(vec!["localhost".into()]).expect("self-signed cert");
+        let pin = identity.pin;
+        let mut plan = ServicePlan::new(plan_name);
+        plan.add_item(ItemKind::Song, "Opening Song");
+        let controller = Arc::new(std::sync::Mutex::new(LiveController::new(
+            plan,
+            320,
+            180,
+            Theme::dark(),
+        )));
+
+        let mut registry_inner = SessionRegistry::new();
+        let now = StdInstant::now();
+        registry_inner.offer_pairing("p", Role::Producer, now, Duration::from_secs(300));
+        registry_inner
+            .redeem(
+                "p",
+                DeviceId("producer".into()),
+                SessionToken::new("tok-prod"),
+                now,
+            )
+            .expect("redeem test pairing code");
+        let registry = Arc::new(AsyncMutex::new(registry_inner));
+
+        let server = Arc::new(
+            ControlServer::new(&identity, registry, handler_for(controller.clone()))
+                .expect("build control server"),
+        );
+
+        let std_listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+        std_listener
+            .set_nonblocking(true)
+            .expect("set listener nonblocking for tokio");
+        let addr = std_listener.local_addr().expect("local addr");
+
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .expect("build dedicated server runtime");
+        rt.spawn(async move {
+            let listener = TcpListener::from_std(std_listener).expect("tokio listener from std");
+            let _ = server.run(listener).await;
+        });
+        (addr, pin, rt)
+    }
+
+    fn state_with_remote(remote: RemoteOperator) -> AppState {
+        AppState {
+            backend: Backend::Remote(Box::new(tokio::sync::Mutex::new(remote))),
+            deck: Mutex::new(crate::DeckWorkspace::demo()),
+            library: Mutex::new(crate::DeckLibrary::load(None)),
+            providers: Mutex::new(selahcue_core::providers::ProvidersConfig::default()),
+            providers_db: None,
+            transcript_db: None,
+            secrets: make_secret_store(),
+            link_status: Mutex::new(selahcue_lan::LinkStatus::connected()),
+            link_next_attempt: Mutex::new(None),
+        }
+    }
+
+    /// The whole point of Tier 2a: after the host really disappears, `link_status()` really
+    /// reports `reconnecting` (never a static "disconnected" the console cannot recover from
+    /// without a restart), and once the backoff elapses and a real host comes back — on a
+    /// DIFFERENT address, exactly as a restarted output window would advertise — the operator's
+    /// own `view()` really reflects the new host's state. Nothing here is asserted against
+    /// `LinkStatus`'s internals directly; every check goes through the same `link_status`/`view`
+    /// Tauri commands the webview polls.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_dropped_link_really_reconnects_and_the_view_really_changes() {
+        let (addr1, pin1, server1) = spawn_server("Original Service");
+        let remote = RemoteOperator::connect(addr1, "localhost", pin1, "producer", "tok-prod")
+            .await
+            .expect("connect to first server");
+        let state = state_with_remote(remote);
+
+        // 1. Healthy: the real poll succeeds and link_status says so.
+        let v1 = view_for_test(&state).await.expect("first view succeeds");
+        assert_eq!(v1.plan_name, "Original Service");
+        assert_eq!(link_status_reply(&state).state, "connected");
+
+        // 2. Kill the real server — a genuine dropped socket (every task the server's runtime
+        //    owns, including the already-accepted connection's handler, is dropped), not a
+        //    simulated error.
+        server1.shutdown_background();
+        // Give the shutdown a moment to actually close the connection.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        // 3. The next real poll fails, and link_status must say `reconnecting` — not a static
+        //    `disconnected` — because an automatic attempt really is now scheduled.
+        let err = view_for_test(&state).await;
+        assert!(err.is_err(), "poll against a dead socket must fail");
+        let status = link_status_reply(&state);
+        assert_eq!(
+            status.state, "reconnecting",
+            "a dropped link with attempts remaining must report reconnecting, not a dead end"
+        );
+        assert_eq!(status.attempts, 1);
+
+        // 4. Stand up a SECOND real server on a DIFFERENT address with DIFFERENT content — the
+        //    honest shape of "the output window restarted" — and let the scheduled backoff
+        //    elapse for real.
+        let (addr2, pin2, server2) = spawn_server("Recovered Service");
+        // `next_backoff` indexes by attempts ALREADY made (1 after the one failure above), i.e.
+        // it is the delay before the *next* (second) attempt — `BACKOFF_MS[1]` = 500ms, not the
+        // first slot's 250ms. Sleep past it for real rather than reaching into `LinkStatus`.
+        tokio::time::sleep(Duration::from_millis(600)).await;
+
+        maybe_reconnect_from(&state, move || {
+            Some(Endpoint {
+                addr: addr2.to_string(),
+                pin: pin2.to_hex(),
+                device: "producer".into(),
+                token: "tok-prod".into(),
+            })
+        })
+        .await;
+
+        // 5. The reconnect must be REAL: link_status flips back to connected, AND a fresh view()
+        //    call returns the SECOND server's own state — proving the swap actually happened,
+        //    not merely that the state label changed.
+        let post = link_status_reply(&state);
+        assert_eq!(
+            post.state, "connected",
+            "last_error = {:?}",
+            post.last_error
+        );
+        let v2 = view_for_test(&state).await.expect("view after reconnect");
+        assert_eq!(v2.plan_name, "Recovered Service");
+
+        // A `Runtime` cannot drop itself from inside an async context (it needs to block the
+        // dropping thread), so shut both down explicitly rather than letting the test fn's end
+        // do it implicitly.
+        server2.shutdown_background();
+    }
+
+    /// The `view` Tauri command's real body (see `view`), against a bare `&AppState` — its logic
+    /// only ever touches `&AppState`, and `record_link_outcome`/`maybe_reconnect_from` are the
+    /// actual production functions, not a re-implementation for the test.
+    async fn view_for_test(state: &AppState) -> Result<OperatorView, String> {
+        let r = state.backend.view().await;
+        if state.backend.is_remote() {
+            record_link_outcome(state, r.as_ref().err());
+        }
+        r
+    }
 }
 
 /// Reply to `link_status` — the operator↔host control-link state (Tier 2).
@@ -1348,49 +1609,38 @@ struct LinkStatusReply {
     last_error: Option<String>,
 }
 
-/// The control-link state, replacing three fabrications at once: a permanent green "Connected"
-/// in the stand-alone build, an untrue "Reconnecting…", and absent telemetry rendered as a fault.
+/// The control-link state, replacing four fabrications at once: a permanent green "Connected"
+/// in the stand-alone build, an untrue "Reconnecting…", absent telemetry rendered as a fault, and
+/// (Tier 2a) a `Reconnecting` that used to be unreachable because nothing actually retried.
 ///
-/// **Read-only by design.** `build_backend` runs exactly once at startup and `AppState.backend` is
-/// an immutable field, so nothing in this shell re-dials. `LinkState::Reconnecting` is therefore
-/// deliberately unreachable here: the contract makes "reconnecting" true *exactly* when an
-/// automatic attempt is scheduled, and none ever is. Reporting it would restore the very lie this
-/// seam exists to remove — so a dropped link reports `disconnected`, which is the truth, and the
-/// console offers no retry it cannot honour. A real re-dial loop is separate work; when it lands,
-/// this command grows a `reconnecting` arm and the biconditional still holds.
-///
-/// `attempts` is always 0 for the same reason. `epoch` mirrors `LinkStatus`'s own convention:
-/// 0 for `local` (no link was ever established), 1 for a link established at startup.
+/// The `view` command now drives a real backoff-paced re-dial loop (see `maybe_reconnect`), so
+/// this is a thin, honest READ of the state that loop maintains — it never itself dials or
+/// mutates `link_status`. The biconditional the pure `selahcue_lan::link` module documents still
+/// holds: `Reconnecting` is true here exactly when [`AppState::link_next_attempt`] genuinely has
+/// a scheduled attempt behind it.
 #[tauri::command]
 fn link_status(state: State<'_, AppState>) -> LinkStatusReply {
-    use selahcue_lan::LinkState;
-    if !state.backend.is_remote() {
-        // Not a degraded connection — there is no link and none is wanted. Distinct from
-        // `connected`, because the demo backend's view() cannot fail, so calling it connected
-        // would report the absence of a failure path rather than the presence of a host.
+    link_status_reply(&state)
+}
+
+/// [`link_status`]'s body, taking a bare `&AppState` so tests can call it directly without
+/// standing up a `tauri::State` wrapper around a throwaway app handle.
+fn link_status_reply(state: &AppState) -> LinkStatusReply {
+    // A poisoned lock must not manufacture a disconnection: fall back to the healthy reading
+    // that matches how the backend was built (Remote only exists because connect_remote worked).
+    let Ok(status) = state.link_status.lock() else {
         return LinkStatusReply {
-            state: LinkState::Local.tag(),
-            epoch: 0,
+            state: selahcue_lan::LinkState::Connected.tag(),
+            epoch: 1,
             attempts: 0,
             last_error: None,
         };
-    }
-    // A poisoned lock must not manufacture a disconnection: fall back to the healthy reading
-    // that matches how the backend was built (Remote only exists because connect_remote worked).
-    let last = state.link_error.lock().ok().and_then(|s| s.clone());
-    match last {
-        None => LinkStatusReply {
-            state: LinkState::Connected.tag(),
-            epoch: 1,
-            attempts: 0,
-            last_error: None,
-        },
-        Some(e) => LinkStatusReply {
-            state: LinkState::Disconnected.tag(),
-            epoch: 1,
-            attempts: 0,
-            last_error: Some(e),
-        },
+    };
+    LinkStatusReply {
+        state: status.state().tag(),
+        epoch: status.epoch(),
+        attempts: status.attempts(),
+        last_error: status.last_error().map(str::to_string),
     }
 }
 #[tauri::command]
@@ -6957,7 +7207,8 @@ mod regenerate_with_retention_tests {
             providers_db: None,
             transcript_db: None,
             secrets: make_secret_store(),
-            link_error: Mutex::new(None),
+            link_status: Mutex::new(selahcue_lan::LinkStatus::local()),
+            link_next_attempt: Mutex::new(None),
         });
         (app, id)
     }
@@ -7265,6 +7516,14 @@ fn main() {
             // why this is a DIFFERENT path from `providers_db` above). Failing to open it is not
             // fatal to boot — the Transcripts page degrades to an honest "unavailable" state.
             let transcript_db = open_transcript_db();
+            // `build_backend` only ever produces `Remote` when `connect_remote` actually
+            // established the link, so a fresh `LinkStatus::connected()` here is honest at boot
+            // — never a claim ahead of the evidence.
+            let link_status = if backend.is_remote() {
+                selahcue_lan::LinkStatus::connected()
+            } else {
+                selahcue_lan::LinkStatus::local()
+            };
             app.manage(AppState {
                 backend,
                 deck: Mutex::new(ws),
@@ -7273,7 +7532,8 @@ fn main() {
                 providers_db: providers_db.map(Mutex::new),
                 transcript_db: transcript_db.map(Mutex::new),
                 secrets: make_secret_store(),
-                link_error: Mutex::new(None),
+                link_status: Mutex::new(link_status),
+                link_next_attempt: Mutex::new(None),
             });
             Ok(())
         })
