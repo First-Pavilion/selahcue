@@ -1199,6 +1199,39 @@ EXPECTED_MIN_CHECKS = 1943
 # total is read off an actual clean run against the real post-rebase tree, never hand-summed.
 # Confirmed by two independent clean runs against the real post-rebase tree: 1964 checks, 0 FAIL.
 EXPECTED_MIN_CHECKS = 1964
+#
+# 17tnw2axptf (Console: geometry + copy polish batch, ~45 minor CON-### ids) — added 38 checks:
+# full coverage on all 7 copy items (CON-023, 051, 065 x3 incl. its no-live-item fallback and a
+# restore control, 066/125, 072 x2, 081, 140 x2), a real rendered-width comparison for CON-042
+# (the one visually significant fix in the batch — a flex-split bug is invisible to a
+# computed-style diff, so this measures actual getBoundingClientRect() widths instead), and a
+# representative cross-section of the pure-CSS geometry/token fixes (CON-003, 006, 024 x3, 082
+# x3, 083 x2, 105, 106, 107 x2, 117 x2, 146, 147, 148 x3, 153) — not literally all ~37 geometry
+# ids, which are covered by eyeballing the CSS diff in review per this file's own stated policy
+# for large mechanical batches. Measured on this branch's own pre-rebase tree (base 1939 above):
+# 1939 + 38 = 1977 checks, 0 FAIL.
+#
+# 1943 & 1977 -> 1981: rebase of this branch onto origin/main after 17tnw2axptd-surface-
+# transcripts-id-specificity (PR #94, ending 1943 above) merged first. Both lineages counted from
+# the same 1939 ancestor along divergent paths, so per this constant's own repeated discipline the
+# merged total is read off an actual clean run against the real post-rebase tree, never
+# hand-summed — 1943 + 38 = 1981 arithmetically agrees here only because neither lineage touched
+# the other's checks, which the measured run confirms rather than assumes. Confirmed by a clean
+# run against the real post-rebase tree: 1981 checks, 0 FAIL. (Superseded by the next entry below
+# — origin/main moved again, past PR #94, before this branch opened its PR.)
+#
+# 1964 & 1981 -> 2002: second rebase of this branch (17tnw2axptf, ending 1981 above, a lineage
+# through PR #94's 1943) onto origin/main after 17tnw2axwve (PR #92, ending 1964 above, a
+# different lineage through the same 1939/1943 ancestors) merged first. `git log origin/main
+# ^HEAD -- scripts/operator_headless.py` before resolving this conflict showed 17tnw2axwve's
+# review-round-2 fix (+2, 1916->1918 above) and its own prior rebase (1960->1964) as the only new
+# commits touching this file — this branch's own 38 checks (1943->1981) are still this branch's
+# alone. Both lineages counted from the same 1939/1943 ancestors along divergent paths, so per
+# this constant's own repeated discipline the merged total is read off an actual clean run
+# against the real post-rebase tree, never hand-summed — measured first, which is how the
+# arithmetic (1964 + 38 = 2002) was confirmed to agree rather than assumed to. Confirmed by a
+# clean run against the real post-rebase tree: 2002 checks, 0 FAIL.
+EXPECTED_MIN_CHECKS = 2002
 
 
 def find_chrome():
