@@ -341,13 +341,32 @@
     invoke("remote_set_role", { deviceId: id, role: role }).then(applySnapshot).catch(reconcile);
   }
 
+  // ---------- host-connection banner (RCD-008) ----------
+  // Reuses the SAME host_connected() signal Pre-service Check already renders a verdict from
+  // (preservice.js) — outside the Tauri shell, or with an older host that doesn't expose the
+  // command, invoke() rejects and this reads as "not connected" too (never a silent guess).
+  function syncHostBanner(connected) {
+    var banner = document.getElementById("rc-host-banner");
+    if (banner) banner.hidden = connected !== false;
+  }
+  function checkHostConnection() {
+    return invoke("host_connected")
+      .then(function (r) { syncHostBanner(r === true); })
+      .catch(function () { syncHostBanner(false); });
+  }
+  // Test-only hook (mirrors window.__resetSettingsAboutForTest/__resetSermonNoteDraftForTest):
+  // lets a headless driver force an immediate recheck instead of waiting out the real 3s poll.
+  window.__rcRecheckHostForTest = checkHostConnection;
+
   // ---------- init ----------
   var nc = document.getElementById("rc-newcode");
   if (nc) nc.addEventListener("click", function () { genCode().then(function () { announce("New pairing code generated"); }); });
+  checkHostConnection();
   genCode();
   loadSnapshot();
   render();
   if (!cdTimer) cdTimer = setInterval(tickCountdown, 1000);
-  // Poll for new pair attempts (bounded single interval).
-  setInterval(loadSnapshot, 3000);
+  // Poll for new pair attempts AND recheck the host link (bounded single interval — the banner
+  // above needs to clear on its own once the output window comes up, with no manual refresh).
+  setInterval(function () { loadSnapshot(); checkHostConnection(); }, 3000);
 })();

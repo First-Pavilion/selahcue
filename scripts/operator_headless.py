@@ -1199,6 +1199,68 @@ EXPECTED_MIN_CHECKS = 1943
 # total is read off an actual clean run against the real post-rebase tree, never hand-summed.
 # Confirmed by two independent clean runs against the real post-rebase tree: 1964 checks, 0 FAIL.
 EXPECTED_MIN_CHECKS = 1964
+#
+# 1939 -> 1945: ClickUp 17tnw2axptv (Remote Control · Devices RCD-### drift closure). Of the 9
+# audited findings, only RCD-008 (MISSING — no signal when the output window isn't connected; the
+# surface silently read as "nothing paired" instead of "can't check") and RCD-009 (A11Y-DEFECT —
+# .rc-role-viewer text at 3.45:1 on --sc-elevated, failing AA-normal for essential role-name text)
+# were genuine, unblocked gaps. RCD-001/002/003/005/007 were confirmed already matching/
+# EXTRA-necessary/INTENTIONAL-DEVIATION on the live tree (RCD-005's real selahcue-lan RBAC roles
+# must NOT be renamed toward Figma's illustrative labels). RCD-004/006 are blocked on the still-
+# open decision ticket 17tnw2axpu4 (RCD-OQ-2/RCD-OQ-3) and were deliberately left untouched.
+# RCD-008's fix reuses the same host_connected() signal Pre-service Check already renders a
+# verdict from, surfaced via a new #rc-host-banner that clears itself on the existing 3s poll —
+# no manual refresh needed. RCD-009 promotes .rc-role-viewer's ink to --sc-text-secondary
+# (7.40:1+), the same PME-006…011 promotion pattern used elsewhere for essential small text
+# sitting on the muted tier by omission. Added 6 assertions: 2 for RCD-009 (pill presence + real
+# contrast-ratio computation) and 4 for RCD-008 (banner starts hidden, appears with the real
+# condition text on computed display, and clears again on reconnect) — driven by a dedicated
+# one-shot test hook (__rcHostDownOnce) kept deliberately separate from Pre-service Check's own
+# __psNoHost after sharing that flag was tried first and found to corrupt an unrelated,
+# much-earlier-resolved boot value (Service Plan's cached planDeckName(2)) elsewhere in the run.
+# Every new assertion mutation-tested (broken, confirmed RED, restored) before this number was
+# re-derived. Confirmed by a clean run against the real tree (this branch's own pre-rebase lineage,
+# forked from the same 1939 ancestor as the chain immediately above): 1945 checks, 0 FAIL.
+#
+# 1945 -> 1946: finishing this same ticket's interrupted work turned up two more real problems
+# past the 6 RCD-008/009 assertions above, both found by mutation-testing rather than assumed:
+# (1) the SP C-001 boot-load check (Service Plan builder, unrelated to Remote Control) started
+# FAILing — not flakily, but reproducibly every run — once these RCD-008/009 checks landed between
+# it and an earlier, PRE-EXISTING driver block (CON-079/080, 17tnw2axptd, already merged) that
+# fire-and-forgets 3 incidental visits to the `plan` surface while `window.__LIB.decks` sits
+# emptied by an even-earlier, unrelated PM/Lib empty-state test. Each incidental visit's
+# planLoadDecks() snapshots the empty library and later overwrites the shared `planDecks` global
+# when its promise settles; whether that lands before or after SP C-001's own check was already a
+# real race, just one this branch's own new `await`s (between the corrupting visits and SP C-001)
+# happened to newly tip the wrong way — confirmed by reverting this branch's dist-file changes one
+# at a time and finding SP C-001 still failed with only the emptied-library timing changed, and by
+# `git stash`-ing back to this file's own pre-branch HEAD and getting a clean run. Fixed at the
+# root, in the PM/Lib empty-state block itself (~line 5551): restore a real library the moment
+# THAT block's own empty-state scenario is done, instead of leaving `__LIB.decks` emptied for
+# ~1500 unrelated lines where any later incidental deck_list call can capture the corruption.
+# Mutation-tested by temporarily deleting the restore and confirming the exact same SP C-001 FAIL
+# reproduces, then restoring. (2) The RCD-008 "banner clears on reconnect" check itself was written
+# against the real `setInterval(…, 3000)` poll (`await waitFor(…, 250)`, a 250*20ms = 5000ms
+# budget) rather than remote.js's own `__rcRecheckHostForTest` hook — whose comment says exactly
+# what it is for: "lets a headless driver force an immediate recheck instead of waiting out the
+# real 3s poll". That margin depends on wall-clock alignment and machine load, not a fixed property
+# of the code under test: mutation-testing finding (1) above (an unrelated dist-file revert)
+# incidentally shifted overall page timing enough to flip this specific check FAIL on an otherwise-
+# CORRECT tree — a real flake, caught by mutation testing rather than by luck. Rewired both of this
+# check's waits to call the hook directly, which exercises the exact same
+# syncHostBanner()/host_connected() code path without depending on real elapsed seconds; this also
+# added a new setup assertion (the hook itself exists), which is the one new check driving the
+# count from 1945 to 1946. Confirmed by three consecutive clean runs against the real tree (this
+# branch's own pre-rebase lineage): 1946 checks, 0 FAIL each time.
+#
+# 1946 & 1964 -> 1971: rebase of 17tnw2axptv (this branch, ending 1946 above, forked from the same
+# 1939 ancestor as the four chains above it) onto origin/main after PR #92 (17tnw2axwve) and PR #94
+# (17tnw2axptd-surface-transcripts-id-specificity) both merged first (ending 1964 above). Both
+# lineages counted from the same 1939 ancestor along divergent paths, so per this constant's own
+# repeated discipline the merged total is read off an actual clean run against the real post-rebase
+# tree, never hand-summed as 1946 + 25 or any other arithmetic shortcut. Confirmed by three
+# independent clean runs against the real post-rebase tree, all agreeing: 1971 checks, 0 FAIL.
+EXPECTED_MIN_CHECKS = 1971
 
 
 def find_chrome():
@@ -1781,7 +1843,14 @@ STUB = r"""
     }
     if (cmd === "remote_new_code")
       return Promise.resolve({code:"AB12CD34", fingerprint:"A1 B2 C3 D4", expires_in_secs:120});
-    if (cmd === "host_connected") return Promise.resolve(!window.__psNoHost); // a real output window (unless the test says otherwise)
+    // One-shot hook (mirrors __pmRejectOnce/__deckListNullOnce): forces exactly the NEXT
+    // host_connected() answer to "not connected", self-consuming so it can never leak into an
+    // unrelated caller later in the run (RCD-008, 17tnw2axptv) — deliberately separate from
+    // __psNoHost, which Pre-service Check owns for its own scenario.
+    if (cmd === "host_connected") {
+      if (window.__rcHostDownOnce) { window.__rcHostDownOnce = false; return Promise.resolve(false); }
+      return Promise.resolve(!window.__psNoHost); // a real output window (unless the test says otherwise)
+    }
   // Tier 2 control-link state. Defaults to a healthy remote link; __link overrides it.
   // Returning `null` here would exercise the "older shell" path instead, which the driver
   // covers separately by deleting the override.
@@ -5641,6 +5710,28 @@ DRIVER = r"""
       await waitFor(function(){ return !el("pm-prompt-input"); });
       // (The '‹ Back to editor' affordance was removed — the Library is the landing; opening a card
       //  goes to the grid, story 86ajxeq17.)
+      // Restore a real library now that this block's own empty-state scenario is done (17tnw2axptv
+      // debugging, RCD-008). Found live: __LIB.decks stayed [] from here all the way to the Service
+      // Plan builder section, ~1500 lines below — and CON-079/080 (17tnw2axptd, already merged)
+      // incidentally visits the `plan` surface 3 times in between (fire-and-forget setup clicks for
+      // its ⌘6/⌘7/⌘, chord assertions, unrelated to decks). Each visit's planActivate() calls the
+      // console's real planLoadDecks(), which snapshots __LIB.decks synchronously at CALL time —
+      // while empty — and later overwrites the shared `planDecks` global when its promise settles.
+      // Whether that stale, empty snapshot lands BEFORE or AFTER SP C-001's own boot-load check
+      // (which needs `planDecks` to still hold the boot-time fixture) depends on how many real
+      // microtask/macrotask ticks elapse in between — a genuine pre-existing race, not something
+      // this fix's own new RCD-008/009 checks caused; they only add enough extra `await waitFor(...)`
+      // ticks between here and SP C-001 to let the race resolve the "wrong" way (confirmed by A/B
+      // isolation: reverting each of this branch's dist-file changes in turn still reproduced the
+      // SP C-001 FAIL, and `git stash` back to this file's own pre-branch HEAD passed clean). Fixing
+      // this at the root — restoring a real library the moment THIS block's own empty-state scenario
+      // is done, instead of leaving it emptied for ~1500 unrelated lines — means no later incidental
+      // deck_list call, from CON-080's or any other surface's fire-and-forget navigation, can ever
+      // capture a corrupted empty snapshot in the first place. A different fixture than SP C-001's
+      // own restore (id 2 "Sermon: Grace That Feeds") on purpose, so SP C-001 continues to prove the
+      // real boot-time load — not a value this line happens to leave lying around.
+      window.__LIB.decks = [{id:1, name:"Sunday Service — Aug 4", slides:24}, {id:2, name:"Sermon: Grace That Feeds", slides:2}, {id:3, name:"Youth Night — Identity", slides:12}];
+      window.__LIB.open = 2; window.__LIB.persistent = true; window.__LIB.nextId = 4;
 
       // The ⌘1–7 surface map follows menu order: ⌘2 → Presentation, ⌘3 → Theme Designer.
       document.dispatchEvent(new KeyboardEvent("keydown", {key:"3", metaKey:true, bubbles:true}));
@@ -7190,6 +7281,62 @@ DRIVER = r"""
       rcRb.click();
       ok(document.querySelectorAll("#rc-rows .rc-row").length === rcRows0 - 1,
          "Remote: second Revoke click removes the device");
+
+      // === RCD-### closure (17tnw2axptv) — RCD-008 (MISSING) + RCD-009 (A11Y-DEFECT). RCD-004/
+      // RCD-006 are deliberately NOT covered here: both are named in the ClickUp ticket itself
+      // as blocked on `DECISION — New-surfaces: open questions` (17tnw2axpu4, RCD-OQ-2/RCD-OQ-3),
+      // which is still unanswered — implementing either would be making the owner's call for
+      // them. RCD-001/002/003/005/007 needed no code change (verified MATCH/EXTRA-necessary/
+      // INTENTIONAL-DEVIATION against the live tree; see the ClickUp start comment). ===
+
+      // RCD-009: the Viewer role pill's label IS the role name — essential, decision-relevant
+      // text, not supplementary micro-copy — so it must clear AA-normal, not just AA-large.
+      // Only Booth iPad (producer) and Guest tablet (viewer) remain after the Approve/Revoke
+      // pair above, so the one surviving row's role select is the Viewer pill.
+      var rcViewerSel = document.querySelector("#rc-rows .rc-role-viewer");
+      ok(!!rcViewerSel, "RCD-009 setup: a Viewer-role select is present in the paired-devices table");
+      var rcViewerCr = _cr(_rgba(getComputedStyle(rcViewerSel).color), _rgba(getComputedStyle(rcViewerSel).backgroundColor));
+      ok(rcViewerCr >= 4.5,
+         "RCD-009: the Viewer role pill clears AA-normal on --sc-elevated (" + _f(rcViewerCr) + ":1) — promoted from --sc-text-muted's 3.45:1 to --sc-text-secondary");
+
+      // RCD-008: with no output window connected, the surface used to render a silent empty
+      // state indistinguishable from "nothing is paired yet". Reuses host_connected() — the
+      // SAME signal Pre-service Check already renders a verdict from — via a DEDICATED one-shot
+      // hook (__rcHostDownOnce, mirrors __pmRejectOnce/__deckListNullOnce), deliberately kept
+      // separate from Pre-service's own __psNoHost: sharing that flag here was tried first and,
+      // although nothing in this surface or its own mock reads it beyond host_connected(),
+      // toggling it mid-run corrupted an unrelated, much-earlier-resolved boot value
+      // (Service Plan's cached planDeckName(2)) elsewhere in the suite — a real cross-test blast
+      // radius from reusing a "global for the whole run" flag for a second, unrelated scenario.
+      // The one-shot hook self-consumes on the very next host_connected() call, so nothing needs
+      // manual restoring and no other test's timing/state can be perturbed by it.
+      //
+      // Drives the check via remote.js's own __rcRecheckHostForTest hook (its comment: "lets a
+      // headless driver force an immediate recheck instead of waiting out the real 3s poll")
+      // rather than waiting out the real setInterval(…, 3000) — found live while finishing this
+      // ticket's interrupted work: the original version of this check instead did
+      // `await waitFor(function(){ return !el("rc-host-banner").hidden; }, 250)` against the real
+      // 3s poll, budgeted at 250*20ms = 5000ms — a margin that depends on wall-clock alignment
+      // (how much of the current 3s cycle had already elapsed) and machine load, not a fixed
+      // property of the code under test; mutation-testing an UNRELATED check elsewhere in this same
+      // run made this one flip FAIL on an otherwise-correct tree, purely from the shift in overall
+      // page timing. Awaiting the hook directly removes the real-time dependency entirely — this
+      // still exercises the exact same syncHostBanner()/host_connected() code path, just without
+      // the driver having to wait out real seconds to prove it.
+      ok(el("rc-host-banner") && el("rc-host-banner").hidden,
+         "RCD-008 setup: the no-host banner starts hidden while the host is connected");
+      window.__rcHostDownOnce = true;
+      ok(typeof window.__rcRecheckHostForTest === "function",
+         "RCD-008 setup: remote.js exposes __rcRecheckHostForTest (its own documented headless-driver hook)");
+      await window.__rcRecheckHostForTest();
+      ok(!el("rc-host-banner").hidden && getComputedStyle(el("rc-host-banner")).display !== "none",
+         "RCD-008: losing the host connection shows the 'No output window connected' banner (computed display, not just the attr)");
+      ok(/No output window connected/.test(el("rc-host-banner").textContent),
+         "RCD-008: the banner names the real condition, matching Pre-service Check's own wording");
+      await window.__rcRecheckHostForTest();
+      ok(el("rc-host-banner").hidden && getComputedStyle(el("rc-host-banner")).display === "none",
+         "RCD-008: the banner clears once the host reconnects and the surface rechecks — no manual refresh needed");
+
       document.querySelector('.nav-item[data-surface="console"]').click();
       document.dispatchEvent(new KeyboardEvent("keydown", {key:"R", metaKey:true, shiftKey:true, bubbles:true}));
       ok(el("surface-settings").classList.contains("active") && !document.getElementById("set-page-network").hidden,

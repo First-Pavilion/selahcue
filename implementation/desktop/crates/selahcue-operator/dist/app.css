@@ -6815,7 +6815,13 @@
       .rc-role-operator  { background-color: var(--sc-gold-soft);   border: 1px solid rgba(242, 184, 75, 0.5);  color: var(--sc-gold); }
       .rc-role-producer  { background-color: var(--sc-preview-soft); border: 1px solid rgba(53, 192, 138, 0.5); color: var(--sc-preview); }
       .rc-role-assistant { background-color: var(--sc-accent-soft);  border: 1px solid rgba(126, 110, 255, 0.5); color: var(--sc-primary-hover); }
-      .rc-role-viewer    { background-color: var(--sc-elevated);     border: 1px solid rgba(107, 115, 131, 0.5); color: var(--sc-text-muted); }
+      /* RCD-009 (17tnw2axptv): this pill's label IS the role name ("Viewer") — essential,
+         decision-relevant text (an operator granting/checking access reads it directly), not
+         supplementary micro-copy. --sc-text-muted measured 3.45:1 on --sc-elevated (fails
+         AA-normal at the select's ~13px); --sc-text-secondary clears it at 7.40:1. Same
+         promotion pattern as PME-006…011 for essential text that sat on the muted tier by
+         omission rather than design. */
+      .rc-role-viewer    { background-color: var(--sc-elevated);     border: 1px solid rgba(107, 115, 131, 0.5); color: var(--sc-text-secondary); }
       .rc-role option { background: var(--sc-elevated); color: var(--sc-text); }
 
       /* --- paired devices table --- */
@@ -7399,7 +7405,15 @@
 
 /* Banners */
 .pp-banner { display: flex; gap: 12px; align-items: center; padding: 13px 16px; border-radius: 12px; border: 1px solid transparent; }
+/* An author `display: flex` above beats the UA `[hidden] { display: none }` (same trap as
+   .td-bgpanel/.pm-error elsewhere in this file) — every banner needs this explicit override. */
+.pp-banner[hidden] { display: none; }
 .pp-banner-ok { background: var(--sc-preview-soft); border-color: var(--sc-preview-border); }
+/* RCD-008 (17tnw2axptv): "no host connected" is informational, not an error — --sc-warn(-soft/
+   -border), the same combo already measured elsewhere in this file (title 14.26:1, body 6.93:1,
+   glyph 7.56:1 on --sc-warn-soft — all comfortably clear AA). */
+.pp-banner-warn { background: var(--sc-warn-soft); border-color: var(--sc-warn-border); }
+.pp-banner-warn .pp-banner-ico { color: var(--sc-warn); }
 .pp-banner-ico { font-size: 18px; line-height: 1; color: var(--sc-preview); flex: none; }
 .pp-banner-body { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
 .pp-banner-title { margin: 0; font-size: 13px; font-weight: 700; color: var(--sc-text); }

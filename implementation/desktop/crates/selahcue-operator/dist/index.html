@@ -2359,6 +2359,18 @@
         </span>
       </div>
 
+      <!-- RCD-008 (17tnw2axptv): with no output window connected, pairing/device data can't be
+           loaded — this used to render as a silent empty state, indistinguishable from "nothing
+           is paired yet". Mirrors Pre-service Check's own host_connected()-driven verdict
+           (preservice.js), so the wording and the underlying signal agree across surfaces. -->
+      <div id="rc-host-banner" class="pp-banner pp-banner-warn" role="status" hidden>
+        <span class="pp-banner-ico" aria-hidden="true">⚠</span>
+        <div class="pp-banner-body">
+          <p class="pp-banner-title">No output window connected</p>
+          <p class="pp-banner-text">Pairing and paired-device data need the output window running to load. Nothing has failed — this updates automatically once it connects.</p>
+        </div>
+      </div>
+
       <div class="rc-cols">
         <!-- LEFT — Pair a device -->
         <aside class="rc-pair" aria-label="Pair a device">
