@@ -1149,12 +1149,16 @@ pub const MAX_PLAN_LABEL_LEN: usize = 120;
 ///
 /// Stated precisely because the obvious reading is wrong: this does not make `ServicePlan.name` a
 /// bounded field, and it does not close this class across the plan surface.
-/// [`ServicePlan::from_parts`], the persistence rehydration path, applies no bound. And
-/// **`AddItem` and `RenameItem` do not use this rule at all** — they apply only `trim` and a
-/// non-empty check, so an override or a 50,000-character title still reaches the run sheet
-/// through the path an operator actually uses. Both are pre-existing and tracked as follow-ups;
-/// routing them through here is the coherent single rule *now that the set no longer locks out
-/// scripts*, but it changes established command behaviour and needs its own test round.
+/// [`ServicePlan::from_parts`], the persistence rehydration path, applies no bound.
+///
+/// **Update (86ak84cy5):** `AddItem`, `RenameItem` and `SetItemOwner` now route their
+/// wire-supplied title/owner through this same rule (`selahcue-app/src/controller.rs`'s
+/// `valid_plan_label`), closing the gap this note used to describe — an override or a
+/// 50,000-character title/owner no longer reaches the run sheet through those commands.
+/// What is still open, and still pre-existing: `ServicePlan::from_parts` rehydration applies
+/// no bound (stated just above), and the trusted, in-process callers of `add_item` and
+/// `set_item_owner` themselves (templates, `duplicate`) remain infallible and unbounded by
+/// design — only the untrusted wire ingress is closed here.
 ///
 pub fn plan_label_valid(name: &str) -> bool {
     let trimmed = name.trim();

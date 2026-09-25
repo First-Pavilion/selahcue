@@ -3,7 +3,7 @@
 #![allow(clippy::unwrap_used)]
 
 use selahcue_app::{ControllerReply, LiveController};
-use selahcue_core::plan::{ItemContent, ItemKind, ServicePlan};
+use selahcue_core::plan::{ItemContent, ItemKind, ServicePlan, MAX_PLAN_LABEL_LEN};
 use selahcue_lan::protocol::{
     Command, ContentLinkView, DenyReason, OutputConfigView, ServerMessage,
 };
@@ -4685,6 +4685,163 @@ fn set_item_owner_and_duration_commands_apply_clear_and_reject_unknown() {
         }),
         ControllerReply::Deny(DenyReason::BadRequest)
     );
+}
+
+#[test]
+fn add_item_and_rename_item_reject_an_overlong_title_but_accept_one_at_the_cap() {
+    // 86ak84cy5: AddItem/RenameItem previously applied only `trim` + non-empty, so a title
+    // up to the LAN server's 64 KB per-message cap reached the run sheet. They now share the
+    // same bound `NewPlan`/`ImportPlan` already enforce on a plan name (`valid_plan_label`,
+    // `MAX_PLAN_LABEL_LEN`).
+    let (mut c, ids) = controller();
+    let before = c.operator_view().items.len();
+
+    // THE HOSTILE CASE IS REFUSED.
+    let too_long = "x".repeat(MAX_PLAN_LABEL_LEN + 1);
+    assert_eq!(
+        c.apply(&Command::AddItem {
+            kind: ItemKind::Song.as_tag().into(),
+            title: too_long.clone(),
+            content: None,
+        }),
+        ControllerReply::Deny(DenyReason::BadRequest),
+        "an over-cap AddItem title must be refused, not silently accepted or truncated"
+    );
+    assert_eq!(
+        c.operator_view().items.len(),
+        before,
+        "a refused AddItem must not have grown the plan"
+    );
+    assert_eq!(
+        c.apply(&Command::RenameItem {
+            item_id: ids[0],
+            title: too_long,
+        }),
+        ControllerReply::Deny(DenyReason::BadRequest),
+        "an over-cap RenameItem title must be refused"
+    );
+    assert_eq!(
+        c.operator_view().items[0].title,
+        "Opening Song",
+        "a refused RenameItem must leave the existing title untouched"
+    );
+
+    // POSITIVE CONTROL: a title AT the cap is still accepted verbatim — the boundary is the
+    // cap, not a vague ceiling below it.
+    let at_cap = "y".repeat(MAX_PLAN_LABEL_LEN);
+    assert_eq!(
+        c.apply(&Command::AddItem {
+            kind: ItemKind::Song.as_tag().into(),
+            title: at_cap.clone(),
+            content: None,
+        }),
+        ControllerReply::Ack,
+        "a title exactly at the cap must be accepted"
+    );
+    assert_eq!(c.operator_view().items[before].title, at_cap);
+    assert_eq!(
+        c.apply(&Command::RenameItem {
+            item_id: ids[0],
+            title: at_cap.clone(),
+        }),
+        ControllerReply::Ack
+    );
+    assert_eq!(c.operator_view().items[0].title, at_cap);
+}
+
+#[test]
+fn set_item_owner_rejects_an_overlong_owner_but_a_blank_owner_still_clears() {
+    // 86ak84cy5: `SetItemOwner` forwarded straight to the domain, which only trims/blanks —
+    // no length bound at all. Non-blank owners are now bounded the same way `ImportPlan`
+    // already bounds an imported item's owner; a blank/absent owner must keep clearing the
+    // field exactly as before (that is the domain's own contract, not something this ticket
+    // changes).
+    let (mut c, ids) = controller();
+
+    // THE HOSTILE CASE IS REFUSED, and the plan is left unchanged (no prior owner to revert).
+    let too_long = "x".repeat(MAX_PLAN_LABEL_LEN + 1);
+    assert_eq!(
+        c.apply(&Command::SetItemOwner {
+            item_id: ids[0],
+            owner: Some(too_long),
+        }),
+        ControllerReply::Deny(DenyReason::BadRequest)
+    );
+    assert_eq!(c.operator_view().items[0].owner, None);
+
+    // POSITIVE CONTROL: an owner AT the cap is accepted verbatim.
+    let at_cap = "y".repeat(MAX_PLAN_LABEL_LEN);
+    assert_eq!(
+        c.apply(&Command::SetItemOwner {
+            item_id: ids[0],
+            owner: Some(at_cap.clone()),
+        }),
+        ControllerReply::Ack
+    );
+    assert_eq!(
+        c.operator_view().items[0].owner.as_deref(),
+        Some(at_cap.as_str())
+    );
+
+    // A refused over-cap owner must not have clobbered the good value that was already there.
+    let too_long_again = "z".repeat(MAX_PLAN_LABEL_LEN + 1);
+    assert_eq!(
+        c.apply(&Command::SetItemOwner {
+            item_id: ids[0],
+            owner: Some(too_long_again),
+        }),
+        ControllerReply::Deny(DenyReason::BadRequest)
+    );
+    assert_eq!(
+        c.operator_view().items[0].owner.as_deref(),
+        Some(at_cap.as_str())
+    );
+
+    // THE BLANK-CLEARS CONTRACT IS PRESERVED: `None` and a whitespace-only owner both clear
+    // the field, exactly as they did before this bound existed.
+    assert_eq!(
+        c.apply(&Command::SetItemOwner {
+            item_id: ids[0],
+            owner: None,
+        }),
+        ControllerReply::Ack
+    );
+    assert_eq!(c.operator_view().items[0].owner, None);
+
+    c.apply(&Command::SetItemOwner {
+        item_id: ids[0],
+        owner: Some("Grace".into()),
+    });
+    assert_eq!(
+        c.apply(&Command::SetItemOwner {
+            item_id: ids[0],
+            owner: Some("   ".into()),
+        }),
+        ControllerReply::Ack,
+        "a whitespace-only owner must clear, not be refused as invalid"
+    );
+    assert_eq!(c.operator_view().items[0].owner, None);
+}
+
+#[test]
+fn set_item_owner_still_refuses_even_a_blank_owner_on_a_divider() {
+    // Regression guard for the fix above (found in review of 86ak84cy5): bounding non-blank
+    // owners must not change what counts as an owner-SET attempt for
+    // `ServicePlan::set_item_owner`'s divider guard, which refuses on `owner.is_some()`
+    // regardless of whether the string is blank. Pre-filtering a blank owner to `None`
+    // before it reaches the domain would silently start Ack-ing an owner attempt on a
+    // Section divider that a non-blank owner still correctly refuses.
+    let (mut c, ids) = controller();
+    assert_eq!(
+        c.apply(&Command::SetItemOwner {
+            item_id: ids[2],
+            owner: Some("   ".into()),
+        }),
+        ControllerReply::Deny(DenyReason::BadRequest),
+        "a blank owner is still an owner-SET attempt on a Section divider, and must be \
+         refused exactly like a non-blank one"
+    );
+    assert_eq!(c.operator_view().items[2].owner, None);
 }
 
 // --- Live-output generation (NDI dirty-gate seam) -------------------------------------------
