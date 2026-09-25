@@ -1275,14 +1275,16 @@ EXPECTED_MIN_CHECKS = 2005
 # no collateral failures); restoring reproduces 1966 checks, 0 FAIL. Confirmed by two independent
 # clean runs against this branch's own pre-rebase tree: 1966 checks, 0 FAIL.
 #
-# 2005 & 1966 -> ?: rebase of 17tnw2aynar (ending 1966 above, its own count already merging this
-# branch's base of 1964) onto origin/main after 17tnw2axptf (PR #99, ending 2005 above, a
+# 2005 & 1966 -> 2007: rebase of 17tnw2aynar (ending 1966 above, its own count already merging
+# this branch's base of 1964) onto origin/main after 17tnw2axptf (PR #99, ending 2005 above, a
 # different lineage through the same 1964 ancestor) merged first. Both lineages counted from the
 # same 1964 ancestor along divergent paths — 17tnw2axptf touches Console geometry/copy
 # (app.js/app.css only, no overlap with planLoadDecks), 17tnw2aynar touches only planLoadDecks()
 # and its own new race-guard checks — so per this constant's own repeated discipline the merged
 # total is read off an actual clean run against the real post-rebase tree, never hand-summed as
-# 2005 + 2 or any other arithmetic shortcut.
+# 2005 + 2 or any other arithmetic shortcut. Confirmed by two independent clean runs against the
+# real post-rebase tree: 2007 checks, 0 FAIL.
+EXPECTED_MIN_CHECKS = 2007
 
 
 def find_chrome():
