@@ -1149,12 +1149,33 @@ pub const MAX_PLAN_LABEL_LEN: usize = 120;
 ///
 /// Stated precisely because the obvious reading is wrong: this does not make `ServicePlan.name` a
 /// bounded field, and it does not close this class across the plan surface.
-/// [`ServicePlan::from_parts`], the persistence rehydration path, applies no bound. And
-/// **`AddItem` and `RenameItem` do not use this rule at all** — they apply only `trim` and a
-/// non-empty check, so an override or a 50,000-character title still reaches the run sheet
-/// through the path an operator actually uses. Both are pre-existing and tracked as follow-ups;
-/// routing them through here is the coherent single rule *now that the set no longer locks out
-/// scripts*, but it changes established command behaviour and needs its own test round.
+/// [`ServicePlan::from_parts`], the persistence rehydration path, applies no bound.
+///
+/// **Update (86ak84cy5):** `AddItem`, `RenameItem` and `SetItemOwner` now route their
+/// wire-supplied **title/owner** through this same rule (`selahcue-app/src/controller.rs`'s
+/// `valid_plan_label`), closing the gap this note used to describe for those two fields — an
+/// override or a 50,000-character title/owner no longer reaches the run sheet through those
+/// commands.
+///
+/// **Named explicitly, per PR #96 security review (Sana, finding S-1), so this note cannot be
+/// read as "the class is closed": it is not.** Two adjacent wire-supplied fields on the very
+/// commands this update touches remain unbounded, reachable by any authenticated `EditPlan`
+/// peer, and were live-verified unbounded against this PR's head (60,000-character values
+/// accepted and stored, `operator_view()` echoing them back in full):
+/// - `Command::AddItem.content` — reaches [`stanzas_from_text`], which pushes every line into a
+///   `Vec<String>` with no cap on stanza count, line length, or total bytes.
+/// - `Command::SetItemContent`'s scripture `translation` (and `reference`) — stored via
+///   `sanitize_field`, which strips control/display-hostile characters but does not truncate;
+///   unlike the deck `label` beside it (`sanitize_label` → `MAX_LINK_LABEL_LEN`), neither field
+///   has a length cap.
+///
+/// Tracked as [17tnw2ayrr4](https://app.clickup.com/t/17tnw2ayrr4) rather than folded into
+/// 86ak84cy5, because bounding these needs its own truncate-vs-reject call, the way
+/// 86ak84cy5's own description flagged for title/owner. Also still open, still pre-existing:
+/// `ServicePlan::from_parts` rehydration applies no bound (stated just above), and the
+/// trusted, in-process callers of `add_item` and `set_item_owner` themselves (templates,
+/// `duplicate`) remain infallible and unbounded by design — only the untrusted wire ingress is
+/// in scope for any of these.
 ///
 pub fn plan_label_valid(name: &str) -> bool {
     let trimmed = name.trim();

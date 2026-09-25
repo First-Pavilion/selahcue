@@ -163,6 +163,84 @@ def test_reactivating_a_known_device_returns_it_without_a_new_token(client):
     assert DeviceToken.objects.count() == 1
 
 
+def test_device_token_hash_is_per_token_distinct_from_the_fingerprint_and_not_pbkdf2():
+    """WHAT THIS PINS: the 86ak69u8u cheap-hash mint — `_device_token_hash` — the same
+    ruling DEC-013 already applied to `_credential_token_hash` (see
+    `test_customer_auth_slice.py::test_credential_token_hash_is_per_token_and_distinct_from_the_fingerprint`,
+    the worked example this test mirrors).
+
+    MUST FAIL if any control it names is removed:
+      1. returning a CONSTANT for every token;
+      2. dropping the DISTINCT LABEL so `token_hash` is an exact copy of `token_fingerprint`;
+      3. reverting to `make_password` (a PBKDF2 column encodes its algorithm/iterations/salt
+         as a `$`-delimited prefix, e.g. `pbkdf2_sha256$...` — this asserts the shape is a
+         bare HMAC-SHA256 hex digest instead).
+
+    Pure: HMAC over SECRET_KEY, no DB, so no `django_db` marker is needed.
+    """
+    from selahcue_api.apps.devices import services
+
+    token_a = "SC-DEV-" + "A" * 32
+    token_b = "SC-DEV-" + "B" * 32
+    assert token_a != token_b, "the two sample tokens must differ or nothing below is a test"
+
+    hash_a = services._device_token_hash(token_a)
+    hash_b = services._device_token_hash(token_b)
+    fingerprint_a = services._fingerprint(token_a)
+    fingerprint_b = services._fingerprint(token_b)
+
+    # POSITIVE CONTROL, asserted BEFORE the contract — without it "the values differ" is
+    # indistinguishable from a function returning fresh randomness per call.
+    assert hash_a == services._device_token_hash(token_a), (
+        "_device_token_hash is not deterministic, so the distinctness contracts below were "
+        "not exercised — they would also pass for a function returning fresh randomness"
+    )
+    assert fingerprint_a != fingerprint_b, (
+        "_fingerprint is not input-dependent, so 'token_hash differs from token_fingerprint' "
+        "was not exercised against a live lookup key"
+    )
+
+    # CONTRACT 1 — dies if the hash is a constant.
+    assert hash_a != hash_b, (
+        "_device_token_hash returned the same digest for two DIFFERENT tokens: the at-rest "
+        "hash no longer depends on the token it is supposed to confirm"
+    )
+
+    # CONTRACT 2 — dies if the distinct label is dropped.
+    assert hash_a != fingerprint_a and hash_b != fingerprint_b, (
+        "_device_token_hash produced the same value as _fingerprint for the same token: the "
+        "distinct label is gone, so token_hash is an exact copy of the lookup key"
+    )
+
+    # CONTRACT 3 — dies if this reverts to `make_password` (a PBKDF2 hash is never a bare
+    # 64-char lowercase hex digest; it is `algorithm$iterations$salt$hash`).
+    assert len(hash_a) == 64 and set(hash_a) <= set("0123456789abcdef"), (
+        f"_device_token_hash no longer returns an HMAC-SHA256 hex digest ({hash_a!r}) — this "
+        "looks like a PBKDF2 (make_password) hash again, reintroducing the write-time stretch "
+        "over a column that is never read back"
+    )
+
+
+@pytest.mark.django_db
+def test_activation_issued_token_hash_is_the_cheap_keyed_hash_not_pbkdf2(client):
+    """The mint path (`_new_device_token`) actually uses `_device_token_hash`, exercised over
+    a real activation rather than calling the helper directly (the test above pins the
+    helper itself; this pins that the mint wires it up)."""
+    from selahcue_api.apps.devices import services
+    from selahcue_api.apps.devices.models import DeviceToken
+
+    _customer_id, full_key = _seed_license_key(tag="hash-wiring")
+    response = _activate(client, license_key=full_key, fingerprint="mac-hash-wiring", idem="act-hash-0001")
+    assert response.status_code == 200
+    token = response.json()["activation_token"]
+
+    token_row = DeviceToken.objects.get()
+    assert token_row.token_hash == services._device_token_hash(token), (
+        "the minted row's token_hash does not match _device_token_hash(token) — "
+        "_new_device_token is no longer writing this column with the cheap keyed hash"
+    )
+
+
 @pytest.mark.django_db
 def test_unknown_key_is_not_found_and_creates_nothing(client):
     response = _activate(client, license_key="SC-TRIAL-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XXXX", idem="act-unknown-1")

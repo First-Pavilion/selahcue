@@ -2942,10 +2942,12 @@ impl LiveController {
                 let Some(kind) = selahcue_core::plan::ItemKind::from_tag(kind) else {
                     return ControllerReply::Deny(DenyReason::BadRequest);
                 };
-                let title = title.trim();
-                if title.is_empty() {
+                // Same rule `ImportPlan`/`NewPlan` already apply to a plan name or an
+                // imported item's title/owner (86ak84cy5) — a title is otherwise unbounded
+                // in length up to the LAN server's 64 KB per-message cap.
+                let Some(title) = valid_plan_label(title) else {
                     return ControllerReply::Deny(DenyReason::BadRequest);
-                }
+                };
                 // Bound the plan (audit M2 no-leak rule): refuse a remote AddItem once the
                 // run sheet is at MAX_PLAN_ITEMS so a buggy/hostile authenticated client loop
                 // cannot grow `items` without limit. Far above any real plan, so this never
@@ -3043,10 +3045,12 @@ impl LiveController {
                 ControllerReply::Ack
             }
             Command::RenameItem { item_id, title } => {
-                let title = title.trim();
-                if title.is_empty() {
+                // Same rule `ImportPlan`/`NewPlan` already apply to a plan name or an
+                // imported item's title/owner (86ak84cy5) — a rename is otherwise unbounded
+                // in length up to the LAN server's 64 KB per-message cap.
+                let Some(title) = valid_plan_label(title) else {
                     return ControllerReply::Deny(DenyReason::BadRequest);
-                }
+                };
                 let Some(item) = self.plan.get_mut(selahcue_core::plan::ItemId(*item_id)) else {
                     return ControllerReply::Deny(DenyReason::BadRequest);
                 };
@@ -3085,7 +3089,24 @@ impl LiveController {
             }
             Command::SetItemContent { item_id, link } => self.set_item_content(*item_id, link),
             Command::SetItemOwner { item_id, owner } => {
-                self.set_item_owner(*item_id, owner.clone())
+                // Only a NON-blank owner is newly bounded here, by the same rule `ImportPlan`
+                // already applies to an imported item's owner (86ak84cy5) — otherwise
+                // unbounded up to the LAN server's 64 KB per-message cap. A blank/absent
+                // owner is passed through UNCHANGED rather than pre-filtered to `None`:
+                // `ServicePlan::set_item_owner`'s divider guard keys off `owner.is_some()`
+                // to decide whether this is an attempted SET (refused on a Section divider)
+                // versus a clear (always allowed), and it must keep seeing a blank string
+                // exactly as it did before this bound existed, or a whitespace-only owner
+                // would newly slip an Ack through on a divider that a non-blank owner still
+                // correctly refuses.
+                let owner = match owner {
+                    Some(o) if !o.trim().is_empty() => match valid_plan_label(o) {
+                        Some(valid) => Some(valid.to_string()),
+                        None => return ControllerReply::Deny(DenyReason::BadRequest),
+                    },
+                    other => other.clone(),
+                };
+                self.set_item_owner(*item_id, owner)
             }
             Command::SetItemDuration { item_id, secs } => self.set_item_duration(*item_id, *secs),
             Command::SaveTheme { name, theme_json } => self.save_theme(name, theme_json),

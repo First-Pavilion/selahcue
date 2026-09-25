@@ -1181,6 +1181,113 @@ fn transforms_preserve_buffer_byte_length_invariant() {
     assert_eq!(fit.byte_len(), 10 * 10 * 4);
 }
 
+// --- Bundled-Inter tie-break order (86ak7kkfv) ------------------------------------------
+// `build_system_fs` in `raster.rs` loads the bundled Inter faces BEFORE
+// `db.load_system_fonts()`. A bundled face loaded first wins fontdb's family-name
+// tie-break (its `find_best_match` returns the first candidate, in insertion order, among
+// equally-scoring ones) — that ORDER is what makes `Family::Name("Inter")` resolve to the
+// face SelahCue ships rather than whatever Inter version happens to be installed on the
+// host. Nothing asserted that order; only a comment said so. This test does, by building
+// an equivalent database directly and pushing an impostor "Inter" face in the position a
+// system font would occupy.
+
+#[test]
+fn a_bundled_inter_face_wins_the_family_tie_break_over_a_later_impostor() {
+    use cosmic_text::fontdb::{Database, FaceInfo, Language, Source, ID};
+    use cosmic_text::{
+        Attrs, Buffer, Family, FontSystem, Metrics, Shaping, Stretch, Style, Weight,
+    };
+    use std::sync::Arc;
+
+    const BUNDLED_INTER: &[u8] = include_bytes!("../assets/fonts/Inter-Latin.ttf");
+    // A genuinely different, already-bundled design (the default output font) — good
+    // impostor material because a shaped line measures differently through it, standing in
+    // for "whatever Inter version a host happens to have installed".
+    const IMPOSTOR: &[u8] = include_bytes!("../assets/fonts/NotoSans-Latin.ttf");
+    const PROBE_TEXT: &str = "Hallelujah";
+    const PX: f32 = 40.0;
+
+    // The same measurement `measure_line_width` makes (Attrs → Buffer → shape_until_scroll
+    // → widest line), but against a database this test builds and controls.
+    fn shaped_width(db: Database, text: &str) -> f32 {
+        let mut fs = FontSystem::new_with_locale_and_db("en-US".to_string(), db);
+        let attrs = Attrs::new()
+            .family(Family::Name("Inter"))
+            .weight(Weight::NORMAL);
+        let mut buffer = Buffer::new(&mut fs, Metrics::new(PX, PX));
+        buffer.set_size(&mut fs, None, None);
+        buffer.set_text(&mut fs, text, attrs, Shaping::Advanced);
+        buffer.shape_until_scroll(&mut fs, false);
+        buffer
+            .layout_runs()
+            .map(|r| r.line_w)
+            .fold(0.0_f32, f32::max)
+    }
+
+    // A face claiming the "Inter" family at Regular weight, backed by IMPOSTOR's bytes —
+    // fontdb matches on this metadata; the actual glyph outlines (and so the shaped width)
+    // come from the real bytes in `source`.
+    fn impostor_face() -> FaceInfo {
+        FaceInfo {
+            id: ID::dummy(),
+            source: Source::Binary(Arc::new(IMPOSTOR.to_vec())),
+            index: 0,
+            families: vec![("Inter".to_string(), Language::English_UnitedStates)],
+            post_script_name: "Impostor Inter".to_string(),
+            style: Style::Normal,
+            weight: Weight::NORMAL,
+            stretch: Stretch::Normal,
+            monospaced: false,
+        }
+    }
+
+    // THE PREMISE, PINNED: the two faces must measure `PROBE_TEXT` DIFFERENTLY, each as the
+    // ONLY "Inter" in its own database, or "which one supplied the width" below is
+    // unobservable and the guard would pass no matter which face actually won.
+    let mut bundled_only = Database::new();
+    bundled_only.load_font_data(BUNDLED_INTER.to_vec());
+    let bundled_width = shaped_width(bundled_only, PROBE_TEXT);
+
+    let mut impostor_only = Database::new();
+    impostor_only.push_face_info(impostor_face());
+    let impostor_width = shaped_width(impostor_only, PROBE_TEXT);
+
+    assert_ne!(
+        bundled_width, impostor_width,
+        "the bundled Inter and the impostor measured {PROBE_TEXT:?} identically — this \
+         test's premise is broken and cannot tell which face supplied a shaped line"
+    );
+    // POSITIVE CONTROL: the impostor is independently loadable and resolvable as "Inter" —
+    // it just shaped real, non-zero glyphs above as the ONLY candidate in its database, so
+    // "the bundled face won" below is distinguishable from "the impostor never loaded".
+    assert!(
+        impostor_width > 0.0,
+        "the impostor never shaped anything, so it cannot be a meaningful competitor for \
+         the tie-break below"
+    );
+
+    // THE GUARD: the REAL `load_bundled_system_faces` (the exact production function
+    // `build_system_fs` calls before `load_system_fonts()`) loads the bundled faces first,
+    // then the impostor is pushed SECOND to stand in for whatever `load_system_fonts()`
+    // would later find on a real machine. Because this calls production code directly, a
+    // regression that reorders or drops the bundled Inter load inside
+    // `load_bundled_system_faces` itself — not just inside this test's own fixture — turns
+    // this RED. Mutation-verified: see ticket 86ak7kkfv for the recorded evidence of
+    // reordering the real function and this test failing.
+    let mut contested = Database::new();
+    selahcue_engine::raster::load_bundled_system_faces(&mut contested);
+    contested.push_face_info(impostor_face());
+    let contested_width = shaped_width(contested, PROBE_TEXT);
+
+    assert_eq!(
+        contested_width, bundled_width,
+        "Inter measured {contested_width}, not the bundled face's {bundled_width} — the \
+         bundled-first load order `build_system_fs` relies on no longer decides the family \
+         tie-break, so a machine-installed Inter could supply the stage/confidence \
+         monitor's advances"
+    );
+}
+
 // --- Static-prefix cache (scripture-select latency fix) --------------------------------
 // Slide navigation re-renders the same theme background (image/gradient/band) with only
 // the text layers changing; `render` caches that static prefix in a GLOBAL, mutex-guarded

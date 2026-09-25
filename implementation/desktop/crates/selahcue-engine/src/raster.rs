@@ -98,6 +98,35 @@ pub fn system_font_families() -> Vec<String> {
     names
 }
 
+/// Loads the bundled Noto Sans + Inter (Regular, Bold) faces into `db`, in the exact order
+/// `build_system_fs` relies on — **before** any call to `db.load_system_fonts()` — so a
+/// bundled face wins fontdb's family-name tie-break over a same-named machine-installed
+/// face. Extracted to its own `pub` function (rather than inlined in `build_system_fs`) so
+/// `a_bundled_inter_face_wins_the_family_tie_break_over_a_later_impostor` in
+/// `tests/test_raster.rs` (86ak7kkfv) can call this REAL loading sequence directly instead
+/// of hand-reimplementing it — a reimplementation cannot observe a regression in this
+/// function's own order, only in its own copy of it.
+///
+/// Noto Sans first: a bundled face loaded BEFORE `load_system_fonts()` wins the family-name
+/// tie-break, so `Family::Name("Noto Sans")` gets the face we ship rather than a
+/// machine-installed one. For Noto Sans specifically this currently makes no measurable
+/// difference — the bundled file is a Latin subset of the same design, so either face yields
+/// the same advances at weight 400 (measured against `fonts-noto-core` in a container). That
+/// is a property of Noto Sans, not of this function: see the Inter note below, where it does
+/// NOT hold.
+///
+/// Inter Regular + Bold next — the stage/confidence typeface. Both weights are bundled so
+/// `(Inter, 700)` has an exact face and never falls back to a system monospace once system
+/// fonts are in the DB. Unlike Noto Sans above, the ORDER IS LOAD-BEARING here: a
+/// machine-installed Inter may be v3 or v4, and Inter 4.0 changed default metrics, so if a
+/// system Inter won the tie-break the stage/confidence advances would move on that host
+/// alone.
+pub fn load_bundled_system_faces(db: &mut cosmic_text::fontdb::Database) {
+    db.load_font_data(FONT_BYTES.to_vec());
+    db.load_font_data(INTER_BYTES.to_vec());
+    db.load_font_data(INTER_BOLD_BYTES.to_vec());
+}
+
 /// A `FontSystem` holding the bundled font PLUS the machine's installed fonts (86ajq6fxt).
 /// A per-theme font is requested by `Family::Name`; when that family is absent, cosmic-text
 /// falls through its own fallback chain to a READABLE platform default (Noto Sans on Linux,
@@ -107,23 +136,7 @@ pub fn system_font_families() -> Vec<String> {
 /// dead code — the honest guarantee is "a readable platform font", not "always Noto Sans".)
 fn build_system_fs() -> FontSystem {
     let mut db = cosmic_text::fontdb::Database::new();
-    // Bundled Noto Sans first, for the same reason as Inter below: a bundled face loaded BEFORE
-    // `load_system_fonts()` wins the family-name tie-break, so `Family::Name("Noto Sans")` gets
-    // the face we ship rather than a machine-installed one. For Noto Sans specifically this
-    // currently makes no measurable difference — the bundled file is a Latin subset of the same
-    // design, so either face yields the same advances at weight 400 (measured against
-    // `fonts-noto-core` in a container). That is a property of Noto Sans, not of this function:
-    // see the Inter note below, where it does NOT hold.
-    db.load_font_data(FONT_BYTES.to_vec());
-    // Bundled Inter Regular + Bold (loaded before the system fonts so `Family::Name("Inter")`
-    // resolves to the bundled faces, not a machine-installed Inter) — the stage/confidence
-    // typeface. Both weights are bundled so `(Inter, 700)` has an exact face and never falls
-    // back to a system monospace once system fonts are in the DB. Unlike Noto Sans above, the
-    // ORDER IS LOAD-BEARING here and nothing tests it: a machine-installed Inter may be v3 or
-    // v4, and Inter 4.0 changed default metrics, so if a system Inter won the tie-break the
-    // stage/confidence advances would move on that host alone.
-    db.load_font_data(INTER_BYTES.to_vec());
-    db.load_font_data(INTER_BOLD_BYTES.to_vec());
+    load_bundled_system_faces(&mut db);
     db.load_system_fonts();
     FontSystem::new_with_locale_and_db("en-US".to_string(), db)
 }

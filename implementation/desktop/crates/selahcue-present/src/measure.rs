@@ -27,12 +27,37 @@ struct Key {
     weight: u16,
 }
 
+impl Key {
+    /// The ONLY place a [`Key`] is built. [`MeasureCache::measure`] (the production
+    /// insert/lookup site) and [`measure_cache_hits_for`] (the test-facing per-key hit
+    /// accessor) must read the exact same key for the exact same inputs, or the accessor
+    /// can silently report on a key that is not the one under test. Routing both through
+    /// one constructor makes that true by construction instead of by the two sites happening
+    /// to agree.
+    fn new(text: &str, cell: u32, font: Option<&FontName>, weight: u16) -> Self {
+        Key {
+            text: text.into(),
+            cell,
+            font: font.copied(),
+            weight,
+        }
+    }
+}
+
 impl std::hash::Hash for Key {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.text.hash(state);
-        self.cell.hash(state);
-        self.font.as_ref().map(FontName::as_str).hash(state);
-        self.weight.hash(state);
+        // Destructured with no `..`: adding a field to `Key` without extending this pattern
+        // is a compile error, not a silently-unhashed field.
+        let Key {
+            text,
+            cell,
+            font,
+            weight,
+        } = self;
+        text.hash(state);
+        cell.hash(state);
+        font.as_ref().map(FontName::as_str).hash(state);
+        weight.hash(state);
     }
 }
 
@@ -93,12 +118,7 @@ impl MeasureCache {
         // whereas wrapping would make an ancient entry look freshly used.
         self.clock = self.clock.saturating_add(1);
         let used_at = self.clock;
-        let key = Key {
-            text: text.into(),
-            cell,
-            font: font.copied(),
-            weight,
-        };
+        let key = Key::new(text, cell, font, weight);
         if let Some(entry) = self.map.get_mut(&key) {
             entry.used_at = used_at;
             entry.hits = entry.hits.saturating_add(1);
@@ -169,12 +189,7 @@ pub fn measure_cache_hits_for(
     if text.len() > MAX_MEASURE_CACHE_TEXT_BYTES {
         return None; // never resident by construction
     }
-    let key = Key {
-        text: text.into(),
-        cell,
-        font: font.copied(),
-        weight,
-    };
+    let key = Key::new(text, cell, font, weight);
     MEASURE_CACHE.with(|cell_ref| cell_ref.borrow().map.get(&key).map(|e| e.hits))
 }
 
