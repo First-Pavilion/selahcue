@@ -1531,6 +1531,11 @@
         if (name === "preservice" && typeof psActivate === "function") psActivate();
         // The Service Plan builder loads the plan + deck names on activation.
         if (name === "plan" && typeof planActivate === "function") planActivate();
+        // Remote Control rechecks the host link immediately on activation, not only on its next 3s
+        // poll tick (RCD-008, Sana's PR #98 review) — otherwise a link that dropped while the
+        // operator was on another surface could arrive here to a populated (frozen) device table
+        // with no banner for up to 3s.
+        if (name === "remote" && typeof rcActivate === "function") rcActivate();
         // Settings opens to Providers & Privacy by default (the sidebar's first built page); it loads
         // the real providers_view() lazily. A caller wanting another page (e.g. ⌘⇧R → Network & Mobile)
         // calls setSettingsPage() AFTER showSurface, overriding this default.

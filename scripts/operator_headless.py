@@ -1292,7 +1292,27 @@ EXPECTED_MIN_CHECKS = 1964
 # why this was a real F1 and not a false alarm); removing the rcPoll visibility guard turns the new
 # F3 "no work while inactive" assertion RED; restoring both turns the whole file green again.
 # Confirmed by three independent clean runs against the real tree: 1976 checks, 0 FAIL each time.
-EXPECTED_MIN_CHECKS = 1976
+# 1976 -> 1979: PR #98 review remediation (Sana, security review round 2 — a re-check of F1/F3
+# requested from her, not a fresh independent pass, since the routing mixup below meant Vera's own
+# agent never got the re-check request; still a real, distinct finding on its own). LOW: the F1 fix
+# repointed the banner at link_status(), but nothing refreshed it on SURFACE ACTIVATION — only the
+# 3s poll tick did — so a link that dropped while the operator was on another surface could arrive
+# at Remote Control to a populated, frozen device table with no banner for up to 3s. Fixed by
+# wiring remote.js's rcPoll (exposed as window.rcActivate) into app.js's showSurface("remote"),
+# mirroring the exact on-activation-refresh pattern presentation/preservice/plan/transcripts
+# already use for their own surfaces (pmActivate/psActivate/planActivate/trActivate). +3
+# assertions: the activation call fires remote_snapshot + link_status synchronously with the nav
+# click (no manual recheck needed), the banner is already correct once a short bounded wait lets
+# the resulting promise settle (waitFor(…, 50) — bounded at 50*20ms=1000ms, waiting out a promise
+# chain settling, not a real timer tick, so this is not the wall-clock-dependent pattern this same
+# constant's history already flagged and fixed twice), and a cleanup assertion restoring the banner
+# to hidden before the suite moves on (this test's own scenario left the link "down" past this
+# point otherwise, which nothing after this point owns resetting). Mutation-tested: removing the
+# showSurface("remote") wiring turns exactly the two new activation assertions RED (the call-fires
+# and the banner-is-correct ones) with no collateral failures elsewhere; restoring turns the whole
+# file green again. Confirmed by three independent clean runs against the real tree: 1979 checks,
+# 0 FAIL each time.
+EXPECTED_MIN_CHECKS = 1979
 
 
 def find_chrome():
@@ -7402,16 +7422,36 @@ DRIVER = r"""
       window.__rcPollForTest();
       ok(window.__calls.slice(rcCallsBeforeInactive).every(function(c){ return c.cmd !== "remote_snapshot" && c.cmd !== "link_status"; }),
          "RCD-008/F3: the 3s poll's real work (remote_snapshot + link_status) does not run while the surface is inactive");
+
+      // Activation refresh (Sana, PR #98 review round 2): without a real production wiring, the
+      // poll's real work only ran on the NEXT 3s tick — so a link that dropped while the operator
+      // was on another surface (exactly the state we're already in, above) could arrive at Remote
+      // Control to a populated, FROZEN device table with no banner for up to 3s. Set the link-down
+      // flag while still on console (genuinely inactive — no manual poll call here), then navigate
+      // straight to Remote Control and confirm the banner is already correct, no waitFor-a-real-
+      // tick or manual recheck required.
+      window.__rcLinkDownOnce = true;
       document.querySelector('.nav-item[data-surface="settings"]').click();
       setSettingsPage("network");
+      var rcCallsBeforeActivate = window.__calls.length;
       el("net-open-roles").click();
       ok(el("surface-remote").classList.contains("active"),
-         "RCD-008/F3 (control): navigating back to Remote Control re-activates the surface");
+         "RCD-008 activation setup: navigating back to Remote Control re-activates the surface");
+      ok(window.__calls.slice(rcCallsBeforeActivate).some(function(c){ return c.cmd === "remote_snapshot"; }) &&
+         window.__calls.slice(rcCallsBeforeActivate).some(function(c){ return c.cmd === "link_status"; }),
+         "RCD-008: arriving at Remote Control immediately re-checks the host link (remote_snapshot + link_status fire on activation, synchronously with the nav click) — not only on the next 3s poll tick");
+      await waitFor(function(){ return !el("rc-host-banner").hidden; }, 50);
+      ok(!el("rc-host-banner").hidden && getComputedStyle(el("rc-host-banner")).display !== "none",
+         "RCD-008: the banner is already showing the moment the surface activates — no populated-but-frozen device table with a silently stale banner");
+
       var rcCallsBeforeActive = window.__calls.length;
       window.__rcPollForTest();
       ok(window.__calls.slice(rcCallsBeforeActive).some(function(c){ return c.cmd === "remote_snapshot"; }) &&
          window.__calls.slice(rcCallsBeforeActive).some(function(c){ return c.cmd === "link_status"; }),
          "RCD-008/F3 (control): the SAME poll call genuinely does its real work once the surface is active again — 'inactive' above was the guard, not a dead mechanism");
+      await window.__rcRecheckHostForTest();
+      ok(el("rc-host-banner").hidden && getComputedStyle(el("rc-host-banner")).display === "none",
+         "RCD-008 cleanup: the host link is healthy again — banner cleared before the suite moves on");
 
       document.querySelector('.nav-item[data-surface="console"]').click();
       document.dispatchEvent(new KeyboardEvent("keydown", {key:"R", metaKey:true, shiftKey:true, bubbles:true}));

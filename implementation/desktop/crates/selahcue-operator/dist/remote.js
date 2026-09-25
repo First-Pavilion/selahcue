@@ -389,6 +389,15 @@
   // 3s tick — call it while this surface is inactive and confirm no remote_snapshot/link_status
   // call follows.
   window.__rcPollForTest = rcPoll;
+  // Real production wiring (Sana, PR #98 review): without this, the poll's real work only ran on
+  // the next 3s tick — so a link that dropped while the operator was on another surface could
+  // arrive at Remote Control to a populated (frozen) device table with no banner for up to 3s.
+  // app.js's showSurface("remote") calls this on activation (mirrors pmActivate/psActivate/
+  // planActivate/trActivate's own on-activation-refresh pattern for their surfaces). rcPoll's own
+  // guard passes trivially here — app.js toggles the "active" class before calling any
+  // surface-specific activation hook — so this reuses the exact same function rather than
+  // duplicating "loadSnapshot(); checkHostConnection();" a third time.
+  window.rcActivate = rcPoll;
 
   // ---------- init ----------
   var nc = document.getElementById("rc-newcode");
