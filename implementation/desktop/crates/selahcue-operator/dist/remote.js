@@ -341,13 +341,82 @@
     invoke("remote_set_role", { deviceId: id, role: role }).then(applySnapshot).catch(reconcile);
   }
 
+  // ---------- host-connection banner (RCD-008) ----------
+  // Polls link_status (Tier 2 control-link state), NOT host_connected — Vera's performance review
+  // (PR #98) found host_connected is a one-shot boolean over Backend::is_remote(), set once in
+  // .setup() and never updated (main.rs: Backend has no interior mutability, build_backend() never
+  // re-dials, AppState.backend is an immutable field). Polling it every 3s was a functional dead
+  // end: the banner could show at boot and then NEVER change for the rest of the session, and it
+  // could never react to a real mid-service disconnect. link_status IS genuinely live — app.js's
+  // own #rcv-link control-link-loss card already polls it the same way (see currentLinkState()) —
+  // driven by the real per-poll outcome of the 1Hz `view()` call (main.rs's `view` command records
+  // link_error on every call). "connected" is the only state that hides the banner; "local" (no
+  // host at all — the stand-alone/demo backend) and "disconnected" (a host that WAS linked and
+  // dropped) both mean "pairing/device data can't be trusted right now", matching the banner's own
+  // copy in index.html.
+  function syncHostBanner(connected) {
+    var banner = document.getElementById("rc-host-banner");
+    // Fail SAFE, not open: only an explicit `true` hides the warning. Both existing call sites
+    // already pass a strict boolean (`r === true` / `false`), so this is behaviorally identical
+    // for them — but a future caller forwarding a raw, non-normalized value (undefined, null)
+    // now shows the banner instead of silently hiding it (Sana, security review round 1).
+    if (banner) banner.hidden = connected === true;
+  }
+  function checkHostConnection() {
+    return invoke("link_status")
+      .then(function (r) { syncHostBanner(!!r && r.state === "connected"); })
+      .catch(function () { syncHostBanner(false); });
+  }
+  // Test-only hook (mirrors window.__resetSettingsAboutForTest/__resetSermonNoteDraftForTest):
+  // lets a headless driver force an immediate recheck instead of waiting out the real 3s poll.
+  window.__rcRecheckHostForTest = checkHostConnection;
+
+  // ---------- link poll (single bounded interval, visible-surface only) ----------
+  // Vera's review also found this interval had no visibility guard anywhere in the bundle (unlike
+  // preservice.js's own tick(), which only does its work while `root.classList.contains("active")`
+  // — the established pattern for a surface-scoped background poll in this codebase). Mirrors that
+  // exact pattern: the timer itself is unconditional and cheap (one closure call every 3s for the
+  // whole app lifetime), but the real work — loadSnapshot() and checkHostConnection() — only runs
+  // while this surface is the one on screen.
+  var pollTimer = null;
+  var polling = false;
+  function rcPoll() {
+    if (!root.classList.contains("active")) return;
+    // Re-entrancy guard (mirrors preservice.js's own `running` at preservice.js:330): without it,
+    // activation (rcActivate, below) and the 3s tick landing near the same moment could both have
+    // a loadSnapshot()/checkHostConnection() pair in flight at once, and an OLDER response settling
+    // AFTER a newer one would silently overwrite fresher state with stale data. Reachable and
+    // measured live, not theoretical (Vera, PR #98 review round 3). Self-clears once both calls
+    // settle — neither currently rejects (both .catch internally), but allSettled stays correct if
+    // that ever changes.
+    if (polling) return;
+    polling = true;
+    Promise.allSettled([loadSnapshot(), checkHostConnection()]).then(function () { polling = false; });
+  }
+  // Test-only hook (mirrors __rcRecheckHostForTest): lets a headless driver invoke the interval's
+  // own callback directly, so the visibility guard above can be proven WITHOUT waiting out a real
+  // 3s tick — call it while this surface is inactive and confirm no remote_snapshot/link_status
+  // call follows.
+  window.__rcPollForTest = rcPoll;
+  // Real production wiring (Sana, PR #98 review): without this, the poll's real work only ran on
+  // the next 3s tick — so a link that dropped while the operator was on another surface could
+  // arrive at Remote Control to a populated (frozen) device table with no banner for up to 3s.
+  // app.js's showSurface("remote") calls this on activation (mirrors pmActivate/psActivate/
+  // planActivate/trActivate's own on-activation-refresh pattern for their surfaces). rcPoll's own
+  // guard passes trivially here — app.js toggles the "active" class before calling any
+  // surface-specific activation hook — so this reuses the exact same function rather than
+  // duplicating "loadSnapshot(); checkHostConnection();" a third time.
+  window.rcActivate = rcPoll;
+
   // ---------- init ----------
   var nc = document.getElementById("rc-newcode");
   if (nc) nc.addEventListener("click", function () { genCode().then(function () { announce("New pairing code generated"); }); });
+  checkHostConnection();
   genCode();
   loadSnapshot();
   render();
   if (!cdTimer) cdTimer = setInterval(tickCountdown, 1000);
-  // Poll for new pair attempts (bounded single interval).
-  setInterval(loadSnapshot, 3000);
+  // Poll for new pair attempts AND recheck the host link (bounded single interval — the banner
+  // above needs to clear on its own once the output window comes up, with no manual refresh).
+  if (!pollTimer) pollTimer = setInterval(rcPoll, 3000);
 })();
