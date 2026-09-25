@@ -1259,6 +1259,30 @@ EXPECTED_MIN_CHECKS = 2002
 # regardless of visibility). Measured directly off real runs, not hand-summed: 2002 + 3 = 2005
 # checks, 0 FAIL.
 EXPECTED_MIN_CHECKS = 2005
+#
+# 1964 -> 1966 (17tnw2aynar, on THIS branch's own pre-rebase tree, base 1964 above): +2 new checks
+# for planLoadDecks()'s request-generation race guard. planLoadDecks() had no defence against an
+# older invoke("deck_list") call's response arriving after a newer, overlapping call's response —
+# the stale answer silently overwrote the fresh planDecks. Reproduced with a new deck_list mock
+# hook (window.__deckListManualQueue, defers each deck_list response so the driver controls
+# resolve ORDER independently of issue order) and fixed with a monotonic generation counter
+# captured before the await, checked before every planDecks assignment (success and failure
+# paths). The 2 checks are a fixture premise (both overlapping requests actually reached the
+# host) and the real assertion (the newer request's data wins even though its response resolved
+# before the older, now-stale response arrived). Mutation-verified: reverting app.js's guard
+# (dropping the `gen !== planDecksGen` checks, code otherwise unchanged) reproduces exactly one
+# clean FAIL — the race-guard assertion — with 1966 checks still running (no aborting exception,
+# no collateral failures); restoring reproduces 1966 checks, 0 FAIL. Confirmed by two independent
+# clean runs against this branch's own pre-rebase tree: 1966 checks, 0 FAIL.
+#
+# 2005 & 1966 -> ?: rebase of 17tnw2aynar (ending 1966 above, its own count already merging this
+# branch's base of 1964) onto origin/main after 17tnw2axptf (PR #99, ending 2005 above, a
+# different lineage through the same 1964 ancestor) merged first. Both lineages counted from the
+# same 1964 ancestor along divergent paths — 17tnw2axptf touches Console geometry/copy
+# (app.js/app.css only, no overlap with planLoadDecks), 17tnw2aynar touches only planLoadDecks()
+# and its own new race-guard checks — so per this constant's own repeated discipline the merged
+# total is read off an actual clean run against the real post-rebase tree, never hand-summed as
+# 2005 + 2 or any other arithmetic shortcut.
 
 
 def find_chrome():
@@ -2052,6 +2076,17 @@ STUB = r"""
       // Test hook (mirrors __pmRejectOnce): force a MALFORMED null answer, so a host that does
       // not implement deck_list can be told apart from one reporting an empty library.
       if (window.__deckListNullOnce) { window.__deckListNullOnce = false; return Promise.resolve(null); }
+      // Test hook (17tnw2aynar): hold this deck_list response pending instead of resolving it
+      // immediately, so the driver can control resolve ORDER across two concurrent calls — the
+      // real-world condition is Tauri dispatching each invoke() to its own async-command thread
+      // pool task with independent IPC-return jitter, so two in-flight deck_list calls have no
+      // guaranteed resolve order relative to issue order. The snapshot (libView()) is captured
+      // NOW, at invoke time, mirroring a real host that answers with the library state as of
+      // when it received the request.
+      if (window.__deckListManualQueue) {
+        var snap = libView();
+        return new Promise(function(res){ window.__deckListManualQueue.push({res: res, view: snap}); });
+      }
       return Promise.resolve(libView());
     }
     if (cmd === "deck_search") {
@@ -8138,6 +8173,30 @@ DRIVER = r"""
       await planLoadDecks();
       ok(Array.isArray(planDecks) && planDecks.length > 0,
          "SP3 AC-4 (control): a well-formed deck_list still loads the library — the guard rejects malformed responses, not every response");
+      // === planLoadDecks() request-generation race guard (17tnw2aynar) ==========================
+      // planLoadDecks() has 4 call sites; one of them (planActivate, app.js ~8423) is
+      // fire-and-forget and has no re-entrancy guard, so rapid nav away/back to the "plan"
+      // surface can have two invoke("deck_list") calls in flight at once. Real deck_list calls
+      // have no guaranteed resolve order relative to issue order — Tauri dispatches each
+      // invoke() to its own async-command thread-pool task, and the IPC round-trip back to the
+      // webview has independent scheduling jitter — so a call issued EARLIER can resolve LATER.
+      // Reproduce that directly: issue two overlapping calls, resolve the NEWER one's response
+      // FIRST, then resolve the OLDER one's now-STALE response SECOND, and prove the stale
+      // response does not win.
+      window.__deckListManualQueue = [];
+      var raceOlder = planLoadDecks(); // request #1 — issued first
+      window.__LIB.decks.push({id: 4001, name: "Race guard — newer snapshot", slides: 1}); // real content changed between requests
+      var raceNewer = planLoadDecks(); // request #2 — issued second, sees the changed library
+      ok(window.__deckListManualQueue.length === 2,
+         "planLoadDecks race guard: both overlapping requests reached the host (fixture premise)");
+      window.__deckListManualQueue[1].res(window.__deckListManualQueue[1].view); // newer resolves FIRST
+      await raceNewer;
+      window.__deckListManualQueue[0].res(window.__deckListManualQueue[0].view); // older (stale) resolves LAST
+      await raceOlder;
+      window.__deckListManualQueue = null;
+      ok(Array.isArray(planDecks) && planDecks.some(function(d){ return d.id === 4001; }),
+         "planLoadDecks race guard: the newer request's data wins even though its response resolved first and the older request's stale response arrived after it");
+      window.__LIB.decks.pop(); // remove the race fixture deck — restore the stable 3-deck library for later checks
       planRenderBuilder(missView);
       planRenderBuilder(sumView);
       ok(sumRowValue("Missing content") === "0" && !document.querySelector("#plan-b-insp .plan-sum-warn"),

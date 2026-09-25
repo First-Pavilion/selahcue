@@ -7250,9 +7250,20 @@
       // Deck names/missing-status resolve against a lazily-loaded deck list (the console does
       // not otherwise load it); scripture uses the host's `scripture_search` + translation list.
       let planDecks = null; // cached [{id,name,slides}] or null (not yet loaded)
+      // Monotonic request generation (17tnw2aynar): planLoadDecks has 4 call sites, one of them
+      // (planActivate, fire-and-forget, no re-entrancy guard) called on every nav to the "plan"
+      // surface — rapid nav away/back can have two invoke("deck_list") calls in flight at once.
+      // Each is dispatched to Tauri's async-command thread pool independently and the IPC
+      // round-trip back has its own scheduling jitter, so there is no guarantee the OLDER call's
+      // response arrives before the NEWER one's. Capture the generation before the await and only
+      // let a response (success or failure) write planDecks when no newer request has been issued
+      // since — a stale, late-arriving response becomes a no-op instead of a silent overwrite.
+      let planDecksGen = 0;
       async function planLoadDecks() {
+        const gen = ++planDecksGen;
         try {
           const r = await invoke("deck_list");
+          if (gen !== planDecksGen) return planDecks || []; // superseded by a newer request — discard this stale response
           // A response without a real decks ARRAY is UNKNOWN, not "loaded and empty". `|| []`
           // here defeated the catch branch below: a host that answers deck_list with null (an
           // older host, or one where the command is not implemented) read as an empty library,
@@ -7261,6 +7272,7 @@
           planDecks = r && Array.isArray(r.decks) ? r.decks : null;
         } catch (e) {
           console.error(e);
+          if (gen !== planDecksGen) return planDecks || []; // superseded — a newer request's outcome must not be clobbered by a stale failure
           // Load FAILED — stay UNRESOLVED (null), not empty. planLinkChip only shows "⚠ missing"
           // when planDecks is a loaded list lacking the id; leaving it null renders the generic
           // chip instead of falsely flagging every deck-linked item as missing on a transient error.
