@@ -1312,7 +1312,30 @@ EXPECTED_MIN_CHECKS = 1964
 # and the banner-is-correct ones) with no collateral failures elsewhere; restoring turns the whole
 # file green again. Confirmed by three independent clean runs against the real tree: 1979 checks,
 # 0 FAIL each time.
-EXPECTED_MIN_CHECKS = 1979
+# 1979 -> 1980: PR #98 review remediation (Vera, performance review round 3 — the re-check she was
+# asked for after F1/F3, approved, and flagged 3 non-blocking residuals in the same pass; two of
+# the three were fixed alongside the approval rather than deferred). R1 (Low, reachable and
+# measured live, not theoretical): rcPoll adopted preservice.js's visibility guard but not its
+# re-entrancy guard (preservice.js:330's `if (running) return`) — activation and the 3s tick
+# landing near the same moment could both have a loadSnapshot()/checkHostConnection() pair in
+# flight at once, and an older response settling after a newer one would silently overwrite fresher
+# state. Fixed with the same `running`-flag pattern, self-clearing once both calls settle. +1
+# assertion: calling the poll again while the first call is still in flight (synchronously, no
+# await in between — genuinely still outstanding, not a timing guess) must not fire a second
+# overlapping remote_snapshot/link_status pair. Mutation-tested: reverting rcPoll to call
+# loadSnapshot()/checkHostConnection() directly (no guard) turns exactly this assertion RED, no
+# collateral failures; restoring turns the file green again. R2 (Low, copy-only, no new checks):
+# the banner's body copy claimed it "updates automatically once it connects" — main.rs's own
+# link_status doc comment is explicit that nothing ever re-dials, so that was never true for either
+# condition that shows the banner (no host at all, or a host that dropped); corrected to match
+# app.js's own #rcv-link card's established "restart to reconnect" copy for the same underlying
+# fact. R3 (Info only, not a finding) was left as-is: checkHostConnection() naming was flagged as
+# now pointing at the wrong command name, but the function still genuinely checks host connection
+# state (via link_status instead of host_connected) — a rename would touch this file's test hooks
+# for a purely cosmetic reason with no correctness/security value, which this codebase's own
+# "no unjustified... broad refactor" discipline argues against. Confirmed by three independent
+# clean runs against the real tree: 1980 checks, 0 FAIL each time.
+EXPECTED_MIN_CHECKS = 1980
 
 
 def find_chrome():
@@ -7449,6 +7472,19 @@ DRIVER = r"""
       ok(window.__calls.slice(rcCallsBeforeActive).some(function(c){ return c.cmd === "remote_snapshot"; }) &&
          window.__calls.slice(rcCallsBeforeActive).some(function(c){ return c.cmd === "link_status"; }),
          "RCD-008/F3 (control): the SAME poll call genuinely does its real work once the surface is active again — 'inactive' above was the guard, not a dead mechanism");
+
+      // Re-entrancy guard (Vera, PR #98 review round 3): activation and the 3s tick landing near
+      // the same moment could otherwise both have a loadSnapshot()/checkHostConnection() pair in
+      // flight at once, and an older response settling after a newer one would silently overwrite
+      // fresher state — reachable and measured live, not theoretical. The poll from the line above
+      // is still in flight (its promises haven't had a microtask tick to settle yet), so calling
+      // __rcPollForTest() again RIGHT NOW, synchronously, is exactly the overlap this guards
+      // against — a second real remote_snapshot/link_status pair must NOT fire while the first is
+      // still outstanding.
+      var rcCallsBeforeReentrant = window.__calls.length;
+      window.__rcPollForTest();
+      ok(window.__calls.slice(rcCallsBeforeReentrant).every(function(c){ return c.cmd !== "remote_snapshot" && c.cmd !== "link_status"; }),
+         "RCD-008 (re-entrancy guard): a poll call landing while the previous one is still in flight does not fire a second overlapping remote_snapshot/link_status pair");
       await window.__rcRecheckHostForTest();
       ok(el("rc-host-banner").hidden && getComputedStyle(el("rc-host-banner")).display === "none",
          "RCD-008 cleanup: the host link is healthy again — banner cleared before the suite moves on");

@@ -379,10 +379,19 @@
   // whole app lifetime), but the real work — loadSnapshot() and checkHostConnection() — only runs
   // while this surface is the one on screen.
   var pollTimer = null;
+  var polling = false;
   function rcPoll() {
     if (!root.classList.contains("active")) return;
-    loadSnapshot();
-    checkHostConnection();
+    // Re-entrancy guard (mirrors preservice.js's own `running` at preservice.js:330): without it,
+    // activation (rcActivate, below) and the 3s tick landing near the same moment could both have
+    // a loadSnapshot()/checkHostConnection() pair in flight at once, and an OLDER response settling
+    // AFTER a newer one would silently overwrite fresher state with stale data. Reachable and
+    // measured live, not theoretical (Vera, PR #98 review round 3). Self-clears once both calls
+    // settle — neither currently rejects (both .catch internally), but allSettled stays correct if
+    // that ever changes.
+    if (polling) return;
+    polling = true;
+    Promise.allSettled([loadSnapshot(), checkHostConnection()]).then(function () { polling = false; });
   }
   // Test-only hook (mirrors __rcRecheckHostForTest): lets a headless driver invoke the interval's
   // own callback directly, so the visibility guard above can be proven WITHOUT waiting out a real
