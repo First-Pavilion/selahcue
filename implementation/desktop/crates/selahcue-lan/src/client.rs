@@ -24,6 +24,9 @@ pub struct ControlClient {
     ws: WebSocketStream<TlsStream<TcpStream>>,
     role: Role,
     next_id: u64,
+    /// Set once a [`command`](Self::command) times out. See that method's doc for why a timed
+    /// out connection can never safely be reused (security review, Sana S-8).
+    poisoned: bool,
 }
 
 /// Credentials issued at pairing time — store these (securely) for reconnects.
@@ -67,9 +70,18 @@ impl ControlClient {
     /// (86ak4xxwm Tier 2a review, Vera P-3): every poll blocked meant the poll never returned,
     /// so the link's own liveness check — the poll failing — could never fire, and the
     /// reconnect path was never even reached. Two seconds is generous for a LAN request/response
-    /// (this repo's own handshake timeout budgets far less per phase) and, critically, must stay
-    /// short enough that a caller polling on some regular cadence (e.g. the operator console's
-    /// 1 Hz `view` poll) gets an answer well inside one tick.
+    /// (this repo's own handshake timeout budgets far less per phase).
+    ///
+    /// **Correction (performance review, Vera P-6 / security review, Sana):** an earlier version
+    /// of this comment claimed the value "must stay short enough... to get an answer well inside
+    /// one tick" of the operator console's 1 Hz `view` poll. That is false as written — 2s is
+    /// LONGER than the 1s tick it was claimed to fit inside, so a stall near the bound can still
+    /// overrun a poll interval. This is a real, currently-open residual (a caller on a fixed
+    /// `setInterval` without backpressure can queue overlapping in-flight calls during a stall),
+    /// but it is the WEBVIEW POLL LOOP's property to fix (`dist/app.js`'s `setInterval`, not
+    /// this client), and it is strictly better than the un-bounded hang this constant replaced.
+    /// Left here rather than silently corrected, so the next reader does not inherit the
+    /// original, disproven claim.
     const COMMAND_TIMEOUT: Duration = Duration::from_secs(2);
 
     /// Establish the pinned-TLS WebSocket transport (no authentication yet).
@@ -121,6 +133,7 @@ impl ControlClient {
                 ws,
                 role,
                 next_id: 1,
+                poisoned: false,
             })
         };
 
@@ -170,6 +183,7 @@ impl ControlClient {
                                 ws,
                                 role,
                                 next_id: 1,
+                                poisoned: false,
                             },
                             PairingCredentials { device_id, token },
                         ))
@@ -196,7 +210,30 @@ impl ControlClient {
     /// Send a command and await the operator's reply. Bounded by [`COMMAND_TIMEOUT`](Self::COMMAND_TIMEOUT)
     /// so a half-open connection (the peer vanished without closing the socket) surfaces as an
     /// error a caller can act on — e.g. retry — instead of hanging indefinitely.
+    ///
+    /// **A connection that has ever timed out here is permanently refused further commands**
+    /// (security/correctness review, Sana S-8). `recv_json` reads the next frame off the socket
+    /// with no `request_id` correlation, so when a timeout fires there is no way to know whether
+    /// the abandoned reply is still in flight. If it is, and this method were simply called
+    /// again, the NEXT command would silently receive THIS one's reply — deserializing fine,
+    /// since every reply shares one `ServerMessage` shape, and reporting success for a request
+    /// that was never actually answered. Measured live: a single >2s host stall left every
+    /// subsequent reply permanently one behind, each returned as `Ok`. For this ticket's own
+    /// Tier 2a specifically, that is fatal: a poll that happens to land on a stale-but-successful
+    /// reply calls `observe_success()`, silently cancelling a reconnect that was already
+    /// scheduled and pinning the console at a fabricated "Connected" for the rest of the
+    /// session — the exact class of lie this ticket exists to remove. Poisoning trades a
+    /// resumable connection for a correct one: every caller here already has a real reconnect
+    /// path (`maybe_reconnect_from` replaces the whole `RemoteOperator`/`ControlClient` on the
+    /// next failure), so refusing to reuse a connection whose reply stream may be desynchronized
+    /// costs one extra dial, never a wrong answer.
     pub async fn command(&mut self, command: Command) -> Result<ServerMessage, TransportError> {
+        if self.poisoned {
+            return Err(TransportError::Protocol(
+                "connection desynchronized after a previous command timed out — reconnect required"
+                    .into(),
+            ));
+        }
         let id = self.next_id;
         self.next_id = self.next_id.wrapping_add(1);
         let exchange = async {
@@ -205,7 +242,10 @@ impl ControlClient {
         };
         match tokio::time::timeout(Self::COMMAND_TIMEOUT, exchange).await {
             Ok(result) => result,
-            Err(_) => Err(TransportError::Protocol("command timed out".into())),
+            Err(_) => {
+                self.poisoned = true;
+                Err(TransportError::Protocol("command timed out".into()))
+            }
         }
     }
 

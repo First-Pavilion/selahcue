@@ -1412,7 +1412,18 @@ fn record_poll_outcome(state: &AppState, err: Option<&String>) {
 /// distinct from [`record_poll_outcome`]: unlike a routine poll, this must always advance
 /// `attempts` and reschedule, even though the state is already `Reconnecting` (which is exactly
 /// the state `record_poll_outcome` refuses to touch further). This poll-vs-dial split is what
-/// makes `attempts` mean "real re-dials made", not "polls received while down" (Sana S-4).
+/// bounds `attempts` at `MAX_RECONNECT_ATTEMPTS` regardless of how long the outage lasts, rather
+/// than climbing forever with every failing poll (Sana S-4).
+///
+/// **Precise count (security review, Sana S-4/P-7 doc nit):** `attempts` is not purely "real
+/// re-dials made" — the FIRST increment happens in `record_poll_outcome`, on the poll that
+/// *detects* the drop, before any dial has been attempted. So `MAX_RECONNECT_ATTEMPTS = 5`
+/// permits **4** real re-dials per outage, not 5, and `LinkStatus::next_backoff`'s first table
+/// slot (250ms) is consequently never read — the first dial always waits the SECOND slot
+/// (500ms). Both are intentional (the detecting poll genuinely is the first "we tried and it
+/// didn't work" event), documented here so a future "attempt N of 5" surface does not
+/// fabricate a dial that has not happened, which is the exact class of statement this ticket
+/// exists to remove.
 fn record_dial_failure(state: &AppState, err: &str) {
     let Ok(mut status) = state.link_status.lock() else {
         return;
@@ -3987,8 +3998,29 @@ const MAX_ENDPOINT_FILE_LEN: u64 = 4096;
 /// from an actual attack, defeating Tier 2a entirely. The mode check above is the fix that
 /// matches the real trust boundary (same local user), without that self-defeat.
 fn read_endpoint() -> Option<Endpoint> {
-    let path = endpoint_file_path();
-    let meta = std::fs::metadata(&path).ok()?;
+    read_endpoint_at(&endpoint_file_path())
+}
+
+/// [`read_endpoint`]'s real body, against an injected path — tests use a private `tempfile`
+/// path instead of the shared, machine-wide `endpoint_file_path()` (touching that file races
+/// every other process on the machine that reads/writes it by convention).
+///
+/// **Check-then-use, closed (security review, Sana S-3a).** An earlier version of this function
+/// checked the path's metadata (`std::fs::metadata`) and then read it (`std::fs::read_to_string`)
+/// as two independent path resolutions — in the threat this guards against, the planted file is
+/// owned by a DIFFERENT local account, which can change its mode between those two syscalls.
+/// Sana reproduced this live: replaying the exact shape (an attacker thread flipping the mode
+/// between `0o600` and `0o644` while this function's shape ran in a loop) let ~9.4% of attempts
+/// pass the mode gate and then read bytes the gate would have rejected. Opening the file ONCE
+/// and taking every check (size, mode) from `File::metadata()` — an `fstat` on the SAME open
+/// file descriptor, not a fresh path lookup — makes the check and the read describe the same
+/// bytes by construction: there is no window between them for the file to be swapped or
+/// re-permissioned. `Read::take` bounds the read itself (not just re-checking `meta.len()`,
+/// which reads as 0 for non-regular files like a FIFO and would otherwise be advisory only).
+fn read_endpoint_at(path: &std::path::Path) -> Option<Endpoint> {
+    use std::io::Read;
+    let file = std::fs::File::open(path).ok()?;
+    let meta = file.metadata().ok()?;
     if meta.len() > MAX_ENDPOINT_FILE_LEN {
         eprintln!(
             "SelahCue operator: endpoint descriptor at {} exceeds {MAX_ENDPOINT_FILE_LEN} bytes — refusing to read it.",
@@ -4009,7 +4041,10 @@ fn read_endpoint() -> Option<Endpoint> {
             return None;
         }
     }
-    let data = std::fs::read_to_string(&path).ok()?;
+    let mut data = String::new();
+    file.take(MAX_ENDPOINT_FILE_LEN)
+        .read_to_string(&mut data)
+        .ok()?;
     serde_json::from_str(&data).ok()
 }
 
@@ -4029,6 +4064,124 @@ async fn connect_remote(ep: &Endpoint) -> Result<RemoteOperator, String> {
     RemoteOperator::connect(addr, "localhost", pin, &ep.device, &ep.token)
         .await
         .map_err(|e| e.to_string())
+}
+
+/// The two checks `connect_remote`/`read_endpoint_at` added for Sana's S-3 review had no test —
+/// "a control nothing consumes" is the exact defect class this repo's own bounded-memory-test
+/// discipline warns about applied to a security control instead of a memory bound. Both would
+/// previously have been deletable with no assertion firing; these two close that.
+#[cfg(test)]
+mod endpoint_guard_tests {
+    use super::*;
+    use std::io::Write;
+    use std::os::unix::fs::PermissionsExt;
+
+    /// A non-loopback address must be refused before any network attempt — proven by using an
+    /// address (`203.0.113.1`, TEST-NET-3, RFC 5737: guaranteed never routable) that would hang
+    /// or fail for an unrelated reason if this check were not the thing that rejected it.
+    #[tokio::test]
+    async fn a_non_loopback_endpoint_is_refused_before_dialling() {
+        let ep = Endpoint {
+            addr: "203.0.113.1:9".into(),
+            pin: "00".repeat(32),
+            device: "producer".into(),
+            token: "tok".into(),
+        };
+        let err = connect_remote(&ep)
+            .await
+            .err()
+            .expect("a non-loopback endpoint must never be dialled");
+        assert!(
+            err.contains("not loopback"),
+            "refusal must name the real reason, not surface as e.g. a connect timeout: {err}"
+        );
+    }
+
+    /// A loopback address passes the check this test targets (it may still fail to connect,
+    /// which is a DIFFERENT, expected error — nothing is listening) — proving the loopback
+    /// branch is a real gate, not one that rejects everything regardless of the address.
+    #[tokio::test]
+    async fn a_loopback_endpoint_clears_the_address_check() {
+        let ep = Endpoint {
+            addr: "127.0.0.1:1".into(), // nothing listens on port 1; connect itself must fail
+            pin: "00".repeat(32),
+            device: "producer".into(),
+            token: "tok".into(),
+        };
+        let err = connect_remote(&ep)
+            .await
+            .err()
+            .expect("nothing listens on 127.0.0.1:1, so this must still fail");
+        assert!(
+            !err.contains("not loopback"),
+            "a loopback address must clear the loopback check — got: {err}"
+        );
+    }
+
+    /// A `0644` descriptor (world/group-readable) is exactly the exposure the mode check exists
+    /// to close (security review, Sana S-3) — refused, not silently trusted.
+    #[test]
+    fn a_world_readable_descriptor_is_refused() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("endpoint.json");
+        std::fs::write(
+            &path,
+            br#"{"addr":"127.0.0.1:1","pin":"00","device":"d","token":"t"}"#,
+        )
+        .expect("write descriptor");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644))
+            .expect("chmod 0644");
+        assert!(
+            read_endpoint_at(&path).is_none(),
+            "a 0644 (world-readable) descriptor must be refused, not trusted"
+        );
+    }
+
+    /// Positive control for the mode check: the SAME descriptor, `0600`, is accepted — proving
+    /// the refusal above is a real branch (a mode check, not something that rejects every file
+    /// regardless of its permissions).
+    #[test]
+    fn a_0600_descriptor_is_accepted() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("endpoint.json");
+        std::fs::write(
+            &path,
+            br#"{"addr":"127.0.0.1:1","pin":"00","device":"d","token":"t"}"#,
+        )
+        .expect("write descriptor");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
+            .expect("chmod 0600");
+        let ep = read_endpoint_at(&path).expect("a 0600 descriptor must be accepted");
+        assert_eq!(ep.addr, "127.0.0.1:1");
+    }
+
+    /// A regular file over `MAX_ENDPOINT_FILE_LEN` is refused — for a regular file this is
+    /// caught by the `fstat`-derived size check. `Read::take` is the SEPARATE, defense-in-depth
+    /// bound for a non-regular file (e.g. a FIFO, where `stat` reports `len() == 0` and the size
+    /// check alone would be fooled); that path needs a real FIFO to exercise and is not covered
+    /// by this test, which asserts the ordinary case: a big honest file is still refused.
+    #[test]
+    fn an_oversized_descriptor_is_refused() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("endpoint.json");
+        let mut f = std::fs::File::create(&path).expect("create");
+        // Valid JSON prefix, padded well past MAX_ENDPOINT_FILE_LEN with whitespace inside a
+        // string value — still parseable if read in full, so a pass here would mean the bound
+        // did nothing, not that the padding happened to break parsing.
+        let padding = " ".repeat(MAX_ENDPOINT_FILE_LEN as usize + 1024);
+        write!(
+            f,
+            r#"{{"addr":"127.0.0.1:1","pin":"00","device":"d{padding}","token":"t"}}"#
+        )
+        .expect("write oversized descriptor");
+        drop(f);
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
+            .expect("chmod 0600");
+        assert!(
+            read_endpoint_at(&path).is_none(),
+            "a descriptor over MAX_ENDPOINT_FILE_LEN must be refused"
+        );
+    }
 }
 
 /// Try to attach to a running output window; fall back to a stand-alone demo controller.
