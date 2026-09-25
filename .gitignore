@@ -27,3 +27,4 @@ implementation/build/
 # and must never be committed, whichever session happens to create it.
 __pycache__/
 *.py[cod]
+scph-worktrees/
