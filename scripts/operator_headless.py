@@ -1325,6 +1325,28 @@ EXPECTED_MIN_CHECKS = 2007
 #     mutations restored, reconfirmed 2012 checks, 0 FAIL. Confirmed by two independent clean runs
 #     against the real tree: 2012 checks, 0 FAIL. Measured directly off real runs, not hand-summed.
 EXPECTED_MIN_CHECKS = 2012
+#
+# 2012 -> 2015 (17tnw2aynar, PR #100 review remediation, follow-up): +3 checks closing the second
+# half of Quinn's own two-part recommendation. Her review named BOTH crossed outcomes — "(a) a
+# newer success beats a late stale failure, and (b) a newer failure beats a late stale success" —
+# but the 2012 checkpoint above only implements (a) (the block whose stale request always resolves
+# via `rej`, i.e. a stale FAILURE arriving after a newer success). This adds (b): a stale
+# (superseded) request that itself RESOLVES (success) arriving after a newer request that FAILED —
+# proving the stale success cannot clobber the newer failure's UNRESOLVED (null) result. This
+# exercises the SUCCESS-path guard (app.js's first `if (gen !== planDecksGen)`) on a crossed case
+# the 2012 checkpoint's own block cannot reach, since that block's stale request is always the one
+# that fails, never the one that succeeds. Uses the same mutation-safe resync-cleanup discipline as
+# the block immediately above it (a plain, non-overlapping `await planLoadDecks()` after the
+# assertions, so a broken guard cannot leak a corrupted `planDecks` into later, unrelated checks).
+#
+# Mutation-verified against this branch's own tree: neutralizing the SUCCESS-path guard line alone
+# (`if (gen !== planDecksGen) return planDecksLatest;`, the first occurrence, replaced with
+# `if (false && …)` to preserve line numbers) reproduces exactly THREE clean FAILs — the original
+# race-guard check, the F1 check, and this new "other direction" check — all three of which depend
+# on that same success-path guard, and nothing else: 2015 checks, 3 FAIL, no collateral damage.
+# Restored: 2015 checks, 0 FAIL, confirmed by two independent clean runs. Measured directly off
+# real runs, never hand-summed.
+EXPECTED_MIN_CHECKS = 2015
 
 
 def find_chrome():
@@ -8285,6 +8307,29 @@ DRIVER = r"""
          "planLoadDecks catch-path guard: a stale, late-arriving FAILURE does not null out a newer successful load");
       window.__LIB.decks.pop();
       await planLoadDecks(); // plain, non-overlapping resync — leaves planDecks correct for later checks regardless of this block's own outcome (mutation-safe cleanup)
+      // --- Quinn (PR #100 review), other direction: Quinn's own recommendation named BOTH crossed
+      // outcomes — "(a) a newer success beats a late stale failure, and (b) a newer failure beats
+      // a late stale success". The block above proves (a). This proves (b): a STALE (superseded)
+      // request's invoke RESOLVES (success) after a newer request has already FAILED — the stale
+      // success must not clobber the newer failure's UNRESOLVED (null) result. This exercises the
+      // SUCCESS-path guard (app.js's first `if (gen !== planDecksGen)`) on a stale call whose own
+      // response was a success but arrives after a newer, failed request — the crossed case the
+      // block above (which only ever resolves a STALE request via a FAILURE) cannot reach.
+      window.__deckListManualQueue = [];
+      var catch2Older = planLoadDecks(); // request #1 — issued first, will resolve with a STALE SUCCESS, arriving LAST
+      var catch2Newer = planLoadDecks(); // request #2 — issued second, will FAIL, resolves FIRST
+      ok(window.__deckListManualQueue.length === 2,
+         "planLoadDecks catch-path guard (other direction): both overlapping requests reached the host (fixture premise)");
+      window.__deckListManualQueue[1].rej("simulated host rejection"); // newer FAILS first
+      await catch2Newer;
+      ok(planDecks === null,
+         "planLoadDecks catch-path guard (other direction): the newer request's failure lands before checking the stale success (fixture premise)");
+      window.__deckListManualQueue[0].res(window.__deckListManualQueue[0].view); // older's STALE response is a SUCCESS, arriving after
+      await catch2Older;
+      window.__deckListManualQueue = null;
+      ok(planDecks === null,
+         "planLoadDecks catch-path guard (other direction): a stale, late-arriving SUCCESS does not clobber a newer failure");
+      await planLoadDecks(); // plain, non-overlapping resync — same mutation-safe cleanup discipline as the block above
       planRenderBuilder(missView);
       planRenderBuilder(sumView);
       ok(sumRowValue("Missing content") === "0" && !document.querySelector("#plan-b-insp .plan-sum-warn"),
