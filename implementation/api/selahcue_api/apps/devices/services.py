@@ -584,8 +584,10 @@ def activate_device_with_session(
 def authenticate_device_token(presented_token: str) -> DeviceToken:
     """Resolve + validate a presented device token — the reusable auth for every
     `device_token`-gated /v1 endpoint. Fingerprint lookup (deterministic, unique-indexed) then
-    constant-time `check_password`; any failure (unknown / hash-mismatch / non-ACTIVE token /
-    expired token / non-ACTIVE device) → UNAUTHENTICATED, with no oracle distinguishing them."""
+    a constant-time `hmac.compare_digest` re-confirm of that same fingerprint (not
+    `check_password` — see 86ak69u8u/DEC-013: the token is high-entropy, so PBKDF2 bought
+    nothing here); any failure (unknown / fingerprint-mismatch / non-ACTIVE token / expired
+    token / non-ACTIVE device) → UNAUTHENTICATED, with no oracle distinguishing them."""
     token_value = (presented_token or "").strip()
     if not token_value:
         raise SafeAPIError(ErrorCode.UNAUTHENTICATED)

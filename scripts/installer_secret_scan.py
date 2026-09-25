@@ -225,6 +225,12 @@ ARTEFACT_FLOOR_MINIMUM = 1_000_000
 REQUIRED_SIGNATURE_COUNT = 8
 REQUIRED_ENCODING_COUNT = 2
 REQUIRED_TARGET_COUNT = 4
+# The no_context_leak_around_a_hit self-test case fails if ANY substring of the canary this
+# many bytes long appears in the gate's output -- not just the whole canary -- so a regression
+# that echoes only a fragment of a real credential (truncated, chunked, partially redacted)
+# still gets caught. 8 bytes of a real API key is already a meaningful disclosure; smaller
+# windows risk coincidental collisions with ordinary output text.
+CANARY_LEAK_WINDOW = 8
 # Floor on the self-test's own case count (see self_test_case_floor).
 #
 # WHEN TO STOP PINNING. This number is itself a bare literal that nothing pins, and adding a
@@ -1179,12 +1185,29 @@ def self_test() -> int:
                     "so the canary-absence check below would be checking against a run that "
                     "exercised nothing"
                 )
-            if canary in combined:
+            # Windowed, not whole-string: an `if canary in combined` check only catches a
+            # regression that echoes the ENTIRE canary verbatim. A regression that echoes just
+            # the first N bytes after a hit (truncated, chunked, or partially redacted) leaks a
+            # real credential's prefix just as badly and would sail through a whole-string
+            # check (Sana, PR #96 security review, S-3: a 16-byte echo passed this case before
+            # this fix). Any CANARY_LEAK_WINDOW-byte substring of the canary appearing in the
+            # gate's output is the same class of leak.
+            leaked_window = next(
+                (
+                    canary[i : i + CANARY_LEAK_WINDOW]
+                    for i in range(len(canary) - CANARY_LEAK_WINDOW + 1)
+                    if canary[i : i + CANARY_LEAK_WINDOW] in combined
+                ),
+                None,
+            )
+            if leaked_window is not None:
                 failures.append(
-                    "no_context_leak_around_a_hit: the CANARY VALUE itself appeared in the "
-                    "gate's stdout/stderr/exception message -- a hit is leaking the bytes "
-                    "adjacent to the marker it matched, exactly what the module docstring "
-                    "promises never happens"
+                    "no_context_leak_around_a_hit: a "
+                    f"{CANARY_LEAK_WINDOW}-byte window of the CANARY VALUE ({leaked_window!r}) "
+                    "appeared in the gate's stdout/stderr/exception message -- a hit is leaking "
+                    "bytes adjacent to the marker it matched, exactly what the module docstring "
+                    "promises never happens, whether the leak is the whole canary or a fragment "
+                    "of it"
                 )
 
         quiet.close()
