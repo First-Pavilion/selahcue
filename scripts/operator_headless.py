@@ -13242,9 +13242,20 @@ right after a generate/save");
       ok(con042GoLiveW > (con042PrevW + con042NextW),
          "CON-042: GO LIVE (" + con042GoLiveW.toFixed(0) + "px) is now wider than Previous+Next COMBINED (" +
          con042PrevW.toFixed(0) + "px + " + con042NextW.toFixed(0) + "px) — the old 1:2:1 split made it only ~2x either neighbour, 144px narrower than the Figma spec");
-      ok(Math.abs(con042PrevW - con042NextW) < 4,
+      // A tight absolute px tolerance here was cross-OS flaky (CI review, 17tnw2axptf): Ubuntu's
+      // headless Chrome renders "Previous"/"Next" a few px narrower/wider than macOS's build of
+      // the same engine (149 vs 141 on Ubuntu CI, an 8px gap, vs 148/144 — 4px — on macOS), so a
+      // <4px absolute bound was measuring font-metric noise, not this control's actual intent.
+      // The intent is "Prev/Next didn't get asymmetrically distorted by the fix" — e.g. the fix
+      // accidentally stealing width from only one neighbour, which is a proportionally much
+      // bigger effect than a few px of cross-platform text-metric variance. A relative bound
+      // scales with the buttons' own size instead of guessing a fixed px figure that has to
+      // survive every OS's font renderer.
+      var con042Asymmetry = Math.abs(con042PrevW - con042NextW) / Math.max(con042PrevW, con042NextW);
+      ok(con042Asymmetry < 0.1,
          "CON-042 (control): Previous and Next still hug roughly equal content widths (" +
-         con042PrevW.toFixed(0) + "px vs " + con042NextW.toFixed(0) + "px) — only GO LIVE grew, the row didn't just uniformly resize");
+         con042PrevW.toFixed(0) + "px vs " + con042NextW.toFixed(0) + "px, " +
+         (con042Asymmetry * 100).toFixed(1) + "% apart) — only GO LIVE grew, the row didn't just uniformly resize");
 
       // --- Representative sample of the pure-CSS geometry/token fixes (padding, gap, size,
       // font-size, and colour-token substitutions) — not the full ~30, which are covered by
