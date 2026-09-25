@@ -243,7 +243,7 @@ REQUIRED_TARGET_COUNT = 4
 # generate cases, then one floor covers all of them, and the last unpinned number is a number
 # whose only effect is to be too low -- which every other case would then have to be deleted to
 # exploit. RAISE THIS when cases are added; it may only ever go up.
-SELF_TEST_CASE_FLOOR = 44
+SELF_TEST_CASE_FLOOR = 45
 
 # The ONLY cases permitted to self-skip. Not a count -- a set of names, so it cannot be widened
 # by lowering a number. `unreadable_file` skips wherever mode 000 is unenforced (Windows, root);
@@ -1132,6 +1132,60 @@ def self_test() -> int:
                 f"({before} -> {after}). The positive control must build its fixture from a "
                 "COPY; writing, appending or truncating in place destroys what we ship."
             )
+
+        # --- NO CONTEXT LEAK: the bytes AROUND a hit are never echoed ---------------------
+        # 86akcawe8 (Sana, PR #21 round 2, deferred): the module docstring above claims a hit
+        # reports WHAT and WHERE, never the bytes NEAR it -- audited by hand across nine print
+        # sites this round, never asserted as a property of the RUNNING gate. Tested
+        # BEHAVIOURALLY rather than by pinning those nine call sites, so it survives a later
+        # refactor of where/how reporting happens: build a fixture with `DEEPGRAM_API_KEY=`
+        # immediately followed by a high-entropy canary (the shape a real credential takes),
+        # run the real gate (not the `scan()` closure above, which discards stdout -- this
+        # case must inspect BOTH streams), and prove the canary itself never reaches stdout or
+        # stderr even though the scan correctly goes RED and names the marker it matched.
+        cases += 1
+        import contextlib
+        import io
+        import secrets
+
+        canary = secrets.token_urlsafe(32)
+        assert canary not in CLEAN.decode("latin-1"), (
+            "the canary collided with the clean filler bytes -- pick a fresh one, this case "
+            "proves nothing if the canary was already going to appear regardless of the hit"
+        )
+        leak_root = root / "leak"
+        _artefact(
+            leak_root / "selahcue-operator.exe",
+            f"DEEPGRAM_API_KEY={canary}".encode("utf-8"),
+        )
+        out_buf, err_buf = io.StringIO(), io.StringIO()
+        try:
+            with contextlib.redirect_stdout(out_buf), contextlib.redirect_stderr(err_buf):
+                run_scan(root, _targets("leak/selahcue-operator.exe"), SIGNATURES)
+            failures.append(
+                "no_context_leak_around_a_hit: expected the gate to FAIL on a canary-adjacent "
+                "DEEPGRAM_API_KEY hit, but it passed -- this case proves nothing about leakage "
+                "if the matcher never fired"
+            )
+        except ScanError as exc:
+            combined = out_buf.getvalue() + err_buf.getvalue() + str(exc)
+            # POSITIVE CONTROL, checked first: without it, "the canary never appeared" is
+            # indistinguishable from a run that printed nothing at all.
+            if "DEEPGRAM_API_KEY" not in combined:
+                failures.append(
+                    "no_context_leak_around_a_hit: the gate went red but never named "
+                    "`DEEPGRAM_API_KEY` in stdout, stderr, or its exception message -- either "
+                    "the wrong signature fired or reporting no longer names the marker matched, "
+                    "so the canary-absence check below would be checking against a run that "
+                    "exercised nothing"
+                )
+            if canary in combined:
+                failures.append(
+                    "no_context_leak_around_a_hit: the CANARY VALUE itself appeared in the "
+                    "gate's stdout/stderr/exception message -- a hit is leaking the bytes "
+                    "adjacent to the marker it matched, exactly what the module docstring "
+                    "promises never happens"
+                )
 
         quiet.close()
 

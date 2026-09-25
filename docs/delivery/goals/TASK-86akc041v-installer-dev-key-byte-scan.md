@@ -280,6 +280,13 @@ test logic — worth its own reviewed pass rather than folding it in.
 Tracked as a follow-up ticket linked from ClickUp task 86akc041v (see task comments) rather than
 left as an implied TODO in this document.
 
+**Closed:** implemented as ticket [86akcawe8](https://app.clickup.com/t/86akcawe8) —
+`no_context_leak_around_a_hit` in `installer_secret_scan.py`'s `self_test()`, exactly as
+proposed above (`SELF_TEST_CASE_FLOOR` 44 → 45, re-derived by running the suite rather than
+assumed). Mutation-verified two ways: injecting a surrounding-bytes echo into `run_scan`'s hit
+report turns the case RED on the canary-leak assertion; omitting the payload from the fixture
+turns it RED on the "expected the gate to fail" assertion. Both restored to green.
+
 ## Risks and rollback
 
 - Risks: the workflow is dispatch-only, so the gate cannot be proven on a real Windows
