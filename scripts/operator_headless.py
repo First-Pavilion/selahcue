@@ -1232,6 +1232,33 @@ EXPECTED_MIN_CHECKS = 1964
 # arithmetic (1964 + 38 = 2002) was confirmed to agree rather than assumed to. Confirmed by a
 # clean run against the real post-rebase tree: 2002 checks, 0 FAIL.
 EXPECTED_MIN_CHECKS = 2002
+#
+# 17tnw2axptf, four-reviewer round remediation (Sana + Vera, corroborated independently): the
+# CON-065 live-item-title prefix on #timer-sub had no length clamp, unlike the sibling .item
+# .title (app.css:3901) which already clamps plan-item titles the same way. A long imported
+# run-sheet title (Vera reproduced with a realistic 110-char one, not just a pathological string)
+# grew #timer-sub from ~17px to hundreds/thousands of px tall, pushing the "SET A CUSTOM TIME"
+# controls off the visible Service Timer panel. Fixed with the same white-space/overflow/
+# text-overflow clamp .item .title already uses. Added 3 checks, all real rendered-DOM
+# assertions rather than a computed-style diff on the CSS rule (per this file's own CON-042
+# precedent — a layout bug like this one is invisible to a diff on the declaration alone): (1)
+# #timer-sub stays single-line height with the long-title fixture; (2) scrollWidth > clientWidth
+# — a positive control proving the fixture is genuinely wider than its box, so (1) isn't a vacuous
+# pass because the string happened to already fit; (3) textContent still holds the FULL
+# untruncated string, proving the clamp is CSS-only paint-time clipping, not a JS/DOM truncation
+# that would silently lose data. Mutation-verified: reverting just the CSS fix (app.css only,
+# test script unchanged) reproduces two clean FAILs on checks (1) and (2) — height grows to 67.2px
+# and scrollWidth==clientWidth (320==320, the text wrapped instead of clipping, which is exactly
+# the bug) — with 2005 checks still running (no aborting exception); restoring reproduces 2005
+# checks, 0 FAIL. Also fixed in the same pass: a pre-existing test-harness ordering issue this
+# new check exposed (not a product bug) — an earlier scenario elsewhere in this file leaves the
+# right column on the "Detected Scriptures" rtab and/or the Timer|Stage seg-stage sub-tab, which
+# made #stab-timer (the ancestor of #timer-sub) `display: none`; the new checks now explicitly
+# click #rtab-timer and #seg-timer and wait for both before reading geometry, which the
+# pre-existing CON-065 checks above them never needed since they only read textContent (updates
+# regardless of visibility). Measured directly off real runs, not hand-summed: 2002 + 3 = 2005
+# checks, 0 FAIL.
+EXPECTED_MIN_CHECKS = 2005
 
 
 def find_chrome():
@@ -13103,6 +13130,51 @@ right after a generate/save");
       await wWait(function(){ return el("timer-sub").textContent.indexOf("Amazing Grace") === 0; });
       ok(el("timer-sub").textContent === "Amazing Grace · Counts down to 00:00",
          "CON-065: #timer-sub is prefixed with the live plan item's title + ' · ' — got \"" + el("timer-sub").textContent + "\"");
+
+      // --- CON-065 (review remediation, Sana/Vera): the live-item title is imported text, not
+      // authored by this UI, so it is unbounded length. Before this fix #timer-sub had no clamp
+      // (unlike the sibling .item .title, app.css:3901), so a long title grew this element from
+      // ~17px to hundreds/thousands of px tall, pushing the "SET A CUSTOM TIME" controls off the
+      // visible Service Timer panel. Vera reproduced this with a realistic 110-char imported
+      // run-sheet title, not just a pathological one — this fixture matches that length. Three
+      // real, rendered-DOM assertions, not a computed-style diff on the CSS rule alone: (1) the
+      // element stays single-line height, so the clamp is genuinely engaging, not just declared;
+      // (2) scrollWidth > clientWidth proves the text is actually LONGER than its box (a vacuous
+      // pass if the fixture string happened to already fit); (3) textContent still holds the
+      // FULL untruncated string — text-overflow:ellipsis is a paint-time clip, not a JS/DOM
+      // truncation, and a future refactor that started slicing the string in app.js would be a
+      // real, worse regression (losing data, not just clipping its display) this control also
+      // catches. ---
+      // An earlier scenario elsewhere in this file leaves the right column on the "Detected
+      // Scriptures" rtab and/or the "Stage" seg-timer/seg-stage sub-tab (the Timer|Stage toggle
+      // nested INSIDE rpanel-timer, #seg-timer/#seg-stage -> #stab-timer/#stab-stage), so
+      // #stab-timer (the ancestor of #timer-sub) can be `display: none` and every geometry read
+      // below would be a false 0. Switch back to Service Timer at both levels first — the
+      // pre-existing CON-065 checks above this didn't need to, since they only read textContent,
+      // which updates regardless of visibility.
+      el("rtab-timer").click();
+      el("seg-timer").click();
+      await wWait(function(){
+        return !el("rpanel-timer").hidden && getComputedStyle(el("stab-timer")).display !== "none";
+      });
+      var con065LongTitle = "Sunday Morning Worship Service — Combined Communion & Baptism " +
+        "Celebration with Guest Speaker Pastor Johnson (Imported Run Sheet)";
+      V.items = [{id:9003, kind:"song", title:con065LongTitle, is_live:true, is_staged:false}];
+      await wWait(function(){ return el("timer-sub").textContent.indexOf(con065LongTitle) === 0; });
+      var con065SubEl = el("timer-sub");
+      var con065SubH = con065SubEl.getBoundingClientRect().height;
+      ok(con065SubH > 0 && con065SubH < 24,
+         "CON-065: a long (110-char) imported plan-item title keeps #timer-sub single-line (height=" +
+         con065SubH.toFixed(1) + "px) — before this fix it grew to hundreds/thousands of px and pushed " +
+         "the custom-time controls off the panel");
+      ok(con065SubEl.scrollWidth > con065SubEl.clientWidth,
+         "CON-065 (premise): the long-title fixture is actually wider than #timer-sub's box (scrollW=" +
+         con065SubEl.scrollWidth + " clientW=" + con065SubEl.clientWidth + ") — proves the clamp is " +
+         "genuinely engaged here, not a vacuous pass because the string happened to fit");
+      ok(con065SubEl.textContent.indexOf(con065LongTitle) === 0,
+         "CON-065 (control): the ellipsis clamp is CSS-only — #timer-sub's textContent still holds the " +
+         "FULL untruncated title, not a JS-sliced copy");
+
       V.items = [{id:9002, kind:"song", title:"Not Live", is_live:false, is_staged:true}];
       await wWait(function(){ return el("timer-sub").textContent === "Counts down to 00:00"; });
       ok(el("timer-sub").textContent === "Counts down to 00:00",

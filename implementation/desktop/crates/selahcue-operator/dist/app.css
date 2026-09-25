@@ -4763,10 +4763,19 @@
         color: var(--sc-live);
       }
 
+      /* CON-065 (review remediation, Sana/Vera): the live-item-title prefix this element now
+         carries is unbounded text (an imported run-sheet title, not authored by this UI) — clamp
+         it the same way the sibling .item .title (app.css:3901) already clamps plan-item titles,
+         or a long title grows this element to hundreds/thousands of px tall and pushes the
+         "SET A CUSTOM TIME" controls off the visible Service Timer panel. Vera reproduced this
+         with a realistic 110-char imported title, not just a pathological one. */
       .timer-sub {
         margin-top: 4px;
         font-size: 12px;
         color: var(--sc-text-muted);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
       }
 
       .timer-custom-label {
@@ -4829,6 +4838,11 @@
         border-radius: 4px;
       }
 
+      /* CON-066/125 (copy only, "HRS" -> "HOURS" in index.html): the finding's other half —
+         font-weight 400 here vs the frame's 700 Bold, and var(--sc-text-muted)'s 3.96:1 at this
+         9px size, an A11Y-DEFECT where BOTH the frame and the code fail NFR-020 — is deliberately
+         left open. Bumping weight alone would not fix the contrast, and --sc-text-muted itself is
+         the open, repo-wide sweep (79 small-type call sites), not something to patch per-site. */
       .hms-cap {
         font-size: 9px;
         color: var(--sc-text-muted);
