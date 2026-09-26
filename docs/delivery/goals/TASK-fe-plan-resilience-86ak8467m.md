@@ -9,7 +9,7 @@
 - Title: Service Plan resilience states — recovery/restore banner, item-delete Undo (backend-kind
   conditional), and the "Plan updated · Review changes" reload/keep banner
 - Role: frontend-engineer
-- Status: DRAFT
+- Status: VERIFIED_COMPLETE
 - Execution engine: goal
 - ClickUp task: https://app.clickup.com/t/86ak8467m
 - Created: 2026-09-26
@@ -168,10 +168,10 @@ conditional, frame 15, `612:584`) — plus AC-2's "Plan updated · Review change
 | C-005 | yes | Undo restores the deleted item with its original id and content link (not a re-added new item) | `operator_headless.py` (asserts the wiring: Undo calls `invoke("plan_undo")`, the SAME whole-plan-undo path already proven server-side) + existing Rust proof `test_service_plan_resilience.rs::undo_plan_restores_a_removed_item_with_its_original_id_and_content_link` | PASS | PL AC-59 PASS (JS wiring); Rust test PASS (unchanged, pre-existing, re-run to confirm) — id/content-link fidelity is a controller-level guarantee this ticket reuses, not re-derives, in JS | PASS |
 | C-006 | yes | "Plan updated · Review changes" banner offers Reload (re-fetches + re-renders) and Keep (dismisses only); neither sends a live-control command (FR-006) | `operator_headless.py` (asserts `invoke("view")` call count for Reload; asserts zero live-control calls — `isLiveCtrl` filter — across the banner's display and Keep) | PASS | PL AC-53..55 PASS | PASS |
 | C-007 | yes | All new controls are keyboard-reachable, dialogs (if any) focus-trapped, alerts use role=alert, no state signalled by colour alone | `operator_headless.py` a11y checks (native button elements, role=alert/role=status regions, text-carries-state assertions) | PASS | new controls are native buttons (default tab order); restore/undo failure paths verified role=alert; Recovery mode / banner copy asserted as TEXT, never colour-only | PASS |
-| C-008 | yes | `make ci` green (fmt, clippy, cargo tests incl. `--features server`, headless webview gate) | `make ci` | exit 0, all green | full run against commit `bb80f7d`: `MAKE_CI_EXIT=0`, "local Rust/Flutter gate: ALL GREEN"; `test_operator_remote.rs` 17/17, `test_service_plan_resilience.rs` 14/14, `operator_headless.py` 2056/2056 — all within this one run | PASS |
-| C-009 | yes | No unintended change to `selahcue-lan` wire fixtures (cross-language pin) | `git diff --stat` shows no changes to `selahcue-lan/src/protocol.rs` or `implementation/mobile/selahcue_controller/test/models/protocol_test.dart` | no diff to either file | confirmed via `git diff --stat` — neither file appears in this branch's diff | PASS |
-| C-010 | yes | Four-reviewer gate (Cody, Vera, Sana, Quinn) run and blocking findings remediated | reviewer reports, consolidated Artifact | no blocking findings outstanding | Artifact URL(s) on ClickUp | PENDING |
-| C-011 | yes | Real GitHub Actions CI green on the opened PR (3-OS matrix), not just local `make ci` | `gh pr checks` | all required checks pass | `gh pr checks` output | PENDING |
+| C-008 | yes | `make ci` green (fmt, clippy, cargo tests incl. `--features server`, headless webview gate) | `make ci` | exit 0, all green | two full runs: pre-remediation at `bb80f7d` (`MAKE_CI_EXIT=0`, 2056/2056) and post-remediation+rebase at `b073e55` (`MAKE_CI_EXIT=0`, "local Rust/Flutter gate: ALL GREEN", headless suite 2065/2065 within the same run) | PASS |
+| C-009 | yes | No unintended change to `selahcue-lan` wire fixtures (cross-language pin) | `git diff --stat` shows no changes to `selahcue-lan/src/protocol.rs` or `implementation/mobile/selahcue_controller/test/models/protocol_test.dart` | no diff to either file | confirmed via `git diff --stat` — neither file appears in this branch's diff (re-confirmed post-rebase) | PASS |
+| C-010 | yes | Four-reviewer gate (Cody, Vera, Sana, Quinn) run and blocking findings remediated | reviewer reports, consolidated Artifact | no blocking findings outstanding | 0 blocking from all four (Cody: 2 Low; Vera: 2 Medium + 3 Low; Sana: 1 Low + 2 info; Quinn: PASS all ACs + 1 Low). Every Medium/Low remediated and mutation-verified except 2 explicitly deferred by reviewer offer (Sana S-1, Vera INFO-1) + 1 pre-existing info (Sana I-1) — all three filed as linked ClickUp follow-ups (17tnw2ayzvg, 17tnw2ayzvh, 17tnw2ayzvk). Consolidated report: https://claude.ai/artifact/Hv1pYsikPFse4GK86Q54mr — posted on PR #108 and ClickUp 86ak8467m | PASS |
+| C-011 | yes | Real GitHub Actions CI green on the opened PR (3-OS matrix), not just local `make ci` | `gh pr checks` | all required checks pass | `gh pr checks 108` exit 0, all pass: rust ×3 OS, operator shell ×3 OS, operator shell release ×3 OS, launch-smoke ×2 OS, dependency audit, supply chain, workflows lint; `api`/`marketing`/`flutter` correctly skipped (path-filter). Run https://github.com/First-Pavilion/selahcue/actions/runs/36266156700, rebased onto `main` post-PR#104 (the pre-existing RCD-008 flake reviewers found is now fixed) | PASS |
 
 Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABLE`.
 
@@ -307,6 +307,25 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
   baseline with a fresh measured run, re-run `make ci`, confirm real `gh pr checks` green, then
   move to VERIFIED_COMPLETE)
 
+### Iteration 5 — rebase, final verification, close-out
+
+- Target criterion: C-008/C-009/C-011 (post-rebase re-verification).
+- Change or investigation: rebased onto `origin/main` (now includes PR #104's RCD-008 fix, merged
+  2026-09-26T19:12:02Z). Two `scripts/operator_headless.py` `EXPECTED_MIN_CHECKS` conflicts
+  (#104's own 2036→2037 bump, and this branch's two bumps) resolved by consolidating into one
+  sequential comment chain (2037 baseline → this PR's total), with the actual count filled in
+  ONLY after a fresh measured run post-rebase (never hand-derived, per the file's own rule).
+  Force-pushed (this is the ticket's own branch, rebase was necessary and expected).
+- Verifier executed: `cargo fmt --check` (clean), `cargo clippy --all-targets -D warnings` both
+  crates (clean), `python3 scripts/operator_headless.py` (2065/2065, 0 FAIL — the true post-rebase
+  count), full `make ci` (`MAKE_CI_EXIT=0`, ALL GREEN, 2065/2065 within the run), `gh pr checks 108`
+  (exit 0 — every required job `pass`, `api`/`marketing`/`flutter` correctly `skipping`).
+- Result: PASS on all remaining criteria.
+- New evidence: consolidated four-reviewer report published as an Artifact
+  (https://claude.ai/artifact/Hv1pYsikPFse4GK86Q54mr), posted on PR #108 and (below) ClickUp
+  86ak8467m; PR marked Ready for Review (`gh pr ready 108`); 3 follow-up tickets filed and linked.
+- Decision: complete — VERIFIED_COMPLETE.
+
 ## Risks and rollback
 
 - Risk: reviewers judge the `main.rs`/`operator.rs` additions out of frontend-role bounds →
@@ -334,8 +353,12 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
 ## Final evaluation
 
 - Validator command: `python3 ~/.claude/skills/goal/scripts/validate_goal_contract.py docs/delivery/goals/TASK-fe-plan-resilience-86ak8467m.md --completion`
-- Validator result: (recorded at completion)
-- Independent verification result: (recorded at completion)
-- Terminal state: (recorded at completion)
-- Remaining failed or blocked criteria: (recorded at completion)
-- ClickUp final evidence comment: (recorded at completion)
+- Validator result: `OK (completion): docs/delivery/goals/TASK-fe-plan-resilience-86ak8467m.md satisfies the Goal Contract schema and all mandatory criteria PASS`
+- Independent verification result: four-reviewer gate complete, 0 blocking findings (Cody, Vera,
+  Sana, Quinn) — see https://claude.ai/artifact/Hv1pYsikPFse4GK86Q54mr for the full consolidated
+  report. Real GitHub Actions CI green on the 3-OS matrix post-rebase (run 36266156700).
+- Terminal state: VERIFIED_COMPLETE
+- Remaining failed or blocked criteria: none. Three non-blocking follow-ups filed and linked
+  (ClickUp 17tnw2ayzvg, 17tnw2ayzvh, 17tnw2ayzvk) for findings explicitly deferred by reviewer
+  offer or pre-existing and out of scope.
+- ClickUp final evidence comment: posted on 86ak8467m alongside this contract's closure.
