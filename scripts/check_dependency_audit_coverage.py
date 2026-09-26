@@ -20,7 +20,8 @@ reads the stale list keeps printing green:
      lockfiles; `selahcue-stt/Cargo.lock` kept the vulnerable `rustls 0.23.43` (RUSTSEC-2026-0285)
      on `main`, undetected, until the PR #41 hotfix.
 
-DERIVATION -- TWO ROUNDS OF THE SAME LESSON (security review, Sana, PR #105, both BLOCKING).
+DERIVATION -- THREE ROUNDS OF THE SAME LESSON (security review, Sana, PR #105, all three
+BLOCKING).
 
 Round 1: the first cut of this script read the required set off
 `implementation/desktop/Cargo.toml`'s own `exclude = [...]` list, reasoning it was "a genuine,
@@ -37,19 +38,35 @@ proven again with a scratch workspace: a nested crate with a PLAIN `[package]` m
 `[workspace]` table of its own is STILL its own independent Cargo root with its own `Cargo.lock`
 the moment nothing in the parent's `members` list references it -- `cargo generate-lockfile`
 inside it succeeds and writes a `Cargo.lock` the parent's `cargo audit` never sees. `[workspace]`
-is a SUFFICIENT signal that a directory is a deliberate root (and this repo's own two extra roots
-both use it, by convention -- see their own comments), but it is not a NECESSARY one, and a
+is a SUFFICIENT signal that a directory is a deliberate root, but not a NECESSARY one, and a
 regex matching only the bare `^[workspace]` line also missed a `[workspace.package]`-only table
 and a trailing inline comment on the same line.
 
-What actually decides whether `cargo audit` needs a dedicated step for a directory is simpler than
-either of the above: **does `Cargo.lock` exist there.** That is the literal artefact `cargo audit`
-reads, not an inference about which Cargo.toml table a human remembered to write. This script's
-primary source of truth is now a walk for every `Cargo.lock` in the repo (excluding `target/` and
-`.git/`, which can contain vendored/generated or historical copies that are not real project
-roots). Applied to the real repo this yields exactly the three real roots (all git-tracked, none
-`.gitignore`d): `implementation/desktop`, `implementation/desktop/crates/selahcue-operator`,
-`implementation/desktop/crates/selahcue-stt`.
+Round 3: the fix for round 2 switched to walking the filesystem (`Path.rglob`) for every
+`Cargo.lock` -- the literal artefact `cargo audit` reads, which sidesteps every Cargo.toml-content
+inference problem above. Still wrong, proven live against the actual shared development checkout
+this repo's own `CLAUDE.md` documents ("one worktree on `main`, several agent sessions at once"):
+a raw filesystem walk cannot tell a real project root from a sibling `git worktree` nested under
+the gitignored `.claude/worktrees/` directory. Run from that shared checkout rather than a clean
+worktree, the walk found **18 lockfiles, not 3** -- 15 of them belonging to five other agents'
+worktrees -- and `check()` would report all fifteen as missing an audit step: a false, unrelated
+`make ci` failure for the next person who runs it there, not a security gap, but exactly the kind
+of self-inflicted false-red this repo's own CI-alarm design goes out of its way to avoid. It was
+also ~100x slower (9.9s vs 0.1s) for the same reason: `rglob` descends into every `target/`
+directory in full before `_is_ignored` filters the result, rather than pruning the walk.
+
+What actually decides whether `cargo audit` needs a dedicated step for a directory is not "is this
+file present on disk" in the raw filesystem sense -- it is "does this repository consider this
+file part of the project", which is exactly what `git` already tracks and a raw walk cannot
+distinguish from a coincidentally-nested sibling checkout, a `target/` build artefact, or anything
+else `.gitignore` covers. The primary source of truth is now `git ls-files --cached --others
+--exclude-standard`, scoped with a pathspec to `*Cargo.lock` / `*Cargo.toml`: tracked files plus
+untracked-but-not-ignored ones (so a brand new, not-yet-committed lockfile still counts), run from
+`REPO_ROOT` so it reports exactly what THIS checkout/worktree contains -- never a sibling one --
+and exactly what a clean `actions/checkout` in CI would produce, with no ignore list of our own to
+maintain (`.gitignore` already excludes `target/` at the repo root; git itself never lists
+anything under `.git/`). Applied to the real repo this yields exactly the three real roots, in
+~0.08s, whether run from this worktree or (verified separately) the shared main checkout.
 
 The `[workspace]`/`[workspace.package]` table scan is kept as a secondary, UNIONED-IN source, not
 because it is reliable on its own, but because it catches a crate one step EARLIER than the
@@ -58,31 +75,30 @@ had `cargo` run against it (no `Cargo.lock` on disk yet) would otherwise stay in
 check until someone happens to build it once. The union costs nothing when the two agree (today,
 they agree exactly) and only ever widens the required set, never narrows it.
 
-The walk root is the repository root, not `implementation/desktop/` -- the earlier version only
+The scope is the whole repository, not `implementation/desktop/` -- an earlier version only
 walked the desktop tree while its own docstring claimed "every Cargo root in this repo"; nothing
 else in the repo is Rust today, but a future Rust helper anywhere else (`implementation/api`, a
 top-level tool) would otherwise be silently out of scope for this check by construction.
 
 Self-test: `check_dependency_audit_coverage.py --self-test` exercises both discovery functions
-against real temporary-directory fixtures (including the exact "own Cargo.lock, no `[workspace]`
-table at all" case Sana's second finding hinged on, and the `[workspace.package]`-only / trailing-
-comment spellings her review also caught) and the ci.yml parsing/comparison logic against small
-text fixtures, so all of it is trusted before this is pointed at the repo.
+against real, `git init`-ed temporary-directory fixtures (including the exact "own Cargo.lock, no
+`[workspace]` table at all" case round 2's finding hinged on, the `[workspace.package]`-only /
+trailing-comment spellings that review also caught, AND a fixture directory that is present on
+disk but `.gitignore`d -- the exact shape of round 3's finding) and the ci.yml parsing/comparison
+logic against small text fixtures, so all of it is trusted before this is pointed at the repo.
 """
 
 from __future__ import annotations
 
 import argparse
 import re
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 CI_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "ci.yml"
-
-# Directory name components that are never a real project root: build output and VCS internals.
-_IGNORED_DIR_PARTS = {"target", ".git"}
 
 # Matches a top-level (2-space-indented) job key, e.g. "  audit:" or "  supply-chain:". Used to
 # find where the `audit` job's body ends: the next line at this indent after `  audit:` itself.
@@ -117,28 +133,35 @@ class CoverageError(Exception):
     """Raised when the two sides can't even be compared (parse failure, not a drift finding)."""
 
 
-def _is_ignored(rel_path: Path) -> bool:
-    return any(part in _IGNORED_DIR_PARTS for part in rel_path.parts)
+def _git_ls_files(repo_root: Path, pathspec: str) -> list[str]:
+    """Run `git ls-files --cached --others --exclude-standard -- <pathspec>` from `repo_root`
+    and return the matched paths, posix-style, relative to `repo_root`. This is what makes
+    discovery match "what this checkout/worktree actually contains" instead of "what the raw
+    filesystem happens to contain" -- see round 3 in the module docstring's DERIVATION for the
+    incident (a sibling agent worktree's lockfiles, nested under the gitignored
+    `.claude/worktrees/`, leaking into a raw `Path.rglob` walk of the shared main checkout) that
+    made this the requirement rather than a nicety. `--cached` covers tracked files, `--others
+    --exclude-standard` adds untracked-but-not-`.gitignore`d ones (so a brand new, not-yet-
+    committed crate still counts) without adding back anything `.gitignore` excludes."""
+    result = subprocess.run(
+        ["git", "ls-files", "--cached", "--others", "--exclude-standard", "--", pathspec],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return [line for line in result.stdout.splitlines() if line]
 
 
 def discover_lockfile_roots(repo_root: Path) -> set[str]:
     """Return every directory (as a posix path relative to `repo_root`, "." for the root
     itself) containing a `Cargo.lock` -- the literal artefact `cargo audit` reads. This is the
     PRIMARY source of truth: see DERIVATION in the module docstring for why inferring
-    "independent root" from Cargo.toml table markers (this script's own previous approach,
-    twice) is not sufficient on its own."""
-    roots: set[str] = set()
-    for lockfile in repo_root.rglob("Cargo.lock"):
-        if not lockfile.is_file():
-            # A directory literally named "Cargo.lock" would otherwise reach the caller as a
-            # root with no real lockfile behind it -- vanishingly unlikely, but cheap to guard
-            # (code review, Cody, PR #105).
-            continue
-        rel_dir = lockfile.parent.relative_to(repo_root)
-        if _is_ignored(rel_dir):
-            continue
-        roots.add(rel_dir.as_posix())
-    return roots
+    "independent root" from Cargo.toml table markers, and from a raw filesystem walk (this
+    script's own previous approaches, in that order), are not sufficient on their own."""
+    return {
+        Path(rel_path).parent.as_posix() for rel_path in _git_ls_files(repo_root, "*Cargo.lock")
+    }
 
 
 def discover_workspace_table_roots(repo_root: Path) -> set[str]:
@@ -147,19 +170,18 @@ def discover_workspace_table_roots(repo_root: Path) -> set[str]:
     `[workspace.package]`, tolerant of spacing and a trailing comment). SECONDARY source, unioned
     with `discover_lockfile_roots`: it catches a crate one step earlier -- before `cargo` has ever
     been run against it and produced a `Cargo.lock` -- not instead of the lockfile scan, which
-    Sana's review proved is the only source that can't itself be true-but-incomplete."""
+    Sana's review proved (across two separate findings) is the only source that can't itself be
+    true-but-incomplete."""
     roots: set[str] = set()
-    for cargo_toml in repo_root.rglob("Cargo.toml"):
-        if not cargo_toml.is_file():
+    for rel_path in _git_ls_files(repo_root, "*Cargo.toml"):
+        full_path = repo_root / rel_path
+        if not full_path.is_file():
             # A directory literally named "Cargo.toml" would otherwise crash `.read_text()`
             # with a raw IsADirectoryError instead of a clean message (code review, Cody,
             # PR #105 -- found while auditing this exact read for the equivalent gap).
             continue
-        rel_dir = cargo_toml.parent.relative_to(repo_root)
-        if _is_ignored(rel_dir):
-            continue
-        if _WORKSPACE_TABLE_RE.search(cargo_toml.read_text()):
-            roots.add(rel_dir.as_posix())
+        if _WORKSPACE_TABLE_RE.search(full_path.read_text()):
+            roots.add(Path(rel_path).parent.as_posix())
     return roots
 
 
@@ -238,9 +260,18 @@ def _write(root: Path, rel_path: str, filename: str, text: str) -> None:
 
 
 def self_test() -> int:
-    # --- discovery functions: real filesystem fixtures, no dependency on the real repo ---
+    # --- discovery functions: real, `git init`-ed temporary-directory fixtures, no dependency
+    # on the real repo. A plain (non-git) directory can no longer be used here: the whole point
+    # of round 3's fix is that discovery goes through `git ls-files`, so the fixture has to be a
+    # real repo for that command to mean anything.
     with tempfile.TemporaryDirectory() as tmp:
         fixture_root = Path(tmp)
+        subprocess.run(["git", "init", "-q"], cwd=fixture_root, check=True)
+
+        # Round 3's exact incident, reproduced: a directory that's present on disk but
+        # `.gitignore`d (this repo's own `.claude/` covers agent worktrees the same way) must
+        # never contribute a root, however many real-looking Cargo.lock files sit under it.
+        fixture_root.joinpath(".gitignore").write_text("target/\nignored-sibling-checkout/\n")
 
         # Root workspace: has both its own Cargo.lock and a [workspace] table.
         _write(fixture_root, ".", "Cargo.toml", "[workspace]\nmembers = [\"crates/plain-member\"]\n")
@@ -249,7 +280,7 @@ def self_test() -> int:
         # A regular member: no Cargo.lock of its own, no workspace table -- not a root.
         _write(fixture_root, "crates/plain-member", "Cargo.toml", '[package]\nname = "plain"\n')
 
-        # Sana's second BLOCKING finding, reproduced directly: an independent root with its own
+        # Round 2's BLOCKING finding, reproduced directly: an independent root with its own
         # Cargo.lock but a PLAIN [package] manifest -- no [workspace] table anywhere. The
         # lockfile-based scan must still find it; the table-based scan (on its own) would not.
         _write(
@@ -269,7 +300,7 @@ def self_test() -> int:
             "[workspace]\n\n[package]\nname = \"not-yet-built\"\n",
         )
 
-        # Spelling variants Sana's review flagged as missed by the previous `^\[workspace\]\s*$`
+        # Spelling variants Sana's review flagged as missed by an earlier `^\[workspace\]\s*$`
         # regex: inner spacing + a trailing comment, and a `[workspace.package]`-only table.
         _write(
             fixture_root,
@@ -284,16 +315,36 @@ def self_test() -> int:
             '[workspace.package]\nversion = "0.1.0"\n\n[package]\nname = "wpo"\n',
         )
 
-        # Must never count: a build-output directory and a VCS-internal one.
+        # Must never count: a build-output directory (excluded via .gitignore, same as the real
+        # repo's own "target/" entry) -- round 3's finding, minus the sibling-worktree case below.
         _write(fixture_root, "target/debug/build/some-dep", "Cargo.lock", "# not a real root\n")
-        _write(fixture_root, ".git/modules/foo", "Cargo.lock", "# not a real root\n")
 
-        # A directory literally named "Cargo.toml"/"Cargo.lock" must not crash `.read_text()`
-        # with a raw IsADirectoryError (Cody, PR #105 re-review: found the missing `is_file()`
-        # guard while auditing the previous version's fixture, which had a typo that meant it
-        # never actually exercised this path).
-        fixture_root.joinpath("crates/weird-dir-name/Cargo.toml").mkdir(parents=True)
-        fixture_root.joinpath("crates/weird-dir-name/Cargo.lock").mkdir(parents=True)
+        # Round 3's BLOCKING finding, reproduced directly: a nested directory that looks exactly
+        # like a real, independent Cargo root (its own Cargo.toml declaring [workspace], its own
+        # Cargo.lock) but sits inside a path `.gitignore` excludes -- exactly the shape of a
+        # sibling `git worktree` nested under this repo's own gitignored `.claude/worktrees/`.
+        # Discovery must not see it at all, however deliberately root-shaped it looks on disk.
+        _write(
+            fixture_root,
+            "ignored-sibling-checkout/crates/looks-like-a-real-root",
+            "Cargo.toml",
+            "[workspace]\n\n[package]\nname = \"decoy\"\n",
+        )
+        _write(
+            fixture_root, "ignored-sibling-checkout/crates/looks-like-a-real-root", "Cargo.lock", "# decoy\n"
+        )
+
+        # A symlink named "Cargo.toml" that resolves to a directory: `git ls-files` legitimately
+        # lists it (it's a tracked/trackable working-tree entry, unlike a bare empty directory,
+        # which git can never list at all), but it is not a real manifest. Must not crash
+        # `.read_text()` with a raw IsADirectoryError (Cody, PR #105 re-review: found the missing
+        # `is_file()` guard; this fixture is the one shape that's actually reachable once
+        # discovery goes through git rather than a raw filesystem walk).
+        fixture_root.joinpath("crates/via-symlink").mkdir(parents=True)
+        fixture_root.joinpath("crates/symlink-target-dir").mkdir(parents=True)
+        (fixture_root / "crates/via-symlink/Cargo.toml").symlink_to(
+            fixture_root / "crates/symlink-target-dir"
+        )
 
         lockfile_roots = discover_lockfile_roots(fixture_root)
         assert lockfile_roots == {".", "crates/independent-no-workspace-table"}, lockfile_roots
