@@ -124,6 +124,49 @@ def should_allow(store, key: str, limit: int, window_seconds: int) -> bool:
     return evaluate_budget(store, key, limit, window_seconds) is not BudgetOutcome.DENIED
 
 
+# IPv6 bucket size for throttle-identity purposes (86akcn8ww). A single attacker on a
+# standard residential IPv6 allocation controls a whole /64 — roughly 2^64 addresses — so
+# returning the full address as the cache key gives them roughly 2^64 distinct throttle
+# identities, defeating every per-IP budget in the API (device-auth, resend-verification,
+# both password-reset paths). Truncating to the /64 network prefix collapses that entire
+# allocation onto one bucket, which is the same boundary a standard residential ISP hands out
+# as a single customer's address space (RFC 6177's recommended minimum allocation). /56 was
+# the other option the ticket named; /64 is chosen because it is the narrower, more
+# conservative bucket — it groups only what a single customer plausibly controls, rather than
+# the 256 /64s (a /56) that can span multiple distinct households or a small business's whole
+# site. Hashing the address was explicitly rejected: a hash preserves cardinality 1:1 and
+# fixes nothing, whereas truncation is what actually collapses the attacker's cheap address
+# space onto a fixed number of buckets.
+#
+# COLLATERAL, stated rather than discovered later: /64 bucketing means every device behind one
+# residential allocation shares a single budget. For an ordinary household that is correct —
+# it is one "customer" for throttling purposes. For a large IPv6-native NAT (e.g. a campus or
+# carrier-grade NAT that hands out addresses within a single /64 to many unrelated real users)
+# it is a shared-bucket denial risk of the same shape as this module's existing
+# SELAHCUE_TRUSTED_PROXY_COUNT misconfiguration behaviour: many legitimate callers can exhaust
+# one shared budget because of how the network above them is structured, not because of
+# anything they did. That trade is accepted here because the alternative — no bucketing at
+# all — makes the per-IP budget meaningless against any IPv6-reachable attacker.
+#
+# IPv4 is completely unaffected: a /32 IS the whole address, so "truncate to /32" is a no-op
+# and the existing full-address behaviour is preserved exactly.
+_IPV6_THROTTLE_BUCKET_PREFIX_BITS = 64
+
+
+def _bucket_for_throttling(address: ipaddress.IPv4Address | ipaddress.IPv6Address) -> str:
+    """Collapse `address` onto its throttle-identity bucket.
+
+    IPv4 passes through unchanged (its /32 network address is the address itself). IPv6 is
+    truncated to its /64 network prefix — see `_IPV6_THROTTLE_BUCKET_PREFIX_BITS` above for
+    why 64 and not the full address or a hash.
+    """
+    if address.version == 4:
+        return str(address)
+    network = ipaddress.ip_network(f"{address}/{_IPV6_THROTTLE_BUCKET_PREFIX_BITS}", strict=False)
+    return str(network.network_address)
+
+
+
 def client_ip(request) -> str:
     """The caller's IP, trusting `X-Forwarded-For` ONLY behind a known proxy count.
 
@@ -143,6 +186,12 @@ def client_ip(request) -> str:
     Note: an entry carrying a port (`1.2.3.4:5678`) does not parse and falls back. That is not
     the `X-Forwarded-For` format (ports belong to RFC 7239 `Forwarded`), and falling back is
     the safe direction.
+
+    The returned value is a throttle-identity BUCKET, not necessarily the literal address:
+    IPv4 is returned unchanged, IPv6 is truncated to its /64 network prefix (see
+    `_bucket_for_throttling`). Every caller of this function gets that bucketing for free,
+    which is the point of fixing it here rather than in each of the /v1, resend-verification
+    and password-reset callers separately.
     """
     hops = int(getattr(settings, "SELAHCUE_TRUSTED_PROXY_COUNT", 0))
     if hops > 0:
@@ -151,8 +200,20 @@ def client_ip(request) -> str:
         if len(parts) >= hops:
             try:
                 # str() of the parsed value normalises IPv6 spelling, so `2001:DB8::1` and
-                # `2001:db8:0:0:0:0:0:1` cannot buy two separate budgets.
-                return str(ipaddress.ip_address(parts[-hops]))
+                # `2001:db8:0:0:0:0:0:1` cannot buy two separate budgets — and bucketing
+                # collapses the low 64 bits too, so they cannot buy separate budgets that way
+                # either.
+                return _bucket_for_throttling(ipaddress.ip_address(parts[-hops]))
             except ValueError:
                 pass
-    return request.META.get("REMOTE_ADDR", "") or "unknown"
+    remote_addr = request.META.get("REMOTE_ADDR", "")
+    if not remote_addr:
+        return "unknown"
+    try:
+        return _bucket_for_throttling(ipaddress.ip_address(remote_addr))
+    except ValueError:
+        # REMOTE_ADDR is set by the WSGI/ASGI server from the socket peer, never by the
+        # caller, so this should be unreachable in practice. Falling back to the raw value
+        # (rather than "unknown") preserves the pre-existing behaviour for whatever wrote it
+        # if it is ever something unparseable, e.g. in an unusual test harness.
+        return remote_addr
