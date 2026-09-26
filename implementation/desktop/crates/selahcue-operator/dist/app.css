@@ -7335,11 +7335,19 @@
 .plan-notice {
   margin: 0 0 4px; padding: 9px 12px; border-radius: 9px; font-size: 12.5px;
   border: 1px solid var(--sc-border);
+  display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;
 }
 /* 7.08:1 — the confirmation an operator reads once and acts on, so AA-normal, not AA-large. */
 .plan-notice-status { background: var(--sc-preview-soft); border-color: var(--sc-preview-border); color: var(--sc-preview); }
 /* 5.31:1 — carries the host's own refusal text, which must be readable to be fixable. */
 .plan-notice-alert { background: var(--sc-live-soft); border-color: var(--sc-live-border); color: var(--sc-live); }
+/* Optional inline action (frame 612:584 Undo). Mirrors .pm-toast-action's shape at a smaller size
+   to fit this strip. */
+.plan-notice-action {
+  border: 1px solid currentColor; border-radius: 7px; background: transparent; color: inherit;
+  padding: 3px 10px; font: inherit; font-weight: 700; cursor: pointer; flex: 0 0 auto;
+}
+.plan-notice-action:hover { background: var(--sc-accent-soft); }
 
 /* "View only" badge (frame 612:342). Text, never colour alone (WCAG 1.4.1). */
 .plan-viewonly-slot:empty { display: none; }
@@ -7351,6 +7359,24 @@
 }
 .plan-viewonly-why { color: var(--sc-text-secondary); font-size: 12px; }
 
+/* Saved/recovery indicator (frame 612:124). Absent in every state except the failed-open/recovery
+   one — see index.html's comment. Text carries the state ("Recovery mode"), never colour alone
+   (WCAG 1.4.1); the amber tint is the SAME token as .plan-viewonly / .plan-pub-badge above. */
+.plan-saved-indicator.is-recovery {
+  display: inline-flex; align-items: center; margin-top: 8px; padding: 2px 9px; border-radius: 999px;
+  font-size: 11px; font-weight: 700; letter-spacing: 0.6px; text-transform: uppercase;
+  background: var(--sc-warn-soft); border: 1px solid var(--sc-warn-border); color: var(--sc-warn);
+}
+
+/* Restore-last-autosave banner (frame 612:124). Sits above the skeleton-replaced run-sheet list,
+   inside #plan-b-list, so it shares the list's own aria-live region rather than needing its own. */
+.plan-restore-banner {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;
+  margin: 0 0 10px; padding: 10px 12px; border-radius: 9px; font-size: 12.5px;
+  background: var(--sc-warn-soft); border: 1px solid var(--sc-warn-border); color: var(--sc-warn);
+}
+.plan-restore-banner-msg { flex: 1 1 auto; min-width: 0; }
+
 /* Publication state + change badge (frames 608:875 / 612:1020), inside the Plan Summary. */
 .plan-pub { margin: 12px 0 2px; display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
 .plan-pub-line { margin: 0; font-size: 12px; color: var(--sc-text-secondary); }
@@ -7360,6 +7386,10 @@
   background: var(--sc-warn-soft); border: 1px solid var(--sc-warn-border); color: var(--sc-warn);
 }
 .plan-pub.is-published .plan-pub-line { color: var(--sc-preview); }
+/* "Plan updated · Review changes" (frame 612:1020, AC-2) + its reload/keep row. A DIFFERENT class
+   from .plan-pub-line on purpose — see the JS comment at the call site. */
+.plan-pub-review { margin: 2px 0 0; font-size: 12px; font-weight: 700; color: var(--sc-warn); }
+.plan-pub-actions { display: flex; gap: 8px; margin-top: 2px; }
 /* .is-changed carries no colour of its own: the badge above the line already says the state in
    TEXT, and tinting the sentence as well would be the second colour-only signal on one fact. It
    is kept as a hook because the state is worth being addressable; .is-draft was removed rather
