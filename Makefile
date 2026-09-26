@@ -637,6 +637,14 @@ ci: ## Run the local Rust/Flutter CI gate (see the header for what CI runs that 
 	# against the real Makefile.
 	python3 scripts/check_launch_reachability.py --self-test
 	python3 scripts/check_launch_reachability.py
+	# 86akmdkdn: the same hand-maintained-list bug class as the reachability check above, one
+	# gate over -- CI's `dependency audit (RustSec)` job ran `cargo audit` against exactly two
+	# of the three excluded Cargo roots and a real CVE (RUSTSEC-2026-0285, rustls in
+	# selahcue-stt) shipped on `main` undetected. This derives the "must be audited" set from
+	# implementation/desktop/Cargo.toml's own `exclude = [...]` list and fails if a future
+	# excluded root has no matching audit step in .github/workflows/ci.yml.
+	python3 scripts/check_dependency_audit_coverage.py --self-test
+	python3 scripts/check_dependency_audit_coverage.py
 	cd $(DESKTOP) && $(CARGO) fmt --check
 	cd $(OPERATOR) && $(CARGO) fmt --check
 	$(CARGO) clippy $(WS) --workspace --all-targets -- -D warnings
