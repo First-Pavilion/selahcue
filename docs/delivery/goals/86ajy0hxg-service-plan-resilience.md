@@ -6,11 +6,11 @@
 - Parent goal ID: 86ajxxqtp (Service Plan builder)
 - Title: Service Plan resilience — autosave slots + restore, crash-loop Resume/StartClean, item Undo, all additive on the LAN wire
 - Role: backend-engineer
-- Status: DRAFT
+- Status: VERIFIED_COMPLETE
 - Execution engine: goal
 - ClickUp task: https://app.clickup.com/t/86ajy0hxg
 - Created: 2026-09-25T20:52:00Z
-- Updated: 2026-09-25T20:52:00Z
+- Updated: 2026-09-26T01:30:00Z
 - Maximum iterations: 8
 - Independent verification required: yes
 
@@ -213,14 +213,14 @@ protocol; `make ci` green; a controller test for restore + crash-loop.
 
 | ID | Mandatory | Criterion | Verifier | Expected result | Evidence | Status |
 |---|---|---|---|---|---|---|
-| C-001 | yes | `selahcue-data` autosave-slot repo: push bounds to 3, oldest pruned, integrity check surfaced | `cargo test -p selahcue-data autosave` | all pass | test output | PENDING |
-| C-002 | yes | `selahcue-app` controller: slot list/restore, Resume/StartClean gate, UndoPlan/RedoPlan wire commands | `cargo test -p selahcue-app --features server` | all pass | test output | PENDING |
-| C-003 | yes | Crash-loop: a controller test exercises Resume and StartClean paths and the never-blank invariant | `cargo test -p selahcue-app --features server -- crash` | pass | test output | PENDING |
-| C-004 | yes | Wire fixtures for every new Command/ServerMessage/field, additive (old fixtures unchanged) | `cargo test -p selahcue-lan` | all pass, `wire_fixtures_are_stable_for_cross_language_clients` still passes unmodified for pre-existing fixtures | test output | PENDING |
-| C-005 | yes | RBAC: new commands mapped, existing `test_rbac.rs` still green | `cargo test -p selahcue-lan` | pass | test output | PENDING |
-| C-006 | yes | Whole workspace + feature-gated suites clean | `make ci` (from repo root) | ALL GREEN | terminal log | PENDING |
-| C-007 | yes | Independent review (Cody, Vera, Sana, Quinn) blocking findings remediated | review artifact | 0 blocking outstanding | published Artifact URL on PR | PENDING |
-| C-008 | yes | PR opened against `main`, not self-merged | `gh pr view` | PR open, base=main | PR link | PENDING |
+| C-001 | yes | `selahcue-data` autosave-slot repo: push bounds to 3, oldest pruned, integrity check surfaced | `cargo test -p selahcue-data` | all pass (13 tests incl. `test_autosave_repo.rs`, `test_db.rs` migration fixture) | test output | PASS |
+| C-002 | yes | `selahcue-app` controller: slot list/restore, Resume/StartClean gate, UndoPlan/RedoPlan wire commands | `cargo test -p selahcue-app --features server` | all pass (14 tests in `test_service_plan_resilience.rs`) | test output | PASS |
+| C-003 | yes | Crash-loop: a controller test exercises Resume and StartClean paths and the never-blank invariant | `cargo test -p selahcue-app --features server` | pass (`resume_is_*`, `start_clean_is_*`, `resume_preserved_never_blanks_the_live_output`) | test output | PASS |
+| C-004 | yes | Wire fixtures for every new Command/ServerMessage/field, additive (old fixtures unchanged) | `cargo test -p selahcue-lan` | all pass (33 tests), `wire_fixtures_are_stable_for_cross_language_clients` unmodified and passing | test output | PASS |
+| C-005 | yes | RBAC: new commands mapped, existing `test_rbac.rs` still green | `cargo test -p selahcue-lan` | pass (26 tests, incl. new `edit_plan_implies_go_live_and_blackout_for_every_role`, `list_autosave_slots_is_monitor_tier`) | test output | PASS |
+| C-006 | yes | Whole workspace + feature-gated suites clean | `make ci` (from repo root) | ALL GREEN | terminal log, twice (commit `5485763` and remediation `29643e8`), both EXIT:0 | PASS |
+| C-007 | yes | Independent review (Cody, Vera, Sana, Quinn) blocking findings remediated | review artifact | 0 blocking outstanding — Cody's Blocking-1 and Vera's B-1 fixed and re-verified; Quinn PASS | published Artifact: https://claude.ai/artifact/UoV4wSbBVdo2FZqUNjJzGP (linked on PR) | PASS |
+| C-008 | yes | PR opened against `main`, not self-merged | `gh pr view` | PR #102 open, base=main, Ready for review, not merged | https://github.com/First-Pavilion/selahcue/pull/102 | PASS |
 
 ## Verification plan
 
@@ -236,15 +236,47 @@ protocol; `make ci` green; a controller test for restore + crash-loop.
 
 ### Iteration 1
 
-- Target criterion: C-001..C-005 (implementation)
+- Target criterion: C-001..C-006 (implementation)
 - Hypothesis: additive wire + trait-seam + migration, reusing existing
   `restore()`/`undo_plan()`/`integrity_check()` primitives, satisfies all
   mandatory criteria with acceptable risk.
 - Change or investigation: implement per Scope above.
-- Verifier executed: per-crate `cargo test`.
-- Result: (recorded after implementation)
-- New evidence: (recorded after implementation)
-- Decision: iterate
+- Verifier executed: per-crate `cargo test`, then full `make ci`.
+- Result: all per-crate suites green; `make ci` ALL GREEN at commit `5485763`
+  (fmt fixed on first attempt, then EXIT:0).
+- New evidence: mid-implementation, found ClickUp 86ak846ge (open architecture
+  decision) — recorded in Assumptions above; corrected the crash-loop bullet's
+  framing before any completion claim.
+- Decision: hand off to C-007 (review pipeline)
+
+### Iteration 2 — review remediation
+
+- Target criterion: C-007 (independent review)
+- Hypothesis: dispatching Cody/Vera/Sana/Quinn in parallel against PR #102
+  would surface real, fixable issues before merge is appropriate.
+- Change or investigation: all four reviewed commit `5485763`. Vera found a
+  blocking performance defect (B-1: whole-store `integrity_check` under the
+  render loop's lock) and Cody found a blocking correctness defect
+  (Blocking-1: silent wrong restore on an edited plan, reproduced live) plus
+  a medium UX gap (Medium-3: `Resume` accepted without `resumable`). Sana
+  found 4 non-blocking issues (S-1/S-2/S-4/S-7, the last two doc-only) plus 3
+  nitpicks, including a live-reproduced backward-clock-jump bug (S-4). Quinn
+  independently re-ran the suites plus GitHub's own CI matrix and reported
+  PASS. Fixed all of the above: moved `RestoreAutosave` resolution off the
+  controller lock (mirrors the already-correct `Resume`/`StartClean`
+  pattern); added a plan-content fingerprint guard (new `autosave_slot`
+  column, migration amended in place — pre-merge, so no v24 needed); fixed
+  the ring's prune ordering (`id` not `saved_at_ms`); corrected two doc
+  claims and added the RBAC invariant test they were missing; added
+  real-SQLite regression tests for every one of the above.
+- Verifier executed: per-crate `cargo test` + `cargo clippy -D warnings`
+  after each fix, then a second full `make ci` run.
+- Result: `make ci` ALL GREEN at commit `29643e8` (fmt clean, 240
+  `test result: ok` blocks, 0 failures, Flutter "All tests passed!").
+- New evidence: consolidated review Artifact published
+  (https://claude.ai/artifact/UoV4wSbBVdo2FZqUNjJzGP) and linked on the PR;
+  PR marked Ready for review.
+- Decision: complete
 
 ## Risks and rollback
 
@@ -267,9 +299,17 @@ protocol; `make ci` green; a controller test for restore + crash-loop.
 
 ## Final evaluation
 
-- Validator command: `python3 ~/.claude/skills/goal/scripts/validate_goal_contract.py docs/delivery/goals/86ajy0hxg-service-plan-resilience.md`
-- Validator result: (recorded before completion claim)
-- Independent verification result: (recorded after review pipeline)
-- Terminal state: (recorded at handoff)
-- Remaining failed or blocked criteria: (recorded at handoff)
-- ClickUp final evidence comment: (posted at handoff)
+- Validator command: `python3 ~/.claude/skills/goal/scripts/validate_goal_contract.py docs/delivery/goals/86ajy0hxg-service-plan-resilience.md --completion`
+- Validator result: `OK (completion): ... satisfies the Goal Contract schema and all mandatory criteria PASS`
+- Independent verification result: Cody/Vera/Sana/Quinn all reported; 2
+  blocking findings (Cody's Blocking-1, Vera's B-1) + 1 medium (Cody's
+  Medium-3) + Sana's non-blocking S-1/S-2/S-4/S-7/N-1/N-2/N-4 all
+  remediated and re-verified (`make ci` ALL GREEN at `29643e8`); Quinn's
+  independent QA pass reported PASS with no blocking defects. Consolidated
+  report: https://claude.ai/artifact/UoV4wSbBVdo2FZqUNjJzGP
+- Terminal state: VERIFIED_COMPLETE
+- Remaining failed or blocked criteria: none. (Non-goal, tracked separately:
+  ClickUp 86ak846ge, the crash-loop dialog architecture decision, remains
+  open — explicitly not this contract's to resolve; flagged there for the
+  architect/product owner.)
+- ClickUp final evidence comment: posted on 86ajy0hxg
