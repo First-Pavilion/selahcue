@@ -364,6 +364,84 @@ def test_a_throttled_request_against_a_real_account_mints_nothing_and_sends_noth
         services.set_email_sender(services.EmailSender())
 
 
+# --- F4, reopened for the two NEW budgets (Sana, PR #107 review round 1, S-2) -------------
+# The test above only tightens `SELAHCUE_THROTTLE_RESET_REQUEST` (the pre-existing per-IP
+# budget), so it can see `enforce_budget` land on the wrong side of the mint for THAT budget
+# only. 86akcn8p4 added two more `enforce_budget` calls (address, global) in the same function
+# — each is its own opportunity for the guard to end up below the mint, and the test above
+# cannot see either. These two mirror it exactly, tightening the ADDRESS and GLOBAL budgets
+# respectively instead.
+@pytest.mark.django_db
+def test_a_throttled_request_against_a_real_account_via_the_address_budget_mints_nothing(
+    client, settings
+):
+    settings.SELAHCUE_THROTTLE_RESET_REQUEST_ADDRESS = (1, 900)
+    sender = _CapturingSender()
+    services.set_email_sender(sender)
+    try:
+        email = _existing_verified_account(sender, email="f4-addr@budget.example", idem="f4-addr-throttle-001")
+        user = CustomerUser.objects.get(email=email)
+
+        first = post_account(client, REQUEST_RESET, {"e": email})
+        assert error_code(first) is None
+
+        minted_count = CredentialToken.objects.filter(
+            customer_user=user, purpose=CredentialTokenPurpose.PASSWORD_RESET
+        ).count()
+        assert minted_count == 1, "the within-budget call did not mint — fixture is not exercising the mint branch"
+        assert len(sender.reset_tokens) == 1
+
+        second = post_account(client, REQUEST_RESET, {"e": email})
+        assert error_code(second) == "RATE_LIMITED"
+
+        assert (
+            CredentialToken.objects.filter(
+                customer_user=user, purpose=CredentialTokenPurpose.PASSWORD_RESET
+            ).count()
+            == minted_count
+        ), "the THROTTLED request minted a new token via the ADDRESS budget — enforce_budget runs after the mint"
+        assert len(sender.reset_tokens) == 1, "the THROTTLED request sent a SECOND email via the ADDRESS budget"
+    finally:
+        services.set_email_sender(services.EmailSender())
+
+
+@pytest.mark.django_db
+def test_a_throttled_request_against_a_real_account_via_the_global_budget_mints_nothing(
+    client, settings
+):
+    """A DIFFERENT address each call, so only the GLOBAL budget (checked first, before IP or
+    address) can be what trips — proving the global spend also precedes the mint."""
+    settings.SELAHCUE_THROTTLE_RESET_REQUEST_GLOBAL = (1, 3600)
+    sender = _CapturingSender()
+    services.set_email_sender(sender)
+    try:
+        email = _existing_verified_account(sender, email="f4-global@budget.example", idem="f4-global-throttle-001")
+        user = CustomerUser.objects.get(email=email)
+
+        first = post_account(client, REQUEST_RESET, {"e": email})
+        assert error_code(first) is None
+
+        minted_count = CredentialToken.objects.filter(
+            customer_user=user, purpose=CredentialTokenPurpose.PASSWORD_RESET
+        ).count()
+        assert minted_count == 1, "the within-budget call did not mint — fixture is not exercising the mint branch"
+        assert len(sender.reset_tokens) == 1
+
+        # A DIFFERENT address, so only the exhausted GLOBAL budget can refuse this call.
+        second = post_account(client, REQUEST_RESET, {"e": "f4-global-other@budget.example"})
+        assert error_code(second) == "RATE_LIMITED"
+
+        assert (
+            CredentialToken.objects.filter(
+                customer_user=user, purpose=CredentialTokenPurpose.PASSWORD_RESET
+            ).count()
+            == minted_count
+        ), "the THROTTLED request minted a token for the real account — enforce_budget runs after the mint"
+        assert len(sender.reset_tokens) == 1, "the THROTTLED request sent a SECOND email via the GLOBAL budget"
+    finally:
+        services.set_email_sender(services.EmailSender())
+
+
 # --- 86akcn8p4: request_password_reset gets a per-address AND a global budget ------------
 # Sana's follow-up finding: 86akcmfd4 gave `request_password_reset` a per-IP budget only, which
 # bounds DEC-013's timing-oracle sampling but does nothing about MAIL VOLUME against one victim
@@ -451,4 +529,35 @@ def test_request_reset_address_budget_is_keyed_on_fingerprint_not_raw_email(clie
     assert error_code(first) is None
     assert error_code(second) == "RATE_LIMITED", (
         "differently-cased spellings of the same address must share one budget"
+    )
+
+
+@pytest.mark.django_db
+def test_request_reset_address_budget_cache_key_is_the_hmac_fingerprint_not_the_raw_email(
+    client, settings
+):
+    """S-1 (Sana, PR #107 review round 1): the test above proves case-insensitivity, which
+    would ALSO pass if the key were the raw NORMALISED email (`.strip().lower()`) rather than
+    its HMAC fingerprint — normalising before keying makes both spellings collapse either way.
+    This asserts the actual Redis/cache key directly, so "keyed on fingerprint" is checked
+    rather than inferred from a behaviour that has two possible causes.
+    """
+    settings.SELAHCUE_THROTTLE_RESET_REQUEST_ADDRESS = (5, 900)
+    email = "fingerprint-check@budget.example"
+
+    resp = post_account(client, REQUEST_RESET, {"e": email})
+    assert error_code(resp) is None
+
+    fingerprint = services._email_fingerprint(email)
+    fingerprint_key = f"throttle:password_reset_request_addr:{fingerprint}"
+    raw_email_key = f"throttle:password_reset_request_addr:{email}"
+
+    assert cache.get(fingerprint_key) == 1, (
+        "expected the address budget's cache key to be keyed on the HMAC fingerprint; it was "
+        "not found where `_email_fingerprint(email)` says it should be"
+    )
+    assert cache.get(raw_email_key) is None, (
+        "the address budget minted a cache key from the RAW email — an unauthenticated "
+        "endpoint keying Redis entries on attacker-chosen text is the unbounded-key-growth "
+        "problem this ticket's own scope note calls out"
     )

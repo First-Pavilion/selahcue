@@ -278,17 +278,21 @@ SELAHCUE_THROTTLE_RESET_CONFIRM = (20, 3600)
 SELAHCUE_THROTTLE_RESET_REQUEST_ADDRESS = (3, 900)
 SELAHCUE_THROTTLE_RESET_REQUEST_GLOBAL = (500, 3600)
 
-# COVERS THE THREE `SELAHCUE_THROTTLE_RESEND_*` BUDGETS ONLY — not the two
-# `SELAHCUE_THROTTLE_RESET_*` budgets above, despite their sitting between this comment and
-# the resend settings it describes. Read the name: this is the *resend* degraded ceiling, and
-# `_claim_degraded_send` is called only from `resend_email_verification`.
+# COVERS THE THREE `SELAHCUE_THROTTLE_RESEND_*` BUDGETS ONLY — not the FOUR
+# `SELAHCUE_THROTTLE_RESET_*` budgets above (86akcn8p4 added the address and global pair
+# alongside the original request/confirm per-IP pair — read the count from the settings
+# actually declared above, not from this comment, if they ever drift again), despite their
+# sitting between this comment and the resend settings it describes. Read the name: this is
+# the *resend* degraded ceiling, and `_claim_degraded_send` is called only from
+# `resend_email_verification`.
 #
-# Every one of the five budgets above fails OPEN when the limiter store is unreachable, so
-# while Redis is down none of them bounds anything. This ceiling stands in for the resend
-# three during an outage: a PER-WORKER, in-process fixed window, because the shared store is
-# exactly what is broken. With N workers the effective limit is N x this. It is deliberately
-# far below the global budget it replaces: an outage is the wrong time to be generous, and a
-# caller whose send is skipped keeps the link they already had.
+# Every one of the SEVEN budgets above (three resend, four reset) fails OPEN when the limiter
+# store is unreachable, so while Redis is down none of them bounds anything. This ceiling
+# stands in for the resend three during an outage: a PER-WORKER, in-process fixed window,
+# because the shared store is exactly what is broken. With N workers the effective limit is
+# N x this. It is deliberately far below the global budget it replaces: an outage is the
+# wrong time to be generous, and a caller whose send is skipped keeps the link they already
+# had.
 #
 # THE RESET PATHS HAVE NO SUCH STAND-IN. During a store outage `request_password_reset`
 # reverts to unmetered unauthenticated mail and unbounded oracle sampling — no worse than
