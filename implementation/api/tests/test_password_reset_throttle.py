@@ -362,3 +362,93 @@ def test_a_throttled_request_against_a_real_account_mints_nothing_and_sends_noth
         )
     finally:
         services.set_email_sender(services.EmailSender())
+
+
+# --- 86akcn8p4: request_password_reset gets a per-address AND a global budget ------------
+# Sana's follow-up finding: 86akcmfd4 gave `request_password_reset` a per-IP budget only, which
+# bounds DEC-013's timing-oracle sampling but does nothing about MAIL VOLUME against one victim
+# — a distributed attacker sprays distinct source IPs, so `request_password_reset` was the only
+# unauthenticated mail-sender in the API with neither a per-address cap nor a global one. These
+# tests mirror `test_resend_verification.py`'s own coverage of that exact shape.
+@pytest.mark.django_db
+def test_request_reset_address_budget_refuses_the_nth_request_and_a_different_address_still_passes(
+    client, settings
+):
+    """THE positive control the ticket calls for by name: refused for the (N+1)th request
+    against ONE address, while a DIFFERENT address still passes — without the second half, a
+    limiter that refuses everyone regardless of address would equally make the first half pass."""
+    settings.SELAHCUE_THROTTLE_RESET_REQUEST_ADDRESS = (2, 900)
+
+    first = post_account(client, REQUEST_RESET, {"e": "flood-victim@budget.example"})
+    second = post_account(client, REQUEST_RESET, {"e": "flood-victim@budget.example"})
+    third = post_account(client, REQUEST_RESET, {"e": "flood-victim@budget.example"})
+
+    assert error_code(first) is None and body(first)["data"]["requestPasswordReset"]["accepted"] is True
+    assert error_code(second) is None and body(second)["data"]["requestPasswordReset"]["accepted"] is True
+    assert error_code(third) == "RATE_LIMITED", (
+        f"expected the 3rd call against ONE address over a (2, 900) budget to be refused, "
+        f"got {error_code(third)!r}"
+    )
+
+    # A DIFFERENT address must still have its own, unspent budget.
+    other = post_account(client, REQUEST_RESET, {"e": "someone-else@budget.example"})
+    assert error_code(other) is None, "a different address must not share the exhausted budget"
+
+
+@pytest.mark.django_db
+def test_request_reset_address_budget_refusal_does_not_leak_existence(client, settings):
+    """A limit that only bit for REAL accounts would be a perfect oracle: the address budget
+    must be spent — and must refuse — identically whether or not the address has an account."""
+    settings.SELAHCUE_THROTTLE_RESET_REQUEST_ADDRESS = (1, 900)
+    sender = _CapturingSender()
+    services.set_email_sender(sender)
+    try:
+        email = _existing_verified_account(sender, email="known-addr-budget@budget.example")
+
+        post_account(client, REQUEST_RESET, {"e": email})
+        post_account(client, REQUEST_RESET, {"e": "ghost-addr-budget@budget.example"})
+        known_limited = post_account(client, REQUEST_RESET, {"e": email})
+        ghost_limited = post_account(client, REQUEST_RESET, {"e": "ghost-addr-budget@budget.example"})
+
+        assert error_code(known_limited) == "RATE_LIMITED"
+        assert error_code(ghost_limited) == "RATE_LIMITED"
+        assert known_limited.status_code == ghost_limited.status_code
+        assert known_limited.content == ghost_limited.content
+    finally:
+        services.set_email_sender(services.EmailSender())
+
+
+@pytest.mark.django_db
+def test_request_reset_global_budget_refuses_once_exhausted_regardless_of_address_or_ip(
+    client, settings
+):
+    """Per-address limits alone let an attacker spray thousands of DISTINCT addresses; the
+    global ceiling is what actually bounds total send cost, same role as
+    SELAHCUE_THROTTLE_RESEND_GLOBAL."""
+    settings.SELAHCUE_THROTTLE_RESET_REQUEST_GLOBAL = (2, 3600)
+
+    first = post_account(client, REQUEST_RESET, {"e": "global-a@budget.example"})
+    second = post_account(client, REQUEST_RESET, {"e": "global-b@budget.example"})
+    third = post_account(client, REQUEST_RESET, {"e": "global-c@budget.example"})
+
+    assert error_code(first) is None
+    assert error_code(second) is None
+    assert error_code(third) == "RATE_LIMITED", (
+        "a THIRD distinct address must still be refused once the shared global budget is spent"
+    )
+
+
+@pytest.mark.django_db
+def test_request_reset_address_budget_is_keyed_on_fingerprint_not_raw_email(client, settings):
+    """Guards the cache-key-cardinality property the ticket calls out explicitly: the SAME
+    address, differently CASED, must share one budget (an attacker minting one Redis key per
+    case variation would defeat the point of a per-address cap)."""
+    settings.SELAHCUE_THROTTLE_RESET_REQUEST_ADDRESS = (1, 900)
+
+    first = post_account(client, REQUEST_RESET, {"e": "MixedCase@Budget.Example"})
+    second = post_account(client, REQUEST_RESET, {"e": "mixedcase@budget.example"})
+
+    assert error_code(first) is None
+    assert error_code(second) == "RATE_LIMITED", (
+        "differently-cased spellings of the same address must share one budget"
+    )

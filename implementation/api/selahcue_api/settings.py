@@ -263,6 +263,21 @@ SELAHCUE_THROTTLE_RESEND_GLOBAL = (500, 3600)
 SELAHCUE_THROTTLE_RESET_REQUEST = (20, 3600)
 SELAHCUE_THROTTLE_RESET_CONFIRM = (20, 3600)
 
+# Per-target-email and global budgets for `request_password_reset` (86akcn8p4 — Sana's
+# more-urgent follow-up to 86akcmfd4). The per-IP budget above was scoped to DEC-013's timing-
+# oracle threat and does NOT bound mail-bombing: a distributed attacker's volume against one
+# victim was bounded by nothing but IP count, and IPv6 makes IP count nearly free (86akcn8ww).
+# `request_password_reset` was therefore the only unauthenticated mail-sender in the API with
+# neither a per-address cap nor a global one — `resend_email_verification` has had both since
+# it shipped. These two mirror `SELAHCUE_THROTTLE_RESEND_ADDRESS` / `_GLOBAL` exactly: same
+# shape, same magnitude, same "spent unconditionally, before the existence check" discipline
+# (a budget that only bit for real accounts would itself be the existence oracle this endpoint
+# is built to deny). Keyed on the same `_email_fingerprint` HMAC the mint branch already uses —
+# never the raw submitted email — for the same cache-key-cardinality reason resend already
+# solved.
+SELAHCUE_THROTTLE_RESET_REQUEST_ADDRESS = (3, 900)
+SELAHCUE_THROTTLE_RESET_REQUEST_GLOBAL = (500, 3600)
+
 # COVERS THE THREE `SELAHCUE_THROTTLE_RESEND_*` BUDGETS ONLY — not the two
 # `SELAHCUE_THROTTLE_RESET_*` budgets above, despite their sitting between this comment and
 # the resend settings it describes. Read the name: this is the *resend* degraded ceiling, and
