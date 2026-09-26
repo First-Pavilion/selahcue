@@ -40,6 +40,7 @@ same way as the header test above (see the handoff evidence).
 """
 
 import json
+import logging
 
 import pytest
 from django.core.cache import cache
@@ -359,6 +360,284 @@ def test_a_throttled_request_against_a_real_account_mints_nothing_and_sends_noth
         assert len(sender.reset_tokens) == 1, (
             "the THROTTLED request sent a SECOND reset email — enforce_budget is running after "
             "the dispatch"
+        )
+    finally:
+        services.set_email_sender(services.EmailSender())
+
+
+# --- F4, reopened for the two NEW budgets (Sana, PR #107 review round 1, S-2) -------------
+# The test above only tightens `SELAHCUE_THROTTLE_RESET_REQUEST` (the pre-existing per-IP
+# budget), so it can see `enforce_budget` land on the wrong side of the mint for THAT budget
+# only. 86akcn8p4 added two more `enforce_budget` calls (address, global) in the same function
+# — each is its own opportunity for the guard to end up below the mint, and the test above
+# cannot see either. These two mirror it exactly, tightening the ADDRESS and GLOBAL budgets
+# respectively instead.
+@pytest.mark.django_db
+def test_a_throttled_request_against_a_real_account_via_the_address_budget_mints_nothing(
+    client, settings
+):
+    settings.SELAHCUE_THROTTLE_RESET_REQUEST_ADDRESS = (1, 900)
+    sender = _CapturingSender()
+    services.set_email_sender(sender)
+    try:
+        email = _existing_verified_account(sender, email="f4-addr@budget.example", idem="f4-addr-throttle-001")
+        user = CustomerUser.objects.get(email=email)
+
+        first = post_account(client, REQUEST_RESET, {"e": email})
+        assert error_code(first) is None
+
+        minted_count = CredentialToken.objects.filter(
+            customer_user=user, purpose=CredentialTokenPurpose.PASSWORD_RESET
+        ).count()
+        assert minted_count == 1, "the within-budget call did not mint — fixture is not exercising the mint branch"
+        assert len(sender.reset_tokens) == 1
+
+        second = post_account(client, REQUEST_RESET, {"e": email})
+        assert error_code(second) == "RATE_LIMITED"
+
+        assert (
+            CredentialToken.objects.filter(
+                customer_user=user, purpose=CredentialTokenPurpose.PASSWORD_RESET
+            ).count()
+            == minted_count
+        ), "the THROTTLED request minted a new token via the ADDRESS budget — enforce_budget runs after the mint"
+        assert len(sender.reset_tokens) == 1, "the THROTTLED request sent a SECOND email via the ADDRESS budget"
+    finally:
+        services.set_email_sender(services.EmailSender())
+
+
+@pytest.mark.django_db
+def test_a_throttled_request_against_a_real_account_via_the_global_budget_mints_nothing(
+    client, settings
+):
+    """A DIFFERENT address each call, so only the GLOBAL budget (checked first, before IP or
+    address) can be what trips — proving the global spend also precedes the mint."""
+    settings.SELAHCUE_THROTTLE_RESET_REQUEST_GLOBAL = (1, 3600)
+    sender = _CapturingSender()
+    services.set_email_sender(sender)
+    try:
+        email = _existing_verified_account(sender, email="f4-global@budget.example", idem="f4-global-throttle-001")
+        user = CustomerUser.objects.get(email=email)
+
+        first = post_account(client, REQUEST_RESET, {"e": email})
+        assert error_code(first) is None
+
+        minted_count = CredentialToken.objects.filter(
+            customer_user=user, purpose=CredentialTokenPurpose.PASSWORD_RESET
+        ).count()
+        assert minted_count == 1, "the within-budget call did not mint — fixture is not exercising the mint branch"
+        assert len(sender.reset_tokens) == 1
+
+        # A DIFFERENT address, so only the exhausted GLOBAL budget can refuse this call.
+        second = post_account(client, REQUEST_RESET, {"e": "f4-global-other@budget.example"})
+        assert error_code(second) == "RATE_LIMITED"
+
+        assert (
+            CredentialToken.objects.filter(
+                customer_user=user, purpose=CredentialTokenPurpose.PASSWORD_RESET
+            ).count()
+            == minted_count
+        ), "the THROTTLED request minted a token for the real account — enforce_budget runs after the mint"
+        assert len(sender.reset_tokens) == 1, "the THROTTLED request sent a SECOND email via the GLOBAL budget"
+    finally:
+        services.set_email_sender(services.EmailSender())
+
+
+# --- 86akcn8p4: request_password_reset gets a per-address AND a global budget ------------
+# Sana's follow-up finding: 86akcmfd4 gave `request_password_reset` a per-IP budget only, which
+# bounds DEC-013's timing-oracle sampling but does nothing about MAIL VOLUME against one victim
+# — a distributed attacker sprays distinct source IPs, so `request_password_reset` was the only
+# unauthenticated mail-sender in the API with neither a per-address cap nor a global one. These
+# tests mirror `test_resend_verification.py`'s own coverage of that exact shape.
+@pytest.mark.django_db
+def test_request_reset_address_budget_refuses_the_nth_request_and_a_different_address_still_passes(
+    client, settings
+):
+    """THE positive control the ticket calls for by name: refused for the (N+1)th request
+    against ONE address, while a DIFFERENT address still passes — without the second half, a
+    limiter that refuses everyone regardless of address would equally make the first half pass."""
+    settings.SELAHCUE_THROTTLE_RESET_REQUEST_ADDRESS = (2, 900)
+
+    first = post_account(client, REQUEST_RESET, {"e": "flood-victim@budget.example"})
+    second = post_account(client, REQUEST_RESET, {"e": "flood-victim@budget.example"})
+    third = post_account(client, REQUEST_RESET, {"e": "flood-victim@budget.example"})
+
+    assert error_code(first) is None and body(first)["data"]["requestPasswordReset"]["accepted"] is True
+    assert error_code(second) is None and body(second)["data"]["requestPasswordReset"]["accepted"] is True
+    assert error_code(third) == "RATE_LIMITED", (
+        f"expected the 3rd call against ONE address over a (2, 900) budget to be refused, "
+        f"got {error_code(third)!r}"
+    )
+
+    # A DIFFERENT address must still have its own, unspent budget.
+    other = post_account(client, REQUEST_RESET, {"e": "someone-else@budget.example"})
+    assert error_code(other) is None, "a different address must not share the exhausted budget"
+
+
+@pytest.mark.django_db
+def test_request_reset_address_budget_refusal_does_not_leak_existence(client, settings):
+    """A limit that only bit for REAL accounts would be a perfect oracle: the address budget
+    must be spent — and must refuse — identically whether or not the address has an account."""
+    settings.SELAHCUE_THROTTLE_RESET_REQUEST_ADDRESS = (1, 900)
+    sender = _CapturingSender()
+    services.set_email_sender(sender)
+    try:
+        email = _existing_verified_account(sender, email="known-addr-budget@budget.example")
+
+        post_account(client, REQUEST_RESET, {"e": email})
+        post_account(client, REQUEST_RESET, {"e": "ghost-addr-budget@budget.example"})
+        known_limited = post_account(client, REQUEST_RESET, {"e": email})
+        ghost_limited = post_account(client, REQUEST_RESET, {"e": "ghost-addr-budget@budget.example"})
+
+        assert error_code(known_limited) == "RATE_LIMITED"
+        assert error_code(ghost_limited) == "RATE_LIMITED"
+        assert known_limited.status_code == ghost_limited.status_code
+        assert known_limited.content == ghost_limited.content
+    finally:
+        services.set_email_sender(services.EmailSender())
+
+
+@pytest.mark.django_db
+def test_request_reset_global_budget_refuses_once_exhausted_regardless_of_address_or_ip(
+    client, settings
+):
+    """Per-address limits alone let an attacker spray thousands of DISTINCT addresses; the
+    global ceiling is what actually bounds total send cost, same role as
+    SELAHCUE_THROTTLE_RESEND_GLOBAL."""
+    settings.SELAHCUE_THROTTLE_RESET_REQUEST_GLOBAL = (2, 3600)
+
+    first = post_account(client, REQUEST_RESET, {"e": "global-a@budget.example"})
+    second = post_account(client, REQUEST_RESET, {"e": "global-b@budget.example"})
+    third = post_account(client, REQUEST_RESET, {"e": "global-c@budget.example"})
+
+    assert error_code(first) is None
+    assert error_code(second) is None
+    assert error_code(third) == "RATE_LIMITED", (
+        "a THIRD distinct address must still be refused once the shared global budget is spent"
+    )
+
+
+@pytest.mark.django_db
+def test_request_reset_address_budget_is_keyed_on_fingerprint_not_raw_email(client, settings):
+    """Guards the cache-key-cardinality property the ticket calls out explicitly: the SAME
+    address, differently CASED, must share one budget (an attacker minting one Redis key per
+    case variation would defeat the point of a per-address cap)."""
+    settings.SELAHCUE_THROTTLE_RESET_REQUEST_ADDRESS = (1, 900)
+
+    first = post_account(client, REQUEST_RESET, {"e": "MixedCase@Budget.Example"})
+    second = post_account(client, REQUEST_RESET, {"e": "mixedcase@budget.example"})
+
+    assert error_code(first) is None
+    assert error_code(second) == "RATE_LIMITED", (
+        "differently-cased spellings of the same address must share one budget"
+    )
+
+
+@pytest.mark.django_db
+def test_request_reset_address_budget_cache_key_is_the_hmac_fingerprint_not_the_raw_email(
+    client, settings
+):
+    """S-1 (Sana, PR #107 review round 1): the test above proves case-insensitivity, which
+    would ALSO pass if the key were the raw NORMALISED email (`.strip().lower()`) rather than
+    its HMAC fingerprint — normalising before keying makes both spellings collapse either way.
+    This asserts the actual Redis/cache key directly, so "keyed on fingerprint" is checked
+    rather than inferred from a behaviour that has two possible causes.
+    """
+    settings.SELAHCUE_THROTTLE_RESET_REQUEST_ADDRESS = (5, 900)
+    email = "fingerprint-check@budget.example"
+
+    resp = post_account(client, REQUEST_RESET, {"e": email})
+    assert error_code(resp) is None
+
+    fingerprint = services._email_fingerprint(email)
+    fingerprint_key = f"throttle:password_reset_request_addr:{fingerprint}"
+    raw_email_key = f"throttle:password_reset_request_addr:{email}"
+
+    assert cache.get(fingerprint_key) == 1, (
+        "expected the address budget's cache key to be keyed on the HMAC fingerprint; it was "
+        "not found where `_email_fingerprint(email)` says it should be"
+    )
+    assert cache.get(raw_email_key) is None, (
+        "the address budget minted a cache key from the RAW email — an unauthenticated "
+        "endpoint keying Redis entries on attacker-chosen text is the unbounded-key-growth "
+        "problem this ticket's own scope note calls out"
+    )
+
+
+# --- 86akcn92k (F1): the reset SEND degrades under its own outage ceiling ------------------
+# All three budgets above fail OPEN when the limiter store is down (by design — see the
+# module comment in services.py). Without a stand-in, an outage would revert
+# `request_password_reset` to unmetered mail and unbounded oracle sampling: exactly the
+# pre-86akcmfd4 state, reachable by anyone who detects or induces store unavailability. The
+# reset send now degrades under `_claim_degraded_reset_send` — its OWN ceiling, never shared
+# with resend-verification's.
+@pytest.fixture
+def reset_limiter_down(monkeypatch):
+    monkeypatch.setattr(guards, "CacheStore", lambda _cache: _BrokenStore())
+    services._reset_floor_overrun_reporting()
+    services._reset_reset_send_degraded_window()
+
+
+@pytest.mark.django_db
+def test_a_limiter_outage_bounds_the_reset_send_without_denying_the_response(
+    client, settings, caplog, reset_limiter_down
+):
+    """THE positive control for F1: many requests during an outage must still all report
+    accepted:true (no enumeration oracle from an outage-shaped error) while only the
+    ceiling's worth of mail actually leaves."""
+    import logging
+
+    settings.SELAHCUE_RESET_SEND_DEGRADED_CEILING = (2, 60)
+    sender = _CapturingSender()
+    services.set_email_sender(sender)
+    try:
+        for i in range(5):
+            _existing_verified_account(sender, email=f"outage-reset{i}@budget.example", idem=f"outage-reset-{i}")
+        sender.reset_tokens.clear()  # the accounts' own setup already sent verify mail, not reset mail
+
+        with caplog.at_level(logging.WARNING, logger=services.logger.name):
+            responses = [
+                post_account(client, REQUEST_RESET, {"e": f"outage-reset{i}@budget.example"})
+                for i in range(5)
+            ]
+
+        assert all(error_code(r) is None for r in responses), "an outage must not deny the response"
+        assert all(
+            body(r)["data"]["requestPasswordReset"]["accepted"] is True for r in responses
+        )
+        assert len(sender.reset_tokens) == 2, (
+            "a limiter outage must bound the reset send, not hand out an unmetered send path"
+        )
+        skips = [r for r in caplog.records if "limiter unavailable" in r.getMessage()]
+        assert len(skips) == 1, "the degradation must be reported, once per interval"
+    finally:
+        services.set_email_sender(services.EmailSender())
+
+
+@pytest.mark.django_db
+def test_the_reset_degraded_ceiling_is_spent_whether_or_not_the_account_exists(
+    client, settings, reset_limiter_down
+):
+    """The ceiling must not become an existence oracle: an attacker who can watch it drain
+    through their own inbox must not be able to tell whether OTHER probed addresses exist by
+    watching how fast it empties. Charged on every degraded call, not only sends."""
+    settings.SELAHCUE_RESET_SEND_DEGRADED_CEILING = (1, 60)
+    sender = _CapturingSender()
+    services.set_email_sender(sender)
+    try:
+        # A call for a NON-EXISTENT address, while the store is down, still spends the shared
+        # ceiling — proven by it being empty for the next (REAL) call below.
+        first = post_account(client, REQUEST_RESET, {"e": "nonexistent-outage@budget.example"})
+        assert error_code(first) is None
+
+        email = _existing_verified_account(sender, email="real-outage@budget.example", idem="real-outage-1")
+        sender.reset_tokens.clear()
+        second = post_account(client, REQUEST_RESET, {"e": email})
+
+        assert error_code(second) is None, "the response must still be accepted:true"
+        assert sender.reset_tokens == [], (
+            "the ceiling was exhausted by the FIRST (non-existent-address) call — a real "
+            "account's send must be skipped too, or the ceiling leaks account existence"
         )
     finally:
         services.set_email_sender(services.EmailSender())

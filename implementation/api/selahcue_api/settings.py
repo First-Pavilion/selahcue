@@ -263,24 +263,63 @@ SELAHCUE_THROTTLE_RESEND_GLOBAL = (500, 3600)
 SELAHCUE_THROTTLE_RESET_REQUEST = (20, 3600)
 SELAHCUE_THROTTLE_RESET_CONFIRM = (20, 3600)
 
-# COVERS THE THREE `SELAHCUE_THROTTLE_RESEND_*` BUDGETS ONLY — not the two
-# `SELAHCUE_THROTTLE_RESET_*` budgets above, despite their sitting between this comment and
-# the resend settings it describes. Read the name: this is the *resend* degraded ceiling, and
-# `_claim_degraded_send` is called only from `resend_email_verification`.
+# Per-target-email and global budgets for `request_password_reset` (86akcn8p4 — Sana's
+# more-urgent follow-up to 86akcmfd4). The per-IP budget above was scoped to DEC-013's timing-
+# oracle threat and does NOT bound mail-bombing: a distributed attacker's volume against one
+# victim was bounded by nothing but IP count, and IPv6 makes IP count nearly free (86akcn8ww).
+# `request_password_reset` was therefore the only unauthenticated mail-sender in the API with
+# neither a per-address cap nor a global one — `resend_email_verification` has had both since
+# it shipped. These two mirror `SELAHCUE_THROTTLE_RESEND_ADDRESS` / `_GLOBAL` exactly: same
+# shape, same magnitude, same "spent unconditionally, before the existence check" discipline
+# (a budget that only bit for real accounts would itself be the existence oracle this endpoint
+# is built to deny). Keyed on the same `_email_fingerprint` HMAC the mint branch already uses —
+# never the raw submitted email — for the same cache-key-cardinality reason resend already
+# solved.
+SELAHCUE_THROTTLE_RESET_REQUEST_ADDRESS = (3, 900)
+SELAHCUE_THROTTLE_RESET_REQUEST_GLOBAL = (500, 3600)
+
+# COVERS THE THREE `SELAHCUE_THROTTLE_RESEND_*` BUDGETS ONLY — not the FOUR
+# `SELAHCUE_THROTTLE_RESET_*` budgets above (86akcn8p4 added the address and global pair
+# alongside the original request/confirm per-IP pair — read the count from the settings
+# actually declared above, not from this comment, if they ever drift again), despite their
+# sitting between this comment and the resend settings it describes. Read the name: this is
+# the *resend* degraded ceiling, and `_claim_degraded_send` is called only from
+# `resend_email_verification`.
 #
-# Every one of the five budgets above fails OPEN when the limiter store is unreachable, so
-# while Redis is down none of them bounds anything. This ceiling stands in for the resend
-# three during an outage: a PER-WORKER, in-process fixed window, because the shared store is
-# exactly what is broken. With N workers the effective limit is N x this. It is deliberately
-# far below the global budget it replaces: an outage is the wrong time to be generous, and a
-# caller whose send is skipped keeps the link they already had.
+# Every one of the SEVEN budgets above (three resend, four reset) fails OPEN when the limiter
+# store is unreachable, so while Redis is down none of them bounds anything. This ceiling
+# stands in for the resend three during an outage: a PER-WORKER, in-process fixed window,
+# because the shared store is exactly what is broken. With N workers the effective limit is
+# N x this. It is deliberately far below the global budget it replaces: an outage is the
+# wrong time to be generous, and a caller whose send is skipped keeps the link they already
+# had.
 #
-# THE RESET PATHS HAVE NO SUCH STAND-IN. During a store outage `request_password_reset`
-# reverts to unmetered unauthenticated mail and unbounded oracle sampling — no worse than
-# before 86akcmfd4, but not fixed by it either. Extending a ceiling to the reset send is a
-# tracked follow-up; do not assume this setting already does it.
+# THE RESET REQUEST PATH NOW HAS ITS OWN, SEPARATE STAND-IN (86akcn92k, F1) —
+# `SELAHCUE_RESET_SEND_DEGRADED_CEILING` below, backed by its own `_DegradedSendCeiling`
+# instance (`apps/accounts/services._reset_send_degraded_ceiling`), never a shared counter
+# with this one: a shared counter would let one endpoint's outage-time flood spend the
+# other's degraded budget. It bounds the SEND only — whether the reset REQUEST path also
+# wants a process-local SAMPLING ceiling (bounding how many times the mint-vs-no-mint timing
+# gap can be probed during an outage, on top of bounding the mail volume) is a separate,
+# deliberately deferred decision the ticket explicitly left open; this setting does not make
+# that call.
 # See RESEND_DEGRADED_SEND_CEILING in apps/accounts/services.py.
 SELAHCUE_RESEND_DEGRADED_SEND_CEILING = (20, 3600)
+
+# `request_password_reset`'s own degraded-send ceiling (86akcn92k, F1) — see the comment
+# above and `apps/accounts/services._DegradedSendCeiling` for the shared mechanism. Same
+# magnitude as the resend ceiling, for the same reason: an outage is the wrong time to be
+# generous, and a caller whose send is skipped keeps the link they already had.
+SELAHCUE_RESET_SEND_DEGRADED_CEILING = (20, 3600)
+
+# Per-client-IP budget for `verify_email` (86akcn92k — scoped out of 86akcmfd4's required
+# follow-up, since DEC-013 named the reset paths specifically). LOWER severity than the reset
+# paths, for a real reason: the EMAIL_VERIFY token carries 256 bits of entropy
+# (`secrets.token_urlsafe(32)`), so a throttle here bounds FLOOD cost only — it is not closing
+# a practical guessing attack the way the reset paths' budgets bound DEC-013's timing oracle.
+# Same magnitude as SELAHCUE_THROTTLE_RESET_CONFIRM for that reason: defence in depth against
+# an unauthenticated endpoint being hammered, not a response to a specific measured gap.
+SELAHCUE_THROTTLE_VERIFY_EMAIL_IP = (20, 3600)
 
 # --- Mail --------------------------------------------------------------------------------
 # Dev points at mailhog (compose service, port 1025) so the transactional templates
