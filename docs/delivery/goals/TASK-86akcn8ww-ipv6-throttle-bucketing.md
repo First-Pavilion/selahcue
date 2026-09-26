@@ -26,11 +26,14 @@ unchanged.
 - Verified: `implementation/api/selahcue_api/apps/throttling/services.py:127-158` — `client_ip`
   parses and normalises the address via `ipaddress.ip_address` but returns it unbucketed.
 - Verified: full local pytest suite against a dedicated Postgres 16 container passes at
-  530 passed / 1 pre-existing timing-flake (`test_resend_verification.py::
-  test_response_timing_does_not_distinguish_the_three_cases`, host-load sensitive, unrelated to
-  throttling) with no other failures, using only `SQL_ENGINE=django.db.backends.postgresql` +
-  matching `SQL_*` vars (no `DEBUG`/`CELERY_TASK_ALWAYS_EAGER` overrides, which independently
-  produce 3 false failures confirmed not to reproduce against the correct env).
+  **538 passed, 0 failed** — this is the corrected baseline. An earlier note in this file said
+  "530 passed / 1 flake"; that number was stale (measured before a clean, non-concurrent rerun)
+  and was flagged by Quinn's independent QA review as inconsistent with this PR's own CI log
+  (run 36250260023, job `api (django)`: 538 passed, 0 failed — matching the corrected number
+  exactly, so there was never a real regression, only a stale paperwork figure). Achieved using
+  only `SQL_ENGINE=django.db.backends.postgresql` + matching `SQL_*` vars (no
+  `DEBUG`/`CELERY_TASK_ALWAYS_EAGER` overrides, which independently produce 3 false failures
+  confirmed not to reproduce against the correct env).
 
 ## Inputs and evidence sources
 

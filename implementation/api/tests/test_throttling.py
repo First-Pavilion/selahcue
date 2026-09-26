@@ -338,6 +338,57 @@ def test_two_addresses_in_different_slash_64s_have_separate_buckets(settings):
     assert client_ip(second) == "2001:db8:1234:5679::"
 
 
+# --- IPv4-mapped IPv6 must not collapse onto one shared bucket (review round 1: Sana + Cody) --
+# `::ffff:0:0/96` sits ENTIRELY inside the single IPv6 network `::/64`, so bucketing a mapped
+# address as ordinary IPv6 (no unwrap) collapsed EVERY IPv4 client behind a dual-stack listener
+# onto one bucket — the exact opposite of "IPv4 is unaffected" this module documents. A
+# dual-stack (`[::]`-bound) listener reports an IPv4 peer to the application exactly this way,
+# so this is a real deployment shape, not a theoretical one; it just is not reachable through
+# this repo's current all-IPv4 (`0.0.0.0`) bind. Both reviewers found this independently in the
+# same round and it blocked the PR until fixed.
+def test_ipv4_mapped_ipv6_addresses_are_unwrapped_not_bucketed_as_ipv6(settings):
+    """THE regression this fix closes. Without unwrapping, `::ffff:203.0.113.9` and
+    `::ffff:198.51.100.7` — genuinely different IPv4 clients — would both truncate to the same
+    /64 network address (`::`), silently merging their throttle identity with every other
+    IPv4-mapped client, including loopback (`::ffff:127.0.0.1`) and `::1`.
+
+    Mutation-verified: reverting `_bucket_for_throttling` to skip the `address.ipv4_mapped`
+    check (treating a mapped address as ordinary IPv6) makes this assertion fail, because all
+    three addresses below then collapse to the single bucket `::`.
+    """
+    settings.SELAHCUE_TRUSTED_PROXY_COUNT = 0
+    a = RequestFactory().get("/", REMOTE_ADDR="::ffff:203.0.113.9")
+    b = RequestFactory().get("/", REMOTE_ADDR="::ffff:198.51.100.7")
+
+    # Each mapped address buckets to its EMBEDDED IPv4 address, unchanged — exactly as if the
+    # caller had connected over plain IPv4 (no truncation, since IPv4 is never truncated).
+    assert client_ip(a) == "203.0.113.9"
+    assert client_ip(b) == "198.51.100.7"
+    assert client_ip(a) != client_ip(b), "two distinct mapped IPv4 clients must not share a bucket"
+
+
+def test_ipv4_mapped_forwarded_for_entry_is_also_unwrapped(settings):
+    """The unwrap must apply on the `X-Forwarded-For` trusted-hop path too, not only the direct
+    `REMOTE_ADDR` fallback — both call through the same `_bucket_for_throttling`, but this pins
+    the integration rather than trusting that shared-helper reasoning holds without a test."""
+    settings.SELAHCUE_TRUSTED_PROXY_COUNT = 1
+    request = RequestFactory().get(
+        "/", REMOTE_ADDR="10.0.0.9", HTTP_X_FORWARDED_FOR="::ffff:203.0.113.9"
+    )
+    assert client_ip(request) == "203.0.113.9"
+
+
+# --- malformed REMOTE_ADDR still falls back safely (Cody, non-blocking coverage gap) -------
+def test_malformed_remote_addr_falls_back_to_the_raw_value(settings):
+    """`test_forged_non_ip_entry_falls_back_to_remote_addr` above covers a malformed
+    `X-Forwarded-For` entry falling back to a VALID `REMOTE_ADDR`. This covers the other
+    branch: `REMOTE_ADDR` itself being unparseable, which the new direct-fallback parse
+    (added alongside the /64 bucketing) must not turn into an unhandled exception."""
+    settings.SELAHCUE_TRUSTED_PROXY_COUNT = 0
+    request = RequestFactory().get("/", REMOTE_ADDR="not-an-ip-either")
+    assert client_ip(request) == "not-an-ip-either"
+
+
 def test_ipv4_bucketing_is_a_no_op_via_remote_addr(settings):
     """IPv4 behaviour must be byte-for-byte unchanged: a /32 is the whole address, so two
     different IPv4 hosts must never collapse onto one bucket the way IPv6 hosts in a /64 do."""
