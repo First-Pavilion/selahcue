@@ -65,6 +65,17 @@ _RUN_CARGO_AUDIT_RE = re.compile(r"run:\s*cargo audit\b")
 _WORKING_DIR_RE = re.compile(r"working-directory:\s*(\S+)")
 
 
+def _without_full_line_comments(text: str) -> str:
+    """Drop every line that is a YAML comment (its stripped text starts with `#`), so a
+    leftover `# run: cargo audit` note beside a step that no longer runs it can't be mistaken
+    for a live step. Code review (Cody, PR #105) found this as a genuine false-pass: without
+    this, disabling a step by commenting out its `run:` line while leaving the old line in
+    place as a note kept `audited_roots` reporting the root as covered -- exactly the silent
+    drift this script exists to catch, one level down. An inline trailing comment (code then
+    `# ...` on the same line) is untouched; only a line that is ENTIRELY a comment is dropped."""
+    return "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("#"))
+
+
 class CoverageError(Exception):
     """Raised when the two sides can't even be compared (parse failure, not a drift finding)."""
 
@@ -104,6 +115,7 @@ def audited_roots(job_body: str) -> set[str]:
     silent pass -- this repo's convention is always to set one explicitly for these steps, and an
     implicit repo-root audit would silently skip whichever nested Cargo.lock it was meant to
     cover."""
+    job_body = _without_full_line_comments(job_body)
     roots: set[str] = set()
     starts = [m.start() for m in _STEP_START_RE.finditer(job_body)] + [len(job_body)]
     for start, end in zip(starts, starts[1:]):
@@ -211,6 +223,63 @@ exclude = ["crates/selahcue-operator", "crates/selahcue-stt"]
         pass
     else:
         raise AssertionError("expected CoverageError for a cargo-audit step with no working-directory")
+
+    # Cody's review of PR #105: a step whose `run:` was changed to something else, but which
+    # still has a leftover `# run: cargo audit` comment in the same block (an ordinary way to
+    # temporarily disable a check while leaving a note), must NOT be counted as coverage. Before
+    # `_without_full_line_comments`, `audited_roots` matched `cargo audit` anywhere in the block
+    # text and silently treated this as a passing "Audit STT crate" step.
+    disabled_via_comment_ci = """
+  audit:
+    name: dependency audit (RustSec)
+    steps:
+      - uses: actions/checkout@v4
+      - name: Audit desktop workspace
+        working-directory: implementation/desktop
+        run: cargo audit
+      - name: Audit operator shell
+        working-directory: implementation/desktop/crates/selahcue-operator
+        run: cargo audit
+      - name: Audit STT crate
+        working-directory: implementation/desktop/crates/selahcue-stt
+        # run: cargo audit
+        run: echo "audit temporarily disabled"
+
+  supply-chain:
+    name: supply chain (licenses + SBOM)
+"""
+    problems = check(passing_cargo_toml, disabled_via_comment_ci)
+    assert len(problems) == 1, (
+        f"expected the commented-out STT step to be reported as missing, got: {problems}"
+    )
+    assert "implementation/desktop/crates/selahcue-stt" in problems[0], problems
+
+    # Reverse drift: a stale audit step for a root that is no longer excluded (e.g. the crate
+    # rejoined the default workspace and its dedicated step was never removed).
+    stale_step_ci = """
+  audit:
+    name: dependency audit (RustSec)
+    steps:
+      - uses: actions/checkout@v4
+      - name: Audit desktop workspace
+        working-directory: implementation/desktop
+        run: cargo audit
+      - name: Audit operator shell
+        working-directory: implementation/desktop/crates/selahcue-operator
+        run: cargo audit
+      - name: Audit STT crate
+        working-directory: implementation/desktop/crates/selahcue-stt
+        run: cargo audit
+      - name: Audit a crate that rejoined the workspace
+        working-directory: implementation/desktop/crates/selahcue-retired
+        run: cargo audit
+
+  supply-chain:
+    name: supply chain (licenses + SBOM)
+"""
+    problems = check(passing_cargo_toml, stale_step_ci)
+    assert len(problems) == 1, f"expected exactly one problem, got: {problems}"
+    assert "selahcue-retired" in problems[0], problems
 
     print("check_dependency_audit_coverage: self-test passed")
     return 0
