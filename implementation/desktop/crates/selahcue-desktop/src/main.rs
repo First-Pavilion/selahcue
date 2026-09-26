@@ -33,13 +33,14 @@ mod keys;
 mod video_sink;
 
 use selahcue_app::{
-    handler_for, CanonicalAction, ControllerSnapshot, KeyPress, Keymap, LiveController,
+    handler_for, CanonicalAction, ControllerSnapshot, CrashDecision, KeyPress, Keymap,
+    LiveController,
 };
 use selahcue_core::plan::{ItemKind, ServicePlan};
 use selahcue_data::session_repo::SessionState;
 use selahcue_data::{
-    output_repo, plan_repo, saved_theme_repo, screen_config_repo, screen_repo, screen_theme_repo,
-    sermon_note_repo, session_repo, transcript_repo, DataError, Database,
+    autosave_repo, output_repo, plan_repo, saved_theme_repo, screen_config_repo, screen_repo,
+    screen_theme_repo, sermon_note_repo, session_repo, transcript_repo, DataError, Database,
 };
 use selahcue_engine::raster::{Fit, FrameBuffer};
 use selahcue_lan::protocol::{
@@ -74,6 +75,11 @@ const AUTOSAVE_MIN_INTERVAL: Duration = Duration::from_secs(1);
 /// While a countdown runs, refresh its persisted elapsed at least this often — so a
 /// crash loses at most this much timer progress.
 const TIMER_AUTOSAVE_INTERVAL: Duration = Duration::from_secs(5);
+/// Minimum spacing between autosave-SLOT captures (FR-005 "last-3"; 86ajy0hxg) — deliberately
+/// much wider than [`AUTOSAVE_MIN_INTERVAL`], so the bounded 3-slot ring holds meaningfully
+/// distinct restore points instead of three near-duplicates of the same instant under a burst
+/// of commands.
+const AUTOSAVE_SLOT_INTERVAL: Duration = Duration::from_secs(60);
 /// After an NDI sender fails to construct, wait at least this long before retrying it — so a
 /// persistent failure (feature-on) is a slow poll, not a per-frame native re-init storm.
 const NDI_RETRY_BACKOFF: Duration = Duration::from_secs(5);
@@ -726,6 +732,119 @@ impl selahcue_app::SermonNoteStore for RealSermonNoteStore {
     }
 }
 
+/// `SessionState` -> [`ControllerSnapshot`] — the read-side counterpart of
+/// [`SessionStore::state_of`], shared by [`SessionStore::load_session`] and
+/// [`RealAutosaveStore::load_slot`] so a persisted row decodes into the SAME snapshot shape no
+/// matter which table it came from (the singleton `session_state` row or an `autosave_slot`
+/// row — `autosave_repo::AutosaveSlot::state` is the same `SessionState` type).
+fn state_to_snapshot(state: &SessionState) -> ControllerSnapshot {
+    ControllerSnapshot {
+        live_idx: state.live_idx,
+        staged_idx: state.staged_idx,
+        plan_cursor: state.plan_cursor,
+        blackout: state.blackout,
+        timer_total_secs: state.timer_total_secs,
+        timer_elapsed_secs: state.timer_elapsed_secs,
+        timer_running: state.timer_running,
+        live_scripture: state.live_scripture.clone(),
+        live_free_text: state.live_free_text.clone(),
+        live_free_body: state.live_free_body.clone(),
+        staged_scripture: state.staged_scripture.clone(),
+        live_slide: state.live_slide,
+        staged_slide: state.staged_slide,
+        cursor_slide: state.cursor_slide,
+        theme: state.theme.clone(),
+        custom_theme: state.custom_theme.clone(),
+    }
+}
+
+/// Adapts `selahcue_data::autosave_repo` to `selahcue_app::AutosaveStore` (FR-005 "last-3";
+/// 86ajy0hxg) — the exact sibling of [`RealSermonNoteStore`] just above, for the identical
+/// reason: `selahcue-app` must not depend on `selahcue-data`. Owns its own `Database`
+/// connection, opened the same way (see [`SessionStore::open_autosave_store`]).
+struct RealAutosaveStore {
+    db: Database,
+}
+
+impl selahcue_app::AutosaveStore for RealAutosaveStore {
+    fn list_slots(&mut self) -> Result<Vec<selahcue_app::AutosaveSlotSummary>, String> {
+        autosave_repo::list(&self.db)
+            .map(|rows| {
+                rows.into_iter()
+                    .map(|s| selahcue_app::AutosaveSlotSummary {
+                        slot: s.id,
+                        saved_at_ms: s.saved_at_ms,
+                        label: s.label,
+                    })
+                    .collect()
+            })
+            .map_err(|e| e.to_string())
+    }
+}
+
+/// A deterministic snapshot of a plan's item CONTENT (86ajy0hxg; Cody, PR #102 code review —
+/// Blocking-1). `autosave_slot` rows store a `plan_id` POINTER, not an independent copy of the
+/// plan's content, and `plan_repo::update` mutates a plan's rows IN PLACE on every edit — so
+/// without something to compare, restoring an older slot silently reapplied its indices onto
+/// whatever the CURRENT (possibly since-edited) content happens to be. Reproduced live: remove
+/// a plan item, `RestoreAutosave` a slot captured before the removal, and the WRONG item went
+/// LIVE with no error at all. [`resolve_autosave_slot`] compares this against the value stored
+/// at capture time and REFUSES the restore (an honest `Err`) on any mismatch.
+///
+/// Debug-formats the item list rather than hashing: no hash-collision risk to reason about, and
+/// `PlanItem`/`Stanza`/`ItemContent` are all `Vec`/`Option`/primitive-based (no unordered
+/// collection whose iteration order could vary between two calls over identical content), so
+/// the format is stable. This intentionally narrows what `RestoreAutosave` can do: it is
+/// reliable for the "failed open" / crash-restart case (nothing edited the plan between capture
+/// and restore), but NOT a general plan-version-history feature — undoing a live edit made
+/// AFTER a slot was captured invalidates that slot's fingerprint by definition, so restoring it
+/// is refused rather than replaying stale indices onto edited content. Real plan-content
+/// versioning (independent snapshots, not a pointer) would need its own, larger feature — out
+/// of scope for this ticket's additive wire slice.
+fn plan_fingerprint(plan: &ServicePlan) -> String {
+    format!("{:?}", plan.items())
+}
+
+/// Resolve one autosave slot to `(plan_id, plan, snapshot)`, integrity-checked (FR-079) and
+/// fingerprint-guarded (see [`plan_fingerprint`]) — the shared logic behind
+/// [`SessionStore::load_autosave_slot`]. A free function over `&Database` (not a method on any
+/// store type) because it is called from the HOST tick ([`App::handle_pending_restore`]),
+/// deliberately OUTSIDE any `Mutex<LiveController>` lock: PR #102's performance review (Vera)
+/// found that running this — an `integrity_check` over the WHOLE store, potentially hundreds of
+/// milliseconds — inline inside `LiveController::apply()` (the earlier shape, via an
+/// `AutosaveStore::load_slot` trait method) held that lock for the same duration, stalling the
+/// render/present loop that locks it every frame. `RestoreAutosave` no longer resolves inline;
+/// see `autosave_store.rs`'s module doc. Returns the resolved plan's OWN row id alongside its
+/// content — a caller with `plan_id` bookkeeping of its own (see
+/// [`SessionStore::load_autosave_slot`]) needs it, and `ServicePlan` itself carries no
+/// persisted identity to re-derive it from.
+fn resolve_autosave_slot(
+    db: &Database,
+    slot: i64,
+) -> Result<Option<(i64, ServicePlan, ControllerSnapshot)>, String> {
+    // FR-079: never trust a read from a store that has gone corrupt — check BEFORE resolving
+    // the row, so a corrupt store refuses the whole restore rather than handing back a
+    // plausible-looking but unreliable snapshot.
+    db.integrity_check().map_err(|e| e.to_string())?;
+    let Some(row) = autosave_repo::load(db, slot).map_err(|e| e.to_string())? else {
+        return Ok(None);
+    };
+    let Some(plan_id) = row.state.plan_id else {
+        return Err("autosave slot has no associated plan".to_string());
+    };
+    let plan = plan_repo::load(db, plan_id).map_err(|e| e.to_string())?;
+    // The plan-content guard (Blocking-1): refuse rather than silently reapply stale indices
+    // onto content that has changed since this slot was captured.
+    let current_fingerprint = plan_fingerprint(&plan);
+    if row.plan_fingerprint.as_deref() != Some(current_fingerprint.as_str()) {
+        return Err(format!(
+            "plan {plan_id} has changed since autosave slot {slot} was captured; refusing to \
+             restore stale indices onto different content"
+        ));
+    }
+    Ok(Some((plan_id, plan, state_to_snapshot(&row.state))))
+}
+
 /// `sermon_note_repo::SermonNoteRecord` -> the LAN wire "slot" shape
 /// ([`selahcue_app::RegenerationSlot`]) — the regenerate-with-retention sibling of
 /// [`sermon_note_view_of`] just above, additionally surfacing the `pending` regeneration
@@ -1004,27 +1123,21 @@ impl SessionStore {
             }
         };
         self.plan_id = Some(plan_id);
-        Some((
-            plan,
-            ControllerSnapshot {
-                live_idx: state.live_idx,
-                staged_idx: state.staged_idx,
-                plan_cursor: state.plan_cursor,
-                blackout: state.blackout,
-                timer_total_secs: state.timer_total_secs,
-                timer_elapsed_secs: state.timer_elapsed_secs,
-                timer_running: state.timer_running,
-                live_scripture: state.live_scripture,
-                live_free_text: state.live_free_text,
-                live_free_body: state.live_free_body,
-                staged_scripture: state.staged_scripture,
-                live_slide: state.live_slide,
-                staged_slide: state.staged_slide,
-                cursor_slide: state.cursor_slide,
-                theme: state.theme,
-                custom_theme: state.custom_theme,
-            },
-        ))
+        Some((plan, state_to_snapshot(&state)))
+    }
+
+    /// Whether a preserved session row exists on disk, WITHOUT the side effects
+    /// [`load_session`](Self::load_session) has (it sets `self.plan_id`, which must stay unset
+    /// until a real resume actually happens — see the crash-loop `resumable` computation in
+    /// [`App::new`], 86ajy0hxg). A read-only peek: `Ok(Some(_))` from `session_repo::load`, and
+    /// nothing else — deliberately NOT "and its plan still loads", because that would require
+    /// the same plan-load side effects this exists to avoid; a session row whose plan later
+    /// fails to load is still surfaced honestly as "nothing to resume" by `Command::Resume`'s
+    /// own handling at that point, not here.
+    fn has_preserved_session(&self) -> bool {
+        self.db
+            .as_ref()
+            .is_some_and(|db| matches!(session_repo::load(db), Ok(Some(_))))
     }
 
     /// Ensure the (demo) plan exists in the store; called before the first save.
@@ -1213,13 +1326,12 @@ impl SessionStore {
         self.last_save_error.as_deref()
     }
 
-    /// Persist the live-state snapshot. Returns whether the write succeeded (an
-    /// error is reported, never fatal mid-service; the caller re-arms the retry).
-    fn save_session(&mut self, snap: &ControllerSnapshot) -> bool {
-        let Some(db) = self.db.as_ref() else {
-            return true;
-        };
-        let state = SessionState {
+    /// Build the persistence-layer [`SessionState`] for `snap`, stamped with this store's
+    /// current `plan_id` — the single conversion both [`save_session`](Self::save_session) and
+    /// [`push_autosave_slot`](Self::push_autosave_slot) use, so the two persisted shapes (the
+    /// singleton row and a slot-ring row) can never drift apart field-by-field.
+    fn state_of(&self, snap: &ControllerSnapshot) -> SessionState {
+        SessionState {
             plan_id: self.plan_id,
             live_idx: snap.live_idx,
             staged_idx: snap.staged_idx,
@@ -1237,7 +1349,16 @@ impl SessionStore {
             cursor_slide: snap.cursor_slide,
             theme: snap.theme.clone(),
             custom_theme: snap.custom_theme.clone(),
+        }
+    }
+
+    /// Persist the live-state snapshot. Returns whether the write succeeded (an
+    /// error is reported, never fatal mid-service; the caller re-arms the retry).
+    fn save_session(&mut self, snap: &ControllerSnapshot) -> bool {
+        let Some(db) = self.db.as_ref() else {
+            return true;
         };
+        let state = self.state_of(snap);
         match session_repo::save(db, &state) {
             Ok(()) => {
                 self.last_save_error = None;
@@ -1249,6 +1370,60 @@ impl SessionStore {
                 false
             }
         }
+    }
+
+    /// Capture a new autosave-slot restore point (FR-005 "last-3"; 86ajy0hxg). Best-effort and
+    /// never fatal — a failure here does not touch [`last_save_error`](Self::last_save_error)
+    /// (that field is specifically the SINGLETON crash-recovery row's health, which the
+    /// operator-facing `autosave_error` health field reports; the slot ring is a secondary,
+    /// lower-stakes convenience feature and logging its own failure is enough).
+    fn push_autosave_slot(&self, plan: &ServicePlan, snap: &ControllerSnapshot, saved_at_ms: i64) {
+        let Some(db) = self.db.as_ref() else {
+            return;
+        };
+        let state = self.state_of(snap);
+        // Captured alongside the state, from the SAME plan the snapshot's indices point into —
+        // see `plan_fingerprint`'s doc for why this exists (Blocking-1).
+        let fingerprint = plan_fingerprint(plan);
+        if let Err(e) = autosave_repo::push(db, &state, saved_at_ms, None, Some(&fingerprint)) {
+            eprintln!("SelahCue: could not capture an autosave restore point ({e}).");
+        }
+    }
+
+    /// Best-effort: open the durable autosave-slot store (FR-005 "last-3"; 86ajy0hxg) — the
+    /// exact sibling of [`open_sermon_note_store`](Self::open_sermon_note_store) just above,
+    /// for the identical reason (`selahcue-app` must not depend on `selahcue-data`). `None` on
+    /// any failure — the caller keeps the default no-op `NullAutosaveStore`.
+    fn open_autosave_store() -> Option<Box<dyn selahcue_app::AutosaveStore>> {
+        let dir = data_dir()?;
+        let path = dir.join("selahcue.db3");
+        let db = Self::open_db(&path, &dir).ok()?;
+        Some(Box::new(RealAutosaveStore { db }))
+    }
+
+    /// Resolve a `Command::RestoreAutosave` slot (FR-005/FR-079; 86ajy0hxg) — called from
+    /// [`App::handle_pending_restore`], on THIS store's own already-open connection, OUTSIDE any
+    /// `Mutex<LiveController>` lock (see [`resolve_autosave_slot`]'s doc for why that matters).
+    ///
+    /// On success, ALSO updates `self.plan_id` to the resolved slot's plan — unlike the earlier
+    /// shape (Sana, PR #102 security review — S-5), this runs on the SAME `SessionStore` whose
+    /// `plan_id` governs where normal autosave writes go, so a cross-plan restore (a slot
+    /// captured before a `NewPlan`/`ImportPlan`) immediately re-points subsequent saves at the
+    /// restored plan's row — not "eventually, on the next edit," which was never actually true
+    /// (`save_plan` only re-derives `plan_id` when it is `None`, never overwrites an existing
+    /// one).
+    fn load_autosave_slot(
+        &mut self,
+        slot: i64,
+    ) -> Result<Option<(ServicePlan, ControllerSnapshot)>, String> {
+        let Some(db) = self.db.as_ref() else {
+            return Ok(None);
+        };
+        let Some((plan_id, plan, snap)) = resolve_autosave_slot(db, slot)? else {
+            return Ok(None);
+        };
+        self.plan_id = Some(plan_id);
+        Ok(Some((plan, snap)))
     }
 }
 
@@ -1752,6 +1927,11 @@ struct App {
     /// Breaker-tripped clean run: checkpointing fully disabled so the
     /// preserved on-disk session is never touched (review 7ad-A).
     clean_mode: bool,
+    /// Whether a preserved session exists to resume from while `clean_mode` is true
+    /// (86ajy0hxg `SessionHealthView::resumable`) — cleared once `Command::Resume`/
+    /// `Command::StartClean` is handled (see [`App::handle_crash_decision`]), since at that
+    /// point there is no longer a pending decision to offer.
+    crash_resumable: bool,
     /// Cached identify frames (main = 1, stage = 2) while the overlay is active. Each side
     /// is `None` when that screen currently has no window (disabled), so identify still
     /// works for whichever outputs ARE open. Invalidated whenever a window opens/closes.
@@ -1762,6 +1942,10 @@ struct App {
     /// The session store (SQLite) for autosave + crash recovery.
     store: SessionStore,
     last_autosave: Instant,
+    /// Last time an autosave-SLOT restore point was captured (FR-005 "last-3"; 86ajy0hxg) —
+    /// gates [`AUTOSAVE_SLOT_INTERVAL`], separate from [`Self::last_autosave`] (the singleton
+    /// row's own, much tighter, throttle).
+    last_slot_push: Instant,
     /// GUI-launch smoke mode (story 86ajpevzp): present the first frame, report
     /// the time-to-first-frame (from App init — an informational figure, NOT the
     /// ≤3s cold-start NFR, which `make nfr` measures), then exit 0.
@@ -2094,6 +2278,13 @@ impl App {
                 None => (demo_plan(), None),
             }
         };
+        // Crash-loop "resumable" (86ajy0hxg): a read-only existence peek, deliberately NOT
+        // `store.load_session()` (which sets `self.plan_id` as a side effect — see
+        // `has_preserved_session`'s own doc) — this process must not point its OWN saves at the
+        // preserved row until `Command::Resume` actually asks for it. Only meaningful when
+        // `crash_loop` is true; the non-crash-loop path already resumed automatically above, so
+        // there is nothing left pending to offer.
+        let crash_resumable = crash_loop && store.has_preserved_session();
         // Make sure the plan rows exist before the first snapshot references them —
         // except in clean mode (the preserved session must stay untouched, and no
         // orphan demo rows may accumulate across breaker trips) or on a critical
@@ -2123,6 +2314,10 @@ impl App {
             if let Some(store) = SessionStore::open_sermon_note_store() {
                 c.set_sermon_note_store(store);
             }
+            // Autosave-slot store (FR-005 "last-3"; 86ajy0hxg): same best-effort degradation.
+            if let Some(store) = SessionStore::open_autosave_store() {
+                c.set_autosave_store(store);
+            }
         }
         if let Ok(mut c) = controller.lock() {
             // Publish health from the FIRST frame, so the very first operator view already
@@ -2136,6 +2331,7 @@ impl App {
                 crash_loop,
                 crash_rapid_launches,
                 store.last_save_error(),
+                crash_resumable,
             );
             // CON-158: a build fact, never a runtime condition, so it is set once here and
             // never revisited (unlike storage/session health, which the host re-reports as
@@ -2205,10 +2401,12 @@ impl App {
             session_restored: restored.is_some(),
             crash_rapid_launches,
             clean_mode: crash_loop,
+            crash_resumable,
             identify_frames: None,
             modifiers: winit::keyboard::ModifiersState::empty(),
             store,
             last_autosave: Instant::now(),
+            last_slot_push: Instant::now(),
             smoke: smoke_mode_requested(
                 std::env::args(),
                 std::env::var_os("SELAHCUE_SMOKE").is_some(),
@@ -2346,6 +2544,104 @@ impl App {
         self.publish_output_status();
     }
 
+    /// Drain and act on a pending crash-loop `Resume`/`StartClean` decision (FR-169,
+    /// FR-074/075; 86ajy0hxg). This is the ONE place that performs the host-side I/O the
+    /// controller cannot reach itself (`SessionStore`/`LaunchGuard`) — the controller only ever
+    /// records the operator's intent (see `LiveController::take_pending_crash_decision`).
+    ///
+    /// `Resume` re-reads the preserved session (untouched on disk because `clean_mode` paused
+    /// checkpointing) and swaps it into the already-running controller; `StartClean` leaves the
+    /// already-running clean session exactly as booted and persists it going forward. Both
+    /// re-enable checkpointing and forgive the launch-stability journal (`mark_stable`) so a
+    /// resolved trip does not compound into the next launch's count.
+    fn handle_crash_decision(&mut self, now: Instant) {
+        let decision = self
+            .controller
+            .lock()
+            .ok()
+            .and_then(|mut c| c.take_pending_crash_decision());
+        let Some(decision) = decision else {
+            return;
+        };
+        match decision {
+            CrashDecision::Resume => {
+                // Re-derive the preserved session the same way boot would have — `clean_mode`
+                // guaranteed nothing wrote over it since. `load_session` (unlike the read-only
+                // `has_preserved_session` peek used at boot) correctly sets `self.plan_id` to
+                // the preserved plan's row, which is exactly right now: going forward, normal
+                // autosave writes should target THAT row, because this IS the resumed session.
+                match self.store.load_session() {
+                    Some((plan, snap)) => {
+                        if let Ok(mut c) = self.controller.lock() {
+                            c.resume_preserved(plan, &snap);
+                        }
+                        self.session_restored = true;
+                        println!("  Session resumed (crash-loop recovery, operator confirmed).");
+                    }
+                    None => {
+                        eprintln!(
+                            "SelahCue: Resume requested but no preserved session was found; \
+                             continuing on the already-running clean session."
+                        );
+                    }
+                }
+            }
+            CrashDecision::StartClean => {
+                // Nothing to swap — the already-running session IS the clean start. Persist its
+                // plan now (skipped at boot specifically because clean_mode was in effect), so
+                // the row exists before checkpointing resumes below.
+                if let Ok(c) = self.controller.lock() {
+                    self.store.ensure_plan(c.plan());
+                }
+                println!("  Starting clean confirmed (crash-loop recovery, operator confirmed).");
+            }
+        }
+        self.clean_mode = false;
+        self.crash_resumable = false;
+        if let Some(g) = self.launch_guard.as_ref() {
+            g.mark_stable();
+        }
+        self.last_autosave = now;
+    }
+
+    /// Drain and act on a pending `Command::RestoreAutosave` slot (FR-005/FR-079; 86ajy0hxg).
+    /// Mirrors [`handle_crash_decision`](Self::handle_crash_decision) exactly, and for the same
+    /// reason PLUS one more (Vera, PR #102 performance review — B-1): resolving a slot means an
+    /// `integrity_check` over the WHOLE store, which can run into the hundreds of milliseconds
+    /// on a realistic install. The earlier shape ran that check INSIDE `LiveController::apply()`,
+    /// which held the same `Mutex<LiveController>` the render/present loop locks every frame,
+    /// stalling audience output for the full duration. This drains the controller's recorded
+    /// INTENT with a brief lock, resolves the slot on `self.store`'s own connection with NO lock
+    /// held, and takes the lock again only to apply the already-decoded result (a fast,
+    /// in-memory `resume_preserved` call) — never both at once.
+    fn handle_pending_restore(&mut self) {
+        let slot = self
+            .controller
+            .lock()
+            .ok()
+            .and_then(|mut c| c.take_pending_restore_slot());
+        let Some(slot) = slot else {
+            return;
+        };
+        match self.store.load_autosave_slot(slot) {
+            Ok(Some((plan, snap))) => {
+                if let Ok(mut c) = self.controller.lock() {
+                    c.resume_preserved(plan, &snap);
+                }
+                println!("  Autosave slot {slot} restored.");
+            }
+            Ok(None) => {
+                eprintln!(
+                    "SelahCue: RestoreAutosave requested slot {slot}, which no longer exists \
+                     (already pruned, or never existed); nothing was restored."
+                );
+            }
+            Err(e) => {
+                eprintln!("SelahCue: could not restore autosave slot {slot} ({e}).");
+            }
+        }
+    }
+
     /// Push the host's storage + session health into the operator view.
     ///
     /// These were previously reported by `eprintln!` only, so nobody actually running a service
@@ -2369,13 +2665,25 @@ impl App {
                 // which is what the operator needs to know.
                 self.disk_critical || self.clean_mode,
             );
-            c.set_session_health(restored, crash_loop, rapid, autosave_error.as_deref());
+            c.set_session_health(
+                restored,
+                crash_loop,
+                rapid,
+                autosave_error.as_deref(),
+                self.crash_resumable,
+            );
         }
     }
 
     /// Autosave: persist the session when state changed (throttled to ~1/s) and
     /// periodically while a countdown runs (so its elapsed stays fresh on disk).
     fn autosave(&mut self, now: Instant) {
+        // Drain any pending crash-loop decision FIRST, so a Resume/StartClean made this tick is
+        // already reflected in this SAME tick's health publish immediately below (86ajy0hxg).
+        self.handle_crash_decision(now);
+        // Drain any pending RestoreAutosave slot — see `handle_pending_restore`'s own doc for
+        // why this must never run inline inside `LiveController::apply()`.
+        self.handle_pending_restore();
         // Publish health FIRST, before any early return below.
         //
         // A halted-checkpoint state is precisely when the operator most needs to be told, and
@@ -2517,8 +2825,17 @@ impl App {
                 c.mark_plan_dirty(); // failed write: retry next frame
             }
             c.take_state_dirty(); // superseded by the immediate joint save below
-            if self.store.save_session(&c.snapshot(now)) {
+            let snap = c.snapshot(now);
+            if self.store.save_session(&snap) {
                 self.last_autosave = now;
+                // Autosave-slot capture (FR-005 "last-3"; 86ajy0hxg), gated by
+                // AUTOSAVE_SLOT_INTERVAL so the bounded 3-slot ring holds distinct instants
+                // rather than near-duplicates. Inlined (not a `&mut self` helper): `c` already
+                // borrows `self.controller`, and only field-disjoint access compiles here.
+                if now.duration_since(self.last_slot_push) >= AUTOSAVE_SLOT_INTERVAL {
+                    self.last_slot_push = now;
+                    self.store.push_autosave_slot(c.plan(), &snap, now_ms());
+                }
             } else {
                 c.mark_state_dirty();
             }
@@ -2528,8 +2845,13 @@ impl App {
         let periodic =
             c.timer_active() && now.duration_since(self.last_autosave) >= TIMER_AUTOSAVE_INTERVAL;
         if (dirty || periodic) && now.duration_since(self.last_autosave) >= AUTOSAVE_MIN_INTERVAL {
-            if self.store.save_session(&c.snapshot(now)) {
+            let snap = c.snapshot(now);
+            if self.store.save_session(&snap) {
                 self.last_autosave = now;
+                if now.duration_since(self.last_slot_push) >= AUTOSAVE_SLOT_INTERVAL {
+                    self.last_slot_push = now;
+                    self.store.push_autosave_slot(c.plan(), &snap, now_ms());
+                }
             } else if dirty {
                 // The write failed: the change is still unpersisted — retry next frame.
                 c.mark_state_dirty();
@@ -3907,6 +4229,209 @@ mod transcript_durability_tests {
             detail.ended_at_ms,
             Some(9_999),
             "a normally-ended transcript's ended_at must be left exactly as it was"
+        );
+    }
+}
+
+/// `resolve_autosave_slot`/`SessionStore::load_autosave_slot` (FR-005/FR-079; 86ajy0hxg) —
+/// closes a gap Sana's PR #102 security review found (S-1): every `RestoreAutosave` test
+/// elsewhere in this ticket goes through `FakeAutosaveStore`
+/// (`selahcue-app/tests/test_service_plan_resilience.rs`), which never runs a real
+/// `PRAGMA integrity_check` — its `fail_integrity` flag just returns a hardcoded string.
+/// Deleting the real `integrity_check()` call, or reordering it after the row read, left every
+/// test in this ticket green. These tests exercise the REAL `selahcue-data`-backed path,
+/// against a real on-disk SQLite store, including a genuinely corrupted one AND the
+/// plan-content fingerprint guard (Cody, PR #102 code review — Blocking-1).
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod autosave_restore_tests {
+    use selahcue_core::plan::{ItemContent, ItemKind, ServicePlan};
+    use selahcue_data::session_repo::SessionState;
+    use selahcue_data::{autosave_repo, plan_repo, Database};
+
+    fn seeded_db() -> (Database, i64, ServicePlan) {
+        let db = Database::open_in_memory().unwrap();
+        let mut plan = ServicePlan::new("Sunday");
+        plan.add_item(ItemKind::Song, "Doxology");
+        plan.add_item(ItemKind::Scripture, "Romans 8:28");
+        let plan_id = plan_repo::insert(&db, &plan).unwrap();
+        (db, plan_id, plan)
+    }
+
+    /// Push a slot for `plan` as it exists RIGHT NOW — mirrors
+    /// `SessionStore::push_autosave_slot`'s real call, so the fingerprint captured always
+    /// matches the plan at push time (tests that want a MISMATCH mutate the plan afterward).
+    fn push(
+        db: &Database,
+        plan: &ServicePlan,
+        plan_id: i64,
+        live_idx: Option<u32>,
+        saved_at_ms: i64,
+    ) {
+        let state = SessionState {
+            plan_id: Some(plan_id),
+            live_idx,
+            ..Default::default()
+        };
+        let fp = super::plan_fingerprint(plan);
+        autosave_repo::push(db, &state, saved_at_ms, None, Some(&fp)).unwrap();
+    }
+
+    #[test]
+    fn resolves_a_healthy_slot_end_to_end() {
+        let (db, plan_id, plan) = seeded_db();
+        push(&db, &plan, plan_id, Some(0), 1_000);
+        let slot = autosave_repo::list(&db).unwrap()[0].id;
+
+        let (resolved_plan_id, resolved_plan, snap) = super::resolve_autosave_slot(&db, slot)
+            .unwrap()
+            .expect("a real, healthy slot must resolve");
+        assert_eq!(resolved_plan_id, plan_id);
+        assert_eq!(resolved_plan.len(), 2);
+        assert_eq!(snap.live_idx, Some(0));
+    }
+
+    #[test]
+    fn refuses_an_unknown_slot_without_touching_integrity() {
+        let (db, _, _) = seeded_db();
+        assert!(super::resolve_autosave_slot(&db, 999).unwrap().is_none());
+    }
+
+    /// FR-079's whole point: a slot with no associated plan (a corrupt/incomplete row) must be
+    /// REFUSED, never silently resolved with a missing or default plan.
+    #[test]
+    fn refuses_a_slot_with_no_associated_plan() {
+        let db = Database::open_in_memory().unwrap();
+        let state = SessionState {
+            plan_id: None,
+            live_idx: Some(0),
+            ..Default::default()
+        };
+        autosave_repo::push(&db, &state, 1_000, None, None).unwrap();
+        let slot = autosave_repo::list(&db).unwrap()[0].id;
+        assert!(
+            super::resolve_autosave_slot(&db, slot).is_err(),
+            "a slot with plan_id = NULL must be refused, not silently restored"
+        );
+    }
+
+    /// FR-079, proven against REAL SQLite corruption (not a mocked flag): two tables sharing
+    /// one b-tree root page is a genuine, `PRAGMA integrity_check`-detectable corruption
+    /// (`sqlite_master.rootpage` edited via `writable_schema`, the standard technique for
+    /// exercising this without fragile raw byte surgery on the file). Proves `resolve_autosave_slot`
+    /// refuses to resolve the row when the store itself is unhealthy — the row read never
+    /// happens; only `Err` comes back, never a plausible-looking but unreliable snapshot.
+    #[test]
+    fn refuses_to_resolve_from_a_genuinely_corrupt_store() {
+        let (db, plan_id, plan) = seeded_db();
+        push(&db, &plan, plan_id, Some(0), 1_000);
+        let slot = autosave_repo::list(&db).unwrap()[0].id;
+        // Positive control: before corruption, this exact slot resolves cleanly.
+        assert!(
+            super::resolve_autosave_slot(&db, slot).unwrap().is_some(),
+            "positive control: the slot must resolve BEFORE corruption for the refusal below \
+             to mean anything"
+        );
+
+        let other_root: i64 = db
+            .conn()
+            .query_row(
+                "SELECT rootpage FROM sqlite_master WHERE type='table' AND name='service_plan'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        db.conn()
+            .execute_batch(&format!(
+                "PRAGMA writable_schema = ON;
+                 UPDATE sqlite_master SET rootpage = {other_root}
+                    WHERE type = 'table' AND name = 'autosave_slot';
+                 PRAGMA writable_schema = OFF;
+                 PRAGMA schema_version = 999999999;"
+            ))
+            .unwrap();
+
+        let result = super::resolve_autosave_slot(&db, slot);
+        assert!(
+            result.is_err(),
+            "a corrupt store must be refused, got {result:?}"
+        );
+    }
+
+    /// THE Blocking-1 regression (Cody, PR #102 code review), reproduced against the real repo
+    /// layer: capture a slot, then edit the SAME plan (same `plan_id` — the case the earlier
+    /// doc comment called "unaffected" and which Cody proved wasn't), then attempt to restore
+    /// the pre-edit slot. Before the fingerprint guard, this silently returned the pre-edit
+    /// INDICES paired with the post-edit CONTENT — a removed item's slot could resolve to
+    /// whatever item now sits at that index, with no error. The guard must refuse instead.
+    #[test]
+    fn refuses_to_restore_a_slot_whose_plan_content_changed_since_capture() {
+        let (db, plan_id, plan) = seeded_db();
+        // Capture live on the Scripture item (index 1) — Cody's exact repro shape.
+        push(&db, &plan, plan_id, Some(1), 1_000);
+        let slot = autosave_repo::list(&db).unwrap()[0].id;
+        // Positive control: before the edit, this exact slot resolves cleanly.
+        assert!(
+            super::resolve_autosave_slot(&db, slot).unwrap().is_some(),
+            "positive control: the slot must resolve BEFORE the edit for the refusal below to \
+             mean anything"
+        );
+
+        // The operator removes the Scripture item — an ordinary, everyday plan edit, not a
+        // NewPlan/ImportPlan replacement. `plan_repo::update` mutates the SAME `plan_id` row
+        // in place, exactly like the real desktop's `App::save_plan` does on every `plan_dirty`
+        // tick.
+        let mut edited = plan.clone();
+        let scripture_id = edited.items()[1].id;
+        edited.remove(scripture_id).unwrap();
+        assert_eq!(
+            edited.len(),
+            1,
+            "positive control: the edit really removed an item"
+        );
+        plan_repo::update(&db, plan_id, &edited).unwrap();
+
+        let result = super::resolve_autosave_slot(&db, slot);
+        assert!(
+            result.is_err(),
+            "a slot captured before a since-applied plan edit must be REFUSED, not resolved \
+             onto the edited content — got {result:?}"
+        );
+    }
+
+    /// Positive control for the guard above, the other direction: a slot's OWN content link
+    /// changing (not just add/remove) must also be caught — proves the fingerprint compares
+    /// real item content, not just item COUNT (which an add/remove-only test could pass with a
+    /// mutation that only checked `.len()`).
+    #[test]
+    fn refuses_when_only_an_items_content_link_changed_not_the_count() {
+        let (db, plan_id, plan) = seeded_db();
+        push(&db, &plan, plan_id, Some(0), 1_000);
+        let slot = autosave_repo::list(&db).unwrap()[0].id;
+
+        let mut edited = plan.clone();
+        let scripture_item_id = edited.items()[1].id;
+        edited
+            .set_item_content(
+                scripture_item_id,
+                Some(ItemContent::Scripture {
+                    reference: "John 3:16".to_string(),
+                    translation: None,
+                    verses_per_slide: None,
+                    verse_numbers: None,
+                }),
+            )
+            .unwrap();
+        assert_eq!(
+            edited.len(),
+            plan.len(),
+            "positive control: the item count is UNCHANGED — only content differs"
+        );
+        plan_repo::update(&db, plan_id, &edited).unwrap();
+
+        assert!(
+            super::resolve_autosave_slot(&db, slot).is_err(),
+            "a content-only edit (same item count) must still invalidate the slot"
         );
     }
 }

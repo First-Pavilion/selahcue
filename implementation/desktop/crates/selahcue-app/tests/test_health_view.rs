@@ -253,12 +253,12 @@ fn an_unknown_storage_verdict_stays_unknown_at_the_view() {
 #[test]
 fn an_autosave_failure_reaches_the_view_and_clears_when_it_recovers() {
     let mut c = live_controller();
-    c.set_session_health(true, false, None, Some("disk I/O error"));
+    c.set_session_health(true, false, None, Some("disk I/O error"), false);
     let down = c.operator_view().session.unwrap();
     assert!(down.restored);
     assert_eq!(down.autosave_error.as_deref(), Some("disk I/O error"));
 
-    c.set_session_health(true, false, None, None);
+    c.set_session_health(true, false, None, None, false);
     let up = c.operator_view().session.unwrap();
     assert_eq!(
         up.autosave_error, None,
@@ -271,7 +271,7 @@ fn an_autosave_failure_reaches_the_view_and_clears_when_it_recovers() {
 #[test]
 fn a_tripped_crash_loop_breaker_reports_its_count() {
     let mut c = live_controller();
-    c.set_session_health(false, true, Some(3), None);
+    c.set_session_health(false, true, Some(3), None, false);
     let s = c.operator_view().session.unwrap();
     assert!(s.crash_loop);
     assert_eq!(s.rapid_launches, Some(3));
@@ -281,12 +281,24 @@ fn a_tripped_crash_loop_breaker_reports_its_count() {
     );
 }
 
+/// `resumable` is a SEPARATE bit from `crash_loop` — a crash loop with nothing preserved to
+/// resume (e.g. a fresh install's first unstable launches) must not claim a session is waiting.
+#[test]
+fn resumable_reports_whether_a_preserved_session_exists() {
+    let mut c = live_controller();
+    c.set_session_health(false, true, Some(3), None, true);
+    assert!(c.operator_view().session.unwrap().resumable);
+
+    c.set_session_health(false, true, Some(3), None, false);
+    assert!(!c.operator_view().session.unwrap().resumable);
+}
+
 /// Bounded memory: exactly one autosave error is retained and it is length-capped. A host error
 /// (a SQLite message with a nested cause) can be arbitrarily long.
 #[test]
 fn the_retained_autosave_error_is_capped() {
     let mut c = live_controller();
-    c.set_session_health(false, false, None, Some(&"x".repeat(10_000)));
+    c.set_session_health(false, false, None, Some(&"x".repeat(10_000)), false);
     let stored = c.operator_view().session.unwrap().autosave_error.unwrap();
     assert!(
         stored.len() <= selahcue_lan::protocol::MAX_ERROR_TEXT_LEN,
@@ -295,7 +307,7 @@ fn the_retained_autosave_error_is_capped() {
     );
     // Positive control: a short error survives verbatim, so the cap above is not merely
     // proving the field stores nothing.
-    c.set_session_health(false, false, None, Some("short"));
+    c.set_session_health(false, false, None, Some("short"), false);
     assert_eq!(
         c.operator_view().session.unwrap().autosave_error.as_deref(),
         Some("short")
@@ -306,7 +318,7 @@ fn the_retained_autosave_error_is_capped() {
 fn storage_and_session_health_survive_the_wire_round_trip() {
     let mut c = live_controller();
     c.set_storage_health("low", Some(64), false);
-    c.set_session_health(true, false, None, Some("autosave failed"));
+    c.set_session_health(true, false, None, Some("autosave failed"), false);
 
     let wire: OperatorStateView = c.operator_view().into();
     let json = to_json(&ServerMessage::OperatorState { view: wire }).unwrap();

@@ -449,6 +449,57 @@ const MIGRATIONS: &[&str] = &[
     ALTER TABLE sermon_note ADD COLUMN pending_model TEXT;
     ALTER TABLE sermon_note ADD COLUMN pending_generated_at INTEGER;
     "#,
+    // v22 -> v23: bounded autosave-SLOT history (FR-005 "last-3"; ticket 86ajy0hxg).
+    //
+    // `session_state` (v1) stays exactly what it always was: a SINGLETON row, continuously
+    // overwritten, that crash recovery restores from on every launch. This table is a sibling,
+    // not a replacement — a bounded RING of distinct earlier restore points (`autosave_repo`
+    // enforces the count via prune-after-insert), so "restore the last autosave" (FR-005) has
+    // more than the single most-recent instant to offer when THAT instant turns out to be the
+    // state the operator wants to get away from (a failed open). Mirrors `session_state`'s
+    // columns, plus `saved_at_ms` (when this restore point was captured), an optional `label`,
+    // and `plan_fingerprint`.
+    //
+    // `plan_fingerprint` (added before this migration ever shipped — Cody, PR #102 code review,
+    // Blocking-1 — so amended in place rather than a follow-up v24): this table stores a
+    // `plan_id` POINTER, not an independent copy of the plan's content, and `plan_repo::update`
+    // mutates a plan's rows IN PLACE on every edit. Without this column, restoring an older slot
+    // silently reapplied its indices onto whatever the CURRENT (possibly since-edited) plan
+    // content happens to be — reproduced live: remove an item, then `RestoreAutosave` a
+    // pre-removal slot, and the wrong item goes LIVE with no error at all. `plan_fingerprint` is
+    // a deterministic snapshot of the plan's item content at capture time
+    // (`main.rs::plan_fingerprint`); a restore compares it against the CURRENT plan's
+    // fingerprint and REFUSES (an honest `Err`, never a silent misapplication) if they differ.
+    // This intentionally narrows the feature: it is reliable for the "failed open" / crash-
+    // restart case (nothing edited the plan between capture and restore), but NOT a general
+    // plan-version-history feature — the plan itself would need its own content snapshot for
+    // that, which is real, separate follow-on work, not this ticket's additive wire slice.
+    r#"
+    CREATE TABLE autosave_slot (
+        id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+        saved_at_ms        INTEGER NOT NULL,
+        label              TEXT,
+        plan_id            INTEGER REFERENCES service_plan(id) ON DELETE SET NULL,
+        plan_fingerprint   TEXT,
+        live_idx           INTEGER,
+        staged_idx         INTEGER,
+        plan_cursor        INTEGER,
+        blackout           INTEGER NOT NULL DEFAULT 0,
+        timer_total_secs   INTEGER,
+        timer_elapsed_secs INTEGER,
+        timer_running      INTEGER,
+        live_scripture     TEXT,
+        staged_scripture   TEXT,
+        live_free_text     TEXT,
+        live_slide         INTEGER,
+        staged_slide       INTEGER,
+        cursor_slide       INTEGER,
+        live_free_body     TEXT,
+        theme              TEXT,
+        custom_theme       TEXT
+    );
+    CREATE INDEX idx_autosave_slot_saved_at ON autosave_slot(saved_at_ms);
+    "#,
 ];
 
 /// The schema version this build expects (== `MIGRATIONS.len()`).
