@@ -283,18 +283,80 @@ def test_forged_non_ip_entry_falls_back_to_remote_addr(settings):
 
 def test_valid_ipv6_forwarded_entry_is_accepted(settings):
     """Validation must not become an accidental IPv4-only filter — that would collapse
-    every IPv6 client onto the proxy's single bucket."""
+    every IPv6 client onto the proxy's single bucket.
+
+    The returned value is the /64 BUCKET, not the literal address (86akcn8ww) — see the
+    dedicated bucketing tests below for why. `2001:db8::1` and `2001:db8::ffff:ffff:ffff:ffff`
+    share a /64 network address of `2001:db8::`, which is what this asserts.
+    """
     settings.SELAHCUE_TRUSTED_PROXY_COUNT = 1
     request = RequestFactory().get(
         "/", REMOTE_ADDR="10.0.0.9", HTTP_X_FORWARDED_FOR="2001:db8::1"
     )
-    assert client_ip(request) == "2001:db8::1"
+    assert client_ip(request) == "2001:db8::"
 
     # Spelling is normalised, so one client cannot hold two budgets.
     expanded = RequestFactory().get(
         "/", REMOTE_ADDR="10.0.0.9", HTTP_X_FORWARDED_FOR="2001:0DB8:0:0:0:0:0:1"
     )
-    assert client_ip(expanded) == "2001:db8::1"
+    assert client_ip(expanded) == "2001:db8::"
+
+
+# --- IPv6 /64 bucketing (86akcn8ww) -----------------------------------------------------
+# Sana's finding: `client_ip` returned the FULL normalised IPv6 address with no bucketing, so
+# one attacker on a standard residential /64 allocation controlled ~2^64 distinct throttle
+# identities — every per-IP budget in the API (device-auth, resend-verification, both
+# password-reset paths) inherited this. The fix collapses IPv6 onto its /64 network prefix
+# before it becomes a cache key. IPv4 is a no-op (a /32 IS the whole address).
+def test_two_addresses_in_the_same_slash_64_share_one_bucket(settings):
+    """THE finding this ticket closes. Two DIFFERENT IPv6 addresses inside the same /64
+    allocation — the low 64 bits (the interface identifier) are all an end host controls
+    freely — must resolve to the SAME throttle identity, or a single attacker can mint
+    unbounded distinct budgets from one allocation.
+
+    Mutation-verified: reverting `client_ip` to return `str(ipaddress.ip_address(...))`
+    directly (no bucketing) makes this assertion fail, because the two addresses would then be
+    distinct strings. Confirmed by hand during implementation; not left in the tree as a
+    mutation the CI can run, per this repo's tests always asserting the POST-fix behaviour.
+    """
+    settings.SELAHCUE_TRUSTED_PROXY_COUNT = 0
+    first = RequestFactory().get("/", REMOTE_ADDR="2001:db8:1234:5678::1")
+    second = RequestFactory().get("/", REMOTE_ADDR="2001:db8:1234:5678:ffff:ffff:ffff:ffff")
+    assert client_ip(first) == client_ip(second) == "2001:db8:1234:5678::"
+
+
+def test_two_addresses_in_different_slash_64s_have_separate_buckets(settings):
+    """The POSITIVE CONTROL the ticket calls for by name: without this, "shares a budget" from
+    the test above is indistinguishable from a limiter that collapses every address onto ONE
+    bucket regardless of network — i.e. broken rather than fixed. Two addresses that differ
+    only in their /64 prefix (bit 63, the boundary itself) must resolve to different buckets."""
+    settings.SELAHCUE_TRUSTED_PROXY_COUNT = 0
+    first = RequestFactory().get("/", REMOTE_ADDR="2001:db8:1234:5678::1")
+    second = RequestFactory().get("/", REMOTE_ADDR="2001:db8:1234:5679::1")
+    assert client_ip(first) != client_ip(second)
+    assert client_ip(first) == "2001:db8:1234:5678::"
+    assert client_ip(second) == "2001:db8:1234:5679::"
+
+
+def test_ipv4_bucketing_is_a_no_op_via_remote_addr(settings):
+    """IPv4 behaviour must be byte-for-byte unchanged: a /32 is the whole address, so two
+    different IPv4 hosts must never collapse onto one bucket the way IPv6 hosts in a /64 do."""
+    settings.SELAHCUE_TRUSTED_PROXY_COUNT = 0
+    a = RequestFactory().get("/", REMOTE_ADDR="203.0.113.5")
+    b = RequestFactory().get("/", REMOTE_ADDR="203.0.113.6")
+    assert client_ip(a) == "203.0.113.5"
+    assert client_ip(b) == "203.0.113.6"
+    assert client_ip(a) != client_ip(b)
+
+
+def test_remote_addr_ipv6_is_bucketed_even_with_no_trusted_proxy(settings):
+    """The direct (no-proxy) fallback path reads `REMOTE_ADDR` straight from the socket peer —
+    this must be bucketed too, not just the `X-Forwarded-For`-derived path, since an
+    IPv6-reachable deployment with no proxy in front is exactly the documented Cloudflare-less
+    edge this ticket exists for."""
+    settings.SELAHCUE_TRUSTED_PROXY_COUNT = 0
+    request = RequestFactory().get("/", REMOTE_ADDR="2001:db8:abcd::42")
+    assert client_ip(request) == "2001:db8:abcd::"
 
 
 # --- through the real view -------------------------------------------------
