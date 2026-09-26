@@ -1,0 +1,86 @@
+# Dependabot version-update coverage. 17tnw2az07j.
+#
+# Before this file existed, this repo had ZERO scheduled ecosystem-update coverage —
+# the only Dependabot activity was GitHub's native "Dependabot security updates" repo
+# setting (which needs no config file and runs independently of this one), and even
+# that had been failing silently since July on `implementation/api`'s open
+# `cryptography` version range with no lockfile (see that crate's pyproject.toml
+# comment and ClickUp 17tnw2az07j for the full root-cause trail). This file adds the
+# scheduled side: routine version-update PRs for all four package ecosystems in the
+# repo, plus the GitHub Actions workflow files themselves.
+#
+# Weekly, not daily: this repo's CI is expensive per its own CLAUDE.md (a 3-OS matrix,
+# an ADR-0015 GPU parity oracle across Metal/lavapipe/DX12, Playwright WebKit smoke,
+# cargo audit/deny, Flutter/Android). A daily cadence would multiply that cost across
+# four ecosystems for marginal freshness. This matches the cadence philosophy already
+# established by `.github/workflows/rust-canary.yml`'s weekly Monday run.
+#
+# Note: this schedule governs routine (non-security) updates. GitHub's native security
+# updates (the ones that were failing) are a separate, always-on mechanism controlled
+# by the repo's Security settings, not by this file — this file cannot disable or
+# replace that path, only add scheduled coverage alongside it.
+
+version: 2
+
+updates:
+  # implementation/desktop — Rust workspace (Cargo.toml at the workspace root; per-crate
+  # manifests, including selahcue-operator, are picked up as workspace members).
+  - package-ecosystem: "cargo"
+    directory: "/implementation/desktop"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "UTC"
+    labels:
+      - "dependencies"
+      - "rust"
+
+  # implementation/api — Django/Strawberry Platform API (pip, pyproject.toml).
+  - package-ecosystem: "pip"
+    directory: "/implementation/api"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "UTC"
+    labels:
+      - "dependencies"
+      - "api"
+
+  # implementation/marketing — Vue SPA (npm, package.json).
+  - package-ecosystem: "npm"
+    directory: "/implementation/marketing"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "UTC"
+    labels:
+      - "dependencies"
+      - "marketing"
+
+  # implementation/mobile/selahcue_controller — Flutter controller app (pub, pubspec.yaml).
+  - package-ecosystem: "pub"
+    directory: "/implementation/mobile/selahcue_controller"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "UTC"
+    labels:
+      - "dependencies"
+      - "mobile"
+
+  # The workflow files themselves (actions/checkout, actions/upload-artifact, etc.),
+  # so pinned action versions get the same scheduled coverage as application code.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "UTC"
+    labels:
+      - "dependencies"
+      - "github-actions"
