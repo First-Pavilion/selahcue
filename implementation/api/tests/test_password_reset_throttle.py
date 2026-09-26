@@ -40,6 +40,7 @@ same way as the header test above (see the handoff evidence).
 """
 
 import json
+import logging
 
 import pytest
 from django.core.cache import cache
@@ -561,3 +562,82 @@ def test_request_reset_address_budget_cache_key_is_the_hmac_fingerprint_not_the_
         "endpoint keying Redis entries on attacker-chosen text is the unbounded-key-growth "
         "problem this ticket's own scope note calls out"
     )
+
+
+# --- 86akcn92k (F1): the reset SEND degrades under its own outage ceiling ------------------
+# All three budgets above fail OPEN when the limiter store is down (by design — see the
+# module comment in services.py). Without a stand-in, an outage would revert
+# `request_password_reset` to unmetered mail and unbounded oracle sampling: exactly the
+# pre-86akcmfd4 state, reachable by anyone who detects or induces store unavailability. The
+# reset send now degrades under `_claim_degraded_reset_send` — its OWN ceiling, never shared
+# with resend-verification's.
+@pytest.fixture
+def reset_limiter_down(monkeypatch):
+    monkeypatch.setattr(guards, "CacheStore", lambda _cache: _BrokenStore())
+    services._reset_floor_overrun_reporting()
+    services._reset_reset_send_degraded_window()
+
+
+@pytest.mark.django_db
+def test_a_limiter_outage_bounds_the_reset_send_without_denying_the_response(
+    client, settings, caplog, reset_limiter_down
+):
+    """THE positive control for F1: many requests during an outage must still all report
+    accepted:true (no enumeration oracle from an outage-shaped error) while only the
+    ceiling's worth of mail actually leaves."""
+    import logging
+
+    settings.SELAHCUE_RESET_SEND_DEGRADED_CEILING = (2, 60)
+    sender = _CapturingSender()
+    services.set_email_sender(sender)
+    try:
+        for i in range(5):
+            _existing_verified_account(sender, email=f"outage-reset{i}@budget.example", idem=f"outage-reset-{i}")
+        sender.reset_tokens.clear()  # the accounts' own setup already sent verify mail, not reset mail
+
+        with caplog.at_level(logging.WARNING, logger=services.logger.name):
+            responses = [
+                post_account(client, REQUEST_RESET, {"e": f"outage-reset{i}@budget.example"})
+                for i in range(5)
+            ]
+
+        assert all(error_code(r) is None for r in responses), "an outage must not deny the response"
+        assert all(
+            body(r)["data"]["requestPasswordReset"]["accepted"] is True for r in responses
+        )
+        assert len(sender.reset_tokens) == 2, (
+            "a limiter outage must bound the reset send, not hand out an unmetered send path"
+        )
+        skips = [r for r in caplog.records if "limiter unavailable" in r.getMessage()]
+        assert len(skips) == 1, "the degradation must be reported, once per interval"
+    finally:
+        services.set_email_sender(services.EmailSender())
+
+
+@pytest.mark.django_db
+def test_the_reset_degraded_ceiling_is_spent_whether_or_not_the_account_exists(
+    client, settings, reset_limiter_down
+):
+    """The ceiling must not become an existence oracle: an attacker who can watch it drain
+    through their own inbox must not be able to tell whether OTHER probed addresses exist by
+    watching how fast it empties. Charged on every degraded call, not only sends."""
+    settings.SELAHCUE_RESET_SEND_DEGRADED_CEILING = (1, 60)
+    sender = _CapturingSender()
+    services.set_email_sender(sender)
+    try:
+        # A call for a NON-EXISTENT address, while the store is down, still spends the shared
+        # ceiling — proven by it being empty for the next (REAL) call below.
+        first = post_account(client, REQUEST_RESET, {"e": "nonexistent-outage@budget.example"})
+        assert error_code(first) is None
+
+        email = _existing_verified_account(sender, email="real-outage@budget.example", idem="real-outage-1")
+        sender.reset_tokens.clear()
+        second = post_account(client, REQUEST_RESET, {"e": email})
+
+        assert error_code(second) is None, "the response must still be accepted:true"
+        assert sender.reset_tokens == [], (
+            "the ceiling was exhausted by the FIRST (non-existent-address) call — a real "
+            "account's send must be skipped too, or the ceiling leaks account existence"
+        )
+    finally:
+        services.set_email_sender(services.EmailSender())
