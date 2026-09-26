@@ -323,6 +323,12 @@ RESEND_GLOBAL_BUDGET = (500, 3600)
 RESET_REQUEST_IP_BUDGET = (20, 3600)
 RESET_CONFIRM_IP_BUDGET = (20, 3600)
 
+# Per-target-email and global budgets for `request_password_reset` (86akcn8p4). Mirrors
+# RESEND_ADDRESS_BUDGET / RESEND_GLOBAL_BUDGET exactly — see the setting-level comment in
+# settings.py for why this closes the mail-bombing gap the per-IP budget above does not.
+RESET_REQUEST_ADDRESS_BUDGET = (3, 900)
+RESET_REQUEST_GLOBAL_BUDGET = (500, 3600)
+
 # --- sending while the limiter is down ---------------------------------------------------
 # All three budgets above FAIL OPEN. That is right for the RESPONSE — refusing because the
 # limiter is unreachable would turn an outage into a second outage, and a refusal is
@@ -1139,15 +1145,37 @@ def request_password_reset(email: str, client_ip: str = "") -> AcceptedResult:
     """Always returns accepted:true (no enumeration). When the email matches a user, invalidate any
     prior unconsumed reset tokens and email a fresh single-use one.
 
-    Spends a per-client-IP budget FIRST, before the email is even validated — 86akcmfd4, DEC-013's
-    required follow-up. The mint-vs-no-mint branch below is what DEC-013 measured a ~0.437ms gap
-    on; this does not close that gap (see the comment on the `else` branch for why not), it bounds
-    how many times one source can sample it. The budget is spent UNCONDITIONALLY, before the
-    existence check, for the same reason the resend budgets are: a limiter that only bit for real
-    accounts would itself be an existence oracle. `RATE_LIMITED` cannot leak anything about the
-    email either way — it is decided purely by request COUNT from `client_ip`, before any
-    existence-dependent branch runs, so a throttled caller learns nothing about the email they sent.
+    Spends THREE budgets before any existence-dependent branch runs — global, then per-client-IP,
+    then per-target-email — mirroring `resend_email_verification`'s shape exactly (86akcn8p4,
+    Sana's more-urgent follow-up to 86akcmfd4). The per-IP budget alone (86akcmfd4, DEC-013's
+    required follow-up) bounds how many timing samples one source can take against the mint-vs-
+    no-mint branch (see the `else` branch below for why it does not close that gap); it does
+    nothing to bound MAIL VOLUME against one victim, which is a different threat with a different
+    key. A distributed attacker sprays distinct source IPs — cheap even before IPv6 (86akcn8ww)
+    makes it nearly free — so the address budget is what actually caps how many reset emails one
+    mailbox can receive, and the global budget caps total send cost the same way
+    `RESEND_GLOBAL_BUDGET` does.
+
+    Widest first (global), exactly as resend does it, so a global flood cannot be diagnosed by
+    watching which specific limit tripped. Every budget is spent UNCONDITIONALLY, before the
+    existence check: a limiter that only bit for real accounts would itself be an existence
+    oracle, and the per-address key is `_email_fingerprint` — the same HMAC the mint branch below
+    already computes — never the raw submitted email, for the same cache-key-cardinality reason
+    resend already solved. `RATE_LIMITED` cannot leak anything about the email either way — it is
+    decided purely by request COUNT, before any existence-dependent branch runs, so a throttled
+    caller learns nothing about the email they sent. Not padded when rate-limited, same as resend:
+    `RATE_LIMITED` is already structurally distinct from `accepted:true`, so its timing reveals
+    nothing further, and padding a rejection would hand an attacker a way to tie up threads.
     """
+    normalized = _require_valid_email(email)
+    fingerprint = _email_fingerprint(normalized)
+
+    enforce_budget(
+        "password_reset_request_global",
+        "global",
+        "SELAHCUE_THROTTLE_RESET_REQUEST_GLOBAL",
+        RESET_REQUEST_GLOBAL_BUDGET,
+    )
     if not client_ip:
         _report_unresolved_client_ip("request_password_reset")
     enforce_budget(
@@ -1156,8 +1184,12 @@ def request_password_reset(email: str, client_ip: str = "") -> AcceptedResult:
         "SELAHCUE_THROTTLE_RESET_REQUEST",
         RESET_REQUEST_IP_BUDGET,
     )
-    normalized = _require_valid_email(email)
-    fingerprint = _email_fingerprint(normalized)
+    enforce_budget(
+        "password_reset_request_addr",
+        fingerprint,
+        "SELAHCUE_THROTTLE_RESET_REQUEST_ADDRESS",
+        RESET_REQUEST_ADDRESS_BUDGET,
+    )
     now = djtz.now()
     with transaction.atomic():
         user = CustomerUser.objects.filter(email_fingerprint=fingerprint).first()
