@@ -442,6 +442,13 @@ fn every_command_round_trips() {
         },
         Command::ConfirmSermonNoteRegeneration { transcript_id: 7 },
         Command::DiscardSermonNoteRegeneration { transcript_id: 7 },
+        // 86ajy0hxg: item Undo/Redo, autosave slots + restore, crash-loop Resume/StartClean.
+        Command::UndoPlan,
+        Command::RedoPlan,
+        Command::ListAutosaveSlots,
+        Command::RestoreAutosave { slot: 7 },
+        Command::Resume,
+        Command::StartClean,
     ];
     for c in cmds {
         let json = to_json(&c).unwrap();
@@ -2037,6 +2044,59 @@ fn plan_publish_and_lifecycle_commands_have_a_pinned_wire_shape() {
         })
         .unwrap(),
         r#"{"cmd":"import_plan","name":"Imported","items":[{"kind":"song","title":"Opening","owner":"Ada","planned_secs":300}]}"#
+    );
+}
+
+#[test]
+fn service_plan_resilience_commands_have_a_pinned_wire_shape() {
+    // Ticket 86ajy0hxg: item Undo/Redo, autosave slots + restore, and crash-loop Resume/
+    // StartClean. All additive — none of these are commands any existing client sends today,
+    // so nothing else would catch a rename; pinned from the day they ship, mirroring the plan
+    // lifecycle commands' own test just above.
+    use selahcue_lan::protocol::{to_json, AutosaveSlotView};
+
+    assert_eq!(
+        to_json(&Command::UndoPlan).unwrap(),
+        r#"{"cmd":"undo_plan"}"#
+    );
+    assert_eq!(
+        to_json(&Command::RedoPlan).unwrap(),
+        r#"{"cmd":"redo_plan"}"#
+    );
+    assert_eq!(
+        to_json(&Command::ListAutosaveSlots).unwrap(),
+        r#"{"cmd":"list_autosave_slots"}"#
+    );
+    assert_eq!(
+        to_json(&Command::RestoreAutosave { slot: 7 }).unwrap(),
+        r#"{"cmd":"restore_autosave","slot":7}"#
+    );
+    assert_eq!(to_json(&Command::Resume).unwrap(), r#"{"cmd":"resume"}"#);
+    assert_eq!(
+        to_json(&Command::StartClean).unwrap(),
+        r#"{"cmd":"start_clean"}"#
+    );
+
+    // AutosaveSlotView: `label` is skip-if-none, so a minimal (automatic, unlabelled) slot
+    // stays compact.
+    assert_eq!(
+        to_json(&AutosaveSlotView {
+            slot: 7,
+            saved_at_ms: 1_700_000_000_000,
+            label: None
+        })
+        .unwrap(),
+        r#"{"slot":7,"saved_at_ms":1700000000000}"#
+    );
+    // With a label present it appends LAST.
+    assert_eq!(
+        to_json(&AutosaveSlotView {
+            slot: 7,
+            saved_at_ms: 1_700_000_000_000,
+            label: Some("before sermon".into())
+        })
+        .unwrap(),
+        r#"{"slot":7,"saved_at_ms":1700000000000,"label":"before sermon"}"#
     );
 }
 

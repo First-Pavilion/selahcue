@@ -5,6 +5,7 @@
 //! `SelectItem`) stages the item in **Preview**; only `GoLive` commits it to the
 //! **Live** output. `Clear`/`Blackout` act on Live.
 
+use crate::autosave_store::{AutosaveStore, NullAutosaveStore};
 use crate::operator::{ItemView, OperatorView};
 use crate::sermon_note_store::{NullSermonNoteStore, SermonNoteStore};
 use crate::transcript_sink::{NullTranscriptSink, TranscriptSink};
@@ -13,11 +14,12 @@ use selahcue_core::plan::{ItemId, ServicePlan};
 use selahcue_core::scripture;
 use selahcue_core::timer::Timer;
 use selahcue_lan::protocol::{
-    Command, ContentLinkView, DenyReason, DetectionView, DisplayView, ImportItemView,
-    OutputConfigView, OutputHealthView, OutputStatusView, PlanSummaryView, PlanTemplateView,
-    PublishStateView, SavedThemeView, ScaleFit, ScreenThemeView, ScreenView, ServerMessage,
-    SessionHealthView, StorageHealthView, ThumbView, TimerSnapshot, TranscriptSegmentView,
-    VerseView, MAX_FRAME_RATE, MAX_NDI_NAME_LEN, MAX_OUTPUT_DELAY_MS, MIN_FRAME_RATE,
+    AutosaveSlotView, Command, ContentLinkView, DenyReason, DetectionView, DisplayView,
+    ImportItemView, OutputConfigView, OutputHealthView, OutputStatusView, PlanSummaryView,
+    PlanTemplateView, PublishStateView, SavedThemeView, ScaleFit, ScreenThemeView, ScreenView,
+    ServerMessage, SessionHealthView, StorageHealthView, ThumbView, TimerSnapshot,
+    TranscriptSegmentView, VerseView, MAX_FRAME_RATE, MAX_NDI_NAME_LEN, MAX_OUTPUT_DELAY_MS,
+    MIN_FRAME_RATE,
 };
 use selahcue_present::{
     AuthoredSlide, FrameBuffer, LayerMask, Presenter, Slide, StageDisplay, StageTheme, Theme,
@@ -298,6 +300,40 @@ pub struct LiveController {
     /// caller with a real store (the desktop binary) wires one in via
     /// [`set_sermon_note_store`](Self::set_sermon_note_store).
     sermon_notes: Box<dyn SermonNoteStore>,
+    /// The autosave-slot store (FR-005 "last-3"; 86ajy0hxg) — the sibling seam to
+    /// `transcript_sink`/`sermon_notes` above, for the identical reason: `selahcue-app` must
+    /// not depend on `selahcue-data`. Defaults to [`NullAutosaveStore`], matching both
+    /// siblings' own no-op default; a caller with a real store (the desktop binary) wires one
+    /// in via [`set_autosave_store`](Self::set_autosave_store).
+    autosave_store: Box<dyn AutosaveStore>,
+    /// A crash-loop `Resume`/`StartClean` decision, set by [`Command::Resume`]/
+    /// [`Command::StartClean`] and drained by the host's tick (86ajy0hxg) — the controller
+    /// stays storage-free (mirrors the `state_dirty`/`screen_registry_dirty` poll pattern: the
+    /// controller marks intent, the host performs the actual `SessionStore`/`LaunchGuard` I/O
+    /// it alone has access to). `None` most of the time.
+    pending_crash_decision: Option<CrashDecision>,
+    /// A pending [`Command::RestoreAutosave`] slot id, drained by the host's tick exactly like
+    /// [`pending_crash_decision`](Self::pending_crash_decision) — and for the same reason PLUS
+    /// one more (Vera, PR #102 performance review, 86ajy0hxg): resolving a slot means an
+    /// `integrity_check` over the WHOLE store, which can run into the hundreds of ms on a
+    /// realistic install. Handling it inline inside `apply()` held the SAME `Mutex<LiveController>`
+    /// the render/present loop locks every frame for that whole duration, stalling audience
+    /// output. The host resolves the slot OUTSIDE this lock (its own `SessionStore` connection,
+    /// `selahcue-desktop`'s `App::handle_pending_restore`) and takes the lock only to apply the
+    /// already-decoded result via [`resume_preserved`](Self::resume_preserved) — mirrors the
+    /// `Resume`/`StartClean` pattern exactly, which Vera's same review confirmed does not have
+    /// this problem.
+    pending_restore_slot: Option<i64>,
+}
+
+/// The operator's crash-loop decision (FR-169; 86ajy0hxg) — see
+/// [`LiveController::take_pending_crash_decision`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CrashDecision {
+    /// Restore the preserved prior session the desktop force-booted clean, away from.
+    Resume,
+    /// Confirm starting clean: keep the already-running fresh session, resume checkpointing.
+    StartClean,
 }
 
 /// How many recent transcript segments the fuzzy quote matcher looks back over, so a
@@ -898,6 +934,9 @@ impl LiveController {
             partial: None,
             transcript_sink: Box::new(NullTranscriptSink),
             sermon_notes: Box::new(NullSermonNoteStore),
+            autosave_store: Box::new(NullAutosaveStore),
+            pending_crash_decision: None,
+            pending_restore_slot: None,
         }
     }
 
@@ -914,6 +953,45 @@ impl LiveController {
     /// store was previously set.
     pub fn set_sermon_note_store(&mut self, store: Box<dyn SermonNoteStore>) {
         self.sermon_notes = store;
+    }
+
+    /// Wire a real durable [`AutosaveStore`] (FR-005 "last-3"; 86ajy0hxg) — e.g. one backed by
+    /// `selahcue_data::autosave_repo` — in place of the default no-op. Replaces whatever store
+    /// was previously set.
+    pub fn set_autosave_store(&mut self, store: Box<dyn AutosaveStore>) {
+        self.autosave_store = store;
+    }
+
+    /// Drain the pending crash-loop decision (86ajy0hxg), if any — the host's per-frame tick
+    /// polls this exactly like [`take_state_dirty`](Self::take_state_dirty), because the
+    /// controller stays storage-free and the actual `SessionStore`/`LaunchGuard` I/O can only
+    /// happen on the host side. `None` on every call that finds nothing pending.
+    pub fn take_pending_crash_decision(&mut self) -> Option<CrashDecision> {
+        self.pending_crash_decision.take()
+    }
+
+    /// Drain a pending [`Command::RestoreAutosave`] slot id (86ajy0hxg), if any — the host's
+    /// per-frame tick polls this exactly like [`take_pending_crash_decision`]. See
+    /// [`pending_restore_slot`](Self::pending_restore_slot)'s doc for why this is deferred
+    /// rather than resolved inline in `apply()`.
+    pub fn take_pending_restore_slot(&mut self) -> Option<i64> {
+        self.pending_restore_slot.take()
+    }
+
+    /// Crash-loop "Resume" (86ajy0hxg): swap in a DIFFERENT plan and restore a snapshot
+    /// captured against it. Unlike [`restore`](Self::restore), which only repositions indices
+    /// WITHIN the plan already loaded, this also replaces the plan document itself — needed
+    /// because this process booted clean (a placeholder plan, checkpointing paused after a
+    /// crash-loop trip) and the preserved snapshot's indices were captured against the
+    /// PRESERVED plan, not whatever placeholder this process started with.
+    ///
+    /// Reuses `restore`'s own tested index/theme/timer reconciliation unchanged — only the plan
+    /// swap is new — and marks state dirty afterward (unlike a boot-time `restore`, this
+    /// resumed state must survive the very next crash, not wait for the next real edit).
+    pub fn resume_preserved(&mut self, plan: ServicePlan, snap: &ControllerSnapshot) {
+        self.plan = plan;
+        self.restore(snap);
+        self.state_dirty = true;
     }
 
     /// Open a new durable transcript session (86akcfftu) — the counterpart of
@@ -2077,12 +2155,17 @@ impl LiveController {
     /// `autosave_error` is truncated to a bounded length: exactly one is retained and each
     /// replaces the last, so nothing accumulates, but an uncapped host error string would still
     /// be unbounded growth.
+    ///
+    /// `resumable` (86ajy0hxg): whether a preserved prior session exists for
+    /// [`Command::Resume`](selahcue_lan::protocol::Command::Resume) to actually restore —
+    /// distinguishes "crash loop, nothing to resume" from "crash loop, a session is waiting."
     pub fn set_session_health(
         &mut self,
         restored: bool,
         crash_loop: bool,
         rapid_launches: Option<u32>,
         autosave_error: Option<&str>,
+        resumable: bool,
     ) {
         self.session_health = Some(SessionHealthView {
             restored,
@@ -2094,6 +2177,7 @@ impl LiveController {
                     selahcue_lan::protocol::MAX_ERROR_TEXT_LEN,
                 )
             }),
+            resumable,
         });
     }
 
@@ -3392,6 +3476,85 @@ impl LiveController {
             },
             Command::ImportPlan { name, items } => self.import_plan(name, items),
 
+            // Item Undo (86ajy0hxg): thin wire wrappers over the existing whole-plan undo
+            // history, previously reachable only from the local Tauri operator shell
+            // (`operator.rs`'s `RemoteOperator::plan_undo`/`plan_redo`). `undo_plan`/`redo_plan`
+            // are no-ops on an empty history, so this is always `Ack`, never `Deny`.
+            Command::UndoPlan => {
+                self.undo_plan();
+                ControllerReply::Ack
+            }
+            Command::RedoPlan => {
+                self.redo_plan();
+                ControllerReply::Ack
+            }
+            // Autosave slots (FR-005 "last-3"; 86ajy0hxg). Read-only: answers from whatever the
+            // injected `AutosaveStore` reports right now — no caching, so the list is always
+            // current with the next successful capture.
+            Command::ListAutosaveSlots => match self.autosave_store.list_slots() {
+                Ok(slots) => ControllerReply::Message(ServerMessage::AutosaveSlots {
+                    slots: slots
+                        .into_iter()
+                        .map(|s| AutosaveSlotView {
+                            slot: s.slot,
+                            saved_at_ms: s.saved_at_ms,
+                            // Bounded (Sana, PR #102 security review — N-2), matching every
+                            // other free-text field this wire carries.
+                            label: s.label.as_deref().map(|l| {
+                                selahcue_lan::protocol::truncate_for_wire(
+                                    l,
+                                    selahcue_lan::protocol::MAX_AUTOSAVE_LABEL_LEN,
+                                )
+                            }),
+                        })
+                        .collect(),
+                }),
+                Err(_) => ControllerReply::Deny(DenyReason::BadRequest),
+            },
+            // Restore an EARLIER checkpoint on purpose (FR-005/FR-079; 86ajy0hxg) — distinct
+            // from `Resume`, which only ever re-applies the single most recent preserved
+            // session. The slot may belong to a different plan document than the one currently
+            // loaded, so the plan is swapped too (mirrors `resume_preserved`).
+            //
+            // Deferred to the host tick, like `Resume`/`StartClean` — NOT resolved inline here.
+            // Resolving a slot means an `integrity_check` over the whole store (Vera, PR #102
+            // review), which must never run while this command holds the lock the render/present
+            // loop needs every frame. Always `Ack`: the request is accepted, not yet known to
+            // have found anything — the host logs (and a future caller can observe via
+            // `ListAutosaveSlots`/`GetOperatorState`) whether it actually found/restored a slot.
+            Command::RestoreAutosave { slot } => {
+                self.pending_restore_slot = Some(*slot);
+                ControllerReply::Ack
+            }
+            // Crash-loop Resume/StartClean (FR-169, FR-074/075; 86ajy0hxg): only meaningful
+            // while the host has reported a crash-loop trip. Recording the decision here and
+            // draining it host-side (rather than acting immediately) is the same storage-free
+            // discipline as every other host-backed command — the controller cannot itself
+            // reach `SessionStore`/`LaunchGuard`. This is a UX guard, not a security boundary:
+            // every role that may send `Resume`/`StartClean` at all (RBAC `EditPlan`,
+            // Operator-only) could equally reach the same live-session outcome through
+            // `RestoreAutosave`, so the check below exists to keep a client honest about
+            // whether a decision is even pending, not to contain a privilege.
+            //
+            // Also requires `resumable` (Cody, PR #102 code review — Medium-3): `crash_loop`
+            // alone does not mean there is anything TO resume (a fresh install's first
+            // unstable launches has no preserved session at all) — without this, `Resume`
+            // would `Ack` and record a decision the host can only silently degrade into a
+            // no-op, leaving the client believing its Resume succeeded.
+            Command::Resume => match &self.session_health {
+                Some(h) if h.crash_loop && h.resumable => {
+                    self.pending_crash_decision = Some(CrashDecision::Resume);
+                    ControllerReply::Ack
+                }
+                _ => ControllerReply::Deny(DenyReason::BadRequest),
+            },
+            Command::StartClean => match &self.session_health {
+                Some(h) if h.crash_loop => {
+                    self.pending_crash_decision = Some(CrashDecision::StartClean);
+                    ControllerReply::Ack
+                }
+                _ => ControllerReply::Deny(DenyReason::BadRequest),
+            },
             // Remote Control device management is handled at the transport/session layer
             // (server.rs, which owns the SessionRegistry), NOT the operational controller — the
             // server intercepts these before the handler, so this arm is a defensive fallback

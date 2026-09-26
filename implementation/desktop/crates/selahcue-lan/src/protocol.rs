@@ -518,6 +518,54 @@ pub enum Command {
         name: String,
         items: Vec<ImportItemView>,
     },
+    /// Undo the last Service-Plan edit (86ajy0hxg — item Undo). The wire surface for the
+    /// existing whole-plan undo history (`LiveController::undo_plan`, previously reachable only
+    /// from the local Tauri operator shell): a removed item comes back with its ORIGINAL id and
+    /// content link intact, because this restores the exact prior document rather than
+    /// re-inserting a new row. A no-op (still `Ack`) on an empty undo history.
+    UndoPlan,
+    /// Redo the last undone plan edit — the inverse of [`Command::UndoPlan`]. A no-op (still
+    /// `Ack`) on an empty redo history.
+    RedoPlan,
+    /// List the bounded autosave-slot history (FR-005 "last-3"; 86ajy0hxg) — the "restore the
+    /// last autosave" recovery flow's read side. Read-only.
+    ListAutosaveSlots,
+    /// Restore the session from a specific autosave slot (an id from
+    /// [`ServerMessage::AutosaveSlots`]), after an integrity check (FR-079) AND a plan-content
+    /// guard (below). Deliberately separate from [`Command::Resume`]: this restores an EARLIER
+    /// checkpoint on purpose, for when the most recent state is itself the problem — a failed
+    /// open — where `Resume` only ever re-applies the single most recent preserved session.
+    ///
+    /// Always replies `Ack` — resolving a slot (integrity check + read, potentially hundreds of
+    /// milliseconds on a large store) happens on the HOST's tick, deferred exactly like
+    /// [`Command::Resume`]/[`Command::StartClean`], never inline while this command would
+    /// otherwise hold the controller lock the render/present loop needs every frame (Vera, PR
+    /// #102 performance review — B-1). An unknown slot, a failed integrity check, or a refused
+    /// plan-content mismatch (below) is a silent no-op from the wire's point of view (still
+    /// `Ack`); the host logs the reason, and a client can tell whether anything actually changed
+    /// via `GetOperatorState`.
+    ///
+    /// **What this restores, precisely (Cody, PR #102 code review — Blocking-1):** a slot is a
+    /// `plan_id` pointer plus SESSION POSITION (live/staged/timer/theme), not an independent
+    /// copy of the plan's item content — the plan document itself is mutated in place by
+    /// ordinary edits. The host therefore refuses the restore outright if the referenced plan's
+    /// content has changed since this slot was captured, rather than silently reapplying stale
+    /// indices onto different content. This makes the command reliable for the "failed open" /
+    /// crash-restart case, but it is NOT a general plan-version-history feature: undoing a live
+    /// edit made after a slot was captured is exactly what invalidates that slot.
+    RestoreAutosave { slot: i64 },
+    /// Accept the crash-loop breaker's preserved prior session (FR-169; FR-074/075) instead of
+    /// the clean start the desktop force-booted with. Only accepted while
+    /// [`SessionHealthView::crash_loop`] AND [`SessionHealthView::resumable`] are both true —
+    /// `crash_loop` alone does not mean there is a preserved session TO resume; denied
+    /// otherwise (86ajy0hxg). A UX guard against sending a decision that has nothing to act on,
+    /// not a security boundary: every role permitted to send this at all (RBAC-gated the same
+    /// as `RestoreAutosave`) could reach an equivalent outcome through that command instead.
+    Resume,
+    /// Explicitly confirm starting clean after a crash-loop trip: dismisses the recovery
+    /// decision and resumes normal checkpointing on the already-running clean session. Only
+    /// accepted while [`SessionHealthView::crash_loop`] is true; denied otherwise (86ajy0hxg).
+    StartClean,
 }
 
 /// A freshly generated sermon-note draft's content — [`Command::SaveSermonNoteDraft`]'s payload
@@ -781,8 +829,33 @@ pub enum ServerMessage {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pending: Option<SermonNoteDraftView>,
     },
+    /// Reply to [`Command::ListAutosaveSlots`] (FR-005 "last-3"; 86ajy0hxg): the bounded
+    /// autosave-slot history, newest first.
+    AutosaveSlots { slots: Vec<AutosaveSlotView> },
     /// A protocol-level or transport-level error not tied to a single request.
     Error { message: String },
+}
+
+/// Bound on [`AutosaveSlotView::label`]'s wire length (Sana, PR #102 security review — N-2):
+/// every slot is unlabelled today (labelling a checkpoint is not yet an operator action, so
+/// nothing on this path can currently produce a long value), but the field exists for that
+/// future action, and every other free-text field on this wire (`autosave_error`, sermon-note
+/// content) is bounded — this one should not be the exception a later caller forgets.
+pub const MAX_AUTOSAVE_LABEL_LEN: usize = 80;
+
+/// One persisted autosave restore point (FR-005 "last-3"; 86ajy0hxg): listed by
+/// [`ServerMessage::AutosaveSlots`], selected by [`Command::RestoreAutosave`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AutosaveSlotView {
+    /// The id to pass back as `RestoreAutosave { slot }`.
+    pub slot: i64,
+    /// Epoch milliseconds this restore point was captured.
+    pub saved_at_ms: i64,
+    /// A human label, when one was set. `None` for an automatic checkpoint (today, every
+    /// slot — labelling a checkpoint is not yet an operator action). Bounded to
+    /// [`MAX_AUTOSAVE_LABEL_LEN`] by the host before this view is built.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
 }
 
 /// A paired controller device for the operator's Remote Control list — a JS-friendly wire view of
@@ -1399,6 +1472,13 @@ pub struct SessionHealthView {
     /// autosave never keeps displaying an old failure. Bounded via [`truncate_for_wire`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub autosave_error: Option<String>,
+    /// A preserved prior session exists and [`Command::Resume`] would actually restore
+    /// something (86ajy0hxg). Only meaningful while `crash_loop` is true — distinguishes
+    /// "crash loop, nothing to resume" (a fresh install's first unstable launches) from "crash
+    /// loop, a session is waiting," so a client shows the Resume affordance only when it would
+    /// do something. `false` when `crash_loop` is false too (nothing pending either way).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub resumable: bool,
 }
 
 /// serde default/skip for a bool that defaults to `true`: an absent field deserialises as

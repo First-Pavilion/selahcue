@@ -6,6 +6,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod autosave_store;
 mod controller;
 pub mod keymap;
 mod operator;
@@ -13,9 +14,10 @@ pub mod sermon_note_store;
 pub mod transcript_pump;
 pub mod transcript_sink;
 
+pub use autosave_store::{AutosaveSlotSummary, AutosaveStore, NullAutosaveStore};
 pub use controller::{
-    ControllerReply, ControllerSnapshot, LiveController, Screen, ScreenRegistry, ScreenRole,
-    AUDIENCE_SCREENS, IDENTIFY_TTL, MAX_SAVED_THEMES, MAX_SCREENS, MAX_THEME_NAME_LEN,
+    ControllerReply, ControllerSnapshot, CrashDecision, LiveController, Screen, ScreenRegistry,
+    ScreenRole, AUDIENCE_SCREENS, IDENTIFY_TTL, MAX_SAVED_THEMES, MAX_SCREENS, MAX_THEME_NAME_LEN,
 };
 pub use keymap::{CanonicalAction, KeyPress, Keymap};
 pub use operator::{ItemView, OperatorShell, OperatorView};
