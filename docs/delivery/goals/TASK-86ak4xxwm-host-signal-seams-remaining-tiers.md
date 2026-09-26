@@ -6,7 +6,7 @@
 - Parent goal ID: NONE
 - Title: The operator console's control-link pill and per-screen output pill stop being able to fabricate a state the host has not reported.
 - Role: backend-engineer
-- Status: GATE_REVIEW
+- Status: VERIFIED_COMPLETE
 - Execution engine: goal
 - ClickUp task: https://app.clickup.com/t/86ak4xxwm
 - Created: 2026-09-25
@@ -70,11 +70,13 @@ Verified by a full-repo audit (subagent, cross-checked against `main` @ 28d9a65,
 | C-002 | yes | `link_reconnect_tests` fails when the reconnect scheduling guard is removed (mutation check) — must fail against the REAL bug all four reviewers found (unconditional deadline rewrite), not a copy of the predicate | manual mutation of `record_poll_outcome`'s reconnecting-guard, re-run, then restore | test FAILs mutated, PASSes restored | terminal transcript (this session, both before and after remediation) | PASS |
 | C-003 | yes | `statusPillFor` never renders `NO SIGNAL` for absent telemetry, and still renders it for a REPORTED `no_signal` (positive control); headless suite has 0 FAIL globally (not just in the new checks) | `python3 scripts/operator_headless.py` | 0 FAIL, check count matches `EXPECTED_MIN_CHECKS` (2036) | terminal transcript | PASS |
 | C-004 | yes | `selahcue-operator` compiles and lints clean standalone | `cargo check` / `cargo clippy --all-targets -- -D warnings` (both `--manifest-path .../selahcue-operator/Cargo.toml`) | 0 errors/warnings | terminal transcript | PASS |
-| C-005 | yes | `selahcue-operator`'s own test suite is unaffected (no regressions) | `cargo test --manifest-path .../selahcue-operator/Cargo.toml --no-fail-fast` | 165 passed, 0 failed | terminal transcript | PASS |
+| C-005 | yes | `selahcue-operator`'s own test suite is unaffected (no regressions) | `cargo test --manifest-path .../selahcue-operator/Cargo.toml --no-fail-fast` | 169 passed, 0 failed (164 at first fix; +5 `endpoint_guard_tests` for S-3a/S-3/S-9) | terminal transcript | PASS |
 | C-006 | yes | Formatting clean | `cargo fmt --manifest-path .../selahcue-operator/Cargo.toml --check` | no diff | terminal transcript | PASS |
-| C-007 | yes | Independent four-reviewer gate (Cody/Sana/Vera/Quinn) — round 1: 3 blockers + 1 high, all four independently found the same root-cause scheduling bug; remediated commit 993c1b7; round 2 requested | role dispatch, blocking findings remediated, re-review requested | all four finished, no unaddressed blocking findings | ClickUp / PR comments | PENDING |
-| C-008 | yes | `selahcue-lan`'s new `ControlClient::COMMAND_TIMEOUT` does not regress the crate | `cargo test -p selahcue-lan --features server`, `cargo clippy -p selahcue-lan --all-targets --features server -- -D warnings`, `cargo fmt -p selahcue-lan --check` | 63 passed; 0 warnings; no diff | terminal transcript | PASS |
-| C-009 | yes | Full desktop workspace regression-free after remediation (record_poll_outcome/record_dial_failure split, COMMAND_TIMEOUT) | `cargo test --workspace --no-fail-fast`, `cargo clippy --workspace --all-targets -- -D warnings` | 1553 passed, 0 failed; 0 warnings | terminal transcript (`/tmp/ws_test_full.log`, `/tmp/ws_clippy.log`, this session) | PASS |
+| C-007 | yes | Independent four-reviewer gate (Cody/Sana/Vera/Quinn), all rounds, no unaddressed blocking findings at the final head | role dispatch each round, blocking findings remediated, re-review requested and returned | all four finished PASS/Resolved | ClickUp / PR comments; consolidated report https://claude.ai/artifact/Jx54jpWiXUQAUESPubeAdV | PASS |
+| C-008 | yes | `selahcue-lan`'s `ControlClient::COMMAND_TIMEOUT` + `poisoned`-on-timeout fix (Sana S-8) does not regress the crate | `cargo test -p selahcue-lan --features server --no-fail-fast`, `cargo clippy -p selahcue-lan --all-targets --features server -- -D warnings`, `cargo fmt -p selahcue-lan --check` | 126 passed (was 125; +1 `test_client_timeout.rs`); 0 warnings; no diff | terminal transcript | PASS |
+| C-009 | yes | Full desktop workspace regression-free after all remediation rounds | `cargo test --workspace --no-fail-fast`, `cargo clippy --workspace --all-targets -- -D warnings` | 1586 passed, 0 failed (post-merge with `main`); 0 warnings | terminal transcript (`/tmp/ws_test_postmerge.log`, `/tmp/ws_clippy_postmerge.log`) | PASS |
+| C-010 | yes | Real GitHub Actions CI green on the branch tip, up to date with `main` | `gh pr checks 101` | all non-skipped jobs pass (rust ×3 OS, operator shell ×3 OS, operator shell release-features ×3 OS, launch-smoke ×2, audit, supply chain, workflows) | CI run 36220547676 (after 2 reruns of a confirmed pre-existing, unrelated flake — `RCD-008`, PR #98's own headless check, reproduced flaky locally too, independently flagged by Cody) | PASS |
+| C-011 | yes | Branch not behind the integration branch immediately before requesting review | `git rev-list --count HEAD..origin/main` | 0 | terminal transcript (merge commit `b2cf88d`) | PASS |
 
 ## Verification plan
 
@@ -119,6 +121,33 @@ Verified by a full-repo audit (subagent, cross-checked against `main` @ 28d9a65,
 - Result: 165/165 operator tests (was 164; the rewritten reconnect test replaces the old one); mutation check fails the mutated version and passes the restored version; operator clippy/fmt clean; selahcue-lan 63/63, clippy/fmt clean; full workspace 1553/1553 passed, clippy clean; headless suite 2036/2036, 0 FAIL (confirms the C-003 correction — the 4 failures are gone with no other code change).
 - Decision: handoff → re-review requested from all four reviewers (PR comment posted, commit 993c1b7).
 
+### Iteration 4 (round 2 re-review → Sana's new finding S-8 → fix)
+
+- Target criterion: C-007 (round 2).
+- Result: Quinn (resolved, closed ClickUp 17tnw2ayw1r) and Vera (PASS, re-measured P-1..P-4 live, 4 real dials/8.06s terminal give-up) confirmed round-1 fixes by independent re-measurement, not by reading the diff. Sana found a NEW blocking defect (S-8): `COMMAND_TIMEOUT` had no `request_id` correlation on the read side, so a timed-out request's abandoned reply could be silently consumed by the next `command()` call and reported as success — proven live (`Ok(State { live_item: Some(0) })` forever after one stall). For this ticket, that meant a stale-but-successful reply could cancel an already-scheduled reconnect and fabricate "Connected."
+- Change: `ControlClient` gains a `poisoned` flag set on any timeout; every later `command()` on that connection is refused immediately rather than risking a desynchronized read (matches Sana's own preferred remedy over request_id correlation). New regression test `selahcue-lan/tests/test_client_timeout.rs` reproduces the exact scenario against a real pinned-TLS server with its own dedicated runtime.
+- Verifier executed: mutation check (disable `poisoned`, confirm the test reproduces Sana's exact stale-reply failure; restore, confirm green); full operator + selahcue-lan suites; clippy/fmt both crates.
+- Result: mutation-verified; 165→ (later 169 after S-3a tests) operator tests; selahcue-lan 63→126 (later, +1 for the new poisoning test, +more after S-3a's own lan-side nothing — count updates below). Commit `9ec3d74`.
+- Decision: handoff → re-review requested (S-8 specifically).
+
+### Iteration 5 (round 3 — S-8/S-3a confirmed, S-9 found and fixed, then real CI)
+
+- Target criterion: C-007 (round 3) + C-010 (real CI, newly added).
+- Result: Sana reproduced her own S-8 proof against the fixed code (now errors locally in 24μs, confirmed via her own independent probe) and mutation-verified both directions; accepted the S-3 counter-proposal after checking `selahcue-desktop::run_server` herself; found S-9 (non-blocking): `an_oversized_descriptor_is_refused` didn't guard the size check it named (mutation-verified — neutering the size check left it green because `Read::take` truncated the padded JSON into invalid JSON first). Cody's round-2 landed at this same head: confirmed the original Blocker resolved by static trace, and — independently, without prompting — found the SAME `stt,cloud-stt` compile break described below before I'd finished pushing the fix for it.
+- Change: fixed S-9 exactly per Sana's own verified remedy (a complete, valid JSON object at exactly `MAX_ENDPOINT_FILE_LEN` bytes, trailing whitespace only pushing it over the cap). Separately, checking the REAL GitHub Actions run (not local default-feature builds) surfaced two genuine CI-only compile breaks: (a) `listening.rs`'s `#[cfg(feature = "stt")]`-gated test helpers still used the pre-Tier-2a field name `link_error` (5 sites) — invisible locally because local runs never used `--features stt,cloud-stt`; (b) this session's own new `endpoint_guard_tests` used `PermissionsExt`/`from_mode` unconditionally, breaking Windows outright, then a follow-up fix that gated `PermissionsExt` but missed that `std::io::Write` was also now unix-test-only, still breaking Windows via `-D warnings` unused-import.
+- Verifier executed: `cargo test`/`clippy`/`fmt --check` for operator (default, `stt,cloud-stt`, `dev-keys`, `dev-keys,openai-notes`) and selahcue-lan (`--features server`), all locally green; then the REAL `gh pr checks 101` / `gh pr checks --watch` against actual GitHub Actions, twice more after each fix commit, until genuinely green.
+- Result: commits `2b0ee49` (S-9 + first CI fix) and `b7fc13f` (second CI fix) — real CI (run 36219703172) fully green: 14/14 non-skipped jobs across the 3-OS matrix. All four reviewers now cleared with zero remaining blocking findings.
+- Decision: handoff → mark PR ready, publish consolidated report, close out ClickUp.
+
+### Iteration 6 (branch currency + final CI)
+
+- Target criterion: C-009/C-010/C-011 (branch-not-behind check, per the team operating contract's pre-review requirement — caught only when explicitly checking `git rev-list --count HEAD..origin/main`, which read 4: an unrelated PR #102 had merged into `main` while this ticket's review rounds were running).
+- Change: merged `origin/main` (clean auto-merge, no conflicts — PR #102 touched `selahcue-lan`/`selahcue-app`/`selahcue-data` in functions this ticket's diff does not touch) → commit `b2cf88d`.
+- Verifier executed: `cargo build --workspace`, `cargo test --workspace --no-fail-fast`, `cargo clippy --workspace --all-targets -- -D warnings` locally post-merge; then real CI on the merge commit.
+- Result: local: 1586/1586 tests (was 1553; +32 from PR #102's own new tests + this ticket's own additions), clippy clean. Real CI (run 36220547676) came back with ONE failure — `operator shell (ubuntu-latest)`, specifically `RCD-008`, a headless-webview check that belongs to an already-merged, unrelated PR (#98) and was already flagged by Cody as a ~1-in-6 intermittent flake. Independently reproduced the same flakiness locally (3 consecutive full `operator_headless.py` runs: 2 clean at 2036/2036, 1 unrelated infra timeout) before concluding it was environment timing variance rather than assuming it. Reran the failed CI job twice (`gh run rerun --failed`): failed identically the first rerun, passed clean the second. Filed a follow-up task (not this ticket's scope) to fix the underlying flakiness. Every other job passed on every attempt without a single retry.
+- Result: real CI (run 36220547676) fully green on the second rerun — 14/14 non-skipped jobs. Branch confirmed 0 commits behind `main`.
+- Decision: VERIFIED_COMPLETE. PR marked ready (not merged — owner's call). Consolidated Artifact updated to reflect all three rounds + final CI. ClickUp evidence comment posted.
+
 ## Risks and rollback
 
 - Risk: the reconnect loop's `Instant`-based scheduling is IO-adjacent code in an excluded, compile-checked-only crate — not covered by the desktop-workspace testable-by-construction bar the pure `LinkStatus` crate meets. Mitigated by the new E2E test exercising the real glue against real sockets, and by keeping all backoff DECISION logic in the already-exhaustively-tested pure crate (the shell only asks "is it due" and "what do the results mean").
@@ -130,9 +159,12 @@ Verified by a full-repo audit (subagent, cross-checked against `main` @ 28d9a65,
 
 ## Final evaluation
 
-- Validator command: `python3 ~/.claude/skills/goal/scripts/validate_goal_contract.py docs/delivery/goals/TASK-86ak4xxwm-host-signal-seams-remaining-tiers.md` (structural) — PASS. `--completion` — FAILs on C-007 (expected: review gate not yet closed).
-- Validator result: structural PASS; completion correctly blocked on C-007 pending re-review.
-- Independent verification result: Round 1 complete — Cody (Blocker), Vera (FAIL, P-1/P-2 blocking + P-3 high), Sana (Blocked, S-1/S-2/S-3 blocking), Quinn (contradicted the PR's own claimed test-plan result, filed ClickUp 17tnw2ayw1r). All three technical reviewers independently reproduced the SAME root-cause scheduling bug against the real `LinkStatus`. Remediated in commit 993c1b7 (Iteration 3); re-review requested via PR comment. Round 2 outcome not yet known at the time of this evaluation entry.
-- Terminal state: GATE_REVIEW (remediation complete and self-verified; awaiting round-2 confirmation from Cody/Sana/Vera/Quinn before VERIFIED_COMPLETE). NOT VERIFIED_COMPLETE — do not treat self-verification as a substitute for the closed review gate.
-- Remaining failed or blocked criteria: C-007 (review gate) — round 1 findings remediated, round 2 pending.
-- ClickUp final evidence comment: to be posted once C-007 clears, per HANDOFF_TEMPLATE.md.
+- Validator command: `python3 ~/.claude/skills/goal/scripts/validate_goal_contract.py docs/delivery/goals/TASK-86ak4xxwm-host-signal-seams-remaining-tiers.md --completion`
+- Validator result: PASS — all mandatory criteria (C-001 through C-011) are PASS.
+- Independent verification result: three review rounds, four reviewers (Cody, Vera, Sana, Quinn), zero blocking findings remaining. Round 1: all three technical reviewers independently reproduced the same root-cause scheduling bug against the real `LinkStatus` state machine; Quinn independently found the headless-suite state leak. Round 2: Sana found a further blocking defect (S-8) in round 1's own fix; Vera and Quinn confirmed round 1 resolved by re-measurement. Round 3: Sana confirmed S-8/S-3a resolved by her own independent reproduction and mutation testing, found one non-blocking test nit (S-9, fixed); Cody confirmed the original Blocker resolved and independently found the same CI-only compile break this session was fixing. Consolidated report, all three rounds: https://claude.ai/artifact/Jx54jpWiXUQAUESPubeAdV
+- Real CI: GitHub Actions run 36220547676 (final branch tip, merged with `main`, 0 commits behind) — 14/14 non-skipped jobs green after one confirmed-flaky, unrelated job (`RCD-008`, pre-existing from PR #98) was reproduced locally, retried, and passed clean. https://github.com/First-Pavilion/selahcue/actions/runs/36220547676
+- Terminal state: **VERIFIED_COMPLETE.**
+- Remaining failed or blocked criteria: none.
+- ClickUp final evidence comment: posted on 86ak4xxwm per HANDOFF_TEMPLATE.md.
+- Not merged: PR #101 marked ready for review; merging is the repo owner's explicit call per the team operating contract, not this role's.
+- Follow-ups spun off, not folded into this ticket: relink_media + detection alternatives/cooldown/history (Tier 3 remainder, pre-existing audit finding, task_3b9c1407); RCD-008 headless-suite flake fix (task_1320ade5); Vera's P-5 (manual retry command) and P-6 (webview poll-queueing during a command timeout) — recommended, not filed as ClickUp tickets by this session.
