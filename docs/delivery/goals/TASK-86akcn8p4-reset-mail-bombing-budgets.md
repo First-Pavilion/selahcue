@@ -135,6 +135,16 @@ branch runs, exactly mirroring the resend path's shape and no-oracle handling.
 - Risks: a legitimate user requesting several resets in a short window (e.g. after mistyping,
   or across several browser tabs) now hits the address budget sooner than before — same trade
   `resend_email_verification` already accepts, at the same magnitude.
+- **Deliberate lockout, quantified (Sana, PR #107 review round 1, S-4):** the address budget
+  is (3, 900) = 12 requests/hour for one target address. A single attacker's IP is separately
+  capped at 20 requests/hour by the pre-existing per-IP budget, so ONE attacker acting alone
+  cannot exhaust the address budget fast enough to matter — but a DISTRIBUTED attacker (or one
+  rotating IPs) spending only the address budget against a single named victim can hold that
+  victim's own `requestPasswordReset` calls at RATE_LIMITED continuously, while still costing
+  the platform up to 12 reset emails/hour (288/day) to a mailbox that keeps re-requesting.
+  This is the accepted trade documented above (mail-bombing bounded, at the cost of a
+  determined attacker being able to deny recovery to one named victim for as long as they
+  keep spending the budget) — recorded here as a number, not left implicit.
 - Rollback: revert the single commit; `request_password_reset` returns to per-IP-only. No
   migration, no persisted state change (throttle counters are ephemeral cache entries).
 
