@@ -49,7 +49,17 @@ pub enum Permission {
     Transcribe,
     /// Observe live/preview state.
     Monitor,
-    /// Edit the service plan (add/remove/move/rename items) — never the live output.
+    /// Edit the service plan (add/remove/move/rename items). Also covers the session-recovery
+    /// commands that wholesale-replace live/session state (`RestoreAutosave`/`Resume`/
+    /// `StartClean`/`UndoPlan`/`RedoPlan`, 86ajy0hxg) — an earlier version of this doc said
+    /// "never the live output," which stopped being true the moment those five commands were
+    /// added here (Sana, PR #102 security review — S-2): `RestoreAutosave` and `Resume` DO
+    /// change what is live, via `LiveController::restore`'s `presenter.go_live()`. Not
+    /// exploitable in practice today — every role holding `EditPlan` also holds `GoLive` and
+    /// `Blackout` (see `permission_sets_are_strictly_ordered_supersets` /
+    /// `edit_plan_implies_go_live_and_blackout_for_every_role` in `test_rbac.rs`, which PIN
+    /// that containment rather than leave it accidental) — but a future role table that granted
+    /// `EditPlan` without those two would silently gain live-output control too.
     EditPlan,
     /// Pair, revoke, or re-role other devices.
     ManageDevices,

@@ -312,6 +312,18 @@ pub struct LiveController {
     /// controller marks intent, the host performs the actual `SessionStore`/`LaunchGuard` I/O
     /// it alone has access to). `None` most of the time.
     pending_crash_decision: Option<CrashDecision>,
+    /// A pending [`Command::RestoreAutosave`] slot id, drained by the host's tick exactly like
+    /// [`pending_crash_decision`](Self::pending_crash_decision) — and for the same reason PLUS
+    /// one more (Vera, PR #102 performance review, 86ajy0hxg): resolving a slot means an
+    /// `integrity_check` over the WHOLE store, which can run into the hundreds of ms on a
+    /// realistic install. Handling it inline inside `apply()` held the SAME `Mutex<LiveController>`
+    /// the render/present loop locks every frame for that whole duration, stalling audience
+    /// output. The host resolves the slot OUTSIDE this lock (its own `SessionStore` connection,
+    /// `selahcue-desktop`'s `App::handle_pending_restore`) and takes the lock only to apply the
+    /// already-decoded result via [`resume_preserved`](Self::resume_preserved) — mirrors the
+    /// `Resume`/`StartClean` pattern exactly, which Vera's same review confirmed does not have
+    /// this problem.
+    pending_restore_slot: Option<i64>,
 }
 
 /// The operator's crash-loop decision (FR-169; 86ajy0hxg) — see
@@ -924,6 +936,7 @@ impl LiveController {
             sermon_notes: Box::new(NullSermonNoteStore),
             autosave_store: Box::new(NullAutosaveStore),
             pending_crash_decision: None,
+            pending_restore_slot: None,
         }
     }
 
@@ -955,6 +968,14 @@ impl LiveController {
     /// happen on the host side. `None` on every call that finds nothing pending.
     pub fn take_pending_crash_decision(&mut self) -> Option<CrashDecision> {
         self.pending_crash_decision.take()
+    }
+
+    /// Drain a pending [`Command::RestoreAutosave`] slot id (86ajy0hxg), if any — the host's
+    /// per-frame tick polls this exactly like [`take_pending_crash_decision`]. See
+    /// [`pending_restore_slot`](Self::pending_restore_slot)'s doc for why this is deferred
+    /// rather than resolved inline in `apply()`.
+    pub fn take_pending_restore_slot(&mut self) -> Option<i64> {
+        self.pending_restore_slot.take()
     }
 
     /// Crash-loop "Resume" (86ajy0hxg): swap in a DIFFERENT plan and restore a snapshot
@@ -3477,7 +3498,14 @@ impl LiveController {
                         .map(|s| AutosaveSlotView {
                             slot: s.slot,
                             saved_at_ms: s.saved_at_ms,
-                            label: s.label,
+                            // Bounded (Sana, PR #102 security review — N-2), matching every
+                            // other free-text field this wire carries.
+                            label: s.label.as_deref().map(|l| {
+                                selahcue_lan::protocol::truncate_for_wire(
+                                    l,
+                                    selahcue_lan::protocol::MAX_AUTOSAVE_LABEL_LEN,
+                                )
+                            }),
                         })
                         .collect(),
                 }),
@@ -3487,24 +3515,34 @@ impl LiveController {
             // from `Resume`, which only ever re-applies the single most recent preserved
             // session. The slot may belong to a different plan document than the one currently
             // loaded, so the plan is swapped too (mirrors `resume_preserved`).
-            Command::RestoreAutosave { slot } => match self.autosave_store.load_slot(*slot) {
-                Ok(Some((plan, snap))) => {
-                    self.resume_preserved(plan, &snap);
-                    ControllerReply::Ack
-                }
-                // Not found (already pruned / never existed) and a failed integrity check both
-                // read the same to the caller: nothing was restored. The distinction is logged
-                // host-side by the `AutosaveStore` implementation; `DenyReason` carries no
-                // message field to relay it further (matches every other `BadRequest` use here).
-                Ok(None) | Err(_) => ControllerReply::Deny(DenyReason::BadRequest),
-            },
+            //
+            // Deferred to the host tick, like `Resume`/`StartClean` — NOT resolved inline here.
+            // Resolving a slot means an `integrity_check` over the whole store (Vera, PR #102
+            // review), which must never run while this command holds the lock the render/present
+            // loop needs every frame. Always `Ack`: the request is accepted, not yet known to
+            // have found anything — the host logs (and a future caller can observe via
+            // `ListAutosaveSlots`/`GetOperatorState`) whether it actually found/restored a slot.
+            Command::RestoreAutosave { slot } => {
+                self.pending_restore_slot = Some(*slot);
+                ControllerReply::Ack
+            }
             // Crash-loop Resume/StartClean (FR-169, FR-074/075; 86ajy0hxg): only meaningful
             // while the host has reported a crash-loop trip. Recording the decision here and
             // draining it host-side (rather than acting immediately) is the same storage-free
             // discipline as every other host-backed command — the controller cannot itself
-            // reach `SessionStore`/`LaunchGuard`.
+            // reach `SessionStore`/`LaunchGuard`. This is a UX guard, not a security boundary:
+            // every role that may send `Resume`/`StartClean` at all (RBAC `EditPlan`,
+            // Operator-only) could equally reach the same live-session outcome through
+            // `RestoreAutosave`, so the check below exists to keep a client honest about
+            // whether a decision is even pending, not to contain a privilege.
+            //
+            // Also requires `resumable` (Cody, PR #102 code review — Medium-3): `crash_loop`
+            // alone does not mean there is anything TO resume (a fresh install's first
+            // unstable launches has no preserved session at all) — without this, `Resume`
+            // would `Ack` and record a decision the host can only silently degrade into a
+            // no-op, leaving the client believing its Resume succeeded.
             Command::Resume => match &self.session_health {
-                Some(h) if h.crash_loop => {
+                Some(h) if h.crash_loop && h.resumable => {
                     self.pending_crash_decision = Some(CrashDecision::Resume);
                     ControllerReply::Ack
                 }

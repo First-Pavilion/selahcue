@@ -267,6 +267,17 @@ fn assistant_can_navigate_and_search_but_not_go_live() {
     assert!(!authorize(Role::Assistant, &Command::Clear));
 }
 
+/// Direct assertion (Sana, PR #102 security review — N-4): `ListAutosaveSlots` maps to
+/// `Monitor`, not merely "a Viewer happens to be allowed" (which `viewer_can_only_monitor`
+/// below checks via `authorize`, one permission tier removed from the mapping itself).
+#[test]
+fn list_autosave_slots_is_monitor_tier() {
+    assert_eq!(
+        required_permission(&Command::ListAutosaveSlots),
+        Permission::Monitor
+    );
+}
+
 #[test]
 fn viewer_can_only_monitor() {
     assert!(authorize(Role::Viewer, &Command::GetState));
@@ -573,6 +584,30 @@ fn permission_sets_are_strictly_ordered_supersets() {
     // Sanity: Operator uniquely holds ManageDevices.
     assert!(Role::Operator.can(Permission::ManageDevices));
     assert!(!Role::Producer.can(Permission::ManageDevices));
+}
+
+/// `EditPlan`'s own doc comment (`rbac.rs`) used to claim "never the live output" — Sana's PR
+/// #102 security review (S-2) found that is false: `RestoreAutosave`/`Resume` (86ajy0hxg) DO
+/// change what is live, via `LiveController::restore`'s `presenter.go_live()`. That is safe
+/// TODAY only because every role holding `EditPlan` also holds `GoLive` and `Blackout` — this
+/// pins that containment as an invariant rather than an accident, so a future role table that
+/// granted `EditPlan` without those two would fail this test instead of silently gaining
+/// live-output control.
+#[test]
+fn edit_plan_implies_go_live_and_blackout_for_every_role() {
+    for role in all_roles() {
+        if role.can(Permission::EditPlan) {
+            assert!(
+                role.can(Permission::GoLive),
+                "{role:?} holds EditPlan (which can change Live via RestoreAutosave/Resume) but \
+                 not GoLive"
+            );
+            assert!(
+                role.can(Permission::Blackout),
+                "{role:?} holds EditPlan but not Blackout"
+            );
+        }
+    }
 }
 
 #[test]

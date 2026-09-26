@@ -7,10 +7,17 @@
 //! `autosave_repo`. [`LiveController`](crate::LiveController) holds one as
 //! `Box<dyn AutosaveStore>`, defaulting to [`NullAutosaveStore`] for a caller with no store
 //! configured (e.g. the operator's stand-alone in-process demo shell).
-
-use selahcue_core::plan::ServicePlan;
-
-use crate::controller::ControllerSnapshot;
+//!
+//! Scoped to the cheap, always-synchronous-safe read only ([`AutosaveStore::list_slots`] is a
+//! query against a 3-row table). Resolving a specific slot's full snapshot — which means an
+//! `integrity_check` over the WHOLE store (FR-079), potentially hundreds of milliseconds — is
+//! deliberately NOT part of this seam: PR #102's performance review (Vera) found that the
+//! earlier shape (a `load_slot` method here, called from `LiveController::apply()`) held the
+//! `Mutex<LiveController>` the render/present loop locks every frame for that whole duration,
+//! stalling audience output. `Command::RestoreAutosave` is now resolved entirely on the HOST
+//! side (`selahcue-desktop`'s `SessionStore::load_autosave_slot` + `App::handle_pending_restore`,
+//! its own `SessionStore` connection, outside any controller lock), which already depends on
+//! `selahcue-data` directly and needs no seam.
 
 /// One listed restore point — the wire-facing summary
 /// ([`selahcue_lan::protocol::AutosaveSlotView`]'s source data), without the full snapshot
@@ -22,24 +29,17 @@ pub struct AutosaveSlotSummary {
     pub label: Option<String>,
 }
 
-/// A durable store for the autosave-slot ring. Every method takes `&mut self` — mirrors
+/// A durable store for the autosave-slot ring's SUMMARY listing only (see the module doc for
+/// why a full-slot read is not part of this seam). Takes `&mut self` — mirrors
 /// `SermonNoteStore`'s own signature and reasoning: a real implementation may want interior
 /// mutability it does not have to expose, and `LiveController` already serializes every call
 /// behind its own `Arc<Mutex<_>>` in real wiring, so `&mut self` costs nothing extra.
 pub trait AutosaveStore: Send {
     /// List slots newest-first. `Err` only for a genuine storage failure — an empty history is
-    /// `Ok(Vec::new())`, never an error.
+    /// `Ok(Vec::new())`, never an error. Cheap: a query against a table bounded to
+    /// `selahcue_data::autosave_repo::MAX_AUTOSAVE_SLOTS` rows, no integrity check — safe to
+    /// call synchronously from [`LiveController::apply`](crate::LiveController::apply).
     fn list_slots(&mut self) -> Result<Vec<AutosaveSlotSummary>, String>;
-
-    /// Load one slot's full snapshot by id, integrity-checked (FR-079) before being trusted. A
-    /// real implementation checks store integrity as part of this call — a corrupt store must
-    /// surface as `Err`, never as a silently wrong snapshot. Returns the slot's plan ALONGSIDE
-    /// its snapshot: an autosave slot may belong to a plan that has since been replaced (a
-    /// different `service_plan` row than the one currently loaded), so the caller cannot assume
-    /// the plan already in memory is the right one to reposition indices against. `Ok(None)` if
-    /// the slot does not exist (already pruned, or never existed).
-    fn load_slot(&mut self, slot: i64)
-        -> Result<Option<(ServicePlan, ControllerSnapshot)>, String>;
 }
 
 /// The default no-op store: an empty history, nothing to restore. Matches
@@ -49,12 +49,5 @@ pub struct NullAutosaveStore;
 impl AutosaveStore for NullAutosaveStore {
     fn list_slots(&mut self) -> Result<Vec<AutosaveSlotSummary>, String> {
         Ok(Vec::new())
-    }
-
-    fn load_slot(
-        &mut self,
-        _slot: i64,
-    ) -> Result<Option<(ServicePlan, ControllerSnapshot)>, String> {
-        Ok(None)
     }
 }

@@ -531,26 +531,36 @@ pub enum Command {
     /// last autosave" recovery flow's read side. Read-only.
     ListAutosaveSlots,
     /// Restore the session from a specific autosave slot (an id from
-    /// [`ServerMessage::AutosaveSlots`]), after an integrity check (FR-079). Deliberately
-    /// separate from [`Command::Resume`]: this restores an EARLIER checkpoint on purpose, for
-    /// when the most recent state is itself the problem — a failed open, a bad edit — where
-    /// `Resume` only ever re-applies the single most recent preserved session.
+    /// [`ServerMessage::AutosaveSlots`]), after an integrity check (FR-079) AND a plan-content
+    /// guard (below). Deliberately separate from [`Command::Resume`]: this restores an EARLIER
+    /// checkpoint on purpose, for when the most recent state is itself the problem — a failed
+    /// open — where `Resume` only ever re-applies the single most recent preserved session.
     ///
-    /// KNOWN LIMITATION (documented, not silent): every slot in the bounded history is normally
-    /// captured against the plan already loaded when this session started, so restoring one is
-    /// a same-plan operation in the overwhelming common case. If the plan itself was replaced
-    /// (`NewPlan`/`ImportPlan`/etc.) BETWEEN two slot captures, a slot from before that edit
-    /// carries an OLDER plan id; restoring it swaps the controller's in-memory plan correctly,
-    /// but the desktop host's own "which plan row do normal autosave writes target" bookkeeping
-    /// is a separate, narrower seam (`SessionStore::plan_id` in `selahcue-desktop`) that this
-    /// command does not reach across to update. The next plan edit (which always re-derives
-    /// that bookkeeping) or a restart corrects it. Tracked as a narrow follow-up rather than
-    /// broadened here, since the common case this ticket's acceptance criteria describe — undo
-    /// a failed open within the SAME service — is unaffected.
+    /// Always replies `Ack` — resolving a slot (integrity check + read, potentially hundreds of
+    /// milliseconds on a large store) happens on the HOST's tick, deferred exactly like
+    /// [`Command::Resume`]/[`Command::StartClean`], never inline while this command would
+    /// otherwise hold the controller lock the render/present loop needs every frame (Vera, PR
+    /// #102 performance review — B-1). An unknown slot, a failed integrity check, or a refused
+    /// plan-content mismatch (below) is a silent no-op from the wire's point of view (still
+    /// `Ack`); the host logs the reason, and a client can tell whether anything actually changed
+    /// via `GetOperatorState`.
+    ///
+    /// **What this restores, precisely (Cody, PR #102 code review — Blocking-1):** a slot is a
+    /// `plan_id` pointer plus SESSION POSITION (live/staged/timer/theme), not an independent
+    /// copy of the plan's item content — the plan document itself is mutated in place by
+    /// ordinary edits. The host therefore refuses the restore outright if the referenced plan's
+    /// content has changed since this slot was captured, rather than silently reapplying stale
+    /// indices onto different content. This makes the command reliable for the "failed open" /
+    /// crash-restart case, but it is NOT a general plan-version-history feature: undoing a live
+    /// edit made after a slot was captured is exactly what invalidates that slot.
     RestoreAutosave { slot: i64 },
     /// Accept the crash-loop breaker's preserved prior session (FR-169; FR-074/075) instead of
     /// the clean start the desktop force-booted with. Only accepted while
-    /// [`SessionHealthView::crash_loop`] is true; denied otherwise (86ajy0hxg).
+    /// [`SessionHealthView::crash_loop`] AND [`SessionHealthView::resumable`] are both true —
+    /// `crash_loop` alone does not mean there is a preserved session TO resume; denied
+    /// otherwise (86ajy0hxg). A UX guard against sending a decision that has nothing to act on,
+    /// not a security boundary: every role permitted to send this at all (RBAC-gated the same
+    /// as `RestoreAutosave`) could reach an equivalent outcome through that command instead.
     Resume,
     /// Explicitly confirm starting clean after a crash-loop trip: dismisses the recovery
     /// decision and resumes normal checkpointing on the already-running clean session. Only
@@ -826,6 +836,13 @@ pub enum ServerMessage {
     Error { message: String },
 }
 
+/// Bound on [`AutosaveSlotView::label`]'s wire length (Sana, PR #102 security review — N-2):
+/// every slot is unlabelled today (labelling a checkpoint is not yet an operator action, so
+/// nothing on this path can currently produce a long value), but the field exists for that
+/// future action, and every other free-text field on this wire (`autosave_error`, sermon-note
+/// content) is bounded — this one should not be the exception a later caller forgets.
+pub const MAX_AUTOSAVE_LABEL_LEN: usize = 80;
+
 /// One persisted autosave restore point (FR-005 "last-3"; 86ajy0hxg): listed by
 /// [`ServerMessage::AutosaveSlots`], selected by [`Command::RestoreAutosave`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -835,7 +852,8 @@ pub struct AutosaveSlotView {
     /// Epoch milliseconds this restore point was captured.
     pub saved_at_ms: i64,
     /// A human label, when one was set. `None` for an automatic checkpoint (today, every
-    /// slot — labelling a checkpoint is not yet an operator action).
+    /// slot — labelling a checkpoint is not yet an operator action). Bounded to
+    /// [`MAX_AUTOSAVE_LABEL_LEN`] by the host before this view is built.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
 }
