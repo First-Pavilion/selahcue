@@ -1534,6 +1534,15 @@ EXPECTED_MIN_CHECKS = 2033
 # reported signal, making a genuine no_signal report on an already-assigned display silently read
 # "CONNECTED" — that branch was unreachable before this fix, not merely untested).
 EXPECTED_MIN_CHECKS = 2036
+#
+# 2036 -> 2037: 17tnw2ayz0m (RCD-008's activation-refresh check flaked ~1-in-6 on ubuntu-latest CI —
+# a real/virtual-time-alignment-dependent `waitFor` poll, the same class PR #98 already removed once
+# for checkHostConnection's real-3s-poll wait). Fixed by awaiting remote.js's newly-exposed
+# __rcActivationSettleForTest() promise directly instead of polling the banner's DOM state; +1 for
+# the new hook-exists setup assertion that mirrors every other hook usage in this same section.
+# Rebased onto 86ak4xxwm's merged 2036 baseline; measured via an actual clean run against the
+# combined tree, not hand-summed: 2037 checks, 0 FAIL.
+EXPECTED_MIN_CHECKS = 2037
 
 
 def find_chrome():
@@ -7719,7 +7728,17 @@ DRIVER = r"""
       ok(window.__calls.slice(rcCallsBeforeActivate).some(function(c){ return c.cmd === "remote_snapshot"; }) &&
          window.__calls.slice(rcCallsBeforeActivate).some(function(c){ return c.cmd === "link_status"; }),
          "RCD-008: arriving at Remote Control immediately re-checks the host link (remote_snapshot + link_status fire on activation, synchronously with the nav click) — not only on the next 3s poll tick");
-      await waitFor(function(){ return !el("rc-host-banner").hidden; }, 50);
+      // Found flaky on ubuntu-latest CI (~1-in-6, 17tnw2ayz0m): this activation was triggered
+      // INDIRECTLY (the nav click above), not via a hook the driver called itself, so there was no
+      // promise of the driver's own to await for the banner's async update — only the resulting
+      // DOM state, polled against a fixed `waitFor` sleep budget. That budget-based poll is exactly
+      // the real/virtual-time-alignment dependency this same ticket's PR #98 round already found
+      // and removed once for checkHostConnection's real-3s-poll wait (see the comment above RCD-008
+      // setup, ~40 lines up). remote.js now exposes the concrete settle promise the click's own
+      // activation kicked off; await THAT instead of re-deriving its effect by polling.
+      ok(typeof window.__rcActivationSettleForTest === "function",
+         "RCD-008 activation setup: remote.js exposes __rcActivationSettleForTest (its own documented headless-driver hook)");
+      await window.__rcActivationSettleForTest();
       ok(!el("rc-host-banner").hidden && getComputedStyle(el("rc-host-banner")).display !== "none",
          "RCD-008: the banner is already showing the moment the surface activates — no populated-but-frozen device table with a silently stale banner");
 
