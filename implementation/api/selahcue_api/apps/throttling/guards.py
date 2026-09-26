@@ -22,11 +22,63 @@ keeps the raise separate from the counting so callers can spend several budgets 
 
 from __future__ import annotations
 
+import logging
+import threading
+import time
+
 from django.conf import settings
 from django.core.cache import cache
 
 from selahcue_api.apps.throttling.services import BudgetOutcome, CacheStore, evaluate_budget
 from selahcue_api.graphql.errors import ErrorCode, SafeAPIError
+
+logger = logging.getLogger(__name__)
+
+# 86akcn92k (F3): DEC-013 required that a sustained run of denials "alerts... someone" — a
+# sustained RATE_LIMITED run on password_reset_request_ip / password_reset_confirm_ip is the
+# highest-signal indicator that an attacker is doing exactly what DEC-013 feared, and until
+# this it produced zero log lines and zero audit events. `enforce_budget` raised and nothing
+# recorded it.
+#
+# Fixed HERE, in the shared layer, so every scope gains it at once — resend, both reset
+# budgets, and any future caller (verify_email, this same ticket) — rather than each caller
+# remembering to log its own denials.
+#
+# Suppressed PER SCOPE, one line per interval rather than one per denied request, for the exact
+# reason `apps.throttling.services._STORE_ERROR_LOG_INTERVAL_SECONDS` already gives: a sustained
+# attack at even a modest rate would otherwise be an unbounded-log problem, which is the thing
+# this repo forbids. `scope` is always a small, fixed, code-defined string — never
+# attacker-controlled — so the dict below cannot grow without bound the way a per-identity map
+# would; that is also why suppression is keyed on `scope` alone and not `scope:identity`
+# (identity IS attacker-controlled on an unauthenticated endpoint, e.g. the reset address).
+_DENIAL_LOG_INTERVAL_SECONDS = 60.0
+_denial_log_lock = threading.Lock()
+_last_denial_log: dict[str, float] = {}
+
+
+def _reset_denial_log_suppression() -> None:
+    """Test seam: forget every scope's last report, so a test can observe the first one
+    deterministically without waiting out the suppression interval."""
+    with _denial_log_lock:
+        _last_denial_log.clear()
+
+
+def _report_sustained_denial(scope: str) -> None:
+    now = time.monotonic()
+    with _denial_log_lock:
+        last = _last_denial_log.get(scope, float("-inf"))
+        if now - last < _DENIAL_LOG_INTERVAL_SECONDS:
+            return
+        _last_denial_log[scope] = now
+    # warning, not exception: no traceback, one line, and the scope is exactly what an
+    # operator needs to go look at which budget is under pressure and from where.
+    logger.warning(
+        "throttle scope=%s is refusing requests (RATE_LIMITED). This may be a sustained "
+        "attack against this scope's budget — see DEC-013 for the reset-path threat this "
+        "guards. Further reports for this scope suppressed for %.0fs.",
+        scope,
+        _DENIAL_LOG_INTERVAL_SECONDS,
+    )
 
 
 def spend_budget(
@@ -41,9 +93,16 @@ def spend_budget(
     from a fail-open. That matters wherever the guarded action is expensive or externally
     visible — sending email, say — because "the limiter is down" is not the same permission
     as "you are within your budget".
+
+    A DENIED outcome also reports a sustained-denial warning (86akcn92k, F3) — done HERE,
+    the one place every caller (`within_budget`, `enforce_budget`,
+    `enforce_budget_reporting_outage`) routes through, rather than in each of them.
     """
     limit, window = getattr(settings, setting_name, default)
-    return evaluate_budget(CacheStore(cache), f"throttle:{scope}:{identity}", limit, window)
+    outcome = evaluate_budget(CacheStore(cache), f"throttle:{scope}:{identity}", limit, window)
+    if outcome is BudgetOutcome.DENIED:
+        _report_sustained_denial(scope)
+    return outcome
 
 
 def within_budget(scope: str, identity: str, setting_name: str, default: tuple[int, int]) -> bool:
