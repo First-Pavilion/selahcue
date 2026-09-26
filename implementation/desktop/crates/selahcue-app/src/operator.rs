@@ -8,10 +8,10 @@
 
 use crate::controller::LiveController;
 use selahcue_lan::protocol::{
-    Command, ContentLinkView, DetectionView, ImportItemView, OperatorStateView, OutputHealthView,
-    PlanItemView, PlanSummaryView, PlanTemplateView, PublishStateView, SavedThemeView, ScaleFit,
-    ScreenThemeView, ScreenView, SessionHealthView, StorageHealthView, TimerSnapshot,
-    TranscriptSegmentView, ViewerView,
+    AutosaveSlotView, Command, ContentLinkView, DetectionView, ImportItemView, OperatorStateView,
+    OutputHealthView, PlanItemView, PlanSummaryView, PlanTemplateView, PublishStateView,
+    SavedThemeView, ScaleFit, ScreenThemeView, ScreenView, SessionHealthView, StorageHealthView,
+    TimerSnapshot, TranscriptSegmentView, ViewerView,
 };
 use selahcue_lan::Role;
 use selahcue_present::FrameBuffer;
@@ -384,6 +384,41 @@ impl OperatorShell {
             c.tick(std::time::Instant::now());
             console_view(c.operator_view())
         })
+    }
+
+    /// List the bounded autosave-slot history (FR-005 "last-3"; 86ajy0hxg / 86ak8467m frame 13),
+    /// newest first. Read-only. `Vec::new()` when the shell's injected `AutosaveStore` reports
+    /// none (the Local/demo shell's default has nothing to restore, which is a healthy answer,
+    /// not a failure) — mirrors `active_transcript_id`'s "answer from whatever the host reports
+    /// right now" shape, just over a list instead of an `Option`.
+    pub fn list_autosave_slots(&self) -> Vec<AutosaveSlotView> {
+        self.with(|c| match c.apply(&Command::ListAutosaveSlots) {
+            crate::ControllerReply::Message(
+                selahcue_lan::protocol::ServerMessage::AutosaveSlots { slots },
+            ) => slots,
+            _ => Vec::new(),
+        })
+    }
+
+    /// Restore the plan + session position from a specific autosave slot (an id from
+    /// [`Self::list_autosave_slots`]; FR-005/FR-079; 86ajy0hxg / 86ak8467m frame 13). Always
+    /// returns the fresh view — an unknown slot or a failed integrity check is a silent no-op
+    /// from the caller's point of view (the host logs the reason), exactly like
+    /// `Command::RestoreAutosave`'s documented wire behaviour. Never changes the Live audience
+    /// output on its own (NFR-024) beyond whatever the restored session position already was.
+    ///
+    /// **Honest limitation on THIS (Local/demo) shell:** resolving a pending restore (integrity
+    /// check + reading the slot's plan from the real store, then `resume_preserved`) is
+    /// `selahcue-desktop`'s own tick-loop responsibility — it needs `selahcue-data`, which this
+    /// crate cannot depend on (same reason `FakeAutosaveStore` exists only in tests). The
+    /// stand-alone/demo shell has no such loop and no durable store behind it (defaults to
+    /// `NullAutosaveStore`, which never lists a slot — see [`Self::list_autosave_slots`]), so
+    /// this call is accepted (`Ack`) and returns the view unchanged, exactly like
+    /// `plan_undo`/`plan_redo`'s documented Remote no-op. This is safe rather than a hidden
+    /// failure ONLY because `list_autosave_slots` is also always empty here — the frontend's own
+    /// rule ("offer Restore only when a slot exists") never surfaces a control this would fail.
+    pub fn restore_autosave(&self, slot: i64) -> OperatorView {
+        self.act(&Command::RestoreAutosave { slot })
     }
 
     /// Stage a scripture reference in Preview (its verse text composes from the
@@ -1212,6 +1247,31 @@ impl RemoteOperator {
         .await
     }
 
+    /// List the host's bounded autosave-slot history (FR-005 "last-3"; 86ajy0hxg /
+    /// 86ak8467m frame 13), newest first. Read-only — no state change.
+    pub async fn list_autosave_slots(
+        &mut self,
+    ) -> Result<Vec<AutosaveSlotView>, selahcue_lan::TransportError> {
+        use selahcue_lan::protocol::ServerMessage;
+        match self.client.command(Command::ListAutosaveSlots).await? {
+            ServerMessage::AutosaveSlots { slots } => Ok(slots),
+            other => Err(selahcue_lan::TransportError::Protocol(format!(
+                "expected autosave_slots, got: {other:?}"
+            ))),
+        }
+    }
+
+    /// Restore the host's plan + session position from a specific autosave slot (an id from
+    /// [`Self::list_autosave_slots`]; FR-005/FR-079; 86ajy0hxg / 86ak8467m frame 13). Always
+    /// `Ack`s on the wire (the host resolves the slot on its own tick and logs the outcome), so
+    /// this returns the fresh view like every other mutating command.
+    pub async fn restore_autosave(
+        &mut self,
+        slot: i64,
+    ) -> Result<OperatorView, selahcue_lan::TransportError> {
+        self.act(Command::RestoreAutosave { slot }).await
+    }
+
     /// Stage a scripture reference on the host (verse text from its bundle;
     /// `None` = the KJV default).
     pub async fn stage_scripture(
@@ -1922,5 +1982,30 @@ mod plan_undo_shell_tests {
         assert_eq!(v.items.len(), 1, "undo peels back the last add");
         let v = sh.plan_redo();
         assert_eq!(v.items.len(), 2, "redo restores it");
+    }
+
+    // 86ak8467m frame 13 — the shell's autosave-slot plumbing. The stand-alone/demo shell has no
+    // durable store, so both of these document an HONEST empty/inert answer rather than a hidden
+    // failure — see `restore_autosave`'s doc comment for why that is safe.
+    #[test]
+    fn local_shell_reports_no_autosave_slots_by_default() {
+        let sh = shell();
+        assert!(
+            sh.list_autosave_slots().is_empty(),
+            "the demo/stand-alone shell has no durable AutosaveStore behind it"
+        );
+    }
+
+    #[test]
+    fn local_shell_restore_autosave_is_accepted_and_leaves_the_plan_unchanged() {
+        let sh = shell();
+        sh.add_item("song", "One", None);
+        let before = sh.view();
+        let after = sh.restore_autosave(1);
+        assert_eq!(
+            after.items.len(),
+            before.items.len(),
+            "nothing to restore FROM (no store, no in-process drain loop) — the view is honestly unchanged"
+        );
     }
 }

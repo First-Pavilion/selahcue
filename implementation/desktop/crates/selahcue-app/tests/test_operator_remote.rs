@@ -710,6 +710,117 @@ async fn remote_transcription_detects_and_approves_over_the_wire() {
     );
 }
 
+/// 86ak8467m frame 13: the operator's autosave-slot plumbing over the wire. This proves the
+/// ROUND TRIP — the host genuinely receives `ListAutosaveSlots`/`RestoreAutosave` and answers —
+/// not the resolve-a-slot-into-a-plan-swap behaviour, which is `selahcue-desktop`'s own tick-loop
+/// job (needs `selahcue-data`, unavailable to this bare `LiveController` host double) and is
+/// already proven against a real store by `test_service_plan_resilience.rs` +
+/// `selahcue-desktop`'s own `autosave_restore_tests`. `RestoreAutosave` deliberately never
+/// resolves inline (Vera, PR #102 perf review) — it only records `pending_restore_slot` for the
+/// host to drain on its own tick, so draining it here manually is the correct way to observe
+/// that the wire command actually reached and was recorded by the host.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn remote_operator_lists_and_restores_an_autosave_slot() {
+    use selahcue_app::{AutosaveSlotSummary, AutosaveStore};
+
+    struct FakeAutosaveStore {
+        slots: Vec<AutosaveSlotSummary>,
+    }
+    impl AutosaveStore for FakeAutosaveStore {
+        fn list_slots(&mut self) -> Result<Vec<AutosaveSlotSummary>, String> {
+            Ok(self.slots.clone())
+        }
+    }
+
+    // RestoreAutosave is EditPlan-tier (Operator-only, rbac.rs) — the shared `setup()` helper only
+    // pairs Producer/Assistant, so this test builds its own Operator connection (mirrors
+    // `plan_editing_is_operator_only_over_the_wire`).
+    let identity = SelfSigned::generate(vec!["localhost".into()]).unwrap();
+    let pin = identity.pin;
+    let mut plan = ServicePlan::new("Sunday");
+    plan.add_item(ItemKind::Song, "Opening Song");
+    let controller = Arc::new(Mutex::new(LiveController::new(
+        plan,
+        320,
+        180,
+        Theme::dark(),
+    )));
+    controller
+        .lock()
+        .unwrap()
+        .set_autosave_store(Box::new(FakeAutosaveStore {
+            slots: vec![
+                AutosaveSlotSummary {
+                    slot: 3,
+                    saved_at_ms: 5_000,
+                    label: None,
+                },
+                AutosaveSlotSummary {
+                    slot: 2,
+                    saved_at_ms: 4_000,
+                    label: Some("before sermon".into()),
+                },
+            ],
+        }));
+
+    let registry = Arc::new(AsyncMutex::new(SessionRegistry::new()));
+    {
+        let now = Instant::now();
+        let mut reg = registry.lock().await;
+        reg.offer_pairing("o", Role::Operator, now, Duration::from_secs(300));
+        reg.redeem("o", DeviceId("op".into()), SessionToken::new("tok-op"), now)
+            .unwrap();
+    }
+    let server =
+        Arc::new(ControlServer::new(&identity, registry, handler_for(controller.clone())).unwrap());
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let running = server.clone();
+    tokio::spawn(async move {
+        let _ = running.run(listener).await;
+    });
+
+    let mut op = RemoteOperator::connect(addr, "localhost", pin, "op", "tok-op")
+        .await
+        .unwrap();
+
+    let slots = op.list_autosave_slots().await.unwrap();
+    assert_eq!(
+        slots.len(),
+        2,
+        "the host's injected store slots travel the wire"
+    );
+    assert_eq!(slots[0].slot, 3);
+    assert_eq!(slots[1].label.as_deref(), Some("before sermon"));
+
+    // Restoring is Ack'd immediately and records the intent for the host's own tick to drain —
+    // never resolved inline.
+    op.restore_autosave(3).await.unwrap();
+    assert_eq!(
+        controller.lock().unwrap().take_pending_restore_slot(),
+        Some(3),
+        "the RestoreAutosave command reached the host and recorded the pending slot"
+    );
+}
+
+/// RBAC negative control, same shape as `plan_editing_is_operator_only_over_the_wire`: a
+/// Producer's `RestoreAutosave` is DENIED, so the wire command is never even recorded as
+/// pending — confirms `remote_operator_lists_and_restores_an_autosave_slot`'s Operator-role
+/// choice above is load-bearing, not incidental.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn remote_a_producer_cannot_restore_an_autosave_slot() {
+    let (addr, pin, controller) = setup().await;
+    let mut op = RemoteOperator::connect(addr, "localhost", pin, "producer", "tok-prod")
+        .await
+        .unwrap();
+    op.restore_autosave(1).await.unwrap();
+    assert_eq!(
+        controller.lock().unwrap().take_pending_restore_slot(),
+        None,
+        "a Producer lacks EditPlan — the restore must be denied, not recorded"
+    );
+}
+
 /// RBAC over the wire: transcription ingestion needs the `Transcribe` permission. An
 /// Assistant is denied ingest (the denial is not an error — the view simply shows no
 /// transcript), but MAY approve/dismiss a detection a Producer created.
