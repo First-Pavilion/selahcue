@@ -380,6 +380,12 @@
   // while this surface is the one on screen.
   var pollTimer = null;
   var polling = false;
+  // The settle promise of the most recent rcPoll() run that actually did its real work (null
+  // until the first one). Production callers (rcActivate/pollTimer below) ignore rcPoll's return
+  // value, so recording it here is purely additive. Exists so a headless driver can await the
+  // EXACT async effect an indirectly-triggered activation kicked off (17tnw2ayz0m) — see
+  // __rcActivationSettleForTest below.
+  var lastPollSettle = null;
   function rcPoll() {
     if (!root.classList.contains("active")) return;
     // Re-entrancy guard (mirrors preservice.js's own `running` at preservice.js:330): without it,
@@ -391,7 +397,8 @@
     // that ever changes.
     if (polling) return;
     polling = true;
-    Promise.allSettled([loadSnapshot(), checkHostConnection()]).then(function () { polling = false; });
+    lastPollSettle = Promise.allSettled([loadSnapshot(), checkHostConnection()]).then(function () { polling = false; });
+    return lastPollSettle;
   }
   // Test-only hook (mirrors __rcRecheckHostForTest): lets a headless driver invoke the interval's
   // own callback directly, so the visibility guard above can be proven WITHOUT waiting out a real
@@ -407,6 +414,15 @@
   // surface-specific activation hook — so this reuses the exact same function rather than
   // duplicating "loadSnapshot(); checkHostConnection();" a third time.
   window.rcActivate = rcPoll;
+  // Test-only hook (17tnw2ayz0m): the driver triggers this activation-on-nav-click INDIRECTLY (a
+  // real click on a nav link, not a direct call to rcActivate/__rcPollForTest), so it has no
+  // promise of its own to await for the visible effect (the host-link banner) to actually land.
+  // Polling the banner's resulting DOM state against a fixed sleep budget instead (the file's own
+  // `waitFor`) was found flaky on ubuntu-latest CI (~1-in-6) — the exact class of real/virtual-
+  // time-alignment dependency this ticket's OWN earlier round (PR #98) already removed once for
+  // checkHostConnection's real-3s-poll wait. This exposes the concrete promise instead, so the
+  // driver can await the actual async effect rather than guess how long it takes.
+  window.__rcActivationSettleForTest = function () { return lastPollSettle; };
 
   // ---------- init ----------
   var nc = document.getElementById("rc-newcode");
