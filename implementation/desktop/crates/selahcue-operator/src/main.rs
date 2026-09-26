@@ -20,7 +20,7 @@
 use selahcue_app::{LiveController, OperatorShell, OperatorView, RemoteOperator};
 use selahcue_core::detector::{detector_state, DetectorSignals, DetectorState};
 use selahcue_core::plan::{ItemKind, ServicePlan};
-use selahcue_lan::protocol::{ContentLinkView, ImportItemView, ScaleFit};
+use selahcue_lan::protocol::{AutosaveSlotView, ContentLinkView, ImportItemView, ScaleFit};
 use selahcue_lan::CertPin;
 use selahcue_present::{FrameBuffer, Theme};
 use std::net::SocketAddr;
@@ -754,6 +754,32 @@ impl Backend {
         match self {
             Backend::Remote(m) => m.lock().await.view().await.map_err(|e| e.to_string()),
             Backend::Local(s) => Ok(s.plan_redo()),
+        }
+    }
+    /// List the bounded autosave-slot history (86ajy0hxg / 86ak8467m frame 13). Unlike
+    /// `plan_undo`/`plan_redo`, this IS wired over the wire for Remote — `RemoteOperator` sends
+    /// `Command::ListAutosaveSlots` and parses the host's `AutosaveSlots` reply.
+    async fn list_autosave_slots(&self) -> Result<Vec<AutosaveSlotView>, String> {
+        match self {
+            Backend::Remote(m) => m
+                .lock()
+                .await
+                .list_autosave_slots()
+                .await
+                .map_err(|e| e.to_string()),
+            Backend::Local(s) => Ok(s.list_autosave_slots()),
+        }
+    }
+    /// Restore a specific autosave slot (86ajy0hxg / 86ak8467m frame 13).
+    async fn restore_autosave(&self, slot: i64) -> Result<OperatorView, String> {
+        match self {
+            Backend::Remote(m) => m
+                .lock()
+                .await
+                .restore_autosave(slot)
+                .await
+                .map_err(|e| e.to_string()),
+            Backend::Local(s) => Ok(s.restore_autosave(slot)),
         }
     }
     async fn rename_item(&self, item_id: u64, title: String) -> Result<OperatorView, String> {
@@ -3565,6 +3591,18 @@ async fn plan_undo(state: State<'_, AppState>) -> Result<OperatorView, String> {
 #[tauri::command]
 async fn plan_redo(state: State<'_, AppState>) -> Result<OperatorView, String> {
     state.backend.plan_redo().await
+}
+/// List the bounded autosave-slot history (FR-005 "last-3"; 86ajy0hxg / 86ak8467m frame 13) —
+/// the "Restore last autosave" recovery banner's read side. Read-only.
+#[tauri::command]
+async fn list_autosave_slots(state: State<'_, AppState>) -> Result<Vec<AutosaveSlotView>, String> {
+    state.backend.list_autosave_slots().await
+}
+/// Restore the plan + session position from a specific autosave slot (86ajy0hxg / 86ak8467m
+/// frame 13). Returns the fresh view, like every other plan action.
+#[tauri::command]
+async fn restore_autosave(slot: i64, state: State<'_, AppState>) -> Result<OperatorView, String> {
+    state.backend.restore_autosave(slot).await
 }
 #[tauri::command]
 async fn rename_item(
@@ -7922,6 +7960,8 @@ fn main() {
             move_item,
             plan_undo,
             plan_redo,
+            list_autosave_slots,
+            restore_autosave,
             rename_item,
             stage_scripture,
             follow_scripture,

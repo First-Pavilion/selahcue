@@ -1534,6 +1534,16 @@ EXPECTED_MIN_CHECKS = 2033
 # reported signal, making a genuine no_signal report on an already-assigned display silently read
 # "CONNECTED" — that branch was unreachable before this fix, not merely untested).
 EXPECTED_MIN_CHECKS = 2036
+#
+# 2036 -> 2056: 86ak8467m (Service Plan resilience states, follow-on round) added the two
+# backend-dependent acceptance criteria this ticket carried since 86ajy0hxg merged: AC-4 (Restore
+# last autosave + amber "Recovery mode" saved-indicator, frame 612:124, PL AC-56..58) and AC-6
+# (item-delete Undo restoring the original id + content link, conditional on backend kind — Local
+# offers it, Remote and unknown withhold it, PL AC-59/AC-60) — plus the full "Plan updated ·
+# Review changes" reload/keep banner for AC-2 (frame 612:1020, PL AC-53..55), upgrading the
+# badge-only signal a prior round shipped. 20 checks added. Confirmed by a clean run against the
+# real post-merge tree: 2056 checks, 0 FAIL.
+EXPECTED_MIN_CHECKS = 2056
 
 
 def find_chrome():
@@ -2050,6 +2060,17 @@ STUB = r"""
     }
     if (cmd === "add_item" || cmd === "move_item" || cmd === "rename_item" || cmd === "remove_item" || cmd === "plan_undo" || cmd === "plan_redo")
       return Promise.resolve(JSON.parse(JSON.stringify(V)));
+    // Autosave slots + restore (86ajy0hxg wire, 86ak8467m frame 13). window.__autosaveSlots
+    // (default none) drives the LIST side; a driver test sets it before triggering a failed open
+    // to prove the Restore banner only appears when the host actually reports something to
+    // restore. __restoreAutosaveRejectOnce exercises the failure path (button re-enables, an
+    // alert names the reason) the same way __planRejectOnce does for the lifecycle commands.
+    if (cmd === "list_autosave_slots") return Promise.resolve((window.__autosaveSlots || []).slice());
+    if (cmd === "restore_autosave") {
+      if (window.__restoreAutosaveRejectOnce) { window.__restoreAutosaveRejectOnce = false; return Promise.reject(new Error("simulated host rejection")); }
+      window.__lastRestoredSlot = args && args.slot;
+      return Promise.resolve(JSON.parse(JSON.stringify(V)));
+    }
     // Plan lifecycle (86ak8467m; host side 86ajy0hwg). The reply is whatever the driver has
     // parked in window.__planLifeReply (defaulting to V), with the request's own name and items
     // folded in — so a check can assert that the client RENDERS what the host returned rather
@@ -9043,6 +9064,50 @@ DRIVER = r"""
       planRenderLoadFailed(new Error("late"));
       ok(document.querySelectorAll("#plan-b-list .plan-b-row").length === 6 && !document.querySelector("#plan-b-list .plan-load-failed"),
          "SP3 AC-7 (control): a late rejection does not clobber a run sheet that already rendered");
+
+      // === 86ak8467m frame 612:124 (AC-4): Restore last autosave + amber "Recovery mode" ========
+      window.__autosaveSlots = []; // nothing to restore
+      planRenderLoading();
+      planRenderLoadFailed(new Error("boom2"));
+      await sleep(20); // the banner is built from an async invoke("list_autosave_slots")
+      var savedInd = el("plan-saved-indicator");
+      ok(!!savedInd && getComputedStyle(savedInd).display !== "none" && /Recovery mode/i.test(savedInd.textContent),
+         "PL AC-56 (frame 612:124): a failed open shows the amber 'Recovery mode' saved-indicator — computed display, not the hidden attribute alone (this webview's known trap)");
+      ok(!document.querySelector(".plan-restore-banner"),
+         "PL AC-56 (control): with NO autosave slot reported, no Restore banner appears — never offering a dead button");
+
+      window.__autosaveSlots = [
+        { slot: 9, saved_at_ms: 1000, label: null },
+        { slot: 8, saved_at_ms: 500, label: "before sermon" }
+      ];
+      planRenderLoading();
+      planRenderLoadFailed(new Error("boom3"));
+      await sleep(20);
+      var restoreBtn = document.querySelector(".plan-restore-banner button");
+      ok(!!restoreBtn && /Restore last autosave/i.test(restoreBtn.textContent),
+         "PL AC-57: with at least one autosave slot reported, the recovery banner offers 'Restore last autosave'");
+      restoreBtn.click();
+      await sleep(20);
+      ok(window.__lastRestoredSlot === 9,
+         "PL AC-57: clicking Restore calls restore_autosave with the NEWEST slot (AutosaveSlots is documented newest-first)");
+      ok(!document.querySelector(".plan-restore-banner") && getComputedStyle(el("plan-saved-indicator")).display === "none",
+         "PL AC-57: a successful restore re-renders the builder and clears Recovery mode");
+
+      // Failure path: the button re-enables and names the reason — never a silently dead control.
+      window.__autosaveSlots = [{ slot: 5, saved_at_ms: 1000, label: null }];
+      planRenderLoading();
+      planRenderLoadFailed(new Error("boom4"));
+      await sleep(20);
+      window.__restoreAutosaveRejectOnce = true;
+      var restoreBtn2 = document.querySelector(".plan-restore-banner button");
+      restoreBtn2.click();
+      await sleep(20);
+      ok(restoreBtn2.disabled === false,
+         "PL AC-58: a refused restore re-enables the button rather than leaving it stuck disabled");
+      ok(!!el("plan-notice").querySelector("p[role=alert]"),
+         "PL AC-58: a refused restore is announced through the plan surface's own alert region");
+      window.__autosaveSlots = [];
+
       showSurface("plan");
       await sleep(40);
       planRenderBuilder(planView); // restore before the nav check
@@ -9184,6 +9249,90 @@ DRIVER = r"""
       ok(el("plan-sum-publish").getAttribute("aria-describedby") === "plan-pub-line" &&
          /edited since version 4/i.test(pubLine()),
          "PL AC-6 a11y: the badge's meaning reaches AT through the Publish button's description — the change glyph is never the only carrier");
+
+      // === 86ak8467m frame 612:1020, AC-2: "Plan updated · Review changes" — reload vs keep ===
+      var liveCtrlBeforePub = window.__calls.filter(isLiveCtrl).length;
+      openPlan(lifeView({ publish: PUB_CHANGED }));
+      ok(/plan updated .* review changes/i.test(el("plan-b-insp").textContent),
+         "PL AC-53 (frame 612:1020): the full banner copy — 'Plan updated · Review changes' — renders, not just the short badge");
+      var reloadBtn = el("plan-pub-reload"), keepBtn = el("plan-pub-keep");
+      ok(!!reloadBtn && !!keepBtn, "PL AC-53: both Reload and Keep are real, focusable buttons");
+      // Keep: a pure UI dismissal — no host round-trip, and the banner (but not the short badge)
+      // goes away for THIS change signature.
+      var callsBeforeKeep = window.__calls.length;
+      keepBtn.click();
+      ok(window.__calls.length === callsBeforeKeep,
+         "PL AC-54 (Keep): dismissing sends NO command to the host — a pure client-side choice");
+      ok(!!el("plan-pub-changed") && !el("plan-pub-keep"),
+         "PL AC-54 (Keep): the short badge stays (still genuinely changed) but the reload/keep row is gone");
+      ok(window.__calls.filter(isLiveCtrl).length === liveCtrlBeforePub,
+         "PL AC-54 (FR-006): neither showing the banner nor clicking Keep sent a single live-control command — the live run sheet cannot have silently reordered");
+      // A LATER change (a new revision) re-arms the banner — Keep silences only the change it
+      // was shown for, never every future one.
+      openPlan(lifeView({ publish: { revision: 11, published_revision: 5, version: 4, changed: true } }));
+      ok(!!el("plan-pub-reload"), "PL AC-54 (control): a NEW revision re-arms the review banner even though a prior one was dismissed");
+      // Reload: a real re-fetch + re-render, never a no-op — and still never a live reorder. A
+      // DIFFERENT revision from PUB_CHANGED/11 above, so this is not accidentally re-testing an
+      // already-Kept signature (which would correctly (and confusingly) render no banner at all).
+      openPlan(lifeView({ publish: { revision: 13, published_revision: 5, version: 4, changed: true } }));
+      var callsBeforeReload = window.__calls.filter(function (c) { return c.cmd === "view"; }).length;
+      el("plan-pub-reload").click();
+      await sleep(20);
+      ok(window.__calls.filter(function (c) { return c.cmd === "view"; }).length === callsBeforeReload + 1,
+         "PL AC-55 (Reload): clicking Reload genuinely calls invoke(\"view\") — not a fake dismissal wearing a different label");
+      ok(el("plan-insp-h").textContent === "PLAN SUMMARY",
+         "PL AC-55 (Reload): the builder re-renders from the fetched view");
+
+      // === 86ak8467m frame 612:584 (AC-6): item-delete Undo, conditional on backend kind =======
+      var undoView = lifeView({ items: [
+        { id: 401, kind: "song", title: "Doxology", is_live: false, is_staged: false },
+        { id: 402, kind: "scripture", title: "Benediction", is_live: false, is_staged: false, link: { kind: "scripture", reference: "Numbers 6:24-26", translation: "KJV" } }
+      ] });
+      // Local backend (host_connected() === false → hostRemote === false): Undo IS offered,
+      // because plan_undo genuinely works there. hostRemote is set directly here (as
+      // planSelectedId/planViewerSig already are elsewhere in this driver) to exercise all three
+      // states deterministically; the startup IIFE that derives it for real from host_connected()
+      // is unit-covered by PL's existing host_connected fixtures ("hostRemote" reads) above.
+      hostRemote = false;
+      openPlan(undoView);
+      document.querySelector('#plan-b-list .plan-b-row[data-item-id="402"]').click();
+      var delBtn = document.querySelector(".plan-insp-danger .pm-btn-danger");
+      ok(!!delBtn, "PL AC-59 (setup): the item inspector offers Remove item");
+      delBtn.click();
+      document.querySelector(".pm-confirm .pm-btn-danger").click(); // confirm the pmConfirm dialog
+      await sleep(20);
+      var undoBtn = document.querySelector("#plan-notice .plan-notice-action");
+      ok(!!undoBtn && /Undo/i.test(undoBtn.textContent),
+         "PL AC-59 (Local backend): deleting an item offers an Undo action, since plan_undo genuinely restores it here");
+      var undoCallsBefore = plCalls("plan_undo").length;
+      undoBtn.click();
+      await sleep(20);
+      ok(plCalls("plan_undo").length === undoCallsBefore + 1,
+         "PL AC-59: clicking Undo calls invoke(\"plan_undo\") — the SAME whole-plan-undo path ⌘Z uses, restoring the item under its ORIGINAL id + content link (proven server-side by selahcue-app's test_service_plan_resilience.rs::undo_plan_restores_a_removed_item_with_its_original_id_and_content_link)");
+
+      // Remote backend (hostRemote === true): Undo must NOT be offered — plan_undo is a
+      // documented no-op there, and offering it ships a control that silently does nothing.
+      hostRemote = true;
+      openPlan(undoView);
+      document.querySelector('#plan-b-list .plan-b-row[data-item-id="402"]').click();
+      document.querySelector(".plan-insp-danger .pm-btn-danger").click();
+      document.querySelector(".pm-confirm .pm-btn-danger").click();
+      await sleep(20);
+      ok(!document.querySelector("#plan-notice .plan-notice-action"),
+         "PL AC-60 (Remote backend): deleting an item does NOT offer Undo — plan_undo is a confirmed no-op over the wire, so an inert button is never shown");
+
+      // Unknown backend (hostRemote === null, e.g. the host_connected() probe itself failed):
+      // never fabricate the capability from an unknown, same rule planViewer already enforces.
+      hostRemote = null;
+      openPlan(undoView);
+      document.querySelector('#plan-b-list .plan-b-row[data-item-id="402"]').click();
+      document.querySelector(".plan-insp-danger .pm-btn-danger").click();
+      document.querySelector(".pm-confirm .pm-btn-danger").click();
+      await sleep(20);
+      ok(!document.querySelector("#plan-notice .plan-notice-action"),
+         "PL AC-60 (control, unknown backend): an UNREPORTED backend kind also withholds Undo, rather than assuming it works");
+      hostRemote = false; // restore the harness default for whatever runs after this block
+
       // The badge must come from `changed` ALONE. `revision !== published_revision` is the
       // obvious implementation, it looks right in testing, and it is wrong: an edit that is then
       // undone moves the revision while restoring the content, so this state means "touched, not

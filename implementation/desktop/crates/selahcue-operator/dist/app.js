@@ -8426,10 +8426,31 @@
           list.appendChild(sk);
         }
       }
+      // Saved/recovery indicator (frame 612:124, section 9 design-QA copy fix). This build has no
+      // normal-state "All changes saved" concept to contradict — the indicator exists ONLY to
+      // carry the amber "Recovery mode" signal, never a green saved state. Hidden with BOTH the
+      // attribute and an inline display together (a class-level rule silently defeats `hidden` in
+      // this webview — see planSyncPermission's palette comment below), so a computed-style check
+      // — not the attribute alone — is what "hidden" means here.
+      function planSetSavedIndicator(mode) {
+        const el = document.getElementById("plan-saved-indicator");
+        if (!el) return;
+        if (mode === "recovery") {
+          el.hidden = false;
+          el.style.display = "";
+          el.className = "plan-saved-indicator is-recovery";
+          el.textContent = "Recovery mode";
+        } else {
+          el.hidden = true;
+          el.style.display = "none";
+          el.className = "plan-saved-indicator";
+          el.textContent = "";
+        }
+      }
       // A failed open must not leave the skeleton up forever — an endless loading state is a lie
-      // about work still being in flight. This is the MINIMUM honest replacement; the designed
-      // error state (frame 612:124: non-blocking banner + Restore last autosave + integrity check)
-      // needs autosave-slot wire fields that do not exist yet and belongs to 86ak8467m.
+      // about work still being in flight. Beyond the honest banner, this now offers the designed
+      // recovery affordance (frame 612:124): Restore last autosave, when the host reports any slot
+      // — and the amber "Recovery mode" indicator, never a contradictory green "All changes saved".
       function planRenderLoadFailed(e) {
         console.error(e);
         const list = document.getElementById("plan-b-list");
@@ -8450,11 +8471,51 @@
         planSyncPermission(null);
         const palette = document.querySelector("#surface-plan .plan-palette");
         if (palette) palette.style.display = "none";
+        planSetSavedIndicator("recovery");
         const p = document.createElement("p");
         p.className = "plan-load-failed";
         p.setAttribute("role", "alert");
         p.textContent = "Couldn't open the plan. Live output is unaffected — reopen this surface to retry.";
         list.appendChild(p);
+        // Restore last autosave (FR-005 last-3; 86ajy0hxg wire, wired here). A host that does not
+        // implement the command (older build, or nothing to restore) answers with an empty list or
+        // a rejected promise — either way this silently offers nothing rather than a dead button.
+        invoke("list_autosave_slots").then((slots) => {
+          if (!Array.isArray(slots) || !slots.length) return;
+          if (!document.body.contains(list) || document.querySelector(".plan-restore-banner")) return;
+          const latest = slots[0]; // ServerMessage::AutosaveSlots is documented newest-first
+          const banner = document.createElement("div");
+          banner.className = "plan-restore-banner";
+          banner.setAttribute("role", "status");
+          const msg = document.createElement("span");
+          msg.className = "plan-restore-banner-msg";
+          msg.textContent = "A recent autosave is available.";
+          banner.appendChild(msg);
+          const btn = document.createElement("button");
+          btn.type = "button";
+          btn.className = "pm-btn-primary";
+          btn.textContent = "Restore last autosave";
+          btn.onclick = () => {
+            btn.disabled = true;
+            invoke("restore_autosave", { slot: latest.slot }).then((v) => {
+              planSetSavedIndicator(null);
+              planRenderBuilder(v);
+              // Deliberately NOT "Restored" — `RestoreAutosave` always Acks even when nothing was
+              // found to restore (an unknown slot, a failed integrity check, or a content-mismatch
+              // refusal are all silent no-ops on the wire), so this message describes what was
+              // SENT, not a confirmed outcome this client cannot actually observe. Live output is
+              // unaffected either way (NFR-024).
+              planNotice("status", "Restore requested — showing the plan as the host now reports it. Live output is unaffected.");
+            }).catch((err) => {
+              console.error(err);
+              btn.disabled = false;
+              const detail = err && err.message ? err.message : typeof err === "string" ? err : "";
+              planNotice("alert", "Couldn't restore the autosave" + (detail ? " — " + detail : "") + ".");
+            });
+          };
+          banner.appendChild(btn);
+          list.insertBefore(banner, list.firstChild);
+        }).catch((err) => { console.error(err); });
       }
       // Deselect back to the Plan Summary. Mirrors the Theme Designer's Escape-deselects pattern
       // (tdSel keydown / empty-canvas click). Without this, planSelectedId is only ever SET by a
@@ -8528,13 +8589,16 @@
           console.error(e);
         }
       }
-      // Run a plan mutation, then refresh the builder from the returned view.
+      // Run a plan mutation, then refresh the builder from the returned view. Returns whether it
+      // succeeded (mirrors planLifecycleRun's boolean), so a caller that wants to react to a real
+      // success — e.g. offering Undo only once the removal actually happened — can.
       async function planMutate(fn) {
         try {
           // Any plan EDIT invalidates a lifecycle outcome message: "Plan published" is true of
           // the run sheet that was published, not of the one now on screen.
           planNotice("");
           planRenderBuilder(await fn());
+          return true;
         } catch (e) {
           console.error(e);
           // ...and SAY so. A refused plan edit reached console.error and nothing else, so a host
@@ -8547,6 +8611,7 @@
           // mutation never re-renders, so clear it — otherwise a later background re-render would
           // consume the stale intent and steal focus onto an item the operator didn't just touch.
           planFocusAfterRender = null;
+          return false;
         }
       }
       // Plan run-sheet undo/redo (⌘Z / ⌘⇧Z) — backend-authoritative (the LiveController plan
@@ -8773,6 +8838,9 @@
       function planRenderBuilder(view) {
         const list = document.getElementById("plan-b-list");
         if (!list || !view) return; // not on the plan surface
+        // A successful render — including one reached BY restoring an autosave — is by definition
+        // not the failed-open/recovery state any more.
+        planSetSavedIndicator(null);
         planLastView = view; // so a pure UI change (deselect) can re-render without a round-trip
         {
           // Keep the poll's signature in step with whatever was just drawn, so it never
@@ -9119,7 +9187,11 @@
       // equivalent, and it is REBUILT rather than re-texted on each call: a live region whose
       // role changes between status and alert does not reliably re-announce, and "Published"
       // arriving in the element that last said "Couldn't publish" is worth announcing.
-      function planNotice(kind, message) {
+      // `actionLabel`/`onAction` are optional (86ak8467m frame 15) — every existing call site
+      // passes neither and is unaffected. When given, a focusable button rides INSIDE the same
+      // live region as the message, so its own text is announced together with the action it
+      // performs (never "Undo" alone with no context of what it undoes).
+      function planNotice(kind, message, actionLabel, onAction) {
         const slot = document.getElementById("plan-notice");
         if (!slot) return;
         slot.innerHTML = "";
@@ -9127,7 +9199,17 @@
         const p = document.createElement("p");
         p.className = "plan-notice plan-notice-" + kind;
         p.setAttribute("role", kind === "alert" ? "alert" : "status");
-        p.textContent = message;
+        const msg = document.createElement("span");
+        msg.textContent = message;
+        p.appendChild(msg);
+        if (actionLabel && onAction) {
+          const btn = document.createElement("button");
+          btn.type = "button";
+          btn.className = "plan-notice-action";
+          btn.textContent = actionLabel;
+          btn.onclick = onAction;
+          p.appendChild(btn);
+        }
         slot.appendChild(p);
       }
 
@@ -9496,6 +9578,11 @@
       // the panel carries the plan's publication state and the frame-612:1020 change badge. The
       // pre-service check stays disabled — no command in this contract performs one.
       // ---------------------------------------------------------------------------------------
+      // AC-2 (frame 612:1020) — "Keep" dismisses the CURRENT change only; it is keyed on the same
+      // signature `planSyncPublishFromPoll` uses, so a LATER edit (a new revision) always re-arms
+      // the banner rather than staying silenced forever. Module-level because the summary panel
+      // is torn down and rebuilt on every render.
+      let planReviewDismissedSig = null;
       function planSummaryActions(box, view) {
         const canEdit = planCanEdit(view);
         const pub = planPublishState(view);
@@ -9528,6 +9615,55 @@
             b.textContent = "⟳ Plan updated";
             state.appendChild(b);
             line.textContent = "Edited since version " + pub.version + " was published.";
+            // Frame 612:1020's full banner: "Plan updated · Review changes" + reload/keep. Shown
+            // once per distinct change (a new revision/version always re-arms it even if a prior
+            // change at this exact signature was already dismissed with Keep — signature equality
+            // is the guard, not a one-shot flag).
+            const sig = pub.revision + "/" + pub.publishedRevision + "/" + pub.version;
+            if (planReviewDismissedSig !== sig) {
+              // A DIFFERENT class from the "Edited since version…" line above (never
+              // "plan-pub-line" again) — that class is a querySelector target
+              // (scripts/operator_headless.py's pubLine()) that must keep resolving to the ORIGINAL
+              // line, not whichever of the two happens to sit first in DOM order.
+              const review = document.createElement("p");
+              review.className = "plan-pub-review";
+              review.textContent = "Plan updated · Review changes";
+              state.appendChild(review);
+              const acts = document.createElement("div");
+              acts.className = "plan-pub-actions";
+              const reloadBtn = document.createElement("button");
+              reloadBtn.type = "button";
+              reloadBtn.className = "pm-btn-ghost";
+              reloadBtn.id = "plan-pub-reload";
+              reloadBtn.textContent = "Reload";
+              // Reload re-fetches the single shared plan and re-renders the WHOLE builder from
+              // host truth — a genuine action (picks up any further edit since this was drawn),
+              // never a fake one. It never touches live_index/staged_index itself (those travel
+              // AS PART OF the fetched view, unchanged by the fetch) — FR-006's "never silently
+              // reorders the live run sheet" holds because nothing here reorders anything; it
+              // only re-paints what the host already reports.
+              reloadBtn.onclick = () => {
+                planReviewDismissedSig = null; // a real fetch always re-checks fresh truth next time
+                invoke("view").then(planRenderBuilder).catch((err) => {
+                  console.error(err);
+                  planNotice("alert", "Couldn't reload the plan.");
+                });
+              };
+              const keepBtn = document.createElement("button");
+              keepBtn.type = "button";
+              keepBtn.className = "pm-btn-ghost";
+              keepBtn.id = "plan-pub-keep";
+              keepBtn.textContent = "Keep";
+              // Keep is a pure UI dismissal — no host round-trip, no data change of any kind, so
+              // the live run sheet cannot possibly move (FR-006).
+              keepBtn.onclick = () => {
+                planReviewDismissedSig = sig;
+                if (planLastView) planRenderBuilder(planLastView);
+              };
+              acts.appendChild(reloadBtn);
+              acts.appendChild(keepBtn);
+              state.appendChild(acts);
+            }
           } else if (pub.published) {
             line.textContent = "Published · version " + pub.version;
           } else {
@@ -9816,7 +9952,32 @@
               confirmLabel: "Remove",
               onConfirm: () => {
                 if (planSelectedId === it.id) planSelectedId = null;
-                planMutate(() => invoke("remove_item", { itemId: it.id }));
+                const title = it.title;
+                planMutate(() => invoke("remove_item", { itemId: it.id })).then((ok) => {
+                  if (!ok) return;
+                  // Offer Undo only where it will actually work (frame 612:584 / AC-6). `plan_undo`
+                  // is a CONFIRMED, documented no-op on a Remote backend (selahcue-operator's
+                  // main.rs) — the host owns its own history and nothing carries the undo over the
+                  // wire. Offering it there is exactly "a control that looks live and fails", the
+                  // failure this surface's whole disabled-with-a-reason discipline exists to avoid
+                  // (the same rule `pmLibRestorable` enforces for the deck library). hostRemote ===
+                  // false (a known-Local backend) is the only case this is known to work; both
+                  // true (Remote) and null (unknown — the call failed) withhold it, matching
+                  // planViewer's "never fabricate a capability from an unknown" rule.
+                  if (hostRemote === false) {
+                    planNotice("status", "Removed “" + title + "”.", "Undo", () => {
+                      invoke("plan_undo").then((v) => {
+                        planRenderBuilder(v);
+                        planNotice("status", "Restored “" + title + "”.");
+                      }).catch((err) => {
+                        console.error(err);
+                        planNotice("alert", "Couldn't undo that.");
+                      });
+                    });
+                  } else {
+                    planNotice("status", "Removed “" + title + "”.");
+                  }
+                });
               },
             });
           danger.appendChild(del);

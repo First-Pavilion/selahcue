@@ -1130,6 +1130,14 @@
                  does not report a permission at all, which is not view-only, so this slot stays
                  empty then — never populated on the strength of a missing field. -->
             <div id="plan-viewonly-slot" class="plan-viewonly-slot"></div>
+            <!-- Saved/recovery indicator (frame 612:124, section 9 design-QA copy fix). This build
+                 has no normal-state "All changes saved" concept to contradict — this slot exists
+                 ONLY to carry the amber "Recovery mode" signal after a failed open, never a green
+                 saved state. Written by planSetSavedIndicator, which hides it with BOTH the
+                 attribute and an inline display (a class-level rule silently defeats `hidden` in
+                 this webview — see the .plan-palette comment in app.js), so "hidden" here means
+                 computed style, not the attribute alone. -->
+            <span id="plan-saved-indicator" class="plan-saved-indicator" hidden></span>
           </div>
           <button id="plan-open-live" class="pm-btn-primary" type="button">Open in Live ▶</button>
         </header>
