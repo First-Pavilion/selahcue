@@ -91,6 +91,7 @@ logic against small text fixtures, so all of it is trusted before this is pointe
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import subprocess
 import sys
@@ -133,7 +134,9 @@ class CoverageError(Exception):
     """Raised when the two sides can't even be compared (parse failure, not a drift finding)."""
 
 
-def _git_ls_files(repo_root: Path, pathspec: str) -> list[str]:
+def _git_ls_files(
+    repo_root: Path, pathspec: str, *, env: dict[str, str] | None = None
+) -> list[str]:
     """Run `git ls-files --cached --others --exclude-standard -- <pathspec>` from `repo_root`
     and return the matched paths, posix-style, relative to `repo_root`. This is what makes
     discovery match "what this checkout/worktree actually contains" instead of "what the raw
@@ -154,13 +157,22 @@ def _git_ls_files(repo_root: Path, pathspec: str) -> list[str]:
     `CoverageError` (Sana, 4th pass, non-blocking #3) so a real problem here is still a clean,
     actionable message rather than a raw `CalledProcessError`/`FileNotFoundError` traceback --
     the exit code was already non-zero either way, so nothing was ever passing wrongly, but a
-    clean report is the standard the rest of this script already holds itself to."""
+    clean report is the standard the rest of this script already holds itself to.
+
+    `env` overrides the subprocess environment (default: inherit this process's, so a real run
+    correctly honours the developer's own git config, e.g. a global `core.excludesFile`).
+    `self_test()` passes a scrubbed one (performance review, Vera, PR #105, 2nd pass,
+    non-blocking (b)): `--exclude-standard` reads global/system git config, so without this a
+    fixture's exact-set assertion could vary by developer machine -- correct behaviour for the
+    real check, but not something a self-test fixture should be at the mercy of."""
     try:
         result = subprocess.run(
             ["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", pathspec],
             cwd=repo_root,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            env=env,
             check=True,
         )
     except (subprocess.CalledProcessError, FileNotFoundError, OSError) as exc:
@@ -191,15 +203,16 @@ def _assert_no_submodules(repo_root: Path) -> None:
         )
 
 
-def discover_lockfile_roots(repo_root: Path) -> set[str]:
+def discover_lockfile_roots(repo_root: Path, *, env: dict[str, str] | None = None) -> set[str]:
     """Return every directory (as a posix path relative to `repo_root`, "." for the root
     itself) containing a `Cargo.lock` -- the literal artefact `cargo audit` reads. This is the
     PRIMARY source of truth: see DERIVATION in the module docstring for why inferring
     "independent root" from Cargo.toml table markers, and from a raw filesystem walk (this
-    script's own previous approaches, in that order), are not sufficient on their own."""
+    script's own previous approaches, in that order), are not sufficient on their own. `env` is
+    passed straight through to `_git_ls_files` (see its docstring); only `self_test()` sets it."""
     return {
         Path(rel_path).parent.as_posix()
-        for rel_path in _git_ls_files(repo_root, "*Cargo.lock")
+        for rel_path in _git_ls_files(repo_root, "*Cargo.lock", env=env)
         # The glob pathspec matches by substring/suffix, not exact basename, so it would also
         # match e.g. "NotCargo.lock" (security review, Sana, PR #105, 4th pass, non-blocking #1
         # -- verified with a fixture). Fails closed (an extra required root, not a missed one)
@@ -208,16 +221,19 @@ def discover_lockfile_roots(repo_root: Path) -> set[str]:
     }
 
 
-def discover_workspace_table_roots(repo_root: Path) -> set[str]:
+def discover_workspace_table_roots(
+    repo_root: Path, *, env: dict[str, str] | None = None
+) -> set[str]:
     """Return every directory (as a posix path relative to `repo_root`, "." for the root
     itself) whose own `Cargo.toml` declares a workspace-table marker (`[workspace]` or
     `[workspace.package]`, tolerant of spacing and a trailing comment). SECONDARY source, unioned
     with `discover_lockfile_roots`: it catches a crate one step earlier -- before `cargo` has ever
     been run against it and produced a `Cargo.lock` -- not instead of the lockfile scan, which
     Sana's review proved (across two separate findings) is the only source that can't itself be
-    true-but-incomplete."""
+    true-but-incomplete. `env` is passed straight through to `_git_ls_files`; only `self_test()`
+    sets it."""
     roots: set[str] = set()
-    for rel_path in _git_ls_files(repo_root, "*Cargo.toml"):
+    for rel_path in _git_ls_files(repo_root, "*Cargo.toml", env=env):
         if Path(rel_path).name != "Cargo.toml":
             continue
         full_path = repo_root / rel_path
@@ -227,16 +243,23 @@ def discover_workspace_table_roots(repo_root: Path) -> set[str]:
             # review, Cody, PR #105 -- found while auditing this exact read for the equivalent
             # gap; unlike a bare empty directory, git DOES list this kind of entry).
             continue
-        if _WORKSPACE_TABLE_RE.search(full_path.read_text()):
+        # Explicit encoding (performance review, Vera, PR #105, 2nd pass, non-blocking (a)): the
+        # `-z` fix in `_git_ls_files` only hardened path decoding -- a manifest whose CONTENTS
+        # (not just its path) contain non-ASCII text, on a machine whose locale-default encoding
+        # isn't UTF-8, would otherwise still raise `UnicodeDecodeError` here.
+        if _WORKSPACE_TABLE_RE.search(full_path.read_text(encoding="utf-8")):
             roots.add(Path(rel_path).parent.as_posix())
     return roots
 
 
-def discover_required_roots(repo_root: Path) -> set[str]:
+def discover_required_roots(repo_root: Path, *, env: dict[str, str] | None = None) -> set[str]:
     """The full required-audit-root set: every `Cargo.lock` location, unioned with every
-    workspace-table location, relative to `repo_root`."""
+    workspace-table location, relative to `repo_root`. `env` is passed straight through; only
+    `self_test()` sets it."""
     _assert_no_submodules(repo_root)
-    return discover_lockfile_roots(repo_root) | discover_workspace_table_roots(repo_root)
+    return discover_lockfile_roots(repo_root, env=env) | discover_workspace_table_roots(
+        repo_root, env=env
+    )
 
 
 def audit_job_body(ci_workflow_text: str) -> str:
@@ -308,13 +331,20 @@ def _write(root: Path, rel_path: str, filename: str, text: str) -> None:
 
 
 def self_test() -> int:
+    # `--exclude-standard` reads global/system git config (e.g. a developer's own
+    # `core.excludesFile`), so without pinning it a fixture's exact-set assertion could vary by
+    # machine (performance review, Vera, PR #105, 2nd pass, non-blocking (b)). Scrubbed for every
+    # fixture git call below; the real check (in `main()`) deliberately does NOT set this, since
+    # honouring the developer's own config there is correct behaviour, not a bug.
+    fixture_git_env = {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_SYSTEM": os.devnull}
+
     # --- discovery functions: real, `git init`-ed temporary-directory fixtures, no dependency
     # on the real repo. A plain (non-git) directory can no longer be used here: the whole point
     # of round 3's fix is that discovery goes through `git ls-files`, so the fixture has to be a
     # real repo for that command to mean anything.
     with tempfile.TemporaryDirectory() as tmp:
         fixture_root = Path(tmp)
-        subprocess.run(["git", "init", "-q"], cwd=fixture_root, check=True)
+        subprocess.run(["git", "init", "-q"], cwd=fixture_root, env=fixture_git_env, check=True)
 
         # Round 3's exact incident, reproduced: a directory that's present on disk but
         # `.gitignore`d (this repo's own `.claude/` covers agent worktrees the same way) must
@@ -406,7 +436,7 @@ def self_test() -> int:
         _write(fixture_root, "crates/café", "Cargo.toml", '[package]\nname = "cafe"\n')
         _write(fixture_root, "crates/café", "Cargo.lock", "# lockfile\n")
 
-        lockfile_roots = discover_lockfile_roots(fixture_root)
+        lockfile_roots = discover_lockfile_roots(fixture_root, env=fixture_git_env)
         assert lockfile_roots == {
             ".",
             "crates/independent-no-workspace-table",
@@ -414,7 +444,7 @@ def self_test() -> int:
         }, lockfile_roots
         assert "crates/odd" not in lockfile_roots, lockfile_roots
 
-        table_roots = discover_workspace_table_roots(fixture_root)
+        table_roots = discover_workspace_table_roots(fixture_root, env=fixture_git_env)
         assert table_roots == {
             ".",
             "crates/not-yet-built",
@@ -422,7 +452,7 @@ def self_test() -> int:
             "crates/workspace-package-only",
         }, table_roots
 
-        required = discover_required_roots(fixture_root)
+        required = discover_required_roots(fixture_root, env=fixture_git_env)
         assert required == {
             ".",
             "crates/independent-no-workspace-table",
@@ -436,7 +466,7 @@ def self_test() -> int:
         # CoverageError, not a raw subprocess traceback (Sana, 4th pass, non-blocking #3).
         with tempfile.TemporaryDirectory() as not_a_repo:
             try:
-                discover_lockfile_roots(Path(not_a_repo))
+                discover_lockfile_roots(Path(not_a_repo), env=fixture_git_env)
             except CoverageError:
                 pass
             else:
@@ -447,12 +477,14 @@ def self_test() -> int:
         # superproject, so a submodule crate with its own Cargo.lock would otherwise vanish).
         with tempfile.TemporaryDirectory() as tmp2:
             submodule_fixture = Path(tmp2)
-            subprocess.run(["git", "init", "-q"], cwd=submodule_fixture, check=True)
+            subprocess.run(
+                ["git", "init", "-q"], cwd=submodule_fixture, env=fixture_git_env, check=True
+            )
             submodule_fixture.joinpath(".gitmodules").write_text(
                 '[submodule "vendor/whatever"]\n\tpath = vendor/whatever\n\turl = ../whatever\n'
             )
             try:
-                discover_required_roots(submodule_fixture)
+                discover_required_roots(submodule_fixture, env=fixture_git_env)
             except CoverageError:
                 pass
             else:
@@ -592,7 +624,7 @@ def main() -> int:
 
     try:
         required = discover_required_roots(REPO_ROOT)
-        problems = check(required, CI_WORKFLOW.read_text())
+        problems = check(required, CI_WORKFLOW.read_text(encoding="utf-8"))
     except CoverageError as exc:
         print(f"check_dependency_audit_coverage: {exc}", file=sys.stderr)
         return 1
