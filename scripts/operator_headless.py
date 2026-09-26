@@ -1562,7 +1562,7 @@ EXPECTED_MIN_CHECKS = 2037
 # docs/delivery/goals/TASK-fe-plan-resilience-86ak8467m.md for the mutation-tested proof each new
 # guard actually bites. Measured via an actual clean run against the combined, rebased tree, not
 # hand-summed.
-EXPECTED_MIN_CHECKS = 2057  # PLACEHOLDER — corrected below after a fresh measured run post-rebase
+EXPECTED_MIN_CHECKS = 2065  # measured post-rebase, clean run: 2065 checks, 0 FAIL
 
 
 def find_chrome():
