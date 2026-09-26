@@ -4073,6 +4073,11 @@ async fn connect_remote(ep: &Endpoint) -> Result<RemoteOperator, String> {
 #[cfg(test)]
 mod endpoint_guard_tests {
     use super::*;
+    // Both imports are used only by the `#[cfg(unix)]` tests below (`write!` into a `File`,
+    // and `Permissions::from_mode`) — gating them the same way avoids an `unused_imports` /
+    // `-D warnings` failure on non-Unix CI (this exact mistake broke Windows CI once already
+    // on this branch: the FIRST cut gated only `PermissionsExt`, leaving `Write` unused there).
+    #[cfg(unix)]
     use std::io::Write;
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
