@@ -127,6 +127,16 @@ impl Backend {
             Backend::Local(s) => Ok(s.view()),
         }
     }
+
+    /// Swap in a freshly (re)connected client after the old one dropped. A no-op on `Local`:
+    /// the demo backend has no link to replace. `Remote`'s client sits behind a `Mutex` that
+    /// already exists for every other command, so replacing its contents needs no change to
+    /// `AppState.backend`'s own type — only the reconnect loop in [`view`] calls this.
+    async fn replace_remote(&self, fresh: RemoteOperator) {
+        if let Backend::Remote(m) = self {
+            *m.lock().await = fresh;
+        }
+    }
     async fn next(&self) -> Result<OperatorView, String> {
         match self {
             Backend::Remote(m) => m.lock().await.next().await.map_err(|e| e.to_string()),
@@ -1046,16 +1056,20 @@ struct AppState {
     /// The SelahCue account/session token store (FR-134): OS keychain in a `cloud-live` build,
     /// in-memory otherwise. Never a user-pasted third-party key.
     secrets: Box<dyn selahcue_cloud::SecretStore + Send + Sync>,
-    /// The last observed outcome of a call over the control link (`Remote` backend only).
+    /// The control link's real state (Tier 2a): the pure backoff/attempt-count state machine
+    /// from `selahcue_lan::link`, driven by actual connect attempts made from [`view`]. A
+    /// `Local` backend never leaves [`selahcue_lan::LinkState::Local`] — `LinkStatus`'s own
+    /// `observe_*` methods no-op there, so this cannot drift into claiming a link that was
+    /// never wanted.
+    link_status: Mutex<selahcue_lan::LinkStatus>,
+    /// Wall-clock deadline for the next automatic reconnect attempt, or `None` when none is
+    /// scheduled (nothing to reconnect, or the breaker in `link_status` has given up).
     ///
-    /// `None` = the last call succeeded, or none has been made yet — and for a `Remote` backend
-    /// that is honest at boot, because `build_backend` only produces `Remote` when
-    /// `connect_remote` actually established the link. `Some(err)` = the last call failed, and
-    /// carries the host's own reason.
-    ///
-    /// This is an OBSERVATION, not a retry state machine. Nothing in this shell re-dials, so a
-    /// failure means the link is down and stays down — see [`link_status`].
-    link_error: Mutex<Option<String>>,
+    /// Lives here rather than in `selahcue_lan::link` because "when" is real-clock IO the
+    /// pure crate deliberately does not own (its own doc: dialling belongs to the shell) —
+    /// mirrors `selahcue-desktop`'s manual window-retry gesture, which is also real-clock
+    /// state kept in the shell around a decision made elsewhere.
+    link_next_attempt: Mutex<Option<std::time::Instant>>,
 }
 
 /// Reply to the Remote Control device commands: the host's paired devices + pending requests.
@@ -1316,24 +1330,378 @@ async fn audio_input() -> AudioInputReply {
 
 #[tauri::command]
 async fn view(state: State<'_, AppState>) -> Result<OperatorView, String> {
+    view_body(&state, read_endpoint).await
+}
+
+/// `view`'s real body, against a bare `&AppState`. Split out so a test can drive the EXACT
+/// sequence production uses — reconnect call included — instead of a hand-reconstructed copy.
+/// The endpoint lookup is injected for the same reason [`maybe_reconnect_from`] takes one: a
+/// test proving the real reconnect fires must not depend on the shared OS-temp-dir file every
+/// other process on the machine also reads/writes (`endpoint_file_path`'s own doc). Production
+/// calls the one-line wrapper above with the real `read_endpoint`.
+///
+/// An earlier version of this function was itself the bug: it called `record_link_outcome` then
+/// immediately `maybe_reconnect`, and the test that was supposed to guard it called
+/// `record_link_outcome` and `maybe_reconnect_from` directly rather than through this shared
+/// body — so it passed even with the real call sequence broken (independently found and proven
+/// by all four reviewers on 86ak4xxwm's review round: Cody, Vera P-2, Sana S-2). Any future
+/// change here is covered by `link_reconnect_tests::a_dropped_link_really_reconnects_and_the_view_really_changes`,
+/// which now calls exactly this function in a loop, the same way the webview's 1 Hz poll does.
+async fn view_body(
+    state: &AppState,
+    endpoint_source: impl Fn() -> Option<Endpoint>,
+) -> Result<OperatorView, String> {
     // The 1 Hz view poll is the console's only regular traffic over the control link, so it is
-    // also the only place the link's liveness is observable. Record the outcome so `link_status`
-    // reports what actually happened rather than a static "is this a remote build" boolean.
+    // also the only place the link's liveness is observable — and, since Tier 2a, the only place
+    // a real reconnect attempt gets a chance to run. Record the outcome so `link_status` reports
+    // what actually happened, then (Remote only) drive the real backoff-paced re-dial loop.
     let r = state.backend.view().await;
     if state.backend.is_remote() {
-        if let Ok(mut slot) = state.link_error.lock() {
-            *slot = match &r {
-                Ok(_) => None,
-                // Bound the retained reason the same way the wire does, so a pathological
-                // transport error cannot grow this field without limit.
-                Err(e) => Some(selahcue_lan::protocol::truncate_for_wire(
-                    e,
-                    selahcue_lan::protocol::MAX_ERROR_TEXT_LEN,
-                )),
-            };
-        }
+        record_poll_outcome(state, r.as_ref().err());
+        maybe_reconnect_from(state, endpoint_source).await;
     }
     r
+}
+
+/// Feed one POLL's outcome into the real `LinkStatus` state machine.
+///
+/// A poll failure only ever STARTS the backoff sequence (`Connected`/`Local` → `Reconnecting`,
+/// exactly once) — it must never touch an ALREADY-scheduled deadline. The first version of this
+/// function unconditionally rewrote `link_next_attempt` on every call, including a routine poll
+/// against a link already known to be down. Since `view_body` calls `record_poll_outcome` then
+/// `maybe_reconnect` back to back on every tick, that meant the deadline this tick just set was
+/// always checked microseconds after being set — never due — and the NEXT tick's poll failure
+/// overwrote it again before it could ever age past its own backoff. The reconnect path could
+/// not fire, ever (proven independently by all four reviewers on 86ak4xxwm's review round, each
+/// replaying the real sequence against the real `LinkStatus`: 0 re-dials over dozens of
+/// simulated 1 Hz polls). Once genuinely reconnecting, only a REAL dial attempt
+/// (`maybe_reconnect_from`'s own `connect_remote` call, via `record_dial_failure` below) is
+/// allowed to advance `attempts`/the schedule — which is also what makes `attempts` count actual
+/// re-dials instead of every failing poll (Sana S-4: the poll-driven version reported `attempts`
+/// climbing past `MAX_RECONNECT_ATTEMPTS` with zero real dials made).
+fn record_poll_outcome(state: &AppState, err: Option<&String>) {
+    let Ok(mut status) = state.link_status.lock() else {
+        return;
+    };
+    match err {
+        None => {
+            status.observe_success();
+            drop(status);
+            if let Ok(mut slot) = state.link_next_attempt.lock() {
+                *slot = None;
+            }
+        }
+        Some(e) => {
+            if !matches!(
+                status.state(),
+                selahcue_lan::LinkState::Connected | selahcue_lan::LinkState::Local
+            ) {
+                // Already reconnecting, or the breaker has given up: this poll is confirming
+                // what is already known, not a new attempt. Leave whatever schedule is already
+                // pending untouched — this is the fix for the bug the doc comment above
+                // describes.
+                return;
+            }
+            status.observe_failure(e);
+            schedule_next_attempt(state, &status);
+        }
+    }
+}
+
+/// Record a REAL dial attempt's failure (`maybe_reconnect_from`'s own `connect_remote` call) —
+/// distinct from [`record_poll_outcome`]: unlike a routine poll, this must always advance
+/// `attempts` and reschedule, even though the state is already `Reconnecting` (which is exactly
+/// the state `record_poll_outcome` refuses to touch further). This poll-vs-dial split is what
+/// bounds `attempts` at `MAX_RECONNECT_ATTEMPTS` regardless of how long the outage lasts, rather
+/// than climbing forever with every failing poll (Sana S-4).
+///
+/// **Precise count (security review, Sana S-4/P-7 doc nit):** `attempts` is not purely "real
+/// re-dials made" — the FIRST increment happens in `record_poll_outcome`, on the poll that
+/// *detects* the drop, before any dial has been attempted. So `MAX_RECONNECT_ATTEMPTS = 5`
+/// permits **4** real re-dials per outage, not 5, and `LinkStatus::next_backoff`'s first table
+/// slot (250ms) is consequently never read — the first dial always waits the SECOND slot
+/// (500ms). Both are intentional (the detecting poll genuinely is the first "we tried and it
+/// didn't work" event), documented here so a future "attempt N of 5" surface does not
+/// fabricate a dial that has not happened, which is the exact class of statement this ticket
+/// exists to remove.
+fn record_dial_failure(state: &AppState, err: &str) {
+    let Ok(mut status) = state.link_status.lock() else {
+        return;
+    };
+    status.observe_failure(err);
+    schedule_next_attempt(state, &status);
+}
+
+/// Sets `link_next_attempt` from `status`'s own backoff table. The only two call sites allowed
+/// to move the schedule forward: the first poll failure ([`record_poll_outcome`]) and a failed
+/// dial attempt ([`record_dial_failure`]) — never a routine poll against an already-known-down
+/// link.
+fn schedule_next_attempt(state: &AppState, status: &selahcue_lan::LinkStatus) {
+    let next = status.next_backoff();
+    if let Ok(mut slot) = state.link_next_attempt.lock() {
+        *slot = next.map(|d| std::time::Instant::now() + d);
+    }
+}
+
+/// Attempt one real re-dial if the pure state machine's own backoff says it is due. This is
+/// what makes `LinkState::Reconnecting` true only when an attempt genuinely is scheduled — the
+/// exact biconditional the fabricated "Reconnecting…" label used to violate — and it is what
+/// actually recovers the link without an operator restarting the console, up to the state
+/// machine's own `MAX_RECONNECT_ATTEMPTS` bound (after which it reports `Disconnected` and this
+/// function has nothing left to schedule).
+///
+/// `endpoint_source` is injected rather than hard-coded to `read_endpoint` for the same reason
+/// [`view_body`] injects it: a test proving a real re-dial fires must not depend on the shared
+/// OS-temp-dir file every other process on the machine also reads/writes. Production always
+/// calls this via `view_body(&state, read_endpoint)`.
+async fn maybe_reconnect_from(state: &AppState, endpoint_source: impl Fn() -> Option<Endpoint>) {
+    let due = {
+        let Ok(mut slot) = state.link_next_attempt.lock() else {
+            return;
+        };
+        match *slot {
+            Some(at) if std::time::Instant::now() >= at => {
+                // Clear the schedule before attempting: a slow connect must not leave a stale
+                // deadline that a later poll reads as "still due" and fires again concurrently.
+                *slot = None;
+                true
+            }
+            _ => false,
+        }
+    };
+    if !due {
+        return;
+    }
+    let Some(ep) = endpoint_source() else {
+        // No endpoint file at all — the output window is gone, not merely unreachable. This
+        // still counts as a failed dial attempt (not a free pass): without that, once the first
+        // poll failure schedules the one and only deadline `record_poll_outcome` will ever set,
+        // nothing would ever reschedule another attempt, and the console would sit in
+        // "Reconnecting…" forever with no dial ever tried again and no honest give-up either.
+        record_dial_failure(state, "no output window endpoint found");
+        return;
+    };
+    match connect_remote(&ep).await {
+        Ok(fresh) => {
+            state.backend.replace_remote(fresh).await;
+            if let Ok(mut status) = state.link_status.lock() {
+                status.observe_success();
+            }
+        }
+        Err(e) => {
+            record_dial_failure(state, &e);
+        }
+    }
+}
+
+/// Tier 2a end to end: a real dropped socket is really reconnected, driven by the real
+/// `selahcue_lan::link::LinkStatus` backoff state machine — not a copy of its logic re-asserted
+/// here (that trap is called out in `implementation/desktop/CLAUDE.md`'s bounded-memory-test
+/// section: a control that re-derives the predicate instead of consuming the real one survives
+/// mutation of the real one). Every assertion below reads `link_status()`/`state.backend.view()`,
+/// the exact producer→view path the console's poll uses.
+#[cfg(test)]
+mod link_reconnect_tests {
+    use super::*;
+    use selahcue_app::{handler_for, LiveController};
+    use selahcue_core::plan::{ItemKind, ServicePlan};
+    use selahcue_lan::session::{DeviceId, SessionRegistry, SessionToken};
+    use selahcue_lan::{ControlServer, Role, SelfSigned};
+    use selahcue_present::Theme;
+    use std::time::{Duration, Instant as StdInstant};
+    use tokio::net::TcpListener;
+    use tokio::sync::Mutex as AsyncMutex;
+
+    /// Stand up one real, pinned-TLS `ControlServer` on loopback with a single pre-paired
+    /// Producer session, backed by a `LiveController` over `plan_name`. Returns the listening
+    /// address, the pin, and the dedicated [`tokio::runtime::Runtime`] it runs on.
+    ///
+    /// It gets its OWN runtime, not a `tokio::spawn` on the test's runtime: `ControlServer::run`
+    /// spawns one further detached task per accepted connection (`server.rs`), so aborting only
+    /// the outer accept-loop `JoinHandle` leaves an already-established connection's handler
+    /// running — the socket stays alive and the test cannot produce the real drop it needs.
+    /// `Runtime::shutdown_background` drops every task the runtime owns, accepted connections
+    /// included, which is what an actual crashed/killed output-window process looks like from
+    /// the operator's side.
+    ///
+    /// Built with NO calls into an ambient async runtime (`block_on` on a fresh `Runtime`
+    /// panics — "cannot start a runtime from within a runtime" — when called from this test's
+    /// own `#[tokio::test]` task): every setup step here is synchronous, and only the accept
+    /// loop itself is handed to the new runtime via `Runtime::spawn`, which merely schedules a
+    /// task and needs no entered context on the calling thread.
+    fn spawn_server(plan_name: &str) -> (SocketAddr, CertPin, tokio::runtime::Runtime) {
+        let identity = SelfSigned::generate(vec!["localhost".into()]).expect("self-signed cert");
+        let pin = identity.pin;
+        let mut plan = ServicePlan::new(plan_name);
+        plan.add_item(ItemKind::Song, "Opening Song");
+        let controller = Arc::new(std::sync::Mutex::new(LiveController::new(
+            plan,
+            320,
+            180,
+            Theme::dark(),
+        )));
+
+        let mut registry_inner = SessionRegistry::new();
+        let now = StdInstant::now();
+        registry_inner.offer_pairing("p", Role::Producer, now, Duration::from_secs(300));
+        registry_inner
+            .redeem(
+                "p",
+                DeviceId("producer".into()),
+                SessionToken::new("tok-prod"),
+                now,
+            )
+            .expect("redeem test pairing code");
+        let registry = Arc::new(AsyncMutex::new(registry_inner));
+
+        let server = Arc::new(
+            ControlServer::new(&identity, registry, handler_for(controller.clone()))
+                .expect("build control server"),
+        );
+
+        let std_listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+        std_listener
+            .set_nonblocking(true)
+            .expect("set listener nonblocking for tokio");
+        let addr = std_listener.local_addr().expect("local addr");
+
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .expect("build dedicated server runtime");
+        rt.spawn(async move {
+            let listener = TcpListener::from_std(std_listener).expect("tokio listener from std");
+            let _ = server.run(listener).await;
+        });
+        (addr, pin, rt)
+    }
+
+    fn state_with_remote(remote: RemoteOperator) -> AppState {
+        AppState {
+            backend: Backend::Remote(Box::new(tokio::sync::Mutex::new(remote))),
+            deck: Mutex::new(crate::DeckWorkspace::demo()),
+            library: Mutex::new(crate::DeckLibrary::load(None)),
+            providers: Mutex::new(selahcue_core::providers::ProvidersConfig::default()),
+            providers_db: None,
+            transcript_db: None,
+            secrets: make_secret_store(),
+            link_status: Mutex::new(selahcue_lan::LinkStatus::connected()),
+            link_next_attempt: Mutex::new(None),
+        }
+    }
+
+    /// The whole point of Tier 2a: after the host really disappears, `link_status()` really
+    /// reports `reconnecting` (never a static "disconnected" the console cannot recover from
+    /// without a restart), and once the backoff elapses and a real host comes back — on a
+    /// DIFFERENT address, exactly as a restarted output window would advertise — the operator's
+    /// own `view()` really reflects the new host's state.
+    ///
+    /// Drives the REAL `view_body` — the exact function `view` delegates to — in a loop, the
+    /// same call pattern the webview's 1 Hz poll uses. An earlier version of this test called
+    /// `record_link_outcome`/`maybe_reconnect_from` directly instead, and PASSED even after the
+    /// real call site inside `view`/`view_body` was deleted entirely (independently reproduced
+    /// by all four reviewers on 86ak4xxwm's review round — Cody, Vera P-2, Sana S-2). That gap,
+    /// not only the scheduling bug it was hiding (Vera P-1 / Sana S-1 / Cody, also independently
+    /// reproduced: the previous version of `record_link_outcome` rewrote `link_next_attempt` on
+    /// every poll, so a deadline set this tick was always checked microseconds later — never
+    /// due — is what this rewrite closes. No fixed-duration sleep gates an assertion here
+    /// either (the previous version's `sleep(50ms)` after `shutdown_background()` — which
+    /// explicitly does not wait for tasks to stop — was a flake risk under CI load, per Vera's
+    /// and Sana's review); both waits below are bounded polls for the real condition.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_dropped_link_really_reconnects_and_the_view_really_changes() {
+        let (addr1, pin1, server1) = spawn_server("Original Service");
+        let remote = RemoteOperator::connect(addr1, "localhost", pin1, "producer", "tok-prod")
+            .await
+            .expect("connect to first server");
+        let state = state_with_remote(remote);
+        // Never actually consulted while nothing is due (see the `view_body`/`maybe_reconnect_from`
+        // doc comments) — used for the phases below that must not touch the shared endpoint file.
+        let no_endpoint = || None;
+
+        // 1. Healthy: the real poll succeeds and link_status says so.
+        let v1 = view_body(&state, no_endpoint)
+            .await
+            .expect("first view succeeds");
+        assert_eq!(v1.plan_name, "Original Service");
+        assert_eq!(link_status_reply(&state).state, "connected");
+
+        // 2. Kill the real server — a genuine dropped socket (every task the server's runtime
+        //    owns, including the already-accepted connection's handler, is dropped), not a
+        //    simulated error. Bounded wait-for-condition: poll the real `view_body` until it
+        //    genuinely observes the drop, rather than betting on a fixed sleep duration.
+        server1.shutdown_background();
+        let mut saw_failure = false;
+        for _ in 0..100 {
+            if view_body(&state, no_endpoint).await.is_err() {
+                saw_failure = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert!(
+            saw_failure,
+            "poll against a dead socket must eventually fail (waited 5s)"
+        );
+
+        // 3. link_status must say `reconnecting` — not a static `disconnected` — because an
+        //    automatic attempt really is now scheduled. `attempts == 1`: exactly one POLL
+        //    detected the drop; no DIAL has been attempted yet (Sana S-4 — `attempts` must count
+        //    real re-dials, not every poll against a link already known to be down).
+        let status = link_status_reply(&state);
+        assert_eq!(
+            status.state, "reconnecting",
+            "a dropped link with attempts remaining must report reconnecting, not a dead end"
+        );
+        assert_eq!(
+            status.attempts, 1,
+            "one poll observed the drop; no dial has been attempted yet"
+        );
+
+        // 4. Stand up a SECOND real server on a DIFFERENT address with DIFFERENT content — the
+        //    honest shape of "the output window restarted".
+        let (addr2, pin2, server2) = spawn_server("Recovered Service");
+        let second_server = move || {
+            Some(Endpoint {
+                addr: addr2.to_string(),
+                pin: pin2.to_hex(),
+                device: "producer".into(),
+                token: "tok-prod".into(),
+            })
+        };
+
+        // 5. Drive the REAL `view_body` sequence in a loop until the real backoff elapses and a
+        //    re-dial actually fires and succeeds. Bounded well past the state machine's own
+        //    `MAX_RECONNECT_ATTEMPTS` give-up point, so a regression fails the assertion below
+        //    rather than hanging.
+        let mut reconnected = false;
+        for _ in 0..100 {
+            let _ = view_body(&state, second_server).await;
+            if link_status_reply(&state).state == "connected" {
+                reconnected = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        assert!(
+            reconnected,
+            "the real view_body sequence never reconnected within 10s — last_error = {:?}",
+            link_status_reply(&state).last_error
+        );
+
+        // 6. The reconnect must be REAL: a fresh view() call returns the SECOND server's own
+        //    data — proving the swap actually happened, not merely that the state label changed.
+        let v2 = view_body(&state, second_server)
+            .await
+            .expect("view after reconnect");
+        assert_eq!(v2.plan_name, "Recovered Service");
+
+        // A `Runtime` cannot drop itself from inside an async context (it needs to block the
+        // dropping thread), so shut both down explicitly rather than letting the test fn's end
+        // do it implicitly.
+        server2.shutdown_background();
+    }
 }
 
 /// Reply to `link_status` — the operator↔host control-link state (Tier 2).
@@ -1348,49 +1716,45 @@ struct LinkStatusReply {
     last_error: Option<String>,
 }
 
-/// The control-link state, replacing three fabrications at once: a permanent green "Connected"
-/// in the stand-alone build, an untrue "Reconnecting…", and absent telemetry rendered as a fault.
+/// The control-link state, replacing four fabrications at once: a permanent green "Connected"
+/// in the stand-alone build, an untrue "Reconnecting…", absent telemetry rendered as a fault, and
+/// (Tier 2a) a `Reconnecting` that used to be unreachable because nothing actually retried.
 ///
-/// **Read-only by design.** `build_backend` runs exactly once at startup and `AppState.backend` is
-/// an immutable field, so nothing in this shell re-dials. `LinkState::Reconnecting` is therefore
-/// deliberately unreachable here: the contract makes "reconnecting" true *exactly* when an
-/// automatic attempt is scheduled, and none ever is. Reporting it would restore the very lie this
-/// seam exists to remove — so a dropped link reports `disconnected`, which is the truth, and the
-/// console offers no retry it cannot honour. A real re-dial loop is separate work; when it lands,
-/// this command grows a `reconnecting` arm and the biconditional still holds.
-///
-/// `attempts` is always 0 for the same reason. `epoch` mirrors `LinkStatus`'s own convention:
-/// 0 for `local` (no link was ever established), 1 for a link established at startup.
+/// The `view` command now drives a real backoff-paced re-dial loop (see `maybe_reconnect`), so
+/// this is a thin, honest READ of the state that loop maintains — it never itself dials or
+/// mutates `link_status`. The biconditional the pure `selahcue_lan::link` module documents still
+/// holds: `Reconnecting` is true here exactly when [`AppState::link_next_attempt`] genuinely has
+/// a scheduled attempt behind it.
 #[tauri::command]
 fn link_status(state: State<'_, AppState>) -> LinkStatusReply {
-    use selahcue_lan::LinkState;
-    if !state.backend.is_remote() {
-        // Not a degraded connection — there is no link and none is wanted. Distinct from
-        // `connected`, because the demo backend's view() cannot fail, so calling it connected
-        // would report the absence of a failure path rather than the presence of a host.
+    link_status_reply(&state)
+}
+
+/// [`link_status`]'s body, taking a bare `&AppState` so tests can call it directly without
+/// standing up a `tauri::State` wrapper around a throwaway app handle.
+fn link_status_reply(state: &AppState) -> LinkStatusReply {
+    // A poisoned lock must not manufacture EITHER a disconnection or a false "connected" — a
+    // mutex poison here says nothing about the link, it says another thread panicked while
+    // holding it. Reporting a static "connected" (the original version of this fallback) is a
+    // fabrication in exactly the sense this ticket exists to remove: a green pill asserted from
+    // no evidence at all (security review, Sana S-5). `"unknown"` is deliberately NOT one of
+    // `LinkState::tag()`'s four values — the webview's `paintConnPill`/`currentLinkState`
+    // already treat any unrecognised state string as unknown ("Checking…"), the exact honest
+    // fallback an older/newer version skew would also hit, so this reuses that path rather than
+    // inventing a new one.
+    let Ok(status) = state.link_status.lock() else {
         return LinkStatusReply {
-            state: LinkState::Local.tag(),
+            state: "unknown",
             epoch: 0,
             attempts: 0,
             last_error: None,
         };
-    }
-    // A poisoned lock must not manufacture a disconnection: fall back to the healthy reading
-    // that matches how the backend was built (Remote only exists because connect_remote worked).
-    let last = state.link_error.lock().ok().and_then(|s| s.clone());
-    match last {
-        None => LinkStatusReply {
-            state: LinkState::Connected.tag(),
-            epoch: 1,
-            attempts: 0,
-            last_error: None,
-        },
-        Some(e) => LinkStatusReply {
-            state: LinkState::Disconnected.tag(),
-            epoch: 1,
-            attempts: 0,
-            last_error: Some(e),
-        },
+    };
+    LinkStatusReply {
+        state: status.state().tag(),
+        epoch: status.epoch(),
+        attempts: status.attempts(),
+        last_error: status.last_error().map(str::to_string),
     }
 }
 #[tauri::command]
@@ -3603,20 +3967,256 @@ fn endpoint_file_path() -> std::path::PathBuf {
     std::env::temp_dir().join("selahcue-operator-endpoint.json")
 }
 
+/// Longest the endpoint descriptor file is trusted to be. It is four short strings of JSON —
+/// real ones are under 300 bytes — so this is generous headroom, not a working limit; its job
+/// is bounding `read_to_string` against a file an unprivileged local writer controls (security
+/// review, Sana S-3: "cap the read... no size limit on a file an attacker controls").
+const MAX_ENDPOINT_FILE_LEN: u64 = 4096;
+
+/// Read and validate the endpoint descriptor file, applying the checks pinned TLS itself cannot
+/// (security review, Sana S-3):
+///
+/// - **Mode `0600` (Unix only).** Before Tier 2a, this file was read exactly once, at process
+///   startup — a narrow window. The reconnect loop re-reads it for the whole life of the
+///   session, turning a locally-writable path into a standing target: on a multi-user machine
+///   `temp_dir()` (e.g. `/tmp`) is typically world-writable, so another local account could
+///   pre-create the file while no real host is running. `selahcue-desktop`'s own writer already
+///   sets `0600` (`write_endpoint`, matching this exact `set_permissions`/`Permissions::from_mode`
+///   pattern) — refusing anything else here is the read-side half of that same contract. This
+///   alone is the actual boundary: the OS already refuses `read_to_string` on a `0600` file this
+///   process does not own (a differently-owned `0600` planted file is unreadable to us
+///   regardless of any check we add), so the exposure this closes is specifically a file some
+///   other local account made WORLD- or GROUP-readable so our process even could read it.
+/// - **Bounded read.** `MAX_ENDPOINT_FILE_LEN` caps the read itself, not just the parsed result.
+///
+/// **Not implemented: pin continuity across reconnects.** An earlier draft of this fix required
+/// a reconnect's pin to match the one the console originally attached to. That is unsound here:
+/// `selahcue-desktop::run_server` generates a FRESH `SelfSigned` identity (and a fresh random
+/// token) on every process start — nothing about this system persists a stable identity across
+/// a restart, by design. A pin-continuity check would therefore refuse the exact scenario this
+/// feature exists to recover — the output window crashing and restarting — indistinguishably
+/// from an actual attack, defeating Tier 2a entirely. The mode check above is the fix that
+/// matches the real trust boundary (same local user), without that self-defeat.
 fn read_endpoint() -> Option<Endpoint> {
-    let data = std::fs::read_to_string(endpoint_file_path()).ok()?;
+    read_endpoint_at(&endpoint_file_path())
+}
+
+/// [`read_endpoint`]'s real body, against an injected path — tests use a private `tempfile`
+/// path instead of the shared, machine-wide `endpoint_file_path()` (touching that file races
+/// every other process on the machine that reads/writes it by convention).
+///
+/// **Check-then-use, closed (security review, Sana S-3a).** An earlier version of this function
+/// checked the path's metadata (`std::fs::metadata`) and then read it (`std::fs::read_to_string`)
+/// as two independent path resolutions — in the threat this guards against, the planted file is
+/// owned by a DIFFERENT local account, which can change its mode between those two syscalls.
+/// Sana reproduced this live: replaying the exact shape (an attacker thread flipping the mode
+/// between `0o600` and `0o644` while this function's shape ran in a loop) let ~9.4% of attempts
+/// pass the mode gate and then read bytes the gate would have rejected. Opening the file ONCE
+/// and taking every check (size, mode) from `File::metadata()` — an `fstat` on the SAME open
+/// file descriptor, not a fresh path lookup — makes the check and the read describe the same
+/// bytes by construction: there is no window between them for the file to be swapped or
+/// re-permissioned. `Read::take` bounds the read itself (not just re-checking `meta.len()`,
+/// which reads as 0 for non-regular files like a FIFO and would otherwise be advisory only).
+fn read_endpoint_at(path: &std::path::Path) -> Option<Endpoint> {
+    use std::io::Read;
+    let file = std::fs::File::open(path).ok()?;
+    let meta = file.metadata().ok()?;
+    if meta.len() > MAX_ENDPOINT_FILE_LEN {
+        eprintln!(
+            "SelahCue operator: endpoint descriptor at {} exceeds {MAX_ENDPOINT_FILE_LEN} bytes — refusing to read it.",
+            path.display()
+        );
+        return None;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = meta.permissions().mode() & 0o777;
+        if mode != 0o600 {
+            eprintln!(
+                "SelahCue operator: endpoint descriptor at {} is not mode 0600 (found {:o}) — refusing to trust it.",
+                path.display(),
+                mode
+            );
+            return None;
+        }
+    }
+    let mut data = String::new();
+    file.take(MAX_ENDPOINT_FILE_LEN)
+        .read_to_string(&mut data)
+        .ok()?;
     serde_json::from_str(&data).ok()
 }
 
+/// Parse, validate and dial an [`Endpoint`]. Enforces loopback-only — this descriptor is a
+/// same-machine convenience file, not a remote pairing credential, and nothing upstream
+/// otherwise restricts `ep.addr` to loopback, so a substituted descriptor could point the
+/// console at an off-box service (security review, Sana S-3).
 async fn connect_remote(ep: &Endpoint) -> Result<RemoteOperator, String> {
     let addr: SocketAddr = ep
         .addr
         .parse()
         .map_err(|_| format!("bad addr: {}", ep.addr))?;
+    if !addr.ip().is_loopback() {
+        return Err("endpoint address is not loopback — refusing to dial".to_string());
+    }
     let pin = CertPin::from_hex(&ep.pin).ok_or_else(|| "bad pin".to_string())?;
     RemoteOperator::connect(addr, "localhost", pin, &ep.device, &ep.token)
         .await
         .map_err(|e| e.to_string())
+}
+
+/// The two checks `connect_remote`/`read_endpoint_at` added for Sana's S-3 review had no test —
+/// "a control nothing consumes" is the exact defect class this repo's own bounded-memory-test
+/// discipline warns about applied to a security control instead of a memory bound. Both would
+/// previously have been deletable with no assertion firing; these two close that.
+#[cfg(test)]
+mod endpoint_guard_tests {
+    use super::*;
+    // Both imports are used only by the `#[cfg(unix)]` tests below (`write!` into a `File`,
+    // and `Permissions::from_mode`) — gating them the same way avoids an `unused_imports` /
+    // `-D warnings` failure on non-Unix CI (this exact mistake broke Windows CI once already
+    // on this branch: the FIRST cut gated only `PermissionsExt`, leaving `Write` unused there).
+    #[cfg(unix)]
+    use std::io::Write;
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
+
+    /// A non-loopback address must be refused before any network attempt — proven by using an
+    /// address (`203.0.113.1`, TEST-NET-3, RFC 5737: guaranteed never routable) that would hang
+    /// or fail for an unrelated reason if this check were not the thing that rejected it.
+    #[tokio::test]
+    async fn a_non_loopback_endpoint_is_refused_before_dialling() {
+        let ep = Endpoint {
+            addr: "203.0.113.1:9".into(),
+            pin: "00".repeat(32),
+            device: "producer".into(),
+            token: "tok".into(),
+        };
+        let err = connect_remote(&ep)
+            .await
+            .err()
+            .expect("a non-loopback endpoint must never be dialled");
+        assert!(
+            err.contains("not loopback"),
+            "refusal must name the real reason, not surface as e.g. a connect timeout: {err}"
+        );
+    }
+
+    /// A loopback address passes the check this test targets (it may still fail to connect,
+    /// which is a DIFFERENT, expected error — nothing is listening) — proving the loopback
+    /// branch is a real gate, not one that rejects everything regardless of the address.
+    #[tokio::test]
+    async fn a_loopback_endpoint_clears_the_address_check() {
+        let ep = Endpoint {
+            addr: "127.0.0.1:1".into(), // nothing listens on port 1; connect itself must fail
+            pin: "00".repeat(32),
+            device: "producer".into(),
+            token: "tok".into(),
+        };
+        let err = connect_remote(&ep)
+            .await
+            .err()
+            .expect("nothing listens on 127.0.0.1:1, so this must still fail");
+        assert!(
+            !err.contains("not loopback"),
+            "a loopback address must clear the loopback check — got: {err}"
+        );
+    }
+
+    /// A `0644` descriptor (world/group-readable) is exactly the exposure the mode check exists
+    /// to close (security review, Sana S-3) — refused, not silently trusted. Unix-only: the mode
+    /// check itself (`read_endpoint_at`) is `#[cfg(unix)]` — there is no POSIX-style mode bit on
+    /// Windows for it to check.
+    #[cfg(unix)]
+    #[test]
+    fn a_world_readable_descriptor_is_refused() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("endpoint.json");
+        std::fs::write(
+            &path,
+            br#"{"addr":"127.0.0.1:1","pin":"00","device":"d","token":"t"}"#,
+        )
+        .expect("write descriptor");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644))
+            .expect("chmod 0644");
+        assert!(
+            read_endpoint_at(&path).is_none(),
+            "a 0644 (world-readable) descriptor must be refused, not trusted"
+        );
+    }
+
+    /// Positive control for the mode check: the SAME descriptor, `0600`, is accepted — proving
+    /// the refusal above is a real branch (a mode check, not something that rejects every file
+    /// regardless of its permissions). Unix-only, same reason as the test above.
+    #[cfg(unix)]
+    #[test]
+    fn a_0600_descriptor_is_accepted() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("endpoint.json");
+        std::fs::write(
+            &path,
+            br#"{"addr":"127.0.0.1:1","pin":"00","device":"d","token":"t"}"#,
+        )
+        .expect("write descriptor");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
+            .expect("chmod 0600");
+        let ep = read_endpoint_at(&path).expect("a 0600 descriptor must be accepted");
+        assert_eq!(ep.addr, "127.0.0.1:1");
+    }
+
+    /// A regular file over `MAX_ENDPOINT_FILE_LEN` is refused — for a regular file this is
+    /// caught by the `fstat`-derived size check. `Read::take` is the SEPARATE, defense-in-depth
+    /// bound for a non-regular file (e.g. a FIFO, where `stat` reports `len() == 0` and the size
+    /// check alone would be fooled); that path needs a real FIFO to exercise and is not covered
+    /// by this test, which asserts the ordinary case: a big honest file is still refused.
+    /// Unix-only only because `set_permissions`/`from_mode` are — the size check itself runs
+    /// unconditionally in `read_endpoint_at`; the chmod here exists only so the file additionally
+    /// clears the (also-tested) mode check and this test isolates the size check alone.
+    #[cfg(unix)]
+    #[test]
+    fn an_oversized_descriptor_is_refused() {
+        // A control that guards another control can be dead in a way a careless test misses
+        // (`implementation/desktop/CLAUDE.md`'s bounded-memory-test section): a first version
+        // of this test padded INSIDE the JSON value out past the cap, so `Read::take` alone
+        // truncated it into invalid JSON and the size check was never actually exercised —
+        // found by mutation (security review round 3, Sana S-9): neutering the size check left
+        // this test green. Fixed by making the JSON object itself COMPLETE AND VALID at exactly
+        // `MAX_ENDPOINT_FILE_LEN` bytes, with only WHITESPACE — which `serde_json` tolerates
+        // trailing — appended afterward to push the file past the cap. A truncated (first
+        // `MAX_ENDPOINT_FILE_LEN` bytes) read of THIS file parses cleanly, so only the size
+        // check (not truncation) can be what refuses it.
+        let prefix = r#"{"addr":"127.0.0.1:1","pin":"00","device":"d"#;
+        let suffix = r#"","token":"t"}"#;
+        let target_len = MAX_ENDPOINT_FILE_LEN as usize;
+        let pad_len = target_len
+            .checked_sub(prefix.len() + suffix.len())
+            .expect("MAX_ENDPOINT_FILE_LEN must be large enough to hold the fixed JSON shape");
+        let json = format!("{prefix}{}{suffix}", "x".repeat(pad_len));
+        assert_eq!(
+            json.len(),
+            target_len,
+            "premise: the JSON object itself must be exactly MAX_ENDPOINT_FILE_LEN bytes, or \
+             this proves nothing about the size check specifically"
+        );
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("endpoint.json");
+        let mut f = std::fs::File::create(&path).expect("create");
+        write!(f, "{json}").expect("write the complete, valid, exactly-sized JSON object");
+        // Trailing WHITESPACE ONLY, after the closing brace — grows the file past the cap
+        // without changing what a first-N-bytes truncated read would see.
+        write!(f, "{}", " ".repeat(1024)).expect("write trailing whitespace past the cap");
+        drop(f);
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
+            .expect("chmod 0600");
+
+        assert!(
+            read_endpoint_at(&path).is_none(),
+            "a descriptor over MAX_ENDPOINT_FILE_LEN must be refused by the SIZE check, even \
+             when its first MAX_ENDPOINT_FILE_LEN bytes alone would parse cleanly"
+        );
+    }
 }
 
 /// Try to attach to a running output window; fall back to a stand-alone demo controller.
@@ -6957,7 +7557,8 @@ mod regenerate_with_retention_tests {
             providers_db: None,
             transcript_db: None,
             secrets: make_secret_store(),
-            link_error: Mutex::new(None),
+            link_status: Mutex::new(selahcue_lan::LinkStatus::local()),
+            link_next_attempt: Mutex::new(None),
         });
         (app, id)
     }
@@ -7265,6 +7866,14 @@ fn main() {
             // why this is a DIFFERENT path from `providers_db` above). Failing to open it is not
             // fatal to boot — the Transcripts page degrades to an honest "unavailable" state.
             let transcript_db = open_transcript_db();
+            // `build_backend` only ever produces `Remote` when `connect_remote` actually
+            // established the link, so a fresh `LinkStatus::connected()` here is honest at boot
+            // — never a claim ahead of the evidence.
+            let link_status = if backend.is_remote() {
+                selahcue_lan::LinkStatus::connected()
+            } else {
+                selahcue_lan::LinkStatus::local()
+            };
             app.manage(AppState {
                 backend,
                 deck: Mutex::new(ws),
@@ -7273,7 +7882,8 @@ fn main() {
                 providers_db: providers_db.map(Mutex::new),
                 transcript_db: transcript_db.map(Mutex::new),
                 secrets: make_secret_store(),
-                link_error: Mutex::new(None),
+                link_status: Mutex::new(link_status),
+                link_next_attempt: Mutex::new(None),
             });
             Ok(())
         })

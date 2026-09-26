@@ -2681,7 +2681,8 @@ mod tests {
                 providers_db: None,
                 transcript_db: None,
                 secrets: crate::make_secret_store(),
-                link_error: Mutex::new(None),
+                link_status: Mutex::new(selahcue_lan::LinkStatus::local()),
+                link_next_attempt: Mutex::new(None),
             });
 
             let stop_worker = Arc::new(AtomicBool::new(false));
@@ -2934,7 +2935,8 @@ mod tests {
             providers_db: None,
             transcript_db: None,
             secrets: crate::make_secret_store(),
-            link_error: Mutex::new(None),
+            link_status: Mutex::new(selahcue_lan::LinkStatus::local()),
+            link_next_attempt: Mutex::new(None),
         });
 
         let stop_worker = Arc::new(AtomicBool::new(false));
@@ -3076,7 +3078,8 @@ mod tests {
             providers_db: None,
             transcript_db: None,
             secrets: crate::make_secret_store(),
-            link_error: Mutex::new(None),
+            link_status: Mutex::new(selahcue_lan::LinkStatus::local()),
+            link_next_attempt: Mutex::new(None),
         });
 
         const TEST_FALLBACK_NOTE: &str = "test: engine changed for this fixture";
@@ -3179,7 +3182,8 @@ mod tests {
                 providers_db: None,
                 transcript_db: None,
                 secrets: crate::make_secret_store(),
-                link_error: Mutex::new(None),
+                link_status: Mutex::new(selahcue_lan::LinkStatus::local()),
+                link_next_attempt: Mutex::new(None),
             });
 
             let stop_worker = Arc::new(AtomicBool::new(true));
@@ -3307,7 +3311,8 @@ mod tests {
             providers_db: None,
             transcript_db: None,
             secrets: crate::make_secret_store(),
-            link_error: Mutex::new(None),
+            link_status: Mutex::new(selahcue_lan::LinkStatus::local()),
+            link_next_attempt: Mutex::new(None),
         });
 
         let stop_worker = Arc::new(AtomicBool::new(false));

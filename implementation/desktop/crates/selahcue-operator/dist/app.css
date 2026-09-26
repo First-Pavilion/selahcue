@@ -2337,6 +2337,17 @@
         border-color: var(--sc-warn-border);
       }
 
+      /* UNKNOWN — telemetry for this role has not been reported at all (host has not sent it
+         yet, or this build has no signal channel for it). Neutral, same construction as
+         .tb-conn.unknown above: absence is not evidence of a fault, so it must not render as
+         one (HOST-SIGNAL-INVENTORY.md fabrication #2 — this pill's own `else` branch used to
+         paint a hard NO SIGNAL warning for exactly this case). */
+      .scr-pill-unknown {
+        color: var(--sc-text-secondary);
+        background: var(--sc-elevated);
+        border-color: var(--sc-border);
+      }
+
       /* CLOSED — a built-in main/stage screen with no OS output window. Deliberately NEUTRAL,
          not a warning: closing an output window is an operator action, not a fault, and the
          same toggle re-opens it. Colour only (no layout/sizing), so WKWebView renders it

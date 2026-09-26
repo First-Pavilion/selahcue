@@ -1525,6 +1525,15 @@ EXPECTED_MIN_CHECKS = 2023
 # crossed-scenario follow-up). Confirmed by two independent clean runs against the real post-merge
 # tree: 2033 checks, 0 FAIL.
 EXPECTED_MIN_CHECKS = 2033
+#
+# 2033 -> 2036: 86ak4xxwm (host signal seams, remaining tiers) fixed the `statusPillFor`
+# fabrication #2 — a per-screen card whose host has reported NO telemetry at all used to read a
+# hard "NO SIGNAL" fault; it now reads "UNKNOWN". Three checks added: the fixed built-in reads
+# UNKNOWN not NO SIGNAL, a positive control that a REPORTED no_signal still reads NO SIGNAL (this
+# also caught and fixed a pre-existing ordering bug where `assigned` was checked before the
+# reported signal, making a genuine no_signal report on an already-assigned display silently read
+# "CONNECTED" — that branch was unreachable before this fix, not merely untested).
+EXPECTED_MIN_CHECKS = 2036
 
 
 def find_chrome():
@@ -5017,6 +5026,31 @@ DRIVER = r"""
          "window: a virtual feed's switch never mentions an output window (aria=" + ariaOf("lower-third") + ")");
       ok(!/window/i.test(metaOf("lower-third")),
          "window: a virtual feed's meta line never mentions an output window (meta=" + metaOf("lower-third") + ")");
+
+      // HOST-SIGNAL-INVENTORY.md fabrication #2: `statusPillFor`'s fallthrough used to render
+      // ANY non-degraded, non-explicitly-`assigned` output as a hard "NO SIGNAL" fault — which
+      // is what an open BUILT-IN screen with no `outputs[]` entry at all looks like (`stage`
+      // never got one in the default fixture this whole scenario runs under). The host simply
+      // hasn't reported telemetry for it; that is unknown, not a fault.
+      ok(!/NO SIGNAL/.test(pillOf("stage")),
+         "fabrication #2: an open built-in screen with NO reported telemetry never says NO SIGNAL (pill=" + pillOf("stage") + ")");
+      ok(/UNKNOWN/.test(pillOf("stage")),
+         "fabrication #2: absent telemetry reads UNKNOWN instead (pill=" + pillOf("stage") + ")");
+
+      // Positive control: the SAME card, once the host actually reports a real fault, DOES say
+      // NO SIGNAL — proving the UNKNOWN case above is a real branch, not a dead one that always
+      // wins regardless of what the host reports.
+      V.outputs = [{role:"stage", assigned:true, assigned_key:"d2", display:"Stage Display",
+                    width:1920, height:1080, signal:"no_signal"}];
+      await waitFor(function(){ return /NO SIGNAL/.test(pillOf("stage")); });
+      ok(/NO SIGNAL/.test(pillOf("stage")),
+         "fabrication #2 (positive control): a REPORTED no_signal still reads NO SIGNAL — the fix narrows the branch, it does not remove it (pill=" + pillOf("stage") + ")");
+      // Restore the harness's own default fixture (QA finding, PR #101: leaving this `[]`
+      // dropped `main`'s outputs entry for every check running afterward in this same page
+      // session — including the CON-089 fullscreen hit-test block and the Pre-service
+      // readiness-count block much later in this file — turning a scoped positive control into
+      // a silent global state leak).
+      V.outputs = [{role:"main", assigned:true, assigned_key:"d1", display:"Main", width:1920, height:1080}];
 
       // === CLOSE-BUTTON PATH: closing the output window with its own OS close button changes
       // `enabled` on the HOST with no operator interaction in this webview. Mutate the host view
