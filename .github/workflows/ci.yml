@@ -1079,17 +1079,20 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      # 86akmdkdn (performance review, Vera): this is a ~0.3s static text check with no cargo/
-      # network dependency, run BEFORE the cargo-audit steps below (each ~4-8s) rather than
-      # after, so a coverage-drift finding (a new excluded Cargo root with no matching audit
-      # step) fails in seconds instead of after paying for every audit step first. It is the
-      # same hand-maintained-list bug class this repo hit twice before (86akc2kmh, 86akd10dq):
-      # it derives the "must be audited" set from the workspace's own `exclude = [...]` list in
-      # implementation/desktop/Cargo.toml (a genuine independent source, unlike deriving straight
-      # from this file) and fails loudly if a future excluded root has no matching
+      # 86akmdkdn (performance review, Vera): this is a fast, filesystem-only check with no
+      # cargo/network dependency, run BEFORE the cargo-audit steps below (each ~4-8s) rather
+      # than after, so a coverage-drift finding fails in seconds instead of after paying for
+      # every audit step first. It is the same hand-maintained-list bug class this repo hit
+      # twice before (86akc2kmh, 86akd10dq): it derives the "must be audited" set by walking
+      # the repo for every `Cargo.lock` on disk (the literal artefact `cargo audit` reads,
+      # unioned with any `[workspace]`/`[workspace.package]` table as an early-warning signal
+      # for a not-yet-built crate) and fails loudly if any of them has no matching
       # `working-directory` step below, instead of relying on someone remembering to edit this
-      # job by hand.
-      - name: Verify dependency-audit coverage of excluded Cargo roots
+      # job by hand or reading `implementation/desktop/Cargo.toml`'s `exclude = [...]` list,
+      # which security review (Sana) proved is NOT load-bearing in this repo -- see
+      # scripts/check_dependency_audit_coverage.py's module docstring for the full derivation
+      # history (two rounds of this same lesson).
+      - name: Verify dependency-audit coverage of every Cargo.lock in the repo
         run: python3 scripts/check_dependency_audit_coverage.py
       - uses: taiki-e/install-action@v2
         with:
@@ -1100,14 +1103,13 @@ jobs:
       - name: Audit operator shell
         working-directory: implementation/desktop/crates/selahcue-operator
         run: cargo audit
-      # selahcue-stt is a third excluded Cargo root (its own `[workspace]`, its own
-      # Cargo.lock — see implementation/desktop/Cargo.toml's `exclude` list and
-      # selahcue-stt/Cargo.toml's own comment) with a real network dependency
-      # (rustls via ureq's model-download feature). It shipped invisible to this
-      # job until 86akmdkdn: PR #39's rustls CVE bump only touched the two roots
-      # above, so selahcue-stt/Cargo.lock kept the vulnerable rustls 0.23.43
-      # (RUSTSEC-2026-0285) unpatched on `main` until the PR #41 hotfix. This
-      # step, plus the coverage-check step above, close that gap.
+      # selahcue-stt is a third independent Cargo root (its own `[workspace]` table, its own
+      # Cargo.lock — see selahcue-stt/Cargo.toml's own comment) with a real network dependency
+      # (rustls via ureq's model-download feature). It shipped invisible to this job until
+      # 86akmdkdn: PR #39's rustls CVE bump only touched the two roots above, so
+      # selahcue-stt/Cargo.lock kept the vulnerable rustls 0.23.43 (RUSTSEC-2026-0285)
+      # unpatched on `main` until the PR #41 hotfix. This step, plus the coverage-check step
+      # above, close that gap.
       - name: Audit STT crate
         working-directory: implementation/desktop/crates/selahcue-stt
         run: cargo audit
