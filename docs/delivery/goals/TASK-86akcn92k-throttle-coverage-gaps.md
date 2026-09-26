@@ -112,15 +112,15 @@ denials on any scope log a suppressed-interval warning; `verify_email` spends a 
 
 | ID | Mandatory | Criterion | Verifier | Expected result | Evidence | Status |
 |---|---|---|---|---|---|---|
-| C-001 | yes | During a store outage, the reset send path is bounded by a process-local ceiling (send skipped once exhausted, response unchanged) | new test in `test_password_reset_throttle.py` | passes | test output | PENDING |
-| C-002 | yes | The reset degraded ceiling is spent whether or not the account exists (no oracle) | new test | passes | test output | PENDING |
-| C-003 | yes | A sustained run of denials on one scope logs exactly one suppressed-interval warning, not one per denial | new test in `test_throttling.py` or `test_guards.py` | passes | test output | PENDING |
-| C-004 | yes | `verify_email`'s (N+1)th call from one IP is refused while a different IP still passes (positive control) | new test | passes | test output | PENDING |
-| C-005 | yes | `verify_email`'s existing no-oracle collapse (every failure VALIDATION_FAILED) is unchanged | existing tests in `test_customer_auth_slice.py` still pass unmodified | pass | test output | PENDING |
-| C-006 | yes | Mutation check: removing each new control turns its own test(s) red, siblings unaffected | manual mutation + rerun, x3 | RED then restored, each time | transcript | PENDING |
-| C-007 | yes | Full suite regression: no new failures vs. the 538-pass baseline | `pytest -q` against Postgres | 538+ passed, 0 failed | test output | PENDING |
-| C-008 | yes | Four-reviewer gate (Cody, Vera, Sana, Quinn) blocking findings resolved | review round + Artifact | 0 blocking outstanding | Artifact URL | PENDING |
-| C-009 | yes | PR opened as Draft against `main`, rebased and not behind, GitHub Actions CI green | `gh pr checks` | all required checks pass | PR URL + checks output | PENDING |
+| C-001 | yes | During a store outage, the reset send path is bounded by a process-local ceiling (send skipped once exhausted, response unchanged) | `test_a_limiter_outage_bounds_the_reset_send_without_denying_the_response` in `test_password_reset_throttle.py` | passes | test output below | PASS |
+| C-002 | yes | The reset degraded ceiling is spent whether or not the account exists (no oracle) | `test_the_reset_degraded_ceiling_is_spent_whether_or_not_the_account_exists` | passes | test output below | PASS |
+| C-003 | yes | A sustained run of denials on one scope logs exactly one suppressed-interval warning, not one per denial | `test_throttling_guards.py` (new file) | passes | test output below | PASS |
+| C-004 | yes | `verify_email`'s (N+1)th call from one IP is refused while a different IP still passes (positive control) | `test_verify_email_nth_call_is_refused_and_earlier_calls_are_not` / `test_verify_email_budget_is_per_client_ip` in `test_customer_auth_slice.py` | passes | test output below | PASS |
+| C-005 | yes | `verify_email`'s existing no-oracle collapse (every failure VALIDATION_FAILED) is unchanged | `test_verify_email_throttle_does_not_disturb_the_no_oracle_collapse` + pre-existing `test_verify_unknown_expired_consumed_are_uniform`, both pass unmodified | pass | test output below | PASS |
+| C-006 | yes | Mutation check: removing each new control turns its own test(s) red, siblings unaffected | manual mutation + rerun, x3 (degraded ceiling, denial alerting removed separately from C-003's own dev, verify_email throttle) | RED then restored, each time | transcript in session log | PASS |
+| C-007 | yes | Full suite regression: no new failures vs. the 538-pass baseline | `pytest -q` against Postgres (`kenji-throttling-pg`, 127.0.0.1:55432) | 538+ passed, 0 failed | 557 passed, 0 failed (post-rebase onto latest `origin/main`) | PASS |
+| C-008 | yes | Four-reviewer gate (Cody, Vera, Sana, Quinn) blocking findings resolved | review round + Artifact | 0 blocking outstanding | Round 1: Cody NON-BLOCKING, Sana 0 BLOCKING/4 non-blocking, Vera NON-BLOCKING, Quinn NON-BLOCKING — all four returned with zero blocking findings on the first pass. Artifact: TBD (to be published) | PASS |
+| C-009 | yes | PR opened as Draft against `main`, rebased and not behind, GitHub Actions CI green | `gh pr checks` | all required checks pass | PR #109 (Draft); rebased onto `origin/main` post-review (`git merge-base --is-ancestor origin/main origin/fix/86akcn92k-throttle-coverage-gaps` confirms up to date); `gh pr checks 109` — TBD to re-confirm green post-rebase push | PENDING |
 
 ## Verification plan
 
@@ -140,11 +140,18 @@ denials on any scope log a suppressed-interval warning; `verify_email` spends a 
   `enforce_budget`'s DENIED branch, suppressed per-scope on the same interval pattern used for
   store errors; (3) a new `verify_email` per-IP budget plus resolver wiring — together close
   all three sub-gaps with no shared-state cross-talk between them.
-- Change or investigation: implement + add tests.
-- Verifier executed: see completion predicate.
-- Result: TBD
-- New evidence: TBD
-- Decision: TBD
+- Change or investigation: implemented as a `_DegradedSendCeiling` class (two independent
+  instances: resend, reset) in `apps/accounts/services.py`; `_report_sustained_denial` added
+  to `apps/throttling/guards.spend_budget`, keyed on `scope` alone; `verify_email` given a new
+  `enforce_budget` call plus `client_ip` threaded through its GraphQL resolver.
+- Verifier executed: `pytest tests/test_throttling_guards.py tests/test_password_reset_throttle.py tests/test_customer_auth_slice.py -q` (all pass), full suite `pytest -q` (557 passed, 0 failed), three manual mutation checks (one per sub-gap, each isolated to its own tests).
+- Result: all five target criteria PASS.
+- New evidence: PR #109 opened; four-reviewer round 1 (Cody, Sana, Vera, Quinn) returned zero
+  blocking findings. Sana's four non-blocking notes (S-1..S-4) and Cody's/Quinn's non-blocking
+  suggestions are recorded on the PR and in the consolidated review Artifact; none gate
+  completion per the operating contract's "blocking findings" bar.
+- Decision: handoff — proceeding to Artifact publication, CI re-confirmation post-rebase, and
+  ClickUp evidence comment.
 
 ## Risks and rollback
 
