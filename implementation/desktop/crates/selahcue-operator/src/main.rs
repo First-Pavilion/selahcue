@@ -4074,6 +4074,7 @@ async fn connect_remote(ep: &Endpoint) -> Result<RemoteOperator, String> {
 mod endpoint_guard_tests {
     use super::*;
     use std::io::Write;
+    #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
 
     /// A non-loopback address must be refused before any network attempt — proven by using an
@@ -4119,7 +4120,10 @@ mod endpoint_guard_tests {
     }
 
     /// A `0644` descriptor (world/group-readable) is exactly the exposure the mode check exists
-    /// to close (security review, Sana S-3) — refused, not silently trusted.
+    /// to close (security review, Sana S-3) — refused, not silently trusted. Unix-only: the mode
+    /// check itself (`read_endpoint_at`) is `#[cfg(unix)]` — there is no POSIX-style mode bit on
+    /// Windows for it to check.
+    #[cfg(unix)]
     #[test]
     fn a_world_readable_descriptor_is_refused() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -4139,7 +4143,8 @@ mod endpoint_guard_tests {
 
     /// Positive control for the mode check: the SAME descriptor, `0600`, is accepted — proving
     /// the refusal above is a real branch (a mode check, not something that rejects every file
-    /// regardless of its permissions).
+    /// regardless of its permissions). Unix-only, same reason as the test above.
+    #[cfg(unix)]
     #[test]
     fn a_0600_descriptor_is_accepted() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -4160,26 +4165,51 @@ mod endpoint_guard_tests {
     /// bound for a non-regular file (e.g. a FIFO, where `stat` reports `len() == 0` and the size
     /// check alone would be fooled); that path needs a real FIFO to exercise and is not covered
     /// by this test, which asserts the ordinary case: a big honest file is still refused.
+    /// Unix-only only because `set_permissions`/`from_mode` are — the size check itself runs
+    /// unconditionally in `read_endpoint_at`; the chmod here exists only so the file additionally
+    /// clears the (also-tested) mode check and this test isolates the size check alone.
+    #[cfg(unix)]
     #[test]
     fn an_oversized_descriptor_is_refused() {
+        // A control that guards another control can be dead in a way a careless test misses
+        // (`implementation/desktop/CLAUDE.md`'s bounded-memory-test section): a first version
+        // of this test padded INSIDE the JSON value out past the cap, so `Read::take` alone
+        // truncated it into invalid JSON and the size check was never actually exercised —
+        // found by mutation (security review round 3, Sana S-9): neutering the size check left
+        // this test green. Fixed by making the JSON object itself COMPLETE AND VALID at exactly
+        // `MAX_ENDPOINT_FILE_LEN` bytes, with only WHITESPACE — which `serde_json` tolerates
+        // trailing — appended afterward to push the file past the cap. A truncated (first
+        // `MAX_ENDPOINT_FILE_LEN` bytes) read of THIS file parses cleanly, so only the size
+        // check (not truncation) can be what refuses it.
+        let prefix = r#"{"addr":"127.0.0.1:1","pin":"00","device":"d"#;
+        let suffix = r#"","token":"t"}"#;
+        let target_len = MAX_ENDPOINT_FILE_LEN as usize;
+        let pad_len = target_len
+            .checked_sub(prefix.len() + suffix.len())
+            .expect("MAX_ENDPOINT_FILE_LEN must be large enough to hold the fixed JSON shape");
+        let json = format!("{prefix}{}{suffix}", "x".repeat(pad_len));
+        assert_eq!(
+            json.len(),
+            target_len,
+            "premise: the JSON object itself must be exactly MAX_ENDPOINT_FILE_LEN bytes, or \
+             this proves nothing about the size check specifically"
+        );
+
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("endpoint.json");
         let mut f = std::fs::File::create(&path).expect("create");
-        // Valid JSON prefix, padded well past MAX_ENDPOINT_FILE_LEN with whitespace inside a
-        // string value — still parseable if read in full, so a pass here would mean the bound
-        // did nothing, not that the padding happened to break parsing.
-        let padding = " ".repeat(MAX_ENDPOINT_FILE_LEN as usize + 1024);
-        write!(
-            f,
-            r#"{{"addr":"127.0.0.1:1","pin":"00","device":"d{padding}","token":"t"}}"#
-        )
-        .expect("write oversized descriptor");
+        write!(f, "{json}").expect("write the complete, valid, exactly-sized JSON object");
+        // Trailing WHITESPACE ONLY, after the closing brace — grows the file past the cap
+        // without changing what a first-N-bytes truncated read would see.
+        write!(f, "{}", " ".repeat(1024)).expect("write trailing whitespace past the cap");
         drop(f);
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
             .expect("chmod 0600");
+
         assert!(
             read_endpoint_at(&path).is_none(),
-            "a descriptor over MAX_ENDPOINT_FILE_LEN must be refused"
+            "a descriptor over MAX_ENDPOINT_FILE_LEN must be refused by the SIZE check, even \
+             when its first MAX_ENDPOINT_FILE_LEN bytes alone would parse cleanly"
         );
     }
 }
