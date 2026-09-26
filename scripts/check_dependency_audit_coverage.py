@@ -142,15 +142,53 @@ def _git_ls_files(repo_root: Path, pathspec: str) -> list[str]:
     `.claude/worktrees/`, leaking into a raw `Path.rglob` walk of the shared main checkout) that
     made this the requirement rather than a nicety. `--cached` covers tracked files, `--others
     --exclude-standard` adds untracked-but-not-`.gitignore`d ones (so a brand new, not-yet-
-    committed crate still counts) without adding back anything `.gitignore` excludes."""
-    result = subprocess.run(
-        ["git", "ls-files", "--cached", "--others", "--exclude-standard", "--", pathspec],
-        cwd=repo_root,
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    return [line for line in result.stdout.splitlines() if line]
+    committed crate still counts) without adding back anything `.gitignore` excludes.
+
+    `-z` NUL-terminates entries instead of newline-separating them (security review, Sana, PR
+    #105, 4th pass, non-blocking #2): without it, git's default `core.quotepath` behaviour
+    C-quotes/escapes any non-ASCII byte in a path (e.g. `crates/café/Cargo.lock` comes back as
+    the literal string `"crates/caf\303\251/Cargo.lock"`, quotes included), which would then
+    become a garbage, never-matchable "root" name. `-z` bypasses that quoting entirely.
+
+    Wraps every failure mode (not a git repository, `git` missing, any other non-zero exit) in
+    `CoverageError` (Sana, 4th pass, non-blocking #3) so a real problem here is still a clean,
+    actionable message rather than a raw `CalledProcessError`/`FileNotFoundError` traceback --
+    the exit code was already non-zero either way, so nothing was ever passing wrongly, but a
+    clean report is the standard the rest of this script already holds itself to."""
+    try:
+        result = subprocess.run(
+            ["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", pathspec],
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except (subprocess.CalledProcessError, FileNotFoundError, OSError) as exc:
+        raise CoverageError(
+            f"`git ls-files` failed for pathspec {pathspec!r} in {repo_root} -- is this a git "
+            f"checkout, and is `git` on PATH? ({exc})"
+        ) from exc
+    return [entry for entry in result.stdout.split("\0") if entry]
+
+
+def _assert_no_submodules(repo_root: Path) -> None:
+    """A submodule's contents live in a separate git repository; the superproject's own index
+    holds only a gitlink (a commit SHA), never the submodule's files -- so `git ls-files` cannot
+    see inside one, and a submodule crate with its own `Cargo.lock` would be silently invisible
+    to both discovery functions (security review, Sana, PR #105, 4th pass: verified with a
+    fixture -- a nested independent repo with its own [workspace]-tabled Cargo.toml AND its own
+    Cargo.lock was invisible to both scans while sitting plainly on disk). This repo has no
+    `.gitmodules` today and `actions/checkout@v4` does not fetch submodules unless asked, so nei
+    ther side of this check nor the CI job it guards is currently exposed -- but if that ever
+    changes, it must be loud, not silent, which is this whole script's reason to exist. Raises
+    CoverageError if any submodule is registered, rather than silently under-reporting."""
+    if (repo_root / ".gitmodules").exists():
+        raise CoverageError(
+            f"{repo_root}/.gitmodules exists, but `git ls-files` cannot see inside a submodule "
+            "-- a submodule crate with its own Cargo.lock would be silently invisible to "
+            "coverage. Update this script to also scan each submodule's own working tree before "
+            "removing this guard."
+        )
 
 
 def discover_lockfile_roots(repo_root: Path) -> set[str]:
@@ -160,7 +198,13 @@ def discover_lockfile_roots(repo_root: Path) -> set[str]:
     "independent root" from Cargo.toml table markers, and from a raw filesystem walk (this
     script's own previous approaches, in that order), are not sufficient on their own."""
     return {
-        Path(rel_path).parent.as_posix() for rel_path in _git_ls_files(repo_root, "*Cargo.lock")
+        Path(rel_path).parent.as_posix()
+        for rel_path in _git_ls_files(repo_root, "*Cargo.lock")
+        # The glob pathspec matches by substring/suffix, not exact basename, so it would also
+        # match e.g. "NotCargo.lock" (security review, Sana, PR #105, 4th pass, non-blocking #1
+        # -- verified with a fixture). Fails closed (an extra required root, not a missed one)
+        # either way, but this keeps the reported root set accurate.
+        if Path(rel_path).name == "Cargo.lock"
     }
 
 
@@ -174,11 +218,14 @@ def discover_workspace_table_roots(repo_root: Path) -> set[str]:
     true-but-incomplete."""
     roots: set[str] = set()
     for rel_path in _git_ls_files(repo_root, "*Cargo.toml"):
+        if Path(rel_path).name != "Cargo.toml":
+            continue
         full_path = repo_root / rel_path
         if not full_path.is_file():
-            # A directory literally named "Cargo.toml" would otherwise crash `.read_text()`
-            # with a raw IsADirectoryError instead of a clean message (code review, Cody,
-            # PR #105 -- found while auditing this exact read for the equivalent gap).
+            # A symlink named "Cargo.toml" resolving to a directory would otherwise crash
+            # `.read_text()` with a raw IsADirectoryError instead of a clean message (code
+            # review, Cody, PR #105 -- found while auditing this exact read for the equivalent
+            # gap; unlike a bare empty directory, git DOES list this kind of entry).
             continue
         if _WORKSPACE_TABLE_RE.search(full_path.read_text()):
             roots.add(Path(rel_path).parent.as_posix())
@@ -188,6 +235,7 @@ def discover_workspace_table_roots(repo_root: Path) -> set[str]:
 def discover_required_roots(repo_root: Path) -> set[str]:
     """The full required-audit-root set: every `Cargo.lock` location, unioned with every
     workspace-table location, relative to `repo_root`."""
+    _assert_no_submodules(repo_root)
     return discover_lockfile_roots(repo_root) | discover_workspace_table_roots(repo_root)
 
 
@@ -346,8 +394,25 @@ def self_test() -> int:
             fixture_root / "crates/symlink-target-dir"
         )
 
+        # A file that merely ENDS with "Cargo.lock" but isn't literally named that: the glob
+        # pathspec `*Cargo.lock` matches it (it's a substring/suffix match, not an exact-basename
+        # one), but the `Path(rel_path).name == "Cargo.lock"` filter in discover_lockfile_roots
+        # must exclude it (security review, Sana, PR #105, 4th pass, non-blocking #1).
+        _write(fixture_root, "crates/odd", "NotCargo.lock", "# not a real lockfile\n")
+
+        # A non-ASCII path: without `-z`, git's default quoting would return this as a mangled,
+        # never-matchable octal-escaped string (Sana, 4th pass, non-blocking #2). Confirms `-z`
+        # round-trips the real UTF-8 name.
+        _write(fixture_root, "crates/café", "Cargo.toml", '[package]\nname = "cafe"\n')
+        _write(fixture_root, "crates/café", "Cargo.lock", "# lockfile\n")
+
         lockfile_roots = discover_lockfile_roots(fixture_root)
-        assert lockfile_roots == {".", "crates/independent-no-workspace-table"}, lockfile_roots
+        assert lockfile_roots == {
+            ".",
+            "crates/independent-no-workspace-table",
+            "crates/café",
+        }, lockfile_roots
+        assert "crates/odd" not in lockfile_roots, lockfile_roots
 
         table_roots = discover_workspace_table_roots(fixture_root)
         assert table_roots == {
@@ -361,10 +426,37 @@ def self_test() -> int:
         assert required == {
             ".",
             "crates/independent-no-workspace-table",
+            "crates/café",
             "crates/not-yet-built",
             "crates/spaced-with-comment",
             "crates/workspace-package-only",
         }, required
+
+        # `_git_ls_files` must turn a real-world failure (not a git repository) into a clean
+        # CoverageError, not a raw subprocess traceback (Sana, 4th pass, non-blocking #3).
+        with tempfile.TemporaryDirectory() as not_a_repo:
+            try:
+                discover_lockfile_roots(Path(not_a_repo))
+            except CoverageError:
+                pass
+            else:
+                raise AssertionError("expected CoverageError when repo_root is not a git repository")
+
+        # A registered submodule must be a hard, loud failure -- not a silent under-report
+        # (Sana, 4th pass: a submodule's own files are invisible to `git ls-files` in the
+        # superproject, so a submodule crate with its own Cargo.lock would otherwise vanish).
+        with tempfile.TemporaryDirectory() as tmp2:
+            submodule_fixture = Path(tmp2)
+            subprocess.run(["git", "init", "-q"], cwd=submodule_fixture, check=True)
+            submodule_fixture.joinpath(".gitmodules").write_text(
+                '[submodule "vendor/whatever"]\n\tpath = vendor/whatever\n\turl = ../whatever\n'
+            )
+            try:
+                discover_required_roots(submodule_fixture)
+            except CoverageError:
+                pass
+            else:
+                raise AssertionError("expected CoverageError when .gitmodules is present")
 
     # --- check(): ci.yml text fixtures, required set passed in directly ---
     required = {
