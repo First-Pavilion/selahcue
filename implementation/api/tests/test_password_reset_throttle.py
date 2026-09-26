@@ -409,9 +409,17 @@ def test_a_throttled_request_against_a_real_account_via_the_address_budget_mints
 def test_a_throttled_request_against_a_real_account_via_the_global_budget_mints_nothing(
     client, settings
 ):
-    """A DIFFERENT address each call, so only the GLOBAL budget (checked first, before IP or
-    address) can be what trips — proving the global spend also precedes the mint."""
+    """S-5 (Sana, PR #107 re-review): the FIRST version of this test used a different,
+    non-existent address for the throttled call, so it never entered the REAL account's mint
+    branch regardless of where `enforce_budget` sits — moving the global spend below the mint
+    left all assertions green, proving nothing about ordering. Fixed by targeting the SAME real
+    address both times, with the IP and address budgets loosened so only the GLOBAL budget
+    (checked first) can be what trips the second call — that is what makes this a genuine
+    ordering check on the real account's own mint branch, not a duplicate of the address test.
+    """
     settings.SELAHCUE_THROTTLE_RESET_REQUEST_GLOBAL = (1, 3600)
+    settings.SELAHCUE_THROTTLE_RESET_REQUEST_ADDRESS = (50, 900)
+    settings.SELAHCUE_THROTTLE_RESET_REQUEST = (50, 3600)
     sender = _CapturingSender()
     services.set_email_sender(sender)
     try:
@@ -427,8 +435,10 @@ def test_a_throttled_request_against_a_real_account_via_the_global_budget_mints_
         assert minted_count == 1, "the within-budget call did not mint — fixture is not exercising the mint branch"
         assert len(sender.reset_tokens) == 1
 
-        # A DIFFERENT address, so only the exhausted GLOBAL budget can refuse this call.
-        second = post_account(client, REQUEST_RESET, {"e": "f4-global-other@budget.example"})
+        # SAME real address again: the address (50, 900) and IP (50, 3600) budgets are both
+        # loose enough not to trip on a 2nd call, so only the exhausted GLOBAL (1, 3600)
+        # budget can refuse this — and it refuses a call that WOULD otherwise mint again.
+        second = post_account(client, REQUEST_RESET, {"e": email})
         assert error_code(second) == "RATE_LIMITED"
 
         assert (
@@ -436,7 +446,7 @@ def test_a_throttled_request_against_a_real_account_via_the_global_budget_mints_
                 customer_user=user, purpose=CredentialTokenPurpose.PASSWORD_RESET
             ).count()
             == minted_count
-        ), "the THROTTLED request minted a token for the real account — enforce_budget runs after the mint"
+        ), "the THROTTLED request minted a SECOND token for the real account — enforce_budget runs after the mint"
         assert len(sender.reset_tokens) == 1, "the THROTTLED request sent a SECOND email via the GLOBAL budget"
     finally:
         services.set_email_sender(services.EmailSender())
