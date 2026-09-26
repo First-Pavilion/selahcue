@@ -129,14 +129,17 @@ def should_allow(store, key: str, limit: int, window_seconds: int) -> bool:
 # returning the full address as the cache key gives them roughly 2^64 distinct throttle
 # identities, defeating every per-IP budget in the API (device-auth, resend-verification,
 # both password-reset paths). Truncating to the /64 network prefix collapses that entire
-# allocation onto one bucket, which is the same boundary a standard residential ISP hands out
-# as a single customer's address space (RFC 6177's recommended minimum allocation). /56 was
-# the other option the ticket named; /64 is chosen because it is the narrower, more
-# conservative bucket — it groups only what a single customer plausibly controls, rather than
-# the 256 /64s (a /56) that can span multiple distinct households or a small business's whole
-# site. Hashing the address was explicitly rejected: a hash preserves cardinality 1:1 and
-# fixes nothing, whereas truncation is what actually collapses the attacker's cheap address
-# space onto a fixed number of buckets.
+# allocation onto one bucket. /56 was the other option the ticket named — RFC 6177 actually
+# recommends /56 or /48 as the minimum an ISP hands a single end site, i.e. it argues for the
+# WIDER bucket, not the narrower one. /64 is chosen anyway, deliberately narrower than the
+# RFC's own floor: it groups only what a single customer plausibly controls, rather than the
+# 256 (or 65,536, at /48) /64s that a /56 allocation can span across multiple distinct
+# households or a small business's whole site. Either bucket size closes the finding — both
+# collapse ~2^64 onto a small, fixed number of identities — /64 is simply the more
+# conservative of the two named options, not a literal reading of RFC 6177. Hashing the
+# address was explicitly rejected: a hash preserves cardinality 1:1 and fixes nothing,
+# whereas truncation is what actually collapses the attacker's cheap address space onto a
+# fixed number of buckets.
 #
 # COLLATERAL, stated rather than discovered later: /64 bucketing means every device behind one
 # residential allocation shares a single budget. For an ordinary household that is correct —
@@ -159,9 +162,30 @@ def _bucket_for_throttling(address: ipaddress.IPv4Address | ipaddress.IPv6Addres
     IPv4 passes through unchanged (its /32 network address is the address itself). IPv6 is
     truncated to its /64 network prefix — see `_IPV6_THROTTLE_BUCKET_PREFIX_BITS` above for
     why 64 and not the full address or a hash.
+
+    IPv4-MAPPED IPv6 addresses (`::ffff:a.b.c.d`, RFC 4291 §2.5.5.2) are unwrapped to their
+    embedded IPv4 address FIRST, before any bucketing decision. Found in review (Sana and Cody,
+    independently, same round): `::ffff:0:0/96` sits entirely inside the single IPv6 network
+    `::/64`, so treating a mapped address as ordinary IPv6 collapses EVERY IPv4 client behind a
+    dual-stack (`[::]`-bound) listener onto one shared bucket — the opposite of "IPv4 is
+    unaffected" this function documents and the ticket requires. A dual-stack listener reports
+    an IPv4 peer to the application exactly this way, so this is a real, not theoretical, input
+    shape; it is simply not reachable through this repo's current all-IPv4 (`0.0.0.0`) bind.
+    Unwrapping first means a mapped address is bucketed exactly as if the caller had connected
+    over plain IPv4 — full address, no truncation — which is the correct identity either way.
+
+    NAT64-embedded addresses (`64:ff9b::/96`, RFC 6052) have the identical structural problem —
+    an IPv4-only client behind a NAT64 gateway is also representable as an IPv6 address that
+    embeds the full IPv4 identity in its low bits, inside a /64 bucket shared with every other
+    NAT64 client. `ipaddress` has no built-in equivalent of `.ipv4_mapped` for this prefix, and
+    it is a narrower deployment shape than IPv4-mapped, so it is not unwrapped here — tracked as
+    residual scope rather than silently declared handled.
     """
     if address.version == 4:
         return str(address)
+    mapped = address.ipv4_mapped
+    if mapped is not None:
+        return str(mapped)
     network = ipaddress.ip_network(f"{address}/{_IPV6_THROTTLE_BUCKET_PREFIX_BITS}", strict=False)
     return str(network.network_address)
 
