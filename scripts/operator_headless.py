@@ -1544,20 +1544,25 @@ EXPECTED_MIN_CHECKS = 2036
 # combined tree, not hand-summed: 2037 checks, 0 FAIL.
 EXPECTED_MIN_CHECKS = 2037
 #
-# 2037 -> next: 86ak8467m (Service Plan resilience states, follow-on round) added the two
-# backend-dependent acceptance criteria this ticket carried since 86ajy0hxg merged: AC-4 (Restore
-# last autosave + amber "Recovery mode" saved-indicator, frame 612:124, PL AC-56..58), AC-6
-# (item-delete Undo restoring the original id + content link, conditional on backend kind — Local
-# offers it, Remote and unknown withhold it, PL AC-59/AC-60), and the full "Plan updated ·
-# Review changes" reload/keep banner for AC-2 (frame 612:1020, PL AC-61..63 — renumbered from an
-# initial 53..55 during review, Quinn: those collided with a pre-existing, unrelated
-# permission-poll fix a few hundred lines below), upgrading the badge-only signal a prior round
-# shipped — plus the four-reviewer remediation round (Vera MEDIUM-1/2, LOW-1/2/3; Cody's two test-
-# strength Lows). Rebased onto 17tnw2ayz0m's merged 2037 baseline; measured via an actual clean
-# run against the combined tree, not hand-summed — see the number below and the Goal Contract at
+# 2037 -> next: 86ak8467m (Service Plan resilience states, follow-on round), rebased onto
+# 17tnw2ayz0m's merged 2037 baseline. Added the two backend-dependent acceptance criteria this
+# ticket carried since 86ajy0hxg merged: AC-4 (Restore last autosave + amber "Recovery mode"
+# saved-indicator, frame 612:124, PL AC-56..58), AC-6 (item-delete Undo restoring the original id
+# + content link, conditional on backend kind — Local offers it, Remote and unknown withhold it,
+# PL AC-59/AC-60), and the full "Plan updated · Review changes" reload/keep banner for AC-2
+# (frame 612:1020, PL AC-61..63 — renumbered from an initial 53..55 during PR #108 review, Quinn:
+# those collided with a pre-existing, unrelated permission-poll fix a few hundred lines below),
+# upgrading the badge-only signal a prior round shipped — PLUS the four-reviewer remediation
+# round folded into the same PR before merge: Vera's 2 Medium + 3 Low (the duplicate-restore-
+# banner guard untested against an overlapping `list_autosave_slots` race; Restore/Reload/Undo's
+# in-flight disable, only Restore had one; a refused Reload silently touching dismissal state it
+# never reloaded past; Keep rebuilding the whole run sheet instead of just the summary panel) and
+# Cody's 2 Low (this file's own PL AC-53/54/55 numbering collision; the two Local-shell tests
+# comparing `.items.len()` instead of `.items`). See the iteration ledger in
 # docs/delivery/goals/TASK-fe-plan-resilience-86ak8467m.md for the mutation-tested proof each new
-# guard actually bites.
-EXPECTED_MIN_CHECKS = 2057  # PLACEHOLDER during rebase — corrected after a fresh measured run, see below
+# guard actually bites. Measured via an actual clean run against the combined, rebased tree, not
+# hand-summed.
+EXPECTED_MIN_CHECKS = 2057  # PLACEHOLDER — corrected below after a fresh measured run post-rebase
 
 
 def find_chrome():
@@ -9111,11 +9116,39 @@ DRIVER = r"""
       ok(!!restoreBtn && /Restore last autosave/i.test(restoreBtn.textContent),
          "PL AC-57: with at least one autosave slot reported, the recovery banner offers 'Restore last autosave'");
       restoreBtn.click();
+      // Vera (PR #108 performance review, MEDIUM-2): assert the in-flight disable BEFORE the
+      // sleep — checking only after the response lands (as the prior round did) passes whether
+      // or not the button was ever disabled in the first place, since it is disabled=false in
+      // both cases by then.
+      ok(restoreBtn.disabled === true,
+         "PL AC-57 (Vera MEDIUM-2): Restore disables itself the instant it is clicked, before the response comes back");
       await sleep(20);
       ok(window.__lastRestoredSlot === 9,
          "PL AC-57: clicking Restore calls restore_autosave with the NEWEST slot (AutosaveSlots is documented newest-first)");
       ok(!document.querySelector(".plan-restore-banner") && getComputedStyle(el("plan-saved-indicator")).display === "none",
          "PL AC-57: a successful restore re-renders the builder and clears Recovery mode");
+
+      // Vera (PR #108 performance review, MEDIUM-1): the duplicate-banner guard
+      // (`document.querySelector(".plan-restore-banner")` inside the `list_autosave_slots`
+      // handler) must actually prevent two banners when two failed opens overlap — e.g. navigate
+      // away and back before the first `list_autosave_slots` answers. Two `planRenderLoading()`
+      // calls simulate that: each intervening loading paint resets the "already painted" guard
+      // that would otherwise make the SECOND planRenderLoadFailed a no-op.
+      // NOTE: inlined rather than using the `plCalls` helper — that helper (and `lifeView` /
+      // `openPlan`) is not declared until further down this driver (a `var` hoisting trap that
+      // already bit the AC-6 block once this same review round; see that block's own comment).
+      var callsOf = function (cmd) { return window.__calls.filter(function (c) { return c.cmd === cmd; }); };
+      window.__autosaveSlots = [{ slot: 42, saved_at_ms: 1000, label: null }];
+      var listCallsBeforeOverlap = callsOf("list_autosave_slots").length;
+      planRenderLoading();
+      planRenderLoadFailed(new Error("boom-overlap-a")); // first failed open — 1st fetch queued
+      planRenderLoading(); // "navigate away and back" before the 1st fetch answers
+      planRenderLoadFailed(new Error("boom-overlap-b")); // second failed open — 2nd fetch queued
+      await sleep(20); // let BOTH microtask-resolved fetches settle
+      ok(callsOf("list_autosave_slots").length === listCallsBeforeOverlap + 2,
+         "PL AC-57 (Vera MEDIUM-1 premise): two overlapping failed opens really did send two list_autosave_slots requests — otherwise the guard below proves nothing");
+      ok(document.querySelectorAll(".plan-restore-banner").length === 1,
+         "PL AC-57 (Vera MEDIUM-1): two overlapping list_autosave_slots responses still draw exactly ONE Restore banner, never two");
 
       // Failure path: the button re-enables and names the reason — never a silently dead control.
       window.__autosaveSlots = [{ slot: 5, saved_at_ms: 1000, label: null }];
@@ -9275,37 +9308,62 @@ DRIVER = r"""
          "PL AC-6 a11y: the badge's meaning reaches AT through the Publish button's description — the change glyph is never the only carrier");
 
       // === 86ak8467m frame 612:1020, AC-2: "Plan updated · Review changes" — reload vs keep ===
+      // Numbered PL AC-61..63, NOT 53..55 (Quinn's QA review of PR #108): AC-53/54/55 were
+      // already in use a few hundred lines below for an unrelated permission-poll fix, and a
+      // future "PL AC-53 failed" report could not have been triaged from the id alone.
       var liveCtrlBeforePub = window.__calls.filter(isLiveCtrl).length;
       openPlan(lifeView({ publish: PUB_CHANGED }));
       ok(/plan updated .* review changes/i.test(el("plan-b-insp").textContent),
-         "PL AC-53 (frame 612:1020): the full banner copy — 'Plan updated · Review changes' — renders, not just the short badge");
+         "PL AC-61 (frame 612:1020): the full banner copy — 'Plan updated · Review changes' — renders, not just the short badge");
       var reloadBtn = el("plan-pub-reload"), keepBtn = el("plan-pub-keep");
-      ok(!!reloadBtn && !!keepBtn, "PL AC-53: both Reload and Keep are real, focusable buttons");
+      ok(!!reloadBtn && !!keepBtn, "PL AC-61: both Reload and Keep are real, focusable buttons");
       // Keep: a pure UI dismissal — no host round-trip, and the banner (but not the short badge)
       // goes away for THIS change signature.
       var callsBeforeKeep = window.__calls.length;
       keepBtn.click();
       ok(window.__calls.length === callsBeforeKeep,
-         "PL AC-54 (Keep): dismissing sends NO command to the host — a pure client-side choice");
+         "PL AC-62 (Keep): dismissing sends NO command to the host — a pure client-side choice");
       ok(!!el("plan-pub-changed") && !el("plan-pub-keep"),
-         "PL AC-54 (Keep): the short badge stays (still genuinely changed) but the reload/keep row is gone");
+         "PL AC-62 (Keep): the short badge stays (still genuinely changed) but the reload/keep row is gone");
       ok(window.__calls.filter(isLiveCtrl).length === liveCtrlBeforePub,
-         "PL AC-54 (FR-006): neither showing the banner nor clicking Keep sent a single live-control command — the live run sheet cannot have silently reordered");
+         "PL AC-62 (FR-006): neither showing the banner nor clicking Keep sent a single live-control command — the live run sheet cannot have silently reordered");
       // A LATER change (a new revision) re-arms the banner — Keep silences only the change it
       // was shown for, never every future one.
       openPlan(lifeView({ publish: { revision: 11, published_revision: 5, version: 4, changed: true } }));
-      ok(!!el("plan-pub-reload"), "PL AC-54 (control): a NEW revision re-arms the review banner even though a prior one was dismissed");
+      ok(!!el("plan-pub-reload"), "PL AC-62 (control): a NEW revision re-arms the review banner even though a prior one was dismissed");
       // Reload: a real re-fetch + re-render, never a no-op — and still never a live reorder. A
       // DIFFERENT revision from PUB_CHANGED/11 above, so this is not accidentally re-testing an
       // already-Kept signature (which would correctly (and confusingly) render no banner at all).
       openPlan(lifeView({ publish: { revision: 13, published_revision: 5, version: 4, changed: true } }));
       var callsBeforeReload = window.__calls.filter(function (c) { return c.cmd === "view"; }).length;
-      el("plan-pub-reload").click();
+      var reloadBtn2 = el("plan-pub-reload");
+      reloadBtn2.click();
+      // Vera (PR #108 performance review, LOW-1): mirror Restore's in-flight guard — disabled the
+      // instant the click fires, not merely "eventually re-enabled".
+      ok(reloadBtn2.disabled === true,
+         "PL AC-63 (Vera LOW-1): Reload disables itself the instant it is clicked, so a second click cannot queue a second in-flight `view` request in front of the 1 Hz poll");
       await sleep(20);
       ok(window.__calls.filter(function (c) { return c.cmd === "view"; }).length === callsBeforeReload + 1,
-         "PL AC-55 (Reload): clicking Reload genuinely calls invoke(\"view\") — not a fake dismissal wearing a different label");
+         "PL AC-63 (Reload): clicking Reload genuinely calls invoke(\"view\") — not a fake dismissal wearing a different label");
       ok(el("plan-insp-h").textContent === "PLAN SUMMARY",
-         "PL AC-55 (Reload): the builder re-renders from the fetched view");
+         "PL AC-63 (Reload): the builder re-renders from the fetched view");
+      // Failure path: a REJECTED Reload re-enables the button and says so, rather than leaving
+      // it stuck disabled forever (Vera LOW-1) — the same "fail closed with a stated reason"
+      // discipline every other lifecycle send-site on this surface already follows.
+      openPlan(lifeView({ publish: { revision: 19, published_revision: 5, version: 4, changed: true } }));
+      var reloadBtn3 = el("plan-pub-reload");
+      window.__viewRejectOnce = true;
+      reloadBtn3.click();
+      await sleep(20);
+      ok(reloadBtn3.disabled === false,
+         "PL AC-63 (Vera LOW-1): a refused Reload re-enables the button rather than leaving it stuck disabled");
+      ok(!!el("plan-notice").querySelector("p[role=alert]"),
+         "PL AC-63: a refused Reload is announced through the plan surface's own alert region");
+      // ...and the banner is UNCHANGED by the failure — planReviewDismissedSig is only ever
+      // cleared on a SUCCESSFUL fetch now, never pre-emptively on click, so a failed attempt
+      // cannot silently re-arm (or leave mid-dismissed) a signature it never actually reloaded.
+      ok(!!el("plan-pub-reload"),
+         "PL AC-63 (control): the banner is still showing after the refusal — nothing about the dismissal state moved on a failed fetch");
 
       // === 86ak8467m frame 612:584 (AC-6): item-delete Undo, conditional on backend kind =======
       var undoView = lifeView({ items: [
@@ -9330,6 +9388,11 @@ DRIVER = r"""
          "PL AC-59 (Local backend): deleting an item offers an Undo action, since plan_undo genuinely restores it here");
       var undoCallsBefore = plCalls("plan_undo").length;
       undoBtn.click();
+      // Vera (PR #108 performance review, LOW-2): disabled the instant it is clicked — plan_undo
+      // is a genuine stack pop, so a second click inside the round-trip window would pop TWO
+      // entries, reverting an edit the operator never asked to revert.
+      ok(undoBtn.disabled === true,
+         "PL AC-59 (Vera LOW-2): the Undo action disables itself the instant it is clicked, so a fast double-click cannot pop the undo stack twice");
       await sleep(20);
       ok(plCalls("plan_undo").length === undoCallsBefore + 1,
          "PL AC-59: clicking Undo calls invoke(\"plan_undo\") — the SAME whole-plan-undo path ⌘Z uses, restoring the item under its ORIGINAL id + content link (proven server-side by selahcue-app's test_service_plan_resilience.rs::undo_plan_restores_a_removed_item_with_its_original_id_and_content_link)");

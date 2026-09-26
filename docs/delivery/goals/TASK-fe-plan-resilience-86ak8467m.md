@@ -167,7 +167,7 @@ conditional, frame 15, `612:584`) — plus AC-2's "Plan updated · Review change
 | C-004 | yes | Deleting a plan item offers Undo (toast) only when the backend is Local (`hostRemote === false`); never offered when Remote/unknown | `operator_headless.py` (positive: Local offers; negative: Remote/unknown does not) | both PASS | PL AC-59 (Local, offered) / PL AC-60 (Remote, withheld) / PL AC-60 control (unknown, withheld) — all PASS | PASS |
 | C-005 | yes | Undo restores the deleted item with its original id and content link (not a re-added new item) | `operator_headless.py` (asserts the wiring: Undo calls `invoke("plan_undo")`, the SAME whole-plan-undo path already proven server-side) + existing Rust proof `test_service_plan_resilience.rs::undo_plan_restores_a_removed_item_with_its_original_id_and_content_link` | PASS | PL AC-59 PASS (JS wiring); Rust test PASS (unchanged, pre-existing, re-run to confirm) — id/content-link fidelity is a controller-level guarantee this ticket reuses, not re-derives, in JS | PASS |
 | C-006 | yes | "Plan updated · Review changes" banner offers Reload (re-fetches + re-renders) and Keep (dismisses only); neither sends a live-control command (FR-006) | `operator_headless.py` (asserts `invoke("view")` call count for Reload; asserts zero live-control calls — `isLiveCtrl` filter — across the banner's display and Keep) | PASS | PL AC-53..55 PASS | PASS |
-| C-007 | yes | All new controls are keyboard-reachable, dialogs (if any) focus-trapped, alerts use `role="alert"`, no state signalled by colour alone | `operator_headless.py` a11y checks (native `<button>` elements, `role="alert"`/`role="status"` regions, text-carries-state assertions) | PASS | new controls are native buttons (default tab order); restore/undo failure paths verified `role="alert"`; Recovery mode / banner copy asserted as TEXT, never colour-only | PASS |
+| C-007 | yes | All new controls are keyboard-reachable, dialogs (if any) focus-trapped, alerts use role=alert, no state signalled by colour alone | `operator_headless.py` a11y checks (native button elements, role=alert/role=status regions, text-carries-state assertions) | PASS | new controls are native buttons (default tab order); restore/undo failure paths verified role=alert; Recovery mode / banner copy asserted as TEXT, never colour-only | PASS |
 | C-008 | yes | `make ci` green (fmt, clippy, cargo tests incl. `--features server`, headless webview gate) | `make ci` | exit 0, all green | full run against commit `bb80f7d`: `MAKE_CI_EXIT=0`, "local Rust/Flutter gate: ALL GREEN"; `test_operator_remote.rs` 17/17, `test_service_plan_resilience.rs` 14/14, `operator_headless.py` 2056/2056 — all within this one run | PASS |
 | C-009 | yes | No unintended change to `selahcue-lan` wire fixtures (cross-language pin) | `git diff --stat` shows no changes to `selahcue-lan/src/protocol.rs` or `implementation/mobile/selahcue_controller/test/models/protocol_test.dart` | no diff to either file | confirmed via `git diff --stat` — neither file appears in this branch's diff | PASS |
 | C-010 | yes | Four-reviewer gate (Cody, Vera, Sana, Quinn) run and blocking findings remediated | reviewer reports, consolidated Artifact | no blocking findings outstanding | Artifact URL(s) on ClickUp | PENDING |
@@ -261,6 +261,51 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
 - Result: PASS
 - New evidence: PL AC-53..60 all PASS.
 - Decision: complete (move to C-007/008/009 verification, then the four-reviewer gate)
+
+### Iteration 4 — four-reviewer gate + remediation
+
+- Target criterion: C-010 (Cody, Vera, Sana, Quinn all reviewed PR #108 at head `1c00ecc`, each in
+  an isolated worktree pinned to that SHA).
+- Result: **Cody** — 0 blocking, 2 Low (validator-breaking literal `` `<button>` `` in this
+  contract's own C-007 cell; `local_shell_restore_autosave_is_accepted_and_leaves_the_plan_unchanged`
+  only compared `.items.len()`, not full identity). **Vera** — 0 blocking, 2 Medium + 3 Low, all
+  about untested-but-correct guards (duplicate-banner race guard, Restore's in-flight disable both
+  untested; Reload/Undo missing the same in-flight disable Restore already had; Keep rebuilding the
+  whole run sheet instead of just the summary panel to hide one div). **Sana** — 0 blocking, 1 Low
+  (the Restore-last-autosave banner is offered without consulting permission state, unlike the
+  Undo gate a few lines below it in the same PR — not exploitable today, RBAC denies it
+  server-side regardless, explicitly offered as "author's call: close now or follow-up"). **Quinn**
+  — PASS on every in-scope AC; filed ClickUp 17tnw2ayzu0 (Low, non-blocking): this round's new
+  `PL AC-53/54/55` labels collided with pre-existing, unrelated checks ~250 lines later in the same
+  file.
+- Remediated: Cody's both Lows (Goal Contract C-007 reworded; both shell tests strengthened to
+  compare `.items`, not `.len()` — full `OperatorView` equality was tried first and rejected: it
+  fails on `publish.revision` alone, which legitimately advances on every undo/redo by design).
+  Vera's 2 Medium + the 2 in-flight-disable Lows, all fixed AND test-covered (new PL AC-57
+  MEDIUM-1/2, PL AC-59 LOW-2, PL AC-63 LOW-1 — every one of the four new/changed guards
+  individually mutation-tested: guard line removed → new check goes RED → line restored → full
+  suite back to clean before moving on). Keep's LOW-3 fixed (now calls `planClearInspector`, the
+  same narrow-rerender helper the 1 Hz poll's own publish-sync already uses for exactly this
+  reason). Quinn's ID collision fixed by renumbering this round's reload/keep checks to
+  `PL AC-61..63`. 2056 -> 2064 checks (8 added); `EXPECTED_MIN_CHECKS` bumped and reverified.
+- Deferred as a linked follow-up rather than fixed inline: **Sana's S-1** (Restore-banner
+  permission gate) — a correct fix needs a new "last-known-canEdit" cache (there is no `view`
+  object at all during a failed open to check `viewer.can_edit` against), which is new state-
+  management surface with its own staleness-risk design questions, not a one-line guard; Sana
+  rated it Low/non-blocking and offered the deferral explicitly. **Vera's INFO-1** (the
+  `ListAutosaveSlots` host-side query selects all 21 columns of a snapshot row instead of the 3 the
+  caller consumes) — pre-existing code this PR merely makes reachable for the first time, Vera
+  explicitly said "not blocking." **Sana's I-1** (`tauri.conf.json`'s `"csp": null"` — pre-existing,
+  out of scope, Sana had no ClickUp access to file it herself). All three filed as linked ClickUp
+  follow-ups against 86ak8467m (see Final evaluation for ids).
+- Not touched, and correctly so: RCD-008 (`operator shell (ubuntu-latest)` CI flake) — confirmed
+  by THREE independent reviewers (Vera reproduced it locally 1-in-4; Cody and Quinn both pulled
+  the actual failing-job log and diffed against `main`) to be a pre-existing flake unrelated to
+  this PR's diff, already tracked by ci-red issue #103 and fixed in PR #104 (ClickUp 17tnw2ayz0m).
+  #104 merged 2026-09-26T19:12:02Z; this branch is rebased onto that merge (see below).
+- Decision: iterate (rebase past #104's merge, recompute `EXPECTED_MIN_CHECKS` against the new
+  baseline with a fresh measured run, re-run `make ci`, confirm real `gh pr checks` green, then
+  move to VERIFIED_COMPLETE)
 
 ## Risks and rollback
 

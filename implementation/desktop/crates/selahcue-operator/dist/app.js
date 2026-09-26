@@ -9207,7 +9207,15 @@
           btn.type = "button";
           btn.className = "plan-notice-action";
           btn.textContent = actionLabel;
-          btn.onclick = onAction;
+          // Vera (PR #108 performance review, LOW-2): disable on click so a fast double-click (or
+          // double-tap) cannot fire the action twice — the Undo action pops a real undo stack, so
+          // two firings would revert an edit the operator never asked to revert. Every caller of
+          // this notice either replaces it (success) or clears it (failure) shortly after, so
+          // there is nothing that ever needs to re-enable this exact button.
+          btn.onclick = () => {
+            btn.disabled = true;
+            onAction();
+          };
           p.appendChild(btn);
         }
         slot.appendChild(p);
@@ -9642,10 +9650,22 @@
               // AS PART OF the fetched view, unchanged by the fetch) — FR-006's "never silently
               // reorders the live run sheet" holds because nothing here reorders anything; it
               // only re-paints what the host already reports.
+              // Vera (PR #108 performance review, LOW-1): disabled the instant it is clicked
+              // (mirrors the Restore-last-autosave button's own in-flight guard) so a second
+              // click cannot queue a second `view` request in front of the 1 Hz poll, which
+              // shares the same Remote-backend mutex. Re-enabled on failure; left disabled on
+              // success because planRenderBuilder tears down and rebuilds this whole button.
               reloadBtn.onclick = () => {
-                planReviewDismissedSig = null; // a real fetch always re-checks fresh truth next time
-                invoke("view").then(planRenderBuilder).catch((err) => {
+                reloadBtn.disabled = true;
+                invoke("view").then((v) => {
+                  // Cleared ONLY on a confirmed fresh fetch — never pre-emptively before it,
+                  // which would have left a failed attempt free to re-arm (or leave stranded)
+                  // a dismissal it never actually reloaded past.
+                  planReviewDismissedSig = null;
+                  planRenderBuilder(v);
+                }).catch((err) => {
                   console.error(err);
+                  reloadBtn.disabled = false;
                   planNotice("alert", "Couldn't reload the plan.");
                 });
               };
@@ -9655,10 +9675,13 @@
               keepBtn.id = "plan-pub-keep";
               keepBtn.textContent = "Keep";
               // Keep is a pure UI dismissal — no host round-trip, no data change of any kind, so
-              // the live run sheet cannot possibly move (FR-006).
+              // the live run sheet cannot possibly move (FR-006). Vera (PR #108 performance
+              // review, LOW-3): re-renders only the Plan Summary panel, not the whole builder —
+              // a dismissal has no business tearing down every row, drag handle and deck-link
+              // chip in the run sheet (and the focus they may be holding) to hide one div.
               keepBtn.onclick = () => {
                 planReviewDismissedSig = sig;
-                if (planLastView) planRenderBuilder(planLastView);
+                if (planLastView) planClearInspector(planLastView);
               };
               acts.appendChild(reloadBtn);
               acts.appendChild(keepBtn);

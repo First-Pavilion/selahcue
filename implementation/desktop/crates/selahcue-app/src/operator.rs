@@ -1977,11 +1977,23 @@ mod plan_undo_shell_tests {
         let sh = shell();
         sh.add_item("song", "One", None);
         sh.add_item("song", "Two", None);
-        assert_eq!(sh.view().items.len(), 2);
+        let original = sh.view();
+        assert_eq!(original.items.len(), 2);
         let v = sh.plan_undo();
         assert_eq!(v.items.len(), 1, "undo peels back the last add");
         let v = sh.plan_redo();
         assert_eq!(v.items.len(), 2, "redo restores it");
+        // Cody (PR #108 code review, Low): a count match alone would still pass if redo silently
+        // renamed, reordered or re-linked an item while restoring the count. Full `OperatorView`
+        // equality is a step too far here — `publish.revision` legitimately advances on every
+        // undo/redo by design (app.js's own comment: "revision bumps on every plan edit, undo
+        // and redo"), so comparing the WHOLE view would fail on that field alone even when redo
+        // is correct (confirmed: the only diff was `revision: 2` vs `revision: 4`). Comparing
+        // `items` directly is the strictly-stronger-than-`.len()` check that's actually sound.
+        assert_eq!(
+            v.items, original.items,
+            "redo must restore the EXACT original items (ids, titles, links), not merely the same COUNT of them"
+        );
     }
 
     // 86ak8467m frame 13 — the shell's autosave-slot plumbing. The stand-alone/demo shell has no
@@ -2002,10 +2014,13 @@ mod plan_undo_shell_tests {
         sh.add_item("song", "One", None);
         let before = sh.view();
         let after = sh.restore_autosave(1);
+        // Cody (PR #108 code review, Low): a count match alone would still pass if this silently
+        // relinked or retitled the item while keeping the count the same. Comparing `items`
+        // directly (not the whole `OperatorView` — see the sibling test above for why full
+        // equality is the wrong bar here) is the strictly-stronger, still-safe check.
         assert_eq!(
-            after.items.len(),
-            before.items.len(),
-            "nothing to restore FROM (no store, no in-process drain loop) — the view is honestly unchanged"
+            after.items, before.items,
+            "nothing to restore FROM (no store, no in-process drain loop) — the items are honestly unchanged, not just the same count of them"
         );
     }
 }
