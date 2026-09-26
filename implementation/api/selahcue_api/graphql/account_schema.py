@@ -174,7 +174,12 @@ class AccountMutation:
 
     @strawberry.mutation
     def verify_email(self, info: strawberry.Info, token: str) -> VerifyEmailPayload:
-        return VerifyEmailPayload(verified=verify_email(token).verified)
+        """The caller IP is resolved HERE, same as the other unauthenticated mutations on this
+        surface and for the same reason: only the transport knows how many proxy hops are
+        trustworthy (`SELAHCUE_TRUSTED_PROXY_COUNT`) (86akcn92k)."""
+        request = getattr(getattr(info, "context", None), "request", None)
+        result = verify_email(token, client_ip=client_ip(request) if request is not None else "")
+        return VerifyEmailPayload(verified=result.verified)
 
     @strawberry.mutation
     def resend_verification_email(

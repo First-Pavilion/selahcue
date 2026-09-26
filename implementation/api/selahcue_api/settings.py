@@ -294,12 +294,32 @@ SELAHCUE_THROTTLE_RESET_REQUEST_GLOBAL = (500, 3600)
 # wrong time to be generous, and a caller whose send is skipped keeps the link they already
 # had.
 #
-# THE RESET PATHS HAVE NO SUCH STAND-IN. During a store outage `request_password_reset`
-# reverts to unmetered unauthenticated mail and unbounded oracle sampling — no worse than
-# before 86akcmfd4, but not fixed by it either. Extending a ceiling to the reset send is a
-# tracked follow-up; do not assume this setting already does it.
+# THE RESET REQUEST PATH NOW HAS ITS OWN, SEPARATE STAND-IN (86akcn92k, F1) —
+# `SELAHCUE_RESET_SEND_DEGRADED_CEILING` below, backed by its own `_DegradedSendCeiling`
+# instance (`apps/accounts/services._reset_send_degraded_ceiling`), never a shared counter
+# with this one: a shared counter would let one endpoint's outage-time flood spend the
+# other's degraded budget. It bounds the SEND only — whether the reset REQUEST path also
+# wants a process-local SAMPLING ceiling (bounding how many times the mint-vs-no-mint timing
+# gap can be probed during an outage, on top of bounding the mail volume) is a separate,
+# deliberately deferred decision the ticket explicitly left open; this setting does not make
+# that call.
 # See RESEND_DEGRADED_SEND_CEILING in apps/accounts/services.py.
 SELAHCUE_RESEND_DEGRADED_SEND_CEILING = (20, 3600)
+
+# `request_password_reset`'s own degraded-send ceiling (86akcn92k, F1) — see the comment
+# above and `apps/accounts/services._DegradedSendCeiling` for the shared mechanism. Same
+# magnitude as the resend ceiling, for the same reason: an outage is the wrong time to be
+# generous, and a caller whose send is skipped keeps the link they already had.
+SELAHCUE_RESET_SEND_DEGRADED_CEILING = (20, 3600)
+
+# Per-client-IP budget for `verify_email` (86akcn92k — scoped out of 86akcmfd4's required
+# follow-up, since DEC-013 named the reset paths specifically). LOWER severity than the reset
+# paths, for a real reason: the EMAIL_VERIFY token carries 256 bits of entropy
+# (`secrets.token_urlsafe(32)`), so a throttle here bounds FLOOD cost only — it is not closing
+# a practical guessing attack the way the reset paths' budgets bound DEC-013's timing oracle.
+# Same magnitude as SELAHCUE_THROTTLE_RESET_CONFIRM for that reason: defence in depth against
+# an unauthenticated endpoint being hammered, not a response to a specific measured gap.
+SELAHCUE_THROTTLE_VERIFY_EMAIL_IP = (20, 3600)
 
 # --- Mail --------------------------------------------------------------------------------
 # Dev points at mailhog (compose service, port 1025) so the transactional templates

@@ -329,6 +329,11 @@ RESET_CONFIRM_IP_BUDGET = (20, 3600)
 RESET_REQUEST_ADDRESS_BUDGET = (3, 900)
 RESET_REQUEST_GLOBAL_BUDGET = (500, 3600)
 
+# Per-client-IP budget for `verify_email` (86akcn92k). See the setting-level comment in
+# settings.py: this bounds flood cost against an unauthenticated endpoint, not a guessing
+# attack — the token's 256 bits of entropy already make guessing impractical.
+VERIFY_EMAIL_IP_BUDGET = (20, 3600)
+
 # --- sending while the limiter is down ---------------------------------------------------
 # All three budgets above FAIL OPEN. That is right for the RESPONSE — refusing because the
 # limiter is unreachable would turn an outage into a second outage, and a refusal is
@@ -354,90 +359,156 @@ RESET_REQUEST_GLOBAL_BUDGET = (500, 3600)
 # the limit. It is a bound on catastrophe during an outage, not a budget — hence a default
 # well under the (500, 3600) global one it stands in for.
 #
-# Memory is three module-level scalars, deliberately NOT a per-address or per-IP map: a map
-# here would be keyed by attacker-chosen values on an unauthenticated endpoint, which is the
-# unbounded growth the repo forbids, and it would grow fastest exactly during the flood.
+# Memory is three scalars PER CEILING INSTANCE below, deliberately NOT a per-address or
+# per-IP map: a map here would be keyed by attacker-chosen values on an unauthenticated
+# endpoint, which is the unbounded growth the repo forbids, and it would grow fastest exactly
+# during the flood.
 RESEND_DEGRADED_SEND_CEILING = (20, 3600)
 _DEGRADED_SEND_LOG_INTERVAL_SECONDS = 60.0
-# A lock, where the log suppressors above accept a benign race. Those cost at most a spare
-# log line; this is a CEILING, and the flood it bounds is concurrent by definition, so an
-# unsynchronised read-modify-write would let it be overspent by however many workers raced.
-_degraded_send_lock = threading.Lock()
-_degraded_window_started = float("-inf")
-_degraded_window_sends = 0
-_last_degraded_send_log = float("-inf")
+
+# 86akcn92k (F1): the reset send path gets its OWN ceiling of the same shape, extracted into
+# this class so the mechanism (fixed window, lock, suppressed-interval log) is defined once
+# and instantiated per caller — never a SHARED counter between resend and reset. A shared
+# counter would let one endpoint's flood starve the other's legitimate degraded-mode budget,
+# which is exactly the kind of cross-talk a "process-local fallback" must not have.
+RESET_SEND_DEGRADED_CEILING = (20, 3600)
 
 
+class _DegradedSendCeiling:
+    """A process-local, per-worker fixed-window ceiling standing in for the shared throttle
+    store while it is unreachable (see the module-level comment above this class for the full
+    "why a send ceiling, and why unconditional" reasoning — every instance shares that
+    reasoning, only the label, setting name and default differ).
+
+    A lock, where the log suppressors elsewhere in this file accept a benign race: those cost
+    at most a spare log line, this is a CEILING, and the flood it bounds is concurrent by
+    definition, so an unsynchronised read-modify-write would let it be overspent by however
+    many workers raced.
+    """
+
+    def __init__(self, *, label: str, setting_name: str, default: tuple[int, int]):
+        self._label = label
+        self._setting_name = setting_name
+        self._default = default
+        self._lock = threading.Lock()
+        self._window_started = float("-inf")
+        self._window_sends = 0
+        self._last_log = float("-inf")
+
+    def _ceiling(self) -> tuple[int, float]:
+        """(limit, window_seconds) for this ceiling, read per call like the resend floor."""
+        limit, window = getattr(settings, self._setting_name, self._default)
+        return int(limit), float(window)
+
+    def reset(self) -> None:
+        """Test seam: forget the current window and the last report, so a test can observe the
+        first skip and the first warning deterministically without waiting out either
+        interval."""
+        with self._lock:
+            self._window_started = float("-inf")
+            self._window_sends = 0
+        self._last_log = float("-inf")
+
+    def claim(self) -> bool:
+        """Claim one unit of the ceiling. False means: do not send, and do not mint.
+
+        A fixed window on `time.monotonic()` — the same shape as the store-backed limiter, so
+        the degraded path is not a second rate limiter with its own semantics to reason about.
+
+        Charged on EVERY call during an outage, including calls that could never send.
+        Charging only senders would be cheaper and is wrong: the ceiling is shared, and an
+        attacker can watch it drain through their own inbox, so a ceiling that only bit for
+        real accounts would leak whether an address has something pending — one probe, one
+        bit. That is the defect this file's docstrings already rule out for the real budgets,
+        and this stands in for them.
+        """
+        limit, window = self._ceiling()
+        now = time.monotonic()
+        with self._lock:
+            if now - self._window_started >= window:
+                self._window_started = now
+                self._window_sends = 0
+            if self._window_sends >= limit:
+                return False
+            self._window_sends += 1
+            return True
+
+    def report_skipped(self) -> None:
+        """Warn — at most once per interval — that mail is being dropped, and why.
+
+        Rate limited for the same reason every other report on this path is: one line per
+        dropped send at flood rate is the unbounded logging the repo forbids. The throttle
+        store logs its own fail-open; this line carries the part that one cannot know, which
+        is that the fail-open has started COSTING something.
+        """
+        now = time.monotonic()
+        if now - self._last_log < _DEGRADED_SEND_LOG_INTERVAL_SECONDS:
+            return
+        self._last_log = now
+        limit, window = self._ceiling()
+        logger.warning(
+            "%s skipped a send: limiter unavailable, so its budgets failed open and the "
+            "process-local fallback ceiling (%d per %.0fs, PER WORKER) is spent. Callers "
+            "still receive the normal accepted:true — the response must not reveal the "
+            "outage — and no link was superseded, so an existing one still works. The remedy "
+            "is to restore the rate-limit store; raising %s only buys more unmetered mail "
+            "while it is down. Further reports suppressed for %.0fs.",
+            self._label,
+            limit,
+            window,
+            self._setting_name,
+            _DEGRADED_SEND_LOG_INTERVAL_SECONDS,
+        )
+
+
+_resend_degraded_ceiling = _DegradedSendCeiling(
+    label="resend-verification",
+    setting_name="SELAHCUE_RESEND_DEGRADED_SEND_CEILING",
+    default=RESEND_DEGRADED_SEND_CEILING,
+)
+_reset_send_degraded_ceiling = _DegradedSendCeiling(
+    label="password-reset",
+    setting_name="SELAHCUE_RESET_SEND_DEGRADED_CEILING",
+    default=RESET_SEND_DEGRADED_CEILING,
+)
+
+
+# --- thin free-function wrappers over `_resend_degraded_ceiling`, kept for the exact names
+# and signatures `resend_email_verification` and its tests already call. ------------------
 def _degraded_send_ceiling() -> tuple[int, float]:
-    """(limit, window_seconds) for the degraded ceiling, read per call like the floor."""
-    limit, window = getattr(
-        settings, "SELAHCUE_RESEND_DEGRADED_SEND_CEILING", RESEND_DEGRADED_SEND_CEILING
-    )
-    return int(limit), float(window)
+    return _resend_degraded_ceiling._ceiling()
 
 
 def _reset_degraded_send_window() -> None:
-    """Test seam: forget the current window and the last report, so a test can observe the
-    first skip and the first warning deterministically without waiting out either interval."""
-    global _degraded_window_started, _degraded_window_sends, _last_degraded_send_log
-    with _degraded_send_lock:
-        _degraded_window_started = float("-inf")
-        _degraded_window_sends = 0
-    _last_degraded_send_log = float("-inf")
+    _resend_degraded_ceiling.reset()
 
 
 def _claim_degraded_send() -> bool:
-    """Claim one unit of the degraded ceiling. False means: do not send, and do not mint.
-
-    A fixed window on `time.monotonic()` — the same shape as the store-backed limiter, so the
-    degraded path is not a second rate limiter with its own semantics to reason about.
-
-    Charged on EVERY call during an outage, including calls for addresses that could never
-    send. Charging only senders would be cheaper and is wrong: the ceiling is shared, and an
-    attacker can watch it drain through their own inbox, so a ceiling that only bit for real
-    accounts would leak whether an address has a verification pending — one probe, one bit.
-    That is the defect `resend_email_verification`'s docstring already rules out for the three
-    real budgets, and this stands in for them.
-    """
-    limit, window = _degraded_send_ceiling()
-    global _degraded_window_started, _degraded_window_sends
-    now = time.monotonic()
-    with _degraded_send_lock:
-        if now - _degraded_window_started >= window:
-            _degraded_window_started = now
-            _degraded_window_sends = 0
-        if _degraded_window_sends >= limit:
-            return False
-        _degraded_window_sends += 1
-        return True
+    return _resend_degraded_ceiling.claim()
 
 
 def _report_degraded_send_skipped() -> None:
-    """Warn — at most once per interval — that mail is being dropped, and why.
+    _resend_degraded_ceiling.report_skipped()
 
-    Rate limited for the same reason every other report on this path is: one line per dropped
-    send at flood rate is the unbounded logging the repo forbids. The throttle store logs its
-    own fail-open; this line carries the part that one cannot know, which is that the
-    fail-open has started COSTING something.
-    """
-    global _last_degraded_send_log
-    now = time.monotonic()
-    if now - _last_degraded_send_log < _DEGRADED_SEND_LOG_INTERVAL_SECONDS:
-        return
-    _last_degraded_send_log = now
-    limit, window = _degraded_send_ceiling()
-    logger.warning(
-        "resend-verification skipped a send: limiter unavailable, so all three budgets "
-        "failed open and the process-local fallback ceiling (%d per %.0fs, PER WORKER) is "
-        "spent. Callers still receive the normal accepted:true — the response must not "
-        "reveal the outage — and no link was superseded, so an existing one still works. "
-        "The remedy is to restore the rate-limit store; raising "
-        "SELAHCUE_RESEND_DEGRADED_SEND_CEILING only buys more unmetered mail while it is "
-        "down. Further reports suppressed for %.0fs.",
-        limit,
-        window,
-        _DEGRADED_SEND_LOG_INTERVAL_SECONDS,
-    )
+
+# --- the reset-send sibling (86akcn92k, F1) -------------------------------------------------
+def _reset_reset_send_degraded_window() -> None:
+    """Test seam, same purpose as `_reset_degraded_send_window` above but for the reset send's
+    own ceiling."""
+    _reset_send_degraded_ceiling.reset()
+
+
+def _claim_degraded_reset_send() -> bool:
+    """`_claim_degraded_send`'s sibling for `request_password_reset`. See
+    `_DegradedSendCeiling.claim` and the module-level "sending while the limiter is down"
+    comment for the shared reasoning; this claims from the RESET ceiling, never the resend
+    one, so one endpoint's outage-time flood cannot spend the other's degraded budget."""
+    return _reset_send_degraded_ceiling.claim()
+
+
+def _report_reset_degraded_send_skipped() -> None:
+    """`_report_degraded_send_skipped`'s sibling for the reset send path."""
+    _reset_send_degraded_ceiling.report_skipped()
 
 
 # A fixed hash to run check_password against on unknown-email login, so the unknown-email and
@@ -749,9 +820,30 @@ def register_customer_user(data: RegisterCustomerUserData) -> AcceptedResult:
         return AcceptedResult(accepted=True)
 
 
-def verify_email(raw_token: str) -> VerifyEmailResult:
+def verify_email(raw_token: str, client_ip: str = "") -> VerifyEmailResult:
     """Consume an EMAIL_VERIFY token: mark the user ACTIVE + email_verified_at. Every failure
-    (unknown / wrong-purpose / consumed / expired) collapses to VALIDATION_FAILED (no oracle)."""
+    (unknown / wrong-purpose / consumed / expired) collapses to VALIDATION_FAILED (no oracle).
+
+    Spends a per-client-IP budget FIRST, before the token is even looked at (86akcn92k) —
+    the same placement as `confirm_password_reset`'s own budget, and for the same reason:
+    `RATE_LIMITED` must fire identically whether the offered token was live, dead, or never
+    existed, so it cannot become a sixth, more-informative token-failure code alongside the
+    existing collapsed `VALIDATION_FAILED`.
+
+    LOWER severity than the reset paths, on purpose — see the setting's own comment in
+    settings.py. `client_ip` defaults to `""` (unresolved) rather than being required, so
+    existing direct-service-call test fixtures that mint-and-verify a user without going
+    through the GraphQL transport keep working unchanged; `""` still spends a budget (the
+    shared `UNRESOLVED_CLIENT_IP` bucket), it just does not distinguish callers.
+    """
+    if not client_ip:
+        _report_unresolved_client_ip("verify_email")
+    enforce_budget(
+        "verify_email_ip",
+        client_ip or UNRESOLVED_CLIENT_IP,
+        "SELAHCUE_THROTTLE_VERIFY_EMAIL_IP",
+        VERIFY_EMAIL_IP_BUDGET,
+    )
     token_value = (raw_token or "").strip()
     if not token_value:
         raise _validation_error()
@@ -1166,11 +1258,20 @@ def request_password_reset(email: str, client_ip: str = "") -> AcceptedResult:
     caller learns nothing about the email they sent. Not padded when rate-limited, same as resend:
     `RATE_LIMITED` is already structurally distinct from `accepted:true`, so its timing reveals
     nothing further, and padding a rejection would hand an attacker a way to tie up threads.
+
+    All three budgets FAIL OPEN while the store is down (86akcn92k, F1) — correct for the
+    RESPONSE, for the same reason resend's docstring gives, but wrong for the SEND: without a
+    stand-in, an outage would revert this endpoint to unmetered mail and unbounded oracle
+    sampling, i.e. exactly the pre-86akcmfd4 state. So the send (never the response) degrades
+    under `_claim_degraded_reset_send` — this endpoint's OWN ceiling, never shared with
+    resend's — mirroring `resend_email_verification`'s `enforce_budget_reporting_outage` /
+    `_claim_degraded_send` shape exactly. `|=` and three separate statements, never `or`: see
+    resend's own comment for why short-circuiting would stop spending the later budgets.
     """
     normalized = _require_valid_email(email)
     fingerprint = _email_fingerprint(normalized)
 
-    enforce_budget(
+    limiter_degraded = enforce_budget_reporting_outage(
         "password_reset_request_global",
         "global",
         "SELAHCUE_THROTTLE_RESET_REQUEST_GLOBAL",
@@ -1178,22 +1279,36 @@ def request_password_reset(email: str, client_ip: str = "") -> AcceptedResult:
     )
     if not client_ip:
         _report_unresolved_client_ip("request_password_reset")
-    enforce_budget(
+    limiter_degraded |= enforce_budget_reporting_outage(
         "password_reset_request_ip",
         client_ip or UNRESOLVED_CLIENT_IP,
         "SELAHCUE_THROTTLE_RESET_REQUEST",
         RESET_REQUEST_IP_BUDGET,
     )
-    enforce_budget(
+    limiter_degraded |= enforce_budget_reporting_outage(
         "password_reset_request_addr",
         fingerprint,
         "SELAHCUE_THROTTLE_RESET_REQUEST_ADDRESS",
         RESET_REQUEST_ADDRESS_BUDGET,
     )
+    # Claimed HERE, before anything has looked the address up — same reasoning as resend's own
+    # ceiling claim: charging only calls that would really send turns the ceiling's depletion
+    # into an existence oracle (an attacker watching it drain through their own inbox).
+    degraded_send_allowed = True
+    if limiter_degraded:
+        degraded_send_allowed = _claim_degraded_reset_send()
+
     now = djtz.now()
     with transaction.atomic():
         user = CustomerUser.objects.filter(email_fingerprint=fingerprint).first()
         if user is not None:
+            # The limiter failed open and this call's claim on the fallback ceiling was
+            # refused: skip the send. The MINT is skipped with it, on purpose — same reasoning
+            # as resend's own docstring: superseding a live link and then not delivering its
+            # replacement would leave this caller worse off than before they asked.
+            if not degraded_send_allowed:
+                _report_reset_degraded_send_skipped()
+                return AcceptedResult(accepted=True)
             CredentialToken.objects.filter(
                 customer_user=user,
                 purpose=CredentialTokenPurpose.PASSWORD_RESET,

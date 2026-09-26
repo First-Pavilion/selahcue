@@ -282,6 +282,76 @@ def test_verify_unknown_expired_consumed_are_uniform(client, sender):
     assert error_code(post_account(client, VERIFY, {"t": raw})) == "VALIDATION_FAILED"
 
 
+# --- 86akcn92k: verify_email gets a per-client-IP budget --------------------------------
+# `verify_email` was unauthenticated with no budget at all — scoped OUT of 86akcmfd4's
+# required follow-up because DEC-013 named the RESET paths specifically, and this endpoint's
+# 256-bit token entropy means a throttle here bounds flood cost only, not a practical guess.
+# Still worth closing: an unauthenticated endpoint with literally no ceiling is reachable at
+# an unlimited rate by definition.
+@pytest.mark.django_db
+def test_verify_email_nth_call_is_refused_and_earlier_calls_are_not(client, settings, sender):
+    """Asserts the WHOLE sequence, not just the last response — inspecting only call 3 would
+    equally pass for a limiter that refuses everything or one that trips on the wrong call.
+    Uses three DISTINCT invalid tokens across the pre-limit calls (mirroring
+    `test_confirm_reset_nth_call_is_refused_and_earlier_calls_are_not` in
+    test_password_reset_throttle.py) — proof the budget is spent by request COUNT, not by
+    which token was offered."""
+    settings.SELAHCUE_THROTTLE_VERIFY_EMAIL_IP = (2, 3600)
+
+    first = post_account(client, VERIFY, {"t": "SC-EVF-guess-one"})
+    second = post_account(client, VERIFY, {"t": "SC-EVF-guess-two"})
+    third = post_account(client, VERIFY, {"t": "SC-EVF-guess-three"})
+
+    # Calls 1-2 are WITHIN budget: each reaches the service and gets the same collapsed
+    # VALIDATION_FAILED every invalid token gets today — proof they were refused by TOKEN
+    # validity, not by the limiter.
+    assert error_code(first) == "VALIDATION_FAILED"
+    assert error_code(second) == "VALIDATION_FAILED"
+    # Call 3 is the FIRST the limiter refuses, regardless of what token it carried.
+    assert error_code(third) == "RATE_LIMITED", (
+        f"expected the 3rd call over a (2, 3600) budget to be refused, got {error_code(third)!r}"
+    )
+
+
+@pytest.mark.django_db
+def test_verify_email_budget_is_per_client_ip(client, settings):
+    """The POSITIVE CONTROL the ticket calls for by name: without this, "refused at N" is
+    indistinguishable from a limiter that shares ONE bucket across every caller."""
+    settings.SELAHCUE_THROTTLE_VERIFY_EMAIL_IP = (1, 3600)
+
+    def call(remote_addr):
+        response = client.post(
+            "/graphql/account",
+            data=json.dumps({"query": VERIFY, "variables": {"t": "SC-EVF-does-not-exist"}}),
+            content_type="application/json",
+            REMOTE_ADDR=remote_addr,
+        )
+        return error_code(response)
+
+    assert call("203.0.113.21") == "VALIDATION_FAILED"
+    assert call("203.0.113.21") == "RATE_LIMITED", "the SAME address must exhaust its own budget"
+    assert call("203.0.113.22") == "VALIDATION_FAILED", "a DIFFERENT address must have its own, unspent budget"
+    assert call("203.0.113.22") == "RATE_LIMITED"
+
+
+@pytest.mark.django_db
+def test_verify_email_throttle_does_not_disturb_the_no_oracle_collapse(client, settings, sender):
+    """The new RATE_LIMITED code must not become a sixth, more-informative token-failure
+    code: within budget, unknown/expired/consumed tokens must still collapse to the SAME
+    VALIDATION_FAILED they always have (this is `test_verify_unknown_expired_consumed_are_
+    uniform`'s own contract — this test just pins that the throttle addition didn't touch
+    it)."""
+    settings.SELAHCUE_THROTTLE_VERIFY_EMAIL_IP = (100, 3600)
+    assert error_code(post_account(client, VERIFY, {"t": "SC-EVF-does-not-exist"})) == "VALIDATION_FAILED"
+
+    post_account(client, REGISTER, register_input())
+    raw = sender.verify_tokens[-1]
+    ct = CredentialToken.objects.get(purpose=CredentialTokenPurpose.EMAIL_VERIFY)
+    ct.expires_at = timezone.now() - timezone.timedelta(minutes=1)
+    ct.save(update_fields=["expires_at"])
+    assert error_code(post_account(client, VERIFY, {"t": raw})) == "VALIDATION_FAILED"
+
+
 @pytest.mark.django_db
 def test_raw_verify_token_never_stored_plaintext(client, sender):
     post_account(client, REGISTER, register_input())
