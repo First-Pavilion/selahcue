@@ -173,6 +173,16 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
 - New evidence: two independent reviewers each reproduced the core claims themselves from primary sources (job log, changelog, live CI, disk) rather than trusting the PR description — this is exactly the independent-verification bar the operating contract requires, and both surfaced real, distinct issues neither of us would have caught alone
 - Decision: iterate (commit and push the fixes; awaiting Sana and Quinn)
 
+### Iteration 6
+
+- Target criterion: C-008 (re-confirm CI on the fixup commit), C-007 (reconcile Quinn's finding with the already-pushed fix)
+- Hypothesis: the fixup commit (`6e51343`) keeps CI green and closes Quinn's independently-raised AC #3 finding, which was filed against the prior commit
+- Change or investigation: watched CI run `36282989244` to completion; separately, Quinn (QA) posted a review with one blocking finding on AC #3 — the same `cargo`/`directories` gap Vera found — but timestamped against head `bd3ebf8`, before the fixup was pushed
+- Verifier executed: `gh pr checks 110` on the new head; direct message to Quinn (agent a4eb6bbecea765a2c) asking her to re-verify against `6e51343`; PR comment and ClickUp comment posted documenting the timing so a human reader isn't confused by an apparently-still-open blocking finding
+- Result: CI green — `api (django)` pass (4m56s), `marketing (vue spa)` pass (1m38s), `detect changed areas` pass, `workflows (actionlint+permissions)` pass, and a new check `.github/dependabot.yml` (GitHub's own Dependabot config validator, not something I control) also passes on the corrected file. Quinn's re-check is outstanding.
+- New evidence: GitHub's own platform-side Dependabot config validation (distinct from my local PyYAML parse) confirms the file is schema-valid
+- Decision: iterate (awaiting Quinn's re-confirmation against `6e51343` and Sana's first pass)
+
 ## Risks and rollback
 
 - Risks: a floor bump could theoretically break something not caught by the test suite (e.g. an environment-specific OpenSSL wheel issue) — mitigated by running the full suite, not a subset, and reviewing the upstream changelog for the crossed range
