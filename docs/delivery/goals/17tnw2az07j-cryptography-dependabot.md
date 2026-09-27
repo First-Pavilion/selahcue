@@ -325,6 +325,14 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
 - New evidence: two independent reviewers (Sana, then Quinn corroborating) caught a real overclaiming gap that neither I nor the first three reviewers (Cody, Vera on her first pass, Quinn on her first pass) had surfaced — the review pipeline is doing exactly what it's for
 - Decision: iterate (commit, push, rewrite PR description again, notify all four reviewers of the new head, do not claim VERIFIED_COMPLETE until Sana and Quinn both confirm S-5 is actually closed — not just the two concrete items, but the honesty of the remaining-scope framing)
 
+### Iteration 16
+
+- Target criterion: C-017, C-018 (evidence completion)
+- Change or investigation: committed (`1543d74`), pushed; rewrote PR #110's description a third time with an explicit "what this does not close" section; posted remediation summaries to the PR and ClickUp 17tnw2az07j; messaged all four reviewer agents directly asking for re-verification against `1543d74`
+- Verifier executed: `gh pr checks 110`; CI watch launched for the triggered run
+- Result: PASS — `gh pr checks 110` on head `1543d74`: `api (django)` pass (3m57s), `marketing (vue spa)` pass (1m34s), `detect changed areas` pass, `workflows (actionlint+permissions)` pass, `.github/dependabot.yml` (GitHub-native validator) pass. Everything else correctly `skipping`. All four reviewers re-dispatched, responses pending.
+- Decision: iterate (await all four reviewers' responses; this is the third round to find something real, so no assumption of a clean pass this time either)
+
 ## Risks and rollback
 
 - Risks: a floor bump could theoretically break something not caught by the test suite (e.g. an environment-specific OpenSSL wheel issue) — mitigated by running the full suite, not a subset, and reviewing the upstream changelog for the crossed range
