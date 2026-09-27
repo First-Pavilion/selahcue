@@ -19,19 +19,47 @@
 # updates (the ones that were failing) are a separate, always-on mechanism controlled
 # by the repo's Security settings, not by this file — this file cannot disable or
 # replace that path, only add scheduled coverage alongside it.
+#
+# `cargo` and `github-actions` are grouped (minor+patch together, major separate) and
+# capped at 2 open PRs each (Vera, PR #110 performance review): `ci.yml`'s path filter
+# treats ANY `.github/workflows/ci.yml` change — which every `github-actions` PR is —
+# as touching every area, so an ungrouped run of these two ecosystems can trigger the
+# full desktop/mobile/android matrix repeatedly; worse, every `cargo` update PR edits a
+# `Cargo.lock`, so merging one conflicts the rest, and Dependabot's default rebase-on-
+# conflict behaviour would re-run that same full matrix once per merge (measured: a
+# desktop-matrix run costs ~44 job-minutes across 15 jobs, 4 of them macOS, against an
+# org-wide 20-job/5-macOS concurrency cap). `pip`, `npm`, and `pub` don't share this
+# failure mode (each edits an independent lockfile with no cross-PR conflict) and are
+# left ungrouped so each dependency still gets its own reviewable PR.
 
 version: 2
 
 updates:
-  # implementation/desktop — Rust workspace (Cargo.toml at the workspace root; per-crate
-  # manifests, including selahcue-operator, are picked up as workspace members).
+  # implementation/desktop — Rust. Three SEPARATE lockfiles, not one workspace:
+  # implementation/desktop/Cargo.toml itself excludes `crates/selahcue-operator` and
+  # `crates/selahcue-stt` (`exclude = [...]`, "excluded so the default core stays fast
+  # + green") and each of those two has its own `[workspace]` declaration and its own
+  # tracked Cargo.lock. A single `directory: "/implementation/desktop"` entry would
+  # only ever see the root workspace's lockfile and silently miss the other two —
+  # the shipped Tauri app (selahcue-operator) and the whisper.cpp STT engine
+  # (selahcue-stt), the two largest Rust dependency trees in the repo (caught in
+  # review, Vera, PR #110). `directories` (plural) lists all three explicitly.
   - package-ecosystem: "cargo"
-    directory: "/implementation/desktop"
+    directories:
+      - "/implementation/desktop"
+      - "/implementation/desktop/crates/selahcue-operator"
+      - "/implementation/desktop/crates/selahcue-stt"
     schedule:
       interval: "weekly"
       day: "monday"
       time: "06:00"
       timezone: "UTC"
+    groups:
+      minor-and-patch:
+        update-types: ["minor", "patch"]
+      major:
+        update-types: ["major"]
+    open-pull-requests-limit: 2
     labels:
       - "dependencies"
       - "rust"
@@ -81,6 +109,12 @@ updates:
       day: "monday"
       time: "06:00"
       timezone: "UTC"
+    groups:
+      minor-and-patch:
+        update-types: ["minor", "patch"]
+      major:
+        update-types: ["major"]
+    open-pull-requests-limit: 2
     labels:
       - "dependencies"
       - "github-actions"

@@ -15,14 +15,19 @@ dependencies = [
   # published `cryptography` GHSA affected-range up to "< 50.0.0" (re-derived from the
   # actual failed Dependabot job log, job_1591749422 — the highest ceiling among all
   # affected-versions entries GitHub's advisory feed returned was ">=44.0.0, <50.0.0"),
-  # so no floor below 50.0.0 is provably safe. 50.0.1 (not 50.0.0) is used because it
-  # is PyPI's actual latest release and itself carries its own fixes (buffer-overflow
-  # and certificate name-constraint issues) on top of 50.0.0's Bleichenbacher-oracle
-  # fix. Upper bound narrowed to the next major (<51, was a 4-major-wide range) so a
-  # future breaking major release needs a reviewed bump rather than drifting in
-  # silently the way this floor did. No Ed25519 API changes are documented between
-  # 43 and 50; `signing.py`'s usage (Ed25519PrivateKey/PublicKey, Encoding, PublicFormat)
-  # is unaffected — verified against the upstream changelog and the full API test suite.
+  # so no floor below 50.0.0 is provably safe. 50.0.0 itself fixes a Bleichenbacher-
+  # oracle vulnerability in PKCS7 decryption. 50.0.1 (not 50.0.0) is used because it is
+  # PyPI's actual latest release; its own changelog entry is a wheel rebuild against a
+  # newer OpenSSL (4.0.2), not an additional CVE fix of its own — checked directly
+  # against https://cryptography.io/en/stable/changelog/ (Cody review, PR #110): the
+  # name-constraints/wildcard-DNS-SAN fix (CVE-2026-34073) landed in 46.0.6, an older
+  # release this floor already supersedes, not in 50.0.1 as an earlier draft of this
+  # comment wrongly claimed. Upper bound narrowed to the next major (<51, was a
+  # 4-major-wide range) so a future breaking major release needs a reviewed bump rather
+  # than drifting in silently the way this floor did. No Ed25519 API changes are
+  # documented between 43 and 50; `signing.py`'s usage (Ed25519PrivateKey/PublicKey,
+  # Encoding, PublicFormat) is unaffected — verified against the upstream changelog and
+  # the full API test suite.
   "cryptography>=50.0.1,<51",
   # Async task runtime: transactional email (worker) + revocation cascade and expiry
   # sweeps (beat). Redis is the broker; see CELERY_BROKER_URL in settings.
