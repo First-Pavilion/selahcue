@@ -351,6 +351,15 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
 - New evidence: two independent reviewers found the *same* gap in the *same* round (Vera first, Sana corroborating and adding two precision corrections on top) — strong signal this specific class of finding (undeclared-but-imported packages) is now genuinely exhausted, verified by the whole-app grep rather than assumed
 - Decision: iterate (confirm test suite, commit, push, notify Vera + Sana of the fix, ask for one more confirmation pass)
 
+### Iteration 18
+
+- Target criterion: C-008 (re-confirm CI on the final head)
+- Change or investigation: committed (`0336063`), pushed; posted remediation summaries to the PR and ClickUp; messaged Vera and Sana directly asking for a final confirmation pass; watched the triggered CI run to completion
+- Verifier executed: `gh pr checks 110`
+- Result: PASS — `api (django)` pass (5m6s), `marketing (vue spa)` pass (1m40s), `detect changed areas` pass, `workflows (actionlint+permissions)` pass, `.github/dependabot.yml` (GitHub-native validator) pass. Everything else correctly `skipping`.
+- New evidence: none beyond reconfirming green on the final head
+- Decision: iterate (await Vera's and Sana's final confirmation; Cody and Quinn already signed off clean on the immediately-prior head, which differs only by this S-6 fix)
+
 ## Risks and rollback
 
 - Risks: a floor bump could theoretically break something not caught by the test suite (e.g. an environment-specific OpenSSL wheel issue) — mitigated by running the full suite, not a subset, and reviewing the upstream changelog for the crossed range
