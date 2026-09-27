@@ -35,9 +35,14 @@
 # `Cargo.lock`, so merging one conflicts the rest, and Dependabot's default rebase-on-
 # conflict behaviour would re-run that same full matrix once per merge (measured: a
 # desktop-matrix run costs ~44 job-minutes across 15 jobs, 4 of them macOS, against an
-# org-wide 20-job/5-macOS concurrency cap). `pip`, `npm`, and `pub` don't share this
-# failure mode (each edits an independent lockfile with no cross-PR conflict) and are
-# left ungrouped so each dependency still gets its own reviewable PR.
+# org-wide 20-job/5-macOS concurrency cap). `pip`, `npm`, and `pub` are left ungrouped
+# so each dependency still gets its own reviewable PR — the real reason grouping isn't
+# needed there (corrected per Vera's second-pass review, PR #110: an earlier version of
+# this comment wrongly said it was because each "edits an independent lockfile," which
+# isn't even true for `pip` — this repo has no pip lockfile at all) is that all three
+# only ever trigger Ubuntu-only jobs (`api`, `marketing (vue spa)`, `flutter controller`
+# — none touch the macOS-heavy desktop matrix), so there is no equivalent capacity
+# squeeze or rebase-cascade cost to guard against.
 
 version: 2
 
@@ -73,22 +78,28 @@ updates:
 
   # implementation/api — Django/Strawberry Platform API (pip, pyproject.toml).
   #
-  # All four direct dependencies (Django, strawberry-graphql-django, cryptography,
-  # celery) are now EXACT pins in pyproject.toml, not ranges — the owner declined to
-  # accept an interim gap on the three that weren't originally in scope for the
-  # `cryptography` CVE fix (17tnw2az07j), so this PR widened to cover all four rather
-  # than deferring the other three to the follow-up ticket (17tnw2az0kw, now closed by
-  # this same PR). `versioning-strategy: increase` makes the weekly routine job propose
-  # raising each pin to match new releases as they ship — for an exact `==` pin this is
-  # simply "bump the pin," so it is what keeps these four from going stale now that
-  # there is no floor left to silently drift (the "widen ranges" default a
-  # library-shaped `pyproject.toml` otherwise gets, per Sana's dependabot-core source
-  # read, does not apply the same way to an exact pin). This is still weekly, not
-  # advisory-triggered, so a routine bump can land up to a week late and won't be
-  # labelled security — but the security gap `versioning-strategy` was originally
-  # covering for the pre-widen state (an unknown installed version) no longer exists:
-  # every dependency's exact installed version is now knowable to Dependabot directly
-  # from the manifest.
+  # Every dependency DECLARED in pyproject.toml (Django, strawberry-graphql-django,
+  # strawberry-graphql, cryptography, celery, plus the pytest/pytest-django dev deps)
+  # is now an EXACT pin, not a range — the owner declined to accept an interim gap on
+  # the direct deps that weren't originally in scope for the `cryptography` CVE fix
+  # (17tnw2az07j), so this PR widened to cover all of them. `versioning-strategy:
+  # increase` makes the weekly routine job propose raising each pin to match new
+  # releases as they ship — for an exact `==` pin this is simply "bump the pin," so it
+  # is what keeps these from going stale now that there is no floor left to silently
+  # drift (the "widen ranges" default a library-shaped `pyproject.toml` otherwise gets,
+  # per Sana's dependabot-core source read, does not apply the same way to an exact
+  # pin). This is still weekly, not advisory-triggered, so a routine bump can land up
+  # to a week late and won't be labelled security.
+  #
+  # **What this does NOT close (Sana, PR #110 second-pass review, S-5):** ~30 further
+  # transitive packages this manifest never declares (e.g. `asgiref`, `sqlparse`,
+  # `kombu`) and `psycopg` (deliberately excluded from this file — see the `api` job
+  # in `ci.yml` and this crate's `Dockerfile`, both of which install it separately via
+  # their own `>=3.2,<4` range) remain invisible to Dependabot's pip updater regardless
+  # of what this file declares. 0 advisories currently affect any of them, but a future
+  # one would reproduce the exact same silent failure this file exists to prevent.
+  # Closing that fully needs a real lockfile the Dockerfile/CI actually install from —
+  # tracked as ClickUp 17tnw2az0kw, not built here.
   - package-ecosystem: "pip"
     directory: "/implementation/api"
     schedule:
