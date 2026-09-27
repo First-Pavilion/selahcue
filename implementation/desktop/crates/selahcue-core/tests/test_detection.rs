@@ -202,15 +202,24 @@ fn digit_by_digit_run_is_bounded_and_never_panics() {
 
     // Ten consecutive single-digit words (well past MAX_DIGIT_RUN) must not panic, must
     // not unboundedly grow the folded value, and must consume at most MAX_DIGIT_RUN of
-    // them per run. "zero one two three four five" (6 words, capped) folds to 12345;
-    // the leftover "six seven eight nine" contains no zero, so the fix's own guard
-    // refuses to fold it further and it falls back to plain single-digit tokens, which
-    // detect()'s pre-existing space-shorthand chapter:verse reading then picks up the
-    // trailing "8 9" from. A naive unbounded fold of all ten words would instead have
-    // produced the ten-digit chapter "0123456789" — this exact string proves it did not.
+    // them per run. "zero one two three four five" (6 words, capped) folds to 12345; the
+    // leftover "six seven eight nine" contains no zero, so the fix's own guard refuses to
+    // fold it further and it falls back to plain single-digit tokens. A naive unbounded
+    // fold of all ten words would instead have produced the ten-digit chapter
+    // "0123456789" — this exact string proves it did not.
+    //
+    // REVISED (86akdc0p7): this used to assert "Psalms 12345:6" — detect()'s pre-existing
+    // space-shorthand chapter:verse reading picking up the leftover "6" (bare, single-word,
+    // no "verse" marker, with "7 8 9" trailing) as if it were a deliberately-cited verse.
+    // That is a smaller instance of the exact fabrication class 86akdc0p7 fixes (see
+    // `detect`'s anti-fabrication guard doc): a bare number coincidentally adjacent to
+    // another number, with more input following and no positive signal they belong
+    // together. The fixed behaviour degrades to the chapter alone — bounded and
+    // non-panicking either way, which is this test's actual purpose, but no longer
+    // fabricating a verse nobody cited.
     assert_eq!(
         detect("psalm zero one two three four five six seven eight nine"),
-        vec!["Psalms 12345:6"]
+        vec!["Psalms 12345"]
     );
 }
 
@@ -902,4 +911,85 @@ fn trailing_oh_at_absolute_end_of_input_is_not_rescued_by_rule_4() {
     // structurally significant to book-name resolution, not just the digit fold.
     assert_eq!(detect("psalm eight oh"), vec!["Psalms 8"]);
     assert_eq!(detect("first corinthians one oh"), vec!["1 Corinthians 1"]);
+}
+
+// ---- Anti-fabrication guard: two independently-folded numbers must not weld into a
+// verse neither was ever spoken as (86akdc0p7) ----
+//
+// `"romans eight ten more minutes"` returned `["Romans 8:10"]` before this fix: "eight"
+// and "ten" fold correctly and independently (there is no `AfterOnes`->`Teen` transition,
+// exactly as intended for "Romans eight twenty-eight"), but `detect()`'s window shrinks
+// past the unrelated trailing "more minutes" and hands `scripture.rs::parse_one`'s bare
+// (no punctuation) space-shorthand fallback two adjacent digit tokens it cannot tell apart
+// from a deliberate "<chapter> <verse>" pair. Fixed by requiring a positive signal that the
+// two numbers were meant to be read together -- see `detect`'s doc comment for the three
+// signals -- before trusting a single-word verse token that has more input after it.
+
+#[test]
+fn bare_adjacent_numbers_with_trailing_speech_and_no_positive_signal_degrade_to_chapter_only() {
+    // The flagship repro. Before this fix: `["Romans 8:10"]` -- a specific verse nobody
+    // cited, at 95% confidence. "ten" is genuinely the first word of "ten more minutes",
+    // not a verse, and nothing here signals otherwise, so the fix withholds the verse
+    // rather than guess -- same missed-verse-not-wrong-verse direction the digit-by-digit
+    // guards above already prefer (e.g. `self_correction_oh_after_a_completed_fold_degrades_to_the_chapter_alone`).
+    assert_eq!(
+        detect("romans eight ten more minutes"),
+        vec!["Romans 8"],
+        "before this fix this produced [\"Romans 8:10\"] -- a fabricated verse, not a missed one"
+    );
+}
+
+#[test]
+fn the_same_bare_numbers_weld_when_nothing_follows_to_collide_with() {
+    // Positive control for the flagship case above: the guard is about whether more input
+    // follows the verse, not a blanket refusal of a bare "eight ten" pairing -- with
+    // nothing trailing, "Romans eight ten" is exactly as legitimate a spoken citation as
+    // "Romans eight twenty-eight", and must still resolve to Romans 8:10.
+    assert_eq!(detect("romans eight ten"), vec!["Romans 8:10"]);
+}
+
+#[test]
+fn an_explicit_verse_marker_rescues_the_same_trailing_speech_that_broke_the_flagship_case() {
+    // Positive control: identical trailing junk ("more minutes") to the flagship case, but
+    // with explicit "chapter"/"verse" markers present (later stripped by `normalize_tokens`,
+    // remembered via `NormToken::after_marker`) -- deliberate citation vocabulary the
+    // coincidental case never has, so the weld is trusted despite the trailing words.
+    assert_eq!(
+        detect("romans chapter eight verse ten more minutes"),
+        vec!["Romans 8:10"]
+    );
+}
+
+#[test]
+fn a_multiword_verse_fold_is_trusted_despite_the_same_trailing_speech() {
+    // Positive control: identical trailing junk again, but the verse is a multi-word fold
+    // ("twenty eight" -> 28, two words) rather than a single bare word -- no English
+    // cardinal number is ever produced by two coincidentally-adjacent, unrelated numbers,
+    // so a multi-word verse is trusted regardless of what follows it.
+    assert_eq!(
+        detect("romans eight twenty eight more minutes"),
+        vec!["Romans 8:28"]
+    );
+}
+
+#[test]
+fn the_guard_checks_the_verse_tokens_atomicity_not_the_chapters() {
+    // The chapter here ("twenty eight" -> 28) is itself a multi-word fold, but the verse
+    // ("ten" -> 10) is a single bare word with unrelated trailing speech and no marker --
+    // exactly the flagship shape, just with a fancier chapter. A guard that mistakenly
+    // consulted the chapter's atomicity (or "any token in the window") instead of the
+    // verse's specifically would wrongly trust this; the fix inspects the verse token only,
+    // so this still degrades to the chapter alone.
+    assert_eq!(
+        detect("psalm twenty eight ten more minutes"),
+        vec!["Psalms 28"]
+    );
+}
+
+#[test]
+fn a_punctuated_verse_is_never_guarded_regardless_of_trailing_speech() {
+    // A colon in the verse token proves the punctuated standard path parsed it, not the
+    // bare-digits shorthand -- the guard must never apply here, no matter how bare/atomic
+    // or trailing-content-adjacent the verse number would otherwise look.
+    assert_eq!(detect("Romans 8:10 more minutes"), vec!["Romans 8:10"]);
 }
