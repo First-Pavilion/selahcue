@@ -1,0 +1,196 @@
+# ADR-0028 — Direct-to-provider AI access: credential issue, server-side attribution and reconciliation
+
+- Status: **Proposed.** D4 (sermon notes) needs an **owner decision** before any notes build ticket starts.
+- Date: 2026-09-27
+- Confidence: **Medium for Deepgram** (the mechanism is documented; two numbers need the spike). **Low-Medium for OpenAI** (the only option that meets the directive rests on a capability nobody has tested for this use).
+- Owner: Software Architect (Aria). Required reviewers before `Accepted`: Security Reviewer (Sana), Performance Engineer (Vera), AI Engineer (Nova) for D4.
+- Relates: ADR-0027 (the weekly ledger; its D5 settlement rules and D6 are replaced by this ADR), DEC-004, 86ajy04hz (hosted AI service), 86akby3xu (STT mint), 86akby344 (attribution spike), 86akby4e9 (reconciliation), 17tnw2az0gn / 17tnw2az0gq (enforcement). ClickUp epic [17tnw2az0g6](https://app.clickup.com/t/17tnw2az0g6).
+- Evidence labels: **Verified (docs)** = read in the provider's own documentation on 2026-09-27; **Verified (code)** = read on `origin/main` `f211581`; **Unknown** = not established, with the owner of the check named.
+
+---
+
+## Context
+
+The product owner has directed that the Platform API is **never in the data path** of an AI provider call. For both cloud transcription (Deepgram) and sermon-note generation (OpenAI), the API's job is:
+
+1. authenticate the device;
+2. check the plan and the remaining weekly allowance;
+3. hand back a credential scoped to the provider;
+4. the desktop then connects **directly** to the provider.
+
+For transcription this was already the plan (86akby3xu). For sermon notes it is new: ADR-0027 and 17tnw2az0gn assumed the API itself calls OpenAI and holds the request open while it does.
+
+Two review findings on ADR-0027 (PR #111) shape this ADR:
+
+- **Vera, High.** A notes request held a web worker and a database connection for the whole OpenAI call.
+- **Sana, SEC-0027-02, High.** The transcript design could not tell which church a Deepgram stream belonged to. Temporary tokens are recorded under the one server key that minted them, and the only per-request label is a `tag` the client sets itself. A modified client could leave it off (free transcription) or set another church's tag (charge that church). One token can also open several streams while it is valid.
+
+The pivot does not fix Sana's finding by itself. Copying the current STT design to OpenAI would copy the flaw. This ADR decides how attribution works when the server never sees the call.
+
+## What the providers actually support
+
+### Deepgram
+
+- **Verified (docs).** Temporary tokens from `POST /v1/auth/grant` last 30 s by default and up to 3600 s. They "have the same accessor as the API key used to generate them". Minting needs a key with Member scope or higher. (Token-based auth guide.)
+- **Verified (docs).** A token only has to be valid when the WebSocket opens. The connection "will then stay open ... until you close it". Deepgram staff confirm that expiring or deleting the key does not end an open stream (discussion deepgram/673).
+- **Verified (docs).** The request log, `GET /v1/projects/{project_id}/requests`, can filter by `accessor`. Each record carries `request_id`, `created`, `api_key_id`, and `response.details` with `duration` and `tags`. The usage breakdown can also filter or group by `accessor`.
+- **Verified (docs).** API keys created with an expiry ("temporary API keys") are limited to **250 created per day**. Unique request tags are limited to **500 per day** (Creating API Keys; discussion deepgram/1409).
+- **Verified (docs).** Concurrency limits apply per **project**. All keys in a project share one pool of 45 to 300+ concurrent streams, depending on plan and model (API rate limits).
+- **Unknown (spike 86akby344).** Whether Deepgram limits the number of durable (non-expiring) keys per project. How long a finished stream takes to appear in the request log. Whether a stream that is still open appears there at all.
+
+### OpenAI
+
+- **Verified (docs).** OpenAI's only short-lived client credential is the Realtime **client secret**: `POST /v1/realtime/client_secrets`, with a TTL of 10 to 7200 s (default 600). It "grants access to the Realtime API". Nothing in the reference says it works with `/v1/responses` or `/v1/chat/completions`, and both of those authenticate only with a normal API key.
+- **Verified (docs).** A Realtime session can be text-only (`output_modalities: ["text"]`). The session settings set at mint time "can also be overridden by the client connection". A session ends at 60 minutes at most. As with Deepgram, the credential's expiry limits when a session can **start**, not how long it runs.
+- **Verified (docs).** The Admin API can create projects, create and delete project service accounts (creating one returns an unredacted API key), delete project API keys, and set per-project, per-model rate limits (requests per minute and per day, tokens per minute).
+- **Verified (docs).** The Usage API (`/v1/organization/usage/completions`) groups by `project_id` and `api_key_id` in buckets of 1 minute, 1 hour or 1 day. It needs an **Admin key**.
+- **Verified (code).** Today's desktop notes path (`selahcue-cloud/src/openai.rs`) calls `POST /v1/responses` with a JSON schema for structured output. Its module doc says a client-held OpenAI key is "not acceptable in a shipped product": it cannot be rotated centrally, metered per account, or revoked for one church.
+- **Unknown (spike, Nova + Kenji).** Whether Realtime client-secret usage appears in the Usage API under the parent project or key. Whether one client secret can open more than one session. Whether a text-only Realtime session can produce the structured note draft (schema-constrained JSON) at acceptable quality and cost. Whether the client can override the **model** of the session, not just its instructions. How many projects an OpenAI organisation may hold.
+
+**The plain answer to the crux question:** OpenAI has **no** short-lived credential for an ordinary Responses or Chat Completions call. For the call shape SelahCue uses today, "hand the client a token" means "hand the client a real, reusable API key". That is a different and much larger risk. D4 sets out the choice.
+
+## Decisions
+
+### D1 — The boundary: the API issues credentials and never relays
+
+- `POST /v1/stt/session` (86akby3xu) and a new `POST /v1/notes/session` authenticate the device, reserve allowance (ADR-0027 D5), and return a provider credential plus connection details.
+- `POST /v1/notes:generate` from 86ajy04hz's contract is **withdrawn** under the directive, unless the owner picks D4 option C.
+- The API never receives audio, transcripts or note bodies. Under the directive, it stores no sermon content, so the note-body replay cache from ADR-0027 (and SEC-0027-04's cache rules and Vera's byte-cap comment) **no longer exists**. The data still goes to the provider on SelahCue's account, so the DPA and disclosure work (86akby942) still applies.
+
+### D2 — Attribution comes only from the identity of the credential the server chose
+
+The rule for both providers: **usage is attributed to a church by the provider-side identity of the credential SelahCue issued, never by anything the client sets or reports.**
+
+- **Server-controlled (usable for charging):** the Deepgram accessor (the key id behind a grant token); the OpenAI `project_id`, and `api_key_id` if the spike shows it is populated.
+- **Client-controlled (never used for charging):** the Deepgram `tag` query parameter; OpenAI `user`, `metadata` and `safety_identifier`; any count, duration or success flag the desktop reports (`usage-events:batch`, 86ak10amq). These may be shown as provisional figures only.
+- A new table `ProviderCredential(org, provider, provider_credential_id, provider_scope_id, secret_ciphertext, state = PROVISIONING | ACTIVE | REVOKED, created_at, revoked_at)` maps each provider identity to exactly one org. It is unique on `(provider, provider_credential_id)`. Rows are **never deleted**, so usage that arrives after revocation still maps to the right org.
+- **Fail closed.** A provider usage record whose identity maps to no org is stored as `UNATTRIBUTED`. It raises an alert and is never charged to any church. It is never dropped either. This covers our shared minting key, keys created outside this table, and provisioning crashes. If unattributed usage passes a configured threshold, minting for that provider switches off (the SEC-0027-08 kill-switch rules apply).
+- **Crash-safe provisioning.** Write the `ProviderCredential` row as `PROVISIONING` **before** calling the provider's create-key endpoint, and put the row id in the key's comment or name. Reconciliation can then map a key whose create call succeeded but whose response was lost.
+
+### D3 — Deepgram: one durable key per church; grant tokens minted from it
+
+- **Credential.** Each org gets one Deepgram API key with Member scope (the lowest scope that can mint grant tokens) and **no expiry**. It is created by a worker task, stored encrypted, and never leaves the server. `POST /v1/stt/session` decrypts it and mints a grant token from it, with `ttl_seconds` = 30 (enough to open a socket). The desktop receives only the grant token.
+- **Why not per-session keys.** Keys with an expiry are capped at 250 created per day (Verified, docs). Per-session keys would stop working at 250 sessions a day across all churches.
+- **Why not tags.** The client sets them, and they are capped at 500 unique values per day (Verified, docs). That is Sana's finding.
+- **Attribution.** Grant tokens carry the parent key's accessor (Verified, docs). So every stream opened with a church's token is logged under that church's key, whatever the client does with `tag`. A client cannot move usage onto another church, because it only ever holds tokens derived from its own church's key.
+- **Reconciliation input.** `GET /v1/projects/{id}/requests` filtered by accessor, or unfiltered and mapped through `ProviderCredential`. It is idempotent per `request_id` (unique constraint). The charge is `response.details.duration`, dated at `created`.
+- **Honest bound (replaces "one stream").** Attribution across churches is **exact**. Enforcement is not. After one admission, a modified client can open any number of streams during the token's 30 s life and keep each one open indefinitely. Deleting the church's key stops new tokens but does not close open streams (Verified, discussion 673). The overrun per admission is therefore *(streams opened within the token TTL) × (how long each is held open)*. It is capped only by the project concurrency pool. It is **detected** at the next reconciliation and **enforced** at the next admission. The bound is financial and after the fact. A hard cap needs a stream proxy, which the directive rules out.
+- **New risk: shared concurrency pool.** Every church's streams draw on one project-wide concurrency pool. One abusive church holding many streams open can use up the pool and block transcription for **every** church, not just itself. Mitigations: an anomaly alert when a church's concurrent requests in the log exceed its device count; revoking that church's key; and, if Deepgram supports it (Unknown), one Deepgram project per church, which isolates the pool. The spike should check whether projects can be created through the API.
+- **Custody.** Creating keys needs `keys:write`. That credential lives only in the worker tier, never in the web tier. The web tier holds only the ability to decrypt per-org keys. Reading usage uses a separate key with only `usage:read`, also worker-only. This separates minting from reporting, as Sana asked.
+- **Provisioning.** Provision the key when an org first holds a plan with transcript minutes above 0. If an admission finds no ACTIVE key, it enqueues provisioning and returns a coded `PROVIDER_PROVISIONING` with a retry-after. It never falls back to the shared key.
+
+### D4 — OpenAI (sermon notes): no ephemeral credential exists for the current call shape. Owner decision required
+
+Every option below uses a **per-org OpenAI project**, created through the Admin API. That gives D2 its server-controlled attribution (`project_id`) and lets per-project rate limits bound the damage. Each project holds one service account, and its key is the **parent** credential.
+
+**Option A — Realtime API, text-only, with a client secret (meets the directive; recommended only if the spike passes).**
+- The API mints a Realtime client secret from the church's project key, with the shortest workable TTL (for example 60 s). The desktop opens a text-only Realtime session, sends the transcript, and reads the draft.
+- For: the church gets a genuinely short-lived credential, and the long-lived key stays on the server.
+- Against:
+  - The model is limited to the realtime family, not the model Nova chose.
+  - Structured output may be weaker or missing.
+  - The client can override session instructions, and the model too if the spike finds that possible. A modified client could therefore get a general-purpose session of up to 60 minutes per admission. That usage is still attributed to the right church, and it is bounded by the session cap and the per-project token rate limit.
+  - Realtime text pricing is higher.
+- Blocked on the four OpenAI Unknowns above. **Do not build until a one-day spike (Nova + Kenji) confirms that the usage is attributable and the quality is acceptable.**
+
+**Option B — Give the desktop the church's real project key (meets the directive; a materially larger risk).**
+- The API returns the church's service-account key. The desktop calls `/v1/responses` exactly as it does today.
+- For: no change to the prompt, schema or model. Attribution is exact by `project_id`. The key can be deleted server-to-server at any time, and per-project rate limits cap spend per day.
+- Against:
+  - This is a long-lived, reusable secret on church laptops. Anyone who extracts it can use it until SelahCue notices and revokes it.
+  - It works for **any** endpoint and model the project allows. Service-account keys cannot be scoped to one endpoint in OpenAI's permission model, and a per-project model allow-list is not confirmed in the API (Unknown).
+  - Nothing revokes it automatically when a session ends.
+  - The allowance becomes advisory between reconciliations. A church can spend until the project's daily rate limit, and the ledger only catches up afterwards.
+  - This is exactly the posture `openai.rs` calls unacceptable for shipping.
+- A per-session service account deleted after use narrows the exposure window. But deletion then depends on a job, and if that job fails the key stays open. That is fail-open.
+
+**Option C — Keep the call server-side, but off the web worker (does NOT meet the directive; shown for comparison).**
+- `POST /v1/notes:generate` reserves allowance, enqueues a Celery task, and returns 202. The desktop polls for the result.
+- For: this also resolves Vera's finding. The key never leaves the server. Attribution is trivial, because the server reads the `usage` in the provider's response. D7's rule that "provider failures are never charged" stays fully enforceable.
+- Against: the backend is in the data path, which the owner has ruled out. The transcript passes through SelahCue briefly.
+
+**Recommendation.**
+- Run the Option A spike first. If it passes, build A.
+- If it fails, the owner chooses between B (accept the key-exposure risk, with per-project rate limits as the only hard cap) and C (make an exception to the directive for notes).
+- The architect's view is that **C carries less risk than B**. The worker-exhaustion problem that motivated the directive is solved equally well by moving the call to a background worker.
+- This is the owner's call, not the architect's.
+
+### D5 — Settlement: charges come from reconciliation, for both meters
+
+The server never sees whether a provider call succeeded, so ADR-0027 D5's in-request commit and release is replaced by the following.
+
+**Reservation states:** `RESERVED` → `ISSUED` → `SETTLED`, with `RELEASED` allowed **only** from `RESERVED`.
+
+- `RESERVED`: the allowance is held and no credential has left the server yet.
+- `ISSUED`: a credential has been returned to the desktop. From here, the reservation can **never** be released by time. When `expires_at` passes, it stays counted until reconciliation settles it. This is SEC-0027-02's expiry-refund fix, applied to both meters.
+- `RELEASED`: the mint failed before any credential was issued (for example, the provider's grant call errored). The server knows nothing left the building, so the church is not charged.
+- `SETTLED`: reconciliation's watermark has passed `issued_at + credential TTL + max session + measured lag`. The reservation's estimate then stops counting, because the provider's actual figures have replaced it.
+
+**What is charged:**
+- The weekly charge is **the sum of provider-reported usage for the org's credentials**, dated by the provider's own timestamp in the org's week boundaries (ADR-0027 D8, found by `starts_at ≤ t < ends_at` per SEC-0027-07).
+- Late records are charged to the week they happened in.
+- Formula: `remaining = limit − settled_usage − Σ estimates of ISSUED reservations`.
+- **Transcript:** charged in seconds of `duration`.
+- **Notes:** each ISSUED admission with any usage in its window costs 1 unit. Usage beyond `used_admissions × NOTE_TOKEN_ENVELOPE` is charged as extra units, `ceil(excess / envelope)`, and recorded as an audited overrun. An admission whose window shows **no** usage for that org is refunded (settled at 0). That is the only provider-side failure the server can see.
+- Because charges come from provider totals, N parallel calls cost N. The "N provider calls charged as one" attack from SEC-0027-03 is closed by construction, not by request-handling logic.
+
+**Idempotency and replay (SEC-0027-03).** The key is `(org, meter, idempotency_key)`, with `org` taken only from the authenticated device (SEC-0027-04). The reservation stores `device_id` and a hash of the request.
+- Same key, different request hash: refused.
+- Same key, found `RESERVED` or `ISSUED`: returns a coded `ALREADY_ISSUED`. **No second credential is issued**, and the desktop must start a new request.
+- Same key, found `RELEASED`: it may re-reserve.
+- Parallel requests with one key: serialised by the unique constraint and the `UsageWeek` lock, so exactly one credential is issued.
+- Commit and release happen only on the server. The desktop has no call for either.
+
+**D7's rule that "provider failures are never charged" cannot be fully kept under the directive.** OpenAI bills tokens for a generation that failed partway, or one the desktop rejected as malformed. The server cannot tell either case from success.
+- Recommended owner rule: a **retry grace**. Within 10 minutes of an ISSUED notes admission, the desktop may request one retry credential against the **same** reservation. The retry is counted under the lock, and there is at most one per admission. The envelope for that reservation doubles.
+- Abuse bound, stated honestly: at most one extra generation per paid unit.
+- Unless the owner picks D4 option C, this changes the D7 decision and must be recorded on 17tnw2az0gu.
+
+**Reconciliation job (one per provider, in Celery beat, worker tier only).**
+1. Read provider usage **server-to-server** with the read-only credential over HTTPS. Never accept a provider callback or usage relayed by the client.
+2. Upsert into `ProviderUsageRecord`:
+   - Deepgram: one row per `request_id`, unique.
+   - OpenAI: one row per `(bucket_start, project_id, api_key_id, model)`, unique. Each run **replaces** the values, because a bucket fills in as late data arrives.
+3. Map each record through `ProviderCredential`, or mark it `UNATTRIBUTED` (D2).
+4. In one short transaction per org, lock `UsageWeek` (org, then licence key, then `UsageWeek`, as Vera asked), recompute `settled_usage` from the records, and advance settled reservations. **Never hold that lock across a provider HTTP call.**
+5. Re-scan a trailing window of the length the spike measured, so every run is safe to repeat.
+6. **If the provider's usage API fails, change nothing.** ISSUED reservations stay counted, so a church sees less remaining, never more. Raise an alert after a configured number of consecutive failures. There is **no automatic release**. The cost is that a long provider-reporting outage lowers what churches appear to have left. That is the fail-closed choice, and it is deliberate.
+7. Retention: `ProviderUsageRecord` rows are kept for 104 weeks. They are deleted in batches by a scheduled sweeper. A test fails if the bound is removed.
+
+**Transcript fairness (Vera, High 2).** Reserve STT in fixed slices (default 5 minutes) per admission, not `min(remaining, session_cap)`. A still-streaming desktop asks for the next slice through the same endpoint, and gets a fresh grant token only if it reconnects. So one device cannot lock up a church's whole balance. The slice is an admission estimate only. The charge is always Deepgram's `duration`.
+
+### D6 — Performance: Vera's worker finding is resolved; a bounded residual stays
+
+- **Resolved.** Under the directive, the API never waits on a generation or a stream. A notes request no longer holds a worker or a database connection for the tens of seconds of an LLM call. Manifest reads (NFR-507) no longer queue behind note generation.
+- **Residual.** The mint itself still makes one outbound call on the request worker: Deepgram `auth/grant`, or the OpenAI client-secret create under D4 option A. Option B makes no call at request time, because it only decrypts a stored key. Rules:
+  - hard connect and read timeouts, 2 s each, asserted at import;
+  - close the database connection before the outbound call (`connection.close()`) so the worker does not hold a connection during it;
+  - a circuit breaker per provider, which returns a coded `PROVIDER_UNAVAILABLE`;
+  - its own throttle budget per device, not per IP (Vera's `/v1/quota` point applies here too).
+- **Worst-case capacity.** With W sync workers, at most W mints are in flight. Each holds a worker for at most 4 s (connect plus read timeout) and no database connection. Mint number W+1 queues at the app server. The fix is the timeout, not a queue.
+- **Reconciliation** runs in the worker tier and never touches the web workers.
+
+### D7 — What stays unsolved, stated plainly
+
+- **No hard cap for either provider** under the directive. Enforcement is at admission, and reconciliation catches up afterwards.
+- **Deepgram:** a modified client's overrun can run for as long as it holds streams open, and it can drain the shared concurrency pool (D3).
+- **OpenAI option B:** an extracted key is usable until someone notices and revokes it.
+- **Overrun policy is an owner decision.** Should an overrun carry into later weeks as debt (refusing admissions until paid down), or be written off and alerted? The architect recommends carrying it forward for at most one week, plus an alert.
+
+## Options considered for attribution
+
+- **Per-org durable key, tokens minted from it (chosen for Deepgram).** Attribution is server-controlled, with no daily creation cap. Custody is on us.
+- **Per-session keys with an expiry.** Attribution per session. Rejected: capped at 250 a day (Deepgram); no TTL and job-dependent deletion (OpenAI).
+- **Client-set tags or metadata.** Rejected: forgeable, and capped at 500 a day (SEC-0027-02).
+- **Server-side stream proxy.** Gives a hard cap. Rejected by the owner's directive.
+
+## Consequences
+
+- New `apps/providers` app: `ProviderCredential`, `ProviderUsageRecord`, two reconciliation tasks, a provisioning task, and an encrypted-secret field. Its key custody follows `ENTITLEMENT_SIGNING_KEY`'s fail-loud pattern.
+- The web tier and the worker tier need different secrets. The ops runbook must list them (DEPLOYMENT.md).
+- Allowances become eventually consistent. Displayed remaining figures lag real use by up to the reconciliation interval plus the provider's reporting lag.
+- Tests must include an explicit cross-tenant test at the reconciliation layer: a record under church A's credential can never change church B's `UsageWeek`, and an unmapped record charges nobody.
+
+## Rollback
+
+Docs only today. Once built: minting can be switched off per provider (the desktop falls back to on-device transcription; notes show "unavailable"), and settlement tables are additive. Revoking every `ProviderCredential` stops new sessions but not open ones (D3).

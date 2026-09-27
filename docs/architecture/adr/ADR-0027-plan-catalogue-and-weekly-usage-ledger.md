@@ -1,9 +1,21 @@
 # ADR-0027 — Plan catalogue, effective plan and the weekly usage ledger (Free / Core / Pro)
 
-- Status: **Proposed** — architecture review of the 2026-09-27 plan-limits design, before backend build starts
-- Date: 2026-09-27
-- Confidence: **Medium-High.** Current state is verified against `origin/main` at `f211581`. The ledger design is reasoned from the shipped concurrency pattern (`devices/services.py` `select_for_update` on the licence row) and has not been spiked. The STT finding in D6 is verified against Deepgram's own documentation.
-- Owner: Software Architect (Aria). Delivery: Backend Engineer (Kenji). Required reviewers before `Accepted`: Security Reviewer (Sana) for D4–D6, Performance Engineer (Vera) for D5.
+- Status: **Proposed**, revision 2. This is the architecture review of the 2026-09-27 plan-limits design, done before the backend build starts.
+- Date: 2026-09-27. Revision 2, the same day, covers three things:
+  - the owner's direct-to-provider directive;
+  - Vera's review (performance);
+  - Sana's review (security).
+- **What revision 2 changed:**
+  - How a spend is settled: D5's commit and release now follow ADR-0028 D5.
+  - D6 is replaced by ADR-0028.
+  - A security dependency section is new.
+  - Every review finding has a recorded outcome (see "Review dispositions").
+- Confidence: **Medium-High.** The current state is verified against `origin/main` at `f211581`. The ledger design is reasoned from the concurrency pattern that already ships (`select_for_update` on the licence row in `devices/services.py`). It has not been spiked.
+- Owner: Software Architect (Aria). Delivery: Backend Engineer (Kenji). Required reviewers before `Accepted`: Security Reviewer (Sana) for D4–D6 and the security dependency section; Performance Engineer (Vera) for D5.
+- Companion: **ADR-0028** decides three things this ADR relies on:
+  - how the desktop reaches Deepgram and OpenAI directly;
+  - how usage is attributed to a church;
+  - how reservations are settled from the provider's own usage figures.
 - Relates: DEC-004 (licensing model), DEC-008 (superseded in part by D7/D8), DEC-009 (Free fallback after grace), DEC-014 (fallback plan gate), ADR-0021 (admin licensing platform). ClickUp: [EPIC 17tnw2az0g6](https://app.clickup.com/t/17tnw2az0g6) and its build tickets 17tnw2az0gd, 17tnw2az0gg, 17tnw2az0gh, 17tnw2az0gj, 17tnw2az0gn, 17tnw2az0gq, 17tnw2az0gr.
 - Decision text for D7 / D8 / D9 is the product owner's and is recorded in `DECISION-LOG.md` by [17tnw2az0gu](https://app.clickup.com/t/17tnw2az0gu). This ADR records only **how** the platform implements them.
 
@@ -70,36 +82,65 @@ This amends DEC-014's premise. It must be recorded with D7 on 17tnw2az0gu.
 Tables (new `apps/usage`, so retention and ownership stay separate from the catalogue):
 
 - `UsageWeek(org, week_start_local, tz_name, starts_at, ends_at, stt_seconds_charged, stt_seconds_reserved, notes_committed, notes_reserved, high_water_rank, rank_at_last_reset)`. Unique on (org, week_start_local). The time zone and both boundaries are **fixed when the row is created**. That is how "a time-zone change applies from the next reset" works without any extra state.
-- `UsageReservation(org, week, meter, units, state = RESERVED | COMMITTED | RELEASED, idempotency_key, device_id, expires_at, created_at)`. Unique on (org, meter, idempotency_key).
+- `UsageReservation(org, week, meter, units, state = RESERVED | ISSUED | SETTLED | RELEASED, idempotency_key, request_hash, device_id, issued_at, retry_count, expires_at, created_at)`. Unique on (org, meter, idempotency_key).
 
-Protocol for a spend (notes, and STT in D6):
+**Revision 2.** Under the owner's direct-to-provider directive, the server never calls the provider on a spend and never sees the outcome. The reservation states and settlement rules are therefore defined in **ADR-0028 D5**: `RESERVED → ISSUED → SETTLED`, with `RELEASED` allowed only before a credential is issued. They replace revision 1's COMMITTED state. Compared with revision 1, the table gains three columns:
 
-1. **Reserve.** One short `transaction.atomic()`. Lock the `UsageWeek` row with `select_for_update` (create it with `get_or_create`, retrying once on `IntegrityError`, which is the house idempotency pattern). Lazily release this org's expired reservations. Apply D7's upgrade rule. Check `committed + reserved + units ≤ limit`. Insert the reservation and bump `*_reserved`. **Commit.** The provider is called only after this transaction commits.
-2. **Commit or release.** A second short transaction, locking the same row: move the reservation to COMMITTED (bump committed, drop reserved) or RELEASED (drop reserved).
-3. **Crash safety.** A reservation not settled by `expires_at` is released lazily by the next reserve for that org, and by a sweeper job for tidiness. **Correctness never depends on the job**, the same principle 17tnw2az0gh uses for grant expiry.
+- `request_hash`;
+- `issued_at`;
+- `retry_count`.
+
+Protocol for a spend (both meters):
+
+1. **Reserve.** This is one short `transaction.atomic()`:
+   - Find the current `UsageWeek` row by `starts_at ≤ now < ends_at` (SEC-0027-07). Lock it with `select_for_update`. If it does not exist, create it with `get_or_create` and retry once on `IntegrityError`, which is the house idempotency pattern.
+   - Apply D7's upgrade rule.
+   - Check `settled + Σ open estimates + units ≤ limit`.
+   - Insert the reservation as `RESERVED`, then commit.
+
+   Reads take **no** lock. A test fails if `remaining()` emits `FOR UPDATE`. Both `remaining()` and reserve have a query budget (`django_assert_num_queries`), and `effective_plan` counts inside it.
+2. **Issue.** Close the database connection, then call the provider's mint endpoint with hard timeouts (ADR-0028 D6).
+   - If the mint succeeds: a second short transaction moves the reservation to `ISSUED`.
+   - If the mint fails: it moves to `RELEASED`.
+3. **Settle.** Only reconciliation settles a reservation. It uses the provider's own usage records (ADR-0028 D5).
+4. **Crash safety.**
+   - A `RESERVED` row older than its TTL has issued nothing, so it is released lazily by the next reserve and by the sweeper.
+   - An `ISSUED` row is **never** released by time. It stays counted until reconciliation settles it.
+   - **Correctness never depends on the job**, the same principle 17tnw2az0gh uses for grant expiry.
+   - The sweeper is scheduled in `CELERY_BEAT_SCHEDULE`, and a test checks it is registered. It deletes in batches, following the `accounts/maintenance.py` pattern.
+   - A partial index on `(org, expires_at) WHERE state = 'RESERVED'` keeps the lazy release cheap while the lock is held.
 
 Why row locking and not optimistic concurrency. Both are correct. A conditional `UPDATE … WHERE committed + reserved < limit` is lock-free, but the reserve step also has to create the week row, expire stale reservations and apply the upgrade reset. Doing that as one guarded write is more complex than one short lock. The lock is per org, so it serialises only one church's handful of devices, and it is held for milliseconds. It matches the shipped activation pattern.
 
-The rule that makes this safe: **never hold the lock, or the transaction, across the provider call.** Wrapping the whole generate request in `transaction.atomic()` would hold a row lock and a database connection for the full LLM latency (tens of seconds). That serialises every device in the org and can exhaust the connection pool under load.
+The rule that makes this safe: **never hold the lock, or the transaction, across any provider call.** That covers the mint call and the reconciliation job's read of the usage API. Under the directive, the server no longer waits on a generation. Vera's worker and connection finding is resolved, with a bounded residual for the mint call; ADR-0028 D6 sets out the residual and its timeouts.
 
-Timeout invariant. The reservation TTL must be longer than the provider hard timeout plus processing time. Assert this at import, beside both constants, in the style of `DEGRADED_MANIFEST_TTL_SECONDS`. If a success does arrive after its reservation expired, the commit re-reserves if a unit is free. If none is free, the note is still delivered (the provider has already been paid), it is committed as a recorded overrun, and it is audited. That bounds the overrun to one unit per late success.
+Timeout invariant. `RESERVED_TTL` must be longer than the mint call's connect and read timeouts. Assert this at import, next to both constants, in the style of `DEGRADED_MANIFEST_TTL_SECONDS`. An `ISSUED` reservation has no time-based release, so it needs no TTL invariant. The "one unit per late success" overrun rule from revision 1 no longer applies: late usage is charged by reconciliation, in the week it happened.
 
-Lock order. Any path that locks both the org (grants, plan assignment) and a `UsageWeek` row locks the org first.
+Upgrade reset (D7) resets only the settled counters and their estimate baseline. It **never** zeroes the open reservations. Zeroing them would drive the counters negative when those reservations settle.
 
-Reads. `remaining(org)` is one primary-key read of `UsageWeek` plus `effective_plan`. It meets the manifest p95 budget and **writes nothing**. If D7's upgrade reset is due but has not been written yet, the read computes it virtually.
+Lock order: the org first, then the licence key (`AppLicenseKey`, as activation and the state machine lock it), then `UsageWeek`. Every path that takes more than one of these locks takes them in this order.
+
+Reads. `remaining(org)` is one read of `UsageWeek` through its unique index, plus `effective_plan` and one indexed sum of the open estimates. It takes no lock, and a query budget pins its cost. It meets the manifest p95 budget and **writes nothing**. If D7's upgrade reset is due but has not been written yet, the read computes it virtually.
 
 Usage is per org, so it **must not** go into the catalogue `GRANT_CACHE`. That cache is keyed per plan and shared across tenants. Putting org usage in it would leak one tenant's figures to another and grow the key space with the number of orgs.
 
-### D6 — Cloud transcript: the token mint can admit a session but cannot bound it
+### D6 — Cloud transcript and sermon notes: replaced by ADR-0028
 
-Verified from Deepgram's documentation: a temporary token only has to be valid when the WebSocket opens. An open stream is **not** re-authenticated when the token expires. Capping the token's TTL at the remaining allowance therefore caps nothing: an admitted stream runs until the client closes it.
+Revision 1 said the transcript overrun was "bounded by one stream". **That was wrong.** Sana's SEC-0027-02 showed why:
 
-So:
+- One Deepgram token can open several streams while it is valid.
+- Every stream is logged under the one server key that minted it.
+- The only per-request label is a tag the client sets itself.
 
-- **Admission.** At `stt/session`, reserve `min(remaining, session_cap)` seconds (D5). A second device then sees only what is left. Without the reservation, N devices can each be admitted against the same remaining balance.
-- **Charging comes from server-side truth, not client reports.** A client that under-reports would get unlimited transcription, one capped session at a time, because its balance would never go down. Settle each reservation from the provider's own usage records for that session (Deepgram's usage API, which depends on the attribution spike 86akby344). A client report through `usage-events:batch` (86ak10amq) is only a provisional figure for display.
-- **The overrun is bounded by the length of one stream, which the client controls.** The honest bound is enforced after the fact: when reconciliation shows an org over its limit, the next admission is refused. A hard cap needs a server-side stream proxy, which is out of scope and should be decided on its own.
-- **"Only delivered time counts"** (the refund analogy, still open on 17tnw2az0gu) should be defined as "what the provider billed us for this session". That is the only definition the server can check.
+ADR-0028 replaces this section, and for both providers it decides the following:
+
+- **Attribution** uses only the identity of the credential the server issued. For Deepgram that is a durable key per church; for OpenAI it is a project per church.
+- **Usage nobody can attribute** fails closed. It raises an alert and is charged to nobody.
+- **Reconciliation** is a read-only, server-to-server call to the provider's usage API.
+- **Transcript reservations** are taken in fixed slices (Vera, High 2).
+- **The stated overrun bound** is honest: *(streams opened within the token's lifetime) × (how long each is held open)*.
+
+"Only delivered time counts" (still open on 17tnw2az0gu) is defined as the provider's recorded duration for the church's credential. That is the only figure the server can check.
 
 ### D7 — Upgrade reset uses a weekly rank high-water mark
 
@@ -130,7 +171,16 @@ A manifest lives as long as the licence (years), so the snapshot is stale almost
 - treat it as display only;
 - after `resets_at` has passed, show the full limit for the plan in the snapshot, marked as an estimate.
 
-Live figures come from `GET /v1/quota`. Clients must not re-issue manifests to refresh usage. Every issuance signs a payload and writes an audit row, so polling would grow the audit table in step with how often clients look at a meter. `GET /v1/quota` is throttled and does not audit every read.
+Live figures come from `GET /v1/quota`. Clients must not re-issue manifests to refresh usage. Every issuance signs a payload and writes an audit row, so polling would grow the audit table in step with how often clients look at a meter.
+
+`GET /v1/quota` has its own rules:
+
+- It is throttled per **device token**, not per IP, because a church's devices share one NAT address.
+- It does not audit every read.
+- Clients poll at 60 s plus jitter, and refresh after their own spends.
+- After `resets_at`, clients also add jitter, so that no time zone polls all at once each Monday.
+
+Under ADR-0028 the figures are eventually consistent. `remaining` includes an estimate for sessions not yet reconciled. The response carries `settled_as_of`.
 
 ### D10 — Catalogue dimensions: new keys, old key deactivated, pending values explicit
 
@@ -148,9 +198,61 @@ Live figures come from `GET /v1/quota`. Clients must not re-issue manifests to r
 ## Consequences
 
 - A new `apps/usage` Django app, two tables, and one sweeper task. Retention: `UsageReservation` rows age out after 35 days; `UsageWeek` rows are kept for 104 weeks. Both bounds are tested so the test fails if a bound is removed. Storage grows linearly with orgs and is bounded per org.
-- Concurrency tests must run on Postgres. On SQLite they pass vacuously, because `select_for_update` does nothing there.
-- STT enforcement (17tnw2az0gq) depends on server-side usage reconciliation with the provider, which today is a non-goal of 86akby3xu. The worst-case overrun is honestly "one stream" until a proxy exists.
-- Notes idempotency replay cannot return the note body without storing sermon content, and the ledger ticket forbids storing it. A replay of a committed request returns the charge outcome plus the body only from a short-lived, size-bounded cache. After that, it returns a coded "already delivered".
+- Concurrency tests must run on Postgres. On SQLite they pass without testing anything, because `select_for_update` does nothing there. The rules:
+  - With `REQUIRE_POSTGRES=1` set in the api CI job, a skip in the concurrency tests becomes a failure.
+  - The last-units race runs N threads, where N is more than the remaining allowance, and asserts that exactly `limit` succeed.
+  - A test-only pause between the check and the write is the positive control. With the lock disabled, the same test must fail.
+- Both meters are enforced at admission and settled by reconciliation (ADR-0028). **Neither has a hard cap.** ADR-0028 D3 and D7 state the true bounds.
+- **The note-body replay cache from revision 1 is removed.** Under the directive the server never receives a note body, so it has nothing to cache. Replaying a request returns a coded `ALREADY_ISSUED` (ADR-0028 D5). This removes the sermon-content storage question (SEC-0027-04 cache rules) and Vera's byte-cap comment.
+- Released-row growth is bounded by a reserve throttle of 30 per hour per org and 10 per hour per device. That gives at most 30 × 24 × 35 ≈ 25,200 rows per org over the 35-day retention. A test pins the throttle.
+
+## Security dependency: there is no real staff login yet (SEC-0027-01)
+
+Verified on `f211581`: the only way to act as STAFF is the header bridge in `graphql/context.py`. With `SELAHCUE_TRUST_ACTOR_HEADERS` on, the caller supplies its own identity and its own `X-SelahCue-Staff-Permissions`. With the flag off, which production requires, no STAFF actor can exist at all.
+
+So the staff-initiated writes in this ADR cannot ship to production until a **real staff authenticator** produces the STAFF `ActorContext` and header trust is off in that environment. Those writes are:
+
+- plan grants (D1);
+- price edits (D4);
+- limit edits (D10).
+
+Closing 86ajyq86g does **not** meet this. Its finding 6 is marked "Partly": the header is stripped at the edge, but that is not a login. A new ticket must deliver the authenticator; Priya or Diego will create it. The grant and price tickets each gain one criterion: a test of the production settings fails if these mutations are enabled while header trust is on.
+
+Permissions and audit (SEC-0027-05):
+
+- A new `StaffPermission.GRANT_PLAN` gates plan grants.
+- A new `StaffPermission.MANAGE_PLAN_PRICING` gates price and limit edits. Neither reuses `GRANT_ENTITLEMENT`.
+- Each write calls `record_audit_event` with the before and after values, the reason, and `request_id = idempotency_key`.
+- `PlanPrice.effective_from` must not be in the past.
+- The price service offers no update or delete path.
+
+Other rules:
+
+- **Plan rank (SEC-0027-06).** `Plan.rank` changes **only by migration**. No admin mutation edits it.
+- **Kill switch (SEC-0027-08).** The enforcement kill switch is read at startup and logs a warning when it is off. In production it writes an ops audit event. It is listed in `docs/ops/DEPLOYMENT.md` next to `SELAHCUE_TRUST_ACTOR_HEADERS`.
+- **Overrun audit.** Overruns are recorded as a `SERVICE` actor, with the action `usage.overrun_recorded`.
+
+**Tenant scoping (SEC-0027-04):**
+
+- The org for every reserve, issue, settle, `GET /v1/quota` and `remaining()` call comes only from the authenticated device: device token, then licence key, then org.
+- Every lookup of a reservation filters by that org. A reservation that belongs to another org returns `NOT_FOUND`.
+- A replay must also match `device_id`.
+
+## Review dispositions (PR #111, revision 1)
+
+| Finding | Outcome |
+|---|---|
+| Vera High 1: worker and connection held during the LLM call | Resolved by the directive. The residual mint call is bounded (ADR-0028 D6). If the owner picks ADR-0028 D4 option C, it is resolved by a Celery task and a 202 response instead. |
+| Vera High 2: STT starvation and TTL | Reservations are taken in fixed slices, and `ISSUED` has no time-based release (ADR-0028 D5). |
+| Vera Medium: read path | Reads take no lock and have a query budget; the quota throttle is per device; polling uses jitter (D5, D9). |
+| Vera Medium: retention | Sweeper scheduled, batched deletes, partial index, reserve throttle with a stated row bound (D5, Consequences). |
+| Vera Medium: vacuous Postgres tests | `REQUIRE_POSTGRES`, an N-thread race and a positive control (Consequences). |
+| Vera Low: counters and lock order | Reset never zeroes open reservations; full lock order stated (D5). |
+| Vera Medium: replay cache bytes | Cache removed (Consequences). |
+| SEC-0027-01 | Security dependency section above. |
+| SEC-0027-02 | ADR-0028 D2, D3 and D5. |
+| SEC-0027-03 | Replay table in ADR-0028 D5. Charging from provider totals closes "N calls charged as one" by construction. |
+| SEC-0027-04 to 08 | Tenant scoping, permissions, rank, time zone and kill-switch rules above, plus D5. |
 
 ## Rollback
 
