@@ -1,8 +1,18 @@
 # ADR-0028 — Direct-to-provider AI access: credential issue, server-side attribution and reconciliation
 
-- Status: **Proposed.** D4 (sermon notes) needs an **owner decision** before any notes build ticket starts.
-- Date: 2026-09-27
-- Confidence: **Medium for Deepgram** (the mechanism is documented; two numbers need the spike). **Low-Medium for OpenAI** (the only option that meets the directive rests on a capability nobody has tested for this use).
+- Status: **Proposed**, revision 2. All three owner questions from revision 1 are now **decided** (see "Owner decisions, 2026-09-27" below). One thing is still **pending**: the result of the OpenAI Realtime spike, which decides whether notes are built on option A or on fallback C.
+- Date: 2026-09-27. Revision 2, the same day, records the owner's answers.
+- Confidence: **Medium for Deepgram** (the mechanism is documented; two numbers need the spike). **Low-Medium for OpenAI** until the spike reports (the chosen option rests on a capability nobody has tested for this use). The fallback, C, is well understood.
+
+### Owner decisions, 2026-09-27 (settled; not open questions)
+
+| # | Question in revision 1 | Owner's decision | Where it lands |
+|---|---|---|---|
+| 1 | Sermon notes: option A, B or C | **A (Realtime text-only with a client secret), spiked first.** If the spike fails, **C** (server-side, off the web worker, 202 + poll). **B is rejected**: a real OpenAI key never goes to a church laptop, spike or no spike. | D4 |
+| 2 | Retry grace for failed notes generations | **Allowed: one retry per notes session** (per ISSUED admission), within 10 minutes, against the same reservation. This is a stated exception to owner decision D7's "failures are never charged" rule. | D5 |
+| 3 | Overrun policy | **Carry into the following week only, capped at one week of debt.** Not written off. Anything beyond the cap is written off with an alert. | D7 |
+
+**Still pending (not a decision):** the OpenAI spike (AI Engineer, Nova). It checks four things, listed under "What the providers actually support → OpenAI → Unknown". Its result picks A or C. It does not reopen B.
 - Owner: Software Architect (Aria). Required reviewers before `Accepted`: Security Reviewer (Sana), Performance Engineer (Vera), AI Engineer (Nova) for D4.
 - Relates: ADR-0027 (the weekly ledger; its D5 settlement rules and D6 are replaced by this ADR), DEC-004, 86ajy04hz (hosted AI service), 86akby3xu (STT mint), 86akby344 (attribution spike), 86akby4e9 (reconciliation), 17tnw2az0gn / 17tnw2az0gq (enforcement). ClickUp epic [17tnw2az0g6](https://app.clickup.com/t/17tnw2az0g6).
 - Evidence labels: **Verified (docs)** = read in the provider's own documentation on 2026-09-27; **Verified (code)** = read on `origin/main` `f211581`; **Unknown** = not established, with the owner of the check named.
@@ -45,16 +55,16 @@ The pivot does not fix Sana's finding by itself. Copying the current STT design 
 - **Verified (docs).** The Admin API can create projects, create and delete project service accounts (creating one returns an unredacted API key), delete project API keys, and set per-project, per-model rate limits (requests per minute and per day, tokens per minute).
 - **Verified (docs).** The Usage API (`/v1/organization/usage/completions`) groups by `project_id` and `api_key_id` in buckets of 1 minute, 1 hour or 1 day. It needs an **Admin key**.
 - **Verified (code).** Today's desktop notes path (`selahcue-cloud/src/openai.rs`) calls `POST /v1/responses` with a JSON schema for structured output. Its module doc says a client-held OpenAI key is "not acceptable in a shipped product": it cannot be rotated centrally, metered per account, or revoked for one church.
-- **Unknown (spike, Nova + Kenji).** Whether Realtime client-secret usage appears in the Usage API under the parent project or key. Whether one client secret can open more than one session. Whether a text-only Realtime session can produce the structured note draft (schema-constrained JSON) at acceptable quality and cost. Whether the client can override the **model** of the session, not just its instructions. How many projects an OpenAI organisation may hold.
+- **Unknown (spike in progress, Nova; owner-approved 2026-09-27).** Whether Realtime client-secret usage appears in the Usage API under the parent project or key. Whether one client secret can open more than one session. Whether a text-only Realtime session can produce the structured note draft (schema-constrained JSON) at acceptable quality and cost. Whether the client can override the **model** of the session, not just its instructions. How many projects an OpenAI organisation may hold.
 
-**The plain answer to the crux question:** OpenAI has **no** short-lived credential for an ordinary Responses or Chat Completions call. For the call shape SelahCue uses today, "hand the client a token" means "hand the client a real, reusable API key". That is a different and much larger risk. D4 sets out the choice.
+**The plain answer to the crux question:** OpenAI has **no** short-lived credential for an ordinary Responses or Chat Completions call. For the call shape SelahCue uses today, "hand the client a token" means "hand the client a real, reusable API key". That is a different and much larger risk, and the owner has ruled it out (D4).
 
 ## Decisions
 
 ### D1 — The boundary: the API issues credentials and never relays
 
 - `POST /v1/stt/session` (86akby3xu) and a new `POST /v1/notes/session` authenticate the device, reserve allowance (ADR-0027 D5), and return a provider credential plus connection details.
-- `POST /v1/notes:generate` from 86ajy04hz's contract is **withdrawn** under the directive, unless the owner picks D4 option C.
+- `POST /v1/notes:generate` from 86ajy04hz's contract is **withdrawn** under the directive. It comes back, in the async 202 form of D4 option C, **only if the Realtime spike fails**. In that case the next bullet's "never receives transcripts" does not hold for notes: the transcript passes through a worker transiently (D4, option C). It still does not hold note bodies at rest.
 - The API never receives audio, transcripts or note bodies. Under the directive, it stores no sermon content, so the note-body replay cache from ADR-0027 (and SEC-0027-04's cache rules and Vera's byte-cap comment) **no longer exists**. The data still goes to the provider on SelahCue's account, so the DPA and disclosure work (86akby942) still applies.
 
 ### D2 — Attribution comes only from the identity of the credential the server chose
@@ -79,11 +89,25 @@ The rule for both providers: **usage is attributed to a church by the provider-s
 - **Custody.** Creating keys needs `keys:write`. That credential lives only in the worker tier, never in the web tier. The web tier holds only the ability to decrypt per-org keys. Reading usage uses a separate key with only `usage:read`, also worker-only. This separates minting from reporting, as Sana asked.
 - **Provisioning.** Provision the key when an org first holds a plan with transcript minutes above 0. If an admission finds no ACTIVE key, it enqueues provisioning and returns a coded `PROVIDER_PROVISIONING` with a retry-after. It never falls back to the shared key.
 
-### D4 — OpenAI (sermon notes): no ephemeral credential exists for the current call shape. Owner decision required
+### D4 — OpenAI (sermon notes): option A, spiked first; C is the fallback; B is rejected
 
-Every option below uses a **per-org OpenAI project**, created through the Admin API. That gives D2 its server-controlled attribution (`project_id`) and lets per-project rate limits bound the damage. Each project holds one service account, and its key is the **parent** credential.
+**Decided by the owner, 2026-09-27.**
 
-**Option A — Realtime API, text-only, with a client secret (meets the directive; recommended only if the spike passes).**
+- **Chosen: option A**, subject to the spike. The spike is running now (AI Engineer, Nova). No notes build ticket starts until it reports.
+- **Fallback: option C**, if the spike fails any of its pass criteria below. The owner has approved C as the notes exception to the directive in that case, so a failed spike needs no new owner decision; it needs only a recorded spike result.
+- **Rejected: option B.** It is not a fallback and not a later option. The analysis stays below as the record of why.
+
+**Spike pass criteria (all four must hold for A).** Each is one of the OpenAI Unknowns above.
+1. Usage from a Realtime client secret appears in the Usage API under the church's `project_id` (D2 attribution).
+2. One client secret can open **at most one** session, **or**, if it can open more, the per-project rate limit bounds the extra usage and it is still attributed to the right church. The spike must say which.
+3. A text-only Realtime session produces the structured note draft at acceptable quality and cost (Nova's evaluation, against today's `/v1/responses` output).
+4. Whether a client can override the session **model**. If it can, A passes only if per-project rate limits still bound the spend. This finding also feeds the D7 overrun figures.
+
+Criterion 1 or 3 failing sends notes to C. Criteria 2 and 4 set the abuse bound Sana reviews; they send notes to C only if the bound cannot be capped by per-project limits.
+
+Option A (and C, if it comes to that) uses a **per-org OpenAI project**, created through the Admin API. That gives D2 its server-controlled attribution (`project_id`) and lets per-project rate limits bound the damage. Each project holds one service account, and its key is the **parent** credential. It never leaves the server.
+
+**Option A — Realtime API, text-only, with a client secret (chosen; meets the directive; build only after the spike passes).**
 - The API mints a Realtime client secret from the church's project key, with the shortest workable TTL (for example 60 s). The desktop opens a text-only Realtime session, sends the transcript, and reads the draft.
 - For: the church gets a genuinely short-lived credential, and the long-lived key stays on the server.
 - Against:
@@ -91,9 +115,9 @@ Every option below uses a **per-org OpenAI project**, created through the Admin 
   - Structured output may be weaker or missing.
   - The client can override session instructions, and the model too if the spike finds that possible. A modified client could therefore get a general-purpose session of up to 60 minutes per admission. That usage is still attributed to the right church, and it is bounded by the session cap and the per-project token rate limit.
   - Realtime text pricing is higher.
-- Blocked on the four OpenAI Unknowns above. **Do not build until a one-day spike (Nova + Kenji) confirms that the usage is attributable and the quality is acceptable.**
+- Blocked on the spike (pass criteria above). **Do not build until it reports.**
 
-**Option B — Give the desktop the church's real project key (meets the directive; a materially larger risk).**
+**Option B — Give the desktop the church's real project key (REJECTED by the owner, 2026-09-27; kept as the record of why).**
 - The API returns the church's service-account key. The desktop calls `/v1/responses` exactly as it does today.
 - For: no change to the prompt, schema or model. Attribution is exact by `project_id`. The key can be deleted server-to-server at any time, and per-project rate limits cap spend per day.
 - Against:
@@ -104,16 +128,13 @@ Every option below uses a **per-org OpenAI project**, created through the Admin 
   - This is exactly the posture `openai.rs` calls unacceptable for shipping.
 - A per-session service account deleted after use narrows the exposure window. But deletion then depends on a job, and if that job fails the key stays open. That is fail-open.
 
-**Option C — Keep the call server-side, but off the web worker (does NOT meet the directive; shown for comparison).**
+**Option C — Keep the call server-side, but off the web worker (the owner-approved fallback if the spike fails; an exception to the directive for notes only).**
 - `POST /v1/notes:generate` reserves allowance, enqueues a Celery task, and returns 202. The desktop polls for the result.
-- For: this also resolves Vera's finding. The key never leaves the server. Attribution is trivial, because the server reads the `usage` in the provider's response. D7's rule that "provider failures are never charged" stays fully enforceable.
-- Against: the backend is in the data path, which the owner has ruled out. The transcript passes through SelahCue briefly.
+- For: this also resolves Vera's finding. The key never leaves the server. Attribution is trivial, because the server reads the `usage` in the provider's response. Owner decision D7's rule that "provider failures are never charged" stays fully enforceable, because the server sees the outcome.
+- Against: the backend is in the data path for notes. The transcript passes through SelahCue briefly. Transcription (Deepgram) stays direct either way.
+- If C is used: the task holds no web worker; it has its own hard timeout and a bounded queue; the result is held only until the desktop fetches it or a short TTL passes, with a byte cap and a test that bites (Vera's replay-cache comment applies again); and the D5 settlement for notes is the in-task commit and release from ADR-0027 revision 1, not reconciliation.
 
-**Recommendation.**
-- Run the Option A spike first. If it passes, build A.
-- If it fails, the owner chooses between B (accept the key-exposure risk, with per-project rate limits as the only hard cap) and C (make an exception to the directive for notes).
-- The architect's view is that **C carries less risk than B**. The worker-exhaustion problem that motivated the directive is solved equally well by moving the call to a background worker.
-- This is the owner's call, not the architect's.
+**Outcome, in one line.** Spike passes → build A. Spike fails → build C. There is no path to B.
 
 ### D5 — Settlement: charges come from reconciliation, for both meters
 
@@ -129,7 +150,7 @@ The server never sees whether a provider call succeeded, so ADR-0027 D5's in-req
 **What is charged:**
 - The weekly charge is **the sum of provider-reported usage for the org's credentials**, dated by the provider's own timestamp in the org's week boundaries (ADR-0027 D8, found by `starts_at ≤ t < ends_at` per SEC-0027-07).
 - Late records are charged to the week they happened in.
-- Formula: `remaining = limit − settled_usage − Σ estimates of ISSUED reservations`.
+- Formula: `remaining = max(0, limit − carried_debt − settled_usage − Σ estimates of ISSUED reservations)`. `carried_debt` is the previous week's capped overrun (D7) and is 0 in most weeks.
 - **Transcript:** charged in seconds of `duration`.
 - **Notes:** each ISSUED admission with any usage in its window costs 1 unit. Usage beyond `used_admissions × NOTE_TOKEN_ENVELOPE` is charged as extra units, `ceil(excess / envelope)`, and recorded as an audited overrun. An admission whose window shows **no** usage for that org is refunded (settled at 0). That is the only provider-side failure the server can see.
 - Because charges come from provider totals, N parallel calls cost N. The "N provider calls charged as one" attack from SEC-0027-03 is closed by construction, not by request-handling logic.
@@ -141,10 +162,17 @@ The server never sees whether a provider call succeeded, so ADR-0027 D5's in-req
 - Parallel requests with one key: serialised by the unique constraint and the `UsageWeek` lock, so exactly one credential is issued.
 - Commit and release happen only on the server. The desktop has no call for either.
 
-**D7's rule that "provider failures are never charged" cannot be fully kept under the directive.** OpenAI bills tokens for a generation that failed partway, or one the desktop rejected as malformed. The server cannot tell either case from success.
-- Recommended owner rule: a **retry grace**. Within 10 minutes of an ISSUED notes admission, the desktop may request one retry credential against the **same** reservation. The retry is counted under the lock, and there is at most one per admission. The envelope for that reservation doubles.
+**Owner decision D7's rule that "provider failures are never charged" cannot be fully kept under the directive.** (That D7 is the owner's product decision recorded on [17tnw2az0gu](https://app.clickup.com/t/17tnw2az0gu), not ADR-0027's section D7.) OpenAI bills tokens for a generation that failed partway, or one the desktop rejected as malformed. The server cannot tell either case from success.
+
+**Decided by the owner, 2026-09-27: one retry per notes session.** This amends owner decision D7 with one stated exception.
+- A "notes session" is one ISSUED notes admission (one reservation, one paid unit).
+- Within **10 minutes** of that admission being ISSUED, the desktop may request **one** retry credential against the **same** reservation, with the same idempotency key plus a retry flag. No new unit is reserved.
+- The retry is counted under the `UsageWeek` lock (`retry_count` goes 0 → 1). A second retry request, or one after 10 minutes, is refused with a coded `RETRY_EXHAUSTED`; the desktop must start a new, paid admission.
+- The reservation's token envelope doubles (`2 × NOTE_TOKEN_ENVELOPE`), so the retry's usage is not charged as overrun.
 - Abuse bound, stated honestly: at most one extra generation per paid unit.
-- Unless the owner picks D4 option C, this changes the D7 decision and must be recorded on 17tnw2az0gu.
+- The retry is charged nothing whether the first attempt failed or not. The server cannot tell, so the grace is unconditional within its limits. That is the exception to D7: a failed generation and its retry together cost one unit, and if the retry also fails, the church is still charged that one unit.
+- **If the spike fails and notes use option C,** the server sees each outcome, so D7 is kept exactly and the retry grace is unnecessary. It may stay as a client convenience; it is not needed for fairness.
+- **Recording:** the D7 text lives on 17tnw2az0gu. Priya or Diego must add this exception there and in `DECISION-LOG.md`. The architect does not edit that ticket.
 
 **Reconciliation job (one per provider, in Celery beat, worker tier only).**
 1. Read provider usage **server-to-server** with the read-only credential over HTTPS. Never accept a provider callback or usage relayed by the client.
@@ -162,7 +190,7 @@ The server never sees whether a provider call succeeded, so ADR-0027 D5's in-req
 ### D6 — Performance: Vera's worker finding is resolved; a bounded residual stays
 
 - **Resolved.** Under the directive, the API never waits on a generation or a stream. A notes request no longer holds a worker or a database connection for the tens of seconds of an LLM call. Manifest reads (NFR-507) no longer queue behind note generation.
-- **Residual.** The mint itself still makes one outbound call on the request worker: Deepgram `auth/grant`, or the OpenAI client-secret create under D4 option A. Option B makes no call at request time, because it only decrypts a stored key. Rules:
+- **Residual.** The mint itself still makes one outbound call on the request worker: Deepgram `auth/grant`, or the OpenAI client-secret create under D4 option A. (Under fallback C, the notes request makes no outbound call on the web worker at all; the Celery task does.) Rules:
   - hard connect and read timeouts, 2 s each, asserted at import;
   - close the database connection before the outbound call (`connection.close()`) so the worker does not hold a connection during it;
   - a circuit breaker per provider, which returns a coded `PROVIDER_UNAVAILABLE`;
@@ -174,8 +202,17 @@ The server never sees whether a provider call succeeded, so ADR-0027 D5's in-req
 
 - **No hard cap for either provider** under the directive. Enforcement is at admission, and reconciliation catches up afterwards.
 - **Deepgram:** a modified client's overrun can run for as long as it holds streams open, and it can drain the shared concurrency pool (D3).
-- **OpenAI option B:** an extracted key is usable until someone notices and revokes it.
-- **Overrun policy is an owner decision.** Should an overrun carry into later weeks as debt (refusing admissions until paid down), or be written off and alerted? The architect recommends carrying it forward for at most one week, plus an alert.
+- **OpenAI option A:** a modified client may override session instructions (and the model, if the spike finds that possible) for up to 60 minutes per admission. Attributed correctly, bounded by the session cap and the per-project rate limit, charged by reconciliation.
+
+**Overrun policy — decided by the owner, 2026-09-27: carry into the following week only, capped at one week of debt.**
+- An **overrun** is settled usage in a week beyond that week's limit: `overrun = max(0, settled_usage − limit)`, per meter, computed when reconciliation settles the week (after `ends_at` plus the settle watermark).
+- **Carry.** The overrun is deducted from the **immediately following** week's allowance only: that week's `remaining = limit − carried_debt − settled_usage − Σ open estimates`.
+- **Cap.** `carried_debt = min(overrun, that following week's limit)`. At most one full week of allowance can be lost.
+- **No further roll.** Debt never passes on to a third week. Any debt the following week cannot absorb, and any overrun above the cap, is **written off**: recorded, audited (`usage.overrun_written_off`, `SERVICE` actor) and alerted. It is never charged later.
+- **Plan changes.** The cap uses the following week's limit for the plan in effect when that week's row is created. An upgrade reset in the following week (ADR-0027 D7) resets settled usage, **not** carried debt. Otherwise an upgrade would wipe debt. A downgrade to Free with a limit of 0 means the carried debt is 0 and the whole overrun is written off.
+- **Every overrun alerts,** carried or not (`usage.overrun_recorded`, per ADR-0027's audit rule).
+- Late records that settle a week after its carry has been applied adjust the carry only while the following week is still current. Once that week has ended, the extra is written off, never charged backwards.
+- Figures Priya can quote: Core notes are 5 a week, so a Core church that overruns by 7 units loses at most 5 next week and 2 are written off. Transcript minutes on Pro are 80 a week, so an overrun of 30 minutes leaves 50 the next week.
 
 ## Options considered for attribution
 
@@ -186,6 +223,8 @@ The server never sees whether a provider call succeeded, so ADR-0027 D5's in-req
 
 ## Consequences
 
+- `UsageWeek` gains `stt_seconds_carried_debt` and `notes_carried_debt` (D7), written once when the previous week settles, and tested for the cap, the no-further-roll rule and the upgrade-reset rule.
+- Notes build tickets are gated on the spike result, not on an owner decision. Transcript tickets are not gated on it.
 - New `apps/providers` app: `ProviderCredential`, `ProviderUsageRecord`, two reconciliation tasks, a provisioning task, and an encrypted-secret field. Its key custody follows `ENTITLEMENT_SIGNING_KEY`'s fail-loud pattern.
 - The web tier and the worker tier need different secrets. The ops runbook must list them (DEPLOYMENT.md).
 - Allowances become eventually consistent. Displayed remaining figures lag real use by up to the reconciliation interval plus the provider's reporting lag.

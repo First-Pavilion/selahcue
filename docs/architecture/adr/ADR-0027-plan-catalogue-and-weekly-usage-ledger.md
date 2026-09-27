@@ -1,6 +1,10 @@
 # ADR-0027 — Plan catalogue, effective plan and the weekly usage ledger (Free / Core / Pro)
 
-- Status: **Proposed**, revision 2. This is the architecture review of the 2026-09-27 plan-limits design, done before the backend build starts.
+- Status: **Proposed**, revision 3. This is the architecture review of the 2026-09-27 plan-limits design, done before the backend build starts.
+- **Revision 3 (same day)** records three owner decisions, all settled (details in ADR-0028, "Owner decisions, 2026-09-27"):
+  - **Sermon notes: ADR-0028 option A, spiked first; option C if the spike fails; option B rejected.** The spike (Nova) is the only thing still pending.
+  - **One retry per notes session.** This is an exception to owner decision D7's "failures are never charged" rule (see Context and D5). It must be added to 17tnw2az0gu.
+  - **Overrun carries into the following week only, capped at one week of debt** (ADR-0028 D7). `UsageWeek` gains two debt columns (D5).
 - Date: 2026-09-27. Revision 2, the same day, covers three things:
   - the owner's direct-to-provider directive;
   - Vera's review (performance);
@@ -23,7 +27,7 @@
 
 ## Context
 
-The owner replaced DEC-008's Free / Pro / Platinum monthly model with Free / Core / Pro and **weekly** allowances for two cloud-only features: cloud transcript minutes (20 / 50 / 80) and sermon-note generations (1 / 5 / 10). Prices and limits must be data. A SuperAdmin can grant a plan for 1–12 months. The week resets Monday 00:00 in the account's time zone. An upgrade grants the full new allowance at once; a downgrade caps and claws nothing back. Failures caused by SelahCue or the AI provider are never charged.
+The owner replaced DEC-008's Free / Pro / Platinum monthly model with Free / Core / Pro and **weekly** allowances for two cloud-only features: cloud transcript minutes (20 / 50 / 80) and sermon-note generations (1 / 5 / 10). Prices and limits must be data. A SuperAdmin can grant a plan for 1–12 months. The week resets Monday 00:00 in the account's time zone. An upgrade grants the full new allowance at once; a downgrade caps and claws nothing back. Failures caused by SelahCue or the AI provider are never charged. **Amended by the owner, 2026-09-27:** under the direct-to-provider directive the server cannot see a failed notes generation, so the rule is kept by a **retry grace of one retry per notes session** (ADR-0028 D5). A failed generation and its one retry cost one unit together. The D7 text on 17tnw2az0gu needs this exception added.
 
 What already ships (verified on `origin/main` `f211581`):
 
@@ -81,7 +85,7 @@ This amends DEC-014's premise. It must be recorded with D7 on 17tnw2az0gu.
 
 Tables (new `apps/usage`, so retention and ownership stay separate from the catalogue):
 
-- `UsageWeek(org, week_start_local, tz_name, starts_at, ends_at, stt_seconds_charged, stt_seconds_reserved, notes_committed, notes_reserved, high_water_rank, rank_at_last_reset)`. Unique on (org, week_start_local). The time zone and both boundaries are **fixed when the row is created**. That is how "a time-zone change applies from the next reset" works without any extra state.
+- `UsageWeek(org, week_start_local, tz_name, starts_at, ends_at, stt_seconds_charged, stt_seconds_reserved, notes_committed, notes_reserved, stt_seconds_carried_debt, notes_carried_debt, high_water_rank, rank_at_last_reset)`. The two `carried_debt` columns (revision 3) hold the previous week's overrun, capped at this week's limit (ADR-0028 D7). The upgrade reset never zeroes them. Unique on (org, week_start_local). The time zone and both boundaries are **fixed when the row is created**. That is how "a time-zone change applies from the next reset" works without any extra state.
 - `UsageReservation(org, week, meter, units, state = RESERVED | ISSUED | SETTLED | RELEASED, idempotency_key, request_hash, device_id, issued_at, retry_count, expires_at, created_at)`. Unique on (org, meter, idempotency_key).
 
 **Revision 2.** Under the owner's direct-to-provider directive, the server never calls the provider on a spend and never sees the outcome. The reservation states and settlement rules are therefore defined in **ADR-0028 D5**: `RESERVED → ISSUED → SETTLED`, with `RELEASED` allowed only before a credential is issued. They replace revision 1's COMMITTED state. Compared with revision 1, the table gains three columns:
@@ -95,7 +99,8 @@ Protocol for a spend (both meters):
 1. **Reserve.** This is one short `transaction.atomic()`:
    - Find the current `UsageWeek` row by `starts_at ≤ now < ends_at` (SEC-0027-07). Lock it with `select_for_update`. If it does not exist, create it with `get_or_create` and retry once on `IntegrityError`, which is the house idempotency pattern.
    - Apply D7's upgrade rule.
-   - Check `settled + Σ open estimates + units ≤ limit`.
+   - Check `carried_debt + settled + Σ open estimates + units ≤ limit`.
+   - A notes **retry** (ADR-0028 D5) reserves no new unit. It only moves `retry_count` from 0 to 1 on the existing ISSUED reservation, under this same lock, within 10 minutes of `issued_at`.
    - Insert the reservation as `RESERVED`, then commit.
 
    Reads take **no** lock. A test fails if `remaining()` emits `FOR UPDATE`. Both `remaining()` and reserve have a query budget (`django_assert_num_queries`), and `effective_plan` counts inside it.
@@ -116,7 +121,7 @@ The rule that makes this safe: **never hold the lock, or the transaction, across
 
 Timeout invariant. `RESERVED_TTL` must be longer than the mint call's connect and read timeouts. Assert this at import, next to both constants, in the style of `DEGRADED_MANIFEST_TTL_SECONDS`. An `ISSUED` reservation has no time-based release, so it needs no TTL invariant. The "one unit per late success" overrun rule from revision 1 no longer applies: late usage is charged by reconciliation, in the week it happened.
 
-Upgrade reset (D7) resets only the settled counters and their estimate baseline. It **never** zeroes the open reservations. Zeroing them would drive the counters negative when those reservations settle.
+Upgrade reset (D7) resets only the settled counters and their estimate baseline. It **never** zeroes the open reservations or the carried debt. Zeroing them would drive the counters negative when those reservations settle.
 
 Lock order: the org first, then the licence key (`AppLicenseKey`, as activation and the state machine lock it), then `UsageWeek`. Every path that takes more than one of these locks takes them in this order.
 
@@ -242,7 +247,7 @@ Other rules:
 
 | Finding | Outcome |
 |---|---|
-| Vera High 1: worker and connection held during the LLM call | Resolved by the directive. The residual mint call is bounded (ADR-0028 D6). If the owner picks ADR-0028 D4 option C, it is resolved by a Celery task and a 202 response instead. |
+| Vera High 1: worker and connection held during the LLM call | Resolved by the directive. The residual mint call is bounded (ADR-0028 D6). If the Realtime spike fails and notes fall back to ADR-0028 D4 option C (owner-approved), it is resolved by a Celery task and a 202 response instead. |
 | Vera High 2: STT starvation and TTL | Reservations are taken in fixed slices, and `ISSUED` has no time-based release (ADR-0028 D5). |
 | Vera Medium: read path | Reads take no lock and have a query budget; the quota throttle is per device; polling uses jitter (D5, D9). |
 | Vera Medium: retention | Sweeper scheduled, batched deletes, partial index, reserve throttle with a stated row bound (D5, Consequences). |
