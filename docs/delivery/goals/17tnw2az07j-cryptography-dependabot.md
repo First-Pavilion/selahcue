@@ -224,6 +224,15 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
 - New evidence: this is the first point in the ticket where the *automation mechanism* itself (not just the CVE) is verifiably closed for `cryptography` — confirmed by matching the fix directly against Dependabot's own stated requirement, not by inference
 - Decision: iterate (push the fixup; ask Sana to re-verify against the new head; do not claim VERIFIED_COMPLETE until she does)
 
+### Iteration 9
+
+- Target criterion: C-008 (re-confirm CI on head `44f49fd`)
+- Change or investigation: pushed `44f49fd`; watched CI run `36283931486` to completion; also rewrote PR #110's description (C-011) and posted remediation summaries to the PR and ClickUp; messaged Sana directly asking for re-verification
+- Verifier executed: `gh pr checks 110`
+- Result: PASS — `api (django)` pass (3m52s), `marketing (vue spa)` pass (1m14s), `detect changed areas` pass, `workflows (actionlint+permissions)` pass, `.github/dependabot.yml` (GitHub-native validator) pass. Everything else correctly `skipping`.
+- New evidence: none beyond reconfirming green; awaiting Sana's re-check
+- Decision: iterate (awaiting Sana's re-verification against `44f49fd` before closing C-007/C-010)
+
 ## Risks and rollback
 
 - Risks: a floor bump could theoretically break something not caught by the test suite (e.g. an environment-specific OpenSSL wheel issue) — mitigated by running the full suite, not a subset, and reviewing the upstream changelog for the crossed range
