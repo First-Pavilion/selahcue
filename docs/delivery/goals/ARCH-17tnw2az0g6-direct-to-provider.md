@@ -60,13 +60,13 @@ An ADR set on PR #111 that an independent reviewer (Sana, Vera) can check agains
 
 | ID | Mandatory | Criterion | Verifier | Expected result | Evidence | Status |
 |---|---|---|---|---|---|---|
-| C-001 | yes | ADR states whether removing the server-side OpenAI call resolves Vera's worker finding, including the residual mint-call cost | Read ADR-0028 D6 | Explicit yes-with-residual and a timeout/capacity rule | ADR-0028 | PENDING |
-| C-002 | yes | Attribution for both providers uses only server-chosen identity, fails closed on unattributable usage, and reconciles server-to-server read-only | Read ADR-0028 D2, D3, D5 | All three properties stated per provider | ADR-0028 | PENDING |
-| C-003 | yes | OpenAI ephemeral-credential research is stated with sources and the key-to-client risk is presented as an owner tradeoff | Read ADR-0028 D4 | Options with sources, unknowns and a recommendation | ADR-0028 | PENDING |
-| C-004 | yes | Deepgram error bound stated honestly | Read ADR-0028 D3 | Bound names parallel streams and stream length, and the shared concurrency pool | ADR-0028 | PENDING |
-| C-005 | yes | Ledger commit comes from reconciliation for both meters; replay rules defined | Read ADR-0027 D5 + ADR-0028 D5 | State machine and replay table present | ADR-0027/0028 | PENDING |
-| C-006 | yes | Ticket fallout named on the epic | ClickUp epic comment read-back | Comment lists 17tnw2az0gn, 86akby3xu, 17tnw2az0gq, 86akby4e9, 86akby344 with required rework | Epic comment | PENDING |
-| C-007 | yes | Revision pushed to the PR #111 branch, not behind origin/main | `git rev-list --count HEAD..origin/main` and `gh pr view 111` | 0 and new head SHA | PR #111 | PENDING |
+| C-001 | yes | ADR states whether removing the server-side OpenAI call resolves Vera's worker finding, including the residual mint-call cost | Read ADR-0028 D6 | Explicit yes-with-residual and a timeout/capacity rule | ADR-0028 | PASS |
+| C-002 | yes | Attribution for both providers uses only server-chosen identity, fails closed on unattributable usage, and reconciles server-to-server read-only | Read ADR-0028 D2, D3, D5 | All three properties stated per provider | ADR-0028 | PASS |
+| C-003 | yes | OpenAI ephemeral-credential research is stated with sources and the key-to-client risk is presented as an owner tradeoff | Read ADR-0028 D4 | Options with sources, unknowns and a recommendation | ADR-0028 | PASS |
+| C-004 | yes | Deepgram error bound stated honestly | Read ADR-0028 D3 | Bound names parallel streams and stream length, and the shared concurrency pool | ADR-0028 | PASS |
+| C-005 | yes | Ledger commit comes from reconciliation for both meters; replay rules defined | Read ADR-0027 D5 + ADR-0028 D5 | State machine and replay table present | ADR-0027/0028 | PASS |
+| C-006 | yes | Ticket fallout named on the epic | ClickUp epic comment read-back | Comment lists 17tnw2az0gn, 86akby3xu, 17tnw2az0gq, 86akby4e9, 86akby344 with required rework | Epic comment | PASS |
+| C-007 | yes | Revision pushed to the PR #111 branch, not behind origin/main | `git rev-list --count HEAD..origin/main` and `gh pr view 111` | 0 and new head SHA | PR #111 | PASS |
 | C-008 | yes | Independent security and performance re-review passed | Sana / Vera review on PR #111 | No open blocking finding | PR #111 | PENDING |
 
 ## Verification plan
@@ -83,7 +83,7 @@ An ADR set on PR #111 that an independent reviewer (Sana, Vera) can check agains
 - Hypothesis: per-org server-held credentials give server-controlled attribution for Deepgram; OpenAI lacks an ephemeral credential for the Responses API.
 - Change or investigation: provider documentation research; ADR-0028 written; ADR-0027 revised.
 - Verifier executed: see Final evaluation.
-- Result: recorded at hand-off.
+- Result: C-001..C-007 PASS (ADR-0028, ADR-0027 rev 2 at 91d210d; epic comment 1400430000022746 read back).
 - New evidence: Deepgram grant tokens share the parent key's accessor; request logs carry `api_key_id` per request; temporary API keys capped at 250/day. OpenAI client secrets grant Realtime API access only.
 - Decision: gate-review
 
@@ -99,7 +99,7 @@ An ADR set on PR #111 that an independent reviewer (Sana, Vera) can check agains
 ## Final evaluation
 
 - Validator command: `python3 ~/.claude/skills/goal/scripts/validate_goal_contract.py docs/delivery/goals/ARCH-17tnw2az0g6-direct-to-provider.md`
-- Validator result: recorded at hand-off
+- Validator result: structural OK; completion check not run (C-008 pending)
 - Independent verification result: pending (C-008)
 - Terminal state: GATE_REVIEW
 - Remaining failed or blocked criteria: C-008 pending independent review; owner decision on ADR-0028 D4
