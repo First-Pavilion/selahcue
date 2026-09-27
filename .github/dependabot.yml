@@ -2,12 +2,19 @@
 #
 # Before this file existed, this repo had ZERO scheduled ecosystem-update coverage —
 # the only Dependabot activity was GitHub's native "Dependabot security updates" repo
-# setting (which needs no config file and runs independently of this one), and even
-# that had been failing silently since July on `implementation/api`'s open
-# `cryptography` version range with no lockfile (see that crate's pyproject.toml
-# comment and ClickUp 17tnw2az07j for the full root-cause trail). This file adds the
-# scheduled side: routine version-update PRs for all four package ecosystems in the
-# repo, plus the GitHub Actions workflow files themselves.
+# setting (which needs no config file and runs independently of this one). That native
+# path failed twice for `implementation/api`'s `cryptography` (2026-09-05, 2026-09-25,
+# `dependency_file_not_supported` — no lockfile, no pinned version, so Dependabot could
+# not tell what was actually installed). Earlier 2026-07-24 failures on this same
+# workflow were a DIFFERENT package and error entirely (`glib`, cargo, in
+# `selahcue-operator` — `security_update_not_possible`, already accepted as a tolerable
+# risk, RISK-015) — corrected here after Sana's security review (PR #110, finding S-4)
+# caught an earlier draft of this file conflating the two. See
+# `implementation/api/pyproject.toml`'s `cryptography` comment and ClickUp 17tnw2az07j
+# for the full root-cause trail, including why an exact pin (not just a higher floor)
+# was needed to actually close the failure mode rather than just the immediate CVE.
+# This file adds the scheduled side: routine version-update PRs for all four package
+# ecosystems in the repo, plus the GitHub Actions workflow files themselves.
 #
 # Weekly, not daily: this repo's CI is expensive per its own CLAUDE.md (a 3-OS matrix,
 # an ADR-0015 GPU parity oracle across Metal/lavapipe/DX12, Playwright WebKit smoke,
@@ -65,6 +72,18 @@ updates:
       - "rust"
 
   # implementation/api — Django/Strawberry Platform API (pip, pyproject.toml).
+  #
+  # `versioning-strategy: increase` (Sana, PR #110 security review, S-1 partial
+  # mitigation): `cryptography` itself is now an exact pin (see pyproject.toml), but
+  # Django/strawberry-graphql-django/celery are still open ranges with no lockfile —
+  # the same root condition that broke cryptography's security-update job. `increase`
+  # makes the weekly routine job raise each floor to match new releases as they ship,
+  # rather than silently leaving an old, possibly-vulnerable floor in place indefinitely
+  # (the "widen ranges" default a library-shaped `pyproject.toml` otherwise gets, per
+  # Sana's dependabot-core source read, would NOT do this — it only relaxes ceilings).
+  # This is a partial mitigation, not a fix: it is a weekly, not advisory-triggered,
+  # so a fix can land up to a week late and won't be labelled security. The actual fix
+  # (a lockfile these three deps resolve against) is the linked follow-up ticket.
   - package-ecosystem: "pip"
     directory: "/implementation/api"
     schedule:
@@ -72,6 +91,7 @@ updates:
       day: "monday"
       time: "06:00"
       timezone: "UTC"
+    versioning-strategy: increase
     labels:
       - "dependencies"
       - "api"
