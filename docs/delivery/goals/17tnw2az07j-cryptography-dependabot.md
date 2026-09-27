@@ -271,6 +271,25 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
 - New evidence: C-007 correctly remains `PENDING` — a prior round's clean sign-off does not carry over automatically to a materially changed diff; each reviewer needs to look at the actual new head, which is why they were re-dispatched rather than assumed still-clean
 - Decision: iterate (await all four reviewers' responses to the widened diff; do not claim VERIFIED_COMPLETE until each has confirmed against `1b91394` or later)
 
+### Iteration 12
+
+- Target criterion: C-008 (investigate an apparent CI failure before reacting to it)
+- Hypothesis: `gh pr checks 110` showed `api (django)` failed on run `36285608277` (head `1b91394`) — before treating this as a real regression, confirm what actually happened per `superpowers:systematic-debugging` (find root cause before proposing fixes)
+- Change or investigation: pulled the actual job log (`gh run view --job 108525797027 --log`) rather than reacting to the summary. Found: install succeeded, `Django==6.1.1`/`celery-5.6.3`/`cryptography-50.0.1`/`strawberry-graphql-django-0.87.1` all installed cleanly; `manage.py check` and `makemigrations --check` both passed; `pytest tests -q` was 25% through (`........ [25%]`) when the log shows `##[error]The operation was canceled.` — not a test assertion failure. Checked `gh run list` for the branch: run `36285608277`'s overall conclusion is `cancelled`, and a newer run `36285797641` started 2 minutes later for the next push (`5ba81a3`, the Goal Contract iteration-11 commit). This matches `ci.yml`'s `cancel-in-progress` concurrency group — pushing a follow-up commit before the prior run's tests finished cancelled it mid-suite. Not a regression from the four-dependency pin; a race I caused by pushing two commits close together.
+- Verifier executed: `gh run view --job <id> --log`, `gh run list --branch ... --limit 10`
+- Result: confirmed self-inflicted CI cancellation, not a test failure. Watching the superseding run (`36285797641`) for the real, uncancelled signal.
+- New evidence: a `cancelled` conclusion in `gh pr checks`'s summary view can render identically to a failure at a glance (an `X`) — worth remembering not to react to the glyph without reading the actual job log first
+- Decision: iterate (wait for run `36285797641` to complete; that is the real CI result for this head)
+
+### Iteration 13
+
+- Target criterion: C-008 (confirm real, uncancelled CI result)
+- Change or investigation: watched run `36285797641` (triggered by `5ba81a3`, the current head) to completion
+- Verifier executed: `gh pr checks 110`
+- Result: PASS — `api (django)` pass (3m13s, uncancelled), `marketing (vue spa)` pass (1m36s), `detect changed areas` pass, `workflows (actionlint+permissions)` pass. Everything else correctly `skipping`. This confirms Iteration 12's diagnosis: the prior "failure" was purely the cancellation race, not a real break from the four-dependency widening.
+- New evidence: none beyond confirming green; C-008 stands
+- Decision: iterate (await the four reviewers' fresh confirmations against `5ba81a3`; hold further pushes until each has had a chance to review the current head, to avoid re-triggering the same cancellation race)
+
 ## Risks and rollback
 
 - Risks: a floor bump could theoretically break something not caught by the test suite (e.g. an environment-specific OpenSSL wheel issue) — mitigated by running the full suite, not a subset, and reviewing the upstream changelog for the crossed range
