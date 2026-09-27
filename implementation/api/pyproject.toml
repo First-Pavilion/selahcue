@@ -32,8 +32,12 @@ dependencies = [
   #     `graphql/errors.py` imports `graphql-core` (`from graphql import ...`);
   #     `graphql/views.py` also imports `cross-web` (`from cross_web.exceptions import
   #     ...`). None of the three was ever declared here — all three arrived only
-  #     transitively via `strawberry-graphql-django`'s own requirements, which have NO
-  #     upper bound. `strawberry-graphql` has 7 published advisories in total; 5 of
+  #     transitively: `cross-web` and `strawberry-graphql` itself via
+  #     `strawberry-graphql-django`'s own unbounded requirements; `graphql-core` one hop
+  #     further down, via `strawberry-graphql`'s own `>=3.2.0,<3.4.0` (bounded, unlike
+  #     the other two — corrected per Cody's round-4 review; undeclared is undeclared
+  #     either way, this only affects the "no upper bound" wording, not the pin or the
+  #     security conclusion). `strawberry-graphql` has 7 published advisories in total; 5 of
   #     them specifically affect the unbounded `>=0.310.1` floor this range permitted
   #     (highest ceiling among those 5 is `<=0.315.6`/fixed `0.315.7`; corrected from an
   #     earlier draft that said "7" without that qualifier — Sana's review, third pass —
