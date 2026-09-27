@@ -91,14 +91,20 @@ updates:
   # pin). This is still weekly, not advisory-triggered, so a routine bump can land up
   # to a week late and won't be labelled security.
   #
-  # **What this does NOT close (Sana, PR #110 second-pass review, S-5):** ~30 further
-  # transitive packages this manifest never declares (e.g. `asgiref`, `sqlparse`,
-  # `kombu`) and `psycopg` (deliberately excluded from this file — see the `api` job
+  # **What this does NOT close (Sana, PR #110, findings S-5 and S-6; the latter also
+  # independently found by Vera):** every package `implementation/api`'s own code
+  # imports directly is now declared here (verified exhaustively across the whole app,
+  # not just spot-checked — see `pyproject.toml`'s dependency-list comment). What
+  # remains open is the further, purely-transitive packages pulled in underneath those
+  # (e.g. `asgiref`, `sqlparse`, `kombu` — none currently carry a live advisory,
+  # verified, but this app's code never imports them directly and they're pinned
+  # nowhere) and `psycopg` (deliberately excluded from this file — see the `api` job
   # in `ci.yml` and this crate's `Dockerfile`, both of which install it separately via
-  # their own `>=3.2,<4` range) remain invisible to Dependabot's pip updater regardless
-  # of what this file declares. 0 advisories currently affect any of them, but a future
-  # one would reproduce the exact same silent failure this file exists to prevent.
-  # Closing that fully needs a real lockfile the Dockerfile/CI actually install from —
+  # their own `>=3.2,<4` range) — both remain invisible to Dependabot's pip updater
+  # regardless of what this file declares. 0 advisories currently affect either, but a
+  # future one would reproduce the exact same silent failure this file exists to
+  # prevent. Closing that fully needs a real lockfile the Dockerfile/CI actually
+  # install from —
   # tracked as ClickUp 17tnw2az0kw, not built here.
   - package-ecosystem: "pip"
     directory: "/implementation/api"

@@ -24,25 +24,38 @@ dependencies = [
   #     already safe, the pin stays at the version this range already resolved to
   #     (0.87.1) rather than bumping to 0.90.0 unreviewed — that upgrade is a
   #     separate, non-security decision.
-  #   - strawberry-graphql 0.327.7 (Vera, PR #110 performance review — caught while
-  #     checking whether the pip entry's dependency count was accurate; routed to
-  #     security for CVE confirmation): `graphql/{admin,account}_schema.py` and
-  #     `graphql/views.py` (whose `GraphQLView` every request goes through) `import
-  #     strawberry` directly, but it was never declared here — only pulled in
-  #     transitively via `strawberry-graphql-django`'s own `strawberry-graphql>=0.310.1`
-  #     requirement, which has NO upper bound and permits 7 advisories (highest ceiling
-  #     `<=0.315.6`/fixed `0.315.7`, cross-checked both sources). CI/local happened to
-  #     resolve the safe 0.327.7, but an undeclared transitive dependency is exactly the
-  #     same "Dependabot can't see it, so can't fix it" exposure this whole ticket
-  #     closes for the other four — leaving it undeclared would have made this PR's own
-  #     claim ("every dependency's installed version is now knowable") false. Declaring
-  #     it directly, pinned, closes that gap the same way.
+  #   - strawberry-graphql 0.327.7, graphql-core 3.2.12, and cross-web 0.7.0 (Vera, PR
+  #     #110 performance review, across two passes — caught while checking whether the
+  #     pip entry's dependency count was accurate; routed to security for CVE
+  #     confirmation): `graphql/{admin,account}_schema.py` and `graphql/views.py` (whose
+  #     `GraphQLView` every request goes through) `import strawberry` directly;
+  #     `graphql/errors.py` imports `graphql-core` (`from graphql import ...`);
+  #     `graphql/views.py` also imports `cross-web` (`from cross_web.exceptions import
+  #     ...`). None of the three was ever declared here — all three arrived only
+  #     transitively via `strawberry-graphql-django`'s own requirements, which have NO
+  #     upper bound. `strawberry-graphql` has 7 published advisories in total; 5 of
+  #     them specifically affect the unbounded `>=0.310.1` floor this range permitted
+  #     (highest ceiling among those 5 is `<=0.315.6`/fixed `0.315.7`; corrected from an
+  #     earlier draft that said "7" without that qualifier — Sana's review, third pass —
+  #     cross-checked both sources);
+  #     `graphql-core` and `cross-web` currently have 0 advisories in either source, but
+  #     were exactly as invisible to Dependabot as `strawberry-graphql` was before this
+  #     pin. CI/local happened to resolve the safe, current-latest version of all
+  #     three, but an undeclared transitive dependency is exactly the same "Dependabot
+  #     can't see it, so can't fix it" exposure this whole ticket closes for the
+  #     declared deps — leaving any of them undeclared would keep this PR's own claim
+  #     ("every package this app's own code imports directly is pinned") false, the
+  #     same overclaim already corrected once for this exact reason (Sana, finding
+  #     S-5). Declaring all three directly, pinned, closes that gap for real.
   "Django==6.1.1",
   # 0.87 declares `django>=5.2` with no upper bound, so it is compatible with 6.1.
   "strawberry-graphql-django==0.87.1",
   # See the shared comment above `Django` — declared directly (was transitive-only)
   # because it's imported directly and floated with no upper bound otherwise.
   "strawberry-graphql==0.327.7",
+  # See the shared comment above `Django` — same reason as `strawberry-graphql`.
+  "graphql-core==3.2.12",
+  "cross-web==0.7.0",
   # Ed25519 for the signed offline entitlement envelope (DEC-004). Django ships no
   # asymmetric primitives.
   #
@@ -56,16 +69,22 @@ dependencies = [
   # whatever range is declared would either raise no alert at all or fail with the exact
   # same `dependency_file_not_supported` error as job_1591749422 — the mechanism that
   # broke, not the version number, is what needed fixing. Django/strawberry-graphql-
-  # django/celery/strawberry-graphql above got the same exact-pin treatment for the
-  # same reason (the owner declined to accept an interim gap on the first three; see
-  # the top-of-file comment). **This narrows, but does not close, ClickUp 17tnw2az0kw**
-  # (Sana security review, PR #110, finding S-5 — a second pass caught that closing it
-  # as fully resolved was premature): every package DECLARED here, and every package
-  # this app's own code imports directly, is now exact-pinned and provably safe. What
-  # is still genuinely open, and remains 17tnw2az0kw's actual scope: the ~30 further
-  # transitive packages pulled in by these direct deps (e.g. `asgiref`, `sqlparse`,
-  # `click`, `kombu` — none currently carry a live advisory, verified, but none are
-  # pinned or Dependabot-visible either), and `psycopg` (deliberately kept out of this
+  # django/celery/strawberry-graphql/graphql-core/cross-web above got the same
+  # exact-pin treatment for the same reason (the owner declined to accept an interim
+  # gap on the first three; see the top-of-file comment). **This narrows, but does not
+  # close, ClickUp 17tnw2az0kw** (Sana security review, PR #110, finding S-5 — a second
+  # pass caught that closing it as fully resolved was premature; a third pass, S-6,
+  # caught `graphql-core`/`cross-web` as two more instances of the exact same gap
+  # Vera also independently found): every package DECLARED here, and every package
+  # this app's own code imports directly, is now exact-pinned and provably safe —
+  # verified exhaustively with `grep -rhoE '^(import|from) [a-zA-Z_]+' selahcue_api/`
+  # across the WHOLE app (not just the graphql/ directory), cross-referenced against
+  # every stdlib module and this dependency list; nothing third-party is left
+  # unaccounted for. What is still genuinely open, and remains 17tnw2az0kw's actual
+  # scope: the further transitive packages pulled in by these direct deps (e.g.
+  # `asgiref`, `sqlparse`, `click`, `kombu` — none currently carry a live advisory,
+  # verified, but none are pinned or Dependabot-visible either, and this app's own
+  # code never imports them directly), and `psycopg` (deliberately kept out of this
   # file — see the comment in `.github/workflows/ci.yml`'s `api` job and this repo's
   # `Dockerfile` — installed via its own separate `>=3.2,<4` range in both places,
   # invisible to Dependabot's pip updater regardless of anything declared here; 0
