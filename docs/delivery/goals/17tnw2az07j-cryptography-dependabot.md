@@ -11,12 +11,18 @@
 - ClickUp task: https://app.clickup.com/t/17tnw2az07j
 - Created: 2026-09-26
 - Updated: 2026-09-26
-- Maximum iterations: 12
+- Maximum iterations: 16
 - Independent verification required: yes
 
-**Iteration cap note:** raised from 8 to 12 after Sana's S-1 finding (Iteration 8) required a materially new increment — the exact-pin fix, framing corrections, and a linked follow-up ticket. This is a genuine correction to what "done" means for this ticket, not scope creep.
+**Iteration cap note:** raised from 8 to 12 after Sana's S-1 finding (Iteration 8) required a materially new increment — the exact-pin fix, framing corrections, and a linked follow-up ticket. Raised again to 16 after the user explicitly declined to accept the interim gap on Django/strawberry-graphql-django/celery (Iteration 10) — widening this same PR to pin all four direct pip deps, closing the follow-up ticket instead, and re-dispatching all four reviewers against the new head. Both raises are genuine corrections to what "done" means for this ticket, not scope creep.
 
 ## Objective
+
+**Widened (Iteration 10):** the user declined to accept an interim gap on
+Django/strawberry-graphql-django/celery being left as open ranges while only
+`cryptography` was pinned — see Iteration 10 below. All four direct pip
+dependencies in `implementation/api/pyproject.toml` are now exact pins,
+each independently checked against published CVE data, not just `cryptography`.
 
 `implementation/api/pyproject.toml`'s `cryptography` constraint has a floor that
 excludes every currently-published vulnerable version range (re-derived from the
@@ -80,8 +86,9 @@ any config file.
 
 ### Non-goals
 
-- Adding a pip lockfile for `implementation/api` (`uv.lock` or similar), covering Django/strawberry-graphql-django/celery — out of scope for this ticket's bounded change; confirmed necessary by Sana's security review (S-1: an exact pin closes the failure mode for `cryptography` specifically, but the other three deps are still open ranges with the identical exposure) and filed as its own linked ClickUp follow-up, with the interim gap explicitly accepted rather than silently left
-- Any other dependency bump not required to resolve this CVE-coverage gap
+- **Superseded (Iteration 10):** exact-pinning Django/strawberry-graphql-django/celery was originally treated as a non-goal, filed to a follow-up (17tnw2az0kw). The user explicitly declined to accept that interim gap; this ticket now pins all four direct pip deps, and 17tnw2az0kw is closed as resolved by this PR rather than left open for redundant tracking.
+- Adding a real **lockfile** (`uv.lock`/`pip-tools` or similar) for `implementation/api` — still out of scope. Exact pins close the security exposure (installed version now knowable to Dependabot for all four deps); a lockfile is a separate, larger improvement for smoother *routine* (non-security) dependency management, not a security gap.
+- Any other dependency bump not required to resolve this CVE-coverage gap or (after widening) the four direct pip deps' pin requirement
 - Changing `implementation/api`'s CI job in `.github/workflows/ci.yml` (not required by the acceptance criteria; `make ci` explicitly does not cover `api` per repo `CLAUDE.md`)
 - Rotating or touching `SELAHCUE_ENTITLEMENT_SIGNING_KEY` itself
 
@@ -118,7 +125,11 @@ any config file.
 | C-008 | yes | Draft PR open against `main`, real `gh pr checks` green (or explained if a check is structurally unrelated) | `gh pr checks` against the opened PR number | All applicable checks pass | PR #110: `api (django)` pass 4m55s, `marketing (vue spa)` pass 1m42s, `detect changed areas` pass, `workflows (actionlint+permissions)` pass; all others correctly `skipping` (path-filtered, untouched areas); no open `ci-red` alarm | PASS |
 | C-009 | yes | Honest note recorded that Dependabot's own re-verification cannot be forced; real proof is the next scheduled/security-triggered run | ClickUp comment + PR description text present | Statement present, not a false completion claim | ClickUp start comment (id 1400430000022688) + PR #110 description, both state this explicitly | PASS |
 | C-010 | yes | The Dependabot automation failure mode itself (not just the CVE) is closed for `cryptography`: the installed version is knowable without a lockfile | `implementation/api/pyproject.toml` declares an exact pin (`==`), matching Dependabot's own stated alternative ("a lockfile or pinned version requirement") | `cryptography==50.0.1`, no range | pyproject.toml diff; independently confirmed the *prior* state's gap via `gh api repos/.../dependency-graph/sbom` showing no `versionInfo` for `cryptography` (Sana, S-1) | PASS |
-| C-011 | yes | Every claim of "fixes the root cause" is accurate and scoped; the un-closed part (Django/strawberry/celery still open ranges) is tracked as an honest, linked follow-up, not silently dropped | Re-read PR description, ClickUp comments, and this contract for overclaiming language; confirm follow-up ticket exists and is linked | No remaining claim that this PR closes the automation gap for anything beyond `cryptography`; follow-up ticket filed and linked | PR #110 description rewritten (scopes the claim to `cryptography` specifically); ClickUp follow-up **17tnw2az0kw** created and linked to 17tnw2az07j with an explicit accepted-interim-gap statement | PASS |
+| C-011 | yes | **Superseded by widening (Iteration 10):** originally required the un-closed part (Django/strawberry/celery) be tracked as an honest, linked follow-up rather than silently dropped. Now requires the reverse: since the gap is closed, claims must say so accurately (all four, not just `cryptography`) and the follow-up must be closed, not left open redundantly | Re-read PR description, ClickUp comments, and this contract for accurate scoping; confirm follow-up ticket is closed with a linking comment | PR/ClickUp claim "root cause fixed for all four direct pip deps"; 17tnw2az0kw closed, comment links back to PR #110 and the exact-pin commit | PR #110 description + ClickUp 17tnw2az07j comment (widened scope); 17tnw2az0kw closure comment (recorded once posted) | PENDING |
+| C-012 | yes | `Django` pin excludes every published advisory affecting it | GH Advisory Database (`gh api /advisories?ecosystem=pip&affects=Django`) and OSV.dev (`api.osv.dev/v1/query`), cross-checked | `Django==6.1.1`; 0 advisories in either source affect 6.1.1 | Iteration 10 evidence below; `implementation/api/pyproject.toml` diff | PASS |
+| C-013 | yes | `strawberry-graphql-django` pin excludes every published advisory affecting it | Same two sources | `strawberry-graphql-django==0.87.1`; 0 advisories exist for this package in either source | Iteration 10 evidence below | PASS |
+| C-014 | yes | `celery[redis]` pin excludes every published advisory affecting it | Same two sources | `celery==5.6.3`; highest advisory ceiling in either source is `<5.2.2` (GHSA-q4xr-rc97-m4xx/CVE-2021-23727), far below 5.6.3 | Iteration 10 evidence below | PASS |
+| C-015 | yes | Full `implementation/api` test suite passes with all four direct deps exact-pinned | `python -m pytest tests -q` | All tests pass, `0` failed | `554 passed, 3 skipped in 133.20s` — identical to every prior run (Iteration 10) | PASS |
 
 Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABLE`.
 
@@ -232,6 +243,24 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
 - Result: PASS — `api (django)` pass (3m52s), `marketing (vue spa)` pass (1m14s), `detect changed areas` pass, `workflows (actionlint+permissions)` pass, `.github/dependabot.yml` (GitHub-native validator) pass. Everything else correctly `skipping`.
 - New evidence: none beyond reconfirming green; awaiting Sana's re-check
 - Decision: iterate (awaiting Sana's re-verification against `44f49fd` before closing C-007/C-010)
+
+### Iteration 10
+
+- Target criterion: C-011 (rework), C-012, C-013, C-014 (new), C-015 (new)
+- Hypothesis: the user, informed that 17tnw2az0kw would leave Django/strawberry-graphql-django/celery on open ranges as an accepted interim risk, declined to accept that risk and asked for this same PR to be widened to pin all four direct pip deps now, with the same CVE-check rigor applied to `cryptography`
+- Change or investigation:
+  1. Checked currently-resolved/latest-safe versions: `pip show` confirmed `Django 6.1.1`, `celery 5.6.3` (both already the actual PyPI latest within their declared ranges); `strawberry-graphql-django 0.87.1` (PyPI's actual latest is 0.90.0, but the declared range `<0.88` already resolves to 0.87.1).
+  2. Checked each against published CVE data from **two independent sources**, same rigor as `cryptography` and matching Sana's own methodology: the GitHub Advisory Database (`gh api /advisories?ecosystem=pip&affects=<pkg>`) and OSV.dev (`api.osv.dev/v1/query`).
+     - **Django 6.1.1:** OSV query returned 321 historical vulnerabilities for the `django` PyPI package; wrote a range-matching script (`packaging.version`/`packaging.specifiers`) to check which affect 6.1.1 specifically — 0 do (the first pass had a bug that missed `last_affected`-only ranges, producing a false positive on a 2011 CVE for Django 1.0–1.3.1; fixed and re-run). GitHub Advisory Database query independently returned 160 Django advisories; 0 affect 6.1.1 (cross-confirms OSV).
+     - **strawberry-graphql-django 0.87.1:** 0 advisories in either source, for any version of this package.
+     - **celery 5.6.3:** OSV returned 4 records (2 unique GHSA IDs, PYSEC mirrors); GitHub Advisory Database independently returned 2. Highest ceiling in both: `< 5.2.2` (GHSA-q4xr-rc97-m4xx / CVE-2021-23727) — 5.6.3 is far above it.
+  3. Switched all three from ranges to exact pins in `implementation/api/pyproject.toml`: `Django==6.1.1`, `strawberry-graphql-django==0.87.1`, `celery[redis]==5.6.3`. Rewrote the `cryptography` comment's cross-reference (it previously said the other three were "still open ranges," now stale) and added a shared comment above the dependency list explaining the widened scope and the two-source CVE-check method for all three.
+  4. Updated `.github/dependabot.yml`'s `pip` entry comment: `versioning-strategy: increase` was originally framed as a partial mitigation for the three still-open-range deps; now all four are exact pins, so the comment is rewritten to reflect that its role is keeping already-safe pins current, not covering an unknown-version gap that no longer exists.
+  5. Reinstalled the venv against all four pins and re-ran the full verification chain.
+- Verifier executed: `pip show` (resolved versions), `gh api /advisories?...` + `api.osv.dev/v1/query` (CVE cross-check, both sources, for each of the 3 new pins), `python3 -c "import tomllib; ..."` (pyproject.toml re-parse), `python3 -c "import yaml; ..."` (dependabot.yml re-parse), `pip install -e ".[dev]"`, `manage.py check`, `manage.py makemigrations --check --noinput`, `pytest tests -q`
+- Result: PASS on all — TOML/YAML valid, all four packages resolve cleanly with no conflicts (`Django 6.1.1`, `strawberry-graphql-django 0.87.1`, `celery 5.6.3`, `cryptography 50.0.1`), Django checks clean, full test suite **554 passed, 3 skipped, 0 failed** (identical to every prior run — no regression from pinning three more direct dependencies)
+- New evidence: this is the first point in the ticket where the automation mechanism is closed for **all four** direct pip dependencies, not `cryptography` alone — matching the user's explicit decision not to accept a partial fix
+- Decision: iterate (confirm test suite result, close follow-up ticket 17tnw2az0kw, update PR/ClickUp framing, re-dispatch all four reviewers against the new head)
 
 ## Risks and rollback
 

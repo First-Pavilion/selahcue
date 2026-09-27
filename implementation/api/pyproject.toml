@@ -5,9 +5,28 @@ description = "Django and Strawberry Platform API for SelahCue licensing and acc
 # Django 6.1 requires >=3.12; CI and local both run 3.14, which 6.1 officially supports.
 requires-python = ">=3.12"
 dependencies = [
-  "Django>=6.1,<6.2",
+  # EXACT PINS for all four direct pip deps (17tnw2az07j; widened from `cryptography`
+  # alone per the owner's explicit decision not to accept the interim gap on these
+  # three — see the follow-up that was closed by this widening, 17tnw2az0kw). Same
+  # root cause as `cryptography` below: an open range with no lockfile leaves the
+  # installed version unknown to Dependabot's security-update job
+  # (`dependency_file_not_supported`), whatever the range's floor. Each pin's safety
+  # was independently checked against BOTH the GitHub Advisory Database
+  # (`gh api /advisories?ecosystem=pip&affects=<pkg>`) and OSV.dev
+  # (`api.osv.dev/v1/query`), not assumed from "latest":
+  #   - Django 6.1.1 (PyPI's actual latest 6.1.x): 0 advisories in either source
+  #     affect it — the highest fixed-version ceiling found was well below 6.x.
+  #   - celery 5.6.3 (PyPI's actual latest): the highest advisory ceiling in either
+  #     source is `< 5.2.2` (GHSA-q4xr-rc97-m4xx / CVE-2021-23727) — 5.6.3 is far
+  #     above it.
+  #   - strawberry-graphql-django 0.87.1: 0 advisories in either source exist for
+  #     this package at all. PyPI's actual latest is 0.90.0, but since 0.87.1 is
+  #     already safe, the pin stays at the version this range already resolved to
+  #     (0.87.1) rather than bumping to 0.90.0 unreviewed — that upgrade is a
+  #     separate, non-security decision.
+  "Django==6.1.1",
   # 0.87 declares `django>=5.2` with no upper bound, so it is compatible with 6.1.
-  "strawberry-graphql-django>=0.87,<0.88",
+  "strawberry-graphql-django==0.87.1",
   # Ed25519 for the signed offline entitlement envelope (DEC-004). Django ships no
   # asymmetric primitives.
   #
@@ -20,12 +39,16 @@ dependencies = [
   # `versionInfo` at all, even after the floor bump). The next advisory that overlaps
   # whatever range is declared would either raise no alert at all or fail with the exact
   # same `dependency_file_not_supported` error as job_1591749422 — the mechanism that
-  # broke, not the version number, is what needed fixing. A pinned exact version is the
-  # cheap alternative to a full-project lockfile migration (which would also need to
-  # cover Django/strawberry-graphql-django/celery, all still open ranges below): tracked
-  # as its own follow-up, not built here, since that's materially larger scope than one
-  # CVE floor. The owner accepts that interim gap for the other three deps on that
-  # follow-up ticket.
+  # broke, not the version number, is what needed fixing. Django/strawberry-graphql-
+  # django/celery above got the same exact-pin treatment for the same reason (the owner
+  # declined to accept an interim gap on them; see the top-of-file comment). This closes
+  # ClickUp 17tnw2az0kw (the follow-up this ticket originally filed for those three) —
+  # exact pins for all four direct deps was one of that ticket's own accepted
+  # resolutions, and it's what actually landed, so that ticket is resolved by this PR
+  # rather than left open for redundant tracking. A real lockfile (`uv.lock` or similar)
+  # remains a possible future upgrade for smoother *routine* (non-security) updates, but
+  # is no longer a security gap now that every direct dependency's installed version is
+  # knowable via its exact pin.
   #
   # 50.0.1 (17tnw2az07j): the prior >=43,<47 range overlapped every published
   # `cryptography` GHSA affected-range up to "< 50.0.0" (re-derived from the actual
@@ -43,7 +66,7 @@ dependencies = [
   "cryptography==50.0.1",
   # Async task runtime: transactional email (worker) + revocation cascade and expiry
   # sweeps (beat). Redis is the broker; see CELERY_BROKER_URL in settings.
-  "celery[redis]>=5.4,<6",
+  "celery[redis]==5.6.3",
 ]
 
 [project.optional-dependencies]

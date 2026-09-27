@@ -73,17 +73,22 @@ updates:
 
   # implementation/api — Django/Strawberry Platform API (pip, pyproject.toml).
   #
-  # `versioning-strategy: increase` (Sana, PR #110 security review, S-1 partial
-  # mitigation): `cryptography` itself is now an exact pin (see pyproject.toml), but
-  # Django/strawberry-graphql-django/celery are still open ranges with no lockfile —
-  # the same root condition that broke cryptography's security-update job. `increase`
-  # makes the weekly routine job raise each floor to match new releases as they ship,
-  # rather than silently leaving an old, possibly-vulnerable floor in place indefinitely
-  # (the "widen ranges" default a library-shaped `pyproject.toml` otherwise gets, per
-  # Sana's dependabot-core source read, would NOT do this — it only relaxes ceilings).
-  # This is a partial mitigation, not a fix: it is a weekly, not advisory-triggered,
-  # so a fix can land up to a week late and won't be labelled security. The actual fix
-  # (a lockfile these three deps resolve against) is the linked follow-up ticket.
+  # All four direct dependencies (Django, strawberry-graphql-django, cryptography,
+  # celery) are now EXACT pins in pyproject.toml, not ranges — the owner declined to
+  # accept an interim gap on the three that weren't originally in scope for the
+  # `cryptography` CVE fix (17tnw2az07j), so this PR widened to cover all four rather
+  # than deferring the other three to the follow-up ticket (17tnw2az0kw, now closed by
+  # this same PR). `versioning-strategy: increase` makes the weekly routine job propose
+  # raising each pin to match new releases as they ship — for an exact `==` pin this is
+  # simply "bump the pin," so it is what keeps these four from going stale now that
+  # there is no floor left to silently drift (the "widen ranges" default a
+  # library-shaped `pyproject.toml` otherwise gets, per Sana's dependabot-core source
+  # read, does not apply the same way to an exact pin). This is still weekly, not
+  # advisory-triggered, so a routine bump can land up to a week late and won't be
+  # labelled security — but the security gap `versioning-strategy` was originally
+  # covering for the pre-widen state (an unknown installed version) no longer exists:
+  # every dependency's exact installed version is now knowable to Dependabot directly
+  # from the manifest.
   - package-ecosystem: "pip"
     directory: "/implementation/api"
     schedule:
