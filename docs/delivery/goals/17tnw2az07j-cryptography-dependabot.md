@@ -360,6 +360,15 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
 - New evidence: none beyond reconfirming green on the final head
 - Decision: iterate (await Vera's and Sana's final confirmation; Cody and Quinn already signed off clean on the immediately-prior head, which differs only by this S-6 fix)
 
+### Iteration 19
+
+- Target criterion: C-007 (final reviewer gate closure)
+- Change or investigation: Vera posted a confirmation on head `e43d120`/`0336063` — independently re-ran her own whole-app import cross-check (app and test code separately, plus `INSTALLED_APPS`, confirmed no dynamic imports), reached the same conclusion (every third-party import now declared/pinned), no performance findings, approved. Sana posted a final confirmation on the same head — independently re-verified `graphql-core`/`cross-web` have 0 advisories in either source at any version, re-ran the whole-app import check herself, confirmed both precision fixes (the 5-of-7 advisory count, the corrected timestamp) are now right, confirmed CI green including a deliberate negative control (`sqlparse 0.4.3`, a known-vulnerable version, correctly still returns hits in her advisory check — proving the check itself works, not just that everything happens to look clean), and explicitly restated that the remaining transitive/psycopg gap is "known and tracked, not a finding." Messaged Cody and Quinn directly asking for a final sign-off on this exact head, since their most recent confirmations were against the immediately-prior commit (`1543d74`), one commit before this S-6 fix.
+- Verifier executed: read Sana's and Vera's PR comments directly rather than only trusting their SendMessage summaries
+- Result: PASS for Vera and Sana on head `0336063`. Cody and Quinn's confirmations on this exact head are still outstanding (both approved the immediately-prior head, `1543d74`).
+- New evidence: Sana's inclusion of a negative control in her final check (a known-vulnerable package version that correctly still flags) is exactly the kind of check that distinguishes "verified" from "looked clean" — recorded as a model example
+- Decision: iterate (await Cody's and Quinn's confirmation on `0336063`/`e43d120` before treating the four-reviewer gate as closed)
+
 ## Risks and rollback
 
 - Risks: a floor bump could theoretically break something not caught by the test suite (e.g. an environment-specific OpenSSL wheel issue) — mitigated by running the full suite, not a subset, and reviewing the upstream changelog for the crossed range
