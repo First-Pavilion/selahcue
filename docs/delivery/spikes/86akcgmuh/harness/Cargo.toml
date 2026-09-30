@@ -1,0 +1,17 @@
+[package]
+name = "rep-loop-spike"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+# Throwaway measurement harness for ClickUp 86akcgmuh. NOT part of the repo.
+[workspace]
+
+[dependencies]
+selahcue-stt = { path = "../../../../../implementation/desktop/crates/selahcue-stt", features = ["metal"] }
+selahcue-core = { path = "../../../../../implementation/desktop/crates/selahcue-core" }
+whisper-rs = { version = "=0.14.4", features = ["metal"] }
+serde_json = "1"
+
+[profile.release]
+debug = false
