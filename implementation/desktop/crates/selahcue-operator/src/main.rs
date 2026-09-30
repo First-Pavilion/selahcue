@@ -864,7 +864,7 @@ impl Backend {
     }
     /// Resolve the transcript id new AI-derived content (a sermon-note draft) should attach to
     /// right now (86akgqdv0; PR #33 review, Sana F1 remediation). Same dispatch shape as
-    /// `ingest_transcript` above — NOT `stt`-gated, because `generate_sermon_notes` (its only
+    /// `ingest_transcript` above — NOT `stt`-gated, because the former live-tail `generate_sermon_notes` (removed, 17tnw2b0ntd) (its only
     /// caller today) is not either: a transcript can be pasted in manually without live STT.
     async fn active_transcript_id(&self) -> Result<Option<i64>, String> {
         match self {
@@ -893,7 +893,7 @@ impl Backend {
         }
     }
     /// Persist (upsert) a freshly generated draft against `transcript_id` on the host
-    /// (86akgqdv0) — `generate_sermon_notes`'s persist-on-success path. `Ok(None)` when the
+    /// (86akgqdv0) — the former live-tail `generate_sermon_notes` (removed, 17tnw2b0ntd) persist-on-success path. `Ok(None)` when the
     /// host refuses it (an oversized field, or no store configured) — never a hard error, so a
     /// persistence failure never blocks the draft from still being shown to the operator.
     async fn save_sermon_note_draft(
@@ -6043,7 +6043,7 @@ fn draft_json(d: &selahcue_core::providers::NoteDraft) -> serde_json::Value {
 }
 
 /// Attach transcript-derived timestamps to `draft`'s chapter markers (and, best-effort, its
-/// outline points) — the ONE call site both `generate_sermon_notes` and
+/// outline points) — the ONE call site both the former live-tail `generate_sermon_notes` (removed, 17tnw2b0ntd) and
 /// `transcript_generate_notes` route through (86akgqdw0), so the linking behaviour cannot
 /// drift between the two entrypoints. `segments` is empty for the live-tail path (the
 /// operator holds no live segment structure there — see this ticket's Goal Contract for the
@@ -6329,7 +6329,7 @@ fn sections_from_input(input: Vec<NoteSectionInput>) -> Vec<selahcue_core::provi
         .collect()
 }
 
-/// Build the wire JSON for a persisted draft, in the same shape `generate_sermon_notes`
+/// Build the wire JSON for a persisted draft, in the same shape the former live-tail `generate_sermon_notes` (removed, 17tnw2b0ntd)
 /// already returns under `"draft"` — so the JS render path is identical whether the
 /// draft just arrived from a live generation or was loaded back from disk on panel
 /// activation.
@@ -6337,7 +6337,7 @@ fn sections_from_input(input: Vec<NoteSectionInput>) -> Vec<selahcue_core::provi
 /// Takes the LAN wire view (`selahcue_lan::protocol::SermonNoteDraftView`), not a
 /// `selahcue-data` type: as of PR #33's review remediation (Sana F1 — High), this
 /// operator process no longer opens `selahcue-data`'s file for the sermon-note feature
-/// at all — see `generate_sermon_notes`/`load_sermon_note_draft`/
+/// at all — see the former live-tail `generate_sermon_notes` (removed, 17tnw2b0ntd)/`load_sermon_note_draft`/
 /// `update_sermon_note_draft`'s doc comments for why (the operator's OWN copy of that
 /// file, at a DIFFERENT path than the desktop's, could never see a real `transcript`
 /// row in a real launch; persistence now goes through `Backend`'s LAN commands, which
@@ -6353,7 +6353,7 @@ fn sections_from_input(input: Vec<NoteSectionInput>) -> Vec<selahcue_core::provi
 /// Cody blocked 86akc0tua on — for the harm this ticket's own PRD cites (a pastor reading
 /// from a RELOADED Sunday-morning draft), not only the just-generated one.
 /// Returns the draft JSON (in `draft_json`'s own shape) alongside the address-only
-/// verification-scope note, gated exactly like `generate_sermon_notes`'s own response:
+/// verification-scope note, gated exactly like the former live-tail `generate_sermon_notes` (removed, 17tnw2b0ntd) own response:
 /// present only when at least one reference was actually (re-)checked. One return value,
 /// not two separate re-computations, since both come from the same `verify_scriptures`
 /// call — see the doc comment above for why this re-verifies on every load/edit-save.
@@ -6689,7 +6689,7 @@ async fn run_note_generation(
 /// and this whole function goes when that lands. It is a sibling of the `cloud-live` path above,
 /// not a replacement: when both are compiled the hosted service wins, matching `notes_status`.
 ///
-/// The consent gate is untouched. `generate_sermon_notes` calls `build_note_request` first, so
+/// The consent gate is untouched. the former live-tail `generate_sermon_notes` (removed, 17tnw2b0ntd) calls `build_note_request` first, so
 /// nothing is sent without cloud-notes consent and an explicit Generate, and the request carries
 /// the completed transcript only.
 #[cfg(feature = "openai-notes")]
@@ -6753,7 +6753,7 @@ async fn run_note_generation(
 /// `Backend::active_transcript_id`/`save_sermon_note_draft`'s doc comments.
 ///
 /// **Regenerate-with-retention (FR-129, 86akgqdx8)** lives here, shared by both
-/// `generate_sermon_notes` (below) and `transcript_generate_notes` (the from-history
+/// the former live-tail `generate_sermon_notes` (removed, 17tnw2b0ntd) (below) and `transcript_generate_notes` (the from-history
 /// sibling further down): a transcript with NO existing accepted draft is persisted exactly
 /// as before this ticket (an immediate save — true first-time generation is unaffected).
 /// A transcript that ALREADY has an accepted draft gets the new draft STAGED instead —
@@ -6943,7 +6943,7 @@ fn note_generation_limits() -> serde_json::Value {
 }
 
 /// Generate AI sermon notes from the FULL stored text of transcript `id` (86akcffy0). See the
-/// section comment above for how this differs from `generate_sermon_notes`; everything else —
+/// section comment above for how this differs from the former live-tail `generate_sermon_notes` (removed, 17tnw2b0ntd); everything else —
 /// the consent gate, the provider fallback ladder, the response shape — is that same function's
 /// machinery, reused unchanged via [`run_note_generation`].
 ///
@@ -6976,7 +6976,7 @@ async fn transcript_generate_notes(
     let clamp = transcript_clamp_notice(&transcript);
 
     // Snapshot the config under the lock, then generate without holding it — same discipline as
-    // `generate_sermon_notes` above.
+    // the former live-tail `generate_sermon_notes` (removed, 17tnw2b0ntd) above.
     let cfg = {
         state
             .providers
@@ -7010,7 +7010,7 @@ async fn transcript_generate_notes(
             link_note_timestamps(&mut outcome.draft, &after.segments);
 
             // 86akc0tua: persist through `sections_to_persist`, exactly as the now-removed
-            // live-tail `generate_sermon_notes` command did — a section that exists only to
+            // live-tail the former live-tail `generate_sermon_notes` (removed, 17tnw2b0ntd) command did — a section that exists only to
             // carry a `SectionRequestedEmpty` caveat's place must not survive into the
             // persisted row, or a reload shows a bare empty heading with none of the
             // explanation the live response gave it. This entrypoint is now the only one, so
@@ -7023,7 +7023,7 @@ async fn transcript_generate_notes(
                 ai_generated: outcome.ai_generated,
                 disclosure: outcome.disclosure.map(str::to_string),
                 provider: outcome.provider_label.clone(),
-                // See `generate_sermon_notes`'s identical field: no `NoteProvider` exposes a
+                // See the former live-tail `generate_sermon_notes` (removed, 17tnw2b0ntd) identical field: no `NoteProvider` exposes a
                 // model id through `GenerationOutcome` today.
                 model: None,
             };
@@ -7040,7 +7040,7 @@ async fn transcript_generate_notes(
                     .then_some(selahcue_core::providers::DEGRADED_FALLBACK_NOTICE),
                 "draft": draft_json(&outcome.draft),
                 "transcript_id": persist.transcript_id,
-                // FR-129 (86akgqdx8) — see `generate_sermon_notes`'s identical fields.
+                // FR-129 (86akgqdx8) — see the former live-tail `generate_sermon_notes` (removed, 17tnw2b0ntd) identical fields.
                 "pending_confirmation": persist.pending_confirmation,
                 "previous_draft": persist.previous_draft,
                 "quota": outcome.quota.map(|q| serde_json::json!({
@@ -7228,7 +7228,7 @@ mod transcript_generate_notes_tests {
     }
 
     /// The consent gate the from-history path relies on is `ProvidersConfig::
-    /// build_note_request` — the SAME egress choke point `generate_sermon_notes`'s existing
+    /// build_note_request` — the SAME egress choke point the former live-tail `generate_sermon_notes` (removed, 17tnw2b0ntd) existing
     /// crate-level test already proves refuses with zero network calls
     /// (`selahcue-cloud/tests/test_openai.rs::
     /// with_consent_off_generate_makes_no_network_call_and_says_consent_is_required`). This test
@@ -7371,7 +7371,7 @@ fn sermon_note_view_ok_json(
 /// (not an error) when there is no host connection, no transcript yet, or no draft —
 /// an absent draft is a normal, common state, not a failure.
 ///
-/// Goes through `Backend`'s LAN commands — see `generate_sermon_notes`'s doc comment
+/// Goes through `Backend`'s LAN commands — see the former live-tail `generate_sermon_notes` (removed, 17tnw2b0ntd) doc comment
 /// for why (PR #33 review, Sana F1).
 #[tauri::command]
 async fn load_sermon_note_draft(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
@@ -7413,7 +7413,7 @@ async fn load_sermon_note_draft(state: State<'_, AppState>) -> Result<serde_json
 }
 
 /// Apply an operator edit to the persisted draft's title/summary/sections/scriptures
-/// (86akgqdv0). `transcript_id` is the id returned by a prior `generate_sermon_notes`
+/// (86akgqdv0). `transcript_id` is the id returned by a prior the former live-tail `generate_sermon_notes` (removed, 17tnw2b0ntd)
 /// or `load_sermon_note_draft` call. Touches ONLY the editable columns — the wire type
 /// (`SermonNoteEditInput`) structurally cannot carry `ai_generated`/`disclosure`/
 /// `provider`, so an edit can never silently drop the FR-123 label or FR-128
@@ -7422,7 +7422,7 @@ async fn load_sermon_note_draft(state: State<'_, AppState>) -> Result<serde_json
 ///
 /// A malformed `sections`/`points` shape (wrong JSON types) is rejected by Tauri's
 /// own IPC deserialization before this function body ever runs. Goes through
-/// `Backend`'s LAN commands — see `generate_sermon_notes`'s doc comment for why (PR #33
+/// `Backend`'s LAN commands — see the former live-tail `generate_sermon_notes` (removed, 17tnw2b0ntd) doc comment for why (PR #33
 /// review, Sana F1). The host's specific refusal reason (no draft yet vs. an oversized
 /// field) does not currently cross the wire as distinct codes — `DenyReason` is a
 /// small, shared enum with no per-command message field — so both surface here as one
@@ -7485,7 +7485,7 @@ async fn update_sermon_note_draft(
 
 /// Accept the pending regeneration for `transcript_id` (FR-129, 86akgqdx8), replacing the
 /// accepted draft with it — the "Use this draft" action on the regenerate-confirmation
-/// banner. `transcript_id` is the id `generate_sermon_notes`/`transcript_generate_notes`
+/// banner. `transcript_id` is the id the former live-tail `generate_sermon_notes` (removed, 17tnw2b0ntd)/`transcript_generate_notes`
 /// returned alongside `pending_confirmation: true`.
 ///
 /// `{"ok": false, "error": "refused", ...}` when the host refuses: nothing is currently
@@ -7578,7 +7578,7 @@ async fn discard_sermon_note_regeneration(
 /// crate's `cargo test` runs under), generation itself always ends in `NotConfigured`/
 /// `ConsentRequired`, never `Ok`. So `persist_generated_draft` is exercised directly with a
 /// hand-built `SermonNoteDraftInput`, exactly as if a real generation had just produced it,
-/// rather than by driving `generate_sermon_notes` all the way to a successful outcome.
+/// rather than by driving the former live-tail `generate_sermon_notes` (removed, 17tnw2b0ntd) all the way to a successful outcome.
 #[cfg(test)]
 mod regenerate_with_retention_tests {
     use super::*;
@@ -7718,6 +7718,24 @@ mod regenerate_with_retention_tests {
     fn state_with_transcript(
         consent_cloud_notes: bool,
     ) -> (tauri::App<tauri::test::MockRuntime>, i64) {
+        // 17tnw2b0ntd: `transcript_generate_notes` reads the stored transcript through
+        // `AppState::transcript_db` (a different handle from the sermon-note store below), so the
+        // same ended transcript is seeded into BOTH — fresh in-memory DBs hand out the same id.
+        let tdb = Database::open_in_memory().expect("in-memory transcript db opens");
+        transcript_repo::create(
+            &tdb,
+            &transcript_repo::NewTranscript {
+                label: "Sunday Service".to_string(),
+                provider: "manual".to_string(),
+                plan_id: None,
+                started_at_ms: 1_000,
+            },
+        )
+        .expect("create transcript (transcript_db)");
+        transcript_repo::append_segment(&tdb, 1, 0, 1_000, "Good morning, church.")
+            .expect("append segment (transcript_db)");
+        transcript_repo::end(&tdb, 1, 1_000).expect("end transcript (transcript_db)");
+
         let db = Database::open_in_memory().expect("in-memory db opens");
         let id = transcript_repo::create(
             &db,
@@ -7757,7 +7775,7 @@ mod regenerate_with_retention_tests {
             library: Mutex::new(crate::DeckLibrary::load(None)),
             providers: Mutex::new(providers),
             providers_db: None,
-            transcript_db: None,
+            transcript_db: Some(Mutex::new(tdb)),
             secrets: make_secret_store(),
             link_status: Mutex::new(selahcue_lan::LinkStatus::local()),
             link_next_attempt: Mutex::new(None),
