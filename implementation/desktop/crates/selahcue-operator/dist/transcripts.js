@@ -14,7 +14,7 @@
 // generation; `update_sermon_note_draft` (86akgqdv0) for editing a saved draft — already generic
 // over `transcriptId`, reused here unchanged, no backend change needed. `confirm_sermon_note_
 // regeneration` / `discard_sermon_note_regeneration` (FR-129, 86akgqdx8) for the regenerate-with-
-// retention confirm/discard step below. Nav + ⌘8 live in app.js; this module owns the surface body
+// retention confirm/discard step below. Nav + ⌘7 (Transcript & Notes, 17tnw2b0ntd) live in app.js; this module owns the surface body
 // and is loaded after app.js (same convention as preservice.js/settings.js).
 //
 // REGENERATE-WITH-RETENTION (FR-129, 86akgqdx8): generating again on a transcript that already
@@ -1017,7 +1017,7 @@
     // before any call is made — so their label says exactly that: nothing was sent.
     r.className = "pp-gen-result pp-gen-err";
     r.setAttribute("role", "alert");
-    var label = code === "quota_exceeded" ? "Monthly limit reached"
+    var label = code === "quota_exceeded" ? "No generations left this week"
       : code === "no_transcript" ? "No transcript to generate from"
       : code === "transcript_too_short" ? "Transcript too short"
       : "Couldn’t generate notes";
