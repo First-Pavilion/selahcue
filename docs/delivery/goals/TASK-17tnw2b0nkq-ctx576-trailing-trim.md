@@ -10,7 +10,7 @@
 - Execution engine: goal
 - ClickUp task: https://app.clickup.com/t/17tnw2b0nkq (origin: https://app.clickup.com/t/86akcgmuh spike findings comment)
 - Created: 2026-09-30T21:08:24Z
-- Updated: 2026-09-30T22:45:00Z
+- Updated: 2026-09-30T23:25:00Z
 - Maximum iterations: 10
 - Independent verification required: yes (four-reviewer gate Cody/Vera/Shadow/Quinn; real `gh pr checks`; `selahcue-stt` run directly because no CI job covers it)
 
@@ -116,16 +116,16 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
 | C-006 | yes | The trim test is mutation-verified: (i) trim applied to every close, (ii) trim removed, (iii) minimum span lowered to 1 — each reddens a named assertion | run the test under each mutation, siblings included (not `--exact`) | red under each mutation; green restored | `docs/delivery/spikes/86akcgmuh/mutate_17tnw2b0nkq.py` plus a flush-only mutant: 6 mutants all RED on the named assertion (trim on every close; on interims; removed; min span 1; same-frame hangover+cap as forced; flush only); files restored byte-for-byte, shasum-checked (iteration 1) | PASS |
 | C-007 | yes | Spike harness re-run with the production recognizer + production trim: loop rate ≤ 2.5% on the 370-window noisy-room set and ≤ 2 loops on the 86 production-faithful finals | harness `decode` with the new `fix` config + `analyze.py`/`compare.py` | ≤ 2.5% and ≤ 2 | harness `fix` (production recognizer at 576 + production trim): noisy-room 4/370 = 1.1% (95% CI 0.4-2.7%) vs main 29/370 = 7.8%; production-faithful 0/86 vs main 2/86; ctx alone (`recog`) 12/370 = 3.2% (iteration 2) | PASS |
 | C-008 | yes | ≤ 3 windows loop on the fix that did not loop on `main` (same windows) | `paired.py` vs the spike's `prod+inst` baseline | new-loop count ≤ 3 | `paired.py`: fix vs main on the same 370 windows - 25 loops fixed, 0 new (exact McNemar p = 6e-8); 0 new on the 86 finals (iteration 2) | PASS |
-| C-009 | yes | Loop rate measured and recorded on real public-domain human speech for `main` and the fix (≥ 100 force-close-shaped windows, ≥ 5 speakers); fix rate ≤ `main` rate; every trim applied to real speech inspected and any legitimate-repeat trim recorded | harness on downloaded, user-approved public-domain recordings | both rates recorded; fix ≤ main; trims inspected | results + ClickUp comment | PENDING |
-| C-010 | yes | On a quiet machine (load average < 4) the four 86akcfp3u tests pass (3 timing at 700 ms + text equivalence) | `cargo test --features metal --lib whisper_tests::capp` with `uptime` recorded before/after | 4 passed; load < 4 throughout | test output + uptime | PENDING |
-| C-011 | yes | Back-to-back on the quiet machine, a 10 s final at ctx 576 decodes within +60 ms of ctx 512 | harness `decode` slice-major interleaving on the 40 production-faithful finals, both ctx values, same process | median(576) − median(512) ≤ 60 ms | harness output + uptime | PENDING |
-| C-012 | yes | A 126 s real-time run through the real engine + production recognizer keeps mean interim lag ≤ 0.6 s, p95 ≤ 0.9 s, zero dropped audio, hand-off peak ≤ 25% | harness `paced` mode with the production recognizer, quiet room, quiet machine | all four bounds met | paced summary + uptime | PENDING |
+| C-009 | yes | Loop rate measured and recorded on real public-domain human speech for `main` and the fix (≥ 100 force-close-shaped windows, ≥ 5 speakers); fix rate ≤ `main` rate; every trim applied to real speech inspected and any legitimate-repeat trim recorded | harness on downloaded, user-approved public-domain recordings | both rates recorded; fix ≤ main; trims inspected | pipeline ready (`real_speech.py` on `spike/17tnw2b0nkq-harness`); download of the 6 LibriVox MP3s (Spurgeon's Sermons May 1858, 124,468,586 bytes, 6 readers) awaits the user's own direct approval - relayed approval is not accepted as consent | BLOCKED |
+| C-010 | yes | On a quiet machine (load average < 4) the four 86akcfp3u tests pass (3 timing at 700 ms + text equivalence) | `cargo test --features metal --lib whisper_tests::capp` with `uptime` recorded before/after | 4 passed; load < 4 throughout | load average 8-24 all session; five `fvm flutter --version`/`flutter test` processes from other sessions at ~96% CPU each for 11-13 h (PIDs 11887, 98402, 73989, 73885, 73640) put a ~5-core floor under the load, so < 4 is unreachable while they run | BLOCKED |
+| C-011 | yes | Back-to-back on the quiet machine, a 10 s final at ctx 576 decodes within +60 ms of ctx 512 | harness `decode` slice-major interleaving on the 40 production-faithful finals, both ctx values, same process | median(576) − median(512) ≤ 60 ms | same quiet-machine blocker as C-010 | BLOCKED |
+| C-012 | yes | A 126 s real-time run through the real engine + production recognizer keeps mean interim lag ≤ 0.6 s, p95 ≤ 0.9 s, zero dropped audio, hand-off peak ≤ 25% | harness `paced` mode with the production recognizer, quiet room, quiet machine | all four bounds met | same quiet-machine blocker as C-010 | BLOCKED |
 | C-013 | yes | Doc comments updated: `WHISPER_AUDIO_CTX` (576, why, measured loop rates) and the trim (why force-closed finals only), both citing 17tnw2b0nkq | code review of the diff | present and accurate | `WHISPER_AUDIO_CTX` doc (why 576, measured loop rates, cost), engine mirror doc, `CloseReason`, `close_utterance` and `trim_trailing_repeat` docs all cite 17tnw2b0nkq (iteration 1) | PASS |
-| C-014 | yes | `make ci` green on the final head | `make ci` from repo root | exit 0, ALL GREEN | terminal output | PENDING |
+| C-014 | yes | `make ci` green on the final head | `make ci` from repo root | exit 0, ALL GREEN | `make ci` on `21571cb`: `== local Rust/Flutter gate: ALL GREEN ==`, exit 0 (iteration 4); the first run on the pre-rebuild branch failed `check_dependency_audit_coverage` (iteration 3) and was fixed by moving the harness off the branch | PASS |
 | C-015 | yes | `selahcue-stt` default suite passes and the metal-feature suite result is recorded (no CI job runs either) | `cargo test --manifest-path .../selahcue-stt/Cargo.toml`; `--features metal` | default all pass; metal results recorded (pre-existing `model.rs` step-down failures under `metal` noted, not introduced) | terminal output | PENDING |
 | C-016 | yes | No new unbounded buffering; the trim allocates only per call, bounded by one line | code review | confirmed | the trim allocates one Vec of normalised words and one output String per force-closed final and retains nothing; no new fields, queues or caches (iteration 1) | PASS |
-| C-017 | yes | Branch up to date with `origin/main` immediately before review | `git fetch origin && git rev-list --count HEAD..origin/main` | 0 | terminal output | PENDING |
-| C-018 | yes | Draft PR against `main`, not merged by this session | `gh pr view` | Draft, open | PR URL | PENDING |
+| C-017 | yes | Branch up to date with `origin/main` immediately before review | `git fetch origin && git rev-list --count HEAD..origin/main` | 0 | `git fetch origin` then `git rev-list --count HEAD..origin/main` = 0 and `origin/main` is an ancestor of HEAD, immediately before push (iteration 4) | PASS |
+| C-018 | yes | Draft PR against `main`, not merged by this session | `gh pr view` | Draft, open | Draft PR https://github.com/First-Pavilion/selahcue/pull/128 against `main`, open, not merged (iteration 4) | PASS |
 | C-019 | yes | Real `gh pr checks` green on the final head | `gh pr checks` on the PR opened for this branch | all applicable pass | checks output | PENDING |
 | C-020 | yes | Four-reviewer gate (Cody, Vera, Shadow, Quinn) complete; blocking findings remediated and re-checked; report artifact published and linked on the PR | reviewer reports | 0 open blocking findings | artifact URL + PR comments | PENDING |
 | C-021 | yes | Goal Contract validator green (structural and completion) | `python3 ~/.claude/skills/goal/scripts/validate_goal_contract.py docs/delivery/goals/TASK-17tnw2b0nkq-ctx576-trailing-trim.md` (and with `--completion`) | exit 0 both | terminal output | PENDING |
@@ -202,6 +202,16 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
   contract only; the harness moved to the reference branch `spike/17tnw2b0nkq-harness`
   (no force-push of the original spike branch, whose SHAs 86akcgmuh cites).
 - Decision: iterate (re-run `make ci` on the rebuilt branch).
+
+### Iteration 4
+
+- Target criterion: C-014, C-017, C-018, C-019
+- Hypothesis: with the harness off the branch, `make ci` is green and the branch can be opened as a Draft PR.
+- Change or investigation: none to code; re-ran the gate on the rebuilt branch (now on `origin/main` @ `d46d6d5`).
+- Verifier executed: `make ci`; `git fetch` + `git rev-list --count HEAD..origin/main`; `gh pr create --draft`; `gh pr checks 128`.
+- Result: C-014, C-017, C-018 PASS; C-019 pending the CI run on the final head. C-009 BLOCKED (user's direct download approval), C-010..C-012 BLOCKED (quiet machine). ClickUp writes are also blocked for ~11.5 h: the ClickUp MCP daily limit (1,000 calls) was reached, so ClickUp updates are carried in the handback instead.
+- New evidence: none beyond the gate results.
+- Decision: blocked - hand back to the coordinator with the two user decisions and the reviewer-gate brokering request.
 
 ## Risks and rollback
 
