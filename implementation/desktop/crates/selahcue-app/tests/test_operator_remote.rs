@@ -18,7 +18,21 @@ use std::time::{Duration, Instant};
 use tokio::net::TcpListener;
 use tokio::sync::Mutex as AsyncMutex;
 
+/// Pay `selahcue_scripture`'s one-time, process-wide cold-start cost (gzip-decode the
+/// bundled KJV corpus + build the fuzzy quote-match inverted index over ~31k verses,
+/// both behind `OnceLock`) HERE — before any test opens a `ControlClient`, whose
+/// [`COMMAND_TIMEOUT`](selahcue_lan) is a fixed 2s. Without this, whichever
+/// `ingest_transcript` call happens to be the first in the test binary's process to touch
+/// `match_quote_scored` eats that cold-start cost (~1.7s in a local debug-profile
+/// measurement) INSIDE its own timed round trip — on a slow/shared CI runner that can
+/// exceed the 2s budget and time out (observed once on `rust (windows-latest)`, GitHub
+/// Actions run 36785087393). This makes the cost deterministic and untimed instead.
+fn warm_scripture_quote_index() {
+    let _ = selahcue_scripture::match_quote_scored("warm the lazily-built quote index");
+}
+
 async fn setup() -> (SocketAddr, CertPin, Arc<Mutex<LiveController>>) {
+    warm_scripture_quote_index();
     let identity = SelfSigned::generate(vec!["localhost".into()]).unwrap();
     let pin = identity.pin;
 
