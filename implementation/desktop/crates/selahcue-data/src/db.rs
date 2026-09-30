@@ -120,6 +120,42 @@ impl Database {
         Ok(Database { conn })
     }
 
+    /// The encrypted twin of [`open_existing_readonly`](Self::open_existing_readonly) — for a
+    /// caller (today: `selahcue-operator`'s Transcripts viewer, FR-154/86akgrz3b) that must read
+    /// an EXISTING, SQLCipher-encrypted store `selahcue-desktop` alone writes/migrates/encrypts,
+    /// never create, write to, or migrate it.
+    ///
+    /// Unlike the plaintext path, this cannot check for SQLite's own magic header first — an
+    /// encrypted file's first page IS the ciphertext, so it never carries that header. The caller
+    /// is responsible for having already established the file is not plaintext (both callers in
+    /// this workspace do their own tiny on-disk header check before reaching for this, rather than
+    /// this crate exposing an encrypted-vs-plaintext discriminator of its own — see
+    /// `selahcue-desktop::SessionStore::open_store` and `selahcue-operator`'s
+    /// `open_transcript_db_with_key`, both inline for exactly this reason, matching precedent).
+    ///
+    /// Never creates: `SQLITE_OPEN_READ_ONLY` with no `SQLITE_OPEN_CREATE`, so a missing file
+    /// surfaces as `Err(DataError::Sqlite(_))` (`SQLITE_CANTOPEN`), not a freshly minted store.
+    /// [`migrations::run`] is never called, so this can never run schema-writing DDL either.
+    ///
+    /// A wrong key is NOT rejected at `PRAGMA key` time — SQLCipher only discovers a bad key once
+    /// a real page is read — so this forces one read (`PRAGMA schema_version`, result discarded)
+    /// before returning, surfacing `Err(DataError::Sqlite(_))` for a wrong key here rather than at
+    /// the caller's first real query.
+    #[cfg(feature = "encryption")]
+    pub fn open_existing_readonly_encrypted(
+        path: impl AsRef<Path>,
+        key: &crate::EncryptionKey,
+    ) -> Result<Self> {
+        let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        key.apply(&conn)?;
+        // Same busy_timeout as the plaintext read-only path: never a file write, just lets a
+        // read wait briefly rather than fail outright on a momentary WAL write lock.
+        conn.busy_timeout(Duration::from_millis(5000))?;
+        // Force key verification now, not at the caller's first query — see doc comment.
+        conn.query_row("PRAGMA schema_version", [], |r| r.get::<_, i64>(0))?;
+        Ok(Database { conn })
+    }
+
     fn init(conn: Connection) -> Result<Self> {
         // WAL: readers never block the writer; a crash loses only uncommitted WAL.
         // synchronous=NORMAL is the recommended durable-but-fast setting under WAL.

@@ -228,6 +228,40 @@ jobs:
         working-directory: ${{ github.workspace }}
         shell: bash
         run: sh scripts/check_toolchain.sh
+      # `encryption` (86akgrz3b) is now a Cargo DEFAULT feature of both selahcue-desktop and
+      # selahcue-data, so EVERY step below that builds this workspace with no --no-default-
+      # features override — Format doesn't touch code, but Clippy (default features) and
+      # Test (workspace) both do — now compiles rusqlite's `bundled-sqlcipher-vendored-openssl`,
+      # which builds OpenSSL from source via openssl-src. That needs a Perl interpreter
+      # (Configure) and NASM (assembly-optimized crypto routines) on Windows only — Linux and
+      # macOS need just the C/C++ toolchain the runner already has (see selahcue-data/Cargo.toml's
+      # `encryption` comment). Before 86akgrz3b this was moot because the feature was off by
+      # default everywhere; now it is the actual, load-bearing reason the "Test (at-rest
+      # encryption)" step further down no longer excludes Windows.
+      #
+      # ilammy/setup-nasm is the action the rust-openssl ecosystem commonly uses for exactly this
+      # gap (pinned major version, matching this workflow's existing convention for narrowly-
+      # scoped third-party actions like ilammy/msvc-dev-cmd and Swatinem/rust-cache).
+      - name: NASM for the vendored-OpenSSL build (Windows only)
+        if: runner.os == 'Windows'
+        uses: ilammy/setup-nasm@v1
+      # windows-latest is DOCUMENTED to ship Strawberry Perl, but "documented to" is not
+      # "verified here" — asserting it explicitly turns a wrong assumption into a clear, named
+      # failure at this step instead of a confusing OpenSSL Configure error buried inside a
+      # `cargo build` several steps later.
+      - name: Verify Perl is on PATH for the vendored-OpenSSL build (Windows only)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $p = Get-Command perl -ErrorAction SilentlyContinue
+          if (-not $p) {
+            throw "perl not found on PATH -- the encryption feature's vendored-OpenSSL build " + `
+              "(now default-on, 86akgrz3b) cannot run its Configure step without it. " + `
+              "windows-latest is documented to ship Strawberry Perl; if this throws, the " + `
+              "runner image changed and perl must be installed explicitly (e.g. " + `
+              "'choco install strawberryperl')."
+          }
+          perl -v
       # Quinn's process finding on PR #24 (86akcmzyq): the PR template's feature-flag-
       # reachability section is three checkboxes a human ticks, unenforced by CI — exactly the
       # human step that let 86akby7d8 ship, merge, and stay invisible from `make launch` in the
@@ -493,9 +527,16 @@ jobs:
         if: ${{ !cancelled() }}
         run: cargo clippy -p selahcue-stt-cloud --features deepgram --release --all-targets -- -D warnings
       - name: Test (at-rest encryption — SQLCipher + vendored OpenSSL)
-        # The vendored OpenSSL build needs perl+nasm on Windows; covered on the
-        # other two OSes (the feature is platform-independent Rust).
-        if: ${{ !cancelled() && runner.os != 'Windows' }}
+        # 86akgrz3b: `encryption` is now a Cargo default feature, so the workspace-wide
+        # Clippy/Test steps above already compile and exercise it on every OS, including
+        # Windows (perl+nasm now provisioned in this job's setup zone — see the "NASM for the
+        # vendored-OpenSSL build"/"Verify Perl is on PATH" steps near the top). This step stays
+        # as an explicit, named, feature-flagged run — redundant with the default-feature
+        # coverage above in what it builds, but not in what it PROVES: it is the one place a
+        # future `default = []` regression (someone dropping `encryption` back out of the
+        # default array) would still be caught by name, on all three OSes, rather than silently
+        # falling out of the workspace run's coverage.
+        if: ${{ !cancelled() }}
         run: |
           cargo test -p selahcue-data --features encryption --no-fail-fast
           cargo test -p selahcue-desktop --features encryption --no-fail-fast
@@ -605,6 +646,22 @@ jobs:
         working-directory: ${{ github.workspace }}
         shell: bash
         run: sh scripts/check_toolchain.sh
+      # `encryption` (86akgrz3b) is now default-on for selahcue-operator too, so Check/Clippy/
+      # Test below compile the vendored-OpenSSL build here as well — see the `rust` job's
+      # identical pair of steps for the full reasoning; not repeated per-job.
+      - name: NASM for the vendored-OpenSSL build (Windows only)
+        if: runner.os == 'Windows'
+        uses: ilammy/setup-nasm@v1
+      - name: Verify Perl is on PATH for the vendored-OpenSSL build (Windows only)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $p = Get-Command perl -ErrorAction SilentlyContinue
+          if (-not $p) {
+            throw "perl not found on PATH -- see the 'rust' job's identical step for the full " + `
+              "reasoning."
+          }
+          perl -v
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: implementation/desktop/crates/selahcue-operator
@@ -814,6 +871,22 @@ jobs:
         working-directory: ${{ github.workspace }}
         shell: bash
         run: sh scripts/check_toolchain.sh
+      # `encryption` (86akgrz3b) is now default-on for selahcue-operator too, so the RELEASE and
+      # stt,cloud-stt steps below compile the vendored-OpenSSL build here as well — see the
+      # `rust` job's identical pair of steps for the full reasoning; not repeated per-job.
+      - name: NASM for the vendored-OpenSSL build (Windows only)
+        if: runner.os == 'Windows'
+        uses: ilammy/setup-nasm@v1
+      - name: Verify Perl is on PATH for the vendored-OpenSSL build (Windows only)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $p = Get-Command perl -ErrorAction SilentlyContinue
+          if (-not $p) {
+            throw "perl not found on PATH -- see the 'rust' job's identical step for the full " + `
+              "reasoning."
+          }
+          perl -v
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: implementation/desktop/crates/selahcue-operator
