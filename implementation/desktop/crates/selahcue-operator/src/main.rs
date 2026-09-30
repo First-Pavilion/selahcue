@@ -6966,11 +6966,10 @@ fn note_generation_limits() -> serde_json::Value {
 /// (`transcript_generate_notes`) has a direct unit test (17tnw2b0ntd: this used to live only in the
 /// removed live-tail command).
 fn apply_scripture_verification(draft: &mut selahcue_core::providers::NoteDraft) {
-    let (verdicts, embedded_scan_truncated) = selahcue_core::providers::verify_scriptures(
-        &draft.scriptures,
-        &draft.sections,
-        |r| !selahcue_scripture::verses(r).is_empty(),
-    );
+    let (verdicts, embedded_scan_truncated) =
+        selahcue_core::providers::verify_scriptures(&draft.scriptures, &draft.sections, |r| {
+            !selahcue_scripture::verses(r).is_empty()
+        });
     draft
         .caveats
         .extend(verdicts.iter().filter(|v| !v.verified).map(|v| {
@@ -7207,9 +7206,20 @@ mod transcript_generate_notes_tests {
         let mut draft = selahcue_core::providers::NoteDraft::default();
         draft.scriptures = vec!["John 3:16".to_string(), "Hezekiah 99:1".to_string()];
         apply_scripture_verification(&mut draft);
-        let real = draft.scripture_verdicts.iter().find(|v| v.reference == "John 3:16").expect("verdict for John 3:16");
-        let fake = draft.scripture_verdicts.iter().find(|v| v.reference == "Hezekiah 99:1").expect("verdict for Hezekiah 99:1");
-        assert!(real.verified, "a real reference must verify (positive control)");
+        let real = draft
+            .scripture_verdicts
+            .iter()
+            .find(|v| v.reference == "John 3:16")
+            .expect("verdict for John 3:16");
+        let fake = draft
+            .scripture_verdicts
+            .iter()
+            .find(|v| v.reference == "Hezekiah 99:1")
+            .expect("verdict for Hezekiah 99:1");
+        assert!(
+            real.verified,
+            "a real reference must verify (positive control)"
+        );
         assert!(!fake.verified, "a fabricated reference must not verify");
         assert!(
             draft.caveats.iter().any(|c| matches!(c,
