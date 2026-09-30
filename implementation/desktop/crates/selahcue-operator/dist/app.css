@@ -7998,10 +7998,18 @@
 /* ===== Transcripts (86akcffvt / FR-130 core slice) ===================================== */
 /* The surface hosts two full-height sibling views ("list" / "detail"), each toggled via the
    native [hidden] attribute, never swapped with the OTHER's own [class] alone — see
-   transcripts.js. This surface manages its own scroll regions (the list scrolls as a whole;
-   the detail view's #tr-detail-log is its OWN scroll container so the bounded-window
-   virtualizer's scrollTop math is meaningful), so it opts out of .surface-pad's page-level
-   scroll the same way #surface-preservice already does. */
+   transcripts.js. The app shell itself still never scrolls (`overflow: hidden` below, unchanged)
+   — but per TRANSCRIPTS-2.0-HANDOFF.md §11 (17tnw2b0ntd), the DETAIL view's own scroll model was
+   rebuilt: the bug was one region (`.tr-log`) being made to scroll by STARVING every other region
+   (`.tr-panel`/`.tr-gen`) of space rather than any of them getting a bounded height on purpose —
+   once a saved draft or edit form was tall, the log shrank to zero and the rest was simply cut
+   off with no scrollbar anywhere. The fix: `.tr-log`'s bounded-window virtualizer (ADR-0026) is a
+   PERFORMANCE mechanism, not a viewport-filling one — it gets a capped height and keeps its own
+   internal scroll (unchanged). `.tr-detail` becomes the outer scroll container instead, so
+   whatever sits below the log (the detections panel, already capped; the notes/generate panel,
+   deliberately UNcapped — a draft is allowed to be as tall as its content needs) sits in normal
+   block flow and is reached by scrolling the page, not the log. The list view is unchanged —
+   `.tr-view`'s own `overflow-y: auto` already did the right thing; the bug was isolated to detail. */
 #surface-transcripts.surface-pad.active {
   padding: 0;
   overflow: hidden;
@@ -8009,9 +8017,24 @@
   flex-direction: column;
 }
 
+/* §11.2: one shared, centered content column across every stacked detail region (header, log,
+   detections, notes) — reusing the Settings precedent (`.pp-wrap`/`.set-page`, 1180px) exactly
+   rather than inventing a new number, so wide windows get neutral margin instead of edge-to-edge
+   text. Applied here AND to `.tr-detail-head`/`.tr-log`/`.tr-panel`/`.tr-gen` below; each keeps
+   its own existing left/right padding inside this shared max-width. */
+.tr-view,
+.tr-detail-head,
+.tr-log,
+.tr-panel,
+.tr-gen {
+  max-width: 1180px;
+  margin-inline: auto;
+  width: 100%;
+  box-sizing: border-box;
+}
+
 .tr-view {
   height: 100%;
-  box-sizing: border-box;
   overflow-y: auto;
   padding: 22px 28px 28px;
 }
@@ -8125,15 +8148,25 @@
 }
 
 /* ---- Detail (read-only viewer) ---- */
+/* §11.1: `.tr-detail` is now the outer scroll container for the detail view — `overflow-y: auto`
+   is the load-bearing change here. Everything below the capped `.tr-log` (detections, notes/
+   generate) sits in normal block flow beneath it; however tall the notes panel gets, scrolling
+   THIS element (not `.tr-log`) reaches every part of it. */
 .tr-detail {
   height: 100%;
   box-sizing: border-box;
   display: flex;
   flex-direction: column;
   min-height: 0;
+  overflow-y: auto;
 }
 .tr-detail[hidden] { display: none; } /* must follow the flex rule above — [hidden] wins by source order (WKWebView-safe) */
 
+/* §11.1 (design decision, flagged not guessed — TRANSCRIPTS-2.0-HANDOFF.md §11.1/§17): sticky so
+   the back button + service identity stay visible while reviewing a long draft. Costs nothing
+   structurally (`flex: none` already) and a one-line revert (`position: sticky; top: 0;` only) if
+   the owner would rather it scroll away with the rest. Background MUST be opaque — content now
+   scrolls under it. */
 .tr-detail-head {
   display: flex;
   align-items: flex-start;
@@ -8141,6 +8174,10 @@
   padding: 18px 28px 14px;
   border-bottom: 1px solid var(--sc-border);
   flex: none;
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--sc-surface);
 }
 .tr-back {
   flex: none;
@@ -8196,8 +8233,14 @@
    Up-Down / Home / End) — NFR-019. This is the virtualizer's OWN scroll container; its
    scrollTop drives transcripts.js's bounded sliding window (renderWindow/recomputeWindow). */
 .tr-log {
-  flex: 1;
-  min-height: 0;
+  /* §11.1: CHANGED from `flex: 1; min-height: 0;` — the bounded-window virtualizer (ADR-0026)
+     is a performance mechanism, not a viewport-filling one. It does not need to occupy 100% of
+     the available space to do that job; giving it a capped height instead turns it into a
+     "window into a long transcript" that settles at a sensible size rather than a panel that
+     either eats everything or (once a tall notes panel existed below it) shrank to nothing. */
+  flex: none;
+  min-height: 220px;
+  max-height: min(48vh, 480px);
   overflow-y: auto;
   padding: 6px 28px 28px;
   /* ADR-0026 rev 2, D2: native scroll anchoring is now load-bearing, not disabled. Every
@@ -8293,11 +8336,13 @@
 .tr-det-conf { flex: 1; text-align: right; color: var(--sc-text-secondary); font-size: 11px; }
 
 /* Generate Sermon Notes from a stored transcript (86akcffy0) — reuses the `.pp-generate`/
-   `.pp-gen-preview`/`.pp-gen-result` rules above (Settings panel's live-tail Generate) so both
-   flows look and behave identically; `.tr-gen` itself is just a `flex: none` footer strip below
-   the (flex:1) log, padded to match this surface's own edges rather than the Settings panel's.
-   `#tr-gen-result` (86akgqdxr) is ALSO where an EXISTING saved draft's view/edit UI renders, not
-   only a freshly generated one — same classes, same rules, one render path. */
+   `.pp-gen-preview`/`.pp-gen-result` rules (originally shared with the Settings panel's live-tail
+   Generate; as of 17tnw2b0ntd that live-tail flow no longer exists, and this surface is the ONLY
+   place these classes render, D1). `.tr-gen` itself is `flex: none` — §11.1: deliberately
+   UNcapped, unlike `.tr-log` above — a draft or edit form is allowed to be as tall as its content
+   needs; `.tr-detail`'s own scroll (not this element's) is what reaches all of it. `#tr-gen-result`
+   (86akgqdxr) is ALSO where an EXISTING saved draft's view/edit UI renders, not only a freshly
+   generated one — same classes, same rules, one render path. */
 .tr-gen {
   flex: none;
   display: flex;
@@ -8435,3 +8480,25 @@
 .pp-copy-chapters-btn:hover { background: var(--sc-inset); }
 .tr-copy-chapters-btn:focus-visible,
 .pp-copy-chapters-btn:focus-visible { outline: 2px solid var(--sc-primary-hover); outline-offset: 2px; }
+
+/* §11.3: narrow-window floor — reusing the Pre-service Check precedent exactly (app.css:7124,
+   `@media (max-width: 900px)`), the pattern TRANSCRIPTS-2.0-HANDOFF.md names as the closest fit;
+   Settings' sidebar collapse and the Service Plan builder also break here, so 900px is already
+   this app's established "narrow shell" floor, not a new number invented for this surface. The
+   layout never changes SHAPE below this width — it was already a single column (§9: Flow 11's
+   side-by-side split is superseded at every width) — only padding and the log's height cap
+   change, so there is no horizontal scroll at any width down to 900px. */
+@media (max-width: 900px) {
+  .tr-view,
+  .tr-detail-head,
+  .tr-log,
+  .tr-panel,
+  .tr-gen {
+    padding-left: 16px;
+    padding-right: 16px;
+  }
+  .tr-log {
+    max-height: 34vh; /* was min(48vh, 480px) — leaves relatively more room for the detections +
+                          notes panels below it on a short, narrow window */
+  }
+}
