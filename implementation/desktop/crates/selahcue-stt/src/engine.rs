@@ -134,14 +134,28 @@ pub struct EngineConfig {
     /// measured numbers). See the horizon constant's own doc comment for why this crate can
     /// enforce that without the `whisper` feature's native toolchain.
     pub max_utterance_samples: usize,
-    /// Streaming interims: while an utterance is still open, re-transcribe the growing buffer
-    /// every this much WALL-CLOCK time since the last interim (86akcfpbj) and emit the result
-    /// as a NON-final segment (`is_final = false`) — the "words appearing as you speak" preview.
-    /// The final on close supersedes it. `Duration::ZERO` disables interims (the utterance only
-    /// transcribes once, on close). The default on-device wiring uses `Duration::from_millis(800)`
-    /// (`selahcue-operator`'s `listening.rs`) for a ~0.8 s cadence. Costs extra recognizer passes
-    /// on the open buffer, so it is off in this struct's own default and enabled by the host
-    /// that wants it.
+    /// Streaming interims: while an utterance is still open, wait AT LEAST this much WALL-CLOCK
+    /// time since the last interim's decode COMPLETED (86akcfpbj), then re-transcribe the
+    /// growing buffer and emit the result as a NON-final segment (`is_final = false`) — the
+    /// "words appearing as you speak" preview. The final on close supersedes it.
+    /// `Duration::ZERO` disables interims (the utterance only transcribes once, on close). The
+    /// default on-device wiring uses `Duration::from_millis(800)` (`selahcue-operator`'s
+    /// `listening.rs`). Costs extra recognizer passes on the open buffer, so it is off in this
+    /// struct's own default and enabled by the host that wants it.
+    ///
+    /// **The REAL steady-state cadence is `interim_interval + decode_time`, not a flat
+    /// `interim_interval` (Vera, PR #124 review round 2, corrected from an earlier, wrong
+    /// characterization).** The gate is measured from when the PREVIOUS decode finished, not
+    /// from when it started — see [`Clock`]'s doc and `process_current_frame`'s stamp site — so
+    /// any real decode cost is additive to the wait, for every utterance, not only during a
+    /// backlog. This is the direct, honest consequence of closing 86akcfpbj's feedback loop
+    /// correctly (a decode that hasn't finished yet cannot be "the last interim" the next wait
+    /// counts from) and was chosen deliberately over a hybrid stamp that would preserve a flat
+    /// cadence for a fast decode at the cost of reintroducing conditional complexity for a
+    /// marginal latency win: it also caps the fraction of wall time spent decoding interims at
+    /// `decode_time / (interim_interval + decode_time)` — at most 50% for any `decode_time <=
+    /// interim_interval` — versus the pre-86akcfpbj design's measured 82-91% duty cycle right
+    /// below the force-close cliff.
     ///
     /// **Wall-clock, not a frame/sample count (86akcfpbj — corrected from the prior design).** A
     /// frame-counted gate fires once N frames of AUDIO POSITION have been processed, which is
@@ -749,38 +763,100 @@ mod tests {
     }
 
     #[test]
-    fn steady_state_cadence_is_unchanged_at_the_documented_800ms_interval() {
-        // POSITIVE CONTROL for the test above: the fix must not silently change today's
-        // steady-state (no backlog) interim cadence. Production wires
-        // `interim_interval: Duration::from_millis(800)` (`selahcue-operator`'s `listening.rs`)
-        // — the same cadence the prior `interim_interval_frames: 40` (40 * 20ms) meant. Fed at
-        // REAL TIME (the manual clock advanced exactly one frame's worth, `MS_PER_FRAME`, per
-        // processed frame — the same pace a live capture/recognition loop runs at when it is
-        // keeping up), interims must fire at that same ~0.8s cadence, not more and not fewer.
-        // 201 frames @ 20ms = exactly 4.0s of real time elapsed; at an 800ms cadence that is
-        // exactly 5 firings (0.8s, 1.6s, 2.4s, 3.2s, 4.0s) — a lower OR higher count here would
-        // mean the wall-clock fix changed the ordinary-case cadence, not just the backlog case.
-        let script = vec!["steady line"; 50];
+    fn steady_state_cadence_is_interim_interval_plus_decode_time() {
+        // 86akcfpbj CORRECTED characterization (Vera, PR #124 review round 2, N2). The
+        // post-decode stamp (F1's fix — see `process_current_frame`'s stamp site) means the
+        // REAL steady-state interim spacing is `interim_interval + decode_time`, not a flat
+        // `interim_interval`, for ANY decode_time > 0 — not only during a backlog. This is the
+        // direct, honest consequence of correctly closing 86akcfpbj's feedback loop: the
+        // interim decode itself is real elapsed time that must pass before the next wait
+        // begins. The PRIOR version of this test used `FakeRecognizer` (zero decode time),
+        // which cannot see this effect at all — it stayed green whether the stamp was pre- or
+        // post-decode, silently leaving the actual cadence formula unverified by any test.
+        //
+        // Chosen deliberately (Vera + coordinator, PR #124 review round 2) over a hybrid stamp
+        // that would preserve a flat cadence for a fast decode at the cost of reintroducing
+        // conditional complexity for a marginal latency win: this is the simpler, more honest
+        // design, and it caps interim-decode wall-time duty at <= 50% for any `decode_time <=
+        // interim_interval`, versus the pre-86akcfpbj design's measured 82-91% duty right below
+        // the force-close cliff.
+        use std::sync::{Arc, Mutex};
+
+        #[derive(Clone)]
+        struct TimestampingRecognizer {
+            clock: ManualClock,
+            decode_cost: Duration,
+            fired_at: Arc<Mutex<Vec<Instant>>>,
+        }
+        impl Recognizer for TimestampingRecognizer {
+            fn label(&self) -> &str {
+                "timestamping"
+            }
+            fn transcribe(
+                &mut self,
+                _samples: &[f32],
+                start_ms: u64,
+                end_ms: u64,
+            ) -> Vec<RecognizedSegment> {
+                self.fired_at
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .push(self.clock.now());
+                self.clock.advance(self.decode_cost); // the decode itself taking real time
+                vec![RecognizedSegment::final_text("partial", start_ms, end_ms)]
+            }
+        }
+
         let clock = ManualClock::new(Instant::now());
-        let (mut engine, mut provider) = engine_with_clock(
-            &script,
+        let fired_at = Arc::new(Mutex::new(Vec::new()));
+        let decode_cost = Duration::from_millis(50);
+        let interim_interval = Duration::from_millis(800);
+        let recognizer = TimestampingRecognizer {
+            clock: clock.clone(),
+            decode_cost,
+            fired_at: Arc::clone(&fired_at),
+        };
+        let (mut engine, _provider) = SttEngine::build_with_clock(
             EngineConfig {
-                interim_interval: Duration::from_millis(800),
+                interim_interval,
                 ..EngineConfig::default()
             },
+            Box::new(EnergyVad::new()),
+            Box::new(recognizer),
+            FeedbackGuard::new(),
             Box::new(clock.clone()),
         );
-        for _ in 0..201 {
+
+        // Real-time-paced speech for comfortably more than the cycle length (interim_interval +
+        // decode_cost each), so at least a few gaps between consecutive decodes can be measured.
+        let cycle = interim_interval + decode_cost; // 850ms
+        let frames = (cycle.as_millis() as u64 * 5) / MS_PER_FRAME;
+        for _ in 0..frames {
             engine.process(&speech_chunk(1));
             clock.advance(Duration::from_millis(MS_PER_FRAME));
         }
-        let mid = provider.poll();
-        let interim_count = mid.iter().filter(|s| !s.is_final).count();
-        assert_eq!(
-            interim_count, 5,
-            "expected exactly 5 interims over 4.0s of steady real-time speech at an 800ms \
-             cadence, got {interim_count}: {mid:?}"
+
+        let stamps = fired_at.lock().unwrap_or_else(|e| e.into_inner());
+        assert!(
+            stamps.len() >= 3,
+            "premise: need at least 3 decodes to measure 2 gaps, got {}",
+            stamps.len()
         );
+        // ±1 frame of slack for the discrete 20ms frame-pacing granularity.
+        let slack = Duration::from_millis(MS_PER_FRAME);
+        let low = cycle.saturating_sub(slack);
+        let high = cycle + slack;
+        for w in stamps.windows(2) {
+            let gap = w[1].duration_since(w[0]);
+            assert!(
+                gap >= low && gap <= high,
+                "REMOVING the post-decode stamp (F1's fix) must fail this test: consecutive \
+                 interim decodes must be spaced interim_interval + decode_time (~{cycle:?} \
+                 here), got {gap:?} (expected {low:?}..={high:?}) — a gap near \
+                 {interim_interval:?} instead means the OLD, pre-fix flat-cadence behaviour \
+                 came back"
+            );
+        }
     }
 
     #[test]

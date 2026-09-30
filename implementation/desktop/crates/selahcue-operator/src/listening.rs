@@ -1155,12 +1155,20 @@ fn run_on_device_with_recognizer<S: DeviceCaptureSource, R: tauri::Runtime>(
     }
 
     let (mut engine, mut provider) = SttEngine::build(
-        // Stream interims (~0.8 s WALL-CLOCK cadence, 86akcfpbj — previously a 40-frame count,
-        // which meant a recognizer falling behind real time fired interims MORE often, not
-        // less, because draining a backlog feeds frames through faster than real time) so
-        // recognised words appear live; bound each interim to a sliding window so its cost
-        // stays fixed as the utterance grows (the final on close still decodes the whole
-        // utterance). Interims run on the recognition thread.
+        // Stream interims (WALL-CLOCK gated, 86akcfpbj — previously a 40-frame count, which
+        // meant a recognizer falling behind real time fired interims MORE often, not less,
+        // because draining a backlog feeds frames through faster than real time) so recognised
+        // words appear live; bound each interim to a sliding window so its cost stays fixed as
+        // the utterance grows (the final on close still decodes the whole utterance). Interims
+        // run on the recognition thread.
+        //
+        // **Real cadence is 800ms + decode_time, not a flat 800ms (Vera, PR #124 review round
+        // 2)** — the wait is measured from when the PREVIOUS interim's decode COMPLETED, not
+        // when it started, for every utterance, not only during a backlog. See
+        // `EngineConfig::interim_interval`'s doc comment for the full reasoning: this is the
+        // direct, honest consequence of correctly closing 86akcfpbj's feedback loop, deliberately
+        // chosen over a hybrid stamp that would preserve a flat cadence at the cost of
+        // reintroducing conditional complexity for a marginal latency win.
         EngineConfig {
             interim_interval: Duration::from_millis(800),
             interim_max_samples: INTERIM_WINDOW_SAMPLES,
@@ -3715,14 +3723,18 @@ mod tests {
              stereo-style widening at the on-device call site, e.g. \
              HANDOFF_MAX_SAMPLES.max(handoff_capacity)) must fail this test"
         );
-        // Stereo cap = 48_000 × 2 × 5 = 480,000. A flood well under it (200,000 — under even
-        // the MONO cap) can never clear it regardless of fragmentation: this is the POSITIVE
-        // CONTROL proving the mono result above isn't a coincidence of some unrelated
-        // always-drop bug, not a bracket needing its own fragmentation-safety margin.
+        // Stereo cap = 48_000 × 2 × 5 = 480,000. Vera's PR #124 review round 2 (N1): the SAME
+        // 350,000-sample flood used for the mono assertion above — not a separately-chosen,
+        // smaller value — is what makes this a genuine positive control. The claim being
+        // checked is "identical input, different device config → different outcome, because the
+        // mono cap is genuinely smaller" — a differently-sized flood would only prove "a small
+        // enough flood never evicts", which is true regardless of whether mono/stereo sizing is
+        // correct at all. 350,000 stays comfortably under 480,000 (27% margin) either way.
         assert!(
-            !drop_notice_fires_for(48_000, 2, 200_000),
-            "a stereo device's capacity (480,000 samples here) must not be crossed by a \
-             200,000-sample flood — got a drop notice anyway"
+            !drop_notice_fires_for(48_000, 2, 350_000),
+            "a stereo device's capacity (480,000 samples here) must not be crossed by the SAME \
+             350,000-sample flood that crosses the mono capacity above — got a drop notice \
+             anyway"
         );
     }
 }
