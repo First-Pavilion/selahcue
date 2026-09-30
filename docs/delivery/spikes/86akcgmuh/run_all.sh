@@ -41,6 +41,17 @@ $BIN decode slices_all.json results/all_levers.jsonl ctx576+inst,ctx640+inst,ctx
 $BIN decode slices_latency.json results/lat_pass1.jsonl prod,ctx576,ctx640,ctx768,ctx1024,unc 2> results/lat_pass1.log
 $BIN decode slices_latency.json results/lat_pass2.jsonl ctx1024,ctx576,prod 2> results/lat_pass2.log
 zsh run_paced.sh > results/paced_summary.txt
+# 17tnw2b0nkq: the SHIPPED code path (production WhisperRecognizer at WHISPER_AUDIO_CTX 576 +
+# production trim_trailing_repeat) on every slice, and the ctx change alone; compare/paired pick
+# these up automatically. Build the harness against the branch that carries the fix.
+$BIN decode slices_all.json results/fix_all.jsonl fix,recog 2> results/fix_all.log
+# 17tnw2b0nkq C-009 real-speech validation — ONLY after the user has directly approved the
+# download of the six LibriVox MP3s named in real_speech.py into audio_real/:
+#   python3 real_speech.py prepare
+#   $BIN extract real_manifest.json results/real_engine_windows.json
+#   python3 real_speech.py slices
+#   $BIN decode slices_real.json results/real.jsonl prod+inst,recog,fix,unc 2> results/real.log
+#   python3 real_speech.py report
 # Reports:
 python3 analyze.py slices_sweep.json audio_manifest.json results/forced_base.jsonl results/onset_base.jsonl results/sweep1.jsonl results/sweep_ctx.jsonl
 python3 compare.py

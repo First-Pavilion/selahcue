@@ -10,7 +10,7 @@
 - Execution engine: goal
 - ClickUp task: https://app.clickup.com/t/17tnw2b0nkq (origin: https://app.clickup.com/t/86akcgmuh spike findings comment)
 - Created: 2026-09-30T21:08:24Z
-- Updated: 2026-09-30T21:08:24Z
+- Updated: 2026-09-30T22:45:00Z
 - Maximum iterations: 10
 - Independent verification required: yes (four-reviewer gate Cody/Vera/Shadow/Quinn; real `gh pr checks`; `selahcue-stt` run directly because no CI job covers it)
 
@@ -104,22 +104,22 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
 
 | ID | Mandatory | Criterion | Verifier | Expected result | Evidence | Status |
 |---|---|---|---|---|---|---|
-| C-001 | yes | `WHISPER_AUDIO_CTX` is 576 and `engine::WHISPER_AUDIO_CTX_HORIZON_SAMPLES` equals 576·16000/50; a mismatch fails the build | `cargo check --manifest-path implementation/desktop/crates/selahcue-stt/Cargo.toml --features metal`; mutation: set only one of the two to 512 | compiles on real code; mutation fails with a const-eval error | build output (both runs) | PENDING |
-| C-002 | yes | 86akcgmvb clamp/horizon tests pass against the 11.52 s horizon | `cargo test --manifest-path .../selahcue-stt/Cargo.toml engine::tests` | all engine tests pass, including the clamp, benign pass-through and default-under-horizon tests | test output | PENDING |
-| C-003 | yes | `a_force_closed_final_ending_mid_word_does_not_repeat_itself` is un-ignored and passes; reverting ctx to 512 reddens it | `cargo test --features metal --lib a_force_closed_final` (real model); mutation: ctx 512 AND trim disabled | passes on real code; red under the mutation | test output (both runs) | PENDING |
-| C-004 | yes | An engine-level test shows a force-closed final "…and then wait long and then wait long and then wait" emitted as "…and then wait long" | `cargo test --manifest-path .../selahcue-stt/Cargo.toml` (default build, FakeRecognizer) | test passes | test output | PENDING |
-| C-005 | yes | The same test shows identical repeated text left untouched on (a) a pause-closed final, (b) an interim, and legitimate text ((c) "Holy, holy, holy", non-adjacent refrain, anaphora) left untouched on a force-closed final | same test | all controls pass | test output | PENDING |
-| C-006 | yes | The trim test is mutation-verified: (i) trim applied to every close, (ii) trim removed, (iii) minimum span lowered to 1 — each reddens a named assertion | run the test under each mutation, siblings included (not `--exact`) | red under each mutation; green restored | test output (each run) | PENDING |
-| C-007 | yes | Spike harness re-run with the production recognizer + production trim: loop rate ≤ 2.5% on the 370-window noisy-room set and ≤ 2 loops on the 86 production-faithful finals | harness `decode` with the new `fix` config + `analyze.py`/`compare.py` | ≤ 2.5% and ≤ 2 | results files + table in ClickUp | PENDING |
-| C-008 | yes | ≤ 3 windows loop on the fix that did not loop on `main` (same windows) | `paired.py` vs the spike's `prod+inst` baseline | new-loop count ≤ 3 | paired output | PENDING |
+| C-001 | yes | `WHISPER_AUDIO_CTX` is 576 and `engine::WHISPER_AUDIO_CTX_HORIZON_SAMPLES` equals 576·16000/50; a mismatch fails the build | `cargo check --manifest-path implementation/desktop/crates/selahcue-stt/Cargo.toml --features metal`; mutation: set only one of the two to 512 | compiles on real code; mutation fails with a const-eval error | `cargo check --features metal` green at 576/576; mutation (recognizer 576, mirror 512) failed the build with `error[E0080]: ... must track WHISPER_AUDIO_CTX exactly` (iteration 1) | PASS |
+| C-002 | yes | 86akcgmvb clamp/horizon tests pass against the 11.52 s horizon | `cargo test --manifest-path .../selahcue-stt/Cargo.toml engine::tests` | all engine tests pass, including the clamp, benign pass-through and default-under-horizon tests | default suite 47 lib + 4 bounded_memory + 3 pipeline pass, including the 86akcgmvb clamp, benign pass-through and default-under-horizon tests against the 184,320-sample horizon (iteration 1) | PASS |
+| C-003 | yes | `a_force_closed_final_ending_mid_word_does_not_repeat_itself` is un-ignored and passes; reverting ctx to 512 reddens it | `cargo test --features metal --lib a_force_closed_final` (real model); mutation: ctx 512 AND trim disabled | passes on real code; red under the mutation | un-ignored; GREEN at 576 (1 passed, 118.6 s); RED at 512 with the trim in place: the raw decode looped on both fixtures ('and then wait long' x2, 'the words on the screen look at the one' x2) while the engine finals were already clean (iteration 1) | PASS |
+| C-004 | yes | An engine-level test shows a force-closed final "…and then wait long and then wait long and then wait" emitted as "…and then wait long" | `cargo test --manifest-path .../selahcue-stt/Cargo.toml` (default build, FakeRecognizer) | test passes | `engine::tests::the_trailing_repeat_trim_applies_only_to_force_closed_finals` passes; RED before the engine change (the looped text came through) (iteration 1) | PASS |
+| C-005 | yes | The same test shows identical repeated text left untouched on (a) a pause-closed final, (b) an interim, and legitimate text ((c) "Holy, holy, holy", non-adjacent refrain, anaphora) left untouched on a force-closed final | same test | all controls pass | same test: pause-closed, flush()-closed, same-frame hangover+cap and interim (ManualClock) finals keep the looped text verbatim; 4 legitimate texts on force-closed finals verbatim (iteration 1) | PASS |
+| C-006 | yes | The trim test is mutation-verified: (i) trim applied to every close, (ii) trim removed, (iii) minimum span lowered to 1 — each reddens a named assertion | run the test under each mutation, siblings included (not `--exact`) | red under each mutation; green restored | `docs/delivery/spikes/86akcgmuh/mutate_17tnw2b0nkq.py` plus a flush-only mutant: 6 mutants all RED on the named assertion (trim on every close; on interims; removed; min span 1; same-frame hangover+cap as forced; flush only); files restored byte-for-byte, shasum-checked (iteration 1) | PASS |
+| C-007 | yes | Spike harness re-run with the production recognizer + production trim: loop rate ≤ 2.5% on the 370-window noisy-room set and ≤ 2 loops on the 86 production-faithful finals | harness `decode` with the new `fix` config + `analyze.py`/`compare.py` | ≤ 2.5% and ≤ 2 | harness `fix` (production recognizer at 576 + production trim): noisy-room 4/370 = 1.1% (95% CI 0.4-2.7%) vs main 29/370 = 7.8%; production-faithful 0/86 vs main 2/86; ctx alone (`recog`) 12/370 = 3.2% (iteration 2) | PASS |
+| C-008 | yes | ≤ 3 windows loop on the fix that did not loop on `main` (same windows) | `paired.py` vs the spike's `prod+inst` baseline | new-loop count ≤ 3 | `paired.py`: fix vs main on the same 370 windows - 25 loops fixed, 0 new (exact McNemar p = 6e-8); 0 new on the 86 finals (iteration 2) | PASS |
 | C-009 | yes | Loop rate measured and recorded on real public-domain human speech for `main` and the fix (≥ 100 force-close-shaped windows, ≥ 5 speakers); fix rate ≤ `main` rate; every trim applied to real speech inspected and any legitimate-repeat trim recorded | harness on downloaded, user-approved public-domain recordings | both rates recorded; fix ≤ main; trims inspected | results + ClickUp comment | PENDING |
 | C-010 | yes | On a quiet machine (load average < 4) the four 86akcfp3u tests pass (3 timing at 700 ms + text equivalence) | `cargo test --features metal --lib whisper_tests::capp` with `uptime` recorded before/after | 4 passed; load < 4 throughout | test output + uptime | PENDING |
 | C-011 | yes | Back-to-back on the quiet machine, a 10 s final at ctx 576 decodes within +60 ms of ctx 512 | harness `decode` slice-major interleaving on the 40 production-faithful finals, both ctx values, same process | median(576) − median(512) ≤ 60 ms | harness output + uptime | PENDING |
 | C-012 | yes | A 126 s real-time run through the real engine + production recognizer keeps mean interim lag ≤ 0.6 s, p95 ≤ 0.9 s, zero dropped audio, hand-off peak ≤ 25% | harness `paced` mode with the production recognizer, quiet room, quiet machine | all four bounds met | paced summary + uptime | PENDING |
-| C-013 | yes | Doc comments updated: `WHISPER_AUDIO_CTX` (576, why, measured loop rates) and the trim (why force-closed finals only), both citing 17tnw2b0nkq | code review of the diff | present and accurate | diff | PENDING |
+| C-013 | yes | Doc comments updated: `WHISPER_AUDIO_CTX` (576, why, measured loop rates) and the trim (why force-closed finals only), both citing 17tnw2b0nkq | code review of the diff | present and accurate | `WHISPER_AUDIO_CTX` doc (why 576, measured loop rates, cost), engine mirror doc, `CloseReason`, `close_utterance` and `trim_trailing_repeat` docs all cite 17tnw2b0nkq (iteration 1) | PASS |
 | C-014 | yes | `make ci` green on the final head | `make ci` from repo root | exit 0, ALL GREEN | terminal output | PENDING |
 | C-015 | yes | `selahcue-stt` default suite passes and the metal-feature suite result is recorded (no CI job runs either) | `cargo test --manifest-path .../selahcue-stt/Cargo.toml`; `--features metal` | default all pass; metal results recorded (pre-existing `model.rs` step-down failures under `metal` noted, not introduced) | terminal output | PENDING |
-| C-016 | yes | No new unbounded buffering; the trim allocates only per call, bounded by one line | code review | confirmed | diff review | PENDING |
+| C-016 | yes | No new unbounded buffering; the trim allocates only per call, bounded by one line | code review | confirmed | the trim allocates one Vec of normalised words and one output String per force-closed final and retains nothing; no new fields, queues or caches (iteration 1) | PASS |
 | C-017 | yes | Branch up to date with `origin/main` immediately before review | `git fetch origin && git rev-list --count HEAD..origin/main` | 0 | terminal output | PENDING |
 | C-018 | yes | Draft PR against `main`, not merged by this session | `gh pr view` | Draft, open | PR URL | PENDING |
 | C-019 | yes | Real `gh pr checks` green on the final head | `gh pr checks` on the PR opened for this branch | all applicable pass | checks output | PENDING |
@@ -144,11 +144,43 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
 - Target criterion: C-001..C-006, C-013, C-016
 - Hypothesis: raising the constant pair and adding a close-reason-gated trim in `engine.rs`
   satisfies the code criteria without touching the recognizer's decode parameters otherwise.
-- Change or investigation: pending
-- Verifier executed: pending
-- Result: pending
-- New evidence: pending
+- Change or investigation: TDD. New `repetition.rs` (`trim_trailing_repeat`,
+  `MIN_TRIM_SPAN_WORDS`; the spike's test-only detector moved here); `engine.rs` gains
+  `CloseReason` {Paused, ForceClosed, Flushed} and applies the trim only to `ForceClosed` finals,
+  logging word counts only; `WHISPER_AUDIO_CTX` and its engine mirror 512 -> 576 with doc
+  updates; the repro test is un-ignored and gains a raw-decode layer. Found while writing the
+  trim's unit test: the spike's Python stand-in for the trim scanned from the RIGHTMOST repeat
+  start, so on a partial last copy it kept "…and then wait long and then wait" — a partial
+  duplicate its own loop detector did not count. The ticket's spec (keep only the FIRST copy) is
+  what is implemented (longest periodic tail, shortest period first), so the spike's "+collapse"
+  figures described a weaker trim than the one shipped; C-007 re-measures the real one.
+- Verifier executed: RED then GREEN for both new tests; `cargo check --features metal` with a
+  mismatched constant pair (C-001); repro test at 512 (RED) and at 576 (GREEN);
+  `mutate_17tnw2b0nkq.py` (6 mutants); `cargo fmt --check`; clippy default and metal
+  `--all-targets` (only the 3 pre-existing `engine.rs` `unwrap` warnings remain).
+- Result: C-001..C-006, C-013, C-016 PASS.
+- New evidence: at 512 the trim alone already cleaned both fixtures' ENGINE finals and only the
+  raw decode kept looping — the two levers are independently observable, which is why the repro
+  test checks both layers.
 - Decision: iterate
+
+### Iteration 2
+
+- Target criterion: C-007, C-008
+- Hypothesis: the shipped code path (production recognizer at 576 + production trim) meets the
+  ticket's loop-rate and regression bounds on the spike's slice sets.
+- Change or investigation: the harness gained `recog`/`trim`/`fix` modes that call the linked
+  crate's `WhisperRecognizer::transcribe` and `trim_trailing_repeat` directly (no
+  re-implementation), built against this branch.
+- Verifier executed: harness `decode slices_all.json results/fix_all.jsonl fix,recog`;
+  `compare.py`; `paired.py`.
+- Result: C-007, C-008 PASS (numbers in the table).
+- New evidence: `recog` reproduces the spike's `ctx576+inst` count exactly (12/370), so the
+  spike's harness parameters matched production; the 4 residual loops on `fix` are all mid-line
+  (followed by the true continuation), which the trim deliberately never touches.
+- Decision: iterate. C-009 waits on the user's direct download approval. C-010..C-012 wait on a
+  quiet machine: five `fvm flutter --version` processes from other sessions have each been
+  spinning at ~75% CPU for 10-12 hours, holding the load average at 8-11.
 
 ## Risks and rollback
 

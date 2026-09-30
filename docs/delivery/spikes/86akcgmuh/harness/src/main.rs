@@ -15,6 +15,11 @@
 //!   | beamN | bestN | nots | ngramN (no-repeat text-token n-gram ban) | padN (append N ms of
 //!   silence) | cutqN (cut at the quietest 20 ms frame within the last N ms) | maxtokN | inst
 //!   (install the counting-only logits callback)
+//!   | recog (decode through the linked crate's PRODUCTION `WhisperRecognizer`, ignoring the
+//!   modifiers above) | trim (apply the PRODUCTION `trim_trailing_repeat` to the output)
+//!   | fix (= recog+trim: exactly what 17tnw2b0nkq ships for a force-closed final)
+//! NOTE: `prod` is the harness's OWN copy of the 86akcgmuh-era production params (audio_ctx
+//! 512); after 17tnw2b0nkq the real production recognizer is `recog` (audio_ctx 576).
 
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -24,7 +29,8 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-use selahcue_stt::model::{verify_model, HardwareProbe, WhisperModel};
+use selahcue_stt::model::{verify_model, Backend, HardwareProbe, ModelSelection, WhisperModel};
+use selahcue_stt::recognizer::WhisperRecognizer;
 use selahcue_stt::{
     AudioChunk, EnergyVad, EngineConfig, FeedbackGuard, RecognizedSegment, Recognizer, SttEngine,
 };
@@ -130,6 +136,12 @@ struct Cfg {
     cutq_ms: usize,
     max_tokens: Option<i32>,
     instrument: bool,
+    /// Decode through the PRODUCTION `WhisperRecognizer::transcribe` (whatever
+    /// `WHISPER_AUDIO_CTX` the linked selahcue-stt has) instead of this harness's own params.
+    recog: bool,
+    /// Apply the PRODUCTION `selahcue_stt::trim_trailing_repeat` to the output (what the engine
+    /// does to a force-closed final).
+    trim: bool,
 }
 
 fn num(s: &str, prefix: &str) -> Option<f32> {
@@ -152,6 +164,8 @@ fn parse_cfg(spec: &str) -> Cfg {
         cutq_ms: 0,
         max_tokens: None,
         instrument: false,
+        recog: false,
+        trim: false,
     };
     for m in spec.split('+') {
         match m {
@@ -161,6 +175,13 @@ fn parse_cfg(spec: &str) -> Cfg {
             "nofb" => c.temp_inc = Some(0.0),
             "nots" => c.no_ts = true,
             "inst" => c.instrument = true,
+            "recog" => c.recog = true,
+            "trim" => c.trim = true,
+            // 17tnw2b0nkq: exactly what production does to a force-closed final.
+            "fix" => {
+                c.recog = true;
+                c.trim = true;
+            }
             _ if m.starts_with("ctx") => c.audio_ctx = Some(num(m, "ctx").unwrap() as i32),
             _ if m.starts_with("ent") => c.entropy = Some(num(m, "ent").unwrap() / 10.0),
             _ if m.starts_with("lp") => c.logprob = Some(-num(m, "lp").unwrap() / 10.0),
@@ -254,11 +275,35 @@ struct DecodeOut {
     used_len: usize,
 }
 
-fn decode(ctx: &WhisperContext, cfg: &Cfg, window: &[f32], threads: i32, eot: i32) -> DecodeOut {
+fn decode(ctx: &Arc<WhisperContext>, cfg: &Cfg, window: &[f32], threads: i32, eot: i32) -> DecodeOut {
     let cut = quiet_cut(window, cfg.cutq_ms);
     let mut samples: Vec<f32> = window[..cut].to_vec();
     samples.extend(std::iter::repeat(0.0f32).take(cfg.pad_ms * SR / 1000));
     let used_len = samples.len();
+
+    if cfg.recog {
+        let started = Instant::now();
+        let selection = ModelSelection {
+            model: WhisperModel::LargeV3Turbo,
+            threads: threads.max(1) as usize,
+            backend: Backend::Metal,
+        };
+        let mut r = WhisperRecognizer::from_context(Arc::clone(ctx), &selection);
+        let end_ms = (samples.len() / (SR / 1000)) as u64;
+        let mut text = r
+            .transcribe(&samples, 0, end_ms)
+            .into_iter()
+            .map(|s| s.text)
+            .collect::<Vec<_>>()
+            .join(" ");
+        if cfg.trim {
+            if let Some(t) = selahcue_stt::trim_trailing_repeat(&text) {
+                text = t;
+            }
+        }
+        let ms = started.elapsed().as_secs_f64() * 1000.0;
+        return DecodeOut { text, ids: vec![], plogs: vec![], ms, passes: 0, bans: 0, used_len };
+    }
 
     let started = Instant::now();
     let mut state = ctx.create_state().expect("state");
@@ -321,6 +366,11 @@ fn decode(ctx: &WhisperContext, cfg: &Cfg, window: &[f32], threads: i32, eot: i3
             }
         }
     }
+    if cfg.trim {
+        if let Some(t) = selahcue_stt::trim_trailing_repeat(&text) {
+            text = t;
+        }
+    }
     let ms = started.elapsed().as_secs_f64() * 1000.0;
     DecodeOut { text, ids, plogs, ms, passes: fs.passes, bans: fs.bans, used_len }
 }
@@ -336,8 +386,10 @@ fn run_decode(slices_path: &str, out_path: &str, cfgs: &str, order: &str) {
     if std::env::var("SPIKE_SKIP_VERIFY").is_err() {
         verify_model(&model, asset.sha256).expect("model must match the pinned SHA-256");
     }
-    let ctx = WhisperContext::new_with_params(model.to_str().unwrap(), WhisperContextParameters::default())
-        .expect("load");
+    let ctx = Arc::new(
+        WhisperContext::new_with_params(model.to_str().unwrap(), WhisperContextParameters::default())
+            .expect("load"),
+    );
     let eot = ctx.token_eot();
     // Same thread count production uses (model.rs production selection: probe - 1, min 1).
     let threads = HardwareProbe::detect().threads.saturating_sub(1).max(1) as i32;

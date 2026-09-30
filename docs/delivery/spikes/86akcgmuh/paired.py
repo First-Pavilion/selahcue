@@ -33,6 +33,10 @@ for r in compare.rows:
     win = r["slice"].split("/")[-1]
     by.setdefault((win, r["cfg"]), {})[key(r)] = r
 base = by[("10s", "prod+inst")]
+FORCED = {}
+for r in compare.frows:
+    if r["slice"] not in compare.unintel_f:
+        FORCED.setdefault(r["cfg"], {})[r["slice"]] = r
 print(f"{'candidate':24s} {'loop: fixed':>11s} {'new':>4s} {'p':>8s}   "
       f"{'defect: fixed':>13s} {'new':>4s} {'p':>8s}   {'fallback: fixed':>15s} {'new':>4s}")
 for (win, cfg), rs in sorted(by.items()):
@@ -52,3 +56,10 @@ for (win, cfg), rs in sorted(by.items()):
         fn += rf and not bf
     print(f"{win + ' ' + cfg:24s} {lf:11d} {ln:4d} {mcnemar_exact(lf, ln):8.1e}   "
           f"{df:13d} {dn:4d} {mcnemar_exact(df, dn):8.1e}   {ff:15d} {fn:4d}")
+
+print("\nproduction-faithful force-closed finals (86): loops per cfg, and new loops vs prod+inst")
+fb = FORCED["prod+inst"]
+for cfg, rs in sorted(FORCED.items()):
+    loops = sum(1 for r in rs.values() if r["loop"])
+    new = sum(1 for k, r in rs.items() if r["loop"] and not fb[k]["loop"])
+    print(f"  {cfg:20s} N={len(rs):3d} loops={loops} new_vs_main={new}")

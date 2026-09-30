@@ -31,7 +31,8 @@ unintel_f = {r["slice"] for r in forced if r["cfg"] == "unc" and r["wer"] > 0.5}
 
 rows = base10 + load("slices_onset8.json", "results/onset8.jsonl") + \
     load("slices_onset9.json", "results/onset9.jsonl")
-extra = [p for p in ["results/all_levers.jsonl"] if os.path.exists(os.path.join(HERE, p))]
+extra = [p for p in ["results/all_levers.jsonl", "results/fix_all.jsonl"]
+         if os.path.exists(os.path.join(HERE, p))]
 allr = load("slices_all.json", *extra) if extra else []
 rows += [r for r in allr if r["slice"].endswith("/10s")]
 frows = forced + [r for r in allr if not r["slice"].endswith("/10s")]
