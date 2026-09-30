@@ -1571,7 +1571,7 @@ EXPECTED_MIN_CHECKS = 2065  # measured post-rebase, clean run: 2065 checks, 0 FA
 # "encrypted" render, its description text, the "not_encrypted" silent-downgrade warning render,
 # and its own control that the warning never also reads ON). Measured via an actual clean run,
 # not hand-summed.
-EXPECTED_MIN_CHECKS = 1900  # measured: 1900 checks, 0 FAIL (17tnw2b0ntd: -Settings Generate suite, +nav/scroll/layout checks)
+EXPECTED_MIN_CHECKS = 1913  # measured: 1913 checks, 0 FAIL (17tnw2b0ntd)
 
 
 def find_chrome():
@@ -2818,6 +2818,44 @@ STUB = r"""
         }
         return Promise.resolve(trOkResponse);
       }
+      // 17tnw2b0ntd: modes restored for the Transcripts page after the Settings-hosted Generate
+      // suite was deleted — the shared draft renderer now has ONE surface, so its empty-section,
+      // scripture-verification, degraded and quota behaviours are driven from here.
+      if (tg === "empty_sections") {
+        return Promise.resolve({ok:true, degraded:false, provider:"OpenAI", ai_generated:true,
+          ai_label:"AI-generated draft", disclosure:"disc", degraded_notice:null, transcript_id: args.id, quota:null,
+          clamp: null,
+          draft:{title:"A Quiet Sunday", summary:null,
+            sections:[
+              {heading:"Illustrations", items:["The mill closed after nineteen years."], points:[], empty_requested:false},
+              {heading:"Chapter markers", items:[], points:[], empty_requested:true}],
+            scriptures:[],
+            caveats:[{kind:"section_empty", heading:"Chapter markers"}, {kind:"section_empty", heading:"Summary"}],
+            scripture_verdicts:[]}});
+      }
+      if (tg === "scripture_marks") {
+        return Promise.resolve({ok:true, degraded:false, provider:"OpenAI", ai_generated:true,
+          ai_label:"AI-generated draft", disclosure:"disc", degraded_notice:null, transcript_id: args.id, quota:null,
+          clamp: null,
+          scripture_verification_note:"Checked against the bundled Bible text: addresses only, not the words attributed to them.",
+          draft:{title:"Marks", summary:null,
+            sections:[{heading:"Main points", items:["see Hezekiah 99:1"], points:[]}],
+            scriptures:["John 3:16", "3Jn 4:12", "Hezekiah 99:1"],
+            caveats:[{kind:"scripture_unverified", reference:"Hezekiah 99:1"}],
+            scripture_verdicts:[{reference:"John 3:16", verified:true}, {reference:"3Jn 4:12", verified:true},
+              {reference:"Hezekiah 99:1", verified:false}]}});
+      }
+      if (tg === "degraded") {
+        return Promise.resolve({ok:true, degraded:true, provider:"Local (offline)", ai_generated:false,
+          ai_label:"AI-generated draft", disclosure:null, transcript_id: args.id, quota:null, clamp: null,
+          degraded_notice:"The AI provider could not be reached, so this is an offline outline built from your transcript — not AI-generated notes. The headings are placeholders for you to fill in. Try again when you are back online.",
+          draft:{title:"Offline outline", summary:null,
+            sections:[{heading:"Outline", items:["point one"], points:[]},
+              {heading:"Prayer points", items:[], points:[], empty_requested:true}],
+            scriptures:[], caveats:[{kind:"section_empty", heading:"Prayer points"}]}});
+      }
+      if (tg === "quota_exceeded")
+        return Promise.resolve({ok:false, error:"quota_exceeded", message:"You have used all generations.", clamp:null});
       if (tg === "transport") return Promise.reject("network down");
       if (tg === "regenerate_pending" || tg === "regenerate_pending_degraded") {
         // FR-129 (86akgqdx8): mirrors the PP `regenerate_pending`/`regenerate_pending_degraded`
@@ -6940,6 +6978,64 @@ DRIVER = r"""
          "TR REGEN-6 (AC): a transport failure during regenerate never loses the prior " +
          "(pre-regenerate) draft, and stages nothing");
 
+      // === 17tnw2b0ntd: behaviours whose ONLY coverage lived in the deleted Settings suite, re-driven
+      // against the Transcripts page (the one surface that now renders them) ===
+      var trGenOnce = async function (mode) {
+        window.__trGen = mode;
+        el("tr-generate").click();
+        await sleep(40);
+        el("tr-gen-preview-confirm").click();
+        await sleep(60);
+        return el("tr-gen-result");
+      };
+      // 86akc0tua: requested-but-empty sections
+      var trEmptyRes = await trGenOnce("empty_sections");
+      var trEmptyLines = trEmptyRes.querySelectorAll(".pp-gen-empty");
+      ok(trEmptyLines.length >= 1 && Array.prototype.every.call(trEmptyLines, function (n) { return getComputedStyle(n).display !== "none"; }) &&
+         /Included in the request — nothing came back\./.test(trEmptyRes.textContent),
+         "TR 86akc0tua: a requested-but-empty section renders the exact empty-requested line, computed-visible");
+      var trExplainer = trEmptyRes.querySelector(".pp-gen-empty-explainer");
+      ok(!!trExplainer && trExplainer.getAttribute("role") === "note" && /Generating again may give a different result/.test(trExplainer.textContent),
+         "TR 86akc0tua: the once-per-draft explainer renders, role=note, exact wording");
+      ok(/The mill closed after nineteen years\./.test(trEmptyRes.textContent),
+         "TR 86akc0tua (positive control): a populated section still renders its content");
+      ok(!/Notable quotations/.test(trEmptyRes.textContent),
+         "TR 86akc0tua: a section the operator never enabled is absent entirely");
+      // 86akby820: scripture verification marks + note
+      var trMarkRes = await trGenOnce("scripture_marks");
+      ok(trMarkRes.querySelectorAll(".pp-gen-scr-verified").length >= 2,
+         "TR 86akby820: verified references (including the abbreviated '3Jn 4:12') carry an explicit verified mark");
+      ok(trMarkRes.querySelectorAll(".pp-gen-scr-unverified").length >= 1 && /unverified/.test(trMarkRes.textContent) &&
+         /Hezekiah 99:1/.test(trMarkRes.textContent),
+         "TR 86akby820: a fabricated reference is marked unverified");
+      ok(/addresses only/.test(trMarkRes.textContent),
+         "TR 86akby820: the verification-scope note renders on a FRESH generate (scripture_verification_note is read from the response)");
+      // FR-135: degraded draft
+      var trDegRes = await trGenOnce("degraded");
+      ok(/Local draft/.test(trDegRes.textContent) && !trDegRes.querySelector(".pp-gen-ai-label") && !trDegRes.querySelector(".pp-gen-disclosure"),
+         "TR FR-135: a degraded draft is badged 'Local draft' and is NOT labelled AI-generated (no fabrication warning either)");
+      ok(/not AI-generated notes/.test(trDegRes.textContent), "TR FR-135: the degraded notice says IN WORDS that this is not the AI draft asked for");
+      ok(trDegRes.querySelectorAll(".pp-gen-empty").length === 0 && !trDegRes.querySelector(".pp-gen-empty-explainer"),
+         "TR 86akc0tua: a degraded draft renders no empty-requested lines and no explainer");
+      // quota refusal label (neutral — the allowance period is not asserted anywhere in the UI)
+      var trQuotaRes = await trGenOnce("quota_exceeded");
+      ok(trQuotaRes.getAttribute("role") === "alert" && /Generation limit reached/.test(trQuotaRes.textContent),
+         "TR: quota_exceeded surfaces 'Generation limit reached' (role=alert)");
+      // consent-off: the operator gets a route to the consent switch (Settings no longer offers Generate)
+      window.__pp.cloud_notes_consent = false;
+      var trConsentRes = await trGenOnce("ok");
+      var trToSettings = el("tr-open-settings");
+      ok(trConsentRes.getAttribute("role") === "alert" && !!trToSettings && trToSettings.tagName === "BUTTON",
+         "TR: consent_required offers a one-click 'Open Settings' route, not a dead end");
+      trToSettings.click();
+      ok(el("surface-settings").classList.contains("active"), "TR: 'Open Settings' actually opens Settings");
+      document.querySelector('.nav-item[data-surface="transcripts"]').click();
+      await sleep(60);
+      window.__pp.cloud_notes_consent = true;
+      // return to transcript 1's detail for the checks that follow
+      await waitFor(function () { return el("tr-list").querySelectorAll(".tr-card").length >= 1; });
+      el('tr-list').querySelector('.tr-card[data-id="1"] .tr-card-open').click();
+      await waitFor(function () { return !el("tr-detail-view").hidden; });
       window.__trGen = "ok"; // restore for any later reads
 
       // (f) Switching to a DIFFERENT transcript resets all Generate UI/state — no stale result
