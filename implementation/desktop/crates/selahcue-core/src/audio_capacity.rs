@@ -82,6 +82,39 @@ use std::time::Duration;
 /// workspace-wide `unwrap_used = "warn"` lint exists specifically to keep the domain core
 /// panic-free on untrusted input (a device's reported configuration is exactly that: untrusted
 /// input this crate did not produce and cannot verify).
+///
+/// # A real `Duration`, proven — not just documented (86akcfp8w)
+///
+/// This crate has a `[lib]` target, so — unlike `selahcue-operator`'s illustrative-only samples
+/// (see `capture_handoff.rs`'s module doc for why those cannot run) — the pair below DOES
+/// execute, under `cargo test`'s doctest runner, on every OS the `rust` CI job covers. The
+/// positive half proves a real `Duration` compiles and returns the expected capacity; the
+/// negative half proves a bare integer (the same class of mistake as the historical `× 2`
+/// stereo literal that caused this ticket's bug: a literal with an assumed, unstated unit) is
+/// REFUSED at compile time, not just "would be a good idea to refuse". Deliberately bare
+/// `compile_fail`, not `compile_fail,E0308`: verified on this repo's pinned toolchain (rustc
+/// 1.98.0) that the error code annotation is ignored on stable — a doctest pinned to a
+/// nonexistent code still passes as long as compilation fails for ANY reason, so annotating one
+/// would assert nothing this bare form doesn't already assert (see `capture_handoff.rs`'s
+/// module doc for the same finding, in more detail).
+///
+/// ```
+/// use std::num::NonZeroUsize;
+/// use std::time::Duration;
+/// use selahcue_core::audio_capacity::handoff_capacity;
+///
+/// // A real Duration compiles, and the capacity is exactly rate × channels × seconds.
+/// let cap = handoff_capacity(48_000, 2, Duration::from_millis(5_000));
+/// assert_eq!(cap, NonZeroUsize::new(48_000 * 2 * 5));
+/// ```
+///
+/// ```compile_fail
+/// use selahcue_core::audio_capacity::handoff_capacity;
+///
+/// // A bare integer is not a Duration — refused at compile time, not silently misread as
+/// // seconds, milliseconds, or anything else.
+/// let _ = handoff_capacity(48_000, 2, 5);
+/// ```
 pub fn handoff_capacity(
     sample_rate_hz: u32,
     channels: u16,

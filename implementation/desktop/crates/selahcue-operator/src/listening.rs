@@ -66,24 +66,29 @@ impl CaptureSource for CpalSource {
     }
 }
 
-/// What `run_cloud` additionally needs, beyond [`CaptureSource`], to size the capture hand-off
-/// from the device's REAL configuration rather than a literal (`sample_rate`/`channels` feed
-/// `selahcue_core::audio_capacity::handoff_capacity`). A separate trait, rather than folding
-/// these into `CaptureSource` itself, so an `stt`-only build (no `cloud-stt`) — which never
-/// calls `run_cloud` at all — does not carry two methods nothing in that build can reach
-/// (`-D warnings` would otherwise flag them `dead_code`). Extended in the PR #22 remediation
-/// round 2 so `run_cloud` ITSELF, not only its inner loop, can be driven by a test — see
-/// `cloud_session_config`.
-#[cfg(feature = "cloud-stt")]
-trait CloudCaptureSource: CaptureSource {
+/// What both capture routes need, beyond [`CaptureSource`], to size the capture→consumer
+/// hand-off from the device's REAL configuration rather than a literal (`sample_rate`/
+/// `channels` feed `selahcue_core::audio_capacity::handoff_capacity`).
+///
+/// **Originally `CloudCaptureSource`, Cloud-only (86akby7th).** At that point only `run_cloud`
+/// derived its hand-off cap this way — the on-device path still sized `HANDOFF_MAX_SAMPLES`
+/// from a hardcoded literal that assumed stereo (86akcfp8w) — so this trait was `cloud-stt`-
+/// gated and named for its one caller. Renamed and UN-gated here because the on-device path now
+/// derives its capacity the identical way (see `run_on_device_with_recognizer`'s call to
+/// `handoff_capacity` and `CAPTURE_WINDOW`, no longer `cloud-stt`-only either): there is now
+/// exactly ONE definition both routes consume, matching the parent ticket's (86akcfp6z) cross-
+/// cutting requirement that the two paths cannot independently drift back into the mono/stereo
+/// class of bug. A separate trait, rather than folding these into `CaptureSource` itself, so a
+/// fake source used ONLY with `flush_pending_backlog` (which never sizes a hand-off) does not
+/// need to implement methods it never calls.
+trait DeviceCaptureSource: CaptureSource {
     /// The device's sample rate, Hz. See [`CpalSource::sample_rate`].
     fn sample_rate(&self) -> u32;
     /// The device's channel count. See [`CpalSource::channels`].
     fn channels(&self) -> u16;
 }
 
-#[cfg(feature = "cloud-stt")]
-impl CloudCaptureSource for CpalSource {
+impl DeviceCaptureSource for CpalSource {
     fn sample_rate(&self) -> u32 {
         CpalSource::sample_rate(self)
     }
@@ -104,16 +109,30 @@ const RECOG_INTERVAL: Duration = Duration::from_millis(30);
 /// (the final on close still decodes the whole utterance for accuracy).
 const INTERIM_WINDOW_SAMPLES: usize = 6 * 16_000;
 
-/// Bound on device audio buffered in the source→recognition hand-off (~5 s at 48 kHz stereo). The
-/// hand-off drops OLDEST beyond this if the recognizer falls behind, keeping it near the live edge
-/// (bounded memory — no-leak).
+/// A fixed reference capacity for the source→recognition hand-off — **no longer the value
+/// `run_on_device_with_recognizer` actually builds `AudioHandoff` with (86akcfp8w)**. It has
+/// exactly two jobs now, both about a MODELED worst case rather than any device's real config:
 ///
-/// **Known issue, not touched by 86akby7th**: this literal assumes stereo (`× 2`); on a mono
-/// microphone the real window is double what is intended. Tracked and being fixed separately —
-/// the value is unchanged here on purpose. Only the TYPE changed, to `NonZeroUsize`, because
-/// `AudioHandoff::new` (now shared with the Cloud route, `capture_handoff.rs`) requires one; the
-/// fix for the VALUE itself is to call `selahcue_core::audio_capacity::handoff_capacity` with
-/// this device's real sample rate and channel count instead of this literal.
+/// 1. The compile-time `MAX_PCM_SAMPLES > HANDOFF_MAX_SAMPLES.get()` headroom assertion just
+///    below, which needs a fixed value to pin a relationship against (`PcmRing`'s 30 s worst
+///    case must comfortably exceed the hand-off's worst realistic cap).
+/// 2. A fixed, realistic cap for tests that exercise `AudioHandoff`/`should_note_audio_drop`'s
+///    OWN mechanics directly (e.g. `a_startup_backlog_dump_can_trip_the_notice_before_any_decode_happens`),
+///    independent of any specific device.
+///
+/// **History: this WAS the literal `run_on_device` built its hand-off from, and it assumed
+/// stereo (`× 2`) — on a mono microphone the real window was double what was intended
+/// (86akcfp8w, the mono/stereo bug the parent ticket 86akcfp6z exists to fix).** The on-device
+/// path now derives its REAL capacity at runtime, from the device's actual sample rate/channel
+/// count, via `selahcue_core::audio_capacity::handoff_capacity` — the identical function and
+/// call shape `run_cloud` already used before this fix — so this constant's value (stereo, 48
+/// kHz, 5 s — the most a "typical" consumer capture device this app targets would ever derive)
+/// is kept ONLY as the two reference uses above, never fed into a real `AudioHandoff::new` call.
+/// A capture device with more than 2 channels would derive a larger real cap than this constant
+/// still models; that is fine for both remaining uses (a professional multi-channel interface
+/// is not this app's target device, and `PcmRing`'s 30 s bound has ample headroom over ANY
+/// single-digit-channel-count device at 48 kHz for 5 s), but it is not a universal ceiling on
+/// every possible device the real, dynamic sizing could see.
 const HANDOFF_MAX_SAMPLES: NonZeroUsize = match NonZeroUsize::new(48_000 * 2 * 5) {
     Some(n) => n,
     None => panic!("HANDOFF_MAX_SAMPLES literal must be nonzero"),
@@ -121,11 +140,12 @@ const HANDOFF_MAX_SAMPLES: NonZeroUsize = match NonZeroUsize::new(48_000 * 2 * 5
 
 // Pins the domain relationship the startup-backlog tests' NARRATIVE relies on (Quinn, 86akd1jcc
 // review): `PcmRing`'s own worst-case retention (`selahcue_stt::audio::MAX_PCM_SAMPLES`) is
-// meant to exceed this hand-off's cap — `PcmRing` exists specifically to buffer MORE audio,
-// for longer, than `AudioHandoff` would ever want to retain (see `flush_pending_backlog`'s doc
-// comment). If a future edit ever made `MAX_PCM_SAMPLES` smaller than `HANDOFF_MAX_SAMPLES`,
-// every place in this file that calls a `MAX_PCM_SAMPLES`-sized backlog "the worst case" would
-// be describing a number smaller than the thing it is supposed to be worse than.
+// meant to exceed the MODELED worst-case hand-off cap above — `PcmRing` exists specifically to
+// buffer MORE audio, for longer, than `AudioHandoff` would ever want to retain (see
+// `flush_pending_backlog`'s doc comment). If a future edit ever made `MAX_PCM_SAMPLES` smaller
+// than `HANDOFF_MAX_SAMPLES`, every place in this file that calls a `MAX_PCM_SAMPLES`-sized
+// backlog "the worst case" would be describing a number smaller than the thing it is supposed
+// to be worse than.
 //
 // **This does NOT, by itself, make `a_real_cold_start_backlog_no_longer_trips_the_notice`
 // sensitive to either constant's value** — that test's own doc comment says so plainly. Quinn
@@ -146,6 +166,15 @@ const HANDOFF_MAX_SAMPLES: NonZeroUsize = match NonZeroUsize::new(48_000 * 2 * 5
 // can run at all. That is a stronger result than "the test goes red": the crate does not
 // compile, so `a_real_cold_start_backlog_no_longer_trips_the_notice` staying green under that
 // mutation is no longer possible — there is no build for it to run against.
+//
+// **Still meaningful after 86akcfp8w's runtime-sizing fix**, even though `HANDOFF_MAX_SAMPLES`
+// is no longer the live cap: it is still what this assertion's own narrative depends on being
+// "the worst-case hand-off cap" for the relationship to mean anything, and it is still what the
+// tests using it as a fixture depend on being generous. Re-pointing this assertion at a live,
+// per-session `NonZeroUsize` is not possible — a `const` assertion can only ever compare
+// compile-time values, and the real cap is now a runtime quantity (see `HANDOFF_MAX_SAMPLES`'s
+// own doc comment for why that value can, in principle, exceed this modeled one on an unusual
+// device).
 const _: () = assert!(
     selahcue_stt::audio::MAX_PCM_SAMPLES > HANDOFF_MAX_SAMPLES.get(),
     "MAX_PCM_SAMPLES must exceed HANDOFF_MAX_SAMPLES, or a MAX_PCM_SAMPLES-sized backlog is no \
@@ -996,7 +1025,7 @@ const FLUSH_PENDING_BACKLOG_ITERATION_CAP: usize = 4;
 /// Resolves a REAL recognizer (`load_recognizer` — the ~1.6 GB whisper.cpp model) then delegates
 /// everything else to [`run_on_device_with_recognizer`]. See that function's doc comment for why
 /// this split exists (86akd1jcc review round 3, Sana/Quinn/coordinator).
-fn run_on_device<S: CaptureSource, R: tauri::Runtime>(
+fn run_on_device<S: DeviceCaptureSource, R: tauri::Runtime>(
     app_worker: AppHandle<R>,
     source: S,
     stop_worker: Arc<AtomicBool>,
@@ -1054,7 +1083,7 @@ fn run_on_device<S: CaptureSource, R: tauri::Runtime>(
 /// `on_device_failure_with_no_prior_engine_reports_the_bare_error`) — just not through this
 /// wrapper's own wiring. Named accurately here so nobody reads the earlier framing as narrower
 /// than the actual gap.
-fn run_on_device_with_recognizer<S: CaptureSource, R: tauri::Runtime>(
+fn run_on_device_with_recognizer<S: DeviceCaptureSource, R: tauri::Runtime>(
     app_worker: AppHandle<R>,
     mut source: S,
     stop_worker: Arc<AtomicBool>,
@@ -1084,6 +1113,37 @@ fn run_on_device_with_recognizer<S: CaptureSource, R: tauri::Runtime>(
         );
     }
 
+    // Size the shared capture hand-off from THIS device's real configuration — never a literal
+    // (86akcfp8w; see `capture_handoff.rs` / `selahcue_core::audio_capacity`, and `run_cloud`'s
+    // identical call a few hundred lines down, the second consumer of the same definition).
+    // `None` means the device reported something this app cannot safely turn into a retention
+    // window (zero channels, zero sample rate, or an unrepresentable product): starting capture
+    // anyway could only ever silently mis-size the buffer, so this refuses to start at all and
+    // says why — mirroring `run_cloud`'s own "surface a device-configuration error rather than
+    // start a capture that can only fail" decision. Computed BEFORE the ready signal below (like
+    // every other startup failure this function can hit) so a caller waiting on `ready_tx` sees
+    // `Err`, not a false `Ok` followed by a worker that immediately has nothing usable to build.
+    let handoff_capacity = match selahcue_core::audio_capacity::handoff_capacity(
+        source.sample_rate(),
+        source.channels(),
+        CAPTURE_WINDOW,
+    ) {
+        Some(cap) => cap,
+        None => {
+            let msg = format!(
+                "microphone reported an unusable configuration (sample_rate={}, channels={}); \
+                 cannot size the capture buffer safely",
+                source.sample_rate(),
+                source.channels()
+            );
+            let message = abandon_worker_after_on_device_failure(&fallback, msg);
+            if let Some(tx) = ready_tx {
+                let _ = tx.send(Err(message));
+            }
+            return;
+        }
+    };
+
     eprintln!(
         "SelahCue STT: capturing from {} — listening on-device.",
         source.label()
@@ -1095,11 +1155,22 @@ fn run_on_device_with_recognizer<S: CaptureSource, R: tauri::Runtime>(
     }
 
     let (mut engine, mut provider) = SttEngine::build(
-        // Stream interims (~0.8 s cadence) so recognised words appear live; bound each interim
-        // to a sliding window so its cost stays fixed as the utterance grows (the final on
-        // close still decodes the whole utterance). Interims run on the recognition thread.
+        // Stream interims (WALL-CLOCK gated, 86akcfpbj — previously a 40-frame count, which
+        // meant a recognizer falling behind real time fired interims MORE often, not less,
+        // because draining a backlog feeds frames through faster than real time) so recognised
+        // words appear live; bound each interim to a sliding window so its cost stays fixed as
+        // the utterance grows (the final on close still decodes the whole utterance). Interims
+        // run on the recognition thread.
+        //
+        // **Real cadence is 800ms + decode_time, not a flat 800ms (Vera, PR #124 review round
+        // 2)** — the wait is measured from when the PREVIOUS interim's decode COMPLETED, not
+        // when it started, for every utterance, not only during a backlog. See
+        // `EngineConfig::interim_interval`'s doc comment for the full reasoning: this is the
+        // direct, honest consequence of correctly closing 86akcfpbj's feedback loop, deliberately
+        // chosen over a hybrid stamp that would preserve a flat cadence at the cost of
+        // reintroducing conditional complexity for a marginal latency win.
         EngineConfig {
-            interim_interval_frames: 40,
+            interim_interval: Duration::from_millis(800),
             interim_max_samples: INTERIM_WINDOW_SAMPLES,
             ..EngineConfig::default()
         },
@@ -1134,7 +1205,7 @@ fn run_on_device_with_recognizer<S: CaptureSource, R: tauri::Runtime>(
     // Decouple recognition from capture so a (potentially slow) decode never freezes the mic
     // or the level meter. The cpal stream is `!Send`, so the SOURCE stays on THIS thread and a
     // separate RECOGNITION thread owns the engine, fed by a bounded drop-oldest hand-off.
-    let handoff = Arc::new(AudioHandoff::new(HANDOFF_MAX_SAMPLES));
+    let handoff = Arc::new(AudioHandoff::new(handoff_capacity));
     let recog_handoff = Arc::clone(&handoff);
     let recog_stop = Arc::clone(&stop_worker);
     let recog = std::thread::spawn(move || {
@@ -1186,13 +1257,13 @@ fn run_on_device_with_recognizer<S: CaptureSource, R: tauri::Runtime>(
     let _ = recog.join();
 }
 
-/// The retention window this route's capture hand-off is sized to — the same 5 seconds
-/// [`HANDOFF_MAX_SAMPLES`]'s literal means for on-device, but derived through
-/// [`selahcue_core::audio_capacity::handoff_capacity`] against THIS device's real
-/// configuration rather than baked into a fixed sample count. `HANDOFF_MAX_SAMPLES` itself is
-/// not switched to consume this constant here — that literal's value is a separate, known
-/// issue (see its own doc comment) that this ticket does not touch.
-#[cfg(feature = "cloud-stt")]
+/// The retention window BOTH routes' capture hand-off is sized to — the same 5 seconds
+/// [`HANDOFF_MAX_SAMPLES`]'s literal used to mean before 86akcfp8w, now derived through
+/// [`selahcue_core::audio_capacity::handoff_capacity`] against THIS device's real configuration
+/// rather than baked into a fixed sample count. Originally Cloud-only (`cloud-stt`-gated); the
+/// on-device path (`run_on_device_with_recognizer`) now derives its capacity the identical way,
+/// so this constant is shared and un-gated too — one retention window, one function, two
+/// callers, not two independent literals that could drift apart again.
 const CAPTURE_WINDOW: Duration = Duration::from_secs(5);
 
 /// Shown once EITHER of this session's bounded buffers has had to drop captured audio because a
@@ -1261,7 +1332,7 @@ fn cloud_session_config() -> selahcue_stt_cloud::transport::SessionConfig {
 /// [`run_cloud_stream_loop`]'s loop is bounded local work — draining the mic, pushing into the
 /// bounded `AudioRing`, draining the bounded `SegmentQueue`, and one non-blocking status read.
 #[cfg(feature = "cloud-stt")]
-fn run_cloud<S: CloudCaptureSource, R: tauri::Runtime>(
+fn run_cloud<S: DeviceCaptureSource, R: tauri::Runtime>(
     app_worker: AppHandle<R>,
     source: S,
     stop_worker: Arc<AtomicBool>,
@@ -2071,7 +2142,7 @@ mod tests {
             }
         }
 
-        impl CloudCaptureSource for TestSource {
+        impl DeviceCaptureSource for TestSource {
             fn sample_rate(&self) -> u32 {
                 // A representative, safely-sizeable value — `run_cloud`'s handoff-capacity
                 // sizing (`selahcue_core::audio_capacity::handoff_capacity`) only needs a
@@ -2414,7 +2485,7 @@ mod tests {
         use std::time::Instant;
 
         /// A capture source that produces silence forever — `run_cloud` only needs SOME
-        /// `CloudCaptureSource`, and this test does not exercise the audio path at all.
+        /// `DeviceCaptureSource`, and this test does not exercise the audio path at all.
         struct NullSource {
             inner: FakeAudioSource,
         }
@@ -2443,7 +2514,7 @@ mod tests {
             }
         }
 
-        impl CloudCaptureSource for NullSource {
+        impl DeviceCaptureSource for NullSource {
             fn sample_rate(&self) -> u32 {
                 16_000
             }
@@ -2905,6 +2976,15 @@ mod tests {
                 0.0
             }
         }
+        impl DeviceCaptureSource for BacklogSource {
+            fn sample_rate(&self) -> u32 {
+                // Matches the 48kHz/mono `AudioChunk`s this test pushes below.
+                48_000
+            }
+            fn channels(&self) -> u16 {
+                1
+            }
+        }
 
         // Backlog sized to `PcmRing`'s own worst-case cap (`MAX_PCM_SAMPLES`) — a stand-in for
         // the most a real mic's ring could ever hand `flush_pending_backlog` in one call. As the
@@ -3055,6 +3135,15 @@ mod tests {
                 0.0
             }
         }
+        impl DeviceCaptureSource for OneChunkSource {
+            fn sample_rate(&self) -> u32 {
+                // Matches the 48kHz/mono `AudioChunk`s this test pushes.
+                48_000
+            }
+            fn channels(&self) -> u16 {
+                1
+            }
+        }
         // Comfortably above `AUDIO_LOSS_DISCLOSURE_THRESHOLD_SAMPLES` (the materiality
         // threshold added in this same review round, Sana advisory B / Cody) — a small,
         // near-threshold backlog would risk this test reading as flaky or coincidental; this
@@ -3128,6 +3217,76 @@ mod tests {
         );
     }
 
+    /// 86akcfp8w: the on-device path must refuse to start on a device config it cannot safely
+    /// size a hand-off from, mirroring `run_cloud`'s own refusal — never silently mis-sizing
+    /// (or zero-sizing) the capture buffer. No thread is spawned and no tokio runtime is needed:
+    /// the capacity check runs and fails synchronously, before `run_on_device_with_recognizer`
+    /// does anything else, so `ready_tx` already holds its `Err` by the time the call returns.
+    #[test]
+    fn on_device_refuses_to_start_on_an_unusable_device_config() {
+        let _guard = state_locked();
+        *status_lock(&ENGINE_NOTE) = None;
+        clear_failure();
+
+        struct ZeroChannelSource {
+            inner: selahcue_stt::audio::FakeAudioSource,
+        }
+        impl AudioSource for ZeroChannelSource {
+            fn label(&self) -> &str {
+                "zero-channel"
+            }
+            fn next_chunk(&mut self) -> Option<AudioChunk> {
+                self.inner.next_chunk()
+            }
+        }
+        impl CaptureSource for ZeroChannelSource {
+            fn peak_level(&self) -> f32 {
+                0.0
+            }
+        }
+        impl DeviceCaptureSource for ZeroChannelSource {
+            fn sample_rate(&self) -> u32 {
+                48_000
+            }
+            fn channels(&self) -> u16 {
+                0 // the unusable case: handoff_capacity() must refuse this
+            }
+        }
+
+        let source = ZeroChannelSource {
+            inner: selahcue_stt::audio::FakeAudioSource::new(),
+        };
+        let app = tauri::test::mock_app();
+        let handle = app.handle().clone();
+        let stop_worker = Arc::new(AtomicBool::new(true));
+        let (seg_tx, _seg_rx) = tokio::sync::mpsc::channel(8);
+        let (ready_tx, mut ready_rx) = tokio::sync::oneshot::channel();
+
+        run_on_device_with_recognizer(
+            handle,
+            source,
+            stop_worker,
+            seg_tx,
+            Some(ready_tx),
+            None,
+            Box::new(selahcue_stt::FakeRecognizer::new()),
+        );
+
+        match ready_rx.try_recv() {
+            Ok(Err(msg)) => {
+                assert!(
+                    msg.contains("channels=0"),
+                    "the refusal message should name the bad device config — got {msg:?}"
+                );
+            }
+            other => panic!(
+                "REMOVING the construction-time device-config check must fail this test: a \
+                 zero-channel device must refuse to start with Err on ready_tx, not Ok or \
+                 nothing — got {other:?}"
+            ),
+        }
+    }
+
     /// The materiality threshold itself (Sana advisory B / Cody, 86akd1jcc review round 3): a
     /// nonzero `flushed` count below [`AUDIO_LOSS_DISCLOSURE_THRESHOLD_SAMPLES`] must NOT reach
     /// the operator — this is the actual fix for the sub-millisecond-race false alarm both
@@ -3162,6 +3321,15 @@ mod tests {
             impl CaptureSource for OneChunkSource {
                 fn peak_level(&self) -> f32 {
                     0.0
+                }
+            }
+            impl DeviceCaptureSource for OneChunkSource {
+                fn sample_rate(&self) -> u32 {
+                    // Matches the 48kHz/mono `AudioChunk` this test pushes below.
+                    48_000
+                }
+                fn channels(&self) -> u16 {
+                    1
                 }
             }
             let source = OneChunkSource {
@@ -3295,6 +3463,15 @@ mod tests {
                 0.0
             }
         }
+        impl DeviceCaptureSource for EmptyThenFloodSource {
+            fn sample_rate(&self) -> u32 {
+                // Matches the 48kHz/mono `AudioChunk`s this test floods with below.
+                48_000
+            }
+            fn channels(&self) -> u16 {
+                1
+            }
+        }
 
         let queue = Arc::new(Mutex::new(selahcue_stt::audio::FakeAudioSource::new()));
         let source = EmptyThenFloodSource {
@@ -3388,6 +3565,176 @@ mod tests {
             "a genuine, post-ready, real-time-outrunning overload must still trip the drop \
              notice — got {note:?} (if this is None, the on-device drop-notice mechanism may be \
              dead, not merely quiet)"
+        );
+    }
+
+    /// 86akcfp8w / Vera's PR #124 performance review (F2, non-blocking but real): none of this
+    /// file's other tests pin the ACTUAL numeric on-device hand-off capacity end to end through
+    /// `run_on_device_with_recognizer` — they only prove SOME capacity gets computed (the
+    /// refusal test) or that eviction fires under a flood far bigger than any real cap either
+    /// way (the test just above this one). Vera proved the gap empirically: mutating the
+    /// on-device call site back to `HANDOFF_MAX_SAMPLES.max(handoff_capacity(...))` — silently
+    /// re-widening a mono device's cap toward the historical stereo-doubled value — left every
+    /// operator test green.
+    ///
+    /// This test brackets the real 48 kHz capacity instead of a synthetic one. `CAPTURE_WINDOW`
+    /// (5 s) gives a mono capacity of exactly 48,000 × 1 × 5 = 240,000 samples — HALF of what a
+    /// stereo-style `× 2` would give (480,000). The two checks below use DIFFERENT, generously
+    /// one-sided flood sizes rather than one flood bracketing both thresholds: with a real
+    /// worker thread draining the mic ring on its own schedule (`CAPTURE_INTERVAL`) concurrent
+    /// with a real recognition thread draining the hand-off on ITS own schedule
+    /// (`RECOG_INTERVAL`), delivery can legitimately fragment across several capture-loop
+    /// iterations — a flood sized to just barely clear one cap while staying just under the
+    /// other (a thin bracket) turned out to be genuinely flaky against that fragmentation, not
+    /// just theoretically risky (caught empirically while writing this test — a 5,001-sample
+    /// flood against a 5,000-sample mono cap intermittently missed). A flood many times a cap
+    /// only needs ONE fragment to individually clear it; a flood well under a cap can never
+    /// clear it regardless of how delivery fragments, since fragmentation only ever REDUCES
+    /// what accumulates before a drain, never inflates it.
+    #[test]
+    fn on_device_hand_off_capacity_is_mono_correct_not_stereo_doubled() {
+        let _guard = state_locked();
+
+        struct RateChannelsSource {
+            inner: Arc<Mutex<selahcue_stt::audio::FakeAudioSource>>,
+            sample_rate: u32,
+            channels: u16,
+        }
+        impl AudioSource for RateChannelsSource {
+            fn label(&self) -> &str {
+                "rate-channels"
+            }
+            fn next_chunk(&mut self) -> Option<AudioChunk> {
+                self.inner
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .next_chunk()
+            }
+        }
+        impl CaptureSource for RateChannelsSource {
+            fn peak_level(&self) -> f32 {
+                0.0
+            }
+        }
+        impl DeviceCaptureSource for RateChannelsSource {
+            fn sample_rate(&self) -> u32 {
+                self.sample_rate
+            }
+            fn channels(&self) -> u16 {
+                self.channels
+            }
+        }
+
+        /// Runs a real on-device session against a device reporting `(sample_rate, channels)`,
+        /// floods it with `flood_samples` samples (in 1,000-sample chunks) AFTER readiness, and
+        /// reports whether the drop notice fired — i.e. whether eviction actually happened.
+        fn drop_notice_fires_for(sample_rate: u32, channels: u16, flood_samples: usize) -> bool {
+            *status_lock(&ENGINE_NOTE) = None;
+            clear_failure();
+
+            let queue = Arc::new(Mutex::new(selahcue_stt::audio::FakeAudioSource::new()));
+            let source = RateChannelsSource {
+                inner: Arc::clone(&queue),
+                sample_rate,
+                channels,
+            };
+
+            let app = tauri::test::mock_app();
+            let handle = app.handle().clone();
+            handle.manage(crate::AppState {
+                backend: crate::Backend::Local(crate::demo_shell()),
+                deck: Mutex::new(crate::DeckWorkspace::demo()),
+                library: Mutex::new(crate::DeckLibrary::load(None)),
+                providers: Mutex::new(selahcue_core::providers::ProvidersConfig::default()),
+                providers_db: None,
+                transcript_db: None,
+                secrets: crate::make_secret_store(),
+                link_status: Mutex::new(selahcue_lan::LinkStatus::local()),
+                link_next_attempt: Mutex::new(None),
+            });
+
+            let stop_worker = Arc::new(AtomicBool::new(false));
+            let (seg_tx, _seg_rx) = tokio::sync::mpsc::channel(64);
+            let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+
+            let sw = Arc::clone(&stop_worker);
+            let app_worker = handle.clone();
+            let worker = std::thread::spawn(move || {
+                run_on_device_with_recognizer(
+                    app_worker,
+                    source,
+                    sw,
+                    seg_tx,
+                    Some(ready_tx),
+                    None,
+                    Box::new(selahcue_stt::FakeRecognizer::new()),
+                );
+            });
+
+            let runtime = tokio::runtime::Runtime::new().expect("build a tokio runtime");
+            let ready = runtime
+                .block_on(async { tokio::time::timeout(Duration::from_secs(10), ready_rx).await });
+            assert!(
+                matches!(ready, Ok(Ok(Ok(())))),
+                "on-device must become ready against the fake recognizer: {ready:?}"
+            );
+
+            // Flood AFTER ready, in modest 1,000-sample chunks (never a single oversized chunk —
+            // capture_handoff.rs's own doc: that would be retained WHOLE, never evicted, which
+            // would make this test measure the wrong thing) so eviction proceeds chunk-by-chunk.
+            const FLOOD_CHUNK_SAMPLES: usize = 1_000;
+            {
+                let mut q = queue.lock().unwrap_or_else(|e| e.into_inner());
+                let mut remaining = flood_samples;
+                while remaining > 0 {
+                    let this_chunk = remaining.min(FLOOD_CHUNK_SAMPLES);
+                    q.push_chunk(AudioChunk::new(
+                        vec![0.0; this_chunk],
+                        sample_rate,
+                        channels,
+                    ));
+                    remaining -= this_chunk;
+                }
+            }
+            std::thread::sleep(Duration::from_millis(2_000));
+            stop_worker.store(true, Ordering::Relaxed);
+            worker.join().expect("run_on_device must not panic");
+
+            let fired = engine_note().as_deref() == Some(ON_DEVICE_AUDIO_DROPPED_NOTICE);
+            *status_lock(&ENGINE_NOTE) = None;
+            *status_lock(&PROVIDER_LABEL) = None;
+            clear_failure();
+            fired
+        }
+
+        // Mono cap = 48_000 × 1 × 5 = 240,000. The flood (350,000) is chosen to sit BETWEEN the
+        // real mono cap and `HANDOFF_MAX_SAMPLES` (480,000, the exact historical stereo-style
+        // literal this ticket replaced) — not just "well over the real cap" — so this assertion
+        // is actually sensitive to the specific regression Vera's PR #124 review reproduced
+        // (widening the derived cap back toward the old constant, e.g. via
+        // `HANDOFF_MAX_SAMPLES.max(handoff_capacity)`), not only to a cap collapsing to ~zero.
+        // Still generous relative to the real cap (46% margin) and delivered in 1,000-sample
+        // chunks over a 2s settle window — verified stable across repeated runs, unlike the
+        // earlier razor-thin (5,001-vs-5,000, single-sample-chunk) version of this test.
+        assert!(
+            drop_notice_fires_for(48_000, 1, 350_000),
+            "a mono device's hand-off capacity must be exactly rate × 1 × CAPTURE_WINDOW \
+             (240,000 samples here) — REMOVING the runtime derivation (or reintroducing any \
+             stereo-style widening at the on-device call site, e.g. \
+             HANDOFF_MAX_SAMPLES.max(handoff_capacity)) must fail this test"
+        );
+        // Stereo cap = 48_000 × 2 × 5 = 480,000. Vera's PR #124 review round 2 (N1): the SAME
+        // 350,000-sample flood used for the mono assertion above — not a separately-chosen,
+        // smaller value — is what makes this a genuine positive control. The claim being
+        // checked is "identical input, different device config → different outcome, because the
+        // mono cap is genuinely smaller" — a differently-sized flood would only prove "a small
+        // enough flood never evicts", which is true regardless of whether mono/stereo sizing is
+        // correct at all. 350,000 stays comfortably under 480,000 (27% margin) either way.
+        assert!(
+            !drop_notice_fires_for(48_000, 2, 350_000),
+            "a stereo device's capacity (480,000 samples here) must not be crossed by the SAME \
+             350,000-sample flood that crosses the mono capacity above — got a drop notice \
+             anyway"
         );
     }
 }
