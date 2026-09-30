@@ -25,7 +25,7 @@ serde_json = "1"
 # key_id derivation only: SHA-256 over a raw Ed25519 public key, first 8 hex chars —
 # mirroring the server's `derive_key_id` so a key and its id cannot drift apart.
 # Already in the workspace lock (selahcue-lan cert pinning), so this adds no new tree.
-sha2 = "0.10"
+sha2 = "0.11"
 
 [lints]
 workspace = true

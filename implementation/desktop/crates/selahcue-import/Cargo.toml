@@ -32,7 +32,7 @@ flate2 = "1"
 # hostile XML from every imported deck — the one dependency in this crate that touches untrusted
 # input directly. The jpeg-decoder pin is enforced for the same reason and by the same script; this
 # one was written as a range and had no guard, which is exactly how a pin quietly stops being one.
-quick-xml = { version = "=0.41.0", default-features = false }
+quick-xml = { version = "=0.42.0", default-features = false }
 
 [dev-dependencies]
 serde_json = "1"
@@ -40,7 +40,7 @@ serde_json = "1"
 flate2 = "1"
 # Tiny valid PNGs for the image stage are ENCODED at test time rather than committed, for the
 # same reason every hostile input is constructed in-test. Transitive via selahcue-engine.
-png = "0.17"
+png = "0.18"
 
 [lints]
 workspace = true
