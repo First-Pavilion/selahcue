@@ -7203,8 +7203,10 @@ mod transcript_generate_notes_tests {
     /// the `scripture_verification_note` emission keys off (`!scripture_verdicts.is_empty()`).
     #[test]
     fn apply_scripture_verification_marks_real_and_fabricated_references() {
-        let mut draft = selahcue_core::providers::NoteDraft::default();
-        draft.scriptures = vec!["John 3:16".to_string(), "Hezekiah 99:1".to_string()];
+        let mut draft = selahcue_core::providers::NoteDraft {
+            scriptures: vec!["John 3:16".to_string(), "Hezekiah 99:1".to_string()],
+            ..Default::default()
+        };
         apply_scripture_verification(&mut draft);
         let real = draft
             .scripture_verdicts
