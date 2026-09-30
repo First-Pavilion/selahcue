@@ -42,6 +42,7 @@ pub mod model_fetch;
 pub mod provider;
 pub mod pump;
 pub mod recognizer;
+pub mod repetition;
 pub mod resample;
 pub mod vad;
 
@@ -59,6 +60,7 @@ pub use model_fetch::{
 pub use provider::{SttProvider, MAX_PENDING_SEGMENTS};
 pub use pump::pump;
 pub use recognizer::{FakeRecognizer, RecognizedSegment, Recognizer};
+pub use repetition::{trim_trailing_repeat, MIN_TRIM_SPAN_WORDS};
 pub use resample::resample_to_16k_mono;
 pub use vad::{EnergyVad, Vad, VadConfig};
 
