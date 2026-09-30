@@ -1010,6 +1010,16 @@
       r.setAttribute("role", "alert");
       r.appendChild(el("span", null,
         "Turn on cloud processing in Settings → Providers & Privacy to generate sermon notes."));
+      // 17tnw2b0ntd: Settings no longer offers Generate, so give a one-click route to the consent
+      // switch instead of a dead end (reuses the real app-menu Settings item's own navigation).
+      var toSettings = el("button", "pp-optin-btn", "Open Settings");
+      toSettings.type = "button";
+      toSettings.id = "tr-open-settings";
+      toSettings.addEventListener("click", function () {
+        var nav = document.querySelector('.nav-item[data-surface="settings"]');
+        if (nav) nav.click();
+      });
+      r.appendChild(toSettings);
       return;
     }
     // quota_exceeded / transport / malformed / no_transcript / transcript_too_short → surface the
@@ -1017,7 +1027,7 @@
     // before any call is made — so their label says exactly that: nothing was sent.
     r.className = "pp-gen-result pp-gen-err";
     r.setAttribute("role", "alert");
-    var label = code === "quota_exceeded" ? "No generations left this week"
+    var label = code === "quota_exceeded" ? "Generation limit reached"
       : code === "no_transcript" ? "No transcript to generate from"
       : code === "transcript_too_short" ? "Transcript too short"
       : "Couldn’t generate notes";

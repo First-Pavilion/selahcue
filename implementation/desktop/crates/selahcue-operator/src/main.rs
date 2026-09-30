@@ -6985,8 +6985,38 @@ async fn transcript_generate_notes(
             .clone()
     };
 
+    // Captured before `cfg` moves into `run_note_generation` below (86akby820).
+    let scripture_extraction_on = cfg.settings.include.scripture_extraction;
     match run_note_generation(cfg, transcript, &state).await {
         Ok(mut outcome) => {
+            // 86akby820 (FR-125/FR-128), ported from the removed live-tail command (17tnw2b0ntd):
+            // every scripture reference this draft carries — in the extracted list AND embedded in
+            // a section's body — is checked offline against the bundled Bible text, only when the
+            // operator turned extraction on. Runs regardless of `degraded`.
+            if scripture_extraction_on {
+                let (verdicts, embedded_scan_truncated) =
+                    selahcue_core::providers::verify_scriptures(
+                        &outcome.draft.scriptures,
+                        &outcome.draft.sections,
+                        |r| !selahcue_scripture::verses(r).is_empty(),
+                    );
+                outcome
+                    .draft
+                    .caveats
+                    .extend(verdicts.iter().filter(|v| !v.verified).map(|v| {
+                        selahcue_core::providers::DraftCaveat::ScriptureUnverified {
+                            reference: v.reference.clone(),
+                        }
+                    }));
+                // 86akgqdwc: the embedded scan can hit its budget; say so rather than let the
+                // absence of a caveat read as "everything was checked".
+                if embedded_scan_truncated {
+                    outcome.draft.caveats.push(
+                        selahcue_core::providers::DraftCaveat::ScriptureVerificationIncomplete,
+                    );
+                }
+                outcome.draft.scripture_verdicts = verdicts;
+            }
             // FR-123's "the source transcript is unchanged" invariant, RE-VERIFIED rather than
             // assumed from `transcript_db` being a read-only connection: a from-history generate
             // must never persist a draft against a record that no longer matches what was
@@ -7038,6 +7068,8 @@ async fn transcript_generate_notes(
                 "disclosure": outcome.disclosure,
                 "degraded_notice": outcome.degraded
                     .then_some(selahcue_core::providers::DEGRADED_FALLBACK_NOTICE),
+                "scripture_verification_note": (!outcome.draft.scripture_verdicts.is_empty())
+                    .then_some(selahcue_core::providers::SCRIPTURE_VERIFICATION_WORDING),
                 "draft": draft_json(&outcome.draft),
                 "transcript_id": persist.transcript_id,
                 // FR-129 (86akgqdx8) — see the former live-tail `generate_sermon_notes` (removed, 17tnw2b0ntd) identical fields.
