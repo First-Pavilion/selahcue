@@ -8296,7 +8296,10 @@
   font-size: 12px;
 }
 #tr-detections-empty { margin: 0 0 8px; }
-#tr-notes-empty { margin: 14px 28px 0; }
+/* Sits inside the shared 1180px column (same side gutter as its siblings: 28px, 16px when narrow)
+   instead of a fixed 28px margin, which let it escape the column on wide windows. */
+#tr-notes-empty { margin: 14px auto 0; width: calc(100% - 56px); max-width: calc(1180px - 56px); box-sizing: border-box; }
+@media (max-width: 900px) { #tr-notes-empty { width: calc(100% - 32px); } }
 
 /* Bounded sliding window (86akgqdxr) — `.tr-det-log`'s OWN scroll container, mirroring `.tr-log`
    above but deliberately simpler: `max-height` + `overflow-y: auto` rather than `flex: 1`, since

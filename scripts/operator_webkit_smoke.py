@@ -606,6 +606,60 @@ def main():
         except Exception as e:  # noqa: BLE001 — any failure here is itself the finding
             tr_v12_errors.append(str(e).splitlines()[0])
 
+        # === 17tnw2b0ntd (TRANSCRIPTS-2.0-HANDOFF.md section 11): the detail view's scroll model on
+        # real WebKit at 1280x720 and at the 900px narrow floor, with a notes panel far taller than
+        # the window. Every control of the tall panel must be reachable by scrolling `.tr-detail`,
+        # the log must not be starved, and nothing may overflow horizontally. Optional screenshots
+        # go to SELAHCUE_SHOT_DIR (evidence for the PR).
+        tr_scroll = {}
+        tr_scroll_errors = []
+        shot_dir = os.environ.get("SELAHCUE_SHOT_DIR")
+        for label, width in (("1280x720", 1280), ("900x720", 900)):
+            try:
+                pg = browser.new_page(viewport={"width": width, "height": 720})
+                pg.on("pageerror", lambda e: tr_scroll_errors.append(str(e)))
+                pg.add_init_script(STUB)
+                pg.goto("file://" + os.path.join(DIST, "index.html"))
+                pg.wait_for_function(HAS_RENDER, timeout=8000)
+                pg.click("#app-menu-btn")
+                pg.wait_for_selector('.nav-item[data-surface="transcripts"]', state="visible", timeout=8000)
+                pg.click('.nav-item[data-surface="transcripts"]')
+                pg.wait_for_function("() => document.querySelectorAll('#tr-list .tr-card').length >= 1", timeout=8000)
+                pg.click('#tr-list .tr-card-open')
+                pg.wait_for_function("() => document.getElementById('tr-detail-log').textContent.indexOf('Good morning') >= 0", timeout=8000)
+                pg.evaluate("""() => {
+                    var r = document.getElementById('tr-gen-result'); r.hidden = false;
+                    r.className = 'pp-gen-result pp-gen-ok';
+                    for (var i = 0; i < 40; i++) { var p = document.createElement('p');
+                      p.style.cssText = 'margin:0 0 10px;color:var(--sc-text)';
+                      p.textContent = 'Notes paragraph ' + i + ': grace that feeds, the crowd came back for the wrong reason, and what it means to be fed.';
+                      r.appendChild(p); }
+                    var b = document.createElement('button'); b.id = 'tr-tall-end'; b.textContent = 'Discard (last control)'; r.appendChild(b);
+                }""")
+                if shot_dir:
+                    os.makedirs(shot_dir, exist_ok=True)
+                    pg.screenshot(path=os.path.join(shot_dir, "transcripts-detail-" + label + "-top.png"))
+                res = pg.evaluate("""() => {
+                    var d = document.getElementById('tr-detail-view'), log = document.getElementById('tr-detail-log');
+                    var head = document.querySelector('.tr-detail-head'), end = document.getElementById('tr-tall-end');
+                    var out = { overflows: d.scrollHeight > d.clientHeight + 300, logH: log.getBoundingClientRect().height,
+                      hOverflow: d.scrollWidth > d.clientWidth + 1 || document.documentElement.scrollWidth > window.innerWidth + 1,
+                      overflowY: getComputedStyle(d).overflowY, headPos: getComputedStyle(head).position,
+                      logPadL: getComputedStyle(log).paddingLeft, logMax: getComputedStyle(log).maxHeight };
+                    d.scrollTop = d.scrollHeight;
+                    var er = end.getBoundingClientRect(), dr = d.getBoundingClientRect();
+                    out.endReachable = er.bottom <= dr.bottom + 1 && er.top >= dr.top;
+                    out.headPinned = head.getBoundingClientRect().top <= dr.top + 1;
+                    return out;
+                }""")
+                if shot_dir:
+                    pg.screenshot(path=os.path.join(shot_dir, "transcripts-detail-" + label + "-scrolled-end.png"))
+                tr_scroll[label] = res
+                pg.close()
+            except Exception as e:  # noqa: BLE001
+                tr_scroll_errors.append(label + ": " + str(e).splitlines()[0])
+                tr_scroll[label] = {}
+
         browser.close()
 
     checks = []
@@ -648,6 +702,19 @@ def main():
     checks.append((not tr_v12_errors, "Transcripts V-12: Shift+End modifier exercised on real WebKit, no exception"
                    + (" — " + "; ".join(tr_v12_errors) if tr_v12_errors else "")))
     checks.append((tr_v12_selection_preserved, "Transcripts V-12: a real Shift+End keypress over an active text selection preserves/extends it rather than silently collapsing it via our own scroll jump"))
+
+    checks.append((not tr_scroll_errors, "Transcripts scroll model: exercised on real WebKit, no exception"
+                   + (" - " + "; ".join(tr_scroll_errors) if tr_scroll_errors else "")))
+    for label in ("1280x720", "900x720"):
+        r = tr_scroll.get(label) or {}
+        checks.append((bool(r.get("overflows")) and r.get("overflowY") == "auto",
+                       "Transcripts scroll model @" + label + ": tall notes overflow .tr-detail, which is the scroll container (WebKit computed style)"))
+        checks.append((r.get("logH", 0) >= 200, "Transcripts scroll model @" + label + ": the log is not starved by tall notes (height " + str(r.get("logH")) + ")"))
+        checks.append((bool(r.get("endReachable")), "Transcripts scroll model @" + label + ": the LAST control of the tall notes panel is reachable by scrolling .tr-detail"))
+        checks.append((r.get("headPos") == "sticky" and bool(r.get("headPinned")), "Transcripts scroll model @" + label + ": the sticky header stays pinned while scrolled"))
+        checks.append((r.get("hOverflow") is False, "Transcripts scroll model @" + label + ": no horizontal scroll"))
+    r900 = tr_scroll.get("900x720") or {}
+    checks.append((r900.get("logPadL") == "16px", "Transcripts narrow @900px: narrow-window padding applies on WebKit (got " + str(r900.get("logPadL")) + ")"))
 
     for passed, msg in checks:
         print(("PASS" if passed else "FAIL") + ": " + msg)
