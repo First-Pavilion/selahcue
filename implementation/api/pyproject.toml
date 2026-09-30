@@ -5,21 +5,131 @@ description = "Django and Strawberry Platform API for SelahCue licensing and acc
 # Django 6.1 requires >=3.12; CI and local both run 3.14, which 6.1 officially supports.
 requires-python = ">=3.12"
 dependencies = [
-  "Django>=6.1,<6.2",
+  # EXACT PINS for every direct AND directly-imported-but-undeclared pip dep
+  # (17tnw2az07j; widened from `cryptography` alone per the owner's explicit decision
+  # not to accept the interim gap on the others — see the follow-up that was closed by
+  # this widening, 17tnw2az0kw). Same root cause as `cryptography` below: an open range
+  # (or, worse, no declaration at all) with no lockfile leaves the installed version
+  # unknown to Dependabot's security-update job (`dependency_file_not_supported`),
+  # whatever the range's floor. Each pin's safety was independently checked against
+  # BOTH the GitHub Advisory Database (`gh api /advisories?ecosystem=pip&affects=<pkg>`)
+  # and OSV.dev (`api.osv.dev/v1/query`), not assumed from "latest":
+  #   - Django 6.1.1 (PyPI's actual latest 6.1.x): 0 advisories in either source
+  #     affect it — the highest fixed-version ceiling found was well below 6.x.
+  #   - celery 5.6.3 (PyPI's actual latest): the highest advisory ceiling in either
+  #     source is `< 5.2.2` (GHSA-q4xr-rc97-m4xx / CVE-2021-23727) — 5.6.3 is far
+  #     above it.
+  #   - strawberry-graphql-django 0.87.1: 0 advisories in either source exist for
+  #     this package at all. PyPI's actual latest is 0.90.0, but since 0.87.1 is
+  #     already safe, the pin stays at the version this range already resolved to
+  #     (0.87.1) rather than bumping to 0.90.0 unreviewed — that upgrade is a
+  #     separate, non-security decision.
+  #   - strawberry-graphql 0.327.7, graphql-core 3.2.12, and cross-web 0.7.0 (Vera, PR
+  #     #110 performance review, across two passes — caught while checking whether the
+  #     pip entry's dependency count was accurate; routed to security for CVE
+  #     confirmation): `graphql/{admin,account}_schema.py` and `graphql/views.py` (whose
+  #     `GraphQLView` every request goes through) `import strawberry` directly;
+  #     `graphql/errors.py` imports `graphql-core` (`from graphql import ...`);
+  #     `graphql/views.py` also imports `cross-web` (`from cross_web.exceptions import
+  #     ...`). None of the three was ever declared here — all three arrived only
+  #     transitively: `cross-web` and `strawberry-graphql` itself via
+  #     `strawberry-graphql-django`'s own unbounded requirements; `graphql-core` one hop
+  #     further down, via `strawberry-graphql`'s own `>=3.2.0,<3.4.0` (bounded, unlike
+  #     the other two — corrected per Cody's round-4 review; undeclared is undeclared
+  #     either way, this only affects the "no upper bound" wording, not the pin or the
+  #     security conclusion). `strawberry-graphql` has 7 published advisories in total; 5 of
+  #     them specifically affect the unbounded `>=0.310.1` floor this range permitted
+  #     (highest ceiling among those 5 is `<=0.315.6`/fixed `0.315.7`; corrected from an
+  #     earlier draft that said "7" without that qualifier — Sana's review, third pass —
+  #     cross-checked both sources);
+  #     `graphql-core` and `cross-web` currently have 0 advisories in either source, but
+  #     were exactly as invisible to Dependabot as `strawberry-graphql` was before this
+  #     pin. CI/local happened to resolve the safe, current-latest version of all
+  #     three, but an undeclared transitive dependency is exactly the same "Dependabot
+  #     can't see it, so can't fix it" exposure this whole ticket closes for the
+  #     declared deps — leaving any of them undeclared would keep this PR's own claim
+  #     ("every package this app's own code imports directly is pinned") false, the
+  #     same overclaim already corrected once for this exact reason (Sana, finding
+  #     S-5). Declaring all three directly, pinned, closes that gap for real.
+  "Django==6.1.1",
   # 0.87 declares `django>=5.2` with no upper bound, so it is compatible with 6.1.
-  "strawberry-graphql-django>=0.87,<0.88",
+  "strawberry-graphql-django==0.87.1",
+  # See the shared comment above `Django` — declared directly (was transitive-only)
+  # because it's imported directly and floated with no upper bound otherwise.
+  "strawberry-graphql==0.327.7",
+  # See the shared comment above `Django` — same reason as `strawberry-graphql`.
+  "graphql-core==3.2.12",
+  "cross-web==0.7.0",
   # Ed25519 for the signed offline entitlement envelope (DEC-004). Django ships no
   # asymmetric primitives.
-  "cryptography>=43,<47",
+  #
+  # EXACT PIN, not a range (17tnw2az07j / Sana security review, PR #110, finding S-1):
+  # a range doesn't fix why Dependabot's security-update job was failing. Its own log
+  # says it needs "a lockfile or pinned version requirement" to know what's installed;
+  # this repo has no lockfile for implementation/api, so a range — any range, whatever
+  # the floor — leaves the installed version genuinely unknown to Dependabot (confirmed
+  # independently: `gh api repos/.../dependency-graph/sbom` shows `cryptography` with no
+  # `versionInfo` at all, even after the floor bump). The next advisory that overlaps
+  # whatever range is declared would either raise no alert at all or fail with the exact
+  # same `dependency_file_not_supported` error as job_1591749422 — the mechanism that
+  # broke, not the version number, is what needed fixing. Django/strawberry-graphql-
+  # django/celery/strawberry-graphql/graphql-core/cross-web above got the same
+  # exact-pin treatment for the same reason (the owner declined to accept an interim
+  # gap on the first three; see the top-of-file comment). **This narrows, but does not
+  # close, ClickUp 17tnw2az0kw** (Sana security review, PR #110, finding S-5 — a second
+  # pass caught that closing it as fully resolved was premature; a third pass, S-6,
+  # caught `graphql-core`/`cross-web` as two more instances of the exact same gap
+  # Vera also independently found): every package DECLARED here, and every package
+  # this app's own code imports directly, is now exact-pinned and provably safe —
+  # verified exhaustively with `grep -rhoE '^(import|from) [a-zA-Z_]+' selahcue_api/`
+  # across the WHOLE app (not just the graphql/ directory), cross-referenced against
+  # every stdlib module and this dependency list; nothing third-party is left
+  # unaccounted for. What is still genuinely open, and remains 17tnw2az0kw's actual
+  # scope: the further transitive packages pulled in by these direct deps (e.g.
+  # `asgiref`, `sqlparse`, `click`, `kombu` — none currently carry a live advisory,
+  # verified, but none are pinned or Dependabot-visible either, and this app's own
+  # code never imports them directly), and `psycopg` (deliberately kept out of this
+  # file — see the comment in `.github/workflows/ci.yml`'s `api` job and this repo's
+  # `Dockerfile` — installed via its own separate `>=3.2,<4` range in both places,
+  # invisible to Dependabot's pip updater regardless of anything declared here; 0
+  # advisories currently affect that range, but the exposure to a *future* one is real
+  # and structurally identical to every gap this ticket has already closed). Only a
+  # real lockfile that the Dockerfile/CI actually install from can close that fully —
+  # tracked as 17tnw2az0kw, not built here.
+  #
+  # 50.0.1 (17tnw2az07j): the prior >=43,<47 range overlapped every published
+  # `cryptography` GHSA affected-range up to "< 50.0.0" (re-derived from the actual
+  # failed Dependabot job log, job_1591749422 — the highest ceiling among all
+  # affected-versions entries GitHub's advisory feed returned was ">=44.0.0, <50.0.0"),
+  # so no version below 50.0.0 is provably safe. 50.0.0 itself fixes a Bleichenbacher-
+  # oracle vulnerability in PKCS7 decryption. 50.0.1 (not 50.0.0) is used because it is
+  # PyPI's actual latest release; its own changelog entry is a wheel rebuild against a
+  # newer OpenSSL (4.0.2) — 8 of the 24 published advisories for this package are
+  # "vulnerable OpenSSL bundled in the wheels", which is exactly what that rebuild
+  # addresses (Sana). No Ed25519 API changes are documented between 43 and 50 relevant
+  # to `signing.py`'s usage (Ed25519PrivateKey/PublicKey, Encoding, PublicFormat,
+  # InvalidSignature) — verified against the upstream changelog and the full API test
+  # suite (independently reproduced by Cody, Vera, Quinn and Sana).
+  "cryptography==50.0.1",
   # Async task runtime: transactional email (worker) + revocation cascade and expiry
   # sweeps (beat). Redis is the broker; see CELERY_BROKER_URL in settings.
-  "celery[redis]>=5.4,<6",
+  "celery[redis]==5.6.3",
 ]
 
 [project.optional-dependencies]
 dev = [
-  "pytest>=8,<9",
-  "pytest-django>=4.11,<5",
+  # EXACT PINS (17tnw2az07j / Sana security review, PR #110, finding S-5): the prior
+  # `pytest>=8,<9` range resolved to 8.4.2, which is affected by CVE-2025-71176
+  # (GHSA-6w46-j5rx-g56g, medium, vulnerable tmpdir handling) — fixed in 9.0.3, which
+  # the `<9` cap itself blocked from ever being reachable. Bumped to `pytest==9.1.1`
+  # (PyPI's actual latest; 0 further advisories above 9.0.3 per both GH Advisory DB and
+  # OSV.dev) and `pytest-django==4.14.0` (PyPI's actual latest; 0 advisories at any
+  # version in either source; declares `pytest>=7.0.0` with no upper bound, so 9.1.1 is
+  # compatible). Verified empirically, not just from the changelog: full suite re-run
+  # against the pytest 9 upgrade — same 554 passed, 3 skipped, 0 failed as every prior
+  # run in this ticket.
+  "pytest==9.1.1",
+  "pytest-django==4.14.0",
 ]
 
 [tool.pytest.ini_options]

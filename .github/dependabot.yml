@@ -1,0 +1,162 @@
+# Dependabot version-update coverage. 17tnw2az07j.
+#
+# Before this file existed, this repo had ZERO scheduled ecosystem-update coverage —
+# the only Dependabot activity was GitHub's native "Dependabot security updates" repo
+# setting (which needs no config file and runs independently of this one). That native
+# path failed twice for `implementation/api`'s `cryptography` (2026-09-05, 2026-09-25,
+# `dependency_file_not_supported` — no lockfile, no pinned version, so Dependabot could
+# not tell what was actually installed). Earlier 2026-07-24 failures on this same
+# workflow were a DIFFERENT package and error entirely (`glib`, cargo, in
+# `selahcue-operator` — `security_update_not_possible`, already accepted as a tolerable
+# risk, RISK-015) — corrected here after Sana's security review (PR #110, finding S-4)
+# caught an earlier draft of this file conflating the two. See
+# `implementation/api/pyproject.toml`'s `cryptography` comment and ClickUp 17tnw2az07j
+# for the full root-cause trail, including why an exact pin (not just a higher floor)
+# was needed to actually close the failure mode rather than just the immediate CVE.
+# This file adds the scheduled side: routine version-update PRs for all four package
+# ecosystems in the repo, plus the GitHub Actions workflow files themselves.
+#
+# Weekly, not daily: this repo's CI is expensive per its own CLAUDE.md (a 3-OS matrix,
+# an ADR-0015 GPU parity oracle across Metal/lavapipe/DX12, Playwright WebKit smoke,
+# cargo audit/deny, Flutter/Android). A daily cadence would multiply that cost across
+# four ecosystems for marginal freshness. This matches the cadence philosophy already
+# established by `.github/workflows/rust-canary.yml`'s weekly Monday run.
+#
+# Note: this schedule governs routine (non-security) updates. GitHub's native security
+# updates (the ones that were failing) are a separate, always-on mechanism controlled
+# by the repo's Security settings, not by this file — this file cannot disable or
+# replace that path, only add scheduled coverage alongside it.
+#
+# `cargo` and `github-actions` are grouped (minor+patch together, major separate) and
+# capped at 2 open PRs each (Vera, PR #110 performance review): `ci.yml`'s path filter
+# treats ANY `.github/workflows/ci.yml` change — which every `github-actions` PR is —
+# as touching every area, so an ungrouped run of these two ecosystems can trigger the
+# full desktop/mobile/android matrix repeatedly; worse, every `cargo` update PR edits a
+# `Cargo.lock`, so merging one conflicts the rest, and Dependabot's default rebase-on-
+# conflict behaviour would re-run that same full matrix once per merge (measured: a
+# desktop-matrix run costs ~44 job-minutes across 15 jobs, 4 of them macOS, against an
+# org-wide 20-job/5-macOS concurrency cap). `pip`, `npm`, and `pub` are left ungrouped
+# so each dependency still gets its own reviewable PR — the real reason grouping isn't
+# needed there (corrected per Vera's second-pass review, PR #110: an earlier version of
+# this comment wrongly said it was because each "edits an independent lockfile," which
+# isn't even true for `pip` — this repo has no pip lockfile at all) is that all three
+# only ever trigger Ubuntu-only jobs (`api`, `marketing (vue spa)`, `flutter controller`
+# — none touch the macOS-heavy desktop matrix), so there is no equivalent capacity
+# squeeze or rebase-cascade cost to guard against.
+
+version: 2
+
+updates:
+  # implementation/desktop — Rust. Three SEPARATE lockfiles, not one workspace:
+  # implementation/desktop/Cargo.toml itself excludes `crates/selahcue-operator` and
+  # `crates/selahcue-stt` (`exclude = [...]`, "excluded so the default core stays fast
+  # + green") and each of those two has its own `[workspace]` declaration and its own
+  # tracked Cargo.lock. A single `directory: "/implementation/desktop"` entry would
+  # only ever see the root workspace's lockfile and silently miss the other two —
+  # the shipped Tauri app (selahcue-operator) and the whisper.cpp STT engine
+  # (selahcue-stt), the two largest Rust dependency trees in the repo (caught in
+  # review, Vera, PR #110). `directories` (plural) lists all three explicitly.
+  - package-ecosystem: "cargo"
+    directories:
+      - "/implementation/desktop"
+      - "/implementation/desktop/crates/selahcue-operator"
+      - "/implementation/desktop/crates/selahcue-stt"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "UTC"
+    groups:
+      minor-and-patch:
+        update-types: ["minor", "patch"]
+      major:
+        update-types: ["major"]
+    open-pull-requests-limit: 2
+    labels:
+      - "dependencies"
+      - "rust"
+
+  # implementation/api — Django/Strawberry Platform API (pip, pyproject.toml).
+  #
+  # Every dependency DECLARED in pyproject.toml (Django, strawberry-graphql-django,
+  # strawberry-graphql, cryptography, celery, plus the pytest/pytest-django dev deps)
+  # is now an EXACT pin, not a range — the owner declined to accept an interim gap on
+  # the direct deps that weren't originally in scope for the `cryptography` CVE fix
+  # (17tnw2az07j), so this PR widened to cover all of them. `versioning-strategy:
+  # increase` makes the weekly routine job propose raising each pin to match new
+  # releases as they ship — for an exact `==` pin this is simply "bump the pin," so it
+  # is what keeps these from going stale now that there is no floor left to silently
+  # drift (the "widen ranges" default a library-shaped `pyproject.toml` otherwise gets,
+  # per Sana's dependabot-core source read, does not apply the same way to an exact
+  # pin). This is still weekly, not advisory-triggered, so a routine bump can land up
+  # to a week late and won't be labelled security.
+  #
+  # **What this does NOT close (Sana, PR #110, findings S-5 and S-6; the latter also
+  # independently found by Vera):** every package `implementation/api`'s own code
+  # imports directly is now declared here (verified exhaustively across the whole app,
+  # not just spot-checked — see `pyproject.toml`'s dependency-list comment). What
+  # remains open is the further, purely-transitive packages pulled in underneath those
+  # (e.g. `asgiref`, `sqlparse`, `kombu` — none currently carry a live advisory,
+  # verified, but this app's code never imports them directly and they're pinned
+  # nowhere) and `psycopg` (deliberately excluded from this file — see the `api` job
+  # in `ci.yml` and this crate's `Dockerfile`, both of which install it separately via
+  # their own `>=3.2,<4` range) — both remain invisible to Dependabot's pip updater
+  # regardless of what this file declares. 0 advisories currently affect either, but a
+  # future one would reproduce the exact same silent failure this file exists to
+  # prevent. Closing that fully needs a real lockfile the Dockerfile/CI actually
+  # install from —
+  # tracked as ClickUp 17tnw2az0kw, not built here.
+  - package-ecosystem: "pip"
+    directory: "/implementation/api"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "UTC"
+    versioning-strategy: increase
+    labels:
+      - "dependencies"
+      - "api"
+
+  # implementation/marketing — Vue SPA (npm, package.json).
+  - package-ecosystem: "npm"
+    directory: "/implementation/marketing"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "UTC"
+    labels:
+      - "dependencies"
+      - "marketing"
+
+  # implementation/mobile/selahcue_controller — Flutter controller app (pub, pubspec.yaml).
+  - package-ecosystem: "pub"
+    directory: "/implementation/mobile/selahcue_controller"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "UTC"
+    labels:
+      - "dependencies"
+      - "mobile"
+
+  # The workflow files themselves (actions/checkout, actions/upload-artifact, etc.),
+  # so pinned action versions get the same scheduled coverage as application code.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "UTC"
+    groups:
+      minor-and-patch:
+        update-types: ["minor", "patch"]
+      major:
+        update-types: ["major"]
+    open-pull-requests-limit: 2
+    labels:
+      - "dependencies"
+      - "github-actions"
