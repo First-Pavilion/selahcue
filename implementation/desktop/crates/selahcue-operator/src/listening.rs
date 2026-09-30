@@ -3559,4 +3559,170 @@ mod tests {
              dead, not merely quiet)"
         );
     }
+
+    /// 86akcfp8w / Vera's PR #124 performance review (F2, non-blocking but real): none of this
+    /// file's other tests pin the ACTUAL numeric on-device hand-off capacity end to end through
+    /// `run_on_device_with_recognizer` — they only prove SOME capacity gets computed (the
+    /// refusal test) or that eviction fires under a flood far bigger than any real cap either
+    /// way (the test just above this one). Vera proved the gap empirically: mutating the
+    /// on-device call site back to `HANDOFF_MAX_SAMPLES.max(handoff_capacity(...))` — silently
+    /// re-widening a mono device's cap toward the historical stereo-doubled value — left every
+    /// operator test green.
+    ///
+    /// This test brackets the real 48 kHz capacity instead of a synthetic one. `CAPTURE_WINDOW`
+    /// (5 s) gives a mono capacity of exactly 48,000 × 1 × 5 = 240,000 samples — HALF of what a
+    /// stereo-style `× 2` would give (480,000). The two checks below use DIFFERENT, generously
+    /// one-sided flood sizes rather than one flood bracketing both thresholds: with a real
+    /// worker thread draining the mic ring on its own schedule (`CAPTURE_INTERVAL`) concurrent
+    /// with a real recognition thread draining the hand-off on ITS own schedule
+    /// (`RECOG_INTERVAL`), delivery can legitimately fragment across several capture-loop
+    /// iterations — a flood sized to just barely clear one cap while staying just under the
+    /// other (a thin bracket) turned out to be genuinely flaky against that fragmentation, not
+    /// just theoretically risky (caught empirically while writing this test — a 5,001-sample
+    /// flood against a 5,000-sample mono cap intermittently missed). A flood many times a cap
+    /// only needs ONE fragment to individually clear it; a flood well under a cap can never
+    /// clear it regardless of how delivery fragments, since fragmentation only ever REDUCES
+    /// what accumulates before a drain, never inflates it.
+    #[test]
+    fn on_device_hand_off_capacity_is_mono_correct_not_stereo_doubled() {
+        let _guard = state_locked();
+
+        struct RateChannelsSource {
+            inner: Arc<Mutex<selahcue_stt::audio::FakeAudioSource>>,
+            sample_rate: u32,
+            channels: u16,
+        }
+        impl AudioSource for RateChannelsSource {
+            fn label(&self) -> &str {
+                "rate-channels"
+            }
+            fn next_chunk(&mut self) -> Option<AudioChunk> {
+                self.inner
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .next_chunk()
+            }
+        }
+        impl CaptureSource for RateChannelsSource {
+            fn peak_level(&self) -> f32 {
+                0.0
+            }
+        }
+        impl DeviceCaptureSource for RateChannelsSource {
+            fn sample_rate(&self) -> u32 {
+                self.sample_rate
+            }
+            fn channels(&self) -> u16 {
+                self.channels
+            }
+        }
+
+        /// Runs a real on-device session against a device reporting `(sample_rate, channels)`,
+        /// floods it with `flood_samples` samples (in 1,000-sample chunks) AFTER readiness, and
+        /// reports whether the drop notice fired — i.e. whether eviction actually happened.
+        fn drop_notice_fires_for(sample_rate: u32, channels: u16, flood_samples: usize) -> bool {
+            *status_lock(&ENGINE_NOTE) = None;
+            clear_failure();
+
+            let queue = Arc::new(Mutex::new(selahcue_stt::audio::FakeAudioSource::new()));
+            let source = RateChannelsSource {
+                inner: Arc::clone(&queue),
+                sample_rate,
+                channels,
+            };
+
+            let app = tauri::test::mock_app();
+            let handle = app.handle().clone();
+            handle.manage(crate::AppState {
+                backend: crate::Backend::Local(crate::demo_shell()),
+                deck: Mutex::new(crate::DeckWorkspace::demo()),
+                library: Mutex::new(crate::DeckLibrary::load(None)),
+                providers: Mutex::new(selahcue_core::providers::ProvidersConfig::default()),
+                providers_db: None,
+                transcript_db: None,
+                secrets: crate::make_secret_store(),
+                link_status: Mutex::new(selahcue_lan::LinkStatus::local()),
+                link_next_attempt: Mutex::new(None),
+            });
+
+            let stop_worker = Arc::new(AtomicBool::new(false));
+            let (seg_tx, _seg_rx) = tokio::sync::mpsc::channel(64);
+            let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+
+            let sw = Arc::clone(&stop_worker);
+            let app_worker = handle.clone();
+            let worker = std::thread::spawn(move || {
+                run_on_device_with_recognizer(
+                    app_worker,
+                    source,
+                    sw,
+                    seg_tx,
+                    Some(ready_tx),
+                    None,
+                    Box::new(selahcue_stt::FakeRecognizer::new()),
+                );
+            });
+
+            let runtime = tokio::runtime::Runtime::new().expect("build a tokio runtime");
+            let ready = runtime
+                .block_on(async { tokio::time::timeout(Duration::from_secs(10), ready_rx).await });
+            assert!(
+                matches!(ready, Ok(Ok(Ok(())))),
+                "on-device must become ready against the fake recognizer: {ready:?}"
+            );
+
+            // Flood AFTER ready, in modest 1,000-sample chunks (never a single oversized chunk —
+            // capture_handoff.rs's own doc: that would be retained WHOLE, never evicted, which
+            // would make this test measure the wrong thing) so eviction proceeds chunk-by-chunk.
+            const FLOOD_CHUNK_SAMPLES: usize = 1_000;
+            {
+                let mut q = queue.lock().unwrap_or_else(|e| e.into_inner());
+                let mut remaining = flood_samples;
+                while remaining > 0 {
+                    let this_chunk = remaining.min(FLOOD_CHUNK_SAMPLES);
+                    q.push_chunk(AudioChunk::new(
+                        vec![0.0; this_chunk],
+                        sample_rate,
+                        channels,
+                    ));
+                    remaining -= this_chunk;
+                }
+            }
+            std::thread::sleep(Duration::from_millis(2_000));
+            stop_worker.store(true, Ordering::Relaxed);
+            worker.join().expect("run_on_device must not panic");
+
+            let fired = engine_note().as_deref() == Some(ON_DEVICE_AUDIO_DROPPED_NOTICE);
+            *status_lock(&ENGINE_NOTE) = None;
+            *status_lock(&PROVIDER_LABEL) = None;
+            clear_failure();
+            fired
+        }
+
+        // Mono cap = 48_000 × 1 × 5 = 240,000. The flood (350,000) is chosen to sit BETWEEN the
+        // real mono cap and `HANDOFF_MAX_SAMPLES` (480,000, the exact historical stereo-style
+        // literal this ticket replaced) — not just "well over the real cap" — so this assertion
+        // is actually sensitive to the specific regression Vera's PR #124 review reproduced
+        // (widening the derived cap back toward the old constant, e.g. via
+        // `HANDOFF_MAX_SAMPLES.max(handoff_capacity)`), not only to a cap collapsing to ~zero.
+        // Still generous relative to the real cap (46% margin) and delivered in 1,000-sample
+        // chunks over a 2s settle window — verified stable across repeated runs, unlike the
+        // earlier razor-thin (5,001-vs-5,000, single-sample-chunk) version of this test.
+        assert!(
+            drop_notice_fires_for(48_000, 1, 350_000),
+            "a mono device's hand-off capacity must be exactly rate × 1 × CAPTURE_WINDOW \
+             (240,000 samples here) — REMOVING the runtime derivation (or reintroducing any \
+             stereo-style widening at the on-device call site, e.g. \
+             HANDOFF_MAX_SAMPLES.max(handoff_capacity)) must fail this test"
+        );
+        // Stereo cap = 48_000 × 2 × 5 = 480,000. A flood well under it (200,000 — under even
+        // the MONO cap) can never clear it regardless of fragmentation: this is the POSITIVE
+        // CONTROL proving the mono result above isn't a coincidence of some unrelated
+        // always-drop bug, not a bracket needing its own fragmentation-safety margin.
+        assert!(
+            !drop_notice_fires_for(48_000, 2, 200_000),
+            "a stereo device's capacity (480,000 samples here) must not be crossed by a \
+             200,000-sample flood — got a drop notice anyway"
+        );
+    }
 }

@@ -122,16 +122,25 @@ fn bounded_utterance_accumulator_force_closes_continuous_speech() {
     engine.flush();
 
     // Force-close on the sample cap must chop 200 frames of unbroken speech into MANY bounded
-    // FINAL utterances (≈ 200 / 4 = 50), plus two interims per 4-frame group at this cadence
-    // (≈ 150 segments total pushed into the shared, bounded queue). This lower bound is what
-    // makes the test non-vacuous: if a regression removed the `max_utterance_samples` guard,
-    // the whole 200 frames would stay in ONE utterance closed only by `flush()` → far fewer
-    // segments → this assertion fails. (A count-only `!is_empty()` check would pass either way.)
+    // FINAL utterances (≈ 200 / 4 = 50), plus roughly two interims per 4-frame group at this
+    // cadence (≈ 150 segments total pushed into the shared, bounded queue).
+    //
+    // **Counted on FINALS ONLY (Vera, PR #124 review, F3 — the prior version of this assertion
+    // counted `out.len()` over EVERY segment, finals and interims together, which made it
+    // vacuous with respect to the claim in its own name and comment.** With interims firing on
+    // their own wall-clock cadence regardless of whether the sample cap does anything, a
+    // regression that removed `max_utterance_samples` entirely — the whole 200 frames staying
+    // in ONE utterance, closed only by the final `flush()` — would still leave `out.len()` in
+    // the hundreds from interims alone, and the old `out.len() >= 40` assertion would not
+    // notice. Counting `is_final` segments specifically measures what this test is actually
+    // named for: verified failing (1 final, from `flush()` alone) against `main`'s equivalent
+    // scenario with the cap effectively disabled, and passing on the real code.
     let out = provider.poll();
+    let finals = out.iter().filter(|s| s.is_final).count();
     assert!(
-        out.len() >= 40,
-        "expected the sample cap to force-close many segments (~50 finals, ~150 with interims), \
-         got {} — cap not enforced?",
+        finals >= 40,
+        "expected the sample cap to force-close many FINAL segments (~50), got {finals} \
+         finals ({} total incl. interims) — cap not enforced?",
         out.len()
     );
     assert!(out.len() <= MAX_PENDING_SEGMENTS);

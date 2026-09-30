@@ -112,8 +112,7 @@ impl Clock for ManualClock {
 /// context / 1,500 positions), so `audio_ctx / 50` seconds of real audio, in samples at
 /// [`TARGET_SAMPLE_RATE`], is `audio_ctx * TARGET_SAMPLE_RATE / 50`. `512 * 16_000 / 50 =
 /// 163_840` samples = 10.24 s — the exact horizon Phase 1's review round (86akcfp3u) measured.
-pub(crate) const WHISPER_AUDIO_CTX_HORIZON_SAMPLES: usize =
-    512 * TARGET_SAMPLE_RATE as usize / 50;
+pub(crate) const WHISPER_AUDIO_CTX_HORIZON_SAMPLES: usize = 512 * TARGET_SAMPLE_RATE as usize / 50;
 
 /// Utterance-segmentation tunables.
 #[derive(Debug, Clone, Copy)]
@@ -169,7 +168,7 @@ impl Default for EngineConfig {
             min_utterance_frames: 3, // ~60 ms of speech minimum
             max_utterance_samples: 10 * TARGET_SAMPLE_RATE as usize, // 10 s force-close
             interim_interval: Duration::ZERO, // interims off by default (opt-in; see the field docs)
-            interim_max_samples: 0,  // 0 = whole utterance (prior behaviour); host may bound it
+            interim_max_samples: 0, // 0 = whole utterance (prior behaviour); host may bound it
         }
     }
 }
@@ -318,8 +317,11 @@ impl SttEngine {
     /// Advance one VAD frame (held in `self.frame_scratch`), updating utterance state and
     /// closing the utterance on end-of-speech hangover or the hard sample cap.
     fn process_current_frame(&mut self) {
-        // Read the clock once per frame, not once per branch below — cheap for the real
-        // monotonic clock, and means every use in this call agrees on "now" (86akcfpbj).
+        // `now` here is "when this frame arrived" — used for the utterance-start stamp and for
+        // the elapsed-time COMPARISON below. It must NOT be reused as the timestamp recorded
+        // AFTER an interim fires: that decode can itself take real time, and stamping with the
+        // pre-decode `now` was exactly the bug Vera's PR #124 review (F1) found — see the fresh
+        // `self.clock.now()` read at the actual stamp site below.
         let now = self.clock.now();
         self.frame_index += 1;
         let speech = self.vad.is_speech(&self.frame_scratch);
@@ -349,16 +351,25 @@ impl SttEngine {
         } else if self.in_speech
             && self.config.interim_interval > Duration::ZERO
             && self.speech_frames >= self.config.min_utterance_frames
-            && self
-                .last_interim_at
-                .is_some_and(|since| now.saturating_duration_since(since) >= self.config.interim_interval)
+            && self.last_interim_at.is_some_and(|since| {
+                now.saturating_duration_since(since) >= self.config.interim_interval
+            })
         {
             // Not closing this frame → emit a streaming interim of the utterance so far. Gated
             // on WALL-CLOCK elapsed time since the last interim (86akcfpbj), not a frame count —
             // see the module doc for why a frame count reintroduces a positive-feedback loop
             // once the recognizer falls behind real time.
             self.emit_interim();
-            self.last_interim_at = Some(now);
+            // Stamp with a FRESH clock read taken AFTER the decode, never the `now` captured at
+            // the top of this function before `emit_interim()` ran (Vera, PR #124 review, F1 —
+            // blocking). Reusing the pre-decode `now` here is the exact same bug shape 86akcfpbj
+            // exists to remove, just moved one line down: once a real decode takes longer than
+            // `interim_interval`, that stale timestamp already reads as "overdue" on the very
+            // next frame, so a slow decode retriggers immediately, and again, and again — a
+            // STRONGER positive-feedback loop than the frame-counted one this ticket replaced,
+            // because now each retrigger costs a full decode, not just a cheap counter increment.
+            // See `a_slow_decode_does_not_retrigger_before_it_actually_completes` below.
+            self.last_interim_at = Some(self.clock.now());
         }
     }
 
@@ -644,6 +655,100 @@ mod tests {
     }
 
     #[test]
+    fn a_slow_decode_does_not_retrigger_before_it_actually_completes() {
+        // Vera, PR #124 review (F1, BLOCKING, found by simulation). `last_interim_at` was being
+        // stamped with the `now` captured at the TOP of `process_current_frame` — BEFORE
+        // `emit_interim()`'s decode ran — not a fresh read taken AFTER the decode completed.
+        // Once a real decode takes longer than `interim_interval`, that stale timestamp already
+        // reads as "overdue" on the very next frame, so a slow decode retriggers immediately —
+        // and does it again, and again — a STRONGER positive-feedback loop than the frame-
+        // counted one 86akcfpbj replaced, because now every retrigger costs a full decode, not
+        // just a cheap counter increment. Vera's own empirical finding: "a 50-frame backlog
+        // after a 1s decode fires 50 more decodes" on the pre-fix code.
+        //
+        // Reproduced with a recognizer double that advances the SAME `ManualClock` during its
+        // own `transcribe()` call — standing in for real decode latency with no actual sleep.
+        // Phase 1 (realistic pacing, clock advanced ~20ms/frame): drive the FIRST interim to
+        // fire naturally, whose "decode" costs 1s on the shared clock. Phase 2 (a true backlog
+        // burst, mirroring the test above — the clock is NOT advanced independently for the
+        // rest of this test): feed 50 more frames. On correct code, nothing has happened in
+        // real time since the first decode finished, so zero further decodes may fire; on the
+        // pre-fix code, the stale pre-decode timestamp makes every one of those 50 frames look
+        // overdue, cascading into ~50 more decodes.
+        use std::sync::{Arc, Mutex};
+
+        #[derive(Clone)]
+        struct SlowRecognizer {
+            clock: ManualClock,
+            decode_cost: Duration,
+            calls: Arc<Mutex<usize>>,
+        }
+        impl Recognizer for SlowRecognizer {
+            fn label(&self) -> &str {
+                "slow"
+            }
+            fn transcribe(
+                &mut self,
+                _samples: &[f32],
+                start_ms: u64,
+                end_ms: u64,
+            ) -> Vec<RecognizedSegment> {
+                *self.calls.lock().unwrap_or_else(|e| e.into_inner()) += 1;
+                self.clock.advance(self.decode_cost); // the decode itself taking real time
+                vec![RecognizedSegment::final_text("partial", start_ms, end_ms)]
+            }
+        }
+
+        let clock = ManualClock::new(Instant::now());
+        let calls = Arc::new(Mutex::new(0usize));
+        let recognizer = SlowRecognizer {
+            clock: clock.clone(),
+            decode_cost: Duration::from_secs(1),
+            calls: Arc::clone(&calls),
+        };
+        let (mut engine, _provider) = SttEngine::build_with_clock(
+            EngineConfig {
+                min_utterance_frames: 1,
+                interim_interval: Duration::from_millis(100), // short: the first interim fires fast
+                ..EngineConfig::default()
+            },
+            Box::new(EnergyVad::new()),
+            Box::new(recognizer),
+            FeedbackGuard::new(),
+            Box::new(clock.clone()),
+        );
+
+        // Phase 1: realistic pacing until the first interim fires (~5 frames at 100ms/20ms).
+        for _ in 0..6 {
+            engine.process(&speech_chunk(1));
+            clock.advance(Duration::from_millis(MS_PER_FRAME));
+        }
+        let fired_after_phase_1 = *calls.lock().unwrap_or_else(|e| e.into_inner());
+        assert_eq!(
+            fired_after_phase_1, 1,
+            "premise: exactly one interim (and its 1s-costing decode) must have fired before \
+             this test can prove anything about what happens after it"
+        );
+
+        // Phase 2: a true backlog burst — 50 more frames, the clock NOT advanced independently
+        // between them (matching `a_backlog_burst_fires_zero_interims_when_zero_real_time_elapses`
+        // above). No real time passes beyond what the first decode itself already consumed.
+        for _ in 0..50 {
+            engine.process(&speech_chunk(1));
+        }
+        let fired_in_phase_2 =
+            *calls.lock().unwrap_or_else(|e| e.into_inner()) - fired_after_phase_1;
+        assert_eq!(
+            fired_in_phase_2, 0,
+            "REMOVING the post-decode timestamp fix must fail this test: with no real time \
+             passing beyond what the first 1s decode itself consumed, zero further decodes may \
+             fire over the next 50 frames — got {fired_in_phase_2} instead (the pre-fix bug \
+             fires ~50, one per frame, because the stale pre-decode timestamp reads every \
+             subsequent frame as already overdue)"
+        );
+    }
+
+    #[test]
     fn steady_state_cadence_is_unchanged_at_the_documented_800ms_interval() {
         // POSITIVE CONTROL for the test above: the fix must not silently change today's
         // steady-state (no backlog) interim cadence. Production wires
@@ -752,7 +857,12 @@ mod tests {
         fn label(&self) -> &str {
             "ctx-limited-fake"
         }
-        fn transcribe(&mut self, samples: &[f32], start_ms: u64, end_ms: u64) -> Vec<RecognizedSegment> {
+        fn transcribe(
+            &mut self,
+            samples: &[f32],
+            start_ms: u64,
+            end_ms: u64,
+        ) -> Vec<RecognizedSegment> {
             self.seen_lens
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
