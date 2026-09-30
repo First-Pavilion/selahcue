@@ -168,14 +168,23 @@ else
 AI_FEATURES := dev-keys openai-notes
 endif
 
-# The actual --features list the dev launch targets build with: STT + AI, comma-joined, with
-# empty slices dropped so e.g. `STT=0 AI=0` still produces a bare `cargo run` (no trailing/leading
-# comma, no --features flag at all). OP_FEATURES=<features> on the command line still overrides
-# this outright, exactly as it did before this change — it is a `?=` like everything above.
+# The actual --features list the dev launch targets build with: encryption + STT + AI,
+# comma-joined, with empty slices dropped so e.g. `STT=0 AI=0` still produces just
+# `--features read-encrypted-transcripts` (no trailing/leading comma). OP_FEATURES=<features> on
+# the command line still overrides this outright, exactly as it did before this change — it is a
+# `?=` like everything above.
+#
+# `read-encrypted-transcripts` (FR-154; 86akgrz3b) has no AUTO/opt-out toggle the way STT/AI do,
+# unconditionally present here: unlike those, it needs no optional heavy toolchain a developer
+# might lack (perl is ubiquitous; CI now carries nasm too — see selahcue-operator/Cargo.toml's
+# `read-encrypted-transcripts` comment). It is ALSO a genuine Cargo default feature on
+# selahcue-operator, so listing it here is redundant for actual reachability but is what makes
+# `scripts/check_launch_reachability.py`'s dry-run text scan — which can only see explicit
+# `--features` tokens, never an implicit Cargo default — actually observe it as REQUIRED.
 EMPTY :=
 SPACE := $(EMPTY) $(EMPTY)
 COMMA := ,
-OP_FEATURES ?= $(subst $(SPACE),$(COMMA),$(strip $(STT_FEATURES) $(AI_FEATURES)))
+OP_FEATURES ?= $(subst $(SPACE),$(COMMA),$(strip read-encrypted-transcripts $(STT_FEATURES) $(AI_FEATURES)))
 OPRUN       := $(if $(strip $(OP_FEATURES)),--features $(strip $(OP_FEATURES)),)
 # Word-list view of the FINAL feature set (whether auto-computed above or supplied directly via
 # OP_FEATURES=...) — this, not STT_FEATURES/AI_FEATURES, is what stt-preflight, release-ai-guard
@@ -250,14 +259,22 @@ else
 NDI_ON := $(wildcard $(NDI_DIR)/include/Processing.NDI.Lib.h)
 endif
 ifeq ($(strip $(NDI_ON)),)
-DESKTOP_FEATURES :=
+DESKTOP_FEATURES := --features encryption
 DESKTOP_ENV :=
 NDI_STATUS := off (no vendored SDK — run scripts/fetch_ndi_sdk.sh to enable NDI output)
 else
-DESKTOP_FEATURES := --features ndi
+DESKTOP_FEATURES := --features encryption,ndi
 DESKTOP_ENV := NDI_SDK_DIR="$(NDI_DIR)" $(NDI_LOADER)
 NDI_STATUS := on (vendored SDK)
 endif
+
+# At-rest encryption (FR-154; 86akgrz3b) — unconditionally on for both the output window
+# (`encryption`, added to DESKTOP_FEATURES above) and the operator shell
+# (`read-encrypted-transcripts`, added to OP_FEATURES above). Unlike NDI_STATUS/STT_STATUS/
+# AI_STATUS there is no on/off branch to report — see those features' own Cargo.toml comments
+# for why this one has no opt-out toggle — so this is a plain constant, printed for the same
+# "prints what it enabled and why" observability this Makefile's other features get.
+ENCRYPTION_STATUS := on (SQLCipher; key via OS secret store, or Argon2id from SELAHCUE_PASSPHRASE)
 
 .DEFAULT_GOAL := help
 .PHONY: help launch run run-release launch-release output-release output output-ndi ndi-preflight operator operator-headless stt-preflight release-ai-guard stage-operator-binaries verify-stage-operator-binaries-create-only remote timer stop-timer demo mobile mobile-test ci nfr build build-output build-operator test test-stt-real-model check clippy fmt clean
@@ -502,6 +519,7 @@ launch: stt-preflight release-ai-guard build-output build-operator ## Launch EVE
 	@echo ">> NDI output: $(NDI_STATUS)"
 	@echo ">> live transcript (STT): $(STT_STATUS)"
 	@echo ">> AI-assisted sermon notes: $(AI_STATUS)"
+	@echo ">> at-rest encryption: $(ENCRYPTION_STATUS)"
 	@echo ">> clearing any stale endpoint and starting the output window…"
 	@rm -f "$(ENDPOINT)"; \
 	$(DESKTOP_ENV) $(CARGO) run $(WS) -p selahcue-desktop $(DESKTOP_FEATURES) $(PROFILE_FLAG) & \
@@ -565,6 +583,7 @@ output-ndi: ndi-preflight ## Force the output window WITH NDI (errors if the SDK
 operator: stt-preflight release-ai-guard stage-operator-binaries ## Run only the operator shell (connects to a running output window, else a standalone demo)
 	@echo ">> live transcript (STT): $(STT_STATUS)"
 	@echo ">> AI-assisted sermon notes: $(AI_STATUS)"
+	@echo ">> at-rest encryption: $(ENCRYPTION_STATUS)"
 	$(OPERATOR_RUN)
 
 operator-headless: ## Run the committed operator-webview behavioural check (headless Chrome; skips if Chrome absent)

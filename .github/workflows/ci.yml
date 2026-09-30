@@ -228,6 +228,40 @@ jobs:
         working-directory: ${{ github.workspace }}
         shell: bash
         run: sh scripts/check_toolchain.sh
+      # `encryption` (86akgrz3b) is now a Cargo DEFAULT feature of both selahcue-desktop and
+      # selahcue-data, so EVERY step below that builds this workspace with no --no-default-
+      # features override — Format doesn't touch code, but Clippy (default features) and
+      # Test (workspace) both do — now compiles rusqlite's `bundled-sqlcipher-vendored-openssl`,
+      # which builds OpenSSL from source via openssl-src. That needs a Perl interpreter
+      # (Configure) and NASM (assembly-optimized crypto routines) on Windows only — Linux and
+      # macOS need just the C/C++ toolchain the runner already has (see selahcue-data/Cargo.toml's
+      # `encryption` comment). Before 86akgrz3b this was moot because the feature was off by
+      # default everywhere; now it is the actual, load-bearing reason the "Test (at-rest
+      # encryption)" step further down no longer excludes Windows.
+      #
+      # ilammy/setup-nasm is the action the rust-openssl ecosystem commonly uses for exactly this
+      # gap (pinned major version, matching this workflow's existing convention for narrowly-
+      # scoped third-party actions like ilammy/msvc-dev-cmd and Swatinem/rust-cache).
+      - name: NASM for the vendored-OpenSSL build (Windows only)
+        if: runner.os == 'Windows'
+        uses: ilammy/setup-nasm@v1
+      # windows-latest is DOCUMENTED to ship Strawberry Perl, but "documented to" is not
+      # "verified here" — asserting it explicitly turns a wrong assumption into a clear, named
+      # failure at this step instead of a confusing OpenSSL Configure error buried inside a
+      # `cargo build` several steps later.
+      - name: Verify Perl is on PATH for the vendored-OpenSSL build (Windows only)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $p = Get-Command perl -ErrorAction SilentlyContinue
+          if (-not $p) {
+            throw "perl not found on PATH -- the encryption feature's vendored-OpenSSL build " + `
+              "(now default-on, 86akgrz3b) cannot run its Configure step without it. " + `
+              "windows-latest is documented to ship Strawberry Perl; if this throws, the " + `
+              "runner image changed and perl must be installed explicitly (e.g. " + `
+              "'choco install strawberryperl')."
+          }
+          perl -v
       # Quinn's process finding on PR #24 (86akcmzyq): the PR template's feature-flag-
       # reachability section is three checkboxes a human ticks, unenforced by CI — exactly the
       # human step that let 86akby7d8 ship, merge, and stay invisible from `make launch` in the
@@ -493,9 +527,16 @@ jobs:
         if: ${{ !cancelled() }}
         run: cargo clippy -p selahcue-stt-cloud --features deepgram --release --all-targets -- -D warnings
       - name: Test (at-rest encryption — SQLCipher + vendored OpenSSL)
-        # The vendored OpenSSL build needs perl+nasm on Windows; covered on the
-        # other two OSes (the feature is platform-independent Rust).
-        if: ${{ !cancelled() && runner.os != 'Windows' }}
+        # 86akgrz3b: `encryption` is now a Cargo default feature, so the workspace-wide
+        # Clippy/Test steps above already compile and exercise it on every OS, including
+        # Windows (perl+nasm now provisioned in this job's setup zone — see the "NASM for the
+        # vendored-OpenSSL build"/"Verify Perl is on PATH" steps near the top). This step stays
+        # as an explicit, named, feature-flagged run — redundant with the default-feature
+        # coverage above in what it builds, but not in what it PROVES: it is the one place a
+        # future `default = []` regression (someone dropping `encryption` back out of the
+        # default array) would still be caught by name, on all three OSes, rather than silently
+        # falling out of the workspace run's coverage.
+        if: ${{ !cancelled() }}
         run: |
           cargo test -p selahcue-data --features encryption --no-fail-fast
           cargo test -p selahcue-desktop --features encryption --no-fail-fast
@@ -577,13 +618,24 @@ jobs:
     # stt,cloud-stt feature-gate pairs moved out to `operator-native` below -- see that job's
     # own timeout comment for why it moved, not just where. What is LEFT in this job is
     # Format/Check/Clippy/Test plus three cheap feature-flag pairs and the two Linux webview
-    # smokes, none of them native-toolchain- or release-codegen-heavy. Measured on run
-    # 33984097274 (the merged-head run that timed out and prompted this split): that content
-    # took ~5m on windows-latest, this job's slowest OS, and ~4m on ubuntu-latest including
-    # both webview smokes. 15 minutes keeps 3x headroom over that without resurrecting the
-    # original job's failure mode -- one slow native build masking a real wedge in the cheap
-    # steps for 25 minutes.
-    timeout-minutes: 15
+    # smokes, none of them native-toolchain- or release-codegen-heavy -- true when this was
+    # written, no longer true on Windows.
+    #
+    # RAISED 15 -> 30 (86akgrz3b, Vera's performance review of PR #125). `encryption`/
+    # `read-encrypted-transcripts` becoming Cargo default features means `Check`/`Clippy`/`Test`
+    # in THIS job now also compile the vendored-OpenSSL build every run, on every OS -- and on
+    # Windows that build is `nmake`, one file at a time, genuinely slow. This job ACTUALLY TIMED
+    # OUT at 15 minutes on a real run of PR #125 (run 36727646787, attempt 2, job 109935685146:
+    # "The job has exceeded the maximum execution time of 15m0s"), with `Check` alone taking
+    # 11m3s against a pre-encryption 2m19s baseline on the same job. Vera measured the
+    # OpenSSL-build portion of that gap directly (`nmake build_libs`) and projected ~19-20
+    # minutes for a fully cold run (no warm `Swatinem/rust-cache` hit) -- which is routine here:
+    # this repo's total Actions cache was already at 10.12 GB against GitHub's 10 GB limit during
+    # that same PR's run, evicting this very job's Windows caches. 30 minutes keeps real headroom
+    # over the cold-run projection without resurrecting the original 25-minute failure mode this
+    # job was split to fix -- see `operator-native` below, whose own timeout got the same
+    # treatment for the same reason.
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -605,6 +657,22 @@ jobs:
         working-directory: ${{ github.workspace }}
         shell: bash
         run: sh scripts/check_toolchain.sh
+      # `encryption` (86akgrz3b) is now default-on for selahcue-operator too, so Check/Clippy/
+      # Test below compile the vendored-OpenSSL build here as well — see the `rust` job's
+      # identical pair of steps for the full reasoning; not repeated per-job.
+      - name: NASM for the vendored-OpenSSL build (Windows only)
+        if: runner.os == 'Windows'
+        uses: ilammy/setup-nasm@v1
+      - name: Verify Perl is on PATH for the vendored-OpenSSL build (Windows only)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $p = Get-Command perl -ErrorAction SilentlyContinue
+          if (-not $p) {
+            throw "perl not found on PATH -- see the 'rust' job's identical step for the full " + `
+              "reasoning."
+          }
+          perl -v
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: implementation/desktop/crates/selahcue-operator
@@ -789,10 +857,21 @@ jobs:
     # pre-merge, on PR #22's own final run (33951200403, also windows-latest): 326s + 285s, plus
     # that run's own post-job cache-save of 238s (this job now caches more artefacts than that
     # run did, so treat 238s as a floor, not a ceiling). Sum: 66 + 373 + 653 + 326 + 285 + 238 +
-    # ~5 (post-checkout/complete) = 1946s ≈ 32.4 minutes. 45 minutes leaves ~13 minutes / ~40%
-    # headroom over that COLD-cache worst case -- sized against it deliberately, since a warm
-    # Swatinem/rust-cache hit is the happy path that does not need headroom.
-    timeout-minutes: 45
+    # ~5 (post-checkout/complete) = 1946s ≈ 32.4 minutes. That sizing predates 86akgrz3b and no
+    # longer holds:
+    #
+    # RAISED 45 -> 60 (86akgrz3b, Vera's performance review of PR #125). `encryption`/
+    # `read-encrypted-transcripts` default-on means the vendored-OpenSSL build now compiles
+    # TWICE in this job (once for the RELEASE steps, once for stt,cloud-stt) on top of the
+    # `openssl-src`/`nmake` cost already described on the `operator` job above. Vera measured
+    # directly on a real PR #125 run: `Clippy (RELEASE)` 181s -> 545s, `Clippy (stt,cloud-stt)`
+    # 206s -> 526s. A partly-warm run was already at ~24 minutes when a subsequent push's
+    # concurrency cancel landed; Vera projects ~28-30 minutes partly warm and ~39-41 of the old
+    # 45-minute cap on a fully cold run -- ~10% headroom, not the ~40% this comment used to
+    # claim (the arithmetic above is left in place as the pre-86akgrz3b baseline, not updated in
+    # place, so the delta this bump represents stays visible). 60 minutes restores real headroom
+    # over the cold-run projection.
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -814,6 +893,22 @@ jobs:
         working-directory: ${{ github.workspace }}
         shell: bash
         run: sh scripts/check_toolchain.sh
+      # `encryption` (86akgrz3b) is now default-on for selahcue-operator too, so the RELEASE and
+      # stt,cloud-stt steps below compile the vendored-OpenSSL build here as well — see the
+      # `rust` job's identical pair of steps for the full reasoning; not repeated per-job.
+      - name: NASM for the vendored-OpenSSL build (Windows only)
+        if: runner.os == 'Windows'
+        uses: ilammy/setup-nasm@v1
+      - name: Verify Perl is on PATH for the vendored-OpenSSL build (Windows only)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $p = Get-Command perl -ErrorAction SilentlyContinue
+          if (-not $p) {
+            throw "perl not found on PATH -- see the 'rust' job's identical step for the full " + `
+              "reasoning."
+          }
+          perl -v
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: implementation/desktop/crates/selahcue-operator

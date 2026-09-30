@@ -7937,6 +7937,14 @@
    privacy or availability MEANING — this one is purely informational. */
 .pp-badge-neutral { color: var(--sc-text-muted); background: var(--sc-elevated); border-color: var(--sc-border-strong); }
 .pp-badge-soon { color: var(--sc-warn); background: var(--sc-warn-soft); border-color: var(--sc-warn-border); }
+/* Real (not planned) at-rest encryption status (86akgrz3b, Shadow's security review): the store
+   this build finds on disk is genuinely encrypted, or genuinely is not — never a static claim.
+   `.pp-badge-ok` reuses the same tokens `.pp-banner-ok` already uses for a positive/verified
+   state; `.pp-badge-danger` reuses `.pp-badge-soon`'s sibling `--sc-live` (red) tokens for the
+   one state that genuinely needs the operator's attention: an existing store that a keychain/
+   passphrase hiccup left unencrypted. */
+.pp-badge-ok { color: var(--sc-preview); background: var(--sc-preview-soft); border-color: var(--sc-preview-border); }
+.pp-badge-danger { color: var(--sc-live); background: var(--sc-live-soft); border-color: var(--sc-live-border); }
 .pp-pill-info-dot { color: var(--sc-info); }
 
 /* A two-way segmented control (Comfortable/Compact density, 12/24-hour clock format). Reuses the

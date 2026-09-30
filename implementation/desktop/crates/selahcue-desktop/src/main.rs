@@ -991,12 +991,22 @@ impl SessionStore {
         path: &std::path::Path,
         acquired: Option<(selahcue_data::EncryptionKey, keys::KeySource)>,
     ) -> Result<Database, DataError> {
+        use std::io::Read as _;
         const SQLITE_MAGIC: &[u8; 16] = b"SQLite format 3\0";
-        let on_disk: Option<bool /* plaintext */> = match std::fs::read(path) {
-            Ok(bytes) if bytes.len() >= 16 => Some(&bytes[..16] == SQLITE_MAGIC),
-            Ok(_) => None, // zero/short file: treat as absent
-            Err(_) => None,
-        };
+        // Bounded 16-byte header peek (86akgrz3b, Vera's performance review of PR #125) — NOT a
+        // full `std::fs::read` of the whole store: `encryption` is now a Cargo default feature,
+        // so this runs on every launch, and `App::new` reaches this decision multiple times
+        // (the session store plus the transcript sink's own second connection). Measured on a
+        // 116.6MB store: the old full-file read cost ~44ms p50 (warm cache) and a 122MB peak —
+        // against 5.7MB for a bounded 16-byte read — and the store's retention default is
+        // keep-forever, so that cost only grows. Mirrors the identical fix already applied to
+        // `selahcue-operator`'s own header peek.
+        let on_disk: Option<bool /* plaintext */> = (|| {
+            let mut f = std::fs::File::open(path).ok()?;
+            let mut header = [0u8; 16];
+            f.read_exact(&mut header).ok()?;
+            Some(&header == SQLITE_MAGIC)
+        })();
         match (on_disk, acquired) {
             (None, Some((key, source))) => {
                 println!("  Store encryption: SQLCipher (key via {source:?}).");

@@ -470,6 +470,50 @@ RELEASE_TAGS = {"SAFE", "UNSAFE"}
 # hard failure instead of an unexplained omission.
 TARGETS = ("launch", "operator", "build-operator")
 
+# TARGET_BUILDS_CRATE (86akgrz3b). Which registered crate(s) each TARGETS entry actually BUILDS --
+# used to scope a REQUIRED feature's reachability check to only the targets whose recipe touches
+# its own crate, rather than requiring it from every target in TARGETS uniformly regardless of
+# which crate it belongs to.
+#
+# WHY THIS EXISTS NOW AND NOT BEFORE: every REQUIRED feature until 86akgrz3b (dev-keys,
+# openai-notes, cloud-stt) happened to live on `selahcue-operator`, which EVERY target in TARGETS
+# builds (launch builds both crates; operator/build-operator build selahcue-operator alone) -- so
+# a target-uniform check was, by coincidence, always correct. 86akgrz3b tags `selahcue-desktop`'s
+# own `encryption` feature REQUIRED for the first time, and `operator`/`build-operator` do not
+# build selahcue-desktop AT ALL (they never invoke `-p selahcue-desktop`/its manifest path) -- so
+# checking encryption's reachability against those two targets was reporting a TRUE fact
+# ("selahcue-desktop's encryption feature does not appear in `make operator`'s dry run") as if it
+# were evidence of the exact regression this script exists to catch, when it is neither: those
+# targets were never going to reach ANY selahcue-desktop feature, REQUIRED or not, because they
+# never build that crate. Verified live: before this fix, tagging `encryption` REQUIRED made the
+# real check fail on exactly those two targets, for exactly this reason.
+#
+# HARDCODED, NOT DERIVED FROM `crate_mentions` -- and that is an explicit, argued choice, the same
+# shape as CRATE_MANIFESTS itself (see MULTI-CRATE SCOPE): which crate(s) a Makefile target builds
+# is a rare, reviewed, architectural fact, not something that changes on every feature PR.
+# `crate_mentions` cannot safely substitute for it either: on Darwin, `operator`'s own recipe
+# shells out to `scripts/run_operator_macapp.sh --features ...`, which carries NO
+# `-p`/`--manifest-path` token of its own in a `make -n` dry run at all (see COLLISION GUARD in
+# this docstring, and `FIXTURE_OPERATOR_OK` below, which models exactly this shape) -- a version
+# of this registry DERIVED from `crate_mentions` would go BLIND for `operator` on macOS, silently
+# dropping ALL of selahcue-operator's own REQUIRED features from enforcement on that OS, which is
+# a strictly worse regression than the one this registry exists to fix.
+#
+# VERIFIED, NOT MERELY ASSERTED, the one direction that CAN be checked without hitting that blind
+# spot: `target_builds_crate_omits_no_crate_mentions_can_see` (used in both self-test and the real
+# check, via `main`) confirms that wherever `crate_mentions` DOES find a crate for a target (i.e.
+# is not blinded by a wrapper script), that finding is a SUBSET of what this registry claims for
+# it -- catching a target that stops building a crate this registry still lists. The reverse (a
+# target starting to build a crate with no visible `-p`/`--manifest-path` token) structurally
+# cannot be verified this way, which is precisely why the registry is hardcoded rather than
+# derived: a derived version would have NO way to catch that direction of drift either, while
+# ALSO going blind on the direction this check *can* catch.
+TARGET_BUILDS_CRATE: dict[str, set[str]] = {
+    "launch": {"selahcue-desktop", "selahcue-operator"},
+    "operator": {"selahcue-operator"},
+    "build-operator": {"selahcue-operator"},
+}
+
 FEATURES_FLAG = re.compile(r"--features\s+(\S+)")
 FEATURE_DEF = re.compile(r"^([A-Za-z0-9_-]+)\s*=")
 LAUNCH_TAG_RE = re.compile(r"^#\s*LAUNCH_REACHABILITY:\s*(\S+)")
@@ -618,6 +662,56 @@ def required_from_tags(tags: dict[str, FeatureTags]) -> set[str]:
     """Features tagged `LAUNCH_REACHABILITY: REQUIRED` -- the set this script asserts is
     reachable from `make launch`/`make operator` by default."""
     return {name for name, t in tags.items() if t.reachability == "REQUIRED"}
+
+
+def required_for_target(
+    per_crate_tags: dict[str, dict[str, FeatureTags]],
+    target: str,
+    registry: dict[str, set[str]] | None = None,
+) -> set[str]:
+    """Which REQUIRED features `target` must actually reach -- scoped to the crate(s)
+    `TARGET_BUILDS_CRATE` says that target builds, not every registered crate's REQUIRED set
+    uniformly (see that registry's own comment for why this scoping exists at all). A target with
+    no entry in the registry is treated CONSERVATIVELY -- every registered crate's REQUIRED
+    features are required of it -- so an unregistered target fails loud (as it always has) rather
+    than silently checking nothing."""
+    reg = TARGET_BUILDS_CRATE if registry is None else registry
+    crates_for_target = reg.get(target, set(per_crate_tags))
+    return {
+        name
+        for crate_name in crates_for_target
+        for name, t in per_crate_tags.get(crate_name, {}).items()
+        if t.reachability == "REQUIRED"
+    }
+
+
+def target_builds_crate_omits_no_crate_mentions_can_see(
+    dry_run_texts: dict[str, str],
+    registry: dict[str, set[str]] | None = None,
+) -> list[str]:
+    """The one direction of `TARGET_BUILDS_CRATE` drift that CAN be verified without hitting the
+    Darwin wrapper-script blind spot (see that registry's own comment): for every target where
+    `crate_mentions` actually finds a crate at all, that finding must be a SUBSET of what the
+    registry claims for it. A crate mentioned in a real dry run but missing from the registry
+    means a target started building a crate this registry does not yet know about -- update
+    `TARGET_BUILDS_CRATE`. An EMPTY `crate_mentions` result (the macOS `operator` shape) is not a
+    problem and is not compared at all -- see the registry's own comment for why the reverse
+    direction structurally cannot be checked this way."""
+    reg = TARGET_BUILDS_CRATE if registry is None else registry
+    problems: list[str] = []
+    for target, text in dry_run_texts.items():
+        mentioned = crate_mentions(text)
+        if not mentioned:
+            continue
+        claimed = reg.get(target, set())
+        extra = mentioned - claimed
+        if extra:
+            problems.append(
+                f"`{target}`'s dry run mentions crate(s) {sorted(extra)} that "
+                f"TARGET_BUILDS_CRATE[{target!r}] ({sorted(claimed)}) does not list -- update "
+                "TARGET_BUILDS_CRATE."
+            )
+    return problems
 
 
 def release_unsafe_from_tags(tags: dict[str, FeatureTags]) -> set[str]:
@@ -1350,6 +1444,72 @@ def self_test() -> int:
                 f"got={sorted(actual)}"
             )
 
+    # `required_for_target` (86akgrz3b): a REQUIRED feature on a crate one TARGETS entry does not
+    # build must be scoped OUT of that target's requirement, not silently demanded of it anyway.
+    # Two crates, one feature each, so `encryption`'s crate (selahcue-desktop) is genuinely
+    # absent from `operator`/`build-operator`'s claimed crate set -- exactly the 86akgrz3b shape.
+    fixture_per_crate_tags = {
+        "selahcue-operator": {
+            "dev-keys": FeatureTags("REQUIRED", "UNSAFE"),
+            "openai-notes": FeatureTags("REQUIRED", "UNSAFE"),
+        },
+        "selahcue-desktop": {"encryption": FeatureTags("REQUIRED", "SAFE")},
+    }
+    for name, target, expected in (
+        (
+            "launch needs both crates' REQUIRED features (the union)",
+            "launch",
+            {"dev-keys", "openai-notes", "encryption"},
+        ),
+        (
+            "operator needs only selahcue-operator's REQUIRED features -- NOT encryption, which "
+            "belongs to a crate `operator` never builds",
+            "operator",
+            {"dev-keys", "openai-notes"},
+        ),
+        (
+            "build-operator scopes identically to operator",
+            "build-operator",
+            {"dev-keys", "openai-notes"},
+        ),
+        (
+            "an unregistered target falls back to the full union, conservatively",
+            "some-future-target",
+            {"dev-keys", "openai-notes", "encryption"},
+        ),
+    ):
+        actual = required_for_target(fixture_per_crate_tags, target)
+        if actual != expected:
+            failures.append(f"required_for_target({name}): expected={sorted(expected)}, got={sorted(actual)}")
+
+    # `target_builds_crate_omits_no_crate_mentions_can_see` (86akgrz3b): the one direction of
+    # TARGET_BUILDS_CRATE drift this script CAN verify without the Darwin wrapper-script blind
+    # spot (see that registry's own comment).
+    for name, dry_run_texts, expected_problem_count in (
+        (
+            "a target's dry run naming a crate the registry does not claim for it is flagged",
+            {"operator": FIXTURE_BOTH_CRATES_REGISTERED},  # names BOTH crates; registry
+            # claims only selahcue-operator for "operator" -- selahcue-desktop is the drift.
+            1,
+        ),
+        (
+            "the macOS wrapper-script shape (no crate mentions at all) is not a problem",
+            {"operator": FIXTURE_OPERATOR_OK},
+            0,
+        ),
+        (
+            "launch naming both crates matches the registry exactly -- no drift",
+            {"launch": FIXTURE_BOTH_CRATES_REGISTERED},
+            0,
+        ),
+    ):
+        actual = target_builds_crate_omits_no_crate_mentions_can_see(dry_run_texts)
+        if len(actual) != expected_problem_count:
+            failures.append(
+                f"target_builds_crate_omits_no_crate_mentions_can_see({name}): expected "
+                f"{expected_problem_count} problem(s), got {len(actual)}: {actual}"
+            )
+
     for name, fixture, expected_tags, expected_problems in tag_parser_cases():
         tags, problems = parse_feature_tags(fixture)
         if tags != expected_tags or problems != expected_problems:
@@ -1648,6 +1808,10 @@ def self_test() -> int:
     total = (
         len(dry_run_cases())
         + len(crate_registry_cases())
+        + 4  # 86akgrz3b: required_for_target (launch union, operator scoped, build-operator
+        #    scoped, unregistered-target conservative fallback)
+        + 3  # 86akgrz3b: target_builds_crate_omits_no_crate_mentions_can_see (drift caught,
+        #    macOS wrapper blind spot tolerated, exact match)
         + len(tag_parser_cases())
         + 1  # collision guard
         + 1  # TARGETS derivation
@@ -1766,6 +1930,24 @@ def main() -> int:
         )
         return 1
 
+    target_builds_crate_problems = target_builds_crate_omits_no_crate_mentions_can_see(
+        dry_run_texts
+    )
+    if target_builds_crate_problems:
+        print(
+            "check_launch_reachability: TARGET_BUILDS_CRATE has drifted from what the real dry "
+            "runs actually build:",
+            file=sys.stderr,
+        )
+        for p in target_builds_crate_problems:
+            print(f"  - {p}", file=sys.stderr)
+        print(
+            "  See TARGET_BUILDS_CRATE's own comment in this script's module for why this is "
+            "checked rather than trusted.",
+            file=sys.stderr,
+        )
+        return 1
+
     derived_targets = dev_launch_entry_point_targets(MAKEFILE_PATH.read_text())
     if derived_targets != set(TARGETS):
         only_in_makefile = derived_targets - set(TARGETS)
@@ -1836,7 +2018,11 @@ def main() -> int:
 
     failed = False
     for target, dry_run_text in dry_run_texts.items():
-        missing = missing_features(dry_run_text, required)
+        # Scoped per target to the crate(s) it actually builds (TARGET_BUILDS_CRATE), not the
+        # flat union of every registered crate's REQUIRED features -- see that registry's own
+        # comment for why a target-uniform check is wrong the moment a REQUIRED feature belongs
+        # to a crate not every target in TARGETS builds (86akgrz3b).
+        missing = missing_features(dry_run_text, required_for_target(per_crate_tags, target))
         if missing:
             failed = True
             print(
@@ -1855,7 +2041,8 @@ def main() -> int:
         return 1
     print(
         "check_launch_reachability: "
-        f"{sorted(required)} reachable from `make launch`/`make operator` by default; "
+        f"{sorted(required)} reachable from `make launch`/`make operator` by default (scoped per "
+        "target to the crate(s) it builds); "
         f"{sorted(release_unsafe)} confirmed release-unsafe and matched against the Makefile"
     )
     return 0

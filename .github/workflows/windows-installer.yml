@@ -81,6 +81,28 @@ jobs:
           if (-not (Test-Path $llvm)) { throw "LLVM/libclang not found at $llvm" }
           "LIBCLANG_PATH=$llvm" | Out-File -FilePath $env:GITHUB_ENV -Append
 
+      # `encryption` (selahcue-desktop) / `read-encrypted-transcripts` (selahcue-operator) —
+      # FR-154; 86akgrz3b — are now Cargo default features on both crates, so the two builds
+      # below (--features ndi, --features stt) both ALSO pull in SQLCipher via a
+      # vendored-from-source OpenSSL (openssl-src), on top of the flags actually named. That
+      # needs a Perl interpreter (Configure) and NASM (assembly-optimized crypto routines) —
+      # see ci.yml's `rust` job for the identical pair of steps and the full reasoning (not
+      # repeated per-workflow).
+      - name: NASM for the vendored-OpenSSL build
+        uses: ilammy/setup-nasm@v1
+      - name: Verify Perl is on PATH for the vendored-OpenSSL build
+        shell: pwsh
+        run: |
+          $p = Get-Command perl -ErrorAction SilentlyContinue
+          if (-not $p) {
+            throw "perl not found on PATH -- the encryption feature's vendored-OpenSSL build " + `
+              "(now default-on, 86akgrz3b) cannot run its Configure step without it. " + `
+              "windows-latest is documented to ship Strawberry Perl; if this throws, the " + `
+              "runner image changed and perl must be installed explicitly (e.g. " + `
+              "'choco install strawberryperl')."
+          }
+          perl -v
+
       # Self-provision NDI from public sources into a scratch NDI_SDK_DIR (headers + generated
       # import lib + runtime DLL). grafton-ndi's build.rs reads NDI_SDK_DIR at compile time.
       - name: Provision NDI (public runtime + generated import lib)

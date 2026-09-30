@@ -81,6 +81,13 @@ mod safe_import;
 /// phase — the module's own docs name what replaces it.
 mod dev_env;
 
+/// SQLCipher key acquisition (feature `read-encrypted-transcripts`; default-on — see that
+/// feature's own Cargo.toml comment) — the read-side twin of `selahcue-desktop/src/keys.rs`,
+/// letting this shell open the shared, at-rest-encrypted transcript store it never writes. See
+/// the module's own doc comment for why it is a duplicate rather than a shared dependency.
+#[cfg(feature = "read-encrypted-transcripts")]
+mod keys;
+
 /// The single lock guarding **all** process-environment mutation in this test binary.
 ///
 /// `std::env::set_var`/`remove_var` are process-global while `cargo test` runs tests as threads,
@@ -2226,22 +2233,23 @@ fn transcript_data_dir() -> Option<std::path::PathBuf> {
 
 /// Open a best-effort READ connection to the shared transcript store at
 /// `<transcript_data_dir>/selahcue.db3`. `None` on any failure (no HOME/APPDATA, no service ever
-/// recorded yet so the directory doesn't exist, the file present but not yet a real store, or an
-/// at-rest-encrypted store this default (non-`encryption`) build can't open) — the caller reports
-/// an honest "transcript store unavailable" rather than panicking.
+/// recorded yet so the directory doesn't exist, the file present but not yet a real store, an
+/// at-rest-encrypted store with no key available or the wrong key, or — on a build without the
+/// `read-encrypted-transcripts` feature — an at-rest-encrypted store this build cannot open at
+/// all) — the caller reports an honest "transcript store unavailable" rather than panicking.
 ///
 /// Structurally, not just documentarily, never creates or writes anything: this calls
-/// [`selahcue_data::Database::open_existing_readonly`] (86akcffvt review, Sana F1 / Cody
-/// Blocker), never plain `open`. Plain `open` opens with SQLite's default CREATE flag and runs
+/// [`selahcue_data::Database::open_existing_readonly`]/`open_existing_readonly_encrypted`
+/// (86akcffvt review, Sana F1 / Cody Blocker; extended for encryption by 86akgrz3b), never plain
+/// `open`/`open_encrypted`. A plain `open` opens with SQLite's default CREATE flag and runs
 /// migrations on demand — so a folder that exists but whose store doesn't yet (a real, ordinary
 /// sequence: `make operator` run standalone before `selahcue-desktop` ever has, or a store
 /// deleted by hand to reset transcript history) would have silently minted a fully-migrated
 /// PLAINTEXT store from this "read-only" page. `selahcue-desktop`'s own `SessionStore::open_store`
 /// decides plaintext-vs-encrypted for what it thinks is a brand-new store by reading what's
 /// already on disk — it would see that operator-created file, find a plaintext header, and open
-/// plain forever, permanently defeating FR-154 for that install the day desktop encryption
-/// ships. `selahcue-desktop` alone owns creating, migrating, and writing this store; this shell
-/// only ever reads it.
+/// plain forever, permanently defeating FR-154 for that install. `selahcue-desktop` alone owns
+/// creating, migrating, and writing this store; this shell only ever reads it.
 fn open_transcript_db() -> Option<selahcue_data::Database> {
     open_transcript_db_at(&transcript_data_dir()?)
 }
@@ -2251,8 +2259,192 @@ fn open_transcript_db() -> Option<selahcue_data::Database> {
 /// it owns and can inspect afterward (86akcffvt review, Sana F1's required verification: "folder
 /// present, no store → None and no file created" only means something against a directory the
 /// test controls). Not a change of behaviour, just of testability.
+///
+/// On a `read-encrypted-transcripts`-feature build (default-on, 86akgrz3b), `keys::acquire`
+/// touches the real OS keychain — and, on a machine with no "SelahCue"/"database-key" entry
+/// yet, WRITES a fresh one. That cost (and side effect) must never be paid for the common
+/// cases — no store yet, or a still-plaintext one — so this peeks just the on-disk header
+/// FIRST and only reaches for a key when the file genuinely is not plaintext SQLite. Every
+/// scenario in `transcript_db_open_tests` below is one of those common cases, so none of them
+/// touch a real keychain (verified: before this ordering, that test module took 90+ seconds
+/// and minted real keychain entries on the machine running `cargo test`; a header check that
+/// reads 16 bytes costs neither). The encrypted branch delegates to
+/// [`open_transcript_db_with_key`], which a test can also call directly with an injected key
+/// (mirroring `selahcue-desktop::SessionStore::open_store`'s equivalent test seam) — see
+/// `transcript_db_open_encrypted_tests` below.
+#[cfg(feature = "read-encrypted-transcripts")]
+fn open_transcript_db_at(dir: &std::path::Path) -> Option<selahcue_data::Database> {
+    use std::io::Read as _;
+    let path = dir.join("selahcue.db3");
+    let mut file = std::fs::File::open(&path).ok()?;
+    let mut header = [0u8; 16];
+    if file.read_exact(&mut header).is_err() {
+        return None; // absent, or a zero/short placeholder — treat as "no store yet"
+    }
+    if &header == b"SQLite format 3\0" {
+        drop(file);
+        return selahcue_data::Database::open_existing_readonly(&path).ok();
+    }
+    drop(file);
+    // Only now — the file genuinely is not plaintext SQLite — reach for the OS keychain.
+    let acquired = keys::acquire(dir);
+    open_transcript_db_with_key(dir, acquired.as_ref().map(|(key, _source)| key))
+}
+
+#[cfg(not(feature = "read-encrypted-transcripts"))]
 fn open_transcript_db_at(dir: &std::path::Path) -> Option<selahcue_data::Database> {
     selahcue_data::Database::open_existing_readonly(dir.join("selahcue.db3")).ok()
+}
+
+/// The testable state machine behind [`open_transcript_db_at`] on a `read-encrypted-transcripts`
+/// build: given the directory and an already-acquired key (or `None`), decides
+/// plaintext-vs-encrypted from what is ACTUALLY on disk — same discriminator
+/// `selahcue-desktop::SessionStore::open_store` uses (the file's first 16 bytes are SQLite's own
+/// plaintext magic header, or they are not) — and never creates, writes, or migrates either way:
+///
+/// | on disk        | key acquired | action                                              |
+/// |----------------|--------------|-----------------------------------------------------|
+/// | nothing        | either       | `None` (no store to read; never minted here)         |
+/// | plaintext      | either       | open PLAIN read-only (pre-encryption install, or a dev override — never a keyed open of a plain file) |
+/// | encrypted      | yes          | open ENCRYPTED read-only; a key mismatch reports unavailable (never a plaintext fallback of an encrypted store) |
+/// | encrypted      | no           | `None` ("transcript store unavailable" — the caller's existing best-effort contract, unchanged) |
+#[cfg(feature = "read-encrypted-transcripts")]
+fn open_transcript_db_with_key(
+    dir: &std::path::Path,
+    key: Option<&selahcue_data::EncryptionKey>,
+) -> Option<selahcue_data::Database> {
+    use std::io::Read as _;
+    const SQLITE_MAGIC: &[u8; 16] = b"SQLite format 3\0";
+    let path = dir.join("selahcue.db3");
+    // Bounded 16-byte header peek (Cody/Shadow, PR #125 review) — NOT a full `std::fs::read` of
+    // the whole store: this now runs on every operator startup that finds an encrypted store
+    // (the common case going forward), so reading the entire, unbounded-size transcript database
+    // into memory just to look at its first 16 bytes would cost real, growing time and memory
+    // for no reason. Mirrors `open_transcript_db_at`'s own header peek exactly.
+    let mut file = std::fs::File::open(&path).ok()?;
+    let mut header = [0u8; 16];
+    if file.read_exact(&mut header).is_err() {
+        return None; // absent, or a zero/short placeholder — treat as "no store yet"
+    }
+    if &header == SQLITE_MAGIC {
+        drop(file);
+        return selahcue_data::Database::open_existing_readonly(&path).ok();
+    }
+    drop(file); // release the peek handle before SQLite opens its own on the same path
+    selahcue_data::Database::open_existing_readonly_encrypted(&path, key?).ok()
+}
+
+// ---------------------------------------------------------------------------------------------
+// Settings → Security (FR-154; 86akgrz3b, Shadow's review round). Before this, the Security page
+// (`dist/index.html`'s `#set-page-security`) hardcoded "NOT YET ON" for at-rest encryption —
+// accurate when written (the feature was opt-in and off by default), but now FALSE for the common
+// case (the feature is default-on) and, worse, indistinguishable from the one case that genuinely
+// still needs a red flag: a keychain hiccup at first launch silently creates a PLAINTEXT store
+// with no key (`SessionStore::open_store`'s `(None, None)` arm, `selahcue-desktop/src/main.rs`) —
+// a real, by-design best-effort fallback, but one the operator console must surface, not hide.
+// `security_status` reports what is ACTUALLY on disk, using the same plaintext-vs-encrypted
+// header discriminator `open_transcript_db_with_key` uses, so the page can no longer disagree
+// with reality in either direction.
+// ---------------------------------------------------------------------------------------------
+
+/// `security_status`'s reply. `state` is one of:
+/// - `"encrypted"` — the shared store exists and its header is NOT SQLite's own plaintext magic
+///   (i.e. it is SQLCipher-encrypted).
+/// - `"not_encrypted"` — the shared store exists and IS plaintext SQLite. On a
+///   `read-encrypted-transcripts` build this is the exact silent-downgrade case Shadow's review
+///   flagged: a keychain/passphrase hiccup at the store's creation left it unkeyed. Never true on
+///   this build going forward without a real cause — surfaced, not hidden.
+/// - `"no_store_yet"` — no service has ever been recorded (or the path could not be resolved/
+///   read for any other reason); the next service creates the store, encrypted, if a key is
+///   available then.
+/// - `"unavailable"` — this build was not compiled with `read-encrypted-transcripts`, so
+///   encryption genuinely is not available here (mirrors the removed hardcoded copy honestly).
+#[derive(serde::Serialize)]
+struct SecurityStatusReply {
+    state: &'static str,
+}
+
+#[tauri::command]
+fn security_status() -> SecurityStatusReply {
+    #[cfg(feature = "read-encrypted-transcripts")]
+    {
+        let Some(dir) = transcript_data_dir() else {
+            return SecurityStatusReply {
+                state: "no_store_yet",
+            };
+        };
+        SecurityStatusReply {
+            state: security_status_at(&dir),
+        }
+    }
+    #[cfg(not(feature = "read-encrypted-transcripts"))]
+    {
+        SecurityStatusReply {
+            state: "unavailable",
+        }
+    }
+}
+
+/// The testable half of [`security_status`] — takes the directory explicitly rather than
+/// resolving the real per-OS `transcript_data_dir()`, the same split
+/// [`open_transcript_db_at`]/`open_transcript_db_with_key` already use for exactly this reason.
+#[cfg(feature = "read-encrypted-transcripts")]
+fn security_status_at(dir: &std::path::Path) -> &'static str {
+    use std::io::Read as _;
+    let path = dir.join("selahcue.db3");
+    let header: std::io::Result<[u8; 16]> = (|| {
+        let mut f = std::fs::File::open(&path)?;
+        let mut buf = [0u8; 16];
+        f.read_exact(&mut buf)?;
+        Ok(buf)
+    })();
+    match header {
+        Ok(bytes) if bytes == *b"SQLite format 3\0" => "not_encrypted",
+        Ok(_) => "encrypted",
+        // Absent, short/placeholder, or unreadable — nothing to report on yet, not an error the
+        // operator needs to see.
+        Err(_) => "no_store_yet",
+    }
+}
+
+#[cfg(all(test, feature = "read-encrypted-transcripts"))]
+mod security_status_tests {
+    use super::*;
+    use selahcue_data::{Database, EncryptionKey};
+
+    #[test]
+    fn no_store_yet_reports_no_store_yet() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        assert_eq!(security_status_at(dir.path()), "no_store_yet");
+    }
+
+    #[test]
+    fn a_plaintext_store_reports_not_encrypted_the_silent_downgrade_case() {
+        // The exact shape Shadow's review flagged: a keychain hiccup at first launch left the
+        // store plaintext. This must be visible, not silently reported as "no_store_yet" or
+        // (worse) "encrypted".
+        let dir = tempfile::tempdir().expect("temp dir");
+        Database::open(dir.path().join("selahcue.db3")).expect("create a plain store");
+        assert_eq!(security_status_at(dir.path()), "not_encrypted");
+    }
+
+    #[test]
+    fn an_encrypted_store_reports_encrypted_positive_control() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        Database::open_encrypted(
+            dir.path().join("selahcue.db3"),
+            &EncryptionKey::from_raw([7u8; 32]),
+        )
+        .expect("create an encrypted store");
+        assert_eq!(security_status_at(dir.path()), "encrypted");
+    }
+
+    #[test]
+    fn a_zero_byte_placeholder_reports_no_store_yet_not_a_false_positive() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        std::fs::write(dir.path().join("selahcue.db3"), []).expect("write placeholder");
+        assert_eq!(security_status_at(dir.path()), "no_store_yet");
+    }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -2934,6 +3126,117 @@ mod transcript_db_open_tests {
         );
         let rows = transcript_repo::list(&db).expect("list still succeeds");
         assert_eq!(rows.len(), 1);
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// `open_transcript_db_with_key` (86akgrz3b): the encrypted half of `open_transcript_db_at`'s
+// state machine. Exercised directly with an INJECTED key rather than through `keys::acquire`,
+// which touches the real OS keychain — mirroring `selahcue-desktop::SessionStore::open_store`'s
+// equivalent test seam, and keeping this hermetic in CI (no keychain/Secret Service required).
+// ---------------------------------------------------------------------------------------------
+#[cfg(all(test, feature = "read-encrypted-transcripts"))]
+mod transcript_db_open_encrypted_tests {
+    use super::*;
+    use selahcue_data::{transcript_repo, Database, EncryptionKey};
+
+    fn seed_encrypted_store(store_path: &std::path::Path, key: &EncryptionKey) {
+        let db = Database::open_encrypted(store_path, key).expect("create the encrypted store");
+        transcript_repo::create(
+            &db,
+            &transcript_repo::NewTranscript {
+                label: "Sunday Service".to_string(),
+                provider: "manual".to_string(),
+                plan_id: None,
+                started_at_ms: 1_722_760_800_000,
+            },
+        )
+        .expect("seed one transcript");
+        db.checkpoint_truncate()
+            .expect("flush WAL into the main file");
+    }
+
+    #[test]
+    fn an_encrypted_store_opens_readonly_with_the_right_key_positive_control() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let store_path = dir.path().join("selahcue.db3");
+        let key = EncryptionKey::from_raw([7u8; 32]);
+        seed_encrypted_store(&store_path, &key);
+
+        // Premise: this really is encrypted (no plaintext SQLite header) — else the test
+        // downstream proves nothing about the encrypted branch.
+        let head = std::fs::read(&store_path).expect("read store bytes");
+        assert_ne!(
+            &head[..16],
+            b"SQLite format 3\0",
+            "premise: the seeded store is really encrypted"
+        );
+
+        let db = open_transcript_db_with_key(dir.path(), Some(&EncryptionKey::from_raw([7u8; 32])))
+            .expect("the right key must open the encrypted store read-only");
+        let rows = transcript_repo::list(&db).expect("list succeeds");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].label, "Sunday Service");
+    }
+
+    #[test]
+    fn an_encrypted_store_with_the_wrong_key_reports_unavailable_not_corrupt() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let store_path = dir.path().join("selahcue.db3");
+        seed_encrypted_store(&store_path, &EncryptionKey::from_raw([7u8; 32]));
+
+        let result =
+            open_transcript_db_with_key(dir.path(), Some(&EncryptionKey::from_raw([9u8; 32])));
+
+        assert!(
+            result.is_none(),
+            "a wrong key must report unavailable, matching this shell's existing best-effort \
+             contract — never a panic, and never a plaintext fallback of an encrypted store"
+        );
+    }
+
+    #[test]
+    fn an_encrypted_store_with_no_key_reports_unavailable_never_a_plaintext_fallback() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let store_path = dir.path().join("selahcue.db3");
+        seed_encrypted_store(&store_path, &EncryptionKey::from_raw([7u8; 32]));
+
+        let result = open_transcript_db_with_key(dir.path(), None);
+
+        assert!(
+            result.is_none(),
+            "no key available must report unavailable, not attempt an unkeyed read of an \
+             encrypted file (which SQLCipher would refuse anyway, but the contract is that this \
+             function never even tries)"
+        );
+    }
+
+    #[test]
+    fn a_plaintext_store_still_opens_plain_even_when_a_key_is_available() {
+        // The same "never a keyed open of a plain file" invariant
+        // `selahcue-desktop::SessionStore::open_store`'s `plaintext_store_is_opened_plain_never_keyed`
+        // test pins, exercised on this shell's own read-only path.
+        let dir = tempfile::tempdir().expect("temp dir");
+        let store_path = dir.path().join("selahcue.db3");
+        {
+            let db = Database::open(&store_path).expect("create a plain store");
+            transcript_repo::create(
+                &db,
+                &transcript_repo::NewTranscript {
+                    label: "Plain Service".to_string(),
+                    provider: "manual".to_string(),
+                    plan_id: None,
+                    started_at_ms: 1_722_760_800_000,
+                },
+            )
+            .expect("seed one transcript");
+        }
+
+        let db = open_transcript_db_with_key(dir.path(), Some(&EncryptionKey::from_raw([7u8; 32])))
+            .expect("a plaintext store must still open plain, key or not");
+        let rows = transcript_repo::list(&db).expect("list succeeds");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].label, "Plain Service");
     }
 }
 
@@ -8062,7 +8365,8 @@ fn main() {
             transcript_list,
             transcript_get,
             transcript_generate_notes,
-            note_generation_limits
+            note_generation_limits,
+            security_status
         ])
         .run(tauri::generate_context!())
         .expect("run SelahCue operator shell");
