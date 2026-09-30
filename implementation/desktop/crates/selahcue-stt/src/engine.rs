@@ -35,6 +35,7 @@ use crate::audio::AudioChunk;
 use crate::guard::FeedbackGuard;
 use crate::provider::{SegmentSink, SttProvider};
 use crate::recognizer::Recognizer;
+use crate::repetition::trim_trailing_repeat;
 use crate::resample::resample_to_16k_mono;
 use crate::vad::{Vad, FRAME_SAMPLES};
 use crate::TARGET_SAMPLE_RATE;
@@ -99,7 +100,8 @@ impl Clock for ManualClock {
 
 /// Whisper.cpp's audio-context horizon, in SAMPLES at [`TARGET_SAMPLE_RATE`] — the longest
 /// utterance the real on-device recognizer's encoder can see AT ALL (86akcgmvb). Mirrors
-/// `recognizer::whisper_backend::WHISPER_AUDIO_CTX` (512), which is gated behind the heavy
+/// `recognizer::whisper_backend::WHISPER_AUDIO_CTX` (576 since 17tnw2b0nkq, 512 before — see
+/// that constant's doc for why), which is gated behind the heavy
 /// `whisper` feature (native toolchain) so this crate's default, fast test build never needs
 /// it — this constant is defined unconditionally instead, and pinned EQUAL to the real one by a
 /// compile-time assertion inside `recognizer.rs`'s `whisper` module, so the two values cannot
@@ -110,9 +112,11 @@ impl Clock for ManualClock {
 ///
 /// Computed the same way whisper.cpp itself does: `audio_ctx` units are 20 ms each (30 s of
 /// context / 1,500 positions), so `audio_ctx / 50` seconds of real audio, in samples at
-/// [`TARGET_SAMPLE_RATE`], is `audio_ctx * TARGET_SAMPLE_RATE / 50`. `512 * 16_000 / 50 =
-/// 163_840` samples = 10.24 s — the exact horizon Phase 1's review round (86akcfp3u) measured.
-pub(crate) const WHISPER_AUDIO_CTX_HORIZON_SAMPLES: usize = 512 * TARGET_SAMPLE_RATE as usize / 50;
+/// [`TARGET_SAMPLE_RATE`], is `audio_ctx * TARGET_SAMPLE_RATE / 50`. `576 * 16_000 / 50 =
+/// 184_320` samples = 11.52 s (at the original 512 it was 163_840 = 10.24 s, the horizon Phase
+/// 1's review round, 86akcfp3u, measured). The 10.000 s default `max_utterance_samples` sits
+/// 1.52 s under it.
+pub(crate) const WHISPER_AUDIO_CTX_HORIZON_SAMPLES: usize = 576 * TARGET_SAMPLE_RATE as usize / 50;
 
 /// Utterance-segmentation tunables.
 #[derive(Debug, Clone, Copy)]
@@ -185,6 +189,21 @@ impl Default for EngineConfig {
             interim_max_samples: 0, // 0 = whole utterance (prior behaviour); host may bound it
         }
     }
+}
+
+/// Why an utterance closed — decides whether its finals get the trailing-repeat trim
+/// (17tnw2b0nkq; see `SttEngine::close_utterance`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CloseReason {
+    /// The hangover elapsed: the speaker paused (including when the cap was reached on the
+    /// same frame — they had already stopped, so nothing was cut off).
+    Paused,
+    /// [`EngineConfig::max_utterance_samples`] was reached while the speaker was still talking:
+    /// the cut usually lands mid-word. The only reason whose finals are trimmed.
+    ForceClosed,
+    /// Closed from outside the VAD loop: [`SttEngine::flush`] (stop) or feedback-guard
+    /// suppression.
+    Flushed,
 }
 
 /// The STT pipeline. Feed it device audio with [`process`](SttEngine::process) (or
@@ -309,7 +328,7 @@ impl SttEngine {
             // Close any real speech captured before suppression, then discard this audio and
             // any partial frame — do not advance the clock across suppressed (untranscribed)
             // time. Skip the resample entirely (no wasted work while suppressed).
-            self.close_utterance();
+            self.close_utterance(CloseReason::Flushed);
             self.frame_buf.clear();
             return;
         }
@@ -357,11 +376,17 @@ impl SttEngine {
         }
         // Close on hangover OR the hard sample cap (checked after any append, so the
         // accumulator is bounded regardless of which branch grew it — no-leak).
-        if self.in_speech
-            && (self.silence_run >= self.config.hangover_frames
-                || self.utterance.len() >= self.config.max_utterance_samples)
-        {
-            self.close_utterance();
+        let paused = self.silence_run >= self.config.hangover_frames;
+        let capped = self.utterance.len() >= self.config.max_utterance_samples;
+        if self.in_speech && (paused || capped) {
+            // FORCE-closed means the cap cut the speaker off: the cap was reached while they
+            // were still talking. If the hangover elapsed on the same frame, they had already
+            // paused, so there is no mid-sentence cut — that is a pause close (17tnw2b0nkq).
+            self.close_utterance(if capped && !paused {
+                CloseReason::ForceClosed
+            } else {
+                CloseReason::Paused
+            });
         } else if self.in_speech
             && self.config.interim_interval > Duration::ZERO
             && self.speech_frames >= self.config.min_utterance_frames
@@ -424,7 +449,16 @@ impl SttEngine {
     /// Close the open utterance: recognize it (if long enough) and push its finals to the
     /// sink, then reset speech state, retaining the accumulator's capacity. No-op when not
     /// in speech.
-    fn close_utterance(&mut self) {
+    ///
+    /// A [`CloseReason::ForceClosed`] final has any trailing back-to-back repeat collapsed by
+    /// [`trim_trailing_repeat`] (17tnw2b0nkq). Only there: the cap cuts the speaker off
+    /// mid-word, and that abrupt end is where whisper.cpp says the preceding phrase again
+    /// (86akcgmuh measured 7.8% of force-closed windows looping vs 0.7% of pause-closed finals).
+    /// A pause-closed or flushed final ends where the speaker stopped, so a repeat there is far
+    /// more likely to be something they actually said twice — the trim's one known false
+    /// positive ("…we worship you, we worship you") — and interims are replaced by the final
+    /// anyway. Both are left verbatim.
+    fn close_utterance(&mut self, reason: CloseReason) {
         if !self.in_speech {
             return;
         }
@@ -445,8 +479,24 @@ impl SttEngine {
                 if seg.text.trim().is_empty() {
                     continue; // never surface an empty transcript line
                 }
+                let text = match reason {
+                    CloseReason::ForceClosed => match trim_trailing_repeat(&seg.text) {
+                        Some(trimmed) => {
+                            // Counts only — never the transcript text itself.
+                            eprintln!(
+                                "SelahCue STT: trimmed a trailing repeat from a force-closed \
+                                 final ({} -> {} words, 17tnw2b0nkq)",
+                                seg.text.split_whitespace().count(),
+                                trimmed.split_whitespace().count()
+                            );
+                            trimmed
+                        }
+                        None => seg.text,
+                    },
+                    CloseReason::Paused | CloseReason::Flushed => seg.text,
+                };
                 self.sink.push(ProviderSegment {
-                    text: seg.text,
+                    text,
                     start_ms: seg.start_ms,
                     end_ms: seg.end_ms,
                     is_final: seg.is_final,
@@ -458,7 +508,7 @@ impl SttEngine {
 
     /// Force-close any open utterance (e.g. on stop). Recognizes and flushes what's buffered.
     pub fn flush(&mut self) {
-        self.close_utterance();
+        self.close_utterance(CloseReason::Flushed);
     }
 
     /// The engine's recognizer label (honest disclosure, FR-120).
@@ -904,6 +954,132 @@ mod tests {
         let out = provider.poll();
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].text, "after-resume");
+    }
+
+    // --- 17tnw2b0nkq: the trailing-repeat trim applies ONLY to force-closed finals -----------
+
+    /// A trailing loop exactly as whisper.cpp produced it on a force-closed window (86akcgmuh
+    /// repro fixture A), and the single-copy form the trim must turn it into.
+    const LOOPED: &str =
+        "Ask them how they are really doing, and then wait long and then wait long \
+                          and then wait";
+    const TRIMMED: &str = "Ask them how they are really doing, and then wait long";
+
+    /// Speech frames that make an utterance exactly reach the default force-close cap.
+    fn frames_to_force_close() -> usize {
+        EngineConfig::default().max_utterance_samples / FRAME_SAMPLES
+    }
+
+    /// The one final a single utterance produced, asserting it is the only segment.
+    fn only_final(provider: &mut crate::provider::SttProvider, case: &str) -> ProviderSegment {
+        let mut out = provider.poll();
+        assert_eq!(
+            out.len(),
+            1,
+            "{case}: expected exactly one segment, got {out:?}"
+        );
+        let seg = out.remove(0);
+        assert!(seg.is_final, "{case}: expected a final, got {seg:?}");
+        seg
+    }
+
+    /// 17tnw2b0nkq: a final the engine FORCE-CLOSED at its sample cap has a trailing
+    /// back-to-back repeat collapsed to its first copy — and nothing else is touched: the same
+    /// looped text on a final closed by the pause (hangover), by `flush()`, or by the hangover and
+    /// the cap on the same frame, and on an interim, comes through verbatim; and legitimate
+    /// repetition on a force-closed final comes through verbatim too.
+    #[test]
+    fn the_trailing_repeat_trim_applies_only_to_force_closed_finals() {
+        let cap_frames = frames_to_force_close();
+
+        // Force-closed final: continuous speech straight to the cap → trimmed.
+        let (mut engine, mut provider) = engine_with(&[LOOPED], EngineConfig::default());
+        engine.process(&speech_chunk(cap_frames));
+        let seg = only_final(&mut provider, "force-closed");
+        assert_eq!(
+            seg.end_ms - seg.start_ms,
+            (cap_frames as u64) * MS_PER_FRAME,
+            "premise: this final must have been closed by the sample cap, not a pause"
+        );
+        assert_eq!(
+            seg.text, TRIMMED,
+            "a force-closed final's trailing loop must be trimmed"
+        );
+
+        // (a) Pause-closed final with identical text → untouched.
+        let (mut engine, mut provider) = engine_with(&[LOOPED], EngineConfig::default());
+        engine.process(&speech_chunk(100));
+        engine.process(&silence_chunk(20));
+        let seg = only_final(&mut provider, "pause-closed");
+        assert_eq!(
+            seg.text, LOOPED,
+            "a pause-closed final must never be trimmed"
+        );
+
+        // (a') The hangover and the cap on the SAME frame: the speaker had already paused, so
+        // there is no mid-word cut — treated as pause-closed → untouched.
+        let hangover = EngineConfig::default().hangover_frames;
+        let (mut engine, mut provider) = engine_with(&[LOOPED], EngineConfig::default());
+        engine.process(&speech_chunk(cap_frames - hangover));
+        engine.process(&silence_chunk(hangover));
+        let seg = only_final(&mut provider, "hangover+cap");
+        assert_eq!(
+            seg.end_ms - seg.start_ms,
+            (cap_frames as u64) * MS_PER_FRAME,
+            "premise: the cap must be reached on the very frame the hangover elapses"
+        );
+        assert_eq!(
+            seg.text, LOOPED,
+            "a final whose speaker had already paused must not be trimmed"
+        );
+
+        // (a'') Closed by `flush()` (stop) → untouched.
+        let (mut engine, mut provider) = engine_with(&[LOOPED], EngineConfig::default());
+        engine.process(&speech_chunk(100));
+        engine.flush();
+        let seg = only_final(&mut provider, "flush-closed");
+        assert_eq!(
+            seg.text, LOOPED,
+            "a flush()-closed final must not be trimmed"
+        );
+
+        // (b) Interims with identical text → untouched.
+        let clock = ManualClock::new(Instant::now());
+        let script = vec![LOOPED; 20];
+        let (mut engine, mut provider) = engine_with_clock(
+            &script,
+            EngineConfig {
+                interim_interval: Duration::from_millis(5 * MS_PER_FRAME),
+                ..EngineConfig::default()
+            },
+            Box::new(clock.clone()),
+        );
+        for _ in 0..12 {
+            engine.process(&speech_chunk(1));
+            clock.advance(Duration::from_millis(MS_PER_FRAME));
+        }
+        let interims = provider.poll();
+        assert!(
+            !interims.is_empty() && interims.iter().all(|s| !s.is_final),
+            "premise: interims must have been emitted, got {interims:?}"
+        );
+        for s in &interims {
+            assert_eq!(s.text, LOOPED, "an interim must never be trimmed");
+        }
+
+        // (c) Legitimate repetition on a FORCE-CLOSED final → untouched.
+        for legit in [
+            "Holy, holy, holy is the Lord God Almighty, who was and who is and who is to come.",
+            "Give thanks to the God of gods; for his loving kindness endures forever. Give thanks \
+             to the Lord of lords; for his loving kindness endures forever.",
+            "He is faithful when the harvest is plentiful, and he is faithful when the field is bare.",
+            "so we say amen, amen",
+        ] {
+            let (mut engine, mut provider) = engine_with(&[legit], EngineConfig::default());
+            engine.process(&speech_chunk(cap_frames));
+            let seg = only_final(&mut provider, "force-closed legitimate");
+            assert_eq!(seg.text, legit, "legitimate repetition was altered on a force-closed final");
+        }
     }
 
     // --- 86akcgmvb: max_utterance_samples vs the whisper.cpp audio-context horizon ----------
