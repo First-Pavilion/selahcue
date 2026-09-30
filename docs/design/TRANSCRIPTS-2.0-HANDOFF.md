@@ -1,12 +1,12 @@
 # SelahCue — Transcripts (Design 2.0) Handoff
 
-**Status:** REVISED 2026-09-30 (17tnw2b0ntc) — this revision is **the one agreed design** for transcript review and sermon-note generation. It supersedes the scrolling/layout gaps in the original pass below, the side-by-side editor in `UX-FLOWS.md` Flow 11, and the pop-up generation flow + Settings copy in `DESIGN-2.0-HANDOFF.md:190-240` (see §11–§14). Pending owner sign-off on ClickUp task `17tnw2b0ntc`.
-**Figma file:** `SYQn5hFY8YVQKm3c6rw0eJ` · **Section:** `1050:2` "Transcripts — Design 2.0" (page `0:1`) — now 15 frames (7 original + 8 added in this revision).
+**Status:** REVISED (v2) 2026-09-30 (17tnw2b0ntc) — this v2 revision is **the one agreed design** for transcript review and sermon-note generation. It supersedes both the shipped-code layout bugs **and** the v1 revision of this doc/section — the owner reviewed v1's Figma frames (section `1050:2`) and correctly rejected them as low-fidelity snapshots traced from the broken shipped code, not a design. v2 is built at full fidelity, reusing real cloned components from the file's own polished reference frames (`349:124` SelahCue AI Generate flow, `338:124`/`348:124` Settings, `336:124`/`336:133` App Navigation) rather than hand-drawn boxes. It supersedes the side-by-side editor in `UX-FLOWS.md` Flow 11 and the pop-up generation flow + stale Settings copy in `DESIGN-2.0-HANDOFF.md:190-240` (see §11–§14). Pending owner sign-off on ClickUp task `17tnw2b0ntc`.
+**Figma file:** `SYQn5hFY8YVQKm3c6rw0eJ` · **Canonical section:** `1127:2` **"Transcripts — Design 2.0 (v2 — full fidelity)"** (page `0:1`) — 14 frames, all built this revision. The old section `1050:2` is renamed `SUPERSEDED — do not build from` and left in place only for history; nothing under it is current.
 **ClickUp task:** `17tnw2b0ntc` (design), parent `17tnw2b0nt5`, blocks build subtask `17tnw2b0ntd`.
 **Goal Contract:** `docs/delivery/goals/TASK-transcripts-design2-spec.md` (original pass); this revision is scoped small enough to track directly on the ClickUp task per the Operating Contract's right-sizing rule.
-**Grounding:** this doc is built **from the shipped implementation**, not the other way around — `implementation/desktop/crates/selahcue-operator/dist/transcripts.js` (1605 lines), `dist/index.html` `#surface-transcripts` (~lines 2231–2306), `dist/app.js` (surface routing, `trActivate`, `showSurface`, `navGo`), `dist/app.css` (`.tr-*`/`.pp-gen-*` rules, `app.css:7985+`); cross-referenced against `docs/design/DETECTIONS-VIEW-spec.md` (mobile equivalent — state naming, not a template), `UX-CANONICAL.md` (binding keybinding/colour/safety rules), `UX-STATE-MATRIX.md`, `DESIGN-TOKENS.md` (`--sc-*`). `UX-FLOWS.md` Flow 11 is no longer treated as live guidance for this surface — see §11.
+**Grounding:** this doc is built **from the shipped implementation's intent**, not its broken layout — `implementation/desktop/crates/selahcue-operator/dist/transcripts.js` (1605 lines), `dist/index.html` `#surface-transcripts` (~lines 2231–2306), `dist/app.js` (surface routing, `trActivate`, `showSurface`, `navGo`), `dist/app.css` (`.tr-*`/`.pp-gen-*` rules, `app.css:7985+`) — cross-referenced against `docs/design/DETECTIONS-VIEW-spec.md` (mobile equivalent — state naming, not a template), `UX-CANONICAL.md` (binding keybinding/colour/safety rules), `UX-STATE-MATRIX.md`, `DESIGN-TOKENS.md` (`--sc-*`), and — for visual fidelity — the real, already-polished Figma frames `349:124`, `338:124`/`348:124`, `336:124`/`336:133`, cloned and adapted rather than redrawn. `UX-FLOWS.md` Flow 11 is no longer treated as live guidance for this surface — see §11. ClickUp `17tnw2az0g8` (D7, weekly generation allowances) is reflected in the Generate-flow copy — see §16.
 
-Frame link pattern: `https://www.figma.com/design/SYQn5hFY8YVQKm3c6rw0eJ/SelahCue?node-id=<id-with-dash>` (e.g. `1050-3`).
+Frame link pattern: `https://www.figma.com/design/SYQn5hFY8YVQKm3c6rw0eJ/SelahCue?node-id=<id-with-dash>` (e.g. `1127-2`).
 
 ---
 
@@ -47,43 +47,73 @@ Type: **Inter** (Regular/Medium/Semi Bold/Bold), matching every other Design 2.0
 
 Component primitives reused verbatim from the shipped CSS, not reinvented: `.tr-card` (10px radius list row), `.tr-empty`/`.tr-error` (centered state card + retry button), `.tr-notes-badge` (999px pill, on/off tint), `.pp-generate` (the same primary gradient CTA the Settings live-session Generate uses), `.pp-gen-preview`/`.pp-gen-result` (the shared preview-and-confirm consent pattern — FR-132/135 — reused byte-for-byte from `settings.js`, including the exact caveat vocabulary: `section_empty`, `scripture_verification_incomplete`), `.pp-gen-edit-form` (the same editable-draft form Settings' own persisted-draft surface uses, ported here with `tr-`-prefixed element ids to avoid a duplicate-`id` collision in the shared document). **No new component language was introduced for this surface.**
 
-**Chrome note:** like `SETTINGS-2.0-HANDOFF.md` §2, these frames clone the reference topbar (logo, surface label) from the shipped console chrome and do **not** redraw the global emergency footer (BLACKOUT / CLEAR ALL) or the app-menu dropdown — per `UX-CANONICAL.md` §3 that chrome is app-shell-global (`336:124`) and persists over every surface including Transcripts; it is never occluded by anything on this page.
+**Chrome note:** like `SETTINGS-2.0-HANDOFF.md` §2, these frames clone the reference topbar (logo, surface label) from the shipped console chrome and do **not** redraw the global emergency footer (BLACKOUT / CLEAR ALL) — per `UX-CANONICAL.md` §3 that chrome is app-shell-global (`336:124`) and persists over every surface including Transcripts; it is never occluded by anything on this page. The app-menu dropdown **is** drawn, once, as its own dedicated frame (§4 row 4) because D2's selected-state change specifically concerns it.
+
+### 3a. v2 fidelity note: real nodes cloned, not redrawn
+
+The v1 pass (superseded, §0/status line) built every frame from primitive rectangles and text with colours approximated from the token table above. The owner correctly rejected this as "a low-fidelity snapshot traced from shipped code… not a design" and pointed at `349:124` ("SelahCue AI — Generate flow") as the bar to match. v2 closes that gap by **cloning real nodes from the file** wherever one exists, inspecting their exact `fills`/`strokes`/`cornerRadius`/`effects` first rather than re-guessing them:
+
+- **Topbar** — every list/detail frame's topbar is `338:125.clone()` (Settings' real topbar: logo mark, wordmark, divider, page label, session-status chip), with only the label and session text edited.
+- **Generate-flow cards** — the Consent (`1133:2`) and Generating (`1133:36`) frames are `349:136.clone()` / `349:173.clone()` respectively; the Notes-ready card embedded in every Detail frame is `349:204.clone()`. Copy is edited via `findAllWithCriteria({types:['TEXT']})` + exact-string match, never rebuilt.
+- **App menu** (`1135:2`) — the entire panel is `336:133.clone()`; only the Transcript & Notes row's fill (elevated) and a new 3px accent-bar rectangle were added, plus its subtitle text edited.
+- **Settings AI card** (`1135:78`) — the entire card is `348:124.clone()`; the Generate button and usage-meter frames were located by exact text match and removed, the privacy paragraph's text was edited in place, and a new link row was appended matching the card's own padding rhythm.
+- **New-but-matching primitives** (over-limit notice, edit-mode form, still-recording card, list/log/detections cards) reuse the exact hex values, corner radii (16 for outer cards, 12 for list cards, 8–10 for inner rows/badges), and auto-layout padding rhythm read directly off the cloned nodes above — never re-approximated from memory.
+
+This is why the result "looks like it belongs next to `349:124`": large parts of it *are* `349:124`, `338:124`/`348:124`, and `336:133`, with only the words changed.
 
 ## 4. Frames pushed to Figma
 
-All under section `1050:2` "Transcripts — Design 2.0", page `0:1`.
+All under section `1127:2` **"Transcripts — Design 2.0 (v2 — full fidelity)"**, page `0:1`, placed beside (not inside) the superseded `1050:2`. Every frame below either clones a real node from `349:124`/`338:124`/`348:124`/`336:124`/`336:133` and edits only its copy, or is newly built using the exact same tokens, radii, and card chrome read directly off those nodes (see §3a). None are hand-drawn approximations.
+
+**Row 1 — List view:**
 
 | # | Frame | Node | What it shows |
 |---|---|---|---|
-| 1 | List — default | `1050:3` | Populated list, 3 example transcripts (one still `In progress`) |
-| 2 | List — empty | `1051:2` | `#tr-empty`: no transcripts recorded yet |
-| 3 | List — error | `1051:18` | `#tr-error`: load failed, with Retry |
-| 4 | Detail — default | `1052:2` | Flagship: log with one corrected line, 2 detections, an existing AI-generated draft in **view** mode (one verified + one unverified reference) |
-| 5 | Detail — still recording | `1053:2` | Empty detections panel + Generate **disabled** with the info notice (service not yet ended) |
-| 6 | Generate — review & consent | `1053:33` | The preview-and-confirm step: full-text disclosure, "will REPLACE" overwrite warning, Cancel/Confirm |
-| 7 | Notes — edit mode | `1053:55` | The editable draft form: title, summary, one outline section with a point + sub-point |
-| 8 | Detail — 1280×720, scroll model | `1118:4` | **New.** The canonical scrolling fix: sticky detail head, capped/internally-scrolling log, unbounded notes panel, whole view scrolls as one column. See §11. |
-| 9 | Detail — narrow window (900px) | `1118:29` | **New.** Stacked single column at the narrow-window floor, reduced padding, no horizontal scroll. See §11. |
-| 10 | Generate — generating (in flight) | `1118:45` | **New.** The transient `aria-busy` sub-state of the Confirm button, drawn as its own frame per the acceptance criteria. |
-| 11 | Generate — over-limit notice | `1118:51` | **New.** The 400,000-character clamp notice, amber, naming what's kept (the start of the transcript). |
-| 12 | List & Detail — loading | `1118:58` | **New.** `aria-busy` list (stays visually empty) + detail header's "Loading…" title. |
-| 13 | Settings AI card — redrawn | `1120:2` | **New.** No Generate/preview/result; consent + provider settings kept; corrected privacy copy; link to Transcripts. See §13. |
-| 14 | App menu — ⌘7 selected, no ⌘8 | `1120:27` | **New.** "Transcript & Notes" shown with `aria-current="page"`/selected styling; no separate Transcripts item. See §14. |
-| 15 | Detail — draft view + Regenerate | `1052:2` (updated) | Frame 4, updated: added a **Regenerate** button beside Edit on the saved-draft panel (`1052:41`), needed for the "regenerate/confirm/discard" state in Scope. |
+| 1 | List — populated | `1128:2` | Real topbar (cloned `338:125`), 3 example transcripts with icon chips, meta, and notes-status badges |
+| 2 | List — empty | `1128:46` | `#tr-empty` card: no transcripts recorded yet |
+| 3 | List — error | `1128:67` | `#tr-error` card: load failed, with Retry |
+| 4 | List — loading | `1128:88` | `aria-busy` note: list stays visually empty until the fetch resolves |
 
-Two states are still deliberately **not** separate frames — they are covered by an existing frame's own annotations rather than duplicated pixel-for-pixel: the **notes-not-yet-generated-but-service-ended** state (`#tr-notes-empty`, same shell as frame 5 minus the disabled/info treatment — Generate is enabled) and the edit-form **save-in-flight** sub-state (`Save` disabled + `aria-busy`, a one-line variant of frame 7). Both are specified in prose in §5 below.
+**Row 2 — Detail view (the scroll-model fix, §11):**
+
+| # | Frame | Node | What it shows |
+|---|---|---|---|
+| 5 | Detail — 1280×720, default | `1132:2` | Flagship: sticky head, capped/internally-scrolling log, detections panel, the real Notes-ready card (cloned `349:204`) embedded as `.tr-gen` |
+| 6 | Detail — scrolled (notes taller than window) | `1132:81` | Same content, frame extended to 900px tall with an illustrative 720px fold line + page-scrollbar affordance, showing every control (Regenerate/Edit at the bottom) is reachable by scrolling `.tr-detail`, not `.tr-log` |
+| 7 | Detail — still recording | `1132:163` | Generate **disabled** (opacity-dimmed) + the info notice, matching D1 |
+| 8 | Detail — narrow window (900px) | `1132:208` | Stacked single column, 16px padding, reduced log height, no horizontal scroll |
+
+**Row 3 — Generate flow, hosted on the Transcripts page (reuses `349:124` directly, §16):**
+
+| # | Frame | Node | What it shows |
+|---|---|---|---|
+| 9 | Consent — before send | `1133:2` | Cloned from `349:136`; copy corrected to name the complete saved transcript and the weekly allowance (D7) |
+| 10 | Generating (in flight) | `1133:36` | Cloned from `349:173`, reused **verbatim** — no copy in this step referenced the monthly/Settings framing, so nothing needed correcting |
+| 11 | Over-limit notice | `1133:64` | New card, same outer/inner chrome + amber `pp-gen-info` treatment as the consent card, naming the 400,000-character clamp |
+| 12 | Edit mode | `1133:80` | New card, same chrome as the Ready card, with labelled input fields (title/summary/points) and Cancel/Save |
+
+**Row 4 — Settings and navigation:**
+
+| # | Frame | Node | What it shows |
+|---|---|---|---|
+| 13 | App menu — Transcript & Notes selected | `1135:2` | The **entire app-menu panel cloned from `336:133`** (already has no ⌘8 item in the source spec — D2 was already reflected there) with a selected-state accent bar added to the Transcript & Notes row and its subtitle corrected |
+| 14 | Settings AI card — redrawn | `1135:78` | The **entire card cloned from `348:124`**, Generate button + usage meter removed, privacy copy corrected, link to Transcripts added |
+
+Two states are still deliberately **not** separate frames — covered by an existing frame's own content rather than duplicated pixel-for-pixel: the **notes-not-yet-generated-but-service-ended** state (same shell as frame 7 minus the disabled/info treatment — Generate is enabled) and the edit-form **save-in-flight** sub-state (`Save` disabled + `aria-busy`, a one-line variant of frame 12). Both are specified in prose in §5 below.
+
+**What happened to the old section (`1050:2`) and the v1 frames (`1118:*`, `1120:*`):** renamed, not deleted — `1050:2` is now titled `SUPERSEDED — do not build from — Transcripts (Design 2.0, low-fidelity code trace) — see "Transcripts — Design 2.0 (v2 — full fidelity)" section`, and every v1-only frame (`1118:4`, `1118:29`, `1118:45`, `1118:51`, `1118:58`, `1120:2`, `1120:27`) is prefixed `SUPERSEDED (low-fi) —`. Nothing was deleted so the review history stays intact, but there is exactly one current design now, not two competing ones.
 
 ## 5. State matrix
 
 | Region | default / happy | empty | loading | error | disabled / permission | recovery / other |
 |---|---|---|---|---|---|---|
-| List | populated `1050:3` | no transcripts `1051:2` | `aria-busy="true"` on `#tr-list`, no dedicated frame (list stays visually empty until the fetch resolves) | load failed `1051:18` | — | — |
-| Detail header | populated `1052:2` | — | title reads "Loading…", meta blank (no dedicated frame) | `#tr-detail-error` — load failed, Retry (same shape as list error) | — | — |
-| Transcript log | populated, bounded window `1052:2` | 0-segment transcript renders an empty `.tr-log` (edge case — not separately designed; treat as the log simply having no rows, no special copy) | — | folds into the detail-header error (the whole detail view fails to load together) | — | a corrected line overlays raw (struck through) + corrected (bold) — shown in `1052:2` |
-| Detected scripture | populated `1052:2` | "No scripture references were detected during this service." `1053:2` | — | — | — | — |
-| Generate / notes | existing draft, view mode `1052:2` (**Regenerate** + Edit, both always present on a saved draft) | not yet generated, service ended: `#tr-notes-empty` text + **enabled** Generate button (same shell as `1053:2`, without the info banner and with the CTA active) | Generate clicked, in flight: CTA reads unchanged label but `aria-busy`, disabled, spinner — now its own frame `1118:45` | `not_configured` (info, "isn't available in this build yet") · `consent_required` (alert, links to Settings → Providers & Privacy) · `quota_exceeded` ("Monthly limit reached") · `transcript_too_short` / `no_transcript` (guarded before any network call) · `transport`/`malformed` (generic "Couldn't generate notes") · **over the 400,000-character limit — now its own frame `1118:51`**, amber, names what's kept (the start of the transcript, per `selahcue-cloud/src/transcript_bounds.rs:26`) | still recording: Generate disabled + info notice `1053:2` | Confirm step (review & consent) `1053:33`; edit mode `1053:55`; save-in-flight (Save disabled + `aria-busy`, sub-state of `1053:55`); **Regenerate** (from the draft view, `1052:41`) re-enters the same review & consent step `1053:33` with the "will REPLACE" warning already worded for this — Regenerate and Generate share one confirm flow, never a second path |
-| List/Detail — loading | — | — | list: `aria-busy="true"` on `#tr-list`, stays visually empty (no skeleton shimmer) — now its own frame `1118:58`; detail header: title reads "Loading…", meta blank, same frame | — | — | — |
-| Window size | 1280×720 and wide: single column capped at the shared content max-width, centered — frame `1118:4` | — | — | — | — | narrowest supported width (900px): stacked, reduced padding, no horizontal scroll — frame `1118:29` |
+| List | populated `1128:2` | no transcripts `1128:46` | `aria-busy="true"` on `#tr-list`, list stays visually empty until the fetch resolves — `1128:88` | load failed `1128:67` | — | — |
+| Detail header | populated `1132:2` | — | title reads "Loading…", meta blank (same shell as `1128:88`'s note, no separate frame needed — it's a text swap) | `#tr-detail-error` — load failed, Retry (same shape as list error) | — | — |
+| Transcript log | populated, bounded internally-scrolling window `1132:2` | 0-segment transcript renders an empty `.tr-log` (edge case — not separately designed; treat as the log simply having no rows, no special copy) | — | folds into the detail-header error (the whole detail view fails to load together) | — | a corrected line overlays raw (struck through) + corrected (bold) — same treatment as `1132:2`'s log rows |
+| Detected scripture | populated `1132:2` | "No scripture references were detected during this service." `1132:163` | — | — | — | — |
+| Generate / notes | existing draft, view mode — the real Notes-ready card (cloned `349:204`) embedded in `1132:2`/`1132:81`/`1132:208` (**Regenerate** + Edit draft, both always present on a saved draft) | not yet generated, service ended: `#tr-notes-empty` text + **enabled** Generate button (same shell as `1132:163`, without the info banner and with the CTA active) | Generate clicked, in flight — cloned `349:173` verbatim, its own frame `1133:36` | `not_configured` (info, "isn't available in this build yet") · `consent_required` (alert, links to Settings → Providers & Privacy) · `quota_exceeded` ("No generations left this week") · `transcript_too_short` / `no_transcript` (guarded before any network call) · `transport`/`malformed` (generic "Couldn't generate notes") · **over the 400,000-character limit — its own frame `1133:64`**, amber, names what's kept (the start of the transcript, per `selahcue-cloud/src/transcript_bounds.rs:26`) | still recording: Generate disabled + info notice `1132:163` | Consent step (review & send) `1133:2`; edit mode `1133:80`; save-in-flight (Save disabled + `aria-busy`, sub-state of `1133:80`); **Regenerate** (from the draft view) re-enters the same consent step `1133:2` with the "will REPLACE" warning already worded for this — Regenerate and Generate share one confirm flow, never a second path |
+| List/Detail — loading | — | — | list: `1128:88`; detail header: title reads "Loading…", meta blank | — | — | — |
+| Window size | 1280×720 and wide: single column capped at the shared content max-width, centered — frame `1132:2`, scrolled variant `1132:81` | — | — | — | — | narrowest supported width (900px): stacked, reduced padding, no horizontal scroll — frame `1132:208` |
 
 ## 6. Copy voice (as shipped — recorded, not invented)
 
@@ -172,7 +202,7 @@ Concretely, against the current rules at `app.css:7985+`:
 .tr-gen   { flex: none; }           /* unchanged — no cap, grows to content */
 ```
 
-This is the exact mechanism shown in Figma frame `1118:4` (1280×720, notes taller than the visible viewport) — screenshot-verified: the log sits as a bounded box with its own scroll affordance, the notes panel below it is fully present in the DOM (not clipped), and a page-level scrollbar on the right is what reaches it.
+This is the exact mechanism shown in Figma frame `1132:81` (1280×900, the frame is drawn taller than the real 720px viewport specifically to show the notes panel fully present and reachable) — screenshot-verified: the log sits as a bounded box with its own internal scroll, an illustrative fold line marks where the real 720px viewport ends, the notes panel below it is fully present in the DOM (not clipped), and a page-level scrollbar on the right is what reaches it, not the log's own scrollbar.
 
 ### 11.2 One shared content column and its max-width
 
@@ -211,26 +241,27 @@ on top of its existing padding. This creates one shared, centered content column
 }
 ```
 
-**How the layout stacks below 900px:** it doesn't have to change shape, because it was never anything but a single column (§9 — Flow 11's side-by-side split is superseded at every width, not just this one). What changes at the narrow floor is purely padding and the log's height cap — there is **no horizontal scroll** at any width down to 900px, matching every other screen's own narrow-window rule. This is shown in Figma frame `1118:29`.
+**How the layout stacks below 900px:** it doesn't have to change shape, because it was never anything but a single column (§9 — Flow 11's side-by-side split is superseded at every width, not just this one). What changes at the narrow floor is purely padding and the log's height cap — there is **no horizontal scroll** at any width down to 900px, matching every other screen's own narrow-window rule. This is shown in Figma frame `1132:208`.
 
 ### 11.4 Verified at the three required sizes
 
-- **1280×720** — frame `1118:4`. The default target size; the scroll model in §11.1 is shown here with a notes draft deliberately taller than the 720px viewport.
-- **Wide window** — the same rules apply; because of the `max-width: 1180px` column (§11.2), a wide window doesn't stretch content, it just adds neutral page-background margin either side of the centered column. No separate frame needed — `1118:4`'s column-behaviour annotation covers it.
-- **Narrowest supported width (900px)** — frame `1118:29`, per §11.3.
+- **1280×720** — frame `1132:2`. The default target size.
+- **Notes taller than the window** — frame `1132:81`, per §11.1: the scroll model shown with a notes draft deliberately taller than the 720px viewport.
+- **Wide window** — the same rules apply; because of the `max-width: 1180px` column (§11.2), a wide window doesn't stretch content, it just adds neutral page-background margin either side of the centered column. No separate frame needed — `1132:2`'s column behaviour covers it.
+- **Narrowest supported width (900px)** — frame `1132:208`, per §11.3.
 
 All three are screenshot-verified at a readable zoom (see the design session's evidence; screenshots attached to the ClickUp comment).
 
-## 12. Superseded passages — formal pointers
+## 12. Superseded / re-aligned passages — formal pointers
 
-Per Scope, the conflicting passages named in Context are marked superseded at their source rather than silently reconciled:
+Per Scope, the conflicting passages named in Context are marked superseded or re-aligned at their source rather than silently reconciled:
 
-- **`docs/design/UX-FLOWS.md` Flow 11** ("Generate & edit sermon notes", the side-by-side transcript↔notes split view): superseded by §9 and §11 of this document. A superseded-notice has been added directly above Flow 11's heading in that file, pointing here.
-- **`docs/design/DESIGN-2.0-HANDOFF.md:190-240`** (§5.7 Settings — the pop-up/modal generation flow, the usage-meter-gated Generate button, and the "Only your completed transcript is sent…" privacy line): superseded by §10 and §13 of this document. A superseded-notice has been added directly above that section in that file, pointing here.
+- **`docs/design/UX-FLOWS.md` Flow 11** ("Generate & edit sermon notes", the side-by-side transcript↔notes split view): superseded by §9 and §11 of this document. A superseded-notice has been added directly above Flow 11's heading in that file, pointing here. This one is a genuine supersession — Flow 11's split-pane layout is not used anywhere.
+- **`docs/design/DESIGN-2.0-HANDOFF.md:190-240`** (§5.7 Settings): **re-aligned, not struck**, per the owner's correction. The Settings-hosted Generate button, usage meter, and the untrue privacy line are still removed from the Settings card (§13) — that part is superseded. But the **`349:124` consent → generating → notes-ready visual flow itself is not superseded** — it is the correct, polished reference, and v2 reuses it directly (cloned, not redrawn) as the Transcripts page's own `.tr-gen` generation flow (§4 row 3, §16). `DESIGN-2.0-HANDOFF.md` §5.7 now says explicitly that the `349:124` flow lives on the Transcripts page, not in a Settings pop-up, rather than marking it struck through.
 
 ## 13. Settings › Providers & Privacy — AI card, redrawn (no Generate)
 
-Figma frame `1120:27`... *(see `1120:2`)*. Per the owner decision, the card keeps consent and provider settings only:
+Figma frame `1135:78` — the **entire real card cloned from `348:124`**, not redrawn. Per the owner decision, the card keeps consent and provider settings only:
 
 **Kept, unchanged in substance:**
 - The consent toggle ("Enable cloud processing for sermon notes").
@@ -254,7 +285,7 @@ This wording is anchored to the actual data path (`transcript_generate_notes`, s
 
 ## 14. App menu — ⌘7 opens Transcripts, no ⌘8 item
 
-Figma frame `1120:27`. Per D2:
+Figma frame `1135:2` — the **entire app-menu panel cloned from `336:133`**, not redrawn; the source spec already has no ⌘8 item (D2 was already reflected there before this ticket), so this frame's job is to show the *selected* state for Transcript & Notes, not to remove anything. Per D2:
 
 - The **"Transcript & Notes"** item (⌘7, currently `data-surface="console" data-focus="transcript"` at `index.html:61-64`) gets `data-surface="transcripts"` and drops `data-focus` entirely — it now opens this page directly, the same route the old ⌘8 item used.
 - Subtitle copy changes from "Live transcript + sermon AI" to **"Review transcripts & generate notes"** — the old copy was written for a live-tail deep-link into the console; the new destination is the saved-transcript workspace, and the copy should say so.
@@ -262,15 +293,28 @@ Figma frame `1120:27`. Per D2:
 - The separate **"Transcripts"** item (⌘8, `index.html:72-78`) is **removed** entirely — its markup, not just its shortcut, since a hidden-but-present duplicate route would still be reachable via the command palette or direct DOM inspection.
 - No two remaining items share a shortcut once ⌘8 is removed (verified against the menu's live-DOM-order chord derivation in `app.js`'s "Global ⌘/Ctrl+1–8" block — removing an item shifts nothing, since chords are derived from order, not from a fixed slot).
 
-## 15. Implementation notes & open questions
+## 16. The generation flow hosted on the Transcripts page (reuses `349:124` directly)
 
-- Farah implementing this surface's *next* increment should treat frames 1–4 (list default/empty/error, detail default) and the §11 scrolling/responsive rules as the near-term priority — together they cover the everyday path and the two reported bugs (layout cut-off, no window-size response). Frames 5–7 (still-recording, consent preview, edit mode) already exist in the live app in substance; §11's CSS changes apply around them, not to their content.
+Per the owner's direction, the `349:124` "SelahCue AI — Generate flow" (consent → generating → notes ready) is the correct, already-polished reference for this interaction — it is **not** superseded, and v2 hosts it directly on the Transcripts page rather than reinventing it:
+
+- **Consent — before send** (`1133:2`, cloned `349:136`). Copy corrected in two places: the disclosure line now reads *"The complete saved transcript of this ended service is sent"* (was *"Your completed transcript is sent"* — the new wording makes explicit it's the complete, saved, ended-service transcript, matching the truthful-privacy requirement elsewhere in this doc), and the subtitle now reads *"…this service's complete stored transcript (subject to a 400,000-character limit)"*.
+- **Generating** (`1133:36`, cloned `349:173`) — reused **verbatim**. Its copy ("Transcript sent securely", "Your audio never left this device") was already accurate and provider-agnostic; nothing referenced Settings or a monthly cadence, so nothing needed correcting.
+- **Notes ready** (embedded in every Detail frame, cloned `349:204`) — copy corrected for D7 (see below) and for the on-page editor: the usage line now reads *"2 of 10 generations used this week"* (was *"13 of 40 generations used this month"*), and the secondary button now reads **"Edit draft"** (was *"Open in editor"* — on this single-page surface, editing happens inline in the same `.tr-gen` panel, not a separate editor route, so the label says so).
+- **Edit mode** (`1133:80`) and **over-limit notice** (`1133:64`) are new cards built to match the same outer/inner card chrome, corner radii, and button styles read directly off the cloned cards above (§3a) — there was no existing polished reference for either state to clone from.
+
+### D7 — weekly generation allowances (ClickUp `17tnw2az0g8`)
+
+Per the linked ClickUp decision, generation allowances are weekly, not monthly. Every allowance-count string in this design says **"this week"**, not "this month": the consent step's *"Uses 1 of your 10 remaining generations this week"* and the ready card's *"2 of 10 generations used this week"*. This also **resolves §15's earlier open question 2** (where generation-allowance visibility should live now that the Settings quota meter is removed) — the answer is: **on the Transcripts page itself**, inside the Generate flow cards it already hosts, which is exactly where `349:124`'s own usage line lived before this design moved the whole flow here. This is recorded as a **proposal**, not a unilateral decision — it follows directly from D7 plus the reused `349:124` layout, but the owner should confirm it's the intended placement in the sign-off comment.
+
+## 17. Implementation notes & open questions
+
+- Farah implementing this surface's *next* increment should treat frames 1–5 (list states, detail default) and the §11 scrolling/responsive rules as the near-term priority — together they cover the everyday path and the two reported bugs (layout cut-off, no window-size response).
 - **Open question (design, minor) — carried from the original pass:** the 0-segment transcript log and the mid-recomputed-window-resize cases have no distinct visual treatment beyond "the log has nothing/reflows" — flagged here rather than silently assumed complete.
-- **Open question (design, new, default chosen) — sticky detail header:** §11.1 makes the detail header `position: sticky`. This wasn't explicitly requested in Scope; the default was chosen because it's low-cost and matches user expectation for a long scrolling page. If the owner disagrees, it's a one-line revert.
-- **Open question (product, new) — generation-allowance visibility after removing the Settings quota meter:** see §13. Not decided here; flagged for the owner/PM to place (or explicitly decline) on the Transcripts page.
+- **Open question (design, default chosen) — sticky detail header:** §11.1 makes the detail header `position: sticky`. This wasn't explicitly requested in Scope; the default was chosen because it's low-cost and matches user expectation for a long scrolling page. If the owner disagrees, it's a one-line revert.
+- **Open question (product, proposal made) — generation-allowance visibility:** §16 proposes the Transcripts page's own Generate flow cards as the home for weekly-allowance visibility (resolving the prior open question). Flagged for explicit owner confirmation, not assumed.
 - FR-124 (timestamp-linked note navigation) remains out of scope for this ticket (non-goal, per parent `17tnw2b0nt5`) and is not reopened by this revision — see §9.
 - No implementation file was modified to produce this handoff — verified by `git status --porcelain implementation/`.
 
 ---
 
-**Verdict:** this revision is the one agreed design for transcript review and sermon-note generation — scrolling model, shared content column, narrow-window floor, and the Settings/menu redraws are all specified concretely enough to implement without guessing. Pending owner sign-off on ClickUp `17tnw2b0ntc`; the build subtask `17tnw2b0ntd` remains blocked until that sign-off lands.
+**Verdict:** this v2 revision is the one agreed design for transcript review and sermon-note generation, built at the same fidelity as `349:124`/`338:124`/`336:124` by cloning their real nodes rather than approximating them — scrolling model, shared content column, narrow-window floor, the reused Generate flow with weekly-allowance wording, and the Settings/menu redraws are all specified concretely enough to implement without guessing. Pending owner sign-off on ClickUp `17tnw2b0ntc`; the build subtask `17tnw2b0ntd` remains blocked until that sign-off lands.
