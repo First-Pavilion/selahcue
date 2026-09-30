@@ -46,7 +46,7 @@ jobs:
       # resolution order, so this is what makes the job float on purpose.
       RUSTUP_TOOLCHAIN: stable
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # This job holds `issues: write` AND runs full-workspace clippy on a
           # deliberately FLOATING toolchain -- which executes every dependency's
