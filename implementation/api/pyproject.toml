@@ -16,7 +16,7 @@ dependencies = [
   # version — advisory ceiling that makes it safe (GitHub Advisory DB + OSV.dev,
   # cross-checked against both):
   #   Django==6.1.1                     0 advisories affect this version
-  #   strawberry-graphql-django==0.87.1 0 advisories exist for this package
+  #   strawberry-graphql-django==0.90.0 0 advisories exist for this package
   #   strawberry-graphql==0.327.7       highest ceiling <=0.315.6 (fixed 0.315.7)
   #   graphql-core==3.2.12              0 advisories exist for this package
   #   cross-web==0.7.0                  0 advisories exist for this package
@@ -28,7 +28,7 @@ dependencies = [
   # same Dependabot-visibility reason as the four declared deps above.
   "Django==6.1.1",
   # 0.87 declares `django>=5.2` with no upper bound, so it is compatible with 6.1.
-  "strawberry-graphql-django==0.87.1",
+  "strawberry-graphql-django==0.90.0",
   "strawberry-graphql==0.327.7",
   "graphql-core==3.2.12",
   "cross-web==0.7.0",
