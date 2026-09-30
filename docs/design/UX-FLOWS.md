@@ -627,6 +627,8 @@ The entire flow embodies "no AI auto-action without operator confirmation." Sugg
 
 ---
 
+> **SUPERSEDED (2026-09-30, ClickUp `17tnw2b0ntc`):** the side-by-side split view below (raw transcript left, editable notes right, with click-to-jump timestamp links) is no longer the target design for this surface, at any window size. The shipped and now-agreed design is a **single vertical workspace** — log, then detected scriptures, then notes, stacked — specified in `docs/design/TRANSCRIPTS-2.0-HANDOFF.md` §9 and §11. The timestamp-jump interaction remains a real, separately-tracked gap (FR-124, non-goal of `17tnw2b0nt5`/`17tnw2b0ntc`) but does not revive the split-pane shape. Read the linked doc, not this flow, for the current design.
+
 ## Flow 11 — Generate & edit sermon notes `[R5]`
 
 **Goal.** Turn a stored transcript into an editable sermon-note draft the human owns — clearly labelled AI-generated, with fabrication disclosed and references verified — to publish by Monday (JTBD-5).

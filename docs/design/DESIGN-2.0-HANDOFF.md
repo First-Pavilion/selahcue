@@ -202,39 +202,52 @@ Left nav (General / Providers & Privacy / Scripture / Outputs / Network & Mobile
 (On-device 🔒 "audio never leaves" vs Cloud ☁ opt-in with "streams live audio" warning); TTS (voice + **output
 routing guard** "never routes to the main PA by default").
 
+> **SUPERSEDED (2026-09-30, ClickUp `17tnw2b0ntc`):** the **Generate Sermon Notes** action, the usage-allowance
+> meter, the pop-up/modal generate flow (`349:124`), the limit/failure modals (`351:124`), and the privacy
+> statement quoted just below are **all removed from this card**. Per owner decision D1/D2 (`17tnw2b0nt5`),
+> sermon notes are generated from exactly one screen — the Transcripts page — and only on a stored, ended
+> transcript. This card keeps consent + provider settings only, plus a link to Transcripts. The privacy line was
+> also factually wrong as shipped (this card sent a 60-segment tail, `window.scCompletedTranscript`, never the
+> complete transcript the old copy claimed). The current design, the redrawn card, and the corrected copy are in
+> `docs/design/TRANSCRIPTS-2.0-HANDOFF.md` §10 and §13 (Figma frame `1120:2`) — read that, not the three
+> paragraphs below, for the current Settings AI card.
+
 **SelahCue AI — sermon notes (platform-managed, no keys).** Per owner decision (2026-08-01), non-technical
 operators must never see providers, tokens, keys, or external billing in the normal path. The AI Sermon Notes
 section is a single **SelahCue AI** card:
 - Header: "SelahCue AI" + **INCLUDED** badge + live status chips (**Service: Available**, **Cloud: connected**).
-- **Privacy statement** (always visible): "Only your completed transcript is sent for processing — never live
-  audio, and never during the service. Nothing is sent until you press Generate."
-- **Usage allowance**: "12 / 40 sermon-note generations this month" + progress bar + "28 remaining · resets <date>".
-- **Default notes template** (select) + **Preferred Bible translation** (select).
+- **Privacy statement** (always visible): ~~"Only your completed transcript is sent for processing — never live
+  audio, and never during the service. Nothing is sent until you press Generate."~~ — superseded, see above.
+- **Usage allowance**: ~~"12 / 40 sermon-note generations this month" + progress bar + "28 remaining · resets <date>".~~ — superseded, see above.
+- **Default notes template** (select) + **Preferred Bible translation** (select). — *kept, still current.*
 - **Include in notes** toggles: Prayer points, Chapter markers, Scripture extraction, Notable quotations, Short
-  summary, Social excerpts.
-- **Generate Sermon Notes** primary action + consent sub-line ("you'll see exactly what's sent and confirm first").
+  summary, Social excerpts. — *kept, still current.*
+- ~~**Generate Sermon Notes** primary action + consent sub-line ("you'll see exactly what's sent and confirm first").~~ — superseded, see above.
 - **Advanced (collapsed) — "Bring your own key / custom provider"**: an *optional / enterprise* disclosure row,
-  chevron-collapsed and de-emphasised. This is the ONLY place API keys / custom providers appear.
+  chevron-collapsed and de-emphasised. This is the ONLY place API keys / custom providers appear. — *kept, still current, not evaluated by this revision.*
 
-**Generate flow — `349:124`** (interaction states, shown before/around generation):
-1. **Consent (before send)** — "Generate sermon notes?" modal: ✓ completed transcript is sent · ✗ raw audio never
+**Generate flow — `349:124`** (interaction states, shown before/around generation) — ~~superseded in full, see above~~:
+1. ~~**Consent (before send)** — "Generate sermon notes?" modal: ✓ completed transcript is sent · ✗ raw audio never
    sent · ☁ processed by SelahCue's cloud AI, not stored after · "uses 1 of your 28 remaining" · "don't ask again
-   for this service" · Cancel / **Generate**. Shown every generation unless muted for the service.
-2. **Generating** — progress with steps (transcript sent → extracting → drafting) + reassurance "your audio never
-   left this device" + Cancel.
-3. **Notes ready** — **AI-GENERATED DRAFT** badge, preview (title, main scripture, points, extras), amber "review
-   & edit before publishing — your transcript is unchanged", Regenerate / Open in editor; usage increments.
+   for this service" · Cancel / **Generate**. Shown every generation unless muted for the service.~~
+2. ~~**Generating** — progress with steps (transcript sent → extracting → drafting) + reassurance "your audio never
+   left this device" + Cancel.~~
+3. ~~**Notes ready** — **AI-GENERATED DRAFT** badge, preview (title, main scripture, points, extras), amber "review
+   & edit before publishing — your transcript is unchanged", Regenerate / Open in editor; usage increments.~~
 
 **Limit & failure states — `351:124`** (the unhappy paths; every one reassures the operator that the service,
-transcript and manual notes are unaffected):
-1. **Approaching limit** — inline amber usage (e.g. 38/40) + "only 2 generations left this month · resets <date>";
-   Generate still works.
-2. **Quota exhausted** — pressing Generate at 40/40 opens a blocked (not dead-end) modal: reset date + "transcript
-   is saved, write notes manually or export" + options (remind-me-on-reset, use-my-own-key→Advanced) + Got it.
-3. **Service unavailable** — AI provider unreachable modal: "doesn't affect your service" + "Service: Unavailable ·
-   retrying automatically" + "no generation was used" + Write manually / Try again.
-4. **Generation failed** — mid-draft error modal: "transcript is safe and unchanged · this didn't count against
-   your allowance" + Cancel / Retry.
+transcript and manual notes are unaffected) — ~~superseded in full, see above~~:
+1. ~~**Approaching limit** — inline amber usage (e.g. 38/40) + "only 2 generations left this month · resets <date>";
+   Generate still works.~~
+2. ~~**Quota exhausted** — pressing Generate at 40/40 opens a blocked (not dead-end) modal: reset date + "transcript
+   is saved, write notes manually or export" + options (remind-me-on-reset, use-my-own-key→Advanced) + Got it.~~
+3. ~~**Service unavailable** — AI provider unreachable modal: "doesn't affect your service" + "Service: Unavailable ·
+   retrying automatically" + "no generation was used" + Write manually / Try again.~~
+4. ~~**Generation failed** — mid-draft error modal: "transcript is safe and unchanged · this didn't count against
+   your allowance" + Cancel / Retry.~~
+
+The Transcripts page's own generate/consent/regenerate/error states (still current, unaffected by this
+supersession) remain specified in `TRANSCRIPTS-2.0-HANDOFF.md` §5 and §11.
 
 Backend implication: SelahCue operates the notes provider (platform key held server-side, never on the client);
 the client needs a **usage/allowance meter** (with approaching-limit + exhausted states), a **transcript-only**
