@@ -54,7 +54,7 @@ jobs:
       run:
         working-directory: implementation/desktop
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
@@ -66,7 +66,7 @@ jobs:
       # Interpreter for the shipped-artefact secret scan at the bottom of this job. Pinned, and
       # installed even though windows-latest ships a Python: the runner image's version floats,
       # and the `python3` spelling is not reliably on PATH on Windows at all.
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
 
@@ -190,7 +190,7 @@ jobs:
           }
 
       - name: Upload installer artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: selahcue-windows-installer
           path: implementation/desktop/crates/selahcue-operator/target/release/bundle/nsis/*-setup.exe
