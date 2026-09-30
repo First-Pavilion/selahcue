@@ -37,7 +37,10 @@ satisfied.
 
 - `selahcue-core/src/audio_capacity.rs`: `handoff_capacity(sample_rate_hz, channels, Duration) ->
   Option<NonZeroUsize>` already exists, fully implemented and tested (mono/stereo/zero-channel/
-  zero-rate/overflow/doctest pair).
+  zero-rate/overflow). **Correction (Quinn, QA review round 1):** this baseline originally also
+  claimed the ticket's required compile-fail/compiling doctest pair on the `Duration` parameter
+  "already exists" — it did not, on any commit reachable from this branch. Added and
+  mutation-verified in this same PR (see C-024 below).
 - `selahcue-operator/src/capture_handoff.rs`: `AudioHandoff::new` already takes `NonZeroUsize`,
   already lives in this neutral module, already has a `dropped: u64` counter + non-vacuous test
   pair (86akcfpa2 — already satisfied, verified independently, evidence comment on that ticket).
@@ -161,6 +164,9 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
 | C-019 | yes | Real `gh pr checks` green (3-OS matrix), not just local `make ci` | `gh pr checks` run against the opened PR | all required checks pass or are not yet applicable per repo convention | checks output | PENDING |
 | C-020 | yes | Four-reviewer gate (Cody, Vera, Sana, Quinn) run, blocking findings remediated | reviewer reports | no unresolved blocking findings | published review report artifact link | PENDING |
 | C-021 | yes | Goal Contract validator green (structural + completion) | `validate_goal_contract.py` (both modes) | exit 0 both | terminal output | PENDING |
+| C-022 | yes | 86akcfp8w's compile-fail/compiling doctest PAIR on `handoff_capacity`'s `Duration` parameter exists in `selahcue-core` and actually executes under the 3-OS `rust` CI job (Quinn, QA review round 1 — found missing) | `cargo test -p selahcue-core --doc`; mutation check (widen the param, confirm both doctests go red, restore) | 2 doctests pass on real code; both fail under the mutation | terminal output (both runs) | PENDING |
+| C-023 | yes | 86akcgmvb's "sooner, weaker" same-crate test pins `EngineConfig::default().max_utterance_samples` specifically under the horizon (Quinn, QA review round 1 — found missing; prior tests used only synthetic over/under values, not the real default) | `cargo test --manifest-path implementation/desktop/crates/selahcue-stt/Cargo.toml engine::tests::the_default_max_utterance_samples_stays_under_the_whisper_ctx_horizon`; mutation check | passes on real code; fails when the default is mutated above the horizon | terminal output (both runs) | PENDING |
+| C-024 | yes | Goal Contract's own baseline no longer misstates that the doctest pair already existed | this file's Baseline section | correction recorded, not silently edited away | this file | PENDING |
 
 ## Verification plan
 

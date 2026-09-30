@@ -789,6 +789,26 @@ mod tests {
     }
 
     #[test]
+    fn the_default_max_utterance_samples_stays_under_the_whisper_ctx_horizon() {
+        // 86akcgmvb's "sooner, weaker guard" (Cody, re-review): unlike the construction-time
+        // clamp below, this touches ZERO lines of production code and guards the DEFAULT
+        // specifically — not a synthetic over/under value picked by the test — so a future edit
+        // that raises `EngineConfig::default().max_utterance_samples` (or shrinks
+        // `WHISPER_AUDIO_CTX_HORIZON_SAMPLES`) without noticing the margin has closed is caught
+        // here directly. Its own stated limit (from the ticket): this guards only the DEFAULT,
+        // not a host override such as `listening.rs`'s own `EngineConfig` construction — the
+        // clamp tests below are what cover a runtime-configured value.
+        let default_cap = EngineConfig::default().max_utterance_samples;
+        assert!(
+            default_cap < WHISPER_AUDIO_CTX_HORIZON_SAMPLES,
+            "the default max_utterance_samples ({default_cap}) must stay under the whisper.cpp \
+             audio-context horizon ({WHISPER_AUDIO_CTX_HORIZON_SAMPLES} samples), or \
+             production's own DEFAULT configuration would already be silently dropping \
+             trailing words even before any host applies an override"
+        );
+    }
+
+    #[test]
     fn max_utterance_samples_above_the_horizon_is_clamped_at_construction() {
         let over = WHISPER_AUDIO_CTX_HORIZON_SAMPLES + 16_000; // comfortably above the horizon
         let (engine, _provider) = SttEngine::build(
