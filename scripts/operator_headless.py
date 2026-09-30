@@ -1571,7 +1571,7 @@ EXPECTED_MIN_CHECKS = 2065  # measured post-rebase, clean run: 2065 checks, 0 FA
 # "encrypted" render, its description text, the "not_encrypted" silent-downgrade warning render,
 # and its own control that the warning never also reads ON). Measured via an actual clean run,
 # not hand-summed.
-EXPECTED_MIN_CHECKS = 1913  # measured: 1913 checks, 0 FAIL (17tnw2b0ntd)
+EXPECTED_MIN_CHECKS = 1915  # measured: 1915 checks, 0 FAIL (17tnw2b0ntd)
 
 
 def find_chrome():
@@ -7021,6 +7021,14 @@ DRIVER = r"""
       var trQuotaRes = await trGenOnce("quota_exceeded");
       ok(trQuotaRes.getAttribute("role") === "alert" && /Generation limit reached/.test(trQuotaRes.textContent),
          "TR: quota_exceeded surfaces 'Generation limit reached' (role=alert)");
+      // generic failure alert (transport) and nested outline sub-points (FR-122), both restored
+      var trFailRes = await trGenOnce("transport");
+      ok(trFailRes.getAttribute("role") === "alert" && /Couldn.t generate notes/.test(trFailRes.textContent),
+         "TR: a transport failure surfaces 'Couldn’t generate notes' (role=alert)");
+      var trOkRes = await trGenOnce("ok");
+      var trSub = trOkRes.querySelector(".pp-gen-sublist");
+      ok(!!trSub && /That is the point of this ticket/.test(trSub.textContent) && !!trSub.closest("li"),
+         "TR FR-122: outline sub-points render as a NESTED list inside their parent point, not flattened");
       // consent-off: the operator gets a route to the consent switch (Settings no longer offers Generate)
       window.__pp.cloud_notes_consent = false;
       var trConsentRes = await trGenOnce("ok");

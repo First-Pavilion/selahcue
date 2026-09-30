@@ -6959,6 +6959,35 @@ fn note_generation_limits() -> serde_json::Value {
 /// would then be lying about. Refusing outright — rather than re-checking the segment set for
 /// growth — is both simpler and strictly stronger: it removes the race window entirely instead
 /// of narrowing it.
+/// 86akby820 (FR-125/FR-128) + 86akgqdwc: check every scripture reference a fresh draft carries
+/// (the extracted list AND references embedded in section bodies) against the bundled Bible text,
+/// offline, recording `scripture_verdicts` plus the `ScriptureUnverified` /
+/// `ScriptureVerificationIncomplete` caveats. A pure function so the fresh-generate path
+/// (`transcript_generate_notes`) has a direct unit test (17tnw2b0ntd: this used to live only in the
+/// removed live-tail command).
+fn apply_scripture_verification(draft: &mut selahcue_core::providers::NoteDraft) {
+    let (verdicts, embedded_scan_truncated) = selahcue_core::providers::verify_scriptures(
+        &draft.scriptures,
+        &draft.sections,
+        |r| !selahcue_scripture::verses(r).is_empty(),
+    );
+    draft
+        .caveats
+        .extend(verdicts.iter().filter(|v| !v.verified).map(|v| {
+            selahcue_core::providers::DraftCaveat::ScriptureUnverified {
+                reference: v.reference.clone(),
+            }
+        }));
+    // The embedded scan can hit its budget; say so rather than let the absence of a caveat read
+    // as "everything was checked".
+    if embedded_scan_truncated {
+        draft
+            .caveats
+            .push(selahcue_core::providers::DraftCaveat::ScriptureVerificationIncomplete);
+    }
+    draft.scripture_verdicts = verdicts;
+}
+
 #[tauri::command]
 async fn transcript_generate_notes(
     id: i64,
@@ -6994,28 +7023,7 @@ async fn transcript_generate_notes(
             // a section's body — is checked offline against the bundled Bible text, only when the
             // operator turned extraction on. Runs regardless of `degraded`.
             if scripture_extraction_on {
-                let (verdicts, embedded_scan_truncated) =
-                    selahcue_core::providers::verify_scriptures(
-                        &outcome.draft.scriptures,
-                        &outcome.draft.sections,
-                        |r| !selahcue_scripture::verses(r).is_empty(),
-                    );
-                outcome
-                    .draft
-                    .caveats
-                    .extend(verdicts.iter().filter(|v| !v.verified).map(|v| {
-                        selahcue_core::providers::DraftCaveat::ScriptureUnverified {
-                            reference: v.reference.clone(),
-                        }
-                    }));
-                // 86akgqdwc: the embedded scan can hit its budget; say so rather than let the
-                // absence of a caveat read as "everything was checked".
-                if embedded_scan_truncated {
-                    outcome.draft.caveats.push(
-                        selahcue_core::providers::DraftCaveat::ScriptureVerificationIncomplete,
-                    );
-                }
-                outcome.draft.scripture_verdicts = verdicts;
+                apply_scripture_verification(&mut outcome.draft);
             }
             // FR-123's "the source transcript is unchanged" invariant, RE-VERIFIED rather than
             // assumed from `transcript_db` being a read-only connection: a from-history generate
@@ -7189,6 +7197,30 @@ mod transcript_generate_notes_tests {
             "the first segment must survive — a 60-tail would have dropped it"
         );
         assert!(joined.contains("segment-69"));
+    }
+
+    /// 86akby820 on the fresh-generate path (17tnw2b0ntd): a real reference resolves, a fabricated
+    /// one is marked unverified and gets a caveat, and the verdicts are recorded — the exact data
+    /// the `scripture_verification_note` emission keys off (`!scripture_verdicts.is_empty()`).
+    #[test]
+    fn apply_scripture_verification_marks_real_and_fabricated_references() {
+        let mut draft = selahcue_core::providers::NoteDraft::default();
+        draft.scriptures = vec!["John 3:16".to_string(), "Hezekiah 99:1".to_string()];
+        apply_scripture_verification(&mut draft);
+        let real = draft.scripture_verdicts.iter().find(|v| v.reference == "John 3:16").expect("verdict for John 3:16");
+        let fake = draft.scripture_verdicts.iter().find(|v| v.reference == "Hezekiah 99:1").expect("verdict for Hezekiah 99:1");
+        assert!(real.verified, "a real reference must verify (positive control)");
+        assert!(!fake.verified, "a fabricated reference must not verify");
+        assert!(
+            draft.caveats.iter().any(|c| matches!(c,
+                selahcue_core::providers::DraftCaveat::ScriptureUnverified { reference } if reference == "Hezekiah 99:1")),
+            "the unverified reference gets a ScriptureUnverified caveat"
+        );
+        assert!(
+            !draft.caveats.iter().any(|c| matches!(c,
+                selahcue_core::providers::DraftCaveat::ScriptureUnverified { reference } if reference == "John 3:16")),
+            "the verified reference gets no caveat"
+        );
     }
 
     /// Matches `app.js`'s `syncTranscript` bridge (`segs.map(s => s.text).join("\n")`) exactly —
