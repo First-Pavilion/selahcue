@@ -33,7 +33,7 @@ dependencies:
   # SHA-256 of the operator certificate (TLS pinning).
   crypto: ^3.0.3
   # Camera QR scanning of the pairing invite.
-  mobile_scanner: ^7.1.4
+  mobile_scanner: ^7.4.2
   # Keychain/Keystore storage for the issued bearer token.
   flutter_secure_storage: ^9.2.2
 
