@@ -1977,14 +1977,14 @@
               <section class="pp-section" aria-labelledby="sec-atrest-h">
                 <h2 id="sec-atrest-h" class="pp-seclabel">AT-REST ENCRYPTION</h2>
                 <div class="set-row">
-                  <div><p class="set-row-t">At-rest encryption</p><p class="set-row-d">Service plans, library, transcripts, and captured audio are not encrypted in the database yet in this build.</p></div>
-                  <span class="pp-badge pp-badge-neutral">NOT YET ON</span>
+                  <div><p class="set-row-t">At-rest encryption</p><p id="sec-atrest-desc" class="set-row-d">Checking this host's database…</p></div>
+                  <span id="sec-atrest-badge" class="pp-badge pp-badge-neutral">CHECKING…</span>
                 </div>
                 <div class="set-row">
-                  <div><p class="set-row-t">Key source</p><p class="set-row-d">Where the database encryption key will come from, once encryption ships.</p></div>
-                  <span class="set-row-v">Planned: OS secret store</span>
+                  <div><p class="set-row-t">Key source</p><p class="set-row-d">Where the database encryption key comes from — the OS secret store (macOS Keychain / Windows Credential Manager / Linux Secret Service), or an Argon2id-derived key if <code>SELAHCUE_PASSPHRASE</code> is set.</p></div>
+                  <span id="sec-key-source-v" class="set-row-v">OS secret store or SELAHCUE_PASSPHRASE</span>
                 </div>
-                <p class="set-inert-note">At-rest encryption (SQLCipher, ADR-0007) is a planned release milestone, not yet in this build.</p>
+                <p id="sec-atrest-note" class="set-inert-note">Checking this host's database…</p>
               </section>
 
               <section class="pp-section" aria-labelledby="sec-secrets-h">

@@ -1564,6 +1564,15 @@ EXPECTED_MIN_CHECKS = 2037
 # hand-summed.
 EXPECTED_MIN_CHECKS = 2065  # measured post-rebase, clean run: 2065 checks, 0 FAIL
 
+# 86akgrz3b (Shadow's security review of PR #125): Settings/Security's at-rest-encryption checks
+# now exercise the REAL security_status() command instead of asserting a hardcoded "NOT YET ON"
+# claim that went stale the moment `encryption`/`read-encrypted-transcripts` shipped default-on.
+# Net +4 checks (one stale check removed, five added: the real-command-read check, the positive
+# "encrypted" render, its description text, the "not_encrypted" silent-downgrade warning render,
+# and its own control that the warning never also reads ON). Measured via an actual clean run,
+# not hand-summed.
+EXPECTED_MIN_CHECKS = 2069  # measured: 2069 checks, 0 FAIL
+
 
 def find_chrome():
     """Locate a Chrome/Chromium binary across dev (macOS) and CI (Linux)."""
@@ -2185,6 +2194,12 @@ STUB = r"""
     if (cmd === "audio_input") return Promise.resolve(window.__psAudio || {available:true, state:"ok", name:"Focusrite Scarlett 2i2", channels:2, detail:"Focusrite Scarlett 2i2 · 2 ch"});
     if (cmd === "disk_free")
       return Promise.resolve({available_bytes: (window.__psDiskLow ? 0.5 : 42) * 1073741824, total_bytes: 500 * 1073741824}); // 42 GB free (or <1 GB critical when flagged)
+    // Real at-rest encryption status (86akgrz3b, Shadow's security review). window.__securityStatus
+    // drives it, defaulting to "encrypted" — the realistic steady state now that the feature is
+    // default-on — so Settings/Security's real render path (not the generic Promise.resolve(null)
+    // fallback) is what every unset-state test actually exercises. A driver test can set
+    // window.__securityStatus to "not_encrypted"/"no_store_yet"/"unavailable" to exercise those.
+    if (cmd === "security_status") return Promise.resolve({state: window.__securityStatus || "encrypted"});
     if (cmd === "render_console") return Promise.resolve(
       window.__renderAvailable
         ? {available:true,
@@ -13790,10 +13805,34 @@ right after a generate/save");
         ok(el("set-page-security") && !el("set-page-security").hidden && el("set-placeholder").hidden,
            "Settings/Security: the real page renders (SET-005 page-level MISSING closed, not the shared placeholder)");
 
-        // CORRECTION vs. the Figma mock: at-rest encryption must NOT read as ON — verified against
-        // the real Cargo.toml/main.rs, not the design mock, which draws it enabled.
-        ok(/NOT YET ON/.test(el("set-page-security").textContent),
-           "Settings/Security: at-rest encryption honestly reads NOT YET ON — the Figma mock's 'ON' badge does not match this build (Cargo.toml has no `encryption` feature; main.rs calls Database::open, not open_encrypted)");
+        // 86akgrz3b (Shadow's security review of PR #125): at-rest encryption now reads the REAL
+        // security_status() command instead of a hardcoded claim — this build DOES have the
+        // `read-encrypted-transcripts` feature, so the mock's "ON" badge is now the accurate
+        // state, not a Figma-vs-build mismatch. window.__securityStatus defaults to "encrypted"
+        // (see the invoke() mock above), so this is the steady-state, real-command-driven render.
+        ok(window.__calls.some(function(c){ return c.cmd === "security_status"; }),
+           "Settings/Security: at-rest encryption status is read from the REAL security_status() command, not hardcoded");
+        ok(/\bON\b/.test(el("sec-atrest-badge").textContent) && el("sec-atrest-badge").classList.contains("pp-badge-ok"),
+           "Settings/Security: at-rest encryption reads ON with the positive badge when security_status() reports \"encrypted\"");
+        ok(/encrypted at rest/.test(el("sec-atrest-desc").textContent),
+           "Settings/Security: the description names what's actually encrypted, not a placeholder");
+
+        // The hostile case Shadow's review made this ticket's blocking minimum: a keychain/
+        // passphrase hiccup at store creation leaves it plaintext, and this must be VISIBLE, not
+        // silently indistinguishable from "encrypted" or from the old permanent "NOT YET ON".
+        window.__securityStatus = "not_encrypted";
+        setSettingsPage("outputs"); // navigate away and back so settingsSecurityActivate() re-fires
+        setSettingsPage("security");
+        await sleep(20);
+        ok(/NOT ENCRYPTED/.test(el("sec-atrest-badge").textContent) && el("sec-atrest-badge").classList.contains("pp-badge-danger"),
+           "Settings/Security (silent-downgrade case): security_status()=\"not_encrypted\" renders a clear NOT ENCRYPTED warning badge — the exact case a keychain hiccup at first launch produces, and the one Shadow's review required be surfaced, not hidden");
+        ok(!/\bON\b/.test(el("sec-atrest-badge").textContent),
+           "Settings/Security (control): the warning state never also reads as ON");
+        window.__securityStatus = null; // restore the default "encrypted" mock for later checks
+        setSettingsPage("outputs");
+        setSettingsPage("security");
+        await sleep(20);
+
         ok(!/VERIFIED · ANTI-ROLLBACK ON/.test(el("set-page-security").textContent),
            "Settings/Security (control): no fabricated 'VERIFIED · ANTI-ROLLBACK ON' update-signature badge — no update mechanism exists in this build to verify anything");
         ok(!/Sarah.s iPad|FOH Mac/.test(el("set-page-security").textContent),

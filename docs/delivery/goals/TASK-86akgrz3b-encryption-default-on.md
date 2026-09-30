@@ -255,6 +255,57 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
   discarded before committing — not part of this ticket's scope.
 - Decision: handoff (ready for commit, push, Draft PR, and the four-reviewer gate)
 
+### Iteration 5
+
+- Target criterion: C-003, C-004 (real Windows CI execution)
+- Change or investigation: committed, pushed, opened Draft PR #125, dispatched the
+  windows-installer.yml verification build and the four-reviewer gate. The PR's own `ci.yml` run
+  (36727646787) came back with all four still-running jobs (`rust (windows-latest)`,
+  `operator shell (windows-latest)`, `operator shell — release & native-toolchain features
+  (windows-latest)`, and — unexpectedly — `operator shell (ubuntu-latest)`) marked `cancelled`,
+  all within the same ~15s wall-clock window (14:28:13–14:28:31) despite being at wildly different
+  points in their own step sequences. That timing signature (simultaneous, not per-job-timeout
+  staggered) means the whole RUN was cancelled externally, not that any of these four jobs failed
+  or timed out on its own.
+- Verifier executed: `gh api .../jobs/<id>` step-by-step inspection of all four cancelled jobs
+  before re-running anything.
+- Result: strong POSITIVE evidence despite the cancellation. Every step this PR actually touches
+  succeeded before the external cancel hit: `NASM for the vendored-OpenSSL build (Windows only)` —
+  success; `Verify Perl is on PATH for the vendored-OpenSSL build (Windows only)` — success (on
+  all three Windows jobs); `Clippy (default features)`/`Clippy (server features)` — success on
+  `rust (windows-latest)`; `Clippy`/`Check` — success on `operator shell (windows-latest)`; and on
+  `operator shell — release & native-toolchain features (windows-latest)`, `Clippy (dev-keys,
+  openai-notes, RELEASE)` AND `Test (dev-keys,openai-notes, RELEASE)` both SUCCEEDED — a full
+  RELEASE-profile build and test pass with `read-encrypted-transcripts` (default-on, pulling in
+  vendored SQLCipher+OpenSSL) compiled in, on Windows. The cancellation hit later, unrelated steps
+  (`Clippy (stt,cloud-stt)`, mid-`Test (workspace...)`, `Install Playwright WebKit`) — none of
+  which this PR touches.
+- New evidence: re-ran the cancelled jobs only (`gh run rerun 36727646787 --failed`), reusing the
+  already-successful jobs' results; a fresh wait is in progress.
+- Decision: iterate
+
+### Iteration 6
+
+- Target criterion: C-010 (four-reviewer gate)
+- Change or investigation: Cody and Shadow reported. Both independently converged on the same two
+  security findings (existing plaintext stores never migrated; a keychain failure at first launch
+  silently and permanently creates an invisible plaintext store) plus Cody's own finding
+  (`open_transcript_db_with_key` read the whole transcript file just to check 16 bytes).
+- Verifier executed: fixed Cody's finding (bounded 16-byte peek, matching the sibling function's
+  existing pattern) and Shadow's Blocker 2 minimum requirement (a real `security_status` Tauri
+  command + Settings → Security UI wiring, replacing the stale hardcoded "NOT YET ON" claim with a
+  live Encrypted/Not Encrypted/Ready/Unavailable status). Re-ran `cargo test`/`clippy`/`fmt` on
+  `selahcue-operator` (180/180, clean) and `scripts/operator_headless.py` (2069/2069, 0 FAIL, exact
+  check-count bumped from 2065 with a real measured re-run, not hand-derived).
+- Result: PASS on both fixes. Blocker 1 (no migration for pre-existing installs) NOT fixed in this
+  PR — judged too large/risky to add under time pressure; instead corrected the overstated
+  ClickUp language (86ajtxzrn comment), filed and linked a follow-up ticket (17tnw2b0gt9), and
+  escalated the accept-vs-build-now decision to the product owner via a ClickUp comment on
+  86akgrz3b, rather than deciding unilaterally.
+- New evidence: full `make ci` re-run after these fixes — `== local Rust/Flutter gate: ALL GREEN
+  ==`, 242 `test result: ok`, 253 Flutter tests, 0 failures (`/tmp/make_ci_86akgrz3b_round2.log`).
+- Decision: iterate (awaiting Vera + Quinn; committing and pushing these fixes now)
+
 ## Risks and rollback
 
 - Risks: Windows CI timing (vendored OpenSSL build can be slow); a subtly wrong key-sharing
