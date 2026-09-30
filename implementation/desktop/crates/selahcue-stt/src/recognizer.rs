@@ -94,6 +94,64 @@ impl Recognizer for FakeRecognizer {
     }
 }
 
+/// 86akcgmuh — the repetition-loop failure shape, as a test-only detector: the longest
+/// BACK-TO-BACK verbatim repeat of a word span in `text` — a span of >= 4 words repeated at least
+/// twice in a row ("and then wait long and then wait long and then wait"), or a 2-3 word span
+/// repeated at least three times in a row ("Phil Philadelphian Phil Philadelphian Phil
+/// Philadelphian"). Returns the repeated span and how many times it occurs in a row.
+///
+/// Matching is on lower-cased words with punctuation stripped, so "screen." == "screen".
+/// Deliberately does NOT flag a repeat that is not adjacent (a refrain like Psalm 136's "for his
+/// loving kindness endures forever" recurring between different lines, or anaphora like "He is
+/// faithful when ... he is faithful when ..."), a single repeated word ("Holy, holy, holy"), or a
+/// short phrase said exactly twice ("who was and who is and who is to come" contains "and who is
+/// and who is" — Revelation 4:8, legitimately) — those are legitimate speech, and the fixtures
+/// this guards contain no such repeat of their own, so any hit is the decoder looping. The same definition is used by the
+/// default-build unit test below (positive + negative controls) and the real-model repro test in
+/// `whisper_tests`, so the control and the assertion cannot drift apart.
+#[cfg(test)]
+pub(crate) fn back_to_back_repeat(text: &str) -> Option<(String, usize)> {
+    let words = normalized_words(text);
+    let m = words.len();
+    let mut best: Option<(usize, String, usize)> = None;
+    for n in 2..=20 {
+        if 2 * n > m {
+            break;
+        }
+        for i in 0..=(m - 2 * n) {
+            if words[i..i + n] != words[i + n..i + 2 * n] {
+                continue;
+            }
+            let mut k = 2;
+            while i + (k + 1) * n <= m && words[i..i + n] == words[i + k * n..i + (k + 1) * n] {
+                k += 1;
+            }
+            if n < 4 && k < 3 {
+                continue;
+            }
+            if best.as_ref().is_none_or(|b| n * k > b.0) {
+                best = Some((n * k, words[i..i + n].join(" "), k));
+            }
+        }
+    }
+    best.map(|(_, span, k)| (span, k))
+}
+
+/// Lower-cased words with everything but ASCII alphanumerics and apostrophes stripped — the one
+/// normalisation both [`back_to_back_repeat`] and the repro test's anchor-phrase check use.
+#[cfg(test)]
+pub(crate) fn normalized_words(text: &str) -> Vec<String> {
+    text.split_whitespace()
+        .map(|w| {
+            w.chars()
+                .filter(|c| c.is_ascii_alphanumeric() || *c == '\'')
+                .collect::<String>()
+                .to_lowercase()
+        })
+        .filter(|w| !w.is_empty())
+        .collect()
+}
+
 #[cfg(feature = "whisper")]
 pub use whisper_backend::{WhisperContext, WhisperRecognizer};
 
@@ -699,6 +757,117 @@ mod whisper_backend {
                  baseline on a >= 4s fixture — the final's accuracy path must be unaffected"
             );
         }
+
+        /// 86akcgmuh REPRODUCTION FIXTURES: continuous speech that the REAL `SttEngine`
+        /// force-closes at exactly 10.000 s, mid-word. Each file is
+        /// `[300 ms silence][the 10.000 s window][up to 2 s of the same speaker continuing][600
+        /// ms silence]`, 16 kHz mono PCM16, and the 10 s window is one the production engine
+        /// (EnergyVad, default `EngineConfig`) itself force-closed when it heard the source
+        /// recording — the 300 ms lead-in is a whole number of 20 ms VAD frames, so the replayed
+        /// fixture force-closes on exactly the same audio.
+        ///
+        /// Each pair is (fixture file, an anchor phrase the correct force-closed final contains).
+        /// Observed on `main` (large-v3-turbo, Metal, `WHISPER_AUDIO_CTX` = 512, 86akcgmuh spike):
+        /// - A: "...Ask them how they are really doing, and then wait long and then wait long and
+        ///   then wait" (the uncapped reference ends "...and then wait long")
+        /// - B: "...Do not just sing the words on the screen. Look at the one the words on the
+        ///   screen. Look at the one the words on the" (reference: "...Look at the one the words")
+        ///
+        /// LICENSING — READ BEFORE MERGING: both files are macOS `say`-derived (voices "Karen" and
+        /// "Daniel"; original text written for the spike, not copyrighted material). They inherit
+        /// the replacement obligation tracked on 86akcmmc1 exactly like the two existing
+        /// `say`-derived fixtures. Replacing them means re-finding a window that loops on real
+        /// speech — the harness and method are on 86akcgmuh.
+        const FORCE_CLOSE_LOOP_FIXTURES: [(&str, &str); 2] = [
+            (
+                "tests/fixtures/force_close_loop_a_16k_mono.wav",
+                "ask them how they are really doing and then wait",
+            ),
+            (
+                "tests/fixtures/force_close_loop_b_16k_mono.wav",
+                "do not just sing the words on the screen look at the one",
+            ),
+        ];
+
+        /// 86akcgmuh — the defect, end to end: a final the engine FORCE-CLOSED at 10 s, mid-word,
+        /// must not repeat a span of itself back-to-back. Drives the real `SttEngine` (production
+        /// VAD and default `EngineConfig`, so the 10 s force-close is the production path) over
+        /// each fixture with the real `WhisperRecognizer`, so it goes green for ANY fix that
+        /// works — a decode-parameter change in `transcribe`, a different context for finals, or
+        /// an `engine.rs` boundary change — without being rewritten.
+        ///
+        /// Two positive controls stop this passing vacuously: (1) the first final must span >= 9
+        /// s, i.e. the fixture still reaches the force-close path rather than closing early on a
+        /// pause (a boundary fix that cuts slightly earlier still passes); (2) that final must
+        /// still contain the fixture's anchor phrase, so an empty or truncated transcript cannot
+        /// read as "no loop". The loop detector is `back_to_back_repeat`, whose own positive and
+        /// negative controls run in the default build (see the `tests` module below).
+        ///
+        /// `#[ignore]`d because it is RED on `main` today (that is the point of a repro): run it
+        /// with `cargo test --features metal --lib -- --ignored force_closed_final`, and remove the
+        /// `#[ignore]` in the PR that fixes 86akcgmuh.
+        #[test]
+        #[ignore = "86akcgmuh repro: RED on main until the force-close repetition loop is fixed"]
+        fn a_force_closed_final_ending_mid_word_does_not_repeat_itself() {
+            use crate::audio::AudioChunk;
+            use crate::engine::{EngineConfig, SttEngine};
+            use crate::guard::FeedbackGuard;
+            use crate::recognizer::{back_to_back_repeat, normalized_words};
+            use crate::vad::EnergyVad;
+            use selahcue_core::transcript::TranscriptProvider;
+
+            let Some(model_path) = cached_model_path() else {
+                eprintln!("skipping: no cached model");
+                return;
+            };
+            let _guard = lock_whisper_gpu();
+            let shared = load_test_recognizer(&model_path).context();
+            let mut loops = Vec::new();
+            for (file, anchor) in FORCE_CLOSE_LOOP_FIXTURES {
+                let audio =
+                    read_wav_pcm16_mono(&PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(file));
+                let (mut engine, mut provider) = SttEngine::build(
+                    EngineConfig::default(),
+                    Box::new(EnergyVad::new()),
+                    Box::new(WhisperRecognizer::from_context(
+                        Arc::clone(&shared),
+                        &production_selection(),
+                    )),
+                    FeedbackGuard::new(),
+                );
+                engine.process(&AudioChunk::new(audio, 16_000, 1));
+                engine.flush();
+                let finals: Vec<_> = provider.poll().into_iter().filter(|s| s.is_final).collect();
+                for s in &finals {
+                    eprintln!("{file} [{}-{} ms]: {:?}", s.start_ms, s.end_ms, s.text);
+                }
+                let first = finals
+                    .first()
+                    .unwrap_or_else(|| panic!("{file}: the engine produced no final at all"));
+                assert!(
+                    first.end_ms - first.start_ms >= 9_000,
+                    "{file}: the first final spans only {} ms — the fixture no longer reaches the \
+                     10 s force-close path, so this test would no longer exercise 86akcgmuh",
+                    first.end_ms - first.start_ms
+                );
+                assert!(
+                    normalized_words(&first.text).join(" ").contains(anchor),
+                    "{file}: the force-closed final lost its anchor phrase {anchor:?} — a \
+                     truncated or empty final must not pass as 'no loop'. Got {:?}",
+                    first.text
+                );
+                for s in &finals {
+                    if let Some((span, times)) = back_to_back_repeat(&s.text) {
+                        loops.push(format!("{file}: {span:?} x{times} in {:?}", s.text));
+                    }
+                }
+            }
+            assert!(
+                loops.is_empty(),
+                "86akcgmuh: force-closed final(s) repeat themselves back-to-back:\n{}",
+                loops.join("\n")
+            );
+        }
     }
 }
 
@@ -719,5 +888,57 @@ mod tests {
     fn recognized_segment_clamps_end() {
         let s = RecognizedSegment::final_text("x", 100, 50);
         assert_eq!(s.end_ms, 100);
+    }
+
+    /// 86akcgmuh: the detector the real-model repro test relies on must (a) flag every loop
+    /// shape actually observed at the 10 s force-close (verbatim model outputs from the scoping
+    /// spike, large-v3-turbo, audio_ctx=512) and (b) NOT flag legitimate repetition that
+    /// sermons and scripture are full of — otherwise "no loop" would be either vacuous or a
+    /// false alarm. Runs in the default build: no model, no native toolchain.
+    #[test]
+    fn back_to_back_repeat_flags_observed_loops_and_spares_legitimate_repetition() {
+        // Positive controls: observed decoder loops (tail and mid-window shapes).
+        for (loop_text, span) in [
+            (
+                "Ask them how they are really doing, and then wait long and then wait long and then wait",
+                "and then wait long",
+            ),
+            (
+                "Do not just sing the words on the screen. Look at the one the words on the \
+                 screen. Look at the one the words on the",
+                "the words on the screen look at the one",
+            ),
+            (
+                "It was the starting point. It was the starting point. It was the foundation \
+                 poured before the first.",
+                "it was the starting point",
+            ),
+            (
+                "Pierre Clovis around the throne Poor Phil Philadelphian Phil Philadelphian Phil \
+                 Philadelphian Phil Philadelphian was",
+                "phil philadelphian",
+            ),
+        ] {
+            let hit = back_to_back_repeat(loop_text);
+            assert_eq!(
+                hit.as_ref().map(|(s, _)| s.as_str()),
+                Some(span),
+                "must flag the observed loop in {loop_text:?}, got {hit:?}"
+            );
+        }
+        // Negative controls: legitimate repetition that must never read as a loop.
+        for clean in [
+            // single repeated word (liturgy)
+            "Holy, holy, holy is the Lord God Almighty, who was and who is and who is to come.",
+            // non-adjacent refrain (Psalm 136, WEB)
+            "Give thanks to Yahweh, for he is good; for his loving kindness endures forever. \
+             Give thanks to the God of gods; for his loving kindness endures forever.",
+            // anaphora (sermon rhetoric)
+            "He is faithful when the harvest is plentiful, and he is faithful when the field is bare.",
+            "It was the starting point. It was the foundation poured before the first brick was laid.",
+            "",
+        ] {
+            assert_eq!(back_to_back_repeat(clean), None, "false alarm on legitimate text {clean:?}");
+        }
     }
 }
