@@ -140,7 +140,25 @@
     var col = el("div", "tr-card-col");
     col.appendChild(el("span", "tr-card-name", label));
     col.appendChild(el("span", "tr-card-meta", fmtDate(t.started_at_ms) + " · " + dur + " · " + fmtSegCount(t.segment_count)));
+    // Figma 1128:2: an icon chip before the text, a status pill (green "Notes generated" when the
+    // row says so, grey "In progress" for a service still being recorded) and a chevron after it.
+    // All three are decorative/redundant with the button's aria-label, so they are aria-hidden.
+    var chip = el("span", "tr-card-ico", "▥");
+    chip.setAttribute("aria-hidden", "true");
+    btn.appendChild(chip);
     btn.appendChild(col);
+    if (t.notes_generated) {
+      var ng = el("span", "tr-notes-badge tr-notes-on", "Notes generated");
+      ng.setAttribute("aria-hidden", "true");
+      btn.appendChild(ng);
+    } else if (t.ended_at_ms == null) {
+      var ip = el("span", "tr-notes-badge", "In progress");
+      ip.setAttribute("aria-hidden", "true");
+      btn.appendChild(ip);
+    }
+    var chev = el("span", "tr-card-chev", "›");
+    chev.setAttribute("aria-hidden", "true");
+    btn.appendChild(chev);
     btn.addEventListener("click", function () { openTranscript(t.id); });
     card.appendChild(btn);
     return card;

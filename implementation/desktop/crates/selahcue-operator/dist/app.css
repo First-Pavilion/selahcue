@@ -8309,7 +8309,7 @@
 #tr-detections-empty { margin: 0 0 8px; }
 /* Sits inside the shared 1180px column (same side gutter as its siblings: 28px, 16px when narrow)
    instead of a fixed 28px margin, which let it escape the column on wide windows. */
-#tr-notes-empty { margin: 14px auto 0; width: calc(100% - 56px); max-width: calc(1180px - 56px); box-sizing: border-box; }
+#tr-notes-empty { margin: 14px auto 0; width: calc(100% - 56px); max-width: 1180px; box-sizing: border-box; }
 @media (max-width: 900px) { #tr-notes-empty { width: calc(100% - 32px); } }
 
 /* Bounded sliding window (86akgqdxr) — `.tr-det-log`'s OWN scroll container, mirroring `.tr-log`
@@ -8495,6 +8495,54 @@
 .tr-copy-chapters-btn:focus-visible,
 .pp-copy-chapters-btn:focus-visible { outline: 2px solid var(--sc-primary-hover); outline-offset: 2px; }
 
+/* Figma 1128:2 list rows: icon chip, status pill pushed right, chevron. */
+.tr-card-ico {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 9px;
+  background: var(--sc-inset);
+  border: 1px solid var(--sc-border);
+  color: var(--sc-text-secondary);
+  font-size: 15px;
+}
+.tr-card-col { flex: 1; }
+.tr-card-chev { flex: none; color: var(--sc-text-secondary); font-size: 18px; }
+.tr-card .tr-notes-badge { margin-left: auto; }
+
+/* Figma 1133:2/36/64/80 + 1132:163: the generate flow lives in ONE bordered card aligned to the
+   same column edges as the log and detections cards (and #tr-notes-empty above it). The shared
+   `.pp-gen-*` blocks inside it drop their own chrome so there is a single card, not cards in cards;
+   the action buttons become equal-width 46px / 12px-radius controls as drawn. */
+.tr-gen {
+  width: calc(100% - 56px);
+  margin-top: 16px;
+  margin-bottom: 20px;
+  padding: 16px;
+  border: 1px solid var(--sc-border);
+  border-radius: 16px;
+  background: var(--sc-surface);
+}
+.tr-gen .pp-gen-preview { padding: 0; border: none; background: transparent; gap: 12px; }
+.tr-gen .pp-gen-preview-title { font-size: 18px; }
+.tr-gen .pp-gen-preview-clamp {
+  padding: 12px; border-radius: 10px; color: var(--sc-warn);
+  background: var(--sc-warn-soft); border: 1px solid var(--sc-warn-border); font-weight: 600;
+}
+.tr-gen .pp-gen-preview-actions { flex-wrap: nowrap; justify-content: stretch; }
+.tr-gen .pp-gen-preview-cancel,
+.tr-gen .pp-gen-preview-confirm { flex: 1; min-height: 46px; border-radius: 12px; font-size: 14px; }
+.tr-gen .pp-gen-edit-form .pp-gen-field input[type="text"],
+.tr-gen .pp-gen-edit-form .pp-gen-field textarea { background: var(--sc-inset); border-radius: 10px; padding: 10px 12px; font-size: 13px; }
+.tr-gen .pp-gen-result { background: transparent; border-color: transparent; padding: 0; }
+.tr-gen .pp-gen-result.pp-gen-info,
+.tr-gen .pp-gen-result.pp-gen-err { padding: 12px; border-radius: 10px; }
+.tr-gen .pp-gen-result.pp-gen-info { border-color: var(--sc-info-border); background: var(--sc-info-soft); }
+.tr-gen .pp-gen-result.pp-gen-err { border-color: var(--sc-warn-border); background: var(--sc-warn-soft); }
+
 /* §11.3: narrow-window floor — reusing the Pre-service Check precedent exactly (app.css:7124,
    `@media (max-width: 900px)`), the pattern TRANSCRIPTS-2.0-HANDOFF.md names as the closest fit;
    Settings' sidebar collapse and the Service Plan builder also break here, so 900px is already
@@ -8512,7 +8560,9 @@
     padding-right: 16px;
   }
   .tr-log,
-  .tr-panel { width: calc(100% - 32px); }
+  .tr-panel,
+  .tr-gen,
+  #tr-notes-empty { width: calc(100% - 32px); }
   .tr-log {
     max-height: 34vh; /* was min(48vh, 480px) — leaves relatively more room for the detections +
                           notes panels below it on a short, narrow window */
