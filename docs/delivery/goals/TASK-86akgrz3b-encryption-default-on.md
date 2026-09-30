@@ -306,6 +306,48 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
   ==`, 242 `test result: ok`, 253 Flutter tests, 0 failures (`/tmp/make_ci_86akgrz3b_round2.log`).
 - Decision: iterate (awaiting Vera + Quinn; committing and pushing these fixes now)
 
+### Iteration 7
+
+- Target criterion: C-005 (installer artifact)
+- Change or investigation: the dispatched `windows-installer.yml` run (36727677825) completed:
+  `success`, 32m6s total. Quinn's QA agent downloaded the produced artifact
+  (`.qa_installer_artifact/SelahCue Operator_0.1.0_x64-setup.exe`, 27MB — gitignored/untracked,
+  never staged) for direct binary inspection.
+- Verifier executed: `gh run view 36727677825 --json status,conclusion`.
+- Result: PASS (build succeeded). Binary-level confirmation that the encrypted path is genuinely
+  compiled in (not just the flag default) is Quinn's in-progress independent verification — not
+  self-certified here.
+- Decision: iterate
+
+### Iteration 8
+
+- Target criterion: C-010 (four-reviewer gate), performance regressions Vera's review surfaced
+- Change or investigation: Vera reported. 1 blocking (V1: `operator` job's 15-min Windows cap
+  ACTUALLY TIMED OUT on a real run — "The job has exceeded the maximum execution time of 15m0s"),
+  3 non-blocking (V2: `operator-native`'s 45-min cap down to ~10% cold-run headroom, not the ~40%
+  its own comment claimed; V3: `SessionStore::open_store`'s whole-file read, same class of bug
+  already fixed in the operator, now hit on every desktop launch — measured 122MB peak / ~44ms
+  warm on a 116.6MB store; V4: the NFR gate never measures the encrypted path since Linux CI has
+  no Secret Service). Also an open, "inferred" question addressed to Shadow/Quinn: could macOS
+  Keychain ACLs prompt when `selahcue-operator` reads a key `selahcue-desktop` created (two
+  different processes/identities)?
+- Verifier executed: fixed V1 (timeout-minutes 15 -> 30, `operator` job) and V2 (15 -> wait, 45
+  -> 60, `operator-native` job) with Vera's real measured numbers cited in the comments; fixed V3
+  (bounded 16-byte header peek in `SessionStore::open_store`, identical pattern to the operator
+  fix). Did not fix V4 (Linux-CI-environmental, out of proportion to fix now). For the open
+  keychain question: built a throwaway 3-binary Cargo project (writer/reader/cleanup, distinct
+  compiled executables, same `keyring` 3.6.3 + feature set as the real code) and ran it for real
+  against this machine's macOS Keychain rather than reasoning about it in the abstract.
+- Result: PASS on V1/V2/V3 (`cargo test -p selahcue-desktop`: 52/52, clippy clean, fmt clean;
+  `actionlint`/`check_workflows.py` clean on the ci.yml edits). Keychain experiment: **no access
+  prompt, no hang** across create (different binary) -> read (different binary) -> delete
+  (different binary again) — the two operations the real `keys::acquire()` code path actually
+  uses (get/set) both succeeded silently. Caveat recorded and posted (PR comment
+  #issuecomment-5914031685): tested via bare dev binaries, not the final packaged `.app` bundle,
+  so this de-risks the underlying mechanism without being a full end-to-end replication.
+- New evidence: full `make ci` re-run in progress after these fixes (round 3).
+- Decision: iterate
+
 ## Risks and rollback
 
 - Risks: Windows CI timing (vendored OpenSSL build can be slow); a subtly wrong key-sharing
