@@ -27,7 +27,7 @@ import {
   parseLegalMarkdown,
   parseVersionLine,
 } from '../scripts/legal_markdown.ts'
-import { GENERATED_DIR, REPO_ROOT, TARGETS, generateAll } from '../scripts/sync_legal.ts'
+import { GENERATED_DIR, REPO_ROOT, TARGETS, generateAll, sameContent } from '../scripts/sync_legal.ts'
 import {
   DRAFT_NOTICE,
   allAnchorIds,
@@ -64,13 +64,23 @@ describe('generated files match docs/legal', { skip: !DOCS_PRESENT && 'docs/lega
       assert.ok(g.outPath.startsWith(GENERATED_DIR))
       assert.ok(existsSync(g.outPath), `${g.outPath} is missing; run: npm run sync:legal`)
       const committed = readFileSync(g.outPath, 'utf8')
-      assert.equal(
-        committed,
-        g.content,
+      // Compared with line endings normalised, as `check:legal` does: a Windows checkout
+      // with autocrlf may hand back CRLF, which is not drift.
+      assert.ok(
+        sameContent(committed, g.content),
         `${g.target.output} is stale: ${g.target.source} changed without regenerating. Run: npm run sync:legal`,
       )
     })
+
+    test(`${g.target.output} is also byte-identical on disk (the LF rule in .gitattributes holds here)`, () => {
+      assert.equal(readFileSync(g.outPath, 'utf8'), g.content)
+    })
   }
+
+  test('generated files are pinned to LF by .gitattributes (so autocrlf cannot fake drift)', () => {
+    const attrs = readFileSync(`${GENERATED_DIR}/.gitattributes`, 'utf8')
+    assert.match(attrs, /^\*\.generated\.ts\s+text\s+eol=lf\s*$/m)
+  })
 
   test('regeneration is deterministic', () => {
     const a = generateAll().map((g) => g.content)
