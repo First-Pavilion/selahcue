@@ -29,6 +29,8 @@ It also exercises, in the real browser, the behaviours CSS alone cannot prove:
     scrim, link tap, history navigation, and the viewport growing past 768px);
   * the footer (collapsed sections on mobile with working `aria-expanded` toggles, 2x2 on
     tablet, 4 across on desktop);
+  * the confirm dialog and toast on a phone (both `position: fixed`, so the scrollWidth
+    check cannot see them overflow);
   * the signed-in navbar (Account / Sign out) still fits one row at tablet widths;
   * `prefers-reduced-motion: reduce` actually removes the sheet's animation (with a
     positive control proving the probe can see it under normal motion).
@@ -591,6 +593,53 @@ def check_reduced_motion(browser, base: str, width: int, fail, count) -> None:
         fail(f"{tag}: transition durations not neutralised under reduced motion: {bad[:4]}")
 
 
+def check_overlays(context, base: str, width: int, fail, count) -> None:
+    """Dialog and toast (both `position: fixed`, so neither can fail the scrollWidth check)."""
+    tag = f"overlays {width}px"
+    page = context.new_page()
+    page.goto(f"{base}/account", wait_until="load")
+    page.wait_for_selector(".portal-content", timeout=10000)
+
+    def inside(sel: str) -> tuple[bool, str]:
+        r = page.evaluate(
+            """(sel) => { const e = document.querySelector(sel); if (!e) return null; const b = e.getBoundingClientRect();
+              return {l: Math.round(b.left), r: Math.round(b.right), t: Math.round(b.top), b: Math.round(b.bottom), vw: innerWidth, vh: innerHeight}; }""",
+            sel,
+        )
+        if r is None:
+            return False, "not rendered"
+        ok = r["l"] >= 0 and r["r"] <= r["vw"] and r["t"] >= 0 and r["b"] <= r["vh"]
+        return ok, f"{r['l']}..{r['r']} x {r['t']}..{r['b']} in {r['vw']}x{r['vh']}"
+
+    # confirm dialog
+    page.get_by_role("button", name="Cancel Subscription").click()
+    page.wait_for_selector(".dialog-card", timeout=5000)
+    page.wait_for_timeout(350)
+    count()
+    ok, where = inside(".dialog-card")
+    if not ok:
+        fail(f"{tag}: confirm dialog is not fully on screen ({where})")
+    count()
+    bad = page.evaluate(TOUCH_JS, [".dialog-card button", ".dialog-card input"])
+    if bad:
+        fail(f"{tag}: dialog controls under 44px: {'; '.join(bad)}")
+    page.keyboard.press("Escape")
+    page.wait_for_timeout(350)
+    count()
+    if page.query_selector(".dialog-card"):
+        fail(f"{tag}: Escape did not close the dialog")
+
+    # toast
+    page.locator(".btn-link").first.click()
+    page.wait_for_selector(".toast-notification", timeout=5000)
+    page.wait_for_timeout(450)
+    count()
+    ok, where = inside(".toast-notification")
+    if not ok:
+        fail(f"{tag}: toast is not fully on screen ({where})")
+    page.close()
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--engine", choices=["chromium", "webkit"], default="chromium")
@@ -731,6 +780,11 @@ def main() -> int:
                     ctx = browser.new_context(viewport={"width": width, "height": HEIGHT}, has_touch=True)
                     install_stubs(ctx)
                     guarded(check_nav_sheet, ctx, base, width)
+                    ctx.close()
+                if width < 768 and not args.routes:
+                    ctx = browser.new_context(viewport={"width": width, "height": HEIGHT}, has_touch=True)
+                    install_stubs(ctx)
+                    guarded(check_overlays, ctx, base, width)
                     ctx.close()
                 if width == 375 and not args.routes:
                     guarded(check_reduced_motion, browser, base, width)
