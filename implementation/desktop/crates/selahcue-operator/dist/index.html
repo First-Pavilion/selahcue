@@ -51,8 +51,8 @@
         <!-- Scriptures (CON-079/080, Design 2.0 Figma 336:180-187): deep-links to the console's
              existing Scriptures content-source tab (#scriptures / #ctab-scriptures — already built,
              already the default active tab). Inserting it HERE, before Transcript & Notes, shifts
-             every ⌘N chord after it by one — the global keydown handler derives ⌘1-⌘8 from this
-             menu's live DOM order (see the "Global ⌘/Ctrl+1–8" block in app.js), so no chord-index
+             every ⌘N chord after it by one — the global keydown handler derives ⌘1-⌘7 from this
+             menu's live DOM order (see the "Global ⌘/Ctrl+1–7" block in app.js), so no chord-index
              code changes; only the markup order + the Settings data-nodigit below do. -->
         <button class="nav-item" role="menuitem" tabindex="-1" data-surface="console" data-focus="scriptures"
           accesskey="6"><span class="nav-ico" aria-hidden="true">✦</span><span class="nav-txt"><span
@@ -71,9 +71,9 @@
               generate notes</span></span><span class="nav-key">⌘7</span></button>
         <div class="menu-div" role="separator"></div>
         <!-- Settings (CON-080) carries the fixed ⌘, chord rather than a menu-order digit — it is
-             excluded from the ⌘1–⌘8 digit derivation via data-nodigit. Removing the old ⌘8
+             excluded from the ⌘1–⌘7 digit derivation via data-nodigit. Removing the old ⌘8
              "Transcripts" item above shifts nothing here: chords are derived from live DOM order
-             (app.js's "Global ⌘/Ctrl+1–8" block), not a fixed slot, and this item was already
+             (app.js's "Global ⌘/Ctrl+1–7" block), not a fixed slot, and this item was already
              excluded from that derivation. -->
         <button class="nav-item" role="menuitem" tabindex="-1" data-surface="settings" data-nodigit="true"><span
             class="nav-ico" aria-hidden="true">⚙</span><span class="nav-txt"><span class="nav-t">Settings</span><span
@@ -2303,8 +2303,13 @@
         <div id="tr-gen" class="tr-gen">
           <button id="tr-generate" class="pp-generate" type="button">✦   Generate Sermon Notes</button>
           <div id="tr-gen-preview" class="pp-gen-preview" hidden></div>
+          <!-- In-flight status (Figma 1133:36): shown only while transcript_generate_notes runs. No
+               step list and no Cancel — nothing reports progress and the command persists its draft
+               on completion (see transcripts.js showGenProgress). -->
+          <div id="tr-gen-progress" class="tr-gen-progress" role="status" aria-live="polite" hidden></div>
           <div id="tr-gen-result" class="pp-gen-result" hidden></div>
         </div>
+        <p id="tr-gen-live" class="sr-only" role="status" aria-live="polite"></p>
         <p id="tr-detail-live" class="sr-only" role="status" aria-live="polite"></p>
       </div>
     </section>

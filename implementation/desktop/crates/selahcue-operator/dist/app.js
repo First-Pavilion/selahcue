@@ -4291,7 +4291,7 @@
           }
         }
         // CON-080: Settings carries the fixed ⌘/Ctrl+, chord (macOS "Preferences" convention)
-        // rather than a menu-order digit — it opts out of the ⌘1–8 derivation above via
+        // rather than a menu-order digit — it opts out of the ⌘1–7 derivation above via
         // data-nodigit, so this is the only way to reach it by keyboard shortcut.
         if (mod && !e.shiftKey && !e.altKey && e.key === ",") {
           const settingsItem = navItems.find((it) => it.dataset.surface === "settings");
@@ -5960,7 +5960,7 @@
           }
           cmds.push({ section: "ACTIONS", label: "Keyboard shortcuts", ico: "⌨", run: () => openShortcuts() });
           // NAVIGATE — the whole top-level app menu, mirrored with each item's real icon + ⌘ badge
-          // (read from the menu DOM, so it stays in sync with the ⌘1–⌘8 order automatically).
+          // (read from the menu DOM, so it stays in sync with the ⌘1–⌘7 order automatically).
           navItems.forEach((it) => {
             if (!it.dataset.surface || it.getAttribute("aria-disabled") === "true") return;
             const t = it.querySelector(".nav-t");

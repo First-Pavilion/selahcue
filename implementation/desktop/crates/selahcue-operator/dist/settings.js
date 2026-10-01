@@ -361,18 +361,18 @@
     //
     // Copy corrected per TRANSCRIPTS-2.0-HANDOFF.md §13 (17tnw2b0ntd): the old line named
     // "your completed transcript" and "press Generate" — both untrue once Generate itself moved
-    // off this card (the old Generate here only ever sent `window.scCompletedTranscript`, a
-    // 60-segment TAIL, not the complete transcript — see the removed OPERATOR_TRANSCRIPT_TAIL
-    // bridge in app.js). This wording is anchored to the actual data path
-    // (`transcript_generate_notes`, `selahcue-cloud/src/transcript_bounds.rs`'s clamp) rather
-    // than to this card's own controls, so it stays true regardless of which screen initiates
-    // generation.
+    // off this card. The wording is anchored to the actual data path (`transcript_generate_notes`,
+    // `selahcue-cloud/src/transcript_bounds.rs`'s clamp) rather than to this card's own controls.
     var consent = el("div", "pp-consent");
     consent.appendChild(el("span", "pp-consent-ico", "🔒"));
+    // Wording agreed with the owner from Shadow's privacy review (17tnw2b0ntd): it states what the
+    // code actually enforces (an ENDED transcript, text only, reviewed and confirmed first) and does
+    // NOT claim "never live audio" — cloud transcription, a separate setting just above, streams audio.
     consent.appendChild(el("span", "pp-consent-text",
-      "Only a saved, ended service's complete transcript is sent — never live audio, never " +
-      "during the service, and never a recent-segments window. Subject to a 400,000-character " +
-      "limit."));
+      "Sermon notes are made from text only: the complete saved transcript of a recording that has " +
+      "ended, up to 400,000 characters. Nothing is sent while that transcript is still recording, " +
+      "and nothing is sent until you review the exact text and confirm. Cloud transcription " +
+      "(above) is a separate setting and does stream microphone audio while it is on."));
     consent.appendChild(toggle(
       "pp-consent-notes", view.cloud_notes_consent,
       "Enable cloud processing for sermon notes",

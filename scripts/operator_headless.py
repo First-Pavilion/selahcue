@@ -1571,7 +1571,7 @@ EXPECTED_MIN_CHECKS = 2065  # measured post-rebase, clean run: 2065 checks, 0 FA
 # "encrypted" render, its description text, the "not_encrypted" silent-downgrade warning render,
 # and its own control that the warning never also reads ON). Measured via an actual clean run,
 # not hand-summed.
-EXPECTED_MIN_CHECKS = 1926  # measured: 1926 checks, 0 FAIL (17tnw2b0ntd)
+EXPECTED_MIN_CHECKS = 1946  # measured: 1946 checks, 0 FAIL (17tnw2b0ntd)
 
 
 def find_chrome():
@@ -6785,6 +6785,9 @@ DRIVER = r"""
       // VALUE does not).
       var trCall = function (cmd) { return window.__calls.filter(function (c) { return c.cmd === cmd; }); };
       var trLast = function (cmd) { var a = trCall(cmd); return a.length ? a[a.length - 1] : null; };
+      // The visible generate entry point: "Regenerate" (inside the Sermon-notes-ready card) once a draft is
+      // rendered, else the primary Generate button (17tnw2b0ntd, Figma 1132:2).
+      var trEntry = function () { return document.getElementById("tr-regenerate") || document.getElementById("tr-generate"); };
 
       document.querySelector('.nav-item[data-surface="transcripts"]').click();
       await waitFor(function () { return el("tr-list").querySelectorAll(".tr-card").length >= 3; });
@@ -6797,7 +6800,7 @@ DRIVER = r"""
       ok(!!el("tr-generate") && getComputedStyle(el("tr-generate")).display !== "none",
          "TR generate: the Generate Sermon Notes button is present on the transcript detail view");
       var trGenBefore = trCall("transcript_generate_notes").length;
-      el("tr-generate").click();
+      trEntry().click();
       await sleep(40);
       var trPreview = el("tr-gen-preview");
       ok(!!trPreview && trPreview.hidden === false, "TR F-5: Generate opens the review step instead of sending");
@@ -6843,7 +6846,7 @@ DRIVER = r"""
       // ProvidersConfig consent gate (state.providers in main.rs), proven here by driving the
       // ACTUAL from-history UI rather than asserting the shared Rust function in isolation.
       ok(!window.__pp.cloud_notes_consent, "TR generate consent (premise): consent defaults to OFF, untouched by this point in the script");
-      el("tr-generate").click();
+      trEntry().click();
       await sleep(40);
       el("tr-gen-preview-confirm").click();
       await sleep(60);
@@ -6863,7 +6866,7 @@ DRIVER = r"""
       // command), and the notes badge flips immediately.
       window.__pp.cloud_notes_consent = true;
       window.__trGen = "ok";
-      el("tr-generate").click();
+      trEntry().click();
       await sleep(40);
       el("tr-gen-preview-confirm").click();
       await sleep(60);
@@ -6879,6 +6882,63 @@ DRIVER = r"""
       ok(el("tr-detail-notes").classList.contains("tr-notes-on") && /Notes generated/.test(el("tr-detail-notes").textContent),
          "TR generate: a successful generate flips the notes badge immediately, without waiting for a reopen");
 
+      // === 17tnw2b0ntd (Figma 1132:2 / 349:124 "Sermon notes ready"; 1133:36 generating) ===
+      var trReadyTitle = trOkResult.querySelector(".tr-ready-title"), trReadyIco = trOkResult.querySelector(".tr-ready-ico");
+      ok(!!trReadyTitle && /^Sermon notes ready$/.test(trReadyTitle.textContent) && getComputedStyle(trReadyTitle).display !== "none" &&
+         !!trReadyIco && getComputedStyle(trReadyIco).display !== "none",
+         "TR ready card: a saved draft shows a 'Sermon notes ready' header with its check icon (computed-visible)");
+      var trReadyBadge = trOkResult.querySelector(".pp-gen-ai-label");
+      ok(!!trReadyBadge && getComputedStyle(trReadyBadge).display !== "none" && /AI-generated draft/i.test(trReadyBadge.textContent),
+         "TR ready card: the AI-GENERATED DRAFT badge is shown on the card");
+      var trRegenBtn = el("tr-regenerate");
+      ok(!!trRegenBtn && /^Regenerate$/.test(trRegenBtn.textContent) && trRegenBtn.disabled === false && getComputedStyle(trRegenBtn).display !== "none" &&
+         /^Edit draft$/.test(el("tr-gen-edit").textContent),
+         "TR ready card: 'Regenerate' and 'Edit draft' buttons are present and Regenerate is enabled");
+      ok(getComputedStyle(el("tr-generate")).display === "none",
+         "TR ready card: the primary 'Generate Sermon Notes' button no longer sits above an existing draft (computed display)");
+      // Quinn D7: after an IN-SESSION generate the next consent step already knows a draft exists.
+      var trD7Before = trCall("transcript_generate_notes").length;
+      trRegenBtn.click();
+      await sleep(40);
+      ok(!!el("tr-gen-preview") && !el("tr-gen-preview").hidden && /You already have sermon notes saved/.test(el("tr-gen-preview").textContent),
+         "TR D7: Regenerate right after an in-session Generate shows the 'You already have sermon notes saved…' consent line");
+      ok(el("tr-regenerate").disabled === true, "TR ready card: Regenerate is disabled while its consent preview is open (no double-fire)");
+      ok(trCall("transcript_generate_notes").length === trD7Before, "TR D7: opening the Regenerate preview sends nothing");
+      el("tr-gen-preview-cancel").click();
+      ok(document.activeElement === el("tr-regenerate") && el("tr-regenerate").disabled === false,
+         "TR ready card: Cancel returns focus to Regenerate and re-enables it");
+      // Quinn D8: no Regenerate (so no silent discard of unsaved edits) while the edit form is open.
+      el("tr-gen-edit").click();
+      await sleep(30);
+      ok(!!document.querySelector(".pp-gen-edit-form") && (!el("tr-regenerate") || el("tr-regenerate").disabled === true) &&
+         getComputedStyle(el("tr-generate")).display === "none",
+         "TR D8: while the edit form is open there is no enabled Regenerate and no primary Generate — an unsaved edit cannot be replaced by a Confirm");
+      el("tr-gen-edit-cancel").click();
+      await sleep(30);
+      ok(!!el("tr-regenerate") && el("tr-regenerate").disabled === false, "TR D8: Regenerate is back once editing ends");
+      // Figma 1133:36 generating state: heading + duration line + polite live region, aria-busy kept,
+      // no invented step list and NO Cancel (the command persists its draft on completion).
+      window.__trGenDeferred = true;
+      el("tr-regenerate").click();
+      await sleep(40);
+      el("tr-gen-preview-confirm").click();
+      await sleep(40);
+      var trProg = el("tr-gen-progress");
+      ok(!!trProg && !trProg.hidden && getComputedStyle(trProg).display !== "none" && /Generating sermon notes…/.test(trProg.textContent) &&
+         /This usually takes 10–20 seconds\./.test(trProg.textContent),
+         "TR generating: a visible 'Generating sermon notes…' status with the expected-duration line appears while the call is in flight");
+      ok(trProg.getAttribute("aria-live") === "polite" && trProg.getAttribute("role") === "status" && /Generating sermon notes/.test(el("tr-gen-live").textContent) &&
+         el("tr-gen").getAttribute("aria-busy") === "true" && el("tr-regenerate").getAttribute("aria-busy") === "true",
+         "TR generating: it is a polite live region, a persistent live-region message is set, and aria-busy is kept on the card and the control");
+      ok(!trProg.querySelector("button") && !trProg.querySelector("li") && !/Extracting|Drafting|Transcript sent/.test(trProg.textContent),
+         "TR generating: NO Cancel and NO invented step list (nothing reports progress; the draft is persisted on completion)");
+      window.__trGenResolveDeferred();
+      await sleep(60);
+      ok(el("tr-gen-progress").hidden === true && getComputedStyle(el("tr-gen-progress")).display === "none" && !el("tr-gen").hasAttribute("aria-busy") &&
+         /Sermon notes are ready/.test(el("tr-gen-live").textContent),
+         "TR generating: the status goes away on completion (computed display) and the live region announces the result");
+      window.__trGenDeferred = false;
+
       // === FR-129 (86akgqdx8) on the Transcripts workspace: the SAME regenerate-with-retention
       // contract PP REGEN-* proves above, exercised through THIS surface's own wiring
       // (transcript_generate_notes / confirm+discard_sermon_note_regeneration, `tr-` prefixed
@@ -6890,7 +6950,7 @@ DRIVER = r"""
       // discard wiring actually works, and that a degraded regenerate cannot downgrade an
       // already AI-generated draft here either. ================================================
       window.__trGen = "regenerate_pending";
-      el("tr-generate").click();
+      trEntry().click();
       await sleep(40);
       el("tr-gen-preview-confirm").click();
       await sleep(60);
@@ -6922,7 +6982,7 @@ DRIVER = r"""
 
       // Confirm REPLACES the saved draft — single prior version, so the replaced one is gone.
       window.__trGen = "regenerate_pending";
-      el("tr-generate").click();
+      trEntry().click();
       await sleep(40);
       el("tr-gen-preview-confirm").click();
       await sleep(60);
@@ -6940,7 +7000,7 @@ DRIVER = r"""
       // already AI-generated draft — "once AI-generated, always AI-generated" holds on this
       // surface too, and the refused pending draft remains staged rather than vanishing.
       window.__trGen = "regenerate_pending_degraded";
-      el("tr-generate").click();
+      trEntry().click();
       await sleep(40);
       el("tr-gen-preview-confirm").click();
       await sleep(60);
@@ -6984,7 +7044,7 @@ DRIVER = r"""
       window.__pp.cloud_notes_consent = false;
       window.__trGen = "regenerate_pending";
       var trRegenConsentGenCallsBefore = trCall("transcript_generate_notes").length;
-      el("tr-generate").click();
+      trEntry().click();
       await sleep(40);
       el("tr-gen-preview-confirm").click();
       await sleep(60);
@@ -7005,7 +7065,7 @@ DRIVER = r"""
       window.__pp.cloud_notes_consent = true;
 
       window.__trGen = "transport";
-      el("tr-generate").click();
+      trEntry().click();
       await sleep(40);
       el("tr-gen-preview-confirm").click();
       await sleep(60);
@@ -7021,7 +7081,7 @@ DRIVER = r"""
       // against the Transcripts page (the one surface that now renders them) ===
       var trGenOnce = async function (mode) {
         window.__trGen = mode;
-        el("tr-generate").click();
+        trEntry().click();
         await sleep(40);
         el("tr-gen-preview-confirm").click();
         await sleep(60);
@@ -7075,6 +7135,19 @@ DRIVER = r"""
       var trSub = trOkRes.querySelector(".pp-gen-sublist");
       ok(!!trSub && /That is the point of this ticket/.test(trSub.textContent) && !!trSub.closest("li"),
          "TR FR-122: outline sub-points render as a NESTED list inside their parent point, not flattened");
+      // PP SN-5 (restored, Cody's condition): editing ONLY the title must send the sub-points the
+      // operator did not touch UNCHANGED — not dropped, not blanked.
+      el("tr-gen-edit").click();
+      await sleep(30);
+      el("tr-edit-title").value = "From-History Sermon (sub-point probe)";
+      var trSubSaves0 = window.__calls.filter(function (c) { return c.cmd === "update_sermon_note_draft"; }).length;
+      el("tr-gen-save").click();
+      await waitFor(function () { return window.__calls.filter(function (c) { return c.cmd === "update_sermon_note_draft"; }).length > trSubSaves0; });
+      var trSubSave = window.__calls.filter(function (c) { return c.cmd === "update_sermon_note_draft"; }).slice(-1)[0];
+      ok(!!trSubSave && JSON.stringify(trSubSave.args.sections[0].points[0].sub_points) === JSON.stringify(["That is the point of this ticket"]),
+         "TR SN-5: sub-points the operator did NOT touch are sent UNCHANGED on a title-only save (got " +
+         JSON.stringify(trSubSave && trSubSave.args.sections[0].points[0].sub_points) + ")");
+      await sleep(40);
       // consent-off: the operator gets a route to the consent switch (Settings no longer offers Generate)
       window.__pp.cloud_notes_consent = false;
       var trConsentRes = await trGenOnce("ok");
@@ -7121,7 +7194,7 @@ DRIVER = r"""
       // HAS its own guard (Sana security review, re-check: this exact gap in an earlier version
       // of this test). Prove the disabled attribute itself blocks the click first...
       var trInProgressCallsBefore = trCall("transcript_generate_notes").length;
-      el("tr-generate").click();
+      trEntry().click();
       await sleep(30);
       ok(el("tr-gen-preview").hidden === true,
          "TR generate (Sana F1): clicking the disabled button never opens the review step");
@@ -7131,7 +7204,7 @@ DRIVER = r"""
       // by clearing the attribute (simulating a stale/replayed event bypassing it) and clicking
       // again — real defense in depth, not two assertions of the same DOM fact.
       el("tr-generate").disabled = false;
-      el("tr-generate").click();
+      trEntry().click();
       await sleep(30);
       ok(el("tr-gen-preview").hidden === true && trCall("transcript_generate_notes").length === trInProgressCallsBefore,
          "TR generate (Sana F1, true defense in depth): with the disabled attribute forcibly cleared, onGenerate's OWN generateAllowed check still refuses — the backend refusal is not the only thing standing between a bypass and a call");
@@ -7158,7 +7231,7 @@ DRIVER = r"""
       var trOversizeFull = window.__TR.detail[6].segments.map(function (s) { return s.text; }).join("\n");
       ok(trOversizeFull.length === 454499,
          "TR generate oversize (premise): the fixture's complete text is deterministically 454,499 characters, well past the 400,000 clamp");
-      el("tr-generate").click();
+      trEntry().click();
       await sleep(40);
       var trOversizePreview = el("tr-gen-preview");
       ok(!!trOversizePreview && trOversizePreview.hidden === false, "TR generate oversize: the review step still opens for an over-the-clamp transcript");
@@ -7204,11 +7277,13 @@ DRIVER = r"""
       el("tr-detail-back").click();
       el('tr-list').querySelector('.tr-card[data-id="1"] .tr-card-open').click();
       await waitFor(function () { return window.__trRenderedRowCount && window.__trRenderedRowCount() > 0; });
-      ok(getComputedStyle(el("tr-generate")).display !== "none",
-         "TR generate (Cody, computed display): the Generate button is actually painted when not hidden");
+      // 17tnw2b0ntd (Figma 1132:2): with a persisted draft the primary Generate is replaced by the
+      // Sermon-notes-ready card's Regenerate — assert COMPUTED display for both sides.
+      ok(!!el("tr-regenerate") && getComputedStyle(el("tr-regenerate")).display !== "none" && getComputedStyle(el("tr-generate")).display === "none",
+         "TR generate (Cody, computed display): with a saved draft, Regenerate is painted and the primary Generate button is not");
       ok(getComputedStyle(el("tr-gen-result")).display !== "none" && /From-History Sermon/.test(el("tr-gen-result").textContent),
          "TR generate + 86akgqdxr (computed display): reopening a transcript with an earlier successful generate shows its PERSISTED draft painted immediately — this is AC2, not a regression of the M-1 fix (see the empty-state checks below for the still-unpainted case)");
-      el("tr-generate").click();
+      trEntry().click();
       await sleep(30);
       ok(getComputedStyle(el("tr-generate")).display === "none",
          "TR generate (Cody, computed display): the Generate button is genuinely unpainted while its own review step is open");
@@ -7223,7 +7298,7 @@ DRIVER = r"""
       // shown the new draft, and the saved one will not change unless they choose to use it.
       ok(el("tr-detail-notes").classList.contains("tr-notes-on"),
          "TR generate F2 (premise): transcript 1 already shows Notes generated from the earlier check");
-      el("tr-generate").click();
+      trEntry().click();
       await sleep(30);
       var trOverwriteNotice = el("tr-gen-preview").querySelector(".pp-gen-preview-overwrite");
       ok(!!trOverwriteNotice && getComputedStyle(trOverwriteNotice).display !== "none" &&
@@ -7240,7 +7315,7 @@ DRIVER = r"""
       // the switch to transcript 2 happens WHILE transcript 1's call is still in flight, then
       // resolve it and confirm nothing from transcript 1 reached transcript 2's now-open view.
       window.__trGenDeferred = true;
-      el("tr-generate").click();
+      trEntry().click();
       await sleep(30);
       el("tr-gen-preview-confirm").click();
       await sleep(30);
@@ -7276,8 +7351,8 @@ DRIVER = r"""
       window.__trLimitsDeferred = true;
       window.__trLimitsPendingResolvers = [];
       var trOpenGenPreviewCountBefore = window.__trOpenGenPreviewCallCount;
-      el("tr-generate").click();
-      el("tr-generate").click();
+      trEntry().click();
+      trEntry().click();
       await sleep(20);
       ok(window.__trLimitsPendingResolvers.length === 2,
          "TR generate (Vera PERF-2, premise): two rapid clicks really did issue two concurrent note_generation_limits calls — onGenerate has no synchronous guard against this, which is exactly why the resolution-time check matters");
@@ -10723,9 +10798,24 @@ DRIVER = r"""
       var ppOpenTr = el("pp-open-transcripts");
       ok(!!ppOpenTr && ppOpenTr.tagName === "A" && /Open Transcripts to generate sermon notes/.test(ppOpenTr.textContent),
          "PP 17tnw2b0ntd: the AI card carries a real <a> link to Transcripts");
-      ok(/complete transcript is sent/.test(el("pp-ai").textContent) && /400,000-character/.test(el("pp-ai").textContent) &&
-         !/press Generate/.test(el("pp-ai").textContent),
-         "PP 17tnw2b0ntd: the corrected privacy copy is shown and the stale 'press Generate' claim is gone");
+      var ppPrivacyTxt = document.querySelector("#pp-ai .pp-consent-text").textContent;
+      ok(ppPrivacyTxt === 'Sermon notes are made from text only: the complete saved transcript of a recording that has ended, up to 400,000 characters. Nothing is sent while that transcript is still recording, and nothing is sent until you review the exact text and confirm. Cloud transcription (above) is a separate setting and does stream microphone audio while it is on.',
+         "PP 17tnw2b0ntd: the Settings privacy sentence is exactly the owner-approved wording (text only, ended transcript, nothing sent while recording or before confirming, cloud transcription is separate and streams audio)");
+      ok(!/press Generate|never live audio|never during the service|recent-segments/.test(el("pp-ai").textContent),
+         "PP 17tnw2b0ntd: none of the old, over-claiming privacy phrases remain on the card");
+      // QA D1: the link is styled (it used to render browser-default blue at 2.07:1): AA contrast on its
+      // real ground, a muted caption, and a visible focus ring declared for keyboard users.
+      var ppLinkBg = (function (n) { while (n) { var c = _trRgba(getComputedStyle(n).backgroundColor); if (c[3] > 0.99) return c; n = n.parentElement; } return [11,13,18,1]; })(ppOpenTr);
+      var ppLinkC = _trCr(_trRgba(getComputedStyle(ppOpenTr).color), ppLinkBg);
+      ok(ppLinkC >= 4.5, "PP D1: the Settings link to Transcripts clears AA-NORMAL on its ground (" + _trF(ppLinkC) + ":1; browser-default blue was 2.07:1)");
+      ok(getComputedStyle(ppOpenTr).textDecorationLine === "none" && getComputedStyle(ppOpenTr).color !== "rgb(0, 0, 238)",
+         "PP D1: the link carries the design's violet styling, not the browser default");
+      var ppLinkSub = document.querySelector(".pp-ai-link-sub");
+      ok(!!ppLinkSub && parseFloat(getComputedStyle(ppLinkSub).fontSize) <= 12.5 && _trCr(_trRgba(getComputedStyle(ppLinkSub).color), ppLinkBg) >= 4.5,
+         "PP D1: the caption is muted 12px secondary ink and still clears AA");
+      var ppLinkFocusRule = __cssRule(".pp-ai-link:focus-visible");
+      ok(!!ppLinkFocusRule && /2px/.test(ppLinkFocusRule.style.getPropertyValue("outline")),
+         "PP D1: the link declares a visible 2px focus ring");
       ppOpenTr.click();
       ok(el("surface-transcripts").classList.contains("active") && getComputedStyle(el("surface-transcripts")).display !== "none",
          "PP 17tnw2b0ntd: the link opens the Transcripts surface");

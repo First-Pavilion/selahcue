@@ -7719,6 +7719,15 @@
 .pp-optin-btn:focus-visible { outline: 2px solid var(--sc-primary-hover); outline-offset: 2px; }
 
 /* Footnote */
+/* Settings > Providers & Privacy: the link to the Transcripts page (Figma 1135:78) — a violet link
+   with a sparkle icon and a muted caption. It is navigation, not a button. Without these rules it
+   rendered in the browser-default blue (rgb(0,0,238)) at 2.07:1 on the dark card. */
+.pp-ai-link-row { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; margin-top: 14px; }
+.pp-ai-link { color: var(--sc-primary-hover); font-size: 13px; font-weight: 600; text-decoration: none; }
+.pp-ai-link::before { content: "✦ "; }
+.pp-ai-link:hover { text-decoration: underline; }
+.pp-ai-link:focus-visible { outline: 2px solid var(--sc-primary-hover); outline-offset: 3px; border-radius: 4px; }
+.pp-ai-link-sub { margin: 0; font-size: 12px; font-weight: 500; color: var(--sc-text-secondary); }
 .pp-footnote { display: flex; gap: 8px; align-items: center; justify-content: center; font-size: 11px; font-weight: 500; color: var(--sc-text-muted); }
 .pp-footnote-ico { flex: none; }
 
@@ -8558,6 +8567,37 @@
 .tr-gen .pp-gen-result.pp-gen-err { padding: 12px; border-radius: 10px; }
 .tr-gen .pp-gen-result.pp-gen-info { border-color: var(--sc-info-border); background: var(--sc-info-soft); }
 .tr-gen .pp-gen-result.pp-gen-err { border-color: var(--sc-warn-border); background: var(--sc-warn-soft); }
+
+/* Figma 1132:2 / 349:124 "Sermon notes ready" card: check chip + header above the draft, then
+   Regenerate (secondary) and Edit draft (primary) as equal-width controls. */
+.tr-ready-head { display: flex; align-items: center; gap: 12px; margin-bottom: 4px; }
+.tr-ready-ico {
+  flex: none; display: inline-flex; align-items: center; justify-content: center;
+  width: 36px; height: 36px; border-radius: 10px; font-size: 16px; font-weight: 700;
+  color: var(--sc-preview); background: var(--sc-preview-soft); border: 1px solid var(--sc-preview-border);
+}
+.tr-ready-title { margin: 0; font-size: 17px; font-weight: 700; color: var(--sc-text); }
+.tr-gen .tr-ready-actions { display: flex; gap: 10px; flex-wrap: nowrap; }
+.tr-gen .tr-ready-actions .pp-gen-edit-btn { flex: 1; min-height: 44px; border-radius: 12px; font-size: 14px; font-weight: 700; }
+.tr-gen .tr-ready-actions .tr-ready-primary { background: var(--sc-primary); color: #fff; border: none; }
+.tr-gen .tr-ready-actions .tr-ready-primary:hover { background: #5a48d0; }
+.tr-gen .tr-ready-actions .tr-ready-secondary[disabled] { opacity: 0.5; cursor: default; }
+.tr-gen .tr-ready-actions .tr-ready-secondary[disabled]:hover { background: var(--sc-elevated); }
+
+/* Figma 1133:36 in-flight status: ring icon, heading, expected-duration line. (No step list, no
+   Cancel — see transcripts.js showGenProgress.) The flex `display` must not defeat [hidden]. */
+.tr-gen-progress { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 18px 12px; text-align: center; }
+.tr-gen-progress[hidden] { display: none; }
+.tr-gen-spin {
+  display: inline-flex; align-items: center; justify-content: center; width: 52px; height: 52px;
+  border-radius: 50%; border: 3px solid var(--sc-primary); color: var(--sc-primary-hover); font-size: 20px;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .tr-gen-spin { animation: tr-gen-pulse 1.6s ease-in-out infinite; }
+}
+@keyframes tr-gen-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.55; } }
+.tr-gen-progress-title { margin: 6px 0 0; font-size: 18px; font-weight: 700; color: var(--sc-text); }
+.tr-gen-progress-sub { margin: 0; font-size: 13px; color: var(--sc-text-secondary); }
 
 /* §11.3: narrow-window floor — reusing the Pre-service Check precedent exactly (app.css:7124,
    `@media (max-width: 900px)`), the pattern TRANSCRIPTS-2.0-HANDOFF.md names as the closest fit;
