@@ -80,6 +80,24 @@ void main() {
     expect(await reply, isA<Ack>());
   });
 
+  test('a stale frame late in the budget, then silence, does not extend the deadline',
+      () async {
+    // Pins that each read is clamped to the time REMAINING, not handed a fresh
+    // full budget: a stale frame at 85% of the deadline followed by silence
+    // would otherwise run to roughly 1.85x (QA review, PR #132). Real time: the
+    // deadline uses a Stopwatch that fake time does not advance.
+    final h = _Harness(deadline: const Duration(seconds: 1));
+    addTearDown(h.dispose);
+    Timer(const Duration(milliseconds: 850), () => h.ack(0));
+    final started = Stopwatch()..start();
+    await expectLater(
+      h.session.command(cmdBlackout(true)).timeout(const Duration(seconds: 5)),
+      throwsA(isA<SessionException>()),
+    );
+    expect(started.elapsed, lessThan(const Duration(milliseconds: 1500)),
+        reason: 'unclamped reads would end near 1.85s');
+  });
+
   test('an expired deadline fails the command even when its reply is already buffered',
       () async {
     // Pins the `remaining <= zero` guard: nextJson returns a buffered frame
