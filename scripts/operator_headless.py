@@ -1571,7 +1571,7 @@ EXPECTED_MIN_CHECKS = 2065  # measured post-rebase, clean run: 2065 checks, 0 FA
 # "encrypted" render, its description text, the "not_encrypted" silent-downgrade warning render,
 # and its own control that the warning never also reads ON). Measured via an actual clean run,
 # not hand-summed.
-EXPECTED_MIN_CHECKS = 2092  # measured: 2092 checks, 0 FAIL
+EXPECTED_MIN_CHECKS = 2108  # measured: 2108 checks, 0 FAIL
 
 
 def find_chrome():
@@ -2272,16 +2272,26 @@ STUB = r"""
         .replace(/(\d)\s+(?:to|through|thru)\s+(\d)/gi, "$1-$2").replace(/\b(?:chapters?|verses?)\b\s*/gi, "").trim();
       var _rm = /BADREF/i.test(_rNorm) ? null : /^(.*?)\s*(\d+)(?:[:\s]\s*(\d+)(?:-(\d+))?)?$/.exec(_rNorm);
       if (!_rm || (_rm[4] && +_rm[4] < +_rm[3])) return Promise.reject("not a reference: " + _rRef);
+      // A well-formed reference the corpus has no chapter for (the real host: "no such chapter").
+      if (/NOCHAPTER/i.test(_rNorm)) return Promise.reject("no such chapter: " + _rRef);
       var _rBook = _rm[1].trim().replace(/^psalm$/i, "Psalms"), _rChap = +_rm[2];
       var _rSize = (/^psalms$/i.test(_rBook) && _rChap === 1) ? 6 : 40;
       var _rVerses = [];
       for (var _ri = 1; _ri <= _rSize; _ri++) _rVerses.push([_ri, "verse " + _ri + " text"]);
-      return Promise.resolve({
+      var _rResp = {
         reference: _rBook + " " + _rChap, translation: "KJV", translations: ["KJV"], verses: _rVerses,
         verse_start: _rm[3] ? +_rm[3] : null,
         verse_end: _rm[4] ? +_rm[4] : (_rm[3] ? +_rm[3] : null),
-        prev: true, next: true,
-      });
+        // Like the real host: the neighbouring chapters as reference strings, null at the start.
+        prev: _rChap > 1 ? _rBook + " " + (_rChap - 1) : null, next: _rBook + " " + (_rChap + 1),
+      };
+      // One-shot DEFER hook (same contract as the default mock's): hold this fetch open so a check
+      // can close the modal / retype the input WHILE it is in flight, then release it.
+      if (window.__getChapterDeferOnce) {
+        window.__getChapterDeferOnce = false;
+        return new Promise(function (res) { window.__getChapterDeferredResolve = function () { res(_rResp); }; });
+      }
+      return Promise.resolve(_rResp);
     }
     if (cmd === "get_chapter") {
       var _gcRef = (args && args.reference) ? String(args.reference) : "";
@@ -8186,8 +8196,8 @@ DRIVER = r"""
       var lc = await linkOnce("Psalms 1:2-10");
       var lcHint = lc.modal.querySelector(".pm-link-hint");
       ok(lc.committed === null, "range: Psalms 1:2-10 is NOT committed on the first press (Psalm 1 has six verses)");
-      ok(lcHint && !lcHint.hidden && /has 6 verses/.test(lcHint.textContent) && /Psalms 1:2-6/.test(lcHint.textContent) &&
-         lcHint.getAttribute("role") === "status" && !lcHint.classList.contains("pm-link-hint-err"),
+      ok(lcHint && /has 6 verses/.test(lcHint.textContent) && /Psalms 1:2-6/.test(lcHint.textContent) &&
+         /^Note:/.test(lcHint.textContent) && lcHint.getAttribute("role") === "status" && !lcHint.classList.contains("pm-link-hint-err"),
          "range: the cut-back is announced (role=status): " + (lcHint ? lcHint.textContent : "no hint"));
       ok(lc.modal.querySelector('input[aria-label="Scripture reference"]').value === "Psalms 1:2-6",
          "range: the input now shows exactly what will be linked, Psalms 1:2-6");
@@ -8202,12 +8212,143 @@ DRIVER = r"""
          "range: Browse of a range past the chapter end also cuts the selection back and says so");
       await closeModal();
 
+      // A reference being resolved when the modal is CLOSED must not be committed afterwards
+      // (Escape / Cancel / backdrop during the get_chapter round trip used to still send
+      // set_item_content for an item the operator had walked away from).
+      openLinkModal({ id: 14, kind: "scripture", title: "Opening Word" });
+      await sleep(20);
+      var lmX = document.querySelector(".pm-confirm.pm-link");
+      lmX.querySelector('input[aria-label="Scripture reference"]').value = "Romans 8:28";
+      var sicX0 = window.__calls.filter(function (c) { return c.cmd === "set_item_content"; }).length;
+      window.__getChapterDeferOnce = true;
+      Array.prototype.filter.call(lmX.querySelectorAll(".pm-btn-primary"), function (b) { return b.textContent === "Link"; })[0].click();
+      await sleep(10);
+      ok(typeof window.__getChapterDeferredResolve === "function", "close-race (precondition): the typed reference is still being resolved");
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); // walk away mid-resolve
+      await sleep(10);
+      window.__getChapterDeferredResolve();
+      window.__getChapterDeferredResolve = null;
+      await sleep(40);
+      ok(window.__calls.filter(function (c) { return c.cmd === "set_item_content"; }).length === sicX0,
+         "close-race: closing the modal while a typed reference resolves commits NOTHING afterwards");
+
+      // The seeded chapter of an EXISTING link loads asynchronously; if the operator retypes before
+      // it arrives, the late response must not overwrite what they typed (it used to restore the
+      // stale browsed chapter, so Link committed the OLD reference and skipped typed resolution).
+      window.__getChapterDeferOnce = true;
+      openLinkModal({ id: 14, kind: "scripture", title: "Opening Word", link: { kind: "scripture", reference: "Psalms 119:2-10", translation: "KJV" } });
+      await sleep(20);
+      var lmZ = document.querySelector(".pm-confirm.pm-link");
+      var zIn = lmZ.querySelector('input[aria-label="Scripture reference"]');
+      zIn.value = "Romans 8:28";
+      zIn.dispatchEvent(new Event("input", { bubbles: true })); // retype BEFORE the seed arrives
+      window.__getChapterDeferredResolve();
+      window.__getChapterDeferredResolve = null;
+      await sleep(40);
+      ok(lmZ.querySelector(".pm-verse-picker").hidden,
+         "seed-race: a seeded chapter that arrives AFTER the operator retyped is discarded (the picker stays hidden)");
+      var sicZ0 = window.__calls.filter(function (c) { return c.cmd === "set_item_content"; }).length;
+      Array.prototype.filter.call(lmZ.querySelectorAll(".pm-btn-primary"), function (b) { return b.textContent === "Link"; })[0].click();
+      await sleep(40);
+      var sicZ = window.__calls.filter(function (c) { return c.cmd === "set_item_content"; });
+      ok(sicZ.length > sicZ0 && sicZ[sicZ.length - 1].args.link.reference === "Romans 8:28",
+         "seed-race: Link commits what the operator TYPED (Romans 8:28), not the stale seeded Psalms 119:2-10");
+
+      // --- second review round (Cody / Quinn / Shadow on #144) ---
+      // The status line is a live region that is ALWAYS in the DOM (announced when its text
+      // changes), empty until there is something to say.
+      var lmA = await browseOnce(null);
+      var aHint = lmA.querySelector(".pm-link-hint");
+      ok(aHint && aHint.getAttribute("role") === "status" && !aHint.hasAttribute("hidden") && aHint.textContent === "",
+         "a11y: the status line is a role=status region present in the DOM from the start (not toggled with hidden), empty");
+      await closeModal();
+
+      // Chapter arrows: a half-made selection must not carry across chapters.
+      var lmN = await browseOnce("Psalms 119");
+      lmN.querySelectorAll(".pm-verse")[1].click(); // verse 2 = the pending start
+      lmN.querySelector('.pm-verse-navbtn[aria-label="Next chapter"]').click();
+      await sleep(40);
+      lmN.querySelectorAll(".pm-verse")[4].click(); // verse 5 of the NEW chapter
+      ok(/Psalms 120:5(?![\d-])/.test(previewOf(lmN)),
+         "chapter arrows: a start picked in one chapter is not extended into the next (Psalms 120:5, not 120:2-5): " + previewOf(lmN));
+      await closeModal();
+
+      // Browse of a start verse past the end selects NOTHING (it used to fall back to verse 1, which one
+      // press of Link then committed) and Link refuses with the chapter's real length.
+      var lmP = await browseOnce("Psalms 1:9");
+      ok(/only has 6 verses/.test(lmP.querySelector(".pm-link-hint").textContent) && lmP.querySelectorAll('.pm-verse[aria-selected="true"]').length === 0,
+         "past-the-end Browse: says the chapter's real length and selects no verse");
+      var sicP0 = window.__calls.filter(function (c) { return c.cmd === "set_item_content"; }).length;
+      Array.prototype.filter.call(lmP.querySelectorAll(".pm-btn-primary"), function (b) { return b.textContent === "Link"; })[0].click();
+      await sleep(40);
+      ok(window.__calls.filter(function (c) { return c.cmd === "set_item_content"; }).length === sicP0,
+         "past-the-end Browse: pressing Link links nothing (it does not fall back to verse 1)");
+      await closeModal();
+
+      // Editing the reference clears a stale notice.
+      var le = await linkOnce("Psalms 1:2-10"); // shows the cut-back note
+      ok(le.modal.querySelector(".pm-link-hint").textContent.length > 0, "stale-notice (precondition): the cut-back note is showing");
+      var eIn = le.modal.querySelector('input[aria-label="Scripture reference"]');
+      eIn.value = "Romans 8:28"; eIn.dispatchEvent(new Event("input", { bubbles: true }));
+      ok(le.modal.querySelector(".pm-link-hint").textContent === "", "stale-notice: editing the reference clears the note");
+      await closeModal();
+
+      // A whole chapter typed is still linkable.
+      var lWhole = await linkOnce("Psalms 119");
+      ok(lWhole.committed === "Psalms 119", "typed whole chapter: Psalms 119 links as a whole chapter — got " + JSON.stringify(lWhole.committed));
+
+      // Verses-per-slide of an existing link survives retyping the reference.
+      openLinkModal({ id: 14, kind: "scripture", title: "Opening Word", link: { kind: "scripture", reference: "Psalms 119:2-4", translation: "KJV", verses_per_slide: 3 } });
+      await sleep(40);
+      var lmV3 = document.querySelector(".pm-confirm.pm-link");
+      var v3In = lmV3.querySelector('input[aria-label="Scripture reference"]');
+      v3In.value = "Romans 8:28"; v3In.dispatchEvent(new Event("input", { bubbles: true }));
+      var sicV3 = window.__calls.filter(function (c) { return c.cmd === "set_item_content"; }).length;
+      Array.prototype.filter.call(lmV3.querySelectorAll(".pm-btn-primary"), function (b) { return b.textContent === "Link"; })[0].click();
+      await sleep(40);
+      var sicV3b = window.__calls.filter(function (c) { return c.cmd === "set_item_content"; });
+      ok(sicV3b.length > sicV3 && sicV3b[sicV3b.length - 1].args.link.verses_per_slide === 3 && sicV3b[sicV3b.length - 1].args.link.reference === "Romans 8:28",
+         "typed path: the existing link's verses-per-slide (3) survives retyping the reference");
+
+      // Double press while resolving links ONCE.
+      openLinkModal({ id: 14, kind: "scripture", title: "Opening Word" });
+      await sleep(20);
+      var lmD = document.querySelector(".pm-confirm.pm-link");
+      lmD.querySelector('input[aria-label="Scripture reference"]').value = "Romans 8:28";
+      var sicD0 = window.__calls.filter(function (c) { return c.cmd === "set_item_content"; }).length;
+      var gcD0 = window.__calls.filter(function (c) { return c.cmd === "get_chapter"; }).length;
+      window.__getChapterDeferOnce = true;
+      var dGo = Array.prototype.filter.call(lmD.querySelectorAll(".pm-btn-primary"), function (b) { return b.textContent === "Link"; })[0];
+      // The Link BUTTON is disabled while resolving, so a second click is swallowed there; the Enter
+      // key on the input is not, and is what the resolving guard exists for.
+      dGo.click();
+      lmD.querySelector('input[aria-label="Scripture reference"]').dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+      await sleep(10);
+      window.__getChapterDeferredResolve(); window.__getChapterDeferredResolve = null;
+      await sleep(50);
+      ok(window.__calls.filter(function (c) { return c.cmd === "set_item_content"; }).length === sicD0 + 1,
+         "double press: Link then Enter while resolving commit exactly ONE link");
+      ok(window.__calls.filter(function (c) { return c.cmd === "get_chapter"; }).length === gcD0 + 1,
+         "double press: the second press while resolving does not start a second host lookup (the resolving guard)");
+
+      // A reference the corpus has no chapter for: told first, linked anyway on a second press.
+      var lm0 = await linkOnce("NOCHAPTER 9:9");
+      var lm0Hint = lm0.modal.querySelector(".pm-link-hint");
+      ok(lm0.committed === null && /isn't a chapter/.test(lm0Hint.textContent) && /Missing/.test(lm0Hint.textContent) && /^Note:/.test(lm0Hint.textContent),
+         "nonexistent chapter: the first press explains it would show as Missing and links nothing: " + lm0Hint.textContent);
+      var sic0 = window.__calls.filter(function (c) { return c.cmd === "set_item_content"; }).length;
+      Array.prototype.filter.call(lm0.modal.querySelectorAll(".pm-btn-primary"), function (b) { return b.textContent === "Link"; })[0].click();
+      await sleep(50);
+      var sic0b = window.__calls.filter(function (c) { return c.cmd === "set_item_content"; });
+      ok(sic0b.length > sic0 && sic0b[sic0b.length - 1].args.link.reference === "NOCHAPTER 9:9",
+         "nonexistent chapter: a second press links it as typed (it is no longer silently refused)");
+
       // What cannot be linked says WHY and what to type, and links nothing.
       var lb = await linkOnce("BADREF 1:1");
       var lbHint = lb.modal.querySelector(".pm-link-hint");
       ok(lb.committed === null && document.querySelector(".pm-confirm.pm-link") === lb.modal,
          "range: an unreadable reference commits nothing and keeps the modal open");
-      ok(lbHint && !lbHint.hidden && lbHint.classList.contains("pm-link-hint-err") && /Couldn.t read/.test(lbHint.textContent) && /Romans 8:28-30/.test(lbHint.textContent),
+      ok(lbHint && lbHint.classList.contains("pm-link-hint-err") && /^Error:/.test(lbHint.textContent) && /Couldn.t read/.test(lbHint.textContent) && /Romans 8:28-30/.test(lbHint.textContent),
          "range: it says what to type, e.g. Romans 8:28-30: " + (lbHint ? lbHint.textContent : "no hint"));
       await closeModal();
       var lw = await linkOnce("Psalms 1:9");
@@ -8215,7 +8356,7 @@ DRIVER = r"""
          "range: a verse past the end of the chapter is refused with the chapter's real length");
       await closeModal();
       var ld = await linkOnce("Romans 8:30 to 28");
-      ok(ld.committed === null && !ld.modal.querySelector(".pm-link-hint").hidden,
+      ok(ld.committed === null && ld.modal.querySelector(".pm-link-hint").textContent.length > 0,
          "range: a descending range is refused with a message, never silently linked");
       await closeModal();
 

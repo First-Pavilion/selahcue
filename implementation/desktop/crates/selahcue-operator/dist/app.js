@@ -8035,16 +8035,17 @@
         wrap.appendChild(hits);
         // This step's own status line (role=status): the "cut back to the chapter" notice and a
         // reference the host could not read. Deliberately NOT the dialog's role=alert error, which
-        // belongs to the commit step and lives outside this function.
+        // belongs to the commit step and lives outside this function. It stays in the DOM, EMPTY
+        // (CSS hides an empty one): a live region announces reliably when its CONTENT changes,
+        // not when the element is un-hidden in the same step that fills it. The text itself says
+        // which kind of message it is ("Error:" / "Note:"), so the cue is not colour alone.
         const hint = document.createElement("p");
         hint.className = "pm-link-hint";
         hint.setAttribute("role", "status");
-        hint.hidden = true;
         wrap.appendChild(hint);
         const showHint = (msg, isError) => {
-          hint.textContent = msg || "";
+          hint.textContent = msg ? (isError ? "Error: " : "Note: ") + msg : "";
           hint.classList.toggle("pm-link-hint-err", !!isError);
-          hint.hidden = !msg;
         };
 
         // Verse picker (frame 610:124): chapter nav + verse list with the selected range highlighted
@@ -8160,10 +8161,16 @@
           });
           updatePreview();
         };
+        // Each load (and each edit of the reference) bumps this, so a chapter that arrives AFTER the
+        // operator moved on — most visibly the seed of an existing link, which loads on open — is
+        // discarded instead of overwriting what they typed or browsed since.
+        let loadGen = 0;
         const loadCh = async (ref) => {
           if (!ref) return;
+          const gen = ++loadGen;
           try {
             const ch = await invoke("get_chapter", { reference: ref, translation: trans.value || null });
+            if (gen !== loadGen) return;
             chapter = ch;
             vStart = ch.verse_start != null ? ch.verse_start : ch.verses && ch.verses[0] ? ch.verses[0][0] : null;
             vEnd = ch.verse_end != null && ch.verse_end > (ch.verse_start || 0) ? ch.verse_end : null;
@@ -8173,8 +8180,11 @@
             showHint("");
             const lastVerse = ch.verses && ch.verses.length ? ch.verses[ch.verses.length - 1][0] : null;
             if (lastVerse != null && vStart != null && vStart > lastVerse) {
+              // Select NOTHING rather than falling back to verse 1: one press of Link would then
+              // commit a verse the operator never asked for. With no selection Link resolves the
+              // typed reference and refuses it with the chapter's real length.
               showHint(ch.reference + " only has " + lastVerse + " verses.", true);
-              vStart = ch.verses[0][0];
+              vStart = null;
               vEnd = null;
             } else if (lastVerse != null && vEnd != null && vEnd > lastVerse) {
               vEnd = lastVerse;
@@ -8219,6 +8229,10 @@
             note: cut ? ch.reference + " has " + last + " verses, so this links as " + ref + ". Press Link to confirm." : "",
           };
         };
+        // A well-formed reference the host has no chapter for (a typo, or a translation whose text is
+        // not downloaded yet) is NOT silently refused — linking it is allowed, it just shows as
+        // Missing — but the operator is told first and presses Link again to confirm.
+        let confirmedMissing = null;
         let resolving = false;
         const doLink = async () => {
           if (resolving) return;
@@ -8229,28 +8243,44 @@
             // Typed text (a browsed/picked selection is already canonical and inside the chapter).
             resolving = true;
             go.disabled = true;
-            let res;
+            let res = null;
+            let linkAsTyped = false;
             try {
               res = await resolveTyped(r);
             } catch (e) {
               console.error(e);
-              showHint("Couldn't read “" + r + "” as a scripture reference. Try Romans 8:28 or Romans 8:28-30.", true);
-              return;
+              if (/no such chapter/i.test(String(e))) {
+                if (confirmedMissing === r) {
+                  linkAsTyped = true; // second press: the operator has been told and confirmed
+                } else {
+                  confirmedMissing = r;
+                  showHint("“" + r + "” isn't a chapter in this translation's text, so it would show as Missing. Press Link again to link it anyway.", false);
+                  return;
+                }
+              } else {
+                showHint("Couldn't read “" + r + "” as a scripture reference. Try Romans 8:28 or Romans 8:28-30.", true);
+                return;
+              }
             } finally {
               resolving = false;
               go.disabled = false;
             }
-            if (res.error) {
-              showHint(res.error, true);
-              return;
-            }
-            r = res.reference;
-            if (res.note) {
-              // Show what will be linked and wait for a second Link — never silently change the
-              // passage the operator asked for.
-              input.value = r;
-              showHint(res.note, false);
-              return;
+            // The modal may have been closed (Escape / Cancel / backdrop) while the host was
+            // resolving — never commit a link the operator walked away from.
+            if (!wrap.isConnected) return;
+            if (!linkAsTyped) {
+              if (res.error) {
+                showHint(res.error, true);
+                return;
+              }
+              r = res.reference;
+              if (res.note) {
+                // Show what will be linked and wait for a second Link — never silently change the
+                // passage the operator asked for.
+                input.value = r;
+                showHint(res.note, false);
+                return;
+              }
             }
           }
           const link = { kind: "scripture", reference: r, translation: trans.value || null };
@@ -8267,6 +8297,8 @@
         // Live search: clicking a hit loads its chapter so the operator can refine the verse range.
         let t = null;
         input.oninput = () => {
+          loadGen++; // invalidate any chapter still in flight
+          confirmedMissing = null;
           showHint("");
           pickPhase = "idle";
           // Editing the reference invalidates any browsed/seeded chapter so a freshly-typed reference

@@ -7261,6 +7261,7 @@
   margin: 8px 0 0;
   font-size: 12px;
 }
+.pm-link-hint:empty { display: none; } /* the live region stays in the DOM, empty and invisible */
 .pm-link-hint-err {
   color: var(--sc-live);
   background: var(--sc-live-soft, rgba(255, 77, 77, 0.08));

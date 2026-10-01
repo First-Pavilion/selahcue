@@ -57,9 +57,19 @@ fn a_range_is_accepted_however_it_is_written() {
         "Psalms 1:2 through 10",
         "Psalms 1:2 thru 10",
         "Psalms 1:2 - 10",      // spaced hyphen
+        "Psalms 1:2- 10",       // dash glued to the first number only
+        "Psalms 1:2 -10",       // dash glued to the second number only
         "Psalms 1:2\u{2013}10", // en dash: what the Settings copy itself shows as the example
         "Psalms 1:2 \u{2013} 10",
-        "Psalms 1:2\u{2014}10", // em dash
+        "Psalms 1:2\u{2014}10",           // em dash
+        "Psalms 1:2\u{2010}10",           // Unicode hyphen
+        "Psalms 1:2\u{2011}10",           // non-breaking hyphen
+        "Psalms 1:2\u{2012}10",           // figure dash
+        "Psalms 1:2\u{2212}10",           // minus sign
+        "Psalms 1:2\u{00A0}-\u{00A0}10",  // non-breaking spaces around a dash (a pasted run sheet)
+        "Psalms 1:2\t-\t10",              // tabs around a dash
+        "Psalms 1:2\u{00A0}to\u{00A0}10", // non-breaking spaces around a connective
+        "Psalm chapters 1 verses 2-10",
         "Psalm 1 verses 2 to 10",
         "Psalm 1 verse 2 through 10",
         "psalm chapter 1 verses 2-10",
@@ -96,6 +106,23 @@ fn a_single_verse_is_still_one_verse() {
             parse_one(typed).unwrap(),
             r(45, "Romans", 8, Some((28, 28))),
             "{typed:?}"
+        );
+    }
+}
+
+#[test]
+fn the_word_verse_only_counts_as_filler_between_two_numbers() {
+    // "Romans 8 verse 28" drops the word because a chapter number precedes it and a verse number
+    // follows. "John verse 16" has no chapter number: dropping the word would silently turn it
+    // into the WHOLE of chapter 16 — a different passage — so it stays unreadable.
+    assert_eq!(
+        parse_one("Romans 8 verse 28").unwrap(),
+        r(45, "Romans", 8, Some((28, 28)))
+    );
+    for bad in ["John verse 16", "John verses 16 to 18", "Romans verse"] {
+        assert!(
+            parse_one(bad).is_err(),
+            "{bad:?} must not read as a chapter"
         );
     }
 }

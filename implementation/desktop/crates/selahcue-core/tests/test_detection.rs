@@ -229,6 +229,26 @@ fn multiple_references_in_one_utterance() {
 }
 
 #[test]
+fn a_verse_range_after_chapter_colon_verse_is_captured_as_the_whole_range() {
+    // "John 3:16 to 18": the detector only joins "<digits> to <digits>" when the first number is
+    // bare, so "3:16 to 18" used to fall back to the single verse John 3:16 and the rest of what
+    // the preacher read was lost. `parse_one` now reads the connective itself (it must, for the
+    // Service Plan link box), so the detector captures the whole range. A behaviour change the
+    // detector inherits from the parser, pinned here so it is deliberate rather than silent.
+    assert_eq!(detect("turn to John 3:16 to 18"), vec!["John 3:16-18"]);
+    assert_eq!(detect("John 3:16 through 18"), vec!["John 3:16-18"]);
+    assert_eq!(detect("Romans 8:28 thru 30"), vec!["Romans 8:28-30"]);
+}
+
+#[test]
+fn an_ordinary_to_next_to_a_reference_does_not_extend_it() {
+    // The connective only joins when a NUMBER follows it: nothing numeric after "to" means no range.
+    assert_eq!(detect("turn to John 3:16 to see"), vec!["John 3:16"]);
+    assert_eq!(detect("John 3:16 to everyone here"), vec!["John 3:16"]);
+    assert_eq!(detect("we went to John 3:16"), vec!["John 3:16"]);
+}
+
+#[test]
 fn digits_in_transcript_also_detect() {
     assert_eq!(detect("look at Genesis 1 verse 1"), vec!["Genesis 1:1"]);
 }
