@@ -1571,7 +1571,7 @@ EXPECTED_MIN_CHECKS = 2065  # measured post-rebase, clean run: 2065 checks, 0 FA
 # "encrypted" render, its description text, the "not_encrypted" silent-downgrade warning render,
 # and its own control that the warning never also reads ON). Measured via an actual clean run,
 # not hand-summed.
-EXPECTED_MIN_CHECKS = 1915  # measured: 1915 checks, 0 FAIL (17tnw2b0ntd)
+EXPECTED_MIN_CHECKS = 1926  # measured: 1926 checks, 0 FAIL (17tnw2b0ntd)
 
 
 def find_chrome():
@@ -2738,7 +2738,9 @@ STUB = r"""
     }
     if (cmd === "transcript_list") {
       if (window.__trListFailOnce) { window.__trListFailOnce = false; return Promise.reject("simulated host rejection"); }
-      return Promise.resolve(TR.list.map(function(t){ return {id:t.id, label:t.label, provider:t.provider, started_at_ms:t.started_at_ms, ended_at_ms:t.ended_at_ms, segment_count:t.segment_count}; }));
+      return Promise.resolve(TR.list.map(function(t){ return {id:t.id, label:t.label, provider:t.provider, started_at_ms:t.started_at_ms, ended_at_ms:t.ended_at_ms, segment_count:t.segment_count,
+        // mirrors the real TranscriptSummaryView (17tnw2b0ntd): drives the list row's "Notes generated" pill
+        notes_generated: !!(TR.detail[t.id] && TR.detail[t.id].notes_generated)}; }));
     }
     if (cmd === "transcript_get") {
       if (window.__trGetFailOnce) { window.__trGetFailOnce = false; return Promise.reject("simulated host rejection"); }
@@ -2840,7 +2842,10 @@ STUB = r"""
           scripture_verification_note:"Checked against the bundled Bible text: addresses only, not the words attributed to them.",
           draft:{title:"Marks", summary:null,
             sections:[{heading:"Main points", items:["see Hezekiah 99:1"], points:[]}],
-            scriptures:["John 3:16", "3Jn 4:12", "Hezekiah 99:1"],
+            // The fabricated reference is deliberately NOT in this list — it appears ONLY in a section
+            // body ("see Hezekiah 99:1" above), so it can only reach the "Also referenced in this
+            // draft" branch (FR-125), never the Scriptures line.
+            scriptures:["John 3:16", "3Jn 4:12"],
             caveats:[{kind:"scripture_unverified", reference:"Hezekiah 99:1"}],
             scripture_verdicts:[{reference:"John 3:16", verified:true}, {reference:"3Jn 4:12", verified:true},
               {reference:"Hezekiah 99:1", verified:false}]}});
@@ -2855,7 +2860,7 @@ STUB = r"""
             scriptures:[], caveats:[{kind:"section_empty", heading:"Prayer points"}]}});
       }
       if (tg === "quota_exceeded")
-        return Promise.resolve({ok:false, error:"quota_exceeded", message:"You have used all generations.", clamp:null});
+        return Promise.resolve({ok:false, error:"quota_exceeded", message:"monthly note-generation quota exceeded", clamp:null});
       if (tg === "transport") return Promise.reject("network down");
       if (tg === "regenerate_pending" || tg === "regenerate_pending_degraded") {
         // FR-129 (86akgqdx8): mirrors the PP `regenerate_pending`/`regenerate_pending_degraded`
@@ -6194,6 +6199,23 @@ DRIVER = r"""
       var trMetaC = _trCr(_trRgba(getComputedStyle(trMetaEl).color), _trRgba(getComputedStyle(el("tr-list").querySelector(".tr-card")).backgroundColor));
       ok(trMetaC >= 4.5, "TR: card meta text clears AA-NORMAL on its card ground (" + _trF(trMetaC) + ":1)");
 
+      // Shortcuts overlay + handler bound must agree with the number of digit-eligible menu items
+      // (derived from the DOM, not hard-coded): 17tnw2b0ntd removed the ⌘8 item.
+      var scDigitN = Array.prototype.filter.call(document.querySelectorAll("#app-menu .nav-item"), function (it) {
+        return it.dataset.surface && it.getAttribute("aria-disabled") !== "true" && !it.dataset.nodigit; }).length;
+      var scRangeRow = Array.prototype.filter.call(document.querySelectorAll("#shortcuts .sc-row"), function (r) {
+        return /Jump to a section/.test(r.textContent); })[0];
+      var scKbds = scRangeRow ? scRangeRow.querySelectorAll("kbd") : [];
+      ok(scDigitN === 7 && scKbds.length === 2 && scKbds[1].textContent === String(scDigitN),
+         "TR D2: the Shortcuts overlay's range (⌘1–" + (scKbds[1] && scKbds[1].textContent) + ") equals the number of digit-eligible menu items (" + scDigitN + ")");
+      var scSetRow = Array.prototype.filter.call(document.querySelectorAll("#gn-shortcuts-list .set-row"), function (r) {
+        return /Jump to a section/.test(r.textContent); });
+      ok(scSetRow.length === 0 || /7/.test(scSetRow[0].textContent) && !/8/.test(scSetRow[0].textContent),
+         "TR D2: Settings > General's shortcuts list (copied from the overlay) no longer says ⌘1–8");
+      var scBefore8 = el("surface-plan").classList.contains("active");
+      document.dispatchEvent(new KeyboardEvent("keydown", {key:"8", metaKey:true, bubbles:true}));
+      ok(el("surface-plan").classList.contains("active") === scBefore8,
+         "TR D2: ⌘8 is no longer a navigation chord");
       // ⌘7 (17tnw2b0ntd D2: Transcript & Notes opens Transcripts; the ⌘8 item was removed): away then back.
       document.querySelector('.nav-item[data-surface="console"]').click();
       ok(!el("surface-transcripts").classList.contains("active"), "TR (setup): navigated away from Transcripts");
@@ -6220,6 +6242,23 @@ DRIVER = r"""
       ok(trKeys.indexOf("⌘8") === -1 && trKeys.filter(function(k, i){ return trKeys.indexOf(k) !== i; }).length === 0,
          "TR D2: no ⌘8 badge remains and no two menu items share a shortcut (got " + trKeys.join(",") + ")");
       await waitFor(function(){ return el("tr-list").querySelectorAll(".tr-card").length >= 3; });
+
+      // 17tnw2b0ntd: list-row status pills (Figma 1128:2). "In progress" for the never-ended
+      // fixture; "Notes generated" only when the ROW says so (the real TranscriptSummaryView now
+      // carries notes_generated). Driven by flipping the fixture and re-activating the surface.
+      var trPillRow = function (id) { return el("tr-list").querySelector('.tr-card[data-id="' + id + '"]'); };
+      ok(!!trPillRow(2).querySelector(".tr-notes-badge") && /In progress/.test(trPillRow(2).textContent) && !trPillRow(2).querySelector(".tr-notes-on"),
+         "TR list: a transcript still being recorded shows an 'In progress' pill");
+      ok(!trPillRow(1).querySelector(".tr-notes-on"), "TR list: no 'Notes generated' pill while the row has no draft");
+      var trNg0 = window.__TR.detail[1].notes_generated;
+      window.__TR.detail[1].notes_generated = true;
+      window.trActivate();
+      await waitFor(function(){ return !!trPillRow(1) && !!trPillRow(1).querySelector(".tr-notes-on"); });
+      ok(!!trPillRow(1).querySelector(".tr-notes-on") && /Notes generated/.test(trPillRow(1).textContent),
+         "TR list: a row flagged notes_generated shows the green 'Notes generated' pill");
+      window.__TR.detail[1].notes_generated = trNg0;
+      window.trActivate();
+      await waitFor(function(){ return !!trPillRow(1) && !trPillRow(1).querySelector(".tr-notes-on"); });
 
       // Selecting a transcript shows its FULL stored text (86akcffvt AC2) — every segment, not a
       // tail or a sample — plus the honest notes-generated status.
@@ -7005,9 +7044,15 @@ DRIVER = r"""
       var trMarkRes = await trGenOnce("scripture_marks");
       ok(trMarkRes.querySelectorAll(".pp-gen-scr-verified").length >= 2,
          "TR 86akby820: verified references (including the abbreviated '3Jn 4:12') carry an explicit verified mark");
-      ok(trMarkRes.querySelectorAll(".pp-gen-scr-unverified").length >= 1 && /unverified/.test(trMarkRes.textContent) &&
-         /Hezekiah 99:1/.test(trMarkRes.textContent),
-         "TR 86akby820: a fabricated reference is marked unverified");
+      var trAlso = Array.prototype.filter.call(trMarkRes.querySelectorAll(".pp-gen-scriptures"), function (p) {
+        return /Also referenced in this draft/.test(p.textContent); })[0];
+      ok(!!trAlso && /Hezekiah 99:1/.test(trAlso.textContent) && !!trAlso.querySelector(".pp-gen-scr-unverified") &&
+         getComputedStyle(trAlso).display !== "none",
+         "TR 86akby820 (FR-125): a fabricated reference that appears ONLY in the note text is flagged under 'Also referenced in this draft' (computed-visible)");
+      var trScrLine = Array.prototype.filter.call(trMarkRes.querySelectorAll(".pp-gen-scriptures"), function (p) {
+        return /^Scriptures:/.test(p.textContent); })[0];
+      ok(!!trScrLine && !/Hezekiah/.test(trScrLine.textContent),
+         "TR 86akby820 (premise): the fixture's bad reference is NOT in the Scriptures line, so the check above can only be satisfied by the 'Also referenced' branch");
       ok(/addresses only/.test(trMarkRes.textContent),
          "TR 86akby820: the verification-scope note renders on a FRESH generate (scripture_verification_note is read from the response)");
       // FR-135: degraded draft
@@ -7019,8 +7064,9 @@ DRIVER = r"""
          "TR 86akc0tua: a degraded draft renders no empty-requested lines and no explainer");
       // quota refusal label (neutral — the allowance period is not asserted anywhere in the UI)
       var trQuotaRes = await trGenOnce("quota_exceeded");
-      ok(trQuotaRes.getAttribute("role") === "alert" && /Generation limit reached/.test(trQuotaRes.textContent),
-         "TR: quota_exceeded surfaces 'Generation limit reached' (role=alert)");
+      ok(trQuotaRes.getAttribute("role") === "alert" && /Generation limit reached/.test(trQuotaRes.textContent) &&
+         !/month|week|daily|annual/i.test(trQuotaRes.textContent),
+         "TR: quota_exceeded surfaces 'Generation limit reached' (role=alert) and, even when the backend sends its REAL monthly text (selahcue-core providers.rs), names no allowance period (D7)");
       // generic failure alert (transport) and nested outline sub-points (FR-122), both restored
       var trFailRes = await trGenOnce("transport");
       ok(trFailRes.getAttribute("role") === "alert" && /Couldn.t generate notes/.test(trFailRes.textContent),
@@ -7331,6 +7377,14 @@ DRIVER = r"""
          "TR notes: Edit swaps the view for the edit form (Edit itself is gone while editing)");
       var trTitleInput = document.getElementById("tr-edit-title");
       ok(!!trTitleInput && trTitleInput.value === "Fixture Sermon", "TR notes: the edit form is pre-filled with the real saved title");
+      // FR-123/FR-128 (restored from the deleted Settings suite, PP SN-3): the AI label and the
+      // fabrication disclosure stay computed-visible WHILE EDITING — drawn from the draft state,
+      // not from anything the edit form itself could omit.
+      var trEditLabel = el("tr-gen-result").querySelector(".pp-gen-ai-label"), trEditDisc = el("tr-gen-result").querySelector(".pp-gen-disclosure");
+      ok(!!trEditLabel && getComputedStyle(trEditLabel).display !== "none" && /AI-generated draft/.test(trEditLabel.textContent),
+         "TR SN-3 (FR-123): the AI-generated label is STILL visibly rendered while the edit form is open");
+      ok(!!trEditDisc && getComputedStyle(trEditDisc).display !== "none" && /invent/i.test(trEditDisc.textContent),
+         "TR SN-3 (FR-128): the fabrication disclosure is STILL visibly rendered while the edit form is open");
       trTitleInput.value = "Edited Fixture Sermon";
       var trSaveCallsBefore = window.__calls.filter(function (c) { return c.cmd === "update_sermon_note_draft"; }).length;
       document.getElementById("tr-gen-save").click();
@@ -7342,6 +7396,13 @@ DRIVER = r"""
       ok(!document.querySelector(".pp-gen-edit-form") && /Edited Fixture Sermon/.test(el("tr-gen-result").textContent),
          "TR notes: a successful save re-renders the view with the edited title, form closed");
       ok(!!document.getElementById("tr-gen-edit"), "TR notes: Edit is reachable again after a save");
+      // PP SN-5 (restored): the edit request cannot touch the label/disclosure/provider, and the
+      // label + disclosure are still rendered AFTER the save (re-read from the backend response).
+      ok(!("ai_generated" in trSaveCall.args) && !("disclosure" in trSaveCall.args) && !("provider" in trSaveCall.args) && !("aiGenerated" in trSaveCall.args),
+         "TR SN-5: the edit request itself carries no ai_generated/disclosure/provider field — the label cannot be altered from the client");
+      var trPostLabel = el("tr-gen-result").querySelector(".pp-gen-ai-label"), trPostDisc = el("tr-gen-result").querySelector(".pp-gen-disclosure");
+      ok(!!trPostLabel && getComputedStyle(trPostLabel).display !== "none" && !!trPostDisc && getComputedStyle(trPostDisc).display !== "none",
+         "TR SN-5 (FR-123/128): the AI label and the fabrication disclosure are still visibly rendered AFTER a save");
       ok(el("tr-detail-notes").classList.contains("tr-notes-on"),
          "TR notes: the notes badge still reads generated after an edit — editing a draft is not the same as un-generating it");
 

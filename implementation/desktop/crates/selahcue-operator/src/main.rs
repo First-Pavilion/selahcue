@@ -2470,6 +2470,10 @@ struct TranscriptSummaryView {
     started_at_ms: i64,
     ended_at_ms: Option<i64>,
     segment_count: i64,
+    /// Whether a sermon-note draft is saved for this transcript (17tnw2b0ntd: drives the list
+    /// row's "Notes generated" pill, Figma 1128:2). Filled by `transcript_list` from ONE bounded
+    /// query over all rows (`notes_generated_ids`), never one lookup per row.
+    notes_generated: bool,
 }
 
 impl From<selahcue_data::transcript_repo::TranscriptSummary> for TranscriptSummaryView {
@@ -2481,6 +2485,7 @@ impl From<selahcue_data::transcript_repo::TranscriptSummary> for TranscriptSumma
             started_at_ms: t.started_at_ms,
             ended_at_ms: t.ended_at_ms,
             segment_count: t.segment_count,
+            notes_generated: false,
         }
     }
 }
@@ -2668,8 +2673,39 @@ fn with_transcript_db<T>(
 /// List every persisted transcript, most recent first (86akcffvt AC1).
 #[tauri::command]
 async fn transcript_list(state: State<'_, AppState>) -> Result<Vec<TranscriptSummaryView>, String> {
-    with_transcript_db(&state, selahcue_data::transcript_repo::list)
-        .map(|rows| rows.into_iter().map(TranscriptSummaryView::from).collect())
+    with_transcript_db(&state, |db| {
+        let rows = selahcue_data::transcript_repo::list(db)?;
+        Ok(summaries_with_notes_flag(db, rows))
+    })
+}
+
+/// The ids of every transcript that has a saved sermon-note draft — ONE query for the whole list
+/// (no N+1). Fault-isolated exactly like [`notes_generated_for`]: a failure (e.g. a store older
+/// than the migration that added `sermon_note`) degrades to "none", never breaks the list.
+fn notes_generated_ids(db: &selahcue_data::Database) -> std::collections::HashSet<i64> {
+    selahcue_data::sermon_note_repo::transcript_ids_with_notes(db)
+        .map(|ids| ids.into_iter().collect())
+        .unwrap_or_else(|e| {
+            eprintln!(
+                "selahcue-operator: could not list transcripts with saved notes, treating as none: {e}"
+            );
+            std::collections::HashSet::new()
+        })
+}
+
+fn summaries_with_notes_flag(
+    db: &selahcue_data::Database,
+    rows: Vec<selahcue_data::transcript_repo::TranscriptSummary>,
+) -> Vec<TranscriptSummaryView> {
+    let with_notes = notes_generated_ids(db);
+    rows.into_iter()
+        .map(|t| {
+            let has = with_notes.contains(&t.id);
+            let mut v = TranscriptSummaryView::from(t);
+            v.notes_generated = has;
+            v
+        })
+        .collect()
 }
 
 /// Whether transcript `id` has a persisted sermon-note draft — fault-isolated (86akcffy0, Sana
@@ -6942,23 +6978,6 @@ fn note_generation_limits() -> serde_json::Value {
     serde_json::json!({ "max_transcript_chars": selahcue_cloud::transcript_bounds::MAX_TRANSCRIPT_CHARS })
 }
 
-/// Generate AI sermon notes from the FULL stored text of transcript `id` (86akcffy0). See the
-/// section comment above for how this differs from the former live-tail `generate_sermon_notes` (removed, 17tnw2b0ntd); everything else —
-/// the consent gate, the provider fallback ladder, the response shape — is that same function's
-/// machinery, reused unchanged via [`run_note_generation`].
-///
-/// Refuses (honestly, `error: "transcript_not_ended"`, no network call) when `id`'s transcript
-/// is still recording (`ended_at_ms` is `None`) — Sana's security review (86akcffy0): this
-/// path's whole design leans on a stored transcript being STATIC between the preview the
-/// operator reviewed and the request this command actually reads/sends. That is true once
-/// [`selahcue_data::transcript_repo::end`] has been called (nothing in this codebase appends a
-/// segment to an ended transcript again — a new session starts a NEW row) and false before it:
-/// `transcript_list` orders by `started_at DESC` with no `ended_at` filter, so an in-progress
-/// service can be the very first, most-clickable card, its writer still appending segments the
-/// preview never showed and the "complete transcript... every recorded segment" disclosure copy
-/// would then be lying about. Refusing outright — rather than re-checking the segment set for
-/// growth — is both simpler and strictly stronger: it removes the race window entirely instead
-/// of narrowing it.
 /// 86akby820 (FR-125/FR-128) + 86akgqdwc: check every scripture reference a fresh draft carries
 /// (the extracted list AND references embedded in section bodies) against the bundled Bible text,
 /// offline, recording `scripture_verdicts` plus the `ScriptureUnverified` /
@@ -6987,6 +7006,24 @@ fn apply_scripture_verification(draft: &mut selahcue_core::providers::NoteDraft)
     draft.scripture_verdicts = verdicts;
 }
 
+/// Generate AI sermon notes from the FULL stored text of transcript `id` (86akcffy0). See the
+/// section comment above for how this differs from the former live-tail `generate_sermon_notes` (removed, 17tnw2b0ntd);
+/// everything else —
+/// the consent gate, the provider fallback ladder, the response shape — is that same function's
+/// machinery, reused unchanged via [`run_note_generation`].
+///
+/// Refuses (honestly, `error: "transcript_not_ended"`, no network call) when `id`'s transcript
+/// is still recording (`ended_at_ms` is `None`) — Sana's security review (86akcffy0): this
+/// path's whole design leans on a stored transcript being STATIC between the preview the
+/// operator reviewed and the request this command actually reads/sends. That is true once
+/// [`selahcue_data::transcript_repo::end`] has been called (nothing in this codebase appends a
+/// segment to an ended transcript again — a new session starts a NEW row) and false before it:
+/// `transcript_list` orders by `started_at DESC` with no `ended_at` filter, so an in-progress
+/// service can be the very first, most-clickable card, its writer still appending segments the
+/// preview never showed and the "complete transcript... every recorded segment" disclosure copy
+/// would then be lying about. Refusing outright — rather than re-checking the segment set for
+/// growth — is both simpler and strictly stronger: it removes the race window entirely instead
+/// of narrowing it.
 #[tauri::command]
 async fn transcript_generate_notes(
     id: i64,
@@ -7196,6 +7233,54 @@ mod transcript_generate_notes_tests {
             "the first segment must survive — a 60-tail would have dropped it"
         );
         assert!(joined.contains("segment-69"));
+    }
+
+    /// 17tnw2b0ntd: the list rows carry `notes_generated` (drives the "Notes generated" pill) from
+    /// one query, true exactly for the transcript that has a saved draft.
+    #[test]
+    fn list_rows_flag_exactly_the_transcripts_with_a_saved_draft() {
+        let (db, with_draft) = fixture_db_with_segments(&["Good morning, church."]);
+        let without = transcript_repo::create(
+            &db,
+            &transcript_repo::NewTranscript {
+                label: "Other".to_string(),
+                provider: "manual".to_string(),
+                plan_id: None,
+                started_at_ms: 2_000,
+            },
+        )
+        .expect("create second transcript");
+        sermon_note_repo::create(
+            &db,
+            &sermon_note_repo::NewSermonNote {
+                transcript_id: with_draft,
+                title: "T".to_string(),
+                summary: None,
+                sections_json: "[]".to_string(),
+                scriptures_json: "[]".to_string(),
+                ai_generated: false,
+                disclosure: None,
+                provider: "manual".to_string(),
+                model: None,
+                created_at_ms: 1,
+            },
+        )
+        .expect("save a draft");
+        let rows = summaries_with_notes_flag(&db, transcript_repo::list(&db).expect("list"));
+        let flag = |id: i64| {
+            rows.iter()
+                .find(|r| r.id == id)
+                .expect("row")
+                .notes_generated
+        };
+        assert!(
+            flag(with_draft),
+            "the transcript with a saved draft is flagged"
+        );
+        assert!(
+            !flag(without),
+            "positive control: a transcript without one is not"
+        );
     }
 
     /// 86akby820 on the fresh-generate path (17tnw2b0ntd): a real reference resolves, a fabricated
@@ -7967,6 +8052,56 @@ mod regenerate_with_retention_tests {
         assert!(
             slot.pending.is_none(),
             "the refused stage must not have left a pending row"
+        );
+    }
+
+    /// AC5 / privacy gate (17tnw2b0ntd): a DIRECT call on a transcript that is still being recorded
+    /// is refused with `transcript_not_ended` before ANY provider work — with consent ON and every
+    /// other precondition satisfied, so the only thing that can produce this error is the early
+    /// return itself (a provider call in this test build would answer `not_configured`, and the
+    /// consent gate would answer `consent_required`). Nothing is persisted either.
+    #[tokio::test]
+    async fn generating_on_an_unfinished_transcript_is_refused_before_any_provider_call() {
+        let (app, _ended_id) = state_with_transcript(true);
+        let state = app.state::<AppState>();
+        let unfinished = {
+            let guard = state
+                .transcript_db
+                .as_ref()
+                .expect("test state seeds transcript_db");
+            let db = guard.lock().expect("lock");
+            let id = transcript_repo::create(
+                &db,
+                &transcript_repo::NewTranscript {
+                    label: "Still recording".to_string(),
+                    provider: "manual".to_string(),
+                    plan_id: None,
+                    started_at_ms: 5_000,
+                },
+            )
+            .expect("create unfinished transcript");
+            transcript_repo::append_segment(&db, id, 0, 1_000, "Still talking about grace.")
+                .expect("append segment");
+            id
+        };
+
+        let result = transcript_generate_notes(unfinished, state.clone())
+            .await
+            .expect("command returns Ok(json) even on refusal");
+        assert_eq!(result["ok"], serde_json::json!(false));
+        assert_eq!(
+            result["error"],
+            serde_json::json!("transcript_not_ended"),
+            "an unfinished transcript must be refused by the early return, not by a later gate"
+        );
+        assert!(
+            state
+                .backend
+                .load_sermon_note_draft(unfinished)
+                .await
+                .expect("load_sermon_note_draft against a real store succeeds")
+                .is_none(),
+            "a refused call persists nothing"
         );
     }
 

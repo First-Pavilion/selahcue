@@ -8022,7 +8022,6 @@
    rather than inventing a new number, so wide windows get neutral margin instead of edge-to-edge
    text. Applied here AND to `.tr-detail-head`/`.tr-log`/`.tr-panel`/`.tr-gen` below; each keeps
    its own existing left/right padding inside this shared max-width. */
-.tr-view,
 .tr-detail-head,
 .tr-log,
 .tr-panel,
@@ -8036,7 +8035,11 @@
 .tr-view {
   height: 100%;
   overflow-y: auto;
-  padding: 22px 28px 28px;
+  box-sizing: border-box;
+  /* The list's scroller stays FULL WIDTH (so a wheel/scrollbar works from the side margins on a
+     wide window); the 1180px column is made with side padding instead of a max-width on the
+     scroller itself. */
+  padding: 22px max(28px, calc((100% - 1180px) / 2)) 28px;
 }
 
 .tr-head { margin-bottom: 16px; }
@@ -8159,6 +8162,10 @@
   flex-direction: column;
   min-height: 0;
   overflow-y: auto;
+  /* WCAG 2.4.11 (Focus Not Obscured): keyboard focus must never be scrolled in BEHIND the sticky
+     header below (~76px tall + its border). Without this, Shift+Tab through a long edit form
+     parked the focused field at y=62-64, fully under the header. */
+  scroll-padding-top: 96px;
 }
 .tr-detail[hidden] { display: none; } /* must follow the flex rule above — [hidden] wins by source order (WKWebView-safe) */
 

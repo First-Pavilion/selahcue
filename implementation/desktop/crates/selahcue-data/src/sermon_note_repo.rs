@@ -380,6 +380,21 @@ pub fn find_by_transcript(db: &Database, transcript_id: i64) -> Result<Option<Se
     }
 }
 
+/// Ids of every transcript that has a saved draft — ONE query for a whole list (17tnw2b0ntd: the
+/// Transcripts list's "Notes generated" pill), instead of a `find_by_transcript` per row.
+pub fn transcript_ids_with_notes(db: &Database) -> Result<Vec<i64>> {
+    let conn = db.conn();
+    let mut stmt = conn.prepare(
+        "SELECT DISTINCT transcript_id FROM sermon_note WHERE transcript_id IS NOT NULL",
+    )?;
+    let rows = stmt.query_map([], |r| r.get::<_, i64>(0))?;
+    let mut ids = Vec::new();
+    for id in rows {
+        ids.push(id?);
+    }
+    Ok(ids)
+}
+
 /// `pending_title` is the presence sentinel for a staged-but-unconfirmed regeneration (see
 /// the v21 -> v22 migration comment for why): a real draft always has a non-empty
 /// `pending_title` when ANY `pending_*` column is set, since [`stage_regeneration`] writes

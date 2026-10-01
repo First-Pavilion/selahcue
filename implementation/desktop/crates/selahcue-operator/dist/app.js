@@ -4272,10 +4272,9 @@
         // ⌘N badges and the Shortcuts reference REAL. Works whether the menu is open or not.
         // (17tnw2b0ntd, D2: the separate ⌘8 "Transcripts" item was removed — ⌘7 "Transcript &
         // Notes" now carries both jobs, back down to 7 digit-eligible entries. The upper bound
-        // below is left at "8" rather than tightened to "7": a stray ⌘8 now simply matches no
-        // `targets` index and no-ops, which is the same "removing an item shifts nothing, chords
-        // are derived from live DOM order" guarantee the menu already relies on elsewhere.)
-        if (mod && !e.shiftKey && !e.altKey && e.key >= "1" && e.key <= "8") {
+        // below is "7" to match, and the Shortcuts overlay says ⌘1–7; chords stay derived from live
+        // DOM order, so the bound only needs to change if a menu item is ever added back.)
+        if (mod && !e.shiftKey && !e.altKey && e.key >= "1" && e.key <= "7") {
           const targets = navItems.filter(
             (it) =>
               it.dataset.surface &&

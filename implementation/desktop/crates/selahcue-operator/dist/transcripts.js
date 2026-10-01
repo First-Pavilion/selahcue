@@ -1050,7 +1050,13 @@
       : code === "transcript_too_short" ? "Transcript too short"
       : "Couldn’t generate notes";
     r.appendChild(el("span", "pp-gen-err-t", label + " — "));
-    r.appendChild(el("span", null, message || ""));
+    // The backend's own quota text names a period ("monthly …") while the allowance is weekly
+    // (D7) — the UI must not state either, so a quota refusal shows a fixed, period-neutral
+    // sentence instead of echoing the backend string.
+    r.appendChild(el("span", null,
+      code === "quota_exceeded"
+        ? "You have no generations left right now. Try again later."
+        : (message || "")));
   }
 
   // ---------- Saved sermon-note draft: view + edit (86akgqdxr) ------------------------------
