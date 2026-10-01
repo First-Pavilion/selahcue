@@ -206,6 +206,26 @@ describe("the document's own banner text is rendered while it is a draft", () =>
   })
 })
 
+/** Visible text of an HTML fragment, the way copy/paste or a text extractor would see it. */
+function textOf(html: string): string {
+  return html
+    .replace(/<!--[\s\S]*?-->/g, '')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&amp;/g, '&')
+    .replace(/&#39;/g, "'")
+    .replace(/&quot;/g, '"')
+}
+
+describe('clause numbers are separated from their text by a real space', () => {
+  test('"1.1 This policy..." not "1.1This policy..." in the text a copy or extractor reads', async () => {
+    const html = await render(privacyPolicy)
+    const clauses = [...html.matchAll(/<p class="lb-p lb-clause"[^>]*>([\s\S]*?)<\/p>/g)].map((m) => textOf(m[1] ?? ''))
+    assert.ok(clauses.length >= 32, `the premise: many numbered clauses (${clauses.length})`)
+    for (const c of clauses) assert.match(c, /^\d+\.\d+ \S/, `no space after the clause number in: ${c.slice(0, 40)}`)
+    assert.ok(clauses.some((c) => c.startsWith('1.1 This policy explains')))
+  })
+})
+
 describe('the skip link is hidden by clipping, not by parking it off-screen', () => {
   const source = readFileSync(fileURLToPath(new URL('../src/components/legal/LegalPage.vue', import.meta.url)), 'utf8')
   const rule = /\.skip-link\s*\{([^}]*)\}/.exec(source)?.[1] ?? ''
