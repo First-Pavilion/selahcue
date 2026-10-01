@@ -84,7 +84,7 @@ const releases = [
 .container {
   max-width: 900px;
   margin: 0 auto;
-  padding: 0 24px;
+  padding: 0 var(--page-gutter);
 }
 
 .hero-section {
@@ -113,7 +113,7 @@ const releases = [
 
 .timeline-item {
   display: grid;
-  grid-template-columns: 200px 1fr;
+  grid-template-columns: 200px minmax(0, 1fr);
   gap: 36px;
   align-items: start;
 }
@@ -175,8 +175,13 @@ const releases = [
   margin: 0;
 }
 
-@media (max-width: 768px) {
-  .timeline-item { grid-template-columns: 1fr; gap: 16px; }
-  .timeline-meta { position: static; flex-direction: row; align-items: center; }
+@media (max-width: 767px) {
+  .changelog-page { padding-bottom: var(--section-pad-sm); }
+  .hero-section { padding: 48px 0 36px; }
+  .hero-title { font-size: 36px; line-height: 40px; }
+  .timeline { gap: 36px; }
+  .timeline-item { grid-template-columns: minmax(0, 1fr); gap: 16px; }
+  .timeline-meta { position: static; flex-direction: row; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+  .timeline-content { padding: 20px; border-radius: 14px; }
 }
 </style>

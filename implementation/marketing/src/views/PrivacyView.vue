@@ -44,7 +44,7 @@ import UiBadge from '@/components/UiBadge.vue'
 
 <style scoped>
 .legal-page { background: var(--sc-base); padding: 60px 0 80px; }
-.container { max-width: 800px; margin: 0 auto; padding: 0 24px; }
+.container { max-width: 800px; margin: 0 auto; padding: 0 var(--page-gutter); }
 .legal-header { text-align: center; margin-bottom: 48px; border-bottom: 1px solid var(--sc-border); padding-bottom: 32px; }
 .legal-title { font-size: 36px; font-weight: 800; color: var(--sc-text); margin: 16px 0 8px 0; }
 .legal-date { font-size: 14px; color: var(--sc-text-muted); }
@@ -53,4 +53,12 @@ import UiBadge from '@/components/UiBadge.vue'
 .legal-content h3 { font-size: 17px; font-weight: 600; color: var(--sc-text); margin: 20px 0 8px 0; }
 .legal-content p { font-size: 15px; color: var(--sc-text-secondary); line-height: 1.7; margin-bottom: 16px; }
 .legal-content code { background: var(--sc-elevated); padding: 2px 6px; border-radius: 4px; color: var(--sc-primary); }
+
+@media (max-width: 767px) {
+  .legal-page { padding: 36px 0 var(--section-pad-sm); }
+  .legal-header { margin-bottom: 32px; padding-bottom: 24px; }
+  .legal-title { font-size: 32px; line-height: 38px; }
+  .legal-content h2 { font-size: 20px; margin-top: 28px; }
+  .legal-content p { overflow-wrap: anywhere; }
+}
 </style>

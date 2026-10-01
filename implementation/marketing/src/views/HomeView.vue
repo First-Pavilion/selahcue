@@ -368,16 +368,19 @@ const faqItems = [
 </template>
 
 <style scoped>
+/* No `overflow-x: hidden` here any more. It used to paper over the oversized glow below
+   (and anything else that ever overflowed), which also hid real clipping bugs from the
+   responsive sweep. The glow is contained by the hero itself, and every grid track is
+   `minmax(0, 1fr)` so content can never widen a column. */
 .home {
   background: #090a0f;
   color: #ffffff;
-  overflow-x: hidden;
 }
 
 .container {
   max-width: 1140px;
   margin: 0 auto;
-  padding: 0 24px;
+  padding: 0 var(--page-gutter);
 }
 
 .section-header {
@@ -411,6 +414,8 @@ const faqItems = [
   position: relative;
   padding: 90px 0 80px 0;
   text-align: center;
+  /* Clips the 900px decorative glow to the page width. */
+  overflow: hidden;
 }
 
 .hero-bg-glow {
@@ -497,34 +502,34 @@ const faqItems = [
 
 /* Section 2: Features */
 .features-section {
-  padding: 100px 0;
+  padding: var(--section-pad) 0;
 }
 
 .features-grid {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 24px;
 }
 
 /* Section 3: Reliability */
 .reliability-section {
-  padding: 100px 0;
+  padding: var(--section-pad) 0;
 }
 
 .reliability-grid {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 24px;
 }
 
 /* Section 4: Outputs Showcase */
 .outputs-section {
-  padding: 100px 0;
+  padding: var(--section-pad) 0;
 }
 
 .outputs-layout {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 60px;
   align-items: center;
 }
@@ -583,12 +588,12 @@ const faqItems = [
 
 /* Section 5: Steps */
 .steps-section {
-  padding: 100px 0;
+  padding: var(--section-pad) 0;
 }
 
 .steps-grid {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 24px;
 }
 
@@ -636,30 +641,30 @@ const faqItems = [
 
 /* Section 6: Pricing */
 .pricing-section {
-  padding: 100px 0;
+  padding: var(--section-pad) 0;
 }
 
 .pricing-grid {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 24px;
   align-items: stretch;
 }
 
 /* Section 7: Testimonials */
 .testimonials-section {
-  padding: 100px 0;
+  padding: var(--section-pad) 0;
 }
 
 .testimonials-grid {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 24px;
 }
 
 /* Section 8: FAQ */
 .faq-section {
-  padding: 100px 0;
+  padding: var(--section-pad) 0;
 }
 
 .faq-wrapper {
@@ -669,7 +674,7 @@ const faqItems = [
 
 /* Section 9: Final CTA Band */
 .final-cta-section {
-  padding: 40px 0 100px 0;
+  padding: 40px 0 var(--section-pad) 0;
 }
 
 .final-cta-card {
@@ -707,13 +712,54 @@ const faqItems = [
   font-weight: 700;
 }
 
-@media (max-width: 1024px) {
-  .hero-title { font-size: 44px; }
-  .features-grid, .reliability-grid, .steps-grid, .pricing-grid, .testimonials-grid {
-    grid-template-columns: 1fr;
+/* Tablet (768-1199): grids go 2-up (a third card wraps), pricing goes 1-up with the Pro
+   card first, the outputs image drops below its text, and the H1 steps down (design 8a/8d). */
+@media (max-width: 1199px) {
+  .hero-title { font-size: 48px; line-height: 52px; }
+  .section-header { margin-bottom: 44px; }
+  .section-title, .outputs-title { font-size: 34px; }
+  .features-grid, .reliability-grid, .steps-grid, .testimonials-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
+  .pricing-grid {
+    grid-template-columns: minmax(0, 1fr);
+    max-width: 520px;
+    margin-inline: auto;
+  }
+  .pricing-grid > .popular { order: -1; }
   .outputs-layout {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 40px;
   }
+  .hero-section { padding: 72px 0 64px; }
+  .final-cta-card { padding: 56px 40px; }
+}
+
+/* Mobile (<768): everything 1-up, 20px gutters, H1 36/40, CTAs stack full-width. */
+@media (max-width: 767px) {
+  .hero-section { padding: 48px 0 48px; }
+  .hero-eyebrow { margin-bottom: 20px; }
+  .hero-title { font-size: 36px; line-height: 40px; margin-bottom: 20px; }
+  .hero-subtitle { font-size: 16px; margin-bottom: 28px; }
+  .hero-actions { flex-direction: column; align-self: stretch; margin-bottom: 20px; }
+  .hero-actions > * { width: 100%; }
+  .hero-trust { flex-direction: column; gap: 4px; margin-bottom: 40px; font-size: 13px; }
+  .hero-trust .dot { display: none; }
+  .section-header { margin-bottom: 32px; }
+  .section-title, .outputs-title { font-size: 28px; }
+  .section-subtitle { font-size: 15px; }
+  .features-grid, .reliability-grid, .steps-grid, .testimonials-grid {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 16px;
+  }
+  .pricing-grid { gap: 20px; }
+  .outputs-layout { gap: 32px; }
+  .step-card { padding: 24px 20px; }
+  .final-cta-section { padding-top: 24px; }
+  .final-cta-card { padding: 40px 24px; border-radius: 20px; }
+  .cta-title { font-size: 28px; }
+  .cta-subtitle { font-size: 16px; margin-bottom: 28px; }
+  .cta-btn-group { flex-direction: column; }
+  .cta-btn-group > * { width: 100%; }
 }
 </style>

@@ -63,14 +63,14 @@ const roles = [
 
 <style scoped>
 .careers-page { background: var(--sc-base); padding-bottom: 80px; }
-.container { max-width: 1000px; margin: 0 auto; padding: 0 24px; }
+.container { max-width: 1000px; margin: 0 auto; padding: 0 var(--page-gutter); }
 .hero-section { padding: 80px 0 50px; text-align: center; }
 .hero-title { font-size: 40px; font-weight: 800; color: var(--sc-text); margin: 16px 0; }
 .hero-sub { font-size: 16px; color: var(--sc-text-secondary); max-width: 640px; margin: 0 auto; }
 
 .section-title { font-size: 26px; font-weight: 700; color: var(--sc-text); margin-bottom: 32px; }
 
-.culture-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 24px; margin-bottom: 60px; }
+.culture-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 24px; margin-bottom: 60px; }
 .culture-card { background: var(--sc-surface); border: 1px solid var(--sc-border); border-radius: 16px; padding: 28px; }
 .icon { font-size: 32px; margin-bottom: 12px; }
 .culture-card h3 { font-size: 18px; color: var(--sc-text); margin: 0 0 8px 0; }
@@ -81,8 +81,16 @@ const roles = [
 .role-title { font-size: 18px; font-weight: 600; color: var(--sc-text); margin: 0 0 4px 0; }
 .role-meta { font-size: 13px; color: var(--sc-text-muted); margin: 0; }
 
-@media (max-width: 768px) {
-  .culture-grid { grid-template-columns: 1fr; }
-  .role-row { flex-direction: column; align-items: flex-start; gap: 12px; }
+@media (max-width: 1199px) {
+  .culture-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+@media (max-width: 767px) {
+  .careers-page { padding-bottom: var(--section-pad-sm); }
+  .hero-section { padding: 48px 0 36px; }
+  .hero-title { font-size: 36px; line-height: 40px; }
+  .culture-grid { grid-template-columns: minmax(0, 1fr); margin-bottom: 40px; }
+  .culture-card { padding: 24px; }
+  .role-row { flex-direction: column; align-items: flex-start; gap: 12px; padding: 20px; }
 }
 </style>

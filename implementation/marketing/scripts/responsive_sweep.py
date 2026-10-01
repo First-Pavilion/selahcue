@@ -149,6 +149,30 @@ PAGE_JS = r"""
       if (out.offenders.length >= 12) break;
     }
   }
+  // Content that is past the viewport edge but HIDDEN rather than scrolling: an
+  // `overflow-x: hidden` wrapper makes scrollWidth look fine while text is cut off. Only
+  // real scroll containers (auto/scroll) are allowed to hold content wider than the screen.
+  const scrollsX = (el) => {
+    for (let p = el.parentElement; p; p = p.parentElement) {
+      const o = getComputedStyle(p).overflowX;
+      if (o === 'auto' || o === 'scroll') return true;
+    }
+    return false;
+  };
+  out.clipped = [];
+  for (const el of document.querySelectorAll('body *')) {
+    if (out.clipped.length >= 8) break;
+    const cs = getComputedStyle(el);
+    if (cs.display === 'none' || cs.visibility === 'hidden' || cs.pointerEvents === 'none') continue;
+    if (cs.position === 'fixed') continue;
+    if (el.closest('[aria-hidden=true]')) continue;
+    const r = el.getBoundingClientRect();
+    if (r.width === 0 || r.height === 0) continue;
+    const hasText = [...el.childNodes].some((n) => n.nodeType === 3 && n.textContent.trim());
+    const isLeaf = hasText || /^(IMG|SVG|BUTTON|INPUT|SELECT|TEXTAREA|A)$/.test(el.tagName);
+    if (!isLeaf) continue;
+    if ((r.right > vw + 1 || r.left < -1) && !scrollsX(el)) out.clipped.push(describe(el));
+  }
   const main = document.querySelector('main');
   out.mainTextLength = main ? main.innerText.trim().length : 0;
   out.title = (document.querySelector('h1') || {}).innerText || '';
@@ -476,7 +500,7 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--engine", choices=["chromium", "webkit"], default="chromium")
     ap.add_argument("--shots", help="directory to write page screenshots into (tiled, 1400px per image)")
-    ap.add_argument("--routes", help="comma-separated subset of paths (prefix match)")
+    ap.add_argument("--routes", help="comma-separated subset of paths (exact, or a whole-segment prefix)")
     ap.add_argument("--widths", help="comma-separated subset of widths")
     args = ap.parse_args()
 
@@ -492,7 +516,11 @@ def main() -> int:
     routes = ROUTES
     if args.routes:
         wanted = args.routes.split(",")
-        routes = [r for r in ROUTES if any(r[0].startswith(w) for w in wanted)]
+        # exact path, or a whole-segment prefix ("/admin" matches /admin/users, not /administer)
+        routes = [
+            r for r in ROUTES
+            if any(r[0].split("?")[0] == w or (w != "/" and r[0].startswith(w.rstrip("/") + "/")) for w in wanted)
+        ]
     widths = [int(w) for w in args.widths.split(",")] if args.widths else WIDTHS
     shots = Path(args.shots) if args.shots else None
     if shots:
@@ -545,6 +573,10 @@ def main() -> int:
                             f"{tag}: horizontal scroll, scrollWidth {info['scrollWidth']} > {info['vw']}; "
                             f"offenders: {'; '.join(info['offenders']) or '(none found outside scroll containers)'}"
                         )
+
+                    checks += 1
+                    if info["clipped"]:
+                        failures.append(f"{tag}: content past the viewport edge but clipped/hidden: {'; '.join(info['clipped'])}")
 
                     checks += 1
                     if info["mainTextLength"] < 20:

@@ -94,7 +94,7 @@ const popularArticles = [
 .container {
   max-width: 1140px;
   margin: 0 auto;
-  padding: 0 24px;
+  padding: 0 var(--page-gutter);
 }
 
 .support-hero {
@@ -157,7 +157,7 @@ const popularArticles = [
 
 .categories-grid {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 24px;
 }
 
@@ -230,6 +230,9 @@ const popularArticles = [
 }
 
 .cta-box {
+  /* Also `.container`; this element's own padding replaces the container gutter, so the
+     gutter is taken as margin (a no-op once the viewport is wider than the max-width). */
+  width: min(1140px, 100% - 2 * var(--page-gutter));
   background: var(--sc-surface);
   border: 1px solid var(--sc-border);
   border-radius: 20px;
@@ -240,8 +243,20 @@ const popularArticles = [
 .cta-box h3 { font-size: 24px; color: var(--sc-text); margin: 0 0 8px 0; }
 .cta-box p { font-size: 15px; color: var(--sc-text-secondary); margin: 0 0 24px 0; }
 
-@media (max-width: 900px) {
-  .categories-grid { grid-template-columns: 1fr; }
-  .article-row { flex-direction: column; align-items: flex-start; gap: 12px; }
+@media (max-width: 1199px) {
+  .categories-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+@media (max-width: 767px) {
+  .support-page { padding-bottom: var(--section-pad-sm); }
+  .support-hero { padding: 48px 0 36px; }
+  .hero-title { font-size: 36px; line-height: 40px; margin-bottom: 24px; }
+  .search-input { padding: 14px 16px 14px 48px; font-size: 16px; text-overflow: ellipsis; }
+  .search-icon { left: 16px; }
+  .categories-section, .articles-section { padding: 32px 0; }
+  .categories-grid { grid-template-columns: minmax(0, 1fr); gap: 16px; }
+  .category-card { padding: 22px; }
+  .article-row { flex-direction: column; align-items: flex-start; gap: 12px; padding: 18px 20px; }
+  .cta-box { padding: 32px 20px; border-radius: 16px; }
 }
 </style>

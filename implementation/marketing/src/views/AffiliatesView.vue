@@ -110,13 +110,13 @@ const faqItems = [
 
 <style scoped>
 .affiliates-page { background: var(--sc-base); padding-bottom: 80px; }
-.container { max-width: 1140px; margin: 0 auto; padding: 0 24px; }
+.container { max-width: 1140px; margin: 0 auto; padding: 0 var(--page-gutter); }
 .hero-section { padding: 80px 0 60px; text-align: center; }
 .hero-title { font-size: 42px; font-weight: 800; color: var(--sc-text); margin: 20px 0; line-height: 1.25; }
 .hero-sub { font-size: 18px; color: var(--sc-text-secondary); max-width: 720px; margin: 0 auto 36px; line-height: 1.6; }
 .hero-ctas { display: flex; justify-content: center; gap: 16px; }
 
-.highlights-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 24px; margin-bottom: 60px; }
+.highlights-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 24px; margin-bottom: 60px; }
 .highlight-card { background: var(--sc-surface); border: 1px solid var(--sc-border); border-radius: 16px; padding: 32px; text-align: center; }
 .hl-value { font-size: 36px; font-weight: 800; color: var(--sc-primary); margin-bottom: 8px; }
 .highlight-card h3 { font-size: 18px; color: var(--sc-text); margin: 0 0 8px 0; }
@@ -133,7 +133,7 @@ const faqItems = [
 
 .range-slider { width: 100%; height: 8px; border-radius: 4px; background: var(--sc-elevated); accent-color: var(--sc-primary); cursor: pointer; }
 
-.results-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+.results-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; }
 .result-box { background: var(--sc-elevated); border: 1px solid var(--sc-border); border-radius: 12px; padding: 20px; text-align: center; }
 .result-box.highlight { background: var(--sc-accent-soft); border-color: var(--sc-primary); }
 .res-label { font-size: 12px; text-transform: uppercase; color: var(--sc-text-muted); display: block; margin-bottom: 6px; }
@@ -143,9 +143,27 @@ const faqItems = [
 .section-title { text-align: center; font-size: 28px; font-weight: 700; color: var(--sc-text); margin-bottom: 32px; }
 .faq-wrapper { max-width: 800px; margin: 0 auto; }
 
-@media (max-width: 768px) {
-  .highlights-grid { grid-template-columns: 1fr; }
-  .results-grid { grid-template-columns: 1fr; }
+@media (max-width: 1199px) {
+  .highlights-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+@media (max-width: 767px) {
+  .affiliates-page { padding-bottom: var(--section-pad-sm); }
+  .hero-section { padding: 48px 0 40px; }
+  .hero-title { font-size: 36px; line-height: 40px; }
+  .hero-sub { font-size: 16px; }
+  .highlights-grid { grid-template-columns: minmax(0, 1fr); gap: 16px; margin-bottom: 40px; }
+  .highlight-card { padding: 24px; }
+  .results-grid { grid-template-columns: minmax(0, 1fr); }
   .hero-ctas { flex-direction: column; }
+  .hero-ctas > * { width: 100%; }
+  .calc-card { padding: 28px 20px; border-radius: 20px; }
+  .calc-card h2 { font-size: 24px; }
+  .slider-label { flex-wrap: wrap; gap: 4px 12px; }
+  .res-amount { font-size: 24px; }
+  /* The native range input's box IS its hit area; 8px is untappable. Make the box 44px
+     and let the thumb + accent-color carry the look instead of a painted 8px bar. */
+  .range-slider { height: 44px; background: transparent; }
+  .faq-section { padding: 40px 0; }
 }
 </style>

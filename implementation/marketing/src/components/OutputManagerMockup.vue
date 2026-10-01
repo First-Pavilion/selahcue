@@ -86,6 +86,8 @@ import UiBadge from './UiBadge.vue'
   display: flex;
   justify-content: space-between;
   align-items: center;
+  flex-wrap: wrap;
+  gap: 10px 12px;
   background: #191d2a;
   border: 1px solid rgba(255, 255, 255, 0.06);
   border-radius: 12px;
@@ -96,6 +98,7 @@ import UiBadge from './UiBadge.vue'
   display: flex;
   align-items: center;
   gap: 14px;
+  min-width: 0;
 }
 
 .output-icon {
@@ -122,5 +125,12 @@ import UiBadge from './UiBadge.vue'
 .output-sub {
   font-size: 12px;
   color: #717d93;
+}
+
+@media (max-width: 767px) {
+  .card-header { padding: 0 16px; gap: 8px; }
+  .output-rows { padding: 14px 16px; }
+  .output-row { padding: 14px; }
+  .output-icon { flex-shrink: 0; }
 }
 </style>

@@ -163,4 +163,12 @@ const component = computed(() => {
 @keyframes spin {
   to { transform: rotate(360deg); }
 }
+
+/* 44px minimum touch target on phones and on any coarse pointer (tablets). A fine
+   pointer keeps the designed heights, so the desktop is visually unchanged. */
+@media (max-width: 767px), (pointer: coarse) {
+  .ui-button {
+    min-height: 44px;
+  }
+}
 </style>
