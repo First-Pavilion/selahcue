@@ -31,6 +31,8 @@ It also exercises, in the real browser, the behaviours CSS alone cannot prove:
     tablet, 4 across on desktop);
   * the confirm dialog and toast on a phone (both `position: fixed`, so the scrollWidth
     check cannot see them overflow);
+  * both sides of every breakpoint (767/768, 1199/1200): the layout that renders must be the
+    one the media query selects (nav, footer, home feature grid, pricing grid);
   * the signed-in navbar (Account / Sign out) still fits one row at tablet widths;
   * `prefers-reduced-motion: reduce` actually removes the sheet's animation (with a
     positive control proving the probe can see it under normal motion).
@@ -195,6 +197,61 @@ PAGE_JS = r"""
       if ((r.left < 8 || r.right > vw - 8) && r.width < vw - 16 && !scrollsX(el)) out.edge.push(describe(el));
     }
   }
+  // ---- facts judged in Python against the breakpoint the browser actually chose ----
+  const mobile = matchMedia('(max-width: 767.98px)').matches;
+  const desktop = matchMedia('(min-width: 1200px)').matches;
+  out.mode = mobile ? 'mobile' : desktop ? 'desktop' : 'tablet';
+  out.gutterToken = getComputedStyle(document.documentElement).getPropertyValue('--page-gutter').trim();
+
+  const mainEl = document.querySelector('main');
+  const FOCUSABLE = 'a[href], button:not([disabled]), input:not([disabled]):not([type=hidden]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+  // GUTTER, measured on the page rather than read from source: any box in <main> that spans
+  // the viewport edge to edge and carries horizontal padding IS a page container, whatever
+  // it is called. Its padding must be the design's gutter for this breakpoint. (A regex for
+  // `.container` missed a view that hard-coded 24px on a differently-named root.)
+  out.fullBleed = [];
+  // INPUT TEXT: below 768px a text field under 16px makes iOS Safari zoom the page on focus.
+  out.smallInputs = [];
+  // SCROLL REGIONS: anything that scrolls sideways must be reachable by keyboard.
+  out.unfocusableScrollers = [];
+  if (mainEl) {
+    for (const e of mainEl.querySelectorAll('*')) {
+      const cs = getComputedStyle(e);
+      if (cs.display === 'none' || cs.visibility === 'hidden') continue;
+      if (e.closest('[aria-hidden=true]')) continue;
+      const r = e.getBoundingClientRect();
+      if (r.width === 0 || r.height === 0) continue;
+      const scroller = cs.overflowX === 'auto' || cs.overflowX === 'scroll';
+
+      const pl = parseFloat(cs.paddingLeft), pr = parseFloat(cs.paddingRight);
+      if (!scroller && Math.abs(r.left) < 0.5 && Math.abs(r.right - vw) < 0.5 && (pl > 0 || pr > 0)) {
+        out.fullBleed.push(`${describe(e)} padding ${pl}/${pr}`);
+      }
+
+      if (mobile && /^(INPUT|SELECT|TEXTAREA)$/.test(e.tagName)) {
+        const t = (e.getAttribute('type') || 'text').toLowerCase();
+        if (!/^(checkbox|radio|range|submit|button|reset|file|color|hidden|image)$/.test(t) && parseFloat(cs.fontSize) < 16) {
+          out.smallInputs.push(`${describe(e)} font-size ${cs.fontSize}`);
+        }
+      }
+
+      if (scroller && e.scrollWidth > e.clientWidth + 1) {
+        const tab = e.getAttribute('tabindex');
+        const selfFocusable = tab !== null && parseInt(tab, 10) >= 0;
+        if (!selfFocusable && !e.querySelector(FOCUSABLE)) out.unfocusableScrollers.push(describe(e));
+      }
+    }
+  }
+  // PRO FIRST (design 8d): below 1200px the pricing cards are one column with the popular plan
+  // leading. Compared in visual order, not DOM order.
+  const cards = [...document.querySelectorAll('.pricing-card')].filter((c) => c.getBoundingClientRect().height > 0);
+  out.pricingFirstIsPopular = null;
+  if (cards.length) {
+    const ordered = cards.slice().sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top || a.getBoundingClientRect().left - b.getBoundingClientRect().left);
+    out.pricingFirstIsPopular = ordered[0].classList.contains('popular');
+  }
+
   const main = document.querySelector('main');
   out.mainTextLength = main ? main.innerText.trim().length : 0;
   out.title = (document.querySelector('h1') || {}).innerText || '';
@@ -747,6 +804,80 @@ def check_overlays(context, base: str, width: int, fail, count) -> None:
     page.close()
 
 
+BOUNDARY_ROUTES = ["/", "/pricing", "/privacy", "/account", "/admin", "/affiliates/dashboard"]
+BOUNDARY_WIDTHS = [767, 768, 1199, 1200]
+
+BOUNDARY_JS = r"""
+() => {
+  const mobile = matchMedia('(max-width: 767.98px)').matches;
+  const desktop = matchMedia('(min-width: 1200px)').matches;
+  const cols = (sel) => { const els = [...document.querySelectorAll(sel)].filter((e) => e.getBoundingClientRect().height > 0);
+    return els.length ? new Set(els.map((e) => Math.round(e.getBoundingClientRect().left))).size : null; };
+  const vis = (el) => !!el && getComputedStyle(el).display !== 'none' && el.getBoundingClientRect().width > 0;
+  return {
+    mode: mobile ? 'mobile' : desktop ? 'desktop' : 'tablet',
+    iw: innerWidth, scrollWidth: document.documentElement.scrollWidth,
+    toggle: vis(document.querySelector('.mobile-toggle')),
+    desktopNav: vis(document.querySelector('.desktop-nav')),
+    footerToggles: document.querySelectorAll('.footer .column-toggle').length,
+    footerCols: cols('.footer .link-column'),
+    featureCols: cols('.features-grid > *'),
+    pricingCols: cols('.pricing-grid > *'),
+  };
+}
+"""
+
+
+def check_boundaries(browser, base: str, engine: str, fail, count) -> None:
+    """Render either side of every breakpoint (767/768, 1199/1200) and compare the layout
+    that appears with the layout the MEDIA QUERY says should appear.
+
+    This is the check that catches a breakpoint typed differently in two places: a CSS rule
+    at 700 instead of 767.98 renders a desktop-ish layout at 767 while the JS (and this
+    probe, which asks the browser the same question the CSS asks) says mobile.
+    """
+    for width in BOUNDARY_WIDTHS:
+        ctx = browser.new_context(viewport={"width": width, "height": HEIGHT})
+        install_stubs(ctx)
+        for path in BOUNDARY_ROUTES:
+            tag = f"boundary {engine} {width}px {path}"
+            page = ctx.new_page()
+            try:
+                page.goto(f"{base}{path}", wait_until="load")
+                page.wait_for_selector("main *")
+                page.wait_for_timeout(150)
+                st = page.evaluate(BOUNDARY_JS)
+            except Exception as exc:  # noqa: BLE001
+                count()
+                fail(f"{tag}: aborted: {str(exc).splitlines()[0][:160]}")
+                page.close()
+                continue
+            mode = st["mode"]
+            want_cols = {"mobile": 1, "tablet": 2, "desktop": 3}[mode]
+            count()
+            if st["scrollWidth"] > st["iw"]:
+                fail(f"{tag}: horizontal scroll ({st['scrollWidth']} > {st['iw']})")
+            count()
+            if st["toggle"] != (mode == "mobile") or st["desktopNav"] == (mode == "mobile"):
+                fail(f"{tag}: nav shows the wrong mode for {mode} (toggle={st['toggle']}, desktopNav={st['desktopNav']})")
+            if st["footerCols"] is not None:
+                count()
+                want_footer = {"mobile": 1, "tablet": 2, "desktop": 4}[mode]
+                if st["footerCols"] != want_footer or (st["footerToggles"] > 0) != (mode == "mobile"):
+                    fail(f"{tag}: footer layout is not the {mode} one (columns={st['footerCols']}, want {want_footer}; collapse controls={st['footerToggles']})")
+            if st["featureCols"] is not None:
+                count()
+                if st["featureCols"] != want_cols:
+                    fail(f"{tag}: home feature grid has {st['featureCols']} columns, {mode} wants {want_cols}")
+            if st["pricingCols"] is not None:
+                count()
+                want_pricing = 3 if mode == "desktop" else 1
+                if st["pricingCols"] != want_pricing:
+                    fail(f"{tag}: pricing grid has {st['pricingCols']} columns, {mode} wants {want_pricing}")
+            page.close()
+        ctx.close()
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--engine", choices=["chromium", "webkit"], default="chromium")
@@ -842,6 +973,27 @@ def main() -> int:
                     if info["edge"]:
                         failures.append(f"{tag}: text/controls within 8px of the screen edge (missing gutter): {'; '.join(info['edge'])}")
 
+                    expected_gutter = {"mobile": "20", "tablet": "48", "desktop": "24"}[info["mode"]]
+                    checks += 1
+                    if info["gutterToken"] != f"{expected_gutter}px":
+                        failures.append(f"{tag}: --page-gutter is {info['gutterToken']!r}, design wants {expected_gutter}px at {info['mode']}")
+                    checks += 1
+                    # Bare auth/landing pages are exempt: their geometry is the auth handoff's
+                    # own (a 92vw card in a 20px-padded page), not the marketing gutter.
+                    wrong = [] if bare else [b for b in info["fullBleed"] if f"padding {expected_gutter}/{expected_gutter}" not in b]
+                    if wrong:
+                        failures.append(f"{tag}: page container padding is not the {expected_gutter}px {info['mode']} gutter: {'; '.join(wrong[:4])}")
+                    checks += 1
+                    if info["smallInputs"]:
+                        failures.append(f"{tag}: text inputs under 16px on a phone (iOS zooms on focus): {'; '.join(info['smallInputs'][:4])}")
+                    checks += 1
+                    if info["unfocusableScrollers"]:
+                        failures.append(f"{tag}: sideways-scrolling region not keyboard focusable: {'; '.join(info['unfocusableScrollers'][:4])}")
+                    if info["pricingFirstIsPopular"] is not None and info["mode"] != "desktop":
+                        checks += 1
+                        if not info["pricingFirstIsPopular"]:
+                            failures.append(f"{tag}: pricing cards are not Pro-first below 1200px (design 8d)")
+
                     checks += 1
                     if info["mainTextLength"] < 20:
                         failures.append(f"{tag}: rendered (almost) nothing, main text length {info['mainTextLength']}")
@@ -891,6 +1043,9 @@ def main() -> int:
                     install_stubs(ctx)
                     guarded(check_nav_sheet, ctx, base, width)
                     ctx.close()
+                if width == widths[-1] and not args.routes:
+                    # boundary widths are their own matrix: run once per engine, after the standard widths
+                    guarded(lambda c, b, w, f, n: check_boundaries(browser, b, args.engine, f, n), None, base, 0)
                 if width < 768 and not args.routes:
                     ctx = browser.new_context(viewport={"width": width, "height": HEIGHT}, has_touch=True)
                     install_stubs(ctx)

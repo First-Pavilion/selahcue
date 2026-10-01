@@ -83,7 +83,7 @@ const pricingFaqItems = [
     <section class="comparison-section">
       <div class="container">
         <h2>Compare features</h2>
-        <div class="table-container">
+        <div class="table-container" tabindex="0" role="region" aria-label="Plan comparison, scrolls sideways when wide">
           <table class="comparison-table">
             <thead>
               <tr>

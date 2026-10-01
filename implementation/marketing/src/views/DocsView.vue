@@ -70,7 +70,7 @@ const topics = [
             </div>
 
             <h2>Code Example: NDI Configuration</h2>
-            <pre class="code-block"><code>// selahcue-output.json
+            <pre class="code-block" tabindex="0"><code>// selahcue-output.json
 {
   "outputs": [
     { "name": "Audience Main", "target": "Display 2", "resolution": "1920x1080" },
