@@ -15,7 +15,7 @@ import { createMemoryHistory, createRouter, type RouteRecordRaw, type Router } f
 import { blogPath, blogPosts } from '../src/lib/content/blog.ts'
 import { docsArticles, docsPath } from '../src/lib/content/docs.ts'
 import { supportArticles, supportPath } from '../src/lib/content/support.ts'
-import { NOT_FOUND_ROUTE, articleRoutes } from '../src/router/articleRoutes.ts'
+import { NOT_FOUND_ROUTE, STICKY_NAV_OFFSET, articleRoutes, hashScrollOffset } from '../src/router/articleRoutes.ts'
 
 const stub = { render: () => null }
 
@@ -147,11 +147,12 @@ describe('an unknown slug lands on not-found, not on a blank page', () => {
   })
 })
 
+// index.ts cannot be imported under node (it pulls in .vue files), so the wiring checks read it.
+const src = readFileSync(fileURLToPath(new URL('../src/router/index.ts', import.meta.url)), 'utf8')
+
 describe('index.ts wires the article routes ahead of the catch-all', () => {
-  // index.ts cannot be imported under node (it pulls in .vue files), so this reads it. It is
-  // a tripwire for the one edit that would silently bring back blank pages: dropping the
+  // A tripwire for the one edit that would silently bring back blank pages: dropping the
   // spread, or defining a second hand-written copy of these routes that skips the guard.
-  const src = readFileSync(fileURLToPath(new URL('../src/router/index.ts', import.meta.url)), 'utf8')
 
   test('spreads articleRoutes, and before the not-found catch-all', () => {
     const spread = src.indexOf('...articleRoutes')
@@ -169,5 +170,26 @@ describe('index.ts wires the article routes ahead of the catch-all', () => {
     for (const p of ["'/blog/:slug'", "'/docs/:category/:slug'", "'/support/:category/:slug'"]) {
       assert.ok(!src.includes(`path: ${p}`), `${p} is declared in index.ts, bypassing the unknown-slug guard`)
     }
+  })
+})
+
+describe('in-page anchors clear the sticky navbar', () => {
+  test('every article and index route offsets hash scrolling by the navbar height', () => {
+    for (const name of ['blog', 'blog-post', 'docs', 'docs-article', 'support', 'support-article']) {
+      assert.equal(hashScrollOffset({ name }), STICKY_NAV_OFFSET, name)
+    }
+    assert.ok(STICKY_NAV_OFFSET > 68, 'must be taller than the 68px navbar or headings still hide under it')
+  })
+
+  test('other routes keep the old behaviour (no offset)', () => {
+    for (const name of ['home', 'pricing', 'account', NOT_FOUND_ROUTE, undefined, Symbol('x')]) {
+      assert.equal(hashScrollOffset({ name }), 0, String(name))
+    }
+  })
+
+  test('index.ts feeds the offset into scrollBehavior', () => {
+    // Tripwire: dropping `top: hashScrollOffset(to)` silently buries every heading anchor
+    // under the navbar again, and nothing but a real browser would notice.
+    assert.match(src, /top:\s*hashScrollOffset\(to\)/)
   })
 })

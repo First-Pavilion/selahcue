@@ -55,3 +55,27 @@ export const articleRoutes: RouteRecordRaw[] = [
     beforeEnter: (to) => (findSupportArticle(to.params.category, to.params.slug) ? true : notFoundFor(to)),
   },
 ]
+
+/**
+ * Pixels to leave above an in-page anchor target so it is not hidden by the sticky navbar
+ * (68px tall, `Navbar.vue`) with some breathing room.
+ *
+ * vue-router's `{ el, behavior }` scroll ignores CSS `scroll-margin-top`, so without an
+ * explicit `top` a table-of-contents or "link to this section" click scrolls the heading
+ * UNDER the navbar. Only these routes opt in: other pages' hash targets (the home page's
+ * `#how-it-works`) keep their existing behaviour.
+ */
+export const STICKY_NAV_OFFSET = 84
+
+const ANCHORED_ROUTES: ReadonlySet<string> = new Set([
+  'blog',
+  'blog-post',
+  'docs',
+  'docs-article',
+  'support',
+  'support-article',
+])
+
+export function hashScrollOffset(to: Pick<RouteLocationNormalized, 'name'>): number {
+  return typeof to.name === 'string' && ANCHORED_ROUTES.has(to.name) ? STICKY_NAV_OFFSET : 0
+}

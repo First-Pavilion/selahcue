@@ -93,6 +93,7 @@ const posts = blogPosts.filter((p) => p !== featuredPost)
 
 <style scoped>
 /* GAP-08: the cards link to real articles now. */
+.blog-card :deep(.ui-badge) { align-self: flex-start; }
 .read-link { text-decoration: none; }
 .read-link:hover { text-decoration: underline; text-underline-offset: 3px; }
 .read-link:focus-visible { outline: 2px solid var(--sc-primary); outline-offset: 3px; border-radius: 4px; }

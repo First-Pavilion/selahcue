@@ -75,7 +75,7 @@ watch(
           @click="menuOpen = !menuOpen"
         >
           Documentation menu
-          <span class="da-chevron" :class="{ 'is-open': menuOpen }" aria-hidden="true">▾</span>
+          <span class="da-chevron" :class="{ 'is-open': menuOpen }" aria-hidden="true"></span>
         </button>
         <nav id="docs-nav" :class="['da-nav', { 'is-open': menuOpen }]" aria-label="Documentation">
           <router-link class="da-all" to="/docs">All documentation</router-link>
@@ -144,10 +144,11 @@ watch(
   align-items: start;
 }
 
+/* Off-screen until it receives keyboard focus, then pinned under the sticky navbar. */
 .da-skip {
-  position: absolute;
-  left: 16px;
-  top: -64px;
+  position: fixed;
+  left: -9999px;
+  top: 80px;
   z-index: 120;
   padding: 12px 18px;
   background: var(--sc-primary);
@@ -155,7 +156,7 @@ watch(
   border-radius: 8px;
   font-weight: 600;
 }
-.da-skip:focus { top: 12px; }
+.da-skip:focus { left: 16px; }
 
 /* Sidebar */
 .da-side { min-width: 0; }
@@ -175,8 +176,16 @@ watch(
   cursor: pointer;
 }
 .da-menu-btn:focus-visible { outline: 2px solid var(--sc-primary); outline-offset: 2px; }
-.da-chevron { transition: transform var(--transition-fast); }
-.da-chevron.is-open { transform: rotate(180deg); }
+.da-chevron {
+  width: 8px;
+  height: 8px;
+  margin-right: 4px;
+  border-right: 2px solid var(--sc-text-secondary);
+  border-bottom: 2px solid var(--sc-text-secondary);
+  transform: rotate(45deg);
+  transition: transform var(--transition-fast);
+}
+.da-chevron.is-open { transform: rotate(225deg); }
 .da-nav {
   display: none;
   margin-top: 8px;

@@ -259,7 +259,7 @@ kbd {
    inside the rules the responsive pass is editing above. */
 .nav-item { display: block; text-decoration: none; }
 .nav-item:focus-visible, .topic-link:focus-visible { outline: 2px solid var(--sc-primary); outline-offset: 2px; }
-.topic { margin-top: 40px; scroll-margin-top: 96px; }
+.topic { margin-top: 40px; scroll-margin-top: 84px; }
 .topic-title { font-size: 22px; font-weight: 700; color: var(--sc-text); margin: 0 0 6px; }
 .topic-desc { font-size: 15px; color: var(--sc-text-secondary); margin: 0 0 16px; }
 .topic-list { display: flex; flex-direction: column; gap: 10px; }

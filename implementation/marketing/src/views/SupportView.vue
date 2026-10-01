@@ -296,7 +296,7 @@ const results = computed(() => {
 .article-link { color: inherit; }
 .article-link:hover { color: var(--sc-primary-hover); text-decoration: underline; }
 .results-status { font-size: 15px; color: var(--sc-text-secondary); margin: -16px 0 20px; }
-.category-card { scroll-margin-top: 96px; }
+.category-card { scroll-margin-top: 84px; }
 .sr-only {
   position: absolute;
   width: 1px;
