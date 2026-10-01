@@ -75,8 +75,8 @@ describe('draft treatment in the rendered page', () => {
     assert.ok(html.includes('2 details are still to be filled in (3 places)'))
   })
 
-  test('no placeholders remain: no banner, no chips, no draft text, from the same component', async () => {
-    const html = await render(docFrom('1.1 Contact privacy@example.com. Nothing is missing.'))
+  test('banner removed and no placeholders remain: no banner, no chips, no draft text, from the same component', async () => {
+    const html = await render(docFrom('1.1 Contact privacy@example.com. Nothing is missing.', false))
     assert.equal(count(html, 'data-draft-banner'), 0)
     assert.equal(count(html, 'data-placeholder'), 0)
     assert.ok(!html.includes(DRAFT_NOTICE))
@@ -84,9 +84,18 @@ describe('draft treatment in the rendered page', () => {
     assert.ok(html.includes('Contact privacy@example.com. Nothing is missing.'), 'the text itself still renders')
   })
 
-  test('the same document flips by filling its last placeholder', async () => {
-    const draft = await render(docFrom('1.1 Contact `{{CONTACT_EMAIL}}`.'))
-    const final = await render(docFrom('1.1 Contact legal@example.com.'))
+  test('FAILS CLOSED: every placeholder filled but the document banner still present renders the draft banner', async () => {
+    const html = await render(docFrom('1.1 Contact legal@example.com.'))
+    assert.equal(count(html, 'data-draft-banner'), 1)
+    assert.equal(count(html, 'data-placeholder'), 0)
+    assert.ok(html.includes(DRAFT_NOTICE))
+    assert.ok(html.includes('DRAFT: NOT FINAL'))
+    assert.ok(!html.includes('still to be filled in'), 'no placeholder count when none remain')
+  })
+
+  test('the draft banner goes only when the banner is removed and the last placeholder is filled', async () => {
+    const draft = await render(docFrom('1.1 Contact `{{CONTACT_EMAIL}}`.', false))
+    const final = await render(docFrom('1.1 Contact legal@example.com.', false))
     assert.equal(count(draft, 'data-draft-banner'), 1)
     assert.equal(count(final, 'data-draft-banner'), 0)
   })

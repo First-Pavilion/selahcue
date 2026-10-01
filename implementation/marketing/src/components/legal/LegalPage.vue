@@ -101,7 +101,7 @@ const EXAMPLE_TOKEN = '{{' + 'EXAMPLE_DETAIL' + '}}'
       <section v-if="state.draft" class="draft-banner" aria-labelledby="draft-banner-title" data-draft-banner>
         <p id="draft-banner-title" class="draft-title">{{ DRAFT_NOTICE }}</p>
         <p v-if="state.bannerHeadline" class="draft-headline">{{ state.bannerHeadline }}</p>
-        <p class="draft-detail">
+        <p v-if="state.placeholderCount > 0" class="draft-detail">
           {{ state.placeholders.length }} details are still to be filled in ({{ state.placeholderCount }} places).
           Each one is highlighted in the text, like
           <mark class="draft-example"

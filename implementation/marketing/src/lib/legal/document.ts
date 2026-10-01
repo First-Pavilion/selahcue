@@ -2,10 +2,20 @@
  * Pure helpers over a `LegalDocument`: everything the legal pages DECIDE lives here, so
  * the decisions can be tested without a browser.
  *
- * The draft treatment is derived, never configured. There is no `isDraft` flag anywhere:
- * the page is a draft exactly while the document text still contains a `{{PLACEHOLDER}}`.
- * Fill the last one in the markdown, run `npm run sync:legal`, and the banner, the
- * highlighting and the `noindex` all go away with no code change.
+ * THE DRAFT RULE FAILS CLOSED. There is no `isDraft` flag anywhere; the page is a draft
+ * while ANY of these holds, all read from the document itself:
+ *
+ *   1. a `{{PLACEHOLDER}}` remains in the text a visitor reads, or
+ *   2. the document still carries its own DRAFT banner, or
+ *   3. its version line says the status is `draft`.
+ *
+ * Why not placeholders alone (the original ticket wording): filling every placeholder does
+ * not make a policy publishable. LEGAL-DRAFT-NOTES section 4 lists about fifty launch-gate
+ * conditions that are facts about the product, not blanks in the text, so a draft with
+ * every blank filled would have turned its own banner and `noindex` off while still
+ * describing features that do not exist yet. Publishing is therefore an explicit act in
+ * the markdown: delete the DRAFT banner and change the version status from `draft`, then
+ * `npm run sync:legal`. No code changes either way.
  */
 import type { Block, DocumentVersion, Inline, LegalDocument, ListItem, Section } from './types.ts'
 
@@ -80,8 +90,14 @@ export function inlineToText(nodes: readonly Inline[]): string {
 }
 
 export interface LegalPageState {
-  /** True while at least one placeholder remains. Drives banner, highlight and noindex. */
+  /** True while ANY draft signal holds. Drives banner, highlight and noindex. */
   readonly draft: boolean
+  /** Which signals hold, so the page (and a test) can say why it is a draft. */
+  readonly reasons: {
+    readonly placeholders: boolean
+    readonly banner: boolean
+    readonly versionDraft: boolean
+  }
   /** Distinct placeholder names, in order of first appearance. */
   readonly placeholders: readonly string[]
   /** Total occurrences (a name used five times counts five). */
@@ -94,9 +110,15 @@ export interface LegalPageState {
 
 export function legalPageState(doc: LegalDocument): LegalPageState {
   const all = placeholderOccurrences(doc)
-  const draft = all.length > 0
+  const reasons = {
+    placeholders: all.length > 0,
+    banner: doc.banner !== null,
+    versionDraft: doc.version?.status === 'draft',
+  }
+  const draft = reasons.placeholders || reasons.banner || reasons.versionDraft
   return {
     draft,
+    reasons,
     placeholders: [...new Set(all)],
     placeholderCount: all.length,
     noindex: draft,

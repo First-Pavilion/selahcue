@@ -353,8 +353,11 @@ describe('the markdown parser', () => {
     )
     assert.deepEqual(doc.version, { number: '1.2', status: 'draft', date: '2026-02-03' })
     assert.equal(doc.banner?.headline.length, 1)
-    assert.equal(placeholderOccurrences(doc).length, 0)
-    assert.equal(legalPageState(doc).draft, false)
+    assert.equal(placeholderOccurrences(doc).length, 0, 'the banner mention is not a missing fact')
+    const state = legalPageState(doc)
+    assert.equal(state.reasons.placeholders, false)
+    assert.equal(state.reasons.banner, true, 'but the banner itself keeps the page a draft')
+    assert.equal(state.draft, true)
   })
 
   test('the version is never guessed: a malformed or impossible line yields null', () => {
@@ -544,19 +547,55 @@ describe('draft treatment is derived from the remaining placeholders', () => {
     assert.equal(DRAFT_NOTICE, 'Draft, pending legal review. This page is not our final policy.')
   })
 
-  test('when none remain: no draft, no noindex, nothing highlighted (and no code change)', () => {
-    const state = legalPageState(docWith('1.1 Contact privacy@example.com. Nothing is missing.'))
+  test('when no signal remains (no placeholders, no banner, status not draft): final, no noindex', () => {
+    const state = legalPageState(docWith('1.1 Contact privacy@example.com. Nothing is missing.', false))
     assert.equal(state.draft, false)
     assert.equal(state.noindex, false)
+    assert.deepEqual(state.reasons, { placeholders: false, banner: false, versionDraft: false })
     assert.deepEqual(state.placeholders, [])
     assert.equal(state.placeholderCount, 0)
   })
 
-  test('the same document flips from draft to final by filling its last placeholder', () => {
-    const draft = docWith('1.1 Contact `{{CONTACT_EMAIL}}`.')
-    const filled = docWith('1.1 Contact legal@example.com.')
-    assert.equal(legalPageState(draft).noindex, true)
-    assert.equal(legalPageState(filled).noindex, false)
+  test('FAILS CLOSED: every placeholder filled but the DRAFT banner still present is still a draft', () => {
+    const state = legalPageState(docWith('1.1 Contact legal@example.com.', true))
+    assert.equal(state.placeholderCount, 0)
+    assert.equal(state.draft, true, 'filling the blanks is not publishing')
+    assert.equal(state.noindex, true)
+    assert.equal(state.reasons.banner, true)
+  })
+
+  test('FAILS CLOSED: a version status of "draft" keeps the page a draft even with the banner removed', () => {
+    const doc = parseLegalMarkdown('# T\n\n## 1. One\n\n1.1 Body.\n', 't.md')
+    const draftStatus: LegalDocument = { ...doc, version: { number: '0.9', status: 'draft', date: '2026-01-02' } }
+    const finalStatus: LegalDocument = { ...doc, version: { number: '1.0', status: 'final', date: '2026-01-02' } }
+    assert.equal(legalPageState(draftStatus).draft, true)
+    assert.equal(legalPageState(draftStatus).reasons.versionDraft, true)
+    assert.equal(legalPageState(finalStatus).draft, false)
+  })
+
+  test('FAILS CLOSED: the banner alone keeps the page a draft even when the version status says final', () => {
+    const doc = parseLegalMarkdown(
+      '# T\n\n> **DRAFT: REVIEW ME**\n>\n> Version 1.0 (final, 2026-01-02). Banner left in by mistake.\n\n## 1. One\n\n1.1 Body.\n',
+      't.md',
+    )
+    const state = legalPageState(doc)
+    assert.deepEqual(state.reasons, { placeholders: false, banner: true, versionDraft: false })
+    assert.equal(state.draft, true)
+    assert.equal(state.noindex, true)
+  })
+
+  test('a placeholder alone keeps a bannerless, non-draft-status document a draft', () => {
+    const state = legalPageState(docWith('1.1 Contact `{{CONTACT_EMAIL}}`.', false))
+    assert.equal(state.draft, true)
+    assert.equal(state.noindex, true)
+    assert.deepEqual(state.reasons, { placeholders: true, banner: false, versionDraft: false })
+  })
+
+  test('publishing is explicit: the same text flips to final only when the banner is removed AND no placeholder remains', () => {
+    const body = '1.1 Contact legal@example.com.'
+    assert.equal(legalPageState(docWith(body, true)).noindex, true, 'banner present')
+    assert.equal(legalPageState(docWith('1.1 Contact `{{CONTACT_EMAIL}}`.', false)).noindex, true, 'placeholder present')
+    assert.equal(legalPageState(docWith(body, false)).noindex, false, 'banner removed and none left')
   })
 
   test('a placeholder is found wherever content can hold one', () => {
