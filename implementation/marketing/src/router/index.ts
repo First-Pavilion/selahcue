@@ -1,6 +1,7 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import HomeView from '@/views/HomeView.vue'
 import { confirmSession, refreshIfExpiringSoon } from '@/lib/auth/sessionStore.ts'
+import { articleRoutes } from './articleRoutes.ts'
 
 const router = createRouter({
   history: createWebHistory(),
@@ -20,6 +21,10 @@ const router = createRouter({
     { path: '/docs', name: 'docs', component: () => import('@/views/DocsView.vue') },
     { path: '/changelog', name: 'changelog', component: () => import('@/views/ChangelogView.vue') },
     { path: '/blog', name: 'blog', component: () => import('@/views/BlogView.vue') },
+    // Blog / docs / support detail pages (GAP-08). Unknown slugs hand off to `not-found`
+    // below, so these must be registered, but their order relative to it does not matter —
+    // the catch-all is ranked last by vue-router either way.
+    ...articleRoutes,
     { path: '/careers', name: 'careers', component: () => import('@/views/CareersView.vue') },
     { path: '/privacy', name: 'privacy', component: () => import('@/views/PrivacyView.vue') },
     { path: '/terms', name: 'terms', component: () => import('@/views/TermsView.vue') },
