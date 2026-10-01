@@ -1103,6 +1103,12 @@ struct AppState {
     /// mirrors `selahcue-desktop`'s manual window-retry gesture, which is also real-clock
     /// state kept in the shell around a decision made elsewhere.
     link_next_attempt: Mutex<Option<std::time::Instant>>,
+    /// The app-owned media store: the folder imported images are copied into, the (best-effort)
+    /// database holding the library registry, and the file-name cursor. `None` only when the OS
+    /// gave no app-data directory, in which case importing is refused with a plain message
+    /// rather than silently pointing the library at files the app does not own. An `Arc` so a
+    /// blocking import can take its own handle without holding any workspace lock.
+    media_store: Option<Arc<media_store::MediaStore>>,
 }
 
 /// Reply to the Remote Control device commands: the host's paired devices + pending requests.
@@ -1621,6 +1627,7 @@ mod link_reconnect_tests {
             secrets: make_secret_store(),
             link_status: Mutex::new(selahcue_lan::LinkStatus::connected()),
             link_next_attempt: Mutex::new(None),
+            media_store: None,
         }
     }
 
@@ -2180,6 +2187,24 @@ fn with_deck(
         lib.store(ws.open_deck());
     }
     Ok(ws.view())
+}
+
+/// The workspace a real launch opens: the demo deck (so the editor opens onto content on first
+/// run) with its **media library replaced by what the store saved**.
+///
+/// The demo workspace seeds eight fake `demo://` assets, and nothing used to load a saved registry,
+/// so every launch showed those and silently dropped whatever the operator had imported. This is
+/// the one definition both `setup()` and the tests consume, so a test that "restarts" through it
+/// fails if the load is ever removed — rather than re-deriving the load in a helper that would
+/// keep passing. Without a store the library is simply empty, never the demo assets.
+fn production_workspace(store: Option<&media_store::MediaStore>) -> DeckWorkspace {
+    let mut ws = DeckWorkspace::demo();
+    ws.set_media(
+        store
+            .map(media_store::MediaStore::load_library)
+            .unwrap_or_default(),
+    );
+    ws
 }
 
 /// Open the operator's best-effort deck DB at `<app_data_dir>/selahcue.db3`. Returns `None` on ANY
@@ -3628,51 +3653,469 @@ async fn deck_remove_media(
     id: u64,
     state: State<'_, AppState>,
 ) -> Result<serde_json::Value, String> {
-    with_deck(&state, |w| w.remove_media(id))
+    remove_media_inner(&state, id)
 }
 
-/// Import an image into the media library via the native file picker, validated (FR-138 /
-/// 86ak0qmzv) before it is staged, recording its real byte size. Video/audio disk import (and
-/// on-output playback) is a deferred affordance (ADR-0020).
+/// Remove asset `id` from the library, **save the registry**, and delete the stored copy — but only
+/// if SelahCue made it (`MediaStore::delete_if_owned`): a legacy asset that points at a file the
+/// operator picked from their own folders is unregistered and its file left strictly alone.
 ///
-/// A cancelled dialog or a validation refusal are both `Ok` with the plan unchanged — matching
-/// `pick_image`'s own "a refusal is not a transport failure" choice, but expressed differently
-/// here because `deck_import_image` already had a real `Result` error channel and its one JS
-/// caller already routes a thrown error through `pmShowErrorRaw` (see `dist/app.js`'s `pm-import`
-/// handler), so a refusal surfaces to the operator as the command's own `Err`.
+/// The copy is deleted *after* the registry is saved, so a crash in between leaves a file nothing
+/// lists (swept by nobody, but harmless and bounded) rather than a library row whose file is gone.
+fn remove_media_inner(state: &AppState, id: u64) -> Result<serde_json::Value, String> {
+    let mut ws = state.deck.lock().map_err(|e| format!("deck lock: {e}"))?;
+    let removed_path = ws.remove_media(id);
+    if let Some(store) = &state.media_store {
+        if removed_path.is_some() {
+            store.save_library(ws.media());
+        }
+        if let Some(path) = &removed_path {
+            store.delete_if_owned(path);
+        }
+    }
+    if let Ok(mut lib) = state.library.lock() {
+        lib.store(ws.open_deck());
+    }
+    Ok(ws.view())
+}
+
+/// Import images into the media library via the native file picker (several at once). Each picked
+/// file is validated by content (FR-138 / 86ak0qmzv), **copied into the app's own media folder**,
+/// registered with the operator's own file name, and the registry is saved — so the library is the
+/// same after a restart and an imported picture no longer depends on the original file staying put
+/// (ADR-0024 §8.5, amended: `deck_import_images` copies like the pptx path does). Video/audio disk
+/// import (and on-output playback) is a deferred affordance (ADR-0020).
+///
+/// A cancelled dialog is `Ok` with the library unchanged. A file that is refused is **not** an
+/// error for the batch: the view comes back with an `import_report` naming each skipped file and
+/// why, and the good files still land. Only a store that cannot exist at all (no app-data folder)
+/// is the command's own `Err`, which the one JS caller routes through `pmShowErrorRaw`.
 #[tauri::command]
-async fn deck_import_image(
+async fn deck_import_images(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<serde_json::Value, String> {
     use tauri_plugin_dialog::DialogExt;
-    let picked = app
+    let picked: Vec<std::path::PathBuf> = app
         .dialog()
         .file()
         .add_filter("Images", &["png", "jpg", "jpeg"])
-        .blocking_pick_file()
-        .and_then(|fp| fp.into_path().ok());
-    let Some(picked) = picked else {
+        .blocking_pick_files()
+        .map(|files| {
+            files
+                .into_iter()
+                .filter_map(|fp| fp.into_path().ok())
+                .collect()
+        })
+        .unwrap_or_default();
+    if picked.is_empty() {
         return with_deck(&state, |_| ()); // the user cancelled — no-op, current view back
-    };
-    // Same offload as `pick_image`: validation does a bounded read of a user-chosen file and
-    // must not run on the shared Tokio worker pool.
-    let path =
-        tauri::async_runtime::spawn_blocking(move || safe_import::validate_picked_image(&picked))
-            .await
-            .map_err(|join_err| format!("internal error validating that file: {join_err}"))?
-            .map_err(|e| e.to_string())?;
-    with_deck(&state, |w| {
-        let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
-        w.import_media(
-            path.to_string_lossy().into_owned(),
-            "image",
-            size,
-            None,
-            None,
-            None,
+    }
+    import_picked_images(&state, picked).await
+}
+
+/// The body of [`deck_import_images`], taking the picked paths so tests can drive it without the
+/// native dialog.
+///
+/// The file work (read, validate, copy) runs on a blocking thread holding **no** workspace lock —
+/// a 60 MiB image must not freeze the console — and only the quick registration and the registry
+/// save happen under the deck lock afterwards. A file the library then refuses (it filled up in the
+/// meantime) has its fresh copy deleted at once, so a refusal never leaves an orphan.
+async fn import_picked_images(
+    state: &AppState,
+    picked: Vec<std::path::PathBuf>,
+) -> Result<serde_json::Value, String> {
+    let Some(store) = state.media_store.clone() else {
+        return Err(
+            "SelahCue can't find its media folder, so images can't be imported.".to_string(),
         );
+    };
+    let library_len = state
+        .deck
+        .lock()
+        .map_err(|e| format!("deck lock: {e}"))?
+        .media()
+        .len();
+    let worker = Arc::clone(&store);
+    let batch =
+        tauri::async_runtime::spawn_blocking(move || worker.import_files(&picked, library_len))
+            .await
+            .map_err(|join_err| format!("internal error importing images: {join_err}"))?;
+
+    let imported_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
+        .unwrap_or(0);
+    let mut ws = state.deck.lock().map_err(|e| format!("deck lock: {e}"))?;
+    let (imported, skipped) = register_batch(&store, &mut ws, batch, imported_at);
+    let mut view = ws.view();
+    if let Some(obj) = view.as_object_mut() {
+        obj.insert(
+            "import_report".to_string(),
+            serde_json::json!({
+                "imported": imported,
+                "skipped": skipped
+                    .iter()
+                    .map(|s| serde_json::json!({ "name": s.name, "reason": s.reason }))
+                    .collect::<Vec<_>>(),
+                "saved": store.is_persistent(),
+            }),
+        );
+    }
+    Ok(view)
+}
+
+/// Register what [`media_store::MediaStore::import_files`] copied: add each file to the workspace's
+/// library, **save the registry** when anything was added, and **delete the copy of any file the
+/// library refuses** (it filled up after the size check), so a refusal can never leave a file that
+/// nothing in the app lists or can remove. Returns how many were registered and every skip — the
+/// store's own plus these refusals.
+fn register_batch(
+    store: &media_store::MediaStore,
+    ws: &mut DeckWorkspace,
+    batch: media_store::CommittedBatch,
+    imported_at: u64,
+) -> (usize, Vec<media_store::ImportSkip>) {
+    let outcome = ws.register_imported(batch.files, imported_at);
+    if !outcome.registered.is_empty() {
+        store.save_library(ws.media());
+    }
+    let mut skipped = batch.skipped;
+    for refused in outcome.refused {
+        store.delete_if_owned(&refused.path);
+        skipped.push(media_store::ImportSkip {
+            name: refused.name.unwrap_or_else(|| "file".to_string()),
+            reason: media_store::MediaStoreError::Full.to_string(),
+        });
+    }
+    (outcome.registered.len(), skipped)
+}
+
+/// One library tile's picture as base64 RGBA8 for the canvas (`blitFrame`), decoded and shrunk in
+/// Rust — the webview never reads a disk path, and the asset protocol stays off. `available: false`
+/// (never an `Err`) for an unknown id or a file that cannot be drawn, so the tile keeps its own
+/// "can't preview" state. At most [`media_store::THUMB_MAX_DIM`] on a side whatever is asked.
+#[tauri::command]
+async fn media_thumbnail(
+    id: u64,
+    max_w: u32,
+    max_h: u32,
+    state: State<'_, AppState>,
+) -> Result<serde_json::Value, String> {
+    media_thumbnail_inner(&state, id, max_w, max_h).await
+}
+
+async fn media_thumbnail_inner(
+    state: &AppState,
+    id: u64,
+    max_w: u32,
+    max_h: u32,
+) -> Result<serde_json::Value, String> {
+    use base64::Engine;
+    // Look the path up under the lock, then release it before any decode: a slow image must not
+    // hold the workspace.
+    let path = state
+        .deck
+        .lock()
+        .map_err(|e| format!("deck lock: {e}"))?
+        .media_path(id);
+    let thumb = match path {
+        Some(path) => tauri::async_runtime::spawn_blocking(move || {
+            media_store::render_thumbnail(&path, max_w, max_h)
+        })
+        .await
+        .map_err(|join_err| format!("internal error drawing a thumbnail: {join_err}"))?,
+        None => None,
+    };
+    Ok(match thumb {
+        Some(t) => serde_json::json!({
+            "available": true,
+            "frame": {
+                "w": t.w,
+                "h": t.h,
+                "rgba": base64::engine::general_purpose::STANDARD.encode(&t.rgba),
+            }
+        }),
+        None => serde_json::json!({ "available": false, "frame": serde_json::Value::Null }),
     })
+}
+
+#[cfg(test)]
+mod media_command_tests {
+    #![allow(clippy::unwrap_used)]
+    use super::*;
+    use crate::media_store::tests::{JPEG_STUB, PNG_8X4};
+    use base64::Engine;
+    use selahcue_data::Database;
+    use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    fn temp_dir(tag: &str) -> PathBuf {
+        static N: AtomicU64 = AtomicU64::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "selahcue-media-cmd-{}-{tag}-{}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// An `AppState` shaped like a production launch: the workspace's demo library is replaced by
+    /// whatever the store saved (so a second call on the same folder is a "restart").
+    fn state_with_store(app: &Path, persistent: bool) -> AppState {
+        let db = persistent.then(|| Database::open(app.join("selahcue.db3")).unwrap());
+        let store = Arc::new(media_store::MediaStore::open(app.to_path_buf(), db));
+        let ws = production_workspace(Some(&store));
+        AppState {
+            backend: Backend::Local(demo_shell()),
+            deck: Mutex::new(ws),
+            library: Mutex::new(DeckLibrary::load(None)),
+            providers: Mutex::new(selahcue_core::providers::ProvidersConfig::default()),
+            providers_db: None,
+            transcript_db: None,
+            secrets: make_secret_store(),
+            link_status: Mutex::new(selahcue_lan::LinkStatus::local()),
+            link_next_attempt: Mutex::new(None),
+            media_store: Some(store),
+        }
+    }
+
+    fn picked(tag: &str, name: &str, bytes: &[u8]) -> PathBuf {
+        let p = temp_dir(tag).join(name);
+        std::fs::write(&p, bytes).unwrap();
+        p
+    }
+
+    fn assets(v: &serde_json::Value) -> Vec<serde_json::Value> {
+        v["media"]["assets"].as_array().unwrap().clone()
+    }
+
+    #[tokio::test]
+    async fn an_import_is_copied_registered_saved_reported_and_survives_a_restart() {
+        let app = temp_dir("import");
+        let pic = picked("import-user", "Sunday banner.png", &PNG_8X4);
+        let state = state_with_store(&app, true);
+
+        let v = import_picked_images(&state, vec![pic]).await.unwrap();
+
+        let a = assets(&v);
+        assert_eq!(
+            a.len(),
+            1,
+            "the production library holds only the real import"
+        );
+        assert_eq!(a[0]["name"], "Sunday banner.png");
+        assert!(
+            Path::new(a[0]["path"].as_str().unwrap()).starts_with(app.join("media")),
+            "the registered path is the app's own copy"
+        );
+        assert_eq!(v["import_report"]["imported"], 1);
+        assert!(v["import_report"]["skipped"].as_array().unwrap().is_empty());
+        assert_eq!(v["import_report"]["saved"], true);
+
+        // "Restart": a fresh store and workspace over the same folder.
+        let reopened = state_with_store(&app, true);
+        let after = reopened.deck.lock().unwrap().view();
+        let b = assets(&after);
+        assert_eq!(
+            b.len(),
+            1,
+            "the import is still in the library after a restart"
+        );
+        assert_eq!(b[0]["name"], "Sunday banner.png");
+        assert_eq!(b[0]["path"], a[0]["path"]);
+    }
+
+    #[tokio::test]
+    async fn a_bad_file_in_the_batch_is_reported_and_does_not_block_the_good_ones() {
+        let app = temp_dir("partial");
+        let good = picked("partial-a", "good.png", &PNG_8X4);
+        let bad = picked("partial-b", "notes.png", b"not an image at all");
+        let state = state_with_store(&app, true);
+
+        let v = import_picked_images(&state, vec![bad, good]).await.unwrap();
+
+        assert_eq!(assets(&v).len(), 1);
+        assert_eq!(v["import_report"]["imported"], 1);
+        let skipped = v["import_report"]["skipped"].as_array().unwrap();
+        assert_eq!(skipped.len(), 1);
+        assert_eq!(skipped[0]["name"], "notes.png");
+        assert!(!skipped[0]["reason"].as_str().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn without_a_media_folder_an_import_is_refused_with_a_plain_message() {
+        let app = temp_dir("nofolder");
+        let mut state = state_with_store(&app, true);
+        state.media_store = None;
+        let err = import_picked_images(&state, vec![picked("nf", "a.png", &PNG_8X4)])
+            .await
+            .unwrap_err();
+        assert!(err.contains("media folder"), "got: {err}");
+    }
+
+    #[test]
+    fn a_file_the_library_refuses_at_registration_has_its_fresh_copy_deleted() {
+        // The library filled up between the size check and registration: the copy is already on
+        // disk, and unless it is deleted nothing in the app can ever list or remove it.
+        let app = temp_dir("orphan");
+        let store = media_store::MediaStore::open(app.clone(), None);
+        let batch = store.import_files(&[picked("orphan-u", "late.png", &PNG_8X4)], 0);
+        let copy = PathBuf::from(&batch.files[0].path);
+        assert!(copy.exists(), "premise: the store copied the file");
+
+        let mut ws = DeckWorkspace::demo();
+        let mut full = selahcue_core::media::MediaLibrary::new();
+        for i in 0..selahcue_core::media::MAX_MEDIA_ASSETS {
+            full.import(
+                format!("/m/f{i}.png"),
+                selahcue_core::media::MediaKind::Image,
+                1,
+                None,
+                None,
+                None,
+                0,
+            )
+            .unwrap();
+        }
+        ws.set_media(full);
+
+        let (imported, skipped) = register_batch(&store, &mut ws, batch, 0);
+
+        assert_eq!(imported, 0);
+        assert_eq!(skipped.len(), 1);
+        assert!(skipped[0].reason.contains("full"));
+        assert!(
+            !copy.exists(),
+            "the refused file's copy was deleted, not orphaned"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_report_says_so_when_the_registry_is_not_being_saved() {
+        let app = temp_dir("unsaved");
+        let state = state_with_store(&app, false);
+        let v = import_picked_images(&state, vec![picked("un", "a.png", &PNG_8X4)])
+            .await
+            .unwrap();
+        assert_eq!(
+            v["import_report"]["imported"], 1,
+            "the import itself still works"
+        );
+        assert_eq!(
+            v["import_report"]["saved"], false,
+            "an honest 'this won't survive a restart', not a silent in-memory list"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_full_library_refuses_the_import_and_leaves_no_orphan_copy() {
+        let app = temp_dir("full");
+        let state = state_with_store(&app, true);
+        let mut full = selahcue_core::media::MediaLibrary::new();
+        for i in 0..selahcue_core::media::MAX_MEDIA_ASSETS {
+            full.import(
+                format!("/m/f{i}.png"),
+                selahcue_core::media::MediaKind::Image,
+                1,
+                None,
+                None,
+                None,
+                0,
+            )
+            .unwrap();
+        }
+        state.deck.lock().unwrap().set_media(full);
+
+        let v = import_picked_images(&state, vec![picked("full-u", "a.png", &PNG_8X4)])
+            .await
+            .unwrap();
+
+        assert_eq!(v["import_report"]["imported"], 0);
+        let skipped = v["import_report"]["skipped"].as_array().unwrap();
+        assert!(skipped[0]["reason"].as_str().unwrap().contains("full"));
+        let stored: Vec<_> = std::fs::read_dir(app.join("media"))
+            .map(|rd| rd.flatten().filter(|e| e.path().is_file()).collect())
+            .unwrap_or_default();
+        assert!(stored.is_empty(), "nothing was copied for a refused import");
+    }
+
+    #[tokio::test]
+    async fn removing_media_deletes_our_copy_saves_the_registry_and_spares_the_operators_own_file()
+    {
+        let app = temp_dir("remove");
+        let theirs = picked("remove-user", "wedding.jpg", &JPEG_STUB);
+        let state = state_with_store(&app, true);
+        let v = import_picked_images(&state, vec![theirs.clone()])
+            .await
+            .unwrap();
+        let copy = PathBuf::from(assets(&v)[0]["path"].as_str().unwrap());
+        let id = assets(&v)[0]["id"].as_u64().unwrap();
+        assert!(copy.exists(), "premise: the copy exists");
+
+        let after = remove_media_inner(&state, id).unwrap();
+
+        assert!(assets(&after).is_empty(), "gone from the library");
+        assert!(!copy.exists(), "our copy is deleted");
+        assert!(theirs.exists(), "the operator's own file is never touched");
+        let reopened = state_with_store(&app, true);
+        assert!(
+            assets(&reopened.deck.lock().unwrap().view()).is_empty(),
+            "the removal was saved, so it does not come back after a restart"
+        );
+
+        // A legacy in-place asset (registered at the operator's own path) is unregistered but its
+        // file is never deleted: it was never ours.
+        let legacy = picked("remove-legacy", "family.png", &PNG_8X4);
+        let legacy_id = {
+            let mut ws = state.deck.lock().unwrap();
+            let out = ws.register_imported(
+                vec![media_store::ImportedFile {
+                    path: legacy.to_string_lossy().into_owned(),
+                    name: None,
+                    size_bytes: 1,
+                }],
+                0,
+            );
+            out.registered[0]
+        };
+        remove_media_inner(&state, legacy_id).unwrap();
+        assert!(
+            legacy.exists(),
+            "a file outside the media folder survives removal"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_thumbnail_is_real_pixels_for_a_stored_image_and_unavailable_otherwise() {
+        let app = temp_dir("thumb");
+        let state = state_with_store(&app, true);
+        let v = import_picked_images(&state, vec![picked("th", "pic.png", &PNG_8X4)])
+            .await
+            .unwrap();
+        let id = assets(&v)[0]["id"].as_u64().unwrap();
+
+        let t = media_thumbnail_inner(&state, id, 64, 64).await.unwrap();
+
+        assert_eq!(t["available"], true);
+        assert_eq!(
+            (t["frame"]["w"].as_u64(), t["frame"]["h"].as_u64()),
+            (Some(8), Some(4))
+        );
+        let rgba = base64::engine::general_purpose::STANDARD
+            .decode(t["frame"]["rgba"].as_str().unwrap())
+            .unwrap();
+        assert_eq!(rgba.len(), 8 * 4 * 4);
+        assert!(
+            rgba.iter().any(|&b| b != 0),
+            "real pixels, not a blank buffer"
+        );
+
+        let none = media_thumbnail_inner(&state, 9_999, 64, 64).await.unwrap();
+        assert_eq!(none["available"], false, "an unknown id has no picture");
+        assert!(none["frame"].is_null());
+    }
 }
 
 /// Compose the selected (or `id`) slide to base64 RGBA8 for the slide-canvas preview — the same
@@ -7900,6 +8343,7 @@ mod regenerate_with_retention_tests {
             secrets: make_secret_store(),
             link_status: Mutex::new(selahcue_lan::LinkStatus::local()),
             link_next_attempt: Mutex::new(None),
+            media_store: None,
         });
         (app, id)
     }
@@ -8186,7 +8630,17 @@ fn main() {
             // deck: the most-recent saved deck, or — on first run — adopt the demo deck so the
             // editor still opens onto content and the library isn't empty.
             let library = DeckLibrary::load(open_deck_db(app));
-            let mut ws = DeckWorkspace::demo();
+            // The MEDIA library: open the app-owned media store (its own connection to the same
+            // DB, like `providers_db`; sweeps staging a crash left behind). No app-data directory →
+            // no store: importing is then refused with a plain message.
+            let media_store = {
+                use tauri::Manager;
+                app.path()
+                    .app_data_dir()
+                    .ok()
+                    .map(|dir| Arc::new(media_store::MediaStore::open(dir, open_deck_db(app))))
+            };
+            let mut ws = production_workspace(media_store.as_deref());
             let mut library = library;
             if library.is_empty() {
                 let seeded = library.adopt(ws.open_deck().clone());
@@ -8225,6 +8679,7 @@ fn main() {
                 secrets: make_secret_store(),
                 link_status: Mutex::new(link_status),
                 link_next_attempt: Mutex::new(None),
+                media_store,
             });
             Ok(())
         })
@@ -8343,7 +8798,8 @@ fn main() {
             deck_go_live,
             deck_go_live_delta,
             deck_remove_media,
-            deck_import_image,
+            deck_import_images,
+            media_thumbnail,
             render_deck_slide,
             plan_deck_slides,
             render_plan_deck_slide,

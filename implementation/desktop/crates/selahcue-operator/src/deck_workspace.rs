@@ -14,6 +14,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
+use crate::media_store::ImportedFile;
 use selahcue_core::media::{MediaId, MediaKind, MediaLibrary};
 use selahcue_present::{
     media_usage, render_authored_slide, AuthoredSlide, Background, Element, Fit, FrameBuffer,
@@ -25,6 +26,15 @@ use serde_json::{json, Value};
 /// Upper bound on the undo/redo history (no-leak): far above the ≥20 steps FR-016 requires, and
 /// each entry is one bounded `SlideDeck` clone.
 const MAX_UNDO: usize = 60;
+
+/// What [`DeckWorkspace::register_imported`] did with a batch of freshly copied files.
+#[derive(Debug, Default)]
+pub struct RegisterOutcome {
+    /// Ids of the assets that were added.
+    pub registered: Vec<u64>,
+    /// Files the library would not hold — their copies are still on disk and must be deleted.
+    pub refused: Vec<ImportedFile>,
+}
 
 /// The authored-deck editing workspace behind the Presentation surface.
 pub struct DeckWorkspace {
@@ -691,24 +701,62 @@ impl DeckWorkspace {
 
     // --- media ------------------------------------------------------------------------------
 
-    /// Register an imported media file (its metadata). Real disk import of the file bytes uses the
-    /// native picker on the shell side; this records the asset in the library.
-    pub fn import_media(
-        &mut self,
-        path: String,
-        kind: &str,
-        size_bytes: u64,
-        width: Option<u32>,
-        height: Option<u32>,
-        duration_ms: Option<u32>,
-    ) {
-        let kind = MediaKind::from_tag(kind).unwrap_or(MediaKind::Image);
-        self.media
-            .import(path, kind, size_bytes, width, height, duration_ms, 0);
+    /// Replace the media library wholesale — how a launch swaps the demo workspace's fake
+    /// `demo://` assets for the registry the operator actually saved.
+    pub fn set_media(&mut self, media: MediaLibrary) {
+        self.media = media;
     }
 
-    pub fn remove_media(&mut self, id: u64) {
-        self.media.remove(MediaId(id));
+    /// The media library, for persisting after an import or a removal.
+    pub fn media(&self) -> &MediaLibrary {
+        &self.media
+    }
+
+    /// The stored path of asset `id`, if the library holds it (what a thumbnail is read from).
+    pub fn media_path(&self, id: u64) -> Option<String> {
+        self.media.get(MediaId(id)).map(|a| a.path.clone())
+    }
+
+    /// Register files the media store has just copied in: each becomes an image asset carrying the
+    /// operator's own name and `imported_at` (epoch milliseconds — the core takes no clock).
+    ///
+    /// A file the library will not hold (full, or a path it cannot represent) is **handed back** in
+    /// [`RegisterOutcome::refused`] rather than dropped: its copy is already on disk, and the caller
+    /// must delete it or it is an orphan nothing in the app can list or remove.
+    pub fn register_imported(
+        &mut self,
+        files: Vec<ImportedFile>,
+        imported_at: u64,
+    ) -> RegisterOutcome {
+        let mut outcome = RegisterOutcome::default();
+        for file in files {
+            let id = self.media.import(
+                file.path.clone(),
+                MediaKind::Image,
+                file.size_bytes,
+                None,
+                None,
+                None,
+                imported_at,
+            );
+            match id {
+                Some(id) => {
+                    if let Some(name) = &file.name {
+                        self.media.set_name(id, name);
+                    }
+                    outcome.registered.push(id.0);
+                }
+                None => outcome.refused.push(file),
+            }
+        }
+        outcome
+    }
+
+    /// Remove asset `id` from the library, returning the path it held so the shell can delete the
+    /// stored copy. `None` when there was no such asset (a quiet no-op).
+    pub fn remove_media(&mut self, id: u64) -> Option<String> {
+        let path = self.media_path(id)?;
+        self.media.remove(MediaId(id)).then_some(path)
     }
 
     // --- preview compose --------------------------------------------------------------------
@@ -790,7 +838,9 @@ impl DeckWorkspace {
             .map(|a| {
                 json!({
                     "id": a.id.0,
-                    "name": file_name(&a.path),
+                    // The operator's own file name when the store kept it; the stored file's name
+                    // otherwise (an in-place legacy asset, or one imported before names existed).
+                    "name": a.name.clone().unwrap_or_else(|| file_name(&a.path)),
                     "path": a.path,
                     "kind": a.kind.as_tag(),
                     "size_label": size_label(a.size_bytes),
@@ -1466,6 +1516,115 @@ mod tests {
             next_json.is_none(),
             "the last deck slide has no coming slide"
         );
+    }
+
+    // --- imported media: names, registration, removal, the production (non-demo) library ----------
+
+    fn imported(path: &str, name: Option<&str>, size: u64) -> ImportedFile {
+        ImportedFile {
+            path: path.to_string(),
+            name: name.map(str::to_string),
+            size_bytes: size,
+        }
+    }
+
+    #[test]
+    fn registering_an_import_adds_a_named_image_asset_stamped_with_the_import_time() {
+        let mut ws = DeckWorkspace::new_empty_for_test();
+        let out = ws.register_imported(
+            vec![imported("/m/import-0.png", Some("Sunday banner.png"), 2048)],
+            1_234,
+        );
+        assert_eq!(out.registered.len(), 1);
+        assert!(out.refused.is_empty());
+        let a = &ws.media.assets()[0];
+        assert_eq!(a.kind, MediaKind::Image);
+        assert_eq!(a.imported_at, 1_234, "stamped with the caller's clock");
+        let v = ws.view();
+        let asset = &v["media"]["assets"][0];
+        assert_eq!(
+            asset["name"], "Sunday banner.png",
+            "the operator's own name is shown"
+        );
+        assert_eq!(asset["path"], "/m/import-0.png");
+        assert_eq!(asset["kind"], "image");
+    }
+
+    #[test]
+    fn an_unnamed_asset_falls_back_to_the_stored_file_name_in_the_view() {
+        let mut ws = DeckWorkspace::new_empty_for_test();
+        ws.register_imported(vec![imported("/m/import-7.jpg", None, 10)], 0);
+        assert_eq!(ws.view()["media"]["assets"][0]["name"], "import-7.jpg");
+    }
+
+    #[test]
+    fn a_file_the_library_will_not_hold_is_handed_back_so_its_copy_can_be_deleted() {
+        // A registration refusal (library full, absurd path) must not strand the copy the store
+        // already wrote: the caller gets the file back and deletes it.
+        let mut ws = DeckWorkspace::new_empty_for_test();
+        let mut full = MediaLibrary::new();
+        for i in 0..selahcue_core::media::MAX_MEDIA_ASSETS {
+            full.import(
+                format!("/m/f{i}.png"),
+                MediaKind::Image,
+                1,
+                None,
+                None,
+                None,
+                0,
+            )
+            .unwrap();
+        }
+        ws.set_media(full);
+        let out = ws.register_imported(vec![imported("/m/one-too-many.png", None, 1)], 0);
+        assert!(out.registered.is_empty(), "nothing registered past the cap");
+        assert_eq!(out.refused.len(), 1, "the refused file comes back");
+        assert_eq!(out.refused[0].path, "/m/one-too-many.png");
+
+        let mut ws = DeckWorkspace::new_empty_for_test();
+        let too_long = format!(
+            "/m/{}",
+            "x".repeat(selahcue_core::media::MAX_MEDIA_PATH_LEN)
+        );
+        let out = ws.register_imported(vec![imported(&too_long, None, 1)], 0);
+        assert_eq!(
+            out.refused.len(),
+            1,
+            "an over-long path is refused, not dropped silently"
+        );
+    }
+
+    #[test]
+    fn removing_media_returns_the_path_so_the_shell_can_delete_its_copy() {
+        let mut ws = DeckWorkspace::new_empty_for_test();
+        let out = ws.register_imported(vec![imported("/m/import-0.png", None, 1)], 0);
+        let id = out.registered[0];
+        assert_eq!(ws.media_path(id).as_deref(), Some("/m/import-0.png"));
+        assert_eq!(ws.remove_media(id).as_deref(), Some("/m/import-0.png"));
+        assert_eq!(ws.remove_media(id), None, "removing twice is a no-op");
+        assert_eq!(
+            ws.remove_media(9_999),
+            None,
+            "an unknown id removes nothing"
+        );
+        assert_eq!(ws.media_path(id), None, "gone from the library");
+    }
+
+    #[test]
+    fn replacing_the_demo_library_leaves_a_production_launch_with_only_real_imports() {
+        let mut ws = DeckWorkspace::demo();
+        assert!(
+            !ws.view()["media"]["assets"].as_array().unwrap().is_empty(),
+            "premise: the demo workspace ships fake demo:// assets"
+        );
+        ws.set_media(MediaLibrary::new());
+        let v = ws.view();
+        assert!(
+            v["media"]["assets"].as_array().unwrap().is_empty(),
+            "no fake assets once the saved (empty) library replaces the demo one"
+        );
+        assert_eq!(v["media"]["missing_count"], 0);
+        assert_eq!(v["media"]["unused_count"], 0);
     }
 
     impl DeckWorkspace {
