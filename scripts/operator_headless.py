@@ -1571,7 +1571,7 @@ EXPECTED_MIN_CHECKS = 2065  # measured post-rebase, clean run: 2065 checks, 0 FA
 # "encrypted" render, its description text, the "not_encrypted" silent-downgrade warning render,
 # and its own control that the warning never also reads ON). Measured via an actual clean run,
 # not hand-summed.
-EXPECTED_MIN_CHECKS = 2069  # measured: 2069 checks, 0 FAIL
+EXPECTED_MIN_CHECKS = 2076  # measured: 2076 checks, 0 FAIL
 
 
 def find_chrome():
@@ -2294,8 +2294,9 @@ STUB = r"""
     // called — Stage alone must never move it (CON-136's on-air card depends on this distinction:
     // it only claims on-air once view.live_scripture genuinely matches the approved reference).
     // Quinn's QA review (PR #61, bug 17tnw2axre8): the real host's ApproveDetection handler
-    // (controller.rs's stage_reference_for_detection) narrows a WHOLE-CHAPTER reference (no
-    // verse) to its first verse before staging — "Isaiah 61" goes live as "Isaiah 61:1". This
+    // (controller.rs's narrow_to_first_verse) narrows a WHOLE-CHAPTER reference (no
+    // verse) to its first verse before staging — "Isaiah 61" goes live as "Isaiah 61:1" — and
+    // a RANGE to its first verse ("Romans 8:28-30" goes live as "Romans 8:28"). This
     // mock reproduces exactly that so app.js's fix is exercised against the real transformation,
     // not a hand-picked string: a reference with no ":" names no verse (every reference string
     // used anywhere in this fixture set follows "Book Chapter:Verse" when a verse is present),
@@ -2306,9 +2307,10 @@ STUB = r"""
     if (cmd === "approve_detection") {
       var _apDet = (V.detections || []).find(function (x) { return x.id === args.detectionId; });
       if (_apDet) {
+        var _apRange = /^(.+:\d+)-\d+$/.exec(_apDet.reference);
         V.__lastApprovedRef = _apDet.reference.indexOf(":") < 0
           ? _apDet.reference + ":1"
-          : _apDet.reference;
+          : (_apRange ? _apRange[1] : _apDet.reference);
         V.detections = (V.detections || []).filter(function (x) { return x.id !== args.detectionId; });
       }
       return Promise.resolve(JSON.parse(JSON.stringify(V)));
@@ -4331,7 +4333,7 @@ DRIVER = r"""
          "CON-134 (Sana finding 1, range coverage): Edit opens a range reference in the chapter browser");
       var callsAfterRangeEdit = window.__calls.slice(callsBeforeRangeEdit);
       ok(!callsAfterRangeEdit.some(function (c) { return c.cmd === "stage_scripture" || c.cmd === "follow_scripture"; }),
-         "CON-134 (Sana finding 1, range coverage): Edit never stages a RANGE reference either — the isRange branch's own stage=false guard, not just the single-verse one");
+         "CON-134 (Sana finding 1, range coverage): Edit never stages a RANGE reference either — the stage=false guard, not just for a single verse");
       // Sana's follow-up security review (PR #64, finding B): setCursor's own clearTimeout only
       // runs once setCursor itself is reached — but loadChapter's get_chapter fetch sits BEFORE
       // that call, so a timer already pending when a read-only load STARTS can still fire mid-
@@ -4497,7 +4499,7 @@ DRIVER = r"""
 
       // === CON-136 / Quinn's QA review (PR #61, bug 17tnw2axre8): a WHOLE-CHAPTER detection
       // (e.g. a spoken "Isaiah 61", no verse) never lit the on-air card. controller.rs's
-      // stage_reference_for_detection (the ApproveDetection handler) narrows a bare "Book
+      // narrow_to_first_verse (the ApproveDetection handler) narrows a bare "Book
       // Chapter" reference to its first verse before it goes live — d.reference stays
       // "Isaiah 61" but view.live_scripture reads "Isaiah 61:1" — so a bare === compare could
       // never match this real, common input shape. The mock's go_live already reproduces this
@@ -4526,6 +4528,52 @@ DRIVER = r"""
       render(Object.assign({}, chapterView, { live_scripture: "Isaiah 62:1" }));
       ok(el("det-onair").hidden,
          "CON-136 (Quinn, control): a genuinely different live reference still clears the card — the narrowing match is exact, not fuzzy");
+      window.__detResetForTest();
+      render(baseView);
+
+      // === ONE VERSE AT A TIME (range detections). A spoken range ("Romans 8:28-30") used to be
+      // staged as ONE slide holding all three verses, shrunk until they fit. Stage must now open the
+      // chapter at the first verse and stage ONLY that verse, and Approve must put only that verse
+      // on air — with the on-air card still lighting, because the host narrows the range exactly
+      // like it narrows a bare chapter. ===
+      window.__detResetForTest();
+      render(Object.assign({}, baseView, { detections: [
+        { id: 988, reference: "Romans 8:28-30", text: "And we know that all things work together", confidence: 90 },
+      ] }));
+      var callsBeforeRangeStage = window.__calls.length;
+      el("detections-list").querySelector(".det-stage").click();
+      await sleep(220); // > setCursor's 120ms stageTimer debounce
+      var rangeStaged = window.__calls.slice(callsBeforeRangeStage).filter(function (c) {
+        return c.cmd === "stage_scripture" || c.cmd === "follow_scripture";
+      });
+      ok(rangeStaged.length >= 1,
+         "range: Stage on a range detection does stage a verse (positive control — the one-verse guard below is not vacuous)");
+      ok(rangeStaged.every(function (c) { return c.args.reference === "Romans 8:28"; }),
+         "range: Stage stages ONLY the first verse (Romans 8:28), never the whole range on one slide — got " +
+         JSON.stringify(rangeStaged.map(function (c) { return c.args.reference; })));
+      ok(!window.__calls.slice(callsBeforeRangeStage).some(function (c) {
+           return (c.cmd === "stage_scripture" || c.cmd === "follow_scripture") && /:\d+-\d+$/.test(String(c.args.reference));
+         }),
+         "range: no staging command ever carries a verse RANGE reference");
+
+      window.__detResetForTest();
+      var rangeView = Object.assign({}, baseView, { detections: [
+        { id: 987, reference: "Romans 8:28-30", text: "And we know that all things work together", confidence: 90 },
+      ] });
+      render(rangeView);
+      V.detections = rangeView.detections;
+      el("detections-list").querySelector(".det-approve").click();
+      await sleep(15);
+      ok(V.live_scripture === "Romans 8:28",
+         "range (premise): the mock host narrowed the range detection to its first verse, like the real host");
+      ok(!el("det-onair").hidden && el("det-onair-ref").textContent === "Romans 8:28-30",
+         "range: the on-air card lights for a range detection even though live_scripture is the host-narrowed 'Romans 8:28'");
+      render(Object.assign({}, rangeView, { live_scripture: "Romans 8:28" }));
+      ok(!el("det-onair").hidden,
+         "range: the on-air card SURVIVES a later poll on the narrowed first verse");
+      render(Object.assign({}, rangeView, { live_scripture: "Romans 8:29" }));
+      ok(el("det-onair").hidden,
+         "range (control): a different verse live clears the card — the match is the range's FIRST verse only, not any verse in it");
       window.__detResetForTest();
       render(baseView);
 
@@ -4841,7 +4889,7 @@ DRIVER = r"""
          "CON-138 (range coverage): re-stage opens the range reference in the chapter browser");
       var callsAfterRangeRestage = window.__calls.slice(callsBeforeRangeRestage);
       ok(!callsAfterRangeRestage.some(function (c) { return c.cmd === "stage_scripture" || c.cmd === "follow_scripture"; }),
-         "CON-138 (Sana finding 1, range coverage): re-stage never stages a RANGE reference either — the isRange branch's own stage=false guard");
+         "CON-138 (Sana finding 1, range coverage): re-stage never stages a RANGE reference either — the stage=false guard");
       liveBtn.click();
       // DET_HISTORY_MAX bounds the log so it cannot grow without limit across a long service
       // (bounded-memory). Dismiss 60 distinct detections, OLDEST (#0) first through NEWEST

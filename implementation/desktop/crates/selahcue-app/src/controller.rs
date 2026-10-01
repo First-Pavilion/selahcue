@@ -648,16 +648,123 @@ fn scripture_slide(reference: &str) -> Slide {
     scripture_slide_in(selahcue_scripture::Translation::default(), reference)
 }
 
-/// Narrow a WHOLE-CHAPTER reference (e.g. a spoken "Isaiah 61" — no verse) to just its first
-/// verse for Preview/Live, so a chapter detection stages a single readable verse rather than a
-/// wall of the whole chapter on one slide. A reference that already names a verse (or doesn't
-/// parse) is returned unchanged. `Reference`'s Display is `"Book Chapter"` for a whole chapter,
-/// so appending `":1"` reparses cleanly to the first verse.
-fn stage_reference_for_detection(reference: &str) -> String {
-    match scripture::parse_one(reference) {
-        Ok(r) if r.verses.is_none() => format!("{r}:1"),
-        _ => reference.to_string(),
+/// Narrow a passage that spans more than one verse to its FIRST verse for Preview/Live — the
+/// display shows one verse at a time, never a wall of text shrunk to fit. A whole chapter (a
+/// spoken "Isaiah 61") becomes `Isaiah 61:1` and a range ("Psalms 1:2-10") becomes `Psalms 1:2`;
+/// the operator then steps on with `FollowScripture`. A reference that already names a single
+/// verse (or doesn't parse) is returned exactly as given.
+///
+/// This is the host-side half of the invariant: `scripture_slide_in` also renders only the first
+/// verse, so a range arriving from ANY client (console, remote controller, a detection, crash
+/// recovery) can never reach the output as more than one verse. Narrowing the *reference* as
+/// well keeps the `staged_scripture`/`live_scripture` readbacks, and the session snapshot, naming
+/// the verse that is actually on screen.
+fn narrow_to_first_verse(reference: &str) -> String {
+    let Ok(r) = scripture::parse_one(reference) else {
+        return reference.to_string();
+    };
+    let start = match r.verses {
+        None => 1,
+        Some(range) if range.end > range.start => range.start,
+        Some(_) => return reference.to_string(),
+    };
+    selahcue_core::scripture::Reference {
+        verses: Some(selahcue_core::scripture::VerseRange { start, end: start }),
+        ..r
     }
+    .to_string()
+}
+
+/// `reference` re-fitted to the verses `t` actually has in its chapter, or `None` when it already
+/// fits or cannot be fitted (the chapter is not in the corpus, or the first verse asked for does
+/// not exist — nothing sensible to clamp to, and the link is reported Missing instead).
+///
+/// A whole chapter becomes its explicit `1..=last` range and a range that runs past the end of
+/// the chapter ("Psalms 1:2-10" when Psalm 1 has six verses) is cut back to the real last verse.
+/// The core counts a link's slides from its reference alone (it has no corpus), so a link made
+/// through this fit counts exactly: no blank trailing slides, and a chapter is paged verse by
+/// verse instead of being one slide that shows only its first verse.
+fn fit_reference_to_chapter(
+    t: selahcue_scripture::Translation,
+    parsed: &selahcue_core::scripture::Reference,
+) -> Option<selahcue_core::scripture::Reference> {
+    let ch = selahcue_scripture::chapter_in(t, parsed)?;
+    let first = ch.verses.first()?.0;
+    let last = ch.verses.last()?.0;
+    let fitted = match parsed.verses {
+        None => selahcue_core::scripture::VerseRange {
+            start: first,
+            end: last,
+        },
+        Some(r) if r.start > last => return None,
+        Some(r) if r.end <= last => return None,
+        Some(r) => selahcue_core::scripture::VerseRange {
+            start: r.start,
+            end: last,
+        },
+    };
+    Some(selahcue_core::scripture::Reference {
+        verses: Some(fitted),
+        ..parsed.clone()
+    })
+}
+
+/// The fitted spelling of a plan link's `reference` in `translation` (see
+/// [`fit_reference_to_chapter`]), or `None` when it is unparseable or already fits. The ONE
+/// definition both the link-time fit (`set_item_content`) and the load-time fit
+/// ([`fit_scripture_links`]) use, so a link means the same thing however it got into the plan.
+fn fitted_scripture_reference(reference: &str, translation: Option<&str>) -> Option<String> {
+    let parsed = selahcue_core::scripture::parse_one(reference).ok()?;
+    let t = translation
+        .and_then(selahcue_scripture::Translation::from_code)
+        .unwrap_or_default();
+    fit_reference_to_chapter(t, &parsed).map(|r| r.to_string())
+}
+
+/// Fit every scripture link in a plan that enters the controller from storage — at boot
+/// (`LiveController::new`) and on a crash-loop resume (`resume_preserved`).
+///
+/// Links saved before the display moved to one verse at a time may name a whole chapter ("Psalm
+/// 23" as the reading) or run past the chapter's end. The core counts a link's slides from its
+/// reference alone, so left as stored a whole-chapter link would be ONE slide showing verse 1 with
+/// nothing to step to. Fitted, it pages through the real verses.
+///
+/// Returns whether any link CHANGED, and the callers then mark the plan dirty so the fitted form
+/// is saved on the next host tick. That matters beyond tidiness: the host fingerprints the
+/// IN-MEMORY plan when it captures an autosave slot and compares it, on restore, against the plan
+/// read back from STORAGE — a fit left only in memory would make those disagree and a crash-restart
+/// would refuse to restore. It is not an operator edit: no undo entry and no revision bump.
+/// Re-fitting an already-fitted link changes nothing, so a clean plan queues no write.
+fn fit_scripture_links(plan: &mut ServicePlan) -> bool {
+    let mut changed = false;
+    let linked: Vec<_> = plan
+        .items()
+        .iter()
+        .filter(|item| {
+            matches!(
+                item.content,
+                Some(selahcue_core::plan::ItemContent::Scripture { .. })
+            )
+        })
+        .map(|item| item.id)
+        .collect();
+    for id in linked {
+        let Some(item) = plan.get_mut(id) else {
+            continue;
+        };
+        if let Some(selahcue_core::plan::ItemContent::Scripture {
+            reference,
+            translation,
+            ..
+        }) = &mut item.content
+        {
+            if let Some(fitted) = fitted_scripture_reference(reference, translation.as_deref()) {
+                *reference = fitted;
+                changed = true;
+            }
+        }
+    }
+    changed
 }
 
 /// The wire view of a plan item's linked content (ADR-0020 follow-up), so the
@@ -814,15 +921,17 @@ fn item_content_from_link(link: &ContentLinkView) -> Option<selahcue_core::plan:
 
 /// Compose the slide for one within-item position (story S8-1). A **scripture-linked**
 /// item (ADR-0020 follow-up) renders its passage from the linked reference/translation,
-/// not its title. A title-only item (no stanzas, no link) is its single title slide —
-/// the exact pre-8a shape. A song stanza renders as the item title plus the stanza's
-/// wrapped lines, capped by the same physical budget as scripture slides (verses-per-slide
-/// pagination is a later slice). A deck/media link falls through to the title slide here —
-/// deck slides are composed by the presenting layer (which holds the deck library).
+/// not its title: slide `slide` is one verse of the range (or `verses_per_slide` verses),
+/// so the operator steps through the passage the way a song steps through its stanzas.
+/// A title-only item (no stanzas, no link) is its single title slide — the exact pre-8a
+/// shape. A song stanza renders as the item title plus the stanza's wrapped lines. A
+/// deck/media link falls through to the title slide here — deck slides are composed by the
+/// presenting layer (which holds the deck library).
 fn item_slide(item: &selahcue_core::plan::PlanItem, slide: usize) -> Slide {
     if let Some(selahcue_core::plan::ItemContent::Scripture {
         reference,
         translation,
+        verses_per_slide,
         ..
     }) = &item.content
     {
@@ -830,7 +939,7 @@ fn item_slide(item: &selahcue_core::plan::PlanItem, slide: usize) -> Slide {
             .as_deref()
             .and_then(selahcue_scripture::Translation::from_code)
             .unwrap_or_default();
-        return scripture_slide_in(t, reference);
+        return scripture_page_in(t, reference, *verses_per_slide, slide);
     }
     if item.stanzas.is_empty() {
         return Slide::title(item.title.clone());
@@ -842,10 +951,31 @@ fn item_slide(item: &selahcue_core::plan::PlanItem, slide: usize) -> Slide {
     Slide::new(item.title.clone(), lines)
 }
 
-/// Compose the scripture slide from a specific bundled translation. Recovery
-/// paths use the default (KJV): the chosen translation is session state, not
-/// yet persisted (documented gap; the reference itself recovers faithfully).
+/// Compose the scripture slide from a specific bundled translation — the FIRST verse of the
+/// passage. This is the ad-hoc path (a staged reference, a detection, crash recovery): the
+/// display shows one verse at a time, so a range or a whole chapter stages its first verse and
+/// the operator steps on with `FollowScripture`. A plan-linked scripture pages through its whole
+/// range via [`scripture_page_in`] instead. Recovery paths use the default (KJV): the chosen
+/// translation is session state, not yet persisted (documented gap; the reference itself
+/// recovers faithfully).
 fn scripture_slide_in(t: selahcue_scripture::Translation, reference: &str) -> Slide {
+    scripture_page_in(t, reference, None, 0)
+}
+
+/// Compose one slide ("page") of a scripture passage: `scripture_verses_per_page(verses_per_slide)`
+/// verses — exactly ONE unless the coordinator opted into more — starting at page `page`
+/// (clamped to the last page, so a stale position can never go blank).
+///
+/// The title names the verses actually on the slide (`Psalms 1:3`, or `Psalms 1:3-4` for a
+/// two-verse page), not the whole range, and the verse number is prefixed to the text only when a
+/// page holds more than one verse (the title names a lone verse). Falls back to a title-only slide
+/// when the reference does not resolve to any verse.
+fn scripture_page_in(
+    t: selahcue_scripture::Translation,
+    reference: &str,
+    verses_per_slide: Option<u16>,
+    page: usize,
+) -> Slide {
     let Ok(parsed) = selahcue_core::scripture::parse_one(reference) else {
         return Slide::title(reference);
     };
@@ -853,11 +983,25 @@ fn scripture_slide_in(t: selahcue_scripture::Translation, reference: &str) -> Sl
     if verses.is_empty() {
         return Slide::title(reference);
     }
-    let multi = verses.len() > 1;
+    let per_page = selahcue_core::plan::scripture_verses_per_page(verses_per_slide);
+    let pages = verses.len().div_ceil(per_page);
+    let start = page.min(pages - 1) * per_page;
+    let chunk = &verses[start..(start + per_page).min(verses.len())];
+    let (Some(first), Some(last)) = (chunk.first(), chunk.last()) else {
+        return Slide::title(reference);
+    };
+    let shown = selahcue_core::scripture::Reference {
+        verses: Some(selahcue_core::scripture::VerseRange {
+            start: first.verse,
+            end: last.verse,
+        }),
+        ..parsed
+    };
+    let multi = chunk.len() > 1;
     // Each verse is one PARAGRAPH — the full text, never truncated. The compositor
-    // word-wraps it to the region width and auto-sizes the font so the WHOLE passage
-    // fits + fills the box (zero content loss, FR-010 — no more "…" on long verses).
-    let lines: Vec<String> = verses
+    // word-wraps it to the region width and auto-sizes the font so the verse fits + fills
+    // the box (zero content loss, FR-010 — no more "…" on long verses).
+    let lines: Vec<String> = chunk
         .iter()
         .map(|v| {
             if multi {
@@ -867,13 +1011,18 @@ fn scripture_slide_in(t: selahcue_scripture::Translation, reference: &str) -> Sl
             }
         })
         .collect();
-    Slide::new(format!("{parsed} ({})", t.code()), lines)
+    Slide::new(format!("{shown} ({})", t.code()), lines)
 }
 
 impl LiveController {
     /// A controller for `plan`, rendering at `width×height` with `theme`. Both
     /// surfaces start blank.
     pub fn new(plan: ServicePlan, width: u32, height: u32, theme: Theme) -> Self {
+        // A stored plan may carry scripture links from before the display paged one verse at a
+        // time; fit them so they step through their real verses, and queue ONE save of the fitted
+        // form so storage and the autosave fingerprint agree (see `fit_scripture_links`).
+        let mut plan = plan;
+        let plan_fitted = fit_scripture_links(&mut plan);
         // Report the theme by its built-in name; an off-registry theme (only test
         // code builds one) falls back to "classic" for the picker's selection.
         let theme_name = theme.name_of().unwrap_or("classic").to_string();
@@ -901,7 +1050,7 @@ impl LiveController {
             display_status: Vec::new(),
             state_dirty: false,
             live_generation: 0,
-            plan_dirty: false,
+            plan_dirty: plan_fitted,
             plan_undo: Vec::new(),
             plan_redo: Vec::new(),
             plan_revision: 0,
@@ -989,6 +1138,10 @@ impl LiveController {
     /// swap is new — and marks state dirty afterward (unlike a boot-time `restore`, this
     /// resumed state must survive the very next crash, not wait for the next real edit).
     pub fn resume_preserved(&mut self, plan: ServicePlan, snap: &ControllerSnapshot) {
+        let mut plan = plan;
+        if fit_scripture_links(&mut plan) {
+            self.plan_dirty = true;
+        }
         self.plan = plan;
         self.restore(snap);
         self.state_dirty = true;
@@ -2094,13 +2247,21 @@ impl LiveController {
     }
 
     /// What the confidence monitor should show as "next": mid-song, the NEXT
-    /// stanza of the LIVE song (the speaker needs the coming line, which may
-    /// differ from Preview); otherwise whatever is staged in Preview. Public so
-    /// the stage-output contract is directly observable (like [`Presenter::staged`]).
+    /// stanza of the LIVE song, and mid-passage the NEXT verse of the LIVE scripture (the
+    /// speaker needs the coming line, which may differ from Preview); otherwise whatever is
+    /// staged in Preview. Public so the stage-output contract is directly observable (like
+    /// [`Presenter::staged`]).
     pub fn stage_next_slide(&self) -> Option<Slide> {
         if let Some(i) = self.live_idx {
             if let Some(item) = self.plan.items().get(i) {
-                if !item.stanzas.is_empty() && self.live_slide + 1 < item.slide_count() {
+                // An item that steps through its own slides: a song by stanza, a scripture
+                // link by verse. (A deck steps in the operator, which holds the deck library.)
+                let steps_within = !item.stanzas.is_empty()
+                    || matches!(
+                        item.content,
+                        Some(selahcue_core::plan::ItemContent::Scripture { .. })
+                    );
+                if steps_within && self.live_slide + 1 < item.slide_count() {
                     return Some(item_slide(item, self.live_slide + 1));
                 }
             }
@@ -2859,9 +3020,11 @@ impl LiveController {
                 if !selahcue_scripture::is_available(t) {
                     return ControllerReply::Deny(DenyReason::BadRequest);
                 }
-                self.presenter.stage(scripture_slide_in(t, reference));
+                // One verse at a time: a range or whole chapter stages its first verse.
+                let staged = narrow_to_first_verse(reference);
+                self.presenter.stage(scripture_slide_in(t, &staged));
                 self.staged_idx = None; // a scripture slide is not a plan index
-                self.staged_scripture = Some(reference.clone());
+                self.staged_scripture = Some(staged);
                 ControllerReply::Ack
             }
             Command::FollowScripture {
@@ -2882,16 +3045,17 @@ impl LiveController {
                     return ControllerReply::Deny(DenyReason::BadRequest);
                 }
                 // Always stage the verse in Preview (identical to StageScripture).
-                self.presenter.stage(scripture_slide_in(t, reference));
+                let verse = narrow_to_first_verse(reference);
+                self.presenter.stage(scripture_slide_in(t, &verse));
                 self.staged_idx = None;
-                self.staged_scripture = Some(reference.clone());
+                self.staged_scripture = Some(verse.clone());
                 // FOLLOW (owner refine #8): advance the LIVE output to the same verse ONLY
                 // when a scripture is ALREADY live — never promotes non-live / non-scripture
                 // content, so preview⟂live isolation holds when nothing is on air.
                 if self.live_scripture.is_some() && self.presenter.go_live() {
                     self.live_idx = None; // a scripture is not a plan index
                     self.live_slide = self.staged_slide;
-                    self.live_scripture = Some(reference.clone());
+                    self.live_scripture = Some(verse);
                     self.live_free_text = None;
                     self.live_free_body = Vec::new();
                     // Following updates the live CONTENT, not the blackout state (unlike
@@ -3407,9 +3571,9 @@ impl LiveController {
                 // the queue. An unknown/stale id is a bad request.
                 match self.transcript.approve(*detection_id) {
                     Some(detected) => {
-                        // A whole-chapter detection stages just its first verse (never a full
-                        // chapter of text on one slide); a specific verse stages as-is.
-                        let staged = stage_reference_for_detection(&detected.reference);
+                        // A whole-chapter or range detection stages just its first verse (never
+                        // a wall of text on one slide); a single verse stages as-is.
+                        let staged = narrow_to_first_verse(&detected.reference);
                         self.presenter.stage(scripture_slide(&staged));
                         self.staged_idx = None; // a scripture slide is not a plan index
                         self.staged_scripture = Some(staged);
@@ -3756,6 +3920,10 @@ impl LiveController {
     /// deck-media id), or a scripture reference that does not parse is rejected with the
     /// plan unchanged. Editing the plan never touches Live; if the edited item is the one
     /// staged in Preview, it is re-staged so a newly linked scripture resolves at once.
+    ///
+    /// A scripture link is stored FITTED to its chapter (see [`fit_reference_to_chapter`]): a
+    /// whole chapter becomes its explicit verse range and a range past the chapter's end is cut
+    /// back to the real last verse, so the link's slide count (one verse a slide) is exact.
     fn set_item_content(
         &mut self,
         item_id: u64,
@@ -3767,14 +3935,29 @@ impl LiveController {
         let content = match link {
             None => None,
             Some(l) => {
-                let Some(c) = item_content_from_link(l) else {
+                let Some(mut c) = item_content_from_link(l) else {
                     return ControllerReply::Deny(DenyReason::BadRequest);
                 };
                 // A scripture link must reference a passage that parses (FR-026) —
                 // reject an unparseable ref rather than store a dangling link.
-                if let selahcue_core::plan::ItemContent::Scripture { reference, .. } = &c {
+                if let selahcue_core::plan::ItemContent::Scripture {
+                    reference,
+                    translation,
+                    ..
+                } = &mut c
+                {
                     if selahcue_core::scripture::parse_one(reference).is_err() {
                         return ControllerReply::Deny(DenyReason::BadRequest);
+                    }
+                    // Store the passage that EXISTS: a whole chapter becomes its explicit range
+                    // and a range past the chapter's end is cut back to the real last verse, so
+                    // the slide count the core derives from the reference is exact. A passage
+                    // that already fits (or is not in the corpus — reported Missing, not
+                    // rejected) is stored exactly as given.
+                    if let Some(fitted) =
+                        fitted_scripture_reference(reference, translation.as_deref())
+                    {
+                        *reference = fitted;
                     }
                 }
                 Some(c)

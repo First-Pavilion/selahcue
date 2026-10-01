@@ -107,20 +107,32 @@ pub fn detect(text: &str) -> Vec<String> {
 }
 
 /// Normalise transcript text into parser-ready tokens: lowercase; strip punctuation
-/// (keeping `:` so a typed `"8:28"` still parses); fold spelled-out numbers ("twenty
+/// (keeping `:` so a typed `"8:28"` still parses, and a hyphen/dash that joins two digit
+/// runs so a typed range `"1:2-10"` stays one range); fold spelled-out numbers ("twenty
 /// eight" → `28`, "one hundred nineteen" → `119`) to digits, including a
 /// **digit-by-digit reading** ("one zero three" / "one oh three" → `103` — see
-/// [`take_digit_run`]); drop "chapter"/"verse" filler (their numbers already survived
-/// the fold on their own); and join spoken ranges ("28 through 30" → `28-30`).
+/// [`take_digit_run`]); drop "chapter"/"verse"/"from" filler (their numbers already
+/// survived the fold on their own); and join spoken ranges ("28 through 30" → `28-30`).
 fn normalize_tokens(text: &str) -> Vec<String> {
-    // 1. Lowercase; keep ASCII alphanumerics and ':' (a chapter:verse separator),
-    //    everything else becomes a break.
-    let cleaned: String = text
-        .chars()
-        .map(|c| {
+    // 1. Lowercase; keep ASCII alphanumerics and ':' (a chapter:verse separator), and a
+    //    hyphen or en/em dash sitting directly between two digits (a typed verse range —
+    //    cloud engines with smart formatting write "Psalm 1:2-10"; flattening it to a space
+    //    read as the single verse 1:2 and lost the rest). Everything else becomes a break,
+    //    so a dash in ordinary prose ("well-known", "John- 3:16") still separates words.
+    let chars: Vec<char> = text.chars().collect();
+    let cleaned: String = chars
+        .iter()
+        .enumerate()
+        .map(|(i, &c)| {
             let c = c.to_ascii_lowercase();
             if c.is_ascii_alphanumeric() || c == ':' {
                 c
+            } else if matches!(c, '-' | '\u{2013}' | '\u{2014}')
+                && i > 0
+                && chars[i - 1].is_ascii_digit()
+                && chars.get(i + 1).is_some_and(|n| n.is_ascii_digit())
+            {
+                '-'
             } else {
                 ' '
             }
@@ -158,10 +170,19 @@ fn normalize_tokens(text: &str) -> Vec<String> {
     }
 
     // 3. Drop filler connectors now that any numbers straddling them have already been
-    //    folded on their own (step 2's ordering is what makes this safe).
+    //    folded on their own (step 2's ordering is what makes this safe). "from" is how a
+    //    preacher introduces a range — "Psalms chapter one FROM verse two to ten" — and left in
+    //    it sat between the chapter and the verse range, so the window failed to parse and the
+    //    match fell back to the bare chapter, dropping the range. Dropping it is safe for the
+    //    same reason as the others: a window must still be led by a real book to parse at all.
     let words: Vec<String> = folded
         .into_iter()
-        .filter(|w| !matches!(w.as_str(), "chapter" | "chapters" | "verse" | "verses"))
+        .filter(|w| {
+            !matches!(
+                w.as_str(),
+                "chapter" | "chapters" | "verse" | "verses" | "from"
+            )
+        })
         .collect();
 
     // 4. Join spoken ranges: <digits> <range-word> <digits> → "a-b".

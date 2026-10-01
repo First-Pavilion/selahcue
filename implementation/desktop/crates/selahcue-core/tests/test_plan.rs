@@ -182,9 +182,68 @@ fn slide_count_is_one_for_a_scripture_linked_item_even_with_stanzas() {
             verse_numbers: None,
         });
     }
-    // A scripture link renders one passage slide, so it counts as one regardless of the stanzas
-    // the item also carries (the picker must not advertise N slides that all render the passage).
+    // A single-verse scripture link is one slide regardless of the stanzas the item also
+    // carries (the picker must not advertise N slides that all render the passage).
     assert_eq!(p.get(s).unwrap().slide_count(), 1);
+}
+
+/// A plan item linked to `reference` with an optional verses-per-slide override.
+fn scripture_item(reference: &str, verses_per_slide: Option<u16>) -> (ServicePlan, ItemId) {
+    let mut p = ServicePlan::new("Sunday");
+    let s = p.add_item(ItemKind::Scripture, "Reading");
+    p.get_mut(s).unwrap().content = Some(ItemContent::Scripture {
+        reference: reference.into(),
+        translation: None,
+        verses_per_slide,
+        verse_numbers: None,
+    });
+    (p, s)
+}
+
+#[test]
+fn a_scripture_range_presents_one_verse_per_slide_by_default() {
+    // The display shows ONE verse at a time: Romans 8:28-30 is three slides, not one wall.
+    let (p, s) = scripture_item("Romans 8:28-30", None);
+    assert_eq!(p.get(s).unwrap().slide_count(), 3);
+    // A single verse stays one slide.
+    let (p, s) = scripture_item("John 3:16", None);
+    assert_eq!(p.get(s).unwrap().slide_count(), 1);
+}
+
+#[test]
+fn verses_per_slide_groups_a_range_into_pages_and_rounds_up() {
+    // An explicit override is honoured (opt-in); 3 verses at 2/slide is 2 pages (2 + 1).
+    let (p, s) = scripture_item("Romans 8:28-30", Some(2));
+    assert_eq!(p.get(s).unwrap().slide_count(), 2);
+    // Larger than the range is one page; zero is nonsense and is treated as 1, never a divide-by-zero.
+    let (p, s) = scripture_item("Romans 8:28-30", Some(10));
+    assert_eq!(p.get(s).unwrap().slide_count(), 1);
+    let (p, s) = scripture_item("Romans 8:28-30", Some(0));
+    assert_eq!(p.get(s).unwrap().slide_count(), 3);
+}
+
+#[test]
+fn a_scripture_range_counts_by_verses_not_by_stanzas() {
+    let (mut p, s) = scripture_item("Psalms 119:2-10", None);
+    p.get_mut(s).unwrap().stanzas = vec![
+        Stanza {
+            lines: vec!["a".into()],
+        },
+        Stanza {
+            lines: vec!["b".into()],
+        },
+    ];
+    assert_eq!(p.get(s).unwrap().slide_count(), 9);
+}
+
+#[test]
+fn a_scripture_link_the_core_cannot_count_is_one_slide() {
+    // The core is corpus-free: a whole chapter has no verse count here (the host expands it to
+    // an explicit range at link time), and an unparseable legacy reference must not panic.
+    for reference in ["Psalms 1", "not a reference", ""] {
+        let (p, s) = scripture_item(reference, None);
+        assert_eq!(p.get(s).unwrap().slide_count(), 1, "{reference:?}");
+    }
 }
 
 #[test]

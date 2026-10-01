@@ -501,6 +501,25 @@ pub struct PlanItem {
     pub content: Option<ItemContent>,
 }
 
+/// How many verses one slide of a scripture link carries: the coordinator's `verses_per_slide`
+/// override, else exactly ONE (the display shows one verse at a time). `0` is nonsense from a
+/// hand-built wire value and is read as 1, never a divide-by-zero.
+///
+/// The ONE definition of the page size — [`PlanItem::slide_count`] counts with it and the host
+/// chunks the passage's verses with it, so the advertised slide count and the slides actually
+/// composed cannot drift apart.
+pub fn scripture_verses_per_page(verses_per_slide: Option<u16>) -> usize {
+    verses_per_slide.map_or(1, |n| usize::from(n).max(1))
+}
+
+/// Slides a scripture link of `verse_count` verses presents as. A count of 0 (a whole chapter the
+/// corpus-free core cannot count) is one slide.
+fn scripture_page_count(verse_count: u16, verses_per_slide: Option<u16>) -> usize {
+    usize::from(verse_count)
+        .div_ceil(scripture_verses_per_page(verses_per_slide))
+        .max(1)
+}
+
 impl PlanItem {
     /// How many slides this item presents as (a title-only item is one slide). A deck-linked
     /// presentation reports the deck's slide count as synced by the operator (the host has no deck
@@ -511,11 +530,22 @@ impl PlanItem {
                 slide_count: Some(c),
                 ..
             }) => (*c as usize).max(1),
-            // A scripture link renders as a single passage slide (the presenter's `item_slide`
-            // returns one scripture slide regardless of index), so it counts as one — even if the
-            // item also carries stanzas. Otherwise the picker would advertise N slides that all
-            // render the same passage, and LIVE/PREVIEW cursors would be meaningless for the item.
-            Some(ItemContent::Scripture { .. }) => 1,
+            // A scripture link presents ONE VERSE per slide (or `verses_per_slide` when the
+            // coordinator opted into more), so a range is a run of slides the operator steps
+            // through, never one wall of text the compositor shrinks to fit. It is counted from
+            // the reference alone, whatever stanzas the item also carries.
+            //
+            // Corpus-free by design (this layer does no I/O): a whole-chapter or unparseable
+            // reference has no countable verses here and is one slide. The host expands a whole
+            // chapter to an explicit range and clamps the range to the real chapter when the link
+            // is made (`LiveController::set_item_content`), so a freshly linked item counts exactly.
+            Some(ItemContent::Scripture {
+                reference,
+                verses_per_slide,
+                ..
+            }) => crate::scripture::parse_one(reference)
+                .map(|r| scripture_page_count(r.verse_count(), *verses_per_slide))
+                .unwrap_or(1),
             _ => self.stanzas.len().max(1),
         }
     }
