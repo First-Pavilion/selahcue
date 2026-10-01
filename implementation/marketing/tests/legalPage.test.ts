@@ -58,7 +58,9 @@ async function render(doc: LegalDocument): Promise<string> {
 const BANNER = '> **DRAFT: NOT FINAL**\n>\n> Version 0.1 (draft, 2026-01-02). Fill every `{{PLACEHOLDER}}` first.\n\n'
 
 function docFrom(body: string, withBanner = true): LegalDocument {
-  return parseLegalMarkdown(`# Synthetic Policy\n\n${withBanner ? BANNER : ''}## 1. One\n\n${body}\n`, 'synthetic.md')
+  // Without the banner the version is a front-matter paragraph (the publish-path shape).
+  const front = withBanner ? BANNER : 'Version 1.0 (final, 2026-01-02).\n\n'
+  return parseLegalMarkdown(`# Synthetic Policy\n\n${front}## 1. One\n\n${body}\n`, 'synthetic.md')
 }
 
 const count = (html: string, needle: string): number => html.split(needle).length - 1
@@ -123,11 +125,10 @@ describe('structure and accessibility of the rendered page', () => {
     assert.ok(html.includes('role="region"') && html.includes('aria-label="Two: table"') && html.includes('scope="col"') && html.includes('scope="row"'))
   })
 
-  test('no version line: nothing is shown in its place', async () => {
-    const doc = parseLegalMarkdown('# T\n\n> **DRAFT**\n>\n> No version here.\n\n## 1. One\n\nBody.\n', 't.md')
-    const html = await render(doc)
-    assert.ok(!html.includes('Last updated'))
-    assert.ok(!html.includes('<time'))
+  test('PUBLISH PATH: with the banner removed, "Last updated" is still shown from the front-matter version line', async () => {
+    const html = await render(docFrom('1.1 Body.', false))
+    assert.match(html, /<time datetime="2026-01-02"[^>]*>\s*Version 1\.0 \(final\) · Last updated 2 January 2026\s*<\/time>/)
+    assert.equal(count(html, 'data-draft-banner'), 0)
   })
 })
 

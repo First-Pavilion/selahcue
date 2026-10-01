@@ -63,10 +63,18 @@ export interface Part {
 export interface DocumentVersion {
   /** "0.3" */
   readonly number: string
-  /** "draft" */
+  /** "draft". Lower-cased; `draft` keeps the page a draft (see document.ts). */
   readonly status: string
   /** ISO calendar date, "2026-10-01". */
   readonly date: string
+  /** The version statement as written: "Version 0.3 (draft, 2026-10-01)" (a front-matter paragraph keeps its final period). */
+  readonly line: string
+  /**
+   * Where it was found. `banner`: the second paragraph of the DRAFT blockquote (how the
+   * drafts carry it today). `front-matter`: its own paragraph under the title, which is
+   * where it lives once the banner is removed to publish.
+   */
+  readonly source: 'banner' | 'front-matter'
 }
 
 export interface LegalDocument {
@@ -82,8 +90,12 @@ export interface LegalDocument {
     readonly headline: readonly Inline[]
     readonly notes: readonly Block[]
   } | null
-  /** Parsed from the banner's own "Version X (draft, date)" line; null if absent or unparseable. */
-  readonly version: DocumentVersion | null
+  /**
+   * The document's own "Version X (status, YYYY-MM-DD)" line. REQUIRED: generation fails
+   * if neither the banner nor a front-matter paragraph carries one, so "Last updated" can
+   * never silently vanish when the banner is removed.
+   */
+  readonly version: DocumentVersion
   /** The key-facts list under the title ("Who we are", "Registered address", ...). */
   readonly facts: readonly ListItem[]
   readonly summary: Section | null

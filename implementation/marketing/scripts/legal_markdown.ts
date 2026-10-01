@@ -418,13 +418,19 @@ function validDate(iso: string): boolean {
   return dt.getUTCFullYear() === y && dt.getUTCMonth() === mo - 1 && dt.getUTCDate() === d
 }
 
-/** "Version 0.3 (draft, 2026-10-01)." -> structured, or null. Never guesses. */
-export function parseVersionLine(text: string): DocumentVersion | null {
+/** What `parseVersionLine` reads out of a sentence; the caller adds where it was found. */
+export type ParsedVersion = Pick<DocumentVersion, 'number' | 'status' | 'date' | 'line'>
+
+/**
+ * "Version 0.3 (draft, 2026-10-01). Anything after." -> structured, or null. Never guesses:
+ * an impossible calendar date is null, not a best effort.
+ */
+export function parseVersionLine(text: string): ParsedVersion | null {
   const m = /^Version (\d+(?:\.\d+)*) \(([A-Za-z][A-Za-z -]*), (\d{4}-\d{2}-\d{2})\)/.exec(text)
   if (!m) return null
   const date = m[3] ?? ''
   if (!validDate(date)) return null
-  return { number: m[1] ?? '', status: (m[2] ?? '').toLowerCase(), date }
+  return { number: m[1] ?? '', status: (m[2] ?? '').toLowerCase(), date, line: m[0] }
 }
 
 export function parseLegalMarkdown(markdown: string, source: string): LegalDocument {
@@ -441,16 +447,34 @@ export function parseLegalMarkdown(markdown: string, source: string): LegalDocum
   plainHeading(first.text, source, first.line)
   const title = first.text
 
+  // Preamble, in this order, each at most once: [> DRAFT banner] [Version line] [- facts].
+  // The version line is its own paragraph so it survives the banner being deleted to
+  // publish (stage numbers enforce the order; a `---` rule is decoration anywhere here).
   let k = 1
   let bannerTok: Extract<Token, { t: 'quote' }> | null = null
+  let versionTok: Extract<Token, { t: 'para' }> | null = null
   let factsTok: Extract<Token, { t: 'list' }> | null = null
+  let stage = 0 // 0 nothing yet, 1 banner, 2 version, 3 facts
   for (; k < tokens.length; k++) {
     const tok = tokens[k]
     if (!tok || tok.t === 'h') break
-    if (tok.t === 'quote' && !bannerTok && !factsTok) bannerTok = tok
-    else if (tok.t === 'list' && !factsTok) factsTok = tok
-    else if (tok.t === 'hr') continue
-    else throw new LegalParseError(source, tok.line, `unexpected ${tok.t} before the first "##" heading`)
+    if (tok.t === 'hr') continue
+    if (tok.t === 'quote' && stage < 1) {
+      bannerTok = tok
+      stage = 1
+    } else if (tok.t === 'para' && /^Version\b/.test(tok.text) && stage < 2) {
+      versionTok = tok
+      stage = 2
+    } else if (tok.t === 'list' && stage < 3) {
+      factsTok = tok
+      stage = 3
+    } else {
+      throw new LegalParseError(
+        source,
+        tok.line,
+        `unexpected ${tok.t} before the first "##" heading (allowed, in order: a "> " DRAFT banner, a "Version X (status, YYYY-MM-DD)." paragraph, a "- " key-facts list)`,
+      )
+    }
   }
 
   // ---- sections ----------------------------------------------------------------------
@@ -612,7 +636,7 @@ export function parseLegalMarkdown(markdown: string, source: string): LegalDocum
 
   // ---- banner, version, facts ----------------------------------------------------------
   let banner: LegalDocument['banner'] = null
-  let version: DocumentVersion | null = null
+  let bannerVersion: DocumentVersion | null = null
   if (bannerTok) {
     const inner = tokenize(bannerTok.lines, source, bannerTok.line - 1)
     const paras = inner.filter((t): t is Extract<Token, { t: 'para' }> => t.t === 'para')
@@ -626,10 +650,31 @@ export function parseLegalMarkdown(markdown: string, source: string): LegalDocum
       notes: rest.map((p): Block => ({ kind: 'paragraph', inline: parseInline(p.text, source, p.line) })),
     }
     for (const p of rest) {
-      version = parseVersionLine(p.text)
-      if (version) break
+      const parsed = parseVersionLine(p.text)
+      if (parsed) {
+        bannerVersion = { ...parsed, source: 'banner' }
+        break
+      }
+      if (/^Version\b/.test(p.text)) {
+        throw new LegalParseError(source, p.line, `unreadable version line (expected "Version X.Y (status, YYYY-MM-DD)" with a real date): "${p.text.slice(0, 60)}"`)
+      }
     }
   }
+  let frontMatterVersion: DocumentVersion | null = null
+  if (versionTok) {
+    const parsed = parseVersionLine(versionTok.text)
+    if (!parsed) {
+      throw new LegalParseError(source, versionTok.line, `unreadable version line (expected "Version X.Y (status, YYYY-MM-DD)." with a real date): "${versionTok.text.slice(0, 60)}"`)
+    }
+    if (versionTok.text.replace(/\.$/, '') !== parsed.line) {
+      throw new LegalParseError(source, versionTok.line, 'a front-matter version paragraph must contain only the version statement (anything else would not be rendered)')
+    }
+    frontMatterVersion = { ...parsed, line: versionTok.text, source: 'front-matter' }
+  }
+  if (bannerVersion && frontMatterVersion) {
+    throw new LegalParseError(source, versionTok?.line ?? null, 'the version is given twice (in the banner and as a front-matter paragraph); keep one')
+  }
+  const version = bannerVersion ?? frontMatterVersion
   const facts = factsTok ? convItems(parseList(factsTok, source)) : []
 
   const parts: Part[] = rawParts.map((p) => ({
@@ -638,6 +683,14 @@ export function parseLegalMarkdown(markdown: string, source: string): LegalDocum
     sections: p.sections.map(convSection),
   }))
 
+  // Checked last, so a content error in the body is reported before a missing version.
+  if (!version) {
+    throw new LegalParseError(
+      source,
+      null,
+      'no version line: add a "Version X.Y (status, YYYY-MM-DD)." paragraph directly under the title (or keep it as the second paragraph of the DRAFT banner)',
+    )
+  }
   const doc: LegalDocument = {
     source,
     title,

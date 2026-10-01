@@ -117,6 +117,7 @@ function documentText(doc: LegalDocument): string[] {
     out.push(inlineWords(doc.banner.headline))
     blocksText(doc.banner.notes, out)
   }
+  if (doc.version.source === 'front-matter') out.push(doc.version.line)
   itemsText(doc.facts, out)
   if (doc.summary) sectionText(doc.summary, out)
   for (const p of doc.parts) {
@@ -145,6 +146,15 @@ function markdownWords(source: string): string[] {
     .split(/\s+/)
     .filter(Boolean)
 }
+
+describe('the completeness check itself works on the publish-path shape (banner removed)', () => {
+  test('a synthetic final document: every word survives, including the front-matter version line', () => {
+    const src =
+      '# Final Policy\n\nVersion 1.0 (final, 2026-11-05).\n\n- **Who:** Example Ltd\n\n---\n\n## Summary in plain language\n\n- one plain point\n\n---\n\n## 1. Scope\n\n1.1 This applies to everyone. See section 2.\n\n## 2. Data\n\n| A | B |\n|---|---|\n| x | `y` |\n'
+    const doc = parseLegalMarkdown(src, 'final.md')
+    assert.deepEqual(documentText(doc), markdownWords(src))
+  })
+})
 
 describe('the typed content holds every word of the draft, in order', { skip: !DOCS_PRESENT && 'docs/legal is not present' }, () => {
   for (const [target, doc] of [
@@ -301,7 +311,7 @@ describe('the real documents are internally consistent', () => {
 describe('the markdown parser', () => {
   test('numbers clauses, anchors them and resolves "section N" references', () => {
     const doc = parseLegalMarkdown(
-      '# T\n\n## 1. One\n\n1.1 First clause, see section 2.\n\n## 2. Two\n\n2.1 Second, with **bold** and `code`.\n',
+      '# T\n\nVersion 1.0 (final, 2026-01-02).\n\n## 1. One\n\n1.1 First clause, see section 2.\n\n## 2. Two\n\n2.1 Second, with **bold** and `code`.\n',
       't.md',
     )
     const one = doc.parts[0]?.sections[0]
@@ -319,7 +329,7 @@ describe('the markdown parser', () => {
 
   test('a list of references links every number and keeps the separators as text', () => {
     const doc = parseLegalMarkdown(
-      '# T\n\n## 1. One\n\n1.1 A.\n\n1.2 Sections 1.1, 1.2 and 2, and more.\n\n## 2. Two\n\nBody.\n',
+      '# T\n\nVersion 1.0 (final, 2026-01-02).\n\n## 1. One\n\n1.1 A.\n\n1.2 Sections 1.1, 1.2 and 2, and more.\n\n## 2. Two\n\nBody.\n',
       't.md',
     )
     const p = doc.parts[0]?.sections[0]?.blocks[1]
@@ -351,7 +361,13 @@ describe('the markdown parser', () => {
       '# T\n\n> **DRAFT: REVIEW ME**\n>\n> Version 1.2 (draft, 2026-02-03). Fill every `{{PLACEHOLDER}}`.\n\n## 1. One\n\nNo placeholders here.\n',
       't.md',
     )
-    assert.deepEqual(doc.version, { number: '1.2', status: 'draft', date: '2026-02-03' })
+    assert.deepEqual(doc.version, {
+      number: '1.2',
+      status: 'draft',
+      date: '2026-02-03',
+      line: 'Version 1.2 (draft, 2026-02-03)',
+      source: 'banner',
+    })
     assert.equal(doc.banner?.headline.length, 1)
     assert.equal(placeholderOccurrences(doc).length, 0, 'the banner mention is not a missing fact')
     const state = legalPageState(doc)
@@ -360,7 +376,7 @@ describe('the markdown parser', () => {
     assert.equal(state.draft, true)
   })
 
-  test('the version is never guessed: a malformed or impossible line yields null', () => {
+  test('the version is never guessed: a malformed or impossible line is null', () => {
     assert.equal(parseVersionLine('Version 0.3 (draft, 2026-10-01). Status.')?.date, '2026-10-01')
     for (const bad of [
       'Version 0.3 (draft, 2026-02-30).',
@@ -371,15 +387,59 @@ describe('the markdown parser', () => {
     ]) {
       assert.equal(parseVersionLine(bad), null, bad)
     }
-    const doc = parseLegalMarkdown('# T\n\n> **DRAFT**\n>\n> No version line here.\n\n## 1. One\n\nBody.\n', 't.md')
-    assert.equal(doc.version, null)
-    assert.equal(versionLabel(doc.version), null)
+  })
+
+  test('the version is REQUIRED and generation fails loudly without one (it can never silently vanish)', () => {
+    assert.throws(
+      () => parseLegalMarkdown('# T\n\n> **DRAFT**\n>\n> No version line here.\n\n## 1. One\n\nBody.\n', 't.md'),
+      /no version line/,
+    )
+    assert.throws(() => parseLegalMarkdown('# T\n\n## 1. One\n\nBody.\n', 't.md'), /no version line/)
+  })
+
+  test('an unreadable version line throws rather than being skipped', () => {
+    for (const bad of ['Version 0.3 (draft, 2026-02-30).', 'Version 0.3 (draft, 1 October 2026).', 'Version three.']) {
+      assert.throws(() => parseLegalMarkdown(`# T\n\n${bad}\n\n## 1. One\n\nBody.\n`, 't.md'), /unreadable version line/, bad)
+      assert.throws(() => parseLegalMarkdown(`# T\n\n> **DRAFT**\n>\n> ${bad}\n\n## 1. One\n\nBody.\n`, 't.md'), /unreadable version line/, bad)
+    }
+  })
+
+  test('PUBLISH PATH: with the banner removed, the version is read from its own front-matter paragraph', () => {
+    const doc = parseLegalMarkdown('# T\n\nVersion 1.0 (final, 2026-11-05).\n\n- **Who:** us\n\n## 1. One\n\n1.1 Body.\n', 't.md')
+    assert.equal(doc.banner, null)
+    assert.deepEqual(doc.version, {
+      number: '1.0',
+      status: 'final',
+      date: '2026-11-05',
+      line: 'Version 1.0 (final, 2026-11-05).',
+      source: 'front-matter',
+    })
+    assert.equal(versionLabel(doc.version)?.text, 'Version 1.0 (final) · Last updated 5 November 2026')
+    assert.equal(legalPageState(doc).draft, false)
+  })
+
+  test('the version may not be given twice, nor carry unrendered extra text, nor sit out of order', () => {
+    assert.throws(
+      () =>
+        parseLegalMarkdown('# T\n\n> **DRAFT**\n>\n> Version 1.0 (draft, 2026-01-02).\n\nVersion 1.0 (final, 2026-01-02).\n\n## 1. One\n\nB.\n', 't.md'),
+      /given twice/,
+    )
+    assert.throws(
+      () => parseLegalMarkdown('# T\n\nVersion 1.0 (final, 2026-01-02). Effective from launch.\n\n## 1. One\n\nB.\n', 't.md'),
+      /only the version statement/,
+    )
+    assert.throws(
+      () => parseLegalMarkdown('# T\n\n- **Who:** us\n\nVersion 1.0 (final, 2026-01-02).\n\n## 1. One\n\nB.\n', 't.md'),
+      /unexpected para/,
+    )
   })
 
   test('Parts, sections, subsections, tables and nested lists parse to the typed shape', () => {
     const doc = parseLegalMarkdown(
       [
         '# T',
+        '',
+        'Version 1.0 (final, 2026-01-02).',
         '',
         '- **Key:** value',
         '',
@@ -428,7 +488,7 @@ describe('the markdown parser', () => {
   })
 
   test('a Windows (CRLF) checkout parses to the same content', () => {
-    const src = '# T\n\n## 1. One\n\n1.1 A clause.\n\n- a\n- b\n'
+    const src = '# T\n\nVersion 1.0 (final, 2026-01-02).\n\n## 1. One\n\n1.1 A clause.\n\n- a\n- b\n'
     assert.deepEqual(parseLegalMarkdown(src.replace(/\n/g, '\r\n'), 't.md'), parseLegalMarkdown(src, 't.md'))
   })
 })
@@ -530,9 +590,11 @@ describe('link targets', () => {
 // ---------------------------------------------------------------------------------------
 
 function docWith(body: string, bannerMentionsPlaceholder = true): LegalDocument {
+  // With the banner: the version rides in the banner (status draft). Without it: the
+  // version is its own front-matter paragraph (status final), the publish-path shape.
   const banner = bannerMentionsPlaceholder
     ? '> **DRAFT: NOT FINAL**\n>\n> Version 0.1 (draft, 2026-01-02). Fill every `{{PLACEHOLDER}}` first.\n\n'
-    : ''
+    : 'Version 1.0 (final, 2026-01-02).\n\n'
   return parseLegalMarkdown(`# Synthetic Policy\n\n${banner}## 1. One\n\n${body}\n`, 'synthetic.md')
 }
 
@@ -565,7 +627,7 @@ describe('draft treatment is derived from the remaining placeholders', () => {
   })
 
   test('FAILS CLOSED: a version status of "draft" keeps the page a draft even with the banner removed', () => {
-    const doc = parseLegalMarkdown('# T\n\n## 1. One\n\n1.1 Body.\n', 't.md')
+    const doc = parseLegalMarkdown('# T\n\nVersion 1.0 (final, 2026-01-02).\n\n## 1. One\n\n1.1 Body.\n', 't.md')
     const draftStatus: LegalDocument = { ...doc, version: { number: '0.9', status: 'draft', date: '2026-01-02' } }
     const finalStatus: LegalDocument = { ...doc, version: { number: '1.0', status: 'final', date: '2026-01-02' } }
     assert.equal(legalPageState(draftStatus).draft, true)
@@ -649,7 +711,7 @@ describe('draft treatment is derived from the remaining placeholders', () => {
 
   test('a placeholder in the facts list or the summary counts too', () => {
     const doc = parseLegalMarkdown(
-      '# T\n\n- **Who:** `{{WHO}}`\n\n---\n\n## Summary in plain language\n\n- we use `{{SUMMARY_FACT}}`\n\n---\n\n## 1. One\n\nBody.\n',
+      '# T\n\nVersion 1.0 (final, 2026-01-02).\n\n- **Who:** `{{WHO}}`\n\n---\n\n## Summary in plain language\n\n- we use `{{SUMMARY_FACT}}`\n\n---\n\n## 1. One\n\nBody.\n',
       't.md',
     )
     assert.deepEqual(placeholderOccurrences(doc), ['WHO', 'SUMMARY_FACT'])

@@ -33,7 +33,7 @@ export const termsOfService: LegalDocument = {
       }
     ]
   },
-  "version": { "number": "0.3", "status": "draft", "date": "2026-10-01" },
+  "version": { "number": "0.3", "status": "draft", "date": "2026-10-01", "line": "Version 0.3 (draft, 2026-10-01)", "source": "banner" },
   "facts": [
     {
       "inline": [
