@@ -12,7 +12,6 @@ import {
   articleNeighbours,
   findArticle,
   findCategory,
-  relatedIn,
   type KnowledgeCollection,
 } from './knowledge.ts'
 import type { KnowledgeArticle, KnowledgeCategory } from './types.ts'
@@ -696,4 +695,3 @@ export const findDocsArticle = (category: unknown, slug: unknown) => findArticle
 export const findDocsCategory = (id: unknown) => findCategory(docs, id)
 export const docsIn = (categoryId: string) => articlesIn(docs, categoryId)
 export const docsNeighbours = (a: KnowledgeArticle) => articleNeighbours(docs, a)
-export const docsRelated = (a: KnowledgeArticle) => relatedIn(docs, a)

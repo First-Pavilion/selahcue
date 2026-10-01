@@ -34,7 +34,15 @@ export function readMinutes(body: readonly Block[]): number {
   return Math.max(1, Math.ceil(wordCount(body) / 200))
 }
 
-/** `heading-text` id for an h2/h3. Collisions get `-2`, `-3` … in document order. */
+/**
+ * Every generated heading id starts with this. The views own a handful of fixed ids
+ * (`docs-nav`, `docs-article`, `bp-share-title` …); an article whose h2 is "Docs nav" must
+ * not be able to collide with one, and the prefix makes that impossible by construction
+ * (`tests/content.test.ts` checks no fixed id uses it).
+ */
+export const HEADING_ID_PREFIX = 'sec-'
+
+/** `sec-heading-text` id for an h2/h3. Collisions get `-2`, `-3` … in document order. */
 export function headingIds(body: readonly Block[]): Map<Block, string> {
   const seen = new Map<string, number>()
   const ids = new Map<Block, string>()
@@ -47,7 +55,7 @@ export function headingIds(body: readonly Block[]): Map<Block, string> {
         .replace(/^-+|-+$/g, '') || 'section'
     const n = (seen.get(base) ?? 0) + 1
     seen.set(base, n)
-    ids.set(b, n === 1 ? base : `${base}-${n}`)
+    ids.set(b, HEADING_ID_PREFIX + (n === 1 ? base : `${base}-${n}`))
   }
   return ids
 }

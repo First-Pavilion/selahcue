@@ -17,8 +17,9 @@ import { fileURLToPath } from 'node:url'
 import { blogPath, blogPosts, blogNeighbours, featuredPost, findBlogPost, relatedPosts } from '../src/lib/content/blog.ts'
 import { docs, docsArticles, docsCategories, docsPath, findDocsArticle, docsNeighbours } from '../src/lib/content/docs.ts'
 import { classifyHref, inlineToText, parseInline } from '../src/lib/content/inline.ts'
-import { articlePath, readingOrder } from '../src/lib/content/knowledge.ts'
+import { articlePath, readingOrder, relatedIn } from '../src/lib/content/knowledge.ts'
 import {
+  HEADING_ID_PREFIX,
   SLUG_PATTERN,
   formatDate,
   headingIds,
@@ -101,13 +102,34 @@ describe('text helpers', () => {
 
   test('heading ids are slugs and collisions are disambiguated in order', () => {
     const ids = headingIds(body)
-    assert.deepEqual([...ids.values()], ['first-step', 'first-step-2', 'detail'])
+    assert.deepEqual([...ids.values()], ['sec-first-step', 'sec-first-step-2', 'sec-detail'])
+  })
+
+  test('generated ids can never collide with an id a view owns: a heading called "Docs nav" is still sec-docs-nav', () => {
+    const ids = headingIds([{ type: 'h2', text: 'Docs nav' }, { type: 'h2', text: 'Docs article' }])
+    assert.deepEqual([...ids.values()], ['sec-docs-nav', 'sec-docs-article'])
+    // Every id the article views and index views declare by hand must stay OUTSIDE the prefix.
+    const read = (n: string): string => readFileSync(MARKETING_SRC + `views/${n}.vue`, 'utf8')
+    const fixed: string[] = []
+    for (const n of ['BlogPostView', 'DocsArticleView', 'SupportArticleView', 'DocsView', 'SupportView', 'BlogView']) {
+      for (const m of read(n).matchAll(/\bid="([^"]+)"/g)) fixed.push(m[1] as string)
+    }
+    assert.ok(fixed.includes('docs-nav') && fixed.includes('docs-article'), 'positive control: the walker finds the fixed ids')
+    for (const id of fixed) assert.ok(!id.startsWith(HEADING_ID_PREFIX), `fixed id ${id} is inside the generated-id prefix`)
+  })
+
+  test('every real article uses prefixed, unique ids', () => {
+    for (const a of [...blogPosts, ...docsArticles, ...supportArticles]) {
+      const ids = [...headingIds(a.body).values()]
+      assert.equal(new Set(ids).size, ids.length, `${a.slug}: duplicate heading ids`)
+      for (const id of ids) assert.ok(id.startsWith(HEADING_ID_PREFIX), `${a.slug}: ${id}`)
+    }
   })
 
   test('the table of contents lists h2s only', () => {
     assert.deepEqual(tableOfContents(body), [
-      { id: 'first-step', text: 'First step' },
-      { id: 'first-step-2', text: 'First step' },
+      { id: 'sec-first-step', text: 'First step' },
+      { id: 'sec-first-step-2', text: 'First step' },
     ])
   })
 
@@ -379,5 +401,19 @@ describe('the live-control article tells the whole truth about the emergency con
     assert.ok(guard > Math.max(chordB, chordDot), 'the single-key guard must come AFTER the chords')
     const footer = readFileSync(REPO_ROOT + 'implementation/desktop/crates/selahcue-operator/dist/index.html', 'utf8')
     assert.ok(footer.indexOf('<footer id="emergency"') > footer.indexOf('</main>'), 'the emergency footer is no longer outside the per-surface <main>')
+  })
+})
+
+describe('related links', () => {
+  test('relatedIn never offers the article itself, stays in its category, and respects the limit', () => {
+    for (const a of supportArticles) {
+      const rel = relatedIn(support, a)
+      assert.ok(!rel.includes(a), `${a.slug} lists itself as related`)
+      assert.ok(rel.every((r) => r.category === a.category))
+      assert.ok(rel.length <= 3)
+    }
+    // Control: a category with company has related links at all.
+    assert.ok(relatedIn(support, supportArticles.find((a) => a.category === 'mobile-control')!).length >= 2)
+    assert.equal(relatedIn(support, supportArticles[0]!, 0).length, 0)
   })
 })
