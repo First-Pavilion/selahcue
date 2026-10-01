@@ -14,7 +14,7 @@
 // generation; `update_sermon_note_draft` (86akgqdv0) for editing a saved draft — already generic
 // over `transcriptId`, reused here unchanged, no backend change needed. `confirm_sermon_note_
 // regeneration` / `discard_sermon_note_regeneration` (FR-129, 86akgqdx8) for the regenerate-with-
-// retention confirm/discard step below. Nav + ⌘8 live in app.js; this module owns the surface body
+// retention confirm/discard step below. Nav + ⌘7 (Transcript & Notes, 17tnw2b0ntd) live in app.js; this module owns the surface body
 // and is loaded after app.js (same convention as preservice.js/settings.js).
 //
 // REGENERATE-WITH-RETENTION (FR-129, 86akgqdx8): generating again on a transcript that already
@@ -140,7 +140,25 @@
     var col = el("div", "tr-card-col");
     col.appendChild(el("span", "tr-card-name", label));
     col.appendChild(el("span", "tr-card-meta", fmtDate(t.started_at_ms) + " · " + dur + " · " + fmtSegCount(t.segment_count)));
+    // Figma 1128:2: an icon chip before the text, a status pill (green "Notes generated" when the
+    // row says so, grey "In progress" for a service still being recorded) and a chevron after it.
+    // All three are decorative/redundant with the button's aria-label, so they are aria-hidden.
+    var chip = el("span", "tr-card-ico", "▥");
+    chip.setAttribute("aria-hidden", "true");
+    btn.appendChild(chip);
     btn.appendChild(col);
+    if (t.notes_generated) {
+      var ng = el("span", "tr-notes-badge tr-notes-on", "Notes generated");
+      ng.setAttribute("aria-hidden", "true");
+      btn.appendChild(ng);
+    } else if (t.ended_at_ms == null) {
+      var ip = el("span", "tr-notes-badge", "In progress");
+      ip.setAttribute("aria-hidden", "true");
+      btn.appendChild(ip);
+    }
+    var chev = el("span", "tr-card-chev", "›");
+    chev.setAttribute("aria-hidden", "true");
+    btn.appendChild(chev);
     btn.addEventListener("click", function () { openTranscript(t.id); });
     card.appendChild(btn);
     return card;
@@ -807,6 +825,7 @@
     generateAllowed = t.ended_at_ms != null;
     generateHasExistingDraft = !!t.notes_generated;
     if (generateBtn) generateBtn.disabled = !generateAllowed;
+    syncGenerateControls();
     if (!generateAllowed) {
       var r = genResultEl();
       if (r) {
@@ -924,6 +943,56 @@
   // `generateAllowed` itself (defense in depth) rather than trusting only the disabled button.
   var generateAllowed = false;
   var generateHasExistingDraft = false;
+  // 17tnw2b0ntd (Figma 1133:36 / 1132:2): the in-flight status card + its polite live region, and
+  // whether a saved/generated draft is currently RENDERED in #tr-gen-result (not merely held in
+  // `currentDraft`: an error replaces the region, and then the primary Generate must come back).
+  var genProgressEl = document.getElementById("tr-gen-progress");
+  var genLiveEl = document.getElementById("tr-gen-live");
+  var genBoxEl = document.getElementById("tr-gen");
+  var draftRendered = false;
+
+  // The one place that decides which generate entry point is on screen: the primary "Generate
+  // Sermon Notes" button when there is no draft, "Regenerate" (inside the Sermon-notes-ready card)
+  // when one is rendered. Regenerate is DISABLED while the consent preview is open or a call is in
+  // flight, and it does not exist while the edit form is open (an in-progress edit can never be
+  // silently replaced by a Confirm — Quinn D8).
+  function syncGenerateControls() {
+    var previewOpen = !!(genPreviewBox && !genPreviewBox.hidden);
+    if (generateBtn) generateBtn.hidden = draftRendered || previewOpen || generating;
+    var rb = document.getElementById("tr-regenerate");
+    if (rb) {
+      rb.disabled = !generateAllowed || previewOpen || generating;
+      if (generating) rb.setAttribute("aria-busy", "true"); else rb.removeAttribute("aria-busy");
+    }
+    // Quinn/Cody D8: "Edit draft" is unavailable while the consent preview is open or a generation
+    // is in flight — otherwise typing started in the edit form is silently replaced when the result
+    // lands (or Confirm is pressed). renderCurrentDraft re-syncs this, so it comes back by itself.
+    var eb = document.getElementById("tr-gen-edit");
+    if (eb) eb.disabled = previewOpen || generating;
+  }
+  function genEntryBtn() { return document.getElementById("tr-regenerate") || generateBtn; }
+
+  // The in-flight status (Figma 1133:36): heading, the expected-duration line, and a polite live
+  // region. There is NO step list ("Extracting scriptures…") because nothing reports progress, and
+  // NO Cancel: `transcript_generate_notes` persists the draft when it completes, so a UI-only
+  // Cancel would mislead the operator into thinking nothing was kept.
+  function showGenProgress(on) {
+    if (genProgressEl) {
+      genProgressEl.textContent = "";
+      genProgressEl.hidden = !on;
+      if (on) {
+        var ico = el("span", "tr-gen-spin", "✦");
+        ico.setAttribute("aria-hidden", "true");
+        genProgressEl.appendChild(ico);
+        genProgressEl.appendChild(el("h3", "tr-gen-progress-title", "Generating sermon notes…"));
+        genProgressEl.appendChild(el("p", "tr-gen-progress-sub", "This usually takes 10–20 seconds."));
+      }
+    }
+    if (genBoxEl) { if (on) genBoxEl.setAttribute("aria-busy", "true"); else genBoxEl.removeAttribute("aria-busy"); }
+    // Turning it OFF leaves the live text alone: the result/error handler has just announced the
+    // outcome there ("Sermon notes are ready." / "Couldn’t generate notes.").
+    if (on && genLiveEl) genLiveEl.textContent = "Generating sermon notes…";
+  }
 
   // Same floor as settings.js's MIN_TRANSCRIPT_CHARS (Vera, PERF-3): an empty/near-empty
   // transcript is refused before any network call, never billed as a fully fabricated draft. A
@@ -992,10 +1061,18 @@
   function genResultEl() {
     var r = genResultBox;
     if (r) { r.hidden = false; r.textContent = ""; r.removeAttribute("role"); }
+    draftRendered = false; // whatever was rendered here is gone; renderCurrentDraft sets it back
     return r;
   }
 
+  // Announce the outcome in the polite live region, then re-sync which generate control is shown
+  // (an error replaces the result region, so the primary Generate must come back).
   function showGenError(code, message) {
+    showGenErrorInner(code, message);
+    if (genLiveEl) genLiveEl.textContent = code === "consent_required" || code === "not_configured" ? "" : "Couldn’t generate notes.";
+    syncGenerateControls();
+  }
+  function showGenErrorInner(code, message) {
     var r = genResultEl();
     if (!r) return;
     if (code === "not_configured") {
@@ -1010,6 +1087,16 @@
       r.setAttribute("role", "alert");
       r.appendChild(el("span", null,
         "Turn on cloud processing in Settings → Providers & Privacy to generate sermon notes."));
+      // 17tnw2b0ntd: Settings no longer offers Generate, so give a one-click route to the consent
+      // switch instead of a dead end (reuses the real app-menu Settings item's own navigation).
+      var toSettings = el("button", "pp-optin-btn", "Open Settings");
+      toSettings.type = "button";
+      toSettings.id = "tr-open-settings";
+      toSettings.addEventListener("click", function () {
+        var nav = document.querySelector('.nav-item[data-surface="settings"]');
+        if (nav) nav.click();
+      });
+      r.appendChild(toSettings);
       return;
     }
     // quota_exceeded / transport / malformed / no_transcript / transcript_too_short → surface the
@@ -1017,12 +1104,18 @@
     // before any call is made — so their label says exactly that: nothing was sent.
     r.className = "pp-gen-result pp-gen-err";
     r.setAttribute("role", "alert");
-    var label = code === "quota_exceeded" ? "Monthly limit reached"
+    var label = code === "quota_exceeded" ? "Generation limit reached"
       : code === "no_transcript" ? "No transcript to generate from"
       : code === "transcript_too_short" ? "Transcript too short"
       : "Couldn’t generate notes";
     r.appendChild(el("span", "pp-gen-err-t", label + " — "));
-    r.appendChild(el("span", null, message || ""));
+    // The backend's own quota text names a period ("monthly …") while the allowance is weekly
+    // (D7) — the UI must not state either, so a quota refusal shows a fixed, period-neutral
+    // sentence instead of echoing the backend string.
+    r.appendChild(el("span", null,
+      code === "quota_exceeded"
+        ? "You have no generations left right now. Try again later."
+        : (message || "")));
   }
 
   // ---------- Saved sermon-note draft: view + edit (86akgqdxr) ------------------------------
@@ -1189,6 +1282,14 @@
   function renderDraftView(r) {
     var d = currentDraft.draft || {};
     var showEmptyState = !currentDraft.degraded;
+    // Figma 1132:2 / 349:124 (Notes ready): a check chip + "Sermon notes ready" header above the
+    // draft. A degraded offline outline is not AI notes, so it says "Draft ready" instead.
+    var ready = el("div", "tr-ready-head");
+    var readyIco = el("span", "tr-ready-ico", "✓");
+    readyIco.setAttribute("aria-hidden", "true");
+    ready.appendChild(readyIco);
+    ready.appendChild(el("h3", "tr-ready-title", currentDraft.degraded ? "Draft ready" : "Sermon notes ready"));
+    r.appendChild(ready);
     renderDraftHeader(r);
     renderRegenerationBanner(r);
     if (d.summary) {
@@ -1300,14 +1401,29 @@
     // so it renders independently of the Edit button below.
     var copyBtn = copyChapterMarkersBtn(d);
     var canEdit = currentDraft.transcriptId != null && !currentDraft.pendingConfirmation;
-    if (canEdit || copyBtn) {
-      var actions = el("div", "pp-gen-actions");
+    // "Regenerate" (Figma: secondary) replaces the primary Generate button that used to sit above an
+    // existing draft; it goes through the SAME consent preview and the SAME stage/confirm/discard
+    // flow. Not offered while a regeneration is pending (resolve that first).
+    var canRegen = openId != null && !currentDraft.pendingConfirmation;
+    if (canEdit || copyBtn || canRegen) {
+      var actions = el("div", "pp-gen-actions tr-ready-actions");
       if (copyBtn) actions.appendChild(copyBtn);
+      if (canRegen) {
+        var regenBtn = el("button", "pp-gen-edit-btn tr-ready-secondary", "Regenerate");
+        regenBtn.type = "button";
+        regenBtn.id = "tr-regenerate";
+        regenBtn.disabled = !generateAllowed || generating;
+        regenBtn.addEventListener("click", onGenerate);
+        actions.appendChild(regenBtn);
+      }
       if (canEdit) {
-        var editBtn = el("button", "pp-gen-edit-btn", "Edit");
+        var editBtn = el("button", "pp-gen-edit-btn tr-ready-primary", "Edit draft");
         editBtn.type = "button";
         editBtn.id = "tr-gen-edit";
-        editBtn.addEventListener("click", function () { editingDraft = true; renderCurrentDraft(); });
+        editBtn.addEventListener("click", function () {
+          if (generating || (genPreviewBox && !genPreviewBox.hidden)) return; // defense in depth (D8)
+          editingDraft = true; renderCurrentDraft();
+        });
         actions.appendChild(editBtn);
       }
       r.appendChild(actions);
@@ -1636,6 +1752,8 @@
     r.className = "pp-gen-result pp-gen-ok";
     r.setAttribute("role", "status");
     if (editingDraft) renderDraftEditForm(r); else renderDraftView(r);
+    draftRendered = true;
+    syncGenerateControls();
   }
 
   // Populates `currentDraft` from `transcript_get`'s OWN response (86akgqdxr) — the saved
@@ -1666,6 +1784,7 @@
       currentDraft = null;
       editingDraft = false;
       notesEmptyEl.hidden = false;
+      syncGenerateControls();
     }
   }
 
@@ -1694,7 +1813,11 @@
     };
     editingDraft = false;
     notesEmptyEl.hidden = true;
+    // Quinn D7: a draft now exists for this transcript (saved, or staged over a saved one), so the
+    // NEXT consent step must say so — previously this flag was only set when a transcript was opened.
+    generateHasExistingDraft = true;
     renderCurrentDraft();
+    if (genLiveEl) genLiveEl.textContent = "Sermon notes are ready.";
     // The backend just persisted (or, with a pending regeneration, STAGED — the saved draft
     // is unaffected either way) against `openId` (`sermon_note_repo` — 86akcffy0/86akgqdx8);
     // reflect that immediately rather than waiting for a future reopen of this same transcript.
@@ -1706,10 +1829,8 @@
 
   function closeGenPreview(refocusButton) {
     if (genPreviewBox) { genPreviewBox.hidden = true; genPreviewBox.textContent = ""; }
-    if (generateBtn) {
-      generateBtn.hidden = false;
-      if (refocusButton) generateBtn.focus();
-    }
+    syncGenerateControls();
+    if (refocusButton) { var entry = genEntryBtn(); if (entry && !entry.hidden) entry.focus(); }
   }
 
   // Resets ALL Generate-related UI/state — called whenever a different transcript is opened
@@ -1723,6 +1844,9 @@
     if (genPreviewBox) { genPreviewBox.hidden = true; genPreviewBox.textContent = ""; }
     if (genResultBox) { genResultBox.hidden = true; genResultBox.textContent = ""; genResultBox.className = "pp-gen-result"; }
     if (generateBtn) { generateBtn.hidden = false; generateBtn.disabled = false; generateBtn.removeAttribute("aria-busy"); }
+    draftRendered = false;
+    showGenProgress(false);
+    if (genLiveEl) genLiveEl.textContent = "";
     // 86akgqdxr: a previous transcript's saved-draft state/empty-state must not leak into the
     // newly opened one either — `renderNotesFromDetail`/`renderDetections` set the real values
     // once the new transcript's data arrives, same discipline as `generateAllowed` above.
@@ -1743,9 +1867,11 @@
   // authoritative source and avoids shipping a (potentially 400k-character) string over IPC
   // twice for no benefit.
   function confirmGenerate(id) {
-    closeGenPreview(false);
     generating = true;
+    closeGenPreview(false);
     if (generateBtn) { generateBtn.setAttribute("aria-busy", "true"); generateBtn.disabled = true; }
+    showGenProgress(true);
+    syncGenerateControls();
     invoke("transcript_generate_notes", { id: id })
       .then(function (res) {
         // A LATER selection superseded this one while the call was in flight (86akcffy0, Sana
@@ -1761,6 +1887,7 @@
       })
       .then(function () {
         generating = false;
+        if (openId === id) showGenProgress(false);
         // Only restore THIS transcript's button state — if a different one is open now,
         // `openTranscript`/`renderDetailHeader` already set its own correct state, and this
         // stale completion must not clobber it (e.g. re-enabling a button `renderDetailHeader`
@@ -1769,6 +1896,7 @@
           generateBtn.removeAttribute("aria-busy");
           generateBtn.disabled = !generateAllowed;
         }
+        syncGenerateControls();
       });
   }
 
@@ -1874,7 +2002,7 @@
     box.setAttribute("role", "group");
     box.setAttribute("aria-labelledby", "tr-gen-preview-title");
     box.hidden = false;
-    if (generateBtn) generateBtn.hidden = true;
+    syncGenerateControls();
     heading.focus();
   }
 
