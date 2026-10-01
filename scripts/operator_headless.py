@@ -1571,7 +1571,7 @@ EXPECTED_MIN_CHECKS = 2065  # measured post-rebase, clean run: 2065 checks, 0 FA
 # "encrypted" render, its description text, the "not_encrypted" silent-downgrade warning render,
 # and its own control that the warning never also reads ON). Measured via an actual clean run,
 # not hand-summed.
-EXPECTED_MIN_CHECKS = 2069  # measured: 2069 checks, 0 FAIL
+EXPECTED_MIN_CHECKS = 2087  # measured: 2087 checks, 0 FAIL (media tile pictures + import report, +18)
 
 
 def find_chrome():
@@ -2957,9 +2957,36 @@ STUB = r"""
     }
     if (cmd === "deck_duplicate_slide" || cmd === "deck_reorder_slide")
       return Promise.resolve(dEdit());
-    if (cmd === "deck_import_image") {
-      D.media.assets.push({id:99,name:"picked.png",kind:"image",size_label:"1.0 MB",missing:false,unused:true});
-      D.media.unused_count += 1; return Promise.resolve(dClone());
+    // Multi-file import (copy-on-import). `window.__importN` adds that many assets in one pick
+    // (default 1; the first keeps the historical id 99), `window.__importReport` overrides the
+    // host's `import_report` (skip reasons / `saved:false`), and — like the real host — the report
+    // rides on the returned view, never on the persisted DeckView `D`.
+    if (cmd === "deck_import_images") {
+      // Harness-only cleanup: drop every imported asset (ids >= 99) so a check that floods the
+      // library does not leak 100 tiles into the checks that follow it.
+      if (window.__importPurge) {
+        D.media.assets = D.media.assets.filter(function(a){ return a.id < 99; });
+        D.media.unused_count = 3; window.__importSeq = 0;
+        var vPurge = dClone(); vPurge.import_report = {imported:0, skipped:[], saved:true};
+        return Promise.resolve(vPurge);
+      }
+      var nImp = window.__importN || 1;
+      for (var iImp = 0; iImp < nImp; iImp++) {
+        var idImp = (D.media.assets.some(function(a){return a.id===99;}) ? 100 + (window.__importSeq = (window.__importSeq||0) + 1) : 99);
+        D.media.assets.push({id:idImp,name:(idImp===99?"picked.png":"import "+idImp+".png"),path:"/app/media/import-"+idImp+".png",kind:"image",size_label:"1.0 MB",missing:false,unused:true,uses:0});
+        D.media.unused_count += 1;
+      }
+      var vImp = dClone();
+      vImp.import_report = window.__importReport || {imported:nImp, skipped:[], saved:true};
+      return Promise.resolve(vImp);
+    }
+    // One tile's picture: a real RGBA frame (non-zero pixels, so a blank canvas is detectable),
+    // or — for ids in `window.__thumbFailIds` — the host's "can't draw this" answer.
+    if (cmd === "media_thumbnail") {
+      if ((window.__thumbFailIds || []).indexOf(args.id) >= 0) return Promise.resolve({available:false, frame:null});
+      var tw = 8, th = 4, tb = "";
+      for (var ti = 0; ti < tw * th; ti++) tb += String.fromCharCode(200, (ti * 17) % 256, 60, 255);
+      return Promise.resolve({available:true, frame:{w:tw, h:th, rgba:btoa(tb)}});
     }
     if (cmd === "deck_remove_media") return Promise.resolve(dClone());
     // --- Providers & Privacy (Settings 338:124) ---
@@ -5688,6 +5715,72 @@ DRIVER = r"""
       document.querySelector('#surface-presentation .pm-mtab[data-filter="image"]').click();
       ok(!Array.from(document.querySelectorAll("#pm-media-grid .pm-asset .pm-asset-meta")).some(function(m){ return /VIDEO/.test(m.textContent); }), "PM: the Images filter hides video assets");
       document.querySelector('#surface-presentation .pm-mtab[data-filter="all"]').click();
+      // --- Media tile pictures + import report. An image tile used to be an empty gradient box:
+      // nothing ever drew the picture. The host decodes it (`media_thumbnail`); the tile blits it.
+      await waitFor(function(){ return document.querySelector("#pm-media-grid .pm-asset-thumb.has-pic"); });
+      var picThumb = document.querySelector("#pm-media-grid .pm-asset:not(.missing) .pm-asset-thumb.has-pic");
+      ok(!!picThumb, "PM media: an image tile paints its picture (it used to be an empty gradient box)");
+      var picCv = picThumb && picThumb.querySelector("canvas.pm-asset-canvas");
+      var picPx = picCv ? picCv.getContext("2d").getImageData(0, 0, picCv.width, picCv.height).data : [];
+      ok(!!picCv && picCv.width === 8 && picCv.height === 4 && picPx[0] === 200 && picPx[3] === 255,
+         "PM media: the tile's canvas holds the host's real pixels (8×4, first pixel r=200 a=255), not a blank buffer");
+      var thumbCalls = function(id){ return window.__calls.filter(function(c){ return c.cmd === "media_thumbnail" && c.args.id === id; }); };
+      ok(thumbCalls(1).length === 1, "PM media: a tile's picture is requested ONCE across many re-renders (cached), got " + thumbCalls(1).length);
+      ok(thumbCalls(1)[0].args.maxW === 240 && thumbCalls(1)[0].args.maxH === 240, "PM media: the picture is requested inside the host's 240px box (camelCase args cross to max_w/max_h)");
+      ok(thumbCalls(4).length === 0 && thumbCalls(3).length === 0, "PM media: a missing image and a video are never asked for a picture");
+      ok(window.__pmMediaThumbDebug.cached(1) === true && window.__pmMediaThumbDebug.cached(4) === null,
+         "PM media: the per-key cache accessor reports a cached id true and a never-requested id null");
+      // Import: the multi-file command, a status toast, the operator's own file name, a picture at once.
+      el("pm-import").click();
+      await waitFor(function(){ return /Imported 1 image\./.test(el("pm-toast").textContent); });
+      ok(window.__calls.some(function(c){ return c.cmd === "deck_import_images"; }) && !window.__calls.some(function(c){ return c.cmd === "deck_import_image"; }),
+         "PM media: + Import drives deck_import_images (the retired single-file command is not called)");
+      ok(/Imported 1 image\./.test(el("pm-toast").textContent) && el("pm-error").hidden, "PM media: a clean import says how many images landed and leaves no error banner");
+      var tileByName = function(re){ return Array.from(document.querySelectorAll("#pm-media-grid .pm-asset")).filter(function(c){ return re.test(c.textContent); })[0]; };
+      ok(!!tileByName(/picked\.png/), "PM media: the imported image appears under the operator's own file name");
+      await waitFor(function(){ var t = tileByName(/picked\.png/); return t && t.querySelector(".pm-asset-thumb.has-pic"); });
+      ok(!!tileByName(/picked\.png/).querySelector(".pm-asset-thumb.has-pic"), "PM media: a freshly imported image shows its picture straight away");
+      // A file the host skipped is named with its reason, in a persistent banner (not a retry prompt).
+      window.__thumbFailIds = [101];
+      window.__importReport = {imported:1, skipped:[{name:"notes.png", reason:"that file isn’t a supported image (PNG or JPEG)"}], saved:true};
+      el("pm-import").click();
+      await waitFor(function(){ return !el("pm-error").hidden; });
+      var errTxt = el("pm-error-msg").textContent;
+      ok(/Imported 1\./.test(errTxt) && /notes\.png/.test(errTxt) && /isn’t a supported image/.test(errTxt) && !/retry/i.test(errTxt),
+         "PM media: a skipped file is named with the host's reason in a persistent banner, not 'please retry': " + errTxt);
+      // A picture the host cannot draw is an honest "Can't preview", never a silent blank tile.
+      await waitFor(function(){ var t = tileByName(/import 101/); return t && t.querySelector(".pm-thumb-fail"); });
+      var failThumb = tileByName(/import 101/).querySelector(".pm-asset-thumb");
+      ok(/Can’t preview/.test(failThumb.textContent) && !failThumb.classList.contains("has-pic")
+         && getComputedStyle(failThumb.querySelector("canvas")).display === "none",
+         "PM media: an undrawable picture shows 'Can’t preview' and hides the empty canvas (computed display, not just [hidden])");
+      ok(window.__pmMediaThumbDebug.cached(101) === false, "PM media: an undrawable picture is cached as 'can't draw' so it is asked for once, not on every render");
+      // An unsaved registry is said out loud.
+      window.__thumbFailIds = [];
+      window.__importReport = {imported:1, skipped:[], saved:false};
+      el("pm-import").click();
+      await waitFor(function(){ return /won’t be kept after you quit/.test(el("pm-toast").textContent); });
+      ok(/won’t be kept after you quit/.test(el("pm-toast").textContent), "PM media: when the registry is not being saved the import says it won't survive a restart");
+      // The picture cache is BOUNDED. IntersectionObserver is switched off for this one flood so
+      // every tile loads eagerly: 100 more images against an 80-entry cap.
+      var ioSaved = window.IntersectionObserver; delete window.IntersectionObserver;
+      window.__importReport = null; window.__importN = 100;
+      el("pm-import").click();
+      var lastId = null;
+      await waitFor(function(){ lastId = 100 + (window.__importSeq || 0); return window.__pmMediaThumbDebug.cached(lastId) === true; });
+      var nPicTiles = document.querySelectorAll("#pm-media-grid canvas.pm-asset-canvas").length;
+      ok(nPicTiles > window.__pmMediaThumbDebug.max(), "PM media: premise — more picture tiles (" + nPicTiles + ") than the cache cap (" + window.__pmMediaThumbDebug.max() + ")");
+      ok(window.__pmMediaThumbDebug.size() === window.__pmMediaThumbDebug.max(),
+         "PM media: the picture cache holds exactly its cap (" + window.__pmMediaThumbDebug.size() + "), not one entry per tile");
+      ok(window.__pmMediaThumbDebug.cached(lastId) === true && window.__pmMediaThumbDebug.cached(1) === null,
+         "PM media: eviction is by entity — the newest picture is kept and the oldest id is gone");
+      // Clean up the flood, and confirm removed assets are pruned from the cache.
+      window.__importPurge = true; window.__importN = 1;
+      el("pm-import").click();
+      await waitFor(function(){ return document.querySelectorAll("#pm-media-grid canvas.pm-asset-canvas").length <= 2; });
+      window.__importPurge = false; window.IntersectionObserver = ioSaved;
+      ok(window.__pmMediaThumbDebug.cached(lastId) === null && window.__pmMediaThumbDebug.cached(99) === null,
+         "PM media: assets that left the library are pruned from the picture cache");
       // Undo/redo (buttons + the DeckView's can_undo/redo drive enablement; ≥20 steps supported host-side).
       ok(el("pm-undo") && !el("pm-undo").disabled, "PM: after edits, Undo is enabled (can_undo)");
       el("pm-undo").click();
