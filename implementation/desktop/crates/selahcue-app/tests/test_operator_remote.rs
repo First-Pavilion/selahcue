@@ -19,6 +19,15 @@ use tokio::net::TcpListener;
 use tokio::sync::Mutex as AsyncMutex;
 
 async fn setup() -> (SocketAddr, CertPin, Arc<Mutex<LiveController>>) {
+    // `selahcue_scripture::warm()` pays its one-time, process-wide cold-start cost (gzip-
+    // decode the bundled KJV corpus + build the fuzzy quote-match inverted index over ~31k
+    // verses) HERE, before any test below opens a `ControlClient`, whose `COMMAND_TIMEOUT`
+    // is a fixed 2s. Without this, whichever `ingest_transcript` call happens to be first
+    // in this binary's process to touch the scripture crate eats that cold-start cost
+    // (~1.7s in a local debug-profile measurement) INSIDE its own timed round trip — on a
+    // slow/shared CI runner that can exceed the 2s budget and time out (observed once on
+    // `rust (windows-latest)`, GitHub Actions run 36785087393).
+    selahcue_scripture::warm();
     let identity = SelfSigned::generate(vec!["localhost".into()]).unwrap();
     let pin = identity.pin;
 
