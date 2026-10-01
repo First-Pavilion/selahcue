@@ -121,6 +121,13 @@ TOUCH_SCOPES = [
     "main .btn, main a.btn",
 ]
 
+# Which layout the browser ACTUALLY chose, straight from the same media query the CSS uses.
+# Comparing against `width < 768` instead would be wrong in exactly one case: WebKit counts
+# a classic scrollbar (main.css restyles `::-webkit-scrollbar`, which forces one on macOS)
+# inside the viewport the media query sees, so a 768px window is, correctly, a mobile
+# layout there. The breakpoint is the contract; the window size is only how we get to it.
+IS_MOBILE_JS = "matchMedia('(max-width: 767px)').matches"
+
 PAGE_JS = r"""
 () => {
   const vw = window.innerWidth;
@@ -452,7 +459,7 @@ def check_footer(context, base: str, width: int, fail, count) -> None:
             fail(f"{tag}: {what}")
 
     st = page.evaluate(FOOTER_STATE_JS)
-    if width < 768:
+    if page.evaluate(IS_MOBILE_JS):
         expect(len(st["toggles"]) == 4, f"expected 4 collapsible headings, got {len(st['toggles'])}")
         expect(all(t["expanded"] == "false" and not t["controlsVisible"] for t in st["toggles"]), "sections are not collapsed by default on mobile")
         expect(all(t["height"] >= 44 for t in st["toggles"]), f"footer headings under 44px: {[t['height'] for t in st['toggles']]}")
@@ -488,7 +495,7 @@ def check_signed_in_nav(context, base: str, width: int, fail, count) -> None:
     page.wait_for_timeout(200)
     info = page.evaluate(NAV_ROW_JS)
     count()
-    if width >= 768:
+    if not page.evaluate(IS_MOBILE_JS):
         if not info["signedIn"]:
             fail(f"{tag}: sweep could not establish the signed-in hint")
         elif info["spread"] > 6 or info["lastRight"] > info["vw"] - 8 or info["barHeight"] != 68:
@@ -586,20 +593,20 @@ def main() -> int:
                     if errors:
                         failures.append(f"{tag}: uncaught page error: {errors[0][:160]}")
 
+                    is_mobile = page.evaluate(IS_MOBILE_JS)
                     if not bare:
                         nav = page.evaluate(NAV_STATE_JS)
                         checks += 1
                         if not nav["hasHeader"]:
                             failures.append(f"{tag}: no navbar rendered on a non-bare route")
                         else:
-                            mobile = width < 768
-                            if nav["toggleVisible"] != mobile or nav["desktopNavVisible"] == mobile:
+                            if nav["toggleVisible"] != is_mobile or nav["desktopNavVisible"] == is_mobile:
                                 failures.append(
                                     f"{tag}: nav mode wrong (toggle={nav['toggleVisible']}, "
-                                    f"desktopNav={nav['desktopNavVisible']}, expected mobile={mobile})"
+                                    f"desktopNav={nav['desktopNavVisible']}, expected mobile={is_mobile})"
                                 )
 
-                    if width < 768:
+                    if is_mobile:
                         checks += 1
                         bad = page.evaluate(TOUCH_JS, TOUCH_SCOPES)
                         if bad:
