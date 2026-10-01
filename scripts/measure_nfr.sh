@@ -25,23 +25,94 @@ BIN="$DESKTOP/target/release/selahcue-output"
 echo ">> building release binary…"
 cargo build --release -q --manifest-path "$DESKTOP/Cargo.toml" -p selahcue-desktop
 
+# Run ONE release-build budget test and PROVE it ran, before the caller may print PASS.
+#
+#   budget_test <crate> <test-file> <test-name> <label>
+#
+# Why this is not just `cargo test ... <name>`: the test is selected by a NAME FILTER, and
+# `cargo test` exits 0 when a filter matches zero tests ("running 0 tests ... 0 passed; N
+# filtered out"). So a test that is renamed, moved to another file, deleted, or marked
+# #[ignore] makes the command SUCCEED while measuring nothing -- and with the output thrown
+# away and an unconditional PASS echoed after it, the budget goes silently unenforced behind
+# a green line. These three gates are the ONLY place the release budgets are enforced (`make
+# ci` runs debug builds with generous tripwires), so that is a dead budget, not a cosmetic
+# slip. ClickUp 86ak66jwh. (The same "referenced by name but no longer defined" shape as
+# 86ak643rc Defect 2.)
+#
+# So this asserts the thing RAN, not merely that it did not fail: the captured output must
+# contain the line libtest prints for one executed, passing test -- `test <name> ... ok` (a
+# test inside a `mod` prints `test <mod>::<name> ... ok`, which the optional prefix covers).
+# `0 passed; N filtered out`, `... ignored` and `... FAILED` all lack that line. The check is
+# on the full test name, not the substring the cargo filter matches, so a rename to
+# `<name>_v2` (which the filter would still select) is caught too.
+#
+# Both a failing test and a missing one stop the script non-zero. The missing-test message
+# names the test and the file it should be in, so the next reader sees "the budget's test no
+# longer exists" instead of having to re-derive it. stdout is captured (and shown only on
+# failure); stderr is left alone so build errors reach the terminal as before.
+budget_test() {
+  bt_crate=$1
+  bt_file=$2
+  bt_name=$3
+  bt_label=$4
+  bt_where="implementation/desktop/crates/$bt_crate/tests/$bt_file.rs"
+
+  bt_out=$(mktemp "${TMPDIR:-/tmp}/selahcue-nfr-test.XXXXXX")
+  # `if` so a failing cargo does not trip `set -e` before the diagnosis below is printed.
+  #
+  # No `-q`: cargo forwards it to libtest, which then prints one `.` per test instead of the
+  # `test <name> ... ok` line this function matches on (the terse form cannot say WHICH test
+  # ran). Cargo's own "Running"/"Finished" chatter goes to stderr, not into the capture.
+  # (Checked: CARGO_TERM_COLOR=always, which CI exports, colours cargo's stderr but does not
+  # reach libtest's redirected stdout, so the match below is not affected by it.)
+  if cargo test --release --manifest-path "$DESKTOP/Cargo.toml" -p "$bt_crate" \
+      --test "$bt_file" "$bt_name" >"$bt_out"; then
+    bt_rc=0
+  else
+    bt_rc=$?
+  fi
+
+  if [ "$bt_rc" -ne 0 ]; then
+    echo "FAIL: release-build budget test '$bt_name' failed or did not build (cargo exit $bt_rc)." >&2
+    echo "      Budget: $bt_label" >&2
+    echo "      Test:   $bt_where" >&2
+    echo "      cargo test output:" >&2
+    sed 's/^/    /' "$bt_out" >&2
+    rm -f "$bt_out"
+    exit 1
+  fi
+
+  if ! grep -Eq "^test (.+::)?${bt_name} \.\.\. ok\$" "$bt_out"; then
+    echo "FAIL: release-build budget test '$bt_name' did not run -- the budget was NOT measured." >&2
+    echo "      Budget:   $bt_label" >&2
+    echo "      Expected: a test named '$bt_name' in $bt_where" >&2
+    echo "      cargo exited 0, but no test with that name ran and passed. It was probably" >&2
+    echo "      renamed, moved, deleted or marked #[ignore]. Restore it, or point this script at" >&2
+    echo "      its new name -- never leave the gate pointing at nothing." >&2
+    echo "      cargo test output:" >&2
+    sed 's/^/    /' "$bt_out" >&2
+    rm -f "$bt_out"
+    exit 1
+  fi
+
+  rm -f "$bt_out"
+  echo "   $bt_label PASS"
+}
+
 echo ">> enforcing the release-build slide-trigger budget (150 ms)…"
-cargo test --release -q --manifest-path "$DESKTOP/Cargo.toml" -p selahcue-present \
-  --test test_present go_live_slide_trigger_latency_is_within_budget >/dev/null
-echo "   slide-trigger latency: within 150 ms (release) PASS"
+budget_test selahcue-present test_present go_live_slide_trigger_latency_is_within_budget \
+  "slide-trigger latency: within 150 ms (release)"
 
 # The 300 ms release arms below exist ONLY here: `make ci` runs debug builds, whose
 # generous tripwires do not enforce the real budgets. Skipping these would leave the
 # release budgets dead (that exact gap shipped the follow-burst budget unenforced).
 echo ">> enforcing the release-build scripture follow-burst budget (300 ms)…"
-cargo test --release -q --manifest-path "$DESKTOP/Cargo.toml" -p selahcue-present \
-  --test test_present scripture_follow_burst_with_an_image_theme_is_within_budget >/dev/null
-echo "   scripture follow burst (image theme): within 300 ms (release) PASS"
+budget_test selahcue-present test_present scripture_follow_burst_with_an_image_theme_is_within_budget \
+  "scripture follow burst (image theme): within 300 ms (release)"
 
 echo ">> enforcing the release-build multi-surface burst budget (300 ms)…"
-cargo test --release -q --manifest-path "$DESKTOP/Cargo.toml" -p selahcue-engine \
-  --test test_raster a_multi_surface_verse_burst_keeps_every_surface_prefix_cached >/dev/null
-echo "   multi-surface (3-prefix) burst: within 300 ms (release) PASS"
+budget_test selahcue-engine test_raster a_multi_surface_verse_burst_keeps_every_surface_prefix_cached \
+  "multi-surface (3-prefix) burst: within 300 ms (release)"
 
 if pgrep -f selahcue-output >/dev/null 2>&1; then
   echo "WARNING: a selahcue-output instance is already running; results would be"
