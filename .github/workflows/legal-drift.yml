@@ -67,4 +67,20 @@ jobs:
       # CI=true (set by Actions) makes a MISSING draft a hard failure in these tests
       # rather than a skip, so renaming a draft cannot turn the drift guard into a no-op.
       - name: Legal content, page and CLI tests
-        run: node --test --test-reporter=spec tests/legal.test.ts tests/legalPage.test.ts tests/syncLegalCli.test.ts
+        run: node --test --test-reporter=spec tests/legal.test.ts tests/legalPage.test.ts tests/syncLegalCli.test.ts tests/legalWorkflow.test.ts
+      # Drives the real built bundle in headless Chrome at 320/375/768/1024/1440px: banner,
+      # placeholder chips, noindex (kept across /privacy -> /terms, removed on leaving),
+      # Contents and scroll-spy, deep links below the sticky navbar, tables, console clean.
+      # SELAHCUE_HEADLESS_REQUIRE=1 makes a missing Playwright or browser a hard FAILURE;
+      # without it the script skips, which on a runner would report success checking nothing.
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.14"
+      - name: Install Playwright and Chromium
+        run: |
+          python3 -m pip install --quiet playwright
+          python3 -m playwright install --with-deps chromium
+      - name: Legal pages in a real browser
+        env:
+          SELAHCUE_HEADLESS_REQUIRE: "1"
+        run: npm run test:legal-pages
