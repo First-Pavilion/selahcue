@@ -7,8 +7,9 @@ app using `vue-router` in history mode. It builds to static files served by ngin
 
 ## Commands
 
-Run from `implementation/marketing`. Run `npm ci` first. Use Node 22 or newer: CI runs 22, and
-`npm test` relies on Node's built-in TypeScript stripping.
+Run from `implementation/marketing`. Run `npm ci` first. Use Node 22.18 or newer (`package.json` says so
+in `engines`): `npm test` runs `.ts` files directly, and Node only strips types by default from 22.18.0.
+CI runs Node 22.
 
 | Command | What it does |
 |---|---|
