@@ -12,6 +12,8 @@
 /// is not `SessionRevoked` is a transient failure — back off and try again.
 library;
 
+import 'dart:async';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:selahcue_controller/controllers/live_controller.dart';
 import 'package:selahcue_controller/models/protocol.dart';
@@ -57,6 +59,23 @@ class _LiveSession implements ControllerSession {
 
   @override
   Future<OperatorStateView> operatorState() async => _view();
+  @override
+  Future<void> close() async => closed = true;
+}
+
+/// A "successful" connect whose session blows up as soon as the controller
+/// reads its role — which `_reconnect()` does immediately after installing it.
+/// Stands in for ANY failure that happens AFTER a connect has succeeded.
+class _RoleBombSession implements ControllerSession {
+  bool closed = false;
+
+  @override
+  MobileRole get grantedRole => throw StateError('post-connect failure');
+  @override
+  Future<ServerMessage> command(Map<String, dynamic> cmd) async => const Ack(1);
+  @override
+  Future<OperatorStateView> operatorState() async =>
+      throw const SessionException('unused');
   @override
   Future<void> close() async => closed = true;
 }
@@ -197,5 +216,128 @@ void main() {
     // Give a (wrongly) surviving loop time to attempt again: 2s backoff + slack.
     await Future<void>.delayed(const Duration(milliseconds: 2500));
     expect(attempts, 1, reason: 'revoked is terminal: exactly one attempt');
+  });
+
+  test('a connect that always fails is retried once per backoff, never in a '
+      'hot loop, and stops when the controller is disposed', () async {
+    // Pins the BACKOFF, which the recovery tests above cannot: they would pass
+    // just as well if the 2s delay were 100ms or gone. A hot loop shows up here
+    // as hundreds of attempts inside the first second.
+    var attempts = 0;
+    Future<ControllerSession> connect({
+      required String host,
+      required int port,
+      required String pinHex,
+      required Credentials creds,
+    }) async {
+      attempts++;
+      throw const FormatException('garbage');
+    }
+
+    final live = LiveController(
+        session: _DeadSession(), stored: _stored, connect: connect);
+    // Disposed by the test body, and again here only if an expectation fails
+    // first — a surviving retry loop must not leak into the next test.
+    var disposed = false;
+    void disposeOnce() {
+      if (!disposed) live.dispose();
+      disposed = true;
+    }
+
+    addTearDown(disposeOnce);
+
+    await _until(() => attempts >= 1);
+    await Future<void>.delayed(const Duration(milliseconds: 800));
+    expect(attempts, 1,
+        reason: 'one attempt, then a backoff: not a retry storm '
+            '(a hot loop would be hundreds by now)');
+
+    disposeOnce();
+    // The loop is mid-backoff. It must wake, see it is disposed, and exit
+    // WITHOUT another attempt: 2s backoff + slack.
+    await Future<void>.delayed(const Duration(milliseconds: 2600));
+    expect(attempts, 1, reason: 'no attempt after dispose');
+  });
+
+  test('a connect that completes after dispose has its session closed, not '
+      'installed', () async {
+    // The in-flight connect outlives the controller. Its session is a pinned-TLS
+    // socket: it must be released, not adopted and not leaked.
+    final late = Completer<ControllerSession>();
+    var attempts = 0;
+    Future<ControllerSession> connect({
+      required String host,
+      required int port,
+      required String pinHex,
+      required Credentials creds,
+    }) {
+      attempts++;
+      return late.future;
+    }
+
+    final live = LiveController(
+        session: _DeadSession(), stored: _stored, connect: connect);
+    var disposed = false;
+    void disposeOnce() {
+      if (!disposed) live.dispose();
+      disposed = true;
+    }
+
+    addTearDown(disposeOnce);
+    await _until(() => attempts == 1);
+
+    disposeOnce(); // disposed while the connect is still in flight
+    final session = _LiveSession();
+    late.complete(session);
+
+    await _until(() => session.closed);
+    expect(attempts, 1, reason: 'no second attempt after dispose');
+  });
+
+  test('a failure AFTER a successful connect is not retried and does not '
+      'orphan the session', () async {
+    // Only the connect attempt is "transient". If the post-connect work sat
+    // inside the catch-all, this failure would back off and open ANOTHER
+    // session, dropping the first one unclosed. Production sessions cannot do
+    // this today (MobileRole.parse never throws), so this pins the structure of
+    // the fix rather than a reachable bug.
+    final uncaught = <Object>[];
+    var attempts = 0;
+    var attemptsSeen = -1;
+    var closedSeen = -1;
+    final created = <_RoleBombSession>[];
+
+    await runZonedGuarded(() async {
+      Future<ControllerSession> connect({
+        required String host,
+        required int port,
+        required String pinHex,
+        required Credentials creds,
+      }) async {
+        attempts++;
+        final bomb = _RoleBombSession();
+        created.add(bomb);
+        return bomb;
+      }
+
+      final live = LiveController(
+          session: _DeadSession(), stored: _stored, connect: connect);
+      // Long enough for a (wrongly) retrying loop to come round again: 2s
+      // backoff + slack.
+      await Future<void>.delayed(const Duration(milliseconds: 2600));
+      // Sampled BEFORE dispose: dispose legitimately closes the installed session.
+      attemptsSeen = attempts;
+      closedSeen = created.where((s) => s.closed).length;
+      live.dispose();
+    }, (error, stack) => uncaught.add(error));
+
+    // Asserted OUTSIDE the guarded zone, so a failed expectation fails the test
+    // instead of being swallowed by the zone's error handler.
+    expect(attemptsSeen, 1, reason: 'must not loop into a second connect');
+    expect(closedSeen, 0,
+        reason: 'the installed session must not be dropped unclosed');
+    expect(uncaught, hasLength(1),
+        reason: 'the failure surfaces; it is not swallowed as "transient"');
+    expect(uncaught.single, isA<StateError>());
   });
 }

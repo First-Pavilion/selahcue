@@ -7,6 +7,7 @@ library;
 
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart' show DebugPrintCallback;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -102,5 +103,54 @@ void main() {
     expect(find.byType(PairingView), findsOneWidget);
     expect(find.byType(SplashView), findsNothing);
     await teardown(tester);
+  });
+
+  group('recording what the catch-all swallowed', () {
+    /// Run [body] with `debugPrint` captured into [sink]. Restored BEFORE the
+    /// test body returns, not in tearDown: flutter_test's invariant check runs
+    /// ahead of tearDown and fails a test that leaves a foundation debug
+    /// variable changed.
+    Future<void> capturing(
+        List<String> sink, Future<void> Function() body) async {
+      final DebugPrintCallback original = debugPrint;
+      debugPrint = (String? message, {int? wrapWidth}) {
+        if (message != null) sink.add(message);
+      };
+      try {
+        await body();
+      } finally {
+        debugPrint = original;
+      }
+    }
+
+    testWidgets('an unexpected launch failure is recorded by TYPE and stack '
+        'only, never with host-sent text', (tester) async {
+      // Falling through to Connect is right, but it must not make a parsing bug
+      // invisible. A FormatException's toString() embeds the offending source —
+      // text the peer chose — so only the runtime type and a stack are written.
+      final printed = <String>[];
+      await capturing(printed, () async {
+        await launchFailingWith(
+            tester, const FormatException('HOST-SENT-PAYLOAD'));
+        expect(find.byType(PairingView), findsOneWidget);
+        await teardown(tester);
+      });
+
+      final log = printed.join('\n');
+      expect(log, contains('unexpected FormatException'));
+      expect(log, isNot(contains('HOST-SENT-PAYLOAD')));
+    });
+
+    testWidgets('an expected failure (revoked) records nothing', (tester) async {
+      final printed = <String>[];
+      await capturing(printed, () async {
+        await launchFailingWith(
+            tester, const SessionRevoked('authentication rejected: revoked'));
+        expect(find.byType(PairingView), findsOneWidget);
+        await teardown(tester);
+      });
+
+      expect(printed.where((m) => m.contains('unexpected')), isEmpty);
+    });
   });
 }

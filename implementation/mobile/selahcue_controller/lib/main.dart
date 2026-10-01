@@ -143,13 +143,18 @@ class _LauncherState extends State<Launcher> {
         pinHex: stored.pinHex,
         creds: Credentials(deviceId: stored.deviceId, token: stored.token),
       );
-    } on Object {
+    } on Object catch (e, stack) {
       // ANY connect failure goes straight to Connect (which explains the
       // situation), rather than stalling on the splash: credentials revoked, the
       // host moved, or the host answered the handshake with garbage (a
       // FormatException for non-JSON, a TypeError for a binary frame — neither
       // is a SessionException, and an unhandled one here left the splash
       // spinning for ever, 17tnw2b0vtj).
+      //
+      // An expected SessionException is routine. Anything else is a failure
+      // nobody modelled, which this catch-all would hide, so its type and stack
+      // are recorded (never its message: see the helper).
+      if (e is! SessionException) debugReportUnexpectedConnectFailure(e, stack);
       await brand;
       if (mounted) _goPair();
       return;
