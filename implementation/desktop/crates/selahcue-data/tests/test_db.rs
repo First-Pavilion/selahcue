@@ -59,7 +59,10 @@ fn a_v23_database_upgrades_media_asset_with_a_name_column_and_keeps_its_rows() {
             Ok((r.get(0)?, r.get(1)?))
         })
         .unwrap();
-    assert_eq!(path_col, "kept.jpg", "the existing row survives the upgrade");
+    assert_eq!(
+        path_col, "kept.jpg",
+        "the existing row survives the upgrade"
+    );
     assert_eq!(name, None, "a pre-v24 row has no name");
 }
 
