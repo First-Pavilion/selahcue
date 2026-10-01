@@ -16,7 +16,7 @@
  * Test/experiment overrides (both optional): `--src <dir>` reads the drafts from `<dir>`
  * instead of `docs/legal/`; `--out <dir>` writes to `<dir>` instead of `src/lib/legal/`.
  */
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parseLegalMarkdown, renderGeneratedModule } from './legal_markdown.ts'
@@ -68,27 +68,62 @@ export function generateAll(opts: { srcDir?: string; outDir?: string } = {}): Ge
   })
 }
 
-function main(argv: string[]): number {
-  const check = argv.includes('--check')
-  const flag = (name: string): string | undefined => {
-    const at = argv.indexOf(name)
-    return at === -1 ? undefined : argv[at + 1]
+export interface Args {
+  readonly check: boolean
+  readonly srcDir?: string
+  readonly outDir?: string
+}
+
+const USAGE = 'usage: node scripts/sync_legal.ts [--check] [--src <dir>] [--out <dir>]'
+
+/**
+ * Strict: an unknown flag (a typo such as `--chek`) or a missing value is an error, never a
+ * silent fall-through into write mode. Returns the parsed args or throws with the usage.
+ */
+export function parseArgs(argv: readonly string[]): Args {
+  let check = false
+  let srcDir: string | undefined
+  let outDir: string | undefined
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i]
+    if (a === '--check') check = true
+    else if (a === '--src' || a === '--out') {
+      const value = argv[i + 1]
+      if (value === undefined || value.startsWith('--')) throw new Error(`${a} needs a directory\n${USAGE}`)
+      if (a === '--src') srcDir = value
+      else outDir = value
+      i++
+    } else {
+      throw new Error(`unknown argument "${a}"\n${USAGE}`)
+    }
   }
-  const generated = generateAll({ srcDir: flag('--src'), outDir: flag('--out') })
+  return { check, srcDir, outDir }
+}
+
+/** Line endings must not decide drift: a Windows checkout may hand back CRLF. */
+export function sameContent(a: string | null, b: string): boolean {
+  return a !== null && a.replace(/\r\n/g, '\n') === b.replace(/\r\n/g, '\n')
+}
+
+function main(argv: string[]): number {
+  const { check, srcDir, outDir } = parseArgs(argv)
+  const generated = generateAll({ srcDir, outDir })
   let stale = 0
   for (const g of generated) {
     const current = existsSync(g.outPath) ? readFileSync(g.outPath, 'utf8') : null
     if (check) {
-      if (current !== g.content) {
+      if (!sameContent(current, g.content)) {
         stale++
-        console.error(`STALE  ${g.outPath}  (does not match ${g.target.source}; run: npm run sync:legal)`)
+        console.error(
+          `STALE  ${g.outPath}\n       does not match ${g.target.source}. After editing a draft in docs/legal, run \`npm run sync:legal\` (in implementation/marketing) and commit the regenerated files.`,
+        )
       } else {
         console.log(`ok     ${g.outPath}`)
       }
       continue
     }
     mkdirSync(dirname(g.outPath), { recursive: true })
-    if (current === g.content) {
+    if (sameContent(current, g.content)) {
       console.log(`same   ${g.outPath}`)
     } else {
       writeFileSync(g.outPath, g.content)
@@ -98,7 +133,22 @@ function main(argv: string[]): number {
   return stale > 0 ? 1 : 0
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+/**
+ * Is this module the entry point? Compared by REAL path on both sides: `process.argv[1]` is
+ * the path as typed (possibly a symlink) while `import.meta.url` is already resolved, and a
+ * plain comparison of the two silently made `check:legal` exit 0 having checked nothing.
+ */
+function isEntryPoint(): boolean {
+  const entry = process.argv[1]
+  if (!entry) return false
+  try {
+    return realpathSync(entry) === realpathSync(fileURLToPath(import.meta.url))
+  } catch {
+    return false
+  }
+}
+
+if (isEntryPoint()) {
   try {
     process.exit(main(process.argv.slice(2)))
   } catch (err) {
