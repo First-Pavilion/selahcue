@@ -152,6 +152,9 @@ function tokenize(lines: string[], source: string, lineOffset = 0): Token[] {
     const parts: string[] = []
     while (i < lines.length) {
       const cur = lines[i] ?? ''
+      if (/^(=+|-+)\s*$/.test(cur) && cur.trim() !== '') {
+        fail(i, 'a line of "=" or "-" under text is a setext heading, which is not supported (use # or ##)')
+      }
       if (cur.trim() === '' || isBlockStart(cur)) break
       if (/ {2}$/.test(cur)) fail(i, 'trailing double space (a markdown hard line break) is not supported')
       if (/^ +\S/.test(cur)) fail(i, 'an indented line inside a paragraph is not supported')
@@ -171,7 +174,18 @@ const PLACEHOLDER_ONLY = /^\{\{[A-Z][A-Z0-9_]*\}\}$/
 const PLACEHOLDER_AT = /^\{\{([A-Z][A-Z0-9_]*)\}\}/
 
 /** Phrases like "section 3.8" / "Sections 9.1, 9.5 and 10", for cross-reference linking. */
-const REF_RUN = /\b([Ss]ections?) (\d+(?:\.\d+)?(?:(?:, | and |, and | or )\d+(?:\.\d+)?)*)/g
+const REF_RUN = /\b([Ss]ections?) (\d+(?:\.\d+)?(?:(?:, | and |, and | or | to |–|-)\d+(?:\.\d+)?)*)/g
+
+/**
+ * A reference that names ANOTHER document ("section 1.1 of the Privacy Policy") must not be
+ * linked to this document's 1.1. Both the "of the X" suffix and an "X, section N" prefix are
+ * refused outright; the author rewords (say "clause" or name the document without the word
+ * "section"). Loud beats a plausible-looking wrong link in a legal text.
+ */
+const OTHER_DOC_AFTER =
+  /^\s*(?:,\s*)?(?:of|in)\s+(?:the|our|your|its|that|those)\s+(?:[A-Z][\w-]*\s+){0,2}(?:Privacy Policy|Terms|Controller|Agreement|Policy|Notice|Plan Terms|Documentation|Licen[cs]e)/
+const OTHER_DOC_BEFORE =
+  /(?:Privacy Policy|Terms of (?:Service|Use)|Controller[A-Za-z ]{0,30}|Plan Terms|Documentation)(?:,|:|'s|’s)?\s+$/
 
 export function parseInline(src: string, source: string, line: number): Inline[] {
   const fail = (msg: string): never => {
@@ -240,7 +254,7 @@ export function parseInline(src: string, source: string, line: number): Inline[]
       fail('stray "}}"')
     } else if (ch === '*') {
       fail('single "*" (italic or bullet) is not supported')
-    } else if (ch === '_' && (i === 0 || /[\s(]/.test(src[i - 1] ?? '')) && /\S/.test(src[i + 1] ?? '')) {
+    } else if (ch === '_' && (i === 0 || !/[A-Za-z0-9]/.test(src[i - 1] ?? '')) && /\S/.test(src[i + 1] ?? '')) {
       fail('"_italic_" is not supported')
     } else if (ch === '~' && src[i + 1] === '~') {
       fail('strikethrough is not supported')
@@ -264,23 +278,61 @@ export function parseInline(src: string, source: string, line: number): Inline[]
 }
 
 /** Turn "section 3.8" in text nodes into `ref` nodes, throwing on a number with no target. */
-function linkRefs(nodes: readonly Inline[], anchors: ReadonlySet<string>, source: string, line: number): Inline[] {
+/** Plain text of inline nodes, for looking at what surrounds a reference. */
+function plainOf(nodes: readonly Inline[]): string {
+  return nodes
+    .map((n) => {
+      switch (n.kind) {
+        case 'text':
+        case 'code':
+        case 'ref':
+          return n.text
+        case 'placeholder':
+          return `{{${n.name}}}`
+        case 'strong':
+        case 'link':
+          return plainOf(n.children)
+      }
+    })
+    .join('')
+}
+
+/** Turn "section 3.8" in text nodes into `ref` nodes, throwing on a number with no target. */
+function linkRefs(
+  nodes: readonly Inline[],
+  anchors: ReadonlySet<string>,
+  source: string,
+  line: number,
+  outerBefore = '',
+  outerAfter = '',
+): Inline[] {
   const out: Inline[] = []
-  for (const node of nodes) {
+  nodes.forEach((node, index) => {
+    const before = outerBefore + plainOf(nodes.slice(0, index))
+    const after = plainOf(nodes.slice(index + 1)) + outerAfter
     if (node.kind === 'strong') {
-      out.push({ kind: 'strong', children: linkRefs(node.children, anchors, source, line) })
-      continue
+      out.push({ kind: 'strong', children: linkRefs(node.children, anchors, source, line, before, after) })
+      return
     }
     if (node.kind !== 'text') {
       out.push(node)
-      continue
+      return
     }
     let last = 0
     const text = node.text
     for (const m of text.matchAll(REF_RUN)) {
       const word = m[1] ?? ''
       const list = m[2] ?? ''
-      const listStart = (m.index ?? 0) + word.length + 1
+      const start = m.index ?? 0
+      const listStart = start + word.length + 1
+      const runEnd = start + m[0].length
+      if (OTHER_DOC_BEFORE.test((before + text.slice(0, start)).slice(-90)) || OTHER_DOC_AFTER.test((text.slice(runEnd) + after).slice(0, 120))) {
+        throw new LegalParseError(
+          source,
+          line,
+          `ambiguous cross-reference "${m[0]}": it appears to name another document, and would be linked to this document's ${list.split(/\D+/)[0] ?? ''}. Reword it so the number is not introduced by the word "${word}" (for example, name the document and quote the heading).`,
+        )
+      }
       if (listStart > last) out.push({ kind: 'text', text: text.slice(last, listStart) })
       let pos = 0
       for (const num of list.matchAll(/\d+(?:\.\d+)?/g)) {
@@ -296,7 +348,7 @@ function linkRefs(nodes: readonly Inline[], anchors: ReadonlySet<string>, source
       last = listStart + pos
     }
     if (last < text.length) out.push({ kind: 'text', text: text.slice(last) })
-  }
+  })
   return out
 }
 
@@ -349,7 +401,11 @@ function parseList(tok: Extract<Token, { t: 'list' }>, source: string): RawItem[
       stack.push({ indent, item })
       continue
     }
-    // continuation line
+    // continuation line. A nested marker other than `-` (or any other block syntax) would be
+    // flattened into the item's text, so it is refused rather than misread.
+    if (/^\s+(?:[*+]|\d+[.)])\s/.test(text) || /^\s+(?:>|\||#{1,6}\s|```|~~~|<)/.test(text)) {
+      throw new LegalParseError(source, line, `unsupported syntax inside a list item (only "- " nesting is supported): "${text.trim().slice(0, 40)}"`)
+    }
     const cur = stack[stack.length - 1]
     const indent = (/^ */.exec(text)?.[0] ?? '').length
     if (!cur || indent < cur.indent + 2) {

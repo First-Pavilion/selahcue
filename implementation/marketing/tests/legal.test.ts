@@ -568,6 +568,23 @@ describe('the parser fails loudly on anything it does not support', () => {
     ['a subsection under the wrong section', '# T\n\n## 1. One\n\n### 2.1 Wrong\n\nB\n', /under section 1/],
     ['mixing Parts with ## sections', '# T\n\n## Part A — X\n\n### 1. One\n\nA\n\n## 2. Two\n\nB\n', /ambiguous/],
     ['a "###" section outside any Part', '# T\n\n### 1. One\n\nA\n', /inside a "## Part/],
+    ['a nested numbered list under a bullet', md('- item\n  1. sub\n'), /unsupported syntax inside a list item/],
+    ['a nested "+" bullet under a bullet', md('- item\n  + sub\n'), /unsupported syntax inside a list item/],
+    ['a nested "*" bullet under a bullet', md('- item\n  * sub\n'), /unsupported syntax inside a list item/],
+    ['a quote inside a list item', md('- item\n  > quoted\n'), /unsupported syntax inside a list item/],
+    ['a setext heading with "="', md('Heading text\n=====\n'), /setext/],
+    ['a setext heading with "-"', md('Heading text\n-----\n'), /setext/],
+    ['a setext heading with a three-dash line', md('Heading text\n---\n'), /setext/],
+    ['a setext heading with a single dash', md('Heading text\n-\n'), /setext/],
+    ['a link target containing parentheses', md('[x](https://example.com/f(1))'), /parentheses/],
+    ['an _italic_ right after a double quote', md('say "_x_" now'), /_italic_/],
+    ['an _italic_ right after a dash', md('a\u2014_x_ b'), /_italic_/],
+    ['an _italic_ right after an apostrophe', md("it's _x_ b"), /_italic_/],
+    ['a bold-with-underscores marker', md('a __x__ b'), /_italic_/],
+    ['a reference to another document ("of the Privacy Policy")', md('1.1 See section 1.1 of the Privacy Policy.'), /ambiguous cross-reference/],
+    ['a reference to another document ("in our Terms of Service")', md('1.1 See section 1.1 in our Terms of Service.'), /ambiguous cross-reference/],
+    ['a reference to another document ("Privacy Policy, section")', md('1.1 See the Privacy Policy, section 1.1.'), /ambiguous cross-reference/],
+    ['a reference to another document (document name in bold)', md('1.1 See the **Privacy Policy** section 1.1.'), /ambiguous cross-reference/],
     ['a placeholder in a heading', '# T\n\n## 1. About {{X}}\n\nBody\n', /plain text/],
     ['markup in a heading', '# T\n\n## 1. About `x`\n\nBody\n', /plain text/],
   ]
@@ -584,6 +601,33 @@ describe('the parser fails loudly on anything it does not support', () => {
 
   test('an error names the line it is on', () => {
     assert.throws(() => parseLegalMarkdown('# T\n\n## 1. One\n\nfine\n\nbad *star*\n', 't.md'), /^LegalParseError: t\.md:7:|t\.md:7:/)
+  })
+})
+
+describe('cross-reference edge cases that must be handled, not misread', () => {
+  test('"section N of these Terms" (this document) IS linked', () => {
+    const doc = parseLegalMarkdown('# T\n\nVersion 1.0 (final, 2026-01-02).\n\n## 1. One\n\n1.1 See section 1.1 of these Terms.\n', 't.md')
+    const p = doc.parts[0]?.sections[0]?.blocks[0]
+    assert.ok(p && p.kind === 'paragraph')
+    assert.deepEqual(p.inline.filter((n) => n.kind === 'ref').map((n) => (n.kind === 'ref' ? n.anchor : '')), ['s-1-1'])
+  })
+
+  test('ranges link BOTH ends: "3.1 to 3.3" and an en-dash range', () => {
+    const doc = parseLegalMarkdown(
+      '# T\n\nVersion 1.0 (final, 2026-01-02).\n\n## 1. One\n\n1.1 A.\n\n1.2 B.\n\n1.3 See sections 1.1 to 1.2, and sections 1.1\u20131.3.\n',
+      't.md',
+    )
+    const p = doc.parts[0]?.sections[0]?.blocks[2]
+    assert.ok(p && p.kind === 'paragraph')
+    assert.deepEqual(
+      p.inline.filter((n) => n.kind === 'ref').map((n) => (n.kind === 'ref' ? n.text : '')),
+      ['1.1', '1.2', '1.1', '1.3'],
+    )
+    assert.equal(inlineToText(p.inline), 'See sections 1.1 to 1.2, and sections 1.1\u20131.3.')
+  })
+
+  test('intraword underscores are not emphasis (snake_case stays text)', () => {
+    assert.deepEqual(parseInline('use snake_case and a_b names', 't', 1), [{ kind: 'text', text: 'use snake_case and a_b names' }])
   })
 })
 
