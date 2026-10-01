@@ -2763,9 +2763,13 @@ impl App {
             Fault::DiskFull,
             disk_fault_active(self.last_disk_status),
         );
-        if self.disk_critical || self.clean_mode {
+        if self.disk_critical || self.clean_mode || self.smoke {
             // Critical disk: never risk corrupting a full store. Clean mode:
-            // the preserved session must stay untouched. State stays in memory.
+            // the preserved session must stay untouched. A `--smoke` launch is a throwaway probe
+            // that "must not persist anything" (the exit save already skips it): loading a stored
+            // plan can queue a one-off save of the fitted scripture links, which this tick would
+            // otherwise write into the data dir the probe was launched against.
+            // State stays in memory.
             return;
         }
         let Ok(mut c) = self.controller.lock() else {

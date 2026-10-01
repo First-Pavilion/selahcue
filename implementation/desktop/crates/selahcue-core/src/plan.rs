@@ -512,10 +512,17 @@ pub fn scripture_verses_per_page(verses_per_slide: Option<u16>) -> usize {
     verses_per_slide.map_or(1, |n| usize::from(n).max(1))
 }
 
+/// The most verses any chapter of the Bible has (Psalm 119: 176). No real link spans more, so this
+/// bounds what a link may ADVERTISE: an unresolvable range such as `Romans 99:1-65535` is never
+/// fitted to a real chapter (there is none), and counted by its full width it would offer tens of
+/// thousands of identical title-only slides and trap Next/Previous on them.
+pub const MAX_CHAPTER_VERSES: u16 = 176;
+
 /// Slides a scripture link of `verse_count` verses presents as. A count of 0 (a whole chapter the
-/// corpus-free core cannot count) is one slide.
+/// corpus-free core cannot count) is one slide; a wider-than-any-chapter range is counted as the
+/// longest chapter ([`MAX_CHAPTER_VERSES`]).
 fn scripture_page_count(verse_count: u16, verses_per_slide: Option<u16>) -> usize {
-    usize::from(verse_count)
+    usize::from(verse_count.min(MAX_CHAPTER_VERSES))
         .div_ceil(scripture_verses_per_page(verses_per_slide))
         .max(1)
 }

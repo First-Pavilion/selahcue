@@ -237,6 +237,29 @@ fn a_scripture_range_counts_by_verses_not_by_stanzas() {
 }
 
 #[test]
+fn a_scripture_range_never_advertises_more_slides_than_the_longest_chapter_has_verses() {
+    // An unresolvable link ("Romans 99:1-65535") is not fitted to any real chapter, so its count
+    // would otherwise be the full width of the range: tens of thousands of identical title-only
+    // slides trapping Next/Previous. The longest chapter in the Bible (Psalm 119) has 176 verses,
+    // so no real range needs more.
+    use selahcue_core::plan::MAX_CHAPTER_VERSES;
+    assert_eq!(MAX_CHAPTER_VERSES, 176, "Psalm 119 is the longest chapter");
+    let (p, s) = scripture_item("Romans 99:1-65535", None);
+    assert_eq!(
+        p.get(s).unwrap().slide_count(),
+        usize::from(MAX_CHAPTER_VERSES)
+    );
+    // The cap is the longest chapter exactly: Psalm 119 in full is unaffected (positive control)...
+    let (p, s) = scripture_item("Psalms 119:1-176", None);
+    assert_eq!(p.get(s).unwrap().slide_count(), 176);
+    // ...one verse past it is clamped, and a page size still divides the CAPPED count.
+    let (p, s) = scripture_item("Psalms 119:1-177", None);
+    assert_eq!(p.get(s).unwrap().slide_count(), 176);
+    let (p, s) = scripture_item("Romans 99:1-65535", Some(10));
+    assert_eq!(p.get(s).unwrap().slide_count(), 18); // ceil(176 / 10)
+}
+
+#[test]
 fn a_scripture_link_the_core_cannot_count_is_one_slide() {
     // The core is corpus-free: a whole chapter has no verse count here (the host expands it to
     // an explicit range at link time), and an unparseable legacy reference must not panic.

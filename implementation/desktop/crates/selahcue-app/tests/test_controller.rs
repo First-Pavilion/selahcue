@@ -4928,6 +4928,83 @@ fn fitting_loaded_links_is_persisted_once_and_is_not_an_undoable_edit() {
 }
 
 #[test]
+fn fitting_a_link_with_no_translation_pins_the_translation_it_was_fitted_against() {
+    // `translation: None` means "the default", and the fit measures the chapter against TODAY's
+    // default. Bundled translations differ in versification (e.g. Romans 14 / 16 between KJV and
+    // WEB), so a bare chapter expanded against one would silently lose or invent verses if the
+    // default ever changed. The fit therefore pins the translation in the same write.
+    let default_code = selahcue_scripture::Translation::default()
+        .code()
+        .to_string();
+    let mut plan = ServicePlan::new("Sunday");
+    let id = plan.add_item(ItemKind::Scripture, "Reading");
+    plan.get_mut(id).unwrap().content = Some(ItemContent::Scripture {
+        reference: "Psalms 1".into(),
+        translation: None,
+        verses_per_slide: None,
+        verse_numbers: None,
+    });
+    // A control that must NOT be touched: it already fits, so nothing is rewritten.
+    let fits = plan.add_item(ItemKind::Scripture, "Already exact");
+    plan.get_mut(fits).unwrap().content = Some(ItemContent::Scripture {
+        reference: "Romans 8:28-30".into(),
+        translation: None,
+        verses_per_slide: None,
+        verse_numbers: None,
+    });
+    let c = LiveController::new(plan, 320, 180, Theme::dark());
+    let view = c.operator_view();
+    let fitted = view.items[0].link.as_ref().unwrap();
+    assert!(
+        fitted
+            .reference
+            .as_deref()
+            .unwrap()
+            .starts_with("Psalms 1:1-"),
+        "{:?}",
+        fitted.reference
+    );
+    assert_eq!(
+        fitted.translation.as_deref(),
+        Some(default_code.as_str()),
+        "a fitted link names the translation it was measured against"
+    );
+    let untouched = view.items[1].link.as_ref().unwrap();
+    assert_eq!(untouched.reference.as_deref(), Some("Romans 8:28-30"));
+    assert_eq!(
+        untouched.translation, None,
+        "a link that needed no fit keeps meaning \"the default\""
+    );
+
+    // The same holds when the link is made over the wire without a translation.
+    let (mut c, ids) = controller();
+    let reply = c.apply(&Command::SetItemContent {
+        item_id: ids[1],
+        link: Some(ContentLinkView {
+            kind: "scripture".into(),
+            reference: Some("Psalms 1".into()),
+            translation: None,
+            verses_per_slide: None,
+            id: None,
+            slide_count: None,
+            verse_numbers: None,
+            status: None,
+            label: None,
+        }),
+    });
+    assert_eq!(reply, ControllerReply::Ack);
+    assert_eq!(
+        c.operator_view().items[1]
+            .link
+            .as_ref()
+            .unwrap()
+            .translation
+            .as_deref(),
+        Some(default_code.as_str())
+    );
+}
+
+#[test]
 fn loading_a_plan_that_needs_no_fit_queues_no_write() {
     // Positive control for the test above: a plan with nothing to fit — already-fitted links, an
     // unresolvable passage, and no links at all — is NOT written at boot.
@@ -4942,6 +5019,15 @@ fn loading_a_plan_that_needs_no_fit_queues_no_write() {
         });
     }
     plan.add_item(ItemKind::Song, "No link");
+    // A range that ends EXACTLY on the chapter's last verse already fits: re-fitting it on every
+    // boot would queue a pointless write each launch.
+    let id = plan.add_item(ItemKind::Scripture, "Exact end");
+    plan.get_mut(id).unwrap().content = Some(ItemContent::Scripture {
+        reference: format!("Psalms 1:2-{}", web_last_verse("Psalms 1")),
+        translation: Some("WEB".into()),
+        verses_per_slide: None,
+        verse_numbers: None,
+    });
     let mut c = LiveController::new(plan, 320, 180, Theme::dark());
     assert!(
         !c.take_plan_dirty(),
@@ -4959,6 +5045,184 @@ fn loading_a_plan_that_needs_no_fit_queues_no_write() {
         c.take_plan_dirty(),
         "a resumed plan whose links were fitted is saved too"
     );
+    // ...and a resumed plan that needed no fit is NOT (resume must not mark the plan dirty
+    // unconditionally).
+    let mut clean = ServicePlan::new("Clean");
+    let id = clean.add_item(ItemKind::Scripture, "Fits");
+    clean.get_mut(id).unwrap().content = Some(ItemContent::Scripture {
+        reference: "Romans 8:28-30".into(),
+        translation: Some("WEB".into()),
+        verses_per_slide: None,
+        verse_numbers: None,
+    });
+    let (mut c, _) = controller();
+    c.take_plan_dirty();
+    c.resume_preserved(clean, &selahcue_app::ControllerSnapshot::default());
+    assert!(
+        !c.take_plan_dirty(),
+        "a resumed plan that needed no fit queues no write"
+    );
+}
+
+#[test]
+fn a_range_that_starts_on_a_verse_the_translation_omits_stages_the_first_verse_that_exists() {
+    // WEB has no Acts 8:37 (Acts 8:36 is followed by 8:38). `Acts 8:37-39` used to stage verses
+    // 38-39 as one slide; narrowing to the first NUMBER typed would stage the verse that does not
+    // exist and show a title-only slide. The first verse of the passage is the first one that
+    // exists.
+    let (mut c, _) = controller();
+    c.apply(&Command::StageScripture {
+        reference: "Acts 8:37-39".into(),
+        translation: Some("WEB".into()),
+    });
+    let body = staged_body(&c);
+    assert_eq!(body.len(), 1, "one verse, and it has text: {body:?}");
+    assert!(!body[0].trim().is_empty());
+    assert!(
+        staged_title(&c).starts_with("Acts 8:38 "),
+        "{:?}",
+        staged_title(&c)
+    );
+    assert_eq!(
+        c.operator_view().staged_scripture.as_deref(),
+        Some("Acts 8:38"),
+        "the readback names the verse actually on screen"
+    );
+    // Control: a range whose first verse DOES exist is narrowed to it, unchanged behaviour.
+    c.apply(&Command::StageScripture {
+        reference: "Acts 8:36-39".into(),
+        translation: Some("WEB".into()),
+    });
+    assert_eq!(
+        c.operator_view().staged_scripture.as_deref(),
+        Some("Acts 8:36")
+    );
+}
+
+#[test]
+fn a_plan_link_over_a_translation_verse_gap_never_goes_blank_or_panics() {
+    // Known limitation, pinned so the safety net stays: the core counts slides from the reference
+    // alone, so a range spanning a verse the translation omits (WEB: no Acts 8:37) advertises one
+    // slide too many. The extra slide repeats the LAST verse rather than going blank or indexing
+    // past the end — stepping to and beyond it must be safe. (Exact counts need the translation's
+    // verse list; tracked with the lazy verse-run table work, 86ak84fbd.)
+    let (mut c, ids) = controller();
+    link_scripture(&mut c, ids[1], "Acts 8:36-40", Some(1));
+    // Five slides are advertised (36..=40) although WEB has only four of those verses.
+    assert_eq!(c.operator_view().items[1].slide_count, Some(5));
+    c.apply(&Command::SelectItem { item_id: ids[1] });
+    let mut titles = Vec::new();
+    for _ in 0..5 {
+        let body = staged_body(&c);
+        assert_eq!(body.len(), 1, "never blank, never more than one verse");
+        assert!(!body[0].trim().is_empty());
+        titles.push(staged_title(&c));
+        c.apply(&Command::Next);
+    }
+    assert!(
+        titles[3].starts_with("Acts 8:40 ") && titles[4].starts_with("Acts 8:40 "),
+        "the extra slide repeats the last real verse instead of going blank: {titles:?}"
+    );
+    // ...and Next past it moves on to the next plan item as usual.
+    assert_eq!(c.staged_index(), Some(2));
+}
+
+#[test]
+fn relinking_the_on_air_item_to_a_shorter_range_never_reports_a_position_past_the_end() {
+    // Editing the plan never touches Live, so the on-air slide position can outlive the range it
+    // was in. The row must not read "slide 8 of 3".
+    let (mut c, ids) = controller();
+    link_scripture(&mut c, ids[1], "Psalms 119:2-10", None); // nine slides
+    c.apply(&Command::SelectSlide {
+        item_id: ids[1],
+        slide_index: 7,
+    });
+    c.apply(&Command::GoLive);
+    assert_eq!(c.operator_view().items[1].slide_index, Some(7), "premise");
+    link_scripture(&mut c, ids[1], "Romans 8:28-30", None); // now three
+    let item = &c.operator_view().items[1];
+    assert_eq!(item.slide_count, Some(3));
+    assert!(
+        item.slide_index.is_some_and(|i| i <= 2),
+        "the position is clamped to the new range: {:?}",
+        item.slide_index
+    );
+}
+
+#[test]
+fn a_verse_past_the_end_of_the_chapter_is_stored_as_given_not_rewritten() {
+    // Psalm 1 has six verses, so `Psalms 1:9` names nothing. Clamping it would produce the
+    // descending nonsense `Psalms 1:9-6`; it is left exactly as typed (and reported Missing).
+    let (mut c, ids) = controller();
+    link_scripture(&mut c, ids[1], "Psalms 1:9", None);
+    assert_eq!(linked_reference(&c).as_deref(), Some("Psalms 1:9"));
+    link_scripture(&mut c, ids[1], "Psalms 1:9-12", None);
+    assert_eq!(linked_reference(&c).as_deref(), Some("Psalms 1:9-12"));
+}
+
+#[test]
+fn following_a_range_narrows_the_live_readback_too() {
+    // FollowScripture updates the LIVE readback when a scripture is already on air; it must name
+    // the single verse that is on screen, not the range the client sent.
+    let (mut c, _) = controller();
+    c.apply(&Command::StageScripture {
+        reference: "Psalms 119:2".into(),
+        translation: Some("WEB".into()),
+    });
+    c.apply(&Command::GoLive);
+    c.apply(&Command::FollowScripture {
+        reference: "Psalms 119:5-9".into(),
+        translation: Some("WEB".into()),
+    });
+    let view = c.operator_view();
+    assert_eq!(view.staged_scripture.as_deref(), Some("Psalms 119:5"));
+    assert_eq!(
+        view.live_scripture.as_deref(),
+        Some("Psalms 119:5"),
+        "the live readback names the verse on air, not the range sent"
+    );
+}
+
+#[test]
+fn recovering_a_legacy_range_readback_names_the_verse_that_is_displayed() {
+    // A snapshot written before the display paged by verse can hold a RANGE as the staged/live
+    // scripture. The slide recovers as its first verse; the readback must say so too, or the
+    // console would claim a range is on screen while one verse is.
+    let (mut c, _) = controller();
+    let snap = selahcue_app::ControllerSnapshot {
+        staged_scripture: Some("Psalms 119:2-10".into()),
+        live_scripture: Some("Psalms 119:2-10".into()),
+        ..Default::default()
+    };
+    c.restore(&snap);
+    let view = c.operator_view();
+    assert_eq!(view.staged_scripture.as_deref(), Some("Psalms 119:2"));
+    assert_eq!(view.live_scripture.as_deref(), Some("Psalms 119:2"));
+}
+
+#[test]
+fn a_single_verse_link_is_stored_exactly_as_given() {
+    // A single verse can never run past the end of its chapter, so linking one is never "fitted":
+    // stored byte for byte with its translation untouched (no fit means no translation pin).
+    let (mut c, ids) = controller();
+    c.apply(&Command::SetItemContent {
+        item_id: ids[1],
+        link: Some(ContentLinkView {
+            kind: "scripture".into(),
+            reference: Some("John 3:16".into()),
+            translation: None,
+            verses_per_slide: None,
+            id: None,
+            slide_count: None,
+            verse_numbers: None,
+            status: None,
+            label: None,
+        }),
+    });
+    let view = c.operator_view();
+    let link = view.items[1].link.as_ref().unwrap();
+    assert_eq!(link.reference.as_deref(), Some("John 3:16"));
+    assert_eq!(link.translation, None);
 }
 
 #[test]

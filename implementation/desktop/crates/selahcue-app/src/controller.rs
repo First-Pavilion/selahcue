@@ -659,15 +659,22 @@ fn scripture_slide(reference: &str) -> Slide {
 /// recovery) can never reach the output as more than one verse. Narrowing the *reference* as
 /// well keeps the `staged_scripture`/`live_scripture` readbacks, and the session snapshot, naming
 /// the verse that is actually on screen.
-fn narrow_to_first_verse(reference: &str) -> String {
+fn narrow_to_first_verse(t: selahcue_scripture::Translation, reference: &str) -> String {
     let Ok(r) = scripture::parse_one(reference) else {
         return reference.to_string();
     };
-    let start = match r.verses {
-        None => 1,
-        Some(range) if range.end > range.start => range.start,
-        Some(_) => return reference.to_string(),
-    };
+    if matches!(r.verses, Some(range) if range.end <= range.start) {
+        return reference.to_string(); // already a single verse
+    }
+    // The first verse that EXISTS in this translation, not merely the first number named: WEB has
+    // no Acts 8:37, so `Acts 8:37-39` shows 8:38 (narrowing to the typed 8:37 would stage a verse
+    // that is not there and put a blank slide on screen). Falls back to the typed start (or verse 1
+    // for a whole chapter) when the passage resolves to nothing at all.
+    let start = selahcue_scripture::verses_in(t, &r)
+        .first()
+        .map(|v| v.verse)
+        .or_else(|| r.verses.map(|range| range.start))
+        .unwrap_or(1);
     selahcue_core::scripture::Reference {
         verses: Some(selahcue_core::scripture::VerseRange { start, end: start }),
         ..r
@@ -688,9 +695,20 @@ fn fit_reference_to_chapter(
     t: selahcue_scripture::Translation,
     parsed: &selahcue_core::scripture::Reference,
 ) -> Option<selahcue_core::scripture::Reference> {
-    let ch = selahcue_scripture::chapter_in(t, parsed)?;
-    let first = ch.verses.first()?.0;
-    let last = ch.verses.last()?.0;
+    // A single verse can never run past the end of its chapter, so it never needs fitting — and
+    // deciding that must not touch (and so must not decode) a translation: resolving a plan's links
+    // on the load / command path must not decompress a bible (86ak84fbd).
+    if matches!(parsed.verses, Some(r) if r.start == r.end) {
+        return None;
+    }
+    // The chapter's verse numbers, borrowed from the corpus (no text cloned just to read two numbers).
+    let whole_chapter = selahcue_core::scripture::Reference {
+        verses: None,
+        ..parsed.clone()
+    };
+    let verses = selahcue_scripture::verses_in(t, &whole_chapter);
+    let first = verses.first()?.verse;
+    let last = verses.last()?.verse;
     let fitted = match parsed.verses {
         None => selahcue_core::scripture::VerseRange {
             start: first,
@@ -719,6 +737,22 @@ fn fitted_scripture_reference(reference: &str, translation: Option<&str>) -> Opt
         .and_then(selahcue_scripture::Translation::from_code)
         .unwrap_or_default();
     fit_reference_to_chapter(t, &parsed).map(|r| r.to_string())
+}
+
+/// Name the translation a FITTED link was measured against. `translation: None` means "the
+/// default", and the fit counted that chapter's verses in today's default; bundled translations
+/// differ in versification (Romans 14 and 16 between KJV and WEB), so a bare chapter expanded
+/// against one would silently drop or invent verses were the default ever to change. Pinning it in
+/// the same write keeps the stored range and the translation it was measured in together. A link
+/// that already names a translation, or that needed no fit, is left alone.
+fn pin_fitted_translation(translation: &mut Option<String>) {
+    if translation.is_none() {
+        *translation = Some(
+            selahcue_scripture::Translation::default()
+                .code()
+                .to_string(),
+        );
+    }
 }
 
 /// Fit every scripture link in a plan that enters the controller from storage — at boot
@@ -760,6 +794,7 @@ fn fit_scripture_links(plan: &mut ServicePlan) -> bool {
         {
             if let Some(fitted) = fitted_scripture_reference(reference, translation.as_deref()) {
                 *reference = fitted;
+                pin_fitted_translation(translation);
                 changed = true;
             }
         }
@@ -1981,10 +2016,14 @@ impl LiveController {
                 self.live_slide = slide;
             }
         } else if let Some(reference) = snap.live_scripture.as_ref() {
-            self.presenter.stage(scripture_slide(reference));
+            // A snapshot from before the display paged by verse may hold a RANGE; the slide
+            // recovers as its first verse, so the readback must name that verse too.
+            let reference =
+                narrow_to_first_verse(selahcue_scripture::Translation::default(), reference);
+            self.presenter.stage(scripture_slide(&reference));
             if self.presenter.go_live() {
                 self.live_idx = None;
-                self.live_scripture = Some(reference.clone());
+                self.live_scripture = Some(reference);
             }
         } else if let Some(text) = snap.live_free_text.as_ref() {
             // A removed item's slide: restore exactly what was on screen — title
@@ -2010,9 +2049,11 @@ impl LiveController {
             let slide = slide_ok(&self.plan, staged, snap.staged_slide);
             self.stage_slide(staged, slide);
         } else if let Some(reference) = snap.staged_scripture.as_ref() {
-            self.presenter.stage(scripture_slide(reference));
+            let reference =
+                narrow_to_first_verse(selahcue_scripture::Translation::default(), reference);
+            self.presenter.stage(scripture_slide(&reference));
             self.staged_idx = None;
-            self.staged_scripture = Some(reference.clone());
+            self.staged_scripture = Some(reference);
         } else {
             self.presenter.clear_preview();
             self.staged_idx = None;
@@ -2480,43 +2521,51 @@ impl LiveController {
             .iter()
             .zip(&resolutions)
             .enumerate()
-            .map(|(i, (item, resolution))| ItemView {
-                id: item.id.0,
-                kind: item.kind.as_tag().to_string(),
-                title: item.title.clone(),
-                is_live: self.live_idx == Some(i),
-                is_staged: self.staged_idx == Some(i),
-                // Truthful slide bookkeeping (S8-1): only multi-slide items
-                // advertise a count; the position shows for the live/staged item.
-                slide_count: (item.slide_count() > 1).then(|| item.slide_count() as u32),
-                slide_index: if item.slide_count() > 1 {
-                    if self.live_idx == Some(i) {
-                        Some(self.live_slide as u32)
-                    } else if self.staged_idx == Some(i) {
-                        Some(self.staged_slide as u32)
+            .map(|(i, (item, resolution))| {
+                // One count per item: for a scripture link it parses the reference, so it is not
+                // asked four times per row on every view build.
+                let slides = item.slide_count();
+                // A position can never read past the end — relinking the on-air item to a shorter
+                // range must not leave the row saying "slide 9 of 3".
+                let last_slide = slides.saturating_sub(1);
+                ItemView {
+                    id: item.id.0,
+                    kind: item.kind.as_tag().to_string(),
+                    title: item.title.clone(),
+                    is_live: self.live_idx == Some(i),
+                    is_staged: self.staged_idx == Some(i),
+                    // Truthful slide bookkeeping (S8-1): only multi-slide items
+                    // advertise a count; the position shows for the live/staged item.
+                    slide_count: (slides > 1).then_some(slides as u32),
+                    slide_index: if slides > 1 {
+                        if self.live_idx == Some(i) {
+                            Some(self.live_slide.min(last_slide) as u32)
+                        } else if self.staged_idx == Some(i) {
+                            Some(self.staged_slide.min(last_slide) as u32)
+                        } else {
+                            None
+                        }
                     } else {
                         None
-                    }
-                } else {
-                    None
-                },
-                // The STAGED slide, always reported for the staged multi-slide item (even when it is
-                // ALSO live at a different slide) — so the slide picker can mark PREVIEW and LIVE on
-                // different slides. `slide_index` above stays LIVE-first for the plan-row badge.
-                staged_slide_index: (item.slide_count() > 1 && self.staged_idx == Some(i))
-                    .then_some(self.staged_slide as u32),
-                theme: item.theme.clone(),
-                // The linked content (scripture/deck/media), so the operator UI shows
-                // link status (ADR-0020 follow-up). `None` = an unlinked item.
-                link: item
-                    .content
-                    .as_ref()
-                    .zip(*resolution)
-                    .map(|(c, r)| content_link_view(c, r)),
-                // Owner + planned duration for the run-sheet row (FR-004); `None` passes through
-                // untouched so unassigned/unplanned items stay byte-stable on the wire.
-                owner: item.owner.clone(),
-                planned_secs: item.planned_secs,
+                    },
+                    // The STAGED slide, always reported for the staged multi-slide item (even when it is
+                    // ALSO live at a different slide) — so the slide picker can mark PREVIEW and LIVE on
+                    // different slides. `slide_index` above stays LIVE-first for the plan-row badge.
+                    staged_slide_index: (slides > 1 && self.staged_idx == Some(i))
+                        .then_some(self.staged_slide.min(last_slide) as u32),
+                    theme: item.theme.clone(),
+                    // The linked content (scripture/deck/media), so the operator UI shows
+                    // link status (ADR-0020 follow-up). `None` = an unlinked item.
+                    link: item
+                        .content
+                        .as_ref()
+                        .zip(*resolution)
+                        .map(|(c, r)| content_link_view(c, r)),
+                    // Owner + planned duration for the run-sheet row (FR-004); `None` passes through
+                    // untouched so unassigned/unplanned items stay byte-stable on the wire.
+                    owner: item.owner.clone(),
+                    planned_secs: item.planned_secs,
+                }
             })
             .collect();
         // Wrapped here, not returned as an `Option` from `plan_summary`: this host always
@@ -3021,7 +3070,7 @@ impl LiveController {
                     return ControllerReply::Deny(DenyReason::BadRequest);
                 }
                 // One verse at a time: a range or whole chapter stages its first verse.
-                let staged = narrow_to_first_verse(reference);
+                let staged = narrow_to_first_verse(t, reference);
                 self.presenter.stage(scripture_slide_in(t, &staged));
                 self.staged_idx = None; // a scripture slide is not a plan index
                 self.staged_scripture = Some(staged);
@@ -3045,7 +3094,7 @@ impl LiveController {
                     return ControllerReply::Deny(DenyReason::BadRequest);
                 }
                 // Always stage the verse in Preview (identical to StageScripture).
-                let verse = narrow_to_first_verse(reference);
+                let verse = narrow_to_first_verse(t, reference);
                 self.presenter.stage(scripture_slide_in(t, &verse));
                 self.staged_idx = None;
                 self.staged_scripture = Some(verse.clone());
@@ -3573,7 +3622,10 @@ impl LiveController {
                     Some(detected) => {
                         // A whole-chapter or range detection stages just its first verse (never
                         // a wall of text on one slide); a single verse stages as-is.
-                        let staged = narrow_to_first_verse(&detected.reference);
+                        let staged = narrow_to_first_verse(
+                            selahcue_scripture::Translation::default(),
+                            &detected.reference,
+                        );
                         self.presenter.stage(scripture_slide(&staged));
                         self.staged_idx = None; // a scripture slide is not a plan index
                         self.staged_scripture = Some(staged);
@@ -3958,6 +4010,7 @@ impl LiveController {
                         fitted_scripture_reference(reference, translation.as_deref())
                     {
                         *reference = fitted;
+                        pin_fitted_translation(translation);
                     }
                 }
                 Some(c)

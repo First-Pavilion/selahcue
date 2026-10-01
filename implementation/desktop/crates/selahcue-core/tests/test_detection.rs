@@ -286,7 +286,41 @@ fn a_hyphen_that_is_not_between_digits_stays_a_separator() {
     // so it cannot weld a book to a number or invent a reference.
     assert_eq!(detect("the well-known John 3:16"), vec!["John 3:16"]);
     assert_eq!(detect("John- 3:16"), vec!["John 3:16"]);
-    assert!(detect("call 555-1234 or 99-100 people").is_empty());
+    // Each of these includes a real reference, so a detector that stopped working could not pass.
+    assert_eq!(
+        detect("John 3:16 call 555-1234 or 99-100 people"),
+        vec!["John 3:16"]
+    );
+    assert_eq!(detect("John-3:16"), vec!["John 3:16"]);
+    assert_eq!(
+        detect("John 3:16\u{2014}the best known verse"),
+        vec!["John 3:16"]
+    );
+}
+
+#[test]
+fn a_cross_chapter_range_still_detects_its_first_verse() {
+    // "Matthew 5:1-7:29" spans chapters, which the reference model cannot express. Keeping the
+    // hyphen made the whole window unparseable, so nothing was detected at all; before that it
+    // fell back to the first verse. The operator still gets the passage's starting point.
+    assert_eq!(
+        detect("turn to Matthew 5:1-7:29 please"),
+        vec!["Matthew 5:1"]
+    );
+    assert_eq!(detect("Genesis 1:1\u{2013}2:3"), vec!["Genesis 1:1"]);
+}
+
+#[test]
+fn from_only_counts_as_filler_when_it_introduces_a_verse() {
+    // "Psalms chapter one from verse 2 to 10" — "from" introduces a verse. A bare "from" between
+    // two numbers is ordinary speech ("John 3 from 5 of us") and must not weld them into a
+    // fabricated verse.
+    assert_eq!(detect("John 3 from 5 of us"), vec!["John 3"]);
+    assert_eq!(detect("Psalm 23 from 10 of them"), vec!["Psalms 23"]);
+    assert_eq!(
+        detect("Psalms chapter one from verse 2 to 10"),
+        vec!["Psalms 1:2-10"]
+    );
 }
 
 #[test]
