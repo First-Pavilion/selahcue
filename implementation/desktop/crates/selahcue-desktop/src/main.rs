@@ -3425,6 +3425,16 @@ fn start_remote_control(controller: Arc<Mutex<LiveController>>, remote: Arc<Remo
                 return;
             }
         };
+        // Pay the scripture quote-match index's one-time cold-start cost (gzip-decode +
+        // tokenize ~31k KJV verses; ~250ms release / ~1.7s debug) HERE — plain sync code on
+        // this dedicated background thread, before `run_server` below does anything, so it
+        // always finishes before the LAN listener can bind, let alone accept a connection.
+        // Without this, the first real IngestTranscript a remote controller sends pays the
+        // same cost inline inside ControlClient::COMMAND_TIMEOUT's 2s budget — and on
+        // overrun, permanently poisons that connection (see its doc comment, Sana S-8).
+        // Does not delay the output window: this thread is already independent of winit's.
+        // 17tnw2b1258 (PR #130 review follow-up); mirrors that PR's test-only warm-up.
+        selahcue_scripture::warm();
         if let Err(e) = runtime.block_on(run_server(controller, remote)) {
             eprintln!("SelahCue: remote control stopped: {e}");
         }
@@ -3494,6 +3504,68 @@ async fn run_server(
         .await
         .map_err(|e| format!("server run: {e:?}"))?;
     Ok(())
+}
+
+/// Regression coverage for 17tnw2b1258: the scripture quote-match index must already be warm
+/// by the time `start_remote_control` publishes its port, i.e. before the LAN server can ever
+/// accept a remote connection. Real windowing isn't testable in CI (see `window_lifecycle_tests`
+/// above), but `start_remote_control` itself needs no window — it runs against a real background
+/// thread, a real Tokio runtime and a real loopback listener, the same way `run_server` does in
+/// production, so this test calls it directly rather than re-implementing its startup order.
+#[cfg(test)]
+mod remote_control_warmup_tests {
+    use super::{
+        demo_plan, start_remote_control, LiveController, RemoteShared, SessionRegistry, Theme,
+    };
+    use std::sync::{Arc, Mutex, OnceLock};
+    use std::time::{Duration, Instant};
+    use tokio::sync::Mutex as AsyncMutex;
+
+    #[test]
+    fn scripture_index_is_warm_before_the_server_can_accept_a_connection() {
+        let controller = Arc::new(Mutex::new(LiveController::new(
+            demo_plan(),
+            320,
+            180,
+            Theme::dark(),
+        )));
+        let remote = Arc::new(RemoteShared {
+            registry: Arc::new(AsyncMutex::new(SessionRegistry::new())),
+            lan: OnceLock::new(),
+            active_code: Mutex::new(None),
+        });
+
+        start_remote_control(controller, remote.clone());
+
+        // `remote.lan` is published only after `run_server` has bound its listener — i.e.
+        // strictly after `start_remote_control`'s warm-up call above has already returned
+        // (plain sequential code on the same background thread). Poll with a generous bound
+        // instead of a fixed sleep: a cold warm-up alone can take ~1.7s in debug profile.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while remote.lan.get().is_none() {
+            assert!(
+                Instant::now() < deadline,
+                "remote control server did not start within 10s"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+
+        // `warm()` is idempotent: a no-op (single-digit microseconds) once the index is
+        // already built, but it pays the FULL cold-start cost (hundreds of ms+) if it is
+        // the first real call. Calling it again here, now that the server is about to
+        // accept connections, proves `start_remote_control` already warmed it — if that
+        // call is ever removed, THIS becomes the first call and the assertion below fails.
+        let started = Instant::now();
+        selahcue_scripture::warm();
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed < Duration::from_millis(300),
+            "a second warm() call took {elapsed:?} after the control server started \
+             listening for connections — the scripture quote-match index was not already \
+             warm, meaning start_remote_control no longer warms it before accepting remote \
+             connections (17tnw2b1258)"
+        );
+    }
 }
 
 /// Advertise the control endpoint as `_selahcue._tcp.local.` while the server
