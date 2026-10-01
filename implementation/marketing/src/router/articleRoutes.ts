@@ -5,63 +5,33 @@
  * can build a real vue-router from them under `node --test`. `index.ts` imports
  * `HomeView.vue` and the session store, neither of which node can load.
  *
- * UNKNOWN SLUGS. A path under these prefixes that names no article must not render a
- * blank page — the same dead end MEDIUM-4 closed with the catch-all. `beforeEnter`
- * checks the content source and, on a miss, sends the visitor to the existing
- * `not-found` route WITH THE URL PRESERVED (the `pathMatch` pattern from the vue-router
- * docs), so the address bar still shows what they typed, the status of the page is
- * honest, and they get NotFoundView's way forward. A path that is only a PREFIX
- * (`/docs/getting-started`) matches no route here at all and falls through to the same
- * catch-all.
+ * UNKNOWN SLUGS ARE THE VIEW'S JOB, NOT THE ROUTER'S. The first version redirected an
+ * unknown slug to the `not-found` route from a `beforeEnter` guard. That had three faults:
+ *   - `beforeEnter` does not run when only the params change, so going from one article to
+ *     an unknown slug skipped it (stale title, empty description, a blank-looking page);
+ *   - the redirect fed the already-encoded `to.path` back through `pathMatch`, so
+ *     `/blog/a%20b` became `/blog/a%2520b` in the address bar;
+ *   - the guard had to load the whole article corpus into the entry chunk to check a slug.
+ * Each view now looks its own article up (it has to, to render it) and shows the not-found
+ * page, embedded, when there is none. That runs on EVERY param change, never rewrites the
+ * address bar, and needs no guard. A path that is only a PREFIX (`/docs/getting-started`)
+ * matches none of these records and falls through to the site's catch-all as before.
  */
-import type { RouteLocationNormalized, RouteLocationRaw, RouteRecordRaw } from 'vue-router'
-
-/** The existing catch-all's route name — see `index.ts`. */
-export const NOT_FOUND_ROUTE = 'not-found'
-
-export function notFoundFor(to: RouteLocationNormalized): RouteLocationRaw {
-  return {
-    name: NOT_FOUND_ROUTE,
-    // Same shape the catch-all `/:pathMatch(.*)*` produces for this path.
-    params: { pathMatch: to.path.substring(1).split('/') },
-    query: to.query,
-    hash: to.hash,
-  }
-}
+import type { RouteLocationNormalized, RouteRecordRaw } from 'vue-router'
 
 export const articleRoutes: RouteRecordRaw[] = [
-  {
-    path: '/blog/:slug',
-    name: 'blog-post',
-    component: () => import('@/views/BlogPostView.vue'),
-    props: true,
-    // The guards load the corpus on demand. A STATIC import here would pull every article
-    // body into the entry chunk, because this module is imported by `router/index.ts`
-    // (measured: entry 80.8 -> 161.5 kB), and the home page would ship article text.
-    beforeEnter: async (to) => {
-      const { findBlogPost } = await import('../lib/content/blog.ts')
-      return findBlogPost(to.params.slug) ? true : notFoundFor(to)
-    },
-  },
+  { path: '/blog/:slug', name: 'blog-post', component: () => import('@/views/BlogPostView.vue'), props: true },
   {
     path: '/docs/:category/:slug',
     name: 'docs-article',
     component: () => import('@/views/DocsArticleView.vue'),
     props: true,
-    beforeEnter: async (to) => {
-      const { findDocsArticle } = await import('../lib/content/docs.ts')
-      return findDocsArticle(to.params.category, to.params.slug) ? true : notFoundFor(to)
-    },
   },
   {
     path: '/support/:category/:slug',
     name: 'support-article',
     component: () => import('@/views/SupportArticleView.vue'),
     props: true,
-    beforeEnter: async (to) => {
-      const { findSupportArticle } = await import('../lib/content/support.ts')
-      return findSupportArticle(to.params.category, to.params.slug) ? true : notFoundFor(to)
-    },
   },
 ]
 

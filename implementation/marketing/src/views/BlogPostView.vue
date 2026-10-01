@@ -10,7 +10,7 @@
  * screenshot to put there, and a stock or generated picture presented as the product
  * would be the kind of fabrication this content pass forbids.
  */
-import { computed, ref } from 'vue'
+import { computed, onBeforeUnmount, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import UiBadge from '@/components/UiBadge.vue'
 import ArticleBody from '@/components/article/ArticleBody.vue'
@@ -30,8 +30,9 @@ const related = computed(() => (post.value ? relatedPosts(post.value) : []))
 const neighbours = computed(() => (post.value ? blogNeighbours(post.value) : { prev: null, next: null }))
 const minutes = computed(() => (post.value ? readMinutes(post.value.body) : 0))
 
+// An unknown slug owns no title: the site defaults show (and the not-found page renders).
 useDocumentMeta(
-  () => post.value?.title ?? 'Blog',
+  () => post.value?.title ?? '',
   () => post.value?.summary ?? '',
 )
 
@@ -59,10 +60,12 @@ async function copyLink(): Promise<void> {
   clearTimeout(copyTimer)
   copyTimer = setTimeout(() => (copyStatus.value = ''), 2500)
 }
+// A pending timer must not outlive the page that scheduled it.
+onBeforeUnmount(() => clearTimeout(copyTimer))
 </script>
 
 <template>
-  <NotFoundView v-if="!post" />
+  <NotFoundView embedded v-if="!post" />
   <article v-else class="bp">
     <div class="bp-wrap">
       <header class="bp-header">

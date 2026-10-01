@@ -35,8 +35,9 @@ const category = computed(() => findDocsCategory(props.category))
 const neighbours = computed(() => (article.value ? docsNeighbours(article.value) : { prev: null, next: null }))
 const minutes = computed(() => (article.value ? readMinutes(article.value.body) : 0))
 
+// An unknown slug owns no title: the site defaults show (and the not-found page renders).
 useDocumentMeta(
-  () => (article.value ? `${article.value.title} — Documentation` : 'Documentation'),
+  () => (article.value && category.value ? `${article.value.title} — Documentation` : ''),
   () => article.value?.summary ?? '',
 )
 
@@ -62,7 +63,7 @@ watch(
 </script>
 
 <template>
-  <NotFoundView v-if="!article || !category" />
+  <NotFoundView embedded v-if="!article || !category" />
   <div v-else class="da">
     <a class="da-skip" href="#docs-article" @click.prevent="skipToArticle">Skip to article</a>
     <div class="da-wrap">

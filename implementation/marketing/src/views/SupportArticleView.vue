@@ -30,8 +30,9 @@ const neighbours = computed(() => (article.value ? supportNeighbours(article.val
 const related = computed(() => (article.value ? supportRelated(article.value) : []))
 const minutes = computed(() => (article.value ? readMinutes(article.value.body) : 0))
 
+// An unknown slug owns no title: the site defaults show (and the not-found page renders).
 useDocumentMeta(
-  () => (article.value ? `${article.value.title} — Support` : 'Support'),
+  () => (article.value && category.value ? `${article.value.title} — Support` : ''),
   () => article.value?.summary ?? '',
 )
 
@@ -40,7 +41,7 @@ useFocusHeading(heading, () => `${props.category}/${props.slug}`)
 </script>
 
 <template>
-  <NotFoundView v-if="!article || !category" />
+  <NotFoundView embedded v-if="!article || !category" />
   <article v-else class="sa">
     <div class="sa-wrap">
       <BreadcrumbTrail
