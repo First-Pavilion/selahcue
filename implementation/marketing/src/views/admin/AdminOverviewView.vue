@@ -89,6 +89,9 @@ const recentSignups = ref([
 .section-block h2 { font-size: 18px; font-weight: 700; color: var(--sc-text); margin: 0 0 16px 0; }
 .customer-link { font-weight: 600; color: var(--sc-text); text-decoration: none; }
 .customer-link:hover { color: var(--sc-primary); text-decoration: underline; }
+@media (max-width: 767.98px), (pointer: coarse) {
+  .customer-link { display: inline-flex; align-items: center; min-height: 44px; }
+}
 code { font-family: monospace; color: var(--sc-gold); }
 
 @media (max-width: 1199.98px) {

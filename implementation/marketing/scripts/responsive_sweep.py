@@ -123,6 +123,10 @@ TOUCH_SCOPES = [
     ".footer a",
     "main button, main input:not([type=checkbox]):not([type=radio]), main select, main textarea",
     "main .btn, main a.btn",
+    # Every link in main. Inline links inside running prose are exempted in TOUCH_JS (WCAG
+    # 2.5.8's inline exception), so this holds standalone links -- the auth cards'
+    # "Create an account" / "Back to sign in", card actions, "View all" -- to 44px.
+    "main a",
 ]
 
 # Which layout the browser ACTUALLY chose, straight from the same media query the CSS uses.
@@ -223,7 +227,7 @@ TOUCH_JS = r"""
       const r = el.getBoundingClientRect();
       if (r.width === 0 || r.height === 0) continue;
       // Inline links inside running prose are exempt (WCAG 2.5.8 inline exception).
-      if (el.tagName === 'A' && cs.display === 'inline' && el.closest('p, li, dd, blockquote')) continue;
+      if (el.tagName === 'A' && cs.display === 'inline' && el.closest('p, li, dd, blockquote, label')) continue;
       if (Math.min(r.width, r.height) < 43.5) {
         const cls = (typeof el.className === 'string' ? el.className : '').trim().split(/\s+/).slice(0, 2).join('.');
         bad.push(`${el.tagName.toLowerCase()}${cls ? '.' + cls : ''} "${(el.innerText || el.getAttribute('aria-label') || '').trim().slice(0, 24)}" ${Math.round(r.width)}x${Math.round(r.height)}`);
