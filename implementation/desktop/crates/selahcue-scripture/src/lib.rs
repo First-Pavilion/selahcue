@@ -37,7 +37,7 @@ use std::sync::OnceLock;
 pub mod quote_match;
 pub use quote_match::{
     match_quote, match_quote_in, match_quote_ranked, match_quote_ranked_in, match_quote_scored,
-    match_quote_scored_in, ranked_offered_in, MAX_ALTERNATIVES, MAX_RANKED,
+    match_quote_scored_in, ranked_offered_in, warm, warm_in, MAX_ALTERNATIVES, MAX_RANKED,
 };
 
 /// Download-on-demand for additional Bible-translation assets (feature `download`).
