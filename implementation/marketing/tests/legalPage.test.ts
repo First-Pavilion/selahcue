@@ -129,11 +129,13 @@ describe('structure and accessibility of the rendered page', () => {
     assert.ok(html.includes('href="#legal-text"'), 'skip link')
     assert.ok(html.includes('aria-label="Contents"'))
     assert.ok(html.includes('id="s-1"') && html.includes('id="s-1-1"') && html.includes('id="s-2"'))
-    assert.ok(html.includes('id="s-1-title"') && html.includes('aria-labelledby="s-1-title"'))
+    assert.ok(html.includes('id="s-1-title"'))
     assert.ok(html.includes('data-spy="s-1"') && html.includes('data-spy="s-2"'))
+    assert.ok(!html.includes('<aside'), 'no unnamed aside: the nav carries the name')
     assert.ok(html.includes('href="#s-2"'), 'the in-text reference and the Contents both link to the section')
     assert.match(html, /<time datetime="2026-01-02"[^>]*>\s*Version 0\.1 \(draft\) · Last updated 2 January 2026\s*<\/time>/)
-    assert.ok(html.includes('role="region"') && html.includes('aria-label="Two: table"') && html.includes('scope="col"') && html.includes('scope="row"'))
+    assert.ok(html.includes('<table') && html.includes('aria-label="Two"') && html.includes('scope="col"') && html.includes('scope="row"'), 'the table is named and has headers')
+    assert.ok(!html.includes('role="region"') && !html.includes('tabindex="0"'), 'no region or tab stop until the table actually overflows (decided in the browser)')
   })
 
   test('PUBLISH PATH: with the banner removed, "Last updated" is still shown from the front-matter version line', async () => {
@@ -215,6 +217,22 @@ function textOf(html: string): string {
     .replace(/&#39;/g, "'")
     .replace(/&quot;/g, '"')
 }
+
+describe('landmarks stay few: only the summary and the draft banner are named regions', () => {
+  for (const [name, doc] of [
+    ['privacy', privacyPolicy],
+    ['terms', termsOfService],
+  ] as const) {
+    test(name, async () => {
+      const html = await render(doc)
+      const named = count(html, 'aria-labelledby=')
+      assert.ok(named <= 3, `${named} aria-labelledby regions (was 15 and 27 section landmarks)`)
+      assert.ok(count(html, '<section') >= 14, 'the sections are still sections')
+      assert.equal(count(html, '<nav '), 1)
+      assert.equal(count(html, '<aside'), 0)
+    })
+  }
+})
 
 describe('clause numbers are separated from their text by a real space', () => {
   test('"1.1 This policy..." not "1.1This policy..." in the text a copy or extractor reads', async () => {

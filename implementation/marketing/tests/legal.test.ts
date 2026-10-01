@@ -42,6 +42,7 @@ import {
 } from '../src/lib/legal/document.ts'
 import { LegalHead, NOINDEX_SELECTOR, type HeadHost } from '../src/lib/legal/head.ts'
 import { classifyHref } from '../src/lib/legal/links.ts'
+import { isOverflowing } from '../src/lib/legal/overflow.ts'
 import { privacyPolicy } from '../src/lib/legal/privacy.generated.ts'
 import { termsOfService } from '../src/lib/legal/terms.generated.ts'
 import type { Block, Inline, LegalDocument, ListItem, Section } from '../src/lib/legal/types.ts'
@@ -628,6 +629,15 @@ describe('cross-reference edge cases that must be handled, not misread', () => {
 
   test('intraword underscores are not emphasis (snake_case stays text)', () => {
     assert.deepEqual(parseInline('use snake_case and a_b names', 't', 1), [{ kind: 'text', text: 'use snake_case and a_b names' }])
+  })
+})
+
+describe('a table wrapper is a tab stop only while it overflows', () => {
+  test('overflow decision (one pixel of slack for sub-pixel rounding)', () => {
+    assert.equal(isOverflowing({ scrollWidth: 560, clientWidth: 280 }), true)
+    assert.equal(isOverflowing({ scrollWidth: 761, clientWidth: 760 }), false, 'rounding is not overflow')
+    assert.equal(isOverflowing({ scrollWidth: 762, clientWidth: 760 }), true)
+    assert.equal(isOverflowing({ scrollWidth: 760, clientWidth: 760 }), false)
   })
 })
 

@@ -125,7 +125,7 @@ const EXAMPLE_TOKEN = '{{' + 'EXAMPLE_DETAIL' + '}}'
       </ul>
 
       <div ref="body" class="legal-layout">
-        <aside class="toc-col">
+        <div class="toc-col">
           <nav ref="tocFrame" class="toc" aria-label="Contents" :class="{ 'is-open': tocOpen }">
             <p class="toc-label">Contents</p>
             <button
@@ -156,7 +156,7 @@ const EXAMPLE_TOKEN = '{{' + 'EXAMPLE_DETAIL' + '}}'
               </template>
             </div>
           </nav>
-        </aside>
+        </div>
 
         <div id="legal-text" ref="textTarget" class="legal-text" tabindex="-1">
           <section
@@ -179,7 +179,6 @@ const EXAMPLE_TOKEN = '{{' + 'EXAMPLE_DETAIL' + '}}'
               :key="s.id"
               :class="['legal-section', { 'has-clauses': hasClauses(s.blocks) }]"
               :data-spy="s.id"
-              :aria-labelledby="`${s.id}-title`"
             >
               <span :id="s.id" class="legal-anchor" aria-hidden="true"></span>
               <component :is="`h${s.level}`" :id="`${s.id}-title`" :class="['sec-title', `sec-h${s.level}`]">
