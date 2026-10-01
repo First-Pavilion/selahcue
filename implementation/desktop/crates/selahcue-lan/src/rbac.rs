@@ -75,8 +75,8 @@ pub enum Permission {
     /// [`Command`]'s doc on `SaveSermonNoteDraft` for the full reasoning — in short, Save is
     /// the one command that can attach a label/disclosure to NEW content or
     /// wholesale-replace an already-persisted (possibly operator-edited) draft, and its
-    /// only legitimate caller today is the operator console's own `generate_sermon_notes`
-    /// flow (the same is true of Stage/Confirm/Discard).
+    /// only legitimate caller today is the operator console's own `transcript_generate_notes`
+    /// flow, through `persist_generated_draft` (the same is true of Stage/Confirm/Discard).
     SaveSermonNotes,
 }
 
