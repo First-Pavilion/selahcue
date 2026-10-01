@@ -4,6 +4,35 @@ Durable record of material product/scope/architecture decisions, with traceabili
 
 ---
 
+## DEC-018 — The media panel's Import copies images into app storage (OVERRIDES the in-place reference of design §8.5)
+
+- **Date:** 2026-10-01
+- **Stage:** Presentation & Media — media library fix (imports vanished on restart and never drew a picture)
+- **Decided by:** User (product owner)
+- **Type:** Architecture / data ownership
+- **Status:** DECIDED
+
+**Decision.** `deck_import_images` (the Presentation media panel's **+ Import**) **copies** each picked PNG/JPEG into the app's own media store, `<app_data>/media/import-<n>.<ext>`, and registers the copy. It no longer records the picked path in place. The registry is saved to the existing `media_asset` table and reloaded at launch.
+
+**What it overrides.** `IMPORT-presentation-design.md` §8.5 and ADR-0024 left `deck_import_image` reference-in-place and only copied on the `.pptx` route. The owner chose copy-on-import for both: an imported picture then survives the original being moved, renamed or deleted (a USB stick, a cleaned-up Downloads folder), which is the ordinary church workflow.
+
+**Why it was needed at all.** Two independent defects made imports unusable: the launch workspace was built from the demo's eight fake `demo://` assets and **nothing loaded a saved registry** (`media_store::load` and `media_repo` had no production caller), and an image tile never drew its picture (no thumbnail path existed). Persistence is the prerequisite step 3a of the import design.
+
+**Consequences accepted.**
+- Disk use grows by the size of each imported picture (≤64 MiB per file, ≤1000 assets). Removing an asset **deletes the app-owned copy** — and only an app-owned one (`is_app_owned`); a legacy asset that points at the operator's own file is unregistered and the file is never touched.
+- The operator's own file name is kept separately (schema v24, `media_asset.name`), since the stored name is generated.
+- Re-importing the same file adds a second copy: there is no content-hash de-duplication (it would need a new dependency).
+- Generated file names are never reused within a session, because the render engine caches decodes by path.
+
+**Affected items.**
+- `IMPORT-presentation-design.md` §8.5 (first bullet) and ADR-0024 decision 8 — updated to match.
+- Schema **v24** (`ALTER TABLE media_asset ADD COLUMN name TEXT`, forward-only; NULL for every existing row).
+- The remove-from-library confirmation no longer says "You can undo it": removal is not undoable and now deletes the copy.
+
+**Reversibility.** Reversible for new imports by returning the command to in-place registration; copies already made would remain valid library assets. Schema v24 is additive and need not be undone.
+
+---
+
 ## DEC-017 — `PASSWORD_INVALID` on password-reset confirm: a second sanctioned exception to the FR-529 collapse (AMENDS DEC-012)
 
 - **Date:** 2026-08-30

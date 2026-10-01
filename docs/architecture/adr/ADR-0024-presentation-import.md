@@ -100,6 +100,12 @@ because there were two.
 Embedded fonts move from a skipped item per file to **one standing notice** for the same reason: a
 real deck carried 25 of them and itemising each consumed a quarter of the whole report budget.
 
+### 8. The media panel's Import copies into the same store (amendment, 2026-10-01 — DEC-018)
+
+Decision 4's media store was introduced for the `.pptx` route, and the design (§8.5) left the media panel's own `deck_import_image` reference-in-place. That is amended: `deck_import_images` (several PNG/JPEG files per pick) now validates each file by content, **copies the same bytes** into `<app_data>/media/` through the staging/atomic-commit path of decision 4, registers the copy with the operator's own file name, and saves the registry. The registry is loaded at launch, replacing the demo workspace's fake assets — which is also what discharges the "wire `media_repo`" prerequisite (design §18, step 3a).
+
+Two properties are load-bearing. A generated file name is **never reused within a session**, because the engine's decode cache is keyed by path and a recycled `import-<n>` could resurrect a deleted picture on a slide. And removal deletes **only** app-owned files (`is_app_owned`): a legacy asset registered at the operator's own path is unregistered and its file left strictly alone.
+
 ## Options considered
 
 **Crate placement.**
