@@ -86,7 +86,13 @@ fn shell() -> (OperatorShell, Arc<Mutex<LiveController>>, Vec<u64>) {
 fn statuses(view: &selahcue_app::OperatorView) -> Vec<Option<String>> {
     view.items
         .iter()
-        .map(|i| i.link.as_ref().expect("every item here is linked").status.clone())
+        .map(|i| {
+            i.link
+                .as_ref()
+                .expect("every item here is linked")
+                .status
+                .clone()
+        })
         .collect()
 }
 
@@ -134,7 +140,11 @@ fn the_operator_view_resolves_every_link_without_decoding_a_translation() {
 
     // 2. The emergency controls — the path the ticket measured. Each rebuilds the view.
     let after_blackout = shell.blackout(true);
-    assert_eq!(statuses(&after_blackout), expected, "verdicts after Blackout");
+    assert_eq!(
+        statuses(&after_blackout),
+        expected,
+        "verdicts after Blackout"
+    );
     assert_no_translation_decoded("after the first Blackout");
     let after_clear = shell.clear();
     assert_eq!(statuses(&after_clear), expected, "verdicts after Clear");
@@ -179,5 +189,9 @@ fn the_operator_view_resolves_every_link_without_decoding_a_translation() {
         );
     }
     // …and the verdicts are unchanged by the passage now being loaded.
-    assert_eq!(statuses(&live), expected, "verdicts after presenting a passage");
+    assert_eq!(
+        statuses(&live),
+        expected,
+        "verdicts after presenting a passage"
+    );
 }

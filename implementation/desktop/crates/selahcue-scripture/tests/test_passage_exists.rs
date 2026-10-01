@@ -125,6 +125,10 @@ fn the_probe_agrees_with_the_corpus_on_every_chapter_boundary_and_gap() {
         }
     }
 
+    eprintln!(
+        "swept {present} present + {absent} absent passages over {gap_chapters} gapped chapters"
+    );
+
     // The comparison must have exercised both outcomes and the versification gaps, or "they
     // agreed" could mean "they both said false to everything".
     assert!(
@@ -136,8 +140,8 @@ fn the_probe_agrees_with_the_corpus_on_every_chapter_boundary_and_gap() {
         "only {absent} missing passages were compared — the sweep is vacuous"
     );
     assert!(
-        gap_chapters >= 25,
-        "only {gap_chapters} gapped chapters were swept; the corpus has more (WEB 4, ASV 15, \
+        gap_chapters >= 26,
+        "only {gap_chapters} gapped chapters were swept; the corpus has 26 (WEB 4, ASV 15, \
          WEBBE 4, DBY 3) — the gap handling went unexercised"
     );
 }
@@ -146,7 +150,13 @@ fn the_probe_agrees_with_the_corpus_on_every_chapter_boundary_and_gap() {
 fn a_passage_that_parses_but_names_no_verse_does_not_exist() {
     // The defect 1840f1c fixed, restated against the probe itself: all well-formed, none presentable.
     for t in BUNDLED {
-        for bad in ["Jude 2:1", "Romans 99:1", "Psalm 151:1", "Genesis 51:1", "John 3:99"] {
+        for bad in [
+            "Jude 2:1",
+            "Romans 99:1",
+            "Psalm 151:1",
+            "Genesis 51:1",
+            "John 3:99",
+        ] {
             assert!(
                 !passage_exists_in(t, &parsed(bad)),
                 "{} {bad} parses but names no verse, so it must not exist",
@@ -215,11 +225,21 @@ fn a_verse_one_translation_omits_is_missing_there_and_present_in_the_others() {
         Translation::Webbe,
         Translation::Dby,
     ] {
-        assert!(!passage_exists_in(t, &acts), "{} has no Acts 8:37", t.code());
+        assert!(
+            !passage_exists_in(t, &acts),
+            "{} has no Acts 8:37",
+            t.code()
+        );
     }
     // Matthew 17:21 only the ASV drops.
-    assert!(!passage_exists_in(Translation::Asv, &parsed("Matthew 17:21")));
-    assert!(passage_exists_in(Translation::Kjv, &parsed("Matthew 17:21")));
+    assert!(!passage_exists_in(
+        Translation::Asv,
+        &parsed("Matthew 17:21")
+    ));
+    assert!(passage_exists_in(
+        Translation::Kjv,
+        &parsed("Matthew 17:21")
+    ));
 }
 
 #[test]
