@@ -65,7 +65,7 @@ place of its fake store badges and fake download buttons. The Vite-template READ
 ### Assumptions and unknowns
 
 - **Verified:** `make ci` reaches the marketing line before any Rust or Flutter step, so the deliberate-failure proof does not start a Flutter run.
-- **Unknown:** how GitHub Actions resolves a step-level `working-directory: .` (believed to be the workspace root). `actionlint` accepts it; the only real proof is the first CI run on the PR.
+- **Verified (was unknown):** a step-level `working-directory: .` resolves to the workspace root. The `marketing (vue spa)` job on PR #134 passed every step, including `Type-check, lint, test, build (make marketing-check)`, on ubuntu-latest with Node 22 (run 36815083374).
 - **Unknown:** whether the Dockerfile's Node 20 builds the site with the new `build` script. Only `type-check` and `vite build` run in the image, both unchanged in substance; not run in a container here.
 
 ## Dependencies and approvals
@@ -129,7 +129,7 @@ place of its fake store badges and fake download buttons. The Vite-template READ
 
 ## Risks and rollback
 
-- Risks: the first CI run is the only proof of `working-directory: .`; the disabled desktop buttons go beyond the literal "store badges" wording; ESLint 10 and typescript-eslint 8 are new dev dependencies (100 packages, none shipped)
+- Risks: the disabled desktop buttons go beyond the literal "store badges" wording; ESLint 10 and typescript-eslint 8 are new dev dependencies (100 packages, none shipped)
 - Rollback or recovery: each concern is its own commit and reverts cleanly; the Makefile target and CI step revert together
 
 ## Pause and escalation conditions
