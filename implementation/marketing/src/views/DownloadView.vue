@@ -65,10 +65,40 @@ import UiButton from '@/components/UiButton.vue'
         <div class="mobile-text">
           <h2>Mobile Control</h2>
           <p>Control your presentation from anywhere on the stage or in the auditorium using our mobile apps. Connects seamlessly over your local network.</p>
-          <div class="app-badges">
-            <div class="badge-placeholder">App Store</div>
-            <div class="badge-placeholder">Google Play</div>
+          <!--
+            Neither store listing exists yet (mobile store publishing is still open work:
+            signing, store accounts, legal sign-off), so these are honest disabled states, not
+            links. No href, no handler. They are native disabled buttons on purpose: that gives
+            assistive tech the real "unavailable" state, keeps them out of the tab order (a tab
+            stop that does nothing is noise), and the visible "Coming soon" text plus the note
+            below carry the meaning for everyone, not just screen-reader users.
+            When a listing goes live, turn the matching badge into a real <a> to that URL.
+          -->
+          <div class="app-badges" role="group" aria-label="Mobile app availability">
+            <button
+              type="button"
+              class="store-badge"
+              disabled
+              aria-disabled="true"
+              aria-describedby="store-availability"
+            >
+              <span class="store-name">App Store</span>
+              <span class="store-status">Coming soon</span>
+            </button>
+            <button
+              type="button"
+              class="store-badge"
+              disabled
+              aria-disabled="true"
+              aria-describedby="store-availability"
+            >
+              <span class="store-name">Google Play</span>
+              <span class="store-status">Coming soon</span>
+            </button>
           </div>
+          <p id="store-availability" class="store-note">
+            The SelahCue Controller app is not in the App Store or Google Play yet.
+          </p>
         </div>
         <div class="mobile-visual">
           <div class="phone-mockup">Mobile App Mockup</div>
@@ -214,12 +244,33 @@ import UiButton from '@/components/UiButton.vue'
   display: flex;
   gap: 1rem;
 }
-.badge-placeholder {
+/* Deliberately NOT styled like a filled button: transparent with a dashed outline, no hover,
+   not-allowed cursor, so nothing here reads as something to click. The status text uses the
+   secondary text colour (not opacity) so "Coming soon" keeps readable contrast. */
+.store-badge {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
   padding: 0.75rem 1.5rem;
-  background: #000;
-  color: #fff;
+  background: transparent;
+  border: 1px dashed var(--sc-border-strong);
   border-radius: 8px;
-  font-weight: bold;
+  color: var(--sc-text);
+  font: inherit;
+  text-align: left;
+  cursor: not-allowed;
+}
+.store-name {
+  font-weight: 700;
+}
+.store-status {
+  font-size: 0.8125rem;
+  color: var(--sc-text-secondary);
+}
+.mobile-text .store-note {
+  margin: 1rem 0 0;
+  font-size: 0.9375rem;
 }
 .mobile-visual {
   flex: 1;
