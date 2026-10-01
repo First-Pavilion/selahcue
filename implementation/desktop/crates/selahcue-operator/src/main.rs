@@ -2817,6 +2817,8 @@ mod transcript_view_tests {
             "started_at_ms",
             "ended_at_ms",
             "segment_count",
+            // 17tnw2b0ntd: read by transcripts.js's list-row "Notes generated" pill.
+            "notes_generated",
         ];
         expected.sort_unstable();
         assert_eq!(got, expected, "the summary view contract changed; transcripts.js must change in the SAME merge request");
