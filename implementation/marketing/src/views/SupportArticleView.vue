@@ -71,7 +71,7 @@ useFocusHeading(heading, () => `${props.category}/${props.slug}`)
       <section class="sa-stuck" aria-labelledby="sa-stuck-title">
         <h2 id="sa-stuck-title" class="sa-stuck-title">Still stuck?</h2>
         <p class="sa-stuck-text">
-          Tell us what you were doing and what you saw, and our team will help.
+          Describe what you were doing and what you saw when it went wrong.
         </p>
         <UiButton variant="gradient" size="md" to="/contact">Contact support</UiButton>
       </section>

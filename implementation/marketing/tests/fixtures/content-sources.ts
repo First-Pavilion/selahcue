@@ -24,7 +24,7 @@ export const SOURCES: Readonly<Record<string, readonly Source[]>> = {
     { path: 'docs/architecture/ARCHITECTURE.md', supports: 'Principles: desktop-authoritative, offline-first core (slides, scripture, timers, blackout work with no network), mobile holds no authoritative state, output-failure isolation.' },
     { path: 'docs/product/prds/SelahCue-PRD.md', supports: 'Core live functions must work with zero network (line 54, NFR-015).' },
     { path: `${CR}/selahcue-scripture/src/lib.rs`, supports: 'Five bundled translations compiled in; "Everything works offline".' },
-    { path: `${OP}/index.html`, supports: 'Console copy: nothing exposed to the internet; autosave saves within 5 s; update checking unavailable; "holding its last good frame".' },
+    { path: `${OP}/index.html`, supports: 'Console copy: phones pair over the LAN with a pinned certificate; autosave saves within 5 s; update checking unavailable; "holding its last good frame".' },
     { path: `${OP}/app.js`, supports: 'Session restored notice; on-device model downloads once on first Start listening; OUTPUT HELD message.' },
     { path: `${CR}/selahcue-desktop/src/main.rs`, supports: 'Autosave throttled to at most once per second; running countdown re-saved every 5 s.' },
     { path: `${CR}/selahcue-app/src/controller.rs`, supports: 'Restore on launch re-presents live/staged items, blackout and countdown; commands are RBAC-checked on the host.' },
@@ -80,6 +80,9 @@ export const SOURCES: Readonly<Record<string, readonly Source[]>> = {
     { path: `${CR}/selahcue-operator/src/main.rs`, supports: 'Operator keeps a second store (deck library and settings) in its app-data folder.' },
   ],
   'docs/display-outputs/assign-displays-to-outputs': [
+    { path: `${CR}/selahcue-operator/src/autolaunch.rs`, supports: 'In a packaged install the output window is a separate sibling process started by the console.' },
+    { path: 'docs/ops/WINDOWS-INSTALLER.md', supports: 'The console spawns selahcue-output.exe; quitting the console terminates the output window.' },
+    { path: `${OP}/app.js`, supports: 'Host link lost: "No automatic reconnect — restart the console to reconnect."' },
     { path: `${OP}/app.js`, supports: 'Output kinds and names; Monitor dropdown in the Display section; "No displays found" / "No physical output"; disabled Test pattern and Go fullscreen.' },
     { path: `${OP}/index.html`, supports: 'Screens & Outputs navigation; Add virtual output; Identify; disabled settings entries (venue profiles, output health, test patterns).' },
     { path: `${OP}/settings-outputs.js`, supports: 'Settings > Outputs & Displays lists displays with Identify and links to Screens & Outputs; assignment is not done there.' },
@@ -95,7 +98,7 @@ export const SOURCES: Readonly<Record<string, readonly Source[]>> = {
     { path: `${CR}/selahcue-desktop/src/main.rs`, supports: 'Date and time of day drawn on the stage output.' },
   ],
   'docs/display-outputs/ndi-output': [
-    { path: `${OP}/app.js`, supports: 'NDI Output inspector (Source name, Broadcast as NDI, status line, NDI pill, frame rates, duplicate-name refusal, runtime-unavailable message, receivable by OBS / vMix / another SelahCue).' },
+    { path: `${OP}/app.js`, supports: 'NDI Output inspector (Source name, Broadcast as NDI, status line, NDI pill, duplicate-name refusal, runtime-unavailable message, receivable by OBS / vMix / another SelahCue); the Frame rate row (24/30/48/50/60) sits in the Display section for every output.' },
     { path: `${CR}/selahcue-desktop/src/video_sink.rs`, supports: '1920x1080 RGBA frames; NDI sink.' },
     { path: `${CR}/selahcue-desktop/Cargo.toml`, supports: '`ndi` feature off by default.' },
     { path: '.github/workflows/windows-installer.yml', supports: 'Windows installer built with --features ndi and the NDI runtime.' },
@@ -191,7 +194,7 @@ export const SOURCES: Readonly<Record<string, readonly Source[]>> = {
     { path: `${OP}/app.js`, supports: 'Top-bar timer chip mirrors the readout.' },
   ],
   'support/mobile-control/phone-wont-pair': [
-    { path: `${CR}/selahcue-lan/src/server.rs`, supports: 'Code valid 120 s, consumed on connect; "pairing rejected: forbidden" / "unauthenticated"; host waits up to 120 s.' },
+    { path: `${CR}/selahcue-lan/src/server.rs`, supports: 'Code valid 120 s, consumed on connect; rejection texts: forbidden (denied, not approved in time, pairing not enabled), unauthenticated (bad/expired code, too many pending requests); host waits up to 120 s.' },
     { path: `${OP}/remote.js`, supports: 'Pending requests polled only while the Remote Control page is open; New code; QR not auto-renewed.' },
     { path: `${OP}/index.html`, supports: 'Multicast-blocked guidance (scan the QR); Pair a device panel.' },
     { path: `${MOB}/views/pairing_view.dart`, supports: 'Waiting for the host to allow this device; discovered hosts list; same-Wi-Fi guidance.' },
@@ -225,7 +228,9 @@ export const SOURCES: Readonly<Record<string, readonly Source[]>> = {
     { path: `${CR}/selahcue-stt/src/model.rs`, supports: 'Model choice and sizes by build: large-v3-turbo ~1.6 GB, small ~488 MB, base ~148 MB.' },
     { path: `${CR}/selahcue-stt/src/model_fetch.rs`, supports: 'Download is not resumable; cache location.' },
     { path: `${CR}/selahcue-operator/src/main.rs`, supports: '"This build does not include on-device speech-to-text".' },
-    { path: `${CR}/selahcue-operator/src/transcription_route.rs`, supports: 'Release builds fall back to on-device when cloud is selected.' },
-    { path: 'docs/ops/WINDOWS-INSTALLER.md', supports: 'Model downloads on first use and needs internet once; Windows installer is CPU-only.' },
+    { path: `${CR}/selahcue-operator/src/transcription_route.rs`, supports: 'Cloud selected but not usable falls back to on-device, and FallbackReason says why: consent not granted, not in this build, or no credential.' },
+    { path: 'docs/ops/WINDOWS-INSTALLER.md', supports: 'Model downloads on first use and needs internet once.' },
+    { path: `${CR}/selahcue-operator/Cargo.toml`, supports: 'The Metal GPU backend for speech-to-text is enabled only in the macOS target dependencies (line 194), so builds for other platforms are CPU-only.' },
+    { path: '.github/workflows/windows-installer.yml', supports: 'The Windows installer is built with --features stt and no GPU backend, so it is CPU-only (this is also where ndi is enabled).' },
   ],
 }

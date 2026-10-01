@@ -32,7 +32,7 @@ export const blogPosts: readonly BlogPost[] = [
         items: [
           '**Scripture.** Five translations (KJV, WEB, ASV, WEBBE and Darby) are compiled into the application. Looking up and searching verses never leaves the machine.',
           '**Service plans, Preview and Live, timers, blackout and clear.** These all run in the desktop app and its output windows.',
-          '**Phone control.** The controller app talks to your desktop over your local network only. The console states that nothing is exposed to the internet.',
+          '**Phone control.** The controller app talks to your desktop over your local network, and a phone only trusts the desktop whose certificate it was paired with.',
           '**Speech-to-text.** Transcription runs on the device by default. The speech model is downloaded once, the first time you start listening, and after that it works with no connection.',
         ],
       },
@@ -73,7 +73,7 @@ export const blogPosts: readonly BlogPost[] = [
           'The line that is live now, and a **NEXT** line so the band or speaker knows what is coming.',
           'The wall-clock date and time.',
           'The service countdown, with a clear **TIME UP** state, and an **OVER** count that keeps running after zero.',
-          'A **Message from production** overlay when someone on the team sends one.',
+          'A **MESSAGE FROM PRODUCTION** overlay when someone on the team sends one.',
         ],
       },
       {
@@ -88,7 +88,7 @@ export const blogPosts: readonly BlogPost[] = [
       { type: 'h2', text: 'Messages to the stage' },
       {
         type: 'p',
-        text: 'The console has one-tap messages for the moments that come up every week (**Wrap up, 2 min left**, **Slow down**, **Wrap up now** and **Great job**) and a free-text field limited to 120 characters. Send it, and it appears on the stage display; clear it when it has done its job.',
+        text: 'The console has one-tap messages for the moments that come up every week (**WRAP UP · 2 MIN LEFT**, **SLOW DOWN**, **WRAP UP NOW** and **GREAT JOB**) and a free-text field limited to 120 characters. Send it, and it appears on the stage display; clear it when it has done its job.',
       },
       {
         type: 'callout',
@@ -176,7 +176,7 @@ export const blogPosts: readonly BlogPost[] = [
       },
       {
         type: 'p',
-        text: 'The phone only trusts a host whose certificate matches the fingerprint in the QR code, and the connection is encrypted. Nothing is exposed to the internet and no internet connection is needed.',
+        text: 'The phone only trusts a host whose certificate matches the fingerprint in the QR code, and the connection is encrypted. Pairing and control use your local network rather than the internet.',
       },
       { type: 'h2', text: 'Roles decide what a phone can do' },
       {
@@ -228,7 +228,7 @@ export const blogPosts: readonly BlogPost[] = [
         type: 'callout',
         variant: 'warning',
         title: 'Not shipped: transparency',
-        text: 'Every frame SelahCue sends is opaque. The Lower Third output is a normal opaque picture, not a keyed overlay with an alpha channel, so it will not composite over your camera as a transparent layer. That is a later piece of work, and we would rather say so than let you find out mid-setup.',
+        text: 'Every frame SelahCue sends is opaque. The Lower Third output is a normal opaque picture, not a keyed overlay with an alpha channel, so it will not composite over your camera as a transparent layer. That is not available in this build, and we would rather say so than let you find out mid-setup.',
       },
       { type: 'h2', text: 'On the receiving side' },
       {

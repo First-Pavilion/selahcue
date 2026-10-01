@@ -417,3 +417,47 @@ describe('related links', () => {
     assert.equal(relatedIn(support, supportArticles[0]!, 0).length, 0)
   })
 })
+
+describe('claims that review found wrong or unverifiable do not come back', () => {
+  const everything = [...blogPosts, ...docsArticles, ...supportArticles]
+  const corpus = everything.map((a) => JSON.stringify(a.body) + a.summary + a.title).join('\n')
+  // The three NEW article views. (The existing support index's own call-to-action copy predates this work and is not covered.)
+  const views = ['SupportArticleView', 'DocsArticleView', 'BlogPostView']
+    .map((n) => readFileSync(MARKETING_SRC + `views/${n}.vue`, 'utf8'))
+    .join('\n')
+
+  // Each pattern is a sentence a reviewer proved false against the code, with the reason.
+  const BANNED: [RegExp, string][] = [
+    [/exposed to the internet/i, 'the control server listens on the LAN; "nothing is exposed" was a console slogan stated in our own voice'],
+    [/Closing the last window quits SelahCue/i, 'only the output process exits; the console is a separate process in the packaged app'],
+    [/Turn an output off from its card if you only mean to hide it/i, 'unverified: the card toggle may also close the last window'],
+    [/Wrap up, 2 min left|\*\*Slow down\*\*|\*\*Great job\*\*|\*\*Wrap up now\*\*/, 'the stage presets are ALL CAPS in the console'],
+    [/Message from production\*\*/, 'the overlay chip reads MESSAGE FROM PRODUCTION'],
+    [/a later piece of work/i, 'a roadmap hint the code does not back'],
+    [/Choose a frame rate: 24/, 'the frame rate is the general Display row, not an NDI Output step'],
+    [/Docs nav|Docs article/, 'placeholder: not a heading text that could collide with the fixed ids'],
+    [/dedicated support|our (support )?team will help|our support team/i, 'unverifiable staffing claim'],
+    [/can never[^"]*blackout the show/i, 'the Ctrl/Cmd+Shift+B chord blackouts from every screen'],
+  ]
+
+  test('none of the banned sentences appears in any article or article view', () => {
+    for (const [pattern, why] of BANNED) {
+      assert.ok(!pattern.test(corpus), `an article says ${pattern}: ${why}`)
+      assert.ok(!pattern.test(views), `an article view says ${pattern}: ${why}`)
+    }
+  })
+
+  test('the corrected wording is present (so the bans are not satisfied by deleting the topic)', () => {
+    const support = supportArticles.find((a) => a.slug === 'phone-wont-pair')!
+    assert.match(JSON.stringify(support.body), /too many pending requests/)
+    assert.match(JSON.stringify(support.body), /not accepting pairing/)
+    const ndi = docsArticles.find((a) => a.slug === 'ndi-output')!
+    assert.match(JSON.stringify(ndi.body), /Frame rate.*Display/)
+    const stage = docsArticles.find((a) => a.slug === 'stage-display')!
+    assert.match(JSON.stringify(stage.body), /WRAP UP · 2 MIN LEFT/)
+    const assign = docsArticles.find((a) => a.slug === 'assign-displays-to-outputs')!
+    assert.match(JSON.stringify(assign.body), /separate window and stays open/)
+    const tx = supportArticles.find((a) => a.slug === 'transcription-will-not-start')!
+    assert.match(JSON.stringify(tx.body), /consent has not been granted/)
+  })
+})

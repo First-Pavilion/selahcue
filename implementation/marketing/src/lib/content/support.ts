@@ -52,7 +52,7 @@ export const supportArticles: readonly KnowledgeArticle[] = [
           '**Blackout is on.** The console says **Output is black: the audience sees nothing. Press B or click to restore.** Click **Restore output**, press [[B]] on the Live Console, or press [[Ctrl]]+[[Shift]]+[[B]] ([[⌘]]+[[Shift]]+[[B]] on a Mac) from any screen. Going live also releases a blackout.',
           '**The output was cleared.** **Clear Output** (the button, or [[Esc]] twice on the Live Console) empties the live output. Stage the item again and go live.',
           '**The output has no window or no monitor.** Open **Screens & Outputs**, check that the audience output’s toggle is on, and that its **Monitor** is set. See [Assign displays to outputs](/docs/display-outputs/assign-displays-to-outputs).',
-          '**The display lost its signal.** A **Signal lost** banner appears and the output’s pill reads **No signal**. Check the cable and the monitor, and see [What the on-screen status messages mean](/docs/troubleshooting/status-messages).',
+          '**The display lost its signal.** A **SIGNAL LOST** banner appears and the output’s pill reads **NO SIGNAL**. Check the cable and the monitor, and see [What the on-screen status messages mean](/docs/troubleshooting/status-messages).',
           '**The single keys are not firing.** Space, Enter, B and the arrows only work on the Live Console, not on Settings or Screens & Outputs, and not while your cursor is in a text field. Click **GO LIVE** instead. The **Blackout** and **Clear Output** buttons, and the Ctrl or ⌘ + Shift chords, work from every screen.',
         ],
       },
@@ -238,8 +238,8 @@ export const supportArticles: readonly KnowledgeArticle[] = [
       {
         type: 'ul',
         items: [
-          '**pairing rejected: forbidden**: the request was denied or timed out. Make a new code and try again.',
-          '**pairing rejected: unauthenticated**: the code was wrong, expired or already used.',
+          '**pairing rejected: forbidden**: the desktop denied the request, did not approve it in time, or is not accepting pairing. Make a new code and try again.',
+          '**pairing rejected: unauthenticated**: the code was wrong, expired or already used. The same message appears when the desktop already has too many pending requests, so approve or deny the ones waiting on the Remote Control page.',
           '**That is not a valid SelahCue pairing invite**: what the app scanned or you typed is not a SelahCue invite.',
         ],
       },
@@ -247,7 +247,7 @@ export const supportArticles: readonly KnowledgeArticle[] = [
         type: 'callout',
         variant: 'info',
         title: 'Still failing?',
-        text: 'No internet connection is needed, but we have not yet tested pairing on networks that stop devices from talking to each other, which some guest networks do. If everything above checks out, try the desktop and phone on a different network.',
+        text: 'Pairing uses your local network rather than the internet. We have not yet tested pairing on networks that stop devices from talking to each other, which some guest networks do. If everything above checks out, try the desktop and phone on a different network.',
       },
       {
         type: 'p',
@@ -388,7 +388,7 @@ export const supportArticles: readonly KnowledgeArticle[] = [
         type: 'callout',
         variant: 'info',
         title: 'Where the audio goes',
-        text: 'Transcription is on-device by default. Cloud transcription is not part of release builds: if cloud is selected in Settings, a release build tells you it does not include it and uses on-device transcription instead.',
+        text: 'Transcription is on-device by default. Cloud transcription is a developer option that is not part of release builds, so a release build uses on-device transcription. If cloud is selected in Settings, the console says why it is using on-device instead, for example that cloud-transcription consent has not been granted or that the build does not include it.',
       },
     ],
   },

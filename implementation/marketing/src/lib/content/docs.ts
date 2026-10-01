@@ -197,8 +197,8 @@ export const docsArticles: readonly KnowledgeArticle[] = [
       {
         type: 'callout',
         variant: 'warning',
-        title: 'Closing the last window quits SelahCue',
-        text: 'The output windows belong to the application. When you close the last one, SelahCue quits. Turn an output off from its card if you only mean to hide it.',
+        title: 'Closing the last output window ends the output',
+        text: 'With both output windows open, closing one only closes that screen. Closing the last one with its own close button quits the output process, because a process with no window has nothing left to receive a quit key. In the installed app the console is a separate window and stays open, but it loses its link to the output and says there is no automatic reconnect: restart the console to reconnect.',
       },
       { type: 'h2', text: 'Work out which screen is which' },
       {
@@ -249,7 +249,7 @@ export const docsArticles: readonly KnowledgeArticle[] = [
       { type: 'h2', text: '3. Send a message to the stage' },
       {
         type: 'p',
-        text: 'Under **Stage message**, tap a preset (**Wrap up, 2 min left**, **Slow down**, **Wrap up now** or **Great job**) or type your own, up to 120 characters. Press **Send to stage**. The message appears over the stage display as **Message from production**. Press **Clear** to remove it.',
+        text: 'Under **Stage message**, tap a preset (**WRAP UP · 2 MIN LEFT**, **SLOW DOWN**, **WRAP UP NOW** or **GREAT JOB**) or type your own, up to 120 characters. Press **Send to stage**. The message appears over the stage display as **MESSAGE FROM PRODUCTION**. Press **Clear** to remove it.',
       },
       { type: 'h2', text: 'What the stage display shows' },
       {
@@ -290,8 +290,11 @@ export const docsArticles: readonly KnowledgeArticle[] = [
           'In the inspector, find **NDI Output**.',
           'Type a **Source name** (up to 64 characters). Two outputs cannot broadcast under the same name.',
           'Turn on **Broadcast as NDI**. The status line reads **Broadcasting NDI** with your source name, and the output’s card shows an **NDI** pill.',
-          'Choose a frame rate: 24, 30, 48, 50 or 60.',
         ],
+      },
+      {
+        type: 'p',
+        text: 'The frame rate is not an NDI setting. Every output has a **Frame rate** row in the inspector’s **Display** section (24, 30, 48, 50 or 60 fps); for an NDI feed it sets the pace at which frames are sent.',
       },
       { type: 'h2', text: 'On the receiving computer' },
       {
@@ -515,7 +518,7 @@ export const docsArticles: readonly KnowledgeArticle[] = [
       { type: 'h2', text: 'TIME UP' },
       {
         type: 'p',
-        text: 'The console shows a status of **Running**, **Paused** or **Time up**, and the readout turns amber at 30 seconds or less. At zero the timer does not stop: it keeps running, and the stage display shows how far over you are (for example, over by 1:12). Taking time off below what has already elapsed puts the timer in TIME UP, and adding time clears it.',
+        text: 'The console shows a status of **RUNNING**, **PAUSED** or **TIME UP**, and the readout turns amber at 30 seconds or less. At zero the timer does not stop: it keeps running, and the stage display shows how far over you are (for example, over by 1:12). Taking time off below what has already elapsed puts the timer in TIME UP, and adding time clears it.',
       },
       { type: 'h2', text: 'Where it appears' },
       {
@@ -552,7 +555,7 @@ export const docsArticles: readonly KnowledgeArticle[] = [
         type: 'callout',
         variant: 'info',
         title: 'Before you start',
-        text: 'The controller app is not in the app stores yet; it is built from the project today. The phone must be on the same Wi-Fi network as the desktop, and no internet connection is needed.',
+        text: 'The controller app is not in the app stores yet; it is built from the project today. The phone must be on the same Wi-Fi network as the desktop. Pairing and control use that local network, not the internet.',
       },
       { type: 'h2', text: 'On the desktop' },
       {
@@ -663,8 +666,8 @@ export const docsArticles: readonly KnowledgeArticle[] = [
       {
         type: 'ul',
         items: [
-          '**No signal**, **No signal · no monitor attached** and the **Signal lost** banner. The output’s monitor is gone. Other outputs are unaffected. The banner says the output reattaches automatically, with its content, when the display is reconnected. If it does not, reassign the display in Screens & Outputs ([Assign displays to outputs](/docs/display-outputs/assign-displays-to-outputs)).',
-          '**Output held: the live output is holding its last good frame.** The renderer hit a fault, and the audience is seeing the last good picture instead of a blank screen. Treat it as a warning and check the output window.',
+          'The **NO SIGNAL** pill, **No signal · no monitor attached** and the **SIGNAL LOST** banner. The output’s monitor is gone. Other outputs are unaffected. The banner says the output reattaches automatically, with its content, when the display is reconnected. If it does not, reassign the display in Screens & Outputs ([Assign displays to outputs](/docs/display-outputs/assign-displays-to-outputs)).',
+          '**OUTPUT HELD**, with the text The live output is holding its last good frame. The renderer hit a fault, and the audience is seeing the last good picture instead of a blank screen. Treat it as a warning and check the output window.',
           '**No displays found** or **No physical output** in an output’s Monitor row: the system reported no displays, or that output kind has no window.',
           '**Output is black: the audience sees nothing.** Blackout is on. Press [[B]] or **Restore output**.',
         ],
