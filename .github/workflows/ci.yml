@@ -148,6 +148,11 @@ jobs:
               # the drift the mirror step exists to catch: the client transcribed Django
               # <= 5.1 while the API pinned 6.1, and both gates stayed green for it.
               - 'implementation/api/pyproject.toml'
+              # The job now runs `make marketing-check`, so the recipe lives in the
+              # Makefile. Without this line an edit that broke that target would not
+              # re-run the job that depends on it, and the break would surface on the
+              # next unrelated marketing change instead of on the commit that caused it.
+              - 'Makefile'
       # Single source of truth for the compiler. Every Rust job installs exactly this
       # version, and scripts/check_toolchain.sh then asserts the running toolchain
       # matches it -- the same script `make ci` runs, which is what makes the local
@@ -1133,11 +1138,15 @@ jobs:
           python-version: "3.14"
       - name: Install
         run: npm ci
-      # `build` is vue-tsc -b && vite build, so this is the typecheck gate too.
-      - name: Build
-        run: npm run build
-      - name: Tests
-        run: npm test
+      # type-check (vue-tsc), lint (eslint, --max-warnings 0), node tests, production build.
+      # Calls the SAME Makefile target `make ci` calls, rather than re-listing the npm
+      # scripts here, so the local gate and this job cannot drift apart (the marketing
+      # half of 86ak5rjh7: `make ci` used to verify nothing about this site). The target
+      # runs from the repo root, so this step overrides the job's default
+      # `working-directory`. It never installs; the step above did.
+      - name: Type-check, lint, test, build (make marketing-check)
+        working-directory: .
+        run: make marketing-check
       # The client/server predicate mirrors, re-derived from the runtimes that decide:
       # CPython for the whitespace set, and the PINNED Django for the email validator.
       # It needs a real Django, so it gets one here from the API's own pin rather than a

@@ -277,7 +277,7 @@ endif
 ENCRYPTION_STATUS := on (SQLCipher; key via OS secret store, or Argon2id from SELAHCUE_PASSPHRASE)
 
 .DEFAULT_GOAL := help
-.PHONY: help launch run run-release launch-release output-release output output-ndi ndi-preflight operator operator-headless stt-preflight release-ai-guard stage-operator-binaries verify-stage-operator-binaries-create-only remote timer stop-timer demo mobile mobile-test ci nfr build build-output build-operator test test-stt-real-model check clippy fmt clean
+.PHONY: help launch run run-release launch-release output-release output output-ndi ndi-preflight operator operator-headless stt-preflight release-ai-guard stage-operator-binaries verify-stage-operator-binaries-create-only remote timer stop-timer demo mobile mobile-test marketing-install marketing-check ci nfr build build-output build-operator test test-stt-real-model check clippy fmt clean
 
 # Recursive-make calls that must NOT get GNU Make's special "$(MAKE) literal text" handling
 # (documented in the GNU Make manual, "How the MAKE Variable Works": a recipe LINE containing
@@ -615,6 +615,42 @@ mobile: ## Run the Flutter controller on this Mac (pair it with a running `make 
 mobile-test: ## Analyze + unit-test the Flutter controller
 	cd $(MOBILE) && $(FLUTTER) analyze && $(FLUTTER) test
 
+# The marketing site + customer web portal (Vue 3 SPA). `marketing-check` is the SINGLE definition of
+# its Node-only gate and is called by both `make ci` and the `marketing (vue spa)` job in
+# .github/workflows/ci.yml, so the local gate and CI cannot drift apart (86ak5rjh7, marketing half;
+# 17tnw2b0q9j). It runs, in order: type-check (vue-tsc), lint (eslint, --max-warnings 0), the node
+# test suite, and the production build. Each is an npm script of the same name in
+# implementation/marketing/package.json, so `npm run <name>` reproduces any one step by hand.
+#
+# It does NOT install anything: a recipe that quietly ran `npm ci` would make `make ci` need the
+# network. Instead it refuses to run against a missing or STALE node_modules -- stale meaning
+# package-lock.json is newer than npm's own record of what was installed
+# (node_modules/.package-lock.json). Running the gate against an old tree after a lockfile change is
+# the same false-green bug class as the unpinned Rust toolchain (86ak5rc9c): it would pass on
+# packages CI is not using. A fresh clone or `git worktree` needs `make marketing-install` once.
+#
+# NOT covered here, CI-only because they need extra runtimes: `npm run test:mirrors` (a pinned
+# Django) and `npm run test:states` (headless Chrome, which skips silently without
+# SELAHCUE_HEADLESS_REQUIRE=1 and is therefore not something to leave to an optional local run).
+MARKETING := implementation/marketing
+NPM       ?= npm
+
+marketing-install: ## Install the marketing site's pinned dependencies (npm ci); needed once per clone/worktree and after a lockfile change
+	cd $(MARKETING) && $(NPM) ci
+
+marketing-check: ## Marketing site gate: type-check + lint + node tests + production build (the Node-only half of CI's `marketing` job)
+	@command -v $(NPM) >/dev/null 2>&1 || { \
+	  echo "ERROR: '$(NPM)' is not on PATH -- the marketing gate needs Node (CI uses Node 22)."; \
+	  exit 1; }
+	@[ -e $(MARKETING)/node_modules/.package-lock.json ] && ! [ $(MARKETING)/package-lock.json -nt $(MARKETING)/node_modules/.package-lock.json ] || { \
+	  echo "ERROR: $(MARKETING)/node_modules is missing or older than package-lock.json."; \
+	  echo "  Run 'make marketing-install' (npm ci) first; this gate never installs for you."; \
+	  exit 1; }
+	cd $(MARKETING) && $(NPM) run type-check
+	cd $(MARKETING) && $(NPM) run lint
+	cd $(MARKETING) && $(NPM) test
+	cd $(MARKETING) && $(NPM) run build
+
 # Mirrors the Rust/Flutter gates in .github/workflows/ci.yml. It does NOT cover
 # everything CI runs -- see the "Not covered here" list below and in CLAUDE.md.
 #
@@ -625,8 +661,12 @@ mobile-test: ## Analyze + unit-test the Flutter controller
 #
 # Not covered here (CI-only): cargo audit / cargo deny (supply chain), the
 # Playwright WebKit engine smoke, launch-smoke + `make nfr`, the Android APK
-# compile-check, and the `api (django)` and `marketing (vue spa)` jobs entirely.
-# Run those areas' own tooling before pushing changes to them.
+# compile-check, the `api (django)` job entirely, and the part of the `marketing
+# (vue spa)` job that needs extra runtimes (client/server mirrors need a pinned
+# Django; the headless auth-page states need Chrome). The Node-only half of the
+# marketing job -- type-check, lint, node tests, build -- IS covered, via the
+# `marketing-check` line below. Run the uncovered areas' own tooling before
+# pushing changes to them.
 #
 # One masking difference from CI, deliberate and not yet closed: CI now runs the
 # steps after Clippy under `if: !cancelled()`, so one failing gate no longer hides
@@ -667,6 +707,11 @@ ci: ## Run the local Rust/Flutter CI gate (see the header for what CI runs that 
 	# no matching audit step in .github/workflows/ci.yml.
 	python3 scripts/check_dependency_audit_coverage.py --self-test
 	python3 scripts/check_dependency_audit_coverage.py
+	# 86ak5rjh7 (marketing half) / 17tnw2b0q9j: `make ci` verified NOTHING about implementation/marketing,
+	# so a type or lint error there passed here and failed only in CI. The same target the CI job calls,
+	# via recursive make so there is exactly one definition. Placed before the cargo gates because it
+	# takes seconds, so a marketing error fails fast instead of after the whole Rust run.
+	$(MAKE_RECURSE) --no-print-directory marketing-check
 	cd $(DESKTOP) && $(CARGO) fmt --check
 	cd $(OPERATOR) && $(CARGO) fmt --check
 	$(CARGO) clippy $(WS) --workspace --all-targets -- -D warnings
