@@ -269,6 +269,21 @@ def main() -> None:
         pg.wait_for_url("**/blog")
         check("leaving an article restores the default description too", pg.get_attribute("meta[name=description]", "content") == default_description)
 
+        # ---- the default title is a constant, not whatever the first page left behind ------
+        # Cold-load a page, let it set its OWN title and description (what /privacy does once
+        # the legal pages land), and only then open an article, so the lazy article module loads
+        # while the document shows that page's values. Leaving the article for the home page
+        # must show the site defaults, not the first page's title.
+        cold = ctx.new_page()
+        cold.goto(base + "/privacy", wait_until="networkidle")
+        cold.evaluate("document.title = 'SelahCue Privacy Policy'; document.querySelector('meta[name=description]').setAttribute('content', 'The privacy page description.')")
+        cold.evaluate("async (u) => { await " + ROUTER + ".push(u); await new Promise(r => setTimeout(r, 300)) }", POST)
+        check("cold-load /privacy, open an article: the article owns the title", cold.title().startswith("Why offline-first matters"), cold.title())
+        cold.evaluate("async () => { await " + ROUTER + ".push('/'); await new Promise(r => setTimeout(r, 300)) }")
+        check("...then the home page shows the SITE default title, not /privacy's", cold.title() == default_title, cold.title())
+        check("...and the SITE default description, not /privacy's", cold.get_attribute("meta[name=description]", "content") == default_description, str(cold.get_attribute("meta[name=description]", "content")))
+        cold.close()
+
         # ---- anchors clear the sticky navbar; instant under reduced motion ---------------
         pg.goto(base + POST, wait_until="networkidle")
         navbar_bottom = pg.evaluate("document.querySelector('header').getBoundingClientRect().bottom")

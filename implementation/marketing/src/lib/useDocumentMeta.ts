@@ -7,6 +7,7 @@
  * the defaults back on unmount (see `releaseMeta` for why that is conditional).
  */
 import { onBeforeUnmount, watchEffect } from 'vue'
+import { SITE_DEFAULT_DESCRIPTION, SITE_DEFAULT_TITLE } from './content/text.ts'
 import { applyMeta, releaseMeta, type MetaDefaults, type MetaTarget, type Written } from './documentMeta.ts'
 
 function descriptionTag(): HTMLMetaElement {
@@ -35,11 +36,12 @@ const browserTarget: MetaTarget = {
   },
 }
 
-/** Captured when this module first loads, before any article has written anything. */
-const DEFAULTS: MetaDefaults =
-  typeof document === 'undefined'
-    ? { title: '', description: '' }
-    : { title: document.title, description: browserTarget.description }
+/**
+ * The site defaults are constants (`SITE_DEFAULT_*`), never read back from the document: by the
+ * time this lazy module loads, another page may already have set its own title, and that would
+ * be remembered as "the default".
+ */
+const DEFAULTS: MetaDefaults = { title: SITE_DEFAULT_TITLE, description: SITE_DEFAULT_DESCRIPTION }
 
 /**
  * `title` empty means "not an article": the site defaults are shown (an unknown slug).

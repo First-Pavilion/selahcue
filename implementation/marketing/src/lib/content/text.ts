@@ -76,6 +76,18 @@ export function tableOfContents(body: readonly Block[]): TocEntry[] {
 
 export const SITE_NAME = 'SelahCue'
 
+/**
+ * What the site shows when no article owns the title or description: the values in
+ * `index.html`. They are CONSTANTS, not read from the document, because the document is the
+ * wrong witness: another page may already have changed `document.title` by the time the lazy
+ * article module first loads (cold-load /privacy, which sets its own title, then open an
+ * article: the "default" captured would be "SelahCue Privacy Policy", and leaving the article
+ * for the home page would show that). `tests/pageMeta.test.ts` checks these match `index.html`.
+ */
+export const SITE_DEFAULT_TITLE = 'SelahCue — Church presentation, reengineered'
+export const SITE_DEFAULT_DESCRIPTION =
+  'A reliable, modern church presentation software built for stability and ease of use.'
+
 /** `Article title — SelahCue`, the shape every detail page uses for `document.title`. */
 export function pageTitle(title: string): string {
   return `${title} — ${SITE_NAME}`

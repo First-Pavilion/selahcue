@@ -4,8 +4,11 @@
  * (`scripts/article_pages_headless.py`) proves the wiring.
  */
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import test, { describe } from 'node:test'
+import { fileURLToPath } from 'node:url'
 
+import { SITE_DEFAULT_DESCRIPTION, SITE_DEFAULT_TITLE } from '../src/lib/content/text.ts'
 import { applyMeta, releaseMeta, type MetaDefaults, type MetaTarget } from '../src/lib/documentMeta.ts'
 import { cameFromInsideTheApp } from '../src/lib/pageFocus.ts'
 
@@ -83,5 +86,35 @@ describe('cameFromInsideTheApp (where focus goes)', () => {
 
   test('absent or odd history state is treated as a direct load', () => {
     for (const s of [null, undefined, 0, 'x', {}, { back: undefined }]) assert.equal(cameFromInsideTheApp(s), false, JSON.stringify(s))
+  })
+})
+
+describe('the site defaults are constants, not whatever the document showed first', () => {
+  const read = (rel: string): string => readFileSync(fileURLToPath(new URL(rel, import.meta.url)), 'utf8')
+
+  test('they equal the title and description in index.html', () => {
+    const html = read('../index.html')
+    assert.equal(/<title>([^<]*)<\/title>/.exec(html)?.[1], SITE_DEFAULT_TITLE)
+    assert.equal(/<meta name="description" content="([^"]*)"/.exec(html)?.[1], SITE_DEFAULT_DESCRIPTION)
+  })
+
+  test('leaving an article restores the constants, whichever page was showing on first load', () => {
+    // Cold-load a page that sets its own title (what /privacy does once the legal pages land),
+    // then visit an article, then leave it. The home page must not inherit the other page's title.
+    const defaults: MetaDefaults = { title: SITE_DEFAULT_TITLE, description: SITE_DEFAULT_DESCRIPTION }
+    for (const firstPage of ['SelahCue Privacy Policy', 'Terms of Service — SelahCue', '', 'x']) {
+      const target: MetaTarget = { title: firstPage, description: 'that page’s own description' }
+      const written = applyMeta(target, defaults, { title: 'Pair a phone', description: 'Connect a phone.' })
+      releaseMeta(target, defaults, written)
+      assert.equal(target.title, SITE_DEFAULT_TITLE, `first page was "${firstPage}"`)
+      assert.equal(target.description, SITE_DEFAULT_DESCRIPTION)
+    }
+  })
+
+  test('the composable does not derive its defaults from the document', () => {
+    const src = read('../src/lib/useDocumentMeta.ts').replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+    const defaultsDecl = /const DEFAULTS[\s\S]*?\n\n/.exec(src)?.[0] ?? ''
+    assert.ok(defaultsDecl.includes('SITE_DEFAULT_TITLE') && defaultsDecl.includes('SITE_DEFAULT_DESCRIPTION'), 'DEFAULTS must be the constants')
+    assert.ok(!/document\./.test(defaultsDecl), 'DEFAULTS must not read the document')
   })
 })
