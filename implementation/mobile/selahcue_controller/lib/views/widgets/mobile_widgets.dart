@@ -561,11 +561,13 @@ class _EmergencyStripState extends State<EmergencyStrip> {
     final armedClear = _armed?.which == _Armed.clear;
     // Reconnecting is the more urgent/informative reason when both are true:
     // it means the link is down or unproven, open-ended until a reconnect.
-    // busy is at least bounded, but not "well under" a single commandTimeout
-    // — act() awaits the command's own round trip AND the refresh() that
-    // follows it, so it can span roughly two commandTimeout windows (and
-    // session.dart's read loop has no single hard cap beyond that; Sana,
-    // 17tnw2ay2pq review).
+    // busy is bounded, but not "well under" a single commandTimeout: each
+    // command is capped at commandTimeout from the moment its own turn starts
+    // (session.dart, 17tnw2ay5jk — frames that don't answer it can't extend
+    // that), and act() awaits that round trip, the refresh() that follows it,
+    // and any wait behind a call already in flight on the session. When the
+    // cap is hit the session is torn down and `syncing` takes over above, so
+    // the open-ended part (the reconnect) always shows its own reason.
     final disabledReason =
         live.syncing ? 'unavailable while reconnecting' : 'sending…';
 
