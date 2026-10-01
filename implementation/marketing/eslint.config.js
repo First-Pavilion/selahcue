@@ -8,14 +8,13 @@
 // `npm run lint` passes --max-warnings 0, so a rule set to "warn" still fails the gate.
 // A warning that cannot fail anything is how a lint run ends up ignored.
 import js from '@eslint/js'
+import { defineConfig, globalIgnores } from 'eslint/config'
 import pluginVue from 'eslint-plugin-vue'
 import tseslint from 'typescript-eslint'
 
-export default tseslint.config(
-  {
-    // Build output and installed packages are not source. `.tmp` holds tsbuildinfo only.
-    ignores: ['dist/**', 'node_modules/**'],
-  },
+export default defineConfig([
+  // Build output and installed packages are not source. `.tmp` holds tsbuildinfo only.
+  globalIgnores(['dist/**', 'node_modules/**']),
 
   js.configs.recommended,
   tseslint.configs.recommended,
@@ -69,4 +68,4 @@ export default tseslint.config(
       'vue/multi-word-component-names': 'off',
     },
   },
-)
+])
