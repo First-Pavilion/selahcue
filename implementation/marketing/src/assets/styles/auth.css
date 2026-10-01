@@ -368,6 +368,13 @@
   .au-select {
     font-size: 16px;
   }
+
+  /* The line under the card ("Already verified? Back to Sign in") has no gutter of its
+     own; with a wider system font it ran to within 1px of both screen edges on a 320px
+     Linux WebKit render. Padding makes it wrap instead. */
+  .au-footer-link {
+    padding-inline: 16px;
+  }
 }
 
 /* Very narrow phones (320px): the card is 92vw, so a 24px inset leaves ~246px for the
