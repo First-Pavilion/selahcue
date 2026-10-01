@@ -17,8 +17,14 @@
 //!   what the first action costs for reasons unrelated to scripture (first render, allocator
 //!   warm-up). The scripture cost is the difference.
 //!
+//! - `PROBE_STEADY_VIEWS=200` (default) is how many warm `view()` calls feed the steady-state
+//!   figure; `0` skips them, so the process's total CPU time is the first-touch cost alone.
+//!
 //! Run (release profile — never compare numbers across profiles; debug gzip/SHA is ~19x slower;
-//! and wall-clock on a busy machine is noisy, so take several processes and read min + median):
+//! and wall-clock on a busy machine is noisy, so take several processes and read min + median.
+//! On a machine under load, prefer the process's user+sys CPU time — `os.wait4`'s rusage in a
+//! small harness, or `/usr/bin/time -l` — over the printed wall-clock `first_ms`, which counts
+//! time spent waiting for a core):
 //!
 //! ```text
 //! cargo test -p selahcue-app --release --test probe_scripture_link_cold_cost --no-run
@@ -93,12 +99,21 @@ fn probe_first_operator_action_on_a_plan_naming_every_bundled_translation() {
     let warm_us = t.elapsed().as_secs_f64() * 1e6;
     assert_eq!(warm.items.len(), 5);
 
-    const N: u32 = 200;
+    // Warm views, for the steady-state number. `PROBE_STEADY_VIEWS=0` skips them, so the whole
+    // process's CPU time (see the run notes) is the first-touch cost and nothing else.
+    let n: u32 = std::env::var("PROBE_STEADY_VIEWS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(200);
     let t = Instant::now();
-    for _ in 0..N {
+    for _ in 0..n {
         std::hint::black_box(shell.view());
     }
-    let steady_us = t.elapsed().as_secs_f64() * 1e6 / f64::from(N);
+    let steady_us = if n == 0 {
+        f64::NAN
+    } else {
+        t.elapsed().as_secs_f64() * 1e6 / f64::from(n)
+    };
 
     println!(
         "PROBE action={action} linked={} first_ms={first_ms:.2} second_action_us={warm_us:.1} \
