@@ -82,7 +82,7 @@ body {
 .font-eyebrow { font: var(--font-eyebrow); }
 .font-micro { font: var(--font-micro); }
 
-@media (max-width: 1199px) {
+@media (max-width: 1199.98px) {
   :root {
     --gutter: 48px;
     --page-gutter: 48px;
@@ -92,7 +92,7 @@ body {
   }
 }
 
-@media (max-width: 767px) {
+@media (max-width: 767.98px) {
   :root {
     --gutter: 20px;
     --page-gutter: 20px;

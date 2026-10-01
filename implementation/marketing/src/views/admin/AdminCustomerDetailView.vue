@@ -212,11 +212,11 @@ const bibles = ref([
 .key-display { font-family: monospace; font-size: 13px; color: var(--sc-gold); display: block; margin-bottom: 6px; }
 .key-sub { font-size: 12px; color: var(--sc-text-muted); }
 
-@media (max-width: 1024px) {
+@media (max-width: 1024.98px) {
   .detail-layout { grid-template-columns: minmax(0, 1fr); }
 }
 
-@media (max-width: 767px) {
+@media (max-width: 767.98px) {
   .back-link { display: inline-flex; align-items: center; min-height: 44px; }
   .detail-header-card { padding: 20px; }
   .info-grid { grid-template-columns: minmax(0, 1fr); gap: 16px; }

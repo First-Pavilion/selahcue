@@ -142,16 +142,16 @@ const recentReferrals = ref([
 .view-all:hover { text-decoration: underline; }
 .font-medium { font-weight: 600; color: var(--sc-text); }
 
-@media (max-width: 1099px) {
+@media (max-width: 1099.98px) {
   .link-banner { flex-direction: column; align-items: flex-start; gap: 16px; }
   .link-input-group { width: 100%; }
 }
 
-@media (max-width: 1199px) {
+@media (max-width: 1199.98px) {
   .kpi-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
-@media (max-width: 767px) {
+@media (max-width: 767.98px) {
   .dashboard-header { margin-bottom: 24px; }
   .dashboard-header h1 { font-size: 24px; line-height: 30px; }
   .link-banner { padding: 20px; margin-bottom: 24px; }

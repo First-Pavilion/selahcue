@@ -190,7 +190,7 @@
   margin: 0;
 }
 
-@media (max-width: 767px) {
+@media (max-width: 767.98px) {
   .interface-grid {
     grid-template-columns: minmax(0, 1fr);
     padding: 14px;

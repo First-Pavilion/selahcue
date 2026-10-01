@@ -175,7 +175,7 @@ const releases = [
   margin: 0;
 }
 
-@media (max-width: 767px) {
+@media (max-width: 767.98px) {
   .changelog-page { padding-bottom: var(--section-pad-sm); }
   .hero-section { padding: 48px 0 36px; }
   .hero-title { font-size: 36px; line-height: 40px; }

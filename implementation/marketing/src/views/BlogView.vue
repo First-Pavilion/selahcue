@@ -88,7 +88,7 @@ const posts = [
 .card-footer { display: flex; justify-content: space-between; align-items: center; font-size: 13px; color: var(--sc-text-muted); }
 .read-link { background: none; border: none; color: var(--sc-primary); font-weight: 600; cursor: pointer; }
 
-@media (max-width: 767px) {
+@media (max-width: 767.98px) {
   .blog-page { padding-bottom: var(--section-pad-sm); }
   .hero-section { padding: 48px 0 32px; }
   .hero-title { font-size: 36px; line-height: 40px; }

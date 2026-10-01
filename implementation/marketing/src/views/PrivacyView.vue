@@ -54,7 +54,7 @@ import UiBadge from '@/components/UiBadge.vue'
 .legal-content p { font-size: 15px; color: var(--sc-text-secondary); line-height: 1.7; margin-bottom: 16px; }
 .legal-content code { background: var(--sc-elevated); padding: 2px 6px; border-radius: 4px; color: var(--sc-primary); }
 
-@media (max-width: 767px) {
+@media (max-width: 767.98px) {
   .legal-page { padding: 36px 0 var(--section-pad-sm); }
   .legal-header { margin-bottom: 32px; padding-bottom: 24px; }
   .legal-title { font-size: 32px; line-height: 38px; }

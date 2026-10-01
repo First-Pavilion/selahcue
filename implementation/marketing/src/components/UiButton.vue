@@ -166,7 +166,7 @@ const component = computed(() => {
 
 /* 44px minimum touch target on phones and on any coarse pointer (tablets). A fine
    pointer keeps the designed heights, so the desktop is visually unchanged. */
-@media (max-width: 767px), (pointer: coarse) {
+@media (max-width: 767.98px), (pointer: coarse) {
   .ui-button {
     min-height: 44px;
   }

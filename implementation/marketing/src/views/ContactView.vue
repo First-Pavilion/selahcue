@@ -266,14 +266,14 @@ const handleSubmit = () => {
   margin-bottom: 28px;
 }
 
-@media (max-width: 1023px) {
+@media (max-width: 1023.98px) {
   .contact-layout {
     grid-template-columns: minmax(0, 1fr);
     gap: 40px;
   }
 }
 
-@media (max-width: 767px) {
+@media (max-width: 767.98px) {
   .contact-page { padding: 40px 0 var(--section-pad-sm); }
   .info-title { font-size: 36px; line-height: 40px; }
   .info-sub { margin-bottom: 28px; }

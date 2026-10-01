@@ -64,11 +64,11 @@ const subscriptions = ref([
 .font-medium { font-weight: 600; color: var(--sc-text); }
 .font-bold { font-weight: 700; color: var(--sc-text); }
 
-@media (max-width: 1199px) {
+@media (max-width: 1199.98px) {
   .sub-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
-@media (max-width: 767px) {
+@media (max-width: 767.98px) {
   .sub-kpis { grid-template-columns: minmax(0, 1fr); gap: 12px; margin-bottom: 24px; }
   .kpi-box .val { font-size: 24px; }
 }

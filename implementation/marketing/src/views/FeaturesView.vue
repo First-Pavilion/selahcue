@@ -398,11 +398,11 @@ import UiBadge from '@/components/UiBadge.vue'
 .cta-card p { font-size: 16px; color: var(--sc-text-secondary); margin: 0 0 32px 0; }
 .cta-btns { display: flex; justify-content: center; gap: 16px; }
 
-@media (max-width: 1023px) {
+@media (max-width: 1023.98px) {
   .row-layout { grid-template-columns: minmax(0, 1fr); gap: 32px; }
 }
 
-@media (max-width: 767px) {
+@media (max-width: 767.98px) {
   .features-view { padding-bottom: var(--section-pad-sm); }
   .hero-section { padding: 48px 0 32px; }
   .hero-title { font-size: 36px; line-height: 40px; }

@@ -243,11 +243,11 @@ const popularArticles = [
 .cta-box h3 { font-size: 24px; color: var(--sc-text); margin: 0 0 8px 0; }
 .cta-box p { font-size: 15px; color: var(--sc-text-secondary); margin: 0 0 24px 0; }
 
-@media (max-width: 1199px) {
+@media (max-width: 1199.98px) {
   .categories-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
-@media (max-width: 767px) {
+@media (max-width: 767.98px) {
   .support-page { padding-bottom: var(--section-pad-sm); }
   .support-hero { padding: 48px 0 36px; }
   .hero-title { font-size: 36px; line-height: 40px; margin-bottom: 24px; }

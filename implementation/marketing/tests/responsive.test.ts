@@ -16,7 +16,7 @@ import test, { describe } from 'node:test'
 import { readdirSync, readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 
-import { MOBILE_MAX_WIDTH, MOBILE_QUERY, TABLET_MAX_WIDTH } from '../src/lib/ui/breakpoints.ts'
+import { MOBILE_MAX_WIDTH, MOBILE_QUERY } from '../src/lib/ui/breakpoints.ts'
 import { FOCUSABLE_SELECTOR, nextTrapIndex } from '../src/lib/ui/focusTrap.ts'
 import { createScrollLock, type ScrollLockTarget } from '../src/lib/ui/scrollLock.ts'
 
@@ -163,28 +163,56 @@ describe('focus trap index', () => {
 })
 
 describe('breakpoints', () => {
-  test('mobile is strictly below 768 and tablet runs to 1199 (design 8a)', () => {
-    assert.equal(MOBILE_MAX_WIDTH, 767)
-    assert.equal(TABLET_MAX_WIDTH, 1199)
-    assert.equal(MOBILE_QUERY, '(max-width: 767px)')
+  test('mobile is strictly below 768 and the ranges are complementary (design 8a)', () => {
+    // `767.98px`, not `767px`: at a fractional viewport width (browser zoom gives 767.5px)
+    // `max-width: 767px` and `min-width: 768px` BOTH miss, and the page gets half of each layout.
+    assert.equal(MOBILE_MAX_WIDTH, 767.98)
+    assert.equal(MOBILE_QUERY, '(max-width: 767.98px)')
   })
 
-  test('no SFC still uses the old off-by-one `max-width: 768px` mobile query', () => {
-    // 768px IS tablet. `max-width: 768px` made the iPad-portrait width a phone layout.
-    // The sweep proves the real layout switches at the right width; this keeps the typo out.
-    const offenders = SFCS.filter((file) => /@media[^{]*max-width:\s*768px/.test(readFileSync(file, 'utf8')))
+  test('every media query that ends a range just below a breakpoint uses the .98 form', () => {
+    // The sweep renders 767/768 and 1199/1200 in a real browser; this is the cheap tripwire
+    // that keeps the whole-pixel form (and the old `768px` off-by-one) out of the source.
+    const offenders: string[] = []
+    for (const file of SFCS) {
+      for (const line of readFileSync(file, 'utf8').split('\n')) {
+        if (!line.includes('@media')) continue
+        if (/max-width:\s*(767|1023|1099|1199|1024|768)px/.test(line)) offenders.push(`${file}: ${line.trim()}`)
+      }
+    }
+    for (const css of ['assets/styles/main.css', 'assets/styles/auth.css']) {
+      for (const line of read(css).split('\n')) {
+        if (line.includes('@media') && /max-width:\s*(767|1023|1099|1199|1024|768)px/.test(line)) offenders.push(`${css}: ${line.trim()}`)
+      }
+    }
     assert.deepEqual(offenders, [])
+  })
+
+  test('the JS mobile query is the exact complement of the CSS tablet start (768)', () => {
+    const navbar = read('components/Navbar.vue')
+    assert.match(navbar, /@media \(min-width: 768px\)/)
+    assert.equal(MOBILE_MAX_WIDTH + 0.02, 768)
   })
 
   test('main.css steps --page-gutter 24 -> 48 -> 20 at the design breakpoints', () => {
     const tokens = read('assets/styles/tokens.css')
     const main = read('assets/styles/main.css')
     assert.match(tokens, /--page-gutter:\s*24px/)
-    const tablet = main.match(/@media \(max-width: 1199px\)\s*\{[^}]*\}/)?.[0] ?? ''
-    const mobile = main.match(/@media \(max-width: 767px\)\s*\{[^}]*\}/)?.[0] ?? ''
+    const tablet = main.match(/@media \(max-width: 1199\.98px\)\s*\{[^}]*\}/)?.[0] ?? ''
+    const mobile = main.match(/@media \(max-width: 767\.98px\)\s*\{[^}]*\}/)?.[0] ?? ''
     assert.match(tablet, /--page-gutter:\s*48px/)
     assert.match(mobile, /--page-gutter:\s*20px/)
     assert.match(mobile, /--font-h1:\s*700 36px\/40px/)
+  })
+
+  test('the footer takes its mobile layout from JS state, not a second CSS breakpoint', () => {
+    // Footer collapse behaviour (JS) and stacked layout (CSS) must flip together. The
+    // layout is keyed on `.is-mobile`, which Footer.vue sets from MOBILE_QUERY.
+    const footer = read('components/Footer.vue')
+    assert.match(footer, /import \{ MOBILE_QUERY \} from '@\/lib\/ui\/breakpoints\.ts'/)
+    assert.match(footer, /'is-mobile': isMobile/)
+    const style = footer.slice(footer.indexOf('<style'))
+    assert.equal(/@media \(max-width: 7\d\d(\.98)?px\)/.test(style), false, 'a hand-typed mobile breakpoint crept back into Footer.vue')
   })
 })
 

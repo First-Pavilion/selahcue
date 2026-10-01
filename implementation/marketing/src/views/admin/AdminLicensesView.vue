@@ -96,7 +96,7 @@ const catalogue = ref([
 code { font-family: monospace; color: var(--sc-gold); font-weight: 600; }
 .font-medium { font-weight: 600; color: var(--sc-text); }
 
-@media (max-width: 767px) {
+@media (max-width: 767.98px) {
   .sub-btn { min-height: 44px; }
 }
 </style>

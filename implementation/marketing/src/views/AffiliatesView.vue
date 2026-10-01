@@ -143,11 +143,11 @@ const faqItems = [
 .section-title { text-align: center; font-size: 28px; font-weight: 700; color: var(--sc-text); margin-bottom: 32px; }
 .faq-wrapper { max-width: 800px; margin: 0 auto; }
 
-@media (max-width: 1199px) {
+@media (max-width: 1199.98px) {
   .highlights-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
-@media (max-width: 767px) {
+@media (max-width: 767.98px) {
   .affiliates-page { padding-bottom: var(--section-pad-sm); }
   .hero-section { padding: 48px 0 40px; }
   .hero-title { font-size: 36px; line-height: 40px; }

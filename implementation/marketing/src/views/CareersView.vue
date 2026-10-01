@@ -81,11 +81,11 @@ const roles = [
 .role-title { font-size: 18px; font-weight: 600; color: var(--sc-text); margin: 0 0 4px 0; }
 .role-meta { font-size: 13px; color: var(--sc-text-muted); margin: 0; }
 
-@media (max-width: 1199px) {
+@media (max-width: 1199.98px) {
   .culture-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
-@media (max-width: 767px) {
+@media (max-width: 767.98px) {
   .careers-page { padding-bottom: var(--section-pad-sm); }
   .hero-section { padding: 48px 0 36px; }
   .hero-title { font-size: 36px; line-height: 40px; }

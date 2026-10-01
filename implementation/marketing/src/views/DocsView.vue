@@ -290,7 +290,7 @@ kbd {
 
 /* Below 1024 the sidebar no longer fits beside the article: it becomes a swipeable row of
    topic chips above it (still the same buttons, so keyboard and AT behaviour is unchanged). */
-@media (max-width: 1023px) {
+@media (max-width: 1023.98px) {
   .docs-layout { grid-template-columns: minmax(0, 1fr); gap: 24px; }
   .docs-sidebar { position: static; padding: 14px 16px; border-radius: 14px; }
   .sidebar-title { margin-bottom: 8px; }
@@ -307,7 +307,7 @@ kbd {
   .nav-item { flex: 0 0 auto; white-space: nowrap; min-height: 44px; display: inline-flex; align-items: center; }
 }
 
-@media (max-width: 767px) {
+@media (max-width: 767.98px) {
   .docs-page { padding: 24px 0 var(--section-pad-sm); min-height: 0; }
   .docs-content { padding: 24px 20px; border-radius: 16px; }
   .doc-title { font-size: 32px; line-height: 38px; }

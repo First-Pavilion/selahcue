@@ -60,7 +60,7 @@ import UiButton from '@/components/UiButton.vue'
   justify-content: center;
 }
 
-@media (max-width: 767px) {
+@media (max-width: 767.98px) {
   .nf-page { padding-top: 56px; padding-bottom: 72px; }
   .nf-title { font-size: 1.75rem; }
   .nf-actions { flex-direction: column; }

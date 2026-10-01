@@ -177,7 +177,7 @@ import UiButton from '@/components/UiButton.vue'
 
 .values-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 
-@media (max-width: 767px) {
+@media (max-width: 767.98px) {
   .about-page { padding-bottom: var(--section-pad-sm); }
   .hero-section { padding: 48px 0 40px; }
   .hero-title { font-size: 36px; line-height: 40px; }

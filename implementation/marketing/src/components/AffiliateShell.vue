@@ -112,7 +112,7 @@ const isActive = (path: string) => route.path === path
 
 /* 44px targets once the nav is a swipeable row (and on any coarse pointer). The desktop
    keeps the designed pill height. */
-@media (max-width: 1099px), (pointer: coarse) {
+@media (max-width: 1099.98px), (pointer: coarse) {
   .nav-link {
     display: inline-flex;
     align-items: center;
@@ -167,7 +167,7 @@ const isActive = (path: string) => route.path === path
 
 /* Below 1100 the brand, six portal links and the balance chip no longer fit one row:
    the nav drops to its own full-width, swipeable row. */
-@media (max-width: 1099px) {
+@media (max-width: 1099.98px) {
   /* padding-block, not `padding`: the shorthand would zero the container's side gutters. */
   .topbar-inner { flex-wrap: wrap; height: auto; padding-block: 12px 4px; gap: 8px 16px; }
   .brand-lockup { order: 1; }
@@ -184,7 +184,7 @@ const isActive = (path: string) => route.path === path
   .portal-nav::-webkit-scrollbar { display: none; }
 }
 
-@media (max-width: 767px) {
+@media (max-width: 767.98px) {
   /* The profile row sits beside the brand on a phone, the nav strip underneath. */
   .affiliate-topbar { position: static; }
   .affiliate-content { padding: 24px 0 var(--section-pad-sm); }

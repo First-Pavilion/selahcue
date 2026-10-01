@@ -329,12 +329,12 @@ const paginatedItems = computed(() => {
 /* Phones and coarse pointers: 44px controls, 16px input text (anything smaller makes iOS
    Safari zoom the page when the field is focused), and cells that do not wrap -- a narrow
    table scrolls inside its wrapper instead of squeezing every cell into a tall column. */
-@media (max-width: 767px), (pointer: coarse) {
+@media (max-width: 767.98px), (pointer: coarse) {
   .table-search { min-height: 44px; font-size: 16px; }
   .page-btn { min-height: 44px; padding: 0 16px; font-size: 14px; }
 }
 
-@media (max-width: 767px) {
+@media (max-width: 767.98px) {
   .table-controls { padding: 14px 16px; }
   .search-input-wrapper { flex: 1 1 100%; max-width: none; }
   .table-actions { flex: 1 1 100%; }

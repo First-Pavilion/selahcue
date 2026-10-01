@@ -130,7 +130,7 @@ TOUCH_SCOPES = [
 # a classic scrollbar (main.css restyles `::-webkit-scrollbar`, which forces one on macOS)
 # inside the viewport the media query sees, so a 768px window is, correctly, a mobile
 # layout there. The breakpoint is the contract; the window size is only how we get to it.
-IS_MOBILE_JS = "matchMedia('(max-width: 767px)').matches"
+IS_MOBILE_JS = "matchMedia('(max-width: 767.98px)').matches"
 
 PAGE_JS = r"""
 () => {

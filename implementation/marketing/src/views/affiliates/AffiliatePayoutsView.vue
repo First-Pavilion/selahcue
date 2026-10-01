@@ -78,11 +78,11 @@ const payouts = ref([
 .font-mono { font-family: monospace; font-weight: 600; color: var(--sc-gold); }
 .font-bold { font-weight: 700; color: var(--sc-text); }
 
-@media (max-width: 1199px) {
+@media (max-width: 1199.98px) {
   .payout-summary-cards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
-@media (max-width: 767px) {
+@media (max-width: 767.98px) {
   .payout-summary-cards { grid-template-columns: minmax(0, 1fr); gap: 12px; margin-bottom: 28px; }
   .summary-card { padding: 18px 20px; }
   .card-value { font-size: 28px; }

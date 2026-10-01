@@ -849,11 +849,11 @@ const invoices = ref([
 
 /* Cards are always 1-up (no sidebar), so tablet only needs tighter chrome; the real
    reflow is below 768. */
-@media (max-width: 1023px) {
+@media (max-width: 1023.98px) {
   .plan-summary-box { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
-@media (max-width: 767px) {
+@media (max-width: 767.98px) {
   .account-portal { padding: 24px 0 var(--section-pad-sm); }
 
   .portal-header {

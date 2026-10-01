@@ -91,11 +91,11 @@ const recentSignups = ref([
 .customer-link:hover { color: var(--sc-primary); text-decoration: underline; }
 code { font-family: monospace; color: var(--sc-gold); }
 
-@media (max-width: 1199px) {
+@media (max-width: 1199.98px) {
   .kpi-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
-@media (max-width: 767px) {
+@media (max-width: 767.98px) {
   .kpi-grid { grid-template-columns: minmax(0, 1fr); gap: 12px; margin-bottom: 24px; }
   .kpi-card { padding: 18px 20px; }
   .kpi-value { font-size: 28px; }

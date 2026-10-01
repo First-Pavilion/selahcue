@@ -300,7 +300,7 @@ input:checked + .slider:before {
 }
 
 /* Tablet and mobile: one card per row, Pro first so the recommended plan leads (design 8d). */
-@media (max-width: 1199px) {
+@media (max-width: 1199.98px) {
   .pricing-grid {
     grid-template-columns: minmax(0, 1fr);
     max-width: 520px;
@@ -312,7 +312,7 @@ input:checked + .slider:before {
   }
 }
 
-@media (max-width: 767px) {
+@media (max-width: 767.98px) {
   .hero { padding: 3rem 0 2rem; }
   .hero h1 { font-size: 36px; line-height: 40px; }
   .hero p { font-size: 1.1rem; margin-bottom: 2rem; }

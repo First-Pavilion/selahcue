@@ -44,7 +44,7 @@ const faqItems = [
 .contact-box h3 { font-size: 20px; color: var(--sc-text); margin: 0 0 8px 0; }
 .contact-box p { font-size: 14px; color: var(--sc-text-secondary); margin: 0 0 20px 0; }
 
-@media (max-width: 767px) {
+@media (max-width: 767.98px) {
   .faq-card, .contact-box { padding: 20px; border-radius: 14px; }
   .faq-card { margin-bottom: 24px; }
   .contact-box > :last-child { width: 100%; }

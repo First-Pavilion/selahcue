@@ -279,13 +279,13 @@ import UiButton from '@/components/UiButton.vue'
 }
 
 /* Tablet: the two platform cards stay side by side, with tighter gaps. */
-@media (max-width: 1199px) {
+@media (max-width: 1199.98px) {
   .req-grid { gap: 2rem; }
   .mobile-layout { gap: 2rem; }
   .requirements-section, .mobile-section, .install-guide { padding: var(--section-pad) 0; }
 }
 
-@media (max-width: 767px) {
+@media (max-width: 767.98px) {
   .hero { padding: 3rem 0 2rem; }
   .hero h1 { font-size: 36px; line-height: 40px; }
   .hero p { font-size: 1.1rem; }

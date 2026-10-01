@@ -251,7 +251,7 @@ onUnmounted(() => {
   justify-content: flex-end;
 }
 
-@media (max-width: 767px) {
+@media (max-width: 767.98px) {
   .dialog-scrim { padding: 16px; }
   .dialog-card { padding: 24px 20px; }
   .dialog-actions { flex-direction: column-reverse; }

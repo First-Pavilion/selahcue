@@ -717,7 +717,7 @@ const faqItems = [
 
 /* Tablet (768-1199): grids go 2-up (a third card wraps), pricing goes 1-up with the Pro
    card first, the outputs image drops below its text, and the H1 steps down (design 8a/8d). */
-@media (max-width: 1199px) {
+@media (max-width: 1199.98px) {
   .hero-title { font-size: 48px; line-height: 52px; }
   .section-header { margin-bottom: 44px; }
   .section-title, .outputs-title { font-size: 34px; }
@@ -739,7 +739,7 @@ const faqItems = [
 }
 
 /* Mobile (<768): everything 1-up, 20px gutters, H1 36/40, CTAs stack full-width. */
-@media (max-width: 767px) {
+@media (max-width: 767.98px) {
   .hero-section { padding: 48px 0 48px; }
   .hero-eyebrow { margin-bottom: 20px; }
   .hero-title { font-size: 36px; line-height: 40px; margin-bottom: 20px; }

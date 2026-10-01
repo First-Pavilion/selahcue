@@ -626,7 +626,7 @@ onBeforeUnmount(() => {
   transform: translateX(100%);
 }
 
-@media (max-width: 767px) {
+@media (max-width: 767.98px) {
   .navbar-container { padding: 0 20px; }
   .signout-error { padding-inline: 20px; }
 }
@@ -644,7 +644,7 @@ onBeforeUnmount(() => {
   }
 }
 
-@media (min-width: 768px) and (max-width: 1199px) {
+@media (min-width: 768px) and (max-width: 1199.98px) {
   .left-group { gap: 20px; margin-right: 16px; }
   .desktop-nav { gap: 12px; }
   .right-group { gap: 12px; }

@@ -68,11 +68,11 @@ const saveSettings = () => {
 
 .form-actions { margin-top: 24px; }
 
-@media (max-width: 1199px) {
+@media (max-width: 1199.98px) {
   .settings-grid { grid-template-columns: minmax(0, 1fr); }
 }
 
-@media (max-width: 767px) {
+@media (max-width: 767.98px) {
   .settings-card { padding: 22px 20px; }
   .setting-item { flex-wrap: wrap; gap: 8px 16px; }
   .form-actions > * { width: 100%; }

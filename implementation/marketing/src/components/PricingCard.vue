@@ -150,7 +150,7 @@ defineProps({
 
 /* On a phone the card is full width, so its call to action is too (the `block` prop the
    template passes is not implemented by UiButton). Desktop keeps the designed auto width. */
-@media (max-width: 767px) {
+@media (max-width: 767.98px) {
   .pricing-card {
     padding: 28px 22px;
   }

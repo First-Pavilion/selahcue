@@ -284,7 +284,7 @@ const isActive = (path: string) => {
 /* Tablet (768-1024): the sidebar collapses to a 72px icon rail. The labels are visually
    hidden, NOT display:none -- an icon-only link with no name is unusable by a screen
    reader (the old rule did exactly that). */
-@media (min-width: 768px) and (max-width: 1024px) {
+@media (min-width: 768px) and (max-width: 1024.98px) {
   .admin-sidebar { width: 72px; }
   .brand-name, .user-info, .sidebar-brand .ui-badge { display: none; }
   .menu-label {
@@ -306,7 +306,7 @@ const isActive = (path: string) => {
 /* Mobile (<768): no rail. The sidebar becomes a horizontally scrolling strip of section
    tabs under the site navbar, and the topbar stacks title over search. Nothing sticks:
    a sticky navbar plus two more sticky bars would leave a phone with no content. */
-@media (max-width: 767px) {
+@media (max-width: 767.98px) {
   .admin-shell { flex-direction: column; min-height: 0; }
 
   .admin-sidebar {

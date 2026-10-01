@@ -53,7 +53,7 @@ const saveSettings = () => {
 .section-divider { margin-top: 32px; padding-top: 24px; border-top: 1px solid var(--sc-border); }
 .form-actions { margin-top: 28px; }
 
-@media (max-width: 767px) {
+@media (max-width: 767.98px) {
   .settings-card { padding: 24px 20px; border-radius: 14px; }
   .form-actions > * { width: 100%; }
   .page-header { margin-bottom: 24px; }

@@ -87,7 +87,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <footer class="footer">
+  <footer :class="['footer', { 'is-mobile': isMobile }]">
     <div class="container footer-content">
       <div class="footer-top">
         <div class="brand-column">
@@ -281,54 +281,59 @@ onBeforeUnmount(() => {
 
 /* 44px lockup target on phones and coarse pointers only: at desktop it would push the
    tagline down 12px and change the designed footer. */
-@media (max-width: 767px), (pointer: coarse) {
+.footer.is-mobile .brand {
+  min-height: 44px;
+}
+
+@media (pointer: coarse) {
   .brand {
     min-height: 44px;
   }
 }
 
-/* Mobile: one stacked column of collapsible sections. */
-@media (max-width: 767px) {
-  .footer {
-    padding-top: var(--section-pad);
-  }
+/* Mobile: one stacked column of collapsible sections.
+   Driven by `.is-mobile` (set from MOBILE_QUERY in the script), NOT by a CSS media query:
+   the collapse behaviour in JS and the stacked layout in CSS must flip at the same width,
+   and a second hand-typed breakpoint here is exactly how they would drift apart. */
+.footer.is-mobile {
+  padding-top: var(--section-pad);
+}
 
-  .footer-top {
-    gap: 32px;
-    margin-bottom: 32px;
-  }
+.footer.is-mobile .footer-top {
+  gap: 32px;
+  margin-bottom: 32px;
+}
 
-  .links-grid {
-    grid-template-columns: minmax(0, 1fr);
-    gap: 0;
-    border-top: 1px solid var(--sc-border);
-  }
+.footer.is-mobile .links-grid {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0;
+  border-top: 1px solid var(--sc-border);
+}
 
-  .link-column {
-    gap: 0;
-    border-bottom: 1px solid var(--sc-border);
-  }
+.footer.is-mobile .link-column {
+  gap: 0;
+  border-bottom: 1px solid var(--sc-border);
+}
 
-  .column-title {
-    margin: 0;
-  }
+.footer.is-mobile .column-title {
+  margin: 0;
+}
 
-  .column-links {
-    gap: 0;
-    padding-bottom: 8px;
-  }
+.footer.is-mobile .column-links {
+  gap: 0;
+  padding-bottom: 8px;
+}
 
-  /* 44px+ rows. Padding rather than min-height on the <a> alone so the whole row taps. */
-  .footer-link {
-    display: flex;
-    align-items: center;
-    min-height: 44px;
-    font-size: 15px;
-  }
+/* 44px+ rows. Flex + min-height on the <a> so the whole row taps. */
+.footer.is-mobile .footer-link {
+  display: flex;
+  align-items: center;
+  min-height: 44px;
+  font-size: 15px;
+}
 
-  .footer-bottom {
-    padding-block: 24px;
-  }
+.footer.is-mobile .footer-bottom {
+  padding-block: 24px;
 }
 
 @media (prefers-reduced-motion: reduce) {

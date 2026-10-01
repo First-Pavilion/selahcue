@@ -57,7 +57,7 @@ const referrals = ref([
 .font-bold { font-weight: 700; }
 .highlight { color: var(--sc-preview); }
 
-@media (max-width: 767px) {
+@media (max-width: 767.98px) {
   .page-header { margin-bottom: 24px; }
   .page-header h1 { font-size: 24px; line-height: 30px; }
 }

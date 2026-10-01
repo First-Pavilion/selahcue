@@ -46,7 +46,7 @@ const assets = [
 .asset-info h3 { font-size: 17px; font-weight: 600; color: var(--sc-text); margin: 8px 0 4px 0; }
 .asset-size { font-size: 13px; color: var(--sc-text-muted); }
 
-@media (max-width: 767px) {
+@media (max-width: 767.98px) {
   .assets-grid { grid-template-columns: minmax(0, 1fr); gap: 16px; }
   .asset-card { padding: 22px; }
   .asset-card > :last-child { align-self: stretch; }

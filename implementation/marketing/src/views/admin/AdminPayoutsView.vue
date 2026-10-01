@@ -72,11 +72,11 @@ const releasePayout = (row: any) => {
 .font-bold { font-weight: 700; color: var(--sc-text); }
 .highlight { color: var(--sc-preview); }
 
-@media (max-width: 1023px) {
+@media (max-width: 1023.98px) {
   .payout-header-box { flex-wrap: wrap; gap: 16px; }
 }
 
-@media (max-width: 767px) {
+@media (max-width: 767.98px) {
   .payout-header-box { padding: 20px; margin-bottom: 20px; }
   .payout-header-box > :last-child { width: 100%; }
 }

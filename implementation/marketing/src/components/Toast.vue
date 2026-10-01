@@ -111,7 +111,7 @@ onUnmounted(() => {
 }
 
 /* A nowrap pill wider than the screen is cut off at both edges on a 320px phone. */
-@media (max-width: 767px) {
+@media (max-width: 767.98px) {
   .toast-notification {
     max-width: calc(100vw - 32px);
     white-space: normal;

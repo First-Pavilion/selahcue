@@ -53,7 +53,7 @@ const users = ref([
 .btn-text { background: none; border: none; color: var(--sc-primary); font-size: 13px; font-weight: 500; cursor: pointer; }
 .btn-text:hover { text-decoration: underline; }
 
-@media (max-width: 767px), (pointer: coarse) {
+@media (max-width: 767.98px), (pointer: coarse) {
   .btn-text { min-height: 44px; padding: 0 8px; font-family: inherit; }
 }
 </style>

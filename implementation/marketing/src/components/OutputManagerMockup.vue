@@ -127,7 +127,7 @@ import UiBadge from './UiBadge.vue'
   color: #717d93;
 }
 
-@media (max-width: 767px) {
+@media (max-width: 767.98px) {
   .card-header { padding: 0 16px; gap: 8px; }
   .output-rows { padding: 14px 16px; }
   .output-row { padding: 14px; }
