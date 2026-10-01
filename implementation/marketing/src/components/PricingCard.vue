@@ -147,4 +147,20 @@ defineProps({
   font-size: 14px;
   flex-shrink: 0;
 }
+
+/* On a phone the card is full width, so its call to action is too (the `block` prop the
+   template passes is not implemented by UiButton). Desktop keeps the designed auto width. */
+@media (max-width: 767px) {
+  .pricing-card {
+    padding: 28px 22px;
+  }
+
+  .cta-wrapper .ui-button {
+    width: 100%;
+  }
+
+  .popular-tag {
+    right: 20px;
+  }
+}
 </style>

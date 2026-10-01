@@ -740,6 +740,8 @@ const faqItems = [
   .hero-section { padding: 48px 0 48px; }
   .hero-eyebrow { margin-bottom: 20px; }
   .hero-title { font-size: 36px; line-height: 40px; margin-bottom: 20px; }
+  /* The designed line break leaves an orphaned "with" on its own line at phone widths. */
+  .hero-title br { display: none; }
   .hero-subtitle { font-size: 16px; margin-bottom: 28px; }
   .hero-actions { flex-direction: column; align-self: stretch; margin-bottom: 20px; }
   .hero-actions > * { width: 100%; }

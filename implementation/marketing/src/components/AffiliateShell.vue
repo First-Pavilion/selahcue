@@ -160,7 +160,8 @@ const isActive = (path: string) => route.path === path
 /* Below 1100 the brand, six portal links and the balance chip no longer fit one row:
    the nav drops to its own full-width, swipeable row. */
 @media (max-width: 1099px) {
-  .topbar-inner { flex-wrap: wrap; height: auto; padding: 12px 0 4px; gap: 8px 16px; }
+  /* padding-block, not `padding`: the shorthand would zero the container's side gutters. */
+  .topbar-inner { flex-wrap: wrap; height: auto; padding-block: 12px 4px; gap: 8px 16px; }
   .brand-lockup { order: 1; }
   .user-profile { order: 2; margin-left: auto; }
   .portal-nav {

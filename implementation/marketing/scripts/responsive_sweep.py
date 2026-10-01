@@ -29,7 +29,9 @@ It also exercises, in the real browser, the behaviours CSS alone cannot prove:
     scrim, link tap, history navigation, and the viewport growing past 768px);
   * the footer (collapsed sections on mobile with working `aria-expanded` toggles, 2x2 on
     tablet, 4 across on desktop);
-  * the signed-in navbar (Account / Sign out) still fits one row at tablet widths.
+  * the signed-in navbar (Account / Sign out) still fits one row at tablet widths;
+  * `prefers-reduced-motion: reduce` actually removes the sheet's animation (with a
+    positive control proving the probe can see it under normal motion).
 
 On a failure it prints the offending elements (those whose right edge is past the
 viewport and which are not inside a scroll container) so the cause is visible without a
@@ -167,8 +169,9 @@ PAGE_JS = r"""
     return false;
   };
   out.clipped = [];
+  out.edge = [];
   for (const el of document.querySelectorAll('body *')) {
-    if (out.clipped.length >= 8) break;
+    if (out.clipped.length >= 8 || out.edge.length >= 8) break;
     const cs = getComputedStyle(el);
     if (cs.display === 'none' || cs.visibility === 'hidden' || cs.pointerEvents === 'none') continue;
     if (cs.position === 'fixed') continue;
@@ -179,6 +182,12 @@ PAGE_JS = r"""
     const isLeaf = hasText || /^(IMG|SVG|BUTTON|INPUT|SELECT|TEXTAREA|A)$/.test(el.tagName);
     if (!isLeaf) continue;
     if ((r.right > vw + 1 || r.left < -1) && !scrollsX(el)) out.clipped.push(describe(el));
+    // Text hard against the screen edge means a missing gutter: nothing overflows, so the
+    // checks above pass, but it reads as broken. Backgrounds are not leaves, so full-bleed
+    // bands are fine; only actual text/controls are held to a margin.
+    if (hasText || el.tagName === 'BUTTON' || el.tagName === 'A') {
+      if ((r.left < 8 || r.right > vw - 8) && r.width < vw - 16 && !scrollsX(el)) out.edge.push(describe(el));
+    }
   }
   const main = document.querySelector('main');
   out.mainTextLength = main ? main.innerText.trim().length : 0;
@@ -358,8 +367,11 @@ def check_nav_sheet(context, base: str, width: int, fail, count) -> None:
         return st["htmlOverflow"] == "" and st["bodyOverflow"] == ""
 
     def open_sheet() -> dict:
-        page.click(".mobile-toggle")
-        page.wait_for_selector("#mobile-nav-sheet")
+        # If a previous (already-reported) failure left the sheet open, the toggle is behind
+        # the scrim and clicking it would hang; carry on from the open state instead.
+        if not sheet_state(page)["open"]:
+            page.click(".mobile-toggle", timeout=5000)
+        page.wait_for_selector("#mobile-nav-sheet", timeout=5000)
         page.wait_for_timeout(350)  # let the slide-in transition finish before measuring
         return sheet_state(page)
 
@@ -503,6 +515,50 @@ def check_signed_in_nav(context, base: str, width: int, fail, count) -> None:
     page.close()
 
 
+def check_reduced_motion(browser, base: str, width: int, fail, count) -> None:
+    """`prefers-reduced-motion: reduce` must remove the sheet's slide/fade and button transitions.
+
+    A positive control runs first with normal motion: the probe (`document.getAnimations()`
+    right after the tap) must SEE the slide-in there, otherwise "no animations under
+    reduced motion" would be vacuously true.
+    """
+    tag = f"reduced-motion {width}px"
+
+    def animations_after_open(reduced: bool) -> tuple[int, str]:
+        ctx = browser.new_context(
+            viewport={"width": width, "height": HEIGHT},
+            has_touch=True,
+            reduced_motion="reduce" if reduced else "no-preference",
+        )
+        install_stubs(ctx)
+        page = ctx.new_page()
+        page.goto(f"{base}/", wait_until="load")
+        page.wait_for_selector(".mobile-toggle")
+        page.wait_for_timeout(200)
+        page.click(".mobile-toggle")
+        page.wait_for_selector("#mobile-nav-sheet")
+        n = page.evaluate("document.getAnimations({subtree: true}).filter((a) => a.playState === 'running' && a.effect && a.effect.getComputedTiming().duration > 1).length")
+        durations = page.evaluate(
+            "[...document.querySelectorAll('.download-cta, .sheet-cta, .mobile-link')].map((e) => getComputedStyle(e).transitionDuration).join(',')"
+        )
+        ctx.close()
+        return n, durations
+
+    count()
+    normal, _ = animations_after_open(False)
+    if normal < 1:
+        fail(f"{tag}: probe is blind -- normal motion showed no running animation after opening the sheet")
+        return
+    count()
+    reduced, durations = animations_after_open(True)
+    if reduced != 0:
+        fail(f"{tag}: {reduced} animation(s) still running with prefers-reduced-motion: reduce")
+    count()
+    bad = [d for d in durations.split(",") if d and d not in ("1e-05s", "0s")]
+    if bad:
+        fail(f"{tag}: transition durations not neutralised under reduced motion: {bad[:4]}")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--engine", choices=["chromium", "webkit"], default="chromium")
@@ -545,6 +601,13 @@ def main() -> int:
         nonlocal checks
         checks += 1
 
+    def guarded(fn, ctx, base, width) -> None:
+        """Run a behaviour check; an exception inside it is a FAILURE, not a crash."""
+        try:
+            fn(ctx, base, width, lambda m: failures.append("FAIL " + m), bump)
+        except Exception as exc:  # noqa: BLE001
+            failures.append(f"FAIL {fn.__name__} {width}px: check aborted: {str(exc).splitlines()[0][:200]}")
+
     try:
         with sync_playwright() as pw:
             try:
@@ -584,6 +647,10 @@ def main() -> int:
                     checks += 1
                     if info["clipped"]:
                         failures.append(f"{tag}: content past the viewport edge but clipped/hidden: {'; '.join(info['clipped'])}")
+
+                    checks += 1
+                    if info["edge"]:
+                        failures.append(f"{tag}: text/controls within 8px of the screen edge (missing gutter): {'; '.join(info['edge'])}")
 
                     checks += 1
                     if info["mainTextLength"] < 20:
@@ -632,17 +699,19 @@ def main() -> int:
                 if width < 768 and not args.routes:
                     ctx = browser.new_context(viewport={"width": width, "height": HEIGHT}, has_touch=True)
                     install_stubs(ctx)
-                    check_nav_sheet(ctx, base, width, lambda m: failures.append("FAIL " + m), bump)
+                    guarded(check_nav_sheet, ctx, base, width)
                     ctx.close()
+                if width == 375 and not args.routes:
+                    guarded(check_reduced_motion, browser, base, width)
                 if not args.routes:
                     ctx = browser.new_context(viewport={"width": width, "height": HEIGHT}, has_touch=width < 768)
                     install_stubs(ctx)
-                    check_footer(ctx, base, width, lambda m: failures.append("FAIL " + m), bump)
+                    guarded(check_footer, ctx, base, width)
                     ctx.close()
                     ctx = browser.new_context(viewport={"width": width, "height": HEIGHT})
                     install_stubs(ctx)
                     ctx.add_init_script(SESSION_HINT_INIT)
-                    check_signed_in_nav(ctx, base, width, lambda m: failures.append("FAIL " + m), bump)
+                    guarded(check_signed_in_nav, ctx, base, width)
                     ctx.close()
             browser.close()
     finally:

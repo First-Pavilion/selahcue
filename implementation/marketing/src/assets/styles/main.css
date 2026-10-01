@@ -24,6 +24,17 @@ html:focus-within {
   scroll-behavior: smooth;
 }
 
+/* Stop mobile browsers inflating text in landscape, which re-flows layouts. */
+html {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+/* Media never outgrows its container. */
+img, video {
+  max-width: 100%;
+}
+
 body {
   min-height: 100vh;
   text-rendering: optimizeSpeed;
