@@ -65,7 +65,7 @@ place of its fake store badges and fake download buttons. The Vite-template READ
 ### Assumptions and unknowns
 
 - **Verified:** `make ci` reaches the marketing line before any Rust or Flutter step, so the deliberate-failure proof does not start a Flutter run.
-- **Verified (was unknown):** a step-level `working-directory: .` resolves to the workspace root. The `marketing (vue spa)` job on PR #134 passed every step, including `Type-check, lint, test, build (make marketing-check)`, on ubuntu-latest with Node 22 (run 36815083374).
+- **Verified (was unknown):** a step-level `working-directory: .` resolves to the workspace root. The `marketing (vue spa)` job passed every step, including `Type-check, lint, test, build (make marketing-check)`, `Client/server mirrors` and `Auth page states (headless)`, on ubuntu-latest with Node 22 in CI run 36818716736 (https://github.com/First-Pavilion/selahcue/actions/runs/36818716736), which ran on commit `2e627fa`, the last commit that changed anything other than this file. An earlier version of this contract cited run 36815083374; that run was cancelled by a later push and proves nothing, so it is no longer cited. This contract is edited after that run, so it cannot cite its own run; it changes no code.
 - **Unknown:** whether the Dockerfile's Node 20 builds the site with the new `build` script. Only `type-check` and `vite build` run in the image, both unchanged in substance; not run in a container here.
 
 ## Dependencies and approvals
@@ -82,11 +82,12 @@ place of its fake store badges and fake download buttons. The Vite-template READ
 | C-003 | yes | `make ci` fails on a marketing error | deliberate type error, then `make ci` | exit 2, stopping at `make[1]: *** [marketing-check] Error 2` | PR description | PASS |
 | C-004 | yes | The CI job and the local gate run the same commands | read `.github/workflows/ci.yml`; `make -n ci`; `actionlint` | the job's step is `make marketing-check`; `make -n ci` lists `marketing-check`; actionlint exits 0 | `git diff`, command output | PASS |
 | C-005 | yes | The lockfile change is additive, dev-only, and every line is explained; guards pass | structural diff of the two lockfiles; `npm audit`; `sh scripts/import_guards.sh`; clean `npm ci` | 76 to 176 packages, 0 versions changed, 0 removed, 100 added all `dev: true`; audit 0; guard exit 0; `npm ci` exit 0 | PR description | PASS |
-| C-006 | yes | `/download` has no element that looks clickable but does nothing | inspect the rendered DOM and screenshots at 1280 and 375 | store badges and both download buttons are `disabled` with `aria-disabled="true"`, no `href`, visible status text, none in the tab order, no horizontal overflow at 375 | screenshots, DOM dump in PR | PASS |
-| C-007 | yes | Every step of the CI `marketing` job passes locally | `make marketing-check`; `SELAHCUE_MIRRORS_REQUIRE=1 npm run test:mirrors` with the pinned Django 6.1.1; `SELAHCUE_HEADLESS_REQUIRE=1 npm run test:states` | all exit 0; 169 tests; "ALL MIRRORS AGREE"; "60 scenarios, 1751 checks, 0 FAIL" | command output | PASS |
+| C-006 | yes | `/download` has no element that looks clickable but does nothing | inspect the rendered DOM and screenshots at 1280 and 375 | store badges and both download buttons are `disabled` with `aria-disabled="true"`, no `href`, visible status text, none in the tab order, no horizontal overflow at 375 | PR #134 description, section "Evidence: Download page DOM" (the `outerHTML` and computed state of all four controls, plus the text each one is described by); guarded from now on by `tests/downloadView.test.ts` | PASS |
+| C-007 | yes | Every step of the CI `marketing` job passes locally | `make marketing-check`; `SELAHCUE_MIRRORS_REQUIRE=1 npm run test:mirrors` with the pinned Django 6.1.1; `SELAHCUE_HEADLESS_REQUIRE=1 npm run test:states` | all exit 0; "ALL MIRRORS AGREE"; "60 scenarios, 1751 checks, 0 FAIL" | local command output, and CI run 36818716736 on `2e627fa` (the same steps, all green) | PASS |
 | C-008 | yes | The repo's other CI check scripts still pass after the Makefile and workflow edits | `check_launch_reachability.py` (self-test and real), `check_dependency_audit_coverage.py` (self-test and real), `check_toolchain.sh`, `ci_alarm.py --self-test`, `actionlint` | all exit 0 | command output | PASS |
 | C-009 | yes | README is accurate and root `CLAUDE.md` no longer says `make ci` ignores the marketing site | read both against the code; every claim checked | claims verified against router, Makefile, workflow, nginx.conf | `git diff` | PASS |
 | C-010 | yes | Independent review (code, performance, security, QA) has passed and blocking findings are remediated | Cody, Vera, Shadow, Quinn on the Draft PR | all four report; no open blocking finding | review report | PENDING |
+| C-011 | yes | Review round 1 findings are fixed and each fix is proven to bite | a scratch element with a `v-html` directive through `npm run lint`; rename a `describedby` id and remove `disabled` against `tests/downloadView.test.ts`; a scratch single-word component through `npm run lint`; `eslint --print-config` before and after the `defineConfig` change | lint exit 1 naming `vue/no-v-html`; test exit 1 for each mutation; lint exit 1 naming `vue/multi-word-component-names`; configs byte-identical | PR #134 description, section "Review round 1" | PASS |
 
 ## Verification plan
 
@@ -125,6 +126,16 @@ place of its fake store badges and fake download buttons. The Vite-template READ
 - Verifier executed: DOM inspection, screenshots at 1280 and 375
 - Result: pass
 - New evidence: the card said `Version 1.2.0 (Stable)` for a product with no served installer and crate version 0.1.0; replaced with the real status
+- Decision: handoff
+
+### Iteration 4
+
+- Target criterion: C-011
+- Hypothesis: the reviewers' findings are real gaps, not preferences (the config header claimed a v-html check that was not on; nothing guarded the Download states; the README's Node floor was too low)
+- Change or investigation: enabled `vue/no-v-html`; added `tests/downloadView.test.ts`; `engines` and README to Node 22.18; narrowed the component-name exemption to three files; moved to `defineConfig`; CLAUDE.md fresh-worktree note
+- Verifier executed: the bite proofs listed in C-011, `make marketing-check`, and the CI marketing job on `2e627fa`
+- Result: every fix bites; the full gate is green locally and in CI
+- New evidence: `npm install --package-lock-only` also rewrites `node_modules/.package-lock.json`, so the stale-install guard (which compares the two files' ages) does not notice a lockfile edited that way; every other route to a changed lockfile (pull, checkout, a real `npm install`) is caught. Recorded, not fixed
 - Decision: handoff
 
 ## Risks and rollback
