@@ -36,6 +36,7 @@ import {
   legalPageState,
   legalTitle,
   placeholderOccurrences,
+  placeholderSummary,
   tableOfContents,
   versionLabel,
 } from '../src/lib/legal/document.ts'
@@ -730,6 +731,20 @@ describe('draft treatment is derived from the remaining placeholders', () => {
   test('the page title never doubles the brand', () => {
     assert.equal(legalTitle(privacyPolicy), 'SelahCue Privacy Policy')
     assert.equal(legalTitle({ ...privacyPolicy, title: 'Privacy Policy' }), 'Privacy Policy — SelahCue')
+  })
+})
+
+describe('the draft banner count reads correctly in the singular and the plural', () => {
+  test('wording', () => {
+    const say = (placeholders: string[], placeholderCount: number): string => placeholderSummary({ placeholders, placeholderCount })
+    assert.equal(say(['A'], 1), '1 detail is still to be filled in (1 place).')
+    assert.equal(say(['A'], 3), '1 detail is still to be filled in (3 places).')
+    assert.equal(say(['A', 'B'], 2), '2 details are still to be filled in (2 places).')
+    assert.equal(say(['A', 'B', 'C'], 50), '3 details are still to be filled in (50 places).')
+  })
+  test('for a real one-placeholder document', () => {
+    const state = legalPageState(docWith('1.1 Contact `{{ONLY_ONE}}`.', false))
+    assert.equal(placeholderSummary(state), '1 detail is still to be filled in (1 place).')
   })
 })
 

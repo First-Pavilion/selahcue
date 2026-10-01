@@ -126,6 +126,13 @@ export function legalPageState(doc: LegalDocument): LegalPageState {
   }
 }
 
+/** "1 detail is still to be filled in (1 place)." / "31 details are still to be filled in (50 places)." */
+export function placeholderSummary(state: Pick<LegalPageState, 'placeholders' | 'placeholderCount'>): string {
+  const details = state.placeholders.length
+  const places = state.placeholderCount
+  return `${details} ${details === 1 ? 'detail is' : 'details are'} still to be filled in (${places} ${places === 1 ? 'place' : 'places'}).`
+}
+
 // ---------------------------------------------------------------------------------------
 // Contents
 // ---------------------------------------------------------------------------------------

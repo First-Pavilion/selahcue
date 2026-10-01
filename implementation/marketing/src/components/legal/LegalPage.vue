@@ -17,6 +17,7 @@ import {
   DRAFT_NOTICE,
   legalPageState,
   legalTitle,
+  placeholderSummary,
   tableOfContents,
   versionLabel,
 } from '@/lib/legal/document.ts'
@@ -102,7 +103,7 @@ const EXAMPLE_TOKEN = '{{' + 'EXAMPLE_DETAIL' + '}}'
         <p id="draft-banner-title" class="draft-title">{{ DRAFT_NOTICE }}</p>
         <p v-if="state.bannerHeadline" class="draft-headline">{{ state.bannerHeadline }}</p>
         <p v-if="state.placeholderCount > 0" class="draft-detail">
-          {{ state.placeholders.length }} details are still to be filled in ({{ state.placeholderCount }} places).
+          {{ placeholderSummary(state) }}
           Each one is highlighted in the text, like
           <mark class="draft-example"
             ><span class="draft-sr">Example placeholder: </span>{{ EXAMPLE_TOKEN }}</mark

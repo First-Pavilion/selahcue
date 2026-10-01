@@ -95,6 +95,13 @@ describe('draft treatment in the rendered page', () => {
     assert.ok(!html.includes('still to be filled in'), 'no placeholder count when none remain')
   })
 
+  test('a single placeholder reads "1 detail is ... (1 place)", not "1 details ... (1 places)"', async () => {
+    const html = await render(docFrom('1.1 Contact `{{ONLY_ONE}}`.', false))
+    assert.ok(html.includes('1 detail is still to be filled in (1 place).'))
+    assert.ok(!html.includes('1 details'))
+    assert.ok(!html.includes('1 places'))
+  })
+
   test('the draft banner goes only when the banner is removed and the last placeholder is filled', async () => {
     const draft = await render(docFrom('1.1 Contact `{{CONTACT_EMAIL}}`.', false))
     const final = await render(docFrom('1.1 Contact legal@example.com.', false))
