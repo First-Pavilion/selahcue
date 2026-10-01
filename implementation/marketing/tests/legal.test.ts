@@ -632,6 +632,87 @@ describe('cross-reference edge cases that must be handled, not misread', () => {
   })
 })
 
+/** anchor id -> the number the target is labelled with ("s-3-8" -> "3.8", "s-12" -> "12"). */
+function numberByAnchor(doc: LegalDocument): Map<string, string> {
+  const map = new Map<string, string>()
+  const walk = (s: Section): void => {
+    if (s.number) map.set(s.id, s.number)
+    for (const b of s.blocks) if (b.kind === 'paragraph' && b.anchor && b.clause) map.set(b.anchor, b.clause)
+    s.children.forEach(walk)
+  }
+  doc.parts.forEach((p) => p.sections.forEach(walk))
+  return map
+}
+
+function refsOf(doc: LegalDocument): { text: string; anchor: string }[] {
+  const out: { text: string; anchor: string }[] = []
+  const visit = (nodes: readonly Inline[]): void => {
+    for (const n of nodes) {
+      if (n.kind === 'ref') out.push({ text: n.text, anchor: n.anchor })
+      else if (n.kind === 'strong' || n.kind === 'link') visit(n.children)
+    }
+  }
+  const items = (list: readonly ListItem[]): void => {
+    for (const it of list) {
+      visit(it.inline)
+      items(it.children)
+    }
+  }
+  const walk = (s: Section): void => {
+    for (const b of s.blocks) {
+      if (b.kind === 'paragraph') visit(b.inline)
+      else if (b.kind === 'list') items(b.items)
+      else {
+        b.header.forEach(visit)
+        b.rows.forEach((r) => r.forEach(visit))
+      }
+    }
+    s.children.forEach(walk)
+  }
+  if (doc.summary) walk(doc.summary)
+  doc.parts.forEach((p) => p.sections.forEach(walk))
+  return out
+}
+
+describe("every cross-reference's displayed number is its target's number", () => {
+  for (const [name, doc] of [
+    ['privacy', privacyPolicy],
+    ['terms', termsOfService],
+  ] as const) {
+    test(`${name} (committed content)`, () => {
+      const numbers = numberByAnchor(doc)
+      const refs = refsOf(doc)
+      assert.ok(refs.length > 10)
+      assert.ok(refs.some((r) => r.text.includes('.')), 'the premise: some references name a clause or subsection (3.8)')
+      if (name === 'terms') assert.ok(refs.some((r) => /^\d\d/.test(r.text)), 'the premise: the Terms reference two-digit sections')
+      for (const r of refs) {
+        assert.equal(numbers.get(r.anchor), r.text, `"${r.text}" links to ${r.anchor}, which is labelled ${numbers.get(r.anchor)}`)
+      }
+    })
+  }
+
+  test('...and the same holds for a FRESH parse of the markdown (a parser regression cannot hide behind stale generated data)', {
+    skip: !DOCS_PRESENT && 'docs/legal is not present',
+  }, () => {
+    for (const t of TARGETS) {
+      const doc = parseLegalMarkdown(readFileSync(`${REPO_ROOT}/${t.source}`, 'utf8'), t.source)
+      const numbers = numberByAnchor(doc)
+      for (const r of refsOf(doc)) assert.equal(numbers.get(r.anchor), r.text, `${t.source}: "${r.text}" -> ${r.anchor}`)
+    }
+  })
+
+  test('two-digit sections and clauses link to themselves, not to the section that shares their first digit', () => {
+    const sections = Array.from({ length: 12 }, (_, i) => `## ${i + 1}. S${i + 1}\n\n${i + 1}.1 Clause ${i + 1}.1.\n`).join('\n')
+    const src = `# T\n\nVersion 1.0 (final, 2026-01-02).\n\n${sections}\n## 13. Last\n\n13.1 See section 12, section 12.1, section 11 and section 1.\n`
+    const doc = parseLegalMarkdown(src, 't.md')
+    const numbers = numberByAnchor(doc)
+    const refs = refsOf(doc)
+    assert.deepEqual(refs.map((r) => r.text), ['12', '12.1', '11', '1'])
+    assert.deepEqual(refs.map((r) => r.anchor), ['s-12', 's-12-1', 's-11', 's-1'])
+    for (const r of refs) assert.equal(numbers.get(r.anchor), r.text)
+  })
+})
+
 describe('a table wrapper is a tab stop only while it overflows', () => {
   test('overflow decision (one pixel of slack for sub-pixel rounding)', () => {
     assert.equal(isOverflowing({ scrollWidth: 560, clientWidth: 280 }), true)
