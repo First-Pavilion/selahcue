@@ -399,8 +399,25 @@ describe('the live-control article tells the whole truth about the emergency con
     assert.ok(!/surface-console|classList\.contains\("active"\)/.test(before), 'a surface guard now runs before the chords; the article is wrong')
     const guard = op.indexOf('getElementById("surface-console").classList.contains("active")', chordB)
     assert.ok(guard > Math.max(chordB, chordDot), 'the single-key guard must come AFTER the chords')
-    const footer = readFileSync(REPO_ROOT + 'implementation/desktop/crates/selahcue-operator/dist/index.html', 'utf8')
-    assert.ok(footer.indexOf('<footer id="emergency"') > footer.indexOf('</main>'), 'the emergency footer is no longer outside the per-surface <main>')
+  })
+
+  test('the emergency footer sits OUTSIDE every <main> (nesting-aware: the page has a nested canvas <main> too)', () => {
+    const html = readFileSync(REPO_ROOT + 'implementation/desktop/crates/selahcue-operator/dist/index.html', 'utf8')
+    const at = html.indexOf('<footer id="emergency"')
+    assert.ok(at > 0, 'the emergency footer is missing')
+    // Walk every <main> and </main> before the footer, tracking depth. Comparing against the
+    // FIRST `</main>` (the old check) is wrong: that one closes the nested canvas <main>, so a
+    // footer moved inside a surface section, still inside the outer <main>, stayed "after" it.
+    let depth = 0
+    let deepest = 0
+    for (const m of html.slice(0, at).matchAll(/<main\b|<\/main>/g)) {
+      depth += m[0] === '</main>' ? -1 : 1
+      deepest = Math.max(deepest, depth)
+    }
+    assert.ok(deepest >= 2, 'control: the walker should see the nested canvas <main> (depth 2)')
+    assert.equal(depth, 0, 'the emergency footer is inside a <main>, so it is no longer on every surface')
+    assert.ok(at > html.lastIndexOf('</main>', at), 'the emergency footer must follow the outer </main>')
+    assert.ok(html.indexOf('</body>') > at, 'the emergency footer must still be in the body')
   })
 })
 
