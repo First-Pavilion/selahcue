@@ -1571,7 +1571,7 @@ EXPECTED_MIN_CHECKS = 2065  # measured post-rebase, clean run: 2065 checks, 0 FA
 # "encrypted" render, its description text, the "not_encrypted" silent-downgrade warning render,
 # and its own control that the warning never also reads ON). Measured via an actual clean run,
 # not hand-summed.
-EXPECTED_MIN_CHECKS = 2069  # measured: 2069 checks, 0 FAIL
+EXPECTED_MIN_CHECKS = 1952  # measured: 1952 checks, 0 FAIL (17tnw2b0ntd)
 
 # 17tnw2ayetm (Sana, PR #79 re-verification): the five filter guards (TD-012, PSC-005,
 # GO-LIVE-HOVER, TIMER-START-HOVER, PP-GEN) read the LAST matching rule (CSSOM half) and the LAST
@@ -2825,7 +2825,9 @@ STUB = r"""
     }
     if (cmd === "transcript_list") {
       if (window.__trListFailOnce) { window.__trListFailOnce = false; return Promise.reject("simulated host rejection"); }
-      return Promise.resolve(TR.list.map(function(t){ return {id:t.id, label:t.label, provider:t.provider, started_at_ms:t.started_at_ms, ended_at_ms:t.ended_at_ms, segment_count:t.segment_count}; }));
+      return Promise.resolve(TR.list.map(function(t){ return {id:t.id, label:t.label, provider:t.provider, started_at_ms:t.started_at_ms, ended_at_ms:t.ended_at_ms, segment_count:t.segment_count,
+        // mirrors the real TranscriptSummaryView (17tnw2b0ntd): drives the list row's "Notes generated" pill
+        notes_generated: !!(TR.detail[t.id] && TR.detail[t.id].notes_generated)}; }));
     }
     if (cmd === "transcript_get") {
       if (window.__trGetFailOnce) { window.__trGetFailOnce = false; return Promise.reject("simulated host rejection"); }
@@ -2905,6 +2907,47 @@ STUB = r"""
         }
         return Promise.resolve(trOkResponse);
       }
+      // 17tnw2b0ntd: modes restored for the Transcripts page after the Settings-hosted Generate
+      // suite was deleted — the shared draft renderer now has ONE surface, so its empty-section,
+      // scripture-verification, degraded and quota behaviours are driven from here.
+      if (tg === "empty_sections") {
+        return Promise.resolve({ok:true, degraded:false, provider:"OpenAI", ai_generated:true,
+          ai_label:"AI-generated draft", disclosure:"disc", degraded_notice:null, transcript_id: args.id, quota:null,
+          clamp: null,
+          draft:{title:"A Quiet Sunday", summary:null,
+            sections:[
+              {heading:"Illustrations", items:["The mill closed after nineteen years."], points:[], empty_requested:false},
+              {heading:"Chapter markers", items:[], points:[], empty_requested:true}],
+            scriptures:[],
+            caveats:[{kind:"section_empty", heading:"Chapter markers"}, {kind:"section_empty", heading:"Summary"}],
+            scripture_verdicts:[]}});
+      }
+      if (tg === "scripture_marks") {
+        return Promise.resolve({ok:true, degraded:false, provider:"OpenAI", ai_generated:true,
+          ai_label:"AI-generated draft", disclosure:"disc", degraded_notice:null, transcript_id: args.id, quota:null,
+          clamp: null,
+          scripture_verification_note:"Checked against the bundled Bible text: addresses only, not the words attributed to them.",
+          draft:{title:"Marks", summary:null,
+            sections:[{heading:"Main points", items:["see Hezekiah 99:1"], points:[]}],
+            // The fabricated reference is deliberately NOT in this list — it appears ONLY in a section
+            // body ("see Hezekiah 99:1" above), so it can only reach the "Also referenced in this
+            // draft" branch (FR-125), never the Scriptures line.
+            scriptures:["John 3:16", "3Jn 4:12"],
+            caveats:[{kind:"scripture_unverified", reference:"Hezekiah 99:1"}],
+            scripture_verdicts:[{reference:"John 3:16", verified:true}, {reference:"3Jn 4:12", verified:true},
+              {reference:"Hezekiah 99:1", verified:false}]}});
+      }
+      if (tg === "degraded") {
+        return Promise.resolve({ok:true, degraded:true, provider:"Local (offline)", ai_generated:false,
+          ai_label:"AI-generated draft", disclosure:null, transcript_id: args.id, quota:null, clamp: null,
+          degraded_notice:"The AI provider could not be reached, so this is an offline outline built from your transcript — not AI-generated notes. The headings are placeholders for you to fill in. Try again when you are back online.",
+          draft:{title:"Offline outline", summary:null,
+            sections:[{heading:"Outline", items:["point one"], points:[]},
+              {heading:"Prayer points", items:[], points:[], empty_requested:true}],
+            scriptures:[], caveats:[{kind:"section_empty", heading:"Prayer points"}]}});
+      }
+      if (tg === "quota_exceeded")
+        return Promise.resolve({ok:false, error:"quota_exceeded", message:"monthly note-generation quota exceeded", clamp:null});
       if (tg === "transport") return Promise.reject("network down");
       if (tg === "regenerate_pending" || tg === "regenerate_pending_degraded") {
         // FR-129 (86akgqdx8): mirrors the PP `regenerate_pending`/`regenerate_pending_degraded`
@@ -6243,7 +6286,24 @@ DRIVER = r"""
       var trMetaC = _trCr(_trRgba(getComputedStyle(trMetaEl).color), _trRgba(getComputedStyle(el("tr-list").querySelector(".tr-card")).backgroundColor));
       ok(trMetaC >= 4.5, "TR: card meta text clears AA-NORMAL on its card ground (" + _trF(trMetaC) + ":1)");
 
-      // ⌘8 (menu-order ⌘1–8, raised from ⌘1–7 by this ticket): away then back.
+      // Shortcuts overlay + handler bound must agree with the number of digit-eligible menu items
+      // (derived from the DOM, not hard-coded): 17tnw2b0ntd removed the ⌘8 item.
+      var scDigitN = Array.prototype.filter.call(document.querySelectorAll("#app-menu .nav-item"), function (it) {
+        return it.dataset.surface && it.getAttribute("aria-disabled") !== "true" && !it.dataset.nodigit; }).length;
+      var scRangeRow = Array.prototype.filter.call(document.querySelectorAll("#shortcuts .sc-row"), function (r) {
+        return /Jump to a section/.test(r.textContent); })[0];
+      var scKbds = scRangeRow ? scRangeRow.querySelectorAll("kbd") : [];
+      ok(scDigitN === 7 && scKbds.length === 2 && scKbds[1].textContent === String(scDigitN),
+         "TR D2: the Shortcuts overlay's range (⌘1–" + (scKbds[1] && scKbds[1].textContent) + ") equals the number of digit-eligible menu items (" + scDigitN + ")");
+      var scSetRow = Array.prototype.filter.call(document.querySelectorAll("#gn-shortcuts-list .set-row"), function (r) {
+        return /Jump to a section/.test(r.textContent); });
+      ok(scSetRow.length === 0 || /7/.test(scSetRow[0].textContent) && !/8/.test(scSetRow[0].textContent),
+         "TR D2: Settings > General's shortcuts list (copied from the overlay) no longer says ⌘1–8");
+      var scBefore8 = el("surface-plan").classList.contains("active");
+      document.dispatchEvent(new KeyboardEvent("keydown", {key:"8", metaKey:true, bubbles:true}));
+      ok(el("surface-plan").classList.contains("active") === scBefore8,
+         "TR D2: ⌘8 is no longer a navigation chord");
+      // ⌘7 (17tnw2b0ntd D2: Transcript & Notes opens Transcripts; the ⌘8 item was removed): away then back.
       document.querySelector('.nav-item[data-surface="console"]').click();
       ok(!el("surface-transcripts").classList.contains("active"), "TR (setup): navigated away from Transcripts");
       // The actual regression guard (17tnw2axptd Cody/Sana review, finding O1): before the fix,
@@ -6258,9 +6318,34 @@ DRIVER = r"""
       ok(getComputedStyle(el("surface-transcripts")).display === "none",
          "TR: the surface is actually hidden by COMPUTED display once inactive (not just missing "
          + ".active) — got display=" + getComputedStyle(el("surface-transcripts")).display);
-      document.dispatchEvent(new KeyboardEvent("keydown", {key:"8", metaKey:true, bubbles:true}));
-      ok(el("surface-transcripts").classList.contains("active"), "TR: ⌘8 routes to Transcripts (menu-order ⌘1–8 map)");
+      document.dispatchEvent(new KeyboardEvent("keydown", {key:"7", metaKey:true, bubbles:true}));
+      ok(el("surface-transcripts").classList.contains("active"), "TR: ⌘7 routes to Transcripts (17tnw2b0ntd D2 — Transcript & Notes now opens the Transcripts page)");
+      var trNavCur = document.querySelector('.nav-item[data-surface="transcripts"]');
+      ok(trNavCur && trNavCur.getAttribute("aria-current") === "page" && trNavCur.querySelector(".nav-key").textContent === "⌘7",
+         "TR D2: the ⌘7 'Transcript & Notes' item is highlighted (aria-current=page) while Transcripts is open");
+      ok(document.querySelectorAll('.nav-item[data-surface="transcripts"]').length === 1 && !document.querySelector('.nav-item[data-focus="transcript"]'),
+         "TR D2: exactly one nav item routes to Transcripts; the old ⌘8 item and data-focus=transcript are gone");
+      var trKeys = Array.prototype.map.call(document.querySelectorAll("#app-menu .nav-item .nav-key"), function(k){ return k.textContent; });
+      ok(trKeys.indexOf("⌘8") === -1 && trKeys.filter(function(k, i){ return trKeys.indexOf(k) !== i; }).length === 0,
+         "TR D2: no ⌘8 badge remains and no two menu items share a shortcut (got " + trKeys.join(",") + ")");
       await waitFor(function(){ return el("tr-list").querySelectorAll(".tr-card").length >= 3; });
+
+      // 17tnw2b0ntd: list-row status pills (Figma 1128:2). "In progress" for the never-ended
+      // fixture; "Notes generated" only when the ROW says so (the real TranscriptSummaryView now
+      // carries notes_generated). Driven by flipping the fixture and re-activating the surface.
+      var trPillRow = function (id) { return el("tr-list").querySelector('.tr-card[data-id="' + id + '"]'); };
+      ok(!!trPillRow(2).querySelector(".tr-notes-badge") && /In progress/.test(trPillRow(2).textContent) && !trPillRow(2).querySelector(".tr-notes-on"),
+         "TR list: a transcript still being recorded shows an 'In progress' pill");
+      ok(!trPillRow(1).querySelector(".tr-notes-on"), "TR list: no 'Notes generated' pill while the row has no draft");
+      var trNg0 = window.__TR.detail[1].notes_generated;
+      window.__TR.detail[1].notes_generated = true;
+      window.trActivate();
+      await waitFor(function(){ return !!trPillRow(1) && !!trPillRow(1).querySelector(".tr-notes-on"); });
+      ok(!!trPillRow(1).querySelector(".tr-notes-on") && /Notes generated/.test(trPillRow(1).textContent),
+         "TR list: a row flagged notes_generated shows the green 'Notes generated' pill");
+      window.__TR.detail[1].notes_generated = trNg0;
+      window.trActivate();
+      await waitFor(function(){ return !!trPillRow(1) && !trPillRow(1).querySelector(".tr-notes-on"); });
 
       // Selecting a transcript shows its FULL stored text (86akcffvt AC2) — every segment, not a
       // tail or a sample — plus the honest notes-generated status.
@@ -6282,6 +6367,45 @@ DRIVER = r"""
       var trLineEl = el("tr-detail-log").querySelector(".tr-line-txt");
       var trLineC = _trCr(_trRgba(getComputedStyle(trLineEl).color), _trRgba(getComputedStyle(el("tr-detail-log")).backgroundColor));
       ok(trLineC >= 4.5, "TR: transcript line text clears AA-NORMAL on the log's ground (" + _trF(trLineC) + ":1)");
+
+      // === 17tnw2b0ntd (TRANSCRIPTS-2.0-HANDOFF.md §11): scroll model + narrow layout, asserted on
+      // COMPUTED values (not class names; the `hidden`-attr-vs-CSS-display trap). The headless
+      // window is narrower than 900px, so the narrow rules are live here; the wide values
+      // (1180px cap, 28px padding) are pinned through the shipped base rules (__cssRule). ===
+      var trDet = el("tr-detail-view"), trHead = document.querySelector(".tr-detail-head"), trLogEl = el("tr-detail-log");
+      var trDetCs = getComputedStyle(trDet), trHeadCs = getComputedStyle(trHead), trLogCs = getComputedStyle(trLogEl);
+      ok(trDetCs.overflowY === "auto", "TR §11: .tr-detail is the outer scroll container (computed overflow-y=auto, got " + trDetCs.overflowY + ")");
+      ok(trHeadCs.position === "sticky" && trHeadCs.top === "0px", "TR §11: the detail header is sticky at top:0 (got " + trHeadCs.position + "/" + trHeadCs.top + ")");
+      ok(_trRgba(trHeadCs.backgroundColor)[3] === 1 || _trRgba(trHeadCs.backgroundColor).length < 4, "TR §11: the sticky header background is opaque");
+      ok(trLogCs.flexGrow === "0" && trLogCs.minHeight === "220px" && trLogCs.overflowY === "auto",
+         "TR §11: .tr-log is capped, not viewport-filling (computed flex-grow " + trLogCs.flexGrow + ", min-height " + trLogCs.minHeight + ")");
+      ok(parseFloat(trLogCs.maxHeight) <= 480 + 0.5 && parseFloat(trLogCs.maxHeight) > 0, "TR §11: .tr-log max-height is bounded (got " + trLogCs.maxHeight + ")");
+      ok(window.innerWidth <= 900 && trLogCs.paddingLeft === "16px" && getComputedStyle(el("tr-gen-result").parentNode).paddingLeft === "16px" &&
+         trHeadCs.paddingLeft === "16px",
+         "TR §11.3: at a window <= 900px the regions use 16px side padding (computed; innerWidth " + window.innerWidth + ")");
+      ok(Math.abs(parseFloat(trLogCs.maxHeight) - window.innerHeight * 0.34) < 1.5, "TR §11.3: the narrow log cap is 34vh (got " + trLogCs.maxHeight + ")");
+      var trColEls = [trHead, trLogEl, document.querySelector(".tr-panel"), el("tr-gen-result").parentNode];
+      ok(trColEls.every(function(e){ var c = getComputedStyle(e); return e && c.maxWidth === "1180px" && c.boxSizing === "border-box"; }),
+         "TR §11.2: every stacked detail region shares the 1180px max-width content column (computed)");
+      ok(trDet.scrollWidth <= trDet.clientWidth + 1,
+         "TR §11.3: no horizontal scroll at the narrow width (detail " + trDet.scrollWidth + "/" + trDet.clientWidth + ")");
+      // Tall notes: a draft taller than the window must be reachable by scrolling .tr-detail.
+      var trGenRes = el("tr-gen-result"), trTall = document.createElement("div");
+      trTall.id = "tr-tall-probe"; trTall.style.height = "2400px"; trTall.textContent = "tall notes probe";
+      var trTallEnd = document.createElement("button"); trTallEnd.id = "tr-tall-end"; trTallEnd.textContent = "end";
+      trGenRes.hidden = false; trGenRes.appendChild(trTall); trGenRes.appendChild(trTallEnd);
+      ok(trDet.scrollHeight > trDet.clientHeight + 500, "TR §11.1: with tall notes the detail view overflows its box (scrollable), scrollHeight " + trDet.scrollHeight + " > clientHeight " + trDet.clientHeight);
+      var trLogH0 = trLogEl.getBoundingClientRect().height;
+      ok(trLogH0 >= 200, "TR §11.1: the log is NOT starved to zero by tall notes below it (height " + trLogH0 + ")");
+      trDet.scrollTop = trDet.scrollHeight;
+      var trEndR = trTallEnd.getBoundingClientRect(), trDetR = trDet.getBoundingClientRect();
+      ok(trEndR.bottom <= trDetR.bottom + 1 && trEndR.top >= trDetR.top, "TR §11.1: the LAST control of a tall notes panel is reachable by scrolling .tr-detail");
+      trDet.scrollTop = 0;
+      var trHeadR = trHead.getBoundingClientRect();
+      ok(trHeadR.top >= trDetR.top - 1 && trHeadR.bottom > trDetR.top, "TR §11.1: scrolled back to top, the header is visible");
+      trDet.scrollTop = trDet.scrollHeight;
+      ok(trHead.getBoundingClientRect().top <= trDet.getBoundingClientRect().top + 1, "TR §11.1: the sticky header stays pinned while the notes scroll under it");
+      trTall.remove(); trTallEnd.remove(); trGenRes.hidden = true; trDet.scrollTop = 0;
 
       // Back returns to the list, focus lands on a stable element (WCAG 2.4.3) — the card that
       // opened this transcript is gone from view, so focus must not fall to <body>.
@@ -6748,6 +6872,9 @@ DRIVER = r"""
       // VALUE does not).
       var trCall = function (cmd) { return window.__calls.filter(function (c) { return c.cmd === cmd; }); };
       var trLast = function (cmd) { var a = trCall(cmd); return a.length ? a[a.length - 1] : null; };
+      // The visible generate entry point: "Regenerate" (inside the Sermon-notes-ready card) once a draft is
+      // rendered, else the primary Generate button (17tnw2b0ntd, Figma 1132:2).
+      var trEntry = function () { return document.getElementById("tr-regenerate") || document.getElementById("tr-generate"); };
 
       document.querySelector('.nav-item[data-surface="transcripts"]').click();
       await waitFor(function () { return el("tr-list").querySelectorAll(".tr-card").length >= 3; });
@@ -6760,7 +6887,7 @@ DRIVER = r"""
       ok(!!el("tr-generate") && getComputedStyle(el("tr-generate")).display !== "none",
          "TR generate: the Generate Sermon Notes button is present on the transcript detail view");
       var trGenBefore = trCall("transcript_generate_notes").length;
-      el("tr-generate").click();
+      trEntry().click();
       await sleep(40);
       var trPreview = el("tr-gen-preview");
       ok(!!trPreview && trPreview.hidden === false, "TR F-5: Generate opens the review step instead of sending");
@@ -6806,7 +6933,7 @@ DRIVER = r"""
       // ProvidersConfig consent gate (state.providers in main.rs), proven here by driving the
       // ACTUAL from-history UI rather than asserting the shared Rust function in isolation.
       ok(!window.__pp.cloud_notes_consent, "TR generate consent (premise): consent defaults to OFF, untouched by this point in the script");
-      el("tr-generate").click();
+      trEntry().click();
       await sleep(40);
       el("tr-gen-preview-confirm").click();
       await sleep(60);
@@ -6826,7 +6953,7 @@ DRIVER = r"""
       // command), and the notes badge flips immediately.
       window.__pp.cloud_notes_consent = true;
       window.__trGen = "ok";
-      el("tr-generate").click();
+      trEntry().click();
       await sleep(40);
       el("tr-gen-preview-confirm").click();
       await sleep(60);
@@ -6842,6 +6969,75 @@ DRIVER = r"""
       ok(el("tr-detail-notes").classList.contains("tr-notes-on") && /Notes generated/.test(el("tr-detail-notes").textContent),
          "TR generate: a successful generate flips the notes badge immediately, without waiting for a reopen");
 
+      // === 17tnw2b0ntd (Figma 1132:2 / 349:124 "Sermon notes ready"; 1133:36 generating) ===
+      var trReadyTitle = trOkResult.querySelector(".tr-ready-title"), trReadyIco = trOkResult.querySelector(".tr-ready-ico");
+      ok(!!trReadyTitle && /^Sermon notes ready$/.test(trReadyTitle.textContent) && getComputedStyle(trReadyTitle).display !== "none" &&
+         !!trReadyIco && getComputedStyle(trReadyIco).display !== "none",
+         "TR ready card: a saved draft shows a 'Sermon notes ready' header with its check icon (computed-visible)");
+      var trReadyBadge = trOkResult.querySelector(".pp-gen-ai-label");
+      ok(!!trReadyBadge && getComputedStyle(trReadyBadge).display !== "none" && /AI-generated draft/i.test(trReadyBadge.textContent),
+         "TR ready card: the AI-GENERATED DRAFT badge is shown on the card");
+      var trRegenBtn = el("tr-regenerate");
+      ok(!!trRegenBtn && /^Regenerate$/.test(trRegenBtn.textContent) && trRegenBtn.disabled === false && getComputedStyle(trRegenBtn).display !== "none" &&
+         /^Edit draft$/.test(el("tr-gen-edit").textContent),
+         "TR ready card: 'Regenerate' and 'Edit draft' buttons are present and Regenerate is enabled");
+      ok(getComputedStyle(el("tr-generate")).display === "none",
+         "TR ready card: the primary 'Generate Sermon Notes' button no longer sits above an existing draft (computed display)");
+      // Quinn D7: after an IN-SESSION generate the next consent step already knows a draft exists.
+      var trD7Before = trCall("transcript_generate_notes").length;
+      trRegenBtn.click();
+      await sleep(40);
+      ok(!!el("tr-gen-preview") && !el("tr-gen-preview").hidden && /You already have sermon notes saved/.test(el("tr-gen-preview").textContent),
+         "TR D7: Regenerate right after an in-session Generate shows the 'You already have sermon notes saved…' consent line");
+      ok(el("tr-regenerate").disabled === true, "TR ready card: Regenerate is disabled while its consent preview is open (no double-fire)");
+      // D8 order B (Regenerate preview open, then Edit): Edit draft is disabled, and even a forced click is ignored.
+      ok(el("tr-gen-edit").disabled === true, "TR D8 (order B): 'Edit draft' is disabled while the Regenerate preview is open");
+      el("tr-gen-edit").disabled = false; el("tr-gen-edit").click(); await sleep(20); el("tr-gen-edit").disabled = true;
+      ok(!document.querySelector(".pp-gen-edit-form"), "TR D8 (order B): a forced click on Edit draft with the preview open opens no edit form (unsaved typing could not be lost)");
+      ok(trCall("transcript_generate_notes").length === trD7Before, "TR D7: opening the Regenerate preview sends nothing");
+      el("tr-gen-preview-cancel").click();
+      ok(document.activeElement === el("tr-regenerate") && el("tr-regenerate").disabled === false,
+         "TR ready card: Cancel returns focus to Regenerate and re-enables it");
+      ok(el("tr-gen-edit").disabled === false, "TR D8 (order B): 'Edit draft' is enabled again after Cancel");
+      // Quinn D8: no Regenerate (so no silent discard of unsaved edits) while the edit form is open.
+      el("tr-gen-edit").click();
+      await sleep(30);
+      ok(!!document.querySelector(".pp-gen-edit-form") && (!el("tr-regenerate") || el("tr-regenerate").disabled === true) &&
+         getComputedStyle(el("tr-generate")).display === "none",
+         "TR D8: while the edit form is open there is no enabled Regenerate and no primary Generate — an unsaved edit cannot be replaced by a Confirm");
+      el("tr-gen-edit-cancel").click();
+      await sleep(30);
+      ok(!!el("tr-regenerate") && el("tr-regenerate").disabled === false, "TR D8: Regenerate is back once editing ends");
+      // Figma 1133:36 generating state: heading + duration line + polite live region, aria-busy kept,
+      // no invented step list and NO Cancel (the command persists its draft on completion).
+      window.__trGenDeferred = true;
+      el("tr-regenerate").click();
+      await sleep(40);
+      el("tr-gen-preview-confirm").click();
+      await sleep(40);
+      var trProg = el("tr-gen-progress");
+      ok(!!trProg && !trProg.hidden && getComputedStyle(trProg).display !== "none" && /Generating sermon notes…/.test(trProg.textContent) &&
+         /This usually takes 10–20 seconds\./.test(trProg.textContent),
+         "TR generating: a visible 'Generating sermon notes…' status with the expected-duration line appears while the call is in flight");
+      ok(trProg.getAttribute("aria-live") === "polite" && trProg.getAttribute("role") === "status" && /Generating sermon notes/.test(el("tr-gen-live").textContent) &&
+         el("tr-gen").getAttribute("aria-busy") === "true" && el("tr-regenerate").getAttribute("aria-busy") === "true",
+         "TR generating: it is a polite live region, a persistent live-region message is set, and aria-busy is kept on the card and the control");
+      // D8 order A (Confirm first, then Edit while "Generating…" shows): Edit draft is disabled in flight, and
+      // even a forced click is ignored, so nothing typed can be replaced when the result arrives.
+      ok(el("tr-gen-edit").disabled === true, "TR D8 (order A): 'Edit draft' is disabled while the generation is in flight");
+      el("tr-gen-edit").disabled = false; el("tr-gen-edit").click(); await sleep(20); el("tr-gen-edit").disabled = true;
+      ok(!document.querySelector(".pp-gen-edit-form"), "TR D8 (order A): a forced click on Edit draft in flight opens no edit form");
+      ok(!trProg.querySelector("button") && !trProg.querySelector("li") && !/Extracting|Drafting|Transcript sent/.test(trProg.textContent),
+         "TR generating: NO Cancel and NO invented step list (nothing reports progress; the draft is persisted on completion)");
+      window.__trGenResolveDeferred();
+      await sleep(60);
+      ok(el("tr-gen-progress").hidden === true && getComputedStyle(el("tr-gen-progress")).display === "none" && !el("tr-gen").hasAttribute("aria-busy") &&
+         /Sermon notes are ready/.test(el("tr-gen-live").textContent),
+         "TR generating: the status goes away on completion (computed display) and the live region announces the result");
+      ok(!!el("tr-gen-edit") && el("tr-gen-edit").disabled === false && !!el("tr-regenerate") && el("tr-regenerate").disabled === false,
+         "TR D8 (order A): 'Edit draft' and Regenerate are enabled again after the generation completes");
+      window.__trGenDeferred = false;
+
       // === FR-129 (86akgqdx8) on the Transcripts workspace: the SAME regenerate-with-retention
       // contract PP REGEN-* proves above, exercised through THIS surface's own wiring
       // (transcript_generate_notes / confirm+discard_sermon_note_regeneration, `tr-` prefixed
@@ -6853,7 +7049,7 @@ DRIVER = r"""
       // discard wiring actually works, and that a degraded regenerate cannot downgrade an
       // already AI-generated draft here either. ================================================
       window.__trGen = "regenerate_pending";
-      el("tr-generate").click();
+      trEntry().click();
       await sleep(40);
       el("tr-gen-preview-confirm").click();
       await sleep(60);
@@ -6885,7 +7081,7 @@ DRIVER = r"""
 
       // Confirm REPLACES the saved draft — single prior version, so the replaced one is gone.
       window.__trGen = "regenerate_pending";
-      el("tr-generate").click();
+      trEntry().click();
       await sleep(40);
       el("tr-gen-preview-confirm").click();
       await sleep(60);
@@ -6903,7 +7099,7 @@ DRIVER = r"""
       // already AI-generated draft — "once AI-generated, always AI-generated" holds on this
       // surface too, and the refused pending draft remains staged rather than vanishing.
       window.__trGen = "regenerate_pending_degraded";
-      el("tr-generate").click();
+      trEntry().click();
       await sleep(40);
       el("tr-gen-preview-confirm").click();
       await sleep(60);
@@ -6947,7 +7143,7 @@ DRIVER = r"""
       window.__pp.cloud_notes_consent = false;
       window.__trGen = "regenerate_pending";
       var trRegenConsentGenCallsBefore = trCall("transcript_generate_notes").length;
-      el("tr-generate").click();
+      trEntry().click();
       await sleep(40);
       el("tr-gen-preview-confirm").click();
       await sleep(60);
@@ -6968,7 +7164,7 @@ DRIVER = r"""
       window.__pp.cloud_notes_consent = true;
 
       window.__trGen = "transport";
-      el("tr-generate").click();
+      trEntry().click();
       await sleep(40);
       el("tr-gen-preview-confirm").click();
       await sleep(60);
@@ -6980,6 +7176,92 @@ DRIVER = r"""
          "TR REGEN-6 (AC): a transport failure during regenerate never loses the prior " +
          "(pre-regenerate) draft, and stages nothing");
 
+      // === 17tnw2b0ntd: behaviours whose ONLY coverage lived in the deleted Settings suite, re-driven
+      // against the Transcripts page (the one surface that now renders them) ===
+      var trGenOnce = async function (mode) {
+        window.__trGen = mode;
+        trEntry().click();
+        await sleep(40);
+        el("tr-gen-preview-confirm").click();
+        await sleep(60);
+        return el("tr-gen-result");
+      };
+      // 86akc0tua: requested-but-empty sections
+      var trEmptyRes = await trGenOnce("empty_sections");
+      var trEmptyLines = trEmptyRes.querySelectorAll(".pp-gen-empty");
+      ok(trEmptyLines.length >= 1 && Array.prototype.every.call(trEmptyLines, function (n) { return getComputedStyle(n).display !== "none"; }) &&
+         /Included in the request — nothing came back\./.test(trEmptyRes.textContent),
+         "TR 86akc0tua: a requested-but-empty section renders the exact empty-requested line, computed-visible");
+      var trExplainer = trEmptyRes.querySelector(".pp-gen-empty-explainer");
+      ok(!!trExplainer && trExplainer.getAttribute("role") === "note" && /Generating again may give a different result/.test(trExplainer.textContent),
+         "TR 86akc0tua: the once-per-draft explainer renders, role=note, exact wording");
+      ok(/The mill closed after nineteen years\./.test(trEmptyRes.textContent),
+         "TR 86akc0tua (positive control): a populated section still renders its content");
+      ok(!/Notable quotations/.test(trEmptyRes.textContent),
+         "TR 86akc0tua: a section the operator never enabled is absent entirely");
+      // 86akby820: scripture verification marks + note
+      var trMarkRes = await trGenOnce("scripture_marks");
+      ok(trMarkRes.querySelectorAll(".pp-gen-scr-verified").length >= 2,
+         "TR 86akby820: verified references (including the abbreviated '3Jn 4:12') carry an explicit verified mark");
+      var trAlso = Array.prototype.filter.call(trMarkRes.querySelectorAll(".pp-gen-scriptures"), function (p) {
+        return /Also referenced in this draft/.test(p.textContent); })[0];
+      ok(!!trAlso && /Hezekiah 99:1/.test(trAlso.textContent) && !!trAlso.querySelector(".pp-gen-scr-unverified") &&
+         getComputedStyle(trAlso).display !== "none",
+         "TR 86akby820 (FR-125): a fabricated reference that appears ONLY in the note text is flagged under 'Also referenced in this draft' (computed-visible)");
+      var trScrLine = Array.prototype.filter.call(trMarkRes.querySelectorAll(".pp-gen-scriptures"), function (p) {
+        return /^Scriptures:/.test(p.textContent); })[0];
+      ok(!!trScrLine && !/Hezekiah/.test(trScrLine.textContent),
+         "TR 86akby820 (premise): the fixture's bad reference is NOT in the Scriptures line, so the check above can only be satisfied by the 'Also referenced' branch");
+      ok(/addresses only/.test(trMarkRes.textContent),
+         "TR 86akby820: the verification-scope note renders on a FRESH generate (scripture_verification_note is read from the response)");
+      // FR-135: degraded draft
+      var trDegRes = await trGenOnce("degraded");
+      ok(/Local draft/.test(trDegRes.textContent) && !trDegRes.querySelector(".pp-gen-ai-label") && !trDegRes.querySelector(".pp-gen-disclosure"),
+         "TR FR-135: a degraded draft is badged 'Local draft' and is NOT labelled AI-generated (no fabrication warning either)");
+      ok(/not AI-generated notes/.test(trDegRes.textContent), "TR FR-135: the degraded notice says IN WORDS that this is not the AI draft asked for");
+      ok(trDegRes.querySelectorAll(".pp-gen-empty").length === 0 && !trDegRes.querySelector(".pp-gen-empty-explainer"),
+         "TR 86akc0tua: a degraded draft renders no empty-requested lines and no explainer");
+      // quota refusal label (neutral — the allowance period is not asserted anywhere in the UI)
+      var trQuotaRes = await trGenOnce("quota_exceeded");
+      ok(trQuotaRes.getAttribute("role") === "alert" && /Generation limit reached/.test(trQuotaRes.textContent) &&
+         !/month|week|daily|annual/i.test(trQuotaRes.textContent),
+         "TR: quota_exceeded surfaces 'Generation limit reached' (role=alert) and, even when the backend sends its REAL monthly text (selahcue-core providers.rs), names no allowance period (D7)");
+      // generic failure alert (transport) and nested outline sub-points (FR-122), both restored
+      var trFailRes = await trGenOnce("transport");
+      ok(trFailRes.getAttribute("role") === "alert" && /Couldn.t generate notes/.test(trFailRes.textContent),
+         "TR: a transport failure surfaces 'Couldn’t generate notes' (role=alert)");
+      var trOkRes = await trGenOnce("ok");
+      var trSub = trOkRes.querySelector(".pp-gen-sublist");
+      ok(!!trSub && /That is the point of this ticket/.test(trSub.textContent) && !!trSub.closest("li"),
+         "TR FR-122: outline sub-points render as a NESTED list inside their parent point, not flattened");
+      // PP SN-5 (restored, Cody's condition): editing ONLY the title must send the sub-points the
+      // operator did not touch UNCHANGED — not dropped, not blanked.
+      el("tr-gen-edit").click();
+      await sleep(30);
+      el("tr-edit-title").value = "From-History Sermon (sub-point probe)";
+      var trSubSaves0 = window.__calls.filter(function (c) { return c.cmd === "update_sermon_note_draft"; }).length;
+      el("tr-gen-save").click();
+      await waitFor(function () { return window.__calls.filter(function (c) { return c.cmd === "update_sermon_note_draft"; }).length > trSubSaves0; });
+      var trSubSave = window.__calls.filter(function (c) { return c.cmd === "update_sermon_note_draft"; }).slice(-1)[0];
+      ok(!!trSubSave && JSON.stringify(trSubSave.args.sections[0].points[0].sub_points) === JSON.stringify(["That is the point of this ticket"]),
+         "TR SN-5: sub-points the operator did NOT touch are sent UNCHANGED on a title-only save (got " +
+         JSON.stringify(trSubSave && trSubSave.args.sections[0].points[0].sub_points) + ")");
+      await sleep(40);
+      // consent-off: the operator gets a route to the consent switch (Settings no longer offers Generate)
+      window.__pp.cloud_notes_consent = false;
+      var trConsentRes = await trGenOnce("ok");
+      var trToSettings = el("tr-open-settings");
+      ok(trConsentRes.getAttribute("role") === "alert" && !!trToSettings && trToSettings.tagName === "BUTTON",
+         "TR: consent_required offers a one-click 'Open Settings' route, not a dead end");
+      trToSettings.click();
+      ok(el("surface-settings").classList.contains("active"), "TR: 'Open Settings' actually opens Settings");
+      document.querySelector('.nav-item[data-surface="transcripts"]').click();
+      await sleep(60);
+      window.__pp.cloud_notes_consent = true;
+      // return to transcript 1's detail for the checks that follow
+      await waitFor(function () { return el("tr-list").querySelectorAll(".tr-card").length >= 1; });
+      el('tr-list').querySelector('.tr-card[data-id="1"] .tr-card-open').click();
+      await waitFor(function () { return !el("tr-detail-view").hidden; });
       window.__trGen = "ok"; // restore for any later reads
 
       // (f) Switching to a DIFFERENT transcript resets all Generate UI/state — no stale result
@@ -7011,7 +7293,7 @@ DRIVER = r"""
       // HAS its own guard (Sana security review, re-check: this exact gap in an earlier version
       // of this test). Prove the disabled attribute itself blocks the click first...
       var trInProgressCallsBefore = trCall("transcript_generate_notes").length;
-      el("tr-generate").click();
+      trEntry().click();
       await sleep(30);
       ok(el("tr-gen-preview").hidden === true,
          "TR generate (Sana F1): clicking the disabled button never opens the review step");
@@ -7021,7 +7303,7 @@ DRIVER = r"""
       // by clearing the attribute (simulating a stale/replayed event bypassing it) and clicking
       // again — real defense in depth, not two assertions of the same DOM fact.
       el("tr-generate").disabled = false;
-      el("tr-generate").click();
+      trEntry().click();
       await sleep(30);
       ok(el("tr-gen-preview").hidden === true && trCall("transcript_generate_notes").length === trInProgressCallsBefore,
          "TR generate (Sana F1, true defense in depth): with the disabled attribute forcibly cleared, onGenerate's OWN generateAllowed check still refuses — the backend refusal is not the only thing standing between a bypass and a call");
@@ -7048,7 +7330,7 @@ DRIVER = r"""
       var trOversizeFull = window.__TR.detail[6].segments.map(function (s) { return s.text; }).join("\n");
       ok(trOversizeFull.length === 454499,
          "TR generate oversize (premise): the fixture's complete text is deterministically 454,499 characters, well past the 400,000 clamp");
-      el("tr-generate").click();
+      trEntry().click();
       await sleep(40);
       var trOversizePreview = el("tr-gen-preview");
       ok(!!trOversizePreview && trOversizePreview.hidden === false, "TR generate oversize: the review step still opens for an over-the-clamp transcript");
@@ -7094,11 +7376,13 @@ DRIVER = r"""
       el("tr-detail-back").click();
       el('tr-list').querySelector('.tr-card[data-id="1"] .tr-card-open').click();
       await waitFor(function () { return window.__trRenderedRowCount && window.__trRenderedRowCount() > 0; });
-      ok(getComputedStyle(el("tr-generate")).display !== "none",
-         "TR generate (Cody, computed display): the Generate button is actually painted when not hidden");
+      // 17tnw2b0ntd (Figma 1132:2): with a persisted draft the primary Generate is replaced by the
+      // Sermon-notes-ready card's Regenerate — assert COMPUTED display for both sides.
+      ok(!!el("tr-regenerate") && getComputedStyle(el("tr-regenerate")).display !== "none" && getComputedStyle(el("tr-generate")).display === "none",
+         "TR generate (Cody, computed display): with a saved draft, Regenerate is painted and the primary Generate button is not");
       ok(getComputedStyle(el("tr-gen-result")).display !== "none" && /From-History Sermon/.test(el("tr-gen-result").textContent),
          "TR generate + 86akgqdxr (computed display): reopening a transcript with an earlier successful generate shows its PERSISTED draft painted immediately — this is AC2, not a regression of the M-1 fix (see the empty-state checks below for the still-unpainted case)");
-      el("tr-generate").click();
+      trEntry().click();
       await sleep(30);
       ok(getComputedStyle(el("tr-generate")).display === "none",
          "TR generate (Cody, computed display): the Generate button is genuinely unpainted while its own review step is open");
@@ -7113,7 +7397,7 @@ DRIVER = r"""
       // shown the new draft, and the saved one will not change unless they choose to use it.
       ok(el("tr-detail-notes").classList.contains("tr-notes-on"),
          "TR generate F2 (premise): transcript 1 already shows Notes generated from the earlier check");
-      el("tr-generate").click();
+      trEntry().click();
       await sleep(30);
       var trOverwriteNotice = el("tr-gen-preview").querySelector(".pp-gen-preview-overwrite");
       ok(!!trOverwriteNotice && getComputedStyle(trOverwriteNotice).display !== "none" &&
@@ -7130,7 +7414,7 @@ DRIVER = r"""
       // the switch to transcript 2 happens WHILE transcript 1's call is still in flight, then
       // resolve it and confirm nothing from transcript 1 reached transcript 2's now-open view.
       window.__trGenDeferred = true;
-      el("tr-generate").click();
+      trEntry().click();
       await sleep(30);
       el("tr-gen-preview-confirm").click();
       await sleep(30);
@@ -7166,8 +7450,8 @@ DRIVER = r"""
       window.__trLimitsDeferred = true;
       window.__trLimitsPendingResolvers = [];
       var trOpenGenPreviewCountBefore = window.__trOpenGenPreviewCallCount;
-      el("tr-generate").click();
-      el("tr-generate").click();
+      trEntry().click();
+      trEntry().click();
       await sleep(20);
       ok(window.__trLimitsPendingResolvers.length === 2,
          "TR generate (Vera PERF-2, premise): two rapid clicks really did issue two concurrent note_generation_limits calls — onGenerate has no synchronous guard against this, which is exactly why the resolution-time check matters");
@@ -7267,6 +7551,14 @@ DRIVER = r"""
          "TR notes: Edit swaps the view for the edit form (Edit itself is gone while editing)");
       var trTitleInput = document.getElementById("tr-edit-title");
       ok(!!trTitleInput && trTitleInput.value === "Fixture Sermon", "TR notes: the edit form is pre-filled with the real saved title");
+      // FR-123/FR-128 (restored from the deleted Settings suite, PP SN-3): the AI label and the
+      // fabrication disclosure stay computed-visible WHILE EDITING — drawn from the draft state,
+      // not from anything the edit form itself could omit.
+      var trEditLabel = el("tr-gen-result").querySelector(".pp-gen-ai-label"), trEditDisc = el("tr-gen-result").querySelector(".pp-gen-disclosure");
+      ok(!!trEditLabel && getComputedStyle(trEditLabel).display !== "none" && /AI-generated draft/.test(trEditLabel.textContent),
+         "TR SN-3 (FR-123): the AI-generated label is STILL visibly rendered while the edit form is open");
+      ok(!!trEditDisc && getComputedStyle(trEditDisc).display !== "none" && /invent/i.test(trEditDisc.textContent),
+         "TR SN-3 (FR-128): the fabrication disclosure is STILL visibly rendered while the edit form is open");
       trTitleInput.value = "Edited Fixture Sermon";
       var trSaveCallsBefore = window.__calls.filter(function (c) { return c.cmd === "update_sermon_note_draft"; }).length;
       document.getElementById("tr-gen-save").click();
@@ -7278,6 +7570,13 @@ DRIVER = r"""
       ok(!document.querySelector(".pp-gen-edit-form") && /Edited Fixture Sermon/.test(el("tr-gen-result").textContent),
          "TR notes: a successful save re-renders the view with the edited title, form closed");
       ok(!!document.getElementById("tr-gen-edit"), "TR notes: Edit is reachable again after a save");
+      // PP SN-5 (restored): the edit request cannot touch the label/disclosure/provider, and the
+      // label + disclosure are still rendered AFTER the save (re-read from the backend response).
+      ok(!("ai_generated" in trSaveCall.args) && !("disclosure" in trSaveCall.args) && !("provider" in trSaveCall.args) && !("aiGenerated" in trSaveCall.args),
+         "TR SN-5: the edit request itself carries no ai_generated/disclosure/provider field — the label cannot be altered from the client");
+      var trPostLabel = el("tr-gen-result").querySelector(".pp-gen-ai-label"), trPostDisc = el("tr-gen-result").querySelector(".pp-gen-disclosure");
+      ok(!!trPostLabel && getComputedStyle(trPostLabel).display !== "none" && !!trPostDisc && getComputedStyle(trPostDisc).display !== "none",
+         "TR SN-5 (FR-123/128): the AI label and the fabrication disclosure are still visibly rendered AFTER a save");
       ok(el("tr-detail-notes").classList.contains("tr-notes-on"),
          "TR notes: the notes badge still reads generated after an edit — editing a draft is not the same as un-generating it");
 
@@ -7670,7 +7969,7 @@ DRIVER = r"""
          "CON-079: Scriptures' title + subtitle match the Figma copy exactly");
       ok(scripturesNav && scripturesNav.querySelector(".nav-key").textContent === "⌘6",
          "CON-080: Scriptures carries the ⌘6 chord badge");
-      var transcriptNav = document.querySelector('.nav-item[data-focus="transcript"]');
+      var transcriptNav = document.querySelector('.nav-item[data-surface="transcripts"]');
       ok(transcriptNav && transcriptNav.querySelector(".nav-key").textContent === "⌘7",
          "CON-080: Transcript & Notes' chord badge shifted from ⌘6 to ⌘7");
       var settingsNav = document.querySelector('.nav-item[data-surface="settings"]');
@@ -7700,19 +7999,17 @@ DRIVER = r"""
       V.items = __con80ItemsBak; V.staged_index = __con80StagedBak; V.staged_scripture = __con80ScrBak;
       window.__syncSlides(JSON.parse(JSON.stringify(V)));
 
-      // CON-080 behaviour: ⌘7 (shifted from ⌘6) opens the console AND scrolls #transcript into
-      // view — spy on scrollIntoView narrowly (patched + restored within these few lines only,
-      // never left in place for any other check in this file).
+      // CON-080 behaviour (updated 17tnw2b0ntd D2): ⌘7 opens the Transcripts page (no longer the
+      // console + scroll-to-#transcript deep link).
       document.querySelector('.nav-item[data-surface="plan"]').click();
       var __sivOrig = Element.prototype.scrollIntoView, __sivIds = [];
       Element.prototype.scrollIntoView = function(){ __sivIds.push(this.id); return __sivOrig.apply(this, arguments); };
       document.dispatchEvent(new KeyboardEvent("keydown", {key:"7", metaKey:true, bubbles:true}));
       Element.prototype.scrollIntoView = __sivOrig;
-      ok(el("surface-console").classList.contains("active") && __sivIds.indexOf("transcript") >= 0,
-         "CON-080: ⌘7 (shifted from ⌘6) opens the Live Console and scrolls #transcript into view (Transcript & Notes' data-focus target)");
+      ok(el("surface-transcripts").classList.contains("active") && __sivIds.indexOf("transcript") === -1,
+         "CON-080/D2: ⌘7 opens the Transcripts page and no longer scrolls the console's #transcript into view");
 
-      // CON-080 behaviour: ⌘, routes to Settings (⌘8 → Transcripts saved is already covered,
-      // unchanged, by the pre-existing 'TR: ⌘8 routes to Transcripts' check above).
+      // CON-080 behaviour: ⌘, routes to Settings (⌘7 → Transcripts is covered by the 'TR: ⌘7 routes to Transcripts' check above).
       document.querySelector('.nav-item[data-surface="plan"]').click();
       ok(!el("surface-settings").classList.contains("active"), "CON-080 (setup): not on Settings before the ⌘, chord");
       document.dispatchEvent(new KeyboardEvent("keydown", {key:",", metaKey:true, bubbles:true}));
@@ -10512,9 +10809,7 @@ DRIVER = r"""
          "PP C-006: an honest 'Coming soon' pill is shown instead");
       ok(!/12\s*\/\s*40/.test(el("surface-settings").textContent),
          "PP C-006: NO fabricated '12 / 40' quota anywhere on the panel");
-      var ppQuota = document.querySelector(".pp-quota");
-      ok(!!ppQuota && ppQuota.classList.contains("pp-quota-empty") && /Not available yet/.test(ppQuota.textContent),
-         "PP C-006: the quota shows an honest placeholder (null quota → 'Not available yet'), not numbers");
+      ok(!document.querySelector(".pp-quota"), "PP C-006: the quota meter was removed from the card (17tnw2b0ntd)");
       // 86akby7d8: with nothing configured the card must NOT claim a provider or an included plan.
       ok(!document.querySelector(".pp-badge-included") && !document.querySelector(".pp-badge-dev"),
          "PP C-010: with no provider configured, neither the INCLUDED nor the DEVELOPER KEY badge is shown");
@@ -10585,932 +10880,46 @@ DRIVER = r"""
       ok(el("pp-consent-notes") && el("pp-consent-notes").getAttribute("role")==="switch" && el("pp-consent-notes").checked===false,
          "PP C-005: the cloud-notes consent switch reflects the backend (off) before opt-in");
 
-      // 86akby7d8 defect 1: the panel has no transcript store of its own — it reads app.js's
-      // bridge, window.scCompletedTranscript, set on every render() from the host-authoritative
-      // view.transcript (syncTranscript() in app.js) — exactly the FULL poll->render path the R3
-      // display checks above already exercise, not a shortcut. Before this fix nothing anywhere
-      // assigned that global, so it stayed "" and every Generate click sent an empty transcript.
-      // Drive it for real: render() with finalised segments, through the SAME render() the 1s
-      // poll invokes, then assert the bridge actually did its job before trusting it below.
-      var PP_TRANSCRIPT_SEGMENTS = [
-        { id: 601, text: "Good morning, church.", start_ms: 0, end_ms: 2000 },
-        { id: 602, text: "Turn with me to Isaiah sixty-one.", start_ms: 2000, end_ms: 5000 },
-        { id: 603, text: "This morning we consider what it means to be fed by grace, not by our own striving.", start_ms: 5000, end_ms: 9000 },
-      ];
-      var PP_TRANSCRIPT_FIXTURE =
-        "Good morning, church.\n" +
-        "Turn with me to Isaiah sixty-one.\n" +
-        "This morning we consider what it means to be fed by grace, not by our own striving.";
-      render(Object.assign({}, baseView, { transcript: PP_TRANSCRIPT_SEGMENTS, partial_transcript: "and the crowd came back" }));
-      ok(window.scCompletedTranscript === PP_TRANSCRIPT_FIXTURE,
-         "PP defect 1: render() with finalised segments populates window.scCompletedTranscript via the real app.js bridge, joined in order");
-      ok(window.scCompletedTranscript.indexOf("and the crowd came back") === -1,
-         "PP defect 1: the in-progress partial line is NEVER part of the completed transcript the bridge exposes");
-      render(Object.assign({}, baseView, { transcript: PP_TRANSCRIPT_SEGMENTS })); // clear the partial, keep the segments
-      ok(window.scCompletedTranscript === PP_TRANSCRIPT_FIXTURE,
-         "PP defect 1: the bridge is stable (same segments -> same completed transcript) once the partial clears");
-
-      // L-3 (Vera, note — 86akby7d8 remediation): the bridge must map the SAME capped list the
-      // DOM renders from (`segs`, MAX_TRANSCRIPT_ROWS=120), not the unsliced `all` — so if a host
-      // ever returns more than the DOM's own defensive cap, "what Generate sends" and "what the
-      // transcript log shows" never disagree about what "the transcript" is.
-      var PP_OVERCAP_SEGMENTS = [];
-      for (var ppOc = 0; ppOc < 125; ppOc++) {
-        PP_OVERCAP_SEGMENTS.push({ id: 900 + ppOc, text: "seg" + ppOc, start_ms: ppOc * 100, end_ms: ppOc * 100 + 90 });
-      }
-      render(Object.assign({}, baseView, { transcript: PP_OVERCAP_SEGMENTS }));
-      var ppOvercapExpected = PP_OVERCAP_SEGMENTS.slice(-120).map(function (s) { return s.text; }).join("\n");
-      ok(window.scCompletedTranscript === ppOvercapExpected,
-         "PP L-3: over the DOM's own 120-segment cap, the Generate bridge reflects the SAME tail #transcript-log renders, not the unsliced list");
-      ok(window.scCompletedTranscript.indexOf("seg0") === -1,
-         "PP L-3: ...specifically, the oldest over-cap segment is excluded — proving this is actually capped, not coincidentally equal");
-      render(Object.assign({}, baseView, { transcript: PP_TRANSCRIPT_SEGMENTS })); // restore the fixture for the checks below
-
-      // Persist into the mock's own view state too (not just this one-off render()): the REAL
-      // app.js 1s poll keeps running underneath this whole block (exactly as it does in the real
-      // app while the operator sits on Settings), and every reactivation below re-fetches
-      // invoke("view") — either would otherwise re-render from V's default (no transcript) and
-      // silently wipe window.scCompletedTranscript back to "" partway through this test.
-      V.transcript = PP_TRANSCRIPT_SEGMENTS;
-
-      // 86akby7d8 defect 2 / F-5 (Sana, escalated blocking by Quinn): Generate no longer sends on
-      // click — it opens a review step showing the exact text and waits for an explicit Confirm.
-      // This helper drives that two-step flow so the pre-existing outcome checks below don't have
-      // to duplicate it, and it re-asserts the core guarantee (no send without Confirm) on every
-      // single call site that exercises Generate — a regression back to send-on-click would fail
-      // here, not just in the dedicated F-5 block further down.
-      var ppGenerateAndConfirm = async function (waitAfterConfirm) {
-        var before = ppCall("generate_sermon_notes").length;
-        el("pp-generate").click();
-        await sleep(30);
-        ok(ppCall("generate_sermon_notes").length === before,
-           "PP F-5: clicking Generate alone never calls generate_sermon_notes — the review step opens first");
-        var confirmBtn = el("pp-gen-preview-confirm");
-        if (confirmBtn) confirmBtn.click();
-        await sleep(waitAfterConfirm || 70);
-      };
-
-      // Generate with consent OFF → the backend returns consent_required → prompt to opt in.
-      window.__ppGen = "not_configured";
-      await ppGenerateAndConfirm(70);
-      var genRes = el("pp-gen-result");
-      ok(!!genRes && !genRes.hidden && genRes.getAttribute("role")==="alert" && /Turn on cloud processing/.test(genRes.textContent),
-         "PP C-005: Generate with consent off surfaces a consent_required prompt (role=alert)");
-      ok(!!el("pp-optin-retry"), "PP C-005: the consent_required prompt offers a one-click 'Opt in & generate'");
-      // PP-GEN: .pp-optin-btn:hover — same defect class as .pm-btn-primary:hover/CON-007/PME-005.
-      // Checked HERE because #pp-optin-retry only exists transiently, during this consent_required
-      // state — the click below (opting in) removes it again, so a later check point would miss it.
-      (function() {
-        var restBg = _rgba(getComputedStyle(el("pp-optin-retry")).backgroundColor);
-        var hoverRule = __cssRule(".pp-optin-btn:hover");
-        ok(!!hoverRule, "PP-GEN (premise): the .pp-optin-btn:hover rule is present in the shipped app.css");
-        var hb = __cssBg(hoverRule);
-        ok(!!hb, "PP-GEN (premise): the .pp-optin-btn:hover rule declares a background, so there is a value to measure");
-        if (hb) {
-          var hoverBg = _resolve(hb.trim());
-          var hoverR = _cr([255,255,255,1], hoverBg);
-          ok(hoverR >= 4.5, "PP-GEN: the HOVERED .pp-optin-btn keeps its white label at AA-NORMAL (" + _f(hoverR) + ":1)");
-          ok(_lum(hoverBg) < _lum(restBg),
-             "PP-GEN: .pp-optin-btn hover DARKENS the fill instead of lightening it, matching .pm-btn-primary:hover");
-        }
-        var oldHover = _resolve("var(--sc-primary-hover)");
-        ok(_cr([255,255,255,1], oldHover) < 4.5,
-           "PP-GEN (control): --sc-primary-hover itself still measures BELOW AA-normal for white (" + _f(_cr([255,255,255,1], oldHover)) + ":1) — the TOKEN VALUE is untouched; only this rule stopped using it");
-      })();
-      // Opt in & generate → grants notes consent then retries (through the SAME review-and-confirm
-      // gate — opting in mid-flow does not bypass it); the service is not configured → 'coming soon'.
-      el("pp-optin-retry").click();
+      // 17tnw2b0ntd (D1): the Settings card no longer has ANY Generate/preview/result/quota UI, and
+      // the window.scCompletedTranscript live-tail bridge is gone. The whole block of checks that
+      // used to live here (PP defect 1, PP L-3, PP F-5/PERF-3 review step, PP SN-* draft persist/
+      // edit, FR-129 regenerate banner, quota meter) exercised Settings-only elements; the same
+      // behaviours on the ONE remaining surface are covered by the TR generate checks (#tr-*).
+      // Regression guards for the removal:
+      ok(!document.querySelector("#surface-settings #pp-generate") && !document.querySelector("#surface-settings #pp-gen-preview") &&
+         !document.querySelector("#surface-settings #pp-gen-result") && !document.querySelector("#surface-settings .pp-generate") &&
+         !document.querySelector("#surface-settings .pp-quota"),
+         "PP 17tnw2b0ntd: Settings has no Generate button, preview, result or quota meter");
+      ok(typeof window.scCompletedTranscript === "undefined",
+         "PP 17tnw2b0ntd: the window.scCompletedTranscript live-tail bridge no longer exists");
+      ok(!window.__calls.some(function(c){ return c.cmd === "generate_sermon_notes"; }),
+         "PP 17tnw2b0ntd: nothing in the frontend invoked the removed generate_sermon_notes command");
+      var ppOpenTr = el("pp-open-transcripts");
+      ok(!!ppOpenTr && ppOpenTr.tagName === "A" && /Open Transcripts to generate sermon notes/.test(ppOpenTr.textContent),
+         "PP 17tnw2b0ntd: the AI card carries a real <a> link to Transcripts");
+      var ppPrivacyTxt = document.querySelector("#pp-ai .pp-consent-text").textContent;
+      ok(ppPrivacyTxt === 'Sermon notes are made from text only: the complete saved transcript of a recording that has ended, up to 400,000 characters. Nothing is sent while that transcript is still recording, and nothing is sent until you review the exact text and confirm. Cloud transcription (above) is a separate setting and does stream microphone audio while it is on.',
+         "PP 17tnw2b0ntd: the Settings privacy sentence is exactly the owner-approved wording (text only, ended transcript, nothing sent while recording or before confirming, cloud transcription is separate and streams audio)");
+      ok(!/press Generate|never live audio|never during the service|recent-segments/.test(el("pp-ai").textContent),
+         "PP 17tnw2b0ntd: none of the old, over-claiming privacy phrases remain on the card");
+      // QA D1: the link is styled (it used to render browser-default blue at 2.07:1): AA contrast on its
+      // real ground, a muted caption, and a visible focus ring declared for keyboard users.
+      var ppLinkBg = (function (n) { while (n) { var c = _trRgba(getComputedStyle(n).backgroundColor); if (c[3] > 0.99) return c; n = n.parentElement; } return [11,13,18,1]; })(ppOpenTr);
+      var ppLinkC = _trCr(_trRgba(getComputedStyle(ppOpenTr).color), ppLinkBg);
+      ok(ppLinkC >= 4.5, "PP D1: the Settings link to Transcripts clears AA-NORMAL on its ground (" + _trF(ppLinkC) + ":1; browser-default blue was 2.07:1)");
+      ok(getComputedStyle(ppOpenTr).textDecorationLine === "none" && getComputedStyle(ppOpenTr).color !== "rgb(0, 0, 238)",
+         "PP D1: the link carries the design's violet styling, not the browser default");
+      var ppLinkSub = document.querySelector(".pp-ai-link-sub");
+      ok(!!ppLinkSub && parseFloat(getComputedStyle(ppLinkSub).fontSize) <= 12.5 && _trCr(_trRgba(getComputedStyle(ppLinkSub).color), ppLinkBg) >= 4.5,
+         "PP D1: the caption is muted 12px secondary ink and still clears AA");
+      var ppLinkFocusRule = __cssRule(".pp-ai-link:focus-visible");
+      ok(!!ppLinkFocusRule && /2px/.test(ppLinkFocusRule.style.getPropertyValue("outline")),
+         "PP D1: the link declares a visible 2px focus ring");
+      ppOpenTr.click();
+      ok(el("surface-transcripts").classList.contains("active") && getComputedStyle(el("surface-transcripts")).display !== "none",
+         "PP 17tnw2b0ntd: the link opens the Transcripts surface");
+      document.querySelector('.nav-item[data-surface="settings"]').click(); // back to Settings for the checks below
       await sleep(60);
-      ok(ppCall("set_cloud_consent").some(function(c){return c.args.kind==="notes" && c.args.enabled===true;}),
-         "PP C-005: 'Opt in & generate' grants cloud-notes consent (set_cloud_consent{notes,true})");
-      var confirmAfterOptin = el("pp-gen-preview-confirm");
-      if (confirmAfterOptin) confirmAfterOptin.click();
-      await sleep(60);
-      var genRes2 = el("pp-gen-result");
-      ok(!!genRes2 && genRes2.getAttribute("role")==="status" && /isn.t available in this build/i.test(genRes2.textContent),
-         "PP C-005: with consent on but nothing configured, Generate says so honestly (role=status, not an error)");
-      // 86akby7d8: the SAME not_configured error code means two different things, and the panel
-      // tells them apart from the status it already holds. "we haven't built it" and "you haven't
-      // supplied a key" ask different things of the reader; collapsing them wastes their time.
-      window.__pp.cloud_status = "key_missing";
-      document.querySelector('.nav-item[data-surface="settings"]').click();
-      await sleep(60);
-      await ppGenerateAndConfirm(70);
-      var genKey = el("pp-gen-result");
-      ok(!!genKey && /OPENAI_API_KEY/.test(genKey.textContent) && /\.env/.test(genKey.textContent),
-         "PP C-010: under key_missing the SAME not_configured code renders the actionable missing-key message instead");
-      ok(!/isn.t available in this build/i.test(genKey.textContent),
-         "PP C-010: ...and NOT the generic 'not available in this build' copy — the two states stay distinguishable");
-      window.__pp.cloud_status = "not_configured";
-      document.querySelector('.nav-item[data-surface="settings"]').click();
-      await sleep(60);
-      ok(el("pp-consent-notes").checked===true, "PP C-005: the consent switch now reflects the granted consent");
-      // Now simulate a configured service returning a draft.
-      window.__ppGen = "ok";
-      await ppGenerateAndConfirm(80);
-      var genOk = el("pp-gen-result");
-      ok(!!genOk && genOk.classList.contains("pp-gen-ok") && /Grace That Feeds/.test(genOk.textContent),
-         "PP C-005: a successful generation renders the returned draft (title + sections)");
-      ok(genOk.querySelectorAll(".pp-gen-list li").length > 0 && /Isaiah 61:5/.test(genOk.textContent),
-         "PP C-005: the draft renders section items + scriptures");
-
-      // --- 86akby7d8: FR-123 label, FR-128 disclosure, FR-122 sub-points ------------------
-      var aiLabel = genOk.querySelector(".pp-gen-ai-label");
-      ok(!!aiLabel && getComputedStyle(aiLabel).display !== "none" && /AI-generated/i.test(aiLabel.textContent),
-         "PP C-011 (FR-123): a model draft is VISIBLY labelled AI-generated (computed display, not just present)");
-      var disc = genOk.querySelector(".pp-gen-disclosure");
-      ok(!!disc && getComputedStyle(disc).display !== "none",
-         "PP C-011 (FR-128): the fabrication-risk disclosure is rendered with the draft");
-      ok(/invent/i.test(disc.textContent) && /Check every/i.test(disc.textContent),
-         "PP C-011 (FR-128): the disclosure actually warns that the model can invent things and asks for review");
-      // The retention/DPA language is Phase 2 (86akby942) and must NOT appear yet: naming a provider
-      // is safe without the DPA work, describing its retention posture is not.
-      ok(!/retention|retain|training data|processing agreement|DPA/i.test(disc.textContent),
-         "PP C-011: the disclosure makes NO retention or data-processing claim (that is gated on the DPA ticket)");
-      // FR-122: sub-points render nested INSIDE their parent point, not flattened into one list.
-      var pt = genOk.querySelector(".pp-gen-point");
-      ok(!!pt && /crowd came back/.test(pt.textContent),
-         "PP C-012 (FR-122): outline points render");
-      var sub = genOk.querySelector(".pp-gen-point > .pp-gen-sublist");
-      ok(!!sub && sub.querySelectorAll("li").length === 2,
-         "PP C-012 (FR-122): sub-points render as a NESTED list inside their parent point, not flattened");
-      ok(genOk.querySelectorAll(".pp-gen-sublist > li")[0].textContent === "They ate of the loaves",
-         "PP C-012 (FR-122): a sub-point is attached to the right parent point");
-      // quota is null even on the SUCCESS path in this phase — no meter is conjured from a working
-      // generation. This is the negative requirement a well-meaning implementation invents past.
-      var qAfter = document.querySelector(".pp-quota");
-      ok(qAfter.classList.contains("pp-quota-empty"),
-         "PP C-006: a successful generation with no metering leaves the honest quota placeholder alone");
-
-      // (C-005 — the terminal generate outcomes each surface honestly; consent is on from the opt-in above.)
-      window.__ppGen = "quota_exceeded"; await ppGenerateAndConfirm(70);
-      var gQ = el("pp-gen-result");
-      ok(gQ.getAttribute("role")==="alert" && /Monthly limit reached/.test(gQ.textContent),
-         "PP C-005: quota_exceeded surfaces 'Monthly limit reached' (role=alert)");
-      window.__ppGen = "transport"; await ppGenerateAndConfirm(70);
-      var gT = el("pp-gen-result");
-      ok(gT.getAttribute("role")==="alert" && /Couldn’t generate notes/.test(gT.textContent),
-         "PP C-005: a transport failure (rejected invoke) surfaces 'Couldn’t generate notes' (role=alert)");
-      window.__ppGen = "malformed"; await ppGenerateAndConfirm(70);
-      var gM = el("pp-gen-result");
-      ok(gM.getAttribute("role")==="alert" && /Couldn’t generate notes/.test(gM.textContent),
-         "PP C-005: a malformed response surfaces 'Couldn’t generate notes' (role=alert)");
-      // A degraded (local fallback) success renders the draft with a 'Local draft' badge — and,
-      // following the errors above, the result region is role=status, NOT a lingering alert (L1).
-      window.__ppGen = "degraded"; await ppGenerateAndConfirm(80);
-      var gD = el("pp-gen-result");
-      ok(gD.classList.contains("pp-gen-ok") && /Local draft/.test(gD.textContent),
-         "PP C-005: a degraded generation renders the draft with a 'Local draft' badge (FR-135)");
-      // 86akby7d8: the offline scaffold is NOT a model, so it carries no AI label and no fabrication
-      // warning — but it must NOT be shown in silence either, or a scaffold reads as though it were
-      // the AI notes the operator asked for.
-      ok(!gD.querySelector(".pp-gen-ai-label"),
-         "PP C-011: a degraded offline draft is NOT labelled AI-generated (it invents nothing — the label would be a false claim)");
-      ok(!gD.querySelector(".pp-gen-disclosure"),
-         "PP C-011: a degraded offline draft carries no fabrication warning, which does not apply to it");
-      var degNote = gD.querySelector(".pp-gen-degraded");
-      ok(!!degNote && getComputedStyle(degNote).display !== "none" && /could not be reached/i.test(degNote.textContent),
-         "PP C-011 (FR-135): a degraded draft says IN WORDS that the provider was unreachable and this is not the AI draft asked for");
-      ok(/not AI-generated notes/i.test(degNote.textContent),
-         "PP C-011 (FR-135): the degraded notice is explicit that these are not AI-generated notes");
-      ok(gD.getAttribute("role")==="status",
-         "PP C-005 (L1): a success after an error is announced as role=status, not a lingering alert");
-
-      // --- 86akc0tua: a section the operator requested and got nothing back says so ------------
-      // Degraded suppression FIRST, on the SAME "degraded" fixture already rendered above (gD) —
-      // its mock now also carries a caveated, empty "Prayer points" section (see the fixture's own
-      // comment for why: this is a mutation-catching check, not a realistic-payload one).
-      ok(gD.querySelectorAll(".pp-gen-empty").length === 0,
-         "PP 86akc0tua: a degraded draft renders ZERO empty-requested lines, even though its own " +
-         "payload carries an empty, caveated section — the suppression is the CONSOLE's, not merely " +
-         "an accident of what the real backend happens to send");
-      ok(!gD.querySelector(".pp-gen-empty-explainer"),
-         "PP 86akc0tua: a degraded draft never renders the once-per-draft explainer either");
-
-      function ppSecHeading(root, text) {
-        return Array.prototype.filter.call(root.querySelectorAll(".pp-gen-sec-h"), function (h) {
-          return h.textContent === text;
-        })[0];
-      }
-      var EMPTY_LINE = "Included in the request — nothing came back.";
-
-      window.__ppGen = "empty_sections"; await ppGenerateAndConfirm(80);
-      var gE = el("pp-gen-result");
-
-      var chHeading = ppSecHeading(gE, "Chapter markers");
-      ok(!!chHeading, "PP 86akc0tua: an empty-but-requested section's heading still renders, in its natural position");
-      var chEmpty = chHeading && chHeading.nextElementSibling;
-      ok(!!chEmpty && chEmpty.classList.contains("pp-gen-empty") &&
-         getComputedStyle(chEmpty).display !== "none" && chEmpty.getClientRects().length > 0 &&
-         chEmpty.textContent === EMPTY_LINE,
-         "PP 86akc0tua: the empty-requested line replaces the (would-be-empty) list — computed-visible, exact copy");
-
-      // POSITIVE CONTROL: a populated section in the SAME render still gets its list, not a
-      // line — without this, the assertion above could pass on a mechanism that marks
-      // EVERY section empty regardless of content.
-      var illHeading = ppSecHeading(gE, "Illustrations");
-      var illList = illHeading && illHeading.nextElementSibling;
-      ok(!!illList && illList.tagName === "UL" && illList.classList.contains("pp-gen-list") &&
-         illList.querySelectorAll("li").length === 1 && !illList.classList.contains("pp-gen-empty"),
-         "PP 86akc0tua (positive control): a populated section renders its list, not an empty-line");
-
-      // OFF: a section never in the response (the operator left it switched off) is absent
-      // entirely — no heading, no message. Asserted on absence of the heading TEXT, not a class,
-      // per the ticket's own verification bar.
-      ok(!/Notable quotations/.test(gE.textContent),
-         "PP 86akc0tua: a section the operator never enabled is absent entirely — no heading, no message");
-
-      // `summary`/`scriptures` are not `NoteSection`s, so they get their own assertions —
-      // same copy, same suppression rule, per Uma's "one string covers all four unmodified".
-      var summaryHeading = ppSecHeading(gE, "Summary");
-      ok(!!summaryHeading, "PP 86akc0tua: an empty-but-requested Summary is given a heading so the line has somewhere to attach");
-      ok(!!summaryHeading && summaryHeading.nextElementSibling &&
-         summaryHeading.nextElementSibling.classList.contains("pp-gen-empty") &&
-         summaryHeading.nextElementSibling.textContent === EMPTY_LINE,
-         "PP 86akc0tua: the empty Summary uses the exact same copy as a section");
-      var scriptEmpty = gE.querySelector(".pp-gen-scriptures .pp-gen-empty");
-      ok(!!scriptEmpty && scriptEmpty.textContent === EMPTY_LINE,
-         "PP 86akc0tua: an empty-but-requested scripture list renders the same line inline after 'Scriptures:'");
-
-      // Once per draft, after everything else, only because at least one caveat fired.
-      var explainer = gE.querySelector(".pp-gen-empty-explainer");
-      ok(!!explainer && getComputedStyle(explainer).display !== "none" && explainer.getAttribute("role") === "note" &&
-         /doesn.t say why/i.test(explainer.textContent) && /Generating again/.test(explainer.textContent),
-         "PP 86akc0tua: the once-per-draft explainer renders, role=note, exact wording, when at least one caveat fired");
-
-      // Cody's second finding on PR #46 (the reload route was fixed by `sections_to_persist`
-      // server-side; this is the OTHER reachable route — edit-save, which the backend has NO
-      // caveat data to filter on at all, since `NoteSectionInput` carries no `empty_requested`).
-      // Generate a caveated-empty section, edit something ELSE, Save — the caveated-empty
-      // section must never reach `update_sermon_note_draft`'s payload, while an ordinary
-      // populated section still does (positive control).
-      el("pp-gen-edit").click();
-      document.getElementById("pp-edit-title").value = "A Quiet Sunday (edited)";
-      var emptySaveBefore = ppCall("update_sermon_note_draft").length;
-      el("pp-gen-save").click();
-      await sleep(60);
-      ok(ppCall("update_sermon_note_draft").length === emptySaveBefore + 1,
-         "PP 86akc0tua (edit-save fix, setup): Save actually called update_sermon_note_draft");
-      var emptySaveArgs = ppLast("update_sermon_note_draft").args;
-      ok(!emptySaveArgs.sections.some(function (s) { return s.heading === "Chapter markers"; }),
-         "PP 86akc0tua (edit-save fix): a caveated-empty section the operator did not fill in " +
-         "is NEVER sent to update_sermon_note_draft — saving ANY unrelated edit must not write " +
-         "the confusing 'bare heading, no explanation' state to persisted storage");
-      ok(emptySaveArgs.sections.some(function (s) { return s.heading === "Illustrations"; }),
-         "PP 86akc0tua (positive control): an ordinary populated section is NOT dropped by the " +
-         "same filter — without this, the assertion above could pass on a mechanism that drops " +
-         "every section");
-
-      // --- 86akby820: scripture verification (FR-125/FR-128) -----------------------------------
-      // Runs AFTER the 86akc0tua edit-save block above rather than before it: that block keeps
-      // operating on the still-active "empty_sections" draft from earlier in this section (no
-      // re-generate call), while this block deliberately switches `window.__ppGen` and calls
-      // `ppGenerateAndConfirm` again — doing that first would pull the rug out from under the
-      // edit-save block's fixture. Two independent, non-conflicting insertions at the same
-      // point in the file (confirmed by reading both diffs before merging, not assumed); this
-      // ordering is the only one that keeps both correct.
-      window.__ppGen = "scripture_verification"; await ppGenerateAndConfirm(80);
-      var gS = el("pp-gen-result");
-      var scLine = gS.querySelector(".pp-gen-scriptures");
-      ok(!!scLine && /John 3:16/.test(scLine.textContent),
-         "PP 86akby820: a verified reference still renders in the Scriptures line");
-      var verifiedItem = Array.prototype.filter.call(scLine.querySelectorAll(".pp-gen-scr-item"), function (s) {
-        return s.textContent === "John 3:16";
-      })[0];
-      var verifiedMark = verifiedItem && verifiedItem.nextElementSibling;
-      // Security review finding (Sana F3): "verified" gets its OWN explicit mark — silence
-      // is never the only signal, so a check that slips past a gap can't read as clean.
-      ok(!!verifiedMark && verifiedMark.classList.contains("pp-gen-scr-verified") &&
-         getComputedStyle(verifiedMark).display !== "none" && verifiedMark.getClientRects().length > 0,
-         "PP 86akby820 (F3): a verified reference carries its OWN explicit computed-visible mark, " +
-         "not just the absence of the unverified one");
-      ok(!verifiedMark.classList.contains("pp-gen-scr-unverified"),
-         "PP 86akby820 (positive control): a verified reference's mark is the VERIFIED class, " +
-         "not the unverified one — without this, the assertion below could pass on a mechanism " +
-         "that marks EVERY reference the same way");
-      var unverifiedItem = Array.prototype.filter.call(scLine.querySelectorAll(".pp-gen-scr-item"), function (s) {
-        return s.textContent === "3Jn 4:12";
-      })[0];
-      ok(!!unverifiedItem,
-         "PP 86akby820 (F1): an ABBREVIATED reference ('3Jn 4:12', not the canonical '3 John " +
-         "4:12') still renders in the list at all — proves the exact-match lookup keys on the " +
-         "model's own spelling, not a re-canonicalised one");
-      var unverifiedMark = unverifiedItem && unverifiedItem.nextElementSibling;
-      ok(!!unverifiedMark && unverifiedMark.classList.contains("pp-gen-scr-unverified") &&
-         getComputedStyle(unverifiedMark).display !== "none" && unverifiedMark.getClientRects().length > 0 &&
-         /unverified/i.test(unverifiedMark.textContent),
-         "PP 86akby820: an unverified (abbreviated-spelling) reference in the extracted list " +
-         "carries a computed-visible mark — the exact bug class Sana's F1 finding named");
-      // Embedded-only: a fabricated reference found ONLY inside a section's body text (not in
-      // the extracted `scriptures` list at all) still gets an unmissable mark — the ticket's own
-      // named more-dangerous case.
-      var elsewhereBlock = Array.prototype.filter.call(gS.querySelectorAll(".pp-gen-scriptures"), function (p) {
-        return /Also referenced in this draft/.test(p.textContent);
-      })[0];
-      ok(!!elsewhereBlock && /Jude 2:1/.test(elsewhereBlock.textContent) &&
-         !!elsewhereBlock.querySelector(".pp-gen-scr-unverified"),
-         "PP 86akby820: a fabricated reference embedded ONLY in a sermon point (not in the " +
-         "extracted list) still renders, unmissably marked — the more dangerous case the ticket names");
-      // The address-only scope of verification is stated in words, not implied.
-      var scNote = gS.querySelector(".pp-gen-scripture-note");
-      ok(!!scNote && getComputedStyle(scNote).display !== "none" && scNote.getAttribute("role") === "note" &&
-         /exists in the bundled Bible text/.test(scNote.textContent) &&
-         /does not confirm/.test(scNote.textContent),
-         "PP 86akby820: the verification-scope note renders, role=note, and is explicit that " +
-         "verification confirms the reference exists, not that quoted words are accurate");
-
-      // Security review remediation (Sana F4 on PR #47): the check must survive an
-      // edit-save, not just the live generation — edit something UNRELATED (the title)
-      // and confirm the unverified mark, the verified mark, and the note are all STILL
-      // there afterward, re-verified fresh rather than silently dropped.
-      el("pp-gen-edit").click();
-      document.getElementById("pp-edit-title").value = "Grace in the Wilderness (edited)";
-      el("pp-gen-save").click();
-      await sleep(60);
-      var gSAfterSave = el("pp-gen-result");
-      ok(/Grace in the Wilderness \(edited\)/.test(gSAfterSave.textContent),
-         "PP 86akby820 (F4 setup): the edit actually saved — proves the check below is against " +
-         "a real post-save render, not the pre-edit one");
-      var scLineAfterSave = gSAfterSave.querySelector(".pp-gen-scriptures");
-      var verifiedAfterSave = Array.prototype.filter.call(scLineAfterSave.querySelectorAll(".pp-gen-scr-item"), function (s) {
-        return s.textContent === "John 3:16";
-      })[0];
-      ok(!!verifiedAfterSave && verifiedAfterSave.nextElementSibling &&
-         verifiedAfterSave.nextElementSibling.classList.contains("pp-gen-scr-verified"),
-         "PP 86akby820 (F4): the verified mark survives an UNRELATED edit-save, re-verified fresh");
-      var unverifiedAfterSave = Array.prototype.filter.call(scLineAfterSave.querySelectorAll(".pp-gen-scr-item"), function (s) {
-        return s.textContent === "3Jn 4:12";
-      })[0];
-      ok(!!unverifiedAfterSave && unverifiedAfterSave.nextElementSibling &&
-         unverifiedAfterSave.nextElementSibling.classList.contains("pp-gen-scr-unverified"),
-         "PP 86akby820 (F4): the unverified mark ALSO survives an edit-save — this is the exact " +
-         "harm the ticket cites (a pastor reading from a saved/reloaded draft), not only the " +
-         "live-generation response");
-      ok(!!gSAfterSave.querySelector(".pp-gen-scripture-note"),
-         "PP 86akby820 (F4): the verification-scope note is still present after an edit-save");
-
-      // NEGATIVE CONTROL for the NEXT block: this "scripture_verification" draft carries no
-      // `scripture_verification_incomplete` caveat, so its own scripture-note text must never
-      // contain the "more than could be checked" wording — proves the two notes render from
-      // DIFFERENT caveat kinds, not from the same generic "any scripture note" branch.
-      ok(!/more scripture references than could be checked/.test(gSAfterSave.textContent),
-         "PP 86akgqdwc (negative control): a draft with no scripture_verification_incomplete " +
-         "caveat must not show its note");
-
-      // --- 86akgqdwc (Sana F2 on PR #48): scripture verification budget exhaustion --------------
-      window.__ppGen = "scripture_incomplete"; await ppGenerateAndConfirm(80);
-      var gSIncomplete = el("pp-gen-result");
-      var incompleteNote = Array.prototype.filter.call(
-        gSIncomplete.querySelectorAll(".pp-gen-scripture-note"),
-        function (p) { return /more scripture references than could be checked/.test(p.textContent); }
-      )[0];
-      ok(!!incompleteNote && getComputedStyle(incompleteNote).display !== "none" &&
-         incompleteNote.getAttribute("role") === "note",
-         "PP 86akgqdwc: the scripture-verification-incomplete note renders, computed-visible, role=note");
-      // POSITIVE CONTROL: the section this budget exhaustion would most affect (last in scan
-      // order in the real backend) still renders normally alongside the note — the note is an
-      // ADDITION, not a replacement for the section's own content.
-      ok(/Podcast show notes/.test(gSIncomplete.textContent) && /Isaiah 55:1/.test(gSIncomplete.textContent),
-         "PP 86akgqdwc (positive control): the podcast section's own content still renders " +
-         "alongside the incomplete-verification note");
-
-      // --- 86akgqdw0 (FR-124): timestamp-linked note items — DATA PARITY on this surface -------
-      // No transcript-log virtualizer exists on Settings to jump within (see settings.js's own
-      // header comment), so this proves only the half that DOES apply here: the timestamp
-      // renders as a plain, non-interactive label (never falsely clickable), "Copy chapter
-      // markers" produces a correct export, and a malformed (non-numeric) offset renders NO
-      // label at all rather than a broken one — this workstream's own "port a new field to BOTH
-      // consoles" lesson (PR #48 Cody MAJOR), applied going forward rather than repeated.
-      window.__ppGen = "timestamps"; await ppGenerateAndConfirm(80);
-      var gTs = el("pp-gen-result");
-      var tsLabels = gTs.querySelectorAll(".pp-item-ts");
-      ok(tsLabels.length === 1 && tsLabels[0].textContent === "00:00:04",
-         "PP 86akgqdw0: a chapter marker with a valid, real offset shows its HH:MM:SS label — " +
-         "exactly one, not one per item, since the malformed one below must render none");
-      ok(getComputedStyle(tsLabels[0]).cursor !== "pointer",
-         "PP 86akgqdw0: the label is genuinely NON-interactive on this surface (computed style, " +
-         "not just the absence of a click handler) — there is nowhere for it to jump to here");
-      ok(gTs.textContent.indexOf("Bogus type") !== -1,
-         "PP 86akgqdw0 (adversarial fixture): the item with a non-numeric offset still renders " +
-         "its OWN text (never dropped) — only its timestamp label is missing, per the " +
-         "`tsLabels.length === 1` check above (a label for it would have made that 2)");
-      var copyBtn = el("pp-copy-chapters-btn") || gTs.querySelector(".pp-copy-chapters-btn");
-      ok(!!copyBtn, "PP 86akgqdw0: the 'Copy chapter markers' action is offered whenever at " +
-         "least one marker resolved a timestamp");
-      ok(copyBtn.textContent === "Copy chapter markers",
-         "PP 86akgqdw0: the copy button's default label, before any click");
-
-      window.__ppGen = "ok"; // restore for any later reads
-
-      // === 86akgqdv0: sermon-note draft persistence + editing (FR-123 "editable" half) ========
-      // Verification expectation from the ticket: assert COMPUTED STYLE for the edit UI, never
-      // just the `.hidden` attribute — this codebase's known WKWebView trap (a class `display`
-      // rule can defeat `hidden`; the Blink engine driving this harness would not catch that on
-      // its own, see CLAUDE.md / the operator-webview-wkwebview-layout-traps note).
-      window.__ppGen = "ok"; await ppGenerateAndConfirm(80); // a known-fresh "ok" draft to start from
-      var snView = el("pp-gen-result");
-
-      // SN-1: a successful (persisted) generate offers an Edit affordance, visibly.
-      var snEditBtn = el("pp-gen-edit");
-      ok(!!snEditBtn && getComputedStyle(snEditBtn).display !== "none" && snEditBtn.textContent === "Edit",
-         "PP SN-1: a persisted draft (transcript_id present) renders a visible Edit button (computed display)");
-      ok(ppLast("generate_sermon_notes") && ppLast("generate_sermon_notes").args, // sanity: a call really happened
-         "PP SN-1 (sanity): generate_sermon_notes was actually called for this fixture");
-
-      // SN-2: the persisted-draft WIRE CONTRACT — what a fresh app process would fetch on restart
-      // via load_sermon_note_draft — carries the label/disclosure/title untouched. This is called
-      // directly (bypassing settings.js's own in-memory `currentDraft`, which this one continuous
-      // page session never naturally clears) because it is the IPC boundary, not the client cache,
-      // that "the draft is still there after a restart" actually rests on — the deeper SQLite
-      // restart-survival property itself is proven in selahcue-data's own
-      // `a_draft_survives_a_fresh_database_open_of_the_same_file` test.
-      var snLoaded = await window.__TAURI__.core.invoke("load_sermon_note_draft");
-      ok(!!snLoaded && snLoaded.ok === true && snLoaded.transcript_id === 42,
-         "PP SN-2: load_sermon_note_draft returns the persisted draft, keyed to its transcript id");
-      ok(snLoaded.draft && snLoaded.draft.title === "Grace That Feeds",
-         "PP SN-2: the restored draft's title matches what was generated");
-      ok(snLoaded.ai_generated === true && /invent/i.test(snLoaded.disclosure || ""),
-         "PP SN-2 (FR-123/128): the label and disclosure travel with the draft through a restart, not just an edit");
-
-      // SN-3: opening Edit shows the edit form (computed style) and HIDES the read-only view's own
-      // Edit button, while the AI label + disclosure remain visibly rendered THROUGHOUT — editing
-      // must never even transiently drop the FR-123/FR-128 warning.
-      snEditBtn.click();
-      var snForm = document.querySelector(".pp-gen-edit-form");
-      ok(!!snForm && getComputedStyle(snForm).display !== "none",
-         "PP SN-3: clicking Edit reveals the edit form (computed display, not just an absent .hidden attribute)");
-      ok(!document.getElementById("pp-gen-edit"),
-         "PP SN-3: the read-only Edit button is gone while editing (view and edit are not both on screen)");
-      var snEditAiLabel = snView.querySelector(".pp-gen-ai-label");
-      ok(!!snEditAiLabel && getComputedStyle(snEditAiLabel).display !== "none",
-         "PP SN-3 (FR-123): the AI-generated label is STILL visibly rendered while the edit form is open");
-      var snEditDisc = snView.querySelector(".pp-gen-disclosure");
-      ok(!!snEditDisc && getComputedStyle(snEditDisc).display !== "none",
-         "PP SN-3 (FR-128): the fabrication disclosure is STILL visibly rendered while the edit form is open");
-
-      // SN-4: the form is pre-filled from the CURRENT draft — title, summary, a flat section's
-      // item, an outline point's text, and its sub-point — proving both shapes (FR-122) round-trip
-      // into editable fields, not just one of them.
-      var snTitleInput = document.getElementById("pp-edit-title");
-      var snSummaryInput = document.getElementById("pp-edit-summary");
-      ok(!!snTitleInput && snTitleInput.value === "Grace That Feeds",
-         "PP SN-4: the title field is pre-filled from the current draft");
-      ok(!!snSummaryInput && snSummaryInput.value === "A sermon on provision and grace.",
-         "PP SN-4: the summary field is pre-filled from the current draft");
-      var snItemInput = snForm.querySelector('.pp-edit-item-text[data-si="1"][data-ii="0"]');
-      ok(!!snItemInput && snItemInput.value === "Thank God for provision",
-         "PP SN-4: a flat section's item is pre-filled in its own editable field");
-      var snPointInput = snForm.querySelector('.pp-edit-point-text[data-si="0"][data-pi="0"]');
-      ok(!!snPointInput && snPointInput.value === "The crowd came back for the wrong reason",
-         "PP SN-4: an outline section's point text is pre-filled in its own editable field");
-      var snSubInput = snForm.querySelector('.pp-edit-subpoint-text[data-si="0"][data-pi="0"][data-spi="0"]');
-      ok(!!snSubInput && snSubInput.value === "They ate of the loaves",
-         "PP SN-4: a sub-point is pre-filled in its own editable field, nested under its parent point");
-
-      // SN-5: editing the title and a point's wording, then Save — persists via
-      // update_sermon_note_draft with the edited values (and the UNCHANGED sub-point, proving a
-      // partial edit does not clobber fields the operator did not touch), returns to view mode, and
-      // the label/disclosure are STILL present afterward (re-read from the backend's own response,
-      // never assumed).
-      var snBeforeSave = ppCall("update_sermon_note_draft").length;
-      snTitleInput.value = "Grace That Feeds (edited)";
-      snPointInput.value = "The crowd came back hungry again";
-      el("pp-gen-save").click();
-      await sleep(60);
-      ok(ppCall("update_sermon_note_draft").length === snBeforeSave + 1,
-         "PP SN-5: Save calls update_sermon_note_draft exactly once");
-      var snSaveArgs = ppLast("update_sermon_note_draft").args;
-      ok(snSaveArgs.transcriptId === 42 && snSaveArgs.title === "Grace That Feeds (edited)",
-         "PP SN-5: the edited title is sent, keyed to the SAME transcript id the draft was loaded against");
-      ok(snSaveArgs.sections[0].points[0].text === "The crowd came back hungry again",
-         "PP SN-5: the edited point's wording is sent");
-      ok(snSaveArgs.sections[0].points[0].sub_points[0] === "They ate of the loaves" &&
-         snSaveArgs.sections[0].points[0].sub_points[1] === "A full church is not a fed one",
-         "PP SN-5: sub-points the operator did NOT touch are sent UNCHANGED, not dropped");
-      ok(!("ai_generated" in snSaveArgs) && !("disclosure" in snSaveArgs) && !("provider" in snSaveArgs),
-         "PP SN-5: the edit request itself carries no ai_generated/disclosure/provider field — the label cannot be touched from the client because there is nowhere on the wire to put a change to it");
-      var snAfterSave = el("pp-gen-result");
-      ok(!document.querySelector(".pp-gen-edit-form"),
-         "PP SN-5: after Save the form is gone (back to view mode)");
-      ok(/Grace That Feeds \(edited\)/.test(snAfterSave.textContent),
-         "PP SN-5: the view now shows the SAVED title, not the pre-edit one");
-      var snPostSaveLabel = snAfterSave.querySelector(".pp-gen-ai-label");
-      var snPostSaveDisc = snAfterSave.querySelector(".pp-gen-disclosure");
-      ok(!!snPostSaveLabel && getComputedStyle(snPostSaveLabel).display !== "none",
-         "PP SN-5 (FR-123): the AI-generated label is still visibly rendered AFTER a save, re-read from the backend response");
-      ok(!!snPostSaveDisc && getComputedStyle(snPostSaveDisc).display !== "none",
-         "PP SN-5 (FR-128): the fabrication disclosure is still visibly rendered AFTER a save");
-
-      // SN-6: Cancel discards in-progress edits and restores the view showing the PRIOR (saved)
-      // content, never the abandoned draft edit.
-      el("pp-gen-edit").click();
-      document.getElementById("pp-edit-title").value = "An edit that will be abandoned";
-      el("pp-gen-edit-cancel").click();
-      ok(!document.querySelector(".pp-gen-edit-form"), "PP SN-6: Cancel closes the edit form");
-      ok(/Grace That Feeds \(edited\)/.test(el("pp-gen-result").textContent) &&
-         !/abandoned/.test(el("pp-gen-result").textContent),
-         "PP SN-6: Cancel discards the in-progress edit — the view still shows the last SAVED title, not the abandoned one");
-
-      // SN-9 (86akgqdv0, Quinn's QA review of PR #33): the CLIENT-SIDE restart-render path —
-      // loadPersistedDraft() actually making a restored draft REAPPEAR ON SCREEN after a real
-      // app restart, with no click required — was previously provable only by (a) a DB-level
-      // test, (b) a wire-contract test (SN-2 above), and (c) a manual code trace, since this
-      // harness is one continuous page session that never naturally clears settings.js's own
-      // in-memory `currentDraft`. `window.__resetSermonNoteDraftForTest()` (the test-only hook
-      // settings.js exposes for exactly this) simulates that clean-slate restart; clearing the
-      // DOM by hand first proves what follows is really painted BY the restore, not leftover
-      // markup from the fixture above. Deliberately placed HERE, right after SN-6 and before
-      // SN-7/SN-8 — SN-7's rejected save and SN-8's own generate calls each persist a DIFFERENT
-      // draft to the mock's single-slot store, so "the last SAVED title" this check names is
-      // only still `Grace That Feeds (edited)` (SN-5's save) at THIS point in the sequence; run
-      // any later, it asserts a title that generation has since overwritten, not a restart bug.
-      el("pp-gen-result").textContent = "";
-      el("pp-gen-result").removeAttribute("role");
-      window.__resetSermonNoteDraftForTest();
-      ok(el("pp-gen-result").textContent === "" && !el("pp-gen-edit"),
-         "PP SN-9 (setup): the page genuinely shows nothing before the simulated restart");
-      window.settingsActivate();
-      await sleep(60);
-      var snRestored = el("pp-gen-result");
-      ok(/Grace That Feeds \(edited\)/.test(snRestored.textContent),
-         "PP SN-9: after a simulated restart, settingsActivate() alone (no click) restores the \
-last SAVED draft's title, via the real loadPersistedDraft() render path");
-      var snRestoredEditBtn = el("pp-gen-edit");
-      ok(!!snRestoredEditBtn && getComputedStyle(snRestoredEditBtn).display !== "none",
-         "PP SN-9: the restored draft offers Edit again (computed display), same as the first \
-persisted view in SN-1");
-      var snRestoredLabel = snRestored.querySelector(".pp-gen-ai-label");
-      var snRestoredDisc = snRestored.querySelector(".pp-gen-disclosure");
-      ok(!!snRestoredLabel && getComputedStyle(snRestoredLabel).display !== "none",
-         "PP SN-9 (FR-123): the AI-generated label renders on the restored draft too, not just \
-right after a generate/save");
-      ok(!!snRestoredDisc && getComputedStyle(snRestoredDisc).display !== "none",
-         "PP SN-9 (FR-128): the fabrication disclosure renders on the restored draft too");
-
-      // SN-7: a backend refusal (oversized field) on Save surfaces an error (role=alert), not a
-      // silent no-op — the operator must be told the edit did not take.
-      el("pp-gen-edit").click();
-      window.__snRejectTooLarge = true;
-      el("pp-gen-save").click();
-      await sleep(60);
-      var snTooLarge = el("pp-gen-result");
-      ok(snTooLarge.getAttribute("role") === "alert" && /exceeds 300 characters/.test(snTooLarge.textContent),
-         "PP SN-7: an oversized-field refusal from the backend surfaces as an alert naming the reason, not a silent failure");
-
-      // SN-8: a degraded (offline-fallback) draft is STILL persisted and editable — FR-123
-      // "editable" is not conditional on ai_generated — but its Edit view carries no AI label or
-      // disclosure to preserve, since it never had one (86akgqdv0 does not invent a false claim on
-      // the one draft type that is honestly not AI-generated).
-      window.__ppGen = "degraded"; await ppGenerateAndConfirm(80);
-      var snDegView = el("pp-gen-result");
-      var snDegEditBtn = el("pp-gen-edit");
-      ok(!!snDegEditBtn && getComputedStyle(snDegEditBtn).display !== "none",
-         "PP SN-8: a degraded (offline-fallback) draft is ALSO persisted and offers Edit — FR-123 editability is not gated on ai_generated");
-      snDegEditBtn.click();
-      ok(!!document.querySelector(".pp-gen-edit-form") && !el("pp-gen-result").querySelector(".pp-gen-ai-label"),
-         "PP SN-8: a degraded draft's edit view carries no AI-generated label to preserve — it never had one");
-      el("pp-gen-edit-cancel").click();
-      window.__ppGen = "ok"; await ppGenerateAndConfirm(80); // restore a clean "ok" fixture for later reads
-
-      // === FR-129 (86akgqdx8): regenerate produces a new draft while RETAINING the prior
-      // version until the operator explicitly confirms/discards it (single prior version,
-      // explicit-confirm-before-replace — see the Goal Contract for the full decision). The
-      // mock's `regenerate_pending`/`regenerate_pending_degraded` `window.__ppGen` values are
-      // DELIBERATELY ISOLATED from every other "g" branch (see that branch's own comment) —
-      // this block always sets up its OWN known-fresh "ok" fixture first, never relying on
-      // whatever a prior block left in `SN.draft`. ==========================================
-      window.__ppGen = "ok"; await ppGenerateAndConfirm(80); // known-fresh accepted draft
-      ok(/Grace That Feeds/.test(el("pp-gen-result").textContent) && !/regenerated/.test(el("pp-gen-result").textContent),
-         "PP REGEN-0 (setup): a known accepted draft exists before any regenerate attempt");
-
-      // REGEN-1: pressing Generate again on a transcript that already has a saved draft does
-      // NOT replace it — it STAGES the new draft instead, and the console shows both the new
-      // content and an explicit accept/discard choice.
-      window.__ppGen = "regenerate_pending"; await ppGenerateAndConfirm(80);
-      var regenResult = el("pp-gen-result");
-      ok(/Grace That Feeds \(regenerated\)/.test(regenResult.textContent),
-         "PP REGEN-1: the freshly regenerated draft's content is shown immediately");
-      var regenBanner = regenResult.querySelector(".pp-gen-regen-banner");
-      ok(!!regenBanner && getComputedStyle(regenBanner).display !== "none",
-         "PP REGEN-1: a pending-confirmation banner is rendered (computed display), not just present in markup");
-      ok(regenBanner.getAttribute("role") === "status",
-         "PP REGEN-1: the banner is a polite status, not an alert — nothing has gone wrong");
-      ok(/Grace That Feeds/.test(regenBanner.textContent) && !/\(regenerated\)/.test(regenBanner.textContent),
-         "PP REGEN-1: the banner names the STILL-SAVED prior draft's own title (the one about to " +
-         "possibly be replaced), not the new one — proving the operator can see it was not silently destroyed");
-      ok(!el("pp-gen-edit"),
-         "PP REGEN-1: Edit is hidden while a regeneration is pending — the content on screen is " +
-         "unconfirmed, and Edit would otherwise write to the accepted row while showing different text");
-      var regenConfirmBtn = el("pp-gen-regen-confirm");
-      var regenDiscardBtn = el("pp-gen-regen-discard");
-      ok(!!regenConfirmBtn && getComputedStyle(regenConfirmBtn).display !== "none" &&
-         !!regenDiscardBtn && getComputedStyle(regenDiscardBtn).display !== "none",
-         "PP REGEN-1: both Confirm ('Use this draft') and Discard ('Keep my current notes') are visibly offered");
-
-      // Direct proof the prior draft is RETRIEVABLE, unmodified, right now — not merely that
-      // the banner names it. `load_sermon_note_draft` is the same wire contract SN-2 above
-      // already uses for "what would a restart see right now".
-      var regenPriorStillSaved = await window.__TAURI__.core.invoke("load_sermon_note_draft");
-      ok(!!regenPriorStillSaved && regenPriorStillSaved.ok === true &&
-         regenPriorStillSaved.draft.title === "Grace That Feeds",
-         "PP REGEN-1 (AC): the prior draft is retrievable and UNCHANGED immediately after a " +
-         "regenerate is requested, before the operator confirms replacement");
-
-      // REGEN-2: Discard leaves the saved draft exactly as it was — no change at all.
-      var regenDiscardCallsBefore = ppCall("discard_sermon_note_regeneration").length;
-      regenDiscardBtn.click();
-      await sleep(60);
-      ok(ppCall("discard_sermon_note_regeneration").length === regenDiscardCallsBefore + 1,
-         "PP REGEN-2: Discard calls discard_sermon_note_regeneration");
-      var afterDiscard = el("pp-gen-result");
-      ok(/Grace That Feeds/.test(afterDiscard.textContent) && !/regenerated/.test(afterDiscard.textContent),
-         "PP REGEN-2: after Discard, the view shows the ORIGINAL saved draft, not the discarded one");
-      ok(!afterDiscard.querySelector(".pp-gen-regen-banner"),
-         "PP REGEN-2: the pending-confirmation banner is gone after Discard");
-      ok(!!el("pp-gen-edit") && getComputedStyle(el("pp-gen-edit")).display !== "none",
-         "PP REGEN-2: Edit is offered again once nothing is pending");
-      var regenAfterDiscardLoaded = await window.__TAURI__.core.invoke("load_sermon_note_draft");
-      ok(regenAfterDiscardLoaded.draft.title === "Grace That Feeds",
-         "PP REGEN-2: the persisted draft on the host is STILL the original — Discard changed nothing there");
-
-      // REGEN-3: Confirm REPLACES the saved draft with the new one — single prior version, so
-      // the version it replaces is now gone (not kept as further history).
-      window.__ppGen = "regenerate_pending"; await ppGenerateAndConfirm(80);
-      var regenConfirmCallsBefore = ppCall("confirm_sermon_note_regeneration").length;
-      el("pp-gen-regen-confirm").click();
-      await sleep(60);
-      ok(ppCall("confirm_sermon_note_regeneration").length === regenConfirmCallsBefore + 1,
-         "PP REGEN-3: 'Use this draft' calls confirm_sermon_note_regeneration");
-      var afterConfirm = el("pp-gen-result");
-      ok(/Grace That Feeds \(regenerated\)/.test(afterConfirm.textContent),
-         "PP REGEN-3: after Confirm, the view shows the NEW draft as the current one");
-      ok(!afterConfirm.querySelector(".pp-gen-regen-banner"),
-         "PP REGEN-3: the banner is gone once the regeneration is confirmed — nothing left pending");
-      ok(!!el("pp-gen-edit"),
-         "PP REGEN-3: Edit is offered again on the newly confirmed draft");
-      var regenAfterConfirmLoaded = await window.__TAURI__.core.invoke("load_sermon_note_draft");
-      ok(regenAfterConfirmLoaded.draft.title === "Grace That Feeds (regenerated)",
-         "PP REGEN-3: the CONFIRMED content is what the host now actually persists, re-read fresh " +
-         "over the same wire contract a restart would use — not merely a client-side swap");
-
-      // REGEN-4: consent-off still blocks Regenerate's network call EXACTLY like the original
-      // Generate flow (regression test, not an assumption) — regenerate reuses the exact same
-      // consent-gated generate_sermon_notes command, so this is the same code path SN-*/C-005
-      // already prove for a first-time generate, re-asserted here against a transcript that
-      // ALREADY has a saved draft.
-      window.__pp.cloud_notes_consent = false;
-      document.querySelector('.nav-item[data-surface="settings"]').click();
-      await sleep(60);
-      var regenGenCallsBefore = ppCall("generate_sermon_notes").length;
-      window.__ppGen = "regenerate_pending";
-      await ppGenerateAndConfirm(70);
-      var regenConsentOffResult = el("pp-gen-result");
-      ok(regenConsentOffResult.getAttribute("role") === "alert" &&
-         /Turn on cloud processing/.test(regenConsentOffResult.textContent),
-         "PP REGEN-4: with consent OFF, pressing Generate again on a transcript that already " +
-         "has a saved draft is STILL gated exactly like a first-time Generate (consent_required)");
-      ok(ppCall("generate_sermon_notes").length === regenGenCallsBefore + 1,
-         "PP REGEN-4 (sanity): the call reached the backend and was gated there — the client did " +
-         "not merely refuse locally");
-      ok(!/regenerated/.test(regenConsentOffResult.textContent),
-         "PP REGEN-4: no draft content of any kind leaked into view — nothing was generated");
-      var regenAfterConsentOffLoaded = await window.__TAURI__.core.invoke("load_sermon_note_draft");
-      ok(regenAfterConsentOffLoaded.draft.title === "Grace That Feeds (regenerated)",
-         "PP REGEN-4: the saved draft from REGEN-3 is completely unaffected by the refused attempt");
-      window.__pp.cloud_notes_consent = true;
-      document.querySelector('.nav-item[data-surface="settings"]').click();
-      await sleep(60);
-
-      // REGEN-5: a transport failure during regenerate must not lose the prior draft — same
-      // fallback ladder as a first-time Generate (PP C-005's own "transport" case), re-asserted
-      // here against a transcript that already has a saved draft. `window.__ppGen = "transport"`
-      // makes the mocked invoke() REJECT — the exact same simulated failure PP C-005 uses — so
-      // `generate_sermon_notes` never even returns a value to stage from, and the accepted
-      // draft cannot have been touched by construction (the real backend's own guarantee: see
-      // `an_unstaged_draft_has_no_pending_regeneration_and_is_unaffected_by_a_failed_generation_attempt`
-      // in selahcue-data's own test suite for the persistence-layer half of this same proof).
-      window.__ppGen = "transport"; await ppGenerateAndConfirm(70);
-      var regenTransportResult = el("pp-gen-result");
-      ok(regenTransportResult.getAttribute("role") === "alert",
-         "PP REGEN-5: a transport failure during regenerate surfaces as an alert, same as a first-time Generate");
-      var regenAfterTransportLoaded = await window.__TAURI__.core.invoke("load_sermon_note_draft");
-      ok(regenAfterTransportLoaded.draft.title === "Grace That Feeds (regenerated)",
-         "PP REGEN-5 (AC): a transport failure during regenerate never loses the prior (pre-regenerate) draft");
-
-      // REGEN-6: a DEGRADED (local-fallback) regenerate still stages (never silently refused
-      // outright) and still carries ai_generated:false + a degraded notice, matching the
-      // original flow's degraded handling — but "once AI-generated, always AI-generated" means
-      // it can be VIEWED and DISCARDED, never CONFIRMED over an already AI-generated draft.
-      window.__ppGen = "regenerate_pending_degraded"; await ppGenerateAndConfirm(80);
-      var regenDegResult = el("pp-gen-result");
-      ok(/Offline outline \(regenerated\)/.test(regenDegResult.textContent),
-         "PP REGEN-6: a degraded regenerate still stages and shows its content, exactly like the original flow's degraded handling");
-      ok(!regenDegResult.querySelector(".pp-gen-ai-label"),
-         "PP REGEN-6: the degraded pending draft carries no AI-generated label, same as a first-time degraded draft");
-      var regenDegNotice = regenDegResult.querySelector(".pp-gen-degraded");
-      ok(!!regenDegNotice && /could not be reached/i.test(regenDegNotice.textContent),
-         "PP REGEN-6: the degraded fallback notice renders on a pending regeneration too");
-      var regenDegConfirmCallsBefore = ppCall("confirm_sermon_note_regeneration").length;
-      el("pp-gen-regen-confirm").click();
-      await sleep(60);
-      ok(ppCall("confirm_sermon_note_regeneration").length === regenDegConfirmCallsBefore + 1,
-         "PP REGEN-6 (sanity): the confirm attempt actually reached the backend");
-      // The refusal is kept INLINE on the still-visible banner — never a whole-region wipe,
-      // which would strand the operator with no reachable Discard button on this transcript
-      // (settings.js can recover via settingsActivate()'s currentDraft re-render, but the
-      // Transcripts workspace genuinely cannot — transcript_get never re-surfaces a pending
-      // regeneration; this inline behaviour is shared code, so proving it here proves it there).
-      var regenDegResultAfterRefusal = el("pp-gen-result");
-      ok(/Offline outline \(regenerated\)/.test(regenDegResultAfterRefusal.textContent),
-         "PP REGEN-6: the pending draft's content is STILL shown after the refused confirm — nothing was wiped");
-      var regenDegInlineError = regenDegResultAfterRefusal.querySelector(".pp-gen-regen-error");
-      ok(!!regenDegInlineError && getComputedStyle(regenDegInlineError).display !== "none" &&
-         regenDegInlineError.getAttribute("role") === "alert" &&
-         /AI-generated label/.test(regenDegInlineError.textContent),
-         "PP REGEN-6: the refusal reason renders INLINE on the banner (role=alert), not as a " +
-         "separate message that replaces the draft view");
-      ok(!!el("pp-gen-regen-discard") && !!el("pp-gen-regen-confirm"),
-         "PP REGEN-6: Confirm/Discard remain reachable after a refused confirm — no dead end");
-      var regenDegAfterRefusedLoaded = await window.__TAURI__.core.invoke("load_sermon_note_draft");
-      ok(regenDegAfterRefusedLoaded.draft.title === "Grace That Feeds (regenerated)",
-         "PP REGEN-6: the accepted draft is untouched by the refused confirm attempt");
-      el("pp-gen-regen-discard").click();
-      await sleep(60);
-      ok(/Grace That Feeds \(regenerated\)/.test(el("pp-gen-result").textContent),
-         "PP REGEN-6: discarding the refused degraded regeneration cleanly restores the accepted draft");
-      ok(!el("pp-gen-result").querySelector(".pp-gen-regen-error"),
-         "PP REGEN-6: the inline refusal message is gone once the regeneration is resolved");
-
-      // === (F-5 / PERF-3) The review-and-confirm step is real, and an empty/below-minimum
-      // transcript is refused before any network call — 86akby7d8 ============================
-      // The footnote under Generate promises "You'll see exactly what's sent and confirm before
-      // anything is generated." Before this fix nothing enforced that: onGenerate sent on the
-      // same click (Sana F-5, escalated to release-blocking by Quinn — both read the shipped
-      // onGenerate themselves rather than take the gap on description). These checks fail if
-      // that regresses in EITHER direction: Generate reaching the network without an explicit
-      // Confirm, or Confirm sending something other than what the review step displayed.
-
-      // (a) PERF-3 (Vera): an empty transcript is refused before any network call, not sent —
-      // the guard that stops a mis-wire (defect 1) silently billing for a fabricated draft again.
-      // Driven through the REAL bridge (V.transcript + render()), not a direct global override —
-      // an empty FINALISED-segment list is what the host actually reports before any speech.
-      V.transcript = [];
-      render(Object.assign({}, baseView, { transcript: [] }));
-      ok(window.scCompletedTranscript === "", "PP defect 1: an empty transcript array bridges to \"\", not undefined or a stale value");
-      var genBeforeEmpty = ppCall("generate_sermon_notes").length;
-      el("pp-generate").click();
-      await sleep(40);
-      ok(ppCall("generate_sermon_notes").length === genBeforeEmpty,
-         "PP PERF-3: an empty transcript never reaches generate_sermon_notes — refused before the network call");
-      ok(el("pp-gen-preview").hidden === true,
-         "PP PERF-3: an empty transcript does not open the review step either — there is nothing to review");
-      var genEmptyRes = el("pp-gen-result");
-      ok(!!genEmptyRes && !genEmptyRes.hidden && /No transcript yet/.test(genEmptyRes.textContent),
-         "PP PERF-3: an empty transcript surfaces its own honest 'No transcript yet' state");
-
-      // (b) PERF-3: a below-floor, non-empty transcript (noise, not silence) is refused the same
-      // way, and distinguishably — the empty and near-empty cases say different true things.
-      V.transcript = [{ id: 701, text: "uh", start_ms: 0, end_ms: 300 }];
-      render(Object.assign({}, baseView, { transcript: V.transcript }));
-      ok(window.scCompletedTranscript === "uh", "PP defect 1: a single short segment bridges byte for byte");
-      el("pp-generate").click();
-      await sleep(40);
-      ok(ppCall("generate_sermon_notes").length === genBeforeEmpty,
-         "PP PERF-3: a below-minimum transcript never reaches generate_sermon_notes either");
-      var genShortRes = el("pp-gen-result");
-      ok(!!genShortRes && /too short/i.test(genShortRes.textContent) && !/No transcript yet/.test(genShortRes.textContent),
-         "PP PERF-3: a below-minimum (but non-empty) transcript surfaces 'too short', distinct from the empty case");
-
-      // (c) F-5: a real transcript opens a review step showing the EXACT string about to be sent,
-      // and calling generate_sermon_notes has still not happened.
-      V.transcript = PP_TRANSCRIPT_SEGMENTS;
-      render(Object.assign({}, baseView, { transcript: PP_TRANSCRIPT_SEGMENTS }));
-      ok(window.scCompletedTranscript === PP_TRANSCRIPT_FIXTURE, "PP defect 1: the fixture transcript is back via the real bridge before the review-step checks");
-      var genBeforeReview = ppCall("generate_sermon_notes").length;
-      el("pp-generate").click();
-      await sleep(40);
-      var previewBox = el("pp-gen-preview");
-      ok(!!previewBox && previewBox.hidden === false, "PP F-5: Generate opens the review step instead of sending");
-      // hidden-attr-vs-css-display trap (this webview): assert COMPUTED display, not just the
-      // cleared [hidden] attribute — a class display rule has defeated `hidden` here before.
-      ok(getComputedStyle(previewBox).display !== "none",
-         "PP F-5 (computed display): the review step is actually visible on screen, not defeated by a CSS display rule");
-      var previewText = previewBox.querySelector(".pp-gen-preview-text");
-      ok(!!previewText && previewText.textContent === PP_TRANSCRIPT_FIXTURE,
-         "PP F-5: the review step shows the EXACT text that will be sent, byte for byte");
-      ok(new RegExp(String(PP_TRANSCRIPT_FIXTURE.length) + " characters").test(previewBox.textContent),
-         "PP F-5: the review step states how much text is about to be sent");
-      // L-2 (Quinn, Cody, Vera — independently): the preview is honest about the byte count but
-      // said nothing about SCOPE — window.scCompletedTranscript is the operator's bounded recent
-      // tail (app.js's syncTranscript), not a full-service store (that's FR-130, not built), so a
-      // 45-minute sermon previews as a confident, complete-looking draft built from its last few
-      // minutes. Pin the disclosure copy exactly — unpinned copy is how F-5's promise rotted once.
-      var previewScope = previewBox.querySelector(".pp-gen-preview-scope");
-      ok(!!previewScope && previewScope.textContent ===
-         "This is drawn from the most recently transcribed speech, not the whole service — for a " +
-         "long sermon, that may be just the last few minutes.",
-         "PP F-5 L-2: the review step discloses that this may be a recent window, not the whole service (exact copy pinned)");
-      ok(document.activeElement && document.activeElement.id === "pp-gen-preview-title",
-         "PP F-5 a11y: opening the review step moves focus into it (a screen reader hears 'Review before sending', not silence)");
-      ok(ppCall("generate_sermon_notes").length === genBeforeReview,
-         "PP F-5: opening the review step alone still has not called generate_sermon_notes");
-      ok(el("pp-generate").hidden === true,
-         "PP F-5: the Generate button is hidden while its own review step is open (no double-fire path)");
-
-      // (d) F-5: Cancel sends nothing and returns the panel to idle.
-      el("pp-gen-preview-cancel").click();
-      await sleep(30);
-      ok(ppCall("generate_sermon_notes").length === genBeforeReview,
-         "PP F-5: Cancel never calls generate_sermon_notes");
-      ok(el("pp-gen-preview").hidden === true, "PP F-5: Cancel closes the review step");
-      // M-1 (Cody): the DOM `hidden` property alone is not proof the panel left the layout — this
-      // webview's known trap is an author `display` rule outranking the UA `[hidden]{display:none}`
-      // rule, which is exactly the direction the check above cannot see. Assert COMPUTED display,
-      // the same discipline the OPEN-direction check a few lines up already applies.
-      ok(getComputedStyle(el("pp-gen-preview")).display === "none",
-         "PP F-5 M-1 (computed display): Cancel actually removes the panel from layout, not just the [hidden] attribute");
-      ok(el("pp-generate").hidden === false, "PP F-5: Cancel restores the Generate button");
-      ok(document.activeElement === el("pp-generate"),
-         "PP F-5 a11y: Cancel returns keyboard focus to Generate, not to whatever the browser defaults to");
-
-      // (e) F-5: Confirm sends the SAME string the review step displayed, and only once pressed.
-      el("pp-generate").click();
-      await sleep(40);
-      // L-1 (Sana and Quinn, independently): the check below used to compare the sent transcript
-      // to PP_TRANSCRIPT_FIXTURE without ever moving the transcript between preview-open and
-      // Confirm — so a captured value and a fresh re-read of window.scCompletedTranscript were
-      // trivially identical and the check could not fail under the mutation it claims to guard
-      // against (confirmGenerate re-reading the global instead of using the value it was handed).
-      // Advance the transcript through the REAL render() path while the preview sits open — exactly
-      // what the live 1s poll would do during a real review — so the two are actually different.
-      var PP_TRANSCRIPT_SEGMENTS_ADVANCED = PP_TRANSCRIPT_SEGMENTS.concat([
-        { id: 604, text: "And now the congregation begins to respond.", start_ms: 9000, end_ms: 12000 },
-      ]);
-      var PP_TRANSCRIPT_FIXTURE_ADVANCED =
-        PP_TRANSCRIPT_FIXTURE + "\nAnd now the congregation begins to respond.";
-      V.transcript = PP_TRANSCRIPT_SEGMENTS_ADVANCED;
-      render(Object.assign({}, baseView, { transcript: PP_TRANSCRIPT_SEGMENTS_ADVANCED }));
-      // Positive control: prove the transcript genuinely advanced underneath the open preview
-      // before trusting the control below to have caught anything.
-      ok(window.scCompletedTranscript === PP_TRANSCRIPT_FIXTURE_ADVANCED,
-         "PP F-5 L-1 (premise): the bridge really did advance past what the open preview is showing, while the preview stayed open");
-      // PP-GEN: .pp-gen-preview-confirm:hover — same defect class as .pm-btn-primary:hover/CON-007.
-      // Checked HERE, right before Confirm is clicked, while the review step is genuinely open —
-      // the button is rebuilt fresh on each Generate cycle, so a later check point cannot rely on
-      // finding it still in the DOM.
-      (function() {
-        var confirmEl = el("pp-gen-preview-confirm");
-        var restBg = _rgba(getComputedStyle(confirmEl).backgroundColor);
-        var restR = _cr([255,255,255,1], restBg);
-        ok(restR >= 4.5,
-           "PP-GEN (premise): .pp-gen-preview-confirm REST already clears AA-NORMAL (flat --sc-primary, " + _f(restR) + ":1) — only :hover regresses");
-        var hoverRule = __cssRule(".pp-gen-preview-confirm:hover");
-        ok(!!hoverRule, "PP-GEN (premise): the .pp-gen-preview-confirm:hover rule is present in the shipped app.css");
-        var hb = __cssBg(hoverRule);
-        ok(!!hb, "PP-GEN (premise): the .pp-gen-preview-confirm:hover rule declares a background, so there is a value to measure");
-        if (hb) {
-          var hoverBg = _resolve(hb.trim());
-          var hoverR = _cr([255,255,255,1], hoverBg);
-          ok(hoverR >= 4.5, "PP-GEN: the HOVERED .pp-gen-preview-confirm keeps its white label at AA-NORMAL (" + _f(hoverR) + ":1)");
-          ok(_lum(hoverBg) < _lum(restBg),
-             "PP-GEN: .pp-gen-preview-confirm hover DARKENS the fill instead of lightening it, matching .pm-btn-primary:hover");
-        }
-      })();
-      // PSC-005: .pp-gen-preview-confirm[disabled] / [aria-busy="true"] — Cody's PR #60 re-review
-      // found the exact same trap reproduced here: this class is shared by the transient Confirm
-      // button above (never disabled) and the edit-draft Save button (id pp-gen-save/tr-gen-save
-      // in settings.js/transcripts.js, which sets disabled + aria-busy="true" while saving), and
-      // :hover/[disabled] are equal specificity with nothing declared here to make the disabled
-      // rule win. Same two-check technique as .pp-generate[disabled] and .ps-start:disabled above:
-      // the disabled rule must declare its own background, AND that background must be the exact
-      // REST fill — not just any declared value (Cody/Vera's PR #62 finding on PSC-005 itself).
-      var wPpGenConfirmDisabledRule = __cssRule('.pp-gen-preview-confirm[disabled], .pp-gen-preview-confirm[aria-busy="true"]');
-      ok(!!wPpGenConfirmDisabledRule, "PP-GEN (premise): the .pp-gen-preview-confirm[disabled] rule is present in the shipped app.css");
-      var wPpGenConfirmDisabledBg = __cssBg(wPpGenConfirmDisabledRule);
-      ok(!!wPpGenConfirmDisabledBg,
-         "PP-GEN: the .pp-gen-preview-confirm disabled rule declares its OWN background — without one, `:hover` (equal specificity) wins the fill and a disabled/saving button visibly flips to the active colour on hover");
-      var wPpGenConfirmBaseRule = __cssRule(".pp-gen-preview-confirm");
-      ok(!!wPpGenConfirmBaseRule, "PP-GEN (premise): the rest-state .pp-gen-preview-confirm rule is present in the shipped app.css");
-      var wPpGenConfirmBaseBg = __cssBg(wPpGenConfirmBaseRule);
-      ok(!!wPpGenConfirmBaseBg, "PP-GEN (premise): the rest-state rule declares a background, so there is a value to compare the disabled rule against");
-      if (wPpGenConfirmDisabledBg && wPpGenConfirmBaseBg) {
-        ok(wPpGenConfirmDisabledBg.trim() === wPpGenConfirmBaseBg.trim(),
-           "PP-GEN: the .pp-gen-preview-confirm disabled rule's background is EXACTLY the rest-state fill (found \"" + wPpGenConfirmDisabledBg.trim() +
-           "\" vs rest \"" + wPpGenConfirmBaseBg.trim() + "\") — not just any declared value, the one that keeps a disabled/saving button visually inert");
-      }
-      el("pp-gen-preview-confirm").click();
-      await sleep(70);
-      var sentCall = ppLast("generate_sermon_notes");
-      ok(!!sentCall && sentCall.args.transcript === PP_TRANSCRIPT_FIXTURE,
-         "PP F-5: Confirm sends the exact transcript the review step displayed — not a re-read that could have drifted");
-      ok(!!sentCall && sentCall.args.transcript !== PP_TRANSCRIPT_FIXTURE_ADVANCED,
-         "PP F-5 L-1: ...and specifically NOT the transcript that advanced underneath the open preview (a re-read-at-send regression sends this)");
-      ok(el("pp-gen-preview").hidden === true, "PP F-5: the review step closes once Confirm is pressed");
-      ok(getComputedStyle(el("pp-gen-preview")).display === "none",
-         "PP F-5 M-1 (computed display): Confirm actually removes the panel from layout, not just the [hidden] attribute");
-      window.__ppGen = "ok"; // restore for any later reads
-      V.transcript = undefined; V.partial_transcript = undefined; // undo the persistent override above
-      render(baseView); // clears view.transcript back to the default so the trailing 1s poll stays consistent
 
       // === (C-010) THE FOUR PROVIDER STATES — 86akby7d8 ==================================
       // The panel's rendered state must match the backend's reported state in every one of them.
@@ -11553,10 +10962,9 @@ right after a generate/save");
          "PP C-010: the throwaway developer-key posture is stated on the card, not implied");
       ok(/gpt-5\.6-terra/.test(document.querySelector(".pp-ai-status").textContent),
          "PP C-010: the model actually in use is disclosed");
-      // quota STAYS null in this phase — a working provider must not conjure a meter.
-      var qDirect = document.querySelector(".pp-quota");
-      ok(qDirect.classList.contains("pp-quota-empty") && !/\d+\s*\/\s*\d+/.test(qDirect.textContent),
-         "PP C-010: with generation WORKING and no metering, quota is still the honest placeholder — no fabricated meter");
+      // No quota meter exists on this card any more (17tnw2b0ntd) — a working provider must not conjure one.
+      ok(!document.querySelector(".pp-quota") && !/\d+\s*\/\s*\d+/.test(el("pp-ai").textContent),
+         "PP C-010: with generation WORKING there is still no meter and no fabricated n/m figure");
 
       // (c) "hosted" — Phase 2. The hosted service is reachable; the pills say so, and the developer
       // -key language is absent because it does not apply.
@@ -11567,13 +10975,6 @@ right after a generate/save");
          "PP C-010: hosted renders the Available + Cloud-connected pills");
       ok(!document.querySelector(".pp-badge-dev"),
          "PP C-010: hosted does NOT show the developer-key badge");
-
-      // (d) a real quota, when a hosted server ever reports one, still drives the meter.
-      window.__pp.quota = {used:13, limit:40, remaining:27, resets_label:"Sep 1"};
-      await ppReactivate();
-      var q2 = document.querySelector(".pp-quota");
-      ok(!q2.classList.contains("pp-quota-empty") && /13/.test(q2.textContent) && /\/\s*40/.test(q2.textContent),
-         "PP C-006: a real server-reported quota renders the used/limit meter");
 
       // restore the honest stock-build default for everything after this block
       window.__pp.cloud_status = "not_configured"; window.__pp.notes_provider = null; window.__pp.quota = null;
@@ -12314,7 +11715,7 @@ right after a generate/save");
       // DESIGN-2.0-PARITY-AUDIT-settings.md's A11Y-1 said no gradient defect was found here,
       // which was wrong; corrected alongside this fix.
       // .pp-generate REST: a two-stop gradient, like GO LIVE — both stops must be measured.
-      var wPpGen = el("pp-generate");
+      var wPpGen = el("tr-generate");
       var wPpGenStops = _stops(wPpGen);
       ok(wPpGenStops.length === 2 && !_same(wPpGenStops[0], wPpGenStops[1]),
          "PP-GEN (premise): .pp-generate REST really is a two-stop gradient (" + wPpGenStops.length + " stops, distinct), so 'measured at both stops' is not vacuous");
@@ -14317,10 +13718,10 @@ right after a generate/save");
          "CON-072 (control): the trailing 'Esc Esc' key chip is UNCHANGED, still present");
 
       // --- CON-081: the nav menu's Transcript & Notes sub-label copy changed ---
-      var con081NavD = document.querySelector('.nav-item[data-surface="console"][data-focus="transcript"] .nav-d');
+      var con081NavD = document.querySelector('.nav-item[data-surface="transcripts"] .nav-d');
       var con081NavDText = con081NavD ? con081NavD.textContent.replace(/\s+/g, " ").trim() : "";
-      ok(!!con081NavD && con081NavDText === "Live transcript + sermon AI",
-         "CON-081: the nav menu's Transcript & Notes sub-label now reads 'Live transcript + sermon AI' (was 'Live transcript · in Console') — got " +
+      ok(!!con081NavD && con081NavDText === "Review transcripts & generate notes",
+         "CON-081: the nav menu's Transcript & Notes sub-label now reads 'Review transcripts & generate notes' (17tnw2b0ntd D2; was 'Live transcript + sermon AI') — got " +
          JSON.stringify(con081NavDText));
 
       // --- CON-140: the Detected Scriptures tab now carries a ✦ det-star glyph before its label
