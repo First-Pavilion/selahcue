@@ -2,13 +2,13 @@
 
 > **DRAFT — NOT LEGAL ADVICE — REQUIRES REVIEW BY A QUALIFIED LAWYER BEFORE PUBLICATION**
 >
-> Version 0.2 (draft, 2026-10-01). Status: Draft — every `{{PLACEHOLDER}}` must be filled and every
+> Version 0.3 (draft, 2026-10-01). Status: Draft — every `{{PLACEHOLDER}}` must be filled and every
 > launch-readiness condition in `docs/legal/LEGAL-DRAFT-NOTES.md` §4 must be satisfied before
 > publication. These Terms describe SelahCue as it operates at launch. Publishing them while any
 > launch-readiness condition is unmet would make them inaccurate. Clauses the owner and counsel must
 > accept as new risk allocations are listed in the notes file §6.
 
-- **Provider:** `{{LEGAL_ENTITY_NAME}}`, trading as SelahCue
+- **Provider and seller:** `{{LEGAL_ENTITY_NAME}}`, trading as SelahCue
 - **Registered address:** `{{REGISTERED_ADDRESS}}`
 - **Registration number:** `{{COMPANY_REGISTRATION_NUMBER}}`
 - **Contact:** `{{SUPPORT_CONTACT_EMAIL}}` · **Legal notices:** `{{LEGAL_NOTICES_EMAIL}}`
@@ -18,31 +18,35 @@
 
 ## Summary in plain language
 
-This summary helps you understand the Terms. If it conflicts with the full Terms below, the full
-Terms apply.
+This summary helps you understand the Terms. If it conflicts with the full Terms below, the full Terms
+apply.
 
-- **Who agrees.** These Terms are an agreement between SelahCue and the church or organisation that
-  uses SelahCue. The person who accepts them confirms they are allowed to accept on the
-  organisation's behalf.
-- **What you get.** A licence to install and use the SelahCue desktop app on computers your
-  organisation controls, within the device limit of your plan. Core presentation features work
-  offline. Each computer is activated once, then runs offline until your licence period ends.
-- **Plans and payment.** We offer a free plan and paid plans. Paid plans are billed in advance. You
-  can cancel at any time and keep paid features until the end of the period you paid for. If a paid
-  plan ends, you keep its features for 7 more days, then move to the free plan.
-- **Your content is yours.** Slides, songs, media, transcripts and notes belong to you or the people
-  you licensed them from. They stay on your computers unless you use a cloud feature. You are
-  responsible for having the rights to show them and for telling people when services are
-  transcribed.
-- **AI can be wrong.** Transcripts can contain mistakes. Scripture detection only suggests a verse;
-  an operator approves it by default. AI sermon notes can contain invented or misattributed content
-  and must be checked by a person before you use them.
-- **Live events carry risk.** Rehearse, keep a backup plan, and do not rely on SelahCue as your only
-  way to run a service. Licence changes never interrupt a presentation that is already running.
-- **Limits.** The software is provided "as is", and our liability is limited, except where the law
-  does not allow this.
-- **Leaving.** You can stop using SelahCue and close your account at any time. We can suspend or end
-  access for serious misuse, with notice where we reasonably can.
+- **Who agrees.** These Terms are an agreement between SelahCue and the church or organisation that uses
+  SelahCue. The person who accepts them confirms they are allowed to accept on the organisation's
+  behalf.
+- **What you get.** A licence to install and use the SelahCue desktop app on computers your organisation
+  controls, within the device limit of your plan. Core presentation features work offline. Each computer
+  is activated once, then runs offline until your licence period ends. Downloads always give you the
+  latest release.
+- **Plans and payment.** We offer a free plan and paid plans. You buy paid plans from us; payments are
+  processed by Paystack. Paid plans are billed in advance. You can cancel at any time and keep paid
+  features until the end of the period you paid for. If a paid plan ends, you keep its features for 7
+  more days, then move to the free plan.
+- **Your content is yours.** Slides, songs, media, transcripts and notes belong to you or the people you
+  licensed them from. They stay on your computers unless you use a cloud feature. You are responsible
+  for having the rights to show them and for telling people when services are transcribed.
+- **Cloud features send data to other companies.** If an administrator turns them on, cloud transcription sends live
+  audio to Deepgram and AI sermon notes send transcript text to OpenAI, which can process it in another
+  country.
+- **AI can be wrong.** Transcripts can contain mistakes. Scripture detection only suggests a verse; an
+  operator approves it by default. AI sermon notes can contain invented or misattributed content and
+  must be checked by a person before you use them.
+- **Live events carry risk.** Rehearse, keep a backup plan, and do not rely on SelahCue as your only way
+  to run a service. Licence changes never interrupt a presentation that is already running.
+- **Limits.** The software is provided "as is", and our liability is limited, except where the law does
+  not allow this.
+- **Leaving.** You can stop using SelahCue and delete or close your account at any time. We can suspend
+  or end access for serious misuse, with notice where we reasonably can.
 
 ---
 
@@ -52,8 +56,8 @@ Terms apply.
 
 1.1 These Terms of Service ("**Terms**") govern your use of:
 
-- the SelahCue desktop application, including its operator console and output window (the
-  "**Desktop Software**");
+- the SelahCue desktop application, including its operator console and output window (the "**Desktop
+  Software**");
 - the SelahCue website at `{{WEBSITE_URL}}`, including sign-up, sign-in, checkout and the customer
   portal;
 - SelahCue accounts and platform services, including plans, billing, licences, device activation and
@@ -63,20 +67,18 @@ Terms apply.
 together, the "**Services**".
 
 1.2 The SelahCue Controller mobile app is also governed by the SelahCue Controller Terms of Use at
-`{{CONTROLLER_TERMS_URL}}`. If those terms conflict with these Terms about the mobile app, the
-Controller Terms of Use apply. If you got the app from an app store, that store's terms also apply to
-your download.
+`{{CONTROLLER_TERMS_URL}}`. If those terms conflict with these Terms about the mobile app, the Controller
+Terms of Use apply. If you got the app from an app store, that store's terms also apply to your
+download.
 
 1.3 These Terms include, by reference:
 
 - our Privacy Policy at `{{PRIVACY_POLICY_URL}}`;
-- the plan details on our pricing page or in your order (the "**Plan Terms**");
-- our data processing terms at `{{DPA_REFERENCE}}`, which apply to the Cloud Features; and
+- the plan details on our pricing page or in your order (the "**Plan Terms**"); and
 - the publisher terms for any licensed Bible translation your plan includes (section 9.3).
 
 1.4 **Order of precedence.** If documents conflict, this order applies: a signed agreement between you
-and us; the data processing terms (for data protection matters only); the Plan Terms; these Terms;
-then the Documentation.
+and us; the Plan Terms; these Terms; then the Documentation.
 
 ### 2. Who agrees to these Terms
 
@@ -90,9 +92,9 @@ confirms that they:
 2.2 If you use the Services only for yourself and not for an organisation, "you" means you personally.
 Some laws give individuals (consumers) rights that these Terms cannot remove; see section 18.
 
-2.3 You accept these Terms by ticking the box when you create an account, or by installing or using
-the Desktop Software. We keep a record of the version you accepted and when. If you do not agree, do
-not use the Services.
+2.3 You accept these Terms by ticking the box when you create an account, or by installing or using the
+Desktop Software. We keep a record of the version you accepted and when. If you do not agree, do not use
+the Services.
 
 ### 3. Definitions
 
@@ -104,14 +106,15 @@ In these Terms:
   generated automatically by the Services.
 - "**Billing Period**" means the period for which a paid Plan is billed in advance.
 - "**Customer Content**" means content you or your users create, import, display or process with the
-  Services, including slides, songs, lyrics, media, service plans, themes, transcripts, corrections
-  and sermon notes.
+  Services, including slides, songs, lyrics, media, service plans, themes, transcripts, corrections and
+  sermon notes.
 - "**Device**" means one installation of the Desktop Software on one computer.
 - "**Documentation**" means the user guides and help pages we publish for the Services.
 - "**Plan**" means the free or paid package of features, device allowance and usage allowances that
   applies to your Account.
-- "**Session**" means one continuous run of a presentation in the Desktop Software, from start until
-  it is closed.
+- "**Release**" means a version of the Desktop Software that we make available to download.
+- "**Session**" means one continuous run of a presentation in the Desktop Software, from start until it
+  is closed.
 - "**Third-Party Components**" means software, content or services provided by someone other than us,
   including open-source software.
 
@@ -149,25 +152,30 @@ within the device allowance and other limits of your Plan.
 
 5.3 You must not, and must not let anyone else:
 
-- copy, modify or create derivative works of the Desktop Software, except as the law allows despite
-  this restriction;
+- copy, modify or create derivative works of the Desktop Software, except as the law allows despite this
+  restriction;
 - reverse engineer, decompile or disassemble it, except as the law allows despite this restriction;
 - remove, bypass or interfere with licensing, activation, signed licence files, watermarks or usage
   limits;
-- sell, rent, lend, sublicense or otherwise make the Desktop Software available to anyone outside
-  your organisation;
+- sell, rent, lend, sublicense or otherwise make the Desktop Software available to anyone outside your
+  organisation;
 - remove or change any copyright, trademark or attribution notice; or
 - use the Services in breach of section 11.
 
-5.4 **Updates.** We release updates that fix problems, improve security or change features. Some
-updates are needed to keep using the Platform Services or Cloud Features. Security updates for your
-licensed version remain available to download even if your paid Plan has ended.
+5.4 **Updates.** We release updates that fix problems, improve security or change features. Some updates
+are needed to keep using the Platform Services or Cloud Features. You can download the latest Release
+even after a paid Plan has ended; your Plan decides which features it enables.
 
-5.5 **Third-Party Components.** The Desktop Software includes Third-Party Components, including
+5.5 **Downloads and Releases.** You download the Desktop Software through your Account or an activated
+Device, using a download link that expires after a short time. A download always gives you the latest
+Release. We keep earlier Releases so that, if a Release has a serious problem, we can withdraw it and
+make an earlier Release the one you download until the problem is fixed.
+
+5.6 **Third-Party Components.** The Desktop Software includes Third-Party Components, including
 open-source software. They are licensed under their own terms, which are listed in
 `{{THIRD_PARTY_NOTICES_LOCATION}}`. Nothing in these Terms limits your rights under those licences.
 
-5.6 We and our licensors keep all rights not expressly granted to you.
+5.7 We and our licensors keep all rights not expressly granted to you.
 
 ### 6. Devices, activation and offline use
 
@@ -204,10 +212,11 @@ pricing page or in your order. Usage allowances for Cloud Features reset every
 
 8.2 **Trials.** `{{TRIAL_TERMS}}`
 
-8.3 **Who you buy from and how you pay.** `{{MERCHANT_OF_RECORD}}` Payments are processed by
-`{{PAYMENT_PROVIDER}}` under its own terms. By buying a paid Plan, you authorise us, or our payment
-provider for us, to charge your chosen payment method for the fees, taxes and any renewals described
-in this Part C.
+8.3 **Who you buy from and how you pay.** You buy paid Plans from `{{LEGAL_ENTITY_NAME}}`, which is the
+seller. Payments are processed by Paystack, our payment processor, on its checkout page and under its
+own terms. By buying a paid Plan, you authorise us to charge your chosen payment method, through
+Paystack, for the fees, taxes and any renewals described in this Part C. We are responsible for your
+invoices, for the taxes we must collect, for refunds and for handling failed payments.
 
 8.4 **Billing Periods.** Paid Plans are billed in advance for each Billing Period. The Billing Periods
 available are `{{BILLING_PERIODS}}`. Prices are in `{{CURRENCY}}`.
@@ -216,22 +225,22 @@ available are `{{BILLING_PERIODS}}`. Prices are in `{{CURRENCY}}`.
 cancel at any time in the customer portal, which stops all future renewals.
 
 8.6 **Cancellation.** You can cancel a paid Plan at any time in the customer portal or by emailing
-`{{SUPPORT_CONTACT_EMAIL}}`. Cancellation takes effect at the end of the current Billing Period. Your
-paid features stay available until then. After that, section 8.13 applies.
+`{{SUPPORT_CONTACT_EMAIL}}`. Cancellation takes effect at the end of the current Billing Period. Your paid
+features stay available until then. After that, section 8.13 applies.
 
-8.7 **Refunds.** `{{REFUND_POLICY}}` This does not affect any right to a refund you have under law.
+8.7 **Refunds.** `{{REFUND_POLICY}}` We pay refunds to the payment method you used, through Paystack.
+This does not affect any right to a refund you have under law.
 
 8.8 **Price changes.** We may change prices for future Billing Periods. We will give you at least
-`{{PRICE_CHANGE_NOTICE_DAYS}}` days' notice by email. A new price applies from your next renewal. If
-you do not agree, you can cancel before it takes effect.
+`{{PRICE_CHANGE_NOTICE_DAYS}}` days' notice by email. A new price applies from your next renewal. If you
+do not agree, you can cancel before it takes effect.
 
-8.9 **Taxes.** Prices exclude taxes unless the pricing page or your order says otherwise. Where we, or
-our payment provider, must collect value added tax, sales tax or similar taxes, they are added to your
-invoice. You are responsible for any other taxes that apply to your purchase, except taxes on our
-income.
+8.9 **Taxes.** Prices exclude taxes unless the pricing page or your order says otherwise. Where we must
+collect value added tax, sales tax or similar taxes, we add them to your invoice. You are responsible for
+any other taxes that apply to your purchase, except taxes on our income.
 
-8.10 **Invoices.** We send receipts and invoices to your Account's billing contact email or, if there
-is none, to your Administrators. You can see your billing history in the customer portal.
+8.10 **Invoices.** We send receipts and invoices to your Account's billing contact email or, if there is
+none, to your Administrators. You can see your billing history in the customer portal.
 
 8.11 **Upgrades and downgrades.**
 
@@ -240,50 +249,49 @@ is none, to your Administrators. You can see your billing history in the custome
 - **Downgrade.** A downgrade takes effect `{{DOWNGRADE_TIMING}}`. Your remaining usage allowance for the
   current allowance period becomes the new Plan's allowance less what you have already used, and not
   less than zero.
-- **Devices.** A downgrade never deactivates or deletes your Devices. If you have more activated
-  Devices than the new Plan allows, the limit applies when each Session starts: the Devices that start
-  Sessions first may present, and the others are told why and shown how to upgrade. Upgrading again
-  restores all of them without re-activation.
+- **Devices.** A downgrade never deactivates or deletes your Devices. If you have more activated Devices
+  than the new Plan allows, the limit applies when each Session starts: the Devices that start Sessions
+  first may present, and the others are told why and shown how to upgrade. Upgrading again restores all
+  of them without re-activation.
 
-8.12 **Failed payments and suspension.** If a payment fails, we tell you by email and try the payment
-again. If it is still unpaid after `{{FAILED_PAYMENT_GRACE_PERIOD}}`, we may suspend your paid Plan.
-During a suspension:
+8.12 **Failed payments and suspension.** If a payment fails, we tell you by email and ask you to update
+your payment method or pay again. If it is still unpaid after `{{FAILED_PAYMENT_GRACE_PERIOD}}`, we may
+suspend your paid Plan. During a suspension:
 
 - Devices that are already activated keep presenting;
 - new activations, licence-file renewals and Cloud Features stop; and
-- once you pay, your Plan returns to the state it was in before the suspension, without
-  re-activating any Device.
+- once you pay, your Plan returns to the state it was in before the suspension, without re-activating
+  any Device.
 
-8.13 **When a paid Plan ends.** If a paid Plan ends because it was cancelled, not renewed or not paid,
-you keep the paid Plan's features for a grace period of 7 days, and we remind you to renew. After that,
-your Account moves to the free Plan, starting from the next Session. A Session that is already running
-is not interrupted. Renewing at any time restores the paid Plan from the next Session.
+8.13 **When a paid Plan ends.** If a paid Plan ends because it was cancelled, not renewed or not paid, you
+keep the paid Plan's features for a grace period of 7 days, and we remind you to renew. After that, your
+Account moves to the free Plan, starting from the next Session. A Session that is already running is not
+interrupted. Renewing at any time restores the paid Plan from the next Session.
 
 ## Part D — Content, AI and acceptable use
 
 ### 9. Your content and Bible texts
 
-9.1 **You own your content.** As between you and us, you keep all rights in Customer Content. We claim
-no ownership of it.
+9.1 **You own your content.** As between you and us, you keep all rights in Customer Content. We claim no
+ownership of it.
 
-9.2 **We do not receive local content.** The Desktop Software stores Customer Content on your Devices.
-We do not have access to it. If you send Customer Content to us, for example for support or through a
-Cloud Feature, you grant us a limited, non-exclusive licence to use it only to provide that support or
-feature to you, for as long as needed. We do not use it for any other purpose.
+9.2 **We do not receive local content.** The Desktop Software stores Customer Content on your Devices. We
+do not have access to it. If you send Customer Content to us, for example for support or through a Cloud
+Feature, you grant us a limited, non-exclusive licence to use it only to provide that support or feature
+to you, for as long as needed. We do not use it for any other purpose.
 
 9.3 **Bible texts.**
 
-- The Desktop Software includes these public-domain Bible translations: King James Version, World
-  English Bible, American Standard Version, World English Bible British Edition and the Darby
-  Translation.
-- In the United Kingdom, printing and importing printed copies of the King James Version are subject
-  to rights held under Crown letters patent. If you are in the United Kingdom and intend to print or
+- The Desktop Software includes these public-domain Bible translations: King James Version, World English
+  Bible, American Standard Version, World English Bible British Edition and the Darby Translation.
+- In the United Kingdom, printing and importing printed copies of the King James Version are subject to
+  rights held under Crown letters patent. If you are in the United Kingdom and intend to print or
   distribute King James Version text, check whether you need permission.
 - Some Plans include copyrighted translations licensed from their publishers, as shown on our pricing
   page. Each publisher's terms apply to its translation as well as these Terms. You must not extract,
   copy, export or redistribute a licensed translation except as the publisher's terms allow. If our
-  licence from a publisher ends, we may have to remove that translation, and we will tell you in
-  advance where we can.
+  licence from a publisher ends, we may have to remove that translation, and we will tell you in advance
+  where we can.
 
 9.4 **Your responsibilities for content.** You are responsible for:
 
@@ -292,8 +300,8 @@ feature to you, for as long as needed. We do not use it for any other purpose.
   or publisher licences);
 - telling people when services may be recorded or transcribed, and getting any consent the law
   requires, including from parents or guardians where children may be heard;
-- complying with data protection law for the personal data in Customer Content, as the organisation
-  that controls it; and
+- having the right to send audio and transcripts to the Cloud Features, if you turn them on;
+- complying with data protection law for the personal data in Customer Content; and
 - keeping your own backups of Customer Content.
 
 9.5 **Feedback.** If you send us suggestions or feedback, we may use them without restriction or
@@ -309,8 +317,8 @@ automatically. **AI Output can be wrong.** In particular:
 - scripture detection can suggest the wrong verse. By default, an operator must approve a suggestion
   before it is shown. If you turn on automatic display, you accept the higher risk of a wrong verse
   appearing on screen; and
-- AI sermon notes can leave out important points, misquote speakers, misattribute or invent content,
-  and cite scripture incorrectly. The app labels notes as AI-generated and shows this warning.
+- AI sermon notes can leave out important points, misquote speakers, misattribute or invent content, and
+  cite scripture incorrectly. The app labels notes as AI-generated and shows this warning.
 
 10.2 You must have a person review AI Output before you display it, publish it or rely on it. You are
 responsible for what appears on your screens and in anything you publish.
@@ -325,36 +333,41 @@ responsible for what appears on your screens and in anything you publish.
 
 - break any law or anyone's rights, including copyright, privacy and data protection rights;
 - record, transcribe or broadcast people where you are not allowed to;
-- display or distribute content that is unlawful, defamatory, hateful or that sexually exploits
-  anyone;
+- display or distribute content that is unlawful, defamatory, hateful or that sexually exploits anyone;
 - access a computer, network or Account without permission, or control a SelahCue Desktop that you are
   not authorised to operate;
 - interfere with or disrupt the Services, or another organisation's use of them;
 - probe, scan or test the security of our systems, except under a written agreement with us;
 - send automated requests that place an unreasonable load on our servers, or get around rate limits;
-- share Accounts, enrolment keys, access credentials or licence files outside your organisation; or
-- misuse Cloud Features, including by trying to get around usage allowances or using them for
-  purposes unrelated to SelahCue.
+- share Accounts, enrolment keys, access credentials, download links or licence files outside your
+  organisation; or
+- misuse Cloud Features, including by trying to get around usage allowances or using them for purposes
+  unrelated to SelahCue.
 
 11.2 You must run the Desktop Software and the mobile controller only on networks and computers you are
 authorised to use, and you must keep pairing approvals and device access under control.
 
 ### 12. Cloud Features
 
-12.1 SelahCue offers two optional Cloud Features: cloud transcription, which streams live audio to our
-speech provider, and AI sermon notes, which sends completed transcript text to our AI provider. They
-are off by default. An Administrator must turn on each one. Before you turn one on, the Desktop
-Software tells you what data it sends, to which provider, and where that provider is.
+12.1 SelahCue offers two optional Cloud Features:
 
-12.2 When you use a Cloud Feature, your church remains responsible for the audio and transcripts it
-sends. We process them for you under the data processing terms in `{{DPA_REFERENCE}}`.
+- **Cloud transcription**, which streams live audio from your Device directly to Deepgram; and
+- **AI sermon notes**, which sends completed transcript text to OpenAI.
 
-12.3 Cloud Features depend on third-party providers and internet access. They may be slower, limited
-or unavailable at times. If a Cloud Feature fails, your presentation is not affected.
+They are off by default. An Administrator must turn on each one. Before you turn one on, the Desktop
+Software tells you what data it sends, to which provider, and that the data can be processed in
+another country.
 
-12.4 Cloud Features have usage allowances under your Plan. When an allowance runs out, the feature
-stops until the allowance resets or you upgrade. Presentation features continue. A note generation
-that fails because of an error on our side or our provider's side does not use up your allowance;
+12.2 When you use a Cloud Feature, your audio or transcript leaves your church's network and is
+processed by Deepgram or OpenAI under their own terms, on servers that can be in a different country
+from yours. Our Privacy Policy explains this in more detail.
+
+12.3 Cloud Features depend on third-party providers and internet access. They may be slower, limited or
+unavailable at times. If a Cloud Feature fails, your presentation is not affected.
+
+12.4 Cloud Features have usage allowances under your Plan. When an allowance runs out, the feature stops
+until the allowance resets or you upgrade. Presentation features continue. A note generation that fails
+because of an error on our side or our provider's side does not use up your allowance;
 `{{RETRY_ALLOWANCE_TERMS}}`
 
 ## Part E — Third parties, availability and support
@@ -367,8 +380,9 @@ that fails because of an error on our side or our provider's side does not use u
 - **Hugging Face**, from which the Desktop Software downloads speech-recognition model files when you
   first use live transcription.
 - **Google Fonts**, which our website uses to load a font.
-- Our payment provider, `{{PAYMENT_PROVIDER}}`.
-- Our cloud transcription and AI providers, `{{STT_PROVIDER}}` and `{{NOTES_PROVIDER}}`.
+- **Paystack**, which processes payments.
+- **Deepgram** and **OpenAI**, which provide the Cloud Features.
+- **`{{DOWNLOAD_HOSTING_PROVIDER}}`**, which stores and delivers our installers.
 - Bible publishers, for licensed translations.
 - App stores, if you download the SelahCue Controller app.
 
@@ -392,22 +406,23 @@ unused part of your fees.
 
 ### 15. Suspension and termination
 
-15.1 **By you.** You can stop using the Services at any time. An Administrator can close your Account
-in the customer portal or by emailing `{{SUPPORT_CONTACT_EMAIL}}`. Closing the Account cancels any paid
-Plan under section 8.6.
+15.1 **By you.** You can stop using the Services at any time. You can delete your user account in your
+account settings, and an Administrator can close your organisation's Account in the customer portal or
+by emailing `{{SUPPORT_CONTACT_EMAIL}}`. Closing the Account cancels any paid Plan under section 8.6. To
+get a copy of your data first, follow the steps in our Privacy Policy.
 
-15.2 **By us.** We may suspend or end your access to the Platform Services or Cloud Features, or end
-these Terms, if:
+15.2 **By us.** We may suspend or end your access to the Platform Services or Cloud Features, or end these
+Terms, if:
 
-- you seriously or repeatedly break these Terms and, if the problem can be fixed, do not fix it within
-  14 days of our notice;
+- you seriously or repeatedly break these Terms and, if the problem can be fixed, do not fix it within 14
+  days of our notice;
 - we must do so to comply with the law or a court or regulator's order; or
 - your use creates a serious security risk, or risk of harm, to us, other customers or anyone else.
 
 Suspension for non-payment is covered by section 8.12.
 
-15.3 We give notice and an explanation where we reasonably can. In urgent cases we may act first and
-tell you as soon as possible.
+15.3 We give notice and an explanation where we reasonably can. In urgent cases we may act first and tell
+you as soon as possible.
 
 15.4 **What happens when these Terms end.**
 
@@ -421,9 +436,9 @@ tell you as soon as possible.
 
 16.1 We provide the Services with reasonable care and skill.
 
-16.2 Apart from that, and to the extent the law allows, the Services and AI Output are provided "as
-is" and "as available". We do not promise that the Services will be uninterrupted, error-free or
-compatible with all hardware, displays, audio equipment or networks.
+16.2 Apart from that, and to the extent the law allows, the Services and AI Output are provided "as is"
+and "as available". We do not promise that the Services will be uninterrupted, error-free or compatible
+with all hardware, displays, audio equipment or networks.
 
 16.3 **Live production risk.** Live events depend on many things outside our control, including
 computers, displays, cables, networks, power and the people operating them. You are responsible for
@@ -431,18 +446,17 @@ testing your setup before each event and for having a fallback.
 
 16.4 You are responsible for the security and backups of your own computers and networks.
 
-16.5 Nothing in this section removes rights you have under law that cannot be excluded. See section
-18.
+16.5 Nothing in this section removes rights you have under law that cannot be excluded. See section 18.
 
 ### 17. Limitation of liability
 
-17.1 **What we do not limit.** Nothing in these Terms limits or excludes liability for death or
-personal injury caused by negligence, for fraud or fraudulent misrepresentation, or any other
-liability that the law does not allow to be limited or excluded.
+17.1 **What we do not limit.** Nothing in these Terms limits or excludes liability for death or personal
+injury caused by negligence, for fraud or fraudulent misrepresentation, or any other liability that the
+law does not allow to be limited or excluded.
 
-17.2 **Indirect losses.** Subject to section 17.1, neither party is liable for indirect or
-consequential loss, or for loss of profits, revenue, donations, goodwill or data, arising from these
-Terms or the Services. This does not limit your obligation to pay fees.
+17.2 **Indirect losses.** Subject to section 17.1, neither party is liable for indirect or consequential
+loss, or for loss of profits, revenue, donations, goodwill or data, arising from these Terms or the
+Services. This does not limit your obligation to pay fees.
 
 17.3 **Overall cap.** Subject to section 17.1, our total liability arising from these Terms or the
 Services in any 12-month period is limited to the greater of:
@@ -455,10 +469,9 @@ rights under section 18.
 
 ### 18. Consumer rights
 
-18.1 If you are an individual using the Services for personal purposes, you may have legal rights as a
-consumer that these Terms cannot exclude or limit, for example under the Federal Competition and
-Consumer Protection Act 2018 in Nigeria, or consumer law in the European Union or the United Kingdom.
-Nothing in these Terms affects those rights.
+18.1 If you are an individual using the Services for personal purposes, the consumer laws of the country
+where you live may give you rights that these Terms cannot exclude or limit. Nothing in these Terms
+affects those rights.
 
 ### 19. Indemnity
 
@@ -468,22 +481,21 @@ arising from a third-party claim that:
 - Customer Content infringes someone's rights; or
 - you recorded, transcribed or broadcast people in breach of the law.
 
-19.2 We will tell you promptly about such a claim, let you control its defence, and cooperate with you
-at your cost. We will not settle it without your consent, which you will not unreasonably withhold.
+19.2 We will tell you promptly about such a claim, let you control its defence, and cooperate with you at
+your cost. We will not settle it without your consent, which you will not unreasonably withhold.
 
 ## Part G — General terms
 
 ### 20. Intellectual property
 
-20.1 We and our licensors own the Services, the Desktop Software, the Documentation and the SelahCue
-name and logos. These Terms do not give you any right to use our name or logos except to identify that
-you use SelahCue.
+20.1 We and our licensors own the Services, the Desktop Software, the Documentation and the SelahCue name
+and logos. These Terms do not give you any right to use our name or logos except to identify that you
+use SelahCue.
 
 ### 21. Privacy
 
-21.1 Our Privacy Policy explains how we handle personal data. For Customer Content kept on your
-Devices, your organisation is the data controller. For the Cloud Features, our data processing terms
-apply.
+21.1 Our Privacy Policy explains how we handle personal data. Customer Content kept on your Devices stays
+under your organisation's control.
 
 ### 22. Governing law and disputes
 
@@ -499,14 +511,13 @@ Nothing in this section removes that right.
 
 ### 23. Changes to these Terms
 
-23.1 We may update these Terms. We post the new version at `{{TERMS_URL}}` and change the effective
-date.
+23.1 We may update these Terms. We post the new version at `{{TERMS_URL}}` and change the effective date.
 
-23.2 For material changes, we give account holders at least `{{TERMS_CHANGE_NOTICE_DAYS}}` days'
-notice by email or in the product, unless the change is required by law sooner or is needed for
-security. We ask Administrators to accept material changes before they continue to use the Platform
-Services, and we record that acceptance. If you do not agree, you can stop using the Services and, if
-you have prepaid, receive a refund of unused fees.
+23.2 For material changes, we give account holders at least `{{TERMS_CHANGE_NOTICE_DAYS}}` days' notice
+by email or in the product, unless the change is required by law sooner or is needed for security. We
+ask Administrators to accept material changes before they continue to use the Platform Services, and we
+record that acceptance. If you do not agree, you can stop using the Services and, if you have prepaid,
+receive a refund of unused fees.
 
 ### 24. Other terms
 
