@@ -754,11 +754,9 @@ fn operator_presentation_media_surface_is_wired() {
         "id=\"surface-presentation\"",
         "id=\"pm-slide-list\"",
         "id=\"pm-canvas\"",
-        "id=\"pm-media-grid\"",
         "id=\"pm-notes\"",
         "id=\"pm-transition\"",
         "id=\"pm-autoadv\"",
-        "id=\"pm-import\"",
         "id=\"pm-undo\"",
         "id=\"pm-grid\"",
         "id=\"pm-grid-edit\"",
@@ -766,14 +764,52 @@ fn operator_presentation_media_surface_is_wired() {
         "id=\"pm-done\"",
         // Scoped to the PM toolbar so it can't accidentally match the Theme Designer's add-bar.
         "class=\"pm-tool\" data-add=\"text\"",
-        // The contextual right panel: Media ⟷ Inspector tabs + the two bodies (86ajvjtax).
-        "id=\"pm-tab-media\"",
-        "id=\"pm-tab-inspector\"",
+        // The right column is the Inspector only; the media library is a MODAL opened from the
+        // toolbar Image button, this header button, or Inspector → Replace…
+        // (PRESENTATION-MEDIA-LIBRARY-MODAL-spec.md).
         "id=\"pm-inspector-body\"",
-        "id=\"pm-media-body\"",
+        "id=\"pm-open-media\"",
     ] {
         assert!(html.contains(needle), "index.html missing {needle:?}");
     }
+    // The Media/Inspector tab pair and the static media panel are GONE (regression guard): a second
+    // copy of the library's ids in the static markup would collide with the modal's.
+    for gone in [
+        "id=\"pm-tab-media\"",
+        "id=\"pm-tab-inspector\"",
+        "id=\"pm-media-body\"",
+        "id=\"pm-media-grid\"",
+        "id=\"pm-import\"",
+    ] {
+        assert!(
+            !html.contains(gone),
+            "index.html still carries {gone:?} — the media library is a modal now"
+        );
+    }
+    // The modal itself is built on demand by app.js, so its load-bearing ids live there.
+    for needle in [
+        "pmOpenMediaModal",
+        "pmCloseMediaModal",
+        "\"pm-confirm-back pm-media-back\"", // the global key-guard sentinel class
+        "\"pm-media-grid\"",
+        "\"pm-import\"",
+        "\"pm-media-insert\"",
+        "\"pm-media-confirm\"", // the inline remove confirmation (pmConfirm cannot open over a modal)
+        "deck_add_image_elements",
+        "deck_import_images",
+        "media_thumbnail",
+    ] {
+        assert!(js.contains(needle), "app.js missing {needle:?}");
+    }
+    // LIVE-SERVICE SAFETY: the modal's scrim must stop above the emergency footer. `.pm-confirm-back`
+    // is declared LATER in app.css with the same single-class specificity, so a bare `.pm-media-back`
+    // rule loses the cascade and the scrim covers BLACKOUT / Clear — a doubled-class selector is what
+    // makes the override win. (The headless gate asserts the computed bottom; this pins the source.)
+    let css = operator_dist("app.css");
+    assert!(
+        css.contains(".pm-confirm-back.pm-media-back { inset: 0 0 56px 0;"),
+        "app.css lost the doubled-class scrim override that keeps the emergency footer reachable"
+    );
     // The webview→engine bridge commands + the own render loop.
     for needle in [
         // The exact APP_SURFACES + SURFACE_LABEL registration (a bare "presentation" would be a
