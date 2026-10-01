@@ -1,25 +1,27 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import UiBadge from '@/components/UiBadge.vue'
 import UiButton from '@/components/UiButton.vue'
+import { supportArticles, supportCategories, supportIn, supportPath } from '@/lib/content/support.ts'
+import { readMinutes } from '@/lib/content/text.ts'
 
 const searchQuery = ref('')
 
-const categories = [
-  { icon: '🚀', title: 'Getting Started', desc: 'Installation, first-time setup, and quickstart guide', count: 8 },
-  { icon: '🖥️', title: 'Display & Outputs', desc: 'Configuring audience screens, stage displays & NDI', count: 12 },
-  { icon: '📖', title: 'Scripture & Bibles', desc: 'Using built-in Bibles, search, and entitlement downloads', count: 7 },
-  { icon: '⏱️', title: 'Timers & Clocks', desc: 'Stage countdowns, service plans, and TIME UP state', count: 5 },
-  { icon: '🔧', title: 'Troubleshooting', desc: 'Graphics drivers, NDI lags, audio routing, crash logs', count: 14 },
-  { icon: '💳', title: 'Licensing & Billing', desc: 'Managing subscriptions, license keys, and device seats', count: 9 }
-]
+// Categories, their article counts and every link come from the local content source, so
+// each card and row resolves to a real article (GAP-08). The old hand-typed counts claimed
+// articles that did not exist.
+const startHere = supportArticles.filter((a) => a.startHere)
+const categoryTitle = (id: string): string => supportCategories.find((c) => c.id === id)?.title ?? id
 
-const popularArticles = [
-  { title: 'How to setup NDI output for OBS and vMix', category: 'Display & Outputs', readTime: '3 min' },
-  { title: 'Offline Bible entitlement download and licensing', category: 'Scripture & Bibles', readTime: '4 min' },
-  { title: 'Configuring stage confidence monitors with custom timers', category: 'Timers & Clocks', readTime: '5 min' },
-  { title: 'Deactivating and reassigning venue device seats', category: 'Licensing & Billing', readTime: '2 min' }
-]
+/**
+ * Client-side filter over the local articles. Not a search backend (out of scope): it
+ * matches the typed text against titles and summaries, which is all the index can know.
+ */
+const results = computed(() => {
+  const q = searchQuery.value.trim().toLowerCase()
+  if (q === '') return null
+  return supportArticles.filter((a) => `${a.title} ${a.summary}`.toLowerCase().includes(q))
+})
 </script>
 
 <template>
@@ -29,50 +31,76 @@ const popularArticles = [
         <UiBadge variant="featured">Support &amp; Help Center</UiBadge>
         <h1 class="hero-title">How can we help you today?</h1>
         
-        <div class="search-box">
-          <svg viewBox="0 0 20 20" fill="currentColor" class="search-icon">
+        <div class="search-box" role="search">
+          <svg viewBox="0 0 20 20" fill="currentColor" class="search-icon" aria-hidden="true">
             <path fill-rule="evenodd" d="M8 4a4 4 0 100 8 4 4 0 000-8zM2 8a6 6 0 1110.89 3.476l4.817 4.817a1 1 0 01-1.414 1.414l-4.816-4.816A6 6 0 012 8z" clip-rule="evenodd"/>
           </svg>
           <input 
             v-model="searchQuery" 
-            type="text" 
+            type="search" 
             class="search-input" 
-            placeholder="Search help articles (e.g. NDI, Bible entitlement, stage monitor)..." 
+            aria-label="Search help articles"
+            placeholder="Search help articles (e.g. stage display, pairing, crash recovery)..." 
           />
         </div>
       </div>
     </section>
 
-    <!-- Categories Grid -->
-    <section class="categories-section">
+    <!-- Search results replace the browse sections while a query is typed. -->
+    <section v-if="results" class="articles-section" aria-labelledby="results-heading">
       <div class="container">
-        <h2 class="section-title">Knowledge Base Categories</h2>
-        <div class="categories-grid">
-          <div v-for="cat in categories" :key="cat.title" class="category-card">
-            <div class="cat-icon">{{ cat.icon }}</div>
-            <h3 class="cat-title">{{ cat.title }}</h3>
-            <p class="cat-desc">{{ cat.desc }}</p>
-            <span class="cat-count">{{ cat.count }} articles</span>
+        <h2 id="results-heading" class="section-title">Search results</h2>
+        <p class="results-status" role="status" aria-live="polite">
+          {{ results.length === 0 ? 'No help articles match that search.' : `${results.length} help ${results.length === 1 ? 'article matches' : 'articles match'} your search.` }}
+        </p>
+        <div class="articles-list">
+          <div v-for="art in results" :key="art.category + '/' + art.slug" class="article-row">
+            <div>
+              <h3 class="article-title"><router-link class="article-link" :to="supportPath(art)">{{ art.title }}</router-link></h3>
+              <span class="article-meta">{{ categoryTitle(art.category) }} &middot; {{ readMinutes(art.body) }} min read</span>
+            </div>
           </div>
         </div>
       </div>
     </section>
 
-    <!-- Popular Articles -->
-    <section class="articles-section">
-      <div class="container">
-        <h2 class="section-title">Popular Help Articles</h2>
-        <div class="articles-list">
-          <div v-for="art in popularArticles" :key="art.title" class="article-row">
-            <div>
-              <h4 class="article-title">{{ art.title }}</h4>
-              <span class="article-meta">{{ art.category }} &middot; {{ art.readTime }} read</span>
+    <template v-else>
+      <!-- Categories Grid -->
+      <section class="categories-section">
+        <div class="container">
+          <h2 class="section-title">Knowledge Base Categories</h2>
+          <div class="categories-grid">
+            <div v-for="cat in supportCategories" :id="cat.id" :key="cat.id" class="category-card">
+              <div class="cat-icon" aria-hidden="true">{{ cat.icon }}</div>
+              <h3 class="cat-title">{{ cat.title }}</h3>
+              <p class="cat-desc">{{ cat.desc }}</p>
+              <ul class="cat-articles">
+                <li v-for="a in supportIn(cat.id)" :key="a.slug">
+                  <router-link class="cat-article-link" :to="supportPath(a)">{{ a.title }}</router-link>
+                </li>
+              </ul>
+              <span class="cat-count">{{ supportIn(cat.id).length }} {{ supportIn(cat.id).length === 1 ? 'article' : 'articles' }}</span>
             </div>
-            <UiButton variant="ghost" size="sm">Read Article →</UiButton>
           </div>
         </div>
-      </div>
-    </section>
+      </section>
+
+      <!-- Start here -->
+      <section v-if="startHere.length" class="articles-section" aria-labelledby="start-heading">
+        <div class="container">
+          <h2 id="start-heading" class="section-title">Start here</h2>
+          <div class="articles-list">
+            <div v-for="art in startHere" :key="art.category + '/' + art.slug" class="article-row">
+              <div>
+                <h3 class="article-title">{{ art.title }}</h3>
+                <span class="article-meta">{{ categoryTitle(art.category) }} &middot; {{ readMinutes(art.body) }} min read</span>
+              </div>
+              <UiButton variant="ghost" size="sm" :to="supportPath(art)">Read article<span class="sr-only">: {{ art.title }}</span> →</UiButton>
+            </div>
+          </div>
+        </div>
+      </section>
+    </template>
 
     <!-- Contact Support CTA -->
     <section class="help-cta">
@@ -243,5 +271,38 @@ const popularArticles = [
 @media (max-width: 900px) {
   .categories-grid { grid-template-columns: 1fr; }
   .article-row { flex-direction: column; align-items: flex-start; gap: 12px; }
+}
+</style>
+
+<style scoped>
+/* GAP-08: category cards list their articles; rows are real links. Own block so it does
+   not sit inside the rules the responsive pass is editing above. */
+.category-card { cursor: default; }
+.category-card:hover { transform: none; }
+.cat-articles { display: flex; flex-direction: column; gap: 2px; margin: 0 0 16px; }
+.cat-article-link {
+  display: block;
+  padding: 8px 0;
+  min-height: 44px;
+  font-size: 14px;
+  line-height: 1.4;
+  color: var(--sc-text);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  text-decoration-color: var(--sc-border-strong);
+}
+.cat-article-link:hover { color: var(--sc-primary-hover); text-decoration-color: currentColor; }
+.cat-article-link:focus-visible, .article-link:focus-visible { outline: 2px solid var(--sc-primary); outline-offset: 2px; border-radius: 3px; }
+.article-link { color: inherit; }
+.article-link:hover { color: var(--sc-primary-hover); text-decoration: underline; }
+.results-status { font-size: 15px; color: var(--sc-text-secondary); margin: -16px 0 20px; }
+.category-card { scroll-margin-top: 96px; }
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
 }
 </style>

@@ -71,6 +71,11 @@ export interface KnowledgeCategory {
 export interface KnowledgeArticle extends ArticleBase {
   /** Matches a `KnowledgeCategory.id` in the same collection. */
   readonly category: string
+  /**
+   * Editorially chosen "start here" article for the index page. This is a curation flag,
+   * not a popularity claim: there is no analytics behind the site to say what is popular.
+   */
+  readonly startHere?: boolean
 }
 
 /** One step in a breadcrumb trail. The last step is the current page and has no link. */

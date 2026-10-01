@@ -1,13 +1,12 @@
 <script setup lang="ts">
 import UiBadge from '@/components/UiBadge.vue'
 import UiButton from '@/components/UiButton.vue'
+import { blogPath, blogPosts, featuredPost } from '@/lib/content/blog.ts'
+import { formatDate, readMinutes } from '@/lib/content/text.ts'
 
-const posts = [
-  { id: 1, title: 'Why Offline-First Presentation Matters for Sunday Morning', tag: 'Product Strategy', date: 'August 5, 2026', readTime: '5 min read', desc: 'When church Wi-Fi fails, your presentation software shouldn’t blank. Here is how SelahCue’s desktop-authoritative architecture protects your service.' },
-  { id: 2, title: 'Setting Up Multi-Screen Confidence Monitors and Timers', tag: 'Worship Tech', date: 'July 28, 2026', readTime: '4 min read', desc: 'A step-by-step guide to routing current slides, next items, and countdown clocks to your stage team.' },
-  { id: 3, title: 'Understanding Bible Translation Copyright & Licensing', tag: 'Legal & Entitlements', date: 'July 14, 2026', readTime: '6 min read', desc: 'Why public domain translations are bundled offline, and how post-activation entitlement grants work for copyrighted versions like NIV and ESV.' },
-  { id: 4, title: 'Integrating NDI 5 with OBS and vMix for Broadcast Quality', tag: 'Livestreaming', date: 'June 30, 2026', readTime: '4 min read', desc: 'Stream transparent lower thirds and worship lyrics directly to your stream switcher with zero capture card latency.' }
-]
+// Every card below is generated from the local content source, so each one resolves to a
+// real article (GAP-08). The featured post is shown in its own panel, not repeated in the grid.
+const posts = blogPosts.filter((p) => p !== featuredPost)
 </script>
 
 <template>
@@ -21,17 +20,15 @@ const posts = [
     </section>
 
     <!-- Featured Post -->
-    <section class="featured-section">
+    <section v-if="featuredPost" class="featured-section" aria-labelledby="featured-heading">
       <div class="container">
         <div class="featured-card">
           <div class="featured-badge"><UiBadge variant="live">Featured Article</UiBadge></div>
-          <h2 class="featured-title">Introducing SelahCue 1.2: Native NDI &amp; Multi-Screen Precision</h2>
-          <p class="featured-desc">
-            Explore our latest release featuring direct NDI streaming, encrypted Bible translation downloads, and zero-latency hardware buffer outputs.
-          </p>
+          <h2 id="featured-heading" class="featured-title">{{ featuredPost.title }}</h2>
+          <p class="featured-desc">{{ featuredPost.summary }}</p>
           <div class="featured-meta">
-            <span>SelahCue Engineering Team &middot; August 8, 2026 &middot; 7 min read</span>
-            <UiButton variant="gradient" size="sm">Read Story →</UiButton>
+            <span>SelahCue Team &middot; {{ formatDate(featuredPost.published) }} &middot; {{ readMinutes(featuredPost.body) }} min read</span>
+            <UiButton variant="gradient" size="sm" :to="blogPath(featuredPost.slug)">Read story<span class="sr-only">: {{ featuredPost.title }}</span> →</UiButton>
           </div>
         </div>
       </div>
@@ -41,15 +38,15 @@ const posts = [
     <section class="grid-section">
       <div class="container">
         <div class="blog-grid">
-          <div v-for="post in posts" :key="post.id" class="blog-card">
-            <UiBadge variant="preview" size="sm">{{ post.tag }}</UiBadge>
+          <article v-for="post in posts" :key="post.slug" class="blog-card">
+            <UiBadge variant="preview" size="sm">{{ post.category }}</UiBadge>
             <h3 class="card-title">{{ post.title }}</h3>
-            <p class="card-desc">{{ post.desc }}</p>
+            <p class="card-desc">{{ post.summary }}</p>
             <div class="card-footer">
-              <span class="meta-text">{{ post.date }} &middot; {{ post.readTime }}</span>
-              <button type="button" class="read-link">Read →</button>
+              <span class="meta-text">{{ formatDate(post.published) }} &middot; {{ readMinutes(post.body) }} min read</span>
+              <router-link class="read-link" :to="blogPath(post.slug)">Read<span class="sr-only">: {{ post.title }}</span> →</router-link>
             </div>
-          </div>
+          </article>
         </div>
       </div>
     </section>
@@ -91,5 +88,20 @@ const posts = [
 @media (max-width: 768px) {
   .blog-grid { grid-template-columns: 1fr; }
   .featured-meta { flex-direction: column; align-items: flex-start; gap: 16px; }
+}
+</style>
+
+<style scoped>
+/* GAP-08: the cards link to real articles now. */
+.read-link { text-decoration: none; }
+.read-link:hover { text-decoration: underline; text-underline-offset: 3px; }
+.read-link:focus-visible { outline: 2px solid var(--sc-primary); outline-offset: 3px; border-radius: 4px; }
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
 }
 </style>
