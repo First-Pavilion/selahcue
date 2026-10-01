@@ -91,7 +91,19 @@ class _NoTransitionsBuilder extends PageTransitionsBuilder {
 
 /// Reconnect with stored credentials, or fall into pairing.
 class Launcher extends StatefulWidget {
-  const Launcher({super.key});
+  /// How to open the authenticated session at launch. A test seam with the same
+  /// shape as [LiveController]'s: it defaults to the production
+  /// `SelahSession.connect`, and lets a test make the launch connect fail in a
+  /// specific way without a real socket.
+  final Future<ControllerSession> Function({
+    required String host,
+    required int port,
+    required String pinHex,
+    required Credentials creds,
+  })?
+  connect;
+
+  const Launcher({super.key, this.connect});
 
   @override
   State<Launcher> createState() => _LauncherState();
@@ -119,32 +131,42 @@ class _LauncherState extends State<Launcher> {
       return;
     }
     setState(() => _status = 'Reconnecting to ${stored.host}…');
+    // ONLY the connect is guarded: a failure after it has succeeded (during the
+    // brand delay or the navigation) must not be routed to Connect, which would
+    // orphan the freshly-opened session.
+    final ControllerSession session;
     try {
-      final session = await SelahSession.connect(
+      final connect = widget.connect ?? SelahSession.connect;
+      session = await connect(
         host: stored.host,
         port: stored.port,
         pinHex: stored.pinHex,
         creds: Credentials(deviceId: stored.deviceId, token: stored.token),
       );
-      await brand;
-      if (!mounted) {
-        // Unmounted during the brand delay — nothing will navigate to the
-        // controller, so close the freshly-opened session rather than leak
-        // its pinned-TLS socket (no-leak rule).
-        unawaited(session.close());
-        return;
-      }
-      Navigator.of(context).pushReplacement(
-        MaterialPageRoute(
-          builder: (_) => ControllerView(session: session, stored: stored),
-        ),
-      );
-    } on SessionException {
-      // Credentials may be revoked or the host moved — go straight to Connect
-      // (which explains the situation), rather than stalling on the splash.
+    } on Object {
+      // ANY connect failure goes straight to Connect (which explains the
+      // situation), rather than stalling on the splash: credentials revoked, the
+      // host moved, or the host answered the handshake with garbage (a
+      // FormatException for non-JSON, a TypeError for a binary frame — neither
+      // is a SessionException, and an unhandled one here left the splash
+      // spinning for ever, 17tnw2b0vtj).
       await brand;
       if (mounted) _goPair();
+      return;
     }
+    await brand;
+    if (!mounted) {
+      // Unmounted during the brand delay — nothing will navigate to the
+      // controller, so close the freshly-opened session rather than leak
+      // its pinned-TLS socket (no-leak rule).
+      unawaited(session.close());
+      return;
+    }
+    Navigator.of(context).pushReplacement(
+      MaterialPageRoute(
+        builder: (_) => ControllerView(session: session, stored: stored),
+      ),
+    );
   }
 
   void _goPair() {

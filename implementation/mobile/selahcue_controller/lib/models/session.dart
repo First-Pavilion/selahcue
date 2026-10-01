@@ -331,7 +331,21 @@ class StreamQueue {
         throw const SessionException('timed out waiting for the host');
       }
     }
-    final decoded = jsonDecode(frame as String);
+    // A binary frame arrives as bytes, not a String, and a text frame need not
+    // be JSON. Both are the peer breaking the protocol, so surface them as the
+    // [SessionException] every caller already treats as "this link is bad":
+    // a raw TypeError (`frame as String`) / FormatException (`jsonDecode`)
+    // slipped past all of those handlers and wedged the reconnect loop and the
+    // launch splash (17tnw2b0vtj).
+    if (frame is! String) {
+      throw const SessionException('malformed frame from the host');
+    }
+    final Object? decoded;
+    try {
+      decoded = jsonDecode(frame);
+    } on FormatException {
+      throw const SessionException('malformed frame from the host');
+    }
     if (decoded is! Map<String, dynamic>) {
       throw const SessionException('malformed frame from the host');
     }

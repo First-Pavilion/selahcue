@@ -626,37 +626,18 @@ class LiveController extends ChangeNotifier {
       // already closed / unreachable
     }
     while (!_disposed) {
+      // ONLY the connect attempt is guarded below, not what follows a success:
+      // a failure after a connect has succeeded is not a reason to open a second
+      // session (which would orphan this one), and it must not be mistaken for a
+      // transient network failure.
+      final ControllerSession fresh;
       try {
-        final fresh = await _connect(
+        fresh = await _connect(
           host: stored.host,
           port: stored.port,
           pinHex: stored.pinHex,
           creds: Credentials(deviceId: stored.deviceId, token: stored.token),
         );
-        if (_disposed) {
-          await fresh.close();
-          return;
-        }
-        _session = fresh;
-        // A reconnect can ALSO carry a new grant (the handshake re-issues it),
-        // so diff here too — before anything else reads the new session. Same
-        // helper, same one slot: the controls vanish immediately (FR-090) and
-        // the receipt is the only trace of WHY, since otherwise a chip in the
-        // app bar would quietly change word and nothing else would say so.
-        _syncRole();
-        // A new connection: every snapshot taken and every intent formed against
-        // the old one is now stale by definition.
-        _epoch++;
-        _reconnecting = false;
-        _statusError = null;
-        _notify();
-        // Re-read host state promptly. Controls stay disabled until this lands
-        // (see [syncing]), so without it the operator would face up to a full
-        // poll interval of dead controls after every blip. Scheduled rather than
-        // awaited because we are usually already inside refresh()'s own frame,
-        // where the in-flight guard would swallow a direct call.
-        Timer.run(refresh);
-        return;
       } on SessionRevoked {
         // An admin unpaired/revoked this device — retrying can never succeed.
         // Stop, drop the dead credentials, and surface the revoked state so the
@@ -671,9 +652,45 @@ class LiveController extends ChangeNotifier {
         }
         _notify();
         return;
-      } on SessionException {
+      } on Object {
+        // Every OTHER failure of a connect attempt is transient: back off and
+        // try again. That is deliberately broader than [SessionException].
+        // `_connect` is an injectable seam, and a host that answers the auth
+        // handshake with garbage used to surface as a raw FormatException
+        // (non-JSON) or TypeError (binary frame) that escaped this loop with
+        // `_reconnecting` still true — one attempt, ever, and a banner stuck on
+        // "Connection lost — reconnecting…" (17tnw2b0vtj). The loop must not
+        // depend on every connect implementation keeping that hygiene.
+        //
+        // Bounded: one attempt per backoff, nothing accumulates between them, and
+        // [unpair] stays reachable the whole time.
         await Future<void>.delayed(const Duration(seconds: 2));
+        continue;
       }
+      if (_disposed) {
+        await fresh.close();
+        return;
+      }
+      _session = fresh;
+      // A reconnect can ALSO carry a new grant (the handshake re-issues it),
+      // so diff here too — before anything else reads the new session. Same
+      // helper, same one slot: the controls vanish immediately (FR-090) and
+      // the receipt is the only trace of WHY, since otherwise a chip in the
+      // app bar would quietly change word and nothing else would say so.
+      _syncRole();
+      // A new connection: every snapshot taken and every intent formed against
+      // the old one is now stale by definition.
+      _epoch++;
+      _reconnecting = false;
+      _statusError = null;
+      _notify();
+      // Re-read host state promptly. Controls stay disabled until this lands
+      // (see [syncing]), so without it the operator would face up to a full
+      // poll interval of dead controls after every blip. Scheduled rather than
+      // awaited because we are usually already inside refresh()'s own frame,
+      // where the in-flight guard would swallow a direct call.
+      Timer.run(refresh);
+      return;
     }
   }
 
