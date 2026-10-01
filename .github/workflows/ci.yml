@@ -1004,6 +1004,34 @@ jobs:
       - name: Test (stt,cloud-stt)
         if: ${{ !cancelled() }}
         run: cargo test --features stt,cloud-stt --no-fail-fast
+      # `stt` ALONE -- the configuration users actually install (86ak4y8yr). `windows-installer.yml`
+      # builds `cargo tauri build --features stt`, with no `cloud-stt` (that feature is
+      # `RELEASE: UNSAFE`, so the Makefile strips it from release builds). The `stt,cloud-stt` pair
+      # above is a DIFFERENT compilation: `cloud-stt` implies `stt`, so it lints most of
+      # `listening.rs`, but `start_listening` has a `#[cfg(not(feature = "cloud-stt"))]` arm that is
+      # compiled ONLY when `stt` is on and `cloud-stt` is off, i.e. only in the shipped build. Until
+      # this step, no push or PR compiled that arm; the first sign of a break there would have been a
+      # manual `windows-installer` run.
+      #
+      # Clippy, not a separate `cargo check`: clippy type-checks every cfg arm, so a compile error
+      # fails here too. No `Test (stt)` step: measured on macOS, `cargo test --features stt` runs 198
+      # tests and every one of them also runs in the `stt,cloud-stt` pair above (206; the 8 extras
+      # are `cloud-stt`-gated), and the only non-test code that differs is that one arm. Revisit if a
+      # test is ever gated `not(feature = "cloud-stt")`.
+      #
+      # Cost: this job already builds `whisper-rs-sys` (cmake/whisper.cpp) and the vendored OpenSSL
+      # for the steps above, with an identical `selahcue-stt` feature set, so cargo reuses those
+      # artefacts and this step re-checks only the operator crate plus the non-`deepgram` build of
+      # `selahcue-stt-cloud`. That is why it lives here, on all three OSes, rather than in a new job
+      # (a new job would pay checkout/toolchain/cache setup AND a second cold whisper.cpp + OpenSSL
+      # build per OS) and rather than Linux-only (Windows is the one OS the installer ships on, and
+      # this job's own history rejects dropping it). Measured locally (macOS arm64, deps already
+      # built by the `stt,cloud-stt` clippy run): 7s for this step. Hosted-runner cost is NOT yet
+      # measured; if a hosted run shows a matrix arm near `timeout-minutes`, the fallback is a
+      # Linux-only `if:` here -- the cfg arm is platform-independent -- not removing the step.
+      - name: Clippy (stt -- the shipped configuration, no cloud-stt)
+        if: ${{ !cancelled() }}
+        run: cargo clippy --features stt --all-targets -- -D warnings
 
   flutter:
     name: flutter controller
