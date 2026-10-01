@@ -250,6 +250,8 @@ SHEET_STATE_JS = r"""
     activeLabel: active ? (active.getAttribute('aria-label') || active.innerText || '').trim().slice(0, 30) : '',
     htmlOverflow: document.documentElement.style.overflow,
     bodyOverflow: document.body.style.overflow,
+    appInert: document.getElementById('app') ? document.getElementById('app').hasAttribute('inert') : null,
+    activeIsBody: active === document.body || active === document.documentElement,
     sheetTop: r ? Math.round(r.top) : null,
     sheetBottom: r ? Math.round(r.bottom) : null,
     sheetRight: r ? Math.round(r.right) : null,
@@ -367,113 +369,214 @@ def sheet_state(page):
     return page.evaluate(SHEET_STATE_JS)
 
 
+SETTLED_JS = """() => {
+  const s = document.querySelector('#mobile-nav-sheet');
+  if (!s) return false;
+  const r = s.getBoundingClientRect();
+  const running = document.getAnimations({ subtree: true }).some(
+    (a) => a.playState === 'running' && a.effect && a.effect.getComputedTiming().duration > 1
+  );
+  return Math.abs(r.right - innerWidth) <= 0.5 && !running;
+}"""
+
+
 def check_nav_sheet(context, base: str, width: int, fail, count) -> None:
-    """Drive the mobile nav sheet. Only meaningful below 768px."""
+    """Drive the mobile nav sheet. Only meaningful below 768px.
+
+    No fixed sleeps: every transition is waited for BY STATE (the sheet element attached and
+    settled, or detached), because under load the leave transition took up to ~470ms and a
+    350ms sleep made different checks fail on different runs. A step that throws is reported
+    as a failure and the page is reset, so one broken step cannot cascade into a hang.
+    """
     tag = f"nav-sheet {width}px"
     page = context.new_page()
+    page.set_default_timeout(8000)
     page.goto(f"{base}/", wait_until="load")
     page.wait_for_selector(".mobile-toggle")
-    page.wait_for_timeout(150)
 
     def expect(cond: bool, what: str) -> None:
         count()
         if not cond:
             fail(f"{tag}: {what}")
 
-    def unlocked() -> bool:
+    def released() -> bool:
+        """Scroll lock AND inert both back to their resting state."""
         st = sheet_state(page)
-        return st["htmlOverflow"] == "" and st["bodyOverflow"] == ""
+        return st["htmlOverflow"] == "" and st["bodyOverflow"] == "" and st["appInert"] is False
 
-    def open_sheet() -> dict:
-        # If a previous (already-reported) failure left the sheet open, the toggle is behind
-        # the scrim and clicking it would hang; carry on from the open state instead.
-        if not sheet_state(page)["open"]:
-            page.click(".mobile-toggle", timeout=5000)
-        page.wait_for_selector("#mobile-nav-sheet", timeout=5000)
-        page.wait_for_timeout(350)  # let the slide-in transition finish before measuring
+    def wait_closed() -> None:
+        page.wait_for_selector("#mobile-nav-sheet", state="detached")
+
+    def settle_open() -> dict:
+        page.wait_for_selector("#mobile-nav-sheet", state="attached")
+        page.wait_for_function(SETTLED_JS)
         return sheet_state(page)
 
-    # closed baseline
-    st = sheet_state(page)
-    expect(not st["open"], "sheet is rendered before it was opened")
-    expect(st["expanded"] == "false" and st["toggleLabel"] == "Open menu", f"closed toggle a11y wrong: {st['expanded']}/{st['toggleLabel']}")
-    expect(unlocked(), "scroll lock held while the sheet is closed")
+    def open_sheet() -> dict:
+        # If an earlier (already-reported) failure left the sheet open, the toggle is behind
+        # the scrim and clicking it would hang; carry on from the open state instead.
+        if not sheet_state(page)["open"]:
+            page.click(".mobile-toggle")
+        return settle_open()
 
-    # scroll first, so the header is in its backdrop-filter state (a fixed child of a
-    # backdrop-filtered element is clipped to it -- the sheet is teleported to avoid that)
-    page.evaluate("window.scrollTo(0, 400)")
-    page.wait_for_timeout(250)
+    def reset() -> None:
+        page.goto(f"{base}/", wait_until="load")
+        page.wait_for_selector(".mobile-toggle")
 
-    st = open_sheet()
-    expect(st["open"], "sheet did not open on tap")
-    expect(st["expanded"] == "true", f"aria-expanded not true when open: {st['expanded']}")
-    expect(st["role"] == "dialog" and st["modal"] == "true", "sheet is not role=dialog aria-modal=true")
-    expect(st["activeInSheet"], f"focus did not move into the sheet (on: {st['activeLabel']!r})")
-    expect(st["htmlOverflow"] == "hidden" and st["bodyOverflow"] == "hidden", "page scroll not locked while open")
-    expect(st["sheetTop"] == 0 and abs(st["sheetBottom"] - st["innerHeight"]) <= 1, f"sheet does not cover the viewport height ({st['sheetTop']}..{st['sheetBottom']} of {st['innerHeight']})")
-    expect(st["sheetRight"] == st["innerWidth"], "sheet is not anchored to the right edge")
-    expect(all(h >= 56 for h in st["linkHeights"]) and st["linkHeights"], f"sheet rows under 56px: {st['linkHeights']}")
-    expect(st["cta"] is not None and st["cta"]["bottom"] <= st["innerHeight"], "Download CTA is not inside the viewport")
-    expect(st["cta"] is not None and abs(st["cta"]["width"] - st["cta"]["sheetWidth"]) <= 2, "CTA is not full-width")
-    expect(page.evaluate("window.scrollY") > 0, "scroll position was reset when the sheet opened")
+    def step(name: str, fn) -> None:
+        try:
+            fn()
+        except Exception as exc:  # noqa: BLE001 -- a timeout here is a finding, not a crash
+            count()
+            fail(f"{tag}: step '{name}' aborted: {str(exc).splitlines()[0][:160]}")
+            try:
+                reset()
+            except Exception:  # noqa: BLE001
+                pass
 
-    # Tab trap: tabbing more times than there are controls never leaves the sheet
-    leaked = False
-    for _ in range(14):
-        page.keyboard.press("Tab")
-        if not sheet_state(page)["activeInSheet"]:
-            leaked = True
-    expect(not leaked, "Tab escaped the sheet")
-    page.keyboard.press("Shift+Tab")
-    expect(sheet_state(page)["activeInSheet"], "Shift+Tab escaped the sheet")
+    def closed_baseline() -> None:
+        st = sheet_state(page)
+        expect(not st["open"], "sheet is rendered before it was opened")
+        expect(st["expanded"] == "false", f"closed toggle aria-expanded wrong: {st['expanded']}")
+        expect(st["toggleLabel"] == "Menu", f"toggle needs ONE static name, got {st['toggleLabel']!r}")
+        expect(released(), "scroll lock or inert held while the sheet is closed")
 
-    # Escape closes, restores focus to the toggle, releases the lock
-    page.keyboard.press("Escape")
-    page.wait_for_timeout(350)
-    st = sheet_state(page)
-    expect(not st["open"], "Escape did not close the sheet")
-    expect(st["activeIsToggle"], f"focus not restored to the toggle after Escape (on: {st['activeLabel']!r})")
-    expect(st["expanded"] == "false", "aria-expanded not false after Escape")
-    expect(unlocked(), "scroll lock still held after Escape")
+    def opened_state() -> None:
+        # scroll first, so the header is in its backdrop-filter state (a fixed child of a
+        # backdrop-filtered element is clipped to it -- the sheet is teleported to avoid that)
+        page.evaluate("window.scrollTo(0, 400)")
+        page.wait_for_function("window.scrollY > 10")
+        st = open_sheet()
+        expect(st["open"], "sheet did not open on tap")
+        expect(st["expanded"] == "true", f"aria-expanded not true when open: {st['expanded']}")
+        expect(st["toggleLabel"] == "Menu", f"toggle name changed while open: {st['toggleLabel']!r}")
+        expect(st["role"] == "dialog" and st["modal"] == "true", "sheet is not role=dialog aria-modal=true")
+        expect(st["activeInSheet"], f"focus did not move into the sheet (on: {st['activeLabel']!r})")
+        expect(st["htmlOverflow"] == "hidden" and st["bodyOverflow"] == "hidden", "page scroll not locked while open")
+        expect(st["appInert"] is True, "the page behind the sheet is not inert while it is open")
+        expect(st["sheetTop"] == 0 and abs(st["sheetBottom"] - st["innerHeight"]) <= 1, f"sheet does not cover the viewport height ({st['sheetTop']}..{st['sheetBottom']} of {st['innerHeight']})")
+        expect(st["sheetRight"] == st["innerWidth"], "sheet is not anchored to the right edge")
+        expect(all(h >= 56 for h in st["linkHeights"]) and st["linkHeights"], f"sheet rows under 56px: {st['linkHeights']}")
+        expect(st["cta"] is not None and st["cta"]["bottom"] <= st["innerHeight"], "Download CTA is not inside the viewport")
+        expect(st["cta"] is not None and abs(st["cta"]["width"] - st["cta"]["sheetWidth"]) <= 2, "CTA is not full-width")
+        expect(page.evaluate("window.scrollY") > 0, "scroll position was reset when the sheet opened")
 
-    # close button
-    open_sheet()
-    page.click(".sheet-close")
-    page.wait_for_timeout(350)
-    expect(not sheet_state(page)["open"] and unlocked(), "close button left the sheet open or the page locked")
+    def tab_trap() -> None:
+        leaked = False
+        for _ in range(14):
+            page.keyboard.press("Tab")
+            if not sheet_state(page)["activeInSheet"]:
+                leaked = True
+        expect(not leaked, "Tab escaped the sheet")
+        page.keyboard.press("Shift+Tab")
+        expect(sheet_state(page)["activeInSheet"], "Shift+Tab escaped the sheet")
 
-    # scrim tap (left of the sheet)
-    open_sheet()
-    page.mouse.click(4, page.evaluate("window.innerHeight") / 2)
-    page.wait_for_timeout(350)
-    expect(not sheet_state(page)["open"] and unlocked(), "scrim tap left the sheet open or the page locked")
+    def escape_closes() -> None:
+        page.keyboard.press("Escape")
+        wait_closed()
+        st = sheet_state(page)
+        expect(st["activeIsToggle"], f"focus not restored to the toggle after Escape (on: {st['activeLabel']!r})")
+        expect(st["expanded"] == "false", "aria-expanded not false after Escape")
+        expect(released(), "scroll lock or inert still held after Escape")
 
-    # link tap navigates AND closes AND unlocks
-    open_sheet()
-    page.click("#mobile-nav-sheet >> text=Pricing")
-    page.wait_for_url("**/pricing")
-    page.wait_for_timeout(350)
-    expect(not sheet_state(page)["open"] and unlocked(), "link tap left the sheet open or the page locked")
+    def blank_click_then_keys() -> None:
+        """REVIEW ITEM 1: a click on empty sheet space sends focus to <body>; Escape and the
+        Tab trap must still work (a keydown handler on the sheet element goes deaf)."""
+        open_sheet()
+        page.click(".sheet-title")  # non-interactive strip inside the sheet
+        st = sheet_state(page)
+        expect(not st["activeInSheet"], "precondition: a blank click should have moved focus out of the sheet's controls")
+        # Tab must pull focus back INTO the sheet (and keep it there), never out to the page/browser
+        leaked = False
+        for _ in range(8):
+            page.keyboard.press("Tab")
+            if not sheet_state(page)["activeInSheet"]:
+                leaked = True
+        expect(not leaked, "after a blank-area click, Tab left the sheet")
+        page.click(".sheet-title")
+        page.keyboard.press("Shift+Tab")
+        expect(sheet_state(page)["activeInSheet"], "after a blank-area click, Shift+Tab did not return into the sheet")
+        # and Escape still closes, restores focus to the hamburger, releases lock + inert
+        page.click(".sheet-title")
+        page.keyboard.press("Escape")
+        wait_closed()
+        st = sheet_state(page)
+        expect(st["activeIsToggle"], f"after a blank-area click, Escape closed the sheet but focus is on {st['activeLabel']!r}")
+        expect(released(), "after a blank-area click, Escape left the page locked or inert")
 
-    # route change that did NOT come from the sheet (history back) while open
-    open_sheet()
-    page.go_back()
-    page.wait_for_timeout(500)
-    expect(not sheet_state(page)["open"] and unlocked(), "history navigation left the sheet open or the page locked")
+    def close_button() -> None:
+        open_sheet()
+        page.click(".sheet-close")
+        wait_closed()
+        expect(released(), "close button left the page locked or inert")
 
-    # viewport grows past the breakpoint while open: hidden by CSS, lock must be released
-    open_sheet()
-    page.set_viewport_size({"width": 1024, "height": HEIGHT})
-    page.wait_for_timeout(350)
-    expect(not sheet_state(page)["open"] and unlocked(), "growing past 768px left the page locked")
-    page.set_viewport_size({"width": width, "height": HEIGHT})
+    def scrim_tap() -> None:
+        open_sheet()
+        page.mouse.click(4, page.evaluate("window.innerHeight") / 2)
+        wait_closed()
+        expect(released(), "scrim tap left the page locked or inert")
 
-    # reopening after all of that still works (no stuck state)
-    st = open_sheet()
-    expect(st["open"] and st["htmlOverflow"] == "hidden", "sheet cannot be reopened after the close paths")
-    page.keyboard.press("Escape")
-    page.wait_for_timeout(350)
-    expect(unlocked(), "final close left the page locked")
+    def link_tap() -> None:
+        open_sheet()
+        page.click("#mobile-nav-sheet >> text=Pricing")
+        page.wait_for_url("**/pricing")
+        wait_closed()
+        expect(released(), "link tap left the page locked or inert")
+
+    def history_back() -> None:
+        # a route change that did NOT come from the sheet, while it is open
+        open_sheet()
+        page.go_back()
+        wait_closed()
+        expect(released(), "history navigation left the page locked or inert")
+
+    def resize_past_breakpoint() -> None:
+        open_sheet()
+        page.set_viewport_size({"width": 1024, "height": HEIGHT})
+        try:
+            wait_closed()
+            expect(released(), "growing past 768px left the page locked or inert")
+        finally:
+            page.set_viewport_size({"width": width, "height": HEIGHT})
+
+    def pagehide_releases() -> None:
+        # bfcache / tab discard: the page can be frozen with the sheet open
+        open_sheet()
+        page.evaluate("window.dispatchEvent(new Event('pagehide'))")
+        wait_closed()
+        expect(released(), "pagehide left the page locked or inert")
+
+    def reopen() -> None:
+        st = open_sheet()
+        expect(st["open"] and st["htmlOverflow"] == "hidden" and st["appInert"] is True, "sheet cannot be reopened after the close paths")
+        page.keyboard.press("Escape")
+        wait_closed()
+        expect(released(), "final close left the page locked or inert")
+
+    def unmount_releases() -> None:
+        # Unmount WITHOUT a route change (the route watcher would close it first): tear the
+        # whole Vue app down while the sheet is open and check nothing is left held.
+        reset()
+        open_sheet()
+        page.evaluate("document.querySelector('#app').__vue_app__.unmount()")
+        page.wait_for_function("document.documentElement.style.overflow === ''")
+        st = sheet_state(page)
+        expect(st["htmlOverflow"] == "" and st["bodyOverflow"] == "", "unmounting with the sheet open left the page scroll-locked")
+        expect(st["appInert"] is False, "unmounting with the sheet open left #app inert")
+
+    step("closed baseline", closed_baseline)
+    step("open state", opened_state)
+    step("tab trap", tab_trap)
+    step("escape", escape_closes)
+    step("blank-area click then Tab/Escape", blank_click_then_keys)
+    step("close button", close_button)
+    step("scrim tap", scrim_tap)
+    step("link tap", link_tap)
+    step("history back", history_back)
+    step("resize past 768", resize_past_breakpoint)
+    step("pagehide", pagehide_releases)
+    step("reopen", reopen)
+    step("unmount", unmount_releases)
     page.close()
 
 
@@ -646,6 +749,7 @@ def main() -> int:
     ap.add_argument("--shots", help="directory to write page screenshots into (tiled, 1400px per image)")
     ap.add_argument("--routes", help="comma-separated subset of paths (exact, or a whole-segment prefix)")
     ap.add_argument("--widths", help="comma-separated subset of widths")
+    ap.add_argument("--behaviours-only", action="store_true", help="skip the per-route layout sweep; run only the interaction checks")
     args = ap.parse_args()
 
     try:
@@ -665,6 +769,8 @@ def main() -> int:
             r for r in ROUTES
             if any(r[0].split("?")[0] == w or (w != "/" and r[0].startswith(w.rstrip("/") + "/")) for w in wanted)
         ]
+    if args.behaviours_only:
+        routes = []
     widths = [int(w) for w in args.widths.split(",")] if args.widths else WIDTHS
     shots = Path(args.shots) if args.shots else None
     if shots:
