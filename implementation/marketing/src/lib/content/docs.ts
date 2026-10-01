@@ -61,8 +61,8 @@ export const docsArticles: readonly KnowledgeArticle[] = [
       {
         type: 'ul',
         items: [
-          '**Blackout** ([[B]], or the **Blackout** button) makes the audience screens go black. The content is kept, so pressing [[B]] again, or **Restore output**, brings it straight back.',
-          '**Clear Output** (press [[Esc]] twice within a second, or click the button) empties the live output. It leaves Preview alone and also releases a blackout.',
+          '**Blackout** ([[B]] on the Live Console, [[Ctrl]]+[[Shift]]+[[B]] anywhere, or the **Blackout** button) makes the audience screens go black. The content is kept, so toggling it again, or pressing **Restore output**, brings it straight back.',
+          '**Clear Output** (press [[Esc]] twice within a second on the Live Console, press [[Ctrl]]+[[Shift]]+[[.]] anywhere, or click the button) empties the live output. It leaves Preview alone and also releases a blackout.',
         ],
       },
       { type: 'h2', text: 'Keys for live control' },
@@ -76,11 +76,24 @@ export const docsArticles: readonly KnowledgeArticle[] = [
           '[[Esc]] [[Esc]]: clear the live output. [[Backspace]] does the same today.',
         ],
       },
+      { type: 'h3', text: 'Emergency controls work everywhere' },
+      {
+        type: 'ul',
+        items: [
+          '[[Ctrl]]+[[Shift]]+[[B]] ([[⌘]]+[[Shift]]+[[B]] on a Mac): toggle blackout.',
+          '[[Ctrl]]+[[Shift]]+[[.]] ([[⌘]]+[[Shift]]+[[.]] on a Mac): clear the live output.',
+          'The **Blackout** and **Clear Output** buttons along the bottom of the window.',
+        ],
+      },
+      {
+        type: 'p',
+        text: 'The two chords work from every screen, even while you are typing in a field, and the buttons are on every screen. A blackout or a clear is never more than one action away.',
+      },
       {
         type: 'callout',
         variant: 'info',
-        title: 'When the keys work',
-        text: 'These keys act on the Live Console only, so moving around Settings or Screens & Outputs can never advance or blackout the show. They are ignored while you are typing in a field, and a button that has keyboard focus keeps Enter and Space for itself. Remapping keys is not available yet.',
+        title: 'When the single keys work',
+        text: 'The single keys above (Space, the arrows, Enter, B, Esc Esc and Backspace) act on the Live Console only, so moving around Settings or Screens & Outputs cannot advance the show by accident. They are ignored while you are typing in a field, and a button that has keyboard focus keeps Enter and Space for itself. Remapping keys is not available yet.',
       },
     ],
   },

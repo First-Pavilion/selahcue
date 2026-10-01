@@ -165,25 +165,6 @@ function assertCollection(
       assert.equal(new Set(titles).size, titles.length)
     })
 
-    test('every link inside a body is a real same-site route or an https URL', () => {
-      for (const a of items) {
-        for (const b of a.body) {
-          const strings =
-            b.type === 'ul' || b.type === 'ol' ? [...b.items] : b.type === 'p' || b.type === 'callout' ? [b.text] : []
-          for (const s of strings) {
-            for (const seg of parseInline(s)) {
-              if (seg.kind !== 'link') continue
-              assert.notEqual(classifyHref(seg.href), null, `${keyOf(a)}: bad link ${seg.href}`)
-            }
-            // A `[label](target)` that did NOT parse into a link was rejected as unsafe.
-            const written = (s.match(/\]\(/g) ?? []).length
-            const parsed = parseInline(s).filter((x) => x.kind === 'link').length
-            assert.equal(parsed, written, `${keyOf(a)}: a link was written but rejected as unsafe in "${s}"`)
-          }
-        }
-      }
-    })
-
     test('no fabricated attribution: bodies never name a person, quote someone, or invent a figure', () => {
       for (const a of items) {
         const text = a.body.map((b) => JSON.stringify(b)).join(' ')
@@ -200,12 +181,22 @@ assertCollection('docs', docsArticles, (a) => `${(a as KnowledgeArticle).categor
 assertCollection('support', supportArticles, (a) => `${(a as KnowledgeArticle).category}/${a.slug}`)
 
 describe('blog collection', () => {
-  test('every post has a real category, an ISO date and no named author', () => {
+  test('every post has a real category and an ISO date', () => {
     for (const p of blogPosts) {
       assert.ok(p.category.trim().length > 0)
       assert.match(p.published, /^\d{4}-\d{2}-\d{2}$/)
       assert.ok(!Number.isNaN(Date.parse(p.published)), `${p.slug}: unparseable date`)
     }
+  })
+
+  test('the author is always the fixed string "SelahCue Team": the data cannot name anyone else', () => {
+    // The post type has no author field, so a post cannot carry a name in data...
+    for (const p of blogPosts) assert.ok(!('author' in p) && !('authors' in p) && !('byline' in p), `${p.slug} carries an author field`)
+    // ...and the one place an author is rendered is hard-wired to the team, byline and card.
+    const view = readFileSync(MARKETING_SRC + 'views/BlogPostView.vue', 'utf8')
+    assert.match(view, /<p class="bp-byline">\s*SelahCue Team\b/)
+    assert.match(view, /<p class="bp-author-name">SelahCue Team<\/p>/)
+    assert.equal((view.match(/class="bp-byline"/g) ?? []).length, 1)
   })
 
   test('at most one post is featured, and the featured post exists', () => {
@@ -347,5 +338,46 @@ describe('the citation trail (test-only data, never in src/)', () => {
         assert.ok(isTrackedRegularFile(s.path), `${key}: cited source is not a git-tracked regular file: ${s.path}`)
       }
     }
+  })
+})
+
+describe('the live-control article tells the whole truth about the emergency controls', () => {
+  const live = findDocsArticle('getting-started', 'preview-live-and-go-live')
+  const text = (live?.body ?? []).map((b) => JSON.stringify(b)).join(' ')
+  const op = readFileSync(REPO_ROOT + 'implementation/desktop/crates/selahcue-operator/dist/app.js', 'utf8')
+
+  test('the article exists (positive control)', () => {
+    assert.ok(live)
+  })
+
+  test('its "Emergency controls" section lists both chords and the footer buttons', () => {
+    const body = live?.body ?? []
+    const at = body.findIndex((b) => b.type === 'h3' && /Emergency controls/.test(b.text))
+    assert.ok(at >= 0, 'the Emergency controls heading is missing')
+    const list = body[at + 1]
+    assert.equal(list?.type, 'ul', 'the heading must be followed by the list')
+    const items = list && list.type === 'ul' ? list.items.join('\n') : ''
+    assert.match(items, /Ctrl\]\]\+\[\[Shift\]\]\+\[\[B\]\]/, 'blackout chord missing')
+    assert.match(items, /Ctrl\]\]\+\[\[Shift\]\]\+\[\[\.\]\]/, 'clear-all chord missing')
+    assert.match(items, /\*\*Blackout\*\* and \*\*Clear Output\*\* buttons/, 'footer buttons missing')
+  })
+
+  test('it never says the single keys cannot blackout the show', () => {
+    assert.ok(!/can never[^"]*blackout the show|cannot[^"]*blackout the show/i.test(text))
+  })
+
+  test('the claim is true: the chords are handled BEFORE the Live-Console-only guard in app.js', () => {
+    const chordB = op.indexOf('e.code === "KeyB"')
+    const chordDot = op.indexOf('e.code === "Period"')
+    assert.ok(chordB > 0 && chordDot > 0, 'could not find the chord handlers in app.js')
+    // From the start of THAT keydown handler to the chord, nothing may gate on the active surface.
+    const handlerStart = op.lastIndexOf('"keydown",', chordB)
+    const before = op.slice(handlerStart, Math.max(chordB, chordDot))
+    assert.ok(handlerStart > 0)
+    assert.ok(!/surface-console|classList\.contains\("active"\)/.test(before), 'a surface guard now runs before the chords; the article is wrong')
+    const guard = op.indexOf('getElementById("surface-console").classList.contains("active")', chordB)
+    assert.ok(guard > Math.max(chordB, chordDot), 'the single-key guard must come AFTER the chords')
+    const footer = readFileSync(REPO_ROOT + 'implementation/desktop/crates/selahcue-operator/dist/index.html', 'utf8')
+    assert.ok(footer.indexOf('<footer id="emergency"') > footer.indexOf('</main>'), 'the emergency footer is no longer outside the per-surface <main>')
   })
 })

@@ -47,11 +47,11 @@ export const supportArticles: readonly KnowledgeArticle[] = [
         type: 'ol',
         items: [
           '**It is staged but not live.** Look at the two panels. If the item is in **Preview · Staged** and **Live · On air** says **Output idle**, press [[Enter]] or click **GO LIVE**. Staging alone never changes the audience screen.',
-          '**Blackout is on.** The console says **Output is black: the audience sees nothing. Press B or click to restore.** Press [[B]] or click **Restore output**. Going live also releases a blackout.',
-          '**The output was cleared.** **Clear Output** ([[Esc]] twice) empties the live output. Stage the item again and go live.',
+          '**Blackout is on.** The console says **Output is black: the audience sees nothing. Press B or click to restore.** Click **Restore output**, press [[B]] on the Live Console, or press [[Ctrl]]+[[Shift]]+[[B]] ([[⌘]]+[[Shift]]+[[B]] on a Mac) from any screen. Going live also releases a blackout.',
+          '**The output was cleared.** **Clear Output** (the button, or [[Esc]] twice on the Live Console) empties the live output. Stage the item again and go live.',
           '**The output has no window or no monitor.** Open **Screens & Outputs**, check that the audience output’s toggle is on, and that its **Monitor** is set. See [Assign displays to outputs](/docs/display-outputs/assign-displays-to-outputs).',
           '**The display lost its signal.** A **Signal lost** banner appears and the output’s pill reads **No signal**. Check the cable and the monitor, and see [What the on-screen status messages mean](/docs/troubleshooting/status-messages).',
-          '**The keys are not firing.** The live-control keys only work on the Live Console, not on Settings or Screens & Outputs, and not while your cursor is in a text field.',
+          '**The single keys are not firing.** Space, Enter, B and the arrows only work on the Live Console, not on Settings or Screens & Outputs, and not while your cursor is in a text field. Click **GO LIVE** instead. The **Blackout** and **Clear Output** buttons, and the Ctrl or ⌘ + Shift chords, work from every screen.',
         ],
       },
       {
