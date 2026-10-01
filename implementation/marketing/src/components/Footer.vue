@@ -160,7 +160,6 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 12px;
   margin-bottom: 16px;
-  min-height: 44px;
   text-decoration: none;
 }
 
@@ -277,6 +276,14 @@ onBeforeUnmount(() => {
   .footer-top {
     flex-direction: row;
     justify-content: space-between;
+  }
+}
+
+/* 44px lockup target on phones and coarse pointers only: at desktop it would push the
+   tagline down 12px and change the designed footer. */
+@media (max-width: 767px), (pointer: coarse) {
+  .brand {
+    min-height: 44px;
   }
 }
 

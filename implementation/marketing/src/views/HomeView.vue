@@ -414,8 +414,9 @@ const faqItems = [
   position: relative;
   padding: 90px 0 80px 0;
   text-align: center;
-  /* Clips the 900px decorative glow to the page width. */
-  overflow: hidden;
+  /* Clip the glow at the top edge of the page (as the old page-wide overflow did) without
+     creating a scroll container, and without clipping the mockup's drop shadow below. */
+  clip-path: inset(0 0 -120px 0);
 }
 
 .hero-bg-glow {
@@ -423,7 +424,9 @@ const faqItems = [
   top: -100px;
   left: 50%;
   transform: translateX(-50%);
-  width: 900px;
+  /* `min()` so the glow can never be wider than the page -- it is the only element that
+     ever overflowed here, and clipping it with overflow:hidden would hide real bugs too. */
+  width: min(900px, 100%);
   height: 600px;
   background: radial-gradient(circle at center, rgba(110, 92, 240, 0.15) 0%, transparent 70%);
   pointer-events: none;

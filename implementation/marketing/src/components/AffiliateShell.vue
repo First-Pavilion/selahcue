@@ -104,13 +104,21 @@ const isActive = (path: string) => route.path === path
   text-decoration: none;
   font-size: 14px;
   font-weight: 500;
-  display: inline-flex;
-  align-items: center;
-  min-height: 44px;
-  padding: 0 14px;
+  padding: 8px 14px;
   border-radius: 8px;
   white-space: nowrap;
   transition: all var(--transition-fast);
+}
+
+/* 44px targets once the nav is a swipeable row (and on any coarse pointer). The desktop
+   keeps the designed pill height. */
+@media (max-width: 1099px), (pointer: coarse) {
+  .nav-link {
+    display: inline-flex;
+    align-items: center;
+    min-height: 44px;
+    padding-block: 0;
+  }
 }
 
 .nav-link:hover {

@@ -86,7 +86,7 @@ const posts = [
 .card-title { font-size: 20px; font-weight: 700; color: var(--sc-text); margin: 14px 0 10px 0; line-height: 1.3; }
 .card-desc { font-size: 14px; color: var(--sc-text-secondary); line-height: 1.6; margin-bottom: 24px; flex-grow: 1; }
 .card-footer { display: flex; justify-content: space-between; align-items: center; font-size: 13px; color: var(--sc-text-muted); }
-.read-link { background: none; border: none; color: var(--sc-primary); font-weight: 600; font-family: inherit; font-size: inherit; cursor: pointer; }
+.read-link { background: none; border: none; color: var(--sc-primary); font-weight: 600; cursor: pointer; }
 
 @media (max-width: 767px) {
   .blog-page { padding-bottom: var(--section-pad-sm); }
