@@ -2,7 +2,7 @@
 import { computed, ref } from 'vue'
 import UiBadge from '@/components/UiBadge.vue'
 import UiButton from '@/components/UiButton.vue'
-import { supportArticles, supportCategories, supportIn, supportPath } from '@/lib/content/support.ts'
+import { searchSupport, supportArticles, supportCategories, supportIn, supportPath } from '@/lib/content/support.ts'
 import { readMinutes } from '@/lib/content/text.ts'
 
 const searchQuery = ref('')
@@ -14,13 +14,21 @@ const startHere = supportArticles.filter((a) => a.startHere)
 const categoryTitle = (id: string): string => supportCategories.find((c) => c.id === id)?.title ?? id
 
 /**
- * Client-side filter over the local articles. Not a search backend (out of scope): it
- * matches the typed text against titles and summaries, which is all the index can know.
+ * Client-side filter over the local articles (`lib/content/search.ts`, tested in node):
+ * every word typed must appear in an article's title, summary, topic or keywords. Not a
+ * search backend, which is out of scope.
  */
-const results = computed(() => {
-  const q = searchQuery.value.trim().toLowerCase()
-  if (q === '') return null
-  return supportArticles.filter((a) => `${a.title} ${a.summary}`.toLowerCase().includes(q))
+const results = computed(() => searchSupport(searchQuery.value))
+
+/**
+ * Read out by screen readers. The element is rendered from the first paint and only its TEXT
+ * changes; a live region that is inserted together with its message is often not announced.
+ */
+const statusText = computed(() => {
+  const r = results.value
+  if (r === null) return ''
+  if (r.length === 0) return 'No help articles match that search.'
+  return `${r.length} help ${r.length === 1 ? 'article matches' : 'articles match'} your search.`
 })
 </script>
 
@@ -42,6 +50,7 @@ const results = computed(() => {
             aria-label="Search help articles"
             placeholder="Search help articles (e.g. stage display, pairing, crash recovery)..." 
           />
+          <p class="sr-only" role="status" aria-live="polite">{{ statusText }}</p>
         </div>
       </div>
     </section>
@@ -50,9 +59,7 @@ const results = computed(() => {
     <section v-if="results" class="articles-section" aria-labelledby="results-heading">
       <div class="container">
         <h2 id="results-heading" class="section-title">Search results</h2>
-        <p class="results-status" role="status" aria-live="polite">
-          {{ results.length === 0 ? 'No help articles match that search.' : `${results.length} help ${results.length === 1 ? 'article matches' : 'articles match'} your search.` }}
-        </p>
+        <p class="results-status" aria-hidden="true">{{ statusText }}</p>
         <div class="articles-list">
           <div v-for="art in results" :key="art.category + '/' + art.slug" class="article-row">
             <div>

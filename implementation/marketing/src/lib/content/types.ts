@@ -70,6 +70,11 @@ export interface KnowledgeArticle extends ArticleBase {
    * not a popularity claim: there is no analytics behind the site to say what is popular.
    */
   readonly startHere?: boolean
+  /**
+   * Extra words a reader might type that the title and summary do not contain ("pairing" for
+   * an article titled "will not pair"). Searched by the support index; never displayed.
+   */
+  readonly keywords?: readonly string[]
 }
 
 /** One step in a breadcrumb trail. The last step is the current page and has no link. */

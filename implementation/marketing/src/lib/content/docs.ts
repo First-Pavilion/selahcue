@@ -347,7 +347,7 @@ export const docsArticles: readonly KnowledgeArticle[] = [
       { type: 'h2', text: 'Search by keyword' },
       {
         type: 'p',
-        text: 'Type words instead of a reference and SelahCue lists verses that contain every word, in Bible order, up to eight. It does not rank them or search for an exact phrase.',
+        text: 'Type words instead of a reference and SelahCue lists verses that contain every word you typed, in Bible order, up to eight. Words are matched as plain text, so a short word also matches longer words that contain it. There is no ranking and no exact-phrase search.',
       },
       { type: 'h2', text: 'Stage and go live' },
       {

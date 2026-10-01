@@ -21,6 +21,7 @@ import {
   relatedIn,
   type KnowledgeCollection,
 } from './knowledge.ts'
+import { searchArticles } from './search.ts'
 import type { KnowledgeArticle, KnowledgeCategory } from './types.ts'
 
 
@@ -38,6 +39,7 @@ export const supportArticles: readonly KnowledgeArticle[] = [
   {
     category: 'getting-started',
     slug: 'nothing-on-the-audience-screen',
+    keywords: ['blank', 'black', 'blackout', 'go live', 'not showing', 'projector'],
     startHere: true,
     title: 'Nothing is showing on the audience screen',
     summary: 'Work through the usual reasons the audience screen is blank, starting with the most common.',
@@ -65,6 +67,7 @@ export const supportArticles: readonly KnowledgeArticle[] = [
   {
     category: 'display-outputs',
     slug: 'no-display-to-choose',
+    keywords: ['monitor', 'projector', 'second screen', 'assign', 'display'],
     title: 'An output has no monitor to choose',
     summary: 'The Monitor dropdown is missing, empty or says no displays found. Here is why, and what to try.',
     body: [
@@ -90,6 +93,7 @@ export const supportArticles: readonly KnowledgeArticle[] = [
   {
     category: 'display-outputs',
     slug: 'ndi-toggle-greyed-out',
+    keywords: ['ndi', 'obs', 'vmix', 'stream', 'broadcast'],
     title: 'The NDI toggle is greyed out',
     summary: 'Why Broadcast as NDI cannot be switched on, and which builds can broadcast.',
     body: [
@@ -124,6 +128,7 @@ export const supportArticles: readonly KnowledgeArticle[] = [
   {
     category: 'scripture-bibles',
     slug: 'verse-will-not-open',
+    keywords: ['bible', 'scripture', 'reference', 'search', 'passage'],
     title: 'A verse will not open or stage',
     summary: 'The usual reasons a reference does nothing, and how to write it so it works.',
     body: [
@@ -135,7 +140,7 @@ export const supportArticles: readonly KnowledgeArticle[] = [
           '**A range across chapters.** Ranges must stay inside one chapter: `Rom 8:28-30` works, a range that crosses into the next chapter does not.',
           '**The verse is not in that translation.** SelahCue tells you the verse is not present in the translation you picked, and stages nothing. Try another translation from the picker.',
           '**Several references at once.** `John 3:16; 1 Cor 13:4` gives one result for each reference. Open them one at a time.',
-          '**It is a keyword search.** Words that are not a reference are searched as keywords: every word must appear in the verse, and results are listed in Bible order, not ranked.',
+          '**It is a keyword search.** Words that are not a reference are searched as keywords: every word must appear in the verse (as plain text, so a short word also matches longer ones), and results are listed in Bible order, not ranked.',
         ],
       },
       { type: 'h2', text: 'If the arrow keys move the plan instead' },
@@ -152,6 +157,7 @@ export const supportArticles: readonly KnowledgeArticle[] = [
   {
     category: 'scripture-bibles',
     slug: 'niv-esv-nlt-not-available',
+    keywords: ['licence', 'license', 'translation', 'bible', 'copyright'],
     title: 'Can I use NIV, ESV or NLT?',
     summary: 'Licensed translations are not available in this build. These are the translations you can use today.',
     body: [
@@ -182,6 +188,7 @@ export const supportArticles: readonly KnowledgeArticle[] = [
   {
     category: 'timers-clocks',
     slug: 'timer-not-on-audience-screen',
+    keywords: ['countdown', 'clock', 'time up', 'stage'],
     title: 'The timer does not show on the audience screen',
     summary: 'That is by design: the countdown is for the stage display. Here is how to see it.',
     body: [
@@ -211,6 +218,7 @@ export const supportArticles: readonly KnowledgeArticle[] = [
   {
     category: 'mobile-control',
     slug: 'phone-wont-pair',
+    keywords: ['pairing', 'pair', 'qr', 'wifi', 'wi-fi', 'connect', 'controller', 'tablet'],
     startHere: true,
     title: 'My phone will not pair',
     summary: 'A checklist for when the controller app cannot connect to the desktop.',
@@ -250,6 +258,7 @@ export const supportArticles: readonly KnowledgeArticle[] = [
   {
     category: 'mobile-control',
     slug: 'phone-cannot-go-live',
+    keywords: ['role', 'producer', 'assistant', 'viewer', 'permission'],
     title: 'My phone cannot go live, clear or run the timer',
     summary: 'What a paired phone is allowed to do depends on its role. Here is how to check and change it.',
     body: [
@@ -281,6 +290,7 @@ export const supportArticles: readonly KnowledgeArticle[] = [
   {
     category: 'mobile-control',
     slug: 'remove-a-paired-phone',
+    keywords: ['revoke', 'unpair', 'device', 'security'],
     title: 'Remove a paired phone',
     summary: 'Revoke a device from the desktop so it can no longer control SelahCue, and what happens on the phone.',
     body: [
@@ -312,6 +322,7 @@ export const supportArticles: readonly KnowledgeArticle[] = [
   {
     category: 'troubleshooting',
     slug: 'after-a-restart-or-crash',
+    keywords: ['crash', 'recovery', 'autosave', 'restore', 'restart', 'session'],
     title: 'SelahCue restarted: what was restored?',
     summary: 'What you should see after a crash or restart, and what to do if the plan will not open.',
     body: [
@@ -344,6 +355,7 @@ export const supportArticles: readonly KnowledgeArticle[] = [
   {
     category: 'troubleshooting',
     slug: 'transcription-will-not-start',
+    keywords: ['speech', 'whisper', 'microphone', 'mic', 'model', 'download', 'transcript'],
     title: 'Transcription will not start',
     summary: 'The first-time model download, the error messages you may see, and a silent microphone.',
     body: [
@@ -391,6 +403,7 @@ export const support: KnowledgeCollection = {
 export const supportPath = (a: KnowledgeArticle): string => articlePath(support.root, a)
 export const findSupportArticle = (category: unknown, slug: unknown) => findArticle(support, category, slug)
 export const findSupportCategory = (id: unknown) => findCategory(support, id)
+export const searchSupport = (query: string) => searchArticles(support.articles, support.categories, query)
 export const supportIn = (categoryId: string) => articlesIn(support, categoryId)
 export const supportNeighbours = (a: KnowledgeArticle) => articleNeighbours(support, a)
 export const supportRelated = (a: KnowledgeArticle) => relatedIn(support, a)
