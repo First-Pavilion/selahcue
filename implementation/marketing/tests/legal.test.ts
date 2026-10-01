@@ -43,6 +43,7 @@ import {
 import { LegalHead, NOINDEX_SELECTOR, type HeadHost } from '../src/lib/legal/head.ts'
 import { classifyHref } from '../src/lib/legal/links.ts'
 import { isOverflowing } from '../src/lib/legal/overflow.ts'
+import { createScrollSpy, type SpyEntry, type SpyObserverCtor, type SpyTarget } from '../src/lib/legal/useScrollSpy.ts'
 import { privacyPolicy } from '../src/lib/legal/privacy.generated.ts'
 import { termsOfService } from '../src/lib/legal/terms.generated.ts'
 import type { Block, Inline, LegalDocument, ListItem, Section } from '../src/lib/legal/types.ts'
@@ -710,6 +711,77 @@ describe("every cross-reference's displayed number is its target's number", () =
     assert.deepEqual(refs.map((r) => r.text), ['12', '12.1', '11', '1'])
     assert.deepEqual(refs.map((r) => r.anchor), ['s-12', 's-12-1', 's-11', 's-1'])
     for (const r of refs) assert.equal(numbers.get(r.anchor), r.text)
+  })
+})
+
+describe('scroll-spy holds exactly one observer and releases it', () => {
+  /** A fake IntersectionObserver that counts how many are alive. */
+  function fakeObserver() {
+    const created: { observed: SpyTarget[]; disconnected: boolean; fire(entries: SpyEntry[]): void }[] = []
+    class Fake {
+      observed: SpyTarget[] = []
+      disconnected = false
+      private readonly cb: (entries: SpyEntry[]) => void
+      constructor(cb: (entries: SpyEntry[]) => void) {
+        this.cb = cb
+        created.push(this)
+      }
+      observe(t: SpyTarget): void {
+        this.observed.push(t)
+      }
+      disconnect(): void {
+        this.disconnected = true
+      }
+      fire(entries: SpyEntry[]): void {
+        this.cb(entries)
+      }
+    }
+    return { Ctor: Fake as unknown as SpyObserverCtor, created, live: () => created.filter((o) => !o.disconnected).length }
+  }
+  const sections: SpyTarget[] = ['summary', 's-1', 's-2', 's-3'].map((id) => ({ dataset: { spy: id } }))
+  const host = { querySelectorAll: () => sections }
+
+  test('one observer watches every section; disconnect() releases it', () => {
+    const f = fakeObserver()
+    const spy = createScrollSpy(host, () => {}, f.Ctor)
+    assert.equal(f.created.length, 1, 'exactly one observer, not one per section')
+    assert.equal(f.created[0]?.observed.length, 4)
+    assert.equal(f.live(), 1)
+    spy.disconnect()
+    assert.equal(f.live(), 0, 'no live observer after unmount')
+  })
+
+  test('mount/unmount cycles never accumulate live observers', () => {
+    const f = fakeObserver()
+    for (let i = 0; i < 100; i++) createScrollSpy(host, () => {}, f.Ctor).disconnect()
+    assert.equal(f.created.length, 100)
+    assert.equal(f.live(), 0)
+  })
+
+  test('reports the first intersecting section in document order, and keeps the last answer when none intersect', () => {
+    const f = fakeObserver()
+    const seen: string[] = []
+    createScrollSpy(host, (id) => seen.push(id), f.Ctor)
+    const obs = f.created[0]
+    assert.ok(obs)
+    const [summary, s1, s2, s3] = sections as [SpyTarget, SpyTarget, SpyTarget, SpyTarget]
+    obs.fire([{ target: s3, isIntersecting: true }, { target: s2, isIntersecting: true }])
+    assert.equal(seen.at(-1), 's-2')
+    obs.fire([{ target: s2, isIntersecting: false }])
+    assert.equal(seen.at(-1), 's-3')
+    obs.fire([{ target: s3, isIntersecting: false }])
+    assert.equal(seen.at(-1), 's-3', 'nothing in the band: the last answer stands')
+    obs.fire([{ target: summary, isIntersecting: true }, { target: s1, isIntersecting: true }])
+    assert.equal(seen.at(-1), 'summary')
+  })
+
+  test('a callback delivered after disconnect() changes nothing', () => {
+    const f = fakeObserver()
+    const seen: string[] = []
+    const spy = createScrollSpy(host, (id) => seen.push(id), f.Ctor)
+    spy.disconnect()
+    f.created[0]?.fire([{ target: sections[1] as SpyTarget, isIntersecting: true }])
+    assert.deepEqual(seen, [])
   })
 })
 
