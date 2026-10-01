@@ -1,0 +1,75 @@
+# Presentation — Media library modal (spec)
+
+Status: **proposed with the implementation** (no prior design exists for this surface; the Design 2.0 frame put the library in a permanent right-hand panel — `PRESENTATION-MEDIA-STATES-spec.md` §2/§5). Owner decision 2026-10-01: the library becomes a **modal picker in the style of Google's file "Open" dialog** — choose, then confirm.
+
+Related: DEC-018 (images are copied into app storage), `PRESENTATION-MEDIA-STATES-spec.md` (tile states), `DESIGN-2.0-PARITY-AUDIT-presentation.md` (PME-038 empty-state call to action).
+
+## 1. What changes
+
+| Before | After |
+|---|---|
+| Right column has two tabs, **Media** and **Inspector**, auto-switching on selection | Right column is the **Inspector only** |
+| Clicking a tile instantly adds the image | A tile is **selected**; **Insert** (or double-click) adds it |
+| `🖼 Image` in the toolbar silently added the first library image, or did nothing | `🖼 Image` opens the library |
+| Inspector → Replace… armed a hint inside the panel | Inspector → Replace… opens the library in **replace mode** |
+
+## 2. Entry points
+
+1. **Toolbar `🖼 Image`** → insert mode.
+2. **Right-panel header `Media library…`** → insert mode (manage and browse; Insert stays disabled until something is selected).
+3. **Inspector → `Replace…` / `Relink…`** on an image element → replace mode (images only, exactly one selection, button reads **Replace**).
+
+The modal never opens by itself and never opens while another modal is open.
+
+## 3. Layout
+
+`role="dialog" aria-modal="true"`, labelled by its title ("Media library", or "Replace image" in replace mode). Width 720px, max 92vw; height max 80vh; the grid scrolls, the header and footer do not.
+
+1. **Header** — title, close `✕`.
+2. **Toolbar** — search field; filter chips **All · Images · Video · Audio** (`aria-pressed`); **+ Import** (primary).
+3. *(replace mode only)* a one-line hint: "Pick the image that replaces the selected element."
+4. **Grid** — `repeat(auto-fill, minmax(140px, 1fr))` tiles, then the **Audio** list below the grid.
+5. **Inline remove bar** (only while confirming a removal) — see §5.
+6. **Footer** — total size and "N missing · M unused" (left); a live "N selected"; **Cancel** and the primary **Insert** / **Replace**.
+
+Tokens are the existing `--sc-*` set. Secondary text uses `--sc-text-secondary`, never `--sc-text-muted` (contrast).
+
+## 4. Tile
+
+Thumbnail (the real picture — see DEC-018 thumbnails), file name, `KIND · size`. States, none colour-only:
+
+- **Selected** — primary ring *and* a check mark; `aria-pressed="true"`.
+- **In use** (the selected slide element uses it) — labelled "(in use)" in the accessible name.
+- **Unused** — "(unused)" in the accessible name.
+- **Missing** — ⚠ and "File moved"; disabled.
+- **Can't preview** — "Can't preview" text; still selectable (the engine draws its own placeholder on the slide).
+- **Video / audio** — listed, disabled: on-slide playback arrives later (ADR-0020). Importing them is not possible yet, so the Video and Audio filters show an honest "Video import arrives later." empty state.
+
+A hover/focus-visible `✕` removes the asset (see §5). Names truncate with an ellipsis and carry the full name in the accessible name.
+
+## 5. Interactions
+
+- **Import** — opens the native picker (several files). A clean import shows a status toast; skipped files appear in the persistent banner with the reason (the banner sits behind the modal scrim and is also announced). New images appear selected-able immediately, with their pictures.
+- **Select** — click or Space/Enter toggles. Insert mode allows multi-select, capped at **24** per insert (a 25th click shows "Up to 24 at a time"). Replace mode keeps exactly one.
+- **Insert** — closes the modal and adds every selected image to the current slide in **one undo step**, cascaded so they do not stack exactly. **Replace** swaps the selected element's image.
+- **Double-click** a tile — insert (or replace) just that image.
+- **Remove** — `✕` shows the **inline bar** (a `role="alert"` strip above the footer): "Remove *name*? This removes the image from the library and deletes SelahCue's copy. This can't be undone." plus, when used, "Used on k slides — removing it leaves them with missing media." Buttons **Remove** (danger) and **Keep**. The bar is inline rather than a second modal because the existing confirm dialog is single-instance and refuses to open over another modal.
+- **Close** — `✕`, **Cancel**, **Esc** or a click on the scrim. Nothing changes. Focus returns to the control that opened it.
+
+## 6. Keyboard and accessibility
+
+- Focus moves into the dialog on open (the search field) and is **trapped**; Tab cycles header → toolbar → tiles → footer. Tiles are buttons in DOM order; there is no roving grid (kept simple on purpose).
+- Esc closes the remove bar first, then the modal.
+- Selection count is in a polite live region; the Insert button's label states the count.
+- The empty library shows "No images yet — Import to get started." with the Import button (PME-038).
+- All state is conveyed by text or shape as well as colour (WCAG 1.4.1).
+
+## 7. Live-service safety (non-negotiable)
+
+- The scrim stops **56px above the bottom** so the emergency footer (BLACKOUT, Clear) stays visible and clickable while the library is open — the same rule as the download modal.
+- The modal carries the existing `.pm-confirm-back` sentinel class so every global shortcut guard (undo/redo, ⌘1–7 surface switching, plan shortcuts) ignores keystrokes while it is open. The emergency chords ⌘⇧B / ⌘⇧. are **not** intercepted (`selahcue-app/tests/test_keymap.rs`).
+- Opening the library never changes what is on air. It only edits the open deck.
+
+## 8. Out of scope
+
+Arrow-key grid navigation, drag-and-drop import from Finder, folders/tags, video and audio import, de-duplication of identical files, and an image *background* picker (the data model has `Background::Image`; the toolbar `Background` button still adds a shape).

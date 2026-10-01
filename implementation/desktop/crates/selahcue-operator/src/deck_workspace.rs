@@ -19,13 +19,18 @@ use selahcue_core::media::{MediaId, MediaKind, MediaLibrary};
 use selahcue_present::{
     media_usage, render_authored_slide, AuthoredSlide, Background, Element, Fit, FrameBuffer,
     ImageBackground, ImageFit, MediaRef, Rgba, ShapeKind, SlideDeck, SlideId, TextAlign, Theme,
-    Transition, VAlign,
+    Transition, VAlign, MAX_ELEMENTS,
 };
 use serde_json::{json, Value};
 
 /// Upper bound on the undo/redo history (no-leak): far above the ≥20 steps FR-016 requires, and
 /// each entry is one bounded `SlideDeck` clone.
 const MAX_UNDO: usize = 60;
+
+/// The most images one Insert from the media modal adds to a slide. The modal enforces the same
+/// number when selecting; this is the host's own bound, so a hand-crafted request cannot flood a
+/// slide (which itself holds at most [`selahcue_present::MAX_ELEMENTS`]).
+pub const MAX_INSERT_BATCH: usize = 24;
 
 /// What [`DeckWorkspace::register_imported`] did with a batch of freshly copied files.
 #[derive(Debug, Default)]
@@ -401,6 +406,58 @@ impl DeckWorkspace {
         });
     }
 
+    /// Add several library images to the selected slide as **one** undo step — the media modal's
+    /// Insert. Returns how many were actually added, so the caller can say so honestly when fewer
+    /// than requested fit.
+    ///
+    /// Ids that are unknown or not images are skipped; at most [`MAX_INSERT_BATCH`] ids are read; and
+    /// the slide's own element cap ([`selahcue_present::MAX_ELEMENTS`]) is respected, taking what
+    /// fits. Each image is placed one diagonal step (30 per-mille, wrapping after seven) from the
+    /// last so a batch does not stack exactly, always inside the slide. The last image added becomes
+    /// the selected element. A batch that adds nothing records nothing — never a phantom undo entry.
+    pub fn add_image_elements(&mut self, media_ids: &[u64]) -> usize {
+        let mut added = 0usize;
+        self.commit(|w| {
+            let sources: Vec<MediaRef> = media_ids
+                .iter()
+                .take(MAX_INSERT_BATCH)
+                .filter_map(|id| {
+                    w.media
+                        .get(MediaId(*id))
+                        .filter(|a| a.kind == MediaKind::Image)
+                        .and_then(|a| MediaRef::new(&a.path))
+                })
+                .collect();
+            let last = w
+                .with_selected(|s| {
+                    let mut last = None;
+                    for source in sources {
+                        if s.elements.len() >= MAX_ELEMENTS {
+                            break;
+                        }
+                        // `added % 7 <= 6`, so the largest step is 180: x + w = 980 and y + h = 890.
+                        let step = u16::try_from(added % 7).unwrap_or(0).saturating_mul(30);
+                        s.elements.push(image_element(
+                            source,
+                            200u16.saturating_add(step),
+                            250u16.saturating_add(step),
+                            600,
+                            460,
+                        ));
+                        added += 1;
+                        last = Some(s.elements.len() - 1);
+                    }
+                    last
+                })
+                .flatten();
+            if last.is_some() {
+                w.selected_element = last;
+            }
+            last.is_some()
+        });
+        added
+    }
+
     pub fn remove_element(&mut self, index: usize) {
         self.commit(|w| {
             let removed = w
@@ -773,6 +830,24 @@ impl DeckWorkspace {
 
     // --- view -------------------------------------------------------------------------------
 
+    /// [`element_json`], but an image element shows the operator's own file name when the library
+    /// knows one: the slide stores only the stored copy's path (`import-0.png`), which the
+    /// Inspector would otherwise show as the element's name and label.
+    fn named_element_json(&self, index: usize, el: &Element) -> Value {
+        let mut v = element_json(index, el);
+        if let Element::Image { source, .. } = el {
+            let name = self
+                .media
+                .get_by_path(source.as_str())
+                .and_then(|a| a.name.as_deref());
+            if let (Some(name), Value::Object(m)) = (name, &mut v) {
+                m.insert("name".into(), json!(name));
+                m.insert("label".into(), json!(name));
+            }
+        }
+        v
+    }
+
     /// The `DeckView` JSON the webview renders from.
     pub fn view(&self) -> Value {
         let usage = media_usage(&self.media, &[&self.deck]);
@@ -803,7 +878,7 @@ impl DeckWorkspace {
                     .elements
                     .iter()
                     .enumerate()
-                    .map(|(i, e)| element_json(i, e))
+                    .map(|(i, e)| self.named_element_json(i, e))
                     .collect::<Vec<_>>(),
                 "selected_element": self.selected_element,
                 "notes": s.notes,
@@ -1625,6 +1700,144 @@ mod tests {
         );
         assert_eq!(v["media"]["missing_count"], 0);
         assert_eq!(v["media"]["unused_count"], 0);
+    }
+
+    // --- inserting several library images at once (the media modal's Insert) ---------------------
+
+    /// An empty workspace with one slide selected and `n` registered image assets; returns their ids.
+    fn ws_with_images(n: usize) -> (DeckWorkspace, Vec<u64>) {
+        let mut ws = DeckWorkspace::new_empty_for_test();
+        ws.add_slide();
+        let files = (0..n)
+            .map(|i| {
+                imported(
+                    &format!("/m/import-{i}.png"),
+                    Some(&format!("pic {i}.png")),
+                    10,
+                )
+            })
+            .collect();
+        let ids = ws.register_imported(files, 0).registered;
+        (ws, ids)
+    }
+
+    fn elements_of(ws: &DeckWorkspace) -> Vec<serde_json::Value> {
+        ws.view()["slide"]["elements"].as_array().unwrap().clone()
+    }
+
+    #[test]
+    fn inserting_several_images_adds_them_all_as_one_undo_step() {
+        let (mut ws, ids) = ws_with_images(3);
+        let before = elements_of(&ws).len();
+        let undo_before = ws.undo.len();
+
+        let added = ws.add_image_elements(&ids);
+
+        assert_eq!(added, 3);
+        assert_eq!(
+            elements_of(&ws).len(),
+            before + 3,
+            "all three are on the slide"
+        );
+        assert_eq!(
+            ws.undo.len(),
+            undo_before + 1,
+            "ONE history entry for the whole batch"
+        );
+        ws.undo();
+        assert_eq!(
+            elements_of(&ws).len(),
+            before,
+            "a single undo removes all three"
+        );
+    }
+
+    #[test]
+    fn inserted_images_are_cascaded_inside_the_slide_and_the_last_is_selected() {
+        let (mut ws, ids) = ws_with_images(MAX_INSERT_BATCH);
+        ws.add_image_elements(&ids);
+        let els = elements_of(&ws);
+        assert_eq!(els.len(), MAX_INSERT_BATCH);
+        let positions: HashSet<(u64, u64)> = els
+            .iter()
+            .map(|e| (e["x"].as_u64().unwrap(), e["y"].as_u64().unwrap()))
+            .collect();
+        assert!(
+            positions.len() >= 7,
+            "images step diagonally, not all stacked: {positions:?}"
+        );
+        for e in &els {
+            let (x, y, w, h) = (
+                e["x"].as_u64().unwrap(),
+                e["y"].as_u64().unwrap(),
+                e["w"].as_u64().unwrap(),
+                e["h"].as_u64().unwrap(),
+            );
+            assert!(x + w <= 1000 && y + h <= 1000, "stays on the slide: {e}");
+        }
+        assert_eq!(
+            ws.view()["slide"]["selected_element"],
+            serde_json::json!(MAX_INSERT_BATCH - 1),
+            "the last image added is the selected element"
+        );
+    }
+
+    #[test]
+    fn unknown_or_non_image_ids_are_skipped_and_an_empty_batch_records_no_undo_step() {
+        let (mut ws, ids) = ws_with_images(1);
+        let mut video = MediaLibrary::new();
+        video
+            .import("/m/clip.mp4", MediaKind::Video, 1, None, None, None, 0)
+            .unwrap();
+        ws.set_media(video);
+        let undo_before = ws.undo.len();
+
+        assert_eq!(
+            ws.add_image_elements(&[9_999]),
+            0,
+            "an unknown id adds nothing"
+        );
+        assert_eq!(
+            ws.add_image_elements(&[1]),
+            0,
+            "a video cannot be placed on a slide"
+        );
+        assert_eq!(ws.add_image_elements(&[]), 0);
+        assert_eq!(
+            ws.undo.len(),
+            undo_before,
+            "a no-op never pushes a phantom undo entry"
+        );
+        let _ = ids;
+    }
+
+    #[test]
+    fn one_insert_is_capped_so_a_huge_selection_cannot_flood_a_slide() {
+        let (mut ws, ids) = ws_with_images(MAX_INSERT_BATCH + 6);
+        assert_eq!(ws.add_image_elements(&ids), MAX_INSERT_BATCH);
+        assert_eq!(elements_of(&ws).len(), MAX_INSERT_BATCH);
+    }
+
+    #[test]
+    fn a_nearly_full_slide_takes_what_fits_and_reports_how_many() {
+        let (mut ws, ids) = ws_with_images(3);
+        while elements_of(&ws).len() < MAX_ELEMENTS - 1 {
+            ws.add_element("text");
+        }
+        let added = ws.add_image_elements(&ids);
+        assert_eq!(added, 1, "only one slot was left");
+        assert_eq!(elements_of(&ws).len(), MAX_ELEMENTS);
+    }
+
+    #[test]
+    fn an_image_elements_inspector_name_is_the_operators_own_file_name() {
+        // The slide stores only the copy's path (`import-0.png`); the Inspector should still say
+        // what the operator called the file.
+        let (mut ws, ids) = ws_with_images(1);
+        ws.add_image_element(ids[0]);
+        let e = &elements_of(&ws)[0];
+        assert_eq!(e["name"], "pic 0.png");
+        assert_eq!(e["label"], "pic 0.png");
     }
 
     impl DeckWorkspace {

@@ -1571,7 +1571,7 @@ EXPECTED_MIN_CHECKS = 2065  # measured post-rebase, clean run: 2065 checks, 0 FA
 # "encrypted" render, its description text, the "not_encrypted" silent-downgrade warning render,
 # and its own control that the warning never also reads ON). Measured via an actual clean run,
 # not hand-summed.
-EXPECTED_MIN_CHECKS = 2087  # measured: 2087 checks, 0 FAIL (media tile pictures + import report, +18)
+EXPECTED_MIN_CHECKS = 2117  # measured: 2117 checks, 0 FAIL (media modal: replaces the Media/Inspector tab checks, +30 net)
 
 
 def find_chrome():
@@ -2917,6 +2917,18 @@ STUB = r"""
       D.slide.selected_element = D.slide.elements.length - 1;
       return Promise.resolve(dEdit());
     }
+    if (cmd === "deck_add_image_elements") {
+      var addedN = 0;
+      (args.mediaIds || []).forEach(function(mid){
+        var am = D.media.assets.filter(function(a){ return a.id === mid && a.kind === "image"; })[0];
+        if (!am) return;
+        D.slide.elements.push({index:D.slide.elements.length, kind:"image", label:am.name, name:am.name, source:am.path, missing:false, x:200,y:250,w:600,h:460,z:0,visible:true, opacity:255, fit:"stretch"});
+        D.slide.selected_element = D.slide.elements.length - 1; addedN++;
+      });
+      var vAdd = addedN ? dEdit() : dClone();
+      vAdd.insert_report = {requested:(args.mediaIds || []).length, added:addedN};
+      return Promise.resolve(vAdd);
+    }
     if (cmd === "deck_update_element") {
       var eu = D.slide.elements[args.index]; if (eu) { for (var k in args.patch) eu[k] = args.patch[k]; } return Promise.resolve(dEdit());
     }
@@ -3444,6 +3456,18 @@ DRIVER = r"""
   // the gate then waits exactly as long as the boot render needs and stays deterministic
   // (bounded) — a fixed sleep would spuriously RED the gate if app.js boot timing ever grew.
   var waitFor=async function(pred, tries){ tries=tries||150; for(var i=0;i<tries;i++){ if(pred()) return true; await sleep(20); } return pred(); };
+  // The toolbar Image button opens the media library MODAL (it used to add the first library image
+  // directly). Drive the whole flow: open, select the first placeable image, Insert, wait for it to
+  // close. Every check that just needs "an image element on the slide" goes through this.
+  var pmAddImageViaModal = async function(){
+    document.querySelector('#surface-presentation .pm-tool[data-add="image"]').click();
+    await waitFor(function(){ return !!document.getElementById("pm-media-back"); }, 200);
+    var sel = '#pm-media-grid .pm-asset:not(.missing) .pm-asset-thumb[aria-pressed]';
+    await waitFor(function(){ return !!document.querySelector(sel); }, 200);
+    document.querySelector(sel).click();
+    document.getElementById("pm-media-insert").click();
+    await waitFor(function(){ return !document.getElementById("pm-media-back"); }, 200);
+  };
   var hasRender=function(id){ var s=el(id) && el(id).querySelector(".surface"); return !!(s && s.classList.contains("has-render")); };
   async function run(){
     try {
@@ -5632,13 +5656,17 @@ DRIVER = r"""
       ok(window.__calls.some(function(c){ return c.cmd === "deck_add_element" && c.args.kind === "text"; }), "PM: the Text tool adds a text element to the slide");
       ok(window.__calls.filter(function(c){ return c.cmd === "deck_go_live"; }).length === liveBefore, "PM: editing the slide never goes Live (FR-012 — Live untouched by edits)");
 
-      // === Inspector: selecting/adding an element AUTO-OPENS the right-panel Inspector (design 509:124) ===
-      await waitFor(function(){ return !el("pm-inspector-body").hidden; });
-      ok(!el("pm-inspector-body").hidden && el("pm-tab-inspector").getAttribute("aria-selected") === "true",
-         "PM: adding/selecting an element AUTO-OPENS the Inspector tab");
+      // === Inspector: the right column IS the Inspector now — the Media/Inspector tab pair is gone
+      //     (the library is a modal) — and it binds to the selected element (design 509:124) ===
+      await waitFor(function(){ return /Text element/.test(el("pm-inspector-body").textContent); });
+      ok(!el("pm-tab-media") && !el("pm-tab-inspector") && !el("pm-media-body"),
+         "PM: the right column has no Media/Inspector tabs — the media library is a modal now");
+      ok(getComputedStyle(el("pm-inspector-body")).display !== "none" && el("pm-inspector-body").getClientRects().length > 0,
+         "PM: the Inspector is visible in the right column without any tab (computed display + a real rect)");
       ok(!el("pm-inspector-body").contains(document.activeElement),
-         "PM: the auto-open does NOT move focus into the Inspector (no focus-steal off the canvas, review #9)");
-      ok(el("pm-tab-inspector").getAttribute("aria-disabled") !== "true", "PM: the Inspector tab is enabled when an element is selected");
+         "PM: selecting an element does NOT move focus into the Inspector (no focus-steal off the canvas, review #9)");
+      ok(!!el("pm-open-media") && /Media library/.test(el("pm-open-media").textContent) && el("pm-open-media").getAttribute("aria-haspopup") === "dialog",
+         "PM: the right column header offers a 'Media library…' button that opens the modal");
       ok(/Text element/.test(el("pm-inspector-body").textContent), "PM: the Inspector binds to the selected element (Text element header)");
       // A Text inspector control drives deck_update_element.
       var sizeIn = Array.from(el("pm-inspector-body").querySelectorAll("input[type=number]"))[0];
@@ -5664,37 +5692,70 @@ DRIVER = r"""
       var layerRow = el("pm-inspector-body").querySelector("#pm-layers .td-layer");
       layerRow.focus(); layerRow.dispatchEvent(new KeyboardEvent("keydown", {key:"ArrowUp", altKey:true, bubbles:true}));
       ok(window.__calls.some(function(c){ return c.cmd === "deck_set_element_z"; }), "PM: a Layers-panel Alt+↑ raises the element (deck_set_element_z)");
-      // Manual tab switch: Media ⟷ Inspector. Assert the COMPUTED display, not just the `.hidden`
-      // property — a class `display:flex` can outrank the UA `[hidden]{display:none}` and leave BOTH
-      // panels visible while `.hidden` still reads true (the contextual switch must actually hide one).
-      var disp = function(id){ return getComputedStyle(el(id)).display; };
-      el("pm-tab-media").click();
-      ok(!el("pm-media-body").hidden && el("pm-inspector-body").hidden, "PM: the Media tab switches the right panel back to the library");
-      ok(disp("pm-media-body") !== "none" && disp("pm-inspector-body") === "none", "PM: on Media, ONLY the media library is rendered (inspector display:none)");
-      el("pm-tab-inspector").click();
-      ok(!el("pm-inspector-body").hidden, "PM: the Inspector tab switches back to the inspector");
-      ok(disp("pm-inspector-body") !== "none" && disp("pm-media-body") === "none", "PM: on Inspector, the media library is NOT rendered (media display:none)");
-      // Image inspector + Replace flow.
-      document.querySelector('#surface-presentation .pm-tool[data-add="image"]').click();
-      await waitFor(function(){ return /Image element/.test(el("pm-inspector-body").textContent); });
-      ok(/Image element/.test(el("pm-inspector-body").textContent), "PM: adding an image element opens the Image inspector (source + Replace)");
+      // === The media library MODAL: toolbar Image → pick → Insert (PRESENTATION-MEDIA-LIBRARY-MODAL-spec) ===
+      var imgTool = document.querySelector('#surface-presentation .pm-tool[data-add="image"]');
+      imgTool.focus();
+      imgTool.click();
+      await waitFor(function(){ return !!el("pm-media-back"); });
+      var mBack = el("pm-media-back"), mDlg = mBack.querySelector('[role="dialog"]');
+      ok(!!mDlg && mDlg.getAttribute("aria-modal") === "true" && mDlg.getAttribute("aria-labelledby") === "pm-media-title" && /Media library/.test(el("pm-media-title").textContent),
+         "PM modal: the toolbar Image button opens the library as an aria-modal dialog labelled 'Media library'");
+      ok(!window.__calls.some(function(c){ return c.cmd === "deck_add_element" && c.args.kind === "image"; }),
+         "PM modal: the Image button no longer silently adds the first library image (it opens a picker)");
+      ok(document.activeElement === el("pm-media-q"), "PM modal: focus moves into the dialog (the search field) on open");
+      ok(mBack.classList.contains("pm-confirm-back"), "PM modal: carries the .pm-confirm-back sentinel so every global key guard ignores keystrokes while it is open");
+      ok(getComputedStyle(mBack).position === "fixed" && getComputedStyle(mBack).bottom === "56px",
+         "PM modal: the scrim stops 56px above the bottom so BLACKOUT / Clear in the emergency footer stay reachable (got bottom=" + getComputedStyle(mBack).bottom + ")");
+      ok(el("pm-media-insert").disabled && el("pm-media-insert").textContent === "Insert", "PM modal: Insert is disabled until something is selected");
+      // Esc closes with no change, and focus returns to the control that opened it.
+      var callsBeforeEsc = window.__calls.length;
+      document.dispatchEvent(new KeyboardEvent("keydown", {key:"Escape", bubbles:true}));
+      ok(!el("pm-media-back") && document.activeElement === imgTool, "PM modal: Esc closes it and returns focus to the control that opened it");
+      ok(!window.__calls.slice(callsBeforeEsc).some(function(c){ return /^deck_/.test(c.cmd); }), "PM modal: closing without Insert changes nothing (no deck command fired)");
+      // Reopen, select, multi-select, deselect, Insert.
+      imgTool.click();
+      await waitFor(function(){ return !!document.querySelector("#pm-media-grid .pm-asset-thumb[aria-pressed]"); });
+      var pickables = Array.from(document.querySelectorAll("#pm-media-grid .pm-asset-thumb[aria-pressed]"));
+      ok(pickables.length === 2 && document.querySelectorAll("#pm-media-grid .pm-asset-thumb[disabled]").length === 2,
+         "PM modal: images are selectable tiles; the missing image and the video are listed but disabled");
+      pickables[0].click();
+      ok(pickables[0].getAttribute("aria-pressed") === "true" && pickables[0].closest(".pm-asset").classList.contains("selected") && !!pickables[0].querySelector(".pm-check"),
+         "PM modal: a selected tile shows a ring AND a check mark and aria-pressed=true (never colour alone)");
+      ok(el("pm-media-insert").textContent === "Insert 1 image" && !el("pm-media-insert").disabled && /1 selected/.test(el("pm-media-sel").textContent),
+         "PM modal: Insert names the count ('Insert 1 image') and the live region says '1 selected'");
+      pickables[1].click();
+      ok(el("pm-media-insert").textContent === "Insert 2 images", "PM modal: multi-select — 'Insert 2 images'");
+      pickables[1].click();
+      ok(pickables[1].getAttribute("aria-pressed") === "false" && el("pm-media-insert").textContent === "Insert 1 image", "PM modal: clicking a selected tile again deselects it");
+      el("pm-media-insert").click();
+      await waitFor(function(){ return !el("pm-media-back") && /Image element/.test(el("pm-inspector-body").textContent); });
+      var addCall = window.__calls.filter(function(c){ return c.cmd === "deck_add_image_elements"; }).pop();
+      ok(!!addCall && JSON.stringify(addCall.args.mediaIds) === "[1]",
+         "PM modal: Insert fires deck_add_image_elements({mediaIds}) — camelCase→snake arg crossing — with exactly the selected asset");
+      ok(/Image element/.test(el("pm-inspector-body").textContent), "PM: after Insert the new image is the selected element and the Image inspector opens (source + Replace)");
+      // Inspector → Replace… opens the SAME modal in replace mode (images only, exactly one pick).
       var repBtn = Array.from(el("pm-inspector-body").querySelectorAll("button")).filter(function(b){ return /Replace|Relink/.test(b.textContent); })[0];
-      repBtn.click();
-      ok(!el("pm-replace-hint").hidden && !el("pm-media-body").hidden, "PM: Replace… arms the flow + switches to the media library with a hint");
-      var imgCell = document.querySelector('#pm-media-grid .pm-asset:not(.missing) .pm-asset-thumb');
-      imgCell.click();
-      ok(window.__calls.some(function(c){ return c.cmd === "deck_replace_element_image" && c.args.mediaId === 1 && typeof c.args.index === "number"; }), "PM: picking a media image fires deck_replace_element_image({mediaId, index}) — camelCase→snake arg crossing");
-      // Deselect → the panel returns to Media.
-      await waitFor(function(){ return !el("pm-inspector-body").hidden; }); // replace re-opened the inspector
-      document.querySelector('#surface-presentation .pm-mtab[data-filter="all"]').click(); // reset the media filter after the Replace flow
+      repBtn.focus(); repBtn.click();
+      await waitFor(function(){ return !!el("pm-media-back"); });
+      ok(/Replace image/.test(el("pm-media-title").textContent) && !!document.querySelector("#pm-media-back .pm-replace-hint") && el("pm-media-insert").textContent === "Replace",
+         "PM modal: Inspector → Replace… opens the library in REPLACE mode (title, hint, 'Replace' button)");
+      ok(document.querySelector('#pm-media-back .pm-mtab[data-filter="image"]').getAttribute("aria-pressed") === "true", "PM modal: replace mode starts on the Images filter");
+      var repTiles = Array.from(document.querySelectorAll("#pm-media-grid .pm-asset-thumb[aria-pressed]"));
+      repTiles[0].click(); repTiles[1].click();
+      ok(document.querySelectorAll("#pm-media-grid .pm-asset.selected").length === 1 && repTiles[1].getAttribute("aria-pressed") === "true",
+         "PM modal: replace mode keeps EXACTLY one selection (the second pick replaces the first)");
+      el("pm-media-insert").click();
+      await waitFor(function(){ return window.__calls.some(function(c){ return c.cmd === "deck_replace_element_image"; }); });
+      ok(window.__calls.some(function(c){ return c.cmd === "deck_replace_element_image" && c.args.mediaId === 2 && typeof c.args.index === "number"; }),
+         "PM modal: Replace fires deck_replace_element_image({mediaId, index}) with the picked asset — camelCase→snake arg crossing");
       // Add a slide.
       var slidesBefore = document.querySelectorAll("#pm-slide-list .pm-slide").length;
       el("pm-add-slide").click();
       await waitFor(function(){ return document.querySelectorAll("#pm-slide-list .pm-slide").length > slidesBefore; });
       ok(document.querySelectorAll("#pm-slide-list .pm-slide").length === slidesBefore + 1, "PM: '+ Add slide' adds a slide via deck_add_slide");
-      // Deselect (a fresh slide with no selected element) returns the panel to Media (review #8).
-      await waitFor(function(){ return !el("pm-media-body").hidden; });
-      ok(!el("pm-media-body").hidden && el("pm-inspector-body").hidden, "PM: a slide with no selected element returns the right panel to Media (deselect)");
+      // A fresh slide has no selected element: the Inspector says so itself (it no longer swaps to Media).
+      await waitFor(function(){ return /Select an element/.test(el("pm-inspector-body").textContent); });
+      ok(/Select an element/.test(el("pm-inspector-body").textContent), "PM: a slide with no selected element shows the Inspector's own empty note (review #8)");
       // Select the first slide.
       document.querySelector('#pm-slide-list .pm-slide .pm-slide-card').click();
       await waitFor(function(){ return window.__calls.some(function(c){ return c.cmd === "deck_select_slide"; }); });
@@ -5706,15 +5767,26 @@ DRIVER = r"""
       ok(window.__calls.some(function(c){ return c.cmd === "deck_set_auto_advance" && c.args.secs === 8; }), "PM: Auto-advance drives deck_set_auto_advance(secs)");
       el("pm-notes").value = "pause here"; el("pm-notes").dispatchEvent(new Event("change"));
       ok(window.__calls.some(function(c){ return c.cmd === "deck_set_notes" && c.args.notes === "pause here"; }), "PM: the speaker-notes field drives deck_set_notes");
-      // Media library: grid + missing/unused footer + filter.
+      // Media library MODAL: grid + missing/unused footer + filter chips + search.
+      el("pm-open-media").click();
+      await waitFor(function(){ return !!el("pm-media-back"); });
       ok(document.querySelectorAll("#pm-media-grid .pm-asset").length >= 3, "PM: the media library renders image/video asset cells");
       ok(document.querySelector("#pm-media-grid .pm-asset.missing"), "PM: a missing asset shows the missing state");
       ok(document.querySelectorAll("#pm-media-audio .pm-audio-row").length === 1, "PM: audio assets render in the AUDIO list");
       ok(/1 missing/.test(el("pm-media-stats").textContent) && /3 unused/.test(el("pm-media-stats").textContent), "PM: the footer reports 'N missing · M unused' (from media_usage + missing detection)");
       ok(el("pm-media-stats").classList.contains("warn"), "PM: the missing count is styled as a warning");
-      document.querySelector('#surface-presentation .pm-mtab[data-filter="image"]').click();
+      document.querySelector('#pm-media-back .pm-mtab[data-filter="image"]').click();
       ok(!Array.from(document.querySelectorAll("#pm-media-grid .pm-asset .pm-asset-meta")).some(function(m){ return /VIDEO/.test(m.textContent); }), "PM: the Images filter hides video assets");
-      document.querySelector('#surface-presentation .pm-mtab[data-filter="all"]').click();
+      document.querySelector('#pm-media-back .pm-mtab[data-filter="all"]').click();
+      ok(document.querySelectorAll('#pm-media-back .pm-mtab[aria-pressed="true"]').length === 1,
+         "PM modal: the filter chips are a toggle group — exactly one is aria-pressed");
+      // Search narrows the grid; an unmatched query is an honest empty state.
+      el("pm-media-q").value = "harvest"; el("pm-media-q").dispatchEvent(new Event("input"));
+      ok(document.querySelectorAll("#pm-media-grid .pm-asset").length === 1 && /harvest/.test(document.querySelector("#pm-media-grid .pm-asset-name").textContent),
+         "PM modal: search narrows the grid to matching names");
+      el("pm-media-q").value = "zzz-no-such-file"; el("pm-media-q").dispatchEvent(new Event("input"));
+      ok(/No matching media/.test(el("pm-media-grid").textContent), "PM modal: an unmatched search shows 'No matching media.'");
+      el("pm-media-q").value = ""; el("pm-media-q").dispatchEvent(new Event("input"));
       // --- Media tile pictures + import report. An image tile used to be an empty gradient box:
       // nothing ever drew the picture. The host decodes it (`media_thumbnail`); the tile blits it.
       await waitFor(function(){ return document.querySelector("#pm-media-grid .pm-asset-thumb.has-pic"); });
@@ -5732,10 +5804,11 @@ DRIVER = r"""
          "PM media: the per-key cache accessor reports a cached id true and a never-requested id null");
       // Import: the multi-file command, a status toast, the operator's own file name, a picture at once.
       el("pm-import").click();
-      await waitFor(function(){ return /Imported 1 image\./.test(el("pm-toast").textContent); });
+      await waitFor(function(){ return /Imported 1 image\./.test(el("pm-media-note").textContent); });
       ok(window.__calls.some(function(c){ return c.cmd === "deck_import_images"; }) && !window.__calls.some(function(c){ return c.cmd === "deck_import_image"; }),
          "PM media: + Import drives deck_import_images (the retired single-file command is not called)");
-      ok(/Imported 1 image\./.test(el("pm-toast").textContent) && el("pm-error").hidden, "PM media: a clean import says how many images landed and leaves no error banner");
+      ok(/Imported 1 image\./.test(el("pm-media-note").textContent) && !el("pm-media-note").hidden && !el("pm-media-note").classList.contains("warn") && el("pm-error").hidden,
+         "PM media: a clean import says how many images landed in the modal's own status line (the toast would sit behind the scrim)");
       var tileByName = function(re){ return Array.from(document.querySelectorAll("#pm-media-grid .pm-asset")).filter(function(c){ return re.test(c.textContent); })[0]; };
       ok(!!tileByName(/picked\.png/), "PM media: the imported image appears under the operator's own file name");
       await waitFor(function(){ var t = tileByName(/picked\.png/); return t && t.querySelector(".pm-asset-thumb.has-pic"); });
@@ -5744,10 +5817,11 @@ DRIVER = r"""
       window.__thumbFailIds = [101];
       window.__importReport = {imported:1, skipped:[{name:"notes.png", reason:"that file isn’t a supported image (PNG or JPEG)"}], saved:true};
       el("pm-import").click();
-      await waitFor(function(){ return !el("pm-error").hidden; });
-      var errTxt = el("pm-error-msg").textContent;
+      await waitFor(function(){ return /Skipped 1/.test(el("pm-media-note").textContent); });
+      var errTxt = el("pm-media-note").textContent;
       ok(/Imported 1\./.test(errTxt) && /notes\.png/.test(errTxt) && /isn’t a supported image/.test(errTxt) && !/retry/i.test(errTxt),
-         "PM media: a skipped file is named with the host's reason in a persistent banner, not 'please retry': " + errTxt);
+         "PM media: a skipped file is named with the host's reason in the modal's status line, not 'please retry': " + errTxt);
+      ok(el("pm-media-note").classList.contains("warn"), "PM media: a skipped file is styled as a warning");
       // A picture the host cannot draw is an honest "Can't preview", never a silent blank tile.
       await waitFor(function(){ var t = tileByName(/import 101/); return t && t.querySelector(".pm-thumb-fail"); });
       var failThumb = tileByName(/import 101/).querySelector(".pm-asset-thumb");
@@ -5759,8 +5833,8 @@ DRIVER = r"""
       window.__thumbFailIds = [];
       window.__importReport = {imported:1, skipped:[], saved:false};
       el("pm-import").click();
-      await waitFor(function(){ return /won’t be kept after you quit/.test(el("pm-toast").textContent); });
-      ok(/won’t be kept after you quit/.test(el("pm-toast").textContent), "PM media: when the registry is not being saved the import says it won't survive a restart");
+      await waitFor(function(){ return /won’t be kept after you quit/.test(el("pm-media-note").textContent); });
+      ok(/won’t be kept after you quit/.test(el("pm-media-note").textContent), "PM media: when the registry is not being saved the import says it won't survive a restart");
       // The picture cache is BOUNDED. IntersectionObserver is switched off for this one flood so
       // every tile loads eagerly: 100 more images against an 80-entry cap.
       var ioSaved = window.IntersectionObserver; delete window.IntersectionObserver;
@@ -5774,6 +5848,13 @@ DRIVER = r"""
          "PM media: the picture cache holds exactly its cap (" + window.__pmMediaThumbDebug.size() + "), not one entry per tile");
       ok(window.__pmMediaThumbDebug.cached(lastId) === true && window.__pmMediaThumbDebug.cached(1) === null,
          "PM media: eviction is by entity — the newest picture is kept and the oldest id is gone");
+      // Insert is capped at 24 per batch (the host's MAX_INSERT_BATCH): a 25th pick is refused out loud.
+      var floodTiles = Array.from(document.querySelectorAll("#pm-media-grid .pm-asset-thumb[aria-pressed]"));
+      ok(floodTiles.length > 25, "PM modal: premise — more than 25 selectable tiles (" + floodTiles.length + ")");
+      floodTiles.slice(0, 25).forEach(function(t){ t.click(); });
+      ok(document.querySelectorAll("#pm-media-grid .pm-asset.selected").length === 24 && el("pm-media-insert").textContent === "Insert 24 images",
+         "PM modal: a selection is capped at 24 images per Insert");
+      ok(/Up to 24 at a time/.test(el("pm-media-sel").textContent), "PM modal: the 25th pick says 'Up to 24 at a time.' (not a silent refusal)");
       // Clean up the flood, and confirm removed assets are pruned from the cache.
       window.__importPurge = true; window.__importN = 1;
       el("pm-import").click();
@@ -5781,6 +5862,21 @@ DRIVER = r"""
       window.__importPurge = false; window.IntersectionObserver = ioSaved;
       ok(window.__pmMediaThumbDebug.cached(lastId) === null && window.__pmMediaThumbDebug.cached(99) === null,
          "PM media: assets that left the library are pruned from the picture cache");
+      // 24 were selected, including the two seeded images (ids 1 and 2) that SURVIVE the purge: only
+      // the flooded assets that left the library are dropped, never a still-valid pick.
+      ok(document.querySelectorAll("#pm-media-grid .pm-asset.selected").length === 2 && el("pm-media-insert").textContent === "Insert 2 images",
+         "PM modal: selections for assets that left the library are dropped, and the two that remain stay selected (got " + el("pm-media-insert").textContent + ")");
+      Array.from(document.querySelectorAll("#pm-media-grid .pm-asset.selected .pm-asset-thumb")).forEach(function(t){ t.click(); });
+      ok(el("pm-media-insert").disabled, "PM modal: deselecting everything disables Insert again");
+      // Tab is trapped inside the dialog (the console behind it holds live controls); Shift+Tab wraps back.
+      el("pm-media-cancel").focus();
+      document.dispatchEvent(new KeyboardEvent("keydown", {key:"Tab", bubbles:true}));
+      ok(document.activeElement === el("pm-media-close"), "PM modal: Tab from the last control wraps to the first (focus never reaches the live console behind the scrim)");
+      document.dispatchEvent(new KeyboardEvent("keydown", {key:"Tab", shiftKey:true, bubbles:true}));
+      ok(document.activeElement === el("pm-media-cancel"), "PM modal: Shift+Tab from the first control wraps to the last");
+      // A click on the scrim closes it (like Esc / Cancel / the X); nothing changes.
+      el("pm-media-back").dispatchEvent(new MouseEvent("mousedown", {bubbles:true}));
+      ok(!el("pm-media-back"), "PM modal: a click on the scrim closes it");
       // Undo/redo (buttons + the DeckView's can_undo/redo drive enablement; ≥20 steps supported host-side).
       ok(el("pm-undo") && !el("pm-undo").disabled, "PM: after edits, Undo is enabled (can_undo)");
       el("pm-undo").click();
@@ -5968,8 +6064,7 @@ DRIVER = r"""
       var liveCard = document.querySelector("#pm-slide-list .pm-slide.live .pm-slide-card");
       ok(!!document.querySelector("#pm-slide-list .pm-slide.live .pm-slide-live-badge"), "PM: the live slide shows a non-colour-only LIVE badge");
       ok(liveCard && /live/i.test(liveCard.getAttribute("aria-label") || ""), "PM: the live slide names 'live' in its aria-label (not colour-only)");
-      // The active media filter reflects aria-pressed (a real toggle-button group, not a fake tablist).
-      ok(document.querySelector('#surface-presentation .pm-mtab[aria-pressed="true"]'), "PM: the media filter marks the active button with aria-pressed");
+      // (The media filter chips' aria-pressed toggle-group check lives with the modal checks above.)
 
       // === Remaining states: font picker · image Fit · destructive confirms · system states ===
 
@@ -5991,7 +6086,7 @@ DRIVER = r"""
          "PM: 'System default' clears the font to null (bundled default)");
 
       // --- C-008 Image Fit control (Stretch / Fit / Fill) ---
-      document.querySelector('#surface-presentation .pm-tool[data-add="image"]').click();
+      await pmAddImageViaModal();
       await waitFor(function(){ return /Image element/.test(el("pm-inspector-body").textContent); });
       var fitSel = el("pm-inspector-body").querySelector('select[data-ik="imgfit"]');
       ok(!!fitSel && fitSel.options.length === 3, "PM: the Image inspector Fit control offers Stretch/Fit/Fill (C-008, not a disabled placeholder)");
@@ -6033,18 +6128,36 @@ DRIVER = r"""
       Array.from(document.querySelectorAll('.pm-confirm .pm-btn-danger')).filter(function(b){ return /Delete slide/.test(b.textContent); })[0].click();
       ok(window.__calls.some(function(c){ return c.cmd === "deck_remove_slide"; }), "PM: confirming delete-slide drives deck_remove_slide");
 
-      // --- C-002 Remove-media confirm with the in-use warning ---
-      el("pm-tab-media").click();
-      await waitFor(function(){ return !el("pm-media-body").hidden; });
+      // --- C-002 Remove-media confirmation, INLINE in the media modal, with the in-use warning ---
+      // (The shared confirm dialog refuses to open over another `.pm-confirm-back`, so the modal owns
+      // its own role=alert bar.)
+      el("pm-open-media").click();
+      await waitFor(function(){ return !!el("pm-media-back"); });
       var inUseCell = Array.from(document.querySelectorAll("#pm-media-grid .pm-asset")).filter(function(cell){
         var d = cell.querySelector(".pm-asset-del"); return d && /used on 2/i.test(d.getAttribute("aria-label") || ""); })[0];
       ok(!!inUseCell, "PM: an in-use asset cell has a remove affordance labelling its usage (C-002)");
       inUseCell.querySelector(".pm-asset-del").click();
-      await waitFor(function(){ return !!document.querySelector('.pm-confirm[role="alertdialog"]'); });
-      ok(!!document.querySelector(".pm-confirm-warn") && /2 slide/i.test(document.querySelector(".pm-confirm-warn").textContent),
-         "PM: removing an in-use asset warns 'Used on 2 slides'");
-      document.querySelector('.pm-confirm .pm-btn-danger').click();
+      await waitFor(function(){ return !el("pm-media-confirm").hidden; });
+      ok(el("pm-media-confirm").getAttribute("role") === "alert" && !!el("pm-media-confirm").querySelector(".pm-media-confirm-warn")
+         && /2 slide/i.test(el("pm-media-confirm").querySelector(".pm-media-confirm-warn").textContent),
+         "PM: removing an in-use asset shows the inline role=alert bar warning 'Used on 2 slides'");
+      ok(/can’t be undone/.test(el("pm-media-confirm").textContent) && !/You can undo/i.test(el("pm-media-confirm").textContent),
+         "PM: the bar says removal deletes SelahCue's copy and can't be undone (it used to claim 'You can undo it')");
+      ok(document.activeElement === el("pm-media-keep"), "PM: the inline confirmation focuses Keep (the safe default)");
+      var rmBefore = window.__calls.filter(function(c){ return c.cmd === "deck_remove_media"; }).length;
+      document.dispatchEvent(new KeyboardEvent("keydown", {key:"Escape", bubbles:true}));
+      ok(el("pm-media-confirm").hidden && !!el("pm-media-back"),
+         "PM: Esc backs out ONE layer — it dismisses the remove bar and leaves the library open");
+      ok(window.__calls.filter(function(c){ return c.cmd === "deck_remove_media"; }).length === rmBefore, "PM: dismissing the bar removes nothing");
+      inUseCell = Array.from(document.querySelectorAll("#pm-media-grid .pm-asset")).filter(function(cell){
+        var d = cell.querySelector(".pm-asset-del"); return d && /used on 2/i.test(d.getAttribute("aria-label") || ""); })[0];
+      inUseCell.querySelector(".pm-asset-del").click();
+      await waitFor(function(){ return !el("pm-media-confirm").hidden; });
+      el("pm-media-remove").click();
       ok(window.__calls.some(function(c){ return c.cmd === "deck_remove_media" && c.args.id === 1; }), "PM: confirming remove-media drives deck_remove_media(id)");
+      ok(el("pm-media-confirm").hidden, "PM: the bar closes once removal is confirmed");
+      document.dispatchEvent(new KeyboardEvent("keydown", {key:"Escape", bubbles:true}));
+      ok(!el("pm-media-back"), "PM: a second Esc closes the library");
 
       // --- C-004 System states: loading (aria-busy) + error banner (role=alert) + Retry ---
       // The busy state must actually ENGAGE while a command is in flight, then clear — not merely
@@ -13442,9 +13555,8 @@ right after a generate/save");
       if (gBody() === "none" && el("pm-grid-edit")) el("pm-grid-edit").click();
       await waitFor(function(){ return gBody() !== "none"; }, 200);
       ok(gBody() !== "none", "G.6 (setup): the deck editor is open, so the inspector checks measure a painted subtree");
-      if (el("pm-tab-inspector")) el("pm-tab-inspector").click();
-      document.querySelector('#surface-presentation .pm-tool[data-add="image"]').click();
-      await waitFor(function(){ return window.__calls.some(function(c){ return c.cmd === "deck_add_image_element"; }); }, 200);
+      await pmAddImageViaModal();
+      await waitFor(function(){ return window.__calls.some(function(c){ return c.cmd === "deck_add_image_elements"; }); }, 200);
       await waitFor(function(){ return /image/i.test(el("pm-inspector-body").textContent); }, 200);
       ok(/image/i.test(el("pm-inspector-body").textContent),
          "G.6 (setup): an image element is selected in the inspector, so the missing state has something real to attach to");
@@ -13465,10 +13577,8 @@ right after a generate/save");
         var gEye2 = document.querySelector("#pm-layers .td-layer.sel .td-layer-eye") || document.querySelector("#pm-layers .td-layer-eye");
         if (gEye2) gEye2.click();
         await waitFor(function(){ return !!document.querySelector(".pm-insp-miss"); }, 200);
-        // Re-assert the Inspector tab: the rect check below is meaningless if an ANCESTOR is
-        // display:none, and an element's own computed display stays "block" in that case — so
-        // without this the check could pass on an invisible panel or fail on a correct one.
-        if (el("pm-tab-inspector")) el("pm-tab-inspector").click();
+        // (The Inspector is the whole right column now — there is no tab to re-assert — so the rect
+        // check below measures a painted panel by construction; the wait still polls for a real rect.)
         await waitFor(function(){
           var m = document.querySelector(".pm-insp-miss");
           return !!m && m.getClientRects().length > 0;
