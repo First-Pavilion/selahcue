@@ -8526,6 +8526,15 @@
   border-radius: 16px;
   background: var(--sc-surface);
 }
+/* Figma 1132:163: an UNAVAILABLE Generate (service still recording) is a flat dim control, not the
+   gradient CTA at reduced opacity. `[aria-busy]` (in flight) keeps the gradient. Scoped to this
+   surface so the shared `.pp-generate[disabled]` rule is untouched. */
+.tr-gen .pp-generate[disabled]:not([aria-busy="true"]) {
+  background: var(--sc-elevated);
+  color: var(--sc-text-secondary);
+  opacity: 1;
+  border: 1px solid var(--sc-border);
+}
 .tr-gen .pp-gen-preview { padding: 0; border: none; background: transparent; gap: 12px; }
 .tr-gen .pp-gen-preview-title { font-size: 18px; }
 .tr-gen .pp-gen-preview-clamp {
