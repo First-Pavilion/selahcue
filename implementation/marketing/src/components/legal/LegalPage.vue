@@ -102,6 +102,13 @@ const EXAMPLE_TOKEN = '{{' + 'EXAMPLE_DETAIL' + '}}'
       <section v-if="state.draft" class="draft-banner" aria-labelledby="draft-banner-title" data-draft-banner>
         <p id="draft-banner-title" class="draft-title">{{ DRAFT_NOTICE }}</p>
         <p v-if="state.bannerHeadline" class="draft-headline">{{ state.bannerHeadline }}</p>
+        <!-- The document's own banner text, in full: status, launch caveats, the pointer to the
+             separate Controller app policy. A visitor is entitled to all of it. -->
+        <template v-if="doc.banner">
+          <template v-for="(note, ni) in doc.banner.notes" :key="ni">
+            <p v-if="note.kind === 'paragraph'" class="draft-note"><LegalInline :nodes="note.inline" mention /></p>
+          </template>
+        </template>
         <p v-if="state.placeholderCount > 0" class="draft-detail">
           {{ placeholderSummary(state) }}
           Each one is highlighted in the text, like
@@ -163,7 +170,7 @@ const EXAMPLE_TOKEN = '{{' + 'EXAMPLE_DETAIL' + '}}'
 
           <template v-for="(part, pi) in doc.parts" :key="pi">
             <h2 v-if="part.label && part.title" class="part-title">
-              <span class="part-label">{{ part.label }}</span> {{ part.title }}
+              <span class="part-label">{{ part.label }}</span> — {{ part.title }}
             </h2>
             <section
               v-for="s in part.sections"
@@ -268,6 +275,7 @@ const EXAMPLE_TOKEN = '{{' + 'EXAMPLE_DETAIL' + '}}'
   color: var(--sc-text);
   margin: 0 0 8px;
 }
+.draft-note { font-size: 13px; line-height: 1.6; color: var(--sc-text-secondary); margin: 0 0 8px; }
 .draft-detail { font-size: 14px; line-height: 1.6; color: var(--sc-text-secondary); margin: 0; }
 .draft-example {
   background: var(--sc-warn-soft);

@@ -16,7 +16,15 @@ import { classifyHref } from '@/lib/legal/links.ts'
 import type { Inline } from '@/lib/legal/types.ts'
 import { inlineToText } from '@/lib/legal/document.ts'
 
-defineProps<{ nodes: readonly Inline[] }>()
+defineProps<{
+  nodes: readonly Inline[]
+  /**
+   * The text MENTIONS the placeholder convention rather than missing a fact (the
+   * document's own draft banner says "fill every {{PLACEHOLDER}}"). Rendered as plain
+   * code, not as a highlighted chip, so chips always equal the real missing facts.
+   */
+  mention?: boolean
+}>()
 const router = useRouter()
 
 function token(name: string): string {
@@ -27,8 +35,9 @@ function token(name: string): string {
 <template>
   <template v-for="(n, i) in nodes" :key="i">
     <template v-if="n.kind === 'text'">{{ n.text }}</template>
-    <strong v-else-if="n.kind === 'strong'" class="li-strong"><LegalInline :nodes="n.children" /></strong>
+    <strong v-else-if="n.kind === 'strong'" class="li-strong"><LegalInline :nodes="n.children" :mention="mention" /></strong>
     <code v-else-if="n.kind === 'code'" class="li-code">{{ n.text }}</code>
+    <code v-else-if="n.kind === 'placeholder' && mention" class="li-code">{{ token(n.name) }}</code>
     <mark v-else-if="n.kind === 'placeholder'" class="ph" data-placeholder
       ><span class="li-sr">Placeholder, to be completed: </span>{{ token(n.name) }}</mark
     >

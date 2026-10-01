@@ -18,7 +18,9 @@ import { renderToString } from 'vue/server-renderer'
 import { createMemoryHistory, createRouter } from 'vue-router'
 import { createServer, type ViteDevServer } from 'vite'
 
-import { DRAFT_NOTICE } from '../src/lib/legal/document.ts'
+import { DRAFT_NOTICE, legalPageState } from '../src/lib/legal/document.ts'
+import { privacyPolicy } from '../src/lib/legal/privacy.generated.ts'
+import { termsOfService } from '../src/lib/legal/terms.generated.ts'
 import type { Inline, LegalDocument } from '../src/lib/legal/types.ts'
 import { parseLegalMarkdown } from '../scripts/legal_markdown.ts'
 
@@ -64,6 +66,7 @@ function docFrom(body: string, withBanner = true): LegalDocument {
 }
 
 const count = (html: string, needle: string): number => html.split(needle).length - 1
+const legalPageStateCount = (doc: LegalDocument): number => legalPageState(doc).placeholderCount
 
 describe('draft treatment in the rendered page', () => {
   test('placeholders remain: banner, highlighted chips and the draft text are rendered', async () => {
@@ -136,6 +139,69 @@ describe('structure and accessibility of the rendered page', () => {
     const html = await render(docFrom('1.1 Body.', false))
     assert.match(html, /<time datetime="2026-01-02"[^>]*>\s*Version 1\.0 \(final\) · Last updated 2 January 2026\s*<\/time>/)
     assert.equal(count(html, 'data-draft-banner'), 0)
+  })
+})
+
+/** Text of every h1-h3 in rendered HTML, tags stripped, entities decoded, whitespace collapsed. */
+function renderedHeadings(html: string): string[] {
+  const decode = (t: string): string =>
+    t.replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'")
+  return [...html.matchAll(/<h([1-3])\b[^>]*>([\s\S]*?)<\/h\1>/g)].map((m) =>
+    decode((m[2] ?? '').replace(/<!--[\s\S]*?-->/g, '').replace(/<[^>]+>/g, ''))
+      .replace(/\s+/g, ' ')
+      .trim(),
+  )
+}
+
+/** The headings the typed content says should exist, in reading order. */
+function expectedHeadings(doc: LegalDocument): string[] {
+  const out = [doc.title]
+  if (doc.summary) out.push(doc.summary.title)
+  for (const p of doc.parts) {
+    if (p.label && p.title) out.push(`${p.label} — ${p.title}`)
+    for (const s of p.sections) {
+      out.push(`${s.number}. ${s.title}`) // top-level numbers have no dot of their own
+      for (const c of s.children) out.push(`${c.number} ${c.title}`)
+    }
+  }
+  return out
+}
+
+describe('rendered headings equal the typed content (nothing dropped between data and page)', () => {
+  for (const [name, doc] of [
+    ['privacy', privacyPolicy],
+    ['terms', termsOfService],
+  ] as const) {
+    test(name, async () => {
+      const got = renderedHeadings(await render(doc))
+      const want = expectedHeadings(doc)
+      assert.ok(want.length > 15, 'the premise: these documents have many headings')
+      assert.deepEqual(got, want)
+    })
+  }
+
+  test('Terms Part headings keep the dash the markdown has: "Part A — The agreement"', async () => {
+    const got = renderedHeadings(await render(termsOfService))
+    assert.ok(got.includes('Part A — The agreement'))
+    assert.ok(got.includes('Part G — General terms'))
+    assert.ok(!got.some((h) => /^Part [A-G] [^—]/.test(h)), 'no Part heading lost its dash')
+  })
+})
+
+describe("the document's own banner text is rendered while it is a draft", () => {
+  test('real drafts: status line, launch caveat and the Controller-policy pointer are all on the page', async () => {
+    const html = await render(privacyPolicy)
+    assert.ok(html.includes('Status: Draft'))
+    assert.ok(html.includes('describes SelahCue as it operates at launch'))
+    assert.ok(html.includes('also has its own policy'))
+    assert.equal(count(html, 'data-placeholder'), legalPageStateCount(privacyPolicy), 'the banner mention is code, not a highlighted chip')
+  })
+
+  test('a banner note mentioning {{PLACEHOLDER}} shows as plain code and is not counted as a missing fact', async () => {
+    const html = await render(docFrom('1.1 Contact legal@example.com.'))
+    assert.ok(html.includes('Fill every'))
+    assert.ok(html.includes('{{PLACEHOLDER}}'))
+    assert.equal(count(html, 'data-placeholder'), 0)
   })
 })
 
