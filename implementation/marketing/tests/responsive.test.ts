@@ -19,6 +19,7 @@ import { join } from 'node:path'
 import { MOBILE_MAX_WIDTH, MOBILE_QUERY } from '../src/lib/ui/breakpoints.ts'
 import { FOCUSABLE_SELECTOR, nextTrapIndex } from '../src/lib/ui/focusTrap.ts'
 import { createScrollLock, type ScrollLockTarget } from '../src/lib/ui/scrollLock.ts'
+import { createInertLock, type InertTarget } from '../src/lib/ui/inertLock.ts'
 
 const SRC = new URL('../src/', import.meta.url)
 const read = (relative: string) => readFileSync(new URL(relative, SRC), 'utf8')
@@ -116,6 +117,29 @@ describe('scroll lock', () => {
     assert.equal(body.style.overflow, '')
   })
 
+  test('a stale release from BEFORE releaseAll cannot drop a LATER hold (review of #140)', () => {
+    // a = acquire(); releaseAll(); b = acquire(); a()
+    // The old count-only implementation decremented b's hold here and unlocked the page under
+    // a sheet that was still open. A generation id makes `a` a no-op once releaseAll ran.
+    const body = target()
+    const lock = createScrollLock(() => [body])
+    const a = lock.acquire()
+    lock.releaseAll()
+    assert.equal(body.style.overflow, '')
+
+    const b = lock.acquire()
+    assert.equal(body.style.overflow, 'hidden')
+    assert.equal(lock.holds, 1)
+
+    a() // stale
+    assert.equal(lock.holds, 1, "a's stale release must not touch b's hold")
+    assert.equal(body.style.overflow, 'hidden', 'the page was unlocked while b still holds it')
+
+    b()
+    assert.equal(lock.holds, 0)
+    assert.equal(body.style.overflow, '')
+  })
+
   test('a lock taken after targets changed captures the CURRENT values', () => {
     const body = target('')
     const lock = createScrollLock(() => [body])
@@ -124,6 +148,61 @@ describe('scroll lock', () => {
     const release = lock.acquire()
     release()
     assert.equal(body.style.overflow, 'clip')
+  })
+})
+
+function inertTarget(inert = false): InertTarget & { inert: boolean; calls: string[] } {
+  const t = {
+    inert,
+    calls: [] as string[],
+    hasAttribute: (name: string) => name === 'inert' && t.inert,
+    setAttribute: (name: string) => {
+      if (name === 'inert') t.inert = true
+      t.calls.push('set')
+    },
+    removeAttribute: (name: string) => {
+      if (name === 'inert') t.inert = false
+      t.calls.push('remove')
+    },
+  }
+  return t
+}
+
+describe('inert lock (page behind the sheet)', () => {
+  test('makes the target inert while held and restores it on the last release', () => {
+    const app = inertTarget()
+    const lock = createInertLock(() => [app])
+    const release = lock.acquire()
+    assert.equal(app.inert, true)
+    release()
+    assert.equal(app.inert, false)
+  })
+
+  test('only undoes what it did: a target that was already inert stays inert', () => {
+    const app = inertTarget(true)
+    const lock = createInertLock(() => [app])
+    lock.acquire()()
+    assert.equal(app.inert, true)
+    assert.deepEqual(app.calls, [], 'must not touch a target it did not inert')
+  })
+
+  test('a missing target (no #app yet) is skipped, not a crash', () => {
+    const lock = createInertLock(() => [null])
+    assert.doesNotThrow(() => lock.acquire()())
+  })
+
+  test('releases are idempotent and a stale release cannot drop a later hold', () => {
+    const app = inertTarget()
+    const lock = createInertLock(() => [app])
+    const a = lock.acquire()
+    lock.releaseAll()
+    assert.equal(app.inert, false)
+    const b = lock.acquire()
+    a()
+    a()
+    assert.equal(app.inert, true, 'stale release un-inerted the page under an open sheet')
+    b()
+    assert.equal(app.inert, false)
   })
 })
 
