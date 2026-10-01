@@ -13,7 +13,7 @@
  */
 import { computed, ref, watch } from 'vue'
 import ArticleBody from '@/components/article/ArticleBody.vue'
-import Breadcrumbs from '@/components/article/Breadcrumbs.vue'
+import BreadcrumbTrail from '@/components/article/BreadcrumbTrail.vue'
 import PrevNext from '@/components/article/PrevNext.vue'
 import NotFoundView from '@/views/NotFoundView.vue'
 import {
@@ -101,7 +101,7 @@ watch(
       </aside>
 
       <article id="docs-article" ref="content" tabindex="-1" class="da-content">
-        <Breadcrumbs
+        <BreadcrumbTrail
           :items="[
             { label: 'Docs', to: '/docs' },
             { label: category.title, to: '/docs#' + category.id },

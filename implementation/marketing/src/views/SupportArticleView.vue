@@ -8,7 +8,7 @@
 import { computed, ref } from 'vue'
 import UiButton from '@/components/UiButton.vue'
 import ArticleBody from '@/components/article/ArticleBody.vue'
-import Breadcrumbs from '@/components/article/Breadcrumbs.vue'
+import BreadcrumbTrail from '@/components/article/BreadcrumbTrail.vue'
 import PrevNext from '@/components/article/PrevNext.vue'
 import NotFoundView from '@/views/NotFoundView.vue'
 import {
@@ -43,7 +43,7 @@ useFocusHeading(heading, () => `${props.category}/${props.slug}`)
   <NotFoundView v-if="!article || !category" />
   <article v-else class="sa">
     <div class="sa-wrap">
-      <Breadcrumbs
+      <BreadcrumbTrail
         :items="[
           { label: 'Support', to: '/support' },
           { label: category.title, to: '/support#' + category.id },

@@ -14,7 +14,7 @@ import { computed, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import UiBadge from '@/components/UiBadge.vue'
 import ArticleBody from '@/components/article/ArticleBody.vue'
-import Breadcrumbs from '@/components/article/Breadcrumbs.vue'
+import BreadcrumbTrail from '@/components/article/BreadcrumbTrail.vue'
 import PrevNext from '@/components/article/PrevNext.vue'
 import NotFoundView from '@/views/NotFoundView.vue'
 import { blogNeighbours, blogPath, findBlogPost, relatedPosts } from '@/lib/content/blog.ts'
@@ -66,7 +66,7 @@ async function copyLink(): Promise<void> {
   <article v-else class="bp">
     <div class="bp-wrap">
       <header class="bp-header">
-        <Breadcrumbs
+        <BreadcrumbTrail
           :items="[
             { label: 'Home', to: '/' },
             { label: 'Blog', to: '/blog' },
