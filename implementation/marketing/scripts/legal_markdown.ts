@@ -71,7 +71,7 @@ function tokenize(lines: string[], source: string, lineOffset = 0): Token[] {
       i++
       continue
     }
-    if (line !== line.trimEnd() && /  $/.test(line)) {
+    if (line !== line.trimEnd() && / {2}$/.test(line)) {
       fail(i, 'trailing double space (a markdown hard line break) is not supported')
     }
     if (/^#{1,6}[^# ]/.test(line)) fail(i, `"${line}" looks like a heading with no space after the #`)
@@ -153,7 +153,7 @@ function tokenize(lines: string[], source: string, lineOffset = 0): Token[] {
     while (i < lines.length) {
       const cur = lines[i] ?? ''
       if (cur.trim() === '' || isBlockStart(cur)) break
-      if (/  $/.test(cur)) fail(i, 'trailing double space (a markdown hard line break) is not supported')
+      if (/ {2}$/.test(cur)) fail(i, 'trailing double space (a markdown hard line break) is not supported')
       if (/^ +\S/.test(cur)) fail(i, 'an indented line inside a paragraph is not supported')
       parts.push(cur.trim())
       i++
@@ -346,7 +346,7 @@ function parseList(tok: Extract<Token, { t: 'list' }>, source: string): RawItem[
     if (!cur || indent < cur.indent + 2) {
       throw new LegalParseError(source, line, 'a list continuation line must be indented under its item')
     }
-    if (/  $/.test(text)) throw new LegalParseError(source, line, 'trailing double space is not supported')
+    if (/ {2}$/.test(text)) throw new LegalParseError(source, line, 'trailing double space is not supported')
     cur.item.raw += ` ${text.trim()}`
   }
   return root
