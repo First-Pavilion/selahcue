@@ -243,6 +243,14 @@ html:has(.legal-page) {
   /* Navbar height (the shared --nav-height token when a stylesheet defines it; 68px is the
      navbar's real height today) plus a little air. The single offset for every anchor. */
   --legal-anchor-offset: calc(var(--nav-height, 68px) + 20px);
+  /* Fallback for `--page-gutter` (see .legal-shell). */
+  --legal-gutter: 24px;
+}
+@media (max-width: 1199.98px) {
+  .legal-page { --legal-gutter: 48px; }
+}
+@media (max-width: 767.98px) {
+  .legal-page { --legal-gutter: 20px; }
 }
 
 /* Keyboard focus must not end up under the sticky navbar (WCAG 2.2 SC 2.4.11). */
@@ -256,7 +264,10 @@ html:has(.legal-page) {
 .legal-shell {
   max-width: 1120px;
   margin: 0 auto;
-  padding-inline: clamp(20px, 5vw, 24px);
+  /* The site's page gutter when a stylesheet defines the token (24 desktop / 48 tablet / 20
+     mobile, PR #140's tokens.css/main.css); otherwise the same three values locally, stepped
+     at the same breakpoints. One or the other applies, never both. */
+  padding-inline: var(--page-gutter, var(--legal-gutter));
 }
 
 /*
@@ -500,7 +511,7 @@ html:has(.legal-page) {
   .toc-link { padding: 10px 10px; }
 }
 
-@media (max-width: 767px) {
+@media (max-width: 767.98px) {
   .legal-title { font-size: 30px; }
   .summary-box { padding: 20px 18px 4px; }
   .legal-facts { padding: 12px 16px; }

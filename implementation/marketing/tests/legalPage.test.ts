@@ -262,6 +262,35 @@ describe('the skip link is hidden by clipping, not by parking it off-screen', ()
   })
 })
 
+describe('breakpoints and gutters agree with the rest of the site (and with PR #140 once it lands)', () => {
+  const dir = fileURLToPath(new URL('../src/components/legal/', import.meta.url))
+  const css = ['LegalPage.vue', 'LegalBlocks.vue', 'LegalInline.vue', 'LegalList.vue', 'LegalTable.vue'].map((f) => [f, readFileSync(`${dir}${f}`, 'utf8')] as const)
+  const page = css[0]?.[1] ?? ''
+
+  test('no media query ends a range at a whole-pixel breakpoint (767px leaves a gap at 767.5px)', () => {
+    const offenders: string[] = []
+    for (const [file, text] of css) {
+      for (const line of text.split('\n')) {
+        if (line.includes('@media') && /max-width:\s*(767|768|1023|1024|1099|1199|1200)px/.test(line)) offenders.push(`${file}: ${line.trim()}`)
+      }
+    }
+    assert.deepEqual(offenders, [])
+  })
+
+  test('the mobile and tablet range ends are the site\'s complementary .98 forms', () => {
+    assert.match(page, /@media \(max-width: 767\.98px\)/)
+    assert.match(page, /@media \(max-width: 1199\.98px\)/)
+  })
+
+  test('the shell takes the site token when it exists and falls back to the same 24/48/20 steps otherwise', () => {
+    assert.match(page, /\.legal-shell\s*\{[^}]*padding-inline:\s*var\(--page-gutter,\s*var\(--legal-gutter\)\)/)
+    assert.match(page, /--legal-gutter:\s*24px/)
+    assert.match(page, /@media \(max-width: 1199\.98px\)\s*\{\s*\.legal-page \{ --legal-gutter: 48px; \}/)
+    assert.match(page, /@media \(max-width: 767\.98px\)\s*\{\s*\.legal-page \{ --legal-gutter: 20px; \}/)
+    assert.equal(page.split('--legal-gutter:').length - 1, 3, 'defined once per breakpoint, nowhere else')
+  })
+})
+
 describe('one offset mechanism for anchors (no double offset next to a page-wide scroll-padding)', () => {
   const page = readFileSync(fileURLToPath(new URL('../src/components/legal/LegalPage.vue', import.meta.url)), 'utf8')
   const anchors = readFileSync(fileURLToPath(new URL('../src/lib/legal/anchors.ts', import.meta.url)), 'utf8')
