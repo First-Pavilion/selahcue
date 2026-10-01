@@ -1,14 +1,12 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import HomeView from '@/views/HomeView.vue'
 import { confirmSession, refreshIfExpiringSoon } from '@/lib/auth/sessionStore.ts'
-import { articleRoutes, hashScrollOffset } from './articleRoutes.ts'
+import { articleRoutes } from './articleRoutes.ts'
+import { siteScrollBehavior } from './scroll.ts'
 
 const router = createRouter({
   history: createWebHistory(),
-  scrollBehavior(to) {
-    if (to.hash) return { el: to.hash, top: hashScrollOffset(to), behavior: 'smooth' }
-    return { top: 0, behavior: 'smooth' }
-  },
+  scrollBehavior: siteScrollBehavior,
   routes: [
     // Marketing Site Routes
     { path: '/', name: 'home', component: HomeView },

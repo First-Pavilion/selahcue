@@ -1,0 +1,23 @@
+/*
+ * Where in-page anchors and keyboard focus land, relative to the sticky site navbar.
+ *
+ * `scroll-padding-top` on the root tells the browser how much of the viewport the sticky
+ * navbar covers, so that anything it scrolls into view (a #hash target, an element that
+ * receives focus by Tab, `scrollIntoView`) stops BELOW the navbar instead of underneath it:
+ * a focused control hidden behind the navbar fails WCAG 2.2 SC 2.4.11.
+ *
+ * `router/scroll.ts` reads this same computed value for router-driven anchor scrolls, so it
+ * is the single definition. `--nav-height` is the navbar's height token; the fallback keeps
+ * it correct while the token is not yet defined by the stylesheet that owns the navbar.
+ * `tests` and `scripts/article_pages_headless.py` check the result against the navbar's real
+ * rendered height, so a navbar that grows without this following fails a gate.
+ *
+ * Per-element `scroll-margin` must NOT also be set: the two add, and anchors land too low.
+ */
+:root {
+  --sc-anchor-gap: 16px;
+}
+
+html {
+  scroll-padding-top: calc(var(--nav-height, 68px) + var(--sc-anchor-gap));
+}

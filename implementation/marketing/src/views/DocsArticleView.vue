@@ -149,7 +149,7 @@ watch(
 .da-skip {
   position: fixed;
   left: -9999px;
-  top: 80px;
+  top: calc(var(--nav-height, 68px) + 12px);
   z-index: 120;
   padding: 12px 18px;
   background: var(--sc-primary);

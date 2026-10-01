@@ -126,7 +126,6 @@ onBeforeUnmount(() => clearTimeout(resetTimer))
   font-weight: 700;
   color: var(--sc-text);
   margin: 44px 0 16px;
-  scroll-margin-top: 84px;
 }
 .ab-h3 {
   position: relative;
@@ -135,7 +134,6 @@ onBeforeUnmount(() => clearTimeout(resetTimer))
   font-weight: 600;
   color: var(--sc-text);
   margin: 32px 0 12px;
-  scroll-margin-top: 84px;
 }
 .ab-anchor {
   margin-left: 10px;
