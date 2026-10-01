@@ -55,4 +55,8 @@ const customers = ref([
 .org-link:hover { color: var(--sc-primary); text-decoration: underline; }
 .action-link { font-size: 13px; color: var(--sc-primary); text-decoration: none; font-weight: 500; }
 .action-link:hover { text-decoration: underline; }
+
+@media (max-width: 767px), (pointer: coarse) {
+  .org-link, .action-link { display: inline-flex; align-items: center; min-height: 44px; }
+}
 </style>

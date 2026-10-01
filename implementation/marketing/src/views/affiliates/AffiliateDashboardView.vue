@@ -104,7 +104,7 @@ const recentReferrals = ref([
 </template>
 
 <style scoped>
-.container { max-width: 1200px; margin: 0 auto; padding: 0 24px; }
+.container { max-width: 1200px; margin: 0 auto; padding: 0 var(--page-gutter); }
 .dashboard-header { margin-bottom: 32px; }
 .dashboard-header h1 { font-size: 28px; font-weight: 700; color: var(--sc-text); margin: 0 0 8px 0; }
 .dashboard-header p { font-size: 15px; color: var(--sc-text-secondary); margin: 0; }
@@ -123,10 +123,10 @@ const recentReferrals = ref([
 .banner-text h3 { font-size: 18px; color: var(--sc-text); margin: 0 0 4px 0; }
 .banner-text p { font-size: 14px; color: var(--sc-text-secondary); margin: 0; }
 
-.link-input-group { display: flex; gap: 12px; width: 440px; }
-.link-input { flex: 1; background: var(--sc-inset); border: 1px solid var(--sc-border); border-radius: 8px; padding: 10px 14px; font-family: monospace; font-size: 13px; color: var(--sc-gold); }
+.link-input-group { display: flex; gap: 12px; width: 440px; max-width: 100%; }
+.link-input { flex: 1; min-width: 0; background: var(--sc-inset); border: 1px solid var(--sc-border); border-radius: 8px; padding: 10px 14px; font-family: monospace; font-size: 13px; color: var(--sc-gold); }
 
-.kpi-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 20px; margin-bottom: 40px; }
+.kpi-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 20px; margin-bottom: 40px; }
 .kpi-card { background: var(--sc-surface); border: 1px solid var(--sc-border); border-radius: 16px; padding: 24px; display: flex; flex-direction: column; gap: 6px; }
 .kpi-title { font-size: 12px; font-weight: 600; color: var(--sc-text-muted); text-transform: uppercase; }
 .kpi-value { font-size: 32px; font-weight: 800; color: var(--sc-text); }
@@ -142,9 +142,25 @@ const recentReferrals = ref([
 .view-all:hover { text-decoration: underline; }
 .font-medium { font-weight: 600; color: var(--sc-text); }
 
-@media (max-width: 900px) {
+@media (max-width: 1099px) {
   .link-banner { flex-direction: column; align-items: flex-start; gap: 16px; }
   .link-input-group { width: 100%; }
-  .kpi-grid { grid-template-columns: repeat(2, 1fr); }
+}
+
+@media (max-width: 1199px) {
+  .kpi-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+@media (max-width: 767px) {
+  .dashboard-header { margin-bottom: 24px; }
+  .dashboard-header h1 { font-size: 24px; line-height: 30px; }
+  .link-banner { padding: 20px; margin-bottom: 24px; }
+  .link-input-group { flex-direction: column; }
+  .link-input { min-height: 44px; font-size: 16px; }
+  .kpi-grid { grid-template-columns: minmax(0, 1fr); gap: 12px; margin-bottom: 28px; }
+  .kpi-card { padding: 18px 20px; }
+  .kpi-value { font-size: 28px; }
+  .block-header { flex-wrap: wrap; gap: 4px 12px; }
+  .view-all { display: inline-flex; align-items: center; min-height: 44px; }
 }
 </style>

@@ -88,7 +88,9 @@ const paginatedItems = computed(() => {
     </div>
 
     <!-- Data Table -->
-    <div class="table-wrapper">
+    <!-- A keyboard user must be able to scroll a table that overflows sideways, so the
+         scroll container is focusable and named. -->
+    <div class="table-wrapper" tabindex="0" role="region" aria-label="Table, scrolls sideways when wide">
       <table class="data-table">
         <thead>
           <tr>
@@ -167,6 +169,7 @@ const paginatedItems = computed(() => {
 
 .table-controls {
   display: flex;
+  flex-wrap: wrap;
   justify-content: space-between;
   align-items: center;
   padding: 16px 20px;
@@ -177,7 +180,14 @@ const paginatedItems = computed(() => {
 .search-input-wrapper {
   position: relative;
   flex: 1;
+  min-width: 0;
   max-width: 320px;
+}
+
+.table-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
 .search-icon {
@@ -209,6 +219,12 @@ const paginatedItems = computed(() => {
 
 .table-wrapper {
   overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.table-wrapper:focus-visible {
+  outline: 2px solid var(--sc-primary);
+  outline-offset: -2px;
 }
 
 .data-table {
@@ -271,6 +287,8 @@ const paginatedItems = computed(() => {
 
 .table-pagination {
   display: flex;
+  flex-wrap: wrap;
+  gap: 10px 16px;
   justify-content: space-between;
   align-items: center;
   padding: 14px 20px;
@@ -305,5 +323,25 @@ const paginatedItems = computed(() => {
 .page-current {
   font-weight: 600;
   color: var(--sc-text);
+  white-space: nowrap;
+}
+
+/* Phones and coarse pointers: 44px controls, 16px input text (anything smaller makes iOS
+   Safari zoom the page when the field is focused), and cells that do not wrap -- a narrow
+   table scrolls inside its wrapper instead of squeezing every cell into a tall column. */
+@media (max-width: 767px), (pointer: coarse) {
+  .table-search { min-height: 44px; font-size: 16px; }
+  .page-btn { min-height: 44px; padding: 0 16px; font-size: 14px; }
+}
+
+@media (max-width: 767px) {
+  .table-controls { padding: 14px 16px; }
+  .search-input-wrapper { flex: 1 1 100%; max-width: none; }
+  .table-actions { flex: 1 1 100%; }
+  .table-actions > * { flex: 1 1 auto; }
+  .data-table th,
+  .data-table td { white-space: nowrap; }
+  .table-pagination { padding: 12px 16px; justify-content: center; text-align: center; }
+  .pagination-info { flex: 1 1 100%; }
 }
 </style>

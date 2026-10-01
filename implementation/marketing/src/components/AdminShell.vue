@@ -31,14 +31,14 @@ const isActive = (path: string) => {
         <UiBadge variant="live" size="sm">ADMIN</UiBadge>
       </div>
 
-      <nav class="sidebar-menu">
+      <nav class="sidebar-menu" aria-label="Admin sections">
         <router-link
           v-for="item in adminNav"
           :key="item.path"
           :to="item.path"
           :class="['menu-item', { active: isActive(item.path) }]"
         >
-          <span class="menu-icon">{{ item.icon }}</span>
+          <span class="menu-icon" aria-hidden="true">{{ item.icon }}</span>
           <span class="menu-label">{{ item.label }}</span>
         </router-link>
       </nav>
@@ -83,7 +83,7 @@ const isActive = (path: string) => {
 <style scoped>
 .admin-shell {
   display: flex;
-  min-height: 100vh;
+  min-height: calc(100vh - var(--nav-height));
   background: var(--sc-base);
 }
 
@@ -95,9 +95,10 @@ const isActive = (path: string) => {
   display: flex;
   flex-direction: column;
   flex-shrink: 0;
+  /* Sticks BELOW the sticky site navbar rather than under it. */
   position: sticky;
-  top: 0;
-  height: 100vh;
+  top: var(--nav-height);
+  height: calc(100vh - var(--nav-height));
 }
 
 .sidebar-brand {
@@ -212,8 +213,12 @@ const isActive = (path: string) => {
   background: var(--sc-surface);
   border-bottom: 1px solid var(--sc-border);
   position: sticky;
-  top: 0;
+  top: var(--nav-height);
   z-index: 10;
+}
+
+.topbar-left {
+  min-width: 0;
 }
 
 .page-title {
@@ -232,6 +237,7 @@ const isActive = (path: string) => {
 .search-box {
   position: relative;
   width: 280px;
+  max-width: 100%;
 }
 
 .search-icon {
@@ -275,9 +281,73 @@ const isActive = (path: string) => {
   flex-grow: 1;
 }
 
-@media (max-width: 1024px) {
+/* Tablet (768-1024): the sidebar collapses to a 72px icon rail. The labels are visually
+   hidden, NOT display:none -- an icon-only link with no name is unusable by a screen
+   reader (the old rule did exactly that). */
+@media (min-width: 768px) and (max-width: 1024px) {
   .admin-sidebar { width: 72px; }
-  .brand-name, .menu-label, .user-info, .sidebar-brand .badge { display: none; }
+  .brand-name, .user-info, .sidebar-brand .ui-badge { display: none; }
+  .menu-label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+  }
+  .sidebar-brand { justify-content: center; padding: 20px 0; }
+  .sidebar-menu { padding: 16px 8px; }
+  .menu-item { justify-content: center; padding: 10px 0; min-height: 44px; }
   .sidebar-user { justify-content: center; padding: 16px 0; }
+  .admin-topbar { padding: 16px 24px; flex-wrap: wrap; gap: 12px; }
+  .admin-content { padding: 24px; }
+}
+
+/* Mobile (<768): no rail. The sidebar becomes a horizontally scrolling strip of section
+   tabs under the site navbar, and the topbar stacks title over search. Nothing sticks:
+   a sticky navbar plus two more sticky bars would leave a phone with no content. */
+@media (max-width: 767px) {
+  .admin-shell { flex-direction: column; min-height: 0; }
+
+  .admin-sidebar {
+    width: 100%;
+    height: auto;
+    position: static;
+    border-right: none;
+    border-bottom: 1px solid var(--sc-border);
+  }
+  .sidebar-brand,
+  .sidebar-user { display: none; }
+
+  .sidebar-menu {
+    flex-direction: row;
+    gap: 4px;
+    padding: 8px 12px;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+  }
+  .sidebar-menu::-webkit-scrollbar { display: none; }
+
+  .menu-item {
+    flex: 0 0 auto;
+    padding: 0 14px;
+    min-height: 44px;
+    white-space: nowrap;
+  }
+
+  .admin-topbar {
+    position: static;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 12px;
+    padding: 16px 20px;
+  }
+  .page-title { font-size: 20px; line-height: 1.3; }
+  .topbar-right { width: 100%; }
+  .search-box { flex: 1; min-width: 0; width: auto; }
+  .topbar-search { min-height: 44px; font-size: 16px; }
+  .icon-btn { min-width: 44px; min-height: 44px; }
+  .admin-content { padding: 20px; }
 }
 </style>

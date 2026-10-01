@@ -57,10 +57,19 @@ const subscriptions = ref([
 </template>
 
 <style scoped>
-.sub-kpis { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; margin-bottom: 32px; }
+.sub-kpis { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 20px; margin-bottom: 32px; }
 .kpi-box { background: var(--sc-surface); border: 1px solid var(--sc-border); border-radius: 14px; padding: 20px; display: flex; flex-direction: column; gap: 4px; }
 .kpi-box .label { font-size: 12px; font-weight: 600; color: var(--sc-text-muted); text-transform: uppercase; }
 .kpi-box .val { font-size: 28px; font-weight: 800; color: var(--sc-text); }
 .font-medium { font-weight: 600; color: var(--sc-text); }
 .font-bold { font-weight: 700; color: var(--sc-text); }
+
+@media (max-width: 1199px) {
+  .sub-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+@media (max-width: 767px) {
+  .sub-kpis { grid-template-columns: minmax(0, 1fr); gap: 12px; margin-bottom: 24px; }
+  .kpi-box .val { font-size: 24px; }
+}
 </style>

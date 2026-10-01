@@ -59,15 +59,16 @@ const isActive = (path: string) => route.path === path
 .affiliate-topbar {
   background: var(--sc-surface);
   border-bottom: 1px solid var(--sc-border);
+  /* Below the sticky site navbar (z-index 100), not stacked over it. */
   position: sticky;
-  top: 0;
-  z-index: 100;
+  top: var(--nav-height);
+  z-index: 90;
 }
 
 .container {
   max-width: 1200px;
   margin: 0 auto;
-  padding: 0 24px;
+  padding: 0 var(--page-gutter);
 }
 
 .topbar-inner {
@@ -103,8 +104,12 @@ const isActive = (path: string) => route.path === path
   text-decoration: none;
   font-size: 14px;
   font-weight: 500;
-  padding: 8px 14px;
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  padding: 0 14px;
   border-radius: 8px;
+  white-space: nowrap;
   transition: all var(--transition-fast);
 }
 
@@ -152,8 +157,27 @@ const isActive = (path: string) => route.path === path
   padding: 40px 0 80px;
 }
 
-@media (max-width: 900px) {
-  .topbar-inner { flex-direction: column; height: auto; padding: 16px 0; gap: 16px; }
-  .portal-nav { overflow-x: auto; width: 100%; justify-content: flex-start; }
+/* Below 1100 the brand, six portal links and the balance chip no longer fit one row:
+   the nav drops to its own full-width, swipeable row. */
+@media (max-width: 1099px) {
+  .topbar-inner { flex-wrap: wrap; height: auto; padding: 12px 0 4px; gap: 8px 16px; }
+  .brand-lockup { order: 1; }
+  .user-profile { order: 2; margin-left: auto; }
+  .portal-nav {
+    order: 3;
+    flex: 1 0 100%;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+    justify-content: flex-start;
+    padding-bottom: 8px;
+  }
+  .portal-nav::-webkit-scrollbar { display: none; }
+}
+
+@media (max-width: 767px) {
+  /* The profile row sits beside the brand on a phone, the nav strip underneath. */
+  .affiliate-topbar { position: static; }
+  .affiliate-content { padding: 24px 0 var(--section-pad-sm); }
 }
 </style>

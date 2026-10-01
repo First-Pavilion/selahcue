@@ -33,7 +33,7 @@ const faqItems = [
 </template>
 
 <style scoped>
-.container { max-width: 900px; margin: 0 auto; padding: 0 24px; }
+.container { max-width: 900px; margin: 0 auto; padding: 0 var(--page-gutter); }
 .page-header { margin-bottom: 32px; text-align: center; }
 .page-header h1 { font-size: 28px; font-weight: 700; color: var(--sc-text); margin: 0 0 8px 0; }
 .page-header p { font-size: 15px; color: var(--sc-text-secondary); margin: 0; }
@@ -43,4 +43,12 @@ const faqItems = [
 .contact-box { background: var(--sc-surface); border: 1px solid var(--sc-border); border-radius: 16px; padding: 32px; text-align: center; }
 .contact-box h3 { font-size: 20px; color: var(--sc-text); margin: 0 0 8px 0; }
 .contact-box p { font-size: 14px; color: var(--sc-text-secondary); margin: 0 0 20px 0; }
+
+@media (max-width: 767px) {
+  .faq-card, .contact-box { padding: 20px; border-radius: 14px; }
+  .faq-card { margin-bottom: 24px; }
+  .contact-box > :last-child { width: 100%; }
+  .page-header { margin-bottom: 24px; }
+  .page-header h1 { font-size: 24px; line-height: 30px; }
+}
 </style>

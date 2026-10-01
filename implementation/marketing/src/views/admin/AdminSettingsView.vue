@@ -57,7 +57,7 @@ const saveSettings = () => {
 </template>
 
 <style scoped>
-.settings-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 28px; }
+.settings-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 28px; }
 .settings-card { background: var(--sc-surface); border: 1px solid var(--sc-border); border-radius: 16px; padding: 32px; }
 .settings-card h2 { font-size: 18px; font-weight: 700; color: var(--sc-text); margin: 0 0 24px 0; }
 
@@ -68,7 +68,13 @@ const saveSettings = () => {
 
 .form-actions { margin-top: 24px; }
 
-@media (max-width: 900px) {
-  .settings-grid { grid-template-columns: 1fr; }
+@media (max-width: 1199px) {
+  .settings-grid { grid-template-columns: minmax(0, 1fr); }
+}
+
+@media (max-width: 767px) {
+  .settings-card { padding: 22px 20px; }
+  .setting-item { flex-wrap: wrap; gap: 8px 16px; }
+  .form-actions > * { width: 100%; }
 }
 </style>

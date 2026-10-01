@@ -90,9 +90,13 @@ const catalogue = ref([
 </template>
 
 <style scoped>
-.sub-nav { display: flex; gap: 8px; margin-bottom: 24px; border-bottom: 1px solid var(--sc-border); padding-bottom: 8px; }
+.sub-nav { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 24px; border-bottom: 1px solid var(--sc-border); padding-bottom: 8px; }
 .sub-btn { background: none; border: none; padding: 8px 16px; font-family: var(--font-family); font-size: 14px; font-weight: 600; color: var(--sc-text-muted); border-radius: 8px; cursor: pointer; }
 .sub-btn.active { background: var(--sc-elevated); color: var(--sc-text); }
 code { font-family: monospace; color: var(--sc-gold); font-weight: 600; }
 .font-medium { font-weight: 600; color: var(--sc-text); }
+
+@media (max-width: 767px) {
+  .sub-btn { min-height: 44px; }
+}
 </style>

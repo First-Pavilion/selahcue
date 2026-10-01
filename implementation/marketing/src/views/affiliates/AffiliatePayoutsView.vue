@@ -62,12 +62,12 @@ const payouts = ref([
 </template>
 
 <style scoped>
-.container { max-width: 1200px; margin: 0 auto; padding: 0 24px; }
+.container { max-width: 1200px; margin: 0 auto; padding: 0 var(--page-gutter); }
 .page-header { margin-bottom: 32px; }
 .page-header h1 { font-size: 28px; font-weight: 700; color: var(--sc-text); margin: 0 0 8px 0; }
 .page-header p { font-size: 15px; color: var(--sc-text-secondary); margin: 0; }
 
-.payout-summary-cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; margin-bottom: 36px; }
+.payout-summary-cards { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 20px; margin-bottom: 36px; }
 .summary-card { background: var(--sc-surface); border: 1px solid var(--sc-border); border-radius: 16px; padding: 24px; display: flex; flex-direction: column; gap: 6px; }
 .card-label { font-size: 12px; font-weight: 600; color: var(--sc-text-muted); text-transform: uppercase; }
 .card-value { font-size: 32px; font-weight: 800; color: var(--sc-text); }
@@ -78,7 +78,16 @@ const payouts = ref([
 .font-mono { font-family: monospace; font-weight: 600; color: var(--sc-gold); }
 .font-bold { font-weight: 700; color: var(--sc-text); }
 
-@media (max-width: 768px) {
-  .payout-summary-cards { grid-template-columns: 1fr; }
+@media (max-width: 1199px) {
+  .payout-summary-cards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+@media (max-width: 767px) {
+  .payout-summary-cards { grid-template-columns: minmax(0, 1fr); gap: 12px; margin-bottom: 28px; }
+  .summary-card { padding: 18px 20px; }
+  .card-value { font-size: 28px; }
+  .card-sub { overflow-wrap: anywhere; }
+  .page-header { margin-bottom: 24px; }
+  .page-header h1 { font-size: 24px; line-height: 30px; }
 }
 </style>

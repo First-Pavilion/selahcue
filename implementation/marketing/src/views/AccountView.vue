@@ -427,7 +427,7 @@ const invoices = ref([
 .container {
   max-width: 1140px;
   margin: 0 auto;
-  padding: 0 24px;
+  padding: 0 var(--page-gutter);
 }
 
 /* Header */
@@ -577,7 +577,7 @@ const invoices = ref([
 /* Summary Box */
 .plan-summary-box {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 20px;
   background: var(--sc-elevated);
   border: 1px solid var(--sc-border);
@@ -749,6 +749,7 @@ const invoices = ref([
 
 .ent-details {
   flex: 1;
+  min-width: 0;
 }
 
 .ent-title-line {
@@ -789,7 +790,7 @@ const invoices = ref([
 
 .bundled-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(280px, 100%), 1fr));
   gap: 12px;
 }
 
@@ -815,7 +816,7 @@ const invoices = ref([
 
 .form-row {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 16px;
 }
 
@@ -846,26 +847,69 @@ const invoices = ref([
   border-color: var(--sc-primary);
 }
 
-@media (max-width: 768px) {
+/* Cards are always 1-up (no sidebar), so tablet only needs tighter chrome; the real
+   reflow is below 768. */
+@media (max-width: 1023px) {
+  .plan-summary-box { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+@media (max-width: 767px) {
+  .account-portal { padding: 24px 0 var(--section-pad-sm); }
+
   .portal-header {
     flex-direction: column;
     align-items: flex-start;
     gap: 16px;
+    margin-bottom: 24px;
+    padding-bottom: 20px;
   }
-  .plan-summary-box {
-    grid-template-columns: 1fr;
-  }
+  .user-lockup { gap: 12px; min-width: 0; }
+  .user-lockup > div { min-width: 0; }
+  .org-title { font-size: 20px; overflow-wrap: anywhere; }
+  .user-sub { overflow-wrap: anywhere; }
+
+  .alert-banner { flex-direction: column; align-items: flex-start; gap: 12px; margin-bottom: 24px; }
+
+  .portal-tabs { margin-bottom: 24px; -webkit-overflow-scrolling: touch; scrollbar-width: none; }
+  .portal-tabs::-webkit-scrollbar { display: none; }
+  .tab-btn { flex: 0 0 auto; min-height: 44px; }
+
+  .portal-content { gap: 20px; }
+  .portal-card { padding: 20px; border-radius: 14px; }
+  .card-header { flex-wrap: wrap; gap: 10px 12px; margin-bottom: 20px; }
+
+  .plan-summary-box { grid-template-columns: minmax(0, 1fr); padding: 16px; gap: 16px; }
+  .summary-col .value { overflow-wrap: anywhere; }
+
+  .card-actions { flex-direction: column; align-items: stretch; }
+  .card-actions > * { width: 100%; }
+  .danger-text { margin-left: 0; }
+
   .license-key-box {
     flex-direction: column;
-    align-items: flex-start;
+    align-items: stretch;
     gap: 12px;
+    padding: 16px;
   }
-  .entitlement-row {
-    flex-direction: column;
-    align-items: flex-start;
-  }
-  .form-row {
-    grid-template-columns: 1fr;
-  }
+  .key-info { min-width: 0; }
+  .key-code { font-size: 14px; overflow-wrap: anywhere; }
+  .key-btn-group > * { flex: 1 1 0; }
+
+  /* Wide tables scroll inside .table-responsive; their cells do not wrap into slivers. */
+  .table-responsive { -webkit-overflow-scrolling: touch; }
+  .data-table th, .data-table td { white-space: nowrap; }
+  .btn-text-danger, .btn-link { min-height: 44px; padding: 0 8px; font-family: inherit; }
+
+  .entitlement-row { flex-direction: column; align-items: flex-start; padding: 16px; gap: 12px; }
+  .ent-details { min-width: 0; width: 100%; }
+  .ent-title-line { flex-wrap: wrap; gap: 6px 12px; }
+  .ent-action { width: 100%; }
+  .ent-action > * { width: 100%; }
+
+  .bundled-chip { gap: 8px; }
+
+  .form-row { grid-template-columns: minmax(0, 1fr); }
+  .form-input { min-height: 44px; font-size: 16px; }
+  .form-actions > * { width: 100%; }
 }
 </style>
