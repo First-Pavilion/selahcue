@@ -224,6 +224,28 @@ describe('the skip link is hidden by clipping, not by parking it off-screen', ()
   })
 })
 
+describe('one offset mechanism for anchors (no double offset next to a page-wide scroll-padding)', () => {
+  const page = readFileSync(fileURLToPath(new URL('../src/components/legal/LegalPage.vue', import.meta.url)), 'utf8')
+  const anchors = readFileSync(fileURLToPath(new URL('../src/lib/legal/anchors.ts', import.meta.url)), 'utf8')
+
+  test('the lift, the skip target and the page share ONE variable, defined once from the navbar height', () => {
+    assert.equal(page.split('--legal-anchor-offset:').length - 1, 1, 'defined exactly once')
+    assert.match(page, /--legal-anchor-offset:\s*calc\(var\(--nav-height, 68px\) \+ 20px\)/)
+    assert.match(page, /\.legal-anchor\s*\{[^}]*top:\s*calc\(-1 \* var\(--legal-anchor-offset/)
+    assert.match(page, /#legal-text\s*\{[^}]*scroll-margin-top:\s*var\(--legal-anchor-offset\)/)
+  })
+
+  test('a page-wide scroll-padding-top is neutralised while a legal page is mounted', () => {
+    assert.match(page, /html:has\(\.legal-page\)\s*\{\s*scroll-padding-top:\s*0/)
+  })
+
+  test('manual scrolling reads only the element\'s own scroll-margin, never scrollIntoView (which adds the page padding)', () => {
+    assert.ok(!anchors.includes('scrollIntoView'), 'anchors.ts must not use scrollIntoView')
+    assert.ok(!page.includes('scrollIntoView'), 'LegalPage.vue must not use scrollIntoView')
+    assert.match(anchors, /scrollMarginTop/)
+  })
+})
+
 describe('rendering is inert', () => {
   function docWithInline(inline: Inline[]): LegalDocument {
     const base = docFrom('1.1 placeholder.')

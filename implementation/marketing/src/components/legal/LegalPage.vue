@@ -12,7 +12,7 @@
 import { computed, nextTick, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import UiBadge from '@/components/UiBadge.vue'
-import { goToAnchor } from '@/lib/legal/anchors.ts'
+import { goToAnchor, scrollToElement } from '@/lib/legal/anchors.ts'
 import {
   DRAFT_NOTICE,
   legalPageState,
@@ -56,7 +56,7 @@ async function onTocClick(id: string): Promise<void> {
 /**
  * On a long document (the Terms have 25 sections) Contents scrolls inside its sticky
  * frame, so keep the active entry in view there. Adjusts the frame's own scrollTop rather
- * than calling scrollIntoView, which could also move the page.
+ * than the built-in scroll-into-view call, which could also move the page.
  */
 const tocFrame = ref<HTMLElement | null>(null)
 watch(active, async () => {
@@ -74,8 +74,10 @@ watch(active, async () => {
 const textTarget = ref<HTMLElement | null>(null)
 async function skipToText(): Promise<void> {
   await nextTick()
-  textTarget.value?.focus()
-  textTarget.value?.scrollIntoView({ block: 'start' })
+  const target = textTarget.value
+  if (!target) return
+  target.focus({ preventScroll: true })
+  scrollToElement(target) // honours #legal-text's own scroll-margin-top, so the first heading clears the navbar
 }
 
 const hasClauses = (blocks: readonly Block[]): boolean =>
@@ -201,17 +203,35 @@ const EXAMPLE_TOKEN = '{{' + 'EXAMPLE_DETAIL' + '}}'
 
 <style>
 /*
- * Deliberately NOT scoped: this is shared by LegalBlocks, which renders the clause anchors.
- * The anchor is a zero-height block lifted by the sticky navbar's height plus a little air,
- * so whatever scrolls to it (router, native fragment navigation) leaves the heading below
- * the bar. See lib/legal/anchors.ts.
+ * Deliberately NOT scoped: shared by LegalBlocks (clause anchors) and the one `html` rule.
+ *
+ * The anchor is a zero-height block lifted by the sticky navbar's height plus a little air
+ * (`--legal-anchor-offset`, defined on .legal-page), so whatever scrolls to it leaves the
+ * heading below the bar. See lib/legal/anchors.ts for why this, and only this, carries the
+ * offset.
  */
 .legal-anchor {
   display: block;
   position: relative;
-  top: -88px;
+  top: calc(-1 * var(--legal-anchor-offset, 88px));
   height: 0;
   visibility: hidden;
+}
+
+/*
+ * While a legal page is mounted the page-wide `scroll-padding-top` (PR #135 sets one on
+ * `html` for the article pages) is zeroed: the anchors already carry the offset, and the
+ * browser would otherwise add the padding on top of it for native fragment navigation.
+ * Focus-visibility under the navbar is kept by the per-element rule in the scoped block.
+ *
+ * WHEN #135 LANDS: this rule and `--legal-anchor-offset` are the legal pages' only offset
+ * mechanism and are self-contained, so nothing needs deleting for correctness. To fold the
+ * legal pages into #135's single mechanism instead: add 'privacy' and 'terms' to
+ * ANCHORED_ROUTES in router/scroll.ts, then delete this rule, the lift in `.legal-anchor`
+ * and `--legal-anchor-offset`.
+ */
+html:has(.legal-page) {
+  scroll-padding-top: 0;
 }
 </style>
 
@@ -221,6 +241,18 @@ const EXAMPLE_TOKEN = '{{' + 'EXAMPLE_DETAIL' + '}}'
   padding: 60px 0 80px;
   --clause-indent: 3em;
   --clause-gap: 10px;
+  /* Navbar height (the shared --nav-height token when a stylesheet defines it; 68px is the
+     navbar's real height today) plus a little air. The single offset for every anchor. */
+  --legal-anchor-offset: calc(var(--nav-height, 68px) + 20px);
+}
+
+/* Keyboard focus must not end up under the sticky navbar (WCAG 2.2 SC 2.4.11). */
+.legal-page :deep(:is(a[href], button, [tabindex])) {
+  scroll-margin-top: calc(var(--nav-height, 68px) + 16px);
+}
+/* The skip-link target: its first heading must clear the navbar, not sit behind it. */
+#legal-text {
+  scroll-margin-top: var(--legal-anchor-offset);
 }
 .legal-shell {
   max-width: 1120px;
