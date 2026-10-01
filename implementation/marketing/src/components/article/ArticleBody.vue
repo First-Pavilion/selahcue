@@ -11,6 +11,7 @@
  */
 import { computed, onBeforeUnmount, ref } from 'vue'
 import InlineText from './InlineText.vue'
+import { inlineToText } from '@/lib/content/inline.ts'
 import { headingIds } from '@/lib/content/text.ts'
 import type { Block } from '@/lib/content/types.ts'
 
@@ -27,6 +28,8 @@ const ids = computed(() => headingIds(props.blocks))
 function idOf(block: Block): string {
   return ids.value.get(block) ?? ''
 }
+/** A heading's text with the inline markup removed, for labels. */
+const plain = inlineToText
 
 /** Index of the code block whose copy status is showing, and what it says. */
 const copyStatusIndex = ref(-1)
@@ -60,27 +63,34 @@ onBeforeUnmount(() => clearTimeout(resetTimer))
     <template v-for="(block, i) in blocks" :key="i">
       <p v-if="block.type === 'p'" class="ab-p"><InlineText :text="block.text" /></p>
 
-      <h2 v-else-if="block.type === 'h2'" :id="idOf(block)" class="ab-h2">
-        <InlineText :text="block.text" />
+      <!-- The anchor sits BESIDE the heading, not inside it, so the heading's accessible name
+           is its own text ("Turn it on"), not "Turn it on #". Its label names the section, so
+           a screen-reader links list does not read the same phrase twenty times. The
+           `aria-current-value="false"` stops router-link marking every same-page hash link as
+           the current page. -->
+      <div v-else-if="block.type === 'h2'" class="ab-hwrap ab-hwrap-2">
+        <h2 :id="idOf(block)" class="ab-h2"><InlineText :text="block.text" /></h2>
         <router-link
           v-if="anchors"
           class="ab-anchor"
           :to="{ hash: '#' + idOf(block) }"
-          aria-label="Link to this section"
+          :aria-label="'Link to section: ' + plain(block.text)"
+          aria-current-value="false"
           >#</router-link
         >
-      </h2>
+      </div>
 
-      <h3 v-else-if="block.type === 'h3'" :id="idOf(block)" class="ab-h3">
-        <InlineText :text="block.text" />
+      <div v-else-if="block.type === 'h3'" class="ab-hwrap ab-hwrap-3">
+        <h3 :id="idOf(block)" class="ab-h3"><InlineText :text="block.text" /></h3>
         <router-link
           v-if="anchors"
           class="ab-anchor"
           :to="{ hash: '#' + idOf(block) }"
-          aria-label="Link to this section"
+          :aria-label="'Link to section: ' + plain(block.text)"
+          aria-current-value="false"
           >#</router-link
         >
-      </h3>
+      </div>
 
       <ul v-else-if="block.type === 'ul'" class="ab-list">
         <li v-for="(item, j) in block.items" :key="j"><InlineText :text="item" /></li>
@@ -119,31 +129,31 @@ onBeforeUnmount(() => clearTimeout(resetTimer))
 <style scoped>
 .ab { font-size: 17px; line-height: 1.75; color: var(--sc-text-secondary); overflow-wrap: break-word; }
 .ab-p { margin: 0 0 20px; }
+.ab-hwrap { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 10px; }
+.ab-hwrap-2 { margin: 44px 0 16px; }
+.ab-hwrap-3 { margin: 32px 0 12px; }
 .ab-h2 {
-  position: relative;
   font-size: 26px;
   line-height: 1.3;
   font-weight: 700;
   color: var(--sc-text);
-  margin: 44px 0 16px;
+  margin: 0;
 }
 .ab-h3 {
-  position: relative;
   font-size: 20px;
   line-height: 1.35;
   font-weight: 600;
   color: var(--sc-text);
-  margin: 32px 0 12px;
+  margin: 0;
 }
 .ab-anchor {
-  margin-left: 10px;
   font-weight: 500;
   color: var(--sc-text-secondary);
   text-decoration: none;
   opacity: 0;
   transition: opacity var(--transition-fast);
 }
-.ab-h2:hover .ab-anchor, .ab-h3:hover .ab-anchor, .ab-anchor:focus-visible { opacity: 1; }
+.ab-hwrap:hover .ab-anchor, .ab-anchor:focus-visible { opacity: 1; }
 .ab-anchor:focus-visible { outline: 2px solid var(--sc-primary); outline-offset: 2px; border-radius: 3px; }
 /* No hover on touch screens: keep the anchor discoverable there. */
 @media (hover: none) { .ab-anchor { opacity: 0.7; } }
@@ -172,6 +182,9 @@ ol.ab-steps li::marker { color: var(--sc-primary-hover); font-weight: 600; }
 .is-warning .ab-callout-title { color: var(--sc-warn); }
 .is-info .ab-callout-title { color: var(--sc-info); }
 .ab-callout-text { margin: 0; color: var(--sc-text-secondary); }
+/* The link colour that passes on the surface and base backgrounds (4.8:1) does not on the
+   soft callout tints (4.1 to 4.4:1), so links inside a callout use the body text colour. */
+.ab-callout :deep(.it-link) { color: var(--sc-text); }
 
 .ab-code {
   margin: 28px 0;
@@ -224,7 +237,8 @@ ol.ab-steps li::marker { color: var(--sc-primary-hover); font-weight: 600; }
 
 @media (max-width: 767px) {
   .ab { font-size: 16px; }
-  .ab-h2 { font-size: 22px; margin-top: 36px; }
+  .ab-h2 { font-size: 22px; }
+  .ab-hwrap-2 { margin-top: 36px; }
   .ab-h3 { font-size: 18px; }
 }
 </style>

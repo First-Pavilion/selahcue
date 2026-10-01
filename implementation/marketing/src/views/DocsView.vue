@@ -22,6 +22,7 @@ import { readMinutes } from '@/lib/content/text.ts'
               :key="c.id"
               class="nav-item"
               :to="{ hash: '#' + c.id }"
+              aria-current-value="false"
             >
               {{ c.title }}
             </router-link>

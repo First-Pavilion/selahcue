@@ -11,7 +11,7 @@
  * actually reaches a person. The thumbs are a placeholder for a real collector, tracked as
  * a follow-up in the PR.
  */
-import { computed, ref, watch } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 import ArticleBody from '@/components/article/ArticleBody.vue'
 import BreadcrumbTrail from '@/components/article/BreadcrumbTrail.vue'
 import PrevNext from '@/components/article/PrevNext.vue'
@@ -52,6 +52,12 @@ function skipToArticle(): void {
 
 const menuOpen = ref(false)
 const feedback = ref<'' | 'yes'>('')
+const thanks = ref<HTMLElement | null>(null)
+async function answerYes(): Promise<void> {
+  feedback.value = 'yes'
+  await nextTick()
+  thanks.value?.focus()
+}
 // A new article is a new question: forget the previous answer and fold the menu.
 watch(
   () => `${props.category}/${props.slug}`,
@@ -67,7 +73,7 @@ watch(
   <div v-else class="da">
     <a class="da-skip" href="#docs-article" @click.prevent="skipToArticle">Skip to article</a>
     <div class="da-wrap">
-      <aside class="da-side">
+      <aside class="da-side" aria-label="Documentation sidebar">
         <button
           type="button"
           class="da-menu-btn"
@@ -117,11 +123,16 @@ watch(
 
         <section class="da-feedback" aria-labelledby="da-feedback-title">
           <h2 id="da-feedback-title" class="da-feedback-title">Was this helpful?</h2>
+          <!-- A live region that exists BEFORE its text does (inserting the region together with
+               its message is often not announced); focus also moves here after "Yes" so the
+               press has a visible and audible result, and the button that was pressed is gone. -->
+          <div ref="thanks" class="da-feedback-result" role="status" aria-live="polite" tabindex="-1">
+            <template v-if="feedback === 'yes'">Glad it helped.</template>
+          </div>
           <div v-if="feedback === ''" class="da-feedback-actions">
-            <button type="button" class="da-btn" @click="feedback = 'yes'">Yes</button>
+            <button type="button" class="da-btn" @click="answerYes">Yes</button>
             <router-link class="da-btn" to="/contact">No, I need help</router-link>
           </div>
-          <p v-else class="da-feedback-thanks" role="status">Glad it helped.</p>
           <a class="da-edit" :href="CONTENT_SOURCE_URL" target="_blank" rel="noopener noreferrer"
             >Suggest an edit on GitHub<span class="da-sr"> (opens in a new tab)</span></a
           >
@@ -223,7 +234,13 @@ watch(
   border-radius: 8px;
 }
 .da-link:hover { background: var(--sc-elevated); color: var(--sc-text); }
-.da-link[aria-current='page'] { background: var(--sc-accent-soft); color: var(--sc-primary-hover); font-weight: 600; }
+.da-link[aria-current='page'] {
+  background: var(--sc-accent-soft);
+  /* primary-hover on accent-soft is 4.2:1; the body text colour is 14.7:1 */
+  color: var(--sc-text);
+  font-weight: 600;
+  box-shadow: inset 3px 0 0 var(--sc-primary);
+}
 
 /* Content */
 .da-content {
@@ -243,7 +260,9 @@ watch(
 .da-feedback { margin-top: 56px; padding-top: 24px; border-top: 1px solid var(--sc-border); }
 .da-feedback-title { font-size: 16px; font-weight: 600; color: var(--sc-text); margin: 0 0 12px; }
 .da-feedback-actions { display: flex; flex-wrap: wrap; gap: 12px; }
-.da-feedback-thanks { margin: 0; min-height: 44px; display: flex; align-items: center; color: var(--sc-preview); font-size: 15px; }
+.da-feedback-result { color: var(--sc-preview); font-size: 15px; }
+.da-feedback-result:focus { outline: none; }
+.da-feedback-result:not(:empty) { min-height: 44px; display: flex; align-items: center; }
 .da-btn {
   display: inline-flex;
   align-items: center;

@@ -118,7 +118,7 @@ onBeforeUnmount(() => clearTimeout(copyTimer))
           <h2 id="bp-toc-title" class="bp-rail-title">On this page</h2>
           <ol class="bp-toc-list">
             <li v-for="entry in toc" :key="entry.id">
-              <router-link class="bp-toc-link" :to="{ hash: '#' + entry.id }">{{ entry.text }}</router-link>
+              <router-link class="bp-toc-link" :to="{ hash: '#' + entry.id }" aria-current-value="false">{{ entry.text }}</router-link>
             </li>
           </ol>
         </nav>
