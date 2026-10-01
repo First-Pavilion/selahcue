@@ -964,6 +964,11 @@
       rb.disabled = !generateAllowed || previewOpen || generating;
       if (generating) rb.setAttribute("aria-busy", "true"); else rb.removeAttribute("aria-busy");
     }
+    // Quinn/Cody D8: "Edit draft" is unavailable while the consent preview is open or a generation
+    // is in flight — otherwise typing started in the edit form is silently replaced when the result
+    // lands (or Confirm is pressed). renderCurrentDraft re-syncs this, so it comes back by itself.
+    var eb = document.getElementById("tr-gen-edit");
+    if (eb) eb.disabled = previewOpen || generating;
   }
   function genEntryBtn() { return document.getElementById("tr-regenerate") || generateBtn; }
 
@@ -1415,7 +1420,10 @@
         var editBtn = el("button", "pp-gen-edit-btn tr-ready-primary", "Edit draft");
         editBtn.type = "button";
         editBtn.id = "tr-gen-edit";
-        editBtn.addEventListener("click", function () { editingDraft = true; renderCurrentDraft(); });
+        editBtn.addEventListener("click", function () {
+          if (generating || (genPreviewBox && !genPreviewBox.hidden)) return; // defense in depth (D8)
+          editingDraft = true; renderCurrentDraft();
+        });
         actions.appendChild(editBtn);
       }
       r.appendChild(actions);

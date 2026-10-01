@@ -1571,7 +1571,7 @@ EXPECTED_MIN_CHECKS = 2065  # measured post-rebase, clean run: 2065 checks, 0 FA
 # "encrypted" render, its description text, the "not_encrypted" silent-downgrade warning render,
 # and its own control that the warning never also reads ON). Measured via an actual clean run,
 # not hand-summed.
-EXPECTED_MIN_CHECKS = 1946  # measured: 1946 checks, 0 FAIL (17tnw2b0ntd)
+EXPECTED_MIN_CHECKS = 1952  # measured: 1952 checks, 0 FAIL (17tnw2b0ntd)
 
 
 def find_chrome():
@@ -6903,10 +6903,15 @@ DRIVER = r"""
       ok(!!el("tr-gen-preview") && !el("tr-gen-preview").hidden && /You already have sermon notes saved/.test(el("tr-gen-preview").textContent),
          "TR D7: Regenerate right after an in-session Generate shows the 'You already have sermon notes saved…' consent line");
       ok(el("tr-regenerate").disabled === true, "TR ready card: Regenerate is disabled while its consent preview is open (no double-fire)");
+      // D8 order B (Regenerate preview open, then Edit): Edit draft is disabled, and even a forced click is ignored.
+      ok(el("tr-gen-edit").disabled === true, "TR D8 (order B): 'Edit draft' is disabled while the Regenerate preview is open");
+      el("tr-gen-edit").disabled = false; el("tr-gen-edit").click(); await sleep(20); el("tr-gen-edit").disabled = true;
+      ok(!document.querySelector(".pp-gen-edit-form"), "TR D8 (order B): a forced click on Edit draft with the preview open opens no edit form (unsaved typing could not be lost)");
       ok(trCall("transcript_generate_notes").length === trD7Before, "TR D7: opening the Regenerate preview sends nothing");
       el("tr-gen-preview-cancel").click();
       ok(document.activeElement === el("tr-regenerate") && el("tr-regenerate").disabled === false,
          "TR ready card: Cancel returns focus to Regenerate and re-enables it");
+      ok(el("tr-gen-edit").disabled === false, "TR D8 (order B): 'Edit draft' is enabled again after Cancel");
       // Quinn D8: no Regenerate (so no silent discard of unsaved edits) while the edit form is open.
       el("tr-gen-edit").click();
       await sleep(30);
@@ -6930,6 +6935,11 @@ DRIVER = r"""
       ok(trProg.getAttribute("aria-live") === "polite" && trProg.getAttribute("role") === "status" && /Generating sermon notes/.test(el("tr-gen-live").textContent) &&
          el("tr-gen").getAttribute("aria-busy") === "true" && el("tr-regenerate").getAttribute("aria-busy") === "true",
          "TR generating: it is a polite live region, a persistent live-region message is set, and aria-busy is kept on the card and the control");
+      // D8 order A (Confirm first, then Edit while "Generating…" shows): Edit draft is disabled in flight, and
+      // even a forced click is ignored, so nothing typed can be replaced when the result arrives.
+      ok(el("tr-gen-edit").disabled === true, "TR D8 (order A): 'Edit draft' is disabled while the generation is in flight");
+      el("tr-gen-edit").disabled = false; el("tr-gen-edit").click(); await sleep(20); el("tr-gen-edit").disabled = true;
+      ok(!document.querySelector(".pp-gen-edit-form"), "TR D8 (order A): a forced click on Edit draft in flight opens no edit form");
       ok(!trProg.querySelector("button") && !trProg.querySelector("li") && !/Extracting|Drafting|Transcript sent/.test(trProg.textContent),
          "TR generating: NO Cancel and NO invented step list (nothing reports progress; the draft is persisted on completion)");
       window.__trGenResolveDeferred();
@@ -6937,6 +6947,8 @@ DRIVER = r"""
       ok(el("tr-gen-progress").hidden === true && getComputedStyle(el("tr-gen-progress")).display === "none" && !el("tr-gen").hasAttribute("aria-busy") &&
          /Sermon notes are ready/.test(el("tr-gen-live").textContent),
          "TR generating: the status goes away on completion (computed display) and the live region announces the result");
+      ok(!!el("tr-gen-edit") && el("tr-gen-edit").disabled === false && !!el("tr-regenerate") && el("tr-regenerate").disabled === false,
+         "TR D8 (order A): 'Edit draft' and Regenerate are enabled again after the generation completes");
       window.__trGenDeferred = false;
 
       // === FR-129 (86akgqdx8) on the Transcripts workspace: the SAME regenerate-with-retention
