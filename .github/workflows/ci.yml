@@ -972,8 +972,8 @@ jobs:
       # Without it, `listening.rs` would be exactly as "linted and tested by nothing" as
       # `selahcue-stt` itself (the standing example every feature-gate comment in this job
       # cites). whisper-rs-sys's native build needs only a C/C++ toolchain + cmake, which all
-      # three GitHub-hosted runner images carry by default -- the same reason the `stt`-only
-      # build was never separately gated before now. It is NOT true, though, that this step
+      # three GitHub-hosted runner images carry by default -- so the `stt`-only step at the end of
+      # this job (86ak4y8yr) needs no setup of its own. It is NOT true, though, that this step
       # needs no extra system packages at all: `stt` also pulls in `selahcue-stt`'s `capture`
       # feature (`CpalSource`, real microphone capture via `cpal`), and on Linux `cpal` builds
       # against ALSA -- `alsa-sys` fails to compile without the ALSA development headers.
@@ -1004,6 +1004,37 @@ jobs:
       - name: Test (stt,cloud-stt)
         if: ${{ !cancelled() }}
         run: cargo test --features stt,cloud-stt --no-fail-fast
+      # `stt` ALONE -- the configuration users actually install (86ak4y8yr). `windows-installer.yml`
+      # builds `cargo tauri build --features stt`, with no `cloud-stt` (that feature is
+      # `RELEASE: UNSAFE`, so the Makefile strips it from release builds). The `stt,cloud-stt` pair
+      # above is a DIFFERENT compilation: `cloud-stt` implies `stt`, so it lints most of
+      # `listening.rs`, but `start_listening` has a `#[cfg(not(feature = "cloud-stt"))]` arm that is
+      # compiled ONLY when `stt` is on and `cloud-stt` is off, i.e. only in the shipped build. Until
+      # this step, no push or PR compiled that arm; the first sign of a break there would have been a
+      # manual `windows-installer` run.
+      #
+      # Clippy, not a separate `cargo check`: clippy type-checks every cfg arm, so a compile error
+      # fails here too. No `Test (stt)` step: measured on macOS, `cargo test --features stt` runs 198
+      # tests and every one of them also runs in the `stt,cloud-stt` pair above (206; the 8 extras
+      # are `cloud-stt`-gated), and the only non-test code that differs is that one arm. Revisit if a
+      # test is ever gated `not(feature = "cloud-stt")`.
+      #
+      # Cost: this job already builds `whisper-rs-sys` (cmake/whisper.cpp) and the vendored OpenSSL
+      # for the steps above, with an identical `selahcue-stt` feature set, so cargo reuses those
+      # artefacts and this step re-checks only six packages -- `tungstenite`, `tokio-tungstenite`,
+      # `selahcue-stt-cloud` (its non-`deepgram` build), `selahcue-lan`, `selahcue-app` and the
+      # operator crate itself -- the same six on all three OSes. That is why it lives here, on all
+      # three OSes, rather than in a new job (a new job would pay checkout/toolchain/cache setup
+      # AND a second cold whisper.cpp + OpenSSL build per OS) and rather than Linux-only (Windows
+      # is the one OS the installer ships on, and this job's own history rejects dropping it).
+      # Measured on PR #137's run 36819129002: 5s on ubuntu (a full cache miss, so `whisper-rs-sys`
+      # had just been built cold by the step before and was still reused), 10s on windows, 16s on
+      # macOS; 7s locally on macOS arm64. If a later run shows a matrix arm near `timeout-minutes`,
+      # the fallback is a Linux-only `if:` here -- the cfg arm is platform-independent -- not
+      # removing the step.
+      - name: Clippy (stt -- the shipped configuration, no cloud-stt)
+        if: ${{ !cancelled() }}
+        run: cargo clippy --features stt --all-targets -- -D warnings
 
   flutter:
     name: flutter controller

@@ -57,8 +57,9 @@ SECS     ?=
 # cmake + a C/C++ toolchain to compile whisper.cpp (and downloads the model on first use), so the
 # dev RUN targets enable it AUTOMATICALLY when cmake is present and quietly skip it otherwise —
 # `make run` never fails just because the STT toolchain is missing (same UX as NDI above). Force
-# it with STT=1 (errors if cmake is absent) or disable with STT=0. CI/check/clippy always use the
-# default (no-STT) operator build, so this never affects them.
+# it with STT=1 (errors if cmake is absent) or disable with STT=0. check/clippy use the default
+# (no-STT) operator build, and `ci` lints the `stt` and `stt,cloud-stt` builds with explicit
+# --features lines (86ak4y8yr), so this toggle never affects any of them.
 #
 # `cloud-stt` (Deepgram live transcription, 86akby7th) rides the SAME toggle rather than getting
 # its own (86akd10dq — the third instance of the 86akcmzyq bug class: shipped, merged, four-
@@ -757,6 +758,12 @@ ci: ## Run the local Rust/Flutter CI gate (see the header for what CI runs that 
 	# checks for it locally; GitHub-hosted runners carry cmake by default).
 	$(CARGO) clippy $(OP) --features stt,cloud-stt --all-targets -- -D warnings
 	$(CARGO) test $(OP) --features stt,cloud-stt --no-fail-fast
+	# `stt` ALONE, the configuration users actually install (86ak4y8yr; windows-installer.yml
+	# builds `--features stt`, and `cloud-stt` is stripped from releases). The pair above is a
+	# different compilation: `listening.rs` has a `#[cfg(not(feature = "cloud-stt"))]` arm that
+	# only exists when `stt` is on and `cloud-stt` is off, so it was linted by no gate. Mirrors the
+	# `Clippy (stt -- the shipped configuration ...)` step in ci.yml's `operator-native` job.
+	$(CARGO) clippy $(OP) --features stt --all-targets -- -D warnings
 	# The real-model on-device STT integration test (86akd1jcc, Vera Q4) is `#[ignore]`d, so the
 	# line above never runs it -- it needs a real ~1.6GB whisper model, which the default debug
 	# profile hashes at ~18-19x release speed (SHA-256 over 1.6GB: ~63s debug / ~3s release,
