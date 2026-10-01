@@ -288,6 +288,12 @@ def main() -> None:
         top = cp.evaluate("document.getElementById('sec-autosave-so-a-crash-is-a-short-interruption').getBoundingClientRect().top")
         check("under prefers-reduced-motion the anchor scroll is instant (already in place 60 ms after the click)", navbar_bottom < top < navbar_bottom + 60, str(top))
 
+        # ---- same-page hash links must not all claim to be the current page ---------------
+        pg.goto(base + POST, wait_until="networkidle")
+        check("blog: the table of contents has links, and none claims aria-current=page", pg.locator("a.bp-toc-link").count() >= 3 and pg.locator("a[href*='#'][aria-current=page]").count() == 0)
+        pg.goto(base + "/docs", wait_until="networkidle")
+        check("docs index: the topic sidebar has links, and none claims aria-current=page", pg.locator("a.nav-item").count() >= 6 and pg.locator("a[href*='#'][aria-current=page]").count() == 0)
+
         # ---- accessibility of the article body ------------------------------------------
         pg.goto(base + "/docs/display-outputs/ndi-output", wait_until="networkidle")
         names = pg.eval_on_selector_all(".ab-h2, .ab-h3", "els => els.map(e => e.textContent.trim())")
