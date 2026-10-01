@@ -53,7 +53,14 @@ export default tseslint.config(
       // `recommended`), so it is enabled here by name; nothing in src/ uses v-html today,
       // and anyone who needs it has to disable this rule at the line and say why.
       'vue/no-v-html': 'error',
+    },
+  },
 
+  {
+    // Exactly the three components that trip the rule today, not a blanket for src/**.
+    // New single-word components should fail.
+    files: ['src/components/Footer.vue', 'src/components/Navbar.vue', 'src/components/Toast.vue'],
+    rules: {
       // Guards against `<Footer>` colliding with the HTML `<footer>` element. That collision
       // only happens in in-DOM templates (a template written inside the page's own HTML),
       // and this app compiles every template from an SFC, so it cannot occur. Footer,
