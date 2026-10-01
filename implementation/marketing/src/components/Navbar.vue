@@ -3,6 +3,7 @@ import { ref, watch, nextTick, onMounted, onBeforeUnmount } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { isProbablySignedIn, signOut } from '@/lib/auth/sessionStore.ts'
 import { pageScrollLock } from '@/lib/ui/scrollLock.ts'
+import { pageInertLock } from '@/lib/ui/inertLock.ts'
 import { FOCUSABLE_SELECTOR, nextTrapIndex } from '@/lib/ui/focusTrap.ts'
 import { MOBILE_QUERY } from '@/lib/ui/breakpoints.ts'
 
@@ -75,43 +76,33 @@ const handleScroll = () => {
 /**
  * THE MOBILE SHEET (< 768px).
  *
- * Four things have to be true at once, and each has a way of quietly not being:
+ * Five things have to be true at once, and each has a way of quietly not being:
  *
  *  1. Focus MOVES INTO the sheet on open, is TRAPPED there (Tab / Shift+Tab wrap), and
  *     RETURNS to the hamburger on close. A sheet that leaves focus on a button now hidden
  *     behind a scrim strands keyboard and switch users.
- *  2. Escape closes it.
+ *  2. Escape closes it -- and keeps closing it after the visitor clicks EMPTY space inside
+ *     the sheet. That click moves `document.activeElement` to <body>, which is OUTSIDE the
+ *     sheet, so a `keydown` handler on the sheet element never hears the next Escape or Tab
+ *     (and in WebKit Tab then walks out of the page and never comes back). So the handler is
+ *     on `document` for exactly as long as the sheet is open, and is removed by the one
+ *     function that closes it.
  *  3. The page behind does not scroll while it is open -- and scrolling is ALWAYS given
  *     back. The lock is taken in `openMobileMenu` and dropped in `closeMobileMenu`, and
  *     `closeMobileMenu` is the ONLY thing that closes: a link tap, the scrim, Escape, the
- *     close button, a route change, a viewport that grows past the breakpoint and unmount
- *     all go through it, so there is no path that closes the sheet and forgets the lock.
- *     (`pageScrollLock` is reference-counted and its release idempotent, so calling this
- *     twice is harmless.)
- *  4. It is a real modal for assistive tech: `role="dialog" aria-modal="true"`, and the
+ *     close button, a route change, a viewport that grows past the breakpoint, `pagehide`
+ *     and unmount all go through it, so there is no path that closes the sheet and forgets
+ *     the lock. (`pageScrollLock` is reference-counted and its release idempotent and
+ *     generation-checked, so calling this twice is harmless.)
+ *  4. The page behind is `inert` while it is open (same lifetime as the scroll lock, same
+ *     single release point): out of the tab order and the accessibility tree, so neither a
+ *     stray Tab nor a screen-reader cursor can reach it. The sheet is teleported to <body>,
+ *     outside `#app`, so it stays live.
+ *  5. It is a real modal for assistive tech: `role="dialog" aria-modal="true"`, and the
  *     hamburger carries `aria-expanded` / `aria-controls`.
  */
 let releaseScrollLock: (() => void) | null = null
-
-const openMobileMenu = () => {
-  if (isMobileMenuOpen.value) return
-  isMobileMenuOpen.value = true
-  releaseScrollLock = pageScrollLock.acquire()
-  void nextTick(() => closeEl.value?.focus())
-}
-
-const closeMobileMenu = ({ restoreFocus = true }: { restoreFocus?: boolean } = {}) => {
-  releaseScrollLock?.()
-  releaseScrollLock = null
-  if (!isMobileMenuOpen.value) return
-  isMobileMenuOpen.value = false
-  if (restoreFocus) void nextTick(() => toggleEl.value?.focus())
-}
-
-const toggleMobileMenu = () => {
-  if (isMobileMenuOpen.value) closeMobileMenu()
-  else openMobileMenu()
-}
+let releaseInert: (() => void) | null = null
 
 const handleSheetKeydown = (event: KeyboardEvent) => {
   if (event.key === 'Escape') {
@@ -121,9 +112,36 @@ const handleSheetKeydown = (event: KeyboardEvent) => {
   }
   if (event.key !== 'Tab' || !sheetEl.value) return
   const focusable = Array.from(sheetEl.value.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR))
+  // `indexOf` is -1 when focus is on <body> (after a click on blank space): the trap then
+  // pulls it back in at the matching end instead of letting Tab leave the page.
   const target = nextTrapIndex(focusable.length, focusable.indexOf(document.activeElement as HTMLElement), event.shiftKey)
   event.preventDefault()
   if (target !== null) focusable[target]?.focus()
+}
+
+const openMobileMenu = () => {
+  if (isMobileMenuOpen.value) return
+  isMobileMenuOpen.value = true
+  releaseScrollLock = pageScrollLock.acquire()
+  releaseInert = pageInertLock.acquire()
+  document.addEventListener('keydown', handleSheetKeydown)
+  void nextTick(() => closeEl.value?.focus())
+}
+
+const closeMobileMenu = ({ restoreFocus = true }: { restoreFocus?: boolean } = {}) => {
+  releaseScrollLock?.()
+  releaseScrollLock = null
+  releaseInert?.()
+  releaseInert = null
+  document.removeEventListener('keydown', handleSheetKeydown)
+  if (!isMobileMenuOpen.value) return
+  isMobileMenuOpen.value = false
+  if (restoreFocus) void nextTick(() => toggleEl.value?.focus())
+}
+
+const toggleMobileMenu = () => {
+  if (isMobileMenuOpen.value) closeMobileMenu()
+  else openMobileMenu()
 }
 
 // Any navigation closes the sheet, including one that did not come from a sheet link
@@ -206,7 +224,7 @@ onBeforeUnmount(() => {
         :aria-expanded="isMobileMenuOpen"
         aria-controls="mobile-nav-sheet"
         aria-haspopup="dialog"
-        :aria-label="isMobileMenuOpen ? 'Close menu' : 'Open menu'"
+        aria-label="Menu"
         @click="toggleMobileMenu"
       >
         <span class="hamburger" aria-hidden="true"></span>
@@ -226,7 +244,7 @@ onBeforeUnmount(() => {
        clipped to the 68px bar instead of covering the viewport. -->
   <Teleport to="body">
     <Transition name="nav-sheet">
-      <div v-if="isMobileMenuOpen" class="mobile-layer" @keydown="handleSheetKeydown">
+      <div v-if="isMobileMenuOpen" class="mobile-layer">
         <div class="mobile-scrim" aria-hidden="true" @click="closeMobileMenu()"></div>
         <div id="mobile-nav-sheet" ref="sheetEl" class="mobile-sheet" role="dialog" aria-modal="true" aria-label="Site menu">
           <div class="sheet-top">

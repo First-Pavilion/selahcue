@@ -355,6 +355,33 @@ describe('mobile nav sheet wiring (Navbar.vue)', () => {
     assert.match(navbar, /event\.key === 'Escape'/)
   })
 
+  test('the toggle has ONE static name; aria-expanded carries the open/closed state', () => {
+    // A label that flips Open/Close while aria-expanded also flips announces the state twice
+    // ("Close menu, expanded").
+    const toggle = navbar.slice(navbar.indexOf('class="mobile-toggle"') - 200, navbar.indexOf('class="mobile-toggle"') + 400)
+    assert.match(toggle, /aria-label="Menu"/)
+    assert.equal(/:aria-label=/.test(toggle), false)
+  })
+
+  test('Escape and the Tab trap are heard on document, not on the sheet element (blank-area click)', () => {
+    // A click on empty space inside the sheet moves focus to <body>, outside the sheet; a
+    // keydown handler bound to the sheet then never fires. The sweep reproduces the click in
+    // Chromium and WebKit; this pins the structure that makes it work.
+    assert.equal(/class="mobile-layer"[^>]*@keydown/.test(navbar), false, 'keydown is bound to the sheet again')
+    const opener = navbar.slice(navbar.indexOf('const openMobileMenu'), navbar.indexOf('const closeMobileMenu'))
+    const closer = navbar.slice(navbar.indexOf('const closeMobileMenu'), navbar.indexOf('const toggleMobileMenu'))
+    assert.match(opener, /document\.addEventListener\('keydown', handleSheetKeydown\)/)
+    assert.match(closer, /document\.removeEventListener\('keydown', handleSheetKeydown\)/)
+  })
+
+  test('the page behind the sheet is inert for exactly the lifetime of the sheet', () => {
+    assert.equal((navbar.match(/pageInertLock\.acquire\(\)/g) ?? []).length, 1)
+    const opener = navbar.slice(navbar.indexOf('const openMobileMenu'), navbar.indexOf('const closeMobileMenu'))
+    const closer = navbar.slice(navbar.indexOf('const closeMobileMenu'), navbar.indexOf('const toggleMobileMenu'))
+    assert.match(opener, /pageInertLock\.acquire\(\)/)
+    assert.match(closer, /releaseInert\?\.\(\)/)
+  })
+
   test('the sheet is teleported out of the (backdrop-filtered) header', () => {
     // A `backdrop-filter` ancestor makes `position: fixed` relative to it, which clips the
     // sheet to the 68px bar. The sweep opens the sheet after scrolling to prove it covers
