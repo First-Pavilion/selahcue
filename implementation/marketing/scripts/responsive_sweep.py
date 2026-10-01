@@ -428,6 +428,24 @@ def install_stubs(context) -> None:
             payload = {"errors": [{"message": "stub", "extensions": {"code": "VALIDATION_FAILED"}}], "data": None}
         route.fulfill(status=200, content_type="application/json", body=json.dumps(payload))
 
+    # CLASSIC SCROLLBARS SKEW THE BREAKPOINT IN WEBKIT. main.css restyles `::-webkit-scrollbar`,
+    # which forces a 12px classic scrollbar even on macOS, and WebKit counts it inside the
+    # width media queries see. A 768px window therefore flips between tablet (page short, no
+    # scrollbar) and mobile (page tall, scrollbar) depending on content height, so exactly at
+    # a breakpoint the CSS and a later `matchMedia` can disagree about the same page. The real
+    # targets (phones, iPads) use overlay scrollbars, so neutralise the classic one here and a
+    # viewport width means the same thing in both engines. Nothing else about the page changes.
+    context.add_init_script(
+        """(() => {
+          const add = () => {
+            const s = document.createElement('style');
+            s.textContent = '::-webkit-scrollbar { display: none !important; width: 0 !important; height: 0 !important; }';
+            document.documentElement.appendChild(s);
+          };
+          if (document.documentElement) add();
+          else new MutationObserver((_, o) => { if (document.documentElement) { o.disconnect(); add(); } }).observe(document, { childList: true });
+        })();"""
+    )
     context.route("**/graphql/**", graphql)
     context.route("**/fonts.googleapis.com/**", lambda r: r.abort())
     context.route("**/fonts.gstatic.com/**", lambda r: r.abort())
