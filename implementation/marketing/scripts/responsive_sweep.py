@@ -455,6 +455,14 @@ def sheet_state(page):
     return page.evaluate(SHEET_STATE_JS)
 
 
+# Every finite animation/transition has finished (infinite ones, like the LIVE badge pulse,
+# are decoration and never settle). Waiting on THIS, not on a sleep, is what makes a
+# measurement taken straight after a load/open/close independent of machine load: a card
+# measured mid `slideUp` is 0.97-scaled, so a 44px control reads 43px and fails for no reason.
+SETTLE_JS = """() => document.getAnimations({ subtree: true }).every(
+  (a) => a.playState !== 'running' || (a.effect && a.effect.getComputedTiming().iterations === Infinity)
+)"""
+
 SETTLED_JS = """() => {
   const s = document.querySelector('#mobile-nav-sheet');
   if (!s) return false;
@@ -711,7 +719,7 @@ def check_signed_in_nav(context, base: str, width: int, fail, count) -> None:
     page = context.new_page()
     page.goto(f"{base}/pricing", wait_until="load")
     page.wait_for_selector(".navbar-header")
-    page.wait_for_timeout(200)
+    page.wait_for_function(SETTLE_JS)
     info = page.evaluate(NAV_ROW_JS)
     count()
     if not page.evaluate(IS_MOBILE_JS):
@@ -741,7 +749,7 @@ def check_reduced_motion(browser, base: str, width: int, fail, count) -> None:
         page = ctx.new_page()
         page.goto(f"{base}/", wait_until="load")
         page.wait_for_selector(".mobile-toggle")
-        page.wait_for_timeout(200)
+        page.wait_for_function(SETTLE_JS)
         # Tap, then sample over ~10 frames and keep the PEAK: WebKit starts Vue's enter
         # transition two frames after the click, so one immediate read would see nothing there
         # even under normal motion.
@@ -802,8 +810,9 @@ def check_overlays(context, base: str, width: int, fail, count) -> None:
 
     # confirm dialog
     page.get_by_role("button", name="Cancel Subscription").click()
-    page.wait_for_selector(".dialog-card", timeout=5000)
-    page.wait_for_timeout(350)
+    page.wait_for_selector(".dialog-card")
+    # the card slides/scales in (`slideUp`); measure only once it has stopped
+    page.wait_for_function("document.querySelector('.dialog-card').getAnimations().length === 0")
     count()
     ok, where = inside(".dialog-card")
     if not ok:
@@ -813,15 +822,22 @@ def check_overlays(context, base: str, width: int, fail, count) -> None:
     if bad:
         fail(f"{tag}: dialog controls under 44px: {'; '.join(bad)}")
     page.keyboard.press("Escape")
-    page.wait_for_timeout(350)
     count()
-    if page.query_selector(".dialog-card"):
+    try:
+        page.wait_for_selector(".dialog-card", state="detached")
+    except Exception:  # noqa: BLE001
         fail(f"{tag}: Escape did not close the dialog")
 
     # toast
     page.locator(".btn-link").first.click()
-    page.wait_for_selector(".toast-notification", timeout=5000)
-    page.wait_for_timeout(450)
+    page.wait_for_selector(".toast-notification")
+    # Vue starts the enter transition a frame AFTER the element exists, so "no animations" is
+    # briefly true while the toast is still fully transparent and 20px low. Wait for it to be
+    # fully opaque AND idle.
+    page.wait_for_function(
+        "(() => { const t = document.querySelector('.toast-notification'); "
+        "return !!t && getComputedStyle(t).opacity === '1' && t.getAnimations().length === 0; })()"
+    )
     count()
     ok, where = inside(".toast-notification")
     if not ok:
@@ -870,7 +886,7 @@ def check_boundaries(browser, base: str, engine: str, fail, count) -> None:
             try:
                 page.goto(f"{base}{path}", wait_until="load")
                 page.wait_for_selector("main *")
-                page.wait_for_timeout(150)
+                page.wait_for_function(SETTLE_JS)
                 st = page.evaluate(BOUNDARY_JS)
             except Exception as exc:  # noqa: BLE001
                 count()
@@ -975,7 +991,7 @@ def main() -> int:
                     try:
                         page.goto(f"http://127.0.0.1:{port}{path}", wait_until="load", timeout=20000)
                         page.wait_for_selector("main *", timeout=10000)
-                        page.wait_for_timeout(250)  # let the route's lazy chunk + first paint settle
+                        page.wait_for_function(SETTLE_JS, timeout=10000)  # lazy chunk painted, nothing mid-transition
                     except Exception as exc:  # noqa: BLE001
                         print(f"INFRA {args.engine} {width}px {path}: {str(exc).splitlines()[0]}")
                         return 2
