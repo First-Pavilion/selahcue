@@ -56,6 +56,10 @@ export async function focusAnchor(id: string): Promise<void> {
 export async function goToAnchor(router: Router, id: string): Promise<void> {
   const hash = `#${id}`
   if (router.currentRoute.value.hash === hash) {
+    // After the DOM has settled: the caller may have just collapsed the phone Contents
+    // list, which sits ABOVE the text, and measuring before that shift scrolls to where the
+    // section used to be.
+    await nextTick()
     const anchor = document.getElementById(id)
     if (anchor) scrollToElement(anchor)
   } else {
