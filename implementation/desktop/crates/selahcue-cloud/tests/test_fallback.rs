@@ -20,7 +20,9 @@ use selahcue_core::providers::ProvidersConfig;
 /// `MockTransport`'s request recording), not against an internal function in isolation.
 #[test]
 fn the_hosted_client_never_sends_an_unclamped_transcript() {
-    let huge = "a".repeat(selahcue_cloud::transcript_bounds::MAX_TRANSCRIPT_CHARS + 5_000);
+    // Distinct HEAD / TAIL markers (QA D5): the wire body must carry the head and not the tail.
+    let filler = selahcue_cloud::transcript_bounds::MAX_TRANSCRIPT_CHARS + 5_000 - 8;
+    let huge = format!("HEAD{}TAIL", "a".repeat(filler));
 
     let transport = MockTransport::responding(
         200,
@@ -67,6 +69,10 @@ fn the_hosted_client_never_sends_an_unclamped_transcript() {
         sent_transcript.chars().count() < huge.chars().count(),
         "positive control: the sent transcript must genuinely be smaller than the oversized input, \
          not merely 'at or under the cap' by coincidence of a provider that always truncates"
+    );
+    assert!(
+        sent_transcript.starts_with("HEAD") && !sent_transcript.contains("TAIL"),
+        "the clamp must keep the START of the transcript and drop the END"
     );
 }
 
