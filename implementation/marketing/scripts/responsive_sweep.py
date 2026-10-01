@@ -236,17 +236,19 @@ PAGE_JS = r"""
         }
       }
 
-      // A scroll wrapper around a TABLE must itself be focusable at every width, whether or not
-      // the table happens to contain a link: a cell's link is not what makes the region
-      // scrollable by keyboard, and which cells have links changes with the data.
-      if (scroller && e.querySelector('table')) {
-        const tab = e.getAttribute('tabindex');
-        if (!(tab !== null && parseInt(tab, 10) >= 0)) out.unfocusableScrollers.push(describe(e) + ' (wraps a table)');
-      }
+      // A region that scrolls sideways must be reachable by keyboard. When it wraps a TABLE the
+      // wrapper itself must be the focusable thing: a link inside one cell is not what makes
+      // the region scrollable by keyboard, and which cells hold links changes with the data
+      // (it is how a DataTable that lost its tabindex kept passing). Judged only where it
+      // actually scrolls, so a component that adds the tab stop only when it overflows (the
+      // legal tables do) is as acceptable as one that always has it.
       if (scroller && e.scrollWidth > e.clientWidth + 1) {
         const tab = e.getAttribute('tabindex');
         const selfFocusable = tab !== null && parseInt(tab, 10) >= 0;
-        if (!selfFocusable && !e.querySelector(FOCUSABLE)) out.unfocusableScrollers.push(describe(e));
+        const wrapsTable = !!e.querySelector('table');
+        if (!selfFocusable && (wrapsTable || !e.querySelector(FOCUSABLE))) {
+          out.unfocusableScrollers.push(describe(e) + (wrapsTable ? ' (wraps a table)' : ''));
+        }
       }
     }
   }
@@ -290,6 +292,8 @@ TOUCH_JS = r"""
       if (el.closest('[hidden], [aria-hidden=true]')) continue;
       const r = el.getBoundingClientRect();
       if (r.width === 0 || r.height === 0) continue;
+      // Visually hidden until focused (a clipped 1x1 skip link) is not a touch target.
+      if (r.width <= 1 && r.height <= 1) continue;
       // Inline links inside running prose are exempt (WCAG 2.5.8 inline exception).
       if (el.tagName === 'A' && cs.display === 'inline' && el.closest('p, li, dd, blockquote, label')) continue;
       if (Math.min(r.width, r.height) < 43.5) {
