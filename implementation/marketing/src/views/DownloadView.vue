@@ -18,15 +18,32 @@ import UiButton from '@/components/UiButton.vue'
             <div class="icon">🪟</div>
             <h2>Windows</h2>
             <p>Windows 10 / 11 (64-bit)</p>
-            <UiButton variant="primary">Download for Windows</UiButton>
-            <span class="version">Version 1.2.0 (Stable)</span>
+            <!--
+              No installer is served from this page yet: the downloads backend is not built
+              (ClickUp 86ak10afm) and both of its endpoints still return 501. So the button is
+              honestly disabled rather than a button that does nothing, and the version line
+              that claimed a stable release is replaced with the real status. Wire this to the
+              downloads backend when that lands.
+            -->
+            <UiButton
+              variant="primary"
+              disabled
+              aria-disabled="true"
+              aria-describedby="windows-availability"
+            >Download for Windows</UiButton>
+            <span id="windows-availability" class="version availability">Not available to download yet</span>
           </div>
           <div class="platform-card">
             <div class="icon">🍎</div>
             <h2>macOS</h2>
             <p>macOS 11.0 or later (Intel & Apple Silicon)</p>
-            <UiButton variant="primary">Download for macOS</UiButton>
-            <span class="version">Version 1.2.0 (Stable)</span>
+            <UiButton
+              variant="primary"
+              disabled
+              aria-disabled="true"
+              aria-describedby="macos-availability"
+            >Download for macOS</UiButton>
+            <span id="macos-availability" class="version availability">Not available to download yet</span>
           </div>
         </div>
       </div>
@@ -184,6 +201,11 @@ import UiButton from '@/components/UiButton.vue'
   margin-top: 1rem;
   font-size: 0.875rem;
   color: var(--sc-text-muted);
+}
+/* The status line now carries information (the button is disabled and this says why), so it
+   uses the secondary text colour, which clears AA on the card surface; the muted token does not. */
+.platform-card .availability {
+  color: var(--sc-text-secondary);
 }
 
 .requirements-section {
