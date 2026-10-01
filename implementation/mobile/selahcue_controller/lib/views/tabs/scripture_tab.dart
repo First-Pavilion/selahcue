@@ -192,9 +192,10 @@ class _ScriptureTabState extends State<ScriptureTab> {
     // act()-level guard in 17tnw2ay2kk). This tab does not gate on `syncing`
     // (act() already backstops that, see live_controller.dart's own note),
     // but `busy` still clears well short of needing a reconnect (bounded by
-    // the in-flight command's own round trip and the refresh() that follows
-    // it — up to roughly two `commandTimeout` windows at worst, not "well
-    // under" one; see session.dart), so it is worth surfacing here rather
+    // the in-flight command's own round trip, the refresh() that follows
+    // it, and any wait behind a call already in flight — each call capped at
+    // `commandTimeout` from its own turn start, so not "well under" one
+    // window; see session.dart), so it is worth surfacing here rather
     // than leaving every tap silently dropped.
     final busy = widget.live.busy;
 
