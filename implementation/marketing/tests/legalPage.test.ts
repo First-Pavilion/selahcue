@@ -254,7 +254,7 @@ describe('the skip link is hidden by clipping, not by parking it off-screen', ()
     assert.doesNotMatch(rule, /(left|right|top|inset-inline-start)\s*:\s*-\d{3,}/, 'no huge negative offset (it breaks responsive audits)')
   })
 
-  test('it becomes visible on focus, and not in the brand-on-white pairing that measured 4.36:1', () => {
+  test('it becomes visible on focus, in the near-black-on-near-white pairing (not white on a brand colour)', () => {
     assert.match(source, /\.skip-link:focus[\s\S]*?clip-path:\s*none/)
     assert.doesNotMatch(rule, /color:\s*#fff\b/)
     assert.match(rule, /background:\s*var\(--sc-text\)/)

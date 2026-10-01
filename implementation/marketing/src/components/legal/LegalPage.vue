@@ -262,9 +262,9 @@ html:has(.legal-page) {
 /*
  * Visually hidden until focused, with the clip pattern rather than parking the link far
  * off-screen with a huge negative offset. An off-screen link is a layout oddity every
- * responsive audit has to special-case (PR #140's sweep fails on it), and the clip keeps
- * the element's box inside the viewport. On focus it is a high-contrast chip (near-black on near-white, about 17:1;
- * white on the brand colour was 4.36:1).
+ * responsive audit has to special-case (PR #140's sweep fails on it); the clip keeps the
+ * element's box inside the viewport. On focus it is a high-contrast chip: near-black on
+ * near-white (about 17:1), asserted at >= 4.5:1 by legal_pages_headless.py.
  */
 .skip-link {
   position: absolute;
