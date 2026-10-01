@@ -1,14 +1,11 @@
 /**
- * Blog posts. See `types.ts` for the honesty rules; every claim is backed by a file listed
- * in that post's `sources`, and each file was read against the shipped code, not just the
- * design documents (the PRD and ADRs describe intent; the operator UI and crates are what
- * runs). Where the two disagree, the post says what the build does.
+ * Blog posts. See `types.ts` for the honesty rules. Claims were checked against the shipped
+ * code, not just the design documents (the PRD and ADRs describe intent; the operator UI
+ * and crates are what runs); where the two disagree, the post says what the build does. The
+ * citations live in `tests/fixtures/content-sources.ts`, not here, so they do not ship.
  */
 import { asParam, neighbours } from './lookup.ts'
 import type { BlogPost, Neighbour } from './types.ts'
-
-const OP = 'implementation/desktop/crates/selahcue-operator/dist'
-const CR = 'implementation/desktop/crates'
 
 export const blogPosts: readonly BlogPost[] = [
   {
@@ -55,17 +52,6 @@ export const blogPosts: readonly BlogPost[] = [
         title: 'What still needs the internet',
         text: 'The first download of the on-device speech model needs a connection once. Features that call an outside service are opt-in, and the cloud transcription option is not in release builds. Checking for updates is not available in this build yet.',
       },
-    ],
-    sources: [
-      { path: 'docs/architecture/ARCHITECTURE.md', supports: 'Principles: desktop-authoritative, offline-first core (slides, scripture, timers, blackout work with no network), mobile holds no authoritative state, output-failure isolation.' },
-      { path: 'docs/product/prds/SelahCue-PRD.md', supports: 'Core live functions must work with zero network (line 54, NFR-015).' },
-      { path: `${CR}/selahcue-scripture/src/lib.rs`, supports: 'Five bundled translations compiled in; "Everything works offline".' },
-      { path: `${OP}/index.html`, supports: 'Console copy: nothing exposed to the internet; autosave saves within 5 s; update checking unavailable; "holding its last good frame".' },
-      { path: `${OP}/app.js`, supports: 'Session restored notice; on-device model downloads once on first Start listening; OUTPUT HELD message.' },
-      { path: `${CR}/selahcue-desktop/src/main.rs`, supports: 'Autosave throttled to at most once per second; running countdown re-saved every 5 s.' },
-      { path: `${CR}/selahcue-app/src/controller.rs`, supports: 'Restore on launch re-presents live/staged items, blackout and countdown; commands are RBAC-checked on the host.' },
-      { path: `${CR}/selahcue-engine/src/engine.rs`, supports: 'Engine holds the last good frame on a fault (never-blank guarantee).' },
-      { path: `${CR}/selahcue-operator/src/transcription_route.rs`, supports: 'Release builds fall back to on-device transcription when cloud is selected.' },
     ],
   },
   {
@@ -115,13 +101,6 @@ export const blogPosts: readonly BlogPost[] = [
         text: 'To set it up step by step, read [Stage display](/docs/display-outputs/stage-display) and [Assign displays to outputs](/docs/display-outputs/assign-displays-to-outputs).',
       },
     ],
-    sources: [
-      { path: 'implementation/desktop/crates/selahcue-present/src/stage.rs', supports: 'Stage content: current/NEXT, TIME UP tint per template, OVER m:ss, Message from production overlay, templates.' },
-      { path: `${OP}/index.html`, supports: 'Stage theme choices, message presets and 120-character custom message, "Shown on the stage output only", disabled text-size and layer controls.' },
-      { path: `${OP}/settings-outputs.js`, supports: 'Stage defaults toggles are always-on and disabled: "Not configurable yet".' },
-      { path: `${CR}/selahcue-desktop/src/main.rs`, supports: 'Wall clock rendered on the stage output.' },
-      { path: `${CR}/selahcue-app/src/controller.rs`, supports: 'Timer is shown on stage only; audience never receives it.' },
-    ],
   },
   {
     slug: 'which-bible-translations-ship-with-selahcue',
@@ -166,13 +145,6 @@ export const blogPosts: readonly BlogPost[] = [
         type: 'p',
         text: 'Switch translation from the picker in the Scriptures tab; it lists the five by code. To find and put a verse on screen, see [Find and stage a verse](/docs/scripture-bibles/find-and-stage-a-verse).',
       },
-    ],
-    sources: [
-      { path: 'implementation/desktop/crates/selahcue-scripture/src/lib.rs', supports: 'Bundled translations KJV (default), WEB, ASV, WEBBE, DBY compiled in; public-domain wording; works offline.' },
-      { path: 'implementation/desktop/crates/selahcue-core/src/scripture.rs', supports: '66-book canon.' },
-      { path: `${OP}/settings-about.js`, supports: 'About page lists bundled translations as "Public Domain — no attribution required".' },
-      { path: `${OP}/index.html`, supports: '"Not available in this build yet" for licensed modules/APIs; "Licensed translations (a future release)".' },
-      { path: `${OP}/app.js`, supports: 'Translation picker shows codes; console opens on KJV.' },
     ],
   },
   {
@@ -224,15 +196,6 @@ export const blogPosts: readonly BlogPost[] = [
         text: 'Step-by-step instructions are in [Pair a phone](/docs/mobile-control/pair-a-phone), and if something does not connect, start with [My phone will not pair](/support/mobile-control/phone-wont-pair).',
       },
     ],
-    sources: [
-      { path: 'implementation/desktop/crates/selahcue-lan/src/rbac.rs', supports: 'Producer / Assistant / Viewer permissions; plan edits, stage messages and device management not available to phones.' },
-      { path: 'implementation/desktop/crates/selahcue-lan/src/server.rs', supports: 'Pairing code valid 120 s and single use; operator approval and role; revoke; per-connection tasks.' },
-      { path: 'implementation/desktop/crates/selahcue-lan/src/pinning.rs', supports: 'Phone trusts only the certificate whose SHA-256 matches the invite.' },
-      { path: `${OP}/remote.js`, supports: 'Pending request card with role dropdown, Approve and Deny; paired devices list with Revoke.' },
-      { path: `${OP}/index.html`, supports: 'Pair a device panel; multicast-blocked guidance (scan the QR); nothing exposed to the internet.' },
-      { path: 'implementation/mobile/selahcue_controller/lib/views/pairing_view.dart', supports: 'Phone pairing screen: scan QR, waiting for host approval.' },
-      { path: 'docs/release/mobile/RELEASE-CHECKLIST.md', supports: 'Mobile app not yet released to stores (checklist unchecked).' },
-    ],
   },
   {
     slug: 'ndi-output-in-selahcue-what-works-today',
@@ -276,15 +239,6 @@ export const blogPosts: readonly BlogPost[] = [
         type: 'p',
         text: 'The how-to is in [NDI output](/docs/display-outputs/ndi-output), and if the toggle is greyed out, see [The NDI toggle is greyed out](/support/display-outputs/ndi-toggle-greyed-out).',
       },
-    ],
-    sources: [
-      { path: `${OP}/app.js`, supports: 'NDI Output inspector: Source name, Broadcast as NDI, runtime-unavailable message, duplicate-name refusal, frame-rate choices, receivable by OBS / vMix / another SelahCue.' },
-      { path: 'implementation/desktop/crates/selahcue-desktop/src/video_sink.rs', supports: 'NDI sink; 1920x1080 RGBA frames.' },
-      { path: 'implementation/desktop/crates/selahcue-desktop/Cargo.toml', supports: '`ndi` Cargo feature is off by default.' },
-      { path: '.github/workflows/windows-installer.yml', supports: 'Windows installer built with --features ndi and bundles the NDI runtime.' },
-      { path: 'implementation/desktop/crates/selahcue-app/src/controller.rs', supports: 'Blackout returns black frames for all outputs including NDI; duplicate NDI source names refused.' },
-      { path: 'implementation/desktop/crates/selahcue-engine/src/raster.rs', supports: 'Output is opaque; no alpha.' },
-      { path: 'implementation/desktop/crates/selahcue-present/src/theme.rs', supports: 'Lower-third uses opaque backdrop; true NDI alpha-keying is a later slice.' },
     ],
   },
 ]

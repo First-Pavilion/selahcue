@@ -15,9 +15,6 @@
  * catch-all.
  */
 import type { RouteLocationNormalized, RouteLocationRaw, RouteRecordRaw } from 'vue-router'
-import { findBlogPost } from '../lib/content/blog.ts'
-import { findDocsArticle } from '../lib/content/docs.ts'
-import { findSupportArticle } from '../lib/content/support.ts'
 
 /** The existing catch-all's route name — see `index.ts`. */
 export const NOT_FOUND_ROUTE = 'not-found'
@@ -38,21 +35,33 @@ export const articleRoutes: RouteRecordRaw[] = [
     name: 'blog-post',
     component: () => import('@/views/BlogPostView.vue'),
     props: true,
-    beforeEnter: (to) => (findBlogPost(to.params.slug) ? true : notFoundFor(to)),
+    // The guards load the corpus on demand. A STATIC import here would pull every article
+    // body into the entry chunk, because this module is imported by `router/index.ts`
+    // (measured: entry 80.8 -> 161.5 kB), and the home page would ship article text.
+    beforeEnter: async (to) => {
+      const { findBlogPost } = await import('../lib/content/blog.ts')
+      return findBlogPost(to.params.slug) ? true : notFoundFor(to)
+    },
   },
   {
     path: '/docs/:category/:slug',
     name: 'docs-article',
     component: () => import('@/views/DocsArticleView.vue'),
     props: true,
-    beforeEnter: (to) => (findDocsArticle(to.params.category, to.params.slug) ? true : notFoundFor(to)),
+    beforeEnter: async (to) => {
+      const { findDocsArticle } = await import('../lib/content/docs.ts')
+      return findDocsArticle(to.params.category, to.params.slug) ? true : notFoundFor(to)
+    },
   },
   {
     path: '/support/:category/:slug',
     name: 'support-article',
     component: () => import('@/views/SupportArticleView.vue'),
     props: true,
-    beforeEnter: (to) => (findSupportArticle(to.params.category, to.params.slug) ? true : notFoundFor(to)),
+    beforeEnter: async (to) => {
+      const { findSupportArticle } = await import('../lib/content/support.ts')
+      return findSupportArticle(to.params.category, to.params.slug) ? true : notFoundFor(to)
+    },
   },
 ]
 

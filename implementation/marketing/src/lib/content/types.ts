@@ -7,17 +7,12 @@
  * HONESTY RULES (ClickUp 17tnw2b0q9h). Every article:
  *   - is authored by "SelahCue Team" — never a named person;
  *   - carries no invented quotes, statistics, customers, benchmarks or dates;
- *   - lists, in `sources`, the repository file that backs each product claim it makes.
- *     `tests/content.test.ts` checks every listed path exists, so a citation cannot rot
- *     quietly when a file moves.
+ *   - has its product claims backed by repository files, recorded in the TEST-ONLY
+ *     `tests/fixtures/content-sources.ts` (keyed by article). They are kept out of `src/`
+ *     on purpose: they are an audit trail for reviewers, not content for readers, and
+ *     must not ship in the browser bundle. `tests/content.test.ts` requires an entry for
+ *     every article and that every cited path is a git-tracked file.
  */
-
-/** A repo file that supports a claim in the article. Paths are relative to the repo root. */
-export interface ArticleSource {
-  readonly path: string
-  /** The claim(s) in the article that this file backs, in one line. Audit trail only. */
-  readonly supports: string
-}
 
 export type CalloutVariant = 'tip' | 'warning' | 'info'
 
@@ -49,7 +44,6 @@ interface ArticleBase {
   /** One or two sentences, shown on index cards and used as the page's meta description. */
   readonly summary: string
   readonly body: readonly Block[]
-  readonly sources: readonly ArticleSource[]
 }
 
 export interface BlogPost extends ArticleBase {

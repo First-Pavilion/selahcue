@@ -9,6 +9,7 @@
  * ever hand-written beside the data.
  */
 import assert from 'node:assert/strict'
+import { execFileSync } from 'node:child_process'
 import { existsSync, readFileSync } from 'node:fs'
 import test, { describe } from 'node:test'
 import { fileURLToPath } from 'node:url'
@@ -28,9 +29,31 @@ import {
 } from '../src/lib/content/text.ts'
 import { support, supportArticles, supportCategories, supportPath, findSupportArticle } from '../src/lib/content/support.ts'
 import type { Block, BlogPost, KnowledgeArticle } from '../src/lib/content/types.ts'
+import { SOURCES } from './fixtures/content-sources.ts'
 
 const REPO_ROOT = fileURLToPath(new URL('../../../', import.meta.url))
 const MARKETING_SRC = fileURLToPath(new URL('../src/', import.meta.url))
+
+/**
+ * Every git-tracked path with its file mode, from `git ls-files -s`. `existsSync` would have
+ * been the easy check and is the wrong one: it passes directories, passes a wrong-case path
+ * on macOS's case-insensitive filesystem, and passes a gitignored file that exists only on
+ * this machine. A citation must name a TRACKED REGULAR FILE, spelled exactly as git has it.
+ */
+function trackedFiles(): Map<string, string> {
+  const raw = execFileSync('git', ['ls-files', '-s', '-z'], { cwd: REPO_ROOT, maxBuffer: 256 * 1024 * 1024 }).toString('utf8')
+  const out = new Map<string, string>()
+  for (const entry of raw.split('\0')) {
+    const m = /^(\d{6}) [0-9a-f]+ \d\t(.+)$/s.exec(entry)
+    if (m) out.set(m[2] as string, m[1] as string)
+  }
+  return out
+}
+const TRACKED = trackedFiles()
+const isTrackedRegularFile = (path: string): boolean => {
+  const mode = TRACKED.get(path)
+  return mode === '100644' || mode === '100755'
+}
 
 describe('inline markup parses to safe segments', () => {
   test('bold, code, key and link become their own segments', () => {
@@ -157,16 +180,6 @@ function assertCollection(
             const parsed = parseInline(s).filter((x) => x.kind === 'link').length
             assert.equal(parsed, written, `${keyOf(a)}: a link was written but rejected as unsafe in "${s}"`)
           }
-        }
-      }
-    })
-
-    test('every article cites sources, and every cited file exists in the repo', () => {
-      for (const a of items) {
-        assert.ok(a.sources.length > 0, `${keyOf(a)}: no sources — every claim needs a repo citation`)
-        for (const s of a.sources) {
-          assert.ok(s.supports.trim().length > 0, `${keyOf(a)}: source ${s.path} says nothing about what it supports`)
-          assert.ok(existsSync(REPO_ROOT + s.path), `${keyOf(a)}: cited source does not exist: ${s.path}`)
         }
       }
     })
@@ -302,5 +315,37 @@ describe('index pages are generated from the content source', () => {
     assert.match(src, /lib\/content\/support\.ts/)
     assert.match(src, /supportPath\(/)
     for (const a of supportArticles) assert.ok(!src.includes(a.title), `SupportView hard-codes the title of ${a.slug}`)
+  })
+})
+
+describe('the citation trail (test-only data, never in src/)', () => {
+  const allKeys = [
+    ...blogPosts.map((a) => `blog/${a.slug}`),
+    ...docsArticles.map((a) => `docs/${a.category}/${a.slug}`),
+    ...supportArticles.map((a) => `support/${a.category}/${a.slug}`),
+  ]
+
+  test('the tracked-file check is not vacuous: it rejects what existsSync would accept', () => {
+    assert.ok(isTrackedRegularFile('implementation/marketing/package.json'), 'a real tracked file must pass')
+    assert.ok(!isTrackedRegularFile('implementation/marketing/src'), 'a directory is not a citation')
+    assert.ok(existsSync(REPO_ROOT + 'implementation/marketing/src'), 'control: the directory does exist on disk')
+    assert.ok(!isTrackedRegularFile('Implementation/marketing/package.json'), 'wrong case must fail even where the filesystem forgives it')
+    assert.ok(!isTrackedRegularFile('implementation/marketing/node_modules/vue/package.json'), 'an untracked/ignored file must fail')
+    assert.ok(!isTrackedRegularFile('implementation/marketing/nope.txt'))
+  })
+
+  test('every article has an entry, and no entry names a non-article', () => {
+    assert.deepEqual([...Object.keys(SOURCES)].sort(), [...allKeys].sort())
+  })
+
+  test('every article cites at least one file, says what it backs, and the file is a tracked regular file', () => {
+    for (const key of allKeys) {
+      const list = SOURCES[key]
+      assert.ok(list && list.length > 0, `${key}: no sources — every claim needs a repo citation`)
+      for (const s of list as NonNullable<typeof list>) {
+        assert.ok(s.supports.trim().length > 0, `${key}: ${s.path} says nothing about what it supports`)
+        assert.ok(isTrackedRegularFile(s.path), `${key}: cited source is not a git-tracked regular file: ${s.path}`)
+      }
+    }
   })
 })

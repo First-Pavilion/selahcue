@@ -23,9 +23,6 @@ import {
 } from './knowledge.ts'
 import type { KnowledgeArticle, KnowledgeCategory } from './types.ts'
 
-const OP = 'implementation/desktop/crates/selahcue-operator/dist'
-const CR = 'implementation/desktop/crates'
-const MOB = 'implementation/mobile/selahcue_controller/lib'
 
 export const supportCategories: readonly KnowledgeCategory[] = [
   { id: 'getting-started', title: 'Getting Started', icon: '🚀', desc: 'The audience screen is blank, or something is not appearing' },
@@ -62,12 +59,6 @@ export const supportArticles: readonly KnowledgeArticle[] = [
         text: 'The rule behind most of this is in [Preview, Live and Go Live](/docs/getting-started/preview-live-and-go-live).',
       },
     ],
-    sources: [
-      { path: `${OP}/index.html`, supports: 'Panel labels, Output idle, Output is black copy, Restore output, Clear Output Esc Esc, GO LIVE Enter.' },
-      { path: `${OP}/app.js`, supports: 'Keys limited to Live Console and ignored in fields; Signal lost banner and NO SIGNAL pill.' },
-      { path: `${CR}/selahcue-app/src/controller.rs`, supports: 'Going live releases blackout; clear empties live; Go Live with nothing staged is a no-op.' },
-      { path: `${CR}/selahcue-present/src/present.rs`, supports: 'Staging never changes Live.' },
-    ],
   },
 
   // -------------------------------------------------------------- display & outputs
@@ -94,11 +85,6 @@ export const supportArticles: readonly KnowledgeArticle[] = [
         type: 'p',
         text: 'The full steps, including **Identify** to find out which screen is which, are in [Assign displays to outputs](/docs/display-outputs/assign-displays-to-outputs).',
       },
-    ],
-    sources: [
-      { path: `${OP}/app.js`, supports: 'Monitor dropdown for main and stage only; "No displays found" / "No physical output".' },
-      { path: `${OP}/settings-outputs.js`, supports: 'Settings > Outputs & Displays lists displays and assignments.' },
-      { path: `${CR}/selahcue-desktop/src/main.rs`, supports: 'Display list built at startup; identical displays keyed by position.' },
     ],
   },
   {
@@ -132,12 +118,6 @@ export const supportArticles: readonly KnowledgeArticle[] = [
         text: 'The set-up steps are in [Send an output over NDI](/docs/display-outputs/ndi-output).',
       },
     ],
-    sources: [
-      { path: `${OP}/app.js`, supports: 'NDI runtime unavailable message and disabled toggle; duplicate-name refusal; NDI offered for audience-class outputs only.' },
-      { path: `${OP}/index.html`, supports: 'Settings > Outputs & Displays shows Network outputs as COMING SOON.' },
-      { path: `${CR}/selahcue-desktop/Cargo.toml`, supports: '`ndi` feature is off by default.' },
-      { path: '.github/workflows/windows-installer.yml', supports: 'Windows installer built with NDI.' },
-    ],
   },
 
   // ------------------------------------------------------------------ scripture
@@ -168,12 +148,6 @@ export const supportArticles: readonly KnowledgeArticle[] = [
         text: 'More examples are in [Find and stage a verse](/docs/scripture-bibles/find-and-stage-a-verse).',
       },
     ],
-    sources: [
-      { path: `${CR}/selahcue-core/tests/test_scripture.rs`, supports: 'Bare book name rejected; accepted reference forms.' },
-      { path: `${CR}/selahcue-scripture/src/lib.rs`, supports: 'Keyword search semantics (all words, Bible order).' },
-      { path: `${CR}/selahcue-app/src/controller.rs`, supports: 'One hit per reference when several are given.' },
-      { path: `${OP}/app.js`, supports: 'Verse not present message; arrow keys move verses only with a chapter open; Space and arrows step the plan.' },
-    ],
   },
   {
     category: 'scripture-bibles',
@@ -201,12 +175,6 @@ export const supportArticles: readonly KnowledgeArticle[] = [
         title: 'If you add the text yourself',
         text: 'SelahCue does not supply a licence for any translation. If you type text from a translation that is not public domain onto a slide, make sure you have permission to use it.',
       },
-    ],
-    sources: [
-      { path: `${OP}/index.html`, supports: '"Not available in this build yet" for licensed modules/APIs.' },
-      { path: `${CR}/selahcue-scripture/src/lib.rs`, supports: 'Five bundled translations; YLT unavailable until fetched.' },
-      { path: `${CR}/selahcue-scripture/src/download.rs`, supports: 'YLT download source is a placeholder.' },
-      { path: `${OP}/settings-about.js`, supports: 'Bundled translations listed as Public Domain.' },
     ],
   },
 
@@ -236,11 +204,6 @@ export const supportArticles: readonly KnowledgeArticle[] = [
         title: 'No stage screen?',
         text: 'The chip at the top of the console always mirrors the readout, so you can follow the countdown there even without a stage display.',
       },
-    ],
-    sources: [
-      { path: `${OP}/index.html`, supports: '"Shown on the stage output only"; TIME UP safety "Locked · stage only"; Timer-only stage theme.' },
-      { path: `${CR}/selahcue-app/src/controller.rs`, supports: 'Timer rendered on the stage output only.' },
-      { path: `${OP}/app.js`, supports: 'Top-bar timer chip mirrors the readout.' },
     ],
   },
 
@@ -283,15 +246,6 @@ export const supportArticles: readonly KnowledgeArticle[] = [
         text: 'Full steps: [Pair a phone](/docs/mobile-control/pair-a-phone).',
       },
     ],
-    sources: [
-      { path: 'implementation/desktop/crates/selahcue-lan/src/server.rs', supports: 'Code valid 120 s, consumed on connect; "pairing rejected: forbidden" / "unauthenticated"; host waits up to 120 s.' },
-      { path: `${OP}/remote.js`, supports: 'Pending requests polled only while the Remote Control page is open; New code; QR not auto-renewed.' },
-      { path: `${OP}/index.html`, supports: 'Multicast-blocked guidance (scan the QR); Pair a device panel.' },
-      { path: `${MOB}/views/pairing_view.dart`, supports: 'Waiting for the host to allow this device; discovered hosts list; same-Wi-Fi guidance.' },
-      { path: `${MOB}/controllers/pairing_controller.dart`, supports: '"That is not a valid SelahCue pairing invite."' },
-      { path: `${MOB}/models/session.dart`, supports: 'Formatting of pairing rejection messages.' },
-      { path: 'docs/architecture/adr/ADR-0008-lan-protocol-security.md', supports: 'Client-isolation networks listed as an unvalidated risk (no result recorded).' },
-    ],
   },
   {
     category: 'mobile-control',
@@ -323,12 +277,6 @@ export const supportArticles: readonly KnowledgeArticle[] = [
         text: 'No role lets a phone edit the plan, send stage messages or manage devices. See [What each phone role can do](/docs/mobile-control/phone-roles).',
       },
     ],
-    sources: [
-      { path: 'implementation/desktop/crates/selahcue-lan/src/rbac.rs', supports: 'Per-role permissions.' },
-      { path: `${OP}/remote.js`, supports: 'Role dropdown in the Paired devices table.' },
-      { path: `${MOB}/models/session.dart`, supports: 'Role fixed from the handshake until reconnect.' },
-      { path: `${MOB}/views/tabs/scripture_tab.dart`, supports: 'Scripture tab shows double-tap-to-send-live regardless of go-live permission.' },
-    ],
   },
   {
     category: 'mobile-control',
@@ -357,13 +305,6 @@ export const supportArticles: readonly KnowledgeArticle[] = [
         type: 'p',
         text: '**Revoke all** and **Regenerate** appear in Settings but are disabled in this build. Revoke devices one at a time.',
       },
-    ],
-    sources: [
-      { path: `${OP}/remote.js`, supports: 'Two-step Revoke ("Confirm?" for ~4 s); paired-devices list.' },
-      { path: `${OP}/index.html`, supports: 'Revoke all / Regenerate disabled ("not available in this build yet").' },
-      { path: 'implementation/desktop/crates/selahcue-lan/src/server.rs', supports: 'Revocation applies on the next request of an open connection.' },
-      { path: `${MOB}/views/controller_view.dart`, supports: '"Access removed" screen with Scan QR to pair again.' },
-      { path: `${MOB}/controllers/live_controller.dart`, supports: 'Disconnect this device clears credentials on the phone only and sends no revoke to the host.' },
     ],
   },
 
@@ -398,13 +339,6 @@ export const supportArticles: readonly KnowledgeArticle[] = [
         type: 'p',
         text: 'More on what is saved and where: [Working offline and how autosave works](/docs/getting-started/offline-and-autosave).',
       },
-    ],
-    sources: [
-      { path: `${OP}/app.js`, supports: 'Session restored and Started clean notices; Couldn’t open the plan / Restore last autosave / Restore requested.' },
-      { path: `${OP}/index.html`, supports: 'Storage copy about resuming vs starting clean; disabled Back up now / Restore / Export diagnostics.' },
-      { path: `${CR}/selahcue-desktop/src/guard.rs`, supports: 'Crash-loop breaker: 3 launches in 60 s; old session preserved.' },
-      { path: `${CR}/selahcue-app/src/controller.rs`, supports: 'Restore on launch of live/staged items, blackout and countdown; no sender for Resume/StartClean.' },
-      { path: `${CR}/selahcue-lan/src/protocol.rs`, supports: 'Restore refused if plan content changed since capture.' },
     ],
   },
   {
@@ -444,15 +378,6 @@ export const supportArticles: readonly KnowledgeArticle[] = [
         title: 'Where the audio goes',
         text: 'Transcription is on-device by default. Cloud transcription is not part of release builds: if cloud is selected in Settings, a release build tells you it does not include it and uses on-device transcription instead.',
       },
-    ],
-    sources: [
-      { path: `${OP}/app.js`, supports: 'Download on Start listening, offline and verification messages, no-audio microphone message, model-size copy.' },
-      { path: `${OP}/preservice.js`, supports: 'Pre-service Check: On-device STT model not downloaded.' },
-      { path: 'implementation/desktop/crates/selahcue-stt/src/model.rs', supports: 'Model choice and sizes by build: large-v3-turbo ~1.6 GB, small ~488 MB, base ~148 MB.' },
-      { path: 'implementation/desktop/crates/selahcue-stt/src/model_fetch.rs', supports: 'Download is not resumable; cache location.' },
-      { path: `${CR}/selahcue-operator/src/main.rs`, supports: '"This build does not include on-device speech-to-text".' },
-      { path: `${CR}/selahcue-operator/src/transcription_route.rs`, supports: 'Release builds fall back to on-device when cloud is selected.' },
-      { path: 'docs/ops/WINDOWS-INSTALLER.md', supports: 'Model downloads on first use and needs internet once; Windows installer is CPU-only.' },
     ],
   },
 ]

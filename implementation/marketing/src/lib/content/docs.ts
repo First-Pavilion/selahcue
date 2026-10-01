@@ -17,8 +17,6 @@ import {
 } from './knowledge.ts'
 import type { KnowledgeArticle, KnowledgeCategory } from './types.ts'
 
-const OP = 'implementation/desktop/crates/selahcue-operator/dist'
-const CR = 'implementation/desktop/crates'
 
 export const docsCategories: readonly KnowledgeCategory[] = [
   { id: 'getting-started', title: 'Getting Started', icon: '🚀', desc: 'How live control works, and how SelahCue saves your work' },
@@ -85,12 +83,6 @@ export const docsArticles: readonly KnowledgeArticle[] = [
         text: 'These keys act on the Live Console only, so moving around Settings or Screens & Outputs can never advance or blackout the show. They are ignored while you are typing in a field, and a button that has keyboard focus keeps Enter and Space for itself. Remapping keys is not available yet.',
       },
     ],
-    sources: [
-      { path: `${CR}/selahcue-present/src/present.rs`, supports: 'Staging never changes Live; only go_live does; blackout retains content; clear empties live and leaves preview.' },
-      { path: `${CR}/selahcue-app/src/controller.rs`, supports: 'Next/Previous stage only; go live with nothing staged is a no-op; going live releases blackout; clear releases blackout.' },
-      { path: `${OP}/app.js`, supports: 'Key bindings (Space/→ next, ← previous, Enter go live, B blackout, Esc Esc and Backspace clear), Live Console only, ignored in fields; double-click behaviours.' },
-      { path: `${OP}/index.html`, supports: 'Panel labels PREVIEW · STAGED / LIVE · ON AIR, GO LIVE with Enter hint, BLACKOUT B, Clear Output Esc Esc, Restore output; keyboard remapping unavailable.' },
-    ],
   },
   {
     category: 'getting-started',
@@ -152,16 +144,6 @@ export const docsArticles: readonly KnowledgeArticle[] = [
         text: '**Back up now**, **Run check** and **Restore** appear in Settings under Storage but are disabled in this build. SelahCue does not write log files, and **Export diagnostics** is disabled too. There is no manual resume-or-start-clean choice after a crash; the behaviour above is automatic.',
       },
     ],
-    sources: [
-      { path: `${CR}/selahcue-desktop/src/main.rs`, supports: 'Autosave throttled to once per second; countdown re-saved every 5 s; restore-point cadence 60 s; data folder locations per OS; unencrypted-store behaviour not claimed.' },
-      { path: `${CR}/selahcue-data/src/autosave_repo.rs`, supports: 'Restore-point ring of 3.' },
-      { path: `${CR}/selahcue-desktop/src/guard.rs`, supports: 'Crash-loop breaker: 3 launches within 60 s; stable after 10 s or clean exit; old session preserved.' },
-      { path: `${CR}/selahcue-app/src/controller.rs`, supports: 'Restore on launch re-presents live/staged items, blackout and countdown.' },
-      { path: `${OP}/app.js`, supports: 'Session restored and Started clean after repeated restarts notices; first-run model download on Start listening.' },
-      { path: `${OP}/index.html`, supports: 'Autosave copy (at most 5 seconds lost); Back up now / Run check / Restore / Export diagnostics disabled.' },
-      { path: `${CR}/selahcue-scripture/src/lib.rs`, supports: 'Bundled translations work offline.' },
-      { path: `${CR}/selahcue-operator/src/main.rs`, supports: 'Operator keeps a second store (deck library and settings) in its app-data folder.' },
-    ],
   },
 
   // -------------------------------------------------------------- display & outputs
@@ -217,14 +199,6 @@ export const docsArticles: readonly KnowledgeArticle[] = [
         title: 'Not available yet',
         text: 'Several controls are shown but disabled in this build, including test patterns, output health, per-output configuration and venue profiles. Phones cannot assign displays; only the desktop operator can. This article covers what works today.',
       },
-    ],
-    sources: [
-      { path: `${OP}/app.js`, supports: 'Output kinds and names; Monitor dropdown in the Display section; "No displays found" / "No physical output"; disabled Test pattern and Go fullscreen.' },
-      { path: `${OP}/index.html`, supports: 'Screens & Outputs navigation; Add virtual output; Identify; disabled settings entries (venue profiles, output health, test patterns).' },
-      { path: `${OP}/settings-outputs.js`, supports: 'Settings > Outputs & Displays lists displays with Identify and links to Screens & Outputs; assignment is not done there.' },
-      { path: `${CR}/selahcue-desktop/src/main.rs`, supports: 'Only main and stage get OS windows; assigned display = borderless fullscreen, unassigned = plain window; closing last window quits; Identify bars.' },
-      { path: `${CR}/selahcue-present/src/stage.rs`, supports: 'Identify draws N vertical bars (1 on main, 2 on stage) for ~5 s.' },
-      { path: `${CR}/selahcue-lan/src/rbac.rs`, supports: 'Assigning outputs is an operator-only permission.' },
     ],
   },
   {
@@ -282,13 +256,6 @@ export const docsArticles: readonly KnowledgeArticle[] = [
         text: 'Stage text size and the choice of which items appear on the stage display are fixed; those controls are shown disabled. The stage output has no NDI option.',
       },
     ],
-    sources: [
-      { path: `${OP}/index.html`, supports: 'Service Timer tab > Stage sub-tab; Stage theme choices; message presets, 120-char custom message, Send to stage / Clear; "Shown on the stage output only"; disabled text size.' },
-      { path: `${OP}/settings-appearance.js`, supports: 'Settings > Appearance default stage theme with the same three choices.' },
-      { path: `${OP}/settings-outputs.js`, supports: 'Stage defaults are fixed on and disabled ("Not configurable yet").' },
-      { path: `${CR}/selahcue-present/src/stage.rs`, supports: 'Current/NEXT lines, templates (Worship, Scripture, Timer-only), TIME UP/OVER, Message from production overlay.' },
-      { path: `${CR}/selahcue-desktop/src/main.rs`, supports: 'Date and time of day drawn on the stage output.' },
-    ],
   },
   {
     category: 'display-outputs',
@@ -334,16 +301,6 @@ export const docsArticles: readonly KnowledgeArticle[] = [
         title: 'Known limits',
         text: 'Every frame is opaque. The Lower Third output is not sent with an alpha channel, so it will not key over other video. There is no macOS or Linux installer yet, so the Windows installer is the only packaged build that includes NDI. We do not publish latency figures for NDI.',
       },
-    ],
-    sources: [
-      { path: `${OP}/app.js`, supports: 'NDI Output inspector (Source name, Broadcast as NDI, status line, NDI pill, frame rates, duplicate-name refusal, runtime-unavailable message, receivable by OBS / vMix / another SelahCue).' },
-      { path: `${CR}/selahcue-desktop/src/video_sink.rs`, supports: '1920x1080 RGBA frames; NDI sink.' },
-      { path: `${CR}/selahcue-desktop/Cargo.toml`, supports: '`ndi` feature off by default.' },
-      { path: '.github/workflows/windows-installer.yml', supports: 'Windows installer built with --features ndi and the NDI runtime.' },
-      { path: `${CR}/selahcue-app/src/controller.rs`, supports: 'Blackout blacks out all outputs including NDI; duplicate source names refused.' },
-      { path: `${CR}/selahcue-engine/src/raster.rs`, supports: 'Output is opaque.' },
-      { path: `${CR}/selahcue-present/src/theme.rs`, supports: 'Lower third is opaque; alpha keying is a later slice.' },
-      { path: 'docs/delivery/BUILD_STATE.md', supports: 'macOS DMG specified but not built; no Linux packaging.' },
     ],
   },
 
@@ -405,13 +362,6 @@ export const docsArticles: readonly KnowledgeArticle[] = [
         text: 'Long passages are not split across slides; the whole passage goes on one slide and its text shrinks to fit. Scripture history and favourites are shown disabled in Settings. A search that contains several references separated by a semicolon returns one result per reference, and you open them one at a time.',
       },
     ],
-    sources: [
-      { path: `${CR}/selahcue-core/tests/test_scripture.rs`, supports: 'Accepted reference forms (abbreviations, periods, numbered books, space shorthand); bare book name rejected.' },
-      { path: `${CR}/selahcue-scripture/src/lib.rs`, supports: 'Keyword search: all words, case-insensitive, limit 8, canonical order.' },
-      { path: `${CR}/selahcue-app/src/controller.rs`, supports: 'Scripture slide composition (range on one slide, verse numbers, title), follow-live behaviour, one hit per reference.' },
-      { path: `${OP}/app.js`, supports: 'Search box behaviour, Enter opens chapter, whole-chapter stages verse 1, verse not present message, arrow/click/double-click behaviour.' },
-      { path: `${OP}/index.html`, supports: 'Scriptures tab labels, placeholder "Reference or keywords", footnote on arrows/Enter/double-click, disabled history and favourites.' },
-    ],
   },
   {
     category: 'scripture-bibles',
@@ -454,15 +404,6 @@ export const docsArticles: readonly KnowledgeArticle[] = [
         title: 'Adding text yourself',
         text: 'SelahCue does not supply a licence for any translation. If you put text from a translation that is not public domain on a slide yourself, make sure you have permission to use it.',
       },
-    ],
-    sources: [
-      { path: `${CR}/selahcue-scripture/src/lib.rs`, supports: 'Bundled KJV (default), WEB, ASV, WEBBE, DBY; YLT downloadable but unavailable.' },
-      { path: `${CR}/selahcue-scripture/src/download.rs`, supports: 'YLT download pin is a placeholder (not downloadable).' },
-      { path: `${CR}/selahcue-core/src/scripture.rs`, supports: '66-book canon.' },
-      { path: `${OP}/settings-about.js`, supports: 'Bundled translations shown as Public Domain.' },
-      { path: `${OP}/settings-scripture.js`, supports: 'Installed translations and default-translation controls.' },
-      { path: `${OP}/index.html`, supports: '"Not available in this build yet" for licensed modules and services.' },
-      { path: `${OP}/app.js`, supports: 'Console opens on KJV; picker lists codes.' },
     ],
   },
 
@@ -525,12 +466,6 @@ export const docsArticles: readonly KnowledgeArticle[] = [
         text: 'A plan holds up to 500 items, and a title can be 120 characters. Song lyrics cannot be typed in yet, so a song item shows only its title. Item owner and duration are read-only. A **Timer** item is a label: it does not start a timer (see [Run the service timer](/docs/timers-plans/service-timer)). Section items are labels too, and Next and Previous do not skip them. There is no Save as template.',
       },
     ],
-    sources: [
-      { path: `${OP}/app.js`, supports: 'Add item buttons, rename, reorder (drag, arrows, Alt+arrows), remove with confirm, link scripture/presentation, Duplicate this service, Publish to team, Open in Live, Create/Template/Import flows, import example, one plan at a time.' },
-      { path: `${OP}/index.html`, supports: 'Service Plan surface and its three columns.' },
-      { path: `${CR}/selahcue-core/src/plan.rs`, supports: 'Templates Sunday Morning and Midweek Gathering; 500-item and 120-character limits.' },
-      { path: `${CR}/selahcue-app/src/controller.rs`, supports: 'Next/Previous do not skip Section items; Timer item kind is a label.' },
-    ],
   },
   {
     category: 'timers-plans',
@@ -591,13 +526,6 @@ export const docsArticles: readonly KnowledgeArticle[] = [
         text: 'Only a single countdown exists: there is no count-up or elapsed timer, no second timer, no sound, and the amber warning point is fixed at 30 seconds. The command palette’s **Start service timer** always starts five minutes. If SelahCue restarts, a running countdown comes back as of the last save, which can be up to five seconds old.',
       },
     ],
-    sources: [
-      { path: `${OP}/index.html`, supports: 'Service Timer tab, Set a custom time (HOURS/MIN/SEC), 5:00 and 10:00 presets, Pause/Resume/Reset/Stop, "Shown on the stage output only".' },
-      { path: `${OP}/app.js`, supports: 'Timer controls and enabled states, status pill RUNNING/PAUSED/TIME UP, amber at 30 s, top-bar chip, command palette Start service timer = 5:00.' },
-      { path: `${CR}/selahcue-core/src/timer.rs`, supports: 'Countdown keeps running past zero; subtracting below elapsed forces TIME UP; adding clears it.' },
-      { path: `${CR}/selahcue-app/src/controller.rs`, supports: 'StartTimer replaces the timer; timer shown on stage output only; recovery restores at last save.' },
-      { path: `${CR}/selahcue-present/src/stage.rs`, supports: 'Stage draws OVER m:ss and TIME UP state.' },
-    ],
   },
 
   // ------------------------------------------------------------------ mobile control
@@ -656,14 +584,6 @@ export const docsArticles: readonly KnowledgeArticle[] = [
         text: 'See [What each phone role can do](/docs/mobile-control/phone-roles). If the phone does not connect, read [My phone will not pair](/support/mobile-control/phone-wont-pair).',
       },
     ],
-    sources: [
-      { path: `${OP}/index.html`, supports: 'Pair a device panel, host fingerprint, Single-use expiry, New code, Paired devices table, multicast-blocked guidance.' },
-      { path: `${OP}/remote.js`, supports: 'Pending request card with Role dropdown (default Producer), Approve/Deny; device status thresholds; two-step Revoke; QR minted on page load, not auto-renewed.' },
-      { path: `${OP}/app.js`, supports: 'Shortcut to Network settings (Ctrl/Cmd+Shift+R).' },
-      { path: 'implementation/desktop/crates/selahcue-lan/src/server.rs', supports: 'Code valid 120 s, consumed on connect; operator wait up to 120 s.' },
-      { path: 'implementation/mobile/selahcue_controller/lib/views/pairing_view.dart', supports: 'Phone screens: Connect to a host, Scan the pairing QR, discovered hosts, device name, waiting for host.' },
-      { path: 'docs/release/mobile/RELEASE-CHECKLIST.md', supports: 'Controller app not yet released to stores.' },
-    ],
   },
   {
     category: 'mobile-control',
@@ -706,15 +626,6 @@ export const docsArticles: readonly KnowledgeArticle[] = [
         title: 'Changing a role',
         text: 'When you change a phone’s role from the Paired devices table, the desktop applies it to that phone’s next request. The phone’s buttons can lag until it reconnects, so a command may be refused as not allowed in the meantime.',
       },
-    ],
-    sources: [
-      { path: 'implementation/desktop/crates/selahcue-lan/src/rbac.rs', supports: 'Permission matrix for Producer / Assistant / Viewer; stage messages and device management operator-only.' },
-      { path: 'implementation/desktop/crates/selahcue-lan/src/server.rs', supports: 'Host refuses the Operator role for remote devices; role change applied on next request.' },
-      { path: 'implementation/mobile/selahcue_controller/lib/models/tab_scope.dart', supports: 'Phone tabs Live, Plan, Scripture, Timer and role scoping.' },
-      { path: 'implementation/mobile/selahcue_controller/lib/views/widgets/mobile_widgets.dart', supports: 'Emergency strip: second tap within 3 s to confirm blackout/clear; reconnecting banner.' },
-      { path: 'implementation/mobile/selahcue_controller/lib/views/tabs/plan_tab.dart', supports: 'Tap stages, double-tap goes live.' },
-      { path: 'implementation/mobile/selahcue_controller/lib/views/tabs/live_tab.dart', supports: 'Read-only transcript, last six lines.' },
-      { path: 'implementation/mobile/selahcue_controller/lib/models/session.dart', supports: 'Role fixed from handshake until reconnect.' },
     ],
   },
 
@@ -761,12 +672,6 @@ export const docsArticles: readonly KnowledgeArticle[] = [
           '**This build keeps one plan at a time.** Creating, templating or importing replaces the open plan.',
         ],
       },
-    ],
-    sources: [
-      { path: `${OP}/app.js`, supports: 'Session restored, Started clean after repeated restarts, Last autosave failed, Couldn’t open the plan / Restore last autosave / Restore requested, NO SIGNAL / SIGNAL LOST, OUTPUT HELD, No displays found, NDI runtime unavailable, duplicate NDI name, one plan at a time.' },
-      { path: `${OP}/index.html`, supports: 'Reattach promise in the Signal-lost banner; Output is black copy and Restore output; autosave failure copy.' },
-      { path: `${CR}/selahcue-desktop/src/guard.rs`, supports: 'Crash-loop breaker thresholds behind the Started clean notice; low-disk warning and checkpoint stop.' },
-      { path: `${CR}/selahcue-desktop/src/main.rs`, supports: 'no_signal telemetry when the window’s monitor is gone; output fault path.' },
     ],
   },
 ]
