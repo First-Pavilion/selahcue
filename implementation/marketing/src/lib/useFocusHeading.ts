@@ -11,15 +11,11 @@
  * NOT ON A DIRECT LOAD. When the page is the first thing the visitor opened (a link, a
  * bookmark, a refresh of the very first entry) the browser has already announced it and
  * focus belongs at the top of the document: moving it to the h1 would put it PAST the
- * navigation and the "Skip to article" link, so the first Tab would skip them. vue-router
- * records the previous in-app location in `history.state.back`; it is null on the first
- * entry of the session.
+ * navigation and the "Skip to article" link, so the first Tab would skip them
+ * (`cameFromInsideTheApp` decides).
  */
 import { nextTick, onMounted, watch, type Ref } from 'vue'
-
-function cameFromInsideTheApp(): boolean {
-  return typeof window !== 'undefined' && window.history.state?.back != null
-}
+import { cameFromInsideTheApp } from './pageFocus.ts'
 
 export function useFocusHeading(heading: Ref<HTMLElement | null>, key: () => string): void {
   async function focusIt(): Promise<void> {
@@ -27,7 +23,7 @@ export function useFocusHeading(heading: Ref<HTMLElement | null>, key: () => str
     heading.value?.focus({ preventScroll: true })
   }
   onMounted(() => {
-    if (cameFromInsideTheApp()) void focusIt()
+    if (cameFromInsideTheApp(window.history.state)) void focusIt()
   })
   watch(key, focusIt)
 }

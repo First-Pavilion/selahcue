@@ -1,25 +1,13 @@
 /**
- * Per-page `document.title` and meta description for the article detail pages.
+ * Per-page `document.title` and meta description for the article detail pages. The rules
+ * live in `documentMeta.ts` (pure, tested in node); this is the thin Vue + DOM adapter.
  *
  * The site had no title management at all (every route showed the `index.html` title), so
- * this is new, and it is deliberately small: set on setup, follow the reactive getters,
- * and give the title back on unmount.
- *
- * GIVE-BACK IS CONDITIONAL, and that is the point. App.vue wraps the router view in
- * <Suspense>, which sets up the NEW page before it unmounts the OLD one. A naive
- * "restore the title I saw at setup on unmount" would therefore run AFTER the next page
- * had set its own title and overwrite it with a stale one. Restoring only when the title
- * is still the one THIS instance wrote keeps article -> article correct.
+ * this is new, and deliberately small: set on setup, follow the reactive getters, and give
+ * the defaults back on unmount (see `releaseMeta` for why that is conditional).
  */
 import { onBeforeUnmount, watchEffect } from 'vue'
-import { pageTitle } from './content/text.ts'
-
-/** Captured when this module first loads — before any article has written a title. */
-const DEFAULT_TITLE = typeof document === 'undefined' ? '' : document.title
-const DEFAULT_DESCRIPTION =
-  typeof document === 'undefined'
-    ? ''
-    : (document.querySelector('meta[name="description"]')?.getAttribute('content') ?? '')
+import { applyMeta, releaseMeta, type MetaDefaults, type MetaTarget, type Written } from './documentMeta.ts'
 
 function descriptionTag(): HTMLMetaElement {
   let tag = document.querySelector<HTMLMetaElement>('meta[name="description"]')
@@ -31,22 +19,37 @@ function descriptionTag(): HTMLMetaElement {
   return tag
 }
 
+/** The real document, as a `MetaTarget`. */
+const browserTarget: MetaTarget = {
+  get title() {
+    return document.title
+  },
+  set title(value: string) {
+    document.title = value
+  },
+  get description() {
+    return descriptionTag().getAttribute('content') ?? ''
+  },
+  set description(value: string) {
+    descriptionTag().setAttribute('content', value)
+  },
+}
+
+/** Captured when this module first loads, before any article has written anything. */
+const DEFAULTS: MetaDefaults =
+  typeof document === 'undefined'
+    ? { title: '', description: '' }
+    : { title: document.title, description: browserTarget.description }
+
+/**
+ * `title` empty means "not an article": the site defaults are shown (an unknown slug).
+ */
 export function useDocumentMeta(title: () => string, description: () => string): void {
-  let writtenTitle = ''
-  let writtenDescription = ''
+  let written: Written = { title: '', description: '' }
 
   watchEffect(() => {
-    writtenTitle = pageTitle(title())
-    document.title = writtenTitle
-    writtenDescription = description()
-    descriptionTag().setAttribute('content', writtenDescription)
+    written = applyMeta(browserTarget, DEFAULTS, { title: title(), description: description() })
   })
 
-  onBeforeUnmount(() => {
-    if (document.title === writtenTitle) document.title = DEFAULT_TITLE
-    const tag = descriptionTag()
-    if (tag.getAttribute('content') === writtenDescription) {
-      tag.setAttribute('content', DEFAULT_DESCRIPTION)
-    }
-  })
+  onBeforeUnmount(() => releaseMeta(browserTarget, DEFAULTS, written))
 }
