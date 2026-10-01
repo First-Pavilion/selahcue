@@ -18,6 +18,7 @@ import {
   supportPath,
   supportRelated,
 } from '@/lib/content/support.ts'
+import { supportCrumbs } from '@/lib/content/breadcrumbs.ts'
 import { readMinutes } from '@/lib/content/text.ts'
 import { useDocumentMeta } from '@/lib/useDocumentMeta.ts'
 import { useFocusHeading } from '@/lib/useFocusHeading.ts'
@@ -44,13 +45,7 @@ useFocusHeading(heading, () => `${props.category}/${props.slug}`)
   <NotFoundView embedded v-if="!article || !category" />
   <article v-else class="sa">
     <div class="sa-wrap">
-      <BreadcrumbTrail
-        :items="[
-          { label: 'Support', to: '/support' },
-          { label: category.title, to: '/support#' + category.id },
-          { label: article.title },
-        ]"
-      />
+      <BreadcrumbTrail :items="supportCrumbs(article, category)" />
       <header class="sa-header">
         <h1 ref="heading" tabindex="-1" class="sa-title">{{ article.title }}</h1>
         <p class="sa-lead">{{ article.summary }}</p>

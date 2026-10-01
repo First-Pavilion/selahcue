@@ -13,59 +13,16 @@ import { readFileSync } from 'node:fs'
 import test, { describe } from 'node:test'
 import { fileURLToPath } from 'node:url'
 
-import { blogPosts, findBlogPost } from '../src/lib/content/blog.ts'
-import { docsArticles, docsCategories, findDocsArticle } from '../src/lib/content/docs.ts'
-import { classifyHref, parseInline } from '../src/lib/content/inline.ts'
+import { blogPosts } from '../src/lib/content/blog.ts'
+import { blogCrumbs, docsCrumbs, supportCrumbs } from '../src/lib/content/breadcrumbs.ts'
+import { docsArticles, findDocsArticle, findDocsCategory } from '../src/lib/content/docs.ts'
+import { parseInline } from '../src/lib/content/inline.ts'
+import { findSupportCategory, supportArticles } from '../src/lib/content/support.ts'
 import { headingIds } from '../src/lib/content/text.ts'
-import { findSupportArticle, supportArticles, supportCategories } from '../src/lib/content/support.ts'
 import type { Block, KnowledgeArticle } from '../src/lib/content/types.ts'
+import { STATIC, whyUnresolvable } from './fixtures/resolveLink.ts'
 
 const read = (rel: string): string => readFileSync(fileURLToPath(new URL(rel, import.meta.url)), 'utf8')
-
-/** Literal, parameter-free paths from router/index.ts: `path: '/pricing'` and friends. */
-function staticPaths(): Set<string> {
-  const src = read('../src/router/index.ts')
-  const out = new Set<string>()
-  for (const m of src.matchAll(/path:\s*'(\/[a-z0-9\-/]*)'/g)) out.add(m[1] as string)
-  return out
-}
-const STATIC = staticPaths()
-
-function articleHeadingIds(a: KnowledgeArticle | { body: readonly Block[] }): Set<string> {
-  return new Set(headingIds(a.body).values())
-}
-
-/** `null` when the link resolves, otherwise a reason. Only same-site paths are resolved. */
-export function whyUnresolvable(href: string): string | null {
-  if (classifyHref(href) !== 'internal') return 'not a same-site path'
-  const hashAt = href.indexOf('#')
-  const hash = hashAt === -1 ? '' : href.slice(hashAt + 1)
-  const base = (hashAt === -1 ? href : href.slice(0, hashAt)).split('?')[0] as string
-
-  let m = /^\/blog\/([^/]+)$/.exec(base)
-  if (m) {
-    const post = findBlogPost(m[1])
-    if (!post) return `no blog post "${m[1]}"`
-    return hash && !articleHeadingIds(post).has(hash) ? `no heading #${hash} in that post` : null
-  }
-  m = /^\/docs\/([^/]+)\/([^/]+)$/.exec(base)
-  if (m) {
-    const a = findDocsArticle(m[1], m[2])
-    if (!a) return `no docs article ${m[1]}/${m[2]}`
-    return hash && !articleHeadingIds(a).has(hash) ? `no heading #${hash} in that article` : null
-  }
-  m = /^\/support\/([^/]+)\/([^/]+)$/.exec(base)
-  if (m) {
-    const a = findSupportArticle(m[1], m[2])
-    if (!a) return `no support article ${m[1]}/${m[2]}`
-    return hash && !articleHeadingIds(a).has(hash) ? `no heading #${hash} in that article` : null
-  }
-  if (!STATIC.has(base)) return `no such page ${base}`
-  if (!hash) return null
-  if (base === '/docs') return docsCategories.some((c) => c.id === hash) ? null : `no docs category #${hash}`
-  if (base === '/support') return supportCategories.some((c) => c.id === hash) ? null : `no support category #${hash}`
-  return `cannot verify an anchor on ${base}`
-}
 
 function bodyStrings(body: readonly Block[]): string[] {
   return body.flatMap((b) =>
@@ -161,5 +118,47 @@ describe('literal links in the article views and index views resolve', () => {
       }
     }
     assert.ok(seen >= 3, `only ${seen} literal links found in the views`)
+  })
+})
+
+describe('every breadcrumb target resolves, for every article', () => {
+  // The breadcrumb trails are built in script (`lib/content/breadcrumbs.ts`), where the
+  // `to="..."` literal scan above cannot see them; a dead one used to survive the whole suite.
+  test('blog posts: Home, Blog, then the post (no link on the current page)', () => {
+    assert.ok(blogPosts.length > 0)
+    for (const p of blogPosts) {
+      const crumbs = blogCrumbs(p)
+      assert.deepEqual(crumbs.map((c) => c.to), ['/', '/blog', undefined], p.slug)
+      for (const c of crumbs) if (c.to) assert.equal(whyUnresolvable(c.to), null, `${p.slug}: ${c.label} -> ${c.to} (${whyUnresolvable(c.to)})`)
+      assert.equal(crumbs[2]!.label, p.title)
+    }
+  })
+
+  for (const [label, articles, find, crumbsOf, root] of [
+    ['docs', docsArticles, findDocsCategory, docsCrumbs, '/docs'],
+    ['support', supportArticles, findSupportCategory, supportCrumbs, '/support'],
+  ] as const) {
+    test(`${label} articles: ${root}, the category anchor, then the article`, () => {
+      assert.ok(articles.length > 0)
+      for (const a of articles) {
+        const category = find(a.category)
+        assert.ok(category, `${a.slug}: its category does not exist`)
+        const crumbs = crumbsOf(a, category!)
+        assert.equal(crumbs.length, 3)
+        assert.equal(crumbs[0]!.to, root)
+        assert.equal(crumbs[1]!.to, `${root}#${a.category}`)
+        assert.equal(crumbs[2]!.to, undefined, 'the current page is not a link')
+        for (const c of crumbs) if (c.to) assert.equal(whyUnresolvable(c.to), null, `${a.category}/${a.slug}: ${c.label} -> ${c.to} (${whyUnresolvable(c.to)})`)
+        assert.equal(crumbs[2]!.label, a.title)
+      }
+    })
+  }
+
+  test('the views build their trail from these functions, not from a private copy', () => {
+    for (const [view, fn] of [['BlogPostView', 'blogCrumbs'], ['DocsArticleView', 'docsCrumbs'], ['SupportArticleView', 'supportCrumbs']] as const) {
+      const src = read(`../src/views/${view}.vue`)
+      assert.match(src, new RegExp(`<BreadcrumbTrail :items="${fn}\\(`), `${view} should call ${fn}`)
+      assert.ok(!/:items="\[/.test(src), `${view} still builds an inline breadcrumb array`)
+    }
   })
 })

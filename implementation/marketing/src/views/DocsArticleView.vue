@@ -24,6 +24,7 @@ import {
   findDocsArticle,
   findDocsCategory,
 } from '@/lib/content/docs.ts'
+import { docsCrumbs } from '@/lib/content/breadcrumbs.ts'
 import { CONTENT_SOURCE_URL, readMinutes } from '@/lib/content/text.ts'
 import { useDocumentMeta } from '@/lib/useDocumentMeta.ts'
 import { useFocusHeading } from '@/lib/useFocusHeading.ts'
@@ -108,13 +109,7 @@ watch(
       </aside>
 
       <article id="docs-article" ref="content" tabindex="-1" class="da-content">
-        <BreadcrumbTrail
-          :items="[
-            { label: 'Docs', to: '/docs' },
-            { label: category.title, to: '/docs#' + category.id },
-            { label: article.title },
-          ]"
-        />
+        <BreadcrumbTrail :items="docsCrumbs(article, category)" />
         <h1 ref="heading" tabindex="-1" class="da-title">{{ article.title }}</h1>
         <p class="da-lead">{{ article.summary }}</p>
         <p class="da-meta">{{ minutes }} min read</p>

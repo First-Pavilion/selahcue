@@ -17,6 +17,7 @@ import ArticleBody from '@/components/article/ArticleBody.vue'
 import BreadcrumbTrail from '@/components/article/BreadcrumbTrail.vue'
 import PrevNext from '@/components/article/PrevNext.vue'
 import NotFoundView from '@/views/NotFoundView.vue'
+import { blogCrumbs } from '@/lib/content/breadcrumbs.ts'
 import { blogNeighbours, blogPath, findBlogPost, relatedPosts } from '@/lib/content/blog.ts'
 import { formatDate, readMinutes, tableOfContents } from '@/lib/content/text.ts'
 import { useDocumentMeta } from '@/lib/useDocumentMeta.ts'
@@ -69,13 +70,7 @@ onBeforeUnmount(() => clearTimeout(copyTimer))
   <article v-else class="bp">
     <div class="bp-wrap">
       <header class="bp-header">
-        <BreadcrumbTrail
-          :items="[
-            { label: 'Home', to: '/' },
-            { label: 'Blog', to: '/blog' },
-            { label: post.title },
-          ]"
-        />
+        <BreadcrumbTrail :items="blogCrumbs(post)" />
         <UiBadge variant="preview">{{ post.category }}</UiBadge>
         <h1 ref="heading" tabindex="-1" class="bp-title">{{ post.title }}</h1>
         <p class="bp-summary">{{ post.summary }}</p>
