@@ -4585,6 +4585,14 @@ async fn build_backend() -> Backend {
 
 /// A demo service plan for the stand-alone (no output window) case.
 fn demo_shell() -> OperatorShell {
+    // This `OperatorShell` drives a real, in-process `LiveController` (`Backend::Local`), not a
+    // mock: a live-transcript final sent while running stand-alone reaches `ingest_transcript`
+    // (`controller.rs`) exactly the way it would with a connected output window, including the
+    // fuzzy `selahcue_scripture::match_quote_scored` call. Warm the index here, once, before
+    // that path is reachable, so the first final doesn't pay the cold OnceLock build (~250ms
+    // release / ~1.7s debug) inline during live service (17tnw2b1258 review follow-up: the
+    // Backend::Remote path is covered by selahcue-desktop's own startup warm-up instead).
+    selahcue_scripture::warm();
     let mut plan = ServicePlan::new("Sunday Service");
     plan.add_item(ItemKind::Song, "Opening Song");
     plan.add_item(ItemKind::Scripture, "Romans 8:28");

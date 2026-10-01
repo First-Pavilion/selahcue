@@ -3540,12 +3540,18 @@ mod remote_control_warmup_tests {
         // `remote.lan` is published only after `run_server` has bound its listener — i.e.
         // strictly after `start_remote_control`'s warm-up call above has already returned
         // (plain sequential code on the same background thread). Poll with a generous bound
-        // instead of a fixed sleep: a cold warm-up alone can take ~1.7s in debug profile.
-        let deadline = Instant::now() + Duration::from_secs(10);
+        // instead of a fixed sleep: this does real TLS identity generation, pairing-registry
+        // setup and a socket bind on top of a cold warm-up (~1.7s debug alone), and this repo
+        // runs several agent sessions concurrently in one checkout (CLAUDE.md), so CPU
+        // contention is routine, not exceptional — a tight bound here would make a passing
+        // regression test about a timing bug itself flaky under load. The real, discriminating
+        // assertion is the warm()-is-already-warm check below, which is cheap and CPU-bound;
+        // this loop only needs to not time out before that check gets a chance to run.
+        let deadline = Instant::now() + Duration::from_secs(60);
         while remote.lan.get().is_none() {
             assert!(
                 Instant::now() < deadline,
-                "remote control server did not start within 10s"
+                "remote control server did not start within 60s"
             );
             std::thread::sleep(Duration::from_millis(10));
         }
