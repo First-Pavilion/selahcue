@@ -645,10 +645,11 @@ onBeforeUnmount(() => {
 }
 
 @media (min-width: 768px) and (max-width: 1199px) {
-  .left-group { gap: 24px; }
-  .desktop-nav { gap: 16px; }
-  .right-group { gap: 14px; }
-  .download-cta { padding: 9px 16px; }
+  .left-group { gap: 20px; margin-right: 16px; }
+  .desktop-nav { gap: 12px; }
+  .right-group { gap: 12px; }
+  .nav-item, .signin-btn, .signout-btn { font-size: 13.5px; }
+  .download-cta { padding: 9px 14px; font-size: 13.5px; }
 }
 
 /* Coarse pointers above the breakpoint (tablets) get the 44px target on the CTA too;
