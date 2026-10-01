@@ -11,6 +11,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:crypto/crypto.dart';
+import 'package:flutter/foundation.dart' show visibleForTesting;
 
 import 'pair_uri.dart';
 import 'protocol.dart';
@@ -122,7 +123,9 @@ class SelahSession implements ControllerSession {
       this._commandDeadline);
 
   /// A session over an in-memory transport, for tests: [send] receives each
-  /// outbound frame and [incoming] yields the host's frames.
+  /// outbound frame and [incoming] yields the host's frames. Never used by
+  /// production code, which always goes through [pair] / [connect].
+  @visibleForTesting
   SelahSession.forTest({
     required void Function(String frame) send,
     required StreamQueue incoming,
@@ -228,6 +231,11 @@ class SelahSession implements ControllerSession {
         // discarded as stale restarted the clock and a chatty host could hold
         // the command (and, via `LiveController.busy`, every control) open for
         // ever (17tnw2ay5jk).
+        //
+        // A plain Stopwatch on purpose (monotonic, immune to wall-clock jumps),
+        // which also means `fakeAsync` / `tester.pump(duration)` do NOT advance
+        // it: tests of this deadline need real time (see
+        // test/models/session_command_deadline_test.dart).
         final sinceSent = Stopwatch()..start();
         _send(jsonEncode(request(id, cmd)));
         // Read until this command's reply: correlated frames (ack/denied carry
@@ -236,6 +244,11 @@ class SelahSession implements ControllerSession {
         // reply under the lockstep discipline.
         while (true) {
           final remaining = _commandDeadline - sinceSent.elapsed;
+          // Checked before every read, not left to nextJson's timeout: a frame
+          // already buffered is returned without consulting its timeout, so
+          // without this an expired command would still read (and could still
+          // complete on) frames that were sitting in the buffer. Expired means
+          // failed, even if the reply is already queued.
           if (remaining <= Duration.zero) {
             throw const SessionException('timed out waiting for the host');
           }

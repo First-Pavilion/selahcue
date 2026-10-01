@@ -20,12 +20,12 @@ const Duration _deadline = Duration(milliseconds: 300);
 
 /// An in-memory transport: [host] plays the operator host's side of the socket.
 class _Harness {
-  _Harness() {
+  _Harness({Duration deadline = _deadline}) {
     session = SelahSession.forTest(
       send: sent.add,
       incoming: StreamQueue(host.stream),
       role: 'producer',
-      commandDeadline: _deadline,
+      commandDeadline: deadline,
     );
   }
 
@@ -80,19 +80,37 @@ void main() {
     expect(await reply, isA<Ack>());
   });
 
-  test('the deadline is per command: a fast command after a slow one gets a full budget',
+  test('an expired deadline fails the command even when its reply is already buffered',
       () async {
-    final h = _Harness();
+    // Pins the `remaining <= zero` guard: nextJson returns a buffered frame
+    // without consulting its timeout, so only that guard stops an expired
+    // command from reading on. Expired means failed.
+    final h = _Harness(deadline: Duration.zero);
+    addTearDown(h.dispose);
+    h.ack(1);
+    await Future<void>.delayed(Duration.zero); // let the frame reach the buffer
+    await expectLater(
+      h.session.command(cmdBlackout(true)).timeout(const Duration(seconds: 5)),
+      throwsA(isA<SessionException>()),
+    );
+  });
+
+  test('the clock starts when a command\'s turn starts, not when it was queued',
+      () async {
+    // Real time on purpose: the deadline uses a Stopwatch, which fake time does
+    // not advance. 1s budget with 400ms+ of slack on each side keeps this stable
+    // on a loaded runner.
+    final h = _Harness(deadline: const Duration(seconds: 1));
     addTearDown(h.dispose);
     final first = h.session.command(cmdBlackout(true));
-    await Future<void>.delayed(const Duration(milliseconds: 200));
+    final second = h.session.command(cmdBlackout(false)); // queued behind `first`
+    await Future<void>.delayed(const Duration(milliseconds: 600));
     h.ack(1);
     await first;
-    // Well past 300ms since the FIRST command was sent, but this one has only
-    // just started.
-    await Future<void>.delayed(const Duration(milliseconds: 150));
-    final second = h.session.command(cmdBlackout(false));
-    await Future<void>.delayed(const Duration(milliseconds: 200));
+    // `second` has now been waiting 600ms+ since the call, and its own turn
+    // starts only now. Answering 600ms into that turn lands 1.2s after the
+    // call: inside its own 1s budget, but past it if the clock ran from queueing.
+    await Future<void>.delayed(const Duration(milliseconds: 600));
     h.ack(2);
     expect(await second, isA<Ack>());
   });
