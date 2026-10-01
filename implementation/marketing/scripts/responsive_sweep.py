@@ -293,6 +293,22 @@ localStorage.setItem('selahcue.session', JSON.stringify({role: 'owner', orgId: '
 """
 
 
+class Server(socketserver.ThreadingTCPServer):
+    """Threaded: a browser keeps connections open and a single-threaded server can stall on one.
+
+    A client that goes away mid-response (a page closed during the run) is routine, not an
+    error worth a traceback.
+    """
+
+    daemon_threads = True
+    allow_reuse_address = True
+
+    def handle_error(self, request, client_address):  # noqa: D401
+        if isinstance(sys.exc_info()[1], (BrokenPipeError, ConnectionResetError)):
+            return
+        super().handle_error(request, client_address)
+
+
 class SpaHandler(http.server.SimpleHTTPRequestHandler):
     """Serves dist/ with SPA fallback to index.html for client-routed paths."""
 
@@ -535,9 +551,24 @@ def check_reduced_motion(browser, base: str, width: int, fail, count) -> None:
         page.goto(f"{base}/", wait_until="load")
         page.wait_for_selector(".mobile-toggle")
         page.wait_for_timeout(200)
-        page.click(".mobile-toggle")
+        # Tap, then sample over ~10 frames and keep the PEAK: WebKit starts Vue's enter
+        # transition two frames after the click, so one immediate read would see nothing there
+        # even under normal motion.
+        n = page.evaluate(
+            """async () => {
+              document.querySelector('.mobile-toggle').click();
+              let peak = 0;
+              for (let i = 0; i < 10; i++) {
+                await new Promise((r) => requestAnimationFrame(r));
+                const running = document.getAnimations({ subtree: true }).filter(
+                  (a) => a.playState === 'running' && a.effect && a.effect.getComputedTiming().duration > 1
+                ).length;
+                peak = Math.max(peak, running);
+              }
+              return peak;
+            }"""
+        )
         page.wait_for_selector("#mobile-nav-sheet")
-        n = page.evaluate("document.getAnimations({subtree: true}).filter((a) => a.playState === 'running' && a.effect && a.effect.getComputedTiming().duration > 1).length")
         durations = page.evaluate(
             "[...document.querySelectorAll('.download-cta, .sheet-cta, .mobile-link')].map((e) => getComputedStyle(e).transitionDuration).join(',')"
         )
@@ -554,7 +585,8 @@ def check_reduced_motion(browser, base: str, width: int, fail, count) -> None:
     if reduced != 0:
         fail(f"{tag}: {reduced} animation(s) still running with prefers-reduced-motion: reduce")
     count()
-    bad = [d for d in durations.split(",") if d and d not in ("1e-05s", "0s")]
+    # Serialised differently per engine ("1e-05s" in Blink, "0.00001s" in WebKit): compare numerically.
+    bad = [d for d in durations.split(",") if d and float(d.removesuffix("s")) > 0.0001]
     if bad:
         fail(f"{tag}: transition durations not neutralised under reduced motion: {bad[:4]}")
 
@@ -589,8 +621,7 @@ def main() -> int:
     if shots:
         shots.mkdir(parents=True, exist_ok=True)
 
-    socketserver.TCPServer.allow_reuse_address = True
-    server = socketserver.TCPServer(("127.0.0.1", 0), SpaHandler)
+    server = Server(("127.0.0.1", 0), SpaHandler)
     port = server.server_address[1]
     threading.Thread(target=server.serve_forever, daemon=True).start()
 
