@@ -35,14 +35,29 @@ const component = computed(() => {
   if (props.href) return 'a'
   return 'button'
 })
+
+/**
+ * Bind ONLY the attributes the chosen element understands.
+ *
+ * The template used to pass `:to`, `:href` and `:disabled` to every variant. For a
+ * `<router-link>` that meant `href: undefined` rode along as a fallthrough attribute and
+ * OVERRODE the `href` the router had computed, so every button with a `to` rendered as
+ * `<a>` with no href: not focusable, not in the Tab order, and middle-click and
+ * "open in new tab" dead. That affected every `UiButton to="..."` on the site (the home page's
+ * "Download free" included). A link is also never given `disabled`, which an `<a>` ignores
+ * anyway; a disabled link is marked `aria-disabled` instead.
+ */
+const bindings = computed(() => {
+  if (props.to) return { to: props.to, ...(props.disabled ? { 'aria-disabled': 'true' } : {}) }
+  if (props.href) return { href: props.href, ...(props.disabled ? { 'aria-disabled': 'true' } : {}) }
+  return { disabled: props.disabled || props.loading }
+})
 </script>
 
 <template>
   <component
     :is="component"
-    :to="to"
-    :href="href"
-    :disabled="disabled || loading"
+    v-bind="bindings"
     :class="['ui-button', `variant-${variant}`, `size-${size}`, { 'is-loading': loading, 'is-disabled': disabled }]"
   >
     <div v-if="loading" class="spinner"></div>
