@@ -27,7 +27,7 @@ import {
   parseLegalMarkdown,
   parseVersionLine,
 } from '../scripts/legal_markdown.ts'
-import { GENERATED_DIR, REPO_ROOT, TARGETS, generateAll, sameContent } from '../scripts/sync_legal.ts'
+import { GENERATED_DIR, REPO_ROOT, TARGETS, docsRequirement, generateAll, sameContent } from '../scripts/sync_legal.ts'
 import {
   DRAFT_NOTICE,
   allAnchorIds,
@@ -47,6 +47,7 @@ import { termsOfService } from '../src/lib/legal/terms.generated.ts'
 import type { Block, Inline, LegalDocument, ListItem, Section } from '../src/lib/legal/types.ts'
 
 const DOCS_PRESENT = TARGETS.every((t) => existsSync(`${REPO_ROOT}/${t.source}`))
+const IN_CI = Boolean(process.env.CI) && process.env.CI !== 'false' && process.env.CI !== '0'
 const SRC = `${fileURLToPath(new URL('../src/', import.meta.url))}`
 
 /** A minimal valid document around `body` (sections), for synthetic cases. */
@@ -57,6 +58,21 @@ function md(body: string, header = ''): string {
 // ---------------------------------------------------------------------------------------
 // 1. Drift
 // ---------------------------------------------------------------------------------------
+
+describe('the drift guard cannot silently become a no-op', () => {
+  test('docs/legal drafts are present (a hard failure in CI, a loud skip elsewhere)', (t) => {
+    const need = docsRequirement(DOCS_PRESENT, IN_CI)
+    if (need === 'skip') t.skip('docs/legal is not present (build context without the repo); NOT enforced outside CI')
+    assert.notEqual(need, 'fail', `docs/legal drafts are missing in CI: ${TARGETS.map((x) => x.source).join(', ')}. Was a draft renamed or moved? Update TARGETS in scripts/sync_legal.ts.`)
+  })
+
+  test('the requirement table', () => {
+    assert.equal(docsRequirement(true, true), 'ok')
+    assert.equal(docsRequirement(true, false), 'ok')
+    assert.equal(docsRequirement(false, false), 'skip')
+    assert.equal(docsRequirement(false, true), 'fail')
+  })
+})
 
 describe('generated files match docs/legal', { skip: !DOCS_PRESENT && 'docs/legal is not present (build context without the repo)' }, () => {
   for (const g of DOCS_PRESENT ? generateAll() : []) {

@@ -10,6 +10,12 @@
  * turns them into typed data that lives INSIDE the build context and is committed, and
  * `tests/legal.test.ts` regenerates in memory and fails if the committed copy differs.
  *
+ * AFTER EDITING A DRAFT IN docs/legal: run `npm run sync:legal` (in implementation/marketing)
+ * and commit the regenerated files. The legal-drift workflow and `tests/legal.test.ts` fail
+ * until you do. PUBLISHING is also an edit to the markdown (delete the DRAFT banner, set the
+ * version status to something other than `draft`, keep a "Version X (status, date)." line
+ * under the title) followed by this command; see README.md and src/lib/legal/document.ts.
+ *
  * Deterministic: same markdown in, byte-identical TypeScript out. No timestamps, no paths
  * other than the repo-relative source, no environment.
  *
@@ -66,6 +72,17 @@ export function generateAll(opts: { srcDir?: string; outDir?: string } = {}): Ge
       content: renderGeneratedModule(doc, target.exportName, 'npm run sync:legal (in implementation/marketing)'),
     }
   })
+}
+
+/**
+ * What a missing `docs/legal` means. Outside CI (a build context that does not carry the
+ * repo's docs, such as the Docker image) the drift tests have nothing to compare and are
+ * skipped, loudly. In CI a missing draft is a FAILURE: a renamed or moved file would
+ * otherwise turn the drift guard into a green no-op.
+ */
+export function docsRequirement(present: boolean, ci: boolean): 'ok' | 'skip' | 'fail' {
+  if (present) return 'ok'
+  return ci ? 'fail' : 'skip'
 }
 
 export interface Args {

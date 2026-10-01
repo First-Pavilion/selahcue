@@ -1,0 +1,70 @@
+# Keeps the marketing site's Privacy Policy and Terms pages in step with the legal drafts.
+#
+# WHY A WORKFLOW OF ITS OWN. The legal pages are GENERATED from docs/legal/*.md
+# (implementation/marketing/scripts/sync_legal.ts) and the generated files are committed.
+# Drift happens exactly when someone edits a draft, say to fill in a placeholder, and
+# forgets to regenerate. ci.yml cannot see that edit: it ignores `docs/**` and `**.md`
+# at the top level, and its marketing path filter does not list docs/legal, so a
+# docs/legal-only change runs NO marketing job. This workflow is triggered by those
+# paths on purpose. It is deliberately separate from the `marketing` job in ci.yml so it
+# does not collide with edits to that job.
+#
+# The same check runs locally: `npm run check:legal` (in implementation/marketing).
+name: legal-drift
+
+on:
+  pull_request:
+    paths:
+      - "docs/legal/**"
+      - "implementation/marketing/src/lib/legal/**"
+      - "implementation/marketing/src/components/legal/**"
+      - "implementation/marketing/scripts/*legal*"
+      - "implementation/marketing/tests/*legal*"
+      - "implementation/marketing/tests/*Legal*"
+      - ".github/workflows/legal-drift.yml"
+  push:
+    branches: [main]
+    paths:
+      - "docs/legal/**"
+      - "implementation/marketing/src/lib/legal/**"
+      - "implementation/marketing/src/components/legal/**"
+      - "implementation/marketing/scripts/*legal*"
+      - "implementation/marketing/tests/*legal*"
+      - "implementation/marketing/tests/*Legal*"
+      - ".github/workflows/legal-drift.yml"
+
+# Least privilege: this job only reads the repository. No secrets are used.
+permissions:
+  contents: read
+
+concurrency:
+  group: legal-drift-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  legal-drift:
+    name: legal pages (drafts in sync)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: implementation/marketing
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: implementation/marketing/package-lock.json
+      - name: Install
+        run: npm ci
+      # Regenerates both pages' content from docs/legal and fails if the committed
+      # files differ. Exit 1 = stale (run `npm run sync:legal` and commit), 2 = cannot run.
+      - name: Generated content matches docs/legal
+        run: npm run check:legal
+      # CI=true (set by Actions) makes a MISSING draft a hard failure in these tests
+      # rather than a skip, so renaming a draft cannot turn the drift guard into a no-op.
+      - name: Legal content, page and CLI tests
+        run: node --test --test-reporter=spec tests/legal.test.ts tests/legalPage.test.ts tests/syncLegalCli.test.ts
