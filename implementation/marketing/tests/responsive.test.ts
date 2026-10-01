@@ -390,6 +390,29 @@ describe('mobile nav sheet wiring (Navbar.vue)', () => {
   })
 })
 
+describe('sideways-scrolling table wrappers are keyboard focusable', () => {
+  test('every table scroll wrapper carries tabindex="0", a region role and a name', () => {
+    // The sweep asserts this in the rendered DOM at every width; this pins it in the source.
+    // A cell's link is not what makes a region scrollable by keyboard, and which cells have
+    // links depends on the data -- so the wrapper itself must be focusable.
+    const files = [
+      'components/DataTable.vue',
+      'views/PricingView.vue',
+      'views/AccountView.vue',
+      'views/admin/AdminCustomerDetailView.vue',
+    ]
+    const bare: string[] = []
+    for (const file of files) {
+      const source = read(file)
+      for (const tag of source.match(/<div class="(?:table-wrapper|table-container|table-responsive|table-scroll)"[^>]*>/g) ?? []) {
+        if (!/tabindex="0"/.test(tag) || !/role="region"/.test(tag) || !/aria-label=/.test(tag)) bare.push(`${file}: ${tag}`)
+      }
+    }
+    assert.deepEqual(bare, [])
+    assert.ok(files.every((f) => /class="(?:table-wrapper|table-container|table-responsive|table-scroll)"/.test(read(f))), 'a listed file lost its wrapper (update the list)')
+  })
+})
+
 describe('every route is covered by the responsive sweep', () => {
   test('router paths and the sweep ROUTES list agree', () => {
     const router = read('router/index.ts')

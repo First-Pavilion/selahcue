@@ -228,7 +228,7 @@ const invoices = ref([
 
           <div class="devices-section">
             <h3>Registered Venue Devices</h3>
-            <div class="table-responsive">
+            <div class="table-responsive" tabindex="0" role="region" aria-label="Registered devices, scrolls sideways when wide">
               <table class="data-table">
                 <thead>
                   <tr>
@@ -317,7 +317,7 @@ const invoices = ref([
             </div>
           </div>
 
-          <div class="table-responsive">
+          <div class="table-responsive" tabindex="0" role="region" aria-label="Invoices, scrolls sideways when wide">
             <table class="data-table">
               <thead>
                 <tr>

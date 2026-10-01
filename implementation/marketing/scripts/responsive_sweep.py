@@ -236,6 +236,13 @@ PAGE_JS = r"""
         }
       }
 
+      // A scroll wrapper around a TABLE must itself be focusable at every width, whether or not
+      // the table happens to contain a link: a cell's link is not what makes the region
+      // scrollable by keyboard, and which cells have links changes with the data.
+      if (scroller && e.querySelector('table')) {
+        const tab = e.getAttribute('tabindex');
+        if (!(tab !== null && parseInt(tab, 10) >= 0)) out.unfocusableScrollers.push(describe(e) + ' (wraps a table)');
+      }
       if (scroller && e.scrollWidth > e.clientWidth + 1) {
         const tab = e.getAttribute('tabindex');
         const selfFocusable = tab !== null && parseInt(tab, 10) >= 0;
