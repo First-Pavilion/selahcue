@@ -307,7 +307,10 @@ def main() -> None:
         pg.goto(base + POST, wait_until="networkidle")
         check("blog: the table of contents has links, and none claims aria-current=page", pg.locator("a.bp-toc-link").count() >= 3 and pg.locator("a[href*='#'][aria-current=page]").count() == 0)
         pg.goto(base + "/docs", wait_until="networkidle")
-        check("docs index: the topic sidebar has links, and none claims aria-current=page", pg.locator("a.nav-item").count() >= 6 and pg.locator("a[href*='#'][aria-current=page]").count() == 0)
+        # `.sidebar-nav a.nav-item`, not bare `a.nav-item`: the site navbar's links share that class.
+        topics = pg.locator("section.topic").count()
+        sidebar = pg.locator(".sidebar-nav a.nav-item")
+        check("docs index: the topic sidebar has one link per topic, and none claims aria-current=page", topics >= 6 and sidebar.count() == topics and pg.locator("a[href*='#'][aria-current=page]").count() == 0, f"{sidebar.count()} links, {topics} topics")
 
         # ---- accessibility of the article body ------------------------------------------
         pg.goto(base + "/docs/display-outputs/ndi-output", wait_until="networkidle")
