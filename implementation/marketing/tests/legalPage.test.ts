@@ -8,6 +8,7 @@
  * (`ssrLoadModule`), Vue renders them to a string.
  */
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import test, { after, before, describe } from 'node:test'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
@@ -202,6 +203,24 @@ describe("the document's own banner text is rendered while it is a draft", () =>
     assert.ok(html.includes('Fill every'))
     assert.ok(html.includes('{{PLACEHOLDER}}'))
     assert.equal(count(html, 'data-placeholder'), 0)
+  })
+})
+
+describe('the skip link is hidden by clipping, not by parking it off-screen', () => {
+  const source = readFileSync(fileURLToPath(new URL('../src/components/legal/LegalPage.vue', import.meta.url)), 'utf8')
+  const rule = /\.skip-link\s*\{([^}]*)\}/.exec(source)?.[1] ?? ''
+
+  test('the resting rule clips and does not use a large negative offset', () => {
+    assert.ok(rule.length > 0, 'found the .skip-link rule')
+    assert.match(rule, /clip-path:\s*inset\(50%\)/)
+    assert.doesNotMatch(rule, /(left|right|top|inset-inline-start)\s*:\s*-\d{3,}/, 'no huge negative offset (it breaks responsive audits)')
+  })
+
+  test('it becomes visible on focus, and not in the brand-on-white pairing that measured 4.36:1', () => {
+    assert.match(source, /\.skip-link:focus[\s\S]*?clip-path:\s*none/)
+    assert.doesNotMatch(rule, /color:\s*#fff\b/)
+    assert.match(rule, /background:\s*var\(--sc-text\)/)
+    assert.match(rule, /color:\s*var\(--sc-base\)/)
   })
 })
 

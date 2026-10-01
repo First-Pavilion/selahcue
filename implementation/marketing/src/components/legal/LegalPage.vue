@@ -228,19 +228,43 @@ const EXAMPLE_TOKEN = '{{' + 'EXAMPLE_DETAIL' + '}}'
   padding-inline: clamp(20px, 5vw, 24px);
 }
 
+/*
+ * Visually hidden until focused, with the clip pattern rather than parking the link far
+ * off-screen with a huge negative offset. An off-screen link is a layout oddity every
+ * responsive audit has to special-case (PR #140's sweep fails on it), and the clip keeps
+ * the element's box inside the viewport. On focus it is a high-contrast chip (near-black on near-white, about 17:1;
+ * white on the brand colour was 4.36:1).
+ */
 .skip-link {
   position: absolute;
-  left: -9999px;
   top: 8px;
+  left: 16px;
   z-index: 200;
-  background: var(--sc-primary);
-  color: #fff;
-  padding: 10px 16px;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  border: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  background: var(--sc-text);
+  color: var(--sc-base);
   border-radius: 8px;
   font-weight: 600;
   font-size: 14px;
 }
-.skip-link:focus { left: 16px; outline: 2px solid #fff; outline-offset: 2px; }
+.skip-link:focus,
+.skip-link:focus-visible {
+  width: auto;
+  height: auto;
+  margin: 0;
+  padding: 10px 16px;
+  overflow: visible;
+  clip-path: none;
+  outline: 2px solid var(--sc-primary);
+  outline-offset: 2px;
+}
 
 .legal-header {
   text-align: center;
