@@ -1571,7 +1571,7 @@ EXPECTED_MIN_CHECKS = 2065  # measured post-rebase, clean run: 2065 checks, 0 FA
 # "encrypted" render, its description text, the "not_encrypted" silent-downgrade warning render,
 # and its own control that the warning never also reads ON). Measured via an actual clean run,
 # not hand-summed.
-EXPECTED_MIN_CHECKS = 2069  # measured: 2069 checks, 0 FAIL
+EXPECTED_MIN_CHECKS = 2092  # measured: 2092 checks, 0 FAIL
 
 
 def find_chrome():
@@ -2257,6 +2257,32 @@ STUB = r"""
     // containing "N-M" after the colon (e.g. "John 3:16-18") now gets a genuine range response,
     // so a test can actually exercise that branch instead of it being permanently dead code as
     // far as this suite can see.
+    // Opt-in REALISTIC get_chapter (window.__gcRealistic), used by the Service Plan link-modal checks.
+    // The default mock below hard-codes verse_start 5 and a two-verse chapter, which is fine for the
+    // checks that lean on those quirks but cannot answer "what does the host say about THIS typed
+    // reference": the modal now resolves typed text through get_chapter (the host's own parser) to
+    // get its canonical spelling and the real chapter length. This mirrors what the host returns:
+    // the book + chapter as the canonical name, the parsed verse range (end == start for a single
+    // verse, null for a whole chapter), the chapter's REAL verse list (Psalm 1 has six verses; any
+    // other chapter here has forty), the host's tolerant range syntax ("2 to 10", an en dash,
+    // "verses 2 through 10" — selahcue-core scripture.rs), and a rejection for what it cannot read.
+    if (cmd === "get_chapter" && window.__gcRealistic) {
+      var _rRef = (args && args.reference) ? String(args.reference) : "";
+      var _rNorm = _rRef.replace(/[\u2010-\u2014\u2212]/g, "-").replace(/\s*-\s*/g, "-")
+        .replace(/(\d)\s+(?:to|through|thru)\s+(\d)/gi, "$1-$2").replace(/\b(?:chapters?|verses?)\b\s*/gi, "").trim();
+      var _rm = /BADREF/i.test(_rNorm) ? null : /^(.*?)\s*(\d+)(?:[:\s]\s*(\d+)(?:-(\d+))?)?$/.exec(_rNorm);
+      if (!_rm || (_rm[4] && +_rm[4] < +_rm[3])) return Promise.reject("not a reference: " + _rRef);
+      var _rBook = _rm[1].trim().replace(/^psalm$/i, "Psalms"), _rChap = +_rm[2];
+      var _rSize = (/^psalms$/i.test(_rBook) && _rChap === 1) ? 6 : 40;
+      var _rVerses = [];
+      for (var _ri = 1; _ri <= _rSize; _ri++) _rVerses.push([_ri, "verse " + _ri + " text"]);
+      return Promise.resolve({
+        reference: _rBook + " " + _rChap, translation: "KJV", translations: ["KJV"], verses: _rVerses,
+        verse_start: _rm[3] ? +_rm[3] : null,
+        verse_end: _rm[4] ? +_rm[4] : (_rm[3] ? +_rm[3] : null),
+        prev: true, next: true,
+      });
+    }
     if (cmd === "get_chapter") {
       var _gcRef = (args && args.reference) ? String(args.reference) : "";
       var _gcRange = /:(\d+)-(\d+)/.exec(_gcRef);
@@ -7996,6 +8022,9 @@ DRIVER = r"""
       var insp2 = el("plan-b-insp");
       ok(!!insp2.querySelector(".plan-insp-unlinked"), "SP C-005: an unlinked scripture item shows the 'no reference yet' warning");
       ok(/Link a scripture/.test(insp2.textContent), "SP C-005: an unlinked item offers Link a scripture…");
+      // The link-Scripture modal resolves TYPED text through get_chapter; give those checks the
+      // realistic mock (cleared again after the host-rejection check below).
+      window.__gcRealistic = true;
       // C-003 link-Scripture flow: the modal → set_item_content{kind:scripture,reference,translation}.
       var sicBefore = window.__calls.filter(function(c){return c.cmd==="set_item_content";}).length;
       openLinkModal({id:14, kind:"scripture", title:"Closing Prayer"});
@@ -8073,6 +8102,123 @@ DRIVER = r"""
       var sicS2 = window.__calls.filter(function(c){return c.cmd==="set_item_content";});
       ok(sicS2.length > sicS && /John 3:16/.test(sicS2[sicS2.length-1].args.link.reference),
          "SP2 C-003: Link commits the freshly-typed reference, not the stale browsed one");
+      // === SERVICE PLAN RANGE INPUT (17tnw2b0x4u) ===================================================
+      // Verse picker: two clicks make a range from ANY starting state, including right after Browse
+      // (which pre-selects the first verse). Clicking verse 2 then verse 10 used to commit the
+      // single verse 10: the first click became the END of the pre-selected 1-2.
+      var linkOnce = async function (typed) { // type a reference, press Link, return the committed reference (or null)
+        openLinkModal({ id: 14, kind: "scripture", title: "Opening Word" });
+        await sleep(20);
+        var m = document.querySelector(".pm-confirm.pm-link");
+        m.querySelector('input[aria-label="Scripture reference"]').value = typed;
+        var before = window.__calls.filter(function (c) { return c.cmd === "set_item_content"; }).length;
+        Array.prototype.filter.call(m.querySelectorAll(".pm-btn-primary"), function (b) { return b.textContent === "Link"; })[0].click();
+        await sleep(40);
+        var after = window.__calls.filter(function (c) { return c.cmd === "set_item_content"; });
+        return { modal: m, committed: after.length > before ? after[after.length - 1].args.link.reference : null };
+      };
+      var browseOnce = async function (typed, link) { // open the modal and Browse a reference (optionally editing an existing link)
+        openLinkModal({ id: 14, kind: "scripture", title: "Opening Word", link: link });
+        await sleep(40);
+        var m = document.querySelector(".pm-confirm.pm-link");
+        if (typed != null) {
+          m.querySelector('input[aria-label="Scripture reference"]').value = typed;
+          Array.prototype.filter.call(m.querySelectorAll("button"), function (b) { return b.textContent === "Browse"; })[0].click();
+          await sleep(40);
+        }
+        return m;
+      };
+      var closeModal = async function () {
+        document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+        await sleep(10);
+      };
+      var previewOf = function (m) { return m.querySelector(".pm-verse-preview").textContent; };
+
+      var lmR = await browseOnce("Psalms 119");
+      var rRows = lmR.querySelectorAll(".pm-verse");
+      ok(rRows.length >= 10, "range (precondition): Browse of a bare chapter lists its verses");
+      rRows[1].click(); // verse 2
+      rRows[9].click(); // verse 10
+      ok(/Psalms 119:2-10(?!\d)/.test(previewOf(lmR)),
+         "range: clicking verse 2 then verse 10 selects 2-10 (the preview reads Psalms 119:2-10) — it was the single verse 10");
+      ok(lmR.querySelectorAll('.pm-verse[aria-selected="true"]').length === 9,
+         "range: exactly the nine verses 2..10 are highlighted");
+      var sicR0 = window.__calls.filter(function (c) { return c.cmd === "set_item_content"; }).length;
+      Array.prototype.filter.call(lmR.querySelectorAll(".pm-btn-primary"), function (b) { return b.textContent === "Link"; })[0].click();
+      await sleep(30);
+      var sicR = window.__calls.filter(function (c) { return c.cmd === "set_item_content"; });
+      ok(sicR.length > sicR0 && sicR[sicR.length - 1].args.link.reference === "Psalms 119:2-10",
+         "range: Link commits exactly the picked range, Psalms 119:2-10");
+
+      var lmS2 = await browseOnce("Psalms 119");
+      var sRows = lmS2.querySelectorAll(".pm-verse");
+      sRows[4].click(); // one click = one verse
+      ok(/Psalms 119:5(?![\d-])/.test(previewOf(lmS2)), "range (control): a single click is still a single verse, Psalms 119:5");
+      sRows[1].click(); sRows[3].click(); // 2..4
+      ok(/Psalms 119:2-4(?!\d)/.test(previewOf(lmS2)), "range: a second click at/after the start completes the range");
+      sRows[6].click(); // after a COMPLETED range → start over at 7
+      ok(/Psalms 119:7(?![\d-])/.test(previewOf(lmS2)), "range: a click after a completed range starts a new selection (not 2-7 or 4-7)");
+      sRows[2].click(); // before the pending start → a new start at 3
+      ok(/Psalms 119:3(?![\d-])/.test(previewOf(lmS2)), "range: a click BEFORE the start restarts the selection at that verse");
+      await closeModal();
+
+      var lmEd = await browseOnce(null, { kind: "scripture", reference: "Psalms 119:2-10", translation: "KJV" });
+      ok(/Psalms 119:2-10(?!\d)/.test(previewOf(lmEd)), "range (precondition): editing an existing range link opens with that range selected");
+      lmEd.querySelectorAll(".pm-verse")[4].click();
+      ok(/Psalms 119:5(?![\d-])/.test(previewOf(lmEd)),
+         "range: the first click while editing an existing range starts a NEW selection instead of extending the old one");
+      await closeModal();
+
+      // Typed text: every way of writing a range links the CANONICAL spelling (the host's parser).
+      var typedForms = [
+        ["Romans 8:28 to 30", "Romans 8:28-30"],
+        ["Romans 8:28 \u2013 30", "Romans 8:28-30"],
+        ["Romans 8 verses 28 through 30", "Romans 8:28-30"],
+        ["Romans 8:28", "Romans 8:28"],
+      ];
+      for (var tf = 0; tf < typedForms.length; tf++) {
+        var lr = await linkOnce(typedForms[tf][0]);
+        ok(lr.committed === typedForms[tf][1],
+           "range: typing " + JSON.stringify(typedForms[tf][0]) + " links " + typedForms[tf][1] + " — got " + JSON.stringify(lr.committed));
+      }
+
+      // A range past the chapter end is cut back VISIBLY and only linked once the operator confirms.
+      var lc = await linkOnce("Psalms 1:2-10");
+      var lcHint = lc.modal.querySelector(".pm-link-hint");
+      ok(lc.committed === null, "range: Psalms 1:2-10 is NOT committed on the first press (Psalm 1 has six verses)");
+      ok(lcHint && !lcHint.hidden && /has 6 verses/.test(lcHint.textContent) && /Psalms 1:2-6/.test(lcHint.textContent) &&
+         lcHint.getAttribute("role") === "status" && !lcHint.classList.contains("pm-link-hint-err"),
+         "range: the cut-back is announced (role=status): " + (lcHint ? lcHint.textContent : "no hint"));
+      ok(lc.modal.querySelector('input[aria-label="Scripture reference"]').value === "Psalms 1:2-6",
+         "range: the input now shows exactly what will be linked, Psalms 1:2-6");
+      var sicC0 = window.__calls.filter(function (c) { return c.cmd === "set_item_content"; }).length;
+      Array.prototype.filter.call(lc.modal.querySelectorAll(".pm-btn-primary"), function (b) { return b.textContent === "Link"; })[0].click();
+      await sleep(40);
+      var sicC = window.__calls.filter(function (c) { return c.cmd === "set_item_content"; });
+      ok(sicC.length > sicC0 && sicC[sicC.length - 1].args.link.reference === "Psalms 1:2-6",
+         "range: the second Link press commits the confirmed Psalms 1:2-6");
+      var lbm = await browseOnce("Psalms 1:2-10");
+      ok(/Psalms 1:2-6(?!\d)/.test(previewOf(lbm)) && /has 6 verses/.test(lbm.querySelector(".pm-link-hint").textContent),
+         "range: Browse of a range past the chapter end also cuts the selection back and says so");
+      await closeModal();
+
+      // What cannot be linked says WHY and what to type, and links nothing.
+      var lb = await linkOnce("BADREF 1:1");
+      var lbHint = lb.modal.querySelector(".pm-link-hint");
+      ok(lb.committed === null && document.querySelector(".pm-confirm.pm-link") === lb.modal,
+         "range: an unreadable reference commits nothing and keeps the modal open");
+      ok(lbHint && !lbHint.hidden && lbHint.classList.contains("pm-link-hint-err") && /Couldn.t read/.test(lbHint.textContent) && /Romans 8:28-30/.test(lbHint.textContent),
+         "range: it says what to type, e.g. Romans 8:28-30: " + (lbHint ? lbHint.textContent : "no hint"));
+      await closeModal();
+      var lw = await linkOnce("Psalms 1:9");
+      ok(lw.committed === null && /only has 6 verses/.test(lw.modal.querySelector(".pm-link-hint").textContent),
+         "range: a verse past the end of the chapter is refused with the chapter's real length");
+      await closeModal();
+      var ld = await linkOnce("Romans 8:30 to 28");
+      ok(ld.committed === null && !ld.modal.querySelector(".pm-link-hint").hidden,
+         "range: a descending range is refused with a message, never silently linked");
+      await closeModal();
+
       // #8 host-rejection path: a rejected link keeps the modal OPEN and shows a role=alert error
       // (no silent close on a no-op). The one-shot __sicRejectOnce hook fails the next command.
       openLinkModal({id:14, kind:"scripture", title:"Closing Prayer"});
@@ -8088,6 +8234,7 @@ DRIVER = r"""
          "SP C-007: a rejected link surfaces an inline role=alert error");
       document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); // close before the next modal
       await sleep(10);
+      window.__gcRealistic = false; // back to the default get_chapter mock for everything after
       // C-004 link-Presentation flow: SELECT-then-confirm (handoff §4.2). Clicking a deck selects it
       // (aria-selected + "✓ Selected", NO commit); the footer "Link to item" → set_item_content{deck}.
       openLinkModal({id:12, kind:"slide_group", title:"Sermon Deck"});

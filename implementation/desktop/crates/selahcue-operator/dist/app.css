@@ -7249,6 +7249,23 @@
   margin: 8px 0 0;
   font-size: 12px;
 }
+/* Inline status for the scripture link step. No `display` rule on purpose: the `hidden`
+   attribute must keep hiding it. A notice (cut back to the chapter) reads as a warning; an
+   unreadable reference reads as an error. */
+.pm-link-hint {
+  color: var(--sc-text);
+  background: var(--sc-warn-soft);
+  border: 1px solid var(--sc-warn-border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  margin: 8px 0 0;
+  font-size: 12px;
+}
+.pm-link-hint-err {
+  color: var(--sc-live);
+  background: var(--sc-live-soft, rgba(255, 77, 77, 0.08));
+  border-color: var(--sc-live);
+}
 .pm-link-foot { display: flex; justify-content: flex-end; margin-top: 10px; }
 .pm-link-sel { color: var(--sc-primary); font-size: 11px; font-weight: 700; white-space: nowrap; }
 [role="listbox"][aria-label="Presentations"] .pm-link-hit { display: flex; align-items: center; gap: 8px; }
