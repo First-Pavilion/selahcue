@@ -20,9 +20,16 @@ route x width asserts:
      `TOUCH_SCOPES`. Inline text links inside running prose are exempt (WCAG 2.5.8
      inline exception), so only chrome and form controls are scoped.
 
-It also exercises the mobile nav sheet interaction (open, focus moves in, Tab is trapped,
-Escape closes and restores focus to the toggle, `aria-expanded` tracks, body scroll lock is
-set while open and released on close AND on route change).
+It also exercises, in the real browser, the behaviours CSS alone cannot prove:
+
+  * the mobile nav sheet (open, focus moves in, Tab/Shift+Tab are trapped, Escape closes
+    and restores focus to the toggle, `aria-expanded` tracks, the sheet covers the whole
+    viewport even after the header has gone `backdrop-filter` on scroll, and the page
+    scroll lock is set while open and RELEASED on every way out: Escape, close button,
+    scrim, link tap, history navigation, and the viewport growing past 768px);
+  * the footer (collapsed sections on mobile with working `aria-expanded` toggles, 2x2 on
+    tablet, 4 across on desktop);
+  * the signed-in navbar (Account / Sign out) still fits one row at tablet widths.
 
 On a failure it prints the offending elements (those whose right edge is past the
 viewport and which are not inside a scroll container) so the cause is visible without a
@@ -186,6 +193,66 @@ TOUCH_JS = r"""
 """
 
 
+SHEET_STATE_JS = r"""
+() => {
+  const sheet = document.querySelector('#mobile-nav-sheet');
+  const toggle = document.querySelector('.mobile-toggle');
+  const r = sheet ? sheet.getBoundingClientRect() : null;
+  const active = document.activeElement;
+  return {
+    open: !!sheet,
+    expanded: toggle ? toggle.getAttribute('aria-expanded') : null,
+    toggleLabel: toggle ? toggle.getAttribute('aria-label') : null,
+    activeInSheet: !!(sheet && active && sheet.contains(active)),
+    activeIsToggle: active === toggle,
+    activeLabel: active ? (active.getAttribute('aria-label') || active.innerText || '').trim().slice(0, 30) : '',
+    htmlOverflow: document.documentElement.style.overflow,
+    bodyOverflow: document.body.style.overflow,
+    sheetTop: r ? Math.round(r.top) : null,
+    sheetBottom: r ? Math.round(r.bottom) : null,
+    sheetRight: r ? Math.round(r.right) : null,
+    innerHeight: window.innerHeight,
+    innerWidth: window.innerWidth,
+    role: sheet ? sheet.getAttribute('role') : null,
+    modal: sheet ? sheet.getAttribute('aria-modal') : null,
+    linkHeights: sheet ? [...sheet.querySelectorAll('.mobile-link')].map((a) => Math.round(a.getBoundingClientRect().height)) : [],
+    cta: (() => { const c = sheet && sheet.querySelector('.sheet-cta'); if (!c) return null; const b = c.getBoundingClientRect(); return { bottom: Math.round(b.bottom), width: Math.round(b.width), sheetWidth: Math.round(r.width) - 40 }; })(),
+  };
+}
+"""
+
+FOOTER_STATE_JS = r"""
+() => {
+  const cols = [...document.querySelectorAll('.footer .link-column')];
+  const vis = (el) => !!el && getComputedStyle(el).display !== 'none' && el.getBoundingClientRect().height > 0;
+  return {
+    toggles: [...document.querySelectorAll('.footer .column-toggle')].map((b) => ({
+      expanded: b.getAttribute('aria-expanded'),
+      controlsVisible: vis(document.getElementById(b.getAttribute('aria-controls'))),
+      height: Math.round(b.getBoundingClientRect().height),
+    })),
+    lefts: [...new Set(cols.map((c) => Math.round(c.getBoundingClientRect().left)))],
+    linksVisible: [...document.querySelectorAll('.footer .footer-link')].filter(vis).length,
+    linksTotal: document.querySelectorAll('.footer .footer-link').length,
+  };
+}
+"""
+
+NAV_ROW_JS = r"""
+() => {
+  const bar = document.querySelector('.navbar-container');
+  const kids = [...bar.querySelectorAll('.brand, .desktop-nav a, .right-group > *')].filter((e) => e.getBoundingClientRect().width > 0);
+  const tops = kids.map((e) => Math.round(e.getBoundingClientRect().top));
+  const lastRight = Math.max(...kids.map((e) => e.getBoundingClientRect().right));
+  return { barHeight: Math.round(bar.getBoundingClientRect().height), spread: Math.max(...tops) - Math.min(...tops), lastRight: Math.round(lastRight), vw: window.innerWidth, signedIn: !!document.querySelector('.signout-btn') };
+}
+"""
+
+SESSION_HINT_INIT = """
+localStorage.setItem('selahcue.session', JSON.stringify({role: 'owner', orgId: 'org_sweep', expiresAt: new Date(Date.now() + 864e5).toISOString()}));
+"""
+
+
 class SpaHandler(http.server.SimpleHTTPRequestHandler):
     """Serves dist/ with SPA fallback to index.html for client-routed paths."""
 
@@ -238,10 +305,177 @@ def install_stubs(context) -> None:
     context.route("**/fonts.gstatic.com/**", lambda r: r.abort())
 
 
+def sheet_state(page):
+    return page.evaluate(SHEET_STATE_JS)
+
+
+def check_nav_sheet(context, base: str, width: int, fail, count) -> None:
+    """Drive the mobile nav sheet. Only meaningful below 768px."""
+    tag = f"nav-sheet {width}px"
+    page = context.new_page()
+    page.goto(f"{base}/", wait_until="load")
+    page.wait_for_selector(".mobile-toggle")
+    page.wait_for_timeout(150)
+
+    def expect(cond: bool, what: str) -> None:
+        count()
+        if not cond:
+            fail(f"{tag}: {what}")
+
+    def unlocked() -> bool:
+        st = sheet_state(page)
+        return st["htmlOverflow"] == "" and st["bodyOverflow"] == ""
+
+    def open_sheet() -> dict:
+        page.click(".mobile-toggle")
+        page.wait_for_selector("#mobile-nav-sheet")
+        page.wait_for_timeout(350)  # let the slide-in transition finish before measuring
+        return sheet_state(page)
+
+    # closed baseline
+    st = sheet_state(page)
+    expect(not st["open"], "sheet is rendered before it was opened")
+    expect(st["expanded"] == "false" and st["toggleLabel"] == "Open menu", f"closed toggle a11y wrong: {st['expanded']}/{st['toggleLabel']}")
+    expect(unlocked(), "scroll lock held while the sheet is closed")
+
+    # scroll first, so the header is in its backdrop-filter state (a fixed child of a
+    # backdrop-filtered element is clipped to it -- the sheet is teleported to avoid that)
+    page.evaluate("window.scrollTo(0, 400)")
+    page.wait_for_timeout(250)
+
+    st = open_sheet()
+    expect(st["open"], "sheet did not open on tap")
+    expect(st["expanded"] == "true", f"aria-expanded not true when open: {st['expanded']}")
+    expect(st["role"] == "dialog" and st["modal"] == "true", "sheet is not role=dialog aria-modal=true")
+    expect(st["activeInSheet"], f"focus did not move into the sheet (on: {st['activeLabel']!r})")
+    expect(st["htmlOverflow"] == "hidden" and st["bodyOverflow"] == "hidden", "page scroll not locked while open")
+    expect(st["sheetTop"] == 0 and abs(st["sheetBottom"] - st["innerHeight"]) <= 1, f"sheet does not cover the viewport height ({st['sheetTop']}..{st['sheetBottom']} of {st['innerHeight']})")
+    expect(st["sheetRight"] == st["innerWidth"], "sheet is not anchored to the right edge")
+    expect(all(h >= 56 for h in st["linkHeights"]) and st["linkHeights"], f"sheet rows under 56px: {st['linkHeights']}")
+    expect(st["cta"] is not None and st["cta"]["bottom"] <= st["innerHeight"], "Download CTA is not inside the viewport")
+    expect(st["cta"] is not None and abs(st["cta"]["width"] - st["cta"]["sheetWidth"]) <= 2, "CTA is not full-width")
+    expect(page.evaluate("window.scrollY") > 0, "scroll position was reset when the sheet opened")
+
+    # Tab trap: tabbing more times than there are controls never leaves the sheet
+    leaked = False
+    for _ in range(14):
+        page.keyboard.press("Tab")
+        if not sheet_state(page)["activeInSheet"]:
+            leaked = True
+    expect(not leaked, "Tab escaped the sheet")
+    page.keyboard.press("Shift+Tab")
+    expect(sheet_state(page)["activeInSheet"], "Shift+Tab escaped the sheet")
+
+    # Escape closes, restores focus to the toggle, releases the lock
+    page.keyboard.press("Escape")
+    page.wait_for_timeout(350)
+    st = sheet_state(page)
+    expect(not st["open"], "Escape did not close the sheet")
+    expect(st["activeIsToggle"], f"focus not restored to the toggle after Escape (on: {st['activeLabel']!r})")
+    expect(st["expanded"] == "false", "aria-expanded not false after Escape")
+    expect(unlocked(), "scroll lock still held after Escape")
+
+    # close button
+    open_sheet()
+    page.click(".sheet-close")
+    page.wait_for_timeout(350)
+    expect(not sheet_state(page)["open"] and unlocked(), "close button left the sheet open or the page locked")
+
+    # scrim tap (left of the sheet)
+    open_sheet()
+    page.mouse.click(4, page.evaluate("window.innerHeight") / 2)
+    page.wait_for_timeout(350)
+    expect(not sheet_state(page)["open"] and unlocked(), "scrim tap left the sheet open or the page locked")
+
+    # link tap navigates AND closes AND unlocks
+    open_sheet()
+    page.click("#mobile-nav-sheet >> text=Pricing")
+    page.wait_for_url("**/pricing")
+    page.wait_for_timeout(350)
+    expect(not sheet_state(page)["open"] and unlocked(), "link tap left the sheet open or the page locked")
+
+    # route change that did NOT come from the sheet (history back) while open
+    open_sheet()
+    page.go_back()
+    page.wait_for_timeout(500)
+    expect(not sheet_state(page)["open"] and unlocked(), "history navigation left the sheet open or the page locked")
+
+    # viewport grows past the breakpoint while open: hidden by CSS, lock must be released
+    open_sheet()
+    page.set_viewport_size({"width": 1024, "height": HEIGHT})
+    page.wait_for_timeout(350)
+    expect(not sheet_state(page)["open"] and unlocked(), "growing past 768px left the page locked")
+    page.set_viewport_size({"width": width, "height": HEIGHT})
+
+    # reopening after all of that still works (no stuck state)
+    st = open_sheet()
+    expect(st["open"] and st["htmlOverflow"] == "hidden", "sheet cannot be reopened after the close paths")
+    page.keyboard.press("Escape")
+    page.wait_for_timeout(350)
+    expect(unlocked(), "final close left the page locked")
+    page.close()
+
+
+def check_footer(context, base: str, width: int, fail, count) -> None:
+    tag = f"footer {width}px"
+    page = context.new_page()
+    page.goto(f"{base}/privacy", wait_until="load")
+    page.wait_for_selector(".footer")
+
+    def expect(cond: bool, what: str) -> None:
+        count()
+        if not cond:
+            fail(f"{tag}: {what}")
+
+    st = page.evaluate(FOOTER_STATE_JS)
+    if width < 768:
+        expect(len(st["toggles"]) == 4, f"expected 4 collapsible headings, got {len(st['toggles'])}")
+        expect(all(t["expanded"] == "false" and not t["controlsVisible"] for t in st["toggles"]), "sections are not collapsed by default on mobile")
+        expect(all(t["height"] >= 44 for t in st["toggles"]), f"footer headings under 44px: {[t['height'] for t in st['toggles']]}")
+        expect(len(st["lefts"]) == 1, f"mobile columns do not stack (distinct left edges: {st['lefts']})")
+        page.locator(".footer .column-toggle").first.click()
+        st = page.evaluate(FOOTER_STATE_JS)
+        expect(st["toggles"][0]["expanded"] == "true" and st["toggles"][0]["controlsVisible"], "tapping a heading did not expand its section")
+        expect(not st["toggles"][1]["controlsVisible"], "tapping one heading expanded another")
+        page.locator(".footer .column-toggle").first.click()
+        st = page.evaluate(FOOTER_STATE_JS)
+        expect(st["toggles"][0]["expanded"] == "false" and not st["toggles"][0]["controlsVisible"], "second tap did not collapse the section")
+        # expand everything so the touch-target audit sees every footer link
+        for i in range(4):
+            page.locator(".footer .column-toggle").nth(i).click()
+        st = page.evaluate(FOOTER_STATE_JS)
+        expect(st["linksVisible"] == st["linksTotal"], "expanding all sections did not show every link")
+        bad = page.evaluate(TOUCH_JS, [".footer a", ".footer button"])
+        expect(not bad, f"footer touch targets < 44px when expanded: {'; '.join(bad)}")
+    else:
+        expect(not st["toggles"], "desktop/tablet footer renders collapse controls")
+        expect(st["linksVisible"] == st["linksTotal"], "desktop/tablet footer hides links")
+        want = 4 if width >= 1200 else 2
+        expect(len(st["lefts"]) == want, f"expected {want} column left edges at {width}px, got {st['lefts']}")
+    page.close()
+
+
+def check_signed_in_nav(context, base: str, width: int, fail, count) -> None:
+    """The densest navbar state is signed-in at tablet width; it must stay on one row."""
+    tag = f"signed-in nav {width}px"
+    page = context.new_page()
+    page.goto(f"{base}/pricing", wait_until="load")
+    page.wait_for_selector(".navbar-header")
+    page.wait_for_timeout(200)
+    info = page.evaluate(NAV_ROW_JS)
+    count()
+    if width >= 768:
+        if not info["signedIn"]:
+            fail(f"{tag}: sweep could not establish the signed-in hint")
+        elif info["spread"] > 6 or info["lastRight"] > info["vw"] - 8 or info["barHeight"] != 68:
+            fail(f"{tag}: navbar wrapped or overflowed {info}")
+    page.close()
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--engine", choices=["chromium", "webkit"], default="chromium")
-    ap.add_argument("--shots", help="directory to write full-page PNGs into")
+    ap.add_argument("--shots", help="directory to write page screenshots into (tiled, 1400px per image)")
     ap.add_argument("--routes", help="comma-separated subset of paths (prefix match)")
     ap.add_argument("--widths", help="comma-separated subset of widths")
     args = ap.parse_args()
@@ -271,6 +505,11 @@ def main() -> int:
 
     failures: list[str] = []
     checks = 0
+
+    def bump() -> None:
+        nonlocal checks
+        checks += 1
+
     try:
         with sync_playwright() as pw:
             try:
@@ -336,15 +575,42 @@ def main() -> int:
 
                     if shots:
                         safe = path.strip("/").replace("/", "_").split("?")[0] or "home"
-                        page.screenshot(path=str(shots / f"{safe}-{width}.png"), full_page=True)
+                        # Tall pages are cut into viewport-friendly tiles: a 12,000px strip
+                        # scaled to fit a screen is unreadable, which defeats looking at it.
+                        total_h = page.evaluate("document.documentElement.scrollHeight")
+                        tile = 1400
+                        for i, top in enumerate(range(0, total_h, tile)):
+                            page.screenshot(
+                                path=str(shots / f"{safe}-{width}-{i:02d}.png"),
+                                full_page=True,
+                                clip={"x": 0, "y": top, "width": width, "height": min(tile, total_h - top)},
+                            )
                     page.close()
                 context.close()
+
+                # ---- behaviours CSS cannot prove ------------------------------------
+                base = f"http://127.0.0.1:{port}"
+                if width < 768 and not args.routes:
+                    ctx = browser.new_context(viewport={"width": width, "height": HEIGHT}, has_touch=True)
+                    install_stubs(ctx)
+                    check_nav_sheet(ctx, base, width, lambda m: failures.append("FAIL " + m), bump)
+                    ctx.close()
+                if not args.routes:
+                    ctx = browser.new_context(viewport={"width": width, "height": HEIGHT}, has_touch=width < 768)
+                    install_stubs(ctx)
+                    check_footer(ctx, base, width, lambda m: failures.append("FAIL " + m), bump)
+                    ctx.close()
+                    ctx = browser.new_context(viewport={"width": width, "height": HEIGHT})
+                    install_stubs(ctx)
+                    ctx.add_init_script(SESSION_HINT_INIT)
+                    check_signed_in_nav(ctx, base, width, lambda m: failures.append("FAIL " + m), bump)
+                    ctx.close()
             browser.close()
     finally:
         server.shutdown()
 
     for line in failures:
-        print("FAIL", line)
+        print(line if line.startswith("FAIL") else "FAIL " + line)
     print(f"{args.engine}: {checks} checks over {len(routes)} routes x {len(widths)} widths, {len(failures)} failed")
     return 1 if failures else 0
 

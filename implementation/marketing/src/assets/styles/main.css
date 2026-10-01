@@ -74,14 +74,20 @@ body {
 @media (max-width: 1199px) {
   :root {
     --gutter: 48px;
-    --font-h1: 700 48px/56px var(--font-family);
+    --page-gutter: 48px;
+    --section-pad: 72px;
+    --section-pad-sm: 56px;
+    --font-h1: 700 48px/52px var(--font-family);
   }
 }
 
 @media (max-width: 767px) {
   :root {
     --gutter: 20px;
-    --font-h1: 700 36px/44px var(--font-family);
+    --page-gutter: 20px;
+    --section-pad: 56px;
+    --section-pad-sm: 44px;
+    --font-h1: 700 36px/40px var(--font-family);
   }
 }
 
