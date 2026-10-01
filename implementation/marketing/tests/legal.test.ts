@@ -20,7 +20,13 @@ import { existsSync, readFileSync } from 'node:fs'
 import test, { describe } from 'node:test'
 import { fileURLToPath } from 'node:url'
 
-import { LegalParseError, parseInline, parseLegalMarkdown, parseVersionLine } from '../scripts/legal_markdown.ts'
+import {
+  LegalParseError,
+  assertNoStrayBraces,
+  parseInline,
+  parseLegalMarkdown,
+  parseVersionLine,
+} from '../scripts/legal_markdown.ts'
 import { GENERATED_DIR, REPO_ROOT, TARGETS, generateAll } from '../scripts/sync_legal.ts'
 import {
   DRAFT_NOTICE,
@@ -561,11 +567,45 @@ describe('draft treatment is derived from the remaining placeholders', () => {
       ['a table cell', '| A | B |\n|---|---|\n| x | `{{P}}` |'],
       ['a table header', '| `{{P}}` | B |\n|---|---|\n| x | y |'],
       ['bold text', '1.1 **`{{P}}`**'],
-      ['a link label is not allowed to hide one', '1.1 plain `{{P}}` text'],
+      ['a link label', '1.1 see [`{{P}}`](/privacy) now'],
+      ['a bare placeholder in a link label', '1.1 see [{{P}} policy](/privacy) now'],
     ]
     for (const [name, body] of where) {
       assert.deepEqual(placeholderOccurrences(docWith(body)), ['P'], name)
     }
+  })
+
+  test('a placeholder in a link target is refused, not silently ignored', () => {
+    for (const target of ['https://{{HOST}}.com/', '/{{PATH}}', 'https://example.com/{{X}}', 'mailto:{{ADDR}}@example.com']) {
+      assert.throws(() => parseLegalMarkdown(md(`1.1 see [policy](${target}) now`), 't.md'), /placeholder inside the link target/, target)
+    }
+  })
+
+  test('a placeholder in a link label is a counted placeholder node inside the link', () => {
+    const doc = docWith('1.1 See [`{{PRIVACY_POLICY_URL}}`](/privacy).')
+    assert.deepEqual(placeholderOccurrences(doc), ['PRIVACY_POLICY_URL'])
+    assert.equal(legalPageState(doc).draft, true)
+    const p = doc.parts[0]?.sections[0]?.blocks[0]
+    assert.ok(p && p.kind === 'paragraph')
+    const link = p.inline.find((n) => n.kind === 'link')
+    assert.deepEqual(link, { kind: 'link', href: '/privacy', children: [{ kind: 'placeholder', name: 'PRIVACY_POLICY_URL' }] })
+  })
+
+  test('backstop: braces outside a placeholder node fail generation, whatever field they hide in', () => {
+    const clean = docWith('1.1 Contact `{{X}}`.')
+    assert.doesNotThrow(() => assertNoStrayBraces(clean))
+    const section = clean.parts[0]?.sections[0]
+    assert.ok(section)
+    const withText = (inline: Inline[]): LegalDocument => ({
+      ...clean,
+      parts: [{ ...clean.parts[0]!, sections: [{ ...section, blocks: [{ kind: 'paragraph', inline }] }] }],
+    })
+    assert.throws(() => assertNoStrayBraces(withText([{ kind: 'text', text: 'oops {{X}} here' }])), /stray/)
+    assert.throws(() => assertNoStrayBraces(withText([{ kind: 'link', href: 'https://{{H}}.com/', children: [{ kind: 'text', text: 'x' }] }])), /stray/)
+    assert.throws(() => assertNoStrayBraces(withText([{ kind: 'code', text: '}}' }])), /stray/)
+    assert.throws(() => assertNoStrayBraces({ ...clean, title: 'About {{X}}' }), /stray/)
+    // ...but the banner may name the convention.
+    assert.doesNotThrow(() => assertNoStrayBraces({ ...clean, banner: { headline: [{ kind: 'text', text: 'fill every {{PLACEHOLDER}}' }], notes: [] } }))
   })
 
   test('a placeholder in the facts list or the summary counts too', () => {

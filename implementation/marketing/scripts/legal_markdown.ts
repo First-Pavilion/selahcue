@@ -216,10 +216,19 @@ export function parseInline(src: string, source: string, line: number): Inline[]
       if (!m) fail('"[" that is not a complete [label](target) link')
       const label = m?.[1] ?? ''
       const href = m?.[2] ?? ''
+      if (href.includes('{{') || href.includes('}}')) {
+        fail(`a placeholder inside the link target "${href}" would hide a missing fact behind a working-looking link`)
+      }
       if (classifyHref(href) === null) fail(`link target "${href}" is not allowed (same-site path, https:// or mailto: only)`)
-      if (label.includes('**') || label.includes('`')) fail('links whose label contains markup are not supported')
+      if (href.includes('(')) fail('parentheses inside a link target are not supported (the link would end at the first ")")')
+      // The label is parsed like any other inline run, so a placeholder in it is a real
+      // placeholder node: counted, and shown as a chip. Anything else is refused.
+      const children = parseInline(label, source, line)
+      if (children.some((c) => c.kind !== 'text' && c.kind !== 'placeholder')) {
+        fail('links whose label contains markup are not supported')
+      }
       flush()
-      out.push({ kind: 'link', href, children: [{ kind: 'text', text: label }] })
+      out.push({ kind: 'link', href, children })
       i += (m?.[0] ?? '').length
     } else if (ch === '{' && src[i + 1] === '{') {
       const m = PLACEHOLDER_AT.exec(src.slice(i))
@@ -629,7 +638,7 @@ export function parseLegalMarkdown(markdown: string, source: string): LegalDocum
     sections: p.sections.map(convSection),
   }))
 
-  return {
+  const doc: LegalDocument = {
     source,
     title,
     banner,
@@ -638,6 +647,33 @@ export function parseLegalMarkdown(markdown: string, source: string): LegalDocum
     summary: summary ? convSection(summary) : null,
     parts,
   }
+  assertNoStrayBraces(doc)
+  return doc
+}
+
+/**
+ * Generator-level backstop for the draft rule. A `{{` or `}}` anywhere outside a
+ * placeholder NODE (and outside the document's own banner) is a missing fact the page
+ * would neither count nor highlight, which could let a draft look final. Every path that
+ * should produce a placeholder node already does; this fails the build if one ever
+ * leaks through some other field (a link target, a heading, a future node kind).
+ */
+export function assertNoStrayBraces(doc: LegalDocument): void {
+  const walk = (value: unknown, path: string): void => {
+    if (typeof value === 'string') {
+      if (value.includes('{{') || value.includes('}}')) {
+        throw new LegalParseError(doc.source, null, `stray "{{" or "}}" in generated content at ${path}: "${value.slice(0, 80)}"`)
+      }
+    } else if (Array.isArray(value)) {
+      value.forEach((v, i) => walk(v, `${path}[${i}]`))
+    } else if (value !== null && typeof value === 'object') {
+      for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+        if (k === 'banner' && path === '$') continue // the banner may mention the convention
+        walk(v, `${path}.${k}`)
+      }
+    }
+  }
+  walk(doc, '$')
 }
 
 // ---------------------------------------------------------------------------------------
