@@ -13,6 +13,14 @@
 name: legal-drift
 
 on:
+  # THE PATH LIST HAS TWO PARTS. The first block is what generates and renders the legal
+  # pages (the drafts, the generated content, the components, their tests). The second
+  # block, from the two views down, is SHARED code that can move where those pages land or
+  # how they look without touching any legal file: the router and its scroll behaviour, the
+  # global styles (a page-wide scroll-padding changes anchor offsets), the navbar whose
+  # height the anchors clear, the app shell, and the build/dependency/tsconfig inputs. A
+  # change there that breaks a legal page would otherwise go unnoticed until some legal
+  # file next changed. It is written out twice because Actions has no shared path list.
   pull_request:
     paths:
       - "docs/legal/**"
@@ -21,6 +29,21 @@ on:
       - "implementation/marketing/scripts/*legal*"
       - "implementation/marketing/tests/*legal*"
       - "implementation/marketing/tests/*Legal*"
+      - "implementation/marketing/tests/fixtures/fakeHead.ts"
+      - "implementation/marketing/src/views/PrivacyView.vue"
+      - "implementation/marketing/src/views/TermsView.vue"
+      - "implementation/marketing/src/router/**"
+      - "implementation/marketing/src/assets/**"
+      - "implementation/marketing/src/components/Navbar.vue"
+      - "implementation/marketing/src/components/Footer.vue"
+      - "implementation/marketing/src/components/UiBadge.vue"
+      - "implementation/marketing/src/App.vue"
+      - "implementation/marketing/src/main.ts"
+      - "implementation/marketing/index.html"
+      - "implementation/marketing/vite.config.ts"
+      - "implementation/marketing/package.json"
+      - "implementation/marketing/package-lock.json"
+      - "implementation/marketing/tsconfig*.json"
       - ".github/workflows/legal-drift.yml"
   push:
     branches: [main]
@@ -31,6 +54,21 @@ on:
       - "implementation/marketing/scripts/*legal*"
       - "implementation/marketing/tests/*legal*"
       - "implementation/marketing/tests/*Legal*"
+      - "implementation/marketing/tests/fixtures/fakeHead.ts"
+      - "implementation/marketing/src/views/PrivacyView.vue"
+      - "implementation/marketing/src/views/TermsView.vue"
+      - "implementation/marketing/src/router/**"
+      - "implementation/marketing/src/assets/**"
+      - "implementation/marketing/src/components/Navbar.vue"
+      - "implementation/marketing/src/components/Footer.vue"
+      - "implementation/marketing/src/components/UiBadge.vue"
+      - "implementation/marketing/src/App.vue"
+      - "implementation/marketing/src/main.ts"
+      - "implementation/marketing/index.html"
+      - "implementation/marketing/vite.config.ts"
+      - "implementation/marketing/package.json"
+      - "implementation/marketing/package-lock.json"
+      - "implementation/marketing/tsconfig*.json"
       - ".github/workflows/legal-drift.yml"
 
 # Least privilege: this job only reads the repository. No secrets are used.
@@ -39,7 +77,9 @@ permissions:
 
 concurrency:
   group: legal-drift-${{ github.ref }}
-  cancel-in-progress: true
+  # Cancel superseded PR runs, but never a main run: every main commit keeps a real
+  # pass/fail verdict (same rule and same expression as ci.yml).
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   legal-drift:
@@ -76,9 +116,13 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: "3.14"
+      # Pinned to the same version as ci.yml's WebKit smoke, so the browser engine under test is
+      # reproducible (bump deliberately, in both places); an unpinned install makes this gate's
+      # behaviour depend on whatever PyPI serves that morning. setup-python's interpreter is not
+      # an externally-managed system Python, so no `--break-system-packages` is needed here.
       - name: Install Playwright and Chromium
         run: |
-          python3 -m pip install --quiet playwright
+          python3 -m pip install --quiet playwright==1.60.0
           python3 -m playwright install --with-deps chromium
       - name: Legal pages in a real browser
         env:

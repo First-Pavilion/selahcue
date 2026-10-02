@@ -19,10 +19,45 @@ describe('legal-drift workflow', { skip: !PRESENT && 'repository workflows are n
   const scripts = (JSON.parse(readFileSync(PACKAGE, 'utf8')) as { scripts: Record<string, string> }).scripts
 
   test('is triggered by edits to docs/legal and to the generated/renderer files, on PRs and on main', () => {
-    assert.match(text, /^on:\s*\n\s+pull_request:\s*\n\s+paths:/m)
+    assert.match(text, /^on:\s*\n(?:\s*#.*\n)*\s+pull_request:\s*\n\s+paths:/m)
     assert.match(text, /^\s+push:\s*\n\s+branches: \[main\]\s*\n\s+paths:/m)
     for (const p of ['docs/legal/**', 'implementation/marketing/src/lib/legal/**', 'implementation/marketing/scripts/*legal*']) {
       assert.equal(text.split(`"${p}"`).length - 1, 2, `${p} must trigger both pull_request and push`)
+    }
+  })
+
+  test('also triggered by SHARED code that can move the legal pages (router, global styles, navbar, build inputs)', () => {
+    for (const p of [
+      'implementation/marketing/src/views/PrivacyView.vue',
+      'implementation/marketing/src/views/TermsView.vue',
+      'implementation/marketing/src/router/**',
+      'implementation/marketing/src/assets/**',
+      'implementation/marketing/src/components/Navbar.vue',
+      'implementation/marketing/src/components/Footer.vue',
+      'implementation/marketing/src/App.vue',
+      'implementation/marketing/package.json',
+      'implementation/marketing/package-lock.json',
+      'implementation/marketing/tsconfig*.json',
+      'implementation/marketing/tests/fixtures/fakeHead.ts',
+    ]) {
+      assert.equal(text.split(`"${p}"`).length - 1, 2, `${p} must trigger both pull_request and push`)
+    }
+  })
+
+  test('never cancels a run on main: cancel-in-progress only for pull_request events (same expression as ci.yml)', () => {
+    assert.match(text, /cancel-in-progress: \$\{\{ github\.event_name == 'pull_request' \}\}/)
+    assert.ok(!/cancel-in-progress: true/.test(text))
+  })
+
+  test('Playwright is pinned, to the version ci.yml pins, and never installed unpinned', () => {
+    const ci = readFileSync(`${REPO}.github/workflows/ci.yml`, 'utf8')
+    const pins = new Set([...ci.matchAll(/playwright==(\d+\.\d+\.\d+)/g)].map((m) => m[1]))
+    const mine = [...text.matchAll(/playwright==(\d+\.\d+\.\d+)/g)].map((m) => m[1])
+    assert.ok(pins.size >= 1, 'ci.yml pins Playwright (this is the version to follow)')
+    assert.equal(mine.length, 1, 'exactly one pinned install in this workflow')
+    assert.ok(pins.has(mine[0]), `legal-drift pins playwright==${mine[0]} but ci.yml pins ${[...pins].join(', ')}`)
+    for (const line of text.split('\n')) {
+      if (/pip install/.test(line) && /playwright/.test(line)) assert.match(line, /playwright==\d/, `unpinned: ${line.trim()}`)
     }
   })
 
