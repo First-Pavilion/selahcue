@@ -71,4 +71,13 @@ const releasePayout = (row: Record<string, string | number>) => {
 .font-medium { font-weight: 600; color: var(--sc-text); }
 .font-bold { font-weight: 700; color: var(--sc-text); }
 .highlight { color: var(--sc-preview); }
+
+@media (max-width: 1023.98px) {
+  .payout-header-box { flex-wrap: wrap; gap: 16px; }
+}
+
+@media (max-width: 767.98px) {
+  .payout-header-box { padding: 20px; margin-bottom: 20px; }
+  .payout-header-box > :last-child { width: 100%; }
+}
 </style>

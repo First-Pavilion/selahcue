@@ -89,7 +89,7 @@
 
 .interface-grid {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 16px;
   padding: 20px;
   background: #090a0f;
@@ -190,9 +190,26 @@
   margin: 0;
 }
 
-@media (max-width: 768px) {
+@media (max-width: 767.98px) {
   .interface-grid {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
+    padding: 14px;
+    gap: 12px;
   }
+
+  /* The title is absolutely centred on desktop; on a phone it collides with the
+     traffic lights and wraps, so it flows after them and truncates instead. */
+  .window-header { gap: 12px; }
+  .window-title {
+    position: static;
+    transform: none;
+    min-width: 0;
+    flex: 1;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .screen-content { padding: 28px 18px; min-height: 150px; }
 }
 </style>

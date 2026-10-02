@@ -209,6 +209,18 @@ const handleInput = (event: Event) => {
   height: 20px;
 }
 
+/* 44x44 on phones and coarse pointers (the desktop keeps the compact 28px control), and
+   16px field text so iOS Safari does not zoom the page on focus. */
+@media (max-width: 767.98px), (pointer: coarse) {
+  .password-toggle {
+    right: 2px;
+    width: 44px;
+    height: 44px;
+    padding: 0;
+  }
+  .field-input { font-size: 16px; }
+}
+
 .field-meta {
   display: flex;
   justify-content: space-between;
