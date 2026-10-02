@@ -2181,6 +2181,15 @@ fn with_deck(
     state: &State<'_, AppState>,
     f: impl FnOnce(&mut DeckWorkspace),
 ) -> Result<serde_json::Value, String> {
+    with_deck_in(state, f)
+}
+
+/// [`with_deck`] over a plain `&AppState`, so the testable `*_inner` command bodies share the one
+/// lock-edit-autosave-view sequence instead of re-deriving it.
+fn with_deck_in(
+    state: &AppState,
+    f: impl FnOnce(&mut DeckWorkspace),
+) -> Result<serde_json::Value, String> {
     let mut ws = state.deck.lock().map_err(|e| format!("deck lock: {e}"))?;
     f(&mut ws);
     Ok(sync_and_view(&ws, &state.library))
@@ -3559,6 +3568,33 @@ async fn deck_add_image_element(
 ) -> Result<serde_json::Value, String> {
     with_deck(&state, |w| w.add_image_element(media_id))
 }
+/// Add several library images to the selected slide in ONE undo step (the media modal's Insert).
+/// The view carries an `insert_report` ({requested, added}) so the console can say so honestly when
+/// fewer fit than were asked for (an unknown id, or a nearly full slide).
+#[tauri::command]
+async fn deck_add_image_elements(
+    media_ids: Vec<u64>,
+    state: State<'_, AppState>,
+) -> Result<serde_json::Value, String> {
+    add_image_elements_inner(&state, media_ids)
+}
+
+fn add_image_elements_inner(
+    state: &AppState,
+    media_ids: Vec<u64>,
+) -> Result<serde_json::Value, String> {
+    let requested = media_ids.len();
+    let mut added = 0usize;
+    let mut view = with_deck_in(state, |w| added = w.add_image_elements(&media_ids))?;
+    if let Some(obj) = view.as_object_mut() {
+        obj.insert(
+            "insert_report".to_string(),
+            serde_json::json!({ "requested": requested, "added": added }),
+        );
+    }
+    Ok(view)
+}
+
 #[tauri::command]
 async fn deck_remove_element(
     index: usize,
@@ -4629,6 +4665,51 @@ mod media_command_tests {
             store.thumbnail_high_water(),
             media_store::MAX_CONCURRENT_THUMBNAILS,
             "decodes overlapped right up to the cap and never beyond it"
+        );
+    }
+
+    #[tokio::test]
+    async fn inserting_images_reports_how_many_landed_in_one_undo_step() {
+        let app = temp_dir("insert");
+        let state = state_with_store(&app, true);
+        let v = import_picked_images(
+            &state,
+            vec![
+                picked("ins-a", "a.png", &PNG_8X4),
+                picked("ins-b", "b.png", &PNG_8X4),
+            ],
+        )
+        .await
+        .unwrap();
+        let ids: Vec<u64> = assets(&v)
+            .iter()
+            .map(|a| a["id"].as_u64().unwrap())
+            .collect();
+        let before = v["slide"]["elements"].as_array().unwrap().len();
+        let undo_before = view_of(&state)["can_undo"].clone();
+        assert_eq!(undo_before, false, "premise: nothing to undo yet");
+
+        // Two real assets and one id the library does not hold.
+        let mut request = ids.clone();
+        request.push(9_999);
+        let after = add_image_elements_inner(&state, request).unwrap();
+
+        assert_eq!(after["insert_report"]["requested"], 3);
+        assert_eq!(
+            after["insert_report"]["added"], 2,
+            "the unknown id is skipped"
+        );
+        assert_eq!(
+            after["slide"]["elements"].as_array().unwrap().len(),
+            before + 2
+        );
+        assert_eq!(after["can_undo"], true);
+        state.deck.lock().unwrap().undo();
+        let undone = view_of(&state);
+        assert_eq!(
+            undone["slide"]["elements"].as_array().unwrap().len(),
+            before,
+            "one undo removes the whole batch"
         );
     }
 
@@ -9741,6 +9822,7 @@ fn main() {
             deck_select_slide,
             deck_add_element,
             deck_add_image_element,
+            deck_add_image_elements,
             deck_remove_element,
             deck_select_element,
             deck_move_element,

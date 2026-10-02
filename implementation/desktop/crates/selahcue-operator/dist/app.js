@@ -6912,15 +6912,18 @@
       let pmMediaFilter = "all";
       let pmMediaQuery = "";
       let pmDrag = null; // active canvas drag: {index, startX, startY, ox, oy, w, h}
-      let pmRightMode = "media"; // right panel: "media" | "inspector"
-      let pmLastSelKey = null; // (slide id):(element index) of the last selection, for auto-switch
-      let pmReplaceTarget = null; // element index awaiting a media-cell pick to replace its image
+      let pmLastSelKey = null; // (slide id):(element index) of the last selection, to announce a change
+      // The open media-library modal's state, or null: {back, mode: "insert"|"replace", target,
+      // selected: Set<asset id>, opener, prevFilter, removing: null | {trigger}}.
+      // The library is a MODAL picker (PRESENTATION-MEDIA-LIBRARY-MODAL-spec.md) built on demand by
+      // pmOpenMediaModal and removed by pmCloseMediaModal; pmRenderMedia draws into it only while open.
+      let pmMediaModal = null;
       let pmRowId = 0; // monotonic id source so each inspector control gets a <label for> (a11y)
       let pmFontsLoading = false; // in-flight guard so concurrent activations don't double-fetch fonts
 
       const pmEl = (id) => document.getElementById(id);
 
-      let pmLastAct = null; // { fn, opName } of the last deck action, for the error-banner Retry
+      let pmLastAct = null; // { fn, opName } (or { retry }) of the last deck action, for the error-banner Retry
       let pmToastTimer = null; // bounded auto-dismiss timer for the action toast
       let pmFonts = null; // system font families (loaded once, shared by the Text inspector)
       let pmBusyCount = 0; // in-flight deck-command count (a COUNTER, not a flag, so overlapping
@@ -6951,8 +6954,19 @@
       // Import an image into the media library (FR-138 / 86ak0qmzv). NOT routed through `pAct`:
       // a validation refusal is a final, specific reason (e.g. "that file is too large to
       // import"), not a transient failure worth a generic "Couldn't import the image — please
-      // retry" — same reasoning as `pmLibRestore`'s own `pmShowErrorRaw` use above.
+      // retry" — same reasoning as `pmLibRestore`'s own `pmShowErrorRaw` use above. The refusal goes
+      // through `pmSay`, not `pmShowErrorRaw` directly: Import lives in the media modal, and the error
+      // banner sits BEHIND its scrim (the host's "can't find its media folder" refusal would be
+      // invisible); `pmSay` writes it into the modal's own status line and falls back to the banner
+      // once the modal is closed.
       async function pmImportImage() {
+        // The error banner's Retry runs `pmLastAct`. An import refused after the modal was closed
+        // lands in that banner, so it must own Retry — otherwise Retry re-runs the last UNRELATED deck
+        // action (a batch Insert: the images would be inserted twice). `deck_import_images` takes no
+        // paths (it opens the native picker itself), so re-running it IS "pick again", the same as
+        // + Import; it goes through `pmImportImage` (not `pAct`) so a second attempt still reports
+        // skipped files and shows the host's specific reason instead of a generic "please retry".
+        pmLastAct = { retry: pmImportImage };
         pmSetBusy(true);
         try {
           pmDv = await invoke("deck_import_images");
@@ -6960,10 +6974,38 @@
           pmShowImportReport(pmDv && pmDv.import_report);
         } catch (e) {
           console.error("[SelahCue] deck action failed", e);
-          pmShowErrorRaw(String(e && e.message ? e.message : e));
+          pmSay(true, String(e && e.message ? e.message : e));
         } finally {
           pmSetBusy(false);
         }
+      }
+
+      // Say something about a media action: a warning (`warn`) is the persistent error banner, anything
+      // else a brief status toast, and empty text clears the banner. While the media modal is open
+      // (Import and Remove both live there) it goes into the modal's own status line instead — the toast
+      // and banner sit BEHIND its scrim and would never be seen.
+      //
+      // The status line is a role="status" live region that is ALWAYS rendered (visually hidden while
+      // empty, never display:none) so that filling it is a content change an assistive technology
+      // announces — a region that goes display:none -> populated in one task is the unreliable case.
+      // The text is cleared immediately and set again after a short tick, so an identical message
+      // repeated (a second "file kept" notice) is a fresh change and is announced again; a token drops
+      // a pending set that a newer message has superseded.
+      let pmSayToken = 0;
+      function pmSay(warn, text) {
+        if (pmMediaModal) {
+          const note = pmEl("pm-media-note");
+          if (!note) return;
+          const token = ++pmSayToken;
+          note.textContent = "";
+          note.classList.toggle("warn", !!warn);
+          if (text) {
+            setTimeout(() => { if (token === pmSayToken && note.isConnected) note.textContent = text; }, 50);
+          }
+          return;
+        }
+        if (warn) pmShowErrorRaw(text);
+        else { pmClearError(); if (text) pmToast(text); }
       }
 
       // What an import did, from the host's `import_report` ({imported, skipped:[{name, reason}],
@@ -6972,55 +7014,61 @@
       // bounded to the first three so a large batch cannot flood the banner. `saved === false` is the
       // honest "this library will not survive a restart" (the registry database is unavailable).
       // A cancelled picker returns no report: just clear any stale banner.
+      //
+      // While the media modal is open (it is where Import lives) the report goes into the modal's own
+      // status line instead: the toast and banner sit BEHIND its scrim and would never be seen.
       function pmShowImportReport(rep) {
-        if (!rep) { pmClearError(); return; }
+        const say = pmSay;
+        if (!rep) { say(false, ""); return; }
         const n = rep.imported || 0;
         const skipped = rep.skipped || [];
         // Only when something DID land: a batch the host rolled back because the registry could not
         // be written has imported nothing, and "these won't be kept" would describe nothing.
         const unsaved = rep.saved === false && n > 0 ? " These won’t be kept after you quit." : "";
         if (!skipped.length) {
-          pmClearError();
-          if (n) pmToast("Imported " + n + " image" + (n === 1 ? "" : "s") + "." + unsaved);
+          say(false, n ? "Imported " + n + " image" + (n === 1 ? "" : "s") + "." + unsaved : "");
           return;
         }
         const shown = skipped.slice(0, 3).map((s) => s.name + " — " + s.reason).join("; ");
         const more = skipped.length > 3 ? " (+" + (skipped.length - 3) + " more)" : "";
-        pmShowErrorRaw((n ? "Imported " + n + ". " : "") + "Skipped " + skipped.length + ": " + shown + more + "." + unsaved);
+        say(true, (n ? "Imported " + n + ". " : "") + "Skipped " + skipped.length + ": " + shown + more + "." + unsaved);
       }
 
       // Remove an asset from the media library. Like the import it is NOT a plain `pAct`: the host
       // refuses with a SPECIFIC reason when the library cannot be saved ("the disk may be full or
       // read-only" — nothing was removed), which is final text to show, not "please retry"; and a
       // success carries a `remove_report` saying whether the stored picture file was kept for other
-      // presentations. `pmLastAct` is set so the banner's Retry re-runs THIS removal, not whatever
-      // deck action happened to come before it.
+      // presentations. `pmLastAct` is set so the error banner's Retry re-runs THIS removal, not
+      // whatever deck action happened to come before it: the banner only shows the refusal when the
+      // modal was closed while the removal was still in flight (while it is open the reason is in the
+      // modal's status line), and a Retry that re-ran an earlier insert would duplicate it.
       async function pmRemoveMedia(id) {
         pmLastAct = { fn: () => invoke("deck_remove_media", { id: id }), opName: "remove the media" };
         pmSetBusy(true);
         try {
           pmDv = await invoke("deck_remove_media", { id: id });
-          pmClearError();
+          pmSay(false, "");
           renderPresentation(pmDv);
           pmShowRemoveReport(pmDv && pmDv.remove_report);
         } catch (e) {
           console.error("[SelahCue] deck action failed", e);
-          pmShowErrorRaw(String(e && e.message ? e.message : e));
+          pmSay(true, String(e && e.message ? e.message : e));
         } finally {
           pmSetBusy(false);
         }
       }
 
       // What a removal did to the stored file, from the host's `remove_report`. Silent when the file
-      // was deleted (the tile simply leaves the grid); a toast when it was KEPT, because the picture
-      // is still on disk and still showing in the presentations that use it.
+      // was deleted (the tile simply leaves the grid); a notice when it was KEPT, because the picture
+      // is still on disk and still showing in the presentations that use it (`pmSay`: the modal's
+      // status line while it is open, a toast otherwise).
       function pmShowRemoveReport(rep) {
         if (!rep || !rep.removed) return;
         const decks = rep.kept_for_decks || 0;
         if (decks > 0) {
-          pmToast("Removed from the library. The picture file is kept because " + decks + " other presentation" + (decks === 1 ? " still uses" : "s still use") + " it.");
+          pmSay(false, "Removed from the library. The picture file is kept because " + decks + " other presentation" + (decks === 1 ? " still uses" : "s still use") + " it.");
         } else if (rep.kept_for_deleted > 0) {
-          pmToast("Removed from the library. The picture file is kept because a presentation you recently deleted still uses it.");
+          pmSay(false, "Removed from the library. The picture file is kept because a presentation you recently deleted still uses it.");
         }
       }
 
@@ -7180,7 +7228,7 @@
           pmFonts = [];
         }
         pmFontsLoading = false;
-        if (pmDv && pmRightMode === "inspector") pmRenderInspector(pmDv);
+        if (pmDv) pmRenderInspector(pmDv);
       }
 
       // Delete the selected element, then offer an Undo toast (⌘Z-backed) — but ONLY if an element
@@ -10940,44 +10988,20 @@
         pmSyncRightPanel(dv);
       }
 
-      // The right column is contextual: Media Library by default, the per-element Inspector when an
-      // element is selected. Selecting an element AUTO-OPENS the Inspector; deselecting returns to
-      // Media. The auto-switch fires only on a CHANGE of selection (so a manual tab switch persists),
-      // and never moves focus (a canvas drag-select must not yank focus off the canvas).
+      // The right column is the per-element Inspector (the media library is a modal now — it used to
+      // share this column behind a Media/Inspector tab pair). Re-rendered on every view, announcing
+      // only a CHANGE of selection, and never moving focus (a canvas drag-select must not yank focus
+      // off the canvas). With nothing selected the Inspector says so itself.
       function pmSyncRightPanel(dv) {
         const slide = dv.slide;
         const selIdx = slide ? slide.selected_element : null;
         const hasSel = selIdx != null && slide.elements && slide.elements[selIdx];
-        const inspTab = pmEl("pm-tab-inspector");
-        if (hasSel) { inspTab.removeAttribute("aria-disabled"); inspTab.title = ""; }
-        else { inspTab.setAttribute("aria-disabled", "true"); inspTab.title = "Select an element"; }
         const key = hasSel ? slide.id + ":" + selIdx : null;
         if (key !== pmLastSelKey) {
-          // A selection/slide change ends any armed image-Replace flow (so a later media pick can
-          // never replace an element the operator is no longer on — review 86ajvjtax #1/#3).
-          if (pmReplaceTarget != null) pmEndReplace();
           pmLastSelKey = key;
-          pmSetRight(hasSel ? "inspector" : "media");
           if (hasSel) pmAnnounce("Inspector — " + (slide.elements[selIdx].kind || "") + " element selected");
-        } else if (hasSel && pmRightMode === "inspector") {
-          pmRenderInspector(dv); // same selection, still inspecting → refresh values after an edit
-        } else if (!hasSel && pmRightMode === "inspector") {
-          pmSetRight("media");
         }
-      }
-
-      function pmSetRight(mode) {
-        pmRightMode = mode;
-        const showInsp = mode === "inspector";
-        pmEl("pm-media-body").hidden = showInsp;
-        pmEl("pm-inspector-body").hidden = !showInsp;
-        const mTab = pmEl("pm-tab-media"), iTab = pmEl("pm-tab-inspector");
-        mTab.setAttribute("aria-selected", showInsp ? "false" : "true");
-        iTab.setAttribute("aria-selected", showInsp ? "true" : "false");
-        mTab.tabIndex = showInsp ? -1 : 0;
-        iTab.tabIndex = showInsp ? 0 : -1;
-        pmEl("pm-panel").setAttribute("aria-labelledby", showInsp ? "pm-tab-inspector" : "pm-tab-media");
-        if (showInsp && pmDv) pmRenderInspector(pmDv);
+        pmRenderInspector(dv);
       }
 
       // --- inspector control helpers ---
@@ -11148,21 +11172,11 @@
         D.row.classList.remove("dragging"); D.row.removeAttribute("style");
         pAct(() => invoke("deck_reorder_elements", { order: order }));
       }
+      // Inspector → Replace… / Relink…: the library opens in REPLACE mode (images only, exactly one
+      // selection). The target element index lives in the modal's state, so a later pick can never
+      // replace an element the operator has since left — the modal blocks the canvas while open.
       function pmStartReplace(idx) {
-        pmReplaceTarget = idx;
-        pmMediaFilter = "image";
-        document.querySelectorAll("#surface-presentation .pm-mtab").forEach((x) => x.setAttribute("aria-pressed", x.dataset.filter === "image" ? "true" : "false"));
-        pmEl("pm-replace-hint").hidden = false;
-        pmSetRight("media");
-        if (pmDv) pmRenderMedia(pmDv);
-      }
-      // End the armed image-Replace flow: clear the target, hide the hint, and reset the media
-      // filter back to All (so the library isn't left silently stuck on Images).
-      function pmEndReplace() {
-        pmReplaceTarget = null;
-        pmEl("pm-replace-hint").hidden = true;
-        pmMediaFilter = "all";
-        document.querySelectorAll("#surface-presentation .pm-mtab").forEach((x) => x.setAttribute("aria-pressed", x.dataset.filter === "all" ? "true" : "false"));
+        pmOpenMediaModal({ mode: "replace", target: idx });
       }
 
       function pmRenderInspector(dv) {
@@ -11409,13 +11423,350 @@
         }
       }
 
-      // The remove-media confirmation for asset `a` (a DeckView `media.assets` row). The host decides
-      // what happens to the stored file when it removes — it deletes SelahCue's copy unless another
-      // saved deck still shows it — so the dialog says which, from the counts the view carries:
-      // `uses` (slides of the OPEN deck) and `other_decks` (OTHER saved decks). When other decks
-      // use it the file is kept, so every slide that shows it keeps showing it and the "missing
-      // media" warning would be false; it is replaced by the keep notice.
-      function pmRemoveMediaConfirm(a) {
+      // ---- Media library MODAL (PRESENTATION-MEDIA-LIBRARY-MODAL-spec.md) ---------------------------
+      // A picker in the style of Google's "Open" dialog: choose, then confirm. Opened from the toolbar
+      // Image button, the Inspector header's "Media library…", or Inspector → Replace… (replace mode).
+      // A DOM overlay, not <dialog> (WKWebView-safe — the same pattern as pmPrompt/openLinkModal).
+      //
+      // It carries the `.pm-confirm-back` sentinel class so every global key guard (undo/redo, ⌘1–7,
+      // plan shortcuts) keeps ignoring keystrokes while it is open, but its CSS overrides the scrim to
+      // stop 56px above the bottom so BLACKOUT / Clear stay reachable mid-service (the `.dl-modal-back`
+      // rule). It never intercepts the emergency chords. The same sentinel is why the remove
+      // confirmation is INLINE: pmConfirm refuses to open over any other `.pm-confirm-back`.
+      const PM_MEDIA_MAX_INSERT = 24; // matches the host's MAX_INSERT_BATCH
+
+      function pmOpenMediaModal(opts) {
+        // One modal at a time (confirm, link picker, prompt and this all share the sentinel class).
+        if (pmMediaModal || document.querySelector(".pm-confirm-back")) return;
+        const mode = opts && opts.mode === "replace" ? "replace" : "insert";
+        const st = {
+          back: null,
+          mode: mode,
+          target: opts && opts.target != null ? opts.target : null,
+          selected: new Set(),
+          opener: document.activeElement,
+          prevFilter: pmMediaFilter,
+          removing: null,
+        };
+        pmMediaFilter = mode === "replace" ? "image" : "all"; // replace can only take an image
+        pmMediaQuery = "";
+        st.back = pmBuildMediaModal(st);
+        document.body.appendChild(st.back);
+        pmMediaModal = st;
+        document.addEventListener("keydown", pmMediaKey, true);
+        if (pmDv) pmRenderMedia(pmDv);
+        const q = pmEl("pm-media-q");
+        if (q) q.focus();
+      }
+
+      function pmCloseMediaModal() {
+        const st = pmMediaModal;
+        if (!st) return;
+        document.removeEventListener("keydown", pmMediaKey, true);
+        if (pmMediaIO) { pmMediaIO.disconnect(); pmMediaIO = null; }
+        st.back.remove();
+        pmMediaModal = null;
+        pmMediaFilter = st.prevFilter;
+        pmMediaQuery = "";
+        if (st.opener && st.opener.focus && document.contains(st.opener)) st.opener.focus();
+      }
+
+      // Esc and the Tab trap, at the document in the capture phase: the background console holds
+      // live-control buttons (Go Live / Next) and is not inert, so Tab MUST stay inside the dialog or
+      // Enter could fire one from behind the scrim. Esc backs out one layer: the inline remove bar
+      // first, then the modal. The focusable set is queried live (tiles and the remove bar come and go).
+      function pmMediaKey(ev) {
+        const st = pmMediaModal;
+        if (!st) return;
+        if (ev.key === "Escape") {
+          ev.preventDefault();
+          ev.stopPropagation();
+          if (st.removing) pmMediaCancelRemove(); else pmCloseMediaModal();
+          return;
+        }
+        if (ev.key === "Tab") {
+          const els = Array.prototype.filter.call(
+            st.back.querySelectorAll("button, input, select, [tabindex]"),
+            (n) => !n.disabled && n.tabIndex !== -1 && (n.offsetWidth > 0 || n.offsetHeight > 0 || n.getClientRects().length > 0)
+          );
+          ev.preventDefault();
+          if (!els.length) return;
+          const i = els.indexOf(document.activeElement);
+          els[ev.shiftKey ? (i <= 0 ? els.length - 1 : i - 1) : (i >= els.length - 1 ? 0 : i + 1)].focus();
+        }
+      }
+
+      function pmBuildMediaModal(st) {
+        const replace = st.mode === "replace";
+        const mk = (tag, cls, text) => {
+          const e = document.createElement(tag);
+          if (cls) e.className = cls;
+          if (text != null) e.textContent = text;
+          return e;
+        };
+        const back = mk("div", "pm-confirm-back pm-media-back");
+        back.id = "pm-media-back";
+        back.onmousedown = (ev) => { if (ev.target === back) pmCloseMediaModal(); };
+        const dlg = mk("div", "pm-media-modal");
+        dlg.setAttribute("role", "dialog");
+        dlg.setAttribute("aria-modal", "true");
+        dlg.setAttribute("aria-labelledby", "pm-media-title");
+
+        const head = mk("div", "pm-media-mhead");
+        const title = mk("h2", "pm-media-title", replace ? "Replace image" : "Media library");
+        title.id = "pm-media-title";
+        const x = mk("button", "pm-media-x", "✕");
+        x.type = "button";
+        x.id = "pm-media-close";
+        x.setAttribute("aria-label", "Close media library");
+        x.onclick = pmCloseMediaModal;
+        head.append(title, x);
+
+        const tools = mk("div", "pm-media-tools");
+        const search = mk("div", "pm-media-search");
+        const glass = mk("span", null, "⌕");
+        glass.setAttribute("aria-hidden", "true");
+        const lab = mk("label", "sr-only", "Search media");
+        lab.htmlFor = "pm-media-q";
+        const q = mk("input", "pm-media-q");
+        q.id = "pm-media-q";
+        q.type = "search";
+        q.placeholder = "Search media…";
+        q.addEventListener("input", (e) => { pmMediaQuery = e.target.value; if (pmDv) pmRenderMedia(pmDv); });
+        search.append(glass, lab, q);
+        const tabs = mk("div", "pm-media-tabs");
+        tabs.setAttribute("role", "group");
+        tabs.setAttribute("aria-label", "Filter media by type");
+        [["all", "All"], ["image", "Images"], ["video", "Video"], ["audio", "Audio"]].forEach((f) => {
+          const b = mk("button", "pm-mtab", f[1]);
+          b.type = "button";
+          b.dataset.filter = f[0];
+          b.setAttribute("aria-pressed", pmMediaFilter === f[0] ? "true" : "false");
+          b.onclick = () => {
+            pmMediaFilter = f[0];
+            tabs.querySelectorAll(".pm-mtab").forEach((t) => t.setAttribute("aria-pressed", t === b ? "true" : "false"));
+            if (pmDv) pmRenderMedia(pmDv);
+          };
+          tabs.appendChild(b);
+        });
+        const imp = mk("button", "pm-btn-primary pm-media-import", "+ Import");
+        imp.type = "button";
+        imp.id = "pm-import";
+        imp.onclick = pmImportImage;
+        tools.append(search, tabs, imp);
+
+        const note = mk("div", "pm-media-note");
+        note.id = "pm-media-note";
+        note.setAttribute("role", "status");
+        // Always rendered (visually hidden while empty — see pmSay), so it is a live region on the
+        // a11y tree before its first message.
+
+        const grid = mk("div", "pm-media-grid");
+        grid.id = "pm-media-grid";
+        grid.setAttribute("role", "list");
+        grid.setAttribute("aria-label", "Media assets");
+        const audioH = mk("div", "pm-media-sect", "AUDIO");
+        audioH.id = "pm-media-audio-h";
+        const audio = mk("div", "pm-media-audio");
+        audio.id = "pm-media-audio";
+        audio.setAttribute("role", "list");
+        audio.setAttribute("aria-label", "Audio tracks");
+
+        const confirm = mk("div", "pm-media-confirm");
+        confirm.id = "pm-media-confirm";
+        confirm.setAttribute("role", "alert");
+        confirm.hidden = true;
+
+        const foot = mk("div", "pm-media-mfoot");
+        const info = mk("div", "pm-media-info");
+        const total = mk("span", null, "— of media");
+        total.id = "pm-media-total";
+        const stats = mk("span", "pm-media-stats");
+        stats.id = "pm-media-stats";
+        info.append(total, stats);
+        const sel = mk("span", "pm-media-sel");
+        sel.id = "pm-media-sel";
+        sel.setAttribute("aria-live", "polite");
+        const cancel = mk("button", "pm-btn-ghost", "Cancel");
+        cancel.type = "button";
+        cancel.id = "pm-media-cancel";
+        cancel.onclick = pmCloseMediaModal;
+        const ok = mk("button", "pm-btn-primary", replace ? "Replace" : "Insert");
+        ok.type = "button";
+        ok.id = "pm-media-insert";
+        ok.disabled = true;
+        ok.onclick = () => pmMediaCommit(null);
+        foot.append(info, sel, cancel, ok);
+
+        const kids = [head, tools];
+        if (replace) kids.push(mk("div", "pm-replace-hint", "Pick the image that replaces the selected element."));
+        kids.push(note, grid, audioH, audio, confirm, foot);
+        dlg.append.apply(dlg, kids);
+        back.appendChild(dlg);
+        return back;
+      }
+
+      // Selection state → every tile's class / aria-pressed / check mark, plus the footer. Done in
+      // place (not by re-rendering the grid) so a click never rebuilds the tile under the cursor or
+      // drops its keyboard focus.
+      function pmMediaPaintSelection() {
+        const st = pmMediaModal;
+        if (!st) return;
+        document.querySelectorAll("#pm-media-grid .pm-asset[data-id]").forEach((cell) => {
+          const on = st.selected.has(Number(cell.dataset.id));
+          cell.classList.toggle("selected", on);
+          const thumb = cell.querySelector(".pm-asset-thumb");
+          if (thumb && thumb.hasAttribute("aria-pressed")) thumb.setAttribute("aria-pressed", on ? "true" : "false");
+          const mark = cell.querySelector(".pm-check");
+          if (on && !mark && thumb) {
+            const c = document.createElement("span");
+            c.className = "pm-check";
+            c.setAttribute("aria-hidden", "true");
+            c.textContent = "✓";
+            thumb.appendChild(c);
+          } else if (!on && mark) {
+            mark.remove();
+          }
+        });
+        pmMediaSyncFooter();
+      }
+
+      function pmMediaSyncFooter() {
+        const st = pmMediaModal;
+        if (!st) return;
+        const n = st.selected.size;
+        const ok = pmEl("pm-media-insert");
+        const sel = pmEl("pm-media-sel");
+        if (ok) {
+          ok.textContent = st.mode === "replace" ? "Replace" : n > 1 ? "Insert " + n + " images" : n === 1 ? "Insert 1 image" : "Insert";
+          ok.disabled = n === 0;
+        }
+        if (sel) sel.textContent = n ? n + " selected" : "";
+      }
+
+      function pmMediaToggle(id) {
+        const st = pmMediaModal;
+        if (!st) return;
+        if (st.mode === "replace") {
+          st.selected.clear();
+          st.selected.add(id);
+        } else if (st.selected.has(id)) {
+          st.selected.delete(id);
+        } else {
+          if (st.selected.size >= PM_MEDIA_MAX_INSERT) {
+            const sel = pmEl("pm-media-sel");
+            if (sel) sel.textContent = "Up to " + PM_MEDIA_MAX_INSERT + " at a time.";
+            return;
+          }
+          st.selected.add(id);
+        }
+        pmMediaPaintSelection();
+      }
+
+      // Insert / Replace (all selected), or a double-clicked single tile. Closes first (so focus goes
+      // back to the opener and the dialog is gone before the deck re-renders), then runs the edit.
+      function pmMediaCommit(onlyId) {
+        const st = pmMediaModal;
+        if (!st) return;
+        const ids = onlyId != null ? [onlyId] : Array.from(st.selected);
+        if (!ids.length) return;
+        const order = ((pmDv && pmDv.media && pmDv.media.assets) || []).map((a) => a.id);
+        ids.sort((a, b) => order.indexOf(a) - order.indexOf(b)); // library order, not click order
+        const mode = st.mode;
+        const target = st.target;
+        pmCloseMediaModal();
+        if (mode === "replace") {
+          pmLastSelKey = null; // announce the (re-selected) element again after the swap
+          pAct(() => invoke("deck_replace_element_image", { index: target, mediaId: ids[0] }), "replace the image");
+        } else {
+          pAct(async () => {
+            const v = await invoke("deck_add_image_elements", { mediaIds: ids });
+            const r = v && v.insert_report;
+            if (r && r.added < r.requested) pmToast("Added " + r.added + " of " + r.requested + " images — the rest couldn’t be placed.");
+            return v;
+          }, "add the images");
+        }
+      }
+
+      // Inline remove confirmation (the shared pmConfirm cannot open over this modal).
+      function pmMediaStartRemove(a, trigger) {
+        const st = pmMediaModal;
+        const bar = pmEl("pm-media-confirm");
+        if (!st || !bar) return;
+        st.removing = { trigger: trigger };
+        // What happens to the stored file depends on whether OTHER saved decks still show it, not just
+        // the open deck's `uses` — `pmRemoveMediaWords` says which, from the counts the view carries.
+        const c = pmRemoveMediaWords(a);
+        // Un-hide FIRST, then fill: a role="alert" region must be on the a11y tree when its content
+        // changes to be announced reliably (same order as `pmShowError`).
+        bar.hidden = false;
+        bar.textContent = "";
+        const msg = document.createElement("p");
+        msg.className = "pm-media-confirm-msg";
+        msg.id = "pm-media-confirm-msg";
+        const strong = document.createElement("strong");
+        strong.textContent = "Remove " + a.name + "? ";
+        msg.appendChild(strong);
+        msg.appendChild(document.createTextNode(c.body));
+        bar.appendChild(msg);
+        let describedBy = "pm-media-confirm-msg";
+        if (c.warning) {
+          const w = document.createElement("p");
+          w.className = "pm-media-confirm-warn";
+          w.id = "pm-media-confirm-warn";
+          w.textContent = c.warning;
+          bar.appendChild(w);
+          describedBy += " pm-media-confirm-warn";
+        }
+        const row = document.createElement("div");
+        row.className = "pm-media-confirm-actions";
+        const keep = document.createElement("button");
+        keep.type = "button";
+        keep.className = "pm-btn-ghost";
+        keep.id = "pm-media-keep";
+        keep.textContent = "Keep";
+        // Focus lands on Keep (the safe default), so what is being asked rides on the button's
+        // description: the bar's own text is what a screen reader reads next to "Keep".
+        keep.setAttribute("aria-describedby", describedBy);
+        keep.onclick = pmMediaCancelRemove;
+        const rm = document.createElement("button");
+        rm.type = "button";
+        rm.className = "pm-btn-danger";
+        rm.id = "pm-media-remove";
+        rm.textContent = "Remove";
+        rm.onclick = () => {
+          const id = a.id;
+          pmMediaClearRemove();
+          pmRemoveMedia(id);
+          const q = pmEl("pm-media-q");
+          if (q) q.focus();
+        };
+        row.append(keep, rm);
+        bar.appendChild(row);
+        keep.focus(); // the safe default
+      }
+      function pmMediaClearRemove() {
+        const st = pmMediaModal;
+        if (st) st.removing = null;
+        const bar = pmEl("pm-media-confirm");
+        if (bar) { bar.hidden = true; bar.textContent = ""; }
+      }
+      function pmMediaCancelRemove() {
+        const st = pmMediaModal;
+        const trigger = st && st.removing ? st.removing.trigger : null;
+        pmMediaClearRemove();
+        const q = pmEl("pm-media-q");
+        if (trigger && document.contains(trigger) && trigger.focus) trigger.focus();
+        else if (q) q.focus();
+      }
+
+      // The words of the remove-media bar for asset `a` (a DeckView `media.assets` row): `{body,
+      // warning}`. The host decides what happens to the stored file when it removes — it deletes
+      // SelahCue's copy unless another saved deck still shows it — so the bar says which, from the
+      // counts the view carries: `uses` (slides of the OPEN deck) and `other_decks` (OTHER saved
+      // decks). When other decks use it the file is kept, so every slide that shows it keeps showing
+      // it and the "missing media" warning would be false; it is replaced by the keep notice.
+      function pmRemoveMediaWords(a) {
         const other = a.other_decks || 0;
         const slides = (n) => n + " slide" + (n === 1 ? "" : "s");
         let warning = null;
@@ -11426,18 +11777,14 @@
         } else if (a.uses) {
           warning = "Used on " + slides(a.uses) + " — removing it leaves " + (a.uses === 1 ? "that slide" : "those slides") + " with missing media.";
         }
-        return {
-          title: "Remove " + a.name + "?",
-          body: body,
-          warning: warning,
-          confirmLabel: "Remove",
-          onConfirm: () => pmRemoveMedia(a.id),
-        };
+        return { body: body, warning: warning };
       }
 
       function pmRenderMedia(dv) {
         const m = (dv && dv.media) || { assets: [], total_label: "—", missing_count: 0, unused_count: 0 };
-        pmMediaThumbPrune(m.assets);
+        pmMediaThumbPrune(m.assets); // keeps the picture cache to what the library still holds, open or not
+        const st = pmMediaModal;
+        if (!st) return;
         if (pmMediaIO) { pmMediaIO.disconnect(); pmMediaIO = null; }
         if ("IntersectionObserver" in window) {
           pmMediaIO = new IntersectionObserver((es) => es.forEach((e) => {
@@ -11446,6 +11793,9 @@
             pmMediaThumbPaint(e.target, e.target.querySelector("canvas"), Number(e.target.dataset.mid));
           }));
         }
+        // Drop selections for assets that are gone (removed here or elsewhere) or no longer placeable.
+        const placeable = new Set(m.assets.filter((a) => a.kind === "image" && !a.missing).map((a) => a.id));
+        Array.from(st.selected).forEach((id) => { if (!placeable.has(id)) st.selected.delete(id); });
         const q = pmMediaQuery.trim().toLowerCase();
         const match = (a) => {
           if (pmMediaFilter !== "all" && a.kind !== pmMediaFilter) return false;
@@ -11459,7 +11809,20 @@
         if (!visual.length) {
           const empty = document.createElement("div");
           empty.className = "pm-media-empty";
-          empty.textContent = "No matching media.";
+          if (!m.assets.length) {
+            // PME-038: an empty library offers the way out, not just a statement.
+            empty.textContent = "No images yet — Import to get started. ";
+            const go = document.createElement("button");
+            go.type = "button";
+            go.className = "pm-btn-ghost pm-media-empty-import";
+            go.textContent = "Import images";
+            go.onclick = pmImportImage;
+            empty.appendChild(go);
+          } else if ((pmMediaFilter === "video" || pmMediaFilter === "audio") && !q && !m.assets.some((a) => a.kind === pmMediaFilter)) {
+            empty.textContent = (pmMediaFilter === "video" ? "Video" : "Audio") + " import arrives later.";
+          } else {
+            empty.textContent = "No matching media.";
+          }
           grid.appendChild(empty);
         }
         // The asset used by the currently-selected image element → mark its cell "in use".
@@ -11467,18 +11830,20 @@
         const inUsePath = selEl && selEl.kind === "image" ? selEl.source : null;
         visual.forEach((a, idx) => {
           const isInUse = a.path && a.path === inUsePath;
+          const pick = !a.missing && a.kind === "image";
           const cell = document.createElement("div");
           cell.className = "pm-asset" + (a.missing ? " missing" : "") + (isInUse ? " in-use" : "");
+          cell.dataset.id = String(a.id);
           cell.setAttribute("role", "listitem");
           const thumb = document.createElement("button");
           thumb.type = "button";
           thumb.className = "pm-asset-thumb";
-          // A non-image, non-missing grid cell (video) is not yet placeable — label it honestly,
-          // not "Add media" (review 86ajvjtax #6). The "in use" state is named, not colour-only (1.4.1).
+          // A non-image, non-missing grid cell (video) is not yet placeable — label it honestly.
+          // "In use", "unused" and the selection itself are named, never colour-only (WCAG 1.4.1).
           thumb.setAttribute("aria-label",
             a.missing ? "Missing media " + a.name
               : a.kind !== "image" ? a.name + ", " + a.kind + " — on-slide playback arrives later"
-                : "Add media " + a.name + (isInUse ? " (in use)" : a.unused ? " (unused)" : ""));
+                : (st.mode === "replace" ? "Choose " : "Select ") + a.name + (isInUse ? " (in use)" : a.unused ? " (unused)" : ""));
           if (a.missing) {
             thumb.innerHTML = '<span aria-hidden="true">⚠</span>';
           } else if (a.kind === "video") {
@@ -11497,19 +11862,11 @@
             thumb.appendChild(cv);
             pmMediaThumbSchedule(thumb, cv, a.id, idx);
           }
-          // Clicking an IMAGE asset either REPLACES the selected image element's source (when a
-          // Replace… flow is armed) or adds it to the current slide (video/audio: no on-slide render).
-          if (!a.missing && a.kind === "image") {
-            thumb.onclick = () => {
-              if (pmReplaceTarget != null) {
-                const t = pmReplaceTarget;
-                pmEndReplace();
-                pmLastSelKey = null; // re-open the Inspector after the replace
-                pAct(() => invoke("deck_replace_element_image", { index: t, mediaId: a.id }));
-              } else {
-                pAct(() => invoke("deck_add_image_element", { mediaId: a.id }));
-              }
-            };
+          if (pick) {
+            // Click / Space / Enter toggles the selection; a double-click uses just this image.
+            thumb.setAttribute("aria-pressed", "false");
+            thumb.onclick = () => pmMediaToggle(a.id);
+            thumb.ondblclick = () => pmMediaCommit(a.id);
           } else {
             // Missing, or a not-yet-placeable video → inert (disabled, not a dead enabled button).
             thumb.onclick = () => {};
@@ -11519,11 +11876,12 @@
           const name = document.createElement("div");
           name.className = "pm-asset-name";
           name.textContent = a.name;
+          name.title = a.name;
           const meta = document.createElement("div");
           meta.className = "pm-asset-meta";
           meta.textContent = a.missing ? "File moved" : a.kind.toUpperCase() + (a.size_label ? " · " + a.size_label : "");
-          // Remove-from-library affordance → a role="alertdialog" confirm that warns when the asset
-          // is still used on k slides (C-002). Removing it there leaves those slides missing media.
+          // Remove-from-library → the inline confirmation bar, which warns when the asset is still
+          // used on k slides (C-002): removing it leaves those slides with missing media.
           const rm = document.createElement("button");
           rm.type = "button";
           rm.className = "pm-asset-del";
@@ -11533,7 +11891,7 @@
           rm.title = "Remove from library";
           rm.onclick = (ev) => {
             ev.stopPropagation();
-            pmConfirm(pmRemoveMediaConfirm(a));
+            pmMediaStartRemove(a, rm);
           };
           cell.appendChild(thumb);
           cell.appendChild(name);
@@ -11572,6 +11930,7 @@
         if (m.unused_count) parts.push(m.unused_count + " unused");
         stats.textContent = parts.join(" · ");
         stats.classList.toggle("warn", m.missing_count > 0);
+        pmMediaPaintSelection();
       }
 
       // --- canvas preview + selection overlay ---------------------------------------------
@@ -11684,9 +12043,15 @@
         }; // editor → grid
         pmEl("pm-undo").onclick = pmUndo;
         pmEl("pm-redo").onclick = pmRedo;
-        pmEl("pm-import").onclick = pmImportImage;
+        // The media library is a modal built on demand (pmOpenMediaModal): this header button is one
+        // of its three entry points (the others: toolbar Image, Inspector → Replace…).
+        pmEl("pm-open-media").onclick = () => pmOpenMediaModal({ mode: "insert" });
         // Error banner: Retry re-runs the last rejected deck action; Dismiss hides it.
-        pmEl("pm-error-retry").onclick = () => { if (pmLastAct) pAct(pmLastAct.fn, pmLastAct.opName); };
+        pmEl("pm-error-retry").onclick = () => {
+          const act = pmLastAct;
+          if (!act) return;
+          if (act.retry) act.retry(); else pAct(act.fn, act.opName);
+        };
         pmEl("pm-error-dismiss").onclick = pmClearError;
         // Presentations Library: the deck-switcher opens it; ＋ New creates; the library controls.
         pmEl("pm-deckswitch").onclick = pmShowLibrary;
@@ -11703,9 +12068,15 @@
         pmEl("pm-lib-sort").addEventListener("change", (e) => { pmLibSort = e.target.value; pmRenderLibGrid(); });
         // add-content toolbar
         document.querySelectorAll("#surface-presentation .pm-tool[data-add]").forEach((b) => {
-          // The host handles each kind: "background" adds a full-frame shape behind the content,
-          // "image" adds the first library image (or is a no-op when there is none). A no-op never
-          // corrupts undo/redo (the host snapshots only on a real edit).
+          // "image" opens the media library to PICK from (it used to silently add the first library
+          // image, or do nothing). The host handles the other kinds: "background" adds a full-frame
+          // shape behind the content; text/shape add a default element. A no-op never corrupts
+          // undo/redo (the host snapshots only on a real edit).
+          if (b.dataset.add === "image") {
+            b.onclick = () => pmOpenMediaModal({ mode: "insert" });
+            b.setAttribute("aria-haspopup", "dialog");
+            return;
+          }
           b.onclick = () => pAct(() => invoke("deck_add_element", { kind: b.dataset.add }));
         });
         // per-slide props
@@ -11717,39 +12088,8 @@
           const secs = parseInt(e.target.value, 10) || 0;
           pAct(() => invoke("deck_set_auto_advance", { secs: secs > 0 ? secs : null }));
         });
-        // media filters + search
-        document.querySelectorAll("#surface-presentation .pm-mtab").forEach((t) => {
-          t.onclick = () => {
-            pmMediaFilter = t.dataset.filter;
-            document.querySelectorAll("#surface-presentation .pm-mtab").forEach((x) =>
-              x.setAttribute("aria-pressed", x === t ? "true" : "false"));
-            if (pmDv) pmRenderMedia(pmDv);
-          };
-        });
-        pmEl("pm-media-q").addEventListener("input", (e) => {
-          pmMediaQuery = e.target.value;
-          if (pmDv) pmRenderMedia(pmDv);
-        });
-
-        // Right-panel Media/Inspector tabs (roving tabindex + Left/Right).
-        const mTab = pmEl("pm-tab-media"), iTab = pmEl("pm-tab-inspector");
-        mTab.onclick = () => pmSetRight("media");
-        iTab.onclick = () => { if (iTab.getAttribute("aria-disabled") !== "true") pmSetRight("inspector"); };
-        [mTab, iTab].forEach((t, i, arr) => {
-          t.addEventListener("keydown", (e) => {
-            if (e.key !== "ArrowRight" && e.key !== "ArrowLeft") return;
-            e.preventDefault();
-            const other = arr[(i + 1) % 2];
-            if (other.getAttribute("aria-disabled") === "true") return;
-            other.focus();
-            other.click();
-          });
-        });
-        pmEl("pm-replace-cancel").onclick = () => {
-          pmEndReplace();
-          pmLastSelKey = null; // re-open the Inspector for the still-selected element
-          if (pmDv) renderPresentation(pmDv);
-        };
+        // (The media filters, search and the Replace hint live inside the media modal now — built
+        // with it by pmBuildMediaModal — and the Media/Inspector tab pair is gone.)
 
         // canvas: click-to-select + drag-to-move (per-mille), keyboard edits.
         const cv = pmEl("pm-canvas");

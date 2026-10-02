@@ -1085,39 +1085,14 @@
               </select></label>
           </div>
         </main>
-        <!-- Right panel — contextual: Media Library (default) ⟷ per-element Inspector (on select).
-             Design 509:124 / PRESENTATION-MEDIA-STATES-spec §2. -->
-        <aside class="pm-right" aria-label="Media and inspector">
-          <div class="pm-right-tabs" role="tablist" aria-label="Right panel">
-            <button id="pm-tab-media" class="pm-rtab" role="tab" aria-selected="true" aria-controls="pm-panel"
-              type="button">Media</button>
-            <button id="pm-tab-inspector" class="pm-rtab" role="tab" aria-selected="false" tabindex="-1"
-              aria-controls="pm-panel" aria-disabled="true" type="button">Inspector</button>
-          </div>
-          <div id="pm-panel" class="pm-panel" role="tabpanel" aria-labelledby="pm-tab-media">
-            <!-- Media Library (default mode) -->
-            <div id="pm-media-body" class="pm-media-body">
-              <div class="pm-media-head"><span class="pm-rail-head">MEDIA LIBRARY</span><button id="pm-import"
-                  class="pm-import" type="button">+ Import</button></div>
-              <div class="pm-media-tabs" role="group" aria-label="Filter media by type">
-                <button class="pm-mtab" type="button" data-filter="all" aria-pressed="true">All</button>
-                <button class="pm-mtab" type="button" data-filter="image" aria-pressed="false">Images</button>
-                <button class="pm-mtab" type="button" data-filter="video" aria-pressed="false">Video</button>
-                <button class="pm-mtab" type="button" data-filter="audio" aria-pressed="false">Audio</button>
-              </div>
-              <div id="pm-replace-hint" class="pm-replace-hint" hidden>Pick an image to replace the selected
-                element · <button id="pm-replace-cancel" class="pm-linkbtn" type="button">Cancel</button></div>
-              <div class="pm-media-search"><span aria-hidden="true">⌕</span><label class="sr-only"
-                  for="pm-media-q">Search media</label><input id="pm-media-q" class="pm-media-q" type="search"
-                  placeholder="Search media…" /></div>
-              <div id="pm-media-grid" class="pm-media-grid" role="list" aria-label="Media assets"></div>
-              <div id="pm-media-audio-h" class="pm-media-sect">AUDIO</div>
-              <div id="pm-media-audio" class="pm-media-audio" role="list" aria-label="Audio tracks"></div>
-              <div class="pm-media-foot"><span id="pm-media-total">— of media</span><span id="pm-media-stats"
-                  class="pm-media-stats"></span></div>
-            </div>
-            <!-- Per-element Inspector (bound to the selected element) -->
-            <div id="pm-inspector-body" class="pm-inspector-body" hidden></div>
+        <!-- Right panel — the per-element Inspector. The media library is a MODAL picker now
+             (PRESENTATION-MEDIA-LIBRARY-MODAL-spec.md): opened from the toolbar Image button, the
+             button below, or Inspector → Replace…; built on demand by pmOpenMediaModal. -->
+        <aside class="pm-right" aria-label="Inspector">
+          <div class="pm-media-head"><span class="pm-rail-head">INSPECTOR</span><button id="pm-open-media"
+              class="pm-import" type="button" aria-haspopup="dialog"><span aria-hidden="true">🖼</span> Media library…</button></div>
+          <div id="pm-panel" class="pm-panel" role="region" aria-label="Element inspector">
+            <div id="pm-inspector-body" class="pm-inspector-body"></div>
           </div>
         </aside>
       </div>

@@ -1,5 +1,13 @@
 # Presentation & Media — Interaction & State Design Spec
 
+> **Amended 2026-10-01 — the media library is now a modal.** Everything below that places the
+> library in a permanent right-hand panel behind a Media/Inspector tab pair (§2 right-panel
+> switching, §5 library layout, and the Replace hint) is **superseded for layout** by
+> [`PRESENTATION-MEDIA-LIBRARY-MODAL-spec.md`](PRESENTATION-MEDIA-LIBRARY-MODAL-spec.md): the right
+> column is the Inspector only, and the library opens from the toolbar Image button, the right-column
+> header, or Inspector → Replace…. The tile **states** in §5 (missing, unused, in use, thumbnails)
+> still apply unchanged.
+
 > **Story:** 86ajvjqw4 · **Epic:** Presentation & Slides (86ajp07ce) · **Design:** Figma
 > `SYQn5hFY8YVQKm3c6rw0eJ` node **329:124** ("Presentation & Media — Design 2.0") + the **States**
 > section authored alongside it (§9). · **Implements design for:** 86ajvccqr (console UI, shipped/QA)
