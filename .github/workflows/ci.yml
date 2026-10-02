@@ -296,6 +296,13 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: implementation/desktop
+          # Save from `main` only (17tnw2b1f24). The cache key has no ref in it, so a pull
+          # request restores main's entry exactly; what it must not do is SAVE its own copy.
+          # Every PR run used to write a private 0.3-1.6 GB entry per job and OS, which put
+          # the repo over its 10 GB Actions cache limit and got main's own entries evicted,
+          # so main's jobs then started cold. Same line on every rust-cache step below;
+          # check_workflows.py fails the build if one is missing.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Linux system deps (winit/wgpu + software Vulkan for GPU parity)
         if: runner.os == 'Linux'
         run: |
@@ -582,6 +589,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: implementation/desktop
+          # Main saves, pull requests only restore -- see the `rust` job (17tnw2b1f24).
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Linux system deps (winit/wgpu + software Vulkan + Xvfb)
         if: runner.os == 'Linux'
         # libxkbcommon-x11: winit dlopens libxkbcommon-x11.so to create a real X11
@@ -676,6 +685,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: implementation/desktop/crates/selahcue-operator
+          # Main saves, pull requests only restore -- see the `rust` job (17tnw2b1f24).
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Linux system deps (Tauri v2 webview + ALSA for cpal)
         if: runner.os == 'Linux'
         run: |
@@ -912,6 +923,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: implementation/desktop/crates/selahcue-operator
+          # Main saves, pull requests only restore -- see the `rust` job (17tnw2b1f24).
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       # Same packages as `operator`'s "Linux system deps" step above, needed here for the
       # identical reason: this job compiles the same crate (Tauri webview deps) and, from the
       # stt,cloud-stt pair below, `cpal`'s ALSA backend (`libasound2-dev`).
