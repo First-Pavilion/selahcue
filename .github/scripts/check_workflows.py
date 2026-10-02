@@ -40,6 +40,11 @@ after them:
    The cache key has no ref in it, so a pull request restores main's entry exactly and
    gains nothing by saving its own.
 
+   `subosito/flutter-action` is covered too, differently: it has no `save-if`, so the rule
+   is that `cache:` is not switched on. Its SDK entry is 1.7 GB, the largest single entry
+   in the repo, and over 27 recent runs it hit 5 times (a hit saved about 35 s; a miss paid
+   about 20 s to save), so it cost more time than it saved.
+
    The rule is deliberately NOT "every rust-cache step in every workflow": a
    `workflow_dispatch`-only workflow (windows-installer.yml) cannot run on a pull
    request, is normally dispatched from a feature branch, and would be cold on every
@@ -49,11 +54,12 @@ after them:
    cannot pass for a decision.
 
 Known gaps, so the boundary is written down rather than assumed:
-   - Check 3 covers `Swatinem/rust-cache` only. Other steps that save to the Actions cache
-     (setup-node / setup-python `cache:`, subosito/flutter-action `cache:`, a bare
-     `actions/cache`) are not checked: the first three expose no `save-if` input (read
-     from their action.yml at the versions ci.yml pins), so there is no one-line fix to
-     enforce. See ClickUp 17tnw2b1f24 for their measured sizes.
+   - Check 3 covers `Swatinem/rust-cache` and `subosito/flutter-action` only. Other steps
+     that save to the Actions cache (setup-node / setup-python `cache:`, a bare
+     `actions/cache`) are not checked: the first two expose no `save-if` input (read from
+     their action.yml at the versions ci.yml pins) and their entries are about 26 MB each
+     per pull request, so there is no one-line fix worth enforcing. See ClickUp
+     17tnw2b1f24.
    - Check 3 keys on the `pull_request` / `pull_request_target` triggers. An unfiltered
      `push:` trigger would also save from feature branches and is not detected; ci.yml
      pushes on `main` only.
@@ -84,6 +90,7 @@ NO_CANCEL = "!cancelled()"
 STATUS_FN = re.compile(r"\b(success|always|failure|cancelled)\s*\(")
 # Check 3. GitHub action names are case-insensitive, so the comparison is on lower().
 RUST_CACHE = "swatinem/rust-cache"
+FLUTTER_ACTION = "subosito/flutter-action"
 PR_TRIGGERS = {"pull_request", "pull_request_target"}
 SAVE_IF_MAIN = "${{ github.ref == 'refs/heads/main' }}"
 # Exactly the main-only spellings, whole-value. A substring test would accept
@@ -192,12 +199,15 @@ def workflow_triggers(workflow: dict) -> set[str]:
 
 
 def cache_save_violations(workflow: dict, filename: str = "<workflow>") -> list[str]:
-    """`Swatinem/rust-cache` steps, in a pull-request-triggered workflow, that can save
-    from a pull request.
+    """Cache-saving steps, in a pull-request-triggered workflow, that can save from a
+    pull request: `Swatinem/rust-cache` without the main-only `save-if`, and
+    `subosito/flutter-action` with its built-in `cache:` switched on.
 
-    Only the canonical main-only `save-if` passes; a missing `with:`, a missing
-    `save-if`, a literal `true`, or an inverted expression is a violation. A workflow
-    with no pull-request trigger is exempt (see the module docstring for why).
+    For rust-cache only the canonical main-only `save-if` passes; a missing `with:`, a
+    missing `save-if`, a literal `true`, or an inverted expression is a violation. For
+    flutter-action the action has no `save-if`, so any `cache` other than absent or
+    literal false is a violation. A workflow with no pull-request trigger is exempt (see
+    the module docstring for why).
     """
     if not (workflow_triggers(workflow) & PR_TRIGGERS):
         return []
@@ -208,7 +218,20 @@ def cache_save_violations(workflow: dict, filename: str = "<workflow>") -> list[
         for step in job.get("steps") or []:
             if not isinstance(step, dict):
                 continue
-            if str(step.get("uses", "")).split("@")[0].lower() != RUST_CACHE:
+            action = str(step.get("uses", "")).split("@")[0].lower()
+            if action == FLUTTER_ACTION:
+                cache = str((step.get("with") or {}).get("cache", "")).strip().lower()
+                if cache not in ("", "false"):
+                    label = step.get("name") or step.get("uses", "<step>")
+                    out.append(
+                        f"{filename}: job `{name}` step `{label}` sets `cache: {cache}` on "
+                        f"subosito/flutter-action in a workflow that runs on pull requests. "
+                        f"The action has no `save-if`, so every pull request would save its "
+                        f"own Flutter SDK copy (about 1.7 GB) and the pub cache, and a hit "
+                        f"saves only about 35 s (17tnw2b1f24). Remove `cache:`."
+                    )
+                continue
+            if action != RUST_CACHE:
                 continue
             value = str((step.get("with") or {}).get("save-if", "")).strip()
             if MAIN_ONLY.match(value):
@@ -436,6 +459,48 @@ jobs:
     steps:
       - uses: actions/cache@v5
         with: {path: x, key: y}
+"""), 0),
+        # flutter-action has no save-if, so the only safe setting is no cache at all.
+        ("flutter-action with cache: true on a PR-triggered workflow is rejected", wf("""
+on: {pull_request: {}}
+jobs:
+  flutter:
+    steps:
+      - uses: subosito/flutter-action@v2
+        with: {channel: stable, cache: true}
+"""), 1),
+        ("flutter-action with a cache expression is rejected too", wf("""
+on: {pull_request: {}}
+jobs:
+  flutter:
+    steps:
+      - uses: subosito/flutter-action@v2
+        with:
+          cache: ${{ github.ref == 'refs/heads/main' }}
+"""), 1),
+        ("flutter-action with no cache input is accepted", wf("""
+on: {pull_request: {}}
+jobs:
+  flutter:
+    steps:
+      - uses: subosito/flutter-action@v2
+        with: {channel: stable}
+"""), 0),
+        ("flutter-action with cache: false is accepted", wf("""
+on: {pull_request: {}}
+jobs:
+  flutter:
+    steps:
+      - uses: subosito/flutter-action@v2
+        with: {channel: stable, cache: false}
+"""), 0),
+        ("flutter-action cache: true in a dispatch-only workflow is exempt", wf("""
+on: {workflow_dispatch: {}}
+jobs:
+  flutter:
+    steps:
+      - uses: subosito/flutter-action@v2
+        with: {cache: true}
 """), 0),
     ]
     failures = []
