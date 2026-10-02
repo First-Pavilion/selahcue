@@ -13,6 +13,7 @@ This root contains the Django + Strawberry backend for SelahCue Admin licensing,
 - **Customer authentication** (DEC-007 / ADR-0023): signup, email verification, login/logout, session refresh, password reset — opaque server-side hashed sessions, not JWT
 - **Device activation** `POST /v1/activations` — enrollment-key authed, instance-limit enforced, show-once device token
 - **Account-based activation** `activateDeviceWithSession` (GraphQL, ADMIN-only per DEC-005)
+- **Native-client account sign-in** `POST /v1/sessions` (email + password → session token) and `POST /v1/activations:with-session` (`Authorization: Bearer <session token>` → device token). These are what the desktop calls: `/graphql/account` authenticates from a session cookie, so it keeps CSRF enforced and a cookie-less native client cannot use it. The two routes are `csrf_exempt` because they read the session from the `Authorization` header only and never set a cookie. Wire contract: `docs/design/ACCOUNT-AUTH-API-HANDOFF.md`; decision and safety argument: ADR-0027 (86ak5t1gw).
 - **License refresh** `POST /v1/license:refresh` — device-token authed, pure read
 - **Signed offline entitlement** `GET /v1/entitlements/manifest` — see below
 

@@ -47,7 +47,9 @@ Traditional email/password auth. All keys are optional (the code falls back to t
 | `ACCOUNT_LOGIN_LOCKOUT_SECONDS` | no | no | `900` (15 min) | Lockout duration once the threshold trips. |
 | `ACCOUNT_MIN_PASSWORD_LENGTH` | no | no | `10` | Minimum password length at signup / reset. |
 
-> **Per-IP / distributed throttling** is an **edge/proxy responsibility** (reverse proxy or WAF rate-limit on `/graphql/account`) — the app enforces the durable per-user lockout above; a shared-store (Redis/DB) per-IP throttle is a tracked hardening follow-up, deliberately not an in-process cache (would not hold across worker processes and would add an unbounded structure).
+> **Native-client sign-in has its own app-level per-IP budget** (86ak5t1gw, ADR-0027): `POST /v1/sessions` is limited by `SELAHCUE_THROTTLE_SESSION_LOGIN` (default `(10, 60)` = 10 requests per minute per client IP) and `POST /v1/activations:with-session` by `SELAHCUE_THROTTLE_ACTIVATION` (default `(10, 60)`, its own bucket). Both depend on `SELAHCUE_TRUSTED_PROXY_COUNT` being set to the real proxy depth behind a reverse proxy, otherwise every caller shares the proxy's address. **An edge rule keyed on `/graphql/account` does not cover these paths — extend any such rule to `/v1/sessions` and `/v1/activations:with-session`.**
+
+> **Per-IP / distributed throttling** on the browser surface is an **edge/proxy responsibility** (reverse proxy or WAF rate-limit on `/graphql/account`) — the app enforces the durable per-user lockout above; a shared-store (Redis/DB) per-IP throttle is a tracked hardening follow-up, deliberately not an in-process cache (would not hold across worker processes and would add an unbounded structure).
 
 > **Email delivery** ships as an injectable no-op seam (`EmailSender`) — no SMTP creds today. The concrete provider + its `EMAIL_*` keys are added **in the change that wires them** (DEC-007 defers the provider choice).
 

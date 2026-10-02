@@ -584,6 +584,15 @@ def test_a_non_json_content_type_is_refused_before_any_credential_is_checked():
     user.refresh_from_db()
     assert user.failed_login_count == 0
 
+    # The same form post with the RIGHT password must not mint a session either.
+    right = native_client().post(
+        SESSIONS,
+        data=json.dumps({"email": EMAIL, "password": PASSWORD}),
+        content_type="text/plain",
+    )
+    assert right.status_code == 400
+    assert CustomerSession.objects.count() == 0
+
 
 @pytest.mark.django_db
 def test_a_non_json_content_type_is_refused_on_native_activation():
@@ -646,6 +655,30 @@ def test_native_routes_accept_post_only():
     for path in (SESSIONS, ACTIVATE):
         for method in ("get", "put", "delete"):
             assert getattr(native_client(), method)(path).status_code == 405
+
+
+@pytest.mark.django_db
+def test_native_routes_emit_no_cors_headers_so_a_cross_origin_page_cannot_use_them():
+    """The `application/json` requirement is only a defence because a cross-origin page needs a
+    CORS preflight to send it, and that preflight must FAIL. It does only while the API emits no
+    `Access-Control-*` headers (`settings.py`: CORS is deliberately not installed). If someone
+    enables CORS for these routes, this is the test that says the CSRF argument no longer holds."""
+    seed_admin_with_license()
+    origin = {"HTTP_ORIGIN": "https://evil.example"}
+
+    for path in (SESSIONS, ACTIVATE):
+        preflight = native_client().options(
+            path,
+            HTTP_ACCESS_CONTROL_REQUEST_METHOD="POST",
+            HTTP_ACCESS_CONTROL_REQUEST_HEADERS="content-type,authorization",
+            **origin,
+        )
+        assert preflight.status_code == 405
+        assert not [h for h in preflight.headers if h.lower().startswith("access-control-")]
+
+    actual = sign_in(native_client(), **origin)
+    assert actual.status_code == 200
+    assert not [h for h in actual.headers if h.lower().startswith("access-control-")]
 
 
 @pytest.mark.django_db
