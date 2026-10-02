@@ -429,6 +429,93 @@ def main() -> None:
             hash_landing("webkit", new_wk_context)
             wk.close()
 
+        # ---- a cold load on a #hash is corrected ONCE after the fonts reflow the page --------
+        # Inter (Google Fonts, display=swap) arrives after the router's first scroll and reflows the
+        # text, leaving the anchor 70-80px too low. `document.fonts` is replaced here by a promise the
+        # test releases by hand, and a spacer above the anchor stands in for the reflow, so the
+        # sequence is deterministic. `window.scrollTo` is wrapped to count the correction.
+        FONT_CONTROL = """
+        (() => {
+          let release; const ready = new Promise((r) => { release = r });
+          window.__releaseFonts = () => release();
+          Object.defineProperty(document, 'fonts', { configurable: true, get() { return { ready, status: 'loading' } } });
+          window.__instant = 0;
+          const st = window.scrollTo.bind(window);
+          window.scrollTo = function (...a) { const o = a[0]; if (o && typeof o === 'object' && o.behavior === 'instant') window.__instant++; return st(...a); };
+          window.__wheel = 0;
+          const add = window.addEventListener.bind(window), rem = window.removeEventListener.bind(window);
+          const cap = (o) => o === true || (o && o.capture === true);
+          window.addEventListener = function (t, h, o) { if (t === 'wheel' && cap(o)) window.__wheel++; return add(t, h, o); };
+          window.removeEventListener = function (t, h, o) { if (t === 'wheel' && cap(o)) window.__wheel--; return rem(t, h, o); };
+        })();
+        """
+        HEADING = "document.getElementById('sec-turn-it-on').getBoundingClientRect().top"
+        # Chrome's scroll anchoring would quietly compensate for the spacer (and hide the very
+        # displacement under test), so it is switched off for the stand-in reflow.
+        SHIFT = "document.documentElement.style.overflowAnchor = 'none'; document.body.style.overflowAnchor = 'none'; document.querySelector('.da-title').insertAdjacentHTML('beforebegin', '<div style=\"height:120px\"></div>')"
+
+        def cold(path_with_hash: str):
+            c = new_context(viewport={"width": 1440, "height": 900})
+            c.add_init_script(FONT_CONTROL)
+            page = c.new_page()
+            page.goto(base + path_with_hash, wait_until="networkidle")
+            page.wait_for_timeout(1000)  # let the router's smooth scroll finish
+            return c, page
+
+        ARTICLE = "/docs/display-outputs/ndi-output"
+        c, fp = cold(ARTICLE + "#sec-turn-it-on")
+        nav_bottom = fp.evaluate("document.querySelector('header').getBoundingClientRect().bottom")
+        placed = fp.evaluate(HEADING)
+        check("cold load on a #hash: the router put the heading the clearance below the navbar", nav_bottom + 8 <= placed <= nav_bottom + 40, f"{placed:.1f} vs navbar {nav_bottom:.1f}")
+        check("while the fonts load, exactly one input listener set is waiting", fp.evaluate("window.__wheel") == 1, str(fp.evaluate("window.__wheel")))
+        fp.evaluate(SHIFT)
+        shifted = fp.evaluate(HEADING)
+        check("the reflow stand-in pushes the anchor down", shifted > placed + 100, f"{placed:.1f} -> {shifted:.1f}")
+        fp.evaluate("window.__releaseFonts()")
+        fp.wait_for_timeout(400)
+        fixed = fp.evaluate(HEADING)
+        check("once the fonts are in, the anchor is put back where it belongs", abs(fixed - placed) < 3, f"{fixed:.1f} vs {placed:.1f}")
+        check("...with exactly one correction", fp.evaluate("window.__instant") == 1, str(fp.evaluate("window.__instant")))
+        fp.evaluate("window.__releaseFonts()")
+        fp.wait_for_timeout(300)
+        check("...and never a second one", fp.evaluate("window.__instant") == 1)
+        check("...and no input listener is left behind", fp.evaluate("window.__wheel") == 0, str(fp.evaluate("window.__wheel")))
+        c.close()
+
+        c, fp = cold(ARTICLE + "#sec-turn-it-on")
+        fp.evaluate(SHIFT)
+        fp.keyboard.press("Shift")  # the reader touches the keyboard before the fonts arrive
+        fp.evaluate("window.__releaseFonts()")
+        fp.wait_for_timeout(400)
+        check("if the reader used the keyboard while the fonts loaded, nothing is re-scrolled", fp.evaluate("window.__instant") == 0, str(fp.evaluate("window.__instant")))
+        check("...and its listeners are gone too", fp.evaluate("window.__wheel") == 0)
+        c.close()
+
+        c, fp = cold(ARTICLE)
+        fp.evaluate(SHIFT)
+        fp.evaluate("window.__releaseFonts()")
+        fp.wait_for_timeout(400)
+        check("a cold load with no #hash is never re-scrolled", fp.evaluate("window.__instant") == 0 and fp.evaluate("window.__wheel") == 0)
+        c.close()
+
+        c, fp = cold(ARTICLE + "#sec-turn-it-on")
+        fp.evaluate(SHIFT)
+        fp.wait_for_timeout(3300)  # past the 3 s bound
+        fp.evaluate("window.__releaseFonts()")
+        fp.wait_for_timeout(300)
+        check("fonts that arrive after the 3 s bound are not chased with a late jump", fp.evaluate("window.__instant") == 0 and fp.evaluate("window.__wheel") == 0)
+        c.close()
+
+        c = new_context(viewport={"width": 1440, "height": 900})
+        c.add_init_script(FONT_CONTROL)
+        hp = c.new_page()
+        hp.goto(base + "/#how-it-works", wait_until="networkidle")
+        hp.wait_for_timeout(800)
+        hp.evaluate("window.__releaseFonts()")
+        hp.wait_for_timeout(300)
+        check("pages outside blog/docs/support keep exactly the scroll the router gave them", hp.evaluate("window.__instant") == 0 and hp.evaluate("window.__wheel") == 0)
+        c.close()
+
         # ---- anchors and copy-to-clipboard ------------------------------------------------
         pg.goto(base + POST, wait_until="networkidle")
         pg.click("text=Copy link")
