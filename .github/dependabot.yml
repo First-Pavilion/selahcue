@@ -119,6 +119,14 @@ updates:
       - "api"
 
   # implementation/marketing — Vue SPA (npm, package.json).
+  #
+  # `typescript` 7.x is ignored. TypeScript 7 is the native (Go) port and no longer ships the
+  # `typescript/lib/tsc` JS entry point that `vue-tsc` resolves, so `vue-tsc -b` (the `npm run
+  # build` type-check of the `.vue` files) dies with `ERR_PACKAGE_PATH_NOT_EXPORTED`. The newest
+  # `vue-tsc` at the time (3.3.12, peer range `typescript >=5.0.0`) fails identically, so no `vue-tsc`
+  # release supports TS 7 yet and the break cannot be worked around in our own code (PR #118,
+  # closed). Remove this entry once a `vue-tsc` release supports TypeScript 7, then let Dependabot
+  # propose it again.
   - package-ecosystem: "npm"
     directory: "/implementation/marketing"
     schedule:
@@ -126,6 +134,9 @@ updates:
       day: "monday"
       time: "06:00"
       timezone: "UTC"
+    ignore:
+      - dependency-name: "typescript"
+        versions: ["7.x"]
     labels:
       - "dependencies"
       - "marketing"
