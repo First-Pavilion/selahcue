@@ -1,9 +1,93 @@
 <script setup lang="ts">
-// Footer component
+import { ref, onMounted, onBeforeUnmount } from 'vue'
+import { MOBILE_QUERY } from '@/lib/ui/breakpoints.ts'
+
+/**
+ * Footer link columns.
+ *
+ * Desktop (>= 1200) shows four columns in a row, tablet (768-1199) a 2x2 grid, and mobile
+ * (< 768) stacks them as collapsible sections -- tap a heading to expand (design 8c).
+ *
+ * The collapse is a MOBILE-ONLY behaviour, so it is driven by `isMobile` (matchMedia)
+ * rather than by CSS alone: above the breakpoint every column is always shown and the
+ * heading is plain text, not a control that does nothing. The visibility uses `v-show`
+ * (an inline `display: none`) rather than the `hidden` attribute, because a class-level
+ * `display` rule would defeat `hidden` -- the same WebKit-visible trap the operator
+ * webview has already hit.
+ */
+const columns = [
+  {
+    title: 'Product',
+    links: [
+      { to: '/features', label: 'Features' },
+      { to: '/pricing', label: 'Pricing' },
+      { to: '/download', label: 'Download' },
+      { to: '/how-it-works', label: 'How it works' },
+    ],
+  },
+  {
+    title: 'Resources',
+    links: [
+      { to: '/docs', label: 'Documentation' },
+      { to: '/support', label: 'Support' },
+      { to: '/blog', label: 'Blog' },
+      { to: '/changelog', label: 'Changelog' },
+    ],
+  },
+  {
+    title: 'Company',
+    links: [
+      { to: '/about', label: 'About' },
+      { to: '/careers', label: 'Careers' },
+      { to: '/contact', label: 'Contact' },
+      { to: '/affiliates', label: 'Affiliates' },
+    ],
+  },
+  {
+    title: 'Legal',
+    links: [
+      { to: '/privacy', label: 'Privacy Policy' },
+      { to: '/terms', label: 'Terms of Service' },
+    ],
+  },
+]
+
+const isMobile = ref(false)
+/** Titles of the sections the visitor has opened. Bounded: at most `columns.length`. */
+const open = ref<string[]>([])
+
+const isOpen = (title: string) => !isMobile.value || open.value.includes(title)
+
+const toggle = (title: string) => {
+  open.value = open.value.includes(title)
+    ? open.value.filter((t) => t !== title)
+    : [...open.value, title]
+}
+
+let query: MediaQueryList | null = null
+const sync = () => {
+  isMobile.value = query?.matches ?? false
+}
+
+// Read the query during setup so the first paint is already correct (no flash of expanded
+// columns on a phone). It is a client-only SPA, so `window` exists here.
+if (typeof window !== 'undefined' && typeof window.matchMedia === 'function') {
+  query = window.matchMedia(MOBILE_QUERY)
+  isMobile.value = query.matches
+}
+
+onMounted(() => {
+  query?.addEventListener('change', sync)
+})
+
+onBeforeUnmount(() => {
+  query?.removeEventListener('change', sync)
+  query = null
+})
 </script>
 
 <template>
-  <footer class="footer">
+  <footer :class="['footer', { 'is-mobile': isMobile }]">
     <div class="container footer-content">
       <div class="footer-top">
         <div class="brand-column">
@@ -13,40 +97,34 @@
           </router-link>
           <p class="tagline">Church presentation, reengineered</p>
         </div>
-        
-        <div class="links-grid">
-          <div class="link-column">
-            <h4 class="column-title">Product</h4>
-            <router-link to="/features" class="footer-link">Features</router-link>
-            <router-link to="/pricing" class="footer-link">Pricing</router-link>
-            <router-link to="/download" class="footer-link">Download</router-link>
-            <router-link to="/how-it-works" class="footer-link">How it works</router-link>
+
+        <nav class="links-grid" aria-label="Footer">
+          <div v-for="(column, index) in columns" :key="column.title" class="link-column">
+            <h3 class="column-title">
+              <button
+                v-if="isMobile"
+                type="button"
+                class="column-toggle"
+                :aria-expanded="isOpen(column.title)"
+                :aria-controls="`footer-col-${index}`"
+                @click="toggle(column.title)"
+              >
+                <span>{{ column.title }}</span>
+                <svg class="chevron" viewBox="0 0 20 20" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M5 8l5 5 5-5" />
+                </svg>
+              </button>
+              <template v-else>{{ column.title }}</template>
+            </h3>
+            <div v-show="isOpen(column.title)" :id="`footer-col-${index}`" class="column-links">
+              <router-link v-for="link in column.links" :key="link.to" :to="link.to" class="footer-link">
+                {{ link.label }}
+              </router-link>
+            </div>
           </div>
-          
-          <div class="link-column">
-            <h4 class="column-title">Resources</h4>
-            <router-link to="/docs" class="footer-link">Documentation</router-link>
-            <router-link to="/support" class="footer-link">Support</router-link>
-            <router-link to="/blog" class="footer-link">Blog</router-link>
-            <router-link to="/changelog" class="footer-link">Changelog</router-link>
-          </div>
-          
-          <div class="link-column">
-            <h4 class="column-title">Company</h4>
-            <router-link to="/about" class="footer-link">About</router-link>
-            <router-link to="/careers" class="footer-link">Careers</router-link>
-            <router-link to="/contact" class="footer-link">Contact</router-link>
-            <router-link to="/affiliates" class="footer-link">Affiliates</router-link>
-          </div>
-          
-          <div class="link-column">
-            <h4 class="column-title">Legal</h4>
-            <router-link to="/privacy" class="footer-link">Privacy Policy</router-link>
-            <router-link to="/terms" class="footer-link">Terms of Service</router-link>
-          </div>
-        </div>
+        </nav>
       </div>
-      
+
       <div class="footer-bottom">
         <p class="copyright">© 2026 SelahCue. All rights reserved.</p>
       </div>
@@ -104,13 +182,21 @@
   line-height: 1.5;
 }
 
+/* Tablet default: 2x2. `minmax(0, 1fr)` so a long link can never widen a track. */
 .links-grid {
   display: grid;
-  grid-template-columns: repeat(2, 1fr);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 40px 24px;
 }
 
 .link-column {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+}
+
+.column-links {
   display: flex;
   flex-direction: column;
   gap: 16px;
@@ -121,6 +207,39 @@
   font-weight: 600;
   font-size: 15px;
   margin: 0 0 4px 0;
+}
+
+.column-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  min-height: 48px;
+  padding: 0;
+  background: none;
+  border: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.column-toggle:focus-visible,
+.footer-link:focus-visible,
+.brand:focus-visible {
+  outline: 2px solid var(--sc-primary);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+.chevron {
+  flex-shrink: 0;
+  color: var(--sc-text-secondary);
+  transition: transform var(--transition-fast);
+}
+
+.column-toggle[aria-expanded='true'] .chevron {
+  transform: rotate(180deg);
 }
 
 .footer-link {
@@ -148,14 +267,79 @@
   margin: 0;
 }
 
-@media (min-width: 768px) {
+/* Desktop (>= 1200): the brand column sits beside the links, four across. Tablet (768-1199)
+   keeps the brand above a 2x2 grid (the base styles); mobile is the `.is-mobile` block below. */
+@media (min-width: 1200px) {
   .links-grid {
-    grid-template-columns: repeat(4, 1fr);
+    grid-template-columns: repeat(4, minmax(0, 1fr));
   }
-  
+
   .footer-top {
     flex-direction: row;
     justify-content: space-between;
+  }
+}
+
+/* 44px lockup target on phones and coarse pointers only: at desktop it would push the
+   tagline down 12px and change the designed footer. */
+.footer.is-mobile .brand {
+  min-height: 44px;
+}
+
+@media (pointer: coarse) {
+  .brand {
+    min-height: 44px;
+  }
+}
+
+/* Mobile: one stacked column of collapsible sections.
+   Driven by `.is-mobile` (set from MOBILE_QUERY in the script), NOT by a CSS media query:
+   the collapse behaviour in JS and the stacked layout in CSS must flip at the same width,
+   and a second hand-typed breakpoint here is exactly how they would drift apart. */
+.footer.is-mobile {
+  padding-top: var(--section-pad);
+}
+
+.footer.is-mobile .footer-top {
+  gap: 32px;
+  margin-bottom: 32px;
+}
+
+.footer.is-mobile .links-grid {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0;
+  border-top: 1px solid var(--sc-border);
+}
+
+.footer.is-mobile .link-column {
+  gap: 0;
+  border-bottom: 1px solid var(--sc-border);
+}
+
+.footer.is-mobile .column-title {
+  margin: 0;
+}
+
+.footer.is-mobile .column-links {
+  gap: 0;
+  padding-bottom: 8px;
+}
+
+/* 44px+ rows. Flex + min-height on the <a> so the whole row taps. */
+.footer.is-mobile .footer-link {
+  display: flex;
+  align-items: center;
+  min-height: 44px;
+  font-size: 15px;
+}
+
+.footer.is-mobile .footer-bottom {
+  padding-block: 24px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chevron {
+    transition: none;
   }
 }
 </style>

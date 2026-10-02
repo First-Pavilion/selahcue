@@ -17,7 +17,8 @@
     "check:legal": "node scripts/sync_legal.ts --check",
     "test:legal-pages": "npm run build && python3 scripts/legal_pages_headless.py",
     "test:mirrors": "python3 scripts/service_text_reference.py",
-    "test:states": "npm run build && python3 scripts/auth_pages_headless.py"
+    "test:states": "npm run build && python3 scripts/auth_pages_headless.py",
+    "test:responsive": "npm run build && python3 scripts/responsive_sweep.py"
   },
   "dependencies": {
     "vue": "^3.5.43",

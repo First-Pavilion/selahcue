@@ -75,7 +75,7 @@ const recentSignups = ref([
 </template>
 
 <style scoped>
-.kpi-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 20px; margin-bottom: 32px; }
+.kpi-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 20px; margin-bottom: 32px; }
 .kpi-card { background: var(--sc-surface); border: 1px solid var(--sc-border); border-radius: 14px; padding: 24px; display: flex; flex-direction: column; gap: 6px; }
 .kpi-label { font-size: 12px; font-weight: 600; color: var(--sc-text-muted); text-transform: uppercase; letter-spacing: 0.05em; }
 .kpi-value { font-size: 32px; font-weight: 800; color: var(--sc-text); }
@@ -89,9 +89,20 @@ const recentSignups = ref([
 .section-block h2 { font-size: 18px; font-weight: 700; color: var(--sc-text); margin: 0 0 16px 0; }
 .customer-link { font-weight: 600; color: var(--sc-text); text-decoration: none; }
 .customer-link:hover { color: var(--sc-primary); text-decoration: underline; }
+@media (max-width: 767.98px), (pointer: coarse) {
+  .customer-link { display: inline-flex; align-items: center; min-height: 44px; }
+}
 code { font-family: monospace; color: var(--sc-gold); }
 
-@media (max-width: 1100px) {
-  .kpi-grid { grid-template-columns: repeat(2, 1fr); }
+@media (max-width: 1199.98px) {
+  .kpi-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+@media (max-width: 767.98px) {
+  .kpi-grid { grid-template-columns: minmax(0, 1fr); gap: 12px; margin-bottom: 24px; }
+  .kpi-card { padding: 18px 20px; }
+  .kpi-value { font-size: 28px; }
+  .alert-strip { padding: 14px 16px; margin-bottom: 24px; }
+  .alert-item { align-items: flex-start; }
 }
 </style>
