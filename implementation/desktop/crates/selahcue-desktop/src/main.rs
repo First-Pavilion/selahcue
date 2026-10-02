@@ -1514,6 +1514,85 @@ impl OutputTelemetry {
     }
 }
 
+/// Rate-limited reporter for a redraw that waited on, or held, the controller lock for
+/// suspiciously long.
+///
+/// WHY IT EXISTS. `RedrawRequested` holds the controller `Mutex` across the whole present —
+/// the GPU upload, `surface.get_current_texture()` and `queue.present` — because the live frame
+/// it draws is borrowed out of the guard. The LAN command handler takes the SAME mutex for every
+/// command, so a present that blocks (on macOS the Metal layer is configured with no
+/// next-drawable timeout, so an acquire against a display that is asleep or not consuming frames
+/// can wait indefinitely) also blocks every reply to the operator console. The console's client
+/// declares the host dead after 2 s with no reply, which is the "Host unreachable" disconnect.
+/// That chain is a hypothesis built from reading the code, not an observation: this reporter is
+/// what turns it into one. A long WAIT points at another thread (a slow LAN command) as the
+/// holder; a long HOLD with a long acquire points at the GPU/compositor.
+///
+/// Bounded by construction: the state is one `Option<Instant>` and one counter. A blocked
+/// acquire is retried by the paced frame loop, so without the rate limit a stall would write a
+/// line to stderr at ~60 Hz for as long as it lasted. What the limiter drops is counted and
+/// reported with the next line rather than lost. The clock is injected (`now`) like every other
+/// time-dependent piece of this crate.
+#[derive(Debug, Default)]
+struct StallReporter {
+    last_report: Option<Instant>,
+    suppressed: u64,
+}
+
+impl StallReporter {
+    /// The longest wait-or-hold that is still ordinary. A paced 60 Hz frame takes ~16 ms, so this
+    /// is ~15 frames; and it is well inside the operator link's 2 s command timeout
+    /// (`selahcue-lan`'s `ControlClient::COMMAND_TIMEOUT`), so the line appears BEFORE the link is
+    /// declared dead rather than only explaining it afterwards. Both bounds are pinned at compile
+    /// time in the tests.
+    const THRESHOLD: Duration = Duration::from_millis(250);
+
+    /// The quiet window after a report, during which further stalls are only counted.
+    const MIN_INTERVAL: Duration = Duration::from_secs(1);
+
+    /// Feed one redraw's worst figure (`waited.max(held)`). Returns `Some(n)` when a line should
+    /// be written now, `n` being how many stalls the rate limit swallowed since the previous
+    /// line; `None` when the redraw was ordinary or is inside the quiet window.
+    fn observe(&mut self, now: Instant, worst: Duration) -> Option<u64> {
+        if worst < Self::THRESHOLD {
+            return None;
+        }
+        if let Some(last) = self.last_report {
+            if now.saturating_duration_since(last) < Self::MIN_INTERVAL {
+                self.suppressed = self.suppressed.saturating_add(1);
+                return None;
+            }
+        }
+        self.last_report = Some(now);
+        Some(std::mem::take(&mut self.suppressed))
+    }
+}
+
+/// The one line a stall writes to stderr. It carries every figure needed to tell the causes apart
+/// (see [`StallReporter`]), because it is what gets pasted back from a user's terminal.
+fn describe_redraw_stall(
+    role: &str,
+    waited: Duration,
+    held: Duration,
+    acquire: Duration,
+    suppressed: u64,
+) -> String {
+    let mut line = format!(
+        "SelahCue: output stall: the {role} window waited {} ms for the controller lock, then \
+         held it for {} ms (surface acquire {} ms). LAN commands from the operator console are \
+         blocked while it is held.",
+        waited.as_millis(),
+        held.as_millis(),
+        acquire.as_millis(),
+    );
+    if suppressed > 0 {
+        line.push_str(&format!(
+            " ({suppressed} similar stall(s) since the last report.)"
+        ));
+    }
+    line
+}
+
 /// Apply a screen's per-output GEOMETRIC config to its composed frame, targeting the
 /// `win_w × win_h` output surface: rotate (orientation) → mirror → fit (scaling). Returns
 /// `None` when the config is geometrically default (orientation 0, no mirror, `Fill`) so the
@@ -1639,6 +1718,11 @@ struct Renderer {
     frame_texture: Option<(wgpu::Texture, u32, u32)>,
     /// Measured present telemetry (Screens page signal-health).
     telemetry: OutputTelemetry,
+    /// How long the most recent `surface.get_current_texture()` took. Reset to zero at the top of
+    /// every [`Renderer::present_output`], so a frame that never reached the acquire (a
+    /// frame-rate skip) cannot report a stale figure. Read only by the stall report in
+    /// `RedrawRequested` (see [`StallReporter`]).
+    last_acquire: Duration,
 }
 
 impl Renderer {
@@ -1748,6 +1832,7 @@ impl Renderer {
             sampler,
             frame_texture: None,
             telemetry: OutputTelemetry::new(),
+            last_acquire: Duration::ZERO,
         })
     }
 
@@ -1825,7 +1910,10 @@ impl Renderer {
         // validation error) just skips the frame. The paced frame loop (`new_events`)
         // re-requests a paint next frame, so we do NOT request one here — doing so would
         // busy-spin while the surface can't present.
-        let surface_frame = match self.surface.get_current_texture() {
+        let acquire_started = Instant::now();
+        let acquired = self.surface.get_current_texture();
+        self.last_acquire = acquire_started.elapsed();
+        let surface_frame = match acquired {
             wgpu::CurrentSurfaceTexture::Success(frame)
             | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => frame,
             wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
@@ -1874,6 +1962,7 @@ impl Renderer {
     /// (the configured interval has not elapsed) is intentional — it returns `false` but is
     /// NOT counted as a dropped frame.
     fn present_output(&mut self, base: &FrameBuffer, cfg: &OutputConfigView, now: Instant) -> bool {
+        self.last_acquire = Duration::ZERO;
         // Frame-rate gate. Default 60fps at the 60 Hz loop never gates (5% slack); only an
         // explicitly LOWER target skips presents.
         let target = cfg.frame_rate.max(1) as f32;
@@ -2002,6 +2091,9 @@ struct App {
     /// condition so a fault that lasts a whole service counts as one hold, not as one per
     /// frame.
     output_faults: FaultLatch,
+    /// Rate-limited stderr report for a redraw that waited on or held the controller lock for
+    /// too long. One reporter for both windows, so the two outputs share the quiet window.
+    stall_reporter: StallReporter,
 }
 
 /// Apply one command to the shared controller (a poisoned lock just drops the input
@@ -2438,6 +2530,7 @@ impl App {
             ndi_frames: std::collections::HashMap::new(),
             open_failures: OpenFailures::default(),
             output_faults: FaultLatch::default(),
+            stall_reporter: StallReporter::default(),
         }
     }
 
@@ -3215,9 +3308,14 @@ impl ApplicationHandler for App {
                 } else {
                     self.identify_frames = None;
                 }
+                // Timed so a present that blocks while holding this lock is visible rather than
+                // inferred (see [`StallReporter`]): the LAN handler takes the same mutex, so a
+                // long WAIT here means another thread held it, a long HOLD means the present did.
+                let wait_started = Instant::now();
                 let Ok(c) = self.controller.lock() else {
                     return;
                 };
+                let lock_acquired = Instant::now();
                 // Each window presents its own surface from the same shared live state.
                 // A DISABLED built-in screen has NO window at all (see `close_screen`), so
                 // there is nothing to mute here — a redraw only ever arrives for a window
@@ -3226,7 +3324,8 @@ impl ApplicationHandler for App {
                 // Match on the window that raised this redraw. A stale event for a window
                 // closed a moment ago matches neither and is dropped — it must never present
                 // one screen's composition on the other's surface.
-                match self.window_role_of(id) {
+                let role = self.window_role_of(id);
+                match role {
                     Some(WindowRole::Main) => {
                         let live = c.presenter().live_output();
                         let cfg = c.output_config("main");
@@ -3254,6 +3353,35 @@ impl ApplicationHandler for App {
                         }
                     }
                     None => {}
+                }
+                // Release the lock BEFORE measuring and reporting: a stderr that is itself slow
+                // must never extend the very stall being reported.
+                drop(c);
+                let held = lock_acquired.elapsed();
+                let waited = lock_acquired.duration_since(wait_started);
+                if let Some(suppressed) = self
+                    .stall_reporter
+                    .observe(Instant::now(), waited.max(held))
+                {
+                    let (label, acquire) = match role {
+                        Some(WindowRole::Main) => (
+                            "main",
+                            self.main
+                                .as_ref()
+                                .map_or(Duration::ZERO, |r| r.last_acquire),
+                        ),
+                        Some(WindowRole::Stage) => (
+                            "stage",
+                            self.stage
+                                .as_ref()
+                                .map_or(Duration::ZERO, |r| r.last_acquire),
+                        ),
+                        None => ("closed", Duration::ZERO),
+                    };
+                    eprintln!(
+                        "{}",
+                        describe_redraw_stall(label, waited, held, acquire, suppressed)
+                    );
                 }
             }
             WindowEvent::KeyboardInput {
@@ -4764,6 +4892,130 @@ mod autosave_restore_tests {
 
 #[cfg(test)]
 mod tests {
+    use std::time::{Duration, Instant};
+
+    const _: () = assert!(
+        super::StallReporter::THRESHOLD.as_millis() < 2000,
+        "the report must fire BEFORE the operator link's 2 s command timeout declares the host dead, \
+         otherwise it only ever explains a disconnect after the fact"
+    );
+    const _: () = assert!(
+        super::StallReporter::THRESHOLD.as_millis() >= 100,
+        "a paced 60 Hz frame takes ~16 ms; a threshold of a few frames would report ordinary jitter"
+    );
+
+    /// A normal frame must stay silent and a real stall must speak — and the threshold is the ONLY
+    /// thing separating the two, so the "speaks" half is the positive control: without it a
+    /// reporter that never fires would pass the "silent" half and every other test here vacuously.
+    #[test]
+    fn a_normal_frame_is_silent_and_a_stall_is_reported() {
+        let mut r = super::StallReporter::default();
+        let t0 = Instant::now();
+        let just_under = super::StallReporter::THRESHOLD - Duration::from_millis(1);
+        assert_eq!(
+            r.observe(t0, super::StallReporter::THRESHOLD),
+            Some(0),
+            "a stall AT the threshold was not reported — the reporter is dead, so the silence \
+             asserted below proves nothing"
+        );
+        // A fresh reporter, so the rate limiter cannot be what made the frame below silent.
+        let mut fresh = super::StallReporter::default();
+        assert_eq!(
+            fresh.observe(t0, just_under),
+            None,
+            "a frame just under the threshold must not be reported"
+        );
+        assert_eq!(
+            fresh.observe(t0, Duration::from_millis(16)),
+            None,
+            "an ordinary 60 Hz frame must not be reported"
+        );
+    }
+
+    /// A blocked surface acquire is retried by the paced frame loop, so without a rate limit a
+    /// stall would write a line to stderr at ~60 Hz for as long as it lasts — and a stderr that is
+    /// itself slow (a terminal under load, a full pipe) would then become a second stall. The
+    /// state is a fixed-size struct (an `Option<Instant>` and one counter): nothing is buffered, so
+    /// there is nothing to grow, and what the limiter drops is COUNTED rather than lost.
+    #[test]
+    fn a_repeating_stall_is_rate_limited_and_the_dropped_reports_are_counted() {
+        let mut r = super::StallReporter::default();
+        let t0 = Instant::now();
+        let stall = super::StallReporter::THRESHOLD * 4;
+        assert_eq!(
+            r.observe(t0, stall),
+            Some(0),
+            "the first stall must be reported"
+        );
+
+        // 59 further redraws at 60 Hz, all inside the quiet window: none may speak. Pin the
+        // premise so a changed MIN_INTERVAL cannot silently turn this loop into one that never
+        // leaves the window.
+        let frame = Duration::from_millis(16);
+        assert!(frame * 59 < super::StallReporter::MIN_INTERVAL);
+        for i in 1..=59u32 {
+            assert_eq!(
+                r.observe(t0 + frame * i, stall),
+                None,
+                "redraw {i} inside the quiet window was reported — a stalled acquire retried every \
+                 frame would flood stderr"
+            );
+        }
+
+        // Once the window has passed it speaks again, and says how many it swallowed.
+        assert_eq!(
+            r.observe(t0 + super::StallReporter::MIN_INTERVAL, stall),
+            Some(59),
+            "the report after the quiet window must carry the number of suppressed stalls"
+        );
+        // …and the count was reset by speaking: it is a per-report figure, not a lifetime total.
+        assert_eq!(
+            r.observe(t0 + super::StallReporter::MIN_INTERVAL * 2, stall),
+            Some(0),
+            "the suppressed count must reset once it has been reported"
+        );
+    }
+
+    /// The line is what gets pasted back from a user's terminal, so it has to carry every figure
+    /// that tells the two causes apart: a long WAIT means another thread (a slow LAN command) held
+    /// the lock; a long HOLD with a long ACQUIRE means the GPU/compositor blocked the present.
+    #[test]
+    fn the_stall_line_carries_every_figure_needed_to_tell_the_causes_apart() {
+        let line = super::describe_redraw_stall(
+            "main",
+            Duration::from_millis(7),
+            Duration::from_millis(1843),
+            Duration::from_millis(1840),
+            0,
+        );
+        for needle in [
+            "main",
+            "waited 7 ms",
+            "held it for 1843 ms",
+            "acquire 1840 ms",
+        ] {
+            assert!(
+                line.contains(needle),
+                "stall line is missing `{needle}`: {line}"
+            );
+        }
+        assert!(
+            !line.contains("similar"),
+            "with nothing suppressed the line must not claim earlier stalls: {line}"
+        );
+
+        let with_dropped = super::describe_redraw_stall(
+            "stage",
+            Duration::ZERO,
+            Duration::from_millis(500),
+            Duration::from_millis(1),
+            59,
+        );
+        assert!(
+            with_dropped.contains("59 similar"),
+            "suppressed stalls must be named: {with_dropped}"
+        );
+    }
 
     /// The storage guard's verdict must reach the operator as FOUR outcomes, not three.
     ///
