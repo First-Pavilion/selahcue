@@ -279,7 +279,9 @@ Figma frame `1135:78` — the **entire real card cloned from `348:124`**, not re
 
 **Corrected privacy copy.** The old line — "Only your completed transcript is sent for processing — never live audio, and never during the service. Nothing is sent until you press Generate." — was untrue in two ways: there was no way to "press Generate" on this card to trigger the send (once Generate is removed, that clause is simply dead), and even when the button existed, this card actually sent a 60-segment tail (`window.scCompletedTranscript`, `OPERATOR_TRANSCRIPT_TAIL = 60`), not the complete transcript. The new line states what the *system* does, truthfully, in a form that doesn't go stale the moment this card's own controls change:
 
-> "Only a saved, ended service's complete transcript is sent — never live audio, never during the service, and never a recent-segments window. Subject to a 400,000-character limit."
+> "Sermon notes are made from text only: the complete saved transcript of a recording that has ended, up to 400,000 characters. Nothing is sent while that transcript is still recording, and nothing is sent until you review the exact text and confirm. Cloud transcription (above) is a separate setting and does stream microphone audio while it is on."
+
+**Superseded wording (owner decision, from the privacy review of PR #129):** the earlier draft of this line — "…never live audio, never during the service, and never a recent-segments window…" — overclaimed. Stopping listening ends a transcript, so a transcript from the first half of a still-running service can legitimately be sent, and "never live audio" sat next to a card offering cloud transcription, which does stream audio. The sentence above says only what the code enforces.
 
 This wording is anchored to the actual data path (`transcript_generate_notes`, stored text, `selahcue-cloud/src/transcript_bounds.rs:26`'s 400,000-character cap) rather than to this card's own UI, so it stays true regardless of which screen initiates generation.
 
