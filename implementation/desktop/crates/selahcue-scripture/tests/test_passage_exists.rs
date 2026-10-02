@@ -18,13 +18,14 @@
 use selahcue_core::scripture::{book_name, parse_one, Reference, VerseRange};
 use selahcue_scripture::{passage_exists_in, verses_in, Translation};
 
-const BUNDLED: [Translation; 5] = [
-    Translation::Kjv,
-    Translation::Web,
-    Translation::Asv,
-    Translation::Webbe,
-    Translation::Dby,
-];
+/// Every translation compiled into the binary, derived rather than listed, so a sixth bundled
+/// translation joins the sweep (and the per-translation checks) automatically.
+fn bundled() -> Vec<Translation> {
+    Translation::ALL
+        .into_iter()
+        .filter(|t| !t.is_downloadable())
+        .collect()
+}
 
 fn reference(book: u8, chapter: u16, verses: Option<(u16, u16)>) -> Reference {
     Reference {
@@ -58,7 +59,7 @@ fn the_probe_agrees_with_the_corpus_on_every_chapter_boundary_and_gap() {
     let mut absent = 0usize;
     let mut gap_chapters = 0usize;
 
-    for t in BUNDLED {
+    for t in bundled() {
         for book in 0u8..=70 {
             // Two chapters past the end of the book, plus chapter 0 and a far-out one.
             let last_chapter = (1u16..=151)
@@ -141,15 +142,17 @@ fn the_probe_agrees_with_the_corpus_on_every_chapter_boundary_and_gap() {
     );
     assert!(
         gap_chapters >= 26,
-        "only {gap_chapters} gapped chapters were swept; the corpus has 26 (WEB 4, ASV 15, \
-         WEBBE 4, DBY 3) — the gap handling went unexercised"
+        "only {gap_chapters} gapped chapters were swept; this floor is pinned to the CURRENT \
+         assets, which have 26 (WEB 4, ASV 15, WEBBE 4, DBY 3) — fewer means the gap handling \
+         went unexercised, or an asset was legitimately replaced with one that has fewer gaps, \
+         in which case re-derive the floor from the new assets rather than deleting it"
     );
 }
 
 #[test]
 fn a_passage_that_parses_but_names_no_verse_does_not_exist() {
     // The defect 1840f1c fixed, restated against the probe itself: all well-formed, none presentable.
-    for t in BUNDLED {
+    for t in bundled() {
         for bad in [
             "Jude 2:1",
             "Romans 99:1",
@@ -168,7 +171,7 @@ fn a_passage_that_parses_but_names_no_verse_does_not_exist() {
 
 #[test]
 fn real_passages_exist_in_every_bundled_translation() {
-    for t in BUNDLED {
+    for t in bundled() {
         for good in [
             "Jude 1:1",
             "Jude 1",
@@ -244,7 +247,7 @@ fn a_verse_one_translation_omits_is_missing_there_and_present_in_the_others() {
 
 #[test]
 fn a_reference_outside_the_canon_does_not_exist() {
-    for t in BUNDLED {
+    for t in bundled() {
         for (book, chapter) in [(0u8, 1u16), (67, 1), (255, 1), (1, 0), (43, 0), (66, 23)] {
             assert!(
                 !passage_exists_in(t, &reference(book, chapter, None)),
