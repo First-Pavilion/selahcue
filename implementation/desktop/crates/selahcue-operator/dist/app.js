@@ -4268,10 +4268,13 @@
           if (window.__gsearch) window.__gsearch.open();
           return;
         }
-        // Global ⌘/Ctrl+1–8 jump to the eight navigable sections in menu order — makes the menu's
+        // Global ⌘/Ctrl+1–7 jump to the seven navigable sections in menu order — makes the menu's
         // ⌘N badges and the Shortcuts reference REAL. Works whether the menu is open or not.
-        // (86akcffvt added Transcripts as the 8th entry — raised from 7.)
-        if (mod && !e.shiftKey && !e.altKey && e.key >= "1" && e.key <= "8") {
+        // (17tnw2b0ntd, D2: the separate ⌘8 "Transcripts" item was removed — ⌘7 "Transcript &
+        // Notes" now carries both jobs, back down to 7 digit-eligible entries. The upper bound
+        // below is "7" to match, and the Shortcuts overlay says ⌘1–7; chords stay derived from live
+        // DOM order, so the bound only needs to change if a menu item is ever added back.)
+        if (mod && !e.shiftKey && !e.altKey && e.key >= "1" && e.key <= "7") {
           const targets = navItems.filter(
             (it) =>
               it.dataset.surface &&
@@ -4288,7 +4291,7 @@
           }
         }
         // CON-080: Settings carries the fixed ⌘/Ctrl+, chord (macOS "Preferences" convention)
-        // rather than a menu-order digit — it opts out of the ⌘1–8 derivation above via
+        // rather than a menu-order digit — it opts out of the ⌘1–7 derivation above via
         // data-nodigit, so this is the only way to reach it by keyboard shortcut.
         if (mod && !e.shiftKey && !e.altKey && e.key === ",") {
           const settingsItem = navItems.find((it) => it.dataset.surface === "settings");
@@ -4478,24 +4481,11 @@
           all.length > MAX_TRANSCRIPT_ROWS ? all.slice(-MAX_TRANSCRIPT_ROWS) : all;
         const partial =
           typeof view.partial_transcript === "string" ? view.partial_transcript : "";
-        // Bridge to the Providers & Privacy "Generate" flow (settings.js), which owns no
-        // transcript store of its own and reads this global rather than a second channel
-        // (86akby7d8 defect 1: nothing ever set this before, so every Generate click sent ""
-        // and billed for a fully fabricated draft). FINALISED segments only — never `partial`,
-        // which by definition is not yet part of the "completed transcript" FR-132 promises is
-        // all that's ever sent. `all` is already the host-tailed bounded list
-        // (OPERATOR_TRANSCRIPT_TAIL), so this stays bounded exactly like the rendered log does:
-        // it is the recent tail, not a persisted full-service transcript — no such store exists
-        // on the frontend yet (that's FR-130's post-service workspace, not built here).
-        //
-        // Maps `segs` (the same MAX_TRANSCRIPT_ROWS-capped list #transcript-log renders from),
-        // not the unsliced `all` (L-3, Vera): nothing bites today — the 240-segment core log
-        // bounds `all` upstream and the 400k clamp bounds the request downstream — but bridging
-        // from the same capped list keeps this bound symmetric with the DOM cap that exists for
-        // exactly the case (a misbehaving/older/newer host skipping its own tail) that cap is for.
-        window.scCompletedTranscript = segs
-          .map((s) => (s && typeof s.text === "string") ? s.text : "")
-          .join("\n");
+        // 17tnw2b0ntd: the `window.scCompletedTranscript` bridge that used to live here was
+        // removed along with the Providers & Privacy "Generate" flow it fed (settings.js) — the
+        // ONE remaining generation entrypoint is the Transcripts page's `transcript_generate_notes`
+        // command, which reads the complete STORED transcript by id, never a live-tail bridge off
+        // this poll. Nothing in the frontend reads or sets that global any more.
         const empty = document.getElementById("transcript-empty");
         // The live in-progress line (streaming interim). Updated EVERY poll — before the log's
         // change-key early-return — so recognised words appear as they're spoken even when the
@@ -5970,7 +5960,7 @@
           }
           cmds.push({ section: "ACTIONS", label: "Keyboard shortcuts", ico: "⌨", run: () => openShortcuts() });
           // NAVIGATE — the whole top-level app menu, mirrored with each item's real icon + ⌘ badge
-          // (read from the menu DOM, so it stays in sync with the ⌘1–⌘8 order automatically).
+          // (read from the menu DOM, so it stays in sync with the ⌘1–⌘7 order automatically).
           navItems.forEach((it) => {
             if (!it.dataset.surface || it.getAttribute("aria-disabled") === "true") return;
             const t = it.querySelector(".nav-t");
@@ -6989,6 +6979,20 @@
         }
       }
 
+      // Say something about a media action: a warning (`warn`) is the persistent error banner, anything
+      // else a brief status toast, and empty text clears the banner. While the media modal is open
+      // (Import and Remove both live there) it goes into the modal's own status line instead — the toast
+      // and banner sit BEHIND its scrim and would never be seen.
+      function pmSay(warn, text) {
+        if (pmMediaModal) {
+          const note = pmEl("pm-media-note");
+          if (note) { note.hidden = !text; note.textContent = text || ""; note.classList.toggle("warn", !!warn); }
+          return;
+        }
+        if (warn) pmShowErrorRaw(text);
+        else { pmClearError(); if (text) pmToast(text); }
+      }
+
       // What an import did, from the host's `import_report` ({imported, skipped:[{name, reason}],
       // saved}). A clean import is a brief status toast; anything skipped is a persistent banner
       // naming the file and the reason (a refusal is final and specific — it is not "please retry"),
@@ -6999,19 +7003,13 @@
       // While the media modal is open (it is where Import lives) the report goes into the modal's own
       // status line instead: the toast and banner sit BEHIND its scrim and would never be seen.
       function pmShowImportReport(rep) {
-        const say = (warn, text) => {
-          if (pmMediaModal) {
-            const note = pmEl("pm-media-note");
-            if (note) { note.hidden = !text; note.textContent = text || ""; note.classList.toggle("warn", !!warn); }
-            return;
-          }
-          if (warn) pmShowErrorRaw(text);
-          else { pmClearError(); if (text) pmToast(text); }
-        };
+        const say = pmSay;
         if (!rep) { say(false, ""); return; }
         const n = rep.imported || 0;
         const skipped = rep.skipped || [];
-        const unsaved = rep.saved === false ? " These won’t be kept after you quit." : "";
+        // Only when something DID land: a batch the host rolled back because the registry could not
+        // be written has imported nothing, and "these won't be kept" would describe nothing.
+        const unsaved = rep.saved === false && n > 0 ? " These won’t be kept after you quit." : "";
         if (!skipped.length) {
           say(false, n ? "Imported " + n + " image" + (n === 1 ? "" : "s") + "." + unsaved : "");
           return;
@@ -7019,6 +7017,41 @@
         const shown = skipped.slice(0, 3).map((s) => s.name + " — " + s.reason).join("; ");
         const more = skipped.length > 3 ? " (+" + (skipped.length - 3) + " more)" : "";
         say(true, (n ? "Imported " + n + ". " : "") + "Skipped " + skipped.length + ": " + shown + more + "." + unsaved);
+      }
+
+      // Remove an asset from the media library. Like the import it is NOT a plain `pAct`: the host
+      // refuses with a SPECIFIC reason when the library cannot be saved ("the disk may be full or
+      // read-only" — nothing was removed), which is final text to show, not "please retry"; and a
+      // success carries a `remove_report` saying whether the stored picture file was kept for other
+      // presentations. `pmLastAct` is set so the banner's Retry re-runs THIS removal, not whatever
+      // deck action happened to come before it.
+      async function pmRemoveMedia(id) {
+        pmLastAct = { fn: () => invoke("deck_remove_media", { id: id }), opName: "remove the media" };
+        pmSetBusy(true);
+        try {
+          pmDv = await invoke("deck_remove_media", { id: id });
+          pmSay(false, "");
+          renderPresentation(pmDv);
+          pmShowRemoveReport(pmDv && pmDv.remove_report);
+        } catch (e) {
+          console.error("[SelahCue] deck action failed", e);
+          pmSay(true, String(e && e.message ? e.message : e));
+        } finally {
+          pmSetBusy(false);
+        }
+      }
+
+      // What a removal did to the stored file, from the host's `remove_report`. Silent when the file
+      // was deleted (the tile simply leaves the grid); a toast when it was KEPT, because the picture
+      // is still on disk and still showing in the presentations that use it.
+      function pmShowRemoveReport(rep) {
+        if (!rep || !rep.removed) return;
+        const decks = rep.kept_for_decks || 0;
+        if (decks > 0) {
+          pmSay(false, "Removed from the library. The picture file is kept because " + decks + " other presentation" + (decks === 1 ? " still uses" : "s still use") + " it.");
+        } else if (rep.kept_for_deleted > 0) {
+          pmSay(false, "Removed from the library. The picture file is kept because a presentation you recently deleted still uses it.");
+        }
       }
 
       // Reflect the canvas loading state: `aria-busy` + a `.busy` skeleton shimmer while ANY deck
@@ -11516,18 +11549,21 @@
         const bar = pmEl("pm-media-confirm");
         if (!st || !bar) return;
         st.removing = { id: a.id, name: a.name, uses: a.uses || 0, trigger: trigger };
+        // The same words as the console's dialog (`pmRemoveMediaConfirm`): what happens to the stored
+        // file depends on whether OTHER saved decks still show it, not just the open deck's `uses`.
+        const c = pmRemoveMediaConfirm(a);
         bar.textContent = "";
         const msg = document.createElement("p");
         msg.className = "pm-media-confirm-msg";
         const strong = document.createElement("strong");
         strong.textContent = "Remove " + a.name + "? ";
         msg.appendChild(strong);
-        msg.appendChild(document.createTextNode("This removes the image from the media library and deletes SelahCue’s copy of it. This can’t be undone."));
+        msg.appendChild(document.createTextNode(c.body));
         bar.appendChild(msg);
-        if (a.uses) {
+        if (c.warning) {
           const w = document.createElement("p");
           w.className = "pm-media-confirm-warn";
-          w.textContent = "Used on " + a.uses + " slide" + (a.uses === 1 ? "" : "s") + " — removing it leaves " + (a.uses === 1 ? "that slide" : "those slides") + " with missing media.";
+          w.textContent = c.warning;
           bar.appendChild(w);
         }
         const row = document.createElement("div");
@@ -11546,7 +11582,7 @@
         rm.onclick = () => {
           const id = a.id;
           pmMediaClearRemove();
-          pAct(() => invoke("deck_remove_media", { id: id }), "remove the media");
+          pmRemoveMedia(id);
           const q = pmEl("pm-media-q");
           if (q) q.focus();
         };
@@ -11568,6 +11604,32 @@
         const q = pmEl("pm-media-q");
         if (trigger && document.contains(trigger) && trigger.focus) trigger.focus();
         else if (q) q.focus();
+      }
+
+      // The remove-media confirmation for asset `a` (a DeckView `media.assets` row). The host decides
+      // what happens to the stored file when it removes — it deletes SelahCue's copy unless another
+      // saved deck still shows it — so the dialog says which, from the counts the view carries:
+      // `uses` (slides of the OPEN deck) and `other_decks` (OTHER saved decks). When other decks
+      // use it the file is kept, so every slide that shows it keeps showing it and the "missing
+      // media" warning would be false; it is replaced by the keep notice.
+      function pmRemoveMediaConfirm(a) {
+        const other = a.other_decks || 0;
+        const slides = (n) => n + " slide" + (n === 1 ? "" : "s");
+        let warning = null;
+        let body = "This removes the image from the media library and deletes SelahCue’s copy of it. This can’t be undone.";
+        if (other > 0) {
+          body = "This removes the image from the media library. SelahCue keeps its copy of the file, because other presentations still show it.";
+          warning = (a.uses ? "Used on " + slides(a.uses) + " here and in " : "Also used in ") + other + " other presentation" + (other === 1 ? "" : "s") + " — the picture file is kept so they keep showing it.";
+        } else if (a.uses) {
+          warning = "Used on " + slides(a.uses) + " — removing it leaves " + (a.uses === 1 ? "that slide" : "those slides") + " with missing media.";
+        }
+        return {
+          title: "Remove " + a.name + "?",
+          body: body,
+          warning: warning,
+          confirmLabel: "Remove",
+          onConfirm: () => pmRemoveMedia(a.id),
+        };
       }
 
       function pmRenderMedia(dv) {
@@ -11676,7 +11738,8 @@
           rm.type = "button";
           rm.className = "pm-asset-del";
           rm.textContent = "✕";
-          rm.setAttribute("aria-label", "Remove " + a.name + " from the library" + (a.uses ? " (used on " + a.uses + " slide" + (a.uses === 1 ? "" : "s") + ")" : ""));
+          const otherDecks = a.other_decks || 0;
+          rm.setAttribute("aria-label", "Remove " + a.name + " from the library" + (a.uses ? " (used on " + a.uses + " slide" + (a.uses === 1 ? "" : "s") + ")" : "") + (otherDecks ? " (also used in " + otherDecks + " other presentation" + (otherDecks === 1 ? "" : "s") + ")" : ""));
           rm.title = "Remove from library";
           rm.onclick = (ev) => {
             ev.stopPropagation();

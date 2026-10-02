@@ -106,6 +106,8 @@ Decision 4's media store was introduced for the `.pptx` route, and the design (�
 
 Two properties are load-bearing. A generated file name is **never reused within a session**, because the engine's decode cache is keyed by path and a recycled `import-<n>` could resurrect a deleted picture on a slide. And removal deletes **only** app-owned files (`is_app_owned`): a legacy asset registered at the operator's own path is unregistered and its file left strictly alone.
 
+Removal also keeps a stored copy that **another deck still shows** (review of the first cut: "unused" had been computed from the open deck alone, so Remove deleted a picture a different saved deck used, with no undo). The usage the media panel shows, and the check `deck_remove_media` makes at removal time, now cover the open deck plus every saved deck; a copy shown by another saved deck — or by a deleted deck "Undo delete" could still restore — is unregistered but not deleted, and the response says so (`remove_report`). The open deck's own slides are unchanged: the operator is looking at them and the confirmation names them. The registry write is no longer swallowed (`MediaStoreError::RegistryWrite`): an import the registry cannot save is rolled back and its copies deleted, and a removal it cannot save does not happen. Thumbnail decodes go through a two-slot limiter (`MAX_CONCURRENT_THUMBNAILS`) because one decode can hold ~200 MiB.
+
 ## Options considered
 
 **Crate placement.**

@@ -14,6 +14,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
+use crate::deck_library::DeckLibrary;
 use crate::media_store::ImportedFile;
 use selahcue_core::media::{MediaId, MediaKind, MediaLibrary};
 use selahcue_present::{
@@ -849,8 +850,24 @@ impl DeckWorkspace {
     }
 
     /// The `DeckView` JSON the webview renders from.
-    pub fn view(&self) -> Value {
-        let usage = media_usage(&self.media, &[&self.deck]);
+    ///
+    /// Takes the **library** on purpose: the media library is shared by every saved deck, so what
+    /// "used" and "unused" mean for an asset is a question about all of them, not just the one open
+    /// in the editor. It used to look at the open deck alone, so an image only "Easter" used showed
+    /// as unused (and removable without a warning) while "Sunday" was open. A view that cannot be
+    /// asked without the library cannot silently regress to that.
+    pub fn view(&self, library: &DeckLibrary) -> Value {
+        let others = library.saved_decks_except(self.deck.id());
+        self.view_over(&others)
+    }
+
+    /// [`DeckWorkspace::view`] over an explicit set of *other* saved decks (the open deck is always
+    /// counted, from the live editor state rather than its stored copy).
+    fn view_over(&self, others: &[&SlideDeck]) -> Value {
+        let mut decks: Vec<&SlideDeck> = Vec::with_capacity(1 + others.len());
+        decks.push(&self.deck);
+        decks.extend(others.iter().copied());
+        let usage = media_usage(&self.media, &decks);
         let unused: HashSet<u64> = usage.unused.iter().map(|m| m.0).collect();
         let missing_ids = self.media.missing(missing_probe);
         let missing: HashSet<u64> = missing_ids.iter().map(|m| m.0).collect();
@@ -888,21 +905,25 @@ impl DeckWorkspace {
             })
         });
 
-        // How many slides reference each asset path (by image element OR image background) — the
-        // "Used on k slides" warning on the remove-media confirm (C-002). Bounded by the deck size.
+        // How many slides of the OPEN deck reference each asset path (by image element OR image
+        // background) — the "Used on k slides" warning on the remove-media confirm (C-002). Bounded
+        // by the deck size.
         let mut uses: HashMap<&str, usize> = HashMap::new();
         for s in self.deck.slides() {
-            let mut seen: HashSet<&str> = HashSet::new();
-            for el in &s.elements {
-                if let Element::Image { source, .. } = el {
-                    seen.insert(source.as_str());
-                }
-            }
-            if let Some(Background::Image(bg)) = &s.background {
-                seen.insert(bg.source.as_str());
-            }
-            for path in seen {
+            for path in slide_image_sources(s) {
                 *uses.entry(path).or_insert(0) += 1;
+            }
+        }
+        // How many OTHER saved decks show each path — the second half of that warning, and the
+        // reason Remove keeps the stored file (the open deck's count says nothing about them).
+        // Skipped for an empty media library: the scan is O(every slide of every saved deck) and
+        // there is nothing to count against.
+        let mut other_decks: HashMap<&str, usize> = HashMap::new();
+        if !self.media.is_empty() {
+            for deck in others {
+                for path in deck_image_paths(deck) {
+                    *other_decks.entry(path).or_insert(0) += 1;
+                }
             }
         }
 
@@ -925,6 +946,7 @@ impl DeckWorkspace {
                     "missing": missing.contains(&a.id.0),
                     "unused": unused.contains(&a.id.0),
                     "uses": uses.get(a.path.as_str()).copied().unwrap_or(0),
+                    "other_decks": other_decks.get(a.path.as_str()).copied().unwrap_or(0),
                 })
             })
             .collect();
@@ -946,6 +968,37 @@ impl DeckWorkspace {
             "can_redo": !self.redo.is_empty(),
         })
     }
+}
+
+// --- picture usage ---------------------------------------------------------------------------
+
+/// Every picture path `slide` shows — its image elements and its image background — each once.
+///
+/// The **one** definition of "this slide shows that file". The open deck's per-asset slide counts
+/// ([`DeckWorkspace::view`]) and every other saved deck's ([`deck_image_paths`], which
+/// `DeckLibrary::media_keepers` also consumes to decide whether Remove may delete a stored copy)
+/// all come through it, so the warning the operator reads and the file the shell keeps cannot
+/// disagree about what counts as a use.
+pub(crate) fn slide_image_sources(slide: &AuthoredSlide) -> HashSet<&str> {
+    let mut seen: HashSet<&str> = HashSet::new();
+    for el in &slide.elements {
+        if let Element::Image { source, .. } = el {
+            seen.insert(source.as_str());
+        }
+    }
+    if let Some(Background::Image(bg)) = &slide.background {
+        seen.insert(bg.source.as_str());
+    }
+    seen
+}
+
+/// Every distinct picture path any slide of `deck` shows. Bounded by the deck's own caps.
+pub(crate) fn deck_image_paths(deck: &SlideDeck) -> HashSet<&str> {
+    let mut all: HashSet<&str> = HashSet::new();
+    for slide in deck.slides() {
+        all.extend(slide_image_sources(slide));
+    }
+    all
 }
 
 // --- element constructors -------------------------------------------------------------------
@@ -1447,7 +1500,7 @@ mod tests {
         // >= 1 (the "Used on k slides" source for the remove-media warning, C-002); an asset no
         // slide references reports 0.
         let ws = DeckWorkspace::demo();
-        let v = ws.view();
+        let v = ws.view(&DeckLibrary::load(None));
         let assets = v["media"]["assets"].as_array().unwrap();
         let harvest = assets
             .iter()
@@ -1615,7 +1668,7 @@ mod tests {
         let a = &ws.media.assets()[0];
         assert_eq!(a.kind, MediaKind::Image);
         assert_eq!(a.imported_at, 1_234, "stamped with the caller's clock");
-        let v = ws.view();
+        let v = ws.view(&DeckLibrary::load(None));
         let asset = &v["media"]["assets"][0];
         assert_eq!(
             asset["name"], "Sunday banner.png",
@@ -1626,10 +1679,75 @@ mod tests {
     }
 
     #[test]
+    fn the_view_counts_every_saved_decks_use_of_a_picture_not_just_the_open_decks() {
+        let mut lib = DeckLibrary::load(None);
+        let mut ws = DeckWorkspace::new_empty_for_test();
+        let out = ws.register_imported(
+            vec![
+                imported("/m/banner.png", Some("banner.png"), 5),
+                imported("/m/spare.png", Some("spare.png"), 5),
+            ],
+            0,
+        );
+        let (banner, spare) = (out.registered[0], out.registered[1]);
+        // "Easter" (saved) shows the banner; "Sunday" is the open deck and shows nothing.
+        ws.load_deck(lib.create("Easter"));
+        ws.add_image_element(banner);
+        lib.store(ws.open_deck());
+        ws.load_deck(lib.create("Sunday"));
+
+        let v = ws.view(&lib);
+        let row = |v: &Value, id: u64| {
+            v["media"]["assets"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|a| a["id"] == id)
+                .unwrap()
+                .clone()
+        };
+        assert_eq!(
+            row(&v, banner)["uses"],
+            0,
+            "premise: the OPEN deck does not show the banner, so an open-deck-only count would call it unused"
+        );
+        assert_eq!(row(&v, banner)["other_decks"], 1, "Easter shows it");
+        assert_eq!(
+            row(&v, banner)["unused"],
+            false,
+            "an image another saved deck shows is not unused"
+        );
+        assert_eq!(
+            row(&v, spare)["unused"],
+            true,
+            "positive control: an image NO deck shows is still unused"
+        );
+        assert_eq!(row(&v, spare)["other_decks"], 0);
+        assert_eq!(
+            v["media"]["unused_count"], 1,
+            "the footer count is across all decks too"
+        );
+
+        // The open deck's own count is the LIVE editor state, not its stored copy (which lags until
+        // the next autosave): show the banner here too, without storing.
+        ws.add_image_element(banner);
+        let v = ws.view(&lib);
+        assert_eq!(row(&v, banner)["uses"], 1);
+        assert_eq!(
+            row(&v, banner)["other_decks"],
+            1,
+            "still just the one OTHER deck"
+        );
+    }
+
+    #[test]
     fn an_unnamed_asset_falls_back_to_the_stored_file_name_in_the_view() {
         let mut ws = DeckWorkspace::new_empty_for_test();
         ws.register_imported(vec![imported("/m/import-7.jpg", None, 10)], 0);
-        assert_eq!(ws.view()["media"]["assets"][0]["name"], "import-7.jpg");
+        assert_eq!(
+            ws.view(&DeckLibrary::load(None))["media"]["assets"][0]["name"],
+            "import-7.jpg"
+        );
     }
 
     #[test]
@@ -1689,11 +1807,14 @@ mod tests {
     fn replacing_the_demo_library_leaves_a_production_launch_with_only_real_imports() {
         let mut ws = DeckWorkspace::demo();
         assert!(
-            !ws.view()["media"]["assets"].as_array().unwrap().is_empty(),
+            !ws.view(&DeckLibrary::load(None))["media"]["assets"]
+                .as_array()
+                .unwrap()
+                .is_empty(),
             "premise: the demo workspace ships fake demo:// assets"
         );
         ws.set_media(MediaLibrary::new());
-        let v = ws.view();
+        let v = ws.view(&DeckLibrary::load(None));
         assert!(
             v["media"]["assets"].as_array().unwrap().is_empty(),
             "no fake assets once the saved (empty) library replaces the demo one"
@@ -1722,7 +1843,10 @@ mod tests {
     }
 
     fn elements_of(ws: &DeckWorkspace) -> Vec<serde_json::Value> {
-        ws.view()["slide"]["elements"].as_array().unwrap().clone()
+        ws.view(&DeckLibrary::load(None))["slide"]["elements"]
+            .as_array()
+            .unwrap()
+            .clone()
     }
 
     #[test]
@@ -1776,7 +1900,7 @@ mod tests {
             assert!(x + w <= 1000 && y + h <= 1000, "stays on the slide: {e}");
         }
         assert_eq!(
-            ws.view()["slide"]["selected_element"],
+            ws.view(&DeckLibrary::load(None))["slide"]["selected_element"],
             serde_json::json!(MAX_INSERT_BATCH - 1),
             "the last image added is the selected element"
         );

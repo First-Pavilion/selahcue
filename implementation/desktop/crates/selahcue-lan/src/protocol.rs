@@ -349,7 +349,8 @@ pub enum Command {
     /// generating or feeding it.
     LoadSermonNoteDraft { transcript_id: i64 },
     /// Persist (upsert) a freshly generated sermon-note draft against `transcript_id` —
-    /// `selahcue-operator`'s `generate_sermon_notes` persist-on-success path (86akgqdv0). A
+    /// `selahcue-operator`'s `transcript_generate_notes` persist-on-success path
+    /// (`persist_generated_draft`; first built for the since-removed live-tail `generate_sermon_notes`, 86akgqdv0). A
     /// second call for the same `transcript_id` REPLACES the existing draft wholesale
     /// (regenerate-with-history is FR-129's separate, not-yet-built territory). Reply:
     /// [`ServerMessage::SermonNoteDraft`] (the row re-read from the store, the source of truth,
@@ -373,7 +374,7 @@ pub enum Command {
     /// supply its own consistent `ai_generated: true` + non-empty `disclosure` — the pairing
     /// check above cannot catch a lie that is internally consistent), or wholesale-replace an
     /// already-persisted, possibly operator-edited draft outright, since `create` is an upsert.
-    /// The operator console's own `generate_sermon_notes` flow is the ONLY legitimate caller of
+    /// The operator console's own `transcript_generate_notes` flow (via `persist_generated_draft`) is the ONLY legitimate caller of
     /// this command today; nothing else needs to attach new provenance or replace existing
     /// content. Narrowing to Operator closes both exploits with one RBAC-table change, rather
     /// than inventing an ownership/precondition mechanism this protocol has nowhere else.
