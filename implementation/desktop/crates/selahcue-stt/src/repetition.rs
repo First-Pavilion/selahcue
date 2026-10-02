@@ -31,12 +31,35 @@ pub const MIN_TRIM_SPAN_WORDS: usize = 3;
 /// recurs with other words in between.
 ///
 /// Known limitation, accepted by 17tnw2b0nkq: a LEGITIMATE back-to-back repeat that happens to
-/// end the text ("…we worship you, we worship you") is collapsed too. That is why the engine
-/// applies this only to force-closed finals — the one place the decoder loop occurs — and never
-/// to finals that closed on a pause or to interims.
+/// end the text ("…we worship you, we worship you") is collapsed too — a doubled refrain at the
+/// end of a force-closed final is the accepted false positive. That is why the engine applies
+/// this only to force-closed finals — the one place the decoder loop occurs — and never to
+/// finals that closed on a pause or to interims.
 ///
-/// Cost: at most O(w²) word comparisons for a w-word line (a 10 s final is ~30-60 words) and two
-/// small allocations (the token list and the normalised words); nothing is retained between calls.
+/// Known limitation, one- and two-word loops are only PARTLY handled, because
+/// [`MIN_TRIM_SPAN_WORDS`] is 3 and the walk only tries spans of 3 or more words (the shortest
+/// period tried is 3, so a loop of a 1- or 2-word span is seen only through a longer period that
+/// happens to fit it). Measured on the shipped code:
+/// - six or more identical words ("a a a a a a") collapse to THREE copies ("a a a"), not one;
+///   fewer than six ("a a a a a") are left alone;
+/// - a 2-word span repeated exactly 3 times ("x y x y x y") is NOT trimmed;
+/// - the same 2-word span repeated 4 times ("x y x y x y x y") IS trimmed, to 2 copies
+///   ("x y x y"), not one.
+///
+/// Handling them fully would mean lowering [`MIN_TRIM_SPAN_WORDS`], which that constant's own
+/// doc rules out ("Holy, holy, holy" and "amen, amen" are legitimate), so this is left as is.
+/// `the_documented_short_span_limitations_hold` pins the three measurements above.
+///
+/// Cost: at most O(w²) word comparisons for a w-word line (a 10 s final is ~30-60 words), and
+/// these allocations per call, all freed before it returns — nothing is retained between calls,
+/// and every one of them is bounded by the single segment passed in:
+/// - a `Vec<&str>` of the line's whitespace-separated tokens (the slices borrow `text`, no
+///   string is copied);
+/// - a `Vec<(usize, String)>` holding one `String` per real word (its normalised form);
+/// - inside `normalize_word`, per token, two transient `String`s (the filtered characters and
+///   their lower-cased copy) that are dropped before it returns — the third string it builds,
+///   the composed result, is the one kept in the vector above;
+/// - the output `String`, only when a repeat was found.
 pub fn trim_trailing_repeat(text: &str) -> Option<String> {
     let raw: Vec<&str> = text.split_whitespace().collect();
     // `words[i]` = (index into `raw`, normalised form) of the i-th real word; see `indexed_words`.
@@ -360,6 +383,77 @@ mod tests {
                 "trimmed legitimate text {clean:?}"
             );
         }
+    }
+
+    /// A loop of a span repeated four or more times is periodic at every multiple of the span's
+    /// length (a 4-word span is also an 8-word period, a 12-word period...), and the trim must
+    /// keep the SHORTEST period's first copy — the phrase actually spoken — not the first copy
+    /// of a longer period, which would keep a duplicate. The loop in `trim_trailing_repeat`
+    /// tries spans from `MIN_TRIM_SPAN_WORDS` upward for exactly this reason; trying them from
+    /// the longest down (review mutant M17: `for n in (MIN_TRIM_SPAN_WORDS..=m / 2).rev()`) kept
+    /// "x y z w x y z w" for the first case below, and no other test noticed.
+    #[test]
+    fn trim_keeps_the_shortest_period_when_the_span_repeats_four_or_more_times() {
+        for (looped, expected) in [
+            // The review's scenario: a 4-word span, four complete copies.
+            ("x y z w x y z w x y z w x y z w", "x y z w"),
+            // ... with a partial last copy, and with a lead-in the trim must keep.
+            ("x y z w x y z w x y z w x y", "x y z w"),
+            (
+                "so we sing x y z w x y z w x y z w x y z w",
+                "so we sing x y z w",
+            ),
+            // A real phrase, four copies, last one complete.
+            (
+                "and then wait long and then wait long and then wait long and then wait long",
+                "and then wait long",
+            ),
+            // A span that itself has a proper sub-period: "p q r p q r" is two copies of
+            // "p q r", so six copies of "p q r" are also three copies of the 6-word span. The
+            // shortest period (3) wins: one "p q r", not "p q r p q r" or "p q r p q r p q r".
+            ("p q r p q r p q r p q r p q r p q r", "p q r"),
+            ("go to p q r p q r p q r p q r p q", "go to p q r"),
+        ] {
+            assert_eq!(
+                trim_trailing_repeat(looped).as_deref(),
+                Some(expected),
+                "must keep only the shortest period's first copy of {looped:?}"
+            );
+        }
+    }
+
+    /// The documented limits of the trim on one- and two-word loops (see the doc comment on
+    /// [`trim_trailing_repeat`]), as measured on the shipped code. This pins the DOC: if the
+    /// trim is deliberately improved, change this test and that comment together.
+    #[test]
+    fn the_documented_short_span_limitations_hold() {
+        // Six or more identical words collapse to THREE copies, not one; fewer than six are left.
+        for n in 1..=5 {
+            let line = vec!["a"; n].join(" ");
+            assert_eq!(trim_trailing_repeat(&line), None, "{n} identical words");
+        }
+        for n in 6..=12 {
+            let line = vec!["a"; n].join(" ");
+            assert_eq!(
+                trim_trailing_repeat(&line).as_deref(),
+                Some("a a a"),
+                "{n} identical words"
+            );
+        }
+        // A 2-word span three times: not trimmed. Four times: trimmed to two copies.
+        assert_eq!(trim_trailing_repeat("x y x y x y"), None);
+        assert_eq!(
+            trim_trailing_repeat("x y x y x y x y").as_deref(),
+            Some("x y x y")
+        );
+        // The accepted false positive: a refrain doubled at the very end is collapsed.
+        assert_eq!(
+            trim_trailing_repeat(
+                "we worship you with all our hearts we worship you with all our hearts"
+            )
+            .as_deref(),
+            Some("we worship you with all our hearts")
+        );
     }
 
     // --- Unicode words, canonical equivalence and punctuation-only tokens -------------------

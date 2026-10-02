@@ -198,11 +198,15 @@ enum CloseReason {
     /// The hangover elapsed: the speaker paused (including when the cap was reached on the
     /// same frame — they had already stopped, so nothing was cut off).
     Paused,
-    /// [`EngineConfig::max_utterance_samples`] was reached while the speaker was still talking:
-    /// the cut usually lands mid-word. The only reason whose finals are trimmed.
+    /// [`EngineConfig::max_utterance_samples`] was reached before the hangover had elapsed — the
+    /// engine's test is `capped && silence_run < hangover_frames`. That is not the same as "the
+    /// speaker was still talking": the trailing `silence_run` may be anywhere from 0 up to
+    /// `hangover_frames - 1` frames of silence (a pause shorter than the hangover). What it does
+    /// mean is that the cap, not a pause, ended the utterance, so the cut usually lands mid-word.
+    /// The only reason whose finals are trimmed.
     ForceClosed,
     /// Closed from outside the VAD loop: [`SttEngine::flush`] (stop) or feedback-guard
-    /// suppression.
+    /// suppression. Never trimmed.
     Flushed,
 }
 
@@ -379,9 +383,12 @@ impl SttEngine {
         let paused = self.silence_run >= self.config.hangover_frames;
         let capped = self.utterance.len() >= self.config.max_utterance_samples;
         if self.in_speech && (paused || capped) {
-            // FORCE-closed means the cap cut the speaker off: the cap was reached while they
-            // were still talking. If the hangover elapsed on the same frame, they had already
-            // paused, so there is no mid-sentence cut — that is a pause close (17tnw2b0nkq).
+            // FORCE-closed means the cap, not a pause, ended the utterance: the cap was reached
+            // while the trailing silence was still shorter than the hangover
+            // (`capped && silence_run < hangover_frames`). That is not literally "still
+            // talking" — up to `hangover_frames - 1` frames of the run may be silence. If the
+            // hangover elapsed on the same frame, the speaker had already paused, so there is
+            // no mid-sentence cut — that is a pause close (17tnw2b0nkq).
             self.close_utterance(if capped && !paused {
                 CloseReason::ForceClosed
             } else {
@@ -450,8 +457,10 @@ impl SttEngine {
     /// sink, then reset speech state, retaining the accumulator's capacity. No-op when not
     /// in speech.
     ///
-    /// A [`CloseReason::ForceClosed`] final has any trailing back-to-back repeat collapsed by
-    /// [`trim_trailing_repeat`] (17tnw2b0nkq). Only there: the cap cuts the speaker off
+    /// A [`CloseReason::ForceClosed`] final — one the sample cap closed before the hangover had
+    /// elapsed (`capped && silence_run < hangover_frames`, not necessarily "while the speaker was
+    /// still talking") — has any trailing back-to-back repeat collapsed by
+    /// [`trim_trailing_repeat`] (17tnw2b0nkq). Only there: the cap usually cuts the audio
     /// mid-word, and that abrupt end is where whisper.cpp says the preceding phrase again
     /// (86akcgmuh measured 7.8% of force-closed windows looping vs 0.7% of pause-closed finals).
     /// A pause-closed or flushed final ends where the speaker stopped, so a repeat there is far
@@ -1090,6 +1099,53 @@ mod tests {
             let seg = only_final(&mut provider, "force-closed legitimate");
             assert_eq!(seg.text, legit, "legitimate repetition was altered on a force-closed final");
         }
+    }
+
+    /// 17tnw2b0nkq review: the close that feedback-guard suppression triggers
+    /// (`CloseReason::Flushed`, in `process`) is not a force-close and must not be trimmed. The
+    /// `flush()` case above never reaches that call site, and it is the close most easily
+    /// mistaken for a forced one: the audio stops partway through a long utterance, so the text
+    /// ends at the point of the cut. Mutation check: passing `CloseReason::ForceClosed` at that
+    /// call site makes this test fail on the verbatim assertion.
+    #[test]
+    fn a_feedback_guard_suppression_close_is_never_trimmed() {
+        let cap_frames = frames_to_force_close();
+        let guard = FeedbackGuard::new();
+        let (mut engine, mut provider) = SttEngine::build(
+            EngineConfig::default(),
+            Box::new(EnergyVad::new()),
+            Box::new(FakeRecognizer::with_script([LOOPED])),
+            guard.clone(),
+        );
+        // Premise: this is exactly the text the trim collapses on a force-closed final, so
+        // "comes through verbatim" below is the engine's choice, not an untrimmable string.
+        assert_eq!(
+            crate::repetition::trim_trailing_repeat(LOOPED).as_deref(),
+            Some(TRIMMED)
+        );
+
+        // Long speech that stops one frame short of the cap: nothing has closed yet.
+        engine.process(&speech_chunk(cap_frames - 1));
+        assert!(
+            provider.poll().is_empty(),
+            "premise: the utterance must still be open"
+        );
+
+        // The app starts playing on the shared output: the next chunk is dropped and the open
+        // utterance is closed by the suppression, not by the cap or a pause.
+        guard.set_output_active(true);
+        engine.process(&speech_chunk(1));
+        let seg = only_final(&mut provider, "suppression-closed");
+        assert_eq!(
+            seg.end_ms - seg.start_ms,
+            (cap_frames as u64 - 1) * MS_PER_FRAME,
+            "premise: this final must have been closed by the suppression, one frame short of \
+             the cap"
+        );
+        assert_eq!(
+            seg.text, LOOPED,
+            "a final closed by feedback-guard suppression must never be trimmed"
+        );
     }
 
     /// 17tnw2b0nkq review: the trim's word comparison used to delete every non-ASCII letter, so
