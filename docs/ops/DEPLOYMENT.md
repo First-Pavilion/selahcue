@@ -314,12 +314,15 @@ strip rule is deployed and tested.
 ### Per-IP flood protection belongs at the edge
 
 The app carries a fixed-window rate limiter on the `/v1` device-auth endpoints (activation,
-licence refresh, entitlement manifest), keyed on `(endpoint, client IP)` with the budgets in
-`SELAHCUE_THROTTLE_*`. Treat it as the **second** layer, never the only one.
+licence refresh, entitlement manifest, and the native account sign-in pair `POST /v1/sessions` and
+`POST /v1/activations:with-session` — ADR-0029), keyed on `(endpoint, client IP)` with the budgets
+in `SELAHCUE_THROTTLE_*`. Treat it as the **second** layer, never the only one. If your ingress
+rate rule is keyed on `/graphql/account`, extend it to the two native paths: it does not cover them.
 
 It runs *inside* Django, so a request must be accepted, routed and middleware-processed before it
 can be refused — a flood large enough to matter has already consumed a worker slot by then. It
-also **fails open** by design: if Redis is unavailable the limiter allows the request and logs,
+also **fails open** by design (this includes `POST /v1/sessions`, where the only remaining brake on
+password guessing during an outage is the per-account lockout): if Redis is unavailable the limiter allows the request and logs,
 because refusing all device traffic during a cache outage would cause the outage it exists to
 prevent. Both properties are deliberate, and both mean the app limiter cannot absorb a real
 flood. Put connection- and request-rate limits on the ingress; the app layer is there to catch

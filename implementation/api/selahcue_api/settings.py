@@ -237,6 +237,11 @@ SELAHCUE_TRUSTED_PROXY_COUNT = int(os.getenv("SELAHCUE_TRUSTED_PROXY_COUNT", "0"
 # `make_password` against the enrollment key — so it gets the tighter budget.
 SELAHCUE_THROTTLE_ACTIVATION = (10, 60)
 SELAHCUE_THROTTLE_DEVICE_READ = (60, 60)
+# Native sign-in (`POST /v1/sessions`, 86ak5t1gw), per client IP. It runs `check_password`
+# against the account hash, so it gets the activation budget. This is the app-level per-IP
+# limit the browser login mutation does not have (that one relies on the edge); the durable
+# per-account lockout in `login` applies to both.
+SELAHCUE_THROTTLE_SESSION_LOGIN = (10, 60)
 
 # Resend-verification is unauthenticated AND sends email on demand, so it is both a spam
 # vector (flooding an arbitrary victim's mailbox) and a cost vector. Three budgets, because

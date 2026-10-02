@@ -281,6 +281,8 @@ Endpoint: `POST /graphql/account`
 | DESKTOP-API-004 | `POST /v1/downloads:prepare` | Device token | Validates entitlement and returns short-lived download lease plus package metadata/checksum. |
 | DESKTOP-API-005 | `POST /v1/downloads/{lease_id}:complete` | Device token | Records checksum/result and local-store package version. |
 | DESKTOP-API-006 | `POST /v1/usage-events:batch` | Device token | Batches display/download/reporting events; idempotent by event id. |
+| DESKTOP-API-007 | `POST /v1/sessions` | Account email + password (JSON only; no cookie read or set) | Native-client sign-in (DEC-011 pt 3): returns a 30-day account session token. CSRF-exempt like the rest of `/v1` because it can neither read nor set an ambient browser credential; the browser equivalent stays on the CSRF-enforced `/graphql/account` (ADR-0029). Per-IP throttled; per-account lockout shared with the browser login. |
+| DESKTOP-API-008 | `POST /v1/activations:with-session` | Account session as `Authorization: Bearer` (ADMIN only; no cookie read) | Registers the device for the signed-in administrator's organisation; same response shape and instance limit as DESKTOP-API-001. Per-IP throttled. |
 
 ### Billing And Provider Inputs
 
