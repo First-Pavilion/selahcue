@@ -7907,7 +7907,9 @@
               setBusy(false);
               showErr(
                 link
-                  ? "The host couldn't link that — check the reference or presentation and try again."
+                  ? link.kind === "scripture"
+                    ? "The host couldn't link that scripture — check the reference (e.g. Romans 8:28 or Romans 8:28-30) and try again."
+                    : "The host couldn't link that — check the reference or presentation and try again."
                   : "The host couldn't unlink this item."
               );
             });
@@ -7970,12 +7972,19 @@
           vStart = null,
           vEnd = null,
           vps = cur.verses_per_slide || null;
+        // Where the verse-range selection is. "idle": the highlighted verse(s) are a DEFAULT or a
+        // seeded existing link, not something the person picked — the next click starts a NEW
+        // selection. "anchor": a start verse was clicked, the next click at/after it sets the end.
+        // "done": a range is complete, the next click starts over. Without this, the first-verse
+        // default Browse pre-selects made the first click on verse 2 the END of 1-2, and the next
+        // click on verse 10 reset to the single verse 10: clicking 2 then 10 could never yield 2-10.
+        let pickPhase = "idle";
         const row = document.createElement("div");
         row.className = "pm-link-row";
         const input = document.createElement("input");
         input.className = "pm-insp-ctrl";
         input.type = "text";
-        input.placeholder = "Reference — e.g. Romans 8:28-30";
+        input.placeholder = "Reference — e.g. Romans 8:28 or Romans 8:28-30";
         input.value = cur.reference || "";
         input.setAttribute("aria-label", "Scripture reference");
         const trans = document.createElement("select");
@@ -8004,6 +8013,20 @@
         const hits = document.createElement("div");
         hits.className = "pm-link-hits";
         wrap.appendChild(hits);
+        // This step's own status line (role=status): the "cut back to the chapter" notice and a
+        // reference the host could not read. Deliberately NOT the dialog's role=alert error, which
+        // belongs to the commit step and lives outside this function. It stays in the DOM, EMPTY
+        // (CSS hides an empty one): a live region announces reliably when its CONTENT changes,
+        // not when the element is un-hidden in the same step that fills it. The text itself says
+        // which kind of message it is ("Error:" / "Note:"), so the cue is not colour alone.
+        const hint = document.createElement("p");
+        hint.className = "pm-link-hint";
+        hint.setAttribute("role", "status");
+        wrap.appendChild(hint);
+        const showHint = (msg, isError) => {
+          hint.textContent = msg ? (isError ? "Error: " : "Note: ") + msg : "";
+          hint.classList.toggle("pm-link-hint-err", !!isError);
+        };
 
         // Verse picker (frame 610:124): chapter nav + verse list with the selected range highlighted
         // + verses-per-slide + a gold reference preview. Hidden until a chapter is browsed/loaded.
@@ -8100,16 +8123,16 @@
             vr.appendChild(n);
             vr.appendChild(t);
             vr.onclick = () => {
-              // First click (or after a complete range) sets the start; a later click at/after the
-              // start extends the range; a click before the start resets to a new start.
-              if (vStart == null || vEnd != null) {
-                vStart = num;
-                vEnd = null;
-              } else if (num >= vStart) {
+              // Two clicks make a range, from ANY starting state (see pickPhase): the first click
+              // always picks the start; a later click at/after it picks the end; a click before it,
+              // or after a completed range, starts over.
+              if (pickPhase === "anchor" && num >= vStart) {
                 vEnd = num;
+                pickPhase = "done";
               } else {
                 vStart = num;
                 vEnd = null;
+                pickPhase = "anchor";
               }
               renderVerses();
               updatePreview();
@@ -8118,13 +8141,36 @@
           });
           updatePreview();
         };
+        // Each load (and each edit of the reference) bumps this, so a chapter that arrives AFTER the
+        // operator moved on — most visibly the seed of an existing link, which loads on open — is
+        // discarded instead of overwriting what they typed or browsed since.
+        let loadGen = 0;
         const loadCh = async (ref) => {
           if (!ref) return;
+          const gen = ++loadGen;
           try {
             const ch = await invoke("get_chapter", { reference: ref, translation: trans.value || null });
+            if (gen !== loadGen) return;
             chapter = ch;
             vStart = ch.verse_start != null ? ch.verse_start : ch.verses && ch.verses[0] ? ch.verses[0][0] : null;
             vEnd = ch.verse_end != null && ch.verse_end > (ch.verse_start || 0) ? ch.verse_end : null;
+            // The host parses a range as typed, so "Psalms 1:2-10" arrives with end 10 although
+            // Psalm 1 has six verses. Cut the selection back to the verses that exist and say so,
+            // so the preview and the committed link are the passage that will actually show.
+            showHint("");
+            const lastVerse = ch.verses && ch.verses.length ? ch.verses[ch.verses.length - 1][0] : null;
+            if (lastVerse != null && vStart != null && vStart > lastVerse) {
+              // Select NOTHING rather than falling back to verse 1: one press of Link would then
+              // commit a verse the operator never asked for. With no selection Link resolves the
+              // typed reference and refuses it with the chapter's real length.
+              showHint(ch.reference + " only has " + lastVerse + " verses.", true);
+              vStart = null;
+              vEnd = null;
+            } else if (lastVerse != null && vEnd != null && vEnd > lastVerse) {
+              vEnd = lastVerse;
+              showHint(ch.reference + " has " + lastVerse + " verses — the range is cut back to " + vStart + "-" + lastVerse + ".", false);
+            }
+            pickPhase = "idle";
             renderVerses();
           } catch (e) {
             console.error(e);
@@ -8138,9 +8184,85 @@
         };
         browse.onclick = () => loadCh(input.value.trim());
 
-        const doLink = () => {
-          const r = refString();
+        // A reference the operator TYPED is resolved through the host's own parser (get_chapter)
+        // before it is committed — the one place that knows every way a range is written ("2 to 10",
+        // an en dash, "verses 2 through 10"). That gives the plan row the CANONICAL spelling
+        // ("Romans 8:28-30", never the text as typed) and the real chapter, so a range that runs
+        // past the chapter's end is cut back — visibly, and only once the operator confirms.
+        // Resolves to {reference, note} or {error}; an unreadable reference rejects.
+        const resolveTyped = async (typed) => {
+          const ch = await invoke("get_chapter", { reference: typed, translation: trans.value || null });
+          if (ch.verse_start == null) return { reference: ch.reference, note: "" }; // a whole chapter
+          const last = ch.verses && ch.verses.length ? ch.verses[ch.verses.length - 1][0] : null;
+          if (last != null && ch.verse_start > last) {
+            return { error: ch.reference + " only has " + last + " verses." };
+          }
+          let end = ch.verse_end != null && ch.verse_end > ch.verse_start ? ch.verse_end : null;
+          let cut = false;
+          if (end != null && last != null && end > last) {
+            end = last;
+            cut = true;
+          }
+          const ref = ch.reference + ":" + ch.verse_start + (end != null && end > ch.verse_start ? "-" + end : "");
+          return {
+            reference: ref,
+            note: cut ? ch.reference + " has " + last + " verses, so this links as " + ref + ". Press Link to confirm." : "",
+          };
+        };
+        // A well-formed reference the host has no chapter for (a typo, or a translation whose text is
+        // not downloaded yet) is NOT silently refused — linking it is allowed, it just shows as
+        // Missing — but the operator is told first and presses Link again to confirm.
+        let confirmedMissing = null;
+        let resolving = false;
+        const doLink = async () => {
+          if (resolving) return;
+          let r = refString();
           if (!r) return;
+          showHint("");
+          if (!(chapter && vStart != null)) {
+            // Typed text (a browsed/picked selection is already canonical and inside the chapter).
+            resolving = true;
+            go.disabled = true;
+            let res = null;
+            let linkAsTyped = false;
+            try {
+              res = await resolveTyped(r);
+            } catch (e) {
+              console.error(e);
+              if (/no such chapter/i.test(String(e))) {
+                if (confirmedMissing === r) {
+                  linkAsTyped = true; // second press: the operator has been told and confirmed
+                } else {
+                  confirmedMissing = r;
+                  showHint("“" + r + "” isn't a chapter in this translation's text, so it would show as Missing. Press Link again to link it anyway.", false);
+                  return;
+                }
+              } else {
+                showHint("Couldn't read “" + r + "” as a scripture reference. Try Romans 8:28 or Romans 8:28-30.", true);
+                return;
+              }
+            } finally {
+              resolving = false;
+              go.disabled = false;
+            }
+            // The modal may have been closed (Escape / Cancel / backdrop) while the host was
+            // resolving — never commit a link the operator walked away from.
+            if (!wrap.isConnected) return;
+            if (!linkAsTyped) {
+              if (res.error) {
+                showHint(res.error, true);
+                return;
+              }
+              r = res.reference;
+              if (res.note) {
+                // Show what will be linked and wait for a second Link — never silently change the
+                // passage the operator asked for.
+                input.value = r;
+                showHint(res.note, false);
+                return;
+              }
+            }
+          }
           const link = { kind: "scripture", reference: r, translation: trans.value || null };
           if (vps) link.verses_per_slide = vps;
           commit(link);
@@ -8155,6 +8277,10 @@
         // Live search: clicking a hit loads its chapter so the operator can refine the verse range.
         let t = null;
         input.oninput = () => {
+          loadGen++; // invalidate any chapter still in flight
+          confirmedMissing = null;
+          showHint("");
+          pickPhase = "idle";
           // Editing the reference invalidates any browsed/seeded chapter so a freshly-typed reference
           // wins on Link — otherwise refString() would keep committing the STALE browsed reference.
           if (chapter) {
