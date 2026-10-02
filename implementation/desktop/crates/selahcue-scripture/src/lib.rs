@@ -298,7 +298,10 @@ fn decode(compressed: &[u8]) -> Vec<Verse> {
 ///
 /// A DOWNLOADABLE translation ([`Translation::is_downloadable`]) has no embedded asset to derive
 /// a table from, so it falls back to the lookup: its verses decode once, and only once they have
-/// been downloaded; until then it is `false` without decoding anything.
+/// been downloaded; until then it is `false` without decoding anything. With the `download`
+/// feature on, a translation that is NOT downloaded yet still costs a failed file read on every
+/// call (a failed load is deliberately not cached, so a later download is picked up) — cheap,
+/// but I/O, unlike the bundled path. Tracked in ClickUp 17tnw2b0wfw.
 ///
 /// An exhaustive test (`tests/test_passage_exists.rs`) pins this to `verses_in` over every chapter
 /// of every bundled translation.
@@ -315,9 +318,12 @@ pub fn passage_exists_in(t: Translation, reference: &Reference) -> bool {
 }
 
 /// Whether translation `t`'s full verse index has been decoded yet in this process. Never
-/// triggers a decode. A diagnostics/test seam: it is how a test proves a code path answered
-/// without paying for the corpus (a global "how many decodes" counter would let a sibling's
-/// decode mask a miss on your translation, so this is per translation).
+/// triggers a decode.
+///
+/// **A test seam, not a product API.** It is how a test proves a code path answered without
+/// paying for the corpus (a global "how many decodes" counter would let a sibling's decode mask a
+/// miss on your translation, so this is per translation).
+#[doc(hidden)]
 pub fn is_index_loaded(t: Translation) -> bool {
     match t {
         Translation::Kjv => KJV_INDEX.get().is_some(),

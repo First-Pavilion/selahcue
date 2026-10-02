@@ -33,8 +33,12 @@ mod tsv_row;
 
 /// `(static name in the generated file, asset file stem)` — one per BUNDLED translation. A
 /// downloadable translation has no embedded asset and so no table. Adding a bundled translation
-/// means adding it here AND to `versification::runs_of`; forgetting either is a compile error,
-/// not a silent gap (the generated `static` is referenced by name, and the match is exhaustive).
+/// means adding it here AND to `versification::runs_of`, and the two are kept in step by the
+/// compiler, though by different mechanisms: `runs_of` naming a static that is not generated
+/// here is a compile error (unresolved name), while a name added here that `runs_of` never uses
+/// is a `dead_code` warning on the generated `static` — a hard failure under CI's
+/// `-D warnings` clippy gate, but only a warning in a plain `cargo build`. `runs_of`'s `match` is
+/// exhaustive over `Translation`, so a new bundled variant cannot be left without an arm.
 const BUNDLED: [(&str, &str); 5] = [
     ("KJV", "kjv"),
     ("WEB", "web"),
@@ -48,6 +52,20 @@ const BUNDLED: [(&str, &str); 5] = [
 /// merge broke) and the "tiny, fixed-size" premise this module exists on is gone. Fails the
 /// build rather than quietly shipping a large table.
 const MAX_RUNS: usize = 2048;
+
+/// Hard floor on rows per translation — the other side of [`MAX_RUNS`]. A canon has at least one
+/// run per chapter (1189 chapters in the Protestant canon), so a table far below that means the
+/// asset is truncated or mostly unparseable lines were silently dropped, and every passage past
+/// the truncation would be reported "missing". Real tables are 1189–1205 rows; 1000 leaves
+/// headroom for a different versification while still catching a half-empty asset.
+const MIN_RUNS: usize = 1000;
+
+/// Ceiling on how many bytes the gzip decoder may produce for one asset. The real assets inflate
+/// to ~4.4 MB; this is 64 MiB, so a tampered or corrupt embedded asset (a decompression bomb)
+/// fails the build with the asset named instead of exhausting the build machine's memory. The
+/// build script trusts its inputs far less than the shipped binary does: they are files in a
+/// working tree, not bytes already audited into a release.
+const MAX_DECOMPRESSED_BYTES: u64 = 64 * 1024 * 1024;
 
 type Run = (u8, u16, u16, u16);
 
@@ -67,10 +85,24 @@ fn main() {
 
         let compressed = fs::read(&asset)
             .unwrap_or_else(|e| panic!("cannot read bundled asset {}: {e}", asset.display()));
-        let mut tsv = String::new();
+        // `take(CAP + 1)`: reading one byte past the cap is how a stream that is EXACTLY at the
+        // cap (accepted) is told apart from one that goes on (refused). Read as bytes, not as a
+        // `String`, so a bomb cut off mid-character still reports the cap, not a UTF-8 error.
+        let mut bytes = Vec::new();
         GzDecoder::new(compressed.as_slice())
-            .read_to_string(&mut tsv)
+            .take(MAX_DECOMPRESSED_BYTES + 1)
+            .read_to_end(&mut bytes)
             .unwrap_or_else(|e| panic!("bundled asset {} does not decode: {e}", asset.display()));
+        assert!(
+            bytes.len() as u64 <= MAX_DECOMPRESSED_BYTES,
+            "bundled asset {} inflates past {MAX_DECOMPRESSED_BYTES} bytes — a real asset is \
+             ~4.4 MB, so this is a corrupt or tampered file (decompression bomb); refusing to \
+             decode it further",
+            asset.display()
+        );
+        let tsv = String::from_utf8(bytes).unwrap_or_else(|e| {
+            panic!("bundled asset {} is not valid UTF-8: {e}", asset.display())
+        });
 
         let runs = runs_of(&tsv);
         assert!(
@@ -82,6 +114,14 @@ fn main() {
             runs.len() <= MAX_RUNS,
             "bundled asset {} produced {} verse runs (cap {MAX_RUNS}) — it no longer looks like a \
              Bible, or the run merge is broken",
+            asset.display(),
+            runs.len()
+        );
+        assert!(
+            runs.len() >= MIN_RUNS,
+            "bundled asset {} produced only {} verse runs (floor {MIN_RUNS}) — a Bible has at \
+             least one run per chapter (1189), so the asset is truncated or most of its lines \
+             stopped parsing",
             asset.display(),
             runs.len()
         );
