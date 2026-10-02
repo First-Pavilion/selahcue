@@ -1665,6 +1665,36 @@ impl SkipCounts {
     }
 }
 
+/// The steps of one present, in the order [`run_present`] takes them. A trait only so the ORDER
+/// can be tested without a GPU: a real surface cannot be unit-tested, and the order is exactly what
+/// went wrong.
+trait PresentSteps {
+    /// Try to take a drawable from the surface. `Err` means no frame will be drawn this tick, and
+    /// nothing may have been queued on the GPU by then.
+    fn acquire(&mut self) -> Result<(), SkipReason>;
+    /// Copy the frame into the GPU texture and build its bind group.
+    fn upload(&mut self);
+    /// Encode the blit, submit it, and present the drawable.
+    fn submit_and_present(&mut self);
+}
+
+/// Run one present: ACQUIRE FIRST, and queue GPU work only once a drawable is in hand.
+///
+/// This order is load-bearing. `Queue::write_texture` copies the whole frame (~8 MB at 1080p) into
+/// staging memory that is released only by the next `Queue::submit`. The renderer used to upload
+/// before it acquired, so a window that wgpu 30 reports as `Occluded` (a new outcome on macOS)
+/// returned early having staged a frame it never submitted: ~8 MB per skipped frame, ~500 MB/s at
+/// 60 Hz. A real run reached a 29 GB footprint, all of it graphics memory, and macOS killed the
+/// host at 56 GB, which is what closed every output window and dropped the console's link.
+fn run_present(steps: &mut impl PresentSteps) -> bool {
+    if steps.acquire().is_err() {
+        return false;
+    }
+    steps.upload();
+    steps.submit_and_present();
+    true
+}
+
 /// The one line a skipped frame writes to stderr: it names the window and the outcome, and says
 /// that the skip is what the console reports as a dropped frame.
 fn describe_skip(window: &str, reason: SkipReason, count: u64) -> String {
@@ -1963,135 +1993,12 @@ impl Renderer {
     /// paint is deferred to the next tick) — the smoke mode uses this to know the
     /// window really produced a visible frame before exiting.
     fn render(&mut self, frame: &FrameBuffer) -> bool {
-        // Timed from here so re-creating the frame texture on a resize counts as upload.
-        let upload_started = Instant::now();
-        let (fw, fh) = (frame.width(), frame.height());
-        if self.frame_texture.as_ref().map(|(_, w, h)| (*w, *h)) != Some((fw, fh)) {
-            let texture = self.device.create_texture(&wgpu::TextureDescriptor {
-                label: Some("frame"),
-                size: wgpu::Extent3d {
-                    width: fw,
-                    height: fh,
-                    depth_or_array_layers: 1,
-                },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format: wgpu::TextureFormat::Rgba8UnormSrgb,
-                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-                view_formats: &[],
-            });
-            self.frame_texture = Some((texture, fw, fh));
-        }
-        let Some((texture, _, _)) = self.frame_texture.as_ref() else {
-            return false;
-        };
-        self.queue.write_texture(
-            wgpu::TexelCopyTextureInfo {
-                texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            frame.bytes(),
-            wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(fw * 4),
-                rows_per_image: Some(fh),
-            },
-            wgpu::Extent3d {
-                width: fw,
-                height: fh,
-                depth_or_array_layers: 1,
-            },
-        );
-        let tex_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("blit"),
-            layout: &self.bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&tex_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(&self.sampler),
-                },
-            ],
-        });
-        self.phases.upload = upload_started.elapsed();
-
-        // wgpu 30 reports the acquire outcome as an enum rather than a `Result`. Mapped onto the
-        // old behaviour exactly: a usable texture (including a merely `Suboptimal` one, which
-        // the old code also presented from) is drawn to; a stale/lost swapchain (sleep, display
-        // re-negotiation) is reconfigured; every other outcome (timeout, occluded window,
-        // validation error) just skips the frame. The paced frame loop (`new_events`)
-        // re-requests a paint next frame, so we do NOT request one here — doing so would
-        // busy-spin while the surface can't present.
-        let acquire_started = Instant::now();
-        let acquired = self.surface.get_current_texture();
-        self.phases.acquire = acquire_started.elapsed();
-        let surface_frame = match acquired {
-            wgpu::CurrentSurfaceTexture::Success(frame)
-            | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => frame,
-            wgpu::CurrentSurfaceTexture::Outdated => {
-                self.surface.configure(&self.device, &self.config);
-                self.note_skip(SkipReason::Outdated);
-                return false;
-            }
-            wgpu::CurrentSurfaceTexture::Lost => {
-                self.surface.configure(&self.device, &self.config);
-                self.note_skip(SkipReason::Lost);
-                return false;
-            }
-            wgpu::CurrentSurfaceTexture::Timeout => {
-                self.note_skip(SkipReason::Timeout);
-                return false;
-            }
-            wgpu::CurrentSurfaceTexture::Occluded => {
-                self.note_skip(SkipReason::Occluded);
-                return false;
-            }
-            wgpu::CurrentSurfaceTexture::Validation => {
-                self.note_skip(SkipReason::Validation);
-                return false;
-            }
-        };
-        let submit_started = Instant::now();
-        let target = surface_frame
-            .texture
-            .create_view(&wgpu::TextureViewDescriptor::default());
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
-        {
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("blit"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &target,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
-            });
-            pass.set_pipeline(&self.pipeline);
-            pass.set_bind_group(0, &bind_group, &[]);
-            pass.draw(0..3, 0..1);
-        }
-        self.queue.submit(Some(encoder.finish()));
-        self.phases.submit = submit_started.elapsed();
-        let present_started = Instant::now();
-        self.queue.present(surface_frame);
-        self.phases.present = present_started.elapsed();
-        true
+        run_present(&mut FramePass {
+            renderer: self,
+            frame,
+            drawable: None,
+            bind_group: None,
+        })
     }
 
     /// Count a skipped frame by outcome and, on its first and every power-of-ten occurrence, say
@@ -2129,6 +2036,156 @@ impl Renderer {
         let presented = self.render(frame);
         self.telemetry.record(now, presented);
         presented
+    }
+}
+
+/// One present of `frame` on a [`Renderer`]'s surface, as the steps [`run_present`] orders.
+struct FramePass<'a> {
+    renderer: &'a mut Renderer,
+    frame: &'a FrameBuffer,
+    /// The drawable [`PresentSteps::acquire`] took, held until it is presented.
+    drawable: Option<wgpu::SurfaceTexture>,
+    /// The bind group [`PresentSteps::upload`] built for this frame's texture.
+    bind_group: Option<wgpu::BindGroup>,
+}
+
+impl PresentSteps for FramePass<'_> {
+    fn acquire(&mut self) -> Result<(), SkipReason> {
+        let r = &mut *self.renderer;
+        // wgpu 30 reports the acquire outcome as an enum rather than a `Result`. A usable texture
+        // (including a merely `Suboptimal` one, which the old code also presented from) is drawn
+        // to; a stale/lost swapchain (sleep, display re-negotiation) is reconfigured; every other
+        // outcome (timeout, occluded window, validation error) just skips the frame. The paced
+        // frame loop (`new_events`) re-requests a paint next frame, so we do NOT request one here:
+        // doing so would busy-spin while the surface can't present.
+        let acquire_started = Instant::now();
+        let acquired = r.surface.get_current_texture();
+        r.phases.acquire = acquire_started.elapsed();
+        let reason = match acquired {
+            wgpu::CurrentSurfaceTexture::Success(frame)
+            | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => {
+                self.drawable = Some(frame);
+                return Ok(());
+            }
+            wgpu::CurrentSurfaceTexture::Outdated => {
+                r.surface.configure(&r.device, &r.config);
+                SkipReason::Outdated
+            }
+            wgpu::CurrentSurfaceTexture::Lost => {
+                r.surface.configure(&r.device, &r.config);
+                SkipReason::Lost
+            }
+            wgpu::CurrentSurfaceTexture::Timeout => SkipReason::Timeout,
+            wgpu::CurrentSurfaceTexture::Occluded => SkipReason::Occluded,
+            wgpu::CurrentSurfaceTexture::Validation => SkipReason::Validation,
+        };
+        r.note_skip(reason);
+        Err(reason)
+    }
+
+    fn upload(&mut self) {
+        let r = &mut *self.renderer;
+        let frame = self.frame;
+        // Timed from here so re-creating the frame texture on a resize counts as upload.
+        let upload_started = Instant::now();
+        let (fw, fh) = (frame.width(), frame.height());
+        if r.frame_texture.as_ref().map(|(_, w, h)| (*w, *h)) != Some((fw, fh)) {
+            let texture = r.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("frame"),
+                size: wgpu::Extent3d {
+                    width: fw,
+                    height: fh,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8UnormSrgb,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[],
+            });
+            r.frame_texture = Some((texture, fw, fh));
+        }
+        let Some((texture, _, _)) = r.frame_texture.as_ref() else {
+            return;
+        };
+        r.queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            frame.bytes(),
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(fw * 4),
+                rows_per_image: Some(fh),
+            },
+            wgpu::Extent3d {
+                width: fw,
+                height: fh,
+                depth_or_array_layers: 1,
+            },
+        );
+        let tex_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        self.bind_group = Some(r.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("blit"),
+            layout: &r.bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&tex_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&r.sampler),
+                },
+            ],
+        }));
+        r.phases.upload = upload_started.elapsed();
+    }
+
+    fn submit_and_present(&mut self) {
+        let (Some(surface_frame), Some(bind_group)) =
+            (self.drawable.take(), self.bind_group.take())
+        else {
+            return;
+        };
+        let r = &mut *self.renderer;
+        let submit_started = Instant::now();
+        let target = surface_frame
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
+        let mut encoder = r
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("blit"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &target,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_pipeline(&r.pipeline);
+            pass.set_bind_group(0, &bind_group, &[]);
+            pass.draw(0..3, 0..1);
+        }
+        r.queue.submit(Some(encoder.finish()));
+        r.phases.submit = submit_started.elapsed();
+        let present_started = Instant::now();
+        r.queue.present(surface_frame);
+        r.phases.present = present_started.elapsed();
     }
 }
 
@@ -5266,6 +5323,65 @@ mod tests {
             assert!(
                 line.contains(needle),
                 "skip line is missing `{needle}`: {line}"
+            );
+        }
+    }
+
+    /// Records which steps of a present ran, and in what order.
+    #[derive(Default)]
+    struct RecordingSteps {
+        calls: Vec<&'static str>,
+        /// `Some(reason)` makes the acquire fail with that outcome.
+        skip: Option<super::SkipReason>,
+    }
+
+    impl super::PresentSteps for RecordingSteps {
+        fn acquire(&mut self) -> Result<(), super::SkipReason> {
+            self.calls.push("acquire");
+            self.skip.map_or(Ok(()), Err)
+        }
+        fn upload(&mut self) {
+            self.calls.push("upload");
+        }
+        fn submit_and_present(&mut self) {
+            self.calls.push("submit_and_present");
+        }
+    }
+
+    /// POSITIVE CONTROL for the test below: a present whose acquire succeeds must still go on to
+    /// upload, submit and present, in that order. Without it, a `run_present` that did nothing at
+    /// all would satisfy "a skipped acquire queues no GPU work" vacuously.
+    #[test]
+    fn a_successful_acquire_uploads_then_submits_and_presents() {
+        let mut steps = RecordingSteps::default();
+        assert!(super::run_present(&mut steps));
+        assert_eq!(steps.calls, ["acquire", "upload", "submit_and_present"]);
+    }
+
+    /// THE leak. `Queue::write_texture` copies the whole frame (~8 MB at 1080p) into staging memory
+    /// that is only released by the next `Queue::submit`. The renderer used to upload BEFORE it
+    /// acquired a drawable, so a window wgpu 30 reported as `Occluded` returned early having staged
+    /// a frame it never submitted: ~8 MB per skipped frame, ~500 MB/s at 60 Hz. A real run reached a
+    /// 29 GB footprint (all of it graphics memory, 3979 regions) and macOS killed the host at 56 GB.
+    /// So for EVERY outcome that skips a frame, nothing may be queued on the GPU.
+    #[test]
+    fn a_skipped_acquire_queues_no_gpu_work_for_any_reason() {
+        for reason in super::SkipReason::ALL {
+            let mut steps = RecordingSteps {
+                skip: Some(reason),
+                ..Default::default()
+            };
+            assert!(
+                !super::run_present(&mut steps),
+                "a skipped acquire ({}) must report that no frame was presented",
+                reason.label()
+            );
+            assert_eq!(
+                steps.calls,
+                ["acquire"],
+                "a frame skipped as {} staged GPU work it never submits: that memory is not \
+                 released until the next submit, so a window that stays skipped leaks ~8 MB a frame",
+                reason.label()
             );
         }
     }
