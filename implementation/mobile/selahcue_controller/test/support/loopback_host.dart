@@ -13,6 +13,11 @@
 /// nothing: the server binds loopback only, lives for the length of one test,
 /// and no real host, device or pairing invite has ever used it. It is NOT a
 /// credential and must never be reused outside tests.
+///
+/// SECRET SCANNERS: the embedded PEM block below is that test-only throwaway.
+/// If a secret scanner (gitleaks, GitHub secret scanning, ...) is ever added to
+/// this repo, allowlist this file (`test/support/loopback_host.dart`) rather than
+/// removing the key: it is deliberate and worthless.
 library;
 
 import 'dart:convert';
@@ -92,6 +97,24 @@ class LoopbackHost {
   /// The length is how many times a client dialled in and spoke.
   final List<Map<String, dynamic>> hellos = [];
 
+  int _clientClosed = 0;
+
+  /// How many connections the CLIENT has closed (this host never closes one
+  /// itself before the test ends, so a socket that ends is the client's doing).
+  int get clientClosedCount => _clientClosed;
+
+  /// Wait until [count] connections have been closed from the client's side.
+  /// `false` on timeout, which is how a leaked socket shows up.
+  Future<bool> waitClientClosed(int count,
+      {Duration timeout = const Duration(seconds: 5)}) async {
+    final deadline = DateTime.now().add(timeout);
+    while (_clientClosed < count) {
+      if (DateTime.now().isAfter(deadline)) return false;
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+    }
+    return true;
+  }
+
   LoopbackHost._(this._server);
 
   int get port => _server.port;
@@ -136,7 +159,9 @@ class LoopbackHost {
         for (final reply in replies) {
           ws.add(reply);
         }
-      }, onError: (Object _) {}, cancelOnError: true);
+      }, onDone: () => host._clientClosed++,
+          onError: (Object _) {},
+          cancelOnError: true);
     }, onError: (Object _) {});
     return host;
   }
