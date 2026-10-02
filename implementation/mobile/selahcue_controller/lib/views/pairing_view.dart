@@ -38,9 +38,11 @@ class _PairingViewState extends State<PairingView> {
   ///
   /// This screen is reachable in two ways: with no stored session (first run, or
   /// after an explicit unpair, which clears them) and WITH one (the launcher
-  /// tried to reconnect and the host was off or had moved). Only the second can
-  /// light the chip, and in that case it is genuinely useful — it points at the
-  /// host you are already paired to among several on the network.
+  /// tried to reconnect and the connect failed for ANY reason — the host was off
+  /// or had moved, the credentials were revoked, or it answered the handshake
+  /// with something malformed). Only the second can light the chip, and in that
+  /// case it is genuinely useful — it points at the host you are already paired
+  /// to among several on the network.
   StoredSession? _paired;
 
   @override
