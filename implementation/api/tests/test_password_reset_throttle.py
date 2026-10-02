@@ -39,25 +39,30 @@ throttled call left NO new `CredentialToken` row and sent NO new email. Mutation
 same way as the header test above (see the handoff evidence).
 
 THE 86ak65mj5 SECTION AT THE END OF THIS FILE pins the ticket's own acceptance criteria that
-the tests above do not reach: the DEFAULT budgets never block a person who mistypes their
-address (and a legitimate single request sends exactly one email), a throttled refusal is
-byte-identical AND takes the same time for a registered and an unregistered address under EACH
-of the three budgets, and the keys the limiter can create are bounded by the global budget
-rather than by attacker input.
+the tests above do not reach: the SHIPPED budgets are pinned and never block a person who
+mistypes their address (and a legitimate single request sends exactly one email); a throttled
+refusal does the same work, returns the same bytes and headers, and takes the same time for a
+registered and an unregistered address under EACH of the three budgets (the work is asserted in
+COUNTS — zero queries, a fixed cache-call shape — and timing is only a second-line alarm); and
+the keys the limiter can create, and how long they live, are bounded by the global budget rather
+than by attacker input.
 """
 
 import json
 import logging
 import statistics
 import time
+from contextlib import contextmanager
 
 import pytest
 from django.core.cache import cache
+from django.db import connection
 from django.test import TestCase
 
 from selahcue_api.apps.accounts import services
 from selahcue_api.apps.accounts.models import CredentialToken, CredentialTokenPurpose, CustomerUser
 from selahcue_api.apps.throttling import guards
+from selahcue_api.apps.throttling.services import CacheStore
 
 
 def post_account(client, query, variables=None, **extra):
@@ -752,23 +757,48 @@ def test_retrying_the_same_address_after_a_lost_email_works_three_times_then_sto
 
 
 @pytest.mark.parametrize(
-    ("setting_name", "module_default"),
+    ("setting_name", "module_default", "shipped"),
     [
-        ("SELAHCUE_THROTTLE_RESET_REQUEST", services.RESET_REQUEST_IP_BUDGET),
-        ("SELAHCUE_THROTTLE_RESET_REQUEST_ADDRESS", services.RESET_REQUEST_ADDRESS_BUDGET),
-        ("SELAHCUE_THROTTLE_RESET_REQUEST_GLOBAL", services.RESET_REQUEST_GLOBAL_BUDGET),
-        ("SELAHCUE_RESET_SEND_DEGRADED_CEILING", services.RESET_SEND_DEGRADED_CEILING),
+        ("SELAHCUE_THROTTLE_RESET_REQUEST", services.RESET_REQUEST_IP_BUDGET, (20, 3600)),
+        ("SELAHCUE_THROTTLE_RESET_REQUEST_ADDRESS", services.RESET_REQUEST_ADDRESS_BUDGET, (3, 900)),
+        ("SELAHCUE_THROTTLE_RESET_REQUEST_GLOBAL", services.RESET_REQUEST_GLOBAL_BUDGET, (500, 3600)),
+        ("SELAHCUE_RESET_SEND_DEGRADED_CEILING", services.RESET_SEND_DEGRADED_CEILING, (20, 3600)),
     ],
 )
-def test_the_reset_budget_settings_and_their_module_defaults_have_not_drifted(
-    settings, setting_name, module_default
+def test_the_shipped_reset_budgets_are_pinned_and_their_two_copies_agree(
+    settings, setting_name, module_default, shipped
 ):
-    """`enforce_budget` reads the setting at call time and falls back to the module constant
-    only if the setting is missing. Two numbers for one budget is how a value gets quietly
-    changed in one place while a test pins the other (same guard resend has for its ceiling)."""
+    """Two things, each with its own message. (1) `enforce_budget` reads the setting at call time
+    and falls back to the module constant only if the setting is missing: two numbers for one
+    budget is how a value gets quietly changed in one place while a test pins the other. (2) The
+    NUMBER itself is pinned, because every behavioural test above tightens a budget to make it
+    trip, so nothing else notices a shipped limit being inflated until it no longer limits
+    anything (20 -> 20000 on the IP budget survived every other test in review). Changing a
+    shipped budget is a decision: update the literal here in the same change and say why."""
     assert getattr(settings, setting_name) == module_default, (
         f"settings.{setting_name} and the matching services.py default have drifted"
     )
+    assert module_default == shipped, (
+        f"the shipped {setting_name} is now {module_default}, not {shipped}. If that is deliberate, "
+        "update this pin and the reasoning in the PR; if not, a limit was loosened or tightened by accident"
+    )
+
+
+@pytest.mark.django_db
+def test_the_default_ip_budget_refuses_the_21st_request_from_one_source(client):
+    """AC1's first clause — "repeated calls from one source are throttled" — under the SHIPPED
+    defaults rather than a budget tightened to make the test short. Twenty distinct addresses
+    from one source are served, the 21st is refused, and a different source is untouched."""
+    codes = [
+        error_code(
+            post_account(client, REQUEST_RESET, {"e": f"source-{n}@default-ip.example"}, REMOTE_ADDR="203.0.113.77")
+        )
+        for n in range(21)
+    ]
+    other = post_account(client, REQUEST_RESET, {"e": "elsewhere@default-ip.example"}, REMOTE_ADDR="203.0.113.78")
+
+    assert codes == [None] * 20 + ["RATE_LIMITED"], codes
+    assert error_code(other) is None, "a different source must have its own, unspent budget"
 
 
 # --- AC2: a throttled refusal is the same for a registered and an unregistered address -------
@@ -782,6 +812,17 @@ _BUDGET_SETTINGS = {
 }
 _TRIPS_AT_ONE = {"ip": (1, 3600), "address": (1, 900), "global": (1, 3600)}
 _OUT_OF_REACH = {"ip": (10_000, 3600), "address": (10_000, 900), "global": (10_000, 3600)}
+# The budgets a refusal BY each budget has already spent, in order. Global is spent first, then
+# the IP, then the address, so a refusal at the IP budget has spent global and IP, and so on.
+_SCOPES_SPENT = {
+    "global": ("password_reset_request_global",),
+    "ip": ("password_reset_request_global", "password_reset_request_ip"),
+    "address": (
+        "password_reset_request_global",
+        "password_reset_request_ip",
+        "password_reset_request_addr",
+    ),
+}
 
 
 def _only_budget_trips(settings, budget):
@@ -789,16 +830,128 @@ def _only_budget_trips(settings, budget):
         setattr(settings, setting_name, _TRIPS_AT_ONE[name] if name == budget else _OUT_OF_REACH[name])
 
 
+class _QueryCounter:
+    """Counts every statement the ORM executes inside `connection.execute_wrapper`.
+
+    Not `CaptureQueriesContext` / `django_assert_num_queries`: those slice `connection.queries_log`,
+    which the test client's `request_started` signal CLEARS, so a count taken around a client
+    request can read short (the allowed call here read 0 for the address budget). A wrapper sees
+    each statement as it runs and is not affected."""
+
+    def __init__(self):
+        self.count = 0
+
+    def __call__(self, execute, sql, params, many, context):
+        self.count += 1
+        return execute(sql, params, many, context)
+
+
+@contextmanager
+def _counting_queries():
+    counter = _QueryCounter()
+    with connection.execute_wrapper(counter):
+        yield counter
+
+
 def _spend_the_allowed_call(client, budget, known, ghost):
     """Use up `budget`'s one allowed call. The REAL account goes first so that call is the one
     that mints — the branch a mis-placed or existence-keyed throttle would treat differently.
     The address budget is per address, so the unknown address must spend its own allowance too;
-    the IP and global budgets are shared, so the first call already spent them."""
-    first = post_account(client, REQUEST_RESET, {"e": known})
+    the IP and global budgets are shared, so the first call already spent them.
+
+    Returns how many database queries the real account's allowed call made, so a caller that
+    asserts a REFUSAL makes none can prove its own query counter is alive."""
+    with _counting_queries() as queries:
+        first = post_account(client, REQUEST_RESET, {"e": known})
     assert error_code(first) is None, "the within-budget call to the real account was refused"
     if budget == "address":
         second = post_account(client, REQUEST_RESET, {"e": ghost})
         assert error_code(second) is None, "the within-budget call to the unknown address was refused"
+    return queries.count
+
+
+class _RecordingCache:
+    """Wraps the cache the limiter spends against and records every call as (method, scope).
+
+    Keys are `throttle:<scope>:<identity>`; only the scope is kept, so what is recorded is the
+    SHAPE of the work — which budgets, in which order, how many round trips — and never an
+    address or an IP."""
+
+    def __init__(self, real, calls):
+        self._real = real
+        self._calls = calls
+
+    def __getattr__(self, name):
+        target = getattr(self._real, name)
+        if not callable(target):
+            return target
+
+        def recorded(key, *args, **kwargs):
+            self._calls.append((name, key.split(":")[1]))
+            return target(key, *args, **kwargs)
+
+        return recorded
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("budget", sorted(_BUDGET_SETTINGS))
+def test_a_refused_request_does_no_work_beyond_its_budget_checks(
+    client, settings, capturing_sender, monkeypatch, budget
+):
+    """THE DETERMINISTIC GUARD for AC2 — the timing probe below is only the second line.
+
+    A refusal must be the same work for a registered and an unregistered address, and that work
+    is only the budget checks. Measured in COUNTS, not milliseconds, so it cannot flake:
+
+    * EXACTLY zero database queries, for both addresses. Zero, not "equal": a lookup moved in
+      front of the three spends makes the same one query for both addresses, so a comparison
+      between them cannot see it, and it is precisely the cheap-refusal property the throttle
+      exists to provide (the existence lookup is what a refused caller must not cost).
+    * The same sequence of cache calls for both addresses, and exactly the one expected: global,
+      then IP, then address, each as `add` + `incr` (see `CacheStore.incr_with_expiry`) — 2, 4 or
+      6 calls. An extra or reordered call is a change to the cost of a refusal.
+    * No token minted and no email sent.
+
+    Positive controls, so a dead instrument cannot pass: the real account's ALLOWED call made
+    database queries and minted, and the cache recorder saw calls."""
+    _only_budget_trips(settings, budget)
+    calls = []
+    monkeypatch.setattr(guards, "cache", _RecordingCache(guards.cache, calls))
+    known = _existing_verified_account(
+        capturing_sender, email=f"known-{budget}@counts.example", idem=f"refusal-counts-{budget}"
+    )
+    ghost = f"ghost-{budget}@counts.example"
+
+    queries_for_the_allowed_call = _spend_the_allowed_call(client, budget, known, ghost)
+
+    assert queries_for_the_allowed_call > 0, "the allowed call made no queries — the query counter is dead"
+    assert calls, "the cache recorder saw nothing — the call-shape control is dead"
+    tokens_before = CredentialToken.objects.count()
+    mails_before = len(capturing_sender.reset_tokens)
+    assert mails_before == 1, "the real account's allowed call did not mint — the control is dead"
+
+    shapes = {}
+    for label, address in (("registered", known), ("unregistered", ghost)):
+        calls.clear()
+        with _counting_queries() as queries:
+            refused = post_account(client, REQUEST_RESET, {"e": address})
+        assert error_code(refused) == "RATE_LIMITED"
+        assert queries.count == 0, (
+            f"a refusal by the {budget} budget ran {queries.count} database queries for the "
+            f"{label} address — something existence-dependent runs before the throttle refuses"
+        )
+        shapes[label] = list(calls)
+
+    expected = [(method, scope) for scope in _SCOPES_SPENT[budget] for method in ("add", "incr")]
+    assert shapes["registered"] == shapes["unregistered"], (
+        f"a refusal by the {budget} budget makes different cache calls for a registered and an "
+        f"unregistered address: {shapes['registered']} vs {shapes['unregistered']}"
+    )
+    assert shapes["registered"] == expected, (
+        f"a refusal by the {budget} budget should cost exactly {expected}, not {shapes['registered']}"
+    )
+    assert CredentialToken.objects.count() == tokens_before, "a refusal minted a token"
+    assert len(capturing_sender.reset_tokens) == mails_before, "a refusal sent an email"
 
 
 @pytest.mark.django_db
@@ -824,35 +977,53 @@ def test_a_throttled_refusal_is_byte_identical_for_a_known_and_an_unknown_addres
     assert known_refused.content == ghost_refused.content, (
         f"the {budget} budget's refusal differs between a registered and an unregistered address"
     )
+    # Headers and cookies are part of "byte-identical" too: a header that differed between the
+    # two would be an oracle the body comparison cannot see.
+    assert dict(known_refused.headers) == dict(ghost_refused.headers), (
+        f"the {budget} budget's refusal HEADERS differ between a registered and an unregistered address"
+    )
+    assert known_refused.cookies.output() == ghost_refused.cookies.output()
     assert len(capturing_sender.reset_tokens) == mails_before, "a refusal must send nothing"
 
 
-# TIMING. The paired-comparison technique, as `test_resend_verification.py` uses it: the two
-# cases are interleaved in time (and the order alternates each round) so warm-up, GC and host
-# load land on both alike, and the verdict is a MEDIAN of per-round differences rather than one
-# wall-clock delta. Every sample is asserted to really be a refusal, so the probe cannot
-# quietly time accepted calls.
+# TIMING — the SECOND line of defence, an alarm; the count-based test above is the deterministic
+# guard and is the one to read first when either goes red.
 #
-# Unlike resend, the refusal path is NOT padded to a floor and must not be: padding a rejection
-# only hands an attacker a way to tie up request threads (see `request_password_reset`'s
-# docstring). It needs no padding because the three budgets are spent BEFORE anything looks the
-# address up, so both cases execute the same code up to the raise. This test is what notices if
-# a future change puts existence-dependent work (the lookup, the mint) in front of a spend.
+# The paired-comparison technique, as `test_resend_verification.py` uses it: the two cases are
+# interleaved in time (the order alternates each round) so warm-up, GC and host load land on both
+# alike, and a measurement is the MEDIAN of 60 per-round differences rather than one wall-clock
+# delta. Every sample is asserted to be a real refusal, so the probe cannot quietly time
+# accepted calls.
 #
-# TOLERANCE, and what it can and cannot see. Measured on a shared 10-core dev host (load average
-# about 5, SQLite + LocMemCache, 25 runs of this probe per budget): the paired median gap on
-# the real code never left +/-0.07ms. The same probe on a throttle deliberately moved AFTER the
-# mint (refuse-after-sending) read a stable +0.44 to +1.5ms. 1ms is therefore ~14x the observed
-# noise and below a 2ms leak, which the control below injects and which must be flagged. The
-# probe's resolution is that, about a millisecond: an existence-dependent difference smaller
-# than that is not guaranteed to be seen, which is why the structural tests above — the
-# throttled call mints nothing and sends nothing — are the deterministic guard and this is the
-# second line. It is not a proof of constant time, and the UNTHROTTLED path (a +0.437ms branch
-# gap, DEC-013) is deliberately not asserted here: padding it is 86ak7kka2.
+# ONE MEASUREMENT WAS NOT ROBUST ENOUGH (86ak65mj5 review: Vera, Cody, Quinn). On UNMODIFIED code,
+# with Postgres and Redis in containers on a host at about twice its core count, a median read
+# +/-1 to 1.5 ms in a few percent of probes. So the verdict is "leak" only when TWO independent
+# measurements both exceed the tolerance on the SAME side: a real, constant leak exceeds it every
+# time, while a host spike rarely repeats and rarely repeats with the same sign. The second
+# measurement costs nothing unless the first one is out.
+#
+# WHAT THIS CAN AND CANNOT SEE — measured, not promised:
+#   * A planted existence-dependent delay of exactly 2.0 ms is flagged (the control below). It is
+#     busy-waited rather than slept because macOS oversleeps `time.sleep`, which made the margin
+#     look bigger locally than a Linux runner would give. The tolerance is 1.0 ms, so the real
+#     margin is about 1 ms.
+#   * A throttle moved AFTER the mint reads about +0.7 to +0.8 ms on SQLite: under the tolerance,
+#     so usually NOT flagged here (2 of 40 probes in the review). On Postgres in containers it
+#     reads +3 to +15 ms and is. That mutant, and a lookup or a small existence-dependent query
+#     in front of the spends (+0.1 to +0.3 ms), are caught by the count-based test, not by this.
+#   * It is not a proof of constant time, and it says nothing about the UNTHROTTLED path (the
+#     +0.437 ms registered-vs-unregistered branch gap of DEC-013): padding that is 86ak7kka2.
 _TIMING_WARMUP_ROUNDS = 8
 _TIMING_ROUNDS = 60
-REFUSAL_GAP_TOLERANCE_SECONDS = 0.001
-_INJECTED_DELAY_SECONDS = 0.002
+_REFUSAL_GAP_TOLERANCE_SECONDS = 0.001
+_PLANTED_DELAY_SECONDS = 0.002
+_CONTROL_ATTEMPTS = 5
+
+
+def _busy_wait(seconds):
+    end = time.perf_counter() + seconds
+    while time.perf_counter() < end:
+        pass
 
 
 def _paired_refusal_gap(client, known, ghost):
@@ -871,6 +1042,17 @@ def _paired_refusal_gap(client, known, ghost):
     return statistics.median(gaps)
 
 
+def _refusal_timing_verdict(client, known, ghost):
+    """(leak, measurements). `leak` only if two independent measurements both exceed the
+    tolerance on the SAME side; the second is taken only when the first is out."""
+    first = _paired_refusal_gap(client, known, ghost)
+    if abs(first) <= _REFUSAL_GAP_TOLERANCE_SECONDS:
+        return False, [first]
+    second = _paired_refusal_gap(client, known, ghost)
+    same_side = (first > 0) == (second > 0)
+    return same_side and abs(second) > _REFUSAL_GAP_TOLERANCE_SECONDS, [first, second]
+
+
 @pytest.mark.django_db
 @pytest.mark.parametrize("budget", sorted(_BUDGET_SETTINGS))
 def test_a_throttled_refusal_takes_the_same_time_for_a_known_and_an_unknown_address(
@@ -883,12 +1065,16 @@ def test_a_throttled_refusal_takes_the_same_time_for_a_known_and_an_unknown_addr
     ghost = f"ghost-{budget}@timing.example"
     _spend_the_allowed_call(client, budget, known, ghost)
 
-    gap = _paired_refusal_gap(client, known, ghost)
+    leak, gaps = _refusal_timing_verdict(client, known, ghost)
 
-    assert abs(gap) <= REFUSAL_GAP_TOLERANCE_SECONDS, (
-        f"the {budget} budget's refusal is {gap * 1000:+.2f}ms slower for a registered address "
-        f"(tolerance {REFUSAL_GAP_TOLERANCE_SECONDS * 1000:.0f}ms) — something existence-dependent "
-        "runs before the throttle refuses"
+    shown = ", ".join(f"{gap * 1000:+.2f}" for gap in gaps)
+    assert not leak, (
+        f"two independent paired measurements of {budget}-budget refusals (registered minus "
+        f"unregistered, ms: {shown}) both exceeded the +/-{_REFUSAL_GAP_TOLERANCE_SECONDS * 1000:.0f}ms "
+        "tolerance on the same side. Repeating on one side is unlikely to be host noise alone, but "
+        "read the count-based test first: if "
+        "test_a_refused_request_does_no_work_beyond_its_budget_checks passes, re-run on a quieter "
+        "host before suspecting the code."
     )
 
 
@@ -897,9 +1083,14 @@ def test_the_refusal_timing_probe_can_see_an_existence_dependent_delay(
     client, settings, capturing_sender, monkeypatch
 ):
     """The positive control for the test above. Without it, a probe that is simply too noisy or
-    too coarse to see anything would pass for the wrong reason. Here the address budget is made
-    deliberately existence-dependent — a pause that happens only for the registered address —
-    and the SAME probe, with the SAME tolerance, must flag it."""
+    too coarse to see anything would pass for the wrong reason. The address budget is made
+    deliberately existence-dependent — an exact busy-wait that happens only for the registered
+    address — and the SAME verdict, with the SAME tolerance, must flag it.
+
+    Up to five attempts: this proves the probe CAN see a 2.0 ms leak, and a load burst on the host
+    must not turn that into a false failure. Under heavy load a single verdict missed the planted
+    delay about 7% of the time, in bursts of at most two in a row, so five attempts leave no
+    realistic false failure while a blind probe would still fail all five."""
     _only_budget_trips(settings, "address")
     known = _existing_verified_account(
         capturing_sender, email="known-control@timing.example", idem="refusal-timing-control"
@@ -909,23 +1100,51 @@ def test_the_refusal_timing_probe_can_see_an_existence_dependent_delay(
 
     known_fingerprint = services._email_fingerprint(known)
     real_spend = services.enforce_budget_reporting_outage
+    planted = []
 
     def existence_dependent(scope, identity, setting_name, default):
         if scope == "password_reset_request_addr" and identity == known_fingerprint:
-            time.sleep(_INJECTED_DELAY_SECONDS)
+            planted.append(identity)
+            _busy_wait(_PLANTED_DELAY_SECONDS)
         return real_spend(scope, identity, setting_name, default)
 
     monkeypatch.setattr(services, "enforce_budget_reporting_outage", existence_dependent)
 
-    gap = _paired_refusal_gap(client, known, ghost)
+    flagged, history = False, []
+    for _ in range(_CONTROL_ATTEMPTS):
+        flagged, gaps = _refusal_timing_verdict(client, known, ghost)
+        history.append(gaps)
+        if flagged:
+            break
 
-    assert gap > REFUSAL_GAP_TOLERANCE_SECONDS, (
-        f"an injected {_INJECTED_DELAY_SECONDS * 1000:.0f}ms existence-dependent delay measured "
-        f"only {gap * 1000:+.2f}ms — the timing probe cannot see a leak of this size"
+    # A different failure from "the probe is blind": the hook below never ran, which means the
+    # control no longer matches the code under test (a renamed scope or function).
+    assert planted, "the planted delay never ran — this control's hook no longer matches the code under test"
+    assert flagged, (
+        f"a planted {_PLANTED_DELAY_SECONDS * 1000:.1f}ms existence-dependent delay was not flagged "
+        f"in {_CONTROL_ATTEMPTS} attempts (measurements, ms: "
+        f"{[[round(g * 1000, 2) for g in gaps] for gaps in history]}) — the timing probe cannot see "
+        "a leak of this size"
     )
 
 
 # --- bounded memory: the limiter's key space follows the global budget, not the attacker -----
+def _record_limiter_keys(monkeypatch):
+    """Record every limiter key the code touches, with the expiry window it was given.
+
+    Recorded at `evaluate_budget` rather than by listing the cache, so the assertions mean the
+    same thing on LocMemCache (local) and Redis (CI) — `cache._cache` exists only on the former."""
+    touched = {}
+    real_evaluate = guards.evaluate_budget
+
+    def recording(store, key, limit, window_seconds):
+        touched[key] = window_seconds
+        return real_evaluate(store, key, limit, window_seconds)
+
+    monkeypatch.setattr(guards, "evaluate_budget", recording)
+    return touched
+
+
 @pytest.mark.django_db
 def test_the_keys_the_limiter_can_create_are_bounded_by_the_global_budget_not_by_attacker_input(
     client, settings, monkeypatch
@@ -936,22 +1155,15 @@ def test_the_keys_the_limiter_can_create_are_bounded_by_the_global_budget_not_by
     address or IP key is ever created. This sprays ten times the global limit of distinct
     addresses from distinct sources and counts the keys the limiter actually touched.
 
-    Recorded at `evaluate_budget` rather than by listing the cache, so the test means the same
-    thing on LocMemCache (local) and Redis (CI) — `cache._cache` exists only on the former.
     The within-budget calls are the positive control: exactly `global_limit` address and IP
-    keys must have been seen, so a recorder that saw nothing cannot pass."""
+    keys must have been seen, so a recorder that saw nothing cannot pass. Every key must also
+    carry the EXPIRY the budget configures: a key with no (or a huge) window is a key that never
+    leaves the store, which is the other half of "bounded"."""
     global_limit = 5
     settings.SELAHCUE_THROTTLE_RESET_REQUEST_GLOBAL = (global_limit, 3600)
     settings.SELAHCUE_THROTTLE_RESET_REQUEST = (10_000, 3600)
     settings.SELAHCUE_THROTTLE_RESET_REQUEST_ADDRESS = (10_000, 900)
-    touched = set()
-    real_evaluate = guards.evaluate_budget
-
-    def recording(store, key, limit, window_seconds):
-        touched.add(key)
-        return real_evaluate(store, key, limit, window_seconds)
-
-    monkeypatch.setattr(guards, "evaluate_budget", recording)
+    touched = _record_limiter_keys(monkeypatch)
 
     outcomes = [
         error_code(
@@ -974,10 +1186,122 @@ def test_the_keys_the_limiter_can_create_are_bounded_by_the_global_budget_not_by
     )
     assert len(keys_for("password_reset_request_ip")) == global_limit
 
-    # Malformed addresses are rejected before ANY budget is spent, so they cannot mint a key
-    # either (the validity of an address is not existence-dependent, so this leaks nothing).
-    seen = set(touched)
+    configured_window = {
+        "password_reset_request_global": 3600,
+        "password_reset_request_ip": 3600,
+        "password_reset_request_addr": 900,
+    }
+    for key, window in touched.items():
+        scope = key.split(":")[1]
+        assert window == configured_window[scope], (
+            f"{scope} was given an expiry of {window}s, not the configured "
+            f"{configured_window[scope]}s — a key that outlives its window is unbounded growth"
+        )
+
+
+@pytest.mark.django_db
+def test_a_malformed_address_is_rejected_before_any_budget_is_spent(client, settings, monkeypatch):
+    """Malformed addresses are rejected before ANY budget is spent, so they cannot mint a limiter
+    key (an address's validity is not existence-dependent, so this leaks nothing).
+
+    Its own test, with every budget wide open, because that is the only state in which the
+    assertion can bite: after the global budget is spent every request is refused before it
+    could create a key, so a check placed there could never fail. The well-formed call at the
+    end is the positive control that keys are recorded at all."""
+    settings.SELAHCUE_THROTTLE_RESET_REQUEST_GLOBAL = (10_000, 3600)
+    settings.SELAHCUE_THROTTLE_RESET_REQUEST = (10_000, 3600)
+    settings.SELAHCUE_THROTTLE_RESET_REQUEST_ADDRESS = (10_000, 900)
+    touched = _record_limiter_keys(monkeypatch)
+
     for n in range(20):
         rejected = post_account(client, REQUEST_RESET, {"e": f"not-an-address-{n}"})
         assert error_code(rejected) == "VALIDATION_FAILED"
-    assert touched == seen, "a malformed address created a limiter key"
+    assert touched == {}, "a malformed address created a limiter key"
+
+    accepted = post_account(client, REQUEST_RESET, {"e": "well-formed@bound.example"})
+    assert error_code(accepted) is None
+    assert len(touched) == 3, "the recorder saw no keys for a well-formed address — the control is dead"
+
+
+# --- QA review (Quinn): regressions the suite did not pin -------------------------------------
+def _live_reset_token_ids(user):
+    return sorted(
+        CredentialToken.objects.filter(
+            customer_user=user, purpose=CredentialTokenPurpose.PASSWORD_RESET, consumed_at__isnull=True
+        ).values_list("id", flat=True)
+    )
+
+
+@pytest.mark.django_db
+def test_a_refused_request_leaves_the_real_accounts_live_link_untouched_and_usable(
+    client, capturing_sender
+):
+    """A refused request must not consume or replace the link the person already holds: the
+    caller was refused, so nothing about their account may have changed. The last link that was
+    actually MAILED must still work."""
+    email = _existing_verified_account(capturing_sender, email="victim@live.example", idem="qa-live-link-0001")
+    user = CustomerUser.objects.get(email=email)
+    served = [post_account(client, REQUEST_RESET, {"e": email}) for _ in range(3)]
+    assert [error_code(r) for r in served] == [None, None, None]
+    live_before = _live_reset_token_ids(user)
+    assert len(live_before) == 1, "control: exactly one live link before the refusal"
+
+    refused = post_account(client, REQUEST_RESET, {"e": email})
+
+    assert error_code(refused) == "RATE_LIMITED"
+    assert _live_reset_token_ids(user) == live_before, "a REFUSED request consumed or replaced the live link"
+    confirm = post_account(
+        client,
+        CONFIRM_RESET,
+        {"input": {"token": capturing_sender.reset_tokens[-1], "newPassword": "qa-new-passphrase-1"}},
+    )
+    assert body(confirm)["data"]["confirmPasswordReset"]["reset"] is True, "the last MAILED link stopped working"
+
+
+class _GlobalKeyOnlyBrokenStore:
+    """A limiter store that fails ONLY for the global budget's key — a partial outage."""
+
+    def __init__(self, cache):
+        self._real = CacheStore(cache)
+
+    def incr_with_expiry(self, key, window_seconds):
+        if key.startswith("throttle:password_reset_request_global:"):
+            raise RuntimeError("the shard holding the global key is down")
+        return self._real.incr_with_expiry(key, window_seconds)
+
+
+@pytest.mark.django_db
+def test_a_global_budget_outage_does_not_switch_off_the_address_budget(client, settings, monkeypatch):
+    """The three spends are three statements joined by `|=`, never `or` (see the comment in
+    `request_password_reset`). If the first budget's outage short-circuited the others, a partial
+    outage would quietly drop the per-address cap. Nothing else in the suite pins that."""
+    settings.SELAHCUE_THROTTLE_RESET_REQUEST_ADDRESS = (2, 900)
+    monkeypatch.setattr(guards, "CacheStore", lambda cache: _GlobalKeyOnlyBrokenStore(cache))
+
+    codes = [
+        error_code(post_account(client, REQUEST_RESET, {"e": "partial@outage.example"})) for _ in range(3)
+    ]
+
+    assert codes == [None, None, "RATE_LIMITED"], codes
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize(
+    "spelling",
+    ["VICTIM@Variant.Example", "  victim@variant.example  ", "\tvictim@variant.example\n"],
+)
+def test_every_spelling_that_reaches_the_account_shares_its_one_address_budget(
+    client, settings, capturing_sender, spelling
+):
+    """The address budget's key must be the same fingerprint the account lookup uses. A key built
+    from a differently-normalised string would give a padded or re-cased spelling a budget of its
+    own while it still reaches the same account — a bypass of the per-address cap."""
+    settings.SELAHCUE_THROTTLE_RESET_REQUEST_ADDRESS = (1, 900)
+    email = _existing_verified_account(capturing_sender, email="victim@variant.example", idem="qa-variant-0001")
+
+    first = post_account(client, REQUEST_RESET, {"e": email})
+    second = post_account(client, REQUEST_RESET, {"e": spelling})
+
+    assert error_code(first) is None
+    assert error_code(second) == "RATE_LIMITED", f"{spelling!r} reached the account on a budget of its own"
+    assert len(capturing_sender.reset_tokens) == 1
