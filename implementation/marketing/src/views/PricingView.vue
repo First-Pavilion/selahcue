@@ -83,7 +83,7 @@ const pricingFaqItems = [
     <section class="comparison-section">
       <div class="container">
         <h2>Compare features</h2>
-        <div class="table-container">
+        <div class="table-container" tabindex="0" role="region" aria-label="Plan comparison, scrolls sideways when wide">
           <table class="comparison-table">
             <thead>
               <tr>
@@ -163,7 +163,7 @@ const pricingFaqItems = [
 .container {
   max-width: 1200px;
   margin: 0 auto;
-  padding: 0 1.5rem;
+  padding: 0 var(--page-gutter);
 }
 
 .hero {
@@ -184,6 +184,7 @@ const pricingFaqItems = [
   display: flex;
   justify-content: center;
   align-items: center;
+  flex-wrap: wrap;
   gap: 1rem;
 }
 
@@ -193,6 +194,17 @@ const pricingFaqItems = [
   display: inline-block;
   width: 50px;
   height: 24px;
+  flex-shrink: 0;
+}
+/* Invisible padding: the visual switch stays 50x24 but the tap area reaches 44px tall. */
+.switch::before {
+  content: '';
+  position: absolute;
+  inset: -10px -6px;
+}
+input:focus-visible + .slider {
+  outline: 2px solid var(--sc-primary);
+  outline-offset: 3px;
 }
 .switch input {
   opacity: 0;
@@ -231,7 +243,7 @@ input:checked + .slider:before {
 }
 .pricing-grid {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 2rem;
 }
 
@@ -287,9 +299,44 @@ input:checked + .slider:before {
   margin: 0 auto;
 }
 
-@media (max-width: 768px) {
+/* Tablet and mobile: one card per row, Pro first so the recommended plan leads (design 8d). */
+@media (max-width: 1199.98px) {
   .pricing-grid {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
+    max-width: 520px;
+    margin-inline: auto;
+    gap: 1.5rem;
+  }
+  .pricing-grid > .popular {
+    order: -1;
+  }
+}
+
+@media (max-width: 767.98px) {
+  .hero { padding: 3rem 0 2rem; }
+  .hero h1 { font-size: 36px; line-height: 40px; }
+  .hero p { font-size: 1.1rem; margin-bottom: 2rem; }
+  .cards-section { padding-bottom: 3rem; }
+  .comparison-section, .faq-section { padding: 3rem 0; }
+  .comparison-section h2, .faq-section h2 { font-size: 1.75rem; margin-bottom: 2rem; }
+
+  /* The comparison table scrolls sideways INSIDE its container (never the page) and the
+     feature column stays pinned so a row is still readable at the far right. */
+  .table-container {
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior-x: contain;
+  }
+  .comparison-table { min-width: 520px; }
+  .comparison-table th,
+  .comparison-table td { padding: 0.9rem 0.75rem; }
+  .comparison-table th { font-size: 1rem; }
+  .comparison-table th:first-child,
+  .comparison-table td:first-child {
+    position: sticky;
+    left: 0;
+    z-index: 1;
+    background: var(--sc-surface);
+    box-shadow: 1px 0 0 var(--sc-border);
   }
 }
 </style>

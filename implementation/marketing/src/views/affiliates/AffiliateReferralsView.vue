@@ -49,11 +49,16 @@ const referrals = ref([
 </template>
 
 <style scoped>
-.container { max-width: 1200px; margin: 0 auto; padding: 0 24px; }
+.container { max-width: 1200px; margin: 0 auto; padding: 0 var(--page-gutter); }
 .page-header { margin-bottom: 32px; }
 .page-header h1 { font-size: 28px; font-weight: 700; color: var(--sc-text); margin: 0 0 8px 0; }
 .page-header p { font-size: 15px; color: var(--sc-text-secondary); margin: 0; }
 .font-medium { font-weight: 600; color: var(--sc-text); }
 .font-bold { font-weight: 700; }
 .highlight { color: var(--sc-preview); }
+
+@media (max-width: 767.98px) {
+  .page-header { margin-bottom: 24px; }
+  .page-header h1 { font-size: 24px; line-height: 30px; }
+}
 </style>

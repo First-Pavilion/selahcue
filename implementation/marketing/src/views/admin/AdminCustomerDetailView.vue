@@ -88,6 +88,7 @@ const bibles = ref([
           <div class="panel-header">
             <h3>Registered Venue Devices ({{ customer.seatsUsed }} / {{ customer.seatsTotal }})</h3>
           </div>
+          <div class="table-scroll" tabindex="0" role="region" aria-label="Registered devices, scrolls sideways when wide">
           <table class="detail-table">
             <thead>
               <tr>
@@ -106,6 +107,7 @@ const bibles = ref([
               </tr>
             </tbody>
           </table>
+          </div>
         </div>
 
         <!-- Bible Entitlements Section -->
@@ -114,6 +116,7 @@ const bibles = ref([
             <h3>Granted Bible Entitlements</h3>
             <UiButton variant="outline" size="sm">+ Grant Entitlement</UiButton>
           </div>
+          <div class="table-scroll" tabindex="0" role="region" aria-label="Bible entitlements, scrolls sideways when wide">
           <table class="detail-table">
             <thead>
               <tr>
@@ -132,6 +135,7 @@ const bibles = ref([
               </tr>
             </tbody>
           </table>
+          </div>
         </div>
       </div>
 
@@ -170,10 +174,10 @@ const bibles = ref([
 </template>
 
 <style scoped>
-.header-with-back { display: flex; align-items: center; gap: 12px; }
+.header-with-back { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; }
 .back-link { font-size: 14px; color: var(--sc-primary); text-decoration: none; font-weight: 500; }
 
-.detail-layout { display: grid; grid-template-columns: 1fr 300px; gap: 28px; align-items: start; }
+.detail-layout { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 28px; align-items: start; }
 .main-col { display: flex; flex-direction: column; gap: 24px; }
 
 .detail-header-card { background: var(--sc-surface); border: 1px solid var(--sc-border); border-radius: 16px; padding: 28px; }
@@ -182,8 +186,12 @@ const bibles = ref([
 .info-grid .val { font-size: 15px; color: var(--sc-text); font-weight: 500; }
 .val.highlight { color: var(--sc-primary); font-weight: 700; }
 
-.section-tabs { display: flex; gap: 8px; border-bottom: 1px solid var(--sc-border); padding-bottom: 8px; }
-.tab-btn { background: none; border: none; padding: 8px 16px; font-family: var(--font-family); font-size: 13px; font-weight: 600; color: var(--sc-text-muted); border-radius: 6px; cursor: pointer; }
+.section-tabs { display: flex; gap: 8px; border-bottom: 1px solid var(--sc-border); padding-bottom: 8px; overflow-x: auto; scrollbar-width: none; }
+.section-tabs::-webkit-scrollbar { display: none; }
+.table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+.table-scroll:focus-visible { outline: 2px solid var(--sc-primary); outline-offset: 2px; }
+.detail-table th, .detail-table td { white-space: nowrap; }
+.tab-btn { flex: 0 0 auto; background: none; border: none; padding: 8px 16px; font-family: var(--font-family); font-size: 13px; font-weight: 600; color: var(--sc-text-muted); border-radius: 6px; cursor: pointer; }
 .tab-btn.active { background: var(--sc-elevated); color: var(--sc-text); }
 
 .panel-card { background: var(--sc-surface); border: 1px solid var(--sc-border); border-radius: 16px; padding: 24px; }
@@ -204,7 +212,17 @@ const bibles = ref([
 .key-display { font-family: monospace; font-size: 13px; color: var(--sc-gold); display: block; margin-bottom: 6px; }
 .key-sub { font-size: 12px; color: var(--sc-text-muted); }
 
-@media (max-width: 1024px) {
-  .detail-layout { grid-template-columns: 1fr; }
+@media (max-width: 1024.98px) {
+  .detail-layout { grid-template-columns: minmax(0, 1fr); }
+}
+
+@media (max-width: 767.98px) {
+  .back-link { display: inline-flex; align-items: center; min-height: 44px; }
+  .detail-header-card { padding: 20px; }
+  .info-grid { grid-template-columns: minmax(0, 1fr); gap: 16px; }
+  .info-grid .val { overflow-wrap: anywhere; }
+  .tab-btn { min-height: 44px; }
+  .panel-card { padding: 18px; }
+  .panel-header { flex-wrap: wrap; gap: 12px; }
 }
 </style>
