@@ -58,6 +58,12 @@
     unless a policy statement depends on them. Accepted risks are recorded in §7. Terms 5.4 (latest
     Release after a Plan ends) moved out of §6 because the owner's always-latest download decision
     covers it.
+- **v0.3, review edit (PR #133 review, 2026-10-02).** No version bump and no new decisions. Terms 9.3 no
+  longer says that *importing* printed copies of the King James Version is covered by the Crown letters
+  patent: the repository supports only "printing within the UK", and "importing" came from a secondary
+  source (T4, §11). §8.3 is new: one list of the facts the policies or these notes rely on that the
+  repository cannot confirm, and who must confirm them. §11's introduction no longer says every entry was
+  checked. Nothing in the policies was verified by this edit; it only records what is still unverified.
 
 ## 3. How to read the drafts
 
@@ -320,7 +326,7 @@ project memory notes, not verified in the tree · **O** = owner decision relayed
 | T1 | Core presentation works offline | PRD CON-2, NFR-015; `selahcue-licensing/src/lib.rs` | V/D |
 | T2 | One email, one account | `CustomerUser` unique constraint | V |
 | T3 | Bundled translations: KJV, WEB, ASV, WEBBE, Darby | `selahcue-scripture/src/lib.rs` | V |
-| T4 | KJV Crown letters patent (UK) | Code comment; ebible.org (secondary) | V (secondary source) |
+| T4 | In the UK, printing of the KJV is subject to Crown letters patent (Terms 9.3). The earlier draft also said "importing printed copies"; that was removed | `selahcue-scripture/src/lib.rs` ~L96 ("covers printing within the UK"); `docs/research/LICENSING-REGISTER.md` §1 and §7 item 4 (Crown/CUP patent, "confirm before UK distribution", marked Legal, confidence Med); ebible.org (secondary, the only source for "importing") | D for printing within the UK; scope beyond printing is **unverified, counsel to confirm** (§8.3) |
 | T5 | Operator approval of scripture suggestions by default | PRD FR-115/116 | D (L-52) |
 | T6 | AI-generated label and fabrication warning | `selahcue-core/src/providers.rs` (`AI_GENERATED_LABEL`, `FABRICATION_DISCLOSURE`); `selahcue-cloud/src/lib.rs` | V |
 | T7 | Watermark on the free Plan | DEC-008; FR-548 | D (L-19) |
@@ -335,6 +341,26 @@ project memory notes, not verified in the tree · **O** = owner decision relayed
 | T16 | Always-latest downloads, rollback of a bad Release, latest Release after a Plan ends | Owner decision | O (L-16, L-49) |
 | T17 | Trial organisation created at sign-up | DEC-007 product answers (TRIAL status) | V |
 | T18 | Third parties: NDI, Hugging Face, Google Fonts, Deepgram, OpenAI | `selahcue-desktop/Cargo.toml`; `selahcue-stt/src/model.rs`; `index.html`; P28 sources | V |
+
+### 8.3 Facts the repository cannot confirm (consolidated flags)
+
+The facts below are stated in the policy text or relied on in these notes, and the repository cannot
+confirm them. The repository was searched (`docs/` and `implementation/`, whole tree, on this branch,
+2026-10-02) for each one; "no hit" means that search found nothing outside `docs/legal/`. This list does
+not verify anything: it names who must confirm each item, from a primary source, before publication. The
+O, M and I flags are the ones defined at the top of §8; "Verify on X" follows §11's convention.
+
+| Item | Where it appears | What the repository shows | Flag | Who confirms, and from what |
+|---|---|---|---|---|
+| **Paystack** is the payment processor and SelahCue is the seller; Paystack's hosted checkout, cookies and scripts; what Paystack sends us | Privacy 3.4, 4.1, 6, 7.1; Terms summary, 8.3, 8.7, 13.1; P22, T15, L-20 | No hit for Paystack in `docs/` or `implementation/` outside these drafts. `DECISION-LOG.md` has no record of it. The Platform PRD's D2 entry (ticket 86ak10g47) lists Stripe, Paddle and FastSpring-class options and does not name Paystack. Paystack's own terms, privacy policy and cookie list were not read (§11) | O | Owner records the decision against D2 and in `DECISION-LOG.md`; engineering confirms the checkout cookies and `{{PAYMENT_DATA_RECEIVED}}` from the integration; counsel reads Paystack's terms |
+| **ADR-0028** and **"draft PR #111"** (the note-retry rule, `{{RETRY_ALLOWANCE_TERMS}}`, `{{NOTES_ROUTE}}`) | These notes only: L-38, §5, T12. The policies carry only the placeholders | `docs/architecture/adr/` has no ADR-0028 (it runs 0001 to 0026, then 0029). The one in-repo mention of PR #111 is `docs/delivery/goals/GOAL-be-86ak5t1gw-native-account-surface.md`, which says that PR claimed ADR numbers 0027 and 0028; the content of the ADR and of the retry rule is not in the tree. Whether PR #111 is still open, and what it says, was not checked | M | Owner or engineering confirms the rule and the notes route from the ADR once it is in the repository; until then keep both placeholders unfilled |
+| **Download-bucket provider**: DigitalOcean Spaces or Hetzner Object Storage; a private, encrypted, versioned S3-compatible bucket; CI uploads; expiring links | These notes only (v0.3 revision, L-16, §5, P20, T16). The policies carry `{{DOWNLOAD_HOSTING_PROVIDER}}` and `{{DOWNLOAD_HOSTING_REGION}}` and name neither provider | No hit for DigitalOcean or Hetzner anywhere outside these notes. `downloads:prepare` and `:complete` return 501 (L-16). No bucket, CI upload step or expiring-link code exists in the tree | O | Owner chooses the provider and region; engineering confirms the bucket properties and the delivery path |
+| **ClickUp ids** that exist only in these notes: 17tnw2b0wqj, 86ak10afm, 17tnw2b0wqk, 17tnw2b0wqm (O); 17tnw2az0gd, 17tnw2az0gj, 17tnw2az0gn, 17tnw2az0n2 (M); 86akby5hk (consent-screen ticket, text not found); 17tnw2b0q93 and 17tnw2b0x3g (this PR pair's own delivery tickets) | These notes only (§4 "Decision or ticket needed" column, §8, §12, §14). The policies cite no ticket id | No hit for any of these ids in `docs/` or `implementation/` outside these notes. No ClickUp lookup was done by the drafting agent or by this edit. The other ids cited in §4 (for example 86ak5mn11, 86ak5mn1t, 86ak5t1gw, 86akby3xu, 86ajpqfyj, 86ak10g47) do appear in other repository documents | O or M, as marked in §4 | Owner or whoever has ClickUp access confirms each id and that it covers what §4 says |
+| **Terms 9.3, KJV and the UK Crown letters patent** | Terms 9.3; T4 | The code comment and `LICENSING-REGISTER.md` support "printing within the UK" only, and the register itself lists the UK position as an open item to confirm with counsel. "Importing" came from ebible.org and is no longer in the Terms | D (printing); I (anything beyond printing) | Counsel: does the patent reach importing, distribution or on-screen display, and does the Terms need to say more than printing. Verify with the rights holder |
+| **CJEU C-184/20** (1 August 2022) on indirectly revealed special-category data | §10.2 | An external authority, so nothing in the repository bears on it. The §11 ledger records it as "identified by search, not opened"; only a press-release URL is cited | I | Verify on curia.europa.eu or EUR-Lex against the judgment text before any reliance |
+| **DUAA 2025 commencement**: Part 5 changes from 5 February 2026; s.103 on 19 June 2026 | §10.3; L-30; §7 | The notes themselves call the s.103 date "secondary source, unverified". The commencement regulations were not read (§11) | I | Verify on legislation.gov.uk (commencement regulations) |
+| **COPPA dates**: amended Rule effective 23 June 2025, compliance by 22 April 2026 | §10.4; §7 | Law-firm summary only. The COPPA Rule text was not read (§11) | I | Verify against the Federal Register notice or ftc.gov |
+| **NDPC fee tiers and thresholds**: UHL, EHL and OHL, the ₦250,000 and ₦100,000 fees, and the 200-data-subject threshold | §10.1; §7 | The §11 ledger records the NDPA text as read from a DataGuidance mirror and the GAID from a PDF, and has no entry for an NDPC fee schedule, so where the amounts were read is not recorded. Nothing in the policies depends on them | I | Verify on ndpc.gov.ng against the current fee schedule and the Act as published |
 
 ## 9. Claims on the old stub pages
 
@@ -484,29 +510,36 @@ home-country rights (already in Terms 22.3).
 
 ## 11. Source ledger
 
-All checked 2026-10-01. No new legal research was done for v0.3.
+Retrieved or searched 2026-10-01, with no new legal research for v0.3. That is not the same as verified: the entries that were not opened, or that rest on a secondary source or a mirror, are flagged in the Authority column and listed in §8.3 and in the verification gaps below.
 
 | Proposition | Authority | Provision | URL | Drafting implication |
 |---|---|---|---|---|
-| NDPA scope, principles, bases, notice, DPIA, processors, sensitive data, children, rights, security, breach, transfers, registration, complaints | Nigeria Data Protection Act 2023 | ss.2, 24–31, 34–46, 65 | https://www.dataguidance.com/sites/default/files/data_protection_act_2023.pdf (mirror of the Act; page images read) | §10.1; accepted risks §7 |
+| NDPA scope, principles, bases, notice, DPIA, processors, sensitive data, children, rights, security, breach, transfers, registration, complaints | Nigeria Data Protection Act 2023 | ss.2, 24–31, 34–46, 65 | https://www.dataguidance.com/sites/default/files/data_protection_act_2023.pdf (mirror of the Act; page images read) | §10.1; accepted risks §7; the registration tiers and fee amounts in §10.1 have no source of their own in this ledger (§8.3) |
 | GAID: NDPR displaced; compliance measures; DCMI; consent cases; cookies; LIA; information; DPIA; third-party sharing; retention | GAID 2025 | Arts. 3, 7–10, 18, 19, 21, 26–28, 41, 49; Schedule 7 | https://ndpc.gov.ng/wp-content/uploads/2025/07/NDP-ACT-GAID-2025-MARCH-20TH.pdf | §10.1; §7 |
 | GAID effective 19 September 2025 | Secondary (law firm) | — | https://www.banwo-ighodalo.com/grey-matter/are-you-gaid-2025-ready-navigating-nigerias-gaid-2025-what-your-organisation-needs-to-know-how-bi-can-support-your-compliance-journey/ | Verify on ndpc.gov.ng |
 | GDPR scope, child consent, special categories, response time, notice, representative | GDPR | Arts. 3(2), 8(1), 9, 12(3), 13, 27 | https://gdpr-info.eu/ (unofficial mirror; EUR-Lex not retrievable) | §10.2 |
-| Indirect revelation of special-category data | CJEU C-184/20 (Grand Chamber, 1 August 2022) | — | https://curia.europa.eu/jcms/upload/docs/application/pdf/2022-08/cp220133lt.pdf (press release; identified by search, not opened) | §10.2 |
+| Indirect revelation of special-category data | CJEU C-184/20 (Grand Chamber, 1 August 2022) | — | https://curia.europa.eu/jcms/upload/docs/application/pdf/2022-08/cp220133lt.pdf (press release; identified by search, not opened) | §10.2; verify against the judgment itself before any reliance (§8.3) |
 | Google Fonts and IP disclosure | LG München I, 3 O 17493/20 (20 January 2022) | — | Secondary: https://www.ihk.de/bergische/recht-und-steuern/wettbewerbsrecht/google-fonts-5646176 | L-41 |
 | DUAA 2025 | Data (Use and Access) Act 2025 | ss.103, 112, 142 | https://www.legislation.gov.uk/ukpga/2025/18/contents; https://www.gov.uk/guidance/data-use-and-access-act-2025-plans-for-commencement | §10.3 |
-| s.103 commenced 19 June 2026 | Secondary | Commencement No. 6 Regulations 2026 | https://digitalpolicyalert.org/event/40956-data-use-and-access-act-2025-commencement-no-6-and-transitional-and-saving-provisions-regulations-2026-section-103-data-protection-complaints-including-data-protection-regulation-enter-into-force | Verify on legislation.gov.uk |
+| s.103 commenced 19 June 2026 | Secondary | Commencement No. 6 Regulations 2026 | https://digitalpolicyalert.org/event/40956-data-use-and-access-act-2025-commencement-no-6-and-transitional-and-saving-provisions-regulations-2026-section-103-data-protection-complaints-including-data-protection-regulation-enter-into-force | Verify on legislation.gov.uk (§8.3) |
 | CCPA revenue threshold $26,625,000 | California Privacy Protection Agency | CPI adjustment, 1 January 2025 | https://www.cppa.ca.gov/regulations/cpi_adjustment.html | §10.4 |
-| COPPA amendments | Secondary (law firm) | 16 CFR Part 312 | https://www.whitecase.com/insight-alert/unpacking-ftcs-coppa-amendments-what-you-need-know | §10.4 |
+| COPPA amendments: effective 23 June 2025, compliance by 22 April 2026 | Secondary (law firm) | 16 CFR Part 312 | https://www.whitecase.com/insight-alert/unpacking-ftcs-coppa-amendments-what-you-need-know | §10.4; the Rule text was not read; verify the dates against the Federal Register notice or ftc.gov (§8.3) |
 | FCCPA provisions (headings only) | FCCPA 2018 | ss.125, 127, 128, 137, 142, 144 | https://fccpc.gov.ng/wp-content/uploads/2022/07/FCCPA-2018.pdf | Terms 18 |
 | AMA 2023 replaced ACA 1988 | Secondary (law firm) | — | https://www.linklaters.com/insights/blogs/arbitrationlinks/2023/may/nigeria-revises-its-arbitration-act | §10.5 |
-| KJV Crown letters patent (UK only) | Secondary (ebible.org) | — | https://ebible.org/kjv/copr.htm | Terms 9.3 |
+| KJV Crown letters patent (UK only) | Secondary (ebible.org); repository code comment (`selahcue-scripture/src/lib.rs` ~L96) and `docs/research/LICENSING-REGISTER.md` | — | https://ebible.org/kjv/copr.htm | Terms 9.3 now says printing only, which is what the repository supports; "importing" came from ebible.org and was removed. Counsel to confirm the scope of the patent (§8.3, T4) |
 
 **Verification gaps.** I could not retrieve EUR-Lex directly; the NDPA text came from a DataGuidance
 mirror; I did not read the Child's Rights Act, the FCCPA's substantive text, the COPPA Rule, the DUAA
 commencement regulations, the ePrivacy Directive, consumer-contract law, automatic-renewal laws,
 Paystack's, Deepgram's or OpenAI's current terms, or Django's default CSRF cookie age. The text of
 consent-screen ticket 86akby5hk was not found in the repository.
+
+Also unverified, and now listed with an owner in §8.3: the CJEU judgment in C-184/20 (a press-release
+URL was found by search and not opened); the DUAA commencement dates (secondary source); the COPPA dates
+(law-firm summary); the NDPC registration tiers and fee amounts (no NDPC fee schedule in the ledger); the
+scope of the KJV Crown letters patent beyond printing; and the existence and content of Paystack as the
+chosen provider, ADR-0028 and draft PR #111, the download-bucket providers and the ClickUp ids that appear
+only in these notes, none of which the repository contains.
 
 ## 12. Top 10 open questions and risks
 

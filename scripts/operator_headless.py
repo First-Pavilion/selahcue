@@ -14,6 +14,10 @@ exits 0 with a LOUD SKIP notice so `make ci` on a Chrome-less box still passes �
 UNLESS SELAHCUE_HEADLESS_REQUIRE=1 (set in CI), which turns a missing Chrome into a
 hard failure so the gate can never silently no-op.
 
+Before Chrome is looked for at all, the gate runs a ~4 s self-test of its own Chrome launcher
+(scripts/headless_chrome.py) against fake browsers. That needs no Chrome, so it also runs on a
+Chrome-less box, and a failure there exits 2 (infra) without ever looking for Chrome (17tnw2b1f32).
+
 FIDELITY NOTE (known gap): this drives Blink (headless Chrome), NOT the engine Tauri
 actually ships on — WebKitGTK (Linux), WKWebView (macOS), WebView2 (Windows). It is
 therefore a gate for BROWSER-PORTABLE DOM/JS LOGIC (the behaviours asserted here:
@@ -23,7 +27,11 @@ Tauri webview stays owner-run / dev-time.
 """
 import json
 import shutil
-import subprocess, tempfile, os, re, sys
+import os, re, sys
+
+# Sibling module (scripts/ is sys.path[0] when this file is run as a script): the launch, its
+# process/temp-dir cleanup and its self-test live there. See its docstring (17tnw2b1f32).
+import headless_chrome
 
 # Repo-relative: this file lives in <repo>/scripts/, the webview in
 # <repo>/implementation/desktop/crates/selahcue-operator/dist. SELAHCUE_OPERATOR_DIST
@@ -214,6 +222,222 @@ if not check_jump_call_site_is_click_only():
         "\n=== D5-jump-caller static check FAILED — jumpToOffsetMs is reachable from somewhere "
         "other than a single click handler — see docs/architecture/adr/"
         "ADR-0026-operator-virtualized-list-scroll-model.md 'Revision 4' ==="
+    )
+    sys.exit(1)
+
+# 17tnw2ayetm (Cody F1/F6/N1/N2/N4): the five filter guards (TD-012, PSC-005, GO-LIVE-HOVER,
+# TIMER-START-HOVER, PP-GEN) each look their selector up for a premise check AND hand it to the
+# guard predicate. When those were two separate string literals, a stale guard literal (a typo, a
+# CSS rename) made the guard see "no such rule, so no filter" and report the passing state while
+# the premise still passed on its own literal. Cody proved it live: a `filter` in the shipped
+# `.tb-golive:hover` rule plus ONE edited guard literal gave 1 FAIL on `main` and 0 FAIL on the
+# first cut of this fix. Two controls hold that shut: the predicates fail closed when their
+# selector matches no rule (driver-side, exercised by CSSOM-PARSE-07), and this source-text check
+# of the DRIVER JavaScript, which ties every guard call to ITS OWN site:
+#   - exactly five guard calls, each passing a bare variable from the registry below, all five
+#     DISTINCT (kills the copy-paste slip: the PSC-005 guard fed the TD-012 variable) and each paired
+#     with the one guard function it belongs to (kills swapped TD-012/PP-GEN functions);
+#   - each variable assigned exactly once anywhere (a later `wXSel = ...` reassignment is refused)
+#     and that one assignment is `var wXSel = "<string literal>"`;
+#   - each variable looked up through `__cssRule` exactly once, BEFORE its guard, with no other
+#     site's premise lookup between that lookup and its guard (the guard's nearest preceding
+#     premise is its own), and read for the failure message (`__cssFilterFound`) exactly once on
+#     the four GuardOk sites;
+#   - comments are stripped first, so a commented-out `__cssRule(decoy)` cannot satisfy a clause and
+#     a comment that merely contains a call-shaped string cannot trip one (Cody D3/N4).
+# That also catches what fail-closed cannot: a literal that went stale by becoming a DIFFERENT real
+# rule, or a guard wired to the wrong site's variable. Like the D5 checks above it is line-local
+# text analysis, not data-flow (an alias such as `var x = wTdHoverSel;` would pass); it exists to
+# make the ordinary slips fail loudly, which is all those slips need. It is itself guarded by
+# NEGATIVE CONTROLS (Cody N2): deliberately broken copies of the real driver text must each be
+# refused, and the check refuses to run if a control cannot be applied or the unbroken text is
+# refused, so a vacuous static check fails loudly instead of printing PASS. Mutation-checking this
+# check (each clause neutralised in turn) shows three clauses are mutually REDUNDANT by
+# construction (exactly five calls, all arguments distinct, each registered variable guarded once:
+# any two imply the third), so deleting any ONE of them is an equivalent mutant, not a gap; they
+# stay because each names a different slip in the failure message. Not pinned: the selector
+# literals themselves (that is 17tnw2ayete); the fail-closed predicates only catch a literal that
+# matches NO rule.
+FILTER_GUARD_SITES = {
+    "wTdHoverSel": "__cssFilterGuardOk",
+    "wPsHoverSel": "__cssFilterGuardOk",
+    "wTbGlHoverSel": "__cssFilterGuardOk",
+    "wTsHoverSel": "__cssFilterGuardOk",
+    "wPpGenHoverSel": "__cssNoBrightnessFilter",
+}
+FILTER_GUARD_CALL_RE = re.compile(
+    r"\bok\(\s*(__cssFilterGuardOk|__cssNoBrightnessFilter)\(\s*([^,()\s]+)\s*\)\s*,"
+)
+# JS assignment operators (plain, compound, logical), never the comparison `==` / `===`.
+_JS_ASSIGN_RE = r"\s*(?:\*\*|<<|>>>?|&&|\|\||\?\?|[-+*/%&|^])?=(?!=)"
+
+
+def _extract_driver_js(file_text):
+    m = re.search(r'^DRIVER = r"""(.*?)^"""', file_text, re.S | re.M)
+    return m.group(1) if m else None
+
+
+def _strip_js_comments(js):
+    js = re.sub(r"/\*[\s\S]*?\*/", "", js)
+    return re.sub(r"(?<!:)//[^\n]*", "", js)
+
+
+def filter_guard_selector_problems(js):
+    """Return a list of problems with how the five filter-guard call sites use their selector
+    variables in the DRIVER JavaScript `js` (empty list == fine)."""
+    code = _strip_js_comments(js)
+    problems = []
+    calls = [(m.start(), m.group(1), m.group(2)) for m in FILTER_GUARD_CALL_RE.finditer(code)]
+    if len(calls) != len(FILTER_GUARD_SITES):
+        problems.append(
+            "expected exactly %d real filter-guard call sites, found %d (%s)"
+            % (len(FILTER_GUARD_SITES), len(calls), [(fn, arg) for _, fn, arg in calls])
+        )
+    args = [arg for _, _, arg in calls]
+    if len(set(args)) != len(args):
+        problems.append("guard arguments are not pairwise distinct: %s" % args)
+    for _, fn, arg in calls:
+        want = FILTER_GUARD_SITES.get(arg)
+        if want is None:
+            problems.append(
+                "%s is called with %r, which is not one of the registered selector variables %s"
+                % (fn, arg, sorted(FILTER_GUARD_SITES))
+            )
+        elif want != fn:
+            problems.append("selector variable %s belongs to %s but is passed to %s" % (arg, want, fn))
+    premise_re = re.compile(r"\b__cssRule\(\s*(" + "|".join(map(re.escape, FILTER_GUARD_SITES)) + r")\s*\)")
+    premises = [(m.start(), m.group(1)) for m in premise_re.finditer(code)]
+    for var, fn in FILTER_GUARD_SITES.items():
+        assigned = len(re.findall(r"\b" + re.escape(var) + _JS_ASSIGN_RE, code))
+        literal = len(re.findall(r"\bvar\s+" + re.escape(var) + r"\s*=\s*([\"'])[^\"']*\1\s*;", code))
+        looked_up = [p for p, v in premises if v == var]
+        guarded = [p for p, _, a in calls if a == var]
+        if assigned != 1:
+            problems.append("%s is assigned %d times, want exactly 1 (a reassignment can point the guard elsewhere)" % (var, assigned))
+        if literal != 1:
+            problems.append("%s is bound to a string literal by `var` %d times, want exactly 1" % (var, literal))
+        if len(looked_up) != 1:
+            problems.append("%s is looked up through __cssRule %d times, want exactly 1 (its premise)" % (var, len(looked_up)))
+        if len(guarded) != 1:
+            problems.append("%s reaches a guard %d times, want exactly 1" % (var, len(guarded)))
+        elif looked_up:
+            prior = [v for p, v in premises if p < guarded[0]]
+            if not prior or prior[-1] != var:
+                problems.append(
+                    "the %s guard's nearest preceding premise lookup is %s, not its own (guard wired to another site)"
+                    % (var, prior[-1] if prior else "none")
+                )
+        if fn == "__cssFilterGuardOk":
+            found = len(re.findall(r"\b__cssFilterFound\(\s*" + re.escape(var) + r"\s*\)", code))
+            if found != 1:
+                problems.append("%s feeds the failure message (__cssFilterFound) %d times, want exactly 1" % (var, found))
+    return problems
+
+
+def _filter_guard_negative_controls(js):
+    """Deliberately broken copies of the real driver text; every one MUST be refused. Each is built
+    from the real text with replacements that must apply exactly once (an inapplicable control would
+    be vacuous, so that is an error, not a skip). Names refer to Cody's re-review (D1-D3, N2)."""
+    ok_fn, nb_fn = "__cssFilterGuardOk", "__cssNoBrightnessFilter"
+
+    def call(fn, var):
+        return "ok(" + fn + "(" + var + "),"
+
+    def sub(text, old, new):
+        if text.count(old) != 1:
+            raise AssertionError("negative control cannot apply: %r matches %d times" % (old, text.count(old)))
+        return text.replace(old, new)
+
+    def crossed(t):
+        t = sub(t, call(ok_fn, "wPsHoverSel"), call(ok_fn, "@@PS@@"))
+        t = sub(t, call(ok_fn, "wTbGlHoverSel"), call(ok_fn, "wPsHoverSel"))
+        return sub(t, call(ok_fn, "@@PS@@"), call(ok_fn, "wTbGlHoverSel"))
+
+    controls = [
+        ("D1 aliasing: the PSC-005 guard is fed the TD-012 variable",
+         lambda t: sub(t, call(ok_fn, "wPsHoverSel"), call(ok_fn, "wTdHoverSel"))),
+        ("D2 reassignment: wTbGlHoverSel is reassigned after its declaration",
+         lambda t: sub(t, 'var wTbGlHoverSel = ".tb-golive:hover";',
+                       'var wTbGlHoverSel = ".tb-golive:hover";\n        wTbGlHoverSel = ".tb-golive";')),
+        ("D3 block-comment decoy: guard fed a decoy variable whose lookup exists only in a comment",
+         lambda t: sub(t, call(ok_fn, "wTbGlHoverSel"), call(ok_fn, "wTbGlAlt"))
+         + '\n/* __cssRule(wTbGlAlt) */\nvar wTbGlAlt = ".tb-golive:hover";\n'),
+        ("D3 line-comment decoy: the same with a // comment",
+         lambda t: sub(t, call(ok_fn, "wTsHoverSel"), call(ok_fn, "wTsAlt"))
+         + '\n// __cssRule(wTsAlt)\nvar wTsAlt = ".timer-start:hover";\n'),
+        ("swapped guard functions: TD-012 gets the PP-GEN predicate and PP-GEN the TD-012 one",
+         lambda t: sub(sub(t, call(ok_fn, "wTdHoverSel"), call(nb_fn, "wTdHoverSel")),
+                       call(nb_fn, "wPpGenHoverSel"), call(ok_fn, "wPpGenHoverSel"))),
+        ("crossed guard arguments: the PSC-005 and GO-LIVE-HOVER guards exchange variables", crossed),
+        ("premise looks up a literal instead of the variable",
+         lambda t: sub(t, "__cssRule(wTsHoverSel)", '__cssRule(".timer-start:hover")')),
+        ("premise lookup duplicated",
+         lambda t: sub(t, "var wTsHoverRule = __cssRule(wTsHoverSel);",
+                       "var wTsHoverRule = __cssRule(wTsHoverSel); var wTsHoverRule2 = __cssRule(wTsHoverSel);")),
+        ("selector variable no longer bound to a string literal",
+         lambda t: sub(t, 'var wTdHoverSel = ".td-save-cta:hover";', "var wTdHoverSel = pickSelector();")),
+        ("failure message reads another site's variable",
+         lambda t: sub(t, "__cssFilterFound(wPsHoverSel)", "__cssFilterFound(wTdHoverSel)")),
+        ("a call site is deleted",
+         lambda t: sub(t, call(nb_fn, "wPpGenHoverSel"), "ok(!!(wPpGenHoverSel),")),
+        ("premise replaced by a literal while a COMMENT keeps the old lookup (only comment stripping refuses this)",
+         lambda t: sub(t, "__cssRule(wTsHoverSel)", '__cssRule(".timer-start:hover") /* __cssRule(wTsHoverSel) */')),
+    ]
+    # Texts that must be ACCEPTED (Cody N4): a comment that merely CONTAINS a call-shaped string is
+    # not a call site, so it must not be counted as a sixth one (a false red of this check).
+    accepted = [
+        ("comments containing call-shaped strings are not call sites",
+         lambda t: t + "\n/* ok(" + ok_fn + "(wFooSel), */\n// ok(" + nb_fn + "(wBarSel),\n"),
+    ]
+    return ([(name, build(js)) for name, build in controls],
+            [(name, build(js)) for name, build in accepted])
+
+
+def check_filter_guard_call_sites_share_one_selector(file_text=None):
+    if file_text is None:
+        file_text = open(os.path.abspath(__file__), encoding="utf-8").read()
+    js = _extract_driver_js(file_text)
+    if js is None:
+        print("FAIL: filter-guard-selector (17tnw2ayetm) — could not find the DRIVER JavaScript in this file")
+        return False
+    problems = filter_guard_selector_problems(js)
+    if problems:
+        print("FAIL: filter-guard-selector (17tnw2ayetm) — " + "; ".join(problems))
+        return False
+    print(
+        "PASS: filter-guard-selector (17tnw2ayetm) — all 5 filter-guard call sites pass their own "
+        "distinct single-literal selector variable, assigned once and looked up by their own premise"
+    )
+    try:
+        controls, accepted = _filter_guard_negative_controls(js)
+    except AssertionError as exc:
+        print("FAIL: filter-guard-selector negative controls (17tnw2ayetm) — %s" % exc)
+        return False
+    survivors = [name for name, broken in controls if not filter_guard_selector_problems(broken)]
+    if survivors:
+        print(
+            "FAIL: filter-guard-selector negative controls (17tnw2ayetm) — the static check ACCEPTED "
+            "%d deliberately broken source(s), so it can no longer be trusted: %s" % (len(survivors), survivors)
+        )
+        return False
+    refused_good = [name for name, good in accepted if filter_guard_selector_problems(good)]
+    if refused_good:
+        print(
+            "FAIL: filter-guard-selector negative controls (17tnw2ayetm) — the static check REFUSED "
+            "%d harmless source(s) it must accept (a false red): %s" % (len(refused_good), refused_good)
+        )
+        return False
+    print(
+        "PASS: filter-guard-selector negative controls (17tnw2ayetm) — all %d deliberately broken "
+        "driver texts were refused and the %d harmless one(s) accepted" % (len(controls), len(accepted))
+    )
+    return True
+
+
+if not check_filter_guard_call_sites_share_one_selector():
+    print(
+        "\n=== filter-guard-selector static check FAILED — a filter guard's selector no longer "
+        "matches the selector its premise looked up, or the static check itself no longer bites ==="
     )
     sys.exit(1)
 
@@ -535,12 +759,14 @@ if not check_jump_call_site_is_click_only():
 # new fixture, no new generate/open call was needed since fixture 7 was already opened earlier
 # in this same test flow, so there is no additional implicit check here.
 #
-# This constant is a SINGLE assignment on purpose (Cody's NIT on the same re-check): two live
-# `EXPECTED_MIN_CHECKS = ...` lines previously existed in this file (1423, then 1429) — harmless
-# today only because Python resolves module-level names last-write-wins, but the identical
-# shape this repo's own CLAUDE.md warns about elsewhere (the Makefile's
-# `RELEASE_UNSAFE_FEATURES` multi-assignment guard). Updated in place from here on, never
-# appended.
+# (HISTORICAL — Cody's NIT on this re-check asked for this constant to be a SINGLE assignment,
+# updated in place and never appended. That is NOT how the file is today: every history entry
+# since has appended its own `EXPECTED_MIN_CHECKS = ...` line, so the file holds many assignments
+# and the LAST one, just above `def find_chrome`, is the only authoritative value — Python's
+# last-write-wins is what makes that work, and it is the same multi-assignment shape the
+# Makefile's `RELEASE_UNSAFE_FEATURES` guard exists to catch. When you add an entry, put your
+# line LAST and measure the real count from an actual clean run; a stale earlier line is inert
+# but misleading. Collapsing these into one assignment is a worthwhile separate cleanup.)
 #
 # 1431 -> 1490: FR-129 (86akgqdx8) regenerate-with-retention. New PP REGEN-*/TR REGEN-* blocks
 # cover: staging leaves the accepted draft retrievable/unchanged; the banner names the
@@ -928,7 +1154,8 @@ if not check_jump_call_site_is_click_only():
 # (`rule.style.cssText` comes back empty), so `__cssFilter` reports NONE for it exactly as if it
 # had never been written — and NONE is the PASSING state every "carries no filter" guard relies
 # on. No CSSOM read can see a declaration the parser discarded; only the raw source text still has
-# it. Added `__cssRawHasFilter()` (built on a new `__cssRawBlock()` primitive) as a
+# it. Added `__cssRawHasFilter()` (built on a new `__cssRawBlock()` primitive — since 17tnw2ayetm
+# `__cssRawBlocks()`, which returns EVERY matching block rather than the last) as a
 # belt-and-suspenders backstop scanning `window.__CSSTEXT` for the rule's own block, independent of
 # whether the value parses, and wired it into all five filter guards (TD-012/PSC-005/GO-LIVE-HOVER/
 # TIMER-START-HOVER/PP-GEN) alongside the CSSOM read — neither mechanism alone is sufficient, since
@@ -974,7 +1201,8 @@ if not check_jump_call_site_is_click_only():
 # migration's own follow-up fix (the 1819 -> 1822 entry above) traded its two closed gaps for
 # three smaller new ones. Two were addressed here (the third, NEW-2, is a pre-existing gap on
 # `main` too — not a regression — and is tracked as a follow-up instead of blocking this branch):
-# NEW-1 (Medium) — `__cssRawBlock()`/`__cssRawHasFilter()` scan raw CSS TEXT and have no notion
+# NEW-1 (Medium) — `__cssRawBlock()` (now `__cssRawBlocks()`, 17tnw2ayetm) and
+# `__cssRawHasFilter()` scan raw CSS TEXT and have no notion
 # that a comment isn't code, proven both directions on shapes this file's own comments already
 # use (a trailing historical comment shaped like `<selector> { ... }` became the "last match" and
 # masked a real, currently-unparseable `filter:` declaration in the rule above it; a comment
@@ -1573,6 +1801,29 @@ EXPECTED_MIN_CHECKS = 2065  # measured post-rebase, clean run: 2065 checks, 0 FA
 # not hand-summed.
 EXPECTED_MIN_CHECKS = 1952  # measured: 1952 checks, 0 FAIL (17tnw2b0ntd)
 
+# 17tnw2ayetm (Sana, PR #79 re-verification): the five filter guards (TD-012, PSC-005,
+# GO-LIVE-HOVER, TIMER-START-HOVER, PP-GEN) read the LAST matching rule (CSSOM half) and the LAST
+# matching block (raw-text half), but the cascade resolves per PROPERTY, so a `filter` declared only
+# in an EARLIER duplicate rule still applied while the gate reported 0 FAIL (reproduced on all five
+# selectors against a copy of dist/ with the two-rule shape appended). Both halves now read every
+# matching rule: the CSSOM half through a per-property cascade (source order, enclosing
+# @media/@supports, !important), the raw half as an OR over all blocks. NOTE the composed guard is
+# NOT a cascade: the raw half fires on any `filter:` text in any matching block, so for any
+# stylesheet that mentions `filter:` the gate behaves like a union (an overridden earlier filter
+# still reds, safe direction); the CSSOM half's cascade precision only matters for spellings the raw
+# half cannot read (CSS escapes). Review round (Cody F1-F6, Quinn m02): one selector variable per
+# call site (premise, message and guard), predicates fail CLOSED on a selector matching no rule, a
+# static check (pre-Chrome, with its own negative controls) refuses a call site whose guard is not
+# wired to its OWN distinct, once-assigned selector variable and premise, an explicit fixture
+# source that is unusable THROWS instead of falling back to the real sheet, and CSSOM-PARSE-07
+# grew @supports/nested-condition, !important-vs-!important, middle-block, fail-closed and
+# explicit-source controls. Count: 1952 on main (after PR #129 landed) + 50 new checks, all in the
+# CSSOM-PARSE-07/06 blocks (27 in the first cut, 21 + 2 in the review rounds; the static check and
+# its negative controls print PASS/FAIL lines but are not counted), measured via an actual clean
+# run, not hand-summed. ANY PR that edits this constant must re-measure after the other of the two
+# lands (PR #129 edited it as well; this one was re-measured on the merged tree).
+EXPECTED_MIN_CHECKS = 2002  # measured: 2002 checks, 0 FAIL
+
 
 def find_chrome():
     """Locate a Chrome/Chromium binary across dev (macOS) and CI (Linux)."""
@@ -1596,6 +1847,127 @@ def find_chrome():
         if os.path.exists(path):
             return path
     return None
+
+
+# ---------------------------------------------------------------------------------------------
+# Launching Chrome and judging what it printed (17tnw2b1f32).
+#
+# The launch itself (private work dir, files instead of pipes, process-group kill, temp-dir
+# cleanup) is `headless_chrome.run_headless_chrome`; READ THAT MODULE'S DOCSTRING for the false
+# red this replaces (Chrome's helper processes held the stdout/stderr pipes open after Chrome had
+# exited, so `subprocess.run(capture_output=True, timeout=90)` waited the full 90 s and discarded a
+# complete result) and for why a throwaway `--user-data-dir` is NOT used (it hangs headless Chrome
+# on macOS). What stays here is the part that is specific to THIS gate: the exit-code mapping.
+#
+# Before Chrome is even looked for, `check_headless_launch_contract()` runs that real launcher and
+# this real mapping against fake browsers (python scripts), so a regression of the launch or of the
+# mapping fails here in a few seconds instead of surfacing as a flaky red hours later. Its PASS
+# line is not a counted check (like the filter-guard static check above), so it does not touch
+# EXPECTED_MIN_CHECKS.
+# ---------------------------------------------------------------------------------------------
+
+# Wall-clock budget for ONE Chrome run. It bounds a hung browser, not a slow one: the 75 s
+# virtual-time budget is fast-forwarded, so a healthy run takes ~4-10 s here (the slowest passing
+# browser phase seen was 79.8 s, at a machine load of 117).
+_CHROME_TIMEOUT_S = 90
+
+_RESULTS_RE = re.compile(r"RESULTS\n(.*?)\nDONE\((\d+)\)", re.S)
+
+
+def _print_chrome_stderr(run):
+    """Chrome's stderr tail (already capped by the launcher) so an infra failure is diagnosable."""
+    tail = run.stderr_tail.strip()
+    if tail:
+        print("  chrome stderr (tail):\n%s" % tail)
+
+
+def gate_verdict(run, expected_checks):
+    """Map one `headless_chrome.ChromeRun` to this gate's exit code, printing what the gate prints.
+
+    0 = every check passed; 1 = at least one check FAILed; 2 = infra (Chrome timed out, crashed or
+    printed no results block); 4 = the number of checks drifted from `expected_checks`.
+    """
+    if run.timed_out:
+        # A hung Chrome is an INFRA failure (exit 2), distinct from a check FAIL (exit 1). It means
+        # the BROWSER process was still running at the timeout; a helper holding a pipe open no
+        # longer counts (17tnw2b1f32). It is ALWAYS red: even a complete block in the partial
+        # output does not rescue a Chrome that did not exit. The first line keeps its old prefix
+        # (`FAIL: headless Chrome timed out (infra)`) for anyone grepping logs, and says which of
+        # the two cases this was, so it never claims "no RESULTS" about a run that had printed them.
+        if _RESULTS_RE.search(run.stdout):
+            print("FAIL: headless Chrome timed out (infra) — RESULTS were printed but Chrome never "
+                  "exited (a shutdown hang), still red by design")
+        else:
+            print("FAIL: headless Chrome timed out (infra) — no RESULTS produced")
+        print("  (browser pid %d was still running after %.0fs; it and its process group were killed)"
+              % (run.pid, run.elapsed))
+        _print_chrome_stderr(run)
+        return 2
+    m = _RESULTS_RE.search(run.stdout)
+    if not m:
+        print("NO RESULTS BLOCK — dom head:\n", run.stdout[:1500])
+        print("  chrome exit code: %s" % headless_chrome.describe_exit(run.returncode))
+        _print_chrome_stderr(run)
+        return 2
+    body = m.group(1)
+    count = int(m.group(2))
+    print(body)
+    fails = [line for line in body.splitlines() if line.startswith("FAIL")]
+    print("\n=== %d checks, %d FAIL ===" % (count, len(fails)))
+    # Guard against the suite count DRIFTING in either direction: a `<` floor only ever
+    # catches SHRINKING (a driver regression / early return running fewer checks). It never
+    # catches GROWING past the recorded value, which lets EXPECTED_MIN_CHECKS drift stale-low
+    # with no red build to catch it — this has happened three times (1514/1520, 1544/1589,
+    # 1589/1593), each caught only by a human/reviewer noticing an oddity, never by this gate.
+    # The third time (17tnw2axpt9, PR #63) root-caused to a merge commit (00f9a50) keeping one
+    # parallel branch's own recorded EXPECTED_MIN_CHECKS instead of re-deriving it after both
+    # branches' new checks were combined. An exact match forces every branch that adds/removes
+    # a check to conflict on this constant during rebase and re-derive it explicitly — that
+    # friction is the point; it's what was skipped at the merge that caused drift #3.
+    # Bump EXPECTED_MIN_CHECKS to the new count when you add or remove a check — always by
+    # actually running the suite, never by hand arithmetic (see the log above this constant).
+    if count != expected_checks:
+        print(
+            "FAIL: %d checks ran; expected exactly %d (bump me to %d if this is a real "
+            "add/remove — never hand-derive; re-run and use the measured count)"
+            % (count, expected_checks, count)
+        )
+        return 4
+    return 1 if fails else 0
+
+
+def check_headless_launch_contract():
+    if not headless_chrome.self_test_supported():
+        # Say so, truthfully: nothing was checked, so nothing may print PASS.
+        print(
+            "SKIP: headless-launch contract (17tnw2b1f32) — NOT RUN: it needs POSIX process groups and "
+            "signals, and this gate is supported on macOS and Linux only"
+        )
+        return True
+    problems = headless_chrome.self_test(verdict=gate_verdict, expected_checks=3)
+    if problems:
+        for problem in problems:
+            print("FAIL: headless-launch contract (17tnw2b1f32) — " + problem)
+        return False
+    print(
+        "PASS: headless-launch contract (17tnw2b1f32) — against fake browsers: a complete result is "
+        "returned promptly even when helper processes hold the output descriptors (in or out of the "
+        "browser's process group); a browser that never exits is red (exit 2) and leaves no process "
+        "or temp dir behind; failing block -> 1, no block -> 2, count drift (either way) -> 4; only "
+        "the url-fetcher dir this run created is swept; no --user-data-dir; SIGTERM, SIGHUP and "
+        "SIGINT unwind cleanly, including one that lands mid-launch or mid-cleanup"
+    )
+    return True
+
+
+if not check_headless_launch_contract():
+    # Exit 2 (infra), not 1 (a check FAILed): this is the gate's own machinery being broken, and it
+    # is reported before Chrome is even looked for.
+    print(
+        "\n=== headless-launch contract FAILED (infra, exit 2) — the Chrome launch no longer behaves "
+        "as scripts/headless_chrome.py documents (see the FAIL lines above) ==="
+    )
+    sys.exit(2)
 
 
 CHROME = find_chrome()
@@ -1825,14 +2197,83 @@ CSS_SRC = (
   // several checks below do) can restore the rule COUNT while the CONTENTS differ, so a
   // length-keyed cache reuses a stale flatten. The ~13ms this function costs per full suite run
   // is not worth silently disabling the checks that justify this file's entire CSSOM migration.
-  window.__cssRule = function(sel) {
-    var target = _cssNormSel(sel);
-    var rules = _cssFlatten(probe.sheet.cssRules, [], true);
-    var match = null;
-    for (var i = 0; i < rules.length; i++) {
-      if (rules[i].selectorText && _cssNormSel(rules[i].selectorText) === target) match = rules[i];
+  //
+  // 17tnw2ayetm (Sana, PR #79 re-verification): "the LAST rule" is the right answer for a
+  // property declared in the SAME rule, but CSS resolves the cascade per PROPERTY, not per rule:
+  // a property declared only in an EARLIER duplicate rule still applies when a LATER duplicate
+  // simply does not redeclare it (`.tb-golive:hover{filter:brightness(1.06)}` then
+  // `.tb-golive:hover{background:#5a48d0}` — the browser paints the filter, and a lookup that only
+  // ever returned the second rule reported "no filter", 0 FAIL). So the primitive is now
+  // __cssRules (EVERY matching rule, source order, conditions respected) and __cssRule is just its
+  // last element, kept for the `background` reads, which genuinely want one rule. Anything that
+  // guards a PROPERTY must read through __cssRules / __cssEffective, never __cssRule.
+  //
+  // The optional `src` argument ({sheet, text}) is how the self-tests below point the REAL
+  // composed guard predicates at a fixture stylesheet without clobbering the window.__CSSTEXT
+  // global every real guard reads (the swap-and-restore shape 17tnw2ayetd item 1 flags). The five
+  // real call sites never pass it, so they read the shipped app.css exactly as before.
+  //
+  // Only an ABSENT `src` (undefined) means "the real stylesheet". Anything else must be a usable
+  // {sheet, text} pair or this THROWS (Cody F5): a truthiness test on `src.sheet` would let a
+  // fixture that failed to build (or a stale second argument) silently fall back to the shipped
+  // app.css, and a "clean control" would then pass vacuously against the wrong stylesheet.
+  function _cssSrc(src) {
+    if (src === undefined) { return { sheet: probe.sheet, text: window.__CSSTEXT }; }
+    if (!src || !src.sheet || typeof src.text !== "string") {
+      throw new Error("__css*: an explicit source must be {sheet, text}; refusing to fall back to the real stylesheet");
     }
-    return match;
+    return src;
+  }
+  window.__cssRules = function(sel, src) {
+    var target = _cssNormSel(sel);
+    var rules = _cssFlatten(_cssSrc(src).sheet.cssRules, [], true);
+    var matches = [];
+    for (var i = 0; i < rules.length; i++) {
+      if (rules[i].selectorText && _cssNormSel(rules[i].selectorText) === target) matches.push(rules[i]);
+    }
+    return matches;
+  };
+  window.__cssRule = function(sel, src) {
+    var matches = window.__cssRules(sel, src);
+    return matches.length ? matches[matches.length - 1] : null;
+  };
+  // The value the browser's CASCADE gives `prop` across every rule that matches `sel` (null when
+  // none declares it). Rules are already in source order and already filtered to those whose
+  // enclosing @media/@supports currently hold (_cssFlatten). All matching rules share one selector
+  // text, so they tie on specificity and the cascade reduces to exactly two things: an
+  // `!important` declaration beats any non-important one regardless of order, and otherwise the
+  // later declaration wins. Reading through CSSStyleDeclaration (getPropertyValue/-Priority) keeps
+  // the vendor-prefix and CSS-escape normalisation __cssFilter relies on. A declaration the
+  // parser rejected is absent from the CSSOM, exactly as it is absent from the browser's cascade.
+  //
+  // NOT MODELLED (deliberately — the guards are about the guarded selector's own rules, matched by
+  // exact selector text, which is also why the fixtures below cover what they cover and no more):
+  //   - a rule with HIGHER specificity than `sel` (a sibling `.parent .tb-golive:hover`), and the
+  //     selector-shape variants that behave like one: a selector LIST with the guarded selector
+  //     first (`.tb-golive:hover, .x`), `:is()` / `:not()` / `:where()` wrappers, ancestor-hover;
+  //   - CSS nesting (a nested rule keeps its relative selectorText, `& .child`);
+  //   - `@layer` ordering and `@container` conditions (a container query is evaluated here by
+  //     `CSS.supports(conditionText)`, which is NOT what a container query means);
+  //   - `all:` resets, inline styles, JS-set styles.
+  // Each of those is a way a re-lightening filter could apply with this gate green; none is in
+  // app.css today. They are tracked as follow-ups, not closed by 17tnw2ayetm.
+  //
+  // The CSSOM half is a TRUE cascade (an earlier filter that a later normal `filter: none`
+  // overrides is not reported here, which is what the browser does). That precision is however
+  // MOOT for the composed guard: the raw-text half below ORs over every block and fires on any
+  // `filter:` text in any matching block, so __cssFilterGuardOk behaves like a UNION for any
+  // stylesheet that mentions `filter:` (it reds that overridden shape too, in the safe direction).
+  // The cascade read is what catches the spellings the raw half cannot see (CSS escapes).
+  window.__cssEffective = function(sel, prop, src) {
+    var rules = window.__cssRules(sel, src), val = null, important = false;
+    for (var i = 0; i < rules.length; i++) {
+      var v = rules[i].style.getPropertyValue(prop);
+      if (!v) continue;
+      var imp = rules[i].style.getPropertyPriority(prop) === "important";
+      if (important && !imp) continue;
+      val = v; important = imp;
+    }
+    return val;
   };
   // The rule's declared background, shorthand first: CSSStyleDeclaration puts a var()-valued
   // `background` shorthand's own longhands (background-color/-image) into a "pending
@@ -1858,16 +2299,34 @@ CSS_SRC = (
   // null exactly as if the declaration had never been written, and null is the PASSING state
   // for a "carries no filter" guard. No CSSOM read can see a declaration the browser's own
   // parser discarded; only the raw source text still has it. This is the coarse, deliberately
-  // dumb backstop for that: scan window.__CSSTEXT for the rule's own block — matched globally
-  // and keeping the LAST occurrence, the same tie-break __cssRule uses — for the literal,
+  // dumb backstop for that: scan window.__CSSTEXT for the rule's own block(s) for the literal,
   // case-insensitive substring "filter", independent of whether the declared value parses at
   // all. It does not replace __cssRule/__cssBg/__cssFilter (those still close the duplicate-rule
   // and vendor-prefix/escape gaps this file was regexing before), it only re-covers the one
   // thing reading real CSSOM cannot: a declaration the parser threw away.
-  // The last matching rule's raw declaration text for `sel` (source order, mirroring the same
-  // tie-break __cssRule uses) straight out of window.__CSSTEXT, or null — independent of
-  // whether the browser's parser accepts any of it. The shared primitive `__cssRawHasFilter`
-  // below is built on.
+  //
+  // 17tnw2ayetm: it used to keep only the LAST matching block, mirroring __cssRule's old
+  // tie-break — wrong for a PROPERTY, because the cascade resolves per property and a `filter:`
+  // that sits only in an EARLIER duplicate block still applies. A raw text scan has no cascade
+  // (no parser, so no way to know which declaration "wins" or whether one even parsed), so the
+  // deliberately dumb and deliberately conservative rule is: collect EVERY matching block and
+  // treat the guard as tripped if ANY of them mentions the property. The price is a (safe-
+  // direction) false red when an earlier block mentions `filter` harmlessly and a later one is
+  // filter-free — the same class as the known `filter: none` false red, not a new kind. The
+  // match semantics themselves (a block whose selector text ENDS in `sel`) are unchanged; only
+  // the aggregation moved from "last" to "all".
+  //
+  // This half is deliberately CONDITION-BLIND (it ignores any enclosing @media/@supports), and
+  // that must NOT be "fixed" (Shadow F3/F5, Cody 7): in the headless configuration this gate runs
+  // in, Chrome evaluates `prefers-color-scheme: dark`, `prefers-reduced-motion: reduce`,
+  // `forced-colors: active` and similar as NOT MATCHING (no dark scheme, no reduced-motion
+  // preference, no forced colours), so a hover `filter` hidden inside one of those blocks is
+  // dropped from the CSSOM half's candidates by construction, and this blind text scan is the
+  // only thing that still catches it. The false red it costs (a harmless `filter: none` inside a
+  // reduced-motion block) is the price of that.
+  // Every matching rule's raw declaration text for `sel` (source order) straight out of the
+  // source text, comments stripped — independent of whether the browser's parser accepts any of
+  // it. The shared primitive `__cssRawHasFilter`/`__cssNoBrightnessFilter` are built on.
   //
   // Sana (security review, PR #79 follow-up round 2, finding NEW-1): this is a raw TEXT scan, so
   // it has no idea a CSS comment isn't code. Proven both directions on the real file's own
@@ -1885,16 +2344,30 @@ CSS_SRC = (
   function _cssStripComments(text) {
     return String(text || "").replace(/\/\*[\s\S]*?\*\//g, "");
   }
-  window.__cssRawBlock = function(sel) {
+  window.__cssRawBlocks = function(sel, src) {
     var escaped = String(sel).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     var re = new RegExp(escaped + "\\s*\\{([^}]*)\\}", "gi");
-    var m, lastBody = null;
-    while ((m = re.exec(_cssStripComments(window.__CSSTEXT))) !== null) { lastBody = m[1]; }
-    return lastBody;
+    var text = _cssStripComments(_cssSrc(src).text), m, bodies = [];
+    while ((m = re.exec(text)) !== null) { bodies.push(m[1]); }
+    return bodies;
   };
-  window.__cssRawHasFilter = function(sel) {
-    var body = window.__cssRawBlock(sel);
-    return !!body && /filter\s*:/i.test(body);
+  window.__cssRawHasFilter = function(sel, src) {
+    return window.__cssRawBlocks(sel, src).some(function(body) { return /filter\s*:/i.test(body); });
+  };
+  // The filter the browser's cascade gives `sel` — what the CSSOM half of every filter guard
+  // reads (17tnw2ayetm: previously `__cssFilter(__cssRule(sel))`, i.e. the last rule only).
+  window.__cssEffectiveFilter = function(sel, src) {
+    return window.__cssEffective(sel, "filter", src);
+  };
+  // What the call sites' FAIL messages print as "found ...": the effective filter, or an explicit
+  // note when the selector matches no rule at all (a vacuous guard — see the fail-closed note on
+  // the two predicates below). Each call site feeds this the SAME variable it feeds its guard, so
+  // the note appears when that shared variable is stale; if only the guard's argument were a stale
+  // literal (the static check at the top of this file refuses that), the message would still read
+  // "found <the real effective filter>" or "found none" while the guard failed closed.
+  window.__cssFilterFound = function(sel, src) {
+    if (window.__cssRules(sel, src).length === 0) { return "NO RULE MATCHES THE GUARD SELECTOR " + sel + " (vacuous guard)"; }
+    return window.__cssEffectiveFilter(sel, src);
   };
   // Sana (security review, PR #79 follow-up round 2, finding NEW-3): a check that only calls
   // __cssRawHasFilter directly pins the PRIMITIVE, not the WIRING — it stays green even if a
@@ -1907,17 +2380,48 @@ CSS_SRC = (
   // this function — and the mutation-proof check on this function directly is therefore a
   // guarantee about what the real guards evaluate, not a parallel copy of it.
   // TD-012/PSC-005/GO-LIVE-HOVER/TIMER-START-HOVER's shape: no filter at all, or exactly `none`.
-  window.__cssFilterGuardOk = function(sel, rule) {
-    var filterVal = __cssFilter(rule);
-    return (!filterVal || /^\s*none\s*$/.test(filterVal)) && !window.__cssRawHasFilter(sel);
+  // 17tnw2ayetm: both halves now read EVERY matching rule (the CSSOM half through the browser's
+  // per-property cascade, the raw half as an OR over all blocks) instead of the last one only.
+  // The optional `src` ({sheet, text}) points the same predicate at a fixture stylesheet; the
+  // five real call sites pass only the selector.
+  //
+  // FAIL-CLOSED on a selector that matches no rule (Cody F1): a guard whose selector literal went
+  // stale (a CSS rename, a typo) would otherwise see "no rule, so no filter" and report the
+  // passing state while checking nothing, disarming BOTH halves at once. The call sites also use
+  // one selector variable for premise, message and guard, and a static check at the top of this
+  // file refuses a call site whose guard argument is not the variable its premise looked up.
+  window.__cssFilterGuardOk = function(sel, src) {
+    if (window.__cssRules(sel, src).length === 0) { return false; }
+    var filterVal = window.__cssEffectiveFilter(sel, src);
+    return (!filterVal || /^\s*none\s*$/.test(filterVal)) && !window.__cssRawHasFilter(sel, src);
   };
   // PP-GEN's own narrower shape (Cody, PR #79 review round 1): only a re-lightening `brightness`
   // filter is disqualifying, not "any filter at all" — a faithful migration of this site's
   // pre-existing intent, not something this fix changes.
-  window.__cssNoBrightnessFilter = function(sel, rule) {
-    var filterVal = __cssFilter(rule);
-    var rawBlock = window.__cssRawBlock(sel);
-    return (!filterVal || !/brightness/.test(filterVal)) && !(rawBlock && /brightness/i.test(rawBlock));
+  window.__cssNoBrightnessFilter = function(sel, src) {
+    if (window.__cssRules(sel, src).length === 0) { return false; }  // fail-closed, as above
+    var filterVal = window.__cssEffectiveFilter(sel, src);
+    var rawBlocks = window.__cssRawBlocks(sel, src);
+    return (!filterVal || !/brightness/.test(filterVal)) &&
+      !rawBlocks.some(function(body) { return /brightness/i.test(body); });
+  };
+  // A throw-away, isolated stylesheet for the self-tests: an inline <style> (so .cssRules is
+  // readable, same reason as the probe above) built from `cssText`, returned as the {sheet, text}
+  // pair the guards above accept as `src`. `dispose()` detaches it. Fixture selectors are unique
+  // classes that match no real element, so nothing the app paints can change.
+  // `tagName` exists only as a test seam (a non-<style> element yields no sheet, the failure the
+  // throw below must report); every real use leaves it undefined.
+  window.__cssFixture = function(cssText, tagName) {
+    var el = document.createElement(tagName || "style");
+    el.textContent = cssText;
+    document.head.appendChild(el);
+    if (!el.sheet) {
+      // Cody F5: never hand back a fixture whose sheet did not materialise (a guard handed
+      // {sheet: null} must not be able to look "clean").
+      if (el.parentNode) el.parentNode.removeChild(el);
+      throw new Error("__cssFixture: the inline <style> produced no sheet");
+    }
+    return { sheet: el.sheet, text: cssText, dispose: function() { if (el.parentNode) el.parentNode.removeChild(el); } };
   };
 })();
 </script>"""
@@ -11019,7 +11523,7 @@ DRIVER = r"""
            (mqBg || "none") + "\"), not whichever came last in SOURCE ORDER alone");
         probeSheet.deleteRule(mqI2); probeSheet.deleteRule(mqI1);
 
-        // Gap 5 (Sana, PR #79 follow-up round 2, finding NEW-1): __cssRawBlock/__cssRawHasFilter
+        // Gap 5 (Sana, PR #79 follow-up round 2, finding NEW-1): __cssRawBlocks/__cssRawHasFilter
         // are a raw TEXT scan and have no idea a CSS comment is not code — proven both directions
         // on shapes this file's own comments already carry (e.g. app.css documents old rules in
         // prose that reads exactly like a selector block).
@@ -11043,12 +11547,288 @@ DRIVER = r"""
         // that could silently drop the backstop — pin THAT function directly, reusing the same
         // CSSOM-drops-it fixture as Gap 3/5, so a regression here is a regression in exactly what
         // every real call site evaluates, not a parallel copy of it.
-        window.__CSSTEXT = wRejectCss;
-        ok(!__cssFilterGuardOk(wRejectSel, wRejectRule),
-           "CSSOM-PARSE-06: __cssFilterGuardOk (what TD-012/PSC-005/GO-LIVE-HOVER/TIMER-START-HOVER actually call) correctly reports the guard as FAILING for a filter: declaration CSSOM alone cannot see — proving the raw-text backstop is wired into the shared function every real call site uses, not just callable in isolation");
-        ok(!__cssNoBrightnessFilter(wRejectSel, wRejectRule),
-           "CSSOM-PARSE-06 (PP-GEN shape): __cssNoBrightnessFilter (what the PP-GEN guard actually calls) correctly reports FAILING for the same fixture — a brightness() filter stacked with a value Chrome's parser rejects outright");
-        window.__CSSTEXT = wSavedCssText;
+        // (17tnw2ayetm: now run through a fixture source instead of swapping window.__CSSTEXT, and
+        // because the predicates fail closed on a selector that matches no rule, the fixture must
+        // actually CONTAIN the rule — otherwise this would pass for the wrong reason.)
+        var wRejectFx = window.__cssFixture(wRejectCss);
+        try {
+          ok(window.__cssRules(wRejectSel, wRejectFx).length === 1,
+             "CSSOM-PARSE-06 (premise): the fixture really contains the guarded rule (so a FAIL below is the raw-text backstop, not the fail-closed vacuity branch)");
+          ok(!__cssFilterGuardOk(wRejectSel, wRejectFx),
+             "CSSOM-PARSE-06: __cssFilterGuardOk (what TD-012/PSC-005/GO-LIVE-HOVER/TIMER-START-HOVER actually call) correctly reports the guard as FAILING for a filter: declaration CSSOM alone cannot see — proving the raw-text backstop is wired into the shared function every real call site uses, not just callable in isolation");
+          ok(!__cssNoBrightnessFilter(wRejectSel, wRejectFx),
+             "CSSOM-PARSE-06 (PP-GEN shape): __cssNoBrightnessFilter (what the PP-GEN guard actually calls) correctly reports FAILING for the same fixture — a brightness() filter stacked with a value Chrome's parser rejects outright");
+        } finally { wRejectFx.dispose(); }
+
+        // Gap 7 (17tnw2ayetm — Sana, PR #79 re-verification): every guard above read the LAST
+        // matching rule/block only, but the cascade resolves per PROPERTY — a `filter` declared
+        // only in an EARLIER duplicate rule still applies when a later duplicate just does not
+        // redeclare it. Verified live on the old gate: `.tb-golive:hover{filter:brightness(1.06)}`
+        // then `.tb-golive:hover{background:#5a48d0}` reported 2069 checks, 0 FAIL while the browser
+        // computed filter=brightness(1.06) (and the same for the other four guarded selectors).
+        //
+        // These are POSITIVE CONTROLS: each fixture is a stylesheet the guard MUST reject, run through
+        // the REAL composed predicates (__cssFilterGuardOk / __cssNoBrightnessFilter, via their
+        // optional `src` argument — the very functions the five real call sites call), so a
+        // regression of either half, of the composition, or of the aggregation fails here even
+        // though the shipped app.css stays clean. Every fixture whose class can be hovered-free also
+        // carries a PREMISE read from the live browser (getComputedStyle on a real element wearing
+        // the class): the "browser genuinely applies it" fact is measured, not assumed, so a
+        // fixture that stopped being a real hazard (or a Chrome that stopped applying it) turns this
+        // red instead of leaving the control vacuous. Fixtures are isolated <style> elements and
+        // each is disposed in a finally, so a throw cannot leave a stray sheet or element behind
+        // (the swap-and-restore shape 17tnw2ayetd item 1 flags is deliberately not used here).
+        function _cascadeCase(css, cls, fn) {
+          var fx = window.__cssFixture(css);
+          var node = document.createElement("div");
+          node.className = cls;
+          document.body.appendChild(node);
+          try { fn(fx, getComputedStyle(node).filter, "." + cls); }
+          finally { if (node.parentNode) node.parentNode.removeChild(node); fx.dispose(); }
+        }
+        // The old read, kept ONLY to prove each fixture really is the shape it used to miss.
+        function _lastRuleFilter(sel, fx) { return __cssFilter(__cssRule(sel, fx)); }
+
+        // (a) The plain shape: an earlier rule declares the filter, a later duplicate declares
+        // only `background`. Caught by BOTH halves — this is the control that the composed
+        // predicate (not just one half) rejects it.
+        _cascadeCase(
+          ".__cssom_casc_plain__{filter:brightness(1.06);} .__cssom_casc_plain__{background:#5a48d0;}",
+          "__cssom_casc_plain__",
+          function(fx, computed, sel){
+            ok(computed === "brightness(1.06)",
+               "CSSOM-PARSE-07 (premise, plain): the browser genuinely APPLIES the filter declared only in the earlier duplicate rule (computed filter=\"" + computed + "\") — this is a real re-lightening hazard, not a theoretical one");
+            ok(_lastRuleFilter(sel, fx) === null,
+               "CSSOM-PARSE-07 (premise, plain): the OLD last-rule-only read reports NO filter for this stylesheet (got \"" + _lastRuleFilter(sel, fx) + "\") — so this fixture really exercises the gap it claims to");
+            ok(window.__cssEffectiveFilter(sel, fx) === "brightness(1.06)",
+               "CSSOM-PARSE-07 (plain): the CSSOM half reads the filter the cascade applies (got \"" + window.__cssEffectiveFilter(sel, fx) + "\"), not the last rule's absence of one");
+            ok(!__cssFilterGuardOk(sel, fx),
+               "CSSOM-PARSE-07 (plain): __cssFilterGuardOk REJECTS a filter declared only in an earlier duplicate rule — the exact false GREEN of 17tnw2ayetm");
+            ok(!__cssNoBrightnessFilter(sel, fx),
+               "CSSOM-PARSE-07 (plain, PP-GEN shape): __cssNoBrightnessFilter REJECTS a brightness() filter declared only in an earlier duplicate rule");
+          });
+
+        // The ticket's own reproduction, verbatim, against each of the five guarded selectors
+        // (hover cannot be forced from a script, so no computed premise here — the plain case above
+        // carries that; this pins that the guard keyed on the REAL selector texts rejects it).
+        [".td-save-cta:hover", ".ps-start:hover", ".tb-golive:hover", ".timer-start:hover"].forEach(function(gs){
+          var fxRepro = window.__cssFixture(gs + " { filter: brightness(1.06); }\n" + gs + " { background: #5a48d0; }");
+          try {
+            ok(!__cssFilterGuardOk(gs, fxRepro),
+               "CSSOM-PARSE-07 (ticket repro): `" + gs + " { filter: brightness(1.06); }` followed by `" + gs + " { background: #5a48d0; }` is REJECTED by __cssFilterGuardOk");
+          } finally { fxRepro.dispose(); }
+        });
+        var fxPpRepro = window.__cssFixture(".pp-generate:hover { filter: brightness(1.06); }\n.pp-generate:hover { background: #5a48d0; }");
+        try {
+          ok(!__cssNoBrightnessFilter(".pp-generate:hover", fxPpRepro),
+             "CSSOM-PARSE-07 (ticket repro, PP-GEN): the same two-rule shape on `.pp-generate:hover` is REJECTED by __cssNoBrightnessFilter");
+        } finally { fxPpRepro.dispose(); }
+
+        // (b) Only the CSSOM half can see this one: the earlier rule spells the property with a CSS
+        // escape, which the raw-text scan (a literal `filter:` match) cannot read. If the CSSOM half
+        // reverted to last-rule-only this fixture would go green, because the raw half is blind to
+        // it AND the later rule declares no filter.
+        _cascadeCase(
+          ".__cssom_casc_esc__{f\\69lter:brightness(1.06);} .__cssom_casc_esc__{background:#5a48d0;}",
+          "__cssom_casc_esc__",
+          function(fx, computed, sel){
+            ok(computed === "brightness(1.06)",
+               "CSSOM-PARSE-07 (premise, escape): the browser applies the CSS-escaped `f\\69lter` declaration from the earlier rule (computed filter=\"" + computed + "\")");
+            ok(!window.__cssRawHasFilter(sel, fx),
+               "CSSOM-PARSE-07 (premise, escape): the raw-text half is BLIND to the escaped spelling — so only the CSSOM half's cascade read can reject this fixture");
+            ok(!__cssFilterGuardOk(sel, fx),
+               "CSSOM-PARSE-07 (escape): __cssFilterGuardOk REJECTS an escape-spelled filter in an earlier duplicate rule — pins the CSSOM half across ALL matching rules, not just the last");
+            ok(!__cssNoBrightnessFilter(sel, fx),
+               "CSSOM-PARSE-07 (escape, PP-GEN shape): __cssNoBrightnessFilter REJECTS it too");
+          });
+
+        // (b2) The PP-GEN predicate's raw half greps for the word `brightness`, so the escape above
+        // is visible to it (the property name is escaped, the function name is not). Escape the
+        // FUNCTION name instead (`\62rightness` is `brightness`) and only the CSSOM half can see it.
+        _cascadeCase(
+          ".__cssom_casc_esf__{filter:\\62rightness(1.06);} .__cssom_casc_esf__{background:#5a48d0;}",
+          "__cssom_casc_esf__",
+          function(fx, computed, sel){
+            ok(computed === "brightness(1.06)" && !window.__cssRawBlocks(sel, fx).some(function(b){ return /brightness/i.test(b); }),
+               "CSSOM-PARSE-07 (premise, escaped function name): the browser applies `filter:\\62rightness(1.06)` from the earlier rule (computed \"" + computed + "\") while the raw text never contains the word `brightness`");
+            ok(!__cssNoBrightnessFilter(sel, fx),
+               "CSSOM-PARSE-07 (escaped function name, PP-GEN shape): __cssNoBrightnessFilter REJECTS it — pins ITS CSSOM half across all matching rules (the raw half cannot see this spelling)");
+          });
+
+        // (c) Only the raw-text half can see this one: the earlier rule's filter value is one
+        // Chrome's parser rejects outright, so the CSSOM carries no trace of it in ANY rule. If the
+        // raw half reverted to last-block-only this fixture would go green. (The browser itself
+        // applies nothing here — the guard is deliberately conservative: a declaration the parser
+        // dropped is exactly what the backstop exists to flag, and the premise below records that.)
+        _cascadeCase(
+          ".__cssom_casc_rej__{filter:brightness(1.06) not-a-real-css-function();} .__cssom_casc_rej__{background:#5a48d0;}",
+          "__cssom_casc_rej__",
+          function(fx, computed, sel){
+            ok(computed === "none" && window.__cssEffectiveFilter(sel, fx) === null,
+               "CSSOM-PARSE-07 (premise, parser-rejected): Chrome drops the unparseable filter declaration (computed filter=\"" + computed + "\", CSSOM effective=\"" + window.__cssEffectiveFilter(sel, fx) + "\") — only the raw-text half can still see it");
+            ok(window.__cssRawHasFilter(sel, fx),
+               "CSSOM-PARSE-07 (parser-rejected): the raw-text half sees a filter declaration in an EARLIER matching block, not only the last one");
+            ok(!__cssFilterGuardOk(sel, fx),
+               "CSSOM-PARSE-07 (parser-rejected): __cssFilterGuardOk REJECTS it — pins the raw half across ALL matching blocks, not just the last");
+            ok(!__cssNoBrightnessFilter(sel, fx),
+               "CSSOM-PARSE-07 (parser-rejected, PP-GEN shape): __cssNoBrightnessFilter REJECTS it too");
+          });
+
+        // (d) The cascade is per property AND importance-aware: an earlier `!important` filter beats
+        // a LATER normal `filter: none` regardless of source order. A read that keeps the last
+        // rule's value would report "none" (a false green); one that took "the last declaration"
+        // without importance would too.
+        _cascadeCase(
+          ".__cssom_casc_imp__{filter:brightness(1.06) !important;} .__cssom_casc_imp__{filter:none;}",
+          "__cssom_casc_imp__",
+          function(fx, computed, sel){
+            ok(computed === "brightness(1.06)" && _lastRuleFilter(sel, fx) === "none",
+               "CSSOM-PARSE-07 (premise, !important): the browser applies the earlier !important filter (computed filter=\"" + computed + "\") although the LAST rule says \"" + _lastRuleFilter(sel, fx) + "\"");
+            ok(window.__cssEffectiveFilter(sel, fx) === "brightness(1.06)",
+               "CSSOM-PARSE-07 (!important): the CSSOM half's cascade read honours !important (got \"" + window.__cssEffectiveFilter(sel, fx) + "\")");
+            ok(!__cssFilterGuardOk(sel, fx),
+               "CSSOM-PARSE-07 (!important): __cssFilterGuardOk REJECTS an earlier !important filter overridden only in source order");
+          });
+
+        // Controls in the OTHER direction, so the new reads are not simply "always red": the CSSOM
+        // half mirrors the cascade rather than over-reporting. This is a statement about the CSSOM
+        // HALF ONLY. The composed guard does NOT share that precision: its raw-text half fires on
+        // any `filter:` text in any matching block, so for any stylesheet that mentions `filter:`
+        // the composed gate behaves like a union and still reds this overridden shape (safe
+        // direction; deliberately not asserted here, so a later narrowing of the raw half is not
+        // blocked by a test that pins today's false red). The "cascade, not union" choice is
+        // therefore MOOT in practice; it only matters for spellings the raw half cannot read.
+        // An earlier filter that a later normal `filter: none` overrides is NOT applied...
+        _cascadeCase(
+          ".__cssom_casc_ovr__{filter:brightness(1.06);} .__cssom_casc_ovr__{filter:none;}",
+          "__cssom_casc_ovr__",
+          function(fx, computed, sel){
+            ok(computed === "none" && window.__cssEffectiveFilter(sel, fx) === "none",
+               "CSSOM-PARSE-07 (control, overridden): an earlier filter overridden by a later `filter: none` is not applied — browser says \"" + computed + "\", the CSSOM half agrees (\"" + window.__cssEffectiveFilter(sel, fx) + "\") rather than reporting a union (CSSOM half only: the composed guard's raw half still reds this shape)");
+          });
+        // ...and an earlier filter under a NON-matching @media does not count, while the same filter
+        // under a MATCHING one does (the condition handling _cssFlatten gave __cssRule must survive
+        // the move to a per-property read).
+        _cascadeCase(
+          "@media (max-width:1px){.__cssom_casc_mqn__{filter:brightness(1.06);}} .__cssom_casc_mqn__{background:#5a48d0;}",
+          "__cssom_casc_mqn__",
+          function(fx, computed, sel){
+            ok(computed === "none" && window.__cssEffectiveFilter(sel, fx) === null,
+               "CSSOM-PARSE-07 (control, @media off): a filter under a NON-matching @media is not applied (computed \"" + computed + "\") and the CSSOM half ignores it (got \"" + window.__cssEffectiveFilter(sel, fx) + "\")");
+          });
+        _cascadeCase(
+          "@media (min-width:1px){.__cssom_casc_mqy__{filter:brightness(1.06);}} .__cssom_casc_mqy__{background:#5a48d0;}",
+          "__cssom_casc_mqy__",
+          function(fx, computed, sel){
+            ok(computed === "brightness(1.06)" && window.__cssEffectiveFilter(sel, fx) === "brightness(1.06)" && !__cssFilterGuardOk(sel, fx),
+               "CSSOM-PARSE-07 (@media on): a filter under a MATCHING @media, followed by a filter-free duplicate, is applied (computed \"" + computed + "\") and rejected by the guard");
+          });
+        // A stylesheet with NO filter anywhere passes both predicates — the positive control for
+        // the other direction, so "always red" cannot satisfy this block.
+        _cascadeCase(
+          ".__cssom_casc_ok__{background:#111111;} .__cssom_casc_ok__{background:#5a48d0;}",
+          "__cssom_casc_ok__",
+          function(fx, computed, sel){
+            ok(computed === "none" && __cssFilterGuardOk(sel, fx) && __cssNoBrightnessFilter(sel, fx),
+               "CSSOM-PARSE-07 (control, clean): a duplicated selector with no filter anywhere is ACCEPTED by both predicates (computed \"" + computed + "\") — the guards still pass clean CSS");
+            // Fail-closed controls (Cody F1/F5), measured against THIS fixture so the clean sheet
+            // proves the predicates are not just "always red": the very same fixture accepts the
+            // real selector (above) yet rejects a stale/typo'd one that matches no rule, in both
+            // predicates, and the failure message says why instead of "found none".
+            ok(window.__cssRules(sel, fx).length === 2 && window.__cssRules(sel + "_stale", fx).length === 0,
+               "CSSOM-PARSE-07 (premise, fail-closed): the clean fixture really holds the two rules for its own selector and none for the stale one");
+            ok(!__cssFilterGuardOk(sel + "_stale", fx) && !__cssNoBrightnessFilter(sel + "_stale", fx),
+               "CSSOM-PARSE-07 (fail-closed): a guard whose selector matches NO rule is REJECTED by both predicates, not waved through as 'no filter' — a stale selector literal can no longer disarm a guard");
+            ok(/NO RULE MATCHES/.test(window.__cssFilterFound(sel + "_stale", fx)),
+               "CSSOM-PARSE-07 (fail-closed): the call sites' message helper names the vacuous guard instead of printing 'found none'");
+          });
+        // The same fail-closed behaviour against the REAL stylesheet with a stale literal — Cody's
+        // own experiment shape (`.tb-golive:hov`), with no fixture involved: a guard handed a
+        // selector that matches no shipped rule must fail, not report the clean state.
+        ok(window.__cssRules(".tb-golive:hov").length === 0 && !__cssFilterGuardOk(".tb-golive:hov") && !__cssNoBrightnessFilter(".tb-golive:hov"),
+           "CSSOM-PARSE-07 (fail-closed, real sheet): a stale guard literal (`.tb-golive:hov`) against the shipped app.css is REJECTED by both predicates");
+
+        // An explicit source must be usable or the call THROWS (Cody F5) — it must never fall back to
+        // the shipped stylesheet, or a fixture that failed to build would let a clean control pass
+        // vacuously against the wrong sheet.
+        // The throw must be _cssSrc's OWN (matched by message): a missing sheet would also throw a
+        // TypeError further down, which would hide a deleted `!src.sheet` clause, and a missing
+        // `text` does not throw anywhere else at all (Cody N3: each clause pinned individually).
+        function _srcRefused(bad) {
+          try { __cssFilterGuardOk(".tb-golive:hover", bad); return false; }
+          catch (e) { return /explicit source must be/.test(String(e && e.message)); }
+        }
+        var wBadSrcThrows = [{}, null, { sheet: null, text: "" }].map(_srcRefused);
+        ok(wBadSrcThrows.every(Boolean),
+           "CSSOM-PARSE-07 (explicit source): an explicit source that is {}, null or has no sheet is refused by _cssSrc itself instead of silently falling back to the real stylesheet (" + JSON.stringify(wBadSrcThrows) + ")");
+        var wOkFx = window.__cssFixture(".__cssom_srcok__{background:#111111;}");
+        try {
+          ok(_srcRefused({ sheet: wOkFx.sheet, text: undefined }) && _srcRefused({ sheet: wOkFx.sheet }),
+             "CSSOM-PARSE-07 (explicit source, text clause): a VALID sheet with `text` undefined is refused — a source without its raw text must not run only the CSSOM half");
+          ok(_srcRefused({ sheet: undefined, text: ".x{}" }) && _srcRefused({ text: wOkFx.text }),
+             "CSSOM-PARSE-07 (explicit source, sheet clause): `text` without a sheet is refused by _cssSrc itself (not by an incidental TypeError later)");
+        } finally { wOkFx.dispose(); }
+        var wNoSheetThrows = false;
+        try { window.__cssFixture(".__cssom_nosheet__{filter:none;}", "div"); } catch (e) { wNoSheetThrows = true; }
+        ok(wNoSheetThrows,
+           "CSSOM-PARSE-07 (fixture): __cssFixture THROWS when the element it built produced no stylesheet, rather than returning a fixture with a null sheet");
+
+        // ---- Review round (Cody 2-4, Quinn m02) -------------------------------------------------
+        // Cody 2: a parser-rejected filter declaration in the MIDDLE of three blocks. First-block-only
+        // and last-block-only raw scans both see only background here; only an all-blocks scan finds it.
+        _cascadeCase(
+          ".__cssom_casc_mid__{background:#111111;} .__cssom_casc_mid__{filter:brightness(1.06) not-a-real-css-function();} .__cssom_casc_mid__{background:#5a48d0;}",
+          "__cssom_casc_mid__",
+          function(fx, computed, sel){
+            ok(computed === "none" && window.__cssRules(sel, fx).length === 3 && window.__cssEffectiveFilter(sel, fx) === null,
+               "CSSOM-PARSE-07 (premise, middle block): three duplicate rules, the MIDDLE one carries a filter Chrome rejects (computed \"" + computed + "\", CSSOM effective \"" + window.__cssEffectiveFilter(sel, fx) + "\") — invisible to the CSSOM, to a first-block-only scan and to a last-block-only scan");
+            ok(!__cssFilterGuardOk(sel, fx),
+               "CSSOM-PARSE-07 (middle block): __cssFilterGuardOk REJECTS a rejected filter declared in the middle of three blocks");
+            ok(!__cssNoBrightnessFilter(sel, fx),
+               "CSSOM-PARSE-07 (middle block, PP-GEN shape): __cssNoBrightnessFilter REJECTS it too");
+          });
+
+        // Cody 3: `!important` against `!important`: the LATER one wins (same importance, source
+        // order). A read that lets the first important declaration stick reports `none`. The plain
+        // spelling is also visible to the raw half, so the escaped spelling (property AND function
+        // name) is what leaves the CSSOM half as the only detector.
+        _cascadeCase(
+          ".__cssom_casc_ii__{filter:none !important;} .__cssom_casc_ii__{filter:brightness(1.06) !important;}",
+          "__cssom_casc_ii__",
+          function(fx, computed, sel){
+            ok(computed === "brightness(1.06)" && window.__cssEffectiveFilter(sel, fx) === "brightness(1.06)",
+               "CSSOM-PARSE-07 (important vs important): the LATER of two !important declarations wins — browser \"" + computed + "\", CSSOM half \"" + window.__cssEffectiveFilter(sel, fx) + "\"");
+          });
+        _cascadeCase(
+          ".__cssom_casc_iie__{f\\69lter:none !important;} .__cssom_casc_iie__{f\\69lter:\\62rightness(1.06) !important;}",
+          "__cssom_casc_iie__",
+          function(fx, computed, sel){
+            ok(computed === "brightness(1.06)" && !window.__cssRawHasFilter(sel, fx) && !window.__cssRawBlocks(sel, fx).some(function(b){ return /brightness/i.test(b); }),
+               "CSSOM-PARSE-07 (premise, escaped important vs important): the browser applies the later escaped !important filter (computed \"" + computed + "\") while the raw text never contains `filter:` or `brightness` — only the CSSOM half can see it");
+            ok(!__cssFilterGuardOk(sel, fx),
+               "CSSOM-PARSE-07 (escaped important vs important): __cssFilterGuardOk REJECTS it — the CSSOM half resolves two !important declarations by source order");
+            ok(!__cssNoBrightnessFilter(sel, fx),
+               "CSSOM-PARSE-07 (escaped important vs important, PP-GEN shape): __cssNoBrightnessFilter REJECTS it too");
+          });
+
+        // Cody 4 / Quinn m02: @supports. A filter under an unsupported / negated condition is not
+        // applied and must be ignored; under a supported one it applies. Then nesting, where the
+        // PARENT's condition must still gate the child, in both orders.
+        [
+          ["sup_no", "@supports (display:nonsense-xyz){.__cssom_casc_sup_no__{filter:brightness(1.06);}} .__cssom_casc_sup_no__{background:#5a48d0;}", false, "an UNSUPPORTED @supports condition"],
+          ["sup_not", "@supports not (display:grid){.__cssom_casc_sup_not__{filter:brightness(1.06);}} .__cssom_casc_sup_not__{background:#5a48d0;}", false, "a NEGATED @supports condition that does not hold (`not (display:grid)`)"],
+          ["sup_yes", "@supports (display:grid){.__cssom_casc_sup_yes__{filter:brightness(1.06);}} .__cssom_casc_sup_yes__{background:#5a48d0;}", true, "a SUPPORTED @supports condition"],
+          ["nest_sup_in_mq_no", "@media (min-width:1px){@supports (display:nonsense-xyz){.__cssom_casc_nest_sup_in_mq_no__{filter:brightness(1.06);}}} .__cssom_casc_nest_sup_in_mq_no__{background:#5a48d0;}", false, "an unsupported @supports nested in a MATCHING @media"],
+          ["nest_mq_in_sup_no", "@supports (display:nonsense-xyz){@media (min-width:1px){.__cssom_casc_nest_mq_in_sup_no__{filter:brightness(1.06);}}} .__cssom_casc_nest_mq_in_sup_no__{background:#5a48d0;}", false, "a matching @media nested in an UNSUPPORTED @supports (the parent must still gate the child)"],
+          ["nest_sup_in_mq_off", "@media (max-width:1px){@supports (display:grid){.__cssom_casc_nest_sup_in_mq_off__{filter:brightness(1.06);}}} .__cssom_casc_nest_sup_in_mq_off__{background:#5a48d0;}", false, "a supported @supports nested in a NON-matching @media (the parent must still gate the child)"],
+          ["nest_yes", "@media (min-width:1px){@supports (display:grid){.__cssom_casc_nest_yes__{filter:brightness(1.06);}}} .__cssom_casc_nest_yes__{background:#5a48d0;}", true, "a supported @supports nested in a matching @media"]
+        ].forEach(function(c){
+          _cascadeCase(c[1], "__cssom_casc_" + c[0] + "__", function(fx, computed, sel){
+            var want = c[2] ? "brightness(1.06)" : null;
+            ok(computed === (c[2] ? "brightness(1.06)" : "none") && window.__cssEffectiveFilter(sel, fx) === want,
+               "CSSOM-PARSE-07 (conditions, " + c[0] + "): a filter under " + c[3] + (c[2] ? " IS" : " is NOT") + " applied (computed \"" + computed + "\") and the CSSOM half agrees (got \"" + window.__cssEffectiveFilter(sel, fx) + "\")");
+          });
+        });
       })();
 
       // Shorter wait budget than the default 150×20ms. This block sits at the very END of the
@@ -11214,7 +11994,10 @@ DRIVER = r"""
           var r = _cr([255,255,255,1], s);
           ok(r >= 4.5, "TD-012: the Save-theme label clears AA-NORMAL on gradient stop " + (i+1) + " (" + _f(r) + ":1)");
         });
-        var wTdHoverRule = __cssRule(".td-save-cta:hover");
+        // ONE selector literal per call site (Cody F1, 17tnw2ayetm): the premise lookup, the
+        // message read and the guard below all use this variable, so they cannot drift apart.
+        var wTdHoverSel = ".td-save-cta:hover";
+        var wTdHoverRule = __cssRule(wTdHoverSel);
         ok(!!wTdHoverRule, "TD-012 (premise): the .td-save-cta:hover rule is present in the shipped app.css");
         var wTdHb = __cssBg(wTdHoverRule);
         ok(!!wTdHb, "TD-012 (premise): the hover rule declares a background, so there is a value to measure");
@@ -11232,8 +12015,8 @@ DRIVER = r"""
         // checks green). Assert the rule declares no re-lightening filter at all — read through
         // __cssFilter (CSSOM-PARSE-02 above), which also catches a re-lightening `-webkit-filter`
         // or CSS-escaped spelling, not just the plain one.
-        var wTdHoverFilter = __cssFilter(wTdHoverRule);
-        ok(__cssFilterGuardOk(".td-save-cta:hover", wTdHoverRule),
+        var wTdHoverFilter = __cssFilterFound(wTdHoverSel);
+        ok(__cssFilterGuardOk(wTdHoverSel),
            "TD-012: the hover rule carries no `filter` (found " + (wTdHoverFilter ? wTdHoverFilter.trim() : "none") +
            ") — a brightness() filter stacked on an already-darkened fill would re-lighten it past AA, and the background-only checks above cannot see that");
         ok(_cr([255,255,255,1], _resolve("var(--sc-primary-hover)")) < 4.5,
@@ -11251,7 +12034,10 @@ DRIVER = r"""
           var r = _cr([255,255,255,1], s);
           ok(r >= 4.5, "PSC-005: the Start-service label clears AA-NORMAL on gradient stop " + (i+1) + " (" + _f(r) + ":1)");
         });
-        var wPsHoverRule = __cssRule(".ps-start:hover");
+        // ONE selector literal per call site (Cody F1, 17tnw2ayetm): the premise lookup, the
+        // message read and the guard below all use this variable, so they cannot drift apart.
+        var wPsHoverSel = ".ps-start:hover";
+        var wPsHoverRule = __cssRule(wPsHoverSel);
         ok(!!wPsHoverRule, "PSC-005 (premise): the .ps-start:hover rule is present in the shipped app.css");
         var wPsHb = __cssBg(wPsHoverRule);
         ok(!!wPsHb, "PSC-005 (premise): the hover rule declares a background, so there is a value to measure");
@@ -11265,8 +12051,8 @@ DRIVER = r"""
         // Same gap Sana found on TD-012 above (PR #58 review): background-only checks miss a
         // `filter: brightness()` stacked back onto this hover rule. Assert none is declared —
         // through __cssFilter, so a re-lightening `-webkit-filter` or escaped spelling counts too.
-        var wPsHoverFilter = __cssFilter(wPsHoverRule);
-        ok(__cssFilterGuardOk(".ps-start:hover", wPsHoverRule),
+        var wPsHoverFilter = __cssFilterFound(wPsHoverSel);
+        ok(__cssFilterGuardOk(wPsHoverSel),
            "PSC-005: the hover rule carries no `filter` (found " + (wPsHoverFilter ? wPsHoverFilter.trim() : "none") +
            ") — a brightness() filter stacked on an already-darkened fill would re-lighten it past AA, and the background-only checks above cannot see that");
         ok(_cr([255,255,255,1], _resolve("var(--sc-primary-hover)")) < 4.5,
@@ -11396,7 +12182,10 @@ DRIVER = r"""
           var r = _cr([255,255,255,1], s);
           ok(r >= 4.5, "GO-LIVE-HOVER: the topbar GO LIVE label clears AA-NORMAL on gradient stop " + (i+1) + " (" + _f(r) + ":1)");
         });
-        var wTbGlHoverRule = __cssRule(".tb-golive:hover");
+        // ONE selector literal per call site (Cody F1, 17tnw2ayetm): the premise lookup, the
+        // message read and the guard below all use this variable, so they cannot drift apart.
+        var wTbGlHoverSel = ".tb-golive:hover";
+        var wTbGlHoverRule = __cssRule(wTbGlHoverSel);
         ok(!!wTbGlHoverRule, "GO-LIVE-HOVER (premise): the .tb-golive:hover rule is present in the shipped app.css");
         var wTbGlHb = __cssBg(wTbGlHoverRule);
         ok(!!wTbGlHb, "GO-LIVE-HOVER (premise): the hover rule declares a background, so there is a value to measure — a bare `filter: brightness()` would leave nothing here");
@@ -11409,8 +12198,8 @@ DRIVER = r"""
         }
         // Sana's TD-012 finding (PR #58 review) applies identically here: the background-only
         // checks above cannot see a `filter: brightness()` stacked back onto this hover rule.
-        var wTbGlHoverFilter = __cssFilter(wTbGlHoverRule);
-        ok(__cssFilterGuardOk(".tb-golive:hover", wTbGlHoverRule),
+        var wTbGlHoverFilter = __cssFilterFound(wTbGlHoverSel);
+        ok(__cssFilterGuardOk(wTbGlHoverSel),
            "GO-LIVE-HOVER: the hover rule carries no `filter` (found " + (wTbGlHoverFilter ? wTbGlHoverFilter.trim() : "none") +
            ") — a brightness() filter stacked on an already-darkened fill would re-lighten it past AA, and the background-only checks above cannot see that");
         // Control: recomputing the ORIGINAL `filter: brightness(1.06)` against the darkened
@@ -11432,7 +12221,10 @@ DRIVER = r"""
           var r = _cr([255,255,255,1], s);
           ok(r >= 4.5, "TIMER-START-HOVER: the Timer Start label clears AA-NORMAL on gradient stop " + (i+1) + " (" + _f(r) + ":1)");
         });
-        var wTsHoverRule = __cssRule(".timer-start:hover");
+        // ONE selector literal per call site (Cody F1, 17tnw2ayetm): the premise lookup, the
+        // message read and the guard below all use this variable, so they cannot drift apart.
+        var wTsHoverSel = ".timer-start:hover";
+        var wTsHoverRule = __cssRule(wTsHoverSel);
         ok(!!wTsHoverRule, "TIMER-START-HOVER (premise): the .timer-start:hover rule is present in the shipped app.css");
         var wTsHb = __cssBg(wTsHoverRule);
         ok(!!wTsHb, "TIMER-START-HOVER (premise): the hover rule declares a background, so there is a value to measure — a bare `filter: brightness()` would leave nothing here");
@@ -11443,8 +12235,8 @@ DRIVER = r"""
           ok(_lum(wTsHoverBg) <= Math.max.apply(null, wTsStops.map(_lum)),
              "TIMER-START-HOVER: hover does not LIGHTEN past the gradient's brightest rest stop — no `filter: brightness()` re-lightening the darkened fill");
         }
-        var wTsHoverFilter = __cssFilter(wTsHoverRule);
-        ok(__cssFilterGuardOk(".timer-start:hover", wTsHoverRule),
+        var wTsHoverFilter = __cssFilterFound(wTsHoverSel);
+        ok(__cssFilterGuardOk(wTsHoverSel),
            "TIMER-START-HOVER: the hover rule carries no `filter` (found " + (wTsHoverFilter ? wTsHoverFilter.trim() : "none") +
            ") — a brightness() filter stacked on an already-darkened fill would re-lighten it past AA, and the background-only checks above cannot see that");
         var wTsBrightened = wTsStops.map(function(s){ return [Math.min(255,s[0]*1.06), Math.min(255,s[1]*1.06), Math.min(255,s[2]*1.06), s[3]]; });
@@ -11472,7 +12264,10 @@ DRIVER = r"""
          "PP-GEN (control): --sc-primary-hover itself still measures BELOW AA-normal for white (" + _f(_cr([255,255,255,1], wPpGenOldStop)) + ":1) — the token is untouched, only the gradient stopped using it as a stop");
       // .pp-generate:hover must not reintroduce filter:brightness() — brightening the now-darker
       // gradient back up is the exact unfixed gap flagged on .tb-golive/.timer-start.
-      var wPpGenHoverRule = __cssRule(".pp-generate:hover");
+      // ONE selector literal per call site (Cody F1, 17tnw2ayetm): the premise lookup, the
+      // message read and the guard below all use this variable, so they cannot drift apart.
+      var wPpGenHoverSel = ".pp-generate:hover";
+      var wPpGenHoverRule = __cssRule(wPpGenHoverSel);
       ok(!!wPpGenHoverRule, "PP-GEN (premise): the .pp-generate:hover rule is present in the shipped app.css");
       if (wPpGenHoverRule) {
         // Read through __cssFilter (not a raw-text scan for "filter:") so a re-lightening
@@ -11481,7 +12276,7 @@ DRIVER = r"""
         // drops a filter: declaration outright when it cannot parse the value, which would make
         // __cssFilter report null (the passing state) for a brightness() call stacked with an
         // unparseable one.
-        ok(__cssNoBrightnessFilter(".pp-generate:hover", wPpGenHoverRule),
+        ok(__cssNoBrightnessFilter(wPpGenHoverSel),
            "PP-GEN: .pp-generate:hover does NOT use filter:brightness() — that would re-lighten the darkened gradient stop, the exact gap still open on .tb-golive/.timer-start");
         var wPpGenHb = __cssBg(wPpGenHoverRule);
         ok(!!wPpGenHb, "PP-GEN (premise): the hover rule declares a background, so there is a value to measure");
@@ -13652,73 +14447,36 @@ html = html.replace("<head>", '<head><base href="file://' + DIST + '/">', 1)
 html = html.replace("</head>", STUB + CSS_SRC + RUST_CONSTS + "</head>", 1)
 html = html.replace("</body>", DRIVER + "</body>", 1)
 
-with tempfile.NamedTemporaryFile(
-    "w", suffix=".html", delete=False, dir=tempfile.gettempdir()
-) as f:
-    f.write(html)
-    path = f.name
-
-try:
-    try:
-        out = subprocess.run(
-            [CHROME, "--headless=new", "--disable-gpu", "--no-sandbox",
-             # Budget is VIRTUAL time, fast-forwarded — it costs little wall clock, but every
-             # driver step that waits on the app's own 1 s view poll spends a full second of it.
-             # Raised from 9000 with the window-semantics checks, which wait on two real polls, and
-             # again to 20000 with the Design 2.0 parity block: that block navigates surfaces and
-             # waits on host round-trips at the very end of the run, so a run in which several of
-             # its checks legitimately FAIL (each spending its wait budget) must still have time
-             # left to WRITE the results. Without the headroom a real regression surfaces as
-             # "NO RESULTS BLOCK" (exit 2, infra) instead of a named FAIL.
-             # Raised again to 60000 for the Frame G recovery block, which is wait-heavy by
-             # nature: every edge check must observe TWO successive 1 Hz polls (that is the
-             # whole point of holds/recoveries being counters), so it spends ~1s of virtual
-             # time per assertion pair and cannot be made cheaper without testing something
-             # weaker than the real poll path.
-             # Raised again to 75000 for CON-156/157/158/161/172/173 (17tnw2axptc): the NDI
-             # runtime-unavailable/restore-to-unknown pair and the console empty-plan
-             # add/restore pair are each two more real 1 Hz-poll round trips, all landing
-             # BEFORE the already wait-heavy Frame G recovery block above — without the extra
-             # headroom the run reached check ~1725 (mid-G.3) and then genuinely ran out of
-             # virtual time, which surfaced as "NO RESULTS BLOCK" (an infra failure) rather
-             # than any named FAIL, exactly the failure mode this comment block already warns
-             # about. Confirmed empirically: a debug build that writes PROGRESS every 25
-             # checks showed the run stalled inside the pre-existing G.3 edges-across-polls
-             # section, not inside anything new.
-             "--virtual-time-budget=75000", "--dump-dom", "file://" + path],
-            capture_output=True, text=True, encoding="utf-8", errors="replace",
-            timeout=90).stdout
-    except subprocess.TimeoutExpired:
-        # A hung Chrome is an INFRA failure (exit 2), distinct from a check FAIL (exit 1).
-        print("FAIL: headless Chrome timed out (infra) — no RESULTS produced")
-        sys.exit(2)
-    m = re.search(r"RESULTS\n(.*?)\nDONE\((\d+)\)", out, re.S)
-    if not m:
-        print("NO RESULTS BLOCK — dom head:\n", out[:1500]); sys.exit(2)
-    body = m.group(1)
-    count = int(m.group(2))
-    print(body)
-    fails = [line for line in body.splitlines() if line.startswith("FAIL")]
-    print("\n=== %d checks, %d FAIL ===" % (count, len(fails)))
-    # Guard against the suite count DRIFTING in either direction: a `<` floor only ever
-    # catches SHRINKING (a driver regression / early return running fewer checks). It never
-    # catches GROWING past the recorded value, which lets EXPECTED_MIN_CHECKS drift stale-low
-    # with no red build to catch it — this has happened three times (1514/1520, 1544/1589,
-    # 1589/1593), each caught only by a human/reviewer noticing an oddity, never by this gate.
-    # The third time (17tnw2axpt9, PR #63) root-caused to a merge commit (00f9a50) keeping one
-    # parallel branch's own recorded EXPECTED_MIN_CHECKS instead of re-deriving it after both
-    # branches' new checks were combined. An exact match forces every branch that adds/removes
-    # a check to conflict on this constant during rebase and re-derive it explicitly — that
-    # friction is the point; it's what was skipped at the merge that caused drift #3.
-    # Bump EXPECTED_MIN_CHECKS to the new count when you add or remove a check — always by
-    # actually running the suite, never by hand arithmetic (see the log above this constant).
-    if count != EXPECTED_MIN_CHECKS:
-        print(
-            "FAIL: %d checks ran; expected exactly %d (bump me to %d if this is a real "
-            "add/remove — never hand-derive; re-run and use the measured count)"
-            % (count, EXPECTED_MIN_CHECKS, count)
-        )
-        sys.exit(4)
-    sys.exit(1 if fails else 0)
-finally:
-    os.unlink(path)
+# `html` is handed to the launcher, which writes it into its own private work dir (removed on every
+# path, including a timeout) and loads it. Chrome's wall-clock timeout, process group and temp
+# cleanup are its business (scripts/headless_chrome.py); this file supplies the flags and judges
+# the result (`gate_verdict`, above).
+run = headless_chrome.run_headless_chrome(
+    CHROME, html,
+    ["--headless=new", "--disable-gpu", "--no-sandbox",
+     # Budget is VIRTUAL time, fast-forwarded — it costs little wall clock, but every
+     # driver step that waits on the app's own 1 s view poll spends a full second of it.
+     # Raised from 9000 with the window-semantics checks, which wait on two real polls, and
+     # again to 20000 with the Design 2.0 parity block: that block navigates surfaces and
+     # waits on host round-trips at the very end of the run, so a run in which several of
+     # its checks legitimately FAIL (each spending its wait budget) must still have time
+     # left to WRITE the results. Without the headroom a real regression surfaces as
+     # "NO RESULTS BLOCK" (exit 2, infra) instead of a named FAIL.
+     # Raised again to 60000 for the Frame G recovery block, which is wait-heavy by
+     # nature: every edge check must observe TWO successive 1 Hz polls (that is the
+     # whole point of holds/recoveries being counters), so it spends ~1s of virtual
+     # time per assertion pair and cannot be made cheaper without testing something
+     # weaker than the real poll path.
+     # Raised again to 75000 for CON-156/157/158/161/172/173 (17tnw2axptc): the NDI
+     # runtime-unavailable/restore-to-unknown pair and the console empty-plan
+     # add/restore pair are each two more real 1 Hz-poll round trips, all landing
+     # BEFORE the already wait-heavy Frame G recovery block above — without the extra
+     # headroom the run reached check ~1725 (mid-G.3) and then genuinely ran out of
+     # virtual time, which surfaced as "NO RESULTS BLOCK" (an infra failure) rather
+     # than any named FAIL, exactly the failure mode this comment block already warns
+     # about. Confirmed empirically: a debug build that writes PROGRESS every 25
+     # checks showed the run stalled inside the pre-existing G.3 edges-across-polls
+     # section, not inside anything new.
+     "--virtual-time-budget=75000"],
+    timeout=_CHROME_TIMEOUT_S)
+sys.exit(gate_verdict(run, EXPECTED_MIN_CHECKS))
