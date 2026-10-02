@@ -2925,6 +2925,7 @@ dependencies = [
  "selahcue-engine",
  "selahcue-lan",
  "selahcue-present",
+ "selahcue-scripture",
  "tokio",
  "wgpu",
  "winit",

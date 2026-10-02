@@ -70,6 +70,10 @@ selahcue-core = { path = "../selahcue-core" }
 selahcue-data = { path = "../selahcue-data" }
 selahcue-engine = { path = "../selahcue-engine" }
 selahcue-present = { path = "../selahcue-present" }
+# `warm()` the fuzzy quote-match index at startup (start_remote_control, src/main.rs) so the
+# first real IngestTranscript command doesn't pay the lazy OnceLock build cost inline inside
+# ControlClient::COMMAND_TIMEOUT. See that call site's comment; 17tnw2b1258.
+selahcue-scripture = { path = "../selahcue-scripture" }
 # The controller + pinned-TLS control server (so a remote controller drives the window).
 selahcue-app = { path = "../selahcue-app", features = ["server"] }
 selahcue-lan = { path = "../selahcue-lan", features = ["server"] }

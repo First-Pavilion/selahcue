@@ -277,3 +277,54 @@ fn probe_ingest_in_process() {
     println!("ingest final warm worst:          {:8.2} ms", ms(worst));
     println!("ingest interim:                   {:8.3} ms", ms(t_interim));
 }
+
+/// The gap `probe_ingest_in_process` and `probe_wire_breakdown` don't cover: a real
+/// `IngestTranscript` over the pinned-TLS wire, bounded by `ControlClient::COMMAND_TIMEOUT`
+/// (2s) — exactly what a connected mobile/remote operator's first live-transcript final pays
+/// in production. Before 17tnw2b1258 (selahcue-desktop calling `selahcue_scripture::warm()`
+/// at startup), this cold hop risked landing inside that 2s budget on a slow machine.
+///
+/// The printed "cold" number is only meaningful run in isolation (`--test-threads=1`): a
+/// sibling test in this binary that also touches the quote-match index (`probe_ingest_in_process`)
+/// can otherwise warm the process-global `OnceLock` first.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn probe_ingest_wire_cold_vs_warm() {
+    let c = controller();
+    let (addr, pin) = serve(c).await;
+    let mut op = RemoteOperator::connect(addr, "localhost", pin, "op", "tok")
+        .await
+        .unwrap();
+
+    let t0 = Instant::now();
+    op.ingest_transcript(
+        "for god so loved the world that he gave his one and only son",
+        0,
+        4_000,
+        true,
+    )
+    .await
+    .unwrap();
+    let t_cold = t0.elapsed();
+
+    let mut samples: Vec<Duration> = Vec::new();
+    for i in 1..=10u64 {
+        let t0 = Instant::now();
+        op.ingest_transcript(
+            "that whoever believes in him shall not perish",
+            i * 4_000,
+            (i + 1) * 4_000,
+            true,
+        )
+        .await
+        .unwrap();
+        samples.push(t0.elapsed());
+    }
+    samples.sort();
+    let p50 = samples[samples.len() / 2];
+
+    println!(
+        "ingest_transcript wire cold:      {:8.2} ms  (COMMAND_TIMEOUT budget: 2000 ms)",
+        ms(t_cold)
+    );
+    println!("ingest_transcript wire warm p50:  {:8.2} ms", ms(p50));
+}
