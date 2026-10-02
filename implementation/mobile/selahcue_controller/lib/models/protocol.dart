@@ -405,24 +405,48 @@ class ChapterResult extends ServerMessage {
   String get heading => '$bookName $chapter ($translation)';
 }
 
-/// The reply to a `pair` hello (`{'pair': 'granted'|'rejected'}` tagged).
+/// A rejection's `reason` is display text, so a rejection that omits it is
+/// still a rejection (reads as `''`). A reason that is PRESENT but not a string
+/// is a wrong-typed field: `null` here means "malformed", so the caller must not
+/// treat the frame as a verdict.
+String? _reasonOf(Map<String, dynamic> j) {
+  if (!j.containsKey('reason')) return '';
+  final reason = j['reason'];
+  return reason is String ? reason : null;
+}
+
+/// The reply to a `pair` hello (`{'pair': 'granted'|'rejected'|'parked'}` tagged).
+///
+/// Only a frame the host really sends, with every field its verdict needs present
+/// and correctly typed, is a verdict. Anything else is [PairMalformed] — never a
+/// guessed rejection, and never a raw cast error (17tnw2b1f1v).
 sealed class PairResult {
   const PairResult();
 
   static PairResult fromJson(Map<String, dynamic> j) {
     switch (j['pair']) {
       case 'granted':
-        return PairGranted(
-          deviceId: j['device_id'] as String? ?? '',
-          token: j['token'] as String? ?? '',
-          role: j['role'] as String? ?? '',
-        );
+        // All three are required: an empty id/token would be saved as the
+        // "issued credentials" and could never authenticate. An unknown role
+        // STRING is still fine — `MobileRole.parse` fails it closed.
+        final deviceId = j['device_id'];
+        final token = j['token'];
+        final role = j['role'];
+        if (deviceId is String &&
+            deviceId.isNotEmpty &&
+            token is String &&
+            token.isNotEmpty &&
+            role is String) {
+          return PairGranted(deviceId: deviceId, token: token, role: role);
+        }
+        return const PairMalformed();
       case 'rejected':
-        return PairRejected(j['reason'] as String? ?? '');
+        final reason = _reasonOf(j);
+        return reason == null ? const PairMalformed() : PairRejected(reason);
       case 'parked':
         return const PairParked();
       default:
-        return const PairRejected('malformed reply');
+        return const PairMalformed();
     }
   }
 }
@@ -445,18 +469,33 @@ class PairParked extends PairResult {
   const PairParked();
 }
 
+/// A reply that is valid JSON but is none of the above: an unknown or missing
+/// `pair` tag, or a granted/rejected frame with a missing or wrong-typed field.
+/// NOT a rejection — the operator said nothing; the frame is just unreadable.
+class PairMalformed extends PairResult {
+  const PairMalformed();
+}
+
 /// The reply to an `auth` hello (`{'auth': 'granted'|'rejected'}` tagged).
+///
+/// Only an explicit `"auth":"rejected"` is a verdict that the credentials are
+/// dead. Every other reply the client cannot read is [AuthMalformed], which is
+/// transient: the caller retries and KEEPS the stored credentials. Wiping them
+/// on a guess would force a fresh pairing code and operator approval for a device
+/// nobody revoked (17tnw2b1f1v).
 sealed class AuthResult {
   const AuthResult();
 
   static AuthResult fromJson(Map<String, dynamic> j) {
     switch (j['auth']) {
       case 'granted':
-        return AuthGranted(j['role'] as String? ?? '');
+        final role = j['role'];
+        return role is String ? AuthGranted(role) : const AuthMalformed();
       case 'rejected':
-        return AuthRejected(j['reason'] as String? ?? '');
+        final reason = _reasonOf(j);
+        return reason == null ? const AuthMalformed() : AuthRejected(reason);
       default:
-        return const AuthRejected('malformed reply');
+        return const AuthMalformed();
     }
   }
 }
@@ -466,7 +505,15 @@ class AuthGranted extends AuthResult {
   const AuthGranted(this.role);
 }
 
+/// The host explicitly rejected the credentials (`"auth":"rejected"`).
 class AuthRejected extends AuthResult {
   final String reason;
   const AuthRejected(this.reason);
+}
+
+/// A reply that is valid JSON but is not a readable verdict: an unknown or
+/// missing `auth` tag, or a granted/rejected frame with a missing or wrong-typed
+/// field. Deliberately NOT a rejection and never a revocation.
+class AuthMalformed extends AuthResult {
+  const AuthMalformed();
 }
