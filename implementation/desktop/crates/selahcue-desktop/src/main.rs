@@ -1568,22 +1568,57 @@ impl StallReporter {
     }
 }
 
+/// Where one present spent its time, measured by the [`Renderer`] while the controller lock is
+/// held. The first field report of [`StallReporter`] showed stalls of 2.8 s and 5.5 s with a
+/// surface acquire of ~0 ms, so "the acquire blocked" was only part of the story: each call that
+/// can wait on the GPU or the compositor is timed separately. Fixed-size and `Copy`, so recording
+/// it allocates nothing and cannot grow.
+#[derive(Debug, Default, Clone, Copy)]
+struct RenderPhases {
+    /// CPU orientation / mirror / fit applied to the frame before upload (`apply_output_config`).
+    transform: Duration,
+    /// Frame upload: `write_texture` and the bind group.
+    upload: Duration,
+    /// `surface.get_current_texture()`.
+    acquire: Duration,
+    /// Encoding the blit and `queue.submit`.
+    submit: Duration,
+    /// `queue.present`.
+    present: Duration,
+}
+
+impl RenderPhases {
+    /// The part of a hold that none of the timed phases explains. A large value here means the
+    /// time went somewhere this did not look (not a GPU call), which is itself the finding.
+    /// Saturates: it is derived from two separate clock reads.
+    fn unaccounted(&self, held: Duration) -> Duration {
+        let timed = self.transform + self.upload + self.acquire + self.submit + self.present;
+        held.saturating_sub(timed)
+    }
+}
+
 /// The one line a stall writes to stderr. It carries every figure needed to tell the causes apart
 /// (see [`StallReporter`]), because it is what gets pasted back from a user's terminal.
 fn describe_redraw_stall(
     role: &str,
     waited: Duration,
     held: Duration,
-    acquire: Duration,
+    phases: RenderPhases,
     suppressed: u64,
 ) -> String {
     let mut line = format!(
         "SelahCue: output stall: the {role} window waited {} ms for the controller lock, then \
-         held it for {} ms (surface acquire {} ms). LAN commands from the operator console are \
-         blocked while it is held.",
+         held it for {} ms (transform {} ms, upload {} ms, acquire {} ms, submit {} ms, present \
+         {} ms, unaccounted {} ms). LAN commands from the operator console are blocked while it \
+         is held.",
         waited.as_millis(),
         held.as_millis(),
-        acquire.as_millis(),
+        phases.transform.as_millis(),
+        phases.upload.as_millis(),
+        phases.acquire.as_millis(),
+        phases.submit.as_millis(),
+        phases.present.as_millis(),
+        phases.unaccounted(held).as_millis(),
     );
     if suppressed > 0 {
         line.push_str(&format!(
@@ -1718,11 +1753,11 @@ struct Renderer {
     frame_texture: Option<(wgpu::Texture, u32, u32)>,
     /// Measured present telemetry (Screens page signal-health).
     telemetry: OutputTelemetry,
-    /// How long the most recent `surface.get_current_texture()` took. Reset to zero at the top of
-    /// every [`Renderer::present_output`], so a frame that never reached the acquire (a
-    /// frame-rate skip) cannot report a stale figure. Read only by the stall report in
-    /// `RedrawRequested` (see [`StallReporter`]).
-    last_acquire: Duration,
+    /// Where the most recent present spent its time. Reset at the top of every
+    /// [`Renderer::present_output`], so a frame that stopped early (a frame-rate skip, a failed
+    /// acquire) cannot report a stale figure for a phase it never reached. Read only by the stall
+    /// report in `RedrawRequested` (see [`StallReporter`]).
+    phases: RenderPhases,
 }
 
 impl Renderer {
@@ -1832,7 +1867,7 @@ impl Renderer {
             sampler,
             frame_texture: None,
             telemetry: OutputTelemetry::new(),
-            last_acquire: Duration::ZERO,
+            phases: RenderPhases::default(),
         })
     }
 
@@ -1847,6 +1882,8 @@ impl Renderer {
     /// paint is deferred to the next tick) — the smoke mode uses this to know the
     /// window really produced a visible frame before exiting.
     fn render(&mut self, frame: &FrameBuffer) -> bool {
+        // Timed from here so re-creating the frame texture on a resize counts as upload.
+        let upload_started = Instant::now();
         let (fw, fh) = (frame.width(), frame.height());
         if self.frame_texture.as_ref().map(|(_, w, h)| (*w, *h)) != Some((fw, fh)) {
             let texture = self.device.create_texture(&wgpu::TextureDescriptor {
@@ -1902,6 +1939,7 @@ impl Renderer {
                 },
             ],
         });
+        self.phases.upload = upload_started.elapsed();
 
         // wgpu 30 reports the acquire outcome as an enum rather than a `Result`. Mapped onto the
         // old behaviour exactly: a usable texture (including a merely `Suboptimal` one, which
@@ -1912,7 +1950,7 @@ impl Renderer {
         // busy-spin while the surface can't present.
         let acquire_started = Instant::now();
         let acquired = self.surface.get_current_texture();
-        self.last_acquire = acquire_started.elapsed();
+        self.phases.acquire = acquire_started.elapsed();
         let surface_frame = match acquired {
             wgpu::CurrentSurfaceTexture::Success(frame)
             | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => frame,
@@ -1924,6 +1962,7 @@ impl Renderer {
             | wgpu::CurrentSurfaceTexture::Occluded
             | wgpu::CurrentSurfaceTexture::Validation => return false,
         };
+        let submit_started = Instant::now();
         let target = surface_frame
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
@@ -1952,7 +1991,10 @@ impl Renderer {
             pass.draw(0..3, 0..1);
         }
         self.queue.submit(Some(encoder.finish()));
+        self.phases.submit = submit_started.elapsed();
+        let present_started = Instant::now();
         self.queue.present(surface_frame);
+        self.phases.present = present_started.elapsed();
         true
     }
 
@@ -1962,7 +2004,7 @@ impl Renderer {
     /// (the configured interval has not elapsed) is intentional — it returns `false` but is
     /// NOT counted as a dropped frame.
     fn present_output(&mut self, base: &FrameBuffer, cfg: &OutputConfigView, now: Instant) -> bool {
-        self.last_acquire = Duration::ZERO;
+        self.phases = RenderPhases::default();
         // Frame-rate gate. Default 60fps at the 60 Hz loop never gates (5% slack); only an
         // explicitly LOWER target skips presents.
         let target = cfg.frame_rate.max(1) as f32;
@@ -1976,7 +2018,9 @@ impl Renderer {
             let s = self.window.inner_size();
             (s.width.max(1), s.height.max(1))
         };
+        let transform_started = Instant::now();
         let transformed = apply_output_config(base, cfg, win_w, win_h);
+        self.phases.transform = transform_started.elapsed();
         let frame = transformed.as_ref().unwrap_or(base);
         let presented = self.render(frame);
         self.telemetry.record(now, presented);
@@ -3363,24 +3407,24 @@ impl ApplicationHandler for App {
                     .stall_reporter
                     .observe(Instant::now(), waited.max(held))
                 {
-                    let (label, acquire) = match role {
+                    let (label, phases) = match role {
                         Some(WindowRole::Main) => (
                             "main",
                             self.main
                                 .as_ref()
-                                .map_or(Duration::ZERO, |r| r.last_acquire),
+                                .map_or_else(RenderPhases::default, |r| r.phases),
                         ),
                         Some(WindowRole::Stage) => (
                             "stage",
                             self.stage
                                 .as_ref()
-                                .map_or(Duration::ZERO, |r| r.last_acquire),
+                                .map_or_else(RenderPhases::default, |r| r.phases),
                         ),
-                        None => ("closed", Duration::ZERO),
+                        None => ("closed", RenderPhases::default()),
                     };
                     eprintln!(
                         "{}",
-                        describe_redraw_stall(label, waited, held, acquire, suppressed)
+                        describe_redraw_stall(label, waited, held, phases, suppressed)
                     );
                 }
             }
@@ -4977,22 +5021,40 @@ mod tests {
     }
 
     /// The line is what gets pasted back from a user's terminal, so it has to carry every figure
-    /// that tells the two causes apart: a long WAIT means another thread (a slow LAN command) held
-    /// the lock; a long HOLD with a long ACQUIRE means the GPU/compositor blocked the present.
+    /// that tells the causes apart: a long WAIT means another thread (a slow LAN command) held the
+    /// lock; a long HOLD is then attributed to ONE phase of the present, or to `unaccounted` when
+    /// none of the timed phases explains it (which means the time is somewhere this did not look).
+    ///
+    /// Every phase gets a DISTINCT value so a swapped or dropped figure cannot pass: the first
+    /// field-report of this line had acquire at ~0 ms for two of its three longest stalls, which is
+    /// exactly the evidence that a single `acquire` figure was not enough to name the blocker.
     #[test]
     fn the_stall_line_carries_every_figure_needed_to_tell_the_causes_apart() {
+        let phases = super::RenderPhases {
+            transform: Duration::from_millis(11),
+            upload: Duration::from_millis(22),
+            acquire: Duration::from_millis(33),
+            submit: Duration::from_millis(44),
+            present: Duration::from_millis(55),
+        };
         let line = super::describe_redraw_stall(
             "main",
             Duration::from_millis(7),
-            Duration::from_millis(1843),
-            Duration::from_millis(1840),
+            Duration::from_millis(2000),
+            phases,
             0,
         );
         for needle in [
             "main",
             "waited 7 ms",
-            "held it for 1843 ms",
-            "acquire 1840 ms",
+            "held it for 2000 ms",
+            "transform 11 ms",
+            "upload 22 ms",
+            "acquire 33 ms",
+            "submit 44 ms",
+            "present 55 ms",
+            // 2000 - (11 + 22 + 33 + 44 + 55): the part no timed phase explains.
+            "unaccounted 1835 ms",
         ] {
             assert!(
                 line.contains(needle),
@@ -5008,12 +5070,33 @@ mod tests {
             "stage",
             Duration::ZERO,
             Duration::from_millis(500),
-            Duration::from_millis(1),
+            super::RenderPhases::default(),
             59,
         );
         assert!(
             with_dropped.contains("59 similar"),
             "suppressed stalls must be named: {with_dropped}"
+        );
+    }
+
+    /// `unaccounted` is hold minus the timed phases. The phases are measured INSIDE the hold, so it
+    /// is never negative in practice — but it is computed from two separate clock reads, so it must
+    /// saturate rather than panic or wrap if they ever disagree by a tick.
+    #[test]
+    fn unaccounted_time_saturates_instead_of_underflowing() {
+        let phases = super::RenderPhases {
+            acquire: Duration::from_millis(300),
+            ..Default::default()
+        };
+        assert_eq!(
+            phases.unaccounted(Duration::from_millis(1000)),
+            Duration::from_millis(700),
+            "positive control: the unexplained part of a hold is the hold minus the timed phases"
+        );
+        assert_eq!(
+            phases.unaccounted(Duration::from_millis(100)),
+            Duration::ZERO,
+            "phases summing past the hold must saturate to zero"
         );
     }
 
