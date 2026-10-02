@@ -26,9 +26,11 @@ It also exercises, in the real browser, the behaviours CSS alone cannot prove:
     and restores focus to the toggle, `aria-expanded` tracks, the sheet covers the whole
     viewport even after the header has gone `backdrop-filter` on scroll, and the page
     scroll lock is set while open and RELEASED on every way out: Escape, close button,
-    scrim, link tap, history navigation, and the viewport growing past 768px);
+    scrim, link tap, history navigation, and the viewport growing past 768px; and the sheet's
+    document-level keydown handler is gone afterwards: a cancelable Escape dispatched on
+    <body> must come back not-defaultPrevented);
   * the footer (collapsed sections on mobile with working `aria-expanded` toggles, 2x2 on
-    tablet, 4 across on desktop);
+    tablet, 4 across on desktop, and following a LIVE resize across 768 in both directions);
   * the confirm dialog and toast on a phone (both `position: fixed`, so the scrollWidth
     check cannot see them overflow);
   * both sides of every breakpoint (767/768, 1199/1200): the layout that renders must be the
@@ -467,6 +469,15 @@ SETTLE_JS = """() => document.getAnimations({ subtree: true }).every(
   (a) => a.playState !== 'running' || (a.effect && a.effect.getComputedTiming().iterations === Infinity)
 )"""
 
+# A cancelable Escape keydown dispatched on <body> AFTER the sheet is gone. The sheet's
+# document-level handler calls preventDefault() on Escape, so if it is still attached the
+# event comes back defaultPrevented -- a leaked listener swallowing Escape for the whole page.
+ESCAPE_LEAK_JS = """() => {
+  const e = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
+  document.body.dispatchEvent(e);
+  return e.defaultPrevented;
+}"""
+
 SETTLED_JS = """() => {
   const s = document.querySelector('#mobile-nav-sheet');
   if (!s) return false;
@@ -498,8 +509,12 @@ def check_nav_sheet(context, base: str, width: int, fail, count) -> None:
             fail(f"{tag}: {what}")
 
     def released() -> bool:
-        """Scroll lock AND inert both back to their resting state."""
+        """Scroll lock AND inert back to rest, AND the sheet's document keydown listener gone."""
         st = sheet_state(page)
+        if page.evaluate(ESCAPE_LEAK_JS):
+            count()
+            fail(f"{tag}: the sheet's document keydown handler is still attached after close (it swallowed a cancelable Escape)")
+            return False
         return st["htmlOverflow"] == "" and st["bodyOverflow"] == "" and st["appInert"] is False
 
     def wait_closed() -> None:
@@ -661,6 +676,7 @@ def check_nav_sheet(context, base: str, width: int, fail, count) -> None:
         st = sheet_state(page)
         expect(st["htmlOverflow"] == "" and st["bodyOverflow"] == "", "unmounting with the sheet open left the page scroll-locked")
         expect(st["appInert"] is False, "unmounting with the sheet open left #app inert")
+        expect(not page.evaluate(ESCAPE_LEAK_JS), "unmounting with the sheet open left its document keydown handler attached")
 
     step("closed baseline", closed_baseline)
     step("open state", opened_state)
@@ -688,6 +704,41 @@ def check_footer(context, base: str, width: int, fail, count) -> None:
         count()
         if not cond:
             fail(f"{tag}: {what}")
+
+    # LIVE RESIZE: the footer reads its mode from a media-query listener. Load at one side of
+    # 768, cross to the other and back; after EACH resize the footer must be in the mode the
+    # media query now says (a footer that never re-reads it stays collapsible on a desktop
+    # window, or expanded on a phone). Waited for by state, not by a sleep.
+    def footer_follows_media_query() -> str | None:
+        probe = """() => {
+          const mobile = matchMedia('(max-width: 767.98px)').matches;
+          const f = document.querySelector('.footer');
+          const toggles = document.querySelectorAll('.footer .column-toggle').length;
+          const lefts = new Set([...document.querySelectorAll('.footer .link-column')].map((c) => Math.round(c.getBoundingClientRect().left))).size;
+          const hidden = [...document.querySelectorAll('.footer .footer-link')].filter((a) => a.getBoundingClientRect().height === 0).length;
+          const ok = mobile
+            ? f.classList.contains('is-mobile') && toggles === 4 && lefts === 1
+            : !f.classList.contains('is-mobile') && toggles === 0 && lefts >= 2 && hidden === 0;
+          return ok;
+        }"""
+        try:
+            page.wait_for_function(probe, timeout=3000)
+            return None
+        except Exception:  # noqa: BLE001
+            return "stayed in the wrong mode"
+
+    other = 1024 if page.evaluate(IS_MOBILE_JS) else 375
+    count()
+    if footer_follows_media_query():
+        fail(f"{tag}: footer is not in the mode its media query selects on load")
+    for step_width in (other, width):
+        page.set_viewport_size({"width": step_width, "height": HEIGHT})
+        count()
+        wrong = footer_follows_media_query()
+        if wrong:
+            fail(f"{tag}: after a live resize to {step_width}px the footer {wrong} (media query listener not re-read)")
+    # restore the starting state for the assertions below
+    page.wait_for_function("document.querySelectorAll('.footer .link-column').length === 4")
 
     st = page.evaluate(FOOTER_STATE_JS)
     if page.evaluate(IS_MOBILE_JS):
