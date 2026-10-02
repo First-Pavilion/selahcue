@@ -6059,8 +6059,6 @@
         color: var(--sc-text);
         font-size: 12px;
       }
-      /* Lighter purple for text/link roles on dark surfaces (AA ≥4.5:1). */
-      .pm-linkbtn { border: 0; background: transparent; color: var(--sc-primary-hover); font: inherit; cursor: pointer; padding: 0; text-decoration: underline; }
       /* Inspector rows */
       .pm-insp-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
       .pm-insp-title { font-size: 15px; font-weight: 600; color: var(--sc-text); }
@@ -6221,16 +6219,6 @@
       .pm-audio-row .pm-play { color: var(--sc-primary); }
       .pm-audio-name { flex: 1 1 auto; font-size: 13px; color: var(--sc-text); }
       .pm-audio-dur { font-size: 12px; color: var(--sc-text-secondary); }
-      .pm-media-foot {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        padding: 10px 14px;
-        border-top: 1px solid var(--sc-border);
-        font-size: 12px;
-        color: var(--sc-text-secondary);
-        flex: 0 0 auto;
-      }
       .pm-media-stats.warn { color: var(--sc-live); }
       /* PME-007: "No matching media." is an empty state — essential text per the project's own
          policy, promoted off the AA-large-only muted tier. */

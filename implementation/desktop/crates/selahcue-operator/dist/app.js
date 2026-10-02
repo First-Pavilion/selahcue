@@ -6923,7 +6923,7 @@
 
       const pmEl = (id) => document.getElementById(id);
 
-      let pmLastAct = null; // { fn, opName } of the last deck action, for the error-banner Retry
+      let pmLastAct = null; // { fn, opName } (or { retry }) of the last deck action, for the error-banner Retry
       let pmToastTimer = null; // bounded auto-dismiss timer for the action toast
       let pmFonts = null; // system font families (loaded once, shared by the Text inspector)
       let pmBusyCount = 0; // in-flight deck-command count (a COUNTER, not a flag, so overlapping
@@ -6960,6 +6960,13 @@
       // invisible); `pmSay` writes it into the modal's own status line and falls back to the banner
       // once the modal is closed.
       async function pmImportImage() {
+        // The error banner's Retry runs `pmLastAct`. An import refused after the modal was closed
+        // lands in that banner, so it must own Retry — otherwise Retry re-runs the last UNRELATED deck
+        // action (a batch Insert: the images would be inserted twice). `deck_import_images` takes no
+        // paths (it opens the native picker itself), so re-running it IS "pick again", the same as
+        // + Import; it goes through `pmImportImage` (not `pAct`) so a second attempt still reports
+        // skipped files and shows the host's specific reason instead of a generic "please retry".
+        pmLastAct = { retry: pmImportImage };
         pmSetBusy(true);
         try {
           pmDv = await invoke("deck_import_images");
@@ -12040,7 +12047,11 @@
         // of its three entry points (the others: toolbar Image, Inspector → Replace…).
         pmEl("pm-open-media").onclick = () => pmOpenMediaModal({ mode: "insert" });
         // Error banner: Retry re-runs the last rejected deck action; Dismiss hides it.
-        pmEl("pm-error-retry").onclick = () => { if (pmLastAct) pAct(pmLastAct.fn, pmLastAct.opName); };
+        pmEl("pm-error-retry").onclick = () => {
+          const act = pmLastAct;
+          if (!act) return;
+          if (act.retry) act.retry(); else pAct(act.fn, act.opName);
+        };
         pmEl("pm-error-dismiss").onclick = pmClearError;
         // Presentations Library: the deck-switcher opens it; ＋ New creates; the library controls.
         pmEl("pm-deckswitch").onclick = pmShowLibrary;

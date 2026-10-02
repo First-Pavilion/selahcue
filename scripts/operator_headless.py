@@ -1863,10 +1863,15 @@ EXPECTED_MIN_CHECKS = 2074  # measured: 2074 checks, 0 FAIL
 # carries the bar's text as its description (1); focus moves to the search field after Remove (1);
 # and when the modal is closed while a removal is in flight and the host then refuses it, the banner
 # shows the reason and Retry re-runs the REMOVAL rather than the last unrelated deck action (3,
-# including the closed-modal premise). Count: 2074 + 41 = 2115, measured via an actual clean run of
-# the merged tree, not hand-summed; any PR that edits this constant must re-measure after the other
-# lands.
-EXPECTED_MIN_CHECKS = 2115  # measured: 2115 checks, 0 FAIL
+# including the closed-modal premise). Final review round: +6 on top of those 41: the same hazard
+# for IMPORT (the library is closed while an import is in flight and the host then refuses it: the
+# banner shows the reason (1), and Retry re-runs the import, never the earlier batch Insert (1), with
+# its closed-modal premise (1)), and three pins for behaviours whose mutants had survived: the alert
+# bar is un-hidden before it is filled (1), a superseded status-line set does not resurrect cleared
+# text (1), and the library never opens over another modal (1). Count: 2074 + 41 + 6 = 2121, measured
+# via an actual clean run of the merged tree, not hand-summed; any PR that edits this constant must
+# re-measure after the other lands.
+EXPECTED_MIN_CHECKS = 2121  # measured: 2121 checks, 0 FAIL
 
 
 def find_chrome():
@@ -3607,6 +3612,14 @@ STUB = r"""
     // host's `import_report` (skip reasons / `saved:false`), and — like the real host — the report
     // rides on the returned view, never on the persisted DeckView `D`.
     if (cmd === "deck_import_images") {
+      // Harness-only: keep the import in flight until `window.__importRelease()` (which then refuses
+      // with `__importFail` if set, else succeeds): lets a check close the modal mid-flight.
+      if (window.__importHold) return new Promise(function(res, rej){
+        window.__importRelease = function(){
+          window.__importHold = false;
+          if (window.__importFail) rej(window.__importFail); else res(dClone());
+        };
+      });
       // Harness-only re-render: hand back the current `D` unchanged (no report), so a check that
       // patched an asset through `window.__setAsset` can have the surface render it.
       if (window.__importRefresh) return Promise.resolve(dClone());
@@ -6839,6 +6852,11 @@ DRIVER = r"""
       ok(!!dlg, "PM: delete-slide opens a role=alertdialog confirm");
       ok(dlg.getAttribute("aria-modal") === "true" && dlg.hasAttribute("aria-labelledby"), "PM: the confirm is aria-modal + labelled (C-009)");
       ok(document.activeElement && document.activeElement.textContent === "Cancel", "PM: the confirm focuses Cancel (safe default for a destructive action)");
+      // The media library never opens over another modal (spec §2): the confirm's `.pm-confirm-back`
+      // sentinel is what the open guard looks for, and stacking would double-trap focus and Esc.
+      el("pm-open-media").click();
+      ok(!el("pm-media-back") && document.querySelectorAll(".pm-confirm-back").length === 1,
+         "PM modal: the library does not open while another modal (the delete-slide confirm) is open — exactly one modal on screen");
       var rmSlideBefore = window.__calls.filter(function(c){ return c.cmd === "deck_remove_slide"; }).length;
       document.dispatchEvent(new KeyboardEvent("keydown", {key:"Escape", bubbles:true}));
       ok(!document.querySelector('.pm-confirm[role="alertdialog"]'), "PM: Esc cancels the confirm (C-009 modal semantics)");
@@ -6894,7 +6912,16 @@ DRIVER = r"""
       };
       var removeCalls = function(id){ return window.__calls.filter(function(c){ return c.cmd === "deck_remove_media" && c.args.id === id; }).length; };
       // Control first: an asset NO other deck shows keeps today's wording — it deletes the copy.
+      // The bar is a role="alert" region, so it must be on the a11y tree BEFORE its text changes:
+      // the first thing that happens to it is the `hidden` attribute coming off, then it is filled.
+      var barRecs = [];
+      var barObs = new MutationObserver(function(rs){ rs.forEach(function(r){ barRecs.push(r.type === "attributes" ? "attr:" + r.attributeName : "child"); }); });
+      barObs.observe(el("pm-media-confirm"), {attributes:true, attributeFilter:["hidden"], childList:true});
       await removeBar(/sunrise/);
+      barObs.takeRecords().forEach(function(r){ barRecs.push(r.type === "attributes" ? "attr:" + r.attributeName : "child"); });
+      barObs.disconnect();
+      ok(barRecs[0] === "attr:hidden" && barRecs.indexOf("child") > 0,
+         "PM remove: the alert bar is un-hidden BEFORE it is filled, so the announcement is not lost (mutation order: " + barRecs.join(",") + ")");
       ok(/deletes SelahCue’s copy/.test(el("pm-media-confirm").textContent) && !el("pm-media-confirm").querySelector(".pm-media-confirm-warn"),
          "PM remove: an asset no other deck shows still says it deletes SelahCue's copy, with no keep notice");
       el("pm-media-keep").click();
@@ -6945,6 +6972,17 @@ DRIVER = r"""
       noteObs.disconnect();
       ok(noteSeen.indexOf("") >= 0 && /2 other presentations still use it/.test(el("pm-media-note").textContent),
          "PM remove: an identical notice repeated passes through an EMPTY status line first (so a live region announces it again), saw " + JSON.stringify(noteSeen.map(function(t){ return t.slice(0, 12); })));
+      // A notice that is still waiting for its tick must not come back after a NEWER message cleared the
+      // line (a stale set resurrecting text the operator already moved past): confirm a removal, then at
+      // once run an import that reports nothing (which clears the line), and check the line stays empty.
+      window.__removeReport = {removed:true, file_deleted:false, kept_for_decks:2, kept_for_deleted:0};
+      await removeBar(/sunrise/);
+      el("pm-media-remove").click();
+      window.__importRefresh = true; el("pm-import").click();
+      await sleep(200);
+      window.__importRefresh = false;
+      ok(el("pm-media-note").textContent === "",
+         "PM remove: a notice superseded by a newer (empty) message does not reappear when its tick fires (line reads '" + el("pm-media-note").textContent + "')");
       // A refusal from the host (the registry could not be saved: nothing was removed) is shown as
       // the host's own final text — in the modal, where it can be seen — not a generic "please retry".
       window.__removeReport = null;
@@ -6996,6 +7034,42 @@ DRIVER = r"""
       var retried = window.__calls[callsBeforeRetry];
       ok(retried.cmd === "deck_remove_media" && retried.args.id === 2,
          "PM remove: Retry re-runs the REMOVAL, not the earlier unrelated deck action that came before it (re-ran " + retried.cmd + ")");
+
+      // The same hazard for IMPORT: the modal is closed while an import is still in flight and the
+      // host then refuses it, so the reason falls back to the error banner — whose Retry runs
+      // `pmLastAct`. If the import never set it, Retry re-runs the last unrelated deck action, here a
+      // batch Insert, and the images are inserted a second time. Retry must re-run the IMPORT (the
+      // command takes no paths: it opens the native picker itself, so re-running it IS "pick again",
+      // exactly what + Import does) and must never call deck_add_image_elements.
+      var addCalls = function(){ return window.__calls.filter(function(c){ return c.cmd === "deck_add_image_elements"; }).length; };
+      var importCalls = function(){ return window.__calls.filter(function(c){ return c.cmd === "deck_import_images"; }).length; };
+      el("pm-open-media").click();
+      await waitFor(function(){ return !!el("pm-media-back") && !!document.querySelector("#pm-media-grid .pm-asset-thumb[aria-pressed]"); });
+      document.querySelector("#pm-media-grid .pm-asset-thumb[aria-pressed]").click();
+      var addBefore = addCalls();
+      el("pm-media-insert").click();
+      await waitFor(function(){ return !el("pm-media-back") && addCalls() === addBefore + 1; });
+      el("pm-open-media").click();
+      await waitFor(function(){ return !!el("pm-media-back"); });
+      var importBefore = importCalls();
+      window.__importHold = true;
+      window.__importFail = "SelahCue can’t find its media folder, so images can’t be imported.";
+      el("pm-import").click();
+      await waitFor(function(){ return typeof window.__importRelease === "function" && importCalls() === importBefore + 1; });
+      document.dispatchEvent(new KeyboardEvent("keydown", {key:"Escape", bubbles:true}));
+      ok(!el("pm-media-back"), "PM import: the library closes while the import is still in flight");
+      window.__importRelease();
+      await waitFor(function(){ return !el("pm-error").hidden; });
+      ok(/media folder/.test(el("pm-error-msg").textContent),
+         "PM import: with the modal closed the host's refusal of the import falls back to the visible error banner: " + el("pm-error-msg").textContent);
+      window.__importFail = null; window.__importRefresh = true;
+      var addAtRetry = addCalls(), callsAtRetry = window.__calls.length;
+      el("pm-error-retry").click();
+      await waitFor(function(){ return window.__calls.length > callsAtRetry; });
+      window.__importRefresh = false;
+      var afterRetry = window.__calls.slice(callsAtRetry);
+      ok(afterRetry[0].cmd === "deck_import_images" && addCalls() === addAtRetry,
+         "PM import: Retry after a refused import re-runs the IMPORT (a fresh pick) and never re-runs the earlier batch Insert (ran " + afterRetry.map(function(c){ return c.cmd; }).join(",") + ")");
 
       // --- C-004 System states: loading (aria-busy) + error banner (role=alert) + Retry ---
       // The busy state must actually ENGAGE while a command is in flight, then clear — not merely
