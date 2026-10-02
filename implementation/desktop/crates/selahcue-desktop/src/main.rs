@@ -1597,6 +1597,84 @@ impl RenderPhases {
     }
 }
 
+/// Why a present attempt put no frame on screen: every non-success outcome of
+/// `surface.get_current_texture()`. Each one makes `Renderer::render` return `false`, which
+/// [`OutputTelemetry::record`] counts as a dropped frame and which turns the monitor DEGRADED in
+/// the console, with no hint of WHICH outcome it was. The first field report was a DEGRADED
+/// warning "immediately at launch" with a single dropped frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SkipReason {
+    /// The surface configuration is stale (resize, scale-factor or display change): reconfigured.
+    Outdated,
+    /// The swapchain was lost (sleep, display re-negotiation): reconfigured.
+    Lost,
+    /// No drawable could be acquired.
+    Timeout,
+    /// The window is not visible (minimised, behind another window, on an inactive Space). wgpu 30
+    /// reports this outcome on macOS; wgpu 22 did not.
+    Occluded,
+    /// wgpu reported a validation error for the acquire.
+    Validation,
+}
+
+impl SkipReason {
+    /// Every reason, so the tests can prove each has its own label and counter slot.
+    #[cfg(test)]
+    const ALL: [SkipReason; 5] = [
+        SkipReason::Outdated,
+        SkipReason::Lost,
+        SkipReason::Timeout,
+        SkipReason::Occluded,
+        SkipReason::Validation,
+    ];
+
+    fn label(self) -> &'static str {
+        match self {
+            SkipReason::Outdated => "Outdated",
+            SkipReason::Lost => "Lost",
+            SkipReason::Timeout => "Timeout",
+            SkipReason::Occluded => "Occluded",
+            SkipReason::Validation => "Validation",
+        }
+    }
+}
+
+/// How many times each [`SkipReason`] has skipped a frame. Fixed-size, so nothing can grow: an
+/// occluded window skips every frame at 60 Hz, which is why [`SkipCounts::record`] only asks for a
+/// log line on the 1st, 10th, 100th, ... occurrence of each reason.
+#[derive(Debug, Default)]
+struct SkipCounts([u64; 5]);
+
+impl SkipCounts {
+    /// Count one skip. Returns `Some(count)` when it should be logged now: the first occurrence of
+    /// this reason and every power of ten after it.
+    fn record(&mut self, reason: SkipReason) -> Option<u64> {
+        let slot = &mut self.0[reason as usize];
+        *slot = slot.saturating_add(1);
+        let n = *slot;
+        let mut power = 1u64;
+        loop {
+            if n == power {
+                return Some(n);
+            }
+            match power.checked_mul(10) {
+                Some(next) if next <= n => power = next,
+                _ => return None,
+            }
+        }
+    }
+}
+
+/// The one line a skipped frame writes to stderr: it names the window and the outcome, and says
+/// that the skip is what the console reports as a dropped frame.
+fn describe_skip(window: &str, reason: SkipReason, count: u64) -> String {
+    format!(
+        "SelahCue: {window}: surface acquire returned {} ({count} so far). The frame was skipped; \
+         each skipped frame is what the console reports as a dropped frame and a DEGRADED monitor.",
+        reason.label(),
+    )
+}
+
 /// The one line a stall writes to stderr. It carries every figure needed to tell the causes apart
 /// (see [`StallReporter`]), because it is what gets pasted back from a user's terminal.
 fn describe_redraw_stall(
@@ -1758,6 +1836,8 @@ struct Renderer {
     /// acquire) cannot report a stale figure for a phase it never reached. Read only by the stall
     /// report in `RedrawRequested` (see [`StallReporter`]).
     phases: RenderPhases,
+    /// Why frames have been skipped, per outcome (see [`SkipReason`]).
+    skips: SkipCounts,
 }
 
 impl Renderer {
@@ -1868,6 +1948,7 @@ impl Renderer {
             frame_texture: None,
             telemetry: OutputTelemetry::new(),
             phases: RenderPhases::default(),
+            skips: SkipCounts::default(),
         })
     }
 
@@ -1954,13 +2035,28 @@ impl Renderer {
         let surface_frame = match acquired {
             wgpu::CurrentSurfaceTexture::Success(frame)
             | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => frame,
-            wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
+            wgpu::CurrentSurfaceTexture::Outdated => {
                 self.surface.configure(&self.device, &self.config);
+                self.note_skip(SkipReason::Outdated);
                 return false;
             }
-            wgpu::CurrentSurfaceTexture::Timeout
-            | wgpu::CurrentSurfaceTexture::Occluded
-            | wgpu::CurrentSurfaceTexture::Validation => return false,
+            wgpu::CurrentSurfaceTexture::Lost => {
+                self.surface.configure(&self.device, &self.config);
+                self.note_skip(SkipReason::Lost);
+                return false;
+            }
+            wgpu::CurrentSurfaceTexture::Timeout => {
+                self.note_skip(SkipReason::Timeout);
+                return false;
+            }
+            wgpu::CurrentSurfaceTexture::Occluded => {
+                self.note_skip(SkipReason::Occluded);
+                return false;
+            }
+            wgpu::CurrentSurfaceTexture::Validation => {
+                self.note_skip(SkipReason::Validation);
+                return false;
+            }
         };
         let submit_started = Instant::now();
         let target = surface_frame
@@ -1996,6 +2092,14 @@ impl Renderer {
         self.queue.present(surface_frame);
         self.phases.present = present_started.elapsed();
         true
+    }
+
+    /// Count a skipped frame by outcome and, on its first and every power-of-ten occurrence, say
+    /// why on stderr (see [`SkipCounts`]).
+    fn note_skip(&mut self, reason: SkipReason) {
+        if let Some(count) = self.skips.record(reason) {
+            eprintln!("{}", describe_skip(&self.window.title(), reason, count));
+        }
     }
 
     /// Present `base` under this output's per-screen `cfg` (Screens page): honor the
@@ -3194,7 +3298,13 @@ impl App {
     /// This is the single code path shared by the Screens toggle and the window's own close
     /// button, so the two can never drift. The process stays alive: it still owns the other
     /// window, the LAN server, and the presentation state paired controllers depend on.
-    fn close_screen(&mut self, role: WindowRole) {
+    fn close_screen(&mut self, role: WindowRole, reason: &str) {
+        // Said on stderr because a window that disappears with no explanation is indistinguishable
+        // from the process dying: `reason` names which of the two callers asked for it.
+        eprintln!(
+            "SelahCue: closing the {} window ({reason}); the process stays up.",
+            role.title()
+        );
         match role {
             WindowRole::Main => self.main = None,
             WindowRole::Stage => self.stage = None,
@@ -3230,7 +3340,9 @@ impl App {
         for action in actions {
             match action {
                 WindowAction::Open(role) => self.open_screen(event_loop, role),
-                WindowAction::Close(role) => self.close_screen(role),
+                WindowAction::Close(role) => {
+                    self.close_screen(role, "the screen is switched off in the registry")
+                }
             }
         }
     }
@@ -3282,8 +3394,15 @@ impl ApplicationHandler for App {
             WindowEvent::CloseRequested => {
                 if let Some(role) = self.window_role_of(id) {
                     match close_button_outcome(self.main.is_some(), self.stage.is_some(), role) {
-                        CloseOutcome::CloseScreen => self.close_screen(role),
-                        CloseOutcome::Quit => event_loop.exit(),
+                        CloseOutcome::CloseScreen => {
+                            self.close_screen(role, "the window was asked to close")
+                        }
+                        CloseOutcome::Quit => {
+                            eprintln!(
+                                "SelahCue: the last output window was asked to close; exiting."
+                            );
+                            event_loop.exit()
+                        }
                     }
                 }
             }
@@ -3456,6 +3575,7 @@ impl ApplicationHandler for App {
                     self.modifiers.control_key(),
                     cfg!(target_os = "macos"),
                 ) {
+                    eprintln!("SelahCue: the quit chord was pressed; exiting.");
                     event_loop.exit();
                     return;
                 }
@@ -3513,6 +3633,16 @@ impl ApplicationHandler for App {
             }
             _ => {}
         }
+    }
+
+    /// Reached on EVERY clean exit of the event loop, whichever path asked for it. A process that
+    /// dies without printing this line did not exit cleanly: it panicked (the panic message is on
+    /// stderr) or was killed from outside.
+    fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
+        eprintln!(
+            "SelahCue: the output event loop exited cleanly after {} s.",
+            self.launched_at.elapsed().as_secs()
+        );
     }
 
     fn new_events(&mut self, event_loop: &ActiveEventLoop, cause: StartCause) {
@@ -5077,6 +5207,67 @@ mod tests {
             with_dropped.contains("59 similar"),
             "suppressed stalls must be named: {with_dropped}"
         );
+    }
+
+    /// A skipped frame counts as "dropped" and is what turns a monitor DEGRADED in the console, so
+    /// the operator needs to know WHICH acquire outcome skipped it. But an occluded window skips
+    /// every frame at 60 Hz, so the line is written on the 1st, 10th, 100th, ... occurrence of each
+    /// outcome, never per frame: a handful of lines an hour, with no clock and nothing that grows.
+    #[test]
+    fn a_skip_is_logged_on_its_first_and_every_power_of_ten_occurrence_per_reason() {
+        use super::SkipReason::{Occluded, Timeout};
+        let mut c = super::SkipCounts::default();
+        assert_eq!(
+            c.record(Occluded),
+            Some(1),
+            "positive control: the first skip must be logged, or every `None` below proves nothing"
+        );
+        for n in 2..=9 {
+            assert_eq!(
+                c.record(Occluded),
+                None,
+                "occurrence {n} must not be logged"
+            );
+        }
+        assert_eq!(c.record(Occluded), Some(10), "the 10th must be logged");
+        // Each outcome has its own counter: a first Timeout is news even though Occluded is at 10.
+        assert_eq!(c.record(Timeout), Some(1));
+        for n in 11..=99 {
+            assert_eq!(
+                c.record(Occluded),
+                None,
+                "occurrence {n} must not be logged"
+            );
+        }
+        assert_eq!(c.record(Occluded), Some(100), "the 100th must be logged");
+    }
+
+    /// Two outcomes sharing a label would make the log line ambiguous, and two sharing an index
+    /// would share a counter and silently swallow each other's first occurrence.
+    #[test]
+    fn every_skip_reason_has_its_own_label_and_its_own_counter() {
+        let labels: std::collections::HashSet<_> =
+            super::SkipReason::ALL.iter().map(|r| r.label()).collect();
+        let slots: std::collections::HashSet<_> =
+            super::SkipReason::ALL.iter().map(|r| *r as usize).collect();
+        assert_eq!(labels.len(), super::SkipReason::ALL.len());
+        assert_eq!(slots.len(), super::SkipReason::ALL.len());
+        assert!(super::SkipReason::ALL
+            .iter()
+            .all(|r| (*r as usize) < super::SkipCounts::default().0.len()));
+    }
+
+    /// The skip line is what explains a DEGRADED monitor, so it must name the window, the outcome
+    /// and the running count, and say that the skip is what the console reports as dropped.
+    #[test]
+    fn the_skip_line_names_the_window_the_outcome_and_the_count() {
+        let line = super::describe_skip("SelahCue Output", super::SkipReason::Occluded, 100);
+        for needle in ["SelahCue Output", "Occluded", "100", "dropped"] {
+            assert!(
+                line.contains(needle),
+                "skip line is missing `{needle}`: {line}"
+            );
+        }
     }
 
     /// `unaccounted` is hold minus the timed phases. The phases are measured INSIDE the hold, so it
