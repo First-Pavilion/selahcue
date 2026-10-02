@@ -689,26 +689,25 @@ fn narrow_to_first_verse(t: selahcue_scripture::Translation, reference: &str) ->
 /// A whole chapter becomes its explicit `1..=last` range and a range that runs past the end of
 /// the chapter ("Psalms 1:2-10" when Psalm 1 has six verses) is cut back to the real last verse.
 /// The core counts a link's slides from its reference alone (it has no corpus), so a link made
-/// through this fit counts exactly: no blank trailing slides, and a chapter is paged verse by
-/// verse instead of being one slide that shows only its first verse.
+/// through this fit has no blank trailing slides, and a chapter is paged verse by verse instead of
+/// being one slide that shows only its first verse. The count is one too high for each verse the
+/// translation omits INSIDE the range (WEB `Acts 8` is 40 slides for 39 verses): the fit reads the
+/// chapter's last verse NUMBER, not which numbers exist, and the extra slide repeats the last real
+/// verse (pinned by `a_plan_link_over_a_translation_verse_gap_never_goes_blank_or_panics`).
 fn fit_reference_to_chapter(
     t: selahcue_scripture::Translation,
     parsed: &selahcue_core::scripture::Reference,
 ) -> Option<selahcue_core::scripture::Reference> {
     // A single verse can never run past the end of its chapter, so it never needs fitting — and
-    // deciding that must not touch (and so must not decode) a translation: resolving a plan's links
-    // on the load / command path must not decompress a bible (86ak84fbd).
+    // deciding that touches nothing at all (not even the verse-run table).
     if matches!(parsed.verses, Some(r) if r.start == r.end) {
         return None;
     }
-    // The chapter's verse numbers, borrowed from the corpus (no text cloned just to read two numbers).
-    let whole_chapter = selahcue_core::scripture::Reference {
-        verses: None,
-        ..parsed.clone()
-    };
-    let verses = selahcue_scripture::verses_in(t, &whole_chapter);
-    let first = verses.first()?.verse;
-    let last = verses.last()?.verse;
+    // The chapter's first and last verse NUMBERS, from the compile-time verse-run table: resolving a
+    // plan's links on the load / command path must not decompress a bible (86ak84fbd), and a range
+    // or a whole chapter used to — `verses_in` decoded the whole translation at boot and on every
+    // link edit just to read two numbers.
+    let (first, last) = selahcue_scripture::chapter_verse_bounds_in(t, parsed)?;
     let fitted = match parsed.verses {
         None => selahcue_core::scripture::VerseRange {
             start: first,
