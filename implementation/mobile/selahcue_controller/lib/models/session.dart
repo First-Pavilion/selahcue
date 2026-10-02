@@ -167,6 +167,12 @@ class SelahSession implements ControllerSession {
     }
   }
 
+  /// What an unreadable handshake reply surfaces as. The words match what
+  /// [StreamQueue.nextJson] says for a frame that is not even a JSON object, so a
+  /// host that breaks the protocol reads the same however it breaks it.
+  static const SessionException _malformedReply =
+      SessionException('malformed frame from the host');
+
   /// Redeem a pairing invite. The device parks until the operator approves it (assigning a role)
   /// from the Remote Control console; on approval the connection is already authenticated and the
   /// issued credentials are returned.
@@ -192,6 +198,9 @@ class SelahSession implements ControllerSession {
             );
           case PairRejected(:final reason):
             throw SessionException('pairing rejected: $reason');
+          case PairMalformed():
+            // Not the operator's answer and not a save failure: say what it is.
+            throw _malformedReply;
         }
       }
     } catch (e) {
@@ -202,6 +211,10 @@ class SelahSession implements ControllerSession {
   }
 
   /// Reconnect with previously issued credentials.
+  ///
+  /// Throws [SessionRevoked] ONLY for an explicit `"auth":"rejected"`. Any other
+  /// reply the client cannot read is a plain [SessionException] (17tnw2b1f1v) —
+  /// callers retry that and keep the credentials.
   static Future<SelahSession> connect({
     required String host,
     required int port,
@@ -220,6 +233,10 @@ class SelahSession implements ControllerSession {
           // Credentials no longer valid (revoked/unpaired) — distinct from a
           // transient network failure so the controller stops reconnecting.
           throw SessionRevoked('authentication rejected: $reason');
+        case AuthMalformed():
+          // NOT a revocation: only an explicit "rejected" is. An unreadable
+          // reply is transient, so it is retried and the credentials are kept.
+          throw _malformedReply;
       }
     } catch (e) {
       // Never leak the socket on a failed handshake (timeout/reject/malformed).
