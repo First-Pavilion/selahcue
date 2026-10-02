@@ -79,6 +79,7 @@ function tokenize(lines: string[], source: string, lineOffset = 0): Token[] {
     if (h) {
       const level = (h[1] ?? '').length
       if (level > 3) fail(i, `heading level ${level} is not supported (use ## or ###)`)
+      if (/(^|\s)#+\s*$/.test(h[3] ?? '')) fail(i, `heading "${h[3]}" ends with a closing "#" sequence (a closed ATX heading), which is not supported; remove it`)
       tokens.push({ t: 'h', level, text: h[3] ?? '', line: i + 1 + lineOffset })
       i++
       continue
@@ -174,18 +175,40 @@ const PLACEHOLDER_ONLY = /^\{\{[A-Z][A-Z0-9_]*\}\}$/
 const PLACEHOLDER_AT = /^\{\{([A-Z][A-Z0-9_]*)\}\}/
 
 /** Phrases like "section 3.8" / "Sections 9.1, 9.5 and 10", for cross-reference linking. */
-const REF_RUN = /\b([Ss]ections?) (\d+(?:\.\d+)?(?:(?:, | and |, and | or | to |–|-)\d+(?:\.\d+)?)*)/g
+const REF_RUN = /\b([Ss]ections?) (\d+(?:\.\d+)*(?:(?:, | and |, and | or | to |–|-)\d+(?:\.\d+)*)*)/g
 
 /**
  * A reference that names ANOTHER document ("section 1.1 of the Privacy Policy") must not be
- * linked to this document's 1.1. Both the "of the X" suffix and an "X, section N" prefix are
- * refused outright; the author rewords (say "clause" or name the document without the word
- * "section"). Loud beats a plausible-looking wrong link in a legal text.
+ * linked to this document's 1.1. The guard looks at the words on both sides of the run:
+ *
+ *   after:   "of / in / from / under  the | our | your | its | that | those | a | another
+ *             + up to three words + a document noun" ("of the separate Privacy Policy",
+ *             "of the full Terms", "of the mobile app's policy", "of our Data Processing
+ *             Addendum")
+ *   before:  a document noun, then optionally "see / in / at / under ...", then the word
+ *             ("The Privacy Policy (section 1.1)", "Our Privacy Policy, see section 1.1")
+ *
+ * References to THIS document are not caught: "of these Terms" / "of this policy" are not in
+ * the article list, and "this/these <noun>, section N" is exempted below. Anything else
+ * that is refused is refused loudly with its line, and the author rewords. Loud beats a
+ * plausible-looking wrong link in a legal text.
  */
-const OTHER_DOC_AFTER =
-  /^\s*(?:,\s*)?(?:of|in)\s+(?:the|our|your|its|that|those)\s+(?:[A-Z][\w-]*\s+){0,2}(?:Privacy Policy|Terms|Controller|Agreement|Policy|Notice|Plan Terms|Documentation|Licen[cs]e)/
-const OTHER_DOC_BEFORE =
-  /(?:Privacy Policy|Terms of (?:Service|Use)|Controller[A-Za-z ]{0,30}|Plan Terms|Documentation)(?:,|:|'s|’s)?\s+$/
+const DOC_NOUN =
+  "(?:privacy policy|policy|terms(?: of (?:service|use))?|controller(?:[ '’\\w-]{0,30})|plan terms|documentation|agreement|notice|addendum|data processing addendum|licen[cs]e|contract|schedule|statement)"
+const OTHER_DOC_AFTER = new RegExp(
+  `^\\s*(?:,\\s*)?(?:of|in|from|under)\\s+(?:the|our|your|its|that|those|a|another)\\s+(?:[\\w'’-]+\\s+){0,3}?${DOC_NOUN}\\b`,
+  'i',
+)
+const LEAD_WORDS = "(?:(?:see|in|at|under|per|from|and|also|refer to|refers to|read)[\\s(]+)*"
+const OTHER_DOC_BEFORE = new RegExp(`${DOC_NOUN}(?:,|:|'s|’s)?[\\s(]*${LEAD_WORDS}$`, 'i')
+const SAME_DOC_BEFORE = new RegExp(`(?:this|these|the present)\\s+${DOC_NOUN}(?:,|:)?[\\s(]*${LEAD_WORDS}$`, 'i')
+
+/** True when the words around a "section N" run suggest it names another document. */
+export function namesAnotherDocument(before: string, after: string): boolean {
+  const b = before.slice(-120)
+  if (OTHER_DOC_AFTER.test(after.slice(0, 160))) return true
+  return OTHER_DOC_BEFORE.test(b) && !SAME_DOC_BEFORE.test(b)
+}
 
 export function parseInline(src: string, source: string, line: number): Inline[] {
   const fail = (msg: string): never => {
@@ -326,7 +349,7 @@ function linkRefs(
       const start = m.index ?? 0
       const listStart = start + word.length + 1
       const runEnd = start + m[0].length
-      if (OTHER_DOC_BEFORE.test((before + text.slice(0, start)).slice(-90)) || OTHER_DOC_AFTER.test((text.slice(runEnd) + after).slice(0, 120))) {
+      if (namesAnotherDocument(before + text.slice(0, start), text.slice(runEnd) + after)) {
         throw new LegalParseError(
           source,
           line,
@@ -335,10 +358,10 @@ function linkRefs(
       }
       if (listStart > last) out.push({ kind: 'text', text: text.slice(last, listStart) })
       let pos = 0
-      for (const num of list.matchAll(/\d+(?:\.\d+)?/g)) {
+      for (const num of list.matchAll(/\d+(?:\.\d+)*/g)) {
         const at = num.index ?? 0
         if (at > pos) out.push({ kind: 'text', text: list.slice(pos, at) })
-        const anchor = `s-${num[0].replace('.', '-')}`
+        const anchor = `s-${num[0].replace(/\./g, '-')}`
         if (!anchors.has(anchor)) {
           throw new LegalParseError(source, line, `"${word} ${num[0]}" refers to a section or clause that does not exist`)
         }

@@ -23,6 +23,7 @@ import { fileURLToPath } from 'node:url'
 import {
   LegalParseError,
   assertNoStrayBraces,
+  namesAnotherDocument,
   parseInline,
   parseLegalMarkdown,
   parseVersionLine,
@@ -593,6 +594,17 @@ describe('the parser fails loudly on anything it does not support', () => {
     ['a reference to another document ("in our Terms of Service")', md('1.1 See section 1.1 in our Terms of Service.'), /ambiguous cross-reference/],
     ['a reference to another document ("Privacy Policy, section")', md('1.1 See the Privacy Policy, section 1.1.'), /ambiguous cross-reference/],
     ['a reference to another document (document name in bold)', md('1.1 See the **Privacy Policy** section 1.1.'), /ambiguous cross-reference/],
+    ['a reference to a three-part number ("section 1.1.2")', md('1.1 See section 1.1.2 for details.'), /does not exist/],
+    ['a reference to a three-part number even when its first two parts exist', md('1.1 A.\n\n1.2 See section 1.1.2.'), /does not exist/],
+    ['a closed ATX heading (trailing ###)', '# T\n\n## 1. One ##\n\nBody\n', /closing "#" sequence/],
+    ['a closed ATX subsection heading', '# T\n\n## 1. One\n\n### 1.4 Title ###\n\nBody\n', /closing "#" sequence/],
+    ['another document ("of the separate Privacy Policy")', md('1.1 See section 1.1 of the separate Privacy Policy.'), /ambiguous cross-reference/],
+    ['another document ("of the full Terms")', md('1.1 See section 1.1 of the full Terms.'), /ambiguous cross-reference/],
+    ['another document ("The Privacy Policy (section 1.1)")', md('1.1 The Privacy Policy (section 1.1) applies.'), /ambiguous cross-reference/],
+    ['another document ("Our Privacy Policy, see section 1.1")', md('1.1 Our Privacy Policy, see section 1.1.'), /ambiguous cross-reference/],
+    ["another document (\"of the mobile app's policy\")", md("1.1 See section 1.1 of the mobile app's policy."), /ambiguous cross-reference/],
+    ['another document ("of our Data Processing Addendum")', md('1.1 See section 1.1 of our Data Processing Addendum.'), /ambiguous cross-reference/],
+    ['another document ("in the Controller Terms of Use")', md('1.1 See section 1.1 in the Controller Terms of Use.'), /ambiguous cross-reference/],
     ['a placeholder in a heading', '# T\n\n## 1. About {{X}}\n\nBody\n', /plain text/],
     ['markup in a heading', '# T\n\n## 1. About `x`\n\nBody\n', /plain text/],
   ]
@@ -618,6 +630,44 @@ describe('cross-reference edge cases that must be handled, not misread', () => {
     const p = doc.parts[0]?.sections[0]?.blocks[0]
     assert.ok(p && p.kind === 'paragraph')
     assert.deepEqual(p.inline.filter((n) => n.kind === 'ref').map((n) => (n.kind === 'ref' ? n.anchor : '')), ['s-1-1'])
+  })
+
+  test('same-document references stay linked: "of these Terms", "this policy (section N)", "these Terms, see section N"', () => {
+    const phrases = [
+      '1.1 See section 1.1 of these Terms.',
+      '1.1 This policy (section 1.1) explains it.',
+      '1.1 These Terms, see section 1.1.',
+      '1.1 Under this Privacy Policy, see section 1.1.',
+      '1.1 As section 1.1 says, and see section 1.1 above.',
+      '1.1 We keep it for the time in section 1.1 and in the customer portal.',
+    ]
+    for (const body of phrases) {
+      const doc = parseLegalMarkdown(`# T\n\nVersion 1.0 (final, 2026-01-02).\n\n## 1. One\n\n${body}\n`, 't.md')
+      const p = doc.parts[0]?.sections[0]?.blocks[0]
+      assert.ok(p && p.kind === 'paragraph')
+      assert.ok(p.inline.some((n) => n.kind === 'ref'), `not linked: ${body}`)
+    }
+  })
+
+  test('"section 1.1.2" is refused even when "1.1" AND a section "2" both exist (it must not become two links)', () => {
+    const src = '# T\n\nVersion 1.0 (final, 2026-01-02).\n\n## 1. One\n\n1.1 A clause.\n\n1.2 See section 1.1.2.\n\n## 2. Two\n\nBody.\n'
+    assert.throws(() => parseLegalMarkdown(src, 't.md'), /"section 1\.1\.2" refers to a section or clause that does not exist/)
+  })
+
+  test('the refusal names the line it is on', () => {
+    assert.throws(
+      () => parseLegalMarkdown('# T\n\n## 1. One\n\n1.1 Fine.\n\n1.2 See section 1.1 of the Privacy Policy.\n', 't.md'),
+      /^LegalParseError: t\.md:7: ambiguous cross-reference/,
+    )
+  })
+
+  test('namesAnotherDocument: both sides of the run', () => {
+    assert.equal(namesAnotherDocument('See ', ' of the Privacy Policy.'), true)
+    assert.equal(namesAnotherDocument('The Privacy Policy (', ').'), true)
+    assert.equal(namesAnotherDocument('Our Privacy Policy, see ', '.'), true)
+    assert.equal(namesAnotherDocument('See ', ' of these Terms.'), false)
+    assert.equal(namesAnotherDocument('Under this policy, see ', '.'), false)
+    assert.equal(namesAnotherDocument('We keep it for ', ' and in the customer portal.'), false)
   })
 
   test('ranges link BOTH ends: "3.1 to 3.3" and an en-dash range', () => {
