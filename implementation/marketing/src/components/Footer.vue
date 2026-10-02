@@ -267,7 +267,8 @@ onBeforeUnmount(() => {
   margin: 0;
 }
 
-/* Tablet and up: brand column beside the grid. Desktop (>= 1200) is four across. */
+/* Desktop (>= 1200): the brand column sits beside the links, four across. Tablet (768-1199)
+   keeps the brand above a 2x2 grid (the base styles); mobile is the `.is-mobile` block below. */
 @media (min-width: 1200px) {
   .links-grid {
     grid-template-columns: repeat(4, minmax(0, 1fr));

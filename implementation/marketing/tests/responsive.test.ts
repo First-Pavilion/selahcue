@@ -249,19 +249,30 @@ describe('breakpoints', () => {
     assert.equal(MOBILE_QUERY, '(max-width: 767.98px)')
   })
 
-  test('every media query that ends a range just below a breakpoint uses the .98 form', () => {
+  /**
+   * The only whole-pixel `max-width` media queries allowed, and why. Everything else that ends a
+   * range must be the `.98` form so it is the complement of the `min-width` that starts the next.
+   *
+   * auth.css `(max-width: 359px)`: ONE-SIDED AND ADDITIVE. It only tightens the auth card's
+   * padding on a very narrow phone; no `min-width: 360px` range depends on it and nothing
+   * switches layout across it, so there is no pair of ranges for a fractional width to fall
+   * between. Adding to this list needs the same argument written next to the entry.
+   */
+  const WHOLE_PIXEL_MAX_WIDTH_ALLOWED = new Set(['assets/styles/auth.css|max-width: 359px'])
+
+  test('every max-width media query is the .98 form (whole-pixel ones only if listed with a reason)', () => {
     // The sweep renders 767/768 and 1199/1200 in a real browser; this is the cheap tripwire
     // that keeps the whole-pixel form (and the old `768px` off-by-one) out of the source.
+    const root = new URL('.', SRC).pathname
+    const files = [...SFCS, ...['assets/styles/main.css', 'assets/styles/auth.css', 'assets/styles/tokens.css'].map((f) => join(root, f))]
     const offenders: string[] = []
-    for (const file of SFCS) {
+    for (const file of files) {
+      const rel = file.slice(root.length)
       for (const line of readFileSync(file, 'utf8').split('\n')) {
         if (!line.includes('@media')) continue
-        if (/max-width:\s*(767|1023|1099|1199|1024|768)px/.test(line)) offenders.push(`${file}: ${line.trim()}`)
-      }
-    }
-    for (const css of ['assets/styles/main.css', 'assets/styles/auth.css']) {
-      for (const line of read(css).split('\n')) {
-        if (line.includes('@media') && /max-width:\s*(767|1023|1099|1199|1024|768)px/.test(line)) offenders.push(`${css}: ${line.trim()}`)
+        for (const m of line.matchAll(/max-width:\s*(\d+)px/g)) {
+          if (!WHOLE_PIXEL_MAX_WIDTH_ALLOWED.has(`${rel}|max-width: ${m[1]}px`)) offenders.push(`${rel}: ${line.trim()}`)
+        }
       }
     }
     assert.deepEqual(offenders, [])
