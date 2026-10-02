@@ -96,6 +96,13 @@ ROUTES: list[tuple[str, bool]] = [
     ("/privacy", False),
     ("/terms", False),
     ("/affiliates", False),
+    # The article routes (`...articleRoutes` in the router, GAP-08): one real article of each
+    # kind, plus an unknown slug, which renders the not-found page embedded in the article view.
+    # `tests/responsive.test.ts` (ARRAY_ROUTES.articleRoutes) pins these paths to this list.
+    ("/blog/why-offline-first-matters-for-sunday-morning", False),
+    ("/docs/display-outputs/ndi-output", False),
+    ("/support/mobile-control/phone-wont-pair", False),
+    ("/blog/no-such-post", False),
     ("/signin", True),
     ("/signup", True),
     ("/forgot-password", True),

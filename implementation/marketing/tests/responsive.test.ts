@@ -470,16 +470,21 @@ export function unenumerableRouteSources(routerSource: string): string[] {
 /**
  * Sample paths the sweep must render for each route array the router pulls in by name.
  *
- * THIS MAP IS EMPTY ON PURPOSE on a base with no such array. When a PR adds one
- * (`...articleRoutes` from `src/router/articleRoutes.ts`), the test below fails loudly until
+ * When a PR adds a new spread or imported route array, the test below fails loudly until
  * the author adds an entry here AND the same concrete paths to `ROUTES` in
- * `scripts/responsive_sweep.py`, e.g.
- *
- *   articleRoutes: ['/blog/<a-real-slug>', '/docs/<cat>/<slug>', '/support/<cat>/<slug>']
- *
- * so landing it forces the pages into the sweep instead of letting the tripwire pass over them.
+ * `scripts/responsive_sweep.py`, so landing it forces the pages into the sweep instead of
+ * letting the tripwire pass over them. `articleRoutes` (`src/router/articleRoutes.ts`) is the
+ * first: one real blog post, docs article and support article, plus an unknown slug (the
+ * not-found page the article views embed), all taken from the local content source.
  */
-const ARRAY_ROUTES: Record<string, string[]> = {}
+const ARRAY_ROUTES: Record<string, string[]> = {
+  articleRoutes: [
+    '/blog/why-offline-first-matters-for-sunday-morning',
+    '/docs/display-outputs/ndi-output',
+    '/support/mobile-control/phone-wont-pair',
+    '/blog/no-such-post',
+  ],
+}
 
 function sweepRoutePaths(): string[] {
   const sweep = readFileSync(new URL('../scripts/responsive_sweep.py', import.meta.url), 'utf8')
