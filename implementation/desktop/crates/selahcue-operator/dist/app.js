@@ -6924,7 +6924,7 @@
       let pmDrag = null; // active canvas drag: {index, startX, startY, ox, oy, w, h}
       let pmLastSelKey = null; // (slide id):(element index) of the last selection, to announce a change
       // The open media-library modal's state, or null: {back, mode: "insert"|"replace", target,
-      // selected: Set<asset id>, opener, prevFilter, removing: null | {id, name, uses, trigger}}.
+      // selected: Set<asset id>, opener, prevFilter, removing: null | {trigger}}.
       // The library is a MODAL picker (PRESENTATION-MEDIA-LIBRARY-MODAL-spec.md) built on demand by
       // pmOpenMediaModal and removed by pmCloseMediaModal; pmRenderMedia draws into it only while open.
       let pmMediaModal = null;
@@ -6964,7 +6964,11 @@
       // Import an image into the media library (FR-138 / 86ak0qmzv). NOT routed through `pAct`:
       // a validation refusal is a final, specific reason (e.g. "that file is too large to
       // import"), not a transient failure worth a generic "Couldn't import the image — please
-      // retry" — same reasoning as `pmLibRestore`'s own `pmShowErrorRaw` use above.
+      // retry" — same reasoning as `pmLibRestore`'s own `pmShowErrorRaw` use above. The refusal goes
+      // through `pmSay`, not `pmShowErrorRaw` directly: Import lives in the media modal, and the error
+      // banner sits BEHIND its scrim (the host's "can't find its media folder" refusal would be
+      // invisible); `pmSay` writes it into the modal's own status line and falls back to the banner
+      // once the modal is closed.
       async function pmImportImage() {
         pmSetBusy(true);
         try {
@@ -6973,7 +6977,7 @@
           pmShowImportReport(pmDv && pmDv.import_report);
         } catch (e) {
           console.error("[SelahCue] deck action failed", e);
-          pmShowErrorRaw(String(e && e.message ? e.message : e));
+          pmSay(true, String(e && e.message ? e.message : e));
         } finally {
           pmSetBusy(false);
         }
@@ -6983,10 +6987,24 @@
       // else a brief status toast, and empty text clears the banner. While the media modal is open
       // (Import and Remove both live there) it goes into the modal's own status line instead — the toast
       // and banner sit BEHIND its scrim and would never be seen.
+      //
+      // The status line is a role="status" live region that is ALWAYS rendered (visually hidden while
+      // empty, never display:none) so that filling it is a content change an assistive technology
+      // announces — a region that goes display:none -> populated in one task is the unreliable case.
+      // The text is cleared immediately and set again after a short tick, so an identical message
+      // repeated (a second "file kept" notice) is a fresh change and is announced again; a token drops
+      // a pending set that a newer message has superseded.
+      let pmSayToken = 0;
       function pmSay(warn, text) {
         if (pmMediaModal) {
           const note = pmEl("pm-media-note");
-          if (note) { note.hidden = !text; note.textContent = text || ""; note.classList.toggle("warn", !!warn); }
+          if (!note) return;
+          const token = ++pmSayToken;
+          note.textContent = "";
+          note.classList.toggle("warn", !!warn);
+          if (text) {
+            setTimeout(() => { if (token === pmSayToken && note.isConnected) note.textContent = text; }, 50);
+          }
           return;
         }
         if (warn) pmShowErrorRaw(text);
@@ -7023,8 +7041,10 @@
       // refuses with a SPECIFIC reason when the library cannot be saved ("the disk may be full or
       // read-only" — nothing was removed), which is final text to show, not "please retry"; and a
       // success carries a `remove_report` saying whether the stored picture file was kept for other
-      // presentations. `pmLastAct` is set so the banner's Retry re-runs THIS removal, not whatever
-      // deck action happened to come before it.
+      // presentations. `pmLastAct` is set so the error banner's Retry re-runs THIS removal, not
+      // whatever deck action happened to come before it: the banner only shows the refusal when the
+      // modal was closed while the removal was still in flight (while it is open the reason is in the
+      // modal's status line), and a Retry that re-ran an earlier insert would duplicate it.
       async function pmRemoveMedia(id) {
         pmLastAct = { fn: () => invoke("deck_remove_media", { id: id }), opName: "remove the media" };
         pmSetBusy(true);
@@ -7042,8 +7062,9 @@
       }
 
       // What a removal did to the stored file, from the host's `remove_report`. Silent when the file
-      // was deleted (the tile simply leaves the grid); a toast when it was KEPT, because the picture
-      // is still on disk and still showing in the presentations that use it.
+      // was deleted (the tile simply leaves the grid); a notice when it was KEPT, because the picture
+      // is still on disk and still showing in the presentations that use it (`pmSay`: the modal's
+      // status line while it is open, a toast otherwise).
       function pmShowRemoveReport(rep) {
         if (!rep || !rep.removed) return;
         const decks = rep.kept_for_decks || 0;
@@ -11414,7 +11435,8 @@
         const note = mk("div", "pm-media-note");
         note.id = "pm-media-note";
         note.setAttribute("role", "status");
-        note.hidden = true;
+        // Always rendered (visually hidden while empty — see pmSay), so it is a live region on the
+        // a11y tree before its first message.
 
         const grid = mk("div", "pm-media-grid");
         grid.id = "pm-media-grid";
@@ -11548,23 +11570,30 @@
         const st = pmMediaModal;
         const bar = pmEl("pm-media-confirm");
         if (!st || !bar) return;
-        st.removing = { id: a.id, name: a.name, uses: a.uses || 0, trigger: trigger };
-        // The same words as the console's dialog (`pmRemoveMediaConfirm`): what happens to the stored
-        // file depends on whether OTHER saved decks still show it, not just the open deck's `uses`.
-        const c = pmRemoveMediaConfirm(a);
+        st.removing = { trigger: trigger };
+        // What happens to the stored file depends on whether OTHER saved decks still show it, not just
+        // the open deck's `uses` — `pmRemoveMediaWords` says which, from the counts the view carries.
+        const c = pmRemoveMediaWords(a);
+        // Un-hide FIRST, then fill: a role="alert" region must be on the a11y tree when its content
+        // changes to be announced reliably (same order as `pmShowError`).
+        bar.hidden = false;
         bar.textContent = "";
         const msg = document.createElement("p");
         msg.className = "pm-media-confirm-msg";
+        msg.id = "pm-media-confirm-msg";
         const strong = document.createElement("strong");
         strong.textContent = "Remove " + a.name + "? ";
         msg.appendChild(strong);
         msg.appendChild(document.createTextNode(c.body));
         bar.appendChild(msg);
+        let describedBy = "pm-media-confirm-msg";
         if (c.warning) {
           const w = document.createElement("p");
           w.className = "pm-media-confirm-warn";
+          w.id = "pm-media-confirm-warn";
           w.textContent = c.warning;
           bar.appendChild(w);
+          describedBy += " pm-media-confirm-warn";
         }
         const row = document.createElement("div");
         row.className = "pm-media-confirm-actions";
@@ -11573,6 +11602,9 @@
         keep.className = "pm-btn-ghost";
         keep.id = "pm-media-keep";
         keep.textContent = "Keep";
+        // Focus lands on Keep (the safe default), so what is being asked rides on the button's
+        // description: the bar's own text is what a screen reader reads next to "Keep".
+        keep.setAttribute("aria-describedby", describedBy);
         keep.onclick = pmMediaCancelRemove;
         const rm = document.createElement("button");
         rm.type = "button";
@@ -11588,7 +11620,6 @@
         };
         row.append(keep, rm);
         bar.appendChild(row);
-        bar.hidden = false;
         keep.focus(); // the safe default
       }
       function pmMediaClearRemove() {
@@ -11606,13 +11637,13 @@
         else if (q) q.focus();
       }
 
-      // The remove-media confirmation for asset `a` (a DeckView `media.assets` row). The host decides
-      // what happens to the stored file when it removes — it deletes SelahCue's copy unless another
-      // saved deck still shows it — so the dialog says which, from the counts the view carries:
-      // `uses` (slides of the OPEN deck) and `other_decks` (OTHER saved decks). When other decks
-      // use it the file is kept, so every slide that shows it keeps showing it and the "missing
-      // media" warning would be false; it is replaced by the keep notice.
-      function pmRemoveMediaConfirm(a) {
+      // The words of the remove-media bar for asset `a` (a DeckView `media.assets` row): `{body,
+      // warning}`. The host decides what happens to the stored file when it removes — it deletes
+      // SelahCue's copy unless another saved deck still shows it — so the bar says which, from the
+      // counts the view carries: `uses` (slides of the OPEN deck) and `other_decks` (OTHER saved
+      // decks). When other decks use it the file is kept, so every slide that shows it keeps showing
+      // it and the "missing media" warning would be false; it is replaced by the keep notice.
+      function pmRemoveMediaWords(a) {
         const other = a.other_decks || 0;
         const slides = (n) => n + " slide" + (n === 1 ? "" : "s");
         let warning = null;
@@ -11623,13 +11654,7 @@
         } else if (a.uses) {
           warning = "Used on " + slides(a.uses) + " — removing it leaves " + (a.uses === 1 ? "that slide" : "those slides") + " with missing media.";
         }
-        return {
-          title: "Remove " + a.name + "?",
-          body: body,
-          warning: warning,
-          confirmLabel: "Remove",
-          onConfirm: () => pmRemoveMedia(a.id),
-        };
+        return { body: body, warning: warning };
       }
 
       function pmRenderMedia(dv) {

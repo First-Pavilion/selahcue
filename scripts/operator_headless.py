@@ -1837,11 +1837,22 @@ EXPECTED_MIN_CHECKS = 2028  # measured: 2028 checks, 0 FAIL
 # 17tnw2b12d9 (media library as a modal picker), stacked on 17tnw2b12d8's review-round head (2028):
 # the modal replaces the Media/Inspector tab checks and adds its own (+30 net on the first cut's
 # 2087 base), and the PR #146 remove-media checks are carried into the modal's inline bar and status
-# line (the console's confirm dialog and toast sit behind the modal's scrim, so the same eight checks
-# read the bar and `#pm-media-note` instead; the console-banner Retry check has no counterpart in
-# the modal and is replaced by an Esc-closes-the-library check). Measured via an actual clean run
-# of the merged tree, not hand-summed.
+# line (the console's confirm dialog cannot open over the modal and its toast sits behind the scrim,
+# so the same eight checks read the bar and `#pm-media-note` instead; the console-banner Retry check
+# has no counterpart in the modal and is replaced by an Esc-closes-the-library check). Measured via
+# an actual clean run of the merged tree, not hand-summed.
 EXPECTED_MIN_CHECKS = 2058  # measured: 2058 checks, 0 FAIL
+
+# 17tnw2b12d9 re-review round: +11 on top of 2058. A refused import (no media folder) shows the host's
+# reason INSIDE the modal instead of the error banner behind the scrim (2); a file kept for a recently
+# deleted presentation is reported in the status line, not a toast (1); an identical notice repeated
+# passes through an empty status line so a live region announces it again (1); the status line is
+# role=status and stays rendered, visually hidden, while empty (2); Keep carries the bar's text as its
+# description (1); focus moves to the search field after Remove (1); and when the modal is closed
+# while a removal is in flight and the host then refuses it, the banner shows the reason and Retry
+# re-runs the REMOVAL rather than the last unrelated deck action (3, including the closed-modal
+# premise). Measured via an actual clean run, not hand-summed.
+EXPECTED_MIN_CHECKS = 2069  # measured: 2069 checks, 0 FAIL
 
 
 def find_chrome():
@@ -3547,6 +3558,9 @@ STUB = r"""
       // Harness-only re-render: hand back the current `D` unchanged (no report), so a check that
       // patched an asset through `window.__setAsset` can have the surface render it.
       if (window.__importRefresh) return Promise.resolve(dClone());
+      // Harness-only: the host REFUSES the whole import (no media folder, a deck-lock error) — a
+      // rejected command, not an `import_report`.
+      if (window.__importFail) return Promise.reject(window.__importFail);
       // Harness-only cleanup: drop every imported asset (ids >= 99) so a check that floods the
       // library does not leak 100 tiles into the checks that follow it.
       if (window.__importPurge) {
@@ -3577,6 +3591,14 @@ STUB = r"""
     // not be saved: nothing was removed), `window.__removeReport` is the `remove_report` it attaches
     // to the returned view (like the real host, never to the persisted DeckView `D`).
     if (cmd === "deck_remove_media") {
+      // `window.__removeHold` keeps the command in flight until `window.__removeRelease()` (which then
+      // refuses with `__removeFail` if set, else succeeds): lets a check close the modal mid-flight.
+      if (window.__removeHold) return new Promise(function(res, rej){
+        window.__removeRelease = function(){
+          window.__removeHold = false;
+          if (window.__removeFail) rej(window.__removeFail); else res(dClone());
+        };
+      });
       if (window.__removeFail) return Promise.reject(window.__removeFail);
       var vRm = dClone();
       if (window.__removeReport) vRm.remove_report = window.__removeReport;
@@ -6388,7 +6410,7 @@ DRIVER = r"""
       await waitFor(function(){ return /Imported 1 image\./.test(el("pm-media-note").textContent); });
       ok(window.__calls.some(function(c){ return c.cmd === "deck_import_images"; }) && !window.__calls.some(function(c){ return c.cmd === "deck_import_image"; }),
          "PM media: + Import drives deck_import_images (the retired single-file command is not called)");
-      ok(/Imported 1 image\./.test(el("pm-media-note").textContent) && !el("pm-media-note").hidden && !el("pm-media-note").classList.contains("warn") && el("pm-error").hidden,
+      ok(/Imported 1 image\./.test(el("pm-media-note").textContent) && !el("pm-media-note").classList.contains("warn") && el("pm-error").hidden,
          "PM media: a clean import says how many images landed in the modal's own status line (the toast would sit behind the scrim)");
       var tileByName = function(re){ return Array.from(document.querySelectorAll("#pm-media-grid .pm-asset")).filter(function(c){ return re.test(c.textContent); })[0]; };
       ok(!!tileByName(/picked\.png/), "PM media: the imported image appears under the operator's own file name");
@@ -6417,6 +6439,18 @@ DRIVER = r"""
       await waitFor(function(){ return /couldn’t be saved/.test(el("pm-media-note").textContent); });
       ok(/banner\.png/.test(el("pm-media-note").textContent) && !/won’t be kept/.test(el("pm-media-note").textContent) && !/Imported/.test(el("pm-media-note").textContent) && el("pm-media-note").classList.contains("warn"),
          "PM media: a rolled-back import reports the file and reason as a warning, claims no import, and adds no 'won't be kept' tail: " + el("pm-media-note").textContent);
+      // The host REFUSES the whole import (no media folder, a deck-lock error): a rejected command.
+      // Import lives in this modal, and the error banner sits BEHIND its scrim — the reason must be
+      // in the modal's own status line, visible, not only in #pm-error.
+      window.__importFail = "SelahCue can’t find its media folder, so images can’t be imported.";
+      el("pm-import").click();
+      await waitFor(function(){ return /media folder/.test(el("pm-media-note").textContent); });
+      window.__importFail = null;
+      var refNote = el("pm-media-note"), refBox = refNote.getBoundingClientRect();
+      var refTop = document.elementFromPoint(refBox.left + refBox.width / 2, refBox.top + refBox.height / 2);
+      ok(/can’t find its media folder/.test(refNote.textContent) && refNote.classList.contains("warn") && refBox.width > 100 && !!refTop && refNote.contains(refTop),
+         "PM media: a refused import shows the host's reason INSIDE the modal, on a warning status line that is the topmost element at its centre (got " + (refTop ? refTop.id || refTop.className : "nothing") + ")");
+      ok(el("pm-error").hidden, "PM media: the refusal is not left in the error banner that sits behind the scrim");
       // An unsaved registry is said out loud.
       window.__thumbFailIds = [];
       window.__importReport = {imported:1, skipped:[], saved:false};
@@ -6744,6 +6778,7 @@ DRIVER = r"""
       el("pm-media-remove").click();
       ok(window.__calls.some(function(c){ return c.cmd === "deck_remove_media" && c.args.id === 1; }), "PM: confirming remove-media drives deck_remove_media(id)");
       ok(el("pm-media-confirm").hidden, "PM: the bar closes once removal is confirmed");
+      ok(document.activeElement === el("pm-media-q"), "PM: after Remove, focus goes to the search field (the confirming control is gone; focus must not fall to the page behind the modal)");
       document.dispatchEvent(new KeyboardEvent("keydown", {key:"Escape", bubbles:true}));
       ok(!el("pm-media-back"), "PM: a second Esc closes the library");
 
@@ -6751,7 +6786,7 @@ DRIVER = r"""
       // "unused" was computed from the open deck alone, so Remove deleted Easter's banner while
       // Sunday was open). The host counts every saved deck (`other_decks`) and keeps the file; the
       // inline bar says so from that count, and the modal's status line says what became of the file
-      // (the toast and error banner would sit behind the scrim). Same flow as the console's dialog.
+      // (the toast and error banner would sit behind the scrim).
       el("pm-open-media").click();
       await waitFor(function(){ return !!el("pm-media-back"); });
       var removeCell = function(re){ return Array.from(document.querySelectorAll("#pm-media-grid .pm-asset")).filter(function(c){ return re.test(c.textContent); })[0]; };
@@ -6773,6 +6808,9 @@ DRIVER = r"""
       ok(/also used in 2 other presentations/.test(removeCell(/sunrise/).querySelector(".pm-asset-del").getAttribute("aria-label")),
          "PM remove: the remove affordance names the other presentations that use the asset (not colour/position only)");
       await removeBar(/sunrise/);
+      var keepDesc = (el("pm-media-keep").getAttribute("aria-describedby") || "").split(/\s+/).map(function(i){ var n = document.getElementById(i); return n ? n.textContent : ""; }).join(" ");
+      ok(/Remove sunrise/.test(keepDesc) && /keeps its copy of the file/.test(keepDesc) && /2 other presentations/.test(keepDesc) && el("pm-media-confirm").getAttribute("role") === "alert",
+         "PM remove: focus lands on Keep, so the bar's own text is Keep's accessible description (what is being asked is read next to the button): " + keepDesc);
       var keepWarn = (el("pm-media-confirm").querySelector(".pm-media-confirm-warn") || {}).textContent || "";
       var keepBody = el("pm-media-confirm").textContent;
       ok(/2 other presentations/.test(keepWarn) && /file is kept/.test(keepWarn) && !/missing media/.test(keepWarn),
@@ -6782,8 +6820,33 @@ DRIVER = r"""
       window.__removeReport = {removed:true, file_deleted:false, kept_for_decks:2, kept_for_deleted:0};
       el("pm-media-remove").click();
       await waitFor(function(){ return /file is kept/.test(el("pm-media-note").textContent); });
+      ok(el("pm-media-note").getAttribute("role") === "status", "PM remove: the modal's status line is a role=status live region");
       ok(removeCalls(2) === 1 && /2 other presentations still use it/.test(el("pm-media-note").textContent) && !el("pm-media-note").classList.contains("warn"),
          "PM remove: after a kept-file removal the modal's status line says the picture file is kept for 2 other presentations: " + el("pm-media-note").textContent);
+      // The "kept for a recently deleted presentation" notice is the other half of the keep report
+      // (kept_for_deleted): it must land in the modal's status line too, not the toast behind the scrim.
+      window.__removeReport = {removed:true, file_deleted:false, kept_for_decks:0, kept_for_deleted:1};
+      await removeBar(/sunrise/);
+      el("pm-media-remove").click();
+      await waitFor(function(){ return /recently deleted/.test(el("pm-media-note").textContent); });
+      ok(/recently deleted still uses it/.test(el("pm-media-note").textContent) && !el("pm-media-note").classList.contains("warn") && !/recently deleted/.test(el("pm-toast").textContent),
+         "PM remove: a file kept for a recently deleted presentation says so in the modal's status line, not a toast behind the scrim: " + el("pm-media-note").textContent);
+      // An IDENTICAL notice repeated is announced again: the line is cleared and filled across a tick
+      // (a clear+set in one task coalesces to "no change" for a live region). Observe what is on the
+      // line each time the DOM settles: it must be empty at some point between the two identical sets.
+      window.__removeReport = {removed:true, file_deleted:false, kept_for_decks:2, kept_for_deleted:0};
+      await removeBar(/sunrise/);
+      el("pm-media-remove").click();
+      await waitFor(function(){ return /2 other presentations still use it/.test(el("pm-media-note").textContent); });
+      var noteSeen = [];
+      var noteObs = new MutationObserver(function(){ noteSeen.push(el("pm-media-note").textContent); });
+      noteObs.observe(el("pm-media-note"), {childList:true, characterData:true, subtree:true});
+      await removeBar(/sunrise/);
+      el("pm-media-remove").click();
+      await waitFor(function(){ return noteSeen.length >= 1 && /2 other presentations still use it/.test(el("pm-media-note").textContent); });
+      noteObs.disconnect();
+      ok(noteSeen.indexOf("") >= 0 && /2 other presentations still use it/.test(el("pm-media-note").textContent),
+         "PM remove: an identical notice repeated passes through an EMPTY status line first (so a live region announces it again), saw " + JSON.stringify(noteSeen.map(function(t){ return t.slice(0, 12); })));
       // A refusal from the host (the registry could not be saved: nothing was removed) is shown as
       // the host's own final text — in the modal, where it can be seen — not a generic "please retry".
       window.__removeReport = null;
@@ -6798,8 +6861,43 @@ DRIVER = r"""
       window.__importRefresh = true; el("pm-import").click();
       await waitFor(function(){ var c = removeCell(/sunrise/); return c && !/other presentation/.test(c.querySelector(".pm-asset-del").getAttribute("aria-label")); });
       window.__importRefresh = false;
+      // The status line is always rendered (a live region on the a11y tree before its first message):
+      // empty, it is visually hidden, never display:none.
+      window.__importRefresh = true; el("pm-import").click();
+      await waitFor(function(){ return el("pm-media-note").textContent === ""; });
+      window.__importRefresh = false;
+      var emptyBox = el("pm-media-note").getBoundingClientRect();
+      ok(!el("pm-media-note").hidden && getComputedStyle(el("pm-media-note")).display !== "none" && emptyBox.width <= 2 && emptyBox.height <= 2,
+         "PM remove: an empty status line is still rendered (a live region on the a11y tree) but visually hidden, never display:none (box " + emptyBox.width + "x" + emptyBox.height + ")");
       document.dispatchEvent(new KeyboardEvent("keydown", {key:"Escape", bubbles:true}));
       ok(!el("pm-media-back"), "PM remove: Esc closes the library after the removal checks");
+      // The modal can be closed while a removal is still in flight. If the host then REFUSES it there
+      // is no status line to put the reason in, so it falls to the error banner — whose Retry must
+      // re-run THIS removal, not the last unrelated deck action (an insert would be duplicated).
+      document.querySelector('#surface-presentation .pm-tool[data-add="text"]').click();
+      await waitFor(function(){ return window.__calls.some(function(c){ return c.cmd === "deck_add_element" && c.args.kind === "text"; }); });
+      await sleep(20);
+      el("pm-open-media").click();
+      await waitFor(function(){ return !!el("pm-media-back"); });
+      var removeCalls0 = removeCalls(2);
+      window.__removeHold = true;
+      window.__removeFail = "Couldn’t remove the image: the media library couldn’t be saved (the disk may be full or read-only).";
+      await removeBar(/sunrise/);
+      el("pm-media-remove").click();
+      await waitFor(function(){ return typeof window.__removeRelease === "function" && window.__calls.filter(function(c){ return c.cmd === "deck_remove_media" && c.args.id === 2; }).length > removeCalls0; });
+      document.dispatchEvent(new KeyboardEvent("keydown", {key:"Escape", bubbles:true}));
+      ok(!el("pm-media-back"), "PM remove: the library closes while the removal is still in flight");
+      window.__removeRelease();
+      await waitFor(function(){ return !el("pm-error").hidden; });
+      ok(/couldn’t be saved/.test(el("pm-error-msg").textContent) && !/please retry/i.test(el("pm-error-msg").textContent),
+         "PM remove: with the modal closed the host's refusal falls back to the visible error banner: " + el("pm-error-msg").textContent);
+      window.__removeFail = null;
+      var callsBeforeRetry = window.__calls.length;
+      el("pm-error-retry").click();
+      await waitFor(function(){ return window.__calls.length > callsBeforeRetry; });
+      var retried = window.__calls[callsBeforeRetry];
+      ok(retried.cmd === "deck_remove_media" && retried.args.id === 2,
+         "PM remove: Retry re-runs the REMOVAL, not the earlier unrelated deck action that came before it (re-ran " + retried.cmd + ")");
 
       // --- C-004 System states: loading (aria-busy) + error banner (role=alert) + Retry ---
       // The busy state must actually ENGAGE while a command is in flight, then clear — not merely

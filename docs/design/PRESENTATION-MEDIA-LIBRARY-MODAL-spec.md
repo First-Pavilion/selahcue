@@ -23,14 +23,15 @@ The modal never opens by itself and never opens while another modal is open.
 
 ## 3. Layout
 
-`role="dialog" aria-modal="true"`, labelled by its title ("Media library", or "Replace image" in replace mode). Width 720px, max 92vw; height max 80vh; the grid scrolls, the header and footer do not.
+`role="dialog" aria-modal="true"`, labelled by its title ("Media library", or "Replace image" in replace mode). Width `min(760px, 100%)`, height up to `min(80vh, 100%)`; the grid scrolls, the header and footer do not.
 
 1. **Header** — title, close `✕`.
 2. **Toolbar** — search field; filter chips **All · Images · Video · Audio** (`aria-pressed`); **+ Import** (primary).
 3. *(replace mode only)* a one-line hint: "Pick the image that replaces the selected element."
-4. **Grid** — `repeat(auto-fill, minmax(140px, 1fr))` tiles, then the **Audio** list below the grid.
-5. **Inline remove bar** (only while confirming a removal) — see §5.
-6. **Footer** — total size and "N missing · M unused" (left); a live "N selected"; **Cancel** and the primary **Insert** / **Replace**.
+4. **Status line** — the outcome of an import or a removal (see §5). A `role="status"` live region that is always rendered and visually hidden while empty, never `display: none`, so filling it is a change a screen reader announces. The toast and the error banner sit behind the modal's scrim, so nothing about Import or Remove is reported anywhere else while the modal is open.
+5. **Grid** — `repeat(auto-fill, minmax(140px, 1fr))` tiles, then the **Audio** list below the grid.
+6. **Inline remove bar** (only while confirming a removal) — see §5.
+7. **Footer** — total size and "N missing · M unused" (left); a live "N selected"; **Cancel** and the primary **Insert** / **Replace**.
 
 Tokens are the existing `--sc-*` set. Secondary text uses `--sc-text-secondary`, never `--sc-text-muted` (contrast).
 
@@ -49,18 +50,18 @@ A hover/focus-visible `✕` removes the asset (see §5). Names truncate with an 
 
 ## 5. Interactions
 
-- **Import** — opens the native picker (several files). A clean import shows a status toast; skipped files appear in the persistent banner with the reason (the banner sits behind the modal scrim and is also announced). New images appear selected-able immediately, with their pictures.
+- **Import** — opens the native picker (several files). The outcome is written to the modal's **status line**: a clean import says how many images landed; skipped files are named with the host's reason as a warning (the first three, then "+n more"); a batch the host rolled back because the library could not be saved reports each file and adds no "won't be kept" tail; and a refusal of the whole import (for example no media folder) shows the host's own reason there too, never only in the error banner behind the scrim. New images appear selected-able immediately, with their pictures.
 - **Select** — click or Space/Enter toggles. Insert mode allows multi-select, capped at **24** per insert (a 25th click shows "Up to 24 at a time"). Replace mode keeps exactly one.
 - **Insert** — closes the modal and adds every selected image to the current slide in **one undo step**, cascaded so they do not stack exactly. **Replace** swaps the selected element's image.
 - **Double-click** a tile — insert (or replace) just that image.
-- **Remove** — `✕` shows the **inline bar** (a `role="alert"` strip above the footer): "Remove *name*? This removes the image from the library and deletes SelahCue's copy. This can't be undone." plus, when used on the open deck, "Used on k slides — removing it leaves them with missing media." When **other saved decks** also show the image the host keeps SelahCue's copy of the file (it never deletes a picture another deck still shows), so the bar says so instead: "Used on k slides here and in n other presentations — the picture file is kept so they keep showing it." (words shared with the console's remove dialog, `pmRemoveMediaConfirm`). The outcome is reported in the modal's own status line — the toast and error banner sit behind its scrim — including a refused removal ("Couldn't remove the image: the media library couldn't be saved …": nothing was removed). Buttons **Remove** (danger) and **Keep**. The bar is inline rather than a second modal because the existing confirm dialog is single-instance and refuses to open over another modal.
+- **Remove** — `✕` shows the **inline bar** (a `role="alert"` strip above the footer): "Remove *name*? This removes the image from the library and deletes SelahCue's copy. This can't be undone." plus, when used on the open deck, "Used on k slides — removing it leaves them with missing media." When **other saved decks** also show the image the host keeps SelahCue's copy of the file (it never deletes a picture another deck still shows), so the bar says so instead: "Used on k slides here and in n other presentations — the picture file is kept so they keep showing it." (the words come from `pmRemoveMediaWords`, the one place that decides them). The outcome is reported in the status line — including "the picture file is kept because …" and a refused removal ("Couldn't remove the image: the media library couldn't be saved …": nothing was removed). If the modal is closed while a removal is still in flight and the host then refuses it, there is no status line, so the reason falls back to the error banner, whose **Retry** re-runs that removal. Buttons **Remove** (danger) and **Keep**; focus lands on **Keep** (the safe default) and the bar's text is its accessible description, and after **Remove** focus moves to the search field. The bar is inline rather than a second modal because the shared confirm dialog is single-instance and refuses to open over another modal.
 - **Close** — `✕`, **Cancel**, **Esc** or a click on the scrim. Nothing changes. Focus returns to the control that opened it.
 
 ## 6. Keyboard and accessibility
 
 - Focus moves into the dialog on open (the search field) and is **trapped**; Tab cycles header → toolbar → tiles → footer. Tiles are buttons in DOM order; there is no roving grid (kept simple on purpose).
 - Esc closes the remove bar first, then the modal.
-- Selection count is in a polite live region; the Insert button's label states the count.
+- Selection count is in a polite live region; the Insert button's label states the count. Import and Remove outcomes are in the status line (a `role="status"` region cleared and refilled across a short tick, so an identical message repeated is announced again).
 - The empty library shows "No images yet — Import to get started." with the Import button (PME-038).
 - All state is conveyed by text or shape as well as colour (WCAG 1.4.1).
 

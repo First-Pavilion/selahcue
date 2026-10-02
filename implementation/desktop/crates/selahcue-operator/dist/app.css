@@ -6045,11 +6045,10 @@
         background: var(--sc-surface);
       }
       .pm-panel { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; }
-      .pm-media-body, .pm-inspector-body { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; }
+      .pm-inspector-body { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; }
       /* The class `display:flex` above outranks the UA `[hidden]{display:none}`, so without this
-         the hidden panel would still show — both Media AND Inspector at once. The attribute-scoped
-         rule restores the contextual switch: only the active panel renders. */
-      .pm-media-body[hidden], .pm-inspector-body[hidden] { display: none; }
+         the hidden panel would still show. The attribute-scoped rule restores the switch. */
+      .pm-inspector-body[hidden] { display: none; }
       .pm-inspector-body { overflow-y: auto; padding: 12px 14px; gap: 12px; }
       .pm-replace-hint {
         margin: 0 12px 6px;
@@ -6312,11 +6311,14 @@
       }
       .pm-asset:hover .pm-asset-del, .pm-asset:focus-within .pm-asset-del { opacity: 1; }
       .pm-media-empty-import { margin-left: 8px; }
-      /* Status line for an import's outcome (inside the modal: the toast/banner sit behind the scrim).
-         `[hidden]` restated — the class `display` would otherwise defeat the attribute. */
+      /* Status line for an import's or removal's outcome (inside the modal: the toast/banner sit behind
+         the scrim). A role="status" live region that is ALWAYS rendered: while empty it is visually
+         hidden, never display:none, so filling it is a content change a screen reader announces.
+         `[hidden]` restated for the remove bar — the class `display` would otherwise defeat it. */
       .pm-media-note { margin: 0 16px 6px; padding: 8px 10px; border-radius: 8px; background: var(--sc-accent-soft); color: var(--sc-text); font-size: 12px; flex: 0 0 auto; }
       .pm-media-note.warn { background: var(--sc-warn-soft); border: 1px solid var(--sc-warn-border); }
-      .pm-media-note[hidden], .pm-media-confirm[hidden] { display: none; }
+      .pm-media-note:empty { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; border: 0; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+      .pm-media-confirm[hidden] { display: none; }
       /* Inline remove confirmation (the shared confirm dialog cannot open over this modal). */
       .pm-media-confirm { margin: 0 16px 8px; padding: 10px 12px; border: 1px solid var(--sc-live-border); border-radius: 10px; background: var(--sc-live-soft); color: var(--sc-text); font-size: 13px; flex: 0 0 auto; }
       .pm-media-confirm p { margin: 0 0 4px; }
@@ -7814,7 +7816,7 @@
 .pp-gen-preview { display: flex; flex-direction: column; gap: 10px; padding: 14px; border-radius: 11px; border: 1px solid var(--sc-preview-border); background: var(--sc-preview-soft); }
 /* The class `display: flex` above outranks the UA `[hidden]{display:none}`, so without this the
    panel stays laid out — an empty bordered box — after closeGenPreview() sets `hidden` (M-1,
-   Cody). Same trap and same fix as .pm-media-body[hidden] / .rcv[hidden] elsewhere in this file. */
+   Cody). Same trap and same fix as .pm-inspector-body[hidden] / .rcv[hidden] elsewhere in this file. */
 .pp-gen-preview[hidden] { display: none; }
 .pp-gen-preview-title { margin: 0; font-size: 13px; font-weight: 700; color: var(--sc-text); }
 .pp-gen-preview-title:focus-visible { outline: 2px solid var(--sc-primary-hover); outline-offset: 2px; }
