@@ -10,11 +10,11 @@
 - Execution engine: goal
 - ClickUp task: https://app.clickup.com/t/17tnw2az0g6
 - Created: 2026-09-27T01:01:36Z
-- Updated: 2026-10-02T10:53:00Z
+- Updated: 2026-10-02T11:17:00Z
 - Maximum iterations: 4
 - Independent verification required: yes
 
-Timestamps: `Created` is the commit time of the first commit that carries this file (`91d210d`). The original value, 2026-09-27T12:00:00Z, was later than the commits that contained it and so cannot have been true when written. `Updated` is the time of the 2026-10-02 edit.
+Timestamps: `Created` is the commit time of the first commit that carries this file (`91d210d`). The original value, 2026-09-27T12:00:00Z, was later than the commits that contained it and so cannot have been true when written. `Updated` is the time of the latest 2026-10-02 edit (iteration 4).
 
 ## Objective
 
@@ -25,13 +25,15 @@ An ADR set on PR #111 that an independent reviewer (Sana, Vera) can check agains
 - ADR-0027 at `e8e782d` (Proposed, Draft PR #111). Vera's review (6 items, 2 High) and Sana's review (8 items, 3 blocking) posted on the PR and the epic.
 - Iteration 1 produced ADR-0028 and ADR-0027 revision 2 (`91d210d`, `903dfa7`).
 - The owner then decided ADR-0028 D4 (OpenAI option), D5 (retry grace) and D7 (overrun carry) on 2026-09-27. They are recorded as ADR-0028 revision 2 and ADR-0027 revision 3 at `38755430`. **D4: option A (Realtime text-only with a client secret), spiked first; option C if the spike fails; option B rejected.**
-- A review of revision 3 at `38755430` (PR #111, 2026-10-02) found process gaps, content findings a to k, and the goal-contract problems corrected here. Its fixes are ADR-0027 revision 4 and ADR-0028 revision 3.
+- A review of revision 3 at `38755430` (PR #111, 2026-10-02) found process gaps, content findings a to k, and the goal-contract problems corrected here. Its fixes are ADR-0027 revision 4 and ADR-0028 revision 3, pushed as head `255d042`.
+- An independent re-review of `255d042` (2026-10-02) returned NEEDS-CHANGES: two must-fix items (ticket ids that exist were recorded as "none"; the ADRs' decision labels conflicted with ClickUp's, and OD-3 was not carried) and six should-fix design gaps. Its fixes are ADR-0027 revision 5 and ADR-0028 revision 4 (iteration 4).
 - `selahcue-cloud/src/openai.rs` calls `POST /v1/responses` with a developer key and a JSON schema; its module doc says a desktop-held key is not acceptable in a shipped product.
 - No outbound provider call exists in `implementation/api` today.
 
 ## Inputs and evidence sources
 
 - PR #111 reviews and inline comments; epic 17tnw2az0g6 comments; tickets 86akby3xu, 17tnw2az0gn, 86akby344, 86akby4e9, 86ajy04hz.
+- ClickUp tickets read on 2026-10-02 to record ids and labels: 17tnw2az0n5 (staff authenticator), 17tnw2az0n2 (OpenAI spike), 17tnw2az0gu (decisions and PRD amendment; labels D7, D8, D9, OD-1 to OD-3), 17tnw2az0g8, 17tnw2az0ga, 17tnw2az0gb, 17tnw2az0gj, 86akby344, 86akby3xu, 86akby4e9. 17tnw2az0gn was not re-read.
 - Deepgram docs: token-based auth, keys create, requests list, usage breakdown, API key limits, discussions #673 and #1409.
 - OpenAI docs: realtime client secrets create, usage API (completions), admin API projects / service accounts / rate limits, key permissions help article.
 - Provider documentation was read on 2026-09-27 and **has not been re-read since** (ADR-0028 open item OI-6).
@@ -63,21 +65,23 @@ An ADR set on PR #111 that an independent reviewer (Sana, Vera) can check agains
 ## Dependencies and approvals
 
 - Owner decision on the OpenAI option (ADR-0028 D4): **DECIDED 2026-09-27** (A, spiked first; C if the spike fails; B rejected). Nothing is pending on the owner for D4 itself.
-- OpenAI Realtime spike result (Nova): pending. It picks A or C and gates the notes build tickets.
+- OpenAI Realtime spike result (Nova, ClickUp 17tnw2az0n2): pending. It picks A or C and gates the notes build tickets.
 - Security re-review (Sana) and performance re-review (Vera) of the revision: independent verifiers (C-008).
-- Ticket ids for the open items that have none (staff authenticator, PRD amendments, ADR-0010 clause, `openai.rs` comment, `NOTE_TOKEN_ENVELOPE`, held-open ceiling, provisioning budget): owner to supply.
+- Ticket ids, as confirmed in ClickUp on 2026-10-02: staff authenticator **17tnw2az0n5**; OpenAI spike **17tnw2az0n2**; PRD amendment (FR-546, AS-P6, FLOW-507, tier table) and the DECISION-LOG entries **17tnw2az0gu** (it does not name FR-533, FR-547 or AS-P7, nor the DEC-014 amendment); the retry exception is already written on 17tnw2az0g8 and 17tnw2az0gu, and only its DECISION-LOG entry is outstanding.
+- Ticket ids still **none recorded** (a ClickUp search found no ticket): the ADR-0010 clause, the `openai.rs` comment, the owner's approval of `NOTE_TOKEN_ENVELOPE` (its proposal is in 17tnw2az0n2), the held-open ceiling, the provisioning budget, the DEC-014 amendment. Owner to supply if one exists or is created.
+- Owner question OI-11 (ADR-0028): overrun measured against `limit` or `limit − carried_debt`.
 
 ## Completion predicate
 
 | ID | Mandatory | Criterion | Verifier | Expected result | Evidence | Status |
 |---|---|---|---|---|---|---|
-| C-001 | yes | ADR states whether removing the server-side OpenAI call resolves Vera's worker finding, including the residual mint-call cost | Read ADR-0028 D6 | Explicit yes-with-residual and a timeout/capacity rule | ADR-0028 D6 (author re-read at revision 3, 2026-10-02) | PASS |
-| C-002 | yes | Attribution for both providers uses only server-chosen identity, fails closed on unattributable usage, and reconciles server-to-server read-only | Read ADR-0028 D2, D3, D5 | All three properties stated per provider | ADR-0028 D2, D3, D5 (author re-read at revision 3) | PASS |
+| C-001 | yes | ADR states whether removing the server-side OpenAI call resolves Vera's worker finding, including the residual mint-call cost | Read ADR-0028 D6 | Explicit yes-with-residual and a timeout/capacity rule | ADR-0028 D6 (author re-read 2026-10-02; D6 gained only the `RESERVED_TTL` cross-reference) | PASS |
+| C-002 | yes | Attribution for both providers uses only server-chosen identity, fails closed on unattributable usage, and reconciles server-to-server read-only | Read ADR-0028 D2, D3, D5 | All three properties stated per provider | ADR-0028 D2, D3, D5 (author re-read 2026-10-02; D3 provisioning and D5 settlement were revised) | PASS |
 | C-003 | yes | OpenAI ephemeral-credential research is stated with sources and the key-to-client risk is presented as an owner tradeoff | Read ADR-0028 D4 | Options with sources, unknowns and a recommendation | ADR-0028 D4; the owner has since decided it (OD-R1). Sources not re-read since 2026-09-27 (OI-6) | PASS |
-| C-004 | yes | Deepgram error bound stated honestly | Read ADR-0028 D3 | Bound names parallel streams and stream length, and the shared concurrency pool | ADR-0028 D3 (author re-read at revision 3) | PASS |
-| C-005 | yes | Ledger commit comes from reconciliation for both meters; replay rules defined | Read ADR-0027 D5 + ADR-0028 D5 | State machine and replay table present | ADR-0027 revision 4 D5; ADR-0028 revision 3 D5 (the replay rules are now a table) | PASS |
+| C-004 | yes | Deepgram error bound stated honestly | Read ADR-0028 D3 | Bound names parallel streams and stream length, and the shared concurrency pool | ADR-0028 D3 (author re-read 2026-10-02; the bound text is unchanged) | PASS |
+| C-005 | yes | Ledger commit comes from reconciliation for both meters; replay rules defined | Read ADR-0027 D5 + ADR-0028 D5 | State machine and replay table present | ADR-0027 revision 5 D5; ADR-0028 revision 4 D5 (the replay rules are a table with `SETTLED` and `RELEASED` rows, and settlement under option C is stated) | PASS |
 | C-006 | yes | Ticket fallout named on the epic | ClickUp epic comment read-back | Comment lists 17tnw2az0gn, 86akby3xu, 17tnw2az0gq, 86akby4e9, 86akby344 with required rework | Epic comment 1400430000022746, read back in iteration 1. Not re-read in iteration 3, and it predates revisions 3 and 4 | PASS |
-| C-007 | yes | Revision pushed to the PR #111 branch, not behind origin/main | `git rev-list --count HEAD..origin/main`, and the PR's head SHA on GitHub | 0 and the new head SHA | 2026-10-02: 0 after merging `origin/main` (`feaee70`) into the branch (merge commit `3d99e40`), re-run immediately before the push. **Perishable:** true only at push time; it goes stale as main moves and must be re-run when the PR is merged | PASS |
+| C-007 | yes | Revision pushed to the PR #111 branch, not behind origin/main | `git rev-list --count HEAD..origin/main`, and the PR's head SHA on GitHub | 0 and the new head SHA | 2026-10-02, iteration 4: 0 after merging `origin/main` (`08b0382`) into the branch (merge commit `d67c051`), re-run immediately before the push. (Iteration 3 had merged `feaee70`, merge commit `3d99e40`; main then moved by four commits.) **Perishable:** true only at push time; it goes stale as main moves and must be re-run when the PR is merged | PASS |
 | C-008 | yes | Independent security and performance re-review passed | Sana / Vera review on PR #111 | No open blocking finding | PR #111 | PENDING |
 
 ## Verification plan
@@ -85,7 +89,7 @@ An ADR set on PR #111 that an independent reviewer (Sana, Vera) can check agains
 - Focused verification: reread both ADRs against each review finding; read back the ClickUp comment.
 - Independent verifier: Sana (C-002..C-005), Vera (C-001, C-005).
 - Required environment: docs only.
-- C-001 to C-006 are the author's own checks. Only C-008 is independent.
+- C-001 to C-006 are the author's own checks. Only C-008 is independent. The re-review of `255d042` that returned NEEDS-CHANGES was an independent read, but it is not the C-008 sign-off: C-008 stays PENDING until Sana and Vera pass the revision.
 
 ## Iteration ledger
 
@@ -118,6 +122,16 @@ An ADR set on PR #111 that an independent reviewer (Sana, Vera) can check agains
 - New evidence: the throttle in revision 3 could not carry 5-minute transcript slices (12 an hour against a cap of 10); the `ISSUED` state made the retention rule unsafe as written; both are fixed in the ADR text.
 - Decision: gate-review
 
+### Iteration 4
+
+- Target criterion: C-005, C-007, and the findings of the independent re-review of `255d042` (NEEDS-CHANGES).
+- Hypothesis: the findings are ADR text and record errors, with no code-fact blocker, and can be fixed in one push.
+- Change or investigation: read ClickUp (read-only) to confirm ticket ids and the owner's decision labels; merged `origin/main` (`08b0382`) with no rebase or force-push; ADR-0027 revision 5 and ADR-0028 revision 4; this contract. Code and test claims touched were re-checked on the merged tree: `_assert_fallback_is_the_permissive_one` and the tests that call it, `FALLBACK_PLAN_CODE`, and the stale "most permissive" comments in `license_keys/services.py`.
+- Verifier executed: `python3 scripts/validate_goal_contract.py` (structural PASS; `--require-complete` fails only on C-008); `git rev-list --count HEAD..origin/main` (0 before the push).
+- Result: C-001..C-007 PASS as author checks; C-008 PENDING. Maximum iterations (4) is now used, so any further round needs this contract to be extended or closed out.
+- New evidence: iteration 3 recorded "none recorded" for tickets that exist, because the ids were not read in ClickUp; that was an error of process, not of fact about the tickets. The labels `OD-7` to `OD-9` and `OD-R1` to `OD-R3` existed nowhere else and are replaced by ClickUp's own.
+- Decision: gate-review
+
 ## Risks and rollback
 
 - Risks: the chosen OpenAI path (option A) depends on an unverified Realtime capability, and its fallback (option C) is owner-approved. Provider facts in the ADRs date from 2026-09-27 and are unverified since. Several figures are explicitly not set (ADR-0028 OI-3, OI-4, OI-5).
@@ -134,5 +148,5 @@ An ADR set on PR #111 that an independent reviewer (Sana, Vera) can check agains
 - Validator result: structural PASS; with `--require-complete` it fails only on C-008 (pending)
 - Independent verification result: pending (C-008)
 - Terminal state: GATE_REVIEW
-- Remaining failed or blocked criteria: C-008 pending independent security and performance re-review; the OpenAI spike result; the ticket ids and figures listed under ADR-0028 "Open items before Accepted"
+- Remaining failed or blocked criteria: C-008 pending independent security and performance re-review; the OpenAI spike result; the open items in ADR-0028 "Open items before Accepted" (OI-1 to OI-12), several of which have no ticket id recorded
 - ClickUp final evidence comment: epic 17tnw2az0g6
