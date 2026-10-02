@@ -1540,6 +1540,9 @@
           else it.removeAttribute("aria-current");
         });
         closeAppMenu();
+        // The GO LIVE controls only exist on the console: an open notification panel re-measures so it
+        // never covers them (or wastes room) after a surface switch.
+        if (typeof notifPlaceIfOpen === "function") notifPlaceIfOpen();
         if (typeof pmLibCloseMenu === "function") pmLibCloseMenu(); // dismiss any open Library ⋯ menu on surface switch (no orphan over the next surface)
         // Move focus INTO the new surface (never leave it on a now-hidden element)
         // and announce the route to assistive tech (NAV-IA §2/§5).
@@ -1639,6 +1642,7 @@
         if (openRemote) openRemote.onclick = () => showSurface("remote"); // Network & Mobile → devices
       })();
       function openAppMenu() {
+        if (typeof notifClose === "function") notifClose(false); // two popovers never stack
         appMenu.classList.add("open");
         appMenuBtn.setAttribute("aria-expanded", "true");
         const cur = navItems.findIndex((i) => i.getAttribute("aria-current") === "page");
@@ -4325,6 +4329,27 @@
           if (e.key !== "Escape") disarm();
           return;
         }
+        // Notification panel (non-modal popover, docs/design/NOTIFICATION-PANEL-spec.md). Esc is CONSUMED by
+        // it: it closes the panel, returns focus to the bell and DISARMS any pending double-Esc window, so
+        // Esc, Esc with the panel open can never send CLEAR ALL (the 1st closes the panel, the 2nd is only
+        // a first tap — and an Esc armed BEFORE the panel opened is cancelled by the same disarm). Placed
+        // before the console-only guard because the bell lives in the global top bar: the panel opens on
+        // every surface. The emergency chords above and plain B / Backspace below are untouched. Only the
+        // keys that would act on a focused POPOVER are held back: with focus INSIDE the panel, Enter /
+        // Space / arrows must never fall through to GO LIVE / Next / Previous.
+        if (notifIsOpen()) {
+          if (e.key === "Escape") {
+            e.preventDefault();
+            e.stopPropagation();
+            disarm();
+            notifClose(true);
+            return;
+          }
+          if (notifPanel.contains(e.target) && (e.key === "Enter" || e.key === " " || e.key.indexOf("Arrow") === 0)) {
+            disarm();
+            return;
+          }
+        }
         // CON-089 (global chord `F`, Figma 337:174): fullscreen the SELECTED output's console-
         // local preview. Placed here (outside the console-only guard below) because its target —
         // Screens & Outputs' "selected output" — is a DIFFERENT surface than the console; mirrors
@@ -6605,6 +6630,229 @@
         return true;
       }
 
+      // ===================================================================================
+      // NOTIFICATION BELL + PANEL (docs/design/NOTIFICATION-PANEL-spec.md)
+      //
+      // The recovery cards above used to sit in the console's flow, so every active message pushed
+      // the whole console down. They now live inside #notif-panel, a position:fixed NON-modal popover
+      // opened from the bell in the top bar. WHEN a card shows and WHAT it says did not change: every
+      // producer above still owns its own card's `hidden`. This block only READS the cards.
+      //
+      // THE RULES (each pinned by a NOTIF-* check in scripts/operator_headless.py):
+      //   - the badge is a live computed read of the cards visible RIGHT NOW — rcvRegionSync() runs
+      //     after every producer — never a latched event: a condition that clears clears the badge;
+      //   - fault cards (warn / live) are counted; info cards (session notice, recovered) are a
+      //     number-less dot, because they are context, not something to act on;
+      //   - the panel takes no page space and never covers the emergency footer or the GO LIVE row;
+      //   - the first Esc is consumed by the panel and DISARMS the double-Esc CLEAR ALL window;
+      //   - a card that BECOMES visible while the panel is closed is announced once, from edges.
+      //
+      // MEMORY: one boolean (is it open — the panel's own `hidden`), one small integer per card id (its
+      // rank at the previous sync, for edge detection) and one string (the last painted state, so the
+      // 1 Hz poll does not rewrite the DOM). No list, no history, no timer handles.
+      // ===================================================================================
+      const notifBell = document.getElementById("notif-bell");
+      const notifPanel = document.getElementById("notif-panel");
+      const notifBadge = document.getElementById("notif-badge");
+      const notifSummary = document.getElementById("notif-summary");
+      const notifEmpty = document.getElementById("notif-empty");
+      const notifEmptyText = document.getElementById("notif-empty-text");
+      const notifLive = document.getElementById("notif-live");
+
+      // A card's severity RANK, read from what it is: 0 hidden, 1 info/ok, 2 warn, 3 live.
+      const NOTIF_INFO = 1, NOTIF_WARN = 2, NOTIF_LIVE = 3;
+      // Narrowest the panel is ever squeezed to keep clear of the GO LIVE controls (see notifPlace).
+      const NOTIF_MIN_W = 320;
+      let notifPrev = {};   // card id -> rank at the previous sync (edge detection)
+      let notifKey = "";    // the last painted state
+      // Whether EVERY assigned output reports a healthy signal right now (set from each view).
+      let notifOutputsHealthy = false;
+
+      function notifRank(card) {
+        if (card.hidden) return 0;
+        if (card.classList.contains("rcv-warn")) return NOTIF_WARN;        // host link lost
+        if (card.classList.contains("rcv-live")) {
+          // The output card is red-tinted in every state, but its PILL says how bad it is: DEGRADED is
+          // amber. SIGNAL LOST and OUTPUT HELD (the live output cannot update) keep the red.
+          return card.querySelector(".rcv-pill.degraded") ? NOTIF_WARN : NOTIF_LIVE;
+        }
+        return NOTIF_INFO;                                                 // session notice, recovered
+      }
+
+      // What a screen reader hears for a card that has just appeared: its title, or for the output card
+      // its name + state ("Monitor #41057 DEGRADED"), or for the recovered line its sentence.
+      function notifTitle(card) {
+        const t = card.querySelector(".rcv-title");
+        if (t) return t.textContent.replace(/\s+/g, " ").trim();
+        const name = card.querySelector(".rcv-name");
+        const pill = card.querySelector(".rcv-pill");
+        if (name && pill) return (name.textContent + " " + pill.textContent).replace(/\s+/g, " ").trim();
+        const x = card.querySelector(".rcv-text");
+        return x ? x.textContent.replace(/\s+/g, " ").trim() : "";
+      }
+
+      // The ONE live region. Cards inside a closed (hidden) panel do not announce, so this does it.
+      // aria-live is flipped per message (assertive only for a red card); the region is emptied and
+      // refilled so an identical message announces again, and it only ever holds the latest one.
+      function notifAnnounce(text, assertive) {
+        if (!notifLive) return;
+        notifLive.setAttribute("aria-live", assertive ? "assertive" : "polite");
+        notifLive.textContent = "";
+        notifLive.appendChild(document.createTextNode("Notification: " + text));
+      }
+
+      // Only said when it is TRUE. "Reporting normally" needs the host link up AND every assigned output
+      // reporting healthy; a Local backend (no host link) or an absent signal says exactly that instead —
+      // an unknown is never rendered as healthy (HOST-SIGNAL-INVENTORY.md, the three-way rule).
+      function notifEmptyLine() {
+        const st = currentLinkState();
+        const outs = notifOutputsHealthy;
+        if (st === "connected") {
+          return outs ? "Nothing needs attention. The host link and outputs are reporting normally."
+            : "The host link is up. Output status is not being reported.";
+        }
+        const tail = outs ? " Outputs are reporting normally." : " Output status is not being reported.";
+        if (st === "local") return "No host link to report — this console runs stand-alone." + tail;
+        return outs ? "Awaiting host telemetry — the host link has not been reported yet." + tail
+          : "Awaiting host telemetry — neither the host link nor output status has been reported yet.";
+      }
+
+      // Read the outputs once per view: are ALL assigned outputs reporting a healthy signal?
+      function notifNoteOutputs(view) {
+        const outs = (view && Array.isArray(view.outputs)) ? view.outputs : [];
+        let assigned = 0, healthy = 0;
+        for (let i = 0; i < outs.length; i++) {
+          const o = outs[i];
+          if (!o || o.assigned !== true) continue;
+          assigned++;
+          if (o.signal === "healthy") healthy++;
+        }
+        notifOutputsHealthy = assigned > 0 && healthy === assigned;
+      }
+
+      // Recompute the bell, the summary, the empty state and (on an edge) the announcement from the cards
+      // that are visible NOW. Called from rcvRegionSync(), i.e. after every producer, every poll.
+      function notifSync() {
+        if (!notifBell || !notifPanel) return;
+        const region = rcvEl("recovery");
+        const cards = region ? region.children : [];
+        let faults = 0, critical = 0, notices = 0;
+        let assertive = false;
+        const said = [];
+        for (let i = 0; i < cards.length; i++) {
+          const card = cards[i];
+          if (!card.classList.contains("rcv-card")) continue;
+          const rank = notifRank(card);
+          if (rank >= NOTIF_WARN) { faults++; if (rank === NOTIF_LIVE) critical++; }
+          else if (rank === NOTIF_INFO) notices++;
+          // EDGE, not level: news is a card that was not showing, or one that has just turned red.
+          // A card that merely STAYS visible is not re-announced on every 1 Hz poll.
+          const id = card.id;
+          if (id) {
+            const was = notifPrev[id] || 0;
+            if (rank > was && (was === 0 || rank === NOTIF_LIVE)) {
+              said.push(notifTitle(card));
+              if (rank === NOTIF_LIVE) assertive = true;
+            }
+            notifPrev[id] = rank;
+          }
+        }
+        // While the panel is OPEN each card's own role (status / alert) announces it; speaking it here
+        // as well would say everything twice. The previous ranks are updated either way.
+        if (said.length && notifPanel.hidden) notifAnnounce(said.join(". "), assertive);
+
+        const total = faults + notices;
+        const noticeText = notices + (notices === 1 ? " notice" : " notices");
+        const summary = total === 0 ? "All clear"
+          : faults ? faults + " active" + (critical ? ", " + critical + " critical" : "") + (notices ? ", " + noticeText : "")
+          : noticeText;
+        const empty = total === 0 ? notifEmptyLine() : "";
+        const key = faults + "|" + critical + "|" + notices + "|" + empty;
+        if (key === notifKey) return;
+        notifKey = key;
+
+        const sev = faults ? (critical ? "live" : "warn") : (notices ? "info" : "");
+        if (sev) {
+          notifBadge.setAttribute("data-sev", sev);
+          notifBell.setAttribute("data-sev", sev);
+          // Info-only is a dot with NO number; fault states show how many, capped at 9+.
+          notifBadge.textContent = faults ? (faults > 9 ? "9+" : String(faults)) : "";
+          notifBadge.hidden = false;
+        } else {
+          notifBadge.hidden = true;
+          notifBadge.textContent = "";
+          notifBadge.removeAttribute("data-sev");
+          notifBell.removeAttribute("data-sev");
+        }
+        notifBell.setAttribute("aria-label", "Notifications: " + (total === 0 ? "all clear" : summary));
+        notifSummary.textContent = summary;
+        notifEmpty.hidden = total !== 0;
+        if (total === 0) notifEmptyText.textContent = empty;
+      }
+
+      function notifIsOpen() { return !!notifPanel && !notifPanel.hidden; }
+
+      // Place the panel between the header and the emergency footer, and clear of the GO LIVE controls.
+      // Measured with getBoundingClientRect on open, on resize and on a surface change — never assumed:
+      //   - top: just under the header;   bottom: stops 12px ABOVE #emergency (BLACKOUT / CLEAR ALL);
+      //   - beside the GO LIVE controls: while the console is showing, the panel's left edge stays 8px
+      //     right of Previous / GO LIVE / Next, so it never covers them (on the console that costs a few
+      //     px of the 400px width — it lands on the right-hand column);
+      //   - if the window is too narrow for that (the console's columns collapse under ~1100px, well below
+      //     the 1400px product minimum) the panel starts UNDER those controls instead.
+      // Nothing here changes layout: the panel is position:fixed.
+      function notifPlace() {
+        if (!notifPanel) return;
+        const head = document.querySelector("header");
+        const foot = document.getElementById("emergency");
+        const vw = document.documentElement.clientWidth;
+        const vh = window.innerHeight;
+        let top = (head ? head.getBoundingClientRect().bottom : 64) + 8;
+        let width = Math.min(400, vw - 24);
+        let right = -Infinity, bottom = -Infinity;
+        ["prev", "golive", "next"].forEach((id) => {
+          const b = document.getElementById(id);
+          const r = b ? b.getBoundingClientRect() : null;
+          if (r && r.width > 0 && r.height > 0) { right = Math.max(right, r.right); bottom = Math.max(bottom, r.bottom); }
+        });
+        if (right > -Infinity) {
+          const room = vw - 20 - (right + 8);
+          if (room >= NOTIF_MIN_W) width = Math.min(width, room);
+          else if (vw - 20 - width < right + 8) top = Math.max(top, bottom + 8);
+        }
+        const limit = Math.min((foot ? foot.getBoundingClientRect().top : vh) - 12, vh - 12);
+        notifPanel.style.top = top + "px";
+        notifPanel.style.width = width + "px";
+        notifPanel.style.maxHeight = Math.max(0, limit - top) + "px";
+      }
+      function notifPlaceIfOpen() { if (notifIsOpen()) notifPlace(); }
+
+      function notifOpen() {
+        closeAppMenu();            // two popovers never stack
+        notifPlace();
+        notifPanel.hidden = false;
+        notifBell.setAttribute("aria-expanded", "true");
+        notifPanel.focus({ preventScroll: true });
+      }
+      function notifClose(returnFocus) {
+        if (!notifIsOpen()) return;
+        notifPanel.hidden = true;
+        notifBell.setAttribute("aria-expanded", "false");
+        if (returnFocus) notifBell.focus({ preventScroll: true });
+      }
+
+      (function wireNotifications() {
+        if (!notifBell || !notifPanel) return;
+        notifBell.addEventListener("click", () => { notifIsOpen() ? notifClose(true) : notifOpen(); });
+        const x = document.getElementById("notif-close");
+        if (x) x.addEventListener("click", () => notifClose(true));
+        // A click outside closes it. There is deliberately no scrim: the console underneath stays live.
+        document.addEventListener("click", (e) => {
+          if (notifIsOpen() && !notifPanel.contains(e.target) && !notifBell.contains(e.target)) notifClose(false);
+        });
+        window.addEventListener("resize", notifPlaceIfOpen);
+      })();
+
       // The region is visible exactly when at least one state is. Derived from the cards' own
       // visibility rather than from a return value, so the several callers that update only ONE
       // card (the link surfaces, the dismiss handler) cannot strand the region open or closed.
@@ -6618,6 +6866,8 @@
           if (e && !e.hidden) { any = true; break; }
         }
         region.hidden = !any;
+        // The bell is derived from the same cards, at the same moment, by the same choke point.
+        notifSync();
       }
 
       // Test seam (mirrors window.__detHealthRefresh): the headless gate asserts recovery
@@ -6626,6 +6876,7 @@
 
       function syncRecovery(view) {
         if (!rcvEl("recovery")) return;
+        notifNoteOutputs(view);
         // Evaluate all four unconditionally (no short-circuit): each owns its own card's
         // visibility, and skipping one would strand a card visible after its cause cleared.
         syncSessionNotice(view);
