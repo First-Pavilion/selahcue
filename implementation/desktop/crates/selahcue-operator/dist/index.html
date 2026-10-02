@@ -51,30 +51,33 @@
         <!-- Scriptures (CON-079/080, Design 2.0 Figma 336:180-187): deep-links to the console's
              existing Scriptures content-source tab (#scriptures / #ctab-scriptures — already built,
              already the default active tab). Inserting it HERE, before Transcript & Notes, shifts
-             every ⌘N chord after it by one — the global keydown handler derives ⌘1-⌘8 from this
-             menu's live DOM order (see the "Global ⌘/Ctrl+1–8" block in app.js), so no chord-index
+             every ⌘N chord after it by one — the global keydown handler derives ⌘1-⌘7 from this
+             menu's live DOM order (see the "Global ⌘/Ctrl+1–7" block in app.js), so no chord-index
              code changes; only the markup order + the Settings data-nodigit below do. -->
         <button class="nav-item" role="menuitem" tabindex="-1" data-surface="console" data-focus="scriptures"
           accesskey="6"><span class="nav-ico" aria-hidden="true">✦</span><span class="nav-txt"><span
               class="nav-t">Scriptures</span><span class="nav-d">Browse &amp; stage the
               Bible</span></span><span class="nav-key">⌘6</span></button>
-        <button class="nav-item" role="menuitem" tabindex="-1" data-surface="console" data-focus="transcript"
+        <!-- 17tnw2b0ntd (D2, TRANSCRIPTS-2.0-HANDOFF.md §14): this item now opens the Transcripts
+             page directly — the separate ⌘8 "Transcripts" item below is REMOVED, its markup and
+             not just its shortcut, so there is exactly one route to saved-transcript review + notes
+             generation. `data-focus` is dropped (was "transcript", a deep-link into the console's
+             live tail) so showSurface()'s "mark only the primary entry for a surface as current"
+             logic (app.js) picks this item up as aria-current="page" while Transcripts is open —
+             no new code path needed, just this markup change. -->
+        <button class="nav-item" role="menuitem" tabindex="-1" data-surface="transcripts"
           accesskey="7"><span class="nav-ico" aria-hidden="true">◎</span><span class="nav-txt"><span
-              class="nav-t">Transcript &amp; Notes</span><span class="nav-d">Live transcript + sermon
-              AI</span></span><span class="nav-key">⌘7</span></button>
+              class="nav-t">Transcript &amp; Notes</span><span class="nav-d">Review transcripts &amp;
+              generate notes</span></span><span class="nav-key">⌘7</span></button>
         <div class="menu-div" role="separator"></div>
         <!-- Settings (CON-080) carries the fixed ⌘, chord rather than a menu-order digit — it is
-             excluded from the ⌘1–⌘8 digit derivation via data-nodigit so Transcripts (saved) below
-             can keep ⌘8 with no other markup change. -->
+             excluded from the ⌘1–⌘7 digit derivation via data-nodigit. Removing the old ⌘8
+             "Transcripts" item above shifts nothing here: chords are derived from live DOM order
+             (app.js's "Global ⌘/Ctrl+1–7" block), not a fixed slot, and this item was already
+             excluded from that derivation. -->
         <button class="nav-item" role="menuitem" tabindex="-1" data-surface="settings" data-nodigit="true"><span
             class="nav-ico" aria-hidden="true">⚙</span><span class="nav-txt"><span class="nav-t">Settings</span><span
               class="nav-d">Providers · privacy · network</span></span><span class="nav-key">⌘,</span></button>
-        <!-- Transcripts (86akcffvt / FR-130 core slice): every saved transcript, read-only. Distinct
-             from "Transcript & Notes" above (⌘7), which deep-links to the LIVE transcript while a
-             service is running — this opens saved history after the fact. -->
-        <button class="nav-item" role="menuitem" tabindex="-1" data-surface="transcripts" accesskey="8"><span
-            class="nav-ico" aria-hidden="true">▥</span><span class="nav-txt"><span class="nav-t">Transcripts</span><span
-              class="nav-d">Saved services · full text</span></span><span class="nav-key">⌘8</span></button>
         <div class="menu-foot"><button class="menu-foot-btn" type="button" data-open="palette"><span
               class="mfk">⌘K</span> Command palette</button><button class="menu-foot-btn" type="button"
             data-open="shortcuts">Shortcuts</button></div>
@@ -1977,14 +1980,14 @@
               <section class="pp-section" aria-labelledby="sec-atrest-h">
                 <h2 id="sec-atrest-h" class="pp-seclabel">AT-REST ENCRYPTION</h2>
                 <div class="set-row">
-                  <div><p class="set-row-t">At-rest encryption</p><p class="set-row-d">Service plans, library, transcripts, and captured audio are not encrypted in the database yet in this build.</p></div>
-                  <span class="pp-badge pp-badge-neutral">NOT YET ON</span>
+                  <div><p class="set-row-t">At-rest encryption</p><p id="sec-atrest-desc" class="set-row-d">Checking this host's database…</p></div>
+                  <span id="sec-atrest-badge" class="pp-badge pp-badge-neutral">CHECKING…</span>
                 </div>
                 <div class="set-row">
-                  <div><p class="set-row-t">Key source</p><p class="set-row-d">Where the database encryption key will come from, once encryption ships.</p></div>
-                  <span class="set-row-v">Planned: OS secret store</span>
+                  <div><p class="set-row-t">Key source</p><p class="set-row-d">Where the database encryption key comes from — the OS secret store (macOS Keychain / Windows Credential Manager / Linux Secret Service), or an Argon2id-derived key if <code>SELAHCUE_PASSPHRASE</code> is set.</p></div>
+                  <span id="sec-key-source-v" class="set-row-v">OS secret store or SELAHCUE_PASSPHRASE</span>
                 </div>
-                <p class="set-inert-note">At-rest encryption (SQLCipher, ADR-0007) is a planned release milestone, not yet in this build.</p>
+                <p id="sec-atrest-note" class="set-inert-note">Checking this host's database…</p>
               </section>
 
               <section class="pp-section" aria-labelledby="sec-secrets-h">
@@ -2300,8 +2303,13 @@
         <div id="tr-gen" class="tr-gen">
           <button id="tr-generate" class="pp-generate" type="button">✦   Generate Sermon Notes</button>
           <div id="tr-gen-preview" class="pp-gen-preview" hidden></div>
+          <!-- In-flight status (Figma 1133:36): shown only while transcript_generate_notes runs. No
+               step list and no Cancel — nothing reports progress and the command persists its draft
+               on completion (see transcripts.js showGenProgress). -->
+          <div id="tr-gen-progress" class="tr-gen-progress" role="status" aria-live="polite" hidden></div>
           <div id="tr-gen-result" class="pp-gen-result" hidden></div>
         </div>
+        <p id="tr-gen-live" class="sr-only" role="status" aria-live="polite"></p>
         <p id="tr-detail-live" class="sr-only" role="status" aria-live="polite"></p>
       </div>
     </section>
@@ -2533,7 +2541,7 @@
           <dd>App menu</dd>
         </div>
         <div class="sc-row">
-          <dt><kbd>⌘1</kbd>–<kbd>8</kbd></dt>
+          <dt><kbd>⌘1</kbd>–<kbd>7</kbd></dt>
           <dd>Jump to a section</dd>
         </div>
         <div class="sc-row">

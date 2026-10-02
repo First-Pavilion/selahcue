@@ -4,9 +4,10 @@
 
 use selahcue_core::transcript::TranscriptProvider;
 use selahcue_stt::{
-    AudioChunk, EnergyVad, EngineConfig, FakeRecognizer, FeedbackGuard, PcmRing, SttEngine,
-    MAX_PCM_SAMPLES, MAX_PENDING_SEGMENTS,
+    AudioChunk, EnergyVad, EngineConfig, FakeRecognizer, FeedbackGuard, ManualClock, PcmRing,
+    SttEngine, MAX_PCM_SAMPLES, MAX_PENDING_SEGMENTS,
 };
+use std::time::{Duration, Instant};
 
 const FRAME_16K: usize = 320;
 
@@ -44,7 +45,7 @@ fn bounded_segment_queue_caps_when_host_never_polls() {
         hangover_frames: 2,
         min_utterance_frames: 1,
         max_utterance_samples: FRAME_16K, // 1 frame → each speech frame closes an utterance
-        interim_interval_frames: 0,
+        interim_interval: Duration::ZERO,
         interim_max_samples: 0,
     };
     let (mut engine, provider) = SttEngine::build(
@@ -81,38 +82,65 @@ fn bounded_segment_queue_caps_when_host_never_polls() {
 fn bounded_utterance_accumulator_force_closes_continuous_speech() {
     // Continuous speech with NO pause must not let the utterance accumulator grow without
     // bound: it force-closes at max_utterance_samples, emitting bounded segments instead.
+    //
+    // Interims are deliberately on at an aggressive cadence (fires roughly every processed
+    // frame) so this test also proves the no-leak guarantee holds when BOTH finals and interims
+    // are being pushed into the shared segment queue, not just finals alone (86akcfpbj). Driven
+    // through `build_with_clock` with a `ManualClock` advanced one frame's worth of real time
+    // per processed frame — the interim gate is now wall-clock-based, so a real `SttEngine::build`
+    // fed this whole 200-frame burst in one synchronous call would very likely never fire an
+    // interim at all (the burst executes in well under a millisecond of real time), which would
+    // silently stop this test from exercising what its own comment claims.
     let config = EngineConfig {
         hangover_frames: 100,
         min_utterance_frames: 1,
         max_utterance_samples: FRAME_16K * 4, // force-close every 4 frames
-        interim_interval_frames: 1,           // interims on — must still stay bounded (no-leak)
+        interim_interval: Duration::from_millis(20), // fires ~every processed frame (1 * MS_PER_FRAME)
         interim_max_samples: 0,
     };
-    let (mut engine, mut provider) = SttEngine::build(
+    let clock = ManualClock::new(Instant::now());
+    let (mut engine, mut provider) = SttEngine::build_with_clock(
         config,
         Box::new(EnergyVad::new()),
         Box::new(FakeRecognizer::with_script(
-            (0..1000).map(|i| format!("seg {i}")),
+            (0..5000).map(|i| format!("seg {i}")),
         )),
         FeedbackGuard::new(),
+        Box::new(clock.clone()),
     );
 
-    // One long continuous-speech chunk (200 frames), no silence at all.
-    let long_speech: Vec<f32> = (0..(200 * FRAME_16K))
+    // 200 frames of continuous speech, no silence at all, fed one frame at a time with the
+    // clock advanced a real frame's worth (20 ms) between each — the same pace a live
+    // capture/recognition loop runs at when it is keeping up.
+    let one_frame: Vec<f32> = (0..FRAME_16K)
         .map(|i| if i % 2 == 0 { 0.5 } else { -0.5 })
         .collect();
-    engine.process(&AudioChunk::new(long_speech, 16_000, 1));
+    for _ in 0..200 {
+        engine.process(&AudioChunk::new(one_frame.clone(), 16_000, 1));
+        clock.advance(Duration::from_millis(20));
+    }
     engine.flush();
 
-    // Force-close on the sample cap must chop 200 frames of unbroken speech into MANY
-    // bounded utterances (≈ 200 / 4 = 50). This lower bound is what makes the test
-    // non-vacuous: if a regression removed the `max_utterance_samples` guard, the whole 200
-    // frames would stay in ONE utterance closed only by `flush()` → exactly 1 segment → this
-    // assertion fails. (A count-only `!is_empty()` check would pass either way.)
+    // Force-close on the sample cap must chop 200 frames of unbroken speech into MANY bounded
+    // FINAL utterances (≈ 200 / 4 = 50), plus roughly two interims per 4-frame group at this
+    // cadence (≈ 150 segments total pushed into the shared, bounded queue).
+    //
+    // **Counted on FINALS ONLY (Vera, PR #124 review, F3 — the prior version of this assertion
+    // counted `out.len()` over EVERY segment, finals and interims together, which made it
+    // vacuous with respect to the claim in its own name and comment.** With interims firing on
+    // their own wall-clock cadence regardless of whether the sample cap does anything, a
+    // regression that removed `max_utterance_samples` entirely — the whole 200 frames staying
+    // in ONE utterance, closed only by the final `flush()` — would still leave `out.len()` in
+    // the hundreds from interims alone, and the old `out.len() >= 40` assertion would not
+    // notice. Counting `is_final` segments specifically measures what this test is actually
+    // named for: verified failing (1 final, from `flush()` alone) against `main`'s equivalent
+    // scenario with the cap effectively disabled, and passing on the real code.
     let out = provider.poll();
+    let finals = out.iter().filter(|s| s.is_final).count();
     assert!(
-        out.len() >= 40,
-        "expected the sample cap to force-close many segments (~50), got {} — cap not enforced?",
+        finals >= 40,
+        "expected the sample cap to force-close many FINAL segments (~50), got {finals} \
+         finals ({} total incl. interims) — cap not enforced?",
         out.len()
     );
     assert!(out.len() <= MAX_PENDING_SEGMENTS);

@@ -238,6 +238,66 @@ fn encrypted_sermon_note_round_trips_and_leaves_no_plaintext_on_disk() {
 }
 
 #[test]
+fn open_existing_readonly_encrypted_reads_back_with_the_right_key_positive_control() {
+    // FR-154/86akgrz3b: selahcue-operator's Transcripts viewer must be able to read an
+    // encrypted store selahcue-desktop wrote, without ever creating/writing/migrating it.
+    const MARKER: &str = "PLAINTEXT_MARKER_Malachi_Messenger_Covenant";
+    let file = tempfile::NamedTempFile::new().unwrap();
+    let transcript_id = {
+        let db = Database::open_encrypted(file.path(), &key_a()).unwrap();
+        let transcript_id = transcript_repo::create(
+            &db,
+            &NewTranscript {
+                label: MARKER.to_string(),
+                provider: "manual".into(),
+                plan_id: None,
+                started_at_ms: 0,
+            },
+        )
+        .unwrap();
+        transcript_repo::append_segment(&db, transcript_id, 0, 1000, MARKER).unwrap();
+        db.checkpoint_truncate().unwrap();
+        transcript_id
+    };
+
+    let db = Database::open_existing_readonly_encrypted(file.path(), &key_a()).unwrap();
+    let detail = transcript_repo::load(&db, transcript_id).unwrap();
+    assert_eq!(detail.label, MARKER);
+    assert_eq!(detail.segments.len(), 1);
+    assert_eq!(detail.segments[0].text, MARKER);
+}
+
+#[test]
+fn open_existing_readonly_encrypted_rejects_the_wrong_key() {
+    let file = tempfile::NamedTempFile::new().unwrap();
+    {
+        let db = Database::open_encrypted(file.path(), &key_a()).unwrap();
+        plan_repo::insert(&db, &ServicePlan::new("Secret")).unwrap();
+        db.checkpoint_truncate().unwrap();
+    }
+    let wrong = EncryptionKey::from_raw([0x99; 32]);
+    assert!(
+        Database::open_existing_readonly_encrypted(file.path(), &wrong).is_err(),
+        "a wrong key must not open the database read-only either — the verification read \
+         (PRAGMA schema_version) must surface it, not silently return an unkeyed/garbage view"
+    );
+}
+
+#[test]
+fn open_existing_readonly_encrypted_never_creates_a_missing_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("does-not-exist.db3");
+    assert!(
+        Database::open_existing_readonly_encrypted(&path, &key_a()).is_err(),
+        "a missing path must error, not mint a fresh encrypted store"
+    );
+    assert!(
+        !path.exists(),
+        "the read-only open must not have created a file"
+    );
+}
+
+#[test]
 fn in_memory_encrypted_round_trips() {
     // The keyed in-memory path (no disk, no WAL sidecar) still opens, migrates,
     // and round-trips.

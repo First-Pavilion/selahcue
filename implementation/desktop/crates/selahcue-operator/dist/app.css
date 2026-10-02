@@ -7719,6 +7719,15 @@
 .pp-optin-btn:focus-visible { outline: 2px solid var(--sc-primary-hover); outline-offset: 2px; }
 
 /* Footnote */
+/* Settings > Providers & Privacy: the link to the Transcripts page (Figma 1135:78) — a violet link
+   with a sparkle icon and a muted caption. It is navigation, not a button. Without these rules it
+   rendered in the browser-default blue (rgb(0,0,238)) at 2.07:1 on the dark card. */
+.pp-ai-link-row { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; margin-top: 14px; }
+.pp-ai-link { color: var(--sc-primary-hover); font-size: 13px; font-weight: 600; text-decoration: none; }
+.pp-ai-link::before { content: "✦ "; }
+.pp-ai-link:hover { text-decoration: underline; }
+.pp-ai-link:focus-visible { outline: 2px solid var(--sc-primary-hover); outline-offset: 3px; border-radius: 4px; }
+.pp-ai-link-sub { margin: 0; font-size: 12px; font-weight: 500; color: var(--sc-text-secondary); }
 .pp-footnote { display: flex; gap: 8px; align-items: center; justify-content: center; font-size: 11px; font-weight: 500; color: var(--sc-text-muted); }
 .pp-footnote-ico { flex: none; }
 
@@ -7937,6 +7946,14 @@
    privacy or availability MEANING — this one is purely informational. */
 .pp-badge-neutral { color: var(--sc-text-muted); background: var(--sc-elevated); border-color: var(--sc-border-strong); }
 .pp-badge-soon { color: var(--sc-warn); background: var(--sc-warn-soft); border-color: var(--sc-warn-border); }
+/* Real (not planned) at-rest encryption status (86akgrz3b, Shadow's security review): the store
+   this build finds on disk is genuinely encrypted, or genuinely is not — never a static claim.
+   `.pp-badge-ok` reuses the same tokens `.pp-banner-ok` already uses for a positive/verified
+   state; `.pp-badge-danger` reuses `.pp-badge-soon`'s sibling `--sc-live` (red) tokens for the
+   one state that genuinely needs the operator's attention: an existing store that a keychain/
+   passphrase hiccup left unencrypted. */
+.pp-badge-ok { color: var(--sc-preview); background: var(--sc-preview-soft); border-color: var(--sc-preview-border); }
+.pp-badge-danger { color: var(--sc-live); background: var(--sc-live-soft); border-color: var(--sc-live-border); }
 .pp-pill-info-dot { color: var(--sc-info); }
 
 /* A two-way segmented control (Comfortable/Compact density, 12/24-hour clock format). Reuses the
@@ -7990,10 +8007,18 @@
 /* ===== Transcripts (86akcffvt / FR-130 core slice) ===================================== */
 /* The surface hosts two full-height sibling views ("list" / "detail"), each toggled via the
    native [hidden] attribute, never swapped with the OTHER's own [class] alone — see
-   transcripts.js. This surface manages its own scroll regions (the list scrolls as a whole;
-   the detail view's #tr-detail-log is its OWN scroll container so the bounded-window
-   virtualizer's scrollTop math is meaningful), so it opts out of .surface-pad's page-level
-   scroll the same way #surface-preservice already does. */
+   transcripts.js. The app shell itself still never scrolls (`overflow: hidden` below, unchanged)
+   — but per TRANSCRIPTS-2.0-HANDOFF.md §11 (17tnw2b0ntd), the DETAIL view's own scroll model was
+   rebuilt: the bug was one region (`.tr-log`) being made to scroll by STARVING every other region
+   (`.tr-panel`/`.tr-gen`) of space rather than any of them getting a bounded height on purpose —
+   once a saved draft or edit form was tall, the log shrank to zero and the rest was simply cut
+   off with no scrollbar anywhere. The fix: `.tr-log`'s bounded-window virtualizer (ADR-0026) is a
+   PERFORMANCE mechanism, not a viewport-filling one — it gets a capped height and keeps its own
+   internal scroll (unchanged). `.tr-detail` becomes the outer scroll container instead, so
+   whatever sits below the log (the detections panel, already capped; the notes/generate panel,
+   deliberately UNcapped — a draft is allowed to be as tall as its content needs) sits in normal
+   block flow and is reached by scrolling the page, not the log. The list view is unchanged —
+   `.tr-view`'s own `overflow-y: auto` already did the right thing; the bug was isolated to detail. */
 #surface-transcripts.surface-pad.active {
   padding: 0;
   overflow: hidden;
@@ -8001,11 +8026,29 @@
   flex-direction: column;
 }
 
+/* §11.2: one shared, centered content column across every stacked detail region (header, log,
+   detections, notes) — reusing the Settings precedent (`.pp-wrap`/`.set-page`, 1180px) exactly
+   rather than inventing a new number, so wide windows get neutral margin instead of edge-to-edge
+   text. Applied here AND to `.tr-detail-head`/`.tr-log`/`.tr-panel`/`.tr-gen` below; each keeps
+   its own existing left/right padding inside this shared max-width. */
+.tr-detail-head,
+.tr-log,
+.tr-panel,
+.tr-gen {
+  max-width: 1180px;
+  margin-inline: auto;
+  width: 100%;
+  box-sizing: border-box;
+}
+
 .tr-view {
   height: 100%;
-  box-sizing: border-box;
   overflow-y: auto;
-  padding: 22px 28px 28px;
+  box-sizing: border-box;
+  /* The list's scroller stays FULL WIDTH (so a wheel/scrollbar works from the side margins on a
+     wide window); the 1180px column is made with side padding instead of a max-width on the
+     scroller itself. */
+  padding: 22px max(28px, calc((100% - 1180px) / 2)) 28px;
 }
 
 .tr-head { margin-bottom: 16px; }
@@ -8117,15 +8160,29 @@
 }
 
 /* ---- Detail (read-only viewer) ---- */
+/* §11.1: `.tr-detail` is now the outer scroll container for the detail view — `overflow-y: auto`
+   is the load-bearing change here. Everything below the capped `.tr-log` (detections, notes/
+   generate) sits in normal block flow beneath it; however tall the notes panel gets, scrolling
+   THIS element (not `.tr-log`) reaches every part of it. */
 .tr-detail {
   height: 100%;
   box-sizing: border-box;
   display: flex;
   flex-direction: column;
   min-height: 0;
+  overflow-y: auto;
+  /* WCAG 2.4.11 (Focus Not Obscured): keyboard focus must never be scrolled in BEHIND the sticky
+     header below (~76px tall + its border). Without this, Shift+Tab through a long edit form
+     parked the focused field at y=62-64, fully under the header. */
+  scroll-padding-top: 96px;
 }
 .tr-detail[hidden] { display: none; } /* must follow the flex rule above — [hidden] wins by source order (WKWebView-safe) */
 
+/* §11.1 (design decision, flagged not guessed — TRANSCRIPTS-2.0-HANDOFF.md §11.1/§17): sticky so
+   the back button + service identity stay visible while reviewing a long draft. Costs nothing
+   structurally (`flex: none` already) and a one-line revert (`position: sticky; top: 0;` only) if
+   the owner would rather it scroll away with the rest. Background MUST be opaque — content now
+   scrolls under it. */
 .tr-detail-head {
   display: flex;
   align-items: flex-start;
@@ -8133,6 +8190,10 @@
   padding: 18px 28px 14px;
   border-bottom: 1px solid var(--sc-border);
   flex: none;
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--sc-surface);
 }
 .tr-back {
   flex: none;
@@ -8188,10 +8249,22 @@
    Up-Down / Home / End) — NFR-019. This is the virtualizer's OWN scroll container; its
    scrollTop drives transcripts.js's bounded sliding window (renderWindow/recomputeWindow). */
 .tr-log {
-  flex: 1;
-  min-height: 0;
+  /* §11.1: CHANGED from `flex: 1; min-height: 0;` — the bounded-window virtualizer (ADR-0026)
+     is a performance mechanism, not a viewport-filling one. It does not need to occupy 100% of
+     the available space to do that job; giving it a capped height instead turns it into a
+     "window into a long transcript" that settles at a sensible size rather than a panel that
+     either eats everything or (once a tall notes panel existed below it) shrank to nothing. */
+  flex: none;
+  min-height: 220px;
+  max-height: min(48vh, 480px);
   overflow-y: auto;
-  padding: 6px 28px 28px;
+  padding: 8px 16px 16px;
+  /* Figma 1132:2: the log is a bordered inset card inside the shared column. */
+  width: calc(100% - 56px);
+  margin-top: 16px;
+  border: 1px solid var(--sc-border);
+  border-radius: 12px;
+  background: var(--sc-inset);
   /* ADR-0026 rev 2, D2: native scroll anchoring is now load-bearing, not disabled. Every
      mutation here (rows added/removed, spacer heights changed) is a plain DOM mutation with NO
      accompanying `scrollTop` write — the browser's own anchoring is what keeps the row the
@@ -8221,8 +8294,13 @@
    `flex: none` like `.tr-gen` below, so it never competes with the log for grow space. */
 .tr-panel {
   flex: none;
-  padding: 14px 28px 4px;
-  border-top: 1px solid var(--sc-border);
+  /* Figma 1132:2: the detections panel is a bordered card inside the shared column. */
+  width: calc(100% - 56px);
+  margin-top: 16px;
+  padding: 14px 16px 12px;
+  border: 1px solid var(--sc-border);
+  border-radius: 12px;
+  background: var(--sc-surface);
 }
 .tr-panel-h {
   margin: 0 0 8px;
@@ -8245,7 +8323,10 @@
   font-size: 12px;
 }
 #tr-detections-empty { margin: 0 0 8px; }
-#tr-notes-empty { margin: 14px 28px 0; }
+/* Sits inside the shared 1180px column (same side gutter as its siblings: 28px, 16px when narrow)
+   instead of a fixed 28px margin, which let it escape the column on wide windows. */
+#tr-notes-empty { margin: 14px auto 0; width: calc(100% - 56px); max-width: 1180px; box-sizing: border-box; }
+@media (max-width: 900px) { #tr-notes-empty { width: calc(100% - 32px); } }
 
 /* Bounded sliding window (86akgqdxr) — `.tr-det-log`'s OWN scroll container, mirroring `.tr-log`
    above but deliberately simpler: `max-height` + `overflow-y: auto` rather than `flex: 1`, since
@@ -8285,11 +8366,13 @@
 .tr-det-conf { flex: 1; text-align: right; color: var(--sc-text-secondary); font-size: 11px; }
 
 /* Generate Sermon Notes from a stored transcript (86akcffy0) — reuses the `.pp-generate`/
-   `.pp-gen-preview`/`.pp-gen-result` rules above (Settings panel's live-tail Generate) so both
-   flows look and behave identically; `.tr-gen` itself is just a `flex: none` footer strip below
-   the (flex:1) log, padded to match this surface's own edges rather than the Settings panel's.
-   `#tr-gen-result` (86akgqdxr) is ALSO where an EXISTING saved draft's view/edit UI renders, not
-   only a freshly generated one — same classes, same rules, one render path. */
+   `.pp-gen-preview`/`.pp-gen-result` rules (originally shared with the Settings panel's live-tail
+   Generate; as of 17tnw2b0ntd that live-tail flow no longer exists, and this surface is the ONLY
+   place these classes render, D1). `.tr-gen` itself is `flex: none` — §11.1: deliberately
+   UNcapped, unlike `.tr-log` above — a draft or edit form is allowed to be as tall as its content
+   needs; `.tr-detail`'s own scroll (not this element's) is what reaches all of it. `#tr-gen-result`
+   (86akgqdxr) is ALSO where an EXISTING saved draft's view/edit UI renders, not only a freshly
+   generated one — same classes, same rules, one render path. */
 .tr-gen {
   flex: none;
   display: flex;
@@ -8427,3 +8510,117 @@
 .pp-copy-chapters-btn:hover { background: var(--sc-inset); }
 .tr-copy-chapters-btn:focus-visible,
 .pp-copy-chapters-btn:focus-visible { outline: 2px solid var(--sc-primary-hover); outline-offset: 2px; }
+
+/* Figma 1128:2 list rows: icon chip, status pill pushed right, chevron. */
+.tr-card-ico {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 9px;
+  background: var(--sc-inset);
+  border: 1px solid var(--sc-border);
+  color: var(--sc-text-secondary);
+  font-size: 15px;
+}
+.tr-card-col { flex: 1; }
+.tr-card-chev { flex: none; color: var(--sc-text-secondary); font-size: 18px; }
+.tr-card .tr-notes-badge { margin-left: auto; }
+
+/* Figma 1133:2/36/64/80 + 1132:163: the generate flow lives in ONE bordered card aligned to the
+   same column edges as the log and detections cards (and #tr-notes-empty above it). The shared
+   `.pp-gen-*` blocks inside it drop their own chrome so there is a single card, not cards in cards;
+   the action buttons become equal-width 46px / 12px-radius controls as drawn. */
+.tr-gen {
+  width: calc(100% - 56px);
+  margin-top: 16px;
+  margin-bottom: 20px;
+  padding: 16px;
+  border: 1px solid var(--sc-border);
+  border-radius: 16px;
+  background: var(--sc-surface);
+}
+/* Figma 1132:163: an UNAVAILABLE Generate (service still recording) is a flat dim control, not the
+   gradient CTA at reduced opacity. `[aria-busy]` (in flight) keeps the gradient. Scoped to this
+   surface so the shared `.pp-generate[disabled]` rule is untouched. */
+.tr-gen .pp-generate[disabled]:not([aria-busy="true"]) {
+  background: var(--sc-elevated);
+  color: var(--sc-text-secondary);
+  opacity: 1;
+  border: 1px solid var(--sc-border);
+}
+.tr-gen .pp-gen-preview { padding: 0; border: none; background: transparent; gap: 12px; }
+.tr-gen .pp-gen-preview-title { font-size: 18px; }
+.tr-gen .pp-gen-preview-clamp {
+  padding: 12px; border-radius: 10px; color: var(--sc-warn);
+  background: var(--sc-warn-soft); border: 1px solid var(--sc-warn-border); font-weight: 600;
+}
+.tr-gen .pp-gen-preview-actions { flex-wrap: nowrap; justify-content: stretch; }
+.tr-gen .pp-gen-preview-cancel,
+.tr-gen .pp-gen-preview-confirm { flex: 1; min-height: 46px; border-radius: 12px; font-size: 14px; }
+.tr-gen .pp-gen-edit-form .pp-gen-field input[type="text"],
+.tr-gen .pp-gen-edit-form .pp-gen-field textarea { background: var(--sc-inset); border-radius: 10px; padding: 10px 12px; font-size: 13px; }
+.tr-gen .pp-gen-result { background: transparent; border-color: transparent; padding: 0; }
+.tr-gen .pp-gen-result.pp-gen-info,
+.tr-gen .pp-gen-result.pp-gen-err { padding: 12px; border-radius: 10px; }
+.tr-gen .pp-gen-result.pp-gen-info { border-color: var(--sc-info-border); background: var(--sc-info-soft); }
+.tr-gen .pp-gen-result.pp-gen-err { border-color: var(--sc-warn-border); background: var(--sc-warn-soft); }
+
+/* Figma 1132:2 / 349:124 "Sermon notes ready" card: check chip + header above the draft, then
+   Regenerate (secondary) and Edit draft (primary) as equal-width controls. */
+.tr-ready-head { display: flex; align-items: center; gap: 12px; margin-bottom: 4px; }
+.tr-ready-ico {
+  flex: none; display: inline-flex; align-items: center; justify-content: center;
+  width: 36px; height: 36px; border-radius: 10px; font-size: 16px; font-weight: 700;
+  color: var(--sc-preview); background: var(--sc-preview-soft); border: 1px solid var(--sc-preview-border);
+}
+.tr-ready-title { margin: 0; font-size: 17px; font-weight: 700; color: var(--sc-text); }
+.tr-gen .tr-ready-actions { display: flex; gap: 10px; flex-wrap: nowrap; }
+.tr-gen .tr-ready-actions .pp-gen-edit-btn { flex: 1; min-height: 44px; border-radius: 12px; font-size: 14px; font-weight: 700; }
+.tr-gen .tr-ready-actions .tr-ready-primary { background: var(--sc-primary); color: #fff; border: none; }
+.tr-gen .tr-ready-actions .tr-ready-primary:hover { background: #5a48d0; }
+.tr-gen .tr-ready-actions .tr-ready-secondary[disabled] { opacity: 0.5; cursor: default; }
+.tr-gen .tr-ready-actions .tr-ready-secondary[disabled]:hover { background: var(--sc-elevated); }
+
+/* Figma 1133:36 in-flight status: ring icon, heading, expected-duration line. (No step list, no
+   Cancel — see transcripts.js showGenProgress.) The flex `display` must not defeat [hidden]. */
+.tr-gen-progress { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 18px 12px; text-align: center; }
+.tr-gen-progress[hidden] { display: none; }
+.tr-gen-spin {
+  display: inline-flex; align-items: center; justify-content: center; width: 52px; height: 52px;
+  border-radius: 50%; border: 3px solid var(--sc-primary); color: var(--sc-primary-hover); font-size: 20px;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .tr-gen-spin { animation: tr-gen-pulse 1.6s ease-in-out infinite; }
+}
+@keyframes tr-gen-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.55; } }
+.tr-gen-progress-title { margin: 6px 0 0; font-size: 18px; font-weight: 700; color: var(--sc-text); }
+.tr-gen-progress-sub { margin: 0; font-size: 13px; color: var(--sc-text-secondary); }
+
+/* §11.3: narrow-window floor — reusing the Pre-service Check precedent exactly (app.css:7124,
+   `@media (max-width: 900px)`), the pattern TRANSCRIPTS-2.0-HANDOFF.md names as the closest fit;
+   Settings' sidebar collapse and the Service Plan builder also break here, so 900px is already
+   this app's established "narrow shell" floor, not a new number invented for this surface. The
+   layout never changes SHAPE below this width — it was already a single column (§9: Flow 11's
+   side-by-side split is superseded at every width) — only padding and the log's height cap
+   change, so there is no horizontal scroll at any width down to 900px. */
+@media (max-width: 900px) {
+  .tr-view,
+  .tr-detail-head,
+  .tr-log,
+  .tr-panel,
+  .tr-gen {
+    padding-left: 16px;
+    padding-right: 16px;
+  }
+  .tr-log,
+  .tr-panel,
+  .tr-gen,
+  #tr-notes-empty { width: calc(100% - 32px); }
+  .tr-log {
+    max-height: 34vh; /* was min(48vh, 480px) — leaves relatively more room for the detections +
+                          notes panels below it on a short, narrow window */
+  }
+}

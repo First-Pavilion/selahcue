@@ -696,9 +696,16 @@ fn output_health_view(h: selahcue_present::OutputHealth) -> OutputHealthView {
 fn host_resolution(c: &selahcue_core::plan::ItemContent) -> selahcue_core::plan::LinkResolution {
     c.resolve(
         // The host DOES own the bundled scripture corpus, so it answers this one for real — and
-        // with the SAME lookup the renderer uses, so "resolved" means "will actually present
-        // verses", not merely "the reference is well-formed". Parsing alone accepts "Jude 2:1"
-        // and "Romans 99:1", which present nothing.
+        // with the SAME answer the renderer's lookup gives, so "resolved" means "will actually
+        // present verses", not merely "the reference is well-formed". Parsing alone accepts
+        // "Jude 2:1" and "Romans 99:1", which present nothing.
+        //
+        // It asks `passage_exists_in`, NOT `verses_in(..).is_empty()`. They agree exactly (an
+        // exhaustive test pins it), but `verses_in` decodes the whole translation on first
+        // touch — ≈4 MB of text per translation — and this runs on the operator view build,
+        // i.e. after EVERY command including Blackout and Clear, with the controller mutex held.
+        // Reintroducing the lookup here is a first-press stall on the emergency controls
+        // (86ak84fbd); `test_scripture_link_resolution_is_lazy.rs` fails if it comes back.
         |reference, translation| {
             // `resolve` only consults this probe once the reference has parsed, so this cannot
             // fail in practice; `None` (= Unknown) is the honest answer if that ever changes,
@@ -707,7 +714,7 @@ fn host_resolution(c: &selahcue_core::plan::ItemContent) -> selahcue_core::plan:
             let t = translation
                 .and_then(selahcue_scripture::Translation::from_code)
                 .unwrap_or_default();
-            Some(!selahcue_scripture::verses_in(t, &parsed).is_empty())
+            Some(selahcue_scripture::passage_exists_in(t, &parsed))
         },
         // Decks and media are operator-owned and this process has no store for either, so it
         // declines rather than guessing.
@@ -2295,14 +2302,17 @@ impl LiveController {
     /// # Cadence assumption
     ///
     /// This is built **per poll and per action — never per frame.** Its dominant cost is link
-    /// resolution: one scripture parse, and a corpus lookup, for every linked item in the plan.
-    /// That is fine at the rate the operator console asks for state and after each command, and
-    /// far too heavy for the render loop.
+    /// resolution: one scripture parse, and a verse-table probe, for every linked item in the
+    /// plan. The probe is a binary search over a compile-time table — it decodes no translation
+    /// and allocates nothing (86ak84fbd) — so a build is microseconds, including the first one
+    /// after a plan names a translation nobody has touched yet. That is fine at the rate the
+    /// operator console asks for state and after each command, and still heavier than the render
+    /// loop should carry.
     ///
     /// Nothing in the type system enforces that. If a future caller reaches for this from a
     /// frame callback, the cost does not announce itself — it shows up as a frame-rate drop
-    /// under a plan with many scripture links, which is the hardest kind of regression to trace
-    /// back to its cause. Cache the view or resolve links ahead of time instead.
+    /// under a plan with many links, which is the hardest kind of regression to trace back to
+    /// its cause. Cache the view or resolve links ahead of time instead.
     pub fn operator_view(&self) -> OperatorView {
         // Resolve each item's link ONCE per build and share it with the summary below.
         // Resolving twice doubles this function's dominant cost — a scripture parse per linked

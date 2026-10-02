@@ -33,9 +33,9 @@ dependencies:
   # SHA-256 of the operator certificate (TLS pinning).
   crypto: ^3.0.3
   # Camera QR scanning of the pairing invite.
-  mobile_scanner: ^7.1.4
+  mobile_scanner: ^7.4.2
   # Keychain/Keystore storage for the issued bearer token.
-  flutter_secure_storage: ^9.2.2
+  flutter_secure_storage: ^10.3.4
 
   # The following adds the Cupertino Icons font to your application.
   # Use with the CupertinoIcons class for iOS style icons.
@@ -47,6 +47,10 @@ dependencies:
 dev_dependencies:
   flutter_test:
     sdk: flutter
+  # Virtual clock for the reconnect-backoff tests (1000 failures in no real
+  # time). Already resolved transitively via flutter_test (same 1.3.3 in the
+  # lock); declared so importing it is not an undeclared-package use.
+  fake_async: ^1.3.3
 
   # The "flutter_lints" package below contains a set of recommended lints to
   # encourage good coding practices. The lint set provided by the package is

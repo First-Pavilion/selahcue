@@ -33,7 +33,7 @@ function recorder(reply: (op: string) => unknown): { calls: Call[]; impl: typeof
   const calls: Call[] = []
   const impl = (async (input: unknown, init: RequestInit = {}) => {
     calls.push({ url: String(input), init })
-    let body: { query?: string } = {}
+    let body: { query?: string }
     try {
       body = JSON.parse(String(init.body ?? '{}'))
     } catch {

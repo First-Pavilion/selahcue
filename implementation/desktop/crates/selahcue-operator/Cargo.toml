@@ -21,7 +21,44 @@ path = "src/main.rs"
 tauri-build = { version = "2", features = [] }
 
 [features]
-default = []
+# Encrypted-by-default posture (FR-154; 86akgrz3b). See the `read-encrypted-transcripts`
+# feature's own comment block below for the full story — this shell must be able to read the
+# same SQLCipher-encrypted store `selahcue-desktop` now writes by default, or its already-shipped
+# Transcripts viewer (86akcffvt) silently and permanently regresses to "unavailable" for every
+# fresh install with a working OS keychain.
+default = ["read-encrypted-transcripts"]
+# Read-only access, via the SAME OS-keychain/Argon2id key `selahcue-desktop` acquires, to the
+# at-rest-encrypted store selahcue-desktop now writes by default (86akgrz3b; FR-154). This shell
+# never creates, writes, or migrates that store (`open_transcript_db_at` in main.rs) — it only
+# needs to be ABLE TO READ one that is already encrypted, for the Transcripts viewer (86akcffvt).
+#
+# NAMED DIFFERENTLY FROM `selahcue-desktop`'s `encryption` feature ON PURPOSE, even though both
+# ultimately just turn on `selahcue-data/encryption`: `scripts/check_launch_reachability.py`
+# hard-fails if two registered crates declare the SAME feature name (its COLLISION GUARD — the
+# dry-run `--features` union it scans cannot always attribute a token to a specific crate's build
+# line, so two same-named features would let one crate's flag silently satisfy the other's
+# requirement). Verified live while wiring this up: naming this feature `encryption` too made the
+# real check fail with exactly that collision message; renaming it is the fix, not a workaround.
+#
+# Key acquisition is duplicated here (`src/keys.rs`, a byte-for-byte twin of
+# `selahcue-desktop/src/keys.rs`) rather than shared through `selahcue-data`: ADR-0007 keeps key
+# derivation out of the data layer on purpose ("the crate has no opinion on the KDF and never
+# sees a passphrase" — see `selahcue-data/src/key.rs`'s own module doc), and this crate is a
+# separate Cargo workspace root from `selahcue-desktop` (excluded from the `implementation/
+# desktop` workspace on purpose — see this file's own header comment), so it cannot path-depend
+# on `selahcue-desktop` without pulling in winit/wgpu/the native output window. Both copies read
+# the identical OS-keychain service/user pair ("SelahCue"/"database-key") and the identical
+# per-install `key.salt` file location (`transcript_data_dir()` mirrors `selahcue-desktop`'s own
+# `data_dir()` byte-for-byte — see that function's doc comment), so whichever process runs first
+# transparently "wins" first-run key generation and the other reads it back.
+#
+# LAUNCH_REACHABILITY: REQUIRED — 86akgrz3b (owner decision): must be reachable from a default
+# `make launch`/`make operator` invocation, unconditionally, the same as the twin feature on
+# `selahcue-desktop`. See scripts/check_launch_reachability.py for what each tag means.
+# RELEASE: SAFE — the key comes from the OS secret store or an Argon2id-derived passphrase,
+# never a developer `.env`/shell-exported credential; no release-boundary concern. Confirmed NOT
+# a member of the Makefile's `RELEASE_UNSAFE_FEATURES` registry (86akgrz3b).
+read-encrypted-transcripts = ["selahcue-data/encryption", "dep:keyring", "dep:argon2", "dep:getrandom", "dep:zeroize"]
 # On-device speech-to-text as the live-transcript source. OFF by default so the operator's
 # compile-check (CI) needs no native whisper toolchain or model; enable on a whisper-capable
 # machine (`cargo run --features stt`) to drive real transcription from "Start listening".
@@ -123,9 +160,16 @@ selahcue-lan = { path = "../selahcue-lan", features = ["server"] }
 selahcue-core = { path = "../selahcue-core" }
 selahcue-scripture = { path = "../selahcue-scripture", features = ["download"] }
 selahcue-present = { path = "../selahcue-present" }
-# Persisted deck library (schema v16 `deck` table via `deck_repo`). Default build is unencrypted
-# (`Database::open`); at-rest encryption for the shared DB is a documented follow-up.
+# Persisted deck library (schema v16 `deck` table via `deck_repo`). The operator-local deck DB
+# (`open_deck_db`, its own separate path — see that function's doc comment) stays unencrypted;
+# only the shared transcript store this shell reads (never writes) gets the `encryption` feature.
 selahcue-data = { path = "../selahcue-data" }
+# `encryption` feature deps (FR-154; 86akgrz3b) — same crates/versions as
+# `selahcue-desktop/Cargo.toml`'s twin declarations, for the duplicated `src/keys.rs` module.
+keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"], optional = true }
+argon2 = { version = "0.5", optional = true }
+getrandom = { version = "0.2", optional = true }
+zeroize = { version = "1", optional = true }
 # Providers & Privacy: the SelahCue-hosted cloud client (note-generation seam), consent-gated
 # egress, graceful local fallback, and the account-token secret store (node 338:124). Default
 # build compiles the offline half only (in-memory secret store, no HTTP); the `cloud-live`

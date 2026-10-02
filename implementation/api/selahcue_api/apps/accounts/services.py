@@ -1087,10 +1087,14 @@ class LoginData:
     password: str
 
 
-def login(data: LoginData) -> LoginResult:
+def login(data: LoginData, *, source_surface: str = ACCOUNT_AUDIT_SURFACE) -> LoginResult:
     """Authenticate email/password and mint a session. Unknown-email and wrong-password are
     indistinguishable (both UNAUTHENTICATED, equal timing). Unverified/disabled → POLICY_DENIED
-    only AFTER a correct password (so state leaks only to the real owner)."""
+    only AFTER a correct password (so state leaks only to the real owner).
+
+    `source_surface` is only the provenance recorded on the audit row, so a session minted over
+    the native `/v1/sessions` route is distinguishable from one minted on the browser surface
+    (86ak5t1gw). It changes nothing about who may sign in or how."""
     email = _normalize_email(data.email)
     fingerprint = _email_fingerprint(email)
     now = djtz.now()
@@ -1137,7 +1141,7 @@ def login(data: LoginData) -> LoginResult:
             target_type="customer_session",
             target_id=str(session.id),
             request_id=session.token_fingerprint,
-            source_surface=ACCOUNT_AUDIT_SURFACE,
+            source_surface=source_surface,
             after={"masked_token": session.masked_token, "expires_at": session.expires_at.isoformat()},
         )
     return LoginResult(

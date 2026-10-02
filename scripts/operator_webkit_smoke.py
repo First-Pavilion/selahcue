@@ -606,6 +606,108 @@ def main():
         except Exception as e:  # noqa: BLE001 — any failure here is itself the finding
             tr_v12_errors.append(str(e).splitlines()[0])
 
+        # === 17tnw2b0ntd (TRANSCRIPTS-2.0-HANDOFF.md section 11): the detail view's scroll model on
+        # real WebKit at 1280x720 and at the 900px narrow floor, with a notes panel far taller than
+        # the window. Every control of the tall panel must be reachable by scrolling `.tr-detail`,
+        # the log must not be starved, and nothing may overflow horizontally. Optional screenshots
+        # go to SELAHCUE_SHOT_DIR (evidence for the PR).
+        tr_scroll = {}
+        tr_scroll_errors = []
+        shot_dir = os.environ.get("SELAHCUE_SHOT_DIR")
+        for label, width in (("1280x720", 1280), ("900x720", 900)):
+            try:
+                pg = browser.new_page(viewport={"width": width, "height": 720})
+                pg.on("pageerror", lambda e: tr_scroll_errors.append(str(e)))
+                pg.add_init_script(STUB)
+                pg.goto("file://" + os.path.join(DIST, "index.html"))
+                pg.wait_for_function(HAS_RENDER, timeout=8000)
+                pg.click("#app-menu-btn")
+                pg.wait_for_selector('.nav-item[data-surface="transcripts"]', state="visible", timeout=8000)
+                pg.click('.nav-item[data-surface="transcripts"]')
+                pg.wait_for_function("() => document.querySelectorAll('#tr-list .tr-card').length >= 1", timeout=8000)
+                pg.click('#tr-list .tr-card-open')
+                pg.wait_for_function("() => document.getElementById('tr-detail-log').textContent.indexOf('Good morning') >= 0", timeout=8000)
+                pg.evaluate("""() => {
+                    var r = document.getElementById('tr-gen-result'); r.hidden = false;
+                    r.className = 'pp-gen-result pp-gen-ok';
+                    for (var i = 0; i < 40; i++) { var p = document.createElement('p');
+                      p.style.cssText = 'margin:0 0 10px;color:var(--sc-text)';
+                      p.textContent = 'Notes paragraph ' + i + ': grace that feeds, the crowd came back for the wrong reason, and what it means to be fed.';
+                      r.appendChild(p);
+                      if (i % 3 === 0) { var inp = document.createElement('input'); inp.type = 'text'; inp.className = 'tr-probe-input';
+                        inp.setAttribute('aria-label', 'probe ' + i); r.appendChild(inp); } }
+                    var b = document.createElement('button'); b.id = 'tr-tall-end'; b.textContent = 'Discard (last control)'; r.appendChild(b);
+                }""")
+                if shot_dir:
+                    os.makedirs(shot_dir, exist_ok=True)
+                    pg.screenshot(path=os.path.join(shot_dir, "transcripts-detail-" + label + "-top.png"))
+                res = pg.evaluate("""() => {
+                    var d = document.getElementById('tr-detail-view'), log = document.getElementById('tr-detail-log');
+                    var head = document.querySelector('.tr-detail-head'), end = document.getElementById('tr-tall-end');
+                    var out = { overflows: d.scrollHeight > d.clientHeight + 300, logH: log.getBoundingClientRect().height,
+                      hOverflow: d.scrollWidth > d.clientWidth + 1 || document.documentElement.scrollWidth > window.innerWidth + 1,
+                      overflowY: getComputedStyle(d).overflowY, headPos: getComputedStyle(head).position,
+                      logPadL: getComputedStyle(log).paddingLeft, logMax: getComputedStyle(log).maxHeight,
+                      headPadL: getComputedStyle(head).paddingLeft, logMaxPx: parseFloat(getComputedStyle(log).maxHeight),
+                      vh: window.innerHeight };
+                    d.scrollTop = d.scrollHeight;
+                    var er = end.getBoundingClientRect(), dr = d.getBoundingClientRect();
+                    out.endReachable = er.bottom <= dr.bottom + 1 && er.top >= dr.top;
+                    out.headPinned = head.getBoundingClientRect().top <= dr.top + 1;
+                    return out;
+                }""")
+                if shot_dir:
+                    pg.screenshot(path=os.path.join(shot_dir, "transcripts-detail-" + label + "-scrolled-end.png"))
+                # WCAG 2.4.11: Shift+Tab backwards through the probe inputs from the bottom; the focused
+                # element must never sit behind the sticky header (scroll-padding-top on .tr-detail).
+                pg.evaluate("() => { var all = document.querySelectorAll('.tr-probe-input'); all[all.length - 1].focus(); }")
+                obscured = 0
+                steps = 0
+                for _ in range(10):
+                    pg.keyboard.press("Shift+Tab")
+                    pg.wait_for_timeout(120)
+                    st = pg.evaluate("""() => {
+                        var a = document.activeElement, head = document.querySelector('.tr-detail-head');
+                        if (!a || !a.classList.contains('tr-probe-input')) return null;
+                        return a.getBoundingClientRect().top >= head.getBoundingClientRect().bottom - 1;
+                    }""")
+                    if st is None:
+                        break
+                    steps += 1
+                    if st is False:
+                        obscured += 1
+                res["focusSteps"] = steps
+                res["focusObscured"] = obscured
+                tr_scroll[label] = res
+                pg.close()
+            except Exception as e:  # noqa: BLE001
+                tr_scroll_errors.append(label + ": " + str(e).splitlines()[0])
+                tr_scroll[label] = {}
+
+        # === Wide window: the list's scroller must be FULL width so a wheel over the side margin
+        # scrolls it (the 1180px cap is made with padding, not a max-width on the scroller).
+        tr_wide = {}
+        try:
+            pgw = browser.new_page(viewport={"width": 1920, "height": 1080})
+            pgw.add_init_script(STUB)
+            pgw.goto("file://" + os.path.join(DIST, "index.html"))
+            pgw.wait_for_function(HAS_RENDER, timeout=8000)
+            pgw.click("#app-menu-btn")
+            pgw.wait_for_selector('.nav-item[data-surface="transcripts"]', state="visible", timeout=8000)
+            pgw.click('.nav-item[data-surface="transcripts"]')
+            pgw.wait_for_function("() => document.querySelectorAll('#tr-list .tr-card').length >= 1", timeout=8000)
+            pgw.evaluate("""() => { var l = document.getElementById('tr-list'), c = l.querySelector('.tr-card');
+                for (var i = 0; i < 40; i++) l.appendChild(c.cloneNode(true)); }""")
+            tr_wide["scrollable"] = pgw.evaluate("() => { var v = document.getElementById('tr-list-view'); return v.scrollHeight > v.clientHeight + 300; }")
+            tr_wide["fullWidth"] = pgw.evaluate("() => document.getElementById('tr-list-view').getBoundingClientRect().width >= window.innerWidth - 20")
+            pgw.mouse.move(185, 500)
+            pgw.mouse.wheel(0, 600)
+            pgw.wait_for_timeout(500)
+            tr_wide["scrollTop"] = pgw.evaluate("() => document.getElementById('tr-list-view').scrollTop")
+            pgw.close()
+        except Exception as e:  # noqa: BLE001
+            tr_scroll_errors.append("wide-list: " + str(e).splitlines()[0])
+
         browser.close()
 
     checks = []
@@ -648,6 +750,34 @@ def main():
     checks.append((not tr_v12_errors, "Transcripts V-12: Shift+End modifier exercised on real WebKit, no exception"
                    + (" — " + "; ".join(tr_v12_errors) if tr_v12_errors else "")))
     checks.append((tr_v12_selection_preserved, "Transcripts V-12: a real Shift+End keypress over an active text selection preserves/extends it rather than silently collapsing it via our own scroll jump"))
+
+    checks.append((not tr_scroll_errors, "Transcripts scroll model: exercised on real WebKit, no exception"
+                   + (" - " + "; ".join(tr_scroll_errors) if tr_scroll_errors else "")))
+    for label in ("1280x720", "900x720"):
+        r = tr_scroll.get(label) or {}
+        checks.append((bool(r.get("overflows")) and r.get("overflowY") == "auto",
+                       "Transcripts scroll model @" + label + ": tall notes overflow .tr-detail, which is the scroll container (WebKit computed style)"))
+        checks.append((r.get("logH", 0) >= 200, "Transcripts scroll model @" + label + ": the log is not starved by tall notes (height " + str(r.get("logH")) + ")"))
+        checks.append((bool(r.get("endReachable")), "Transcripts scroll model @" + label + ": the LAST control of the tall notes panel is reachable by scrolling .tr-detail"))
+        checks.append((r.get("headPos") == "sticky" and bool(r.get("headPinned")), "Transcripts scroll model @" + label + ": the sticky header stays pinned while scrolled"))
+        checks.append((r.get("hOverflow") is False, "Transcripts scroll model @" + label + ": no horizontal scroll"))
+    r900 = tr_scroll.get("900x720") or {}
+    r1280 = tr_scroll.get("1280x720") or {}
+    # Values that genuinely CHANGE at the 900px breakpoint (a mutation moving it to 600px must fail these).
+    checks.append((r1280.get("headPadL") == "28px" and r900.get("headPadL") == "16px",
+                   "Transcripts narrow: .tr-detail-head side padding is 28px at 1280 and 16px at 900 on WebKit (got "
+                   + str(r1280.get("headPadL")) + " / " + str(r900.get("headPadL")) + ")"))
+    checks.append((abs((r900.get("logMaxPx") or 0) - 0.34 * (r900.get("vh") or 0)) < 2
+                   and abs((r1280.get("logMaxPx") or 0) - 0.48 * (r1280.get("vh") or 0)) < 2,
+                   "Transcripts narrow: .tr-log max-height is 34vh at 900 and 48vh at 1280 on WebKit (got "
+                   + str(r900.get("logMaxPx")) + " / " + str(r1280.get("logMaxPx")) + ")"))
+    for label in ("1280x720", "900x720"):
+        r = tr_scroll.get(label) or {}
+        checks.append(((r.get("focusSteps") or 0) >= 8 and r.get("focusObscured") == 0,
+                       "Transcripts focus @" + label + ": Shift+Tab through the edit-sized form never lands the focused field behind the sticky header ("
+                       + str(r.get("focusSteps")) + " steps, " + str(r.get("focusObscured")) + " obscured)"))
+    checks.append((bool(tr_wide.get("scrollable")) and bool(tr_wide.get("fullWidth")) and (tr_wide.get("scrollTop") or 0) > 100,
+                   "Transcripts list @1920x1080: a mouse wheel over the SIDE margin (x=185) scrolls the list (scrollTop " + str(tr_wide.get("scrollTop")) + ")"))
 
     for passed, msg in checks:
         print(("PASS" if passed else "FAIL") + ": " + msg)

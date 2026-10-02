@@ -5,21 +5,51 @@ description = "Django and Strawberry Platform API for SelahCue licensing and acc
 # Django 6.1 requires >=3.12; CI and local both run 3.14, which 6.1 officially supports.
 requires-python = ">=3.12"
 dependencies = [
-  "Django>=6.1,<6.2",
+  # EXACT PINS, not ranges, for every direct AND directly-imported-but-undeclared
+  # pip dep: this repo has no lockfile for implementation/api, so an open range at
+  # any floor leaves the installed version invisible to Dependabot's security-update
+  # job (`dependency_file_not_supported`). Full mechanism, CVE-derivation method,
+  # and the complete review trail (19 iterations, four-reviewer gate) live in
+  # ClickUp 17tnw2az07j and docs/delivery/goals/17tnw2az07j-cryptography-dependabot.md
+  # — read those before touching this list, not just this comment.
+  #
+  # version — advisory ceiling that makes it safe (GitHub Advisory DB + OSV.dev,
+  # cross-checked against both):
+  #   Django==6.1.1                     0 advisories affect this version
+  #   strawberry-graphql-django==0.90.0 0 advisories exist for this package
+  #   strawberry-graphql==0.327.7       highest ceiling <=0.315.6 (fixed 0.315.7)
+  #   graphql-core==3.2.12              0 advisories exist for this package
+  #   cross-web==0.7.0                  0 advisories exist for this package
+  #   cryptography==50.0.1              highest ceiling <50.0.0 (fixed 50.0.0)
+  #   celery[redis]==5.6.3              highest ceiling <5.2.2 (fixed 5.2.2)
+  #
+  # strawberry-graphql, graphql-core, and cross-web are undeclared transitive
+  # dependencies imported directly by this app's own code; pinned here for the
+  # same Dependabot-visibility reason as the four declared deps above.
+  "Django==6.1.1",
   # 0.87 declares `django>=5.2` with no upper bound, so it is compatible with 6.1.
-  "strawberry-graphql-django>=0.87,<0.88",
+  "strawberry-graphql-django==0.90.0",
+  "strawberry-graphql==0.327.7",
+  "graphql-core==3.2.12",
+  "cross-web==0.7.0",
   # Ed25519 for the signed offline entitlement envelope (DEC-004). Django ships no
-  # asymmetric primitives.
-  "cryptography>=43,<47",
+  # asymmetric primitives. 50.0.1 is PyPI's current latest — a wheel-only OpenSSL
+  # rebuild on top of 50.0.0, where the advisory ceiling's fix actually lands.
+  "cryptography==50.0.1",
   # Async task runtime: transactional email (worker) + revocation cascade and expiry
   # sweeps (beat). Redis is the broker; see CELERY_BROKER_URL in settings.
-  "celery[redis]>=5.4,<6",
+  "celery[redis]==5.6.3",
 ]
 
 [project.optional-dependencies]
 dev = [
-  "pytest>=8,<9",
-  "pytest-django>=4.11,<5",
+  # EXACT PINS (17tnw2az07j), same Dependabot-visibility reason as the main
+  # dependency list above. Full derivation: docs/delivery/goals/17tnw2az07j-
+  # cryptography-dependabot.md.
+  #   pytest==9.1.1        highest ceiling <9.0.3 (fixed 9.0.3, GHSA-6w46-j5rx-g56g)
+  #   pytest-django==4.14.0 0 advisories exist for this package
+  "pytest==9.1.1",
+  "pytest-django==4.14.0",
 ]
 
 [tool.pytest.ini_options]

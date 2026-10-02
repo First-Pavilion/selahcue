@@ -1694,7 +1694,7 @@ impl RemoteOperator {
     }
 
     /// Persist (upsert) a freshly generated draft against `transcript_id` on the host
-    /// (86akgqdv0) — `generate_sermon_notes`'s persist-on-success path. `Ok(None)` (not an
+    /// (86akgqdv0) — `transcript_generate_notes`'s persist-on-success path. `Ok(None)` (not an
     /// `Err`) when the host refuses it (e.g. an oversized field) OR when this frame is never
     /// sent because it would exceed the control link's frame cap (86akgqdv0 PR #33 review,
     /// Vera F5 / Sana N1 — see [`Self::would_exceed_wire_cap`]) — fails soft exactly like a

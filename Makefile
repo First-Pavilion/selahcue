@@ -57,8 +57,9 @@ SECS     ?=
 # cmake + a C/C++ toolchain to compile whisper.cpp (and downloads the model on first use), so the
 # dev RUN targets enable it AUTOMATICALLY when cmake is present and quietly skip it otherwise —
 # `make run` never fails just because the STT toolchain is missing (same UX as NDI above). Force
-# it with STT=1 (errors if cmake is absent) or disable with STT=0. CI/check/clippy always use the
-# default (no-STT) operator build, so this never affects them.
+# it with STT=1 (errors if cmake is absent) or disable with STT=0. check/clippy use the default
+# (no-STT) operator build, and `ci` lints the `stt` and `stt,cloud-stt` builds with explicit
+# --features lines (86ak4y8yr), so this toggle never affects any of them.
 #
 # `cloud-stt` (Deepgram live transcription, 86akby7th) rides the SAME toggle rather than getting
 # its own (86akd10dq — the third instance of the 86akcmzyq bug class: shipped, merged, four-
@@ -168,14 +169,23 @@ else
 AI_FEATURES := dev-keys openai-notes
 endif
 
-# The actual --features list the dev launch targets build with: STT + AI, comma-joined, with
-# empty slices dropped so e.g. `STT=0 AI=0` still produces a bare `cargo run` (no trailing/leading
-# comma, no --features flag at all). OP_FEATURES=<features> on the command line still overrides
-# this outright, exactly as it did before this change — it is a `?=` like everything above.
+# The actual --features list the dev launch targets build with: encryption + STT + AI,
+# comma-joined, with empty slices dropped so e.g. `STT=0 AI=0` still produces just
+# `--features read-encrypted-transcripts` (no trailing/leading comma). OP_FEATURES=<features> on
+# the command line still overrides this outright, exactly as it did before this change — it is a
+# `?=` like everything above.
+#
+# `read-encrypted-transcripts` (FR-154; 86akgrz3b) has no AUTO/opt-out toggle the way STT/AI do,
+# unconditionally present here: unlike those, it needs no optional heavy toolchain a developer
+# might lack (perl is ubiquitous; CI now carries nasm too — see selahcue-operator/Cargo.toml's
+# `read-encrypted-transcripts` comment). It is ALSO a genuine Cargo default feature on
+# selahcue-operator, so listing it here is redundant for actual reachability but is what makes
+# `scripts/check_launch_reachability.py`'s dry-run text scan — which can only see explicit
+# `--features` tokens, never an implicit Cargo default — actually observe it as REQUIRED.
 EMPTY :=
 SPACE := $(EMPTY) $(EMPTY)
 COMMA := ,
-OP_FEATURES ?= $(subst $(SPACE),$(COMMA),$(strip $(STT_FEATURES) $(AI_FEATURES)))
+OP_FEATURES ?= $(subst $(SPACE),$(COMMA),$(strip read-encrypted-transcripts $(STT_FEATURES) $(AI_FEATURES)))
 OPRUN       := $(if $(strip $(OP_FEATURES)),--features $(strip $(OP_FEATURES)),)
 # Word-list view of the FINAL feature set (whether auto-computed above or supplied directly via
 # OP_FEATURES=...) — this, not STT_FEATURES/AI_FEATURES, is what stt-preflight, release-ai-guard
@@ -250,17 +260,25 @@ else
 NDI_ON := $(wildcard $(NDI_DIR)/include/Processing.NDI.Lib.h)
 endif
 ifeq ($(strip $(NDI_ON)),)
-DESKTOP_FEATURES :=
+DESKTOP_FEATURES := --features encryption
 DESKTOP_ENV :=
 NDI_STATUS := off (no vendored SDK — run scripts/fetch_ndi_sdk.sh to enable NDI output)
 else
-DESKTOP_FEATURES := --features ndi
+DESKTOP_FEATURES := --features encryption,ndi
 DESKTOP_ENV := NDI_SDK_DIR="$(NDI_DIR)" $(NDI_LOADER)
 NDI_STATUS := on (vendored SDK)
 endif
 
+# At-rest encryption (FR-154; 86akgrz3b) — unconditionally on for both the output window
+# (`encryption`, added to DESKTOP_FEATURES above) and the operator shell
+# (`read-encrypted-transcripts`, added to OP_FEATURES above). Unlike NDI_STATUS/STT_STATUS/
+# AI_STATUS there is no on/off branch to report — see those features' own Cargo.toml comments
+# for why this one has no opt-out toggle — so this is a plain constant, printed for the same
+# "prints what it enabled and why" observability this Makefile's other features get.
+ENCRYPTION_STATUS := on (SQLCipher; key via OS secret store, or Argon2id from SELAHCUE_PASSPHRASE)
+
 .DEFAULT_GOAL := help
-.PHONY: help launch run run-release launch-release output-release output output-ndi ndi-preflight operator operator-headless stt-preflight release-ai-guard stage-operator-binaries verify-stage-operator-binaries-create-only remote timer stop-timer demo mobile mobile-test ci nfr build build-output build-operator test test-stt-real-model check clippy fmt clean
+.PHONY: help launch run run-release launch-release output-release output output-ndi ndi-preflight operator operator-headless stt-preflight release-ai-guard stage-operator-binaries verify-stage-operator-binaries-create-only remote timer stop-timer demo mobile mobile-test marketing-install marketing-check ci nfr build build-output build-operator test test-stt-real-model check clippy fmt clean
 
 # Recursive-make calls that must NOT get GNU Make's special "$(MAKE) literal text" handling
 # (documented in the GNU Make manual, "How the MAKE Variable Works": a recipe LINE containing
@@ -502,6 +520,7 @@ launch: stt-preflight release-ai-guard build-output build-operator ## Launch EVE
 	@echo ">> NDI output: $(NDI_STATUS)"
 	@echo ">> live transcript (STT): $(STT_STATUS)"
 	@echo ">> AI-assisted sermon notes: $(AI_STATUS)"
+	@echo ">> at-rest encryption: $(ENCRYPTION_STATUS)"
 	@echo ">> clearing any stale endpoint and starting the output window…"
 	@rm -f "$(ENDPOINT)"; \
 	$(DESKTOP_ENV) $(CARGO) run $(WS) -p selahcue-desktop $(DESKTOP_FEATURES) $(PROFILE_FLAG) & \
@@ -565,6 +584,7 @@ output-ndi: ndi-preflight ## Force the output window WITH NDI (errors if the SDK
 operator: stt-preflight release-ai-guard stage-operator-binaries ## Run only the operator shell (connects to a running output window, else a standalone demo)
 	@echo ">> live transcript (STT): $(STT_STATUS)"
 	@echo ">> AI-assisted sermon notes: $(AI_STATUS)"
+	@echo ">> at-rest encryption: $(ENCRYPTION_STATUS)"
 	$(OPERATOR_RUN)
 
 operator-headless: ## Run the committed operator-webview behavioural check (headless Chrome; skips if Chrome absent)
@@ -596,6 +616,42 @@ mobile: ## Run the Flutter controller on this Mac (pair it with a running `make 
 mobile-test: ## Analyze + unit-test the Flutter controller
 	cd $(MOBILE) && $(FLUTTER) analyze && $(FLUTTER) test
 
+# The marketing site + customer web portal (Vue 3 SPA). `marketing-check` is the SINGLE definition of
+# its Node-only gate and is called by both `make ci` and the `marketing (vue spa)` job in
+# .github/workflows/ci.yml, so the local gate and CI cannot drift apart (86ak5rjh7, marketing half;
+# 17tnw2b0q9j). It runs, in order: type-check (vue-tsc), lint (eslint, --max-warnings 0), the node
+# test suite, and the production build. Each is an npm script of the same name in
+# implementation/marketing/package.json, so `npm run <name>` reproduces any one step by hand.
+#
+# It does NOT install anything: a recipe that quietly ran `npm ci` would make `make ci` need the
+# network. Instead it refuses to run against a missing or STALE node_modules -- stale meaning
+# package-lock.json is newer than npm's own record of what was installed
+# (node_modules/.package-lock.json). Running the gate against an old tree after a lockfile change is
+# the same false-green bug class as the unpinned Rust toolchain (86ak5rc9c): it would pass on
+# packages CI is not using. A fresh clone or `git worktree` needs `make marketing-install` once.
+#
+# NOT covered here, CI-only because they need extra runtimes: `npm run test:mirrors` (a pinned
+# Django) and `npm run test:states` (headless Chrome, which skips silently without
+# SELAHCUE_HEADLESS_REQUIRE=1 and is therefore not something to leave to an optional local run).
+MARKETING := implementation/marketing
+NPM       ?= npm
+
+marketing-install: ## Install the marketing site's pinned dependencies (npm ci); needed once per clone/worktree and after a lockfile change
+	cd $(MARKETING) && $(NPM) ci
+
+marketing-check: ## Marketing site gate: type-check + lint + node tests + production build (the Node-only half of CI's `marketing` job)
+	@command -v $(NPM) >/dev/null 2>&1 || { \
+	  echo "ERROR: '$(NPM)' is not on PATH -- the marketing gate needs Node (CI uses Node 22)."; \
+	  exit 1; }
+	@[ -e $(MARKETING)/node_modules/.package-lock.json ] && ! [ $(MARKETING)/package-lock.json -nt $(MARKETING)/node_modules/.package-lock.json ] || { \
+	  echo "ERROR: $(MARKETING)/node_modules is missing or older than package-lock.json."; \
+	  echo "  Run 'make marketing-install' (npm ci) first; this gate never installs for you."; \
+	  exit 1; }
+	cd $(MARKETING) && $(NPM) run type-check
+	cd $(MARKETING) && $(NPM) run lint
+	cd $(MARKETING) && $(NPM) test
+	cd $(MARKETING) && $(NPM) run build
+
 # Mirrors the Rust/Flutter gates in .github/workflows/ci.yml. It does NOT cover
 # everything CI runs -- see the "Not covered here" list below and in CLAUDE.md.
 #
@@ -606,8 +662,12 @@ mobile-test: ## Analyze + unit-test the Flutter controller
 #
 # Not covered here (CI-only): cargo audit / cargo deny (supply chain), the
 # Playwright WebKit engine smoke, launch-smoke + `make nfr`, the Android APK
-# compile-check, and the `api (django)` and `marketing (vue spa)` jobs entirely.
-# Run those areas' own tooling before pushing changes to them.
+# compile-check, the `api (django)` job entirely, and the part of the `marketing
+# (vue spa)` job that needs extra runtimes (client/server mirrors need a pinned
+# Django; the headless auth-page states need Chrome). The Node-only half of the
+# marketing job -- type-check, lint, node tests, build -- IS covered, via the
+# `marketing-check` line below. Run the uncovered areas' own tooling before
+# pushing changes to them.
 #
 # One masking difference from CI, deliberate and not yet closed: CI now runs the
 # steps after Clippy under `if: !cancelled()`, so one failing gate no longer hides
@@ -648,6 +708,11 @@ ci: ## Run the local Rust/Flutter CI gate (see the header for what CI runs that 
 	# no matching audit step in .github/workflows/ci.yml.
 	python3 scripts/check_dependency_audit_coverage.py --self-test
 	python3 scripts/check_dependency_audit_coverage.py
+	# 86ak5rjh7 (marketing half) / 17tnw2b0q9j: `make ci` verified NOTHING about implementation/marketing,
+	# so a type or lint error there passed here and failed only in CI. The same target the CI job calls,
+	# via recursive make so there is exactly one definition. Placed before the cargo gates because it
+	# takes seconds, so a marketing error fails fast instead of after the whole Rust run.
+	$(MAKE_RECURSE) --no-print-directory marketing-check
 	cd $(DESKTOP) && $(CARGO) fmt --check
 	cd $(OPERATOR) && $(CARGO) fmt --check
 	$(CARGO) clippy $(WS) --workspace --all-targets -- -D warnings
@@ -738,6 +803,12 @@ ci: ## Run the local Rust/Flutter CI gate (see the header for what CI runs that 
 	# checks for it locally; GitHub-hosted runners carry cmake by default).
 	$(CARGO) clippy $(OP) --features stt,cloud-stt --all-targets -- -D warnings
 	$(CARGO) test $(OP) --features stt,cloud-stt --no-fail-fast
+	# `stt` ALONE, the configuration users actually install (86ak4y8yr; windows-installer.yml
+	# builds `--features stt`, and `cloud-stt` is stripped from releases). The pair above is a
+	# different compilation: `listening.rs` has a `#[cfg(not(feature = "cloud-stt"))]` arm that
+	# only exists when `stt` is on and `cloud-stt` is off, so it was linted by no gate. Mirrors the
+	# `Clippy (stt -- the shipped configuration ...)` step in ci.yml's `operator-native` job.
+	$(CARGO) clippy $(OP) --features stt --all-targets -- -D warnings
 	# The real-model on-device STT integration test (86akd1jcc, Vera Q4) is `#[ignore]`d, so the
 	# line above never runs it -- it needs a real ~1.6GB whisper model, which the default debug
 	# profile hashes at ~18-19x release speed (SHA-256 over 1.6GB: ~63s debug / ~3s release,

@@ -11,6 +11,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:crypto/crypto.dart';
+import 'package:flutter/foundation.dart' show debugPrintStack, visibleForTesting;
 
 import 'pair_uri.dart';
 import 'protocol.dart';
@@ -22,6 +23,8 @@ const Duration connectTimeout = Duration(seconds: 10);
 // Must exceed the server's operator-approval park window (120s) so the device does not hang up
 // before the operator has decided (86ajxer8n).
 const Duration pairTimeout = Duration(seconds: 150);
+/// The budget for ONE command, from the moment it is sent — not a per-frame
+/// silence timeout, so frames that don't answer the command cannot extend it.
 const Duration commandTimeout = Duration(seconds: 10);
 
 class SessionException implements Exception {
@@ -37,6 +40,30 @@ class SessionException implements Exception {
 /// want to STOP reconnecting (and prompt a re-pair) can catch it specifically.
 class SessionRevoked extends SessionException {
   const SessionRevoked(super.message);
+}
+
+/// What a frame the client cannot read surfaces as — not text, not JSON, not an
+/// object ([StreamQueue.nextJson]), or an auth/pair reply that is no readable
+/// verdict ([SelahSession.connect] / [SelahSession.pair]). The ONE definition of
+/// the words, so a host that breaks the protocol reads the same however it
+/// breaks it and the paths cannot drift apart.
+const SessionException _malformedFrame =
+    SessionException('malformed frame from the host');
+
+/// Record that a connect attempt failed with something that is NOT a
+/// [SessionException] — a failure nobody modelled (a parsing bug, a platform
+/// error). Callers treat any connect failure as survivable (retry, or fall back
+/// to the Connect screen), which would otherwise make such a bug invisible.
+///
+/// Writes the runtime TYPE and a bounded stack, **never** `error.toString()` or
+/// its message: a `FormatException` embeds the source text it failed to parse,
+/// which here is a frame the host chose, so it must not reach a log.
+void debugReportUnexpectedConnectFailure(Object error, StackTrace stack) {
+  debugPrintStack(
+    stackTrace: stack,
+    label: 'connect failed with an unexpected ${error.runtimeType}',
+    maxFrames: 8,
+  );
 }
 
 /// Credentials issued at pairing time (store securely; reused on reconnect).
@@ -58,8 +85,14 @@ abstract interface class ControllerSession {
 }
 
 class SelahSession implements ControllerSession {
-  final WebSocket _ws;
+  final void Function(String frame) _send;
+  final Future<void> Function() _close;
   final StreamQueue _incoming;
+
+  /// How long ONE command may take, measured from when it was sent. Distinct
+  /// from frame liveness: a host that keeps emitting frames which never answer
+  /// the in-flight command must not be able to extend this (17tnw2ay5jk).
+  final Duration _commandDeadline;
 
   /// The role the host granted this device (raw wire string).
   final String role;
@@ -107,7 +140,22 @@ class SelahSession implements ControllerSession {
   /// alongside `StreamQueue._buffer` below.
   Future<void> _turn = Future.value();
 
-  SelahSession._(this._ws, this._incoming, this.role);
+  SelahSession._(WebSocket ws, StreamQueue incoming, String role)
+      : this._over(ws.add, ws.close, incoming, role, commandTimeout);
+
+  SelahSession._over(this._send, this._close, this._incoming, this.role,
+      this._commandDeadline);
+
+  /// A session over an in-memory transport, for tests: [send] receives each
+  /// outbound frame and [incoming] yields the host's frames. Never used by
+  /// production code, which always goes through [pair] / [connect].
+  @visibleForTesting
+  SelahSession.forTest({
+    required void Function(String frame) send,
+    required StreamQueue incoming,
+    required String role,
+    Duration commandDeadline = commandTimeout,
+  }) : this._over(send, () async {}, incoming, role, commandDeadline);
 
   /// Open the pinned TLS WebSocket (no authentication yet).
   static Future<WebSocket> _establish(String host, int port, String pinHex) async {
@@ -152,6 +200,9 @@ class SelahSession implements ControllerSession {
             );
           case PairRejected(:final reason):
             throw SessionException('pairing rejected: $reason');
+          case PairMalformed():
+            // Not the operator's answer and not a save failure: say what it is.
+            throw _malformedFrame;
         }
       }
     } catch (e) {
@@ -162,6 +213,10 @@ class SelahSession implements ControllerSession {
   }
 
   /// Reconnect with previously issued credentials.
+  ///
+  /// Throws [SessionRevoked] ONLY for an explicit `"auth":"rejected"`. Any other
+  /// reply the client cannot read is a plain [SessionException] (17tnw2b1f1v) —
+  /// callers retry that and keep the credentials.
   static Future<SelahSession> connect({
     required String host,
     required int port,
@@ -180,6 +235,10 @@ class SelahSession implements ControllerSession {
           // Credentials no longer valid (revoked/unpaired) — distinct from a
           // transient network failure so the controller stops reconnecting.
           throw SessionRevoked('authentication rejected: $reason');
+        case AuthMalformed():
+          // NOT a revocation: only an explicit "rejected" is. An unreadable
+          // reply is transient, so it is retried and the credentials are kept.
+          throw _malformedFrame;
       }
     } catch (e) {
       // Never leak the socket on a failed handshake (timeout/reject/malformed).
@@ -202,13 +261,33 @@ class SelahSession implements ControllerSession {
     _turn = _turn.then((_) async {
       try {
         final id = _nextId++;
-        _ws.add(jsonEncode(request(id, cmd)));
+        // One clock for the whole command, started at the send. The old code
+        // handed `commandTimeout` to every frame read, so any frame it then
+        // discarded as stale restarted the clock and a chatty host could hold
+        // the command (and, via `LiveController.busy`, every control) open for
+        // ever (17tnw2ay5jk).
+        //
+        // A plain Stopwatch on purpose (monotonic, immune to wall-clock jumps),
+        // which also means `fakeAsync` / `tester.pump(duration)` do NOT advance
+        // it: tests of this deadline need real time (see
+        // test/models/session_command_deadline_test.dart).
+        final sinceSent = Stopwatch()..start();
+        _send(jsonEncode(request(id, cmd)));
         // Read until this command's reply: correlated frames (ack/denied carry
         // request_id) from an EARLIER, timed-out command are discarded rather than
         // mis-attributed. Uncorrelated frames (state/operator_state/...) are the
         // reply under the lockstep discipline.
         while (true) {
-          final reply = await _incoming.nextJson(commandTimeout);
+          final remaining = _commandDeadline - sinceSent.elapsed;
+          // Checked before every read, not left to nextJson's timeout: a frame
+          // already buffered is returned without consulting its timeout, so
+          // without this an expired command would still read (and could still
+          // complete on) frames that were sitting in the buffer. Expired means
+          // failed, even if the reply is already queued.
+          if (remaining <= Duration.zero) {
+            throw const SessionException('timed out waiting for the host');
+          }
+          final reply = await _incoming.nextJson(remaining);
           final rid = reply['request_id'];
           if (rid is int && rid < id) continue; // stale reply to a timed-out call
           completer.complete(ServerMessage.fromJson(reply));
@@ -234,7 +313,7 @@ class SelahSession implements ControllerSession {
 
   @override
   Future<void> close() async {
-    await _ws.close();
+    await _close();
   }
 }
 
@@ -291,8 +370,8 @@ class StreamQueue {
   final List<Completer<dynamic>> _waiters = [];
   bool _done = false;
 
-  StreamQueue(WebSocket ws) {
-    ws.listen((frame) {
+  StreamQueue(Stream<dynamic> frames) {
+    frames.listen((frame) {
       if (_waiters.isNotEmpty) {
         _waiters.removeAt(0).complete(frame);
       } else {
@@ -331,9 +410,24 @@ class StreamQueue {
         throw const SessionException('timed out waiting for the host');
       }
     }
-    final decoded = jsonDecode(frame as String);
+    // A binary frame arrives as bytes, not a String, and a text frame need not
+    // be JSON. Both are the peer breaking the protocol, so surface them as the
+    // [SessionException] every caller already treats as "this link is bad".
+    // [command] already wrapped everything it caught, so it was `connect` and
+    // `pair` that leaked a raw TypeError (`frame as String`) / FormatException
+    // (`jsonDecode`) — past `_reconnect()`'s and the launch splash's
+    // SessionException-only catches, wedging both (17tnw2b0vtj).
+    if (frame is! String) {
+      throw _malformedFrame;
+    }
+    final Object? decoded;
+    try {
+      decoded = jsonDecode(frame);
+    } on FormatException {
+      throw _malformedFrame;
+    }
     if (decoded is! Map<String, dynamic>) {
-      throw const SessionException('malformed frame from the host');
+      throw _malformedFrame;
     }
     return decoded;
   }

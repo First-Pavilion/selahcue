@@ -26,6 +26,17 @@
 //! remain on story 86ajpqfyj.
 //!
 //! Everything works offline — a hard product requirement for live services.
+//!
+//! # Asking "does this passage exist?" without paying for the corpus
+//!
+//! Decoding a translation is the expensive part of every lookup here (≈4 MB of text and ≈31k
+//! `String`s per translation). A caller that only needs a yes/no — the operator view's link
+//! status, which is rebuilt after every command including Blackout — must therefore use
+//! [`passage_exists_in`], never `!verses_in(..).is_empty()`. It answers from a small table of
+//! verse runs that `build.rs` derives from the embedded assets at compile time, so it decodes
+//! nothing and allocates nothing, yet returns exactly what the lookup would (86ak84fbd). A
+//! downloadable translation has no embedded asset to derive a table from; it falls back to the
+//! lookup, which decodes its verses once if (and only if) they have been downloaded.
 
 #![forbid(unsafe_code)]
 
@@ -33,11 +44,16 @@ use selahcue_core::scripture::Reference;
 use std::io::Read;
 use std::sync::OnceLock;
 
+/// The one definition of a verse line, shared with `build.rs` (see the module doc).
+mod tsv_row;
+/// Compile-time verse-run tables behind [`passage_exists_in`].
+mod versification;
+
 /// Fuzzy quote/paraphrase detection (R4 "fuzzy" rung) — match spoken text against the corpus.
 pub mod quote_match;
 pub use quote_match::{
     match_quote, match_quote_in, match_quote_ranked, match_quote_ranked_in, match_quote_scored,
-    match_quote_scored_in, ranked_offered_in, MAX_ALTERNATIVES, MAX_RANKED,
+    match_quote_scored_in, ranked_offered_in, warm, warm_in, MAX_ALTERNATIVES, MAX_RANKED,
 };
 
 /// Download-on-demand for additional Bible-translation assets (feature `download`).
@@ -250,20 +266,75 @@ fn decode(compressed: &[u8]) -> Vec<Verse> {
         {
             return Vec::new();
         }
+        // `parse_row` is shared with `build.rs`, so the compile-time verse-run table and this
+        // index agree on which lines are verses by construction.
         let mut verses: Vec<Verse> = tsv
             .lines()
             .filter_map(|line| {
-                let mut parts = line.splitn(4, '\t');
+                let (book, chapter, verse, text) = tsv_row::parse_row(line)?;
                 Some(Verse {
-                    book: parts.next()?.parse().ok()?,
-                    chapter: parts.next()?.parse().ok()?,
-                    verse: parts.next()?.parse().ok()?,
-                    text: parts.next()?.to_string(),
+                    book,
+                    chapter,
+                    verse,
+                    text: text.to_string(),
                 })
             })
             .collect();
         verses.sort_by_key(|v| (v.book, v.chapter, v.verse));
         verses
+    }
+}
+
+/// Whether `reference` presents at least one verse in translation `t` — exactly
+/// `!verses_in(t, reference).is_empty()`, without the cost of `verses_in`.
+///
+/// For a BUNDLED translation this answers from a compile-time table of verse runs: it never
+/// decodes the translation, never allocates, and keeps no cache (the table is read-only static
+/// data, ~1.2k rows of 8 bytes per translation). That is the point — it is the call to make on a
+/// path that runs per action (the operator view's link status runs after every command, Blackout
+/// and Clear included), where decoding a whole translation to ask a yes/no question is a
+/// first-press stall. A well-formed reference that names nothing (`Jude 2:1`, `Romans 99:1`) is
+/// `false`, and a verse one translation omits (the WEB has no Luke 17:36) is `false` there only.
+///
+/// A DOWNLOADABLE translation ([`Translation::is_downloadable`]) has no embedded asset to derive
+/// a table from, so it falls back to the lookup: its verses decode once, and only once they have
+/// been downloaded; until then it is `false` without decoding anything. With the `download`
+/// feature on, a translation that is NOT downloaded yet still costs a failed file read on every
+/// call (a failed load is deliberately not cached, so a later download is picked up) — cheap,
+/// but I/O, unlike the bundled path. Tracked in ClickUp 17tnw2b0wfw.
+///
+/// An exhaustive test (`tests/test_passage_exists.rs`) pins this to `verses_in` over every chapter
+/// of every bundled translation.
+pub fn passage_exists_in(t: Translation, reference: &Reference) -> bool {
+    match versification::runs_of(t) {
+        Some(runs) => versification::contains(
+            runs,
+            reference.book,
+            reference.chapter,
+            reference.verses.map(|r| (r.start, r.end)),
+        ),
+        None => !verses_in(t, reference).is_empty(),
+    }
+}
+
+/// Whether translation `t`'s full verse index has been decoded yet in this process. Never
+/// triggers a decode.
+///
+/// **A test seam, not a product API.** It is how a test proves a code path answered without
+/// paying for the corpus (a global "how many decodes" counter would let a sibling's decode mask a
+/// miss on your translation, so this is per translation).
+#[doc(hidden)]
+pub fn is_index_loaded(t: Translation) -> bool {
+    match t {
+        Translation::Kjv => KJV_INDEX.get().is_some(),
+        Translation::Web => WEB_INDEX.get().is_some(),
+        Translation::Asv => ASV_INDEX.get().is_some(),
+        Translation::Webbe => WEBBE_INDEX.get().is_some(),
+        Translation::Dby => DBY_INDEX.get().is_some(),
+        #[cfg(feature = "download")]
+        Translation::Ylt => YLT_INDEX.get().is_some(),
+        #[cfg(not(feature = "download"))]
+        Translation::Ylt => false,
     }
 }
 

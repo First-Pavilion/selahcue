@@ -14,10 +14,15 @@
 //!   backlog or an absent model can never stall or back-pressure live output.
 //! - **Bounded memory (no-leak).** Every buffer — the PCM ring, the utterance accumulator,
 //!   and the pending-segment queue — is hard-capped; an endless sermon cannot grow memory.
-//! - **Deterministic tested path.** The pure-Rust pipeline reads no wall clock (timestamps
-//!   are derived from the 16 kHz sample position) and uses no RNG, so the whole
-//!   audio → VAD → recognizer → segment flow is reproducible with fakes and needs no
-//!   microphone, native toolchain, or model file.
+//! - **Deterministic tested path.** The pure-Rust pipeline reads no OS wall clock unprompted
+//!   and uses no RNG, so the whole audio → VAD → recognizer → segment flow is reproducible
+//!   with fakes and needs no microphone, native toolchain, or model file. Two clocks exist,
+//!   deliberately not conflated (86akcfpbj): transcript **timestamps** are derived from the
+//!   16 kHz sample position, never wall time; the streaming-interim **cadence** is wall time,
+//!   via an injected [`Clock`] (the real monotonic clock in production, [`ManualClock`] in
+//!   tests) — mirroring `selahcue_core::timer::Timer`'s "the caller supplies `now`" discipline
+//!   rather than reading `Instant::now()` unprompted. See `engine`'s module doc for why the
+//!   cadence needed this and the transcript clock did not.
 //!
 //! # Feature flags
 //!
@@ -41,7 +46,7 @@ pub mod resample;
 pub mod vad;
 
 pub use audio::{frame_peak, AudioChunk, AudioSource, FakeAudioSource, PcmRing, MAX_PCM_SAMPLES};
-pub use engine::{EngineConfig, SttEngine};
+pub use engine::{Clock, EngineConfig, ManualClock, SttEngine};
 pub use guard::FeedbackGuard;
 pub use model::{
     model_readiness, verify_model, Backend, HardwareProbe, ModelAsset, ModelError, ModelReadiness,

@@ -93,8 +93,8 @@ jobs:
       # drift from `make ci` (86ak5rc9c).
       rust: ${{ steps.toolchain.outputs.channel }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: dorny/paths-filter@v3
+      - uses: actions/checkout@v7
+      - uses: dorny/paths-filter@v4
         id: filter
         with:
           filters: |
@@ -148,6 +148,11 @@ jobs:
               # the drift the mirror step exists to catch: the client transcribed Django
               # <= 5.1 while the API pinned 6.1, and both gates stayed green for it.
               - 'implementation/api/pyproject.toml'
+              # The job now runs `make marketing-check`, so the recipe lives in the
+              # Makefile. Without this line an edit that broke that target would not
+              # re-run the job that depends on it, and the break would surface on the
+              # next unrelated marketing change instead of on the commit that caused it.
+              - 'Makefile'
       # Single source of truth for the compiler. Every Rust job installs exactly this
       # version, and scripts/check_toolchain.sh then asserts the running toolchain
       # matches it -- the same script `make ci` runs, which is what makes the local
@@ -180,11 +185,11 @@ jobs:
     name: workflows (actionlint + permissions)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: docker://rhysd/actionlint:1.7.12
         with:
           args: -color
-      # Two invariants actionlint does not model, both of which shipped as real
+      # Three invariants actionlint does not model. The first two shipped as real
       # defects in this branch and were caught by human review rather than any gate:
       #   - a job declaring `permissions` loses every scope it does not list, so an
       #     `issues: write`-only job cannot check out a private repo and dies at step 1;
@@ -195,7 +200,11 @@ jobs:
       # narrow -- it checks checkout-vs-`contents` and step ordering, NOT that every
       # job's scopes match everything it does (a job declaring `contents: read` and
       # then running `gh issue create` dies the same way and is not detected).
-      - name: Checkout scopes + setup/gate ordering
+      #   - cache saves (17tnw2b1f24): in a workflow that runs on pull requests, every
+      #     Swatinem/rust-cache step must save from `main` only and flutter-action must
+      #     not cache, or each PR writes its own copy and the repo's Actions cache limit
+      #     evicts main's entries. A failure of this check shows under this step's name.
+      - name: Checkout scopes + setup/gate ordering + cache saves
         run: |
           # Pinned, matching the playwright pin below: an unpinned install makes this
           # gate's behaviour depend on whatever PyPI serves that morning.
@@ -216,7 +225,7 @@ jobs:
       run:
         working-directory: implementation/desktop
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: ${{ needs.changes.outputs.rust }}
@@ -228,6 +237,40 @@ jobs:
         working-directory: ${{ github.workspace }}
         shell: bash
         run: sh scripts/check_toolchain.sh
+      # `encryption` (86akgrz3b) is now a Cargo DEFAULT feature of both selahcue-desktop and
+      # selahcue-data, so EVERY step below that builds this workspace with no --no-default-
+      # features override — Format doesn't touch code, but Clippy (default features) and
+      # Test (workspace) both do — now compiles rusqlite's `bundled-sqlcipher-vendored-openssl`,
+      # which builds OpenSSL from source via openssl-src. That needs a Perl interpreter
+      # (Configure) and NASM (assembly-optimized crypto routines) on Windows only — Linux and
+      # macOS need just the C/C++ toolchain the runner already has (see selahcue-data/Cargo.toml's
+      # `encryption` comment). Before 86akgrz3b this was moot because the feature was off by
+      # default everywhere; now it is the actual, load-bearing reason the "Test (at-rest
+      # encryption)" step further down no longer excludes Windows.
+      #
+      # ilammy/setup-nasm is the action the rust-openssl ecosystem commonly uses for exactly this
+      # gap (pinned major version, matching this workflow's existing convention for narrowly-
+      # scoped third-party actions like ilammy/msvc-dev-cmd and Swatinem/rust-cache).
+      - name: NASM for the vendored-OpenSSL build (Windows only)
+        if: runner.os == 'Windows'
+        uses: ilammy/setup-nasm@v1
+      # windows-latest is DOCUMENTED to ship Strawberry Perl, but "documented to" is not
+      # "verified here" — asserting it explicitly turns a wrong assumption into a clear, named
+      # failure at this step instead of a confusing OpenSSL Configure error buried inside a
+      # `cargo build` several steps later.
+      - name: Verify Perl is on PATH for the vendored-OpenSSL build (Windows only)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $p = Get-Command perl -ErrorAction SilentlyContinue
+          if (-not $p) {
+            throw "perl not found on PATH -- the encryption feature's vendored-OpenSSL build " + `
+              "(now default-on, 86akgrz3b) cannot run its Configure step without it. " + `
+              "windows-latest is documented to ship Strawberry Perl; if this throws, the " + `
+              "runner image changed and perl must be installed explicitly (e.g. " + `
+              "'choco install strawberryperl')."
+          }
+          perl -v
       # Quinn's process finding on PR #24 (86akcmzyq): the PR template's feature-flag-
       # reachability section is three checkboxes a human ticks, unenforced by CI — exactly the
       # human step that let 86akby7d8 ship, merge, and stay invisible from `make launch` in the
@@ -262,6 +305,22 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: implementation/desktop
+          # Save from `main` only (17tnw2b1f24). The cache key has no ref in it, so a pull
+          # request restores main's entry exactly; what it must not do is SAVE its own copy.
+          # Every PR run used to write a private 0.3-1.6 GB entry per job and OS, which put
+          # the repo over its Actions cache limit and got main's own entries evicted, so
+          # main's jobs then started cold.
+          #
+          # THE COST, so nobody removes this in a hurry. A PR can only restore what main
+          # holds. While main has no entry for a job -- the job is red on main (a red job
+          # saves nothing; macOS operator-native today, via flaky test 17tnw2b1vyy), the
+          # entry was evicted, or a lockfile/toolchain change moved the key -- EVERY push of
+          # EVERY PR runs that job cold. Before, a PR's first push seeded an entry its later
+          # pushes reused. A cold Windows operator-native job is about 35 min against about
+          # 4 warm. The remedy is to keep main's entries whole (17tnw2b1waw), not to let PRs
+          # save again. Same line on every rust-cache step below; check_workflows.py fails
+          # the build if one is missing.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Linux system deps (winit/wgpu + software Vulkan for GPU parity)
         if: runner.os == 'Linux'
         run: |
@@ -493,9 +552,16 @@ jobs:
         if: ${{ !cancelled() }}
         run: cargo clippy -p selahcue-stt-cloud --features deepgram --release --all-targets -- -D warnings
       - name: Test (at-rest encryption — SQLCipher + vendored OpenSSL)
-        # The vendored OpenSSL build needs perl+nasm on Windows; covered on the
-        # other two OSes (the feature is platform-independent Rust).
-        if: ${{ !cancelled() && runner.os != 'Windows' }}
+        # 86akgrz3b: `encryption` is now a Cargo default feature, so the workspace-wide
+        # Clippy/Test steps above already compile and exercise it on every OS, including
+        # Windows (perl+nasm now provisioned in this job's setup zone — see the "NASM for the
+        # vendored-OpenSSL build"/"Verify Perl is on PATH" steps near the top). This step stays
+        # as an explicit, named, feature-flagged run — redundant with the default-feature
+        # coverage above in what it builds, but not in what it PROVES: it is the one place a
+        # future `default = []` regression (someone dropping `encryption` back out of the
+        # default array) would still be caught by name, on all three OSes, rather than silently
+        # falling out of the workspace run's coverage.
+        if: ${{ !cancelled() }}
         run: |
           cargo test -p selahcue-data --features encryption --no-fail-fast
           cargo test -p selahcue-desktop --features encryption --no-fail-fast
@@ -527,7 +593,7 @@ jobs:
       run:
         working-directory: implementation/desktop
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: ${{ needs.changes.outputs.rust }}
@@ -541,6 +607,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: implementation/desktop
+          # Main saves, pull requests only restore -- see the `rust` job (17tnw2b1f24).
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Linux system deps (winit/wgpu + software Vulkan + Xvfb)
         if: runner.os == 'Linux'
         # libxkbcommon-x11: winit dlopens libxkbcommon-x11.so to create a real X11
@@ -577,13 +645,24 @@ jobs:
     # stt,cloud-stt feature-gate pairs moved out to `operator-native` below -- see that job's
     # own timeout comment for why it moved, not just where. What is LEFT in this job is
     # Format/Check/Clippy/Test plus three cheap feature-flag pairs and the two Linux webview
-    # smokes, none of them native-toolchain- or release-codegen-heavy. Measured on run
-    # 33984097274 (the merged-head run that timed out and prompted this split): that content
-    # took ~5m on windows-latest, this job's slowest OS, and ~4m on ubuntu-latest including
-    # both webview smokes. 15 minutes keeps 3x headroom over that without resurrecting the
-    # original job's failure mode -- one slow native build masking a real wedge in the cheap
-    # steps for 25 minutes.
-    timeout-minutes: 15
+    # smokes, none of them native-toolchain- or release-codegen-heavy -- true when this was
+    # written, no longer true on Windows.
+    #
+    # RAISED 15 -> 30 (86akgrz3b, Vera's performance review of PR #125). `encryption`/
+    # `read-encrypted-transcripts` becoming Cargo default features means `Check`/`Clippy`/`Test`
+    # in THIS job now also compile the vendored-OpenSSL build every run, on every OS -- and on
+    # Windows that build is `nmake`, one file at a time, genuinely slow. This job ACTUALLY TIMED
+    # OUT at 15 minutes on a real run of PR #125 (run 36727646787, attempt 2, job 109935685146:
+    # "The job has exceeded the maximum execution time of 15m0s"), with `Check` alone taking
+    # 11m3s against a pre-encryption 2m19s baseline on the same job. Vera measured the
+    # OpenSSL-build portion of that gap directly (`nmake build_libs`) and projected ~19-20
+    # minutes for a fully cold run (no warm `Swatinem/rust-cache` hit) -- which is routine here:
+    # this repo's total Actions cache was already at 10.12 GB against GitHub's 10 GB limit during
+    # that same PR's run, evicting this very job's Windows caches. 30 minutes keeps real headroom
+    # over the cold-run projection without resurrecting the original 25-minute failure mode this
+    # job was split to fix -- see `operator-native` below, whose own timeout got the same
+    # treatment for the same reason.
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -593,7 +672,7 @@ jobs:
       run:
         working-directory: implementation/desktop/crates/selahcue-operator
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: ${{ needs.changes.outputs.rust }}
@@ -605,9 +684,27 @@ jobs:
         working-directory: ${{ github.workspace }}
         shell: bash
         run: sh scripts/check_toolchain.sh
+      # `encryption` (86akgrz3b) is now default-on for selahcue-operator too, so Check/Clippy/
+      # Test below compile the vendored-OpenSSL build here as well — see the `rust` job's
+      # identical pair of steps for the full reasoning; not repeated per-job.
+      - name: NASM for the vendored-OpenSSL build (Windows only)
+        if: runner.os == 'Windows'
+        uses: ilammy/setup-nasm@v1
+      - name: Verify Perl is on PATH for the vendored-OpenSSL build (Windows only)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $p = Get-Command perl -ErrorAction SilentlyContinue
+          if (-not $p) {
+            throw "perl not found on PATH -- see the 'rust' job's identical step for the full " + `
+              "reasoning."
+          }
+          perl -v
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: implementation/desktop/crates/selahcue-operator
+          # Main saves, pull requests only restore -- see the `rust` job (17tnw2b1f24).
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Linux system deps (Tauri v2 webview + ALSA for cpal)
         if: runner.os == 'Linux'
         run: |
@@ -789,10 +886,21 @@ jobs:
     # pre-merge, on PR #22's own final run (33951200403, also windows-latest): 326s + 285s, plus
     # that run's own post-job cache-save of 238s (this job now caches more artefacts than that
     # run did, so treat 238s as a floor, not a ceiling). Sum: 66 + 373 + 653 + 326 + 285 + 238 +
-    # ~5 (post-checkout/complete) = 1946s ≈ 32.4 minutes. 45 minutes leaves ~13 minutes / ~40%
-    # headroom over that COLD-cache worst case -- sized against it deliberately, since a warm
-    # Swatinem/rust-cache hit is the happy path that does not need headroom.
-    timeout-minutes: 45
+    # ~5 (post-checkout/complete) = 1946s ≈ 32.4 minutes. That sizing predates 86akgrz3b and no
+    # longer holds:
+    #
+    # RAISED 45 -> 60 (86akgrz3b, Vera's performance review of PR #125). `encryption`/
+    # `read-encrypted-transcripts` default-on means the vendored-OpenSSL build now compiles
+    # TWICE in this job (once for the RELEASE steps, once for stt,cloud-stt) on top of the
+    # `openssl-src`/`nmake` cost already described on the `operator` job above. Vera measured
+    # directly on a real PR #125 run: `Clippy (RELEASE)` 181s -> 545s, `Clippy (stt,cloud-stt)`
+    # 206s -> 526s. A partly-warm run was already at ~24 minutes when a subsequent push's
+    # concurrency cancel landed; Vera projects ~28-30 minutes partly warm and ~39-41 of the old
+    # 45-minute cap on a fully cold run -- ~10% headroom, not the ~40% this comment used to
+    # claim (the arithmetic above is left in place as the pre-86akgrz3b baseline, not updated in
+    # place, so the delta this bump represents stays visible). 60 minutes restores real headroom
+    # over the cold-run projection.
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -802,7 +910,7 @@ jobs:
       run:
         working-directory: implementation/desktop/crates/selahcue-operator
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: ${{ needs.changes.outputs.rust }}
@@ -814,9 +922,27 @@ jobs:
         working-directory: ${{ github.workspace }}
         shell: bash
         run: sh scripts/check_toolchain.sh
+      # `encryption` (86akgrz3b) is now default-on for selahcue-operator too, so the RELEASE and
+      # stt,cloud-stt steps below compile the vendored-OpenSSL build here as well — see the
+      # `rust` job's identical pair of steps for the full reasoning; not repeated per-job.
+      - name: NASM for the vendored-OpenSSL build (Windows only)
+        if: runner.os == 'Windows'
+        uses: ilammy/setup-nasm@v1
+      - name: Verify Perl is on PATH for the vendored-OpenSSL build (Windows only)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $p = Get-Command perl -ErrorAction SilentlyContinue
+          if (-not $p) {
+            throw "perl not found on PATH -- see the 'rust' job's identical step for the full " + `
+              "reasoning."
+          }
+          perl -v
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: implementation/desktop/crates/selahcue-operator
+          # Main saves, pull requests only restore -- see the `rust` job (17tnw2b1f24).
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       # Same packages as `operator`'s "Linux system deps" step above, needed here for the
       # identical reason: this job compiles the same crate (Tauri webview deps) and, from the
       # stt,cloud-stt pair below, `cpal`'s ALSA backend (`libasound2-dev`).
@@ -877,8 +1003,8 @@ jobs:
       # Without it, `listening.rs` would be exactly as "linted and tested by nothing" as
       # `selahcue-stt` itself (the standing example every feature-gate comment in this job
       # cites). whisper-rs-sys's native build needs only a C/C++ toolchain + cmake, which all
-      # three GitHub-hosted runner images carry by default -- the same reason the `stt`-only
-      # build was never separately gated before now. It is NOT true, though, that this step
+      # three GitHub-hosted runner images carry by default -- so the `stt`-only step at the end of
+      # this job (86ak4y8yr) needs no setup of its own. It is NOT true, though, that this step
       # needs no extra system packages at all: `stt` also pulls in `selahcue-stt`'s `capture`
       # feature (`CpalSource`, real microphone capture via `cpal`), and on Linux `cpal` builds
       # against ALSA -- `alsa-sys` fails to compile without the ALSA development headers.
@@ -909,6 +1035,37 @@ jobs:
       - name: Test (stt,cloud-stt)
         if: ${{ !cancelled() }}
         run: cargo test --features stt,cloud-stt --no-fail-fast
+      # `stt` ALONE -- the configuration users actually install (86ak4y8yr). `windows-installer.yml`
+      # builds `cargo tauri build --features stt`, with no `cloud-stt` (that feature is
+      # `RELEASE: UNSAFE`, so the Makefile strips it from release builds). The `stt,cloud-stt` pair
+      # above is a DIFFERENT compilation: `cloud-stt` implies `stt`, so it lints most of
+      # `listening.rs`, but `start_listening` has a `#[cfg(not(feature = "cloud-stt"))]` arm that is
+      # compiled ONLY when `stt` is on and `cloud-stt` is off, i.e. only in the shipped build. Until
+      # this step, no push or PR compiled that arm; the first sign of a break there would have been a
+      # manual `windows-installer` run.
+      #
+      # Clippy, not a separate `cargo check`: clippy type-checks every cfg arm, so a compile error
+      # fails here too. No `Test (stt)` step: measured on macOS, `cargo test --features stt` runs 198
+      # tests and every one of them also runs in the `stt,cloud-stt` pair above (206; the 8 extras
+      # are `cloud-stt`-gated), and the only non-test code that differs is that one arm. Revisit if a
+      # test is ever gated `not(feature = "cloud-stt")`.
+      #
+      # Cost: this job already builds `whisper-rs-sys` (cmake/whisper.cpp) and the vendored OpenSSL
+      # for the steps above, with an identical `selahcue-stt` feature set, so cargo reuses those
+      # artefacts and this step re-checks only six packages -- `tungstenite`, `tokio-tungstenite`,
+      # `selahcue-stt-cloud` (its non-`deepgram` build), `selahcue-lan`, `selahcue-app` and the
+      # operator crate itself -- the same six on all three OSes. That is why it lives here, on all
+      # three OSes, rather than in a new job (a new job would pay checkout/toolchain/cache setup
+      # AND a second cold whisper.cpp + OpenSSL build per OS) and rather than Linux-only (Windows
+      # is the one OS the installer ships on, and this job's own history rejects dropping it).
+      # Measured on PR #137's run 36819129002: 5s on ubuntu (a full cache miss, so `whisper-rs-sys`
+      # had just been built cold by the step before and was still reused), 10s on windows, 16s on
+      # macOS; 7s locally on macOS arm64. If a later run shows a matrix arm near `timeout-minutes`,
+      # the fallback is a Linux-only `if:` here -- the cfg arm is platform-independent -- not
+      # removing the step.
+      - name: Clippy (stt -- the shipped configuration, no cloud-stt)
+        if: ${{ !cancelled() }}
+        run: cargo clippy --features stt --all-targets -- -D warnings
 
   flutter:
     name: flutter controller
@@ -919,11 +1076,21 @@ jobs:
       run:
         working-directory: implementation/mobile/selahcue_controller
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: subosito/flutter-action@v2
         with:
           channel: stable
-          cache: true
+          # No `cache: true` (17tnw2b1f24). It saves the Flutter SDK (1.72 GB) and the pub cache
+          # (39 MB) from pull-request runs, and the action has no `save-if` to stop that. The
+          # reason to drop it is BYTES, not time: 1.76 GB is about 17.6% of a 10 GB Actions
+          # cache limit, and at the limit it would be the first entry evicted (mobile runs are
+          # rarer than desktop runs, Inferred), while the time it saves is roughly a wash (a
+          # hit saves under a minute; a miss pays about 20 s to save). The operator caches
+          # that need those bytes are worth far more (Windows: 35 min cold, 4 warm). Revisit
+          # if the limit is raised; a main-only version needs a `dry-run` step, then
+          # actions/cache/restore, the real action, and a main-only actions/cache/save.
+          # check_workflows.py fails the build if `cache:` or `pub-cache:` comes back on this
+          # action in a pull-request workflow.
       - run: flutter pub get
       - run: flutter analyze
       - run: flutter test
@@ -932,7 +1099,7 @@ jobs:
       # Kotlin without needing a device. JDK 17 for the Android Gradle plugin.
       # Only when the Android/Kotlin (or its Dart callers) actually changed —
       # the Gradle/SDK build is the heaviest mobile step, wasted on pure-Dart edits.
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v6
         if: needs.changes.outputs.android == 'true'
         with:
           distribution: temurin
@@ -977,8 +1144,8 @@ jobs:
           --health-cmd "redis-cli ping"
           --health-interval 10s --health-timeout 5s --health-retries 5
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           # Matches the local dev interpreter. Django 6.1 supports 3.12-3.14.
           python-version: "3.14"
@@ -1019,8 +1186,8 @@ jobs:
       run:
         working-directory: implementation/marketing
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: "22"
           cache: npm
@@ -1033,16 +1200,20 @@ jobs:
       # PEP 668 — `pip install` into a distro-managed python3 is refused as an
       # externally-managed environment. Measured: the 29-code-point whitespace set is
       # identical under 3.12 and 3.14.5, so this pin is a guard, not a fix.
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.14"
       - name: Install
         run: npm ci
-      # `build` is vue-tsc -b && vite build, so this is the typecheck gate too.
-      - name: Build
-        run: npm run build
-      - name: Tests
-        run: npm test
+      # type-check (vue-tsc), lint (eslint, --max-warnings 0), node tests, production build.
+      # Calls the SAME Makefile target `make ci` calls, rather than re-listing the npm
+      # scripts here, so the local gate and this job cannot drift apart (the marketing
+      # half of 86ak5rjh7: `make ci` used to verify nothing about this site). The target
+      # runs from the repo root, so this step overrides the job's default
+      # `working-directory`. It never installs; the step above did.
+      - name: Type-check, lint, test, build (make marketing-check)
+        working-directory: .
+        run: make marketing-check
       # The client/server predicate mirrors, re-derived from the runtimes that decide:
       # CPython for the whitespace set, and the PINNED Django for the email validator.
       # It needs a real Django, so it gets one here from the API's own pin rather than a
@@ -1078,7 +1249,7 @@ jobs:
     if: needs.changes.outputs.desktop == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # 86akmdkdn (performance review, Vera): this is a fast, filesystem-only check with no
       # cargo/network dependency, run BEFORE the cargo-audit steps below (each ~4-8s) rather
       # than after, so a coverage-drift finding fails in seconds instead of after paying for
@@ -1123,7 +1294,7 @@ jobs:
     if: needs.changes.outputs.desktop == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-deny,cargo-cyclonedx
@@ -1140,7 +1311,7 @@ jobs:
         working-directory: implementation/desktop/crates/selahcue-operator
         run: cargo cyclonedx --format json
       - name: Upload SBOMs
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: sbom-cyclonedx
           path: implementation/desktop/**/*.cdx.json
@@ -1190,7 +1361,7 @@ jobs:
       contents: read
       issues: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # This job holds `issues: write`; nothing here needs the token afterwards
           # (the reconcile step gets it via a step-scoped `env:`), so keep it out of

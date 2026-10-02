@@ -182,6 +182,16 @@ mod whisper_backend {
     /// decodes across the whole ramp a real utterance grows through before the 6 s interim
     /// window engages (1.6/2.4/3.2/4.8/5.6 s) and at the 10 s final — not an accident of a
     /// shared params builder.
+    ///
+    /// **86akcgmvb resolution, added after this doc comment's original "this crate cannot
+    /// enforce that at compile time from here" line was written — that line is still true of
+    /// THIS constant (it only ever pins the DEFAULT), but the coupling itself is now enforced,
+    /// at `engine.rs`'s `SttEngine::build`/`build_with_clock`, as a RUNTIME check against a
+    /// mirrored horizon constant, `engine::WHISPER_AUDIO_CTX_HORIZON_SAMPLES` — a compile-time-
+    /// only assertion could never have covered a `listening.rs`-supplied runtime value anyway.**
+    /// The const assertion immediately below this one pins that mirrored constant EQUAL to this
+    /// one, so the two cannot silently drift apart on any build that actually compiles this
+    /// `whisper` module.
     const WHISPER_AUDIO_CTX: std::os::raw::c_int = 512;
 
     // Pins the arithmetic half of the ALIGNMENT CONSTRAINT above at compile time: a future
@@ -192,6 +202,21 @@ mod whisper_backend {
         "audio_ctx must be positive, <= n_audio_ctx (1500), and a multiple of 4: Metal's F16 \
          matmul asserts nb01 % 8 == 0 on a 2-byte-per-element stride (SIGABRT otherwise) -- \
          see WHISPER_AUDIO_CTX's doc comment"
+    );
+
+    // 86akcgmvb: keeps `engine::WHISPER_AUDIO_CTX_HORIZON_SAMPLES` (the always-compiled mirror
+    // the runtime `max_utterance_samples` guard checks against, since this whole module is
+    // gated behind the heavy `whisper` feature and the guard's default build cannot see
+    // `WHISPER_AUDIO_CTX` directly) pinned EQUAL to the real value here, on any build that
+    // actually compiles this module. A retune of either constant without the other fails the
+    // BUILD, not a test that might not be run — see `engine.rs`'s `WHISPER_AUDIO_CTX_HORIZON_SAMPLES`
+    // doc comment for the full reasoning.
+    const _: () = assert!(
+        crate::engine::WHISPER_AUDIO_CTX_HORIZON_SAMPLES
+            == (WHISPER_AUDIO_CTX as usize) * (crate::TARGET_SAMPLE_RATE as usize) / 50,
+        "engine::WHISPER_AUDIO_CTX_HORIZON_SAMPLES must track WHISPER_AUDIO_CTX exactly, or the \
+         runtime max_utterance_samples guard (86akcgmvb) checks against the wrong horizon \
+         whenever the whisper feature is actually compiled in"
     );
 
     /// whisper.cpp-backed recognizer. Holds a **shared** loaded model context (`Arc`) so a
