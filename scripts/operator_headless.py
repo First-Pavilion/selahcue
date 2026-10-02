@@ -217,51 +217,211 @@ if not check_jump_call_site_is_click_only():
     )
     sys.exit(1)
 
-# 17tnw2ayetm (Cody F1/F6): the five filter guards (TD-012, PSC-005, GO-LIVE-HOVER,
+# 17tnw2ayetm (Cody F1/F6/N1/N2/N4): the five filter guards (TD-012, PSC-005, GO-LIVE-HOVER,
 # TIMER-START-HOVER, PP-GEN) each look their selector up for a premise check AND hand it to the
 # guard predicate. When those were two separate string literals, a stale guard literal (a typo, a
 # CSS rename) made the guard see "no such rule, so no filter" and report the passing state while
 # the premise still passed on its own literal. Cody proved it live: a `filter` in the shipped
 # `.tb-golive:hover` rule plus ONE edited guard literal gave 1 FAIL on `main` and 0 FAIL on the
-# first cut of this fix. Two controls now hold that shut: the predicates fail closed when their
-# selector matches no rule (driver-side, exercised by CSSOM-PARSE-07), and this source-text check,
-# which refuses a call site whose guard argument is not a bare variable that is (a) bound to a
-# string literal exactly once and (b) the very variable its premise looked up through `__cssRule`.
-# That also catches the case fail-closed cannot: a literal that went stale by becoming a DIFFERENT
-# real rule. It counts the call sites (exactly 5) so a deleted guard cannot hide. Like the D5
-# checks above it is line-local text analysis, not data-flow (an alias of the variable would pass);
-# it exists to make the ordinary slip fail loudly, which is all the slip needs.
+# first cut of this fix. Two controls hold that shut: the predicates fail closed when their
+# selector matches no rule (driver-side, exercised by CSSOM-PARSE-07), and this source-text check
+# of the DRIVER JavaScript, which ties every guard call to ITS OWN site:
+#   - exactly five guard calls, each passing a bare variable from the registry below, all five
+#     DISTINCT (kills the copy-paste slip: the PSC-005 guard fed the TD-012 variable) and each paired
+#     with the one guard function it belongs to (kills swapped TD-012/PP-GEN functions);
+#   - each variable assigned exactly once anywhere (a later `wXSel = ...` reassignment is refused)
+#     and that one assignment is `var wXSel = "<string literal>"`;
+#   - each variable looked up through `__cssRule` exactly once, BEFORE its guard, with no other
+#     site's premise lookup between that lookup and its guard (the guard's nearest preceding
+#     premise is its own), and read for the failure message (`__cssFilterFound`) exactly once on
+#     the four GuardOk sites;
+#   - comments are stripped first, so a commented-out `__cssRule(decoy)` cannot satisfy a clause and
+#     a comment that merely contains a call-shaped string cannot trip one (Cody D3/N4).
+# That also catches what fail-closed cannot: a literal that went stale by becoming a DIFFERENT real
+# rule, or a guard wired to the wrong site's variable. Like the D5 checks above it is line-local
+# text analysis, not data-flow (an alias such as `var x = wTdHoverSel;` would pass); it exists to
+# make the ordinary slips fail loudly, which is all those slips need. It is itself guarded by
+# NEGATIVE CONTROLS (Cody N2): deliberately broken copies of the real driver text must each be
+# refused, and the check refuses to run if a control cannot be applied or the unbroken text is
+# refused, so a vacuous static check fails loudly instead of printing PASS. Mutation-checking this
+# check (each clause neutralised in turn) shows three clauses are mutually REDUNDANT by
+# construction (exactly five calls, all arguments distinct, each registered variable guarded once:
+# any two imply the third), so deleting any ONE of them is an equivalent mutant, not a gap; they
+# stay because each names a different slip in the failure message. Not pinned: the selector
+# literals themselves (that is 17tnw2ayete); the fail-closed predicates only catch a literal that
+# matches NO rule.
+FILTER_GUARD_SITES = {
+    "wTdHoverSel": "__cssFilterGuardOk",
+    "wPsHoverSel": "__cssFilterGuardOk",
+    "wTbGlHoverSel": "__cssFilterGuardOk",
+    "wTsHoverSel": "__cssFilterGuardOk",
+    "wPpGenHoverSel": "__cssNoBrightnessFilter",
+}
 FILTER_GUARD_CALL_RE = re.compile(
     r"\bok\(\s*(__cssFilterGuardOk|__cssNoBrightnessFilter)\(\s*([^,()\s]+)\s*\)\s*,"
 )
+# JS assignment operators (plain, compound, logical), never the comparison `==` / `===`.
+_JS_ASSIGN_RE = r"\s*(?:\*\*|<<|>>>?|&&|\|\||\?\?|[-+*/%&|^])?=(?!=)"
 
 
-def check_filter_guard_call_sites_share_one_selector(source=None):
-    if source is None:
-        source = open(os.path.abspath(__file__), encoding="utf-8").read()
-    calls = FILTER_GUARD_CALL_RE.findall(source)
+def _extract_driver_js(file_text):
+    m = re.search(r'^DRIVER = r"""(.*?)^"""', file_text, re.S | re.M)
+    return m.group(1) if m else None
+
+
+def _strip_js_comments(js):
+    js = re.sub(r"/\*[\s\S]*?\*/", "", js)
+    return re.sub(r"(?<!:)//[^\n]*", "", js)
+
+
+def filter_guard_selector_problems(js):
+    """Return a list of problems with how the five filter-guard call sites use their selector
+    variables in the DRIVER JavaScript `js` (empty list == fine)."""
+    code = _strip_js_comments(js)
     problems = []
-    if sorted(fn for fn, _ in calls) != ["__cssFilterGuardOk"] * 4 + ["__cssNoBrightnessFilter"]:
+    calls = [(m.start(), m.group(1), m.group(2)) for m in FILTER_GUARD_CALL_RE.finditer(code)]
+    if len(calls) != len(FILTER_GUARD_SITES):
         problems.append(
-            "expected exactly 4 __cssFilterGuardOk + 1 __cssNoBrightnessFilter real call sites, "
-            "found %s" % [fn for fn, _ in calls]
+            "expected exactly %d real filter-guard call sites, found %d (%s)"
+            % (len(FILTER_GUARD_SITES), len(calls), [(fn, arg) for _, fn, arg in calls])
         )
-    for fn, arg in calls:
-        if not re.fullmatch(r"[A-Za-z_]\w*", arg):
-            problems.append("%s is called with %r, not a bare selector variable" % (fn, arg))
-            continue
-        bindings = re.findall(r"\bvar\s+" + re.escape(arg) + r"\s*=\s*([\"'])[^\"']*\1\s*;", source)
-        looked_up = re.findall(r"\b__cssRule\(\s*" + re.escape(arg) + r"\s*\)", source)
-        if len(bindings) != 1:
-            problems.append("%s's selector variable %s is bound to a string literal %d times, want exactly 1" % (fn, arg, len(bindings)))
+    args = [arg for _, _, arg in calls]
+    if len(set(args)) != len(args):
+        problems.append("guard arguments are not pairwise distinct: %s" % args)
+    for _, fn, arg in calls:
+        want = FILTER_GUARD_SITES.get(arg)
+        if want is None:
+            problems.append(
+                "%s is called with %r, which is not one of the registered selector variables %s"
+                % (fn, arg, sorted(FILTER_GUARD_SITES))
+            )
+        elif want != fn:
+            problems.append("selector variable %s belongs to %s but is passed to %s" % (arg, want, fn))
+    premise_re = re.compile(r"\b__cssRule\(\s*(" + "|".join(map(re.escape, FILTER_GUARD_SITES)) + r")\s*\)")
+    premises = [(m.start(), m.group(1)) for m in premise_re.finditer(code)]
+    for var, fn in FILTER_GUARD_SITES.items():
+        assigned = len(re.findall(r"\b" + re.escape(var) + _JS_ASSIGN_RE, code))
+        literal = len(re.findall(r"\bvar\s+" + re.escape(var) + r"\s*=\s*([\"'])[^\"']*\1\s*;", code))
+        looked_up = [p for p, v in premises if v == var]
+        guarded = [p for p, _, a in calls if a == var]
+        if assigned != 1:
+            problems.append("%s is assigned %d times, want exactly 1 (a reassignment can point the guard elsewhere)" % (var, assigned))
+        if literal != 1:
+            problems.append("%s is bound to a string literal by `var` %d times, want exactly 1" % (var, literal))
         if len(looked_up) != 1:
-            problems.append("%s's selector variable %s is not the one its premise looked up (__cssRule(%s) appears %d times, want exactly 1)" % (fn, arg, arg, len(looked_up)))
+            problems.append("%s is looked up through __cssRule %d times, want exactly 1 (its premise)" % (var, len(looked_up)))
+        if len(guarded) != 1:
+            problems.append("%s reaches a guard %d times, want exactly 1" % (var, len(guarded)))
+        elif looked_up:
+            prior = [v for p, v in premises if p < guarded[0]]
+            if not prior or prior[-1] != var:
+                problems.append(
+                    "the %s guard's nearest preceding premise lookup is %s, not its own (guard wired to another site)"
+                    % (var, prior[-1] if prior else "none")
+                )
+        if fn == "__cssFilterGuardOk":
+            found = len(re.findall(r"\b__cssFilterFound\(\s*" + re.escape(var) + r"\s*\)", code))
+            if found != 1:
+                problems.append("%s feeds the failure message (__cssFilterFound) %d times, want exactly 1" % (var, found))
+    return problems
+
+
+def _filter_guard_negative_controls(js):
+    """Deliberately broken copies of the real driver text; every one MUST be refused. Each is built
+    from the real text with replacements that must apply exactly once (an inapplicable control would
+    be vacuous, so that is an error, not a skip). Names refer to Cody's re-review (D1-D3, N2)."""
+    ok_fn, nb_fn = "__cssFilterGuardOk", "__cssNoBrightnessFilter"
+
+    def call(fn, var):
+        return "ok(" + fn + "(" + var + "),"
+
+    def sub(text, old, new):
+        if text.count(old) != 1:
+            raise AssertionError("negative control cannot apply: %r matches %d times" % (old, text.count(old)))
+        return text.replace(old, new)
+
+    def crossed(t):
+        t = sub(t, call(ok_fn, "wPsHoverSel"), call(ok_fn, "@@PS@@"))
+        t = sub(t, call(ok_fn, "wTbGlHoverSel"), call(ok_fn, "wPsHoverSel"))
+        return sub(t, call(ok_fn, "@@PS@@"), call(ok_fn, "wTbGlHoverSel"))
+
+    controls = [
+        ("D1 aliasing: the PSC-005 guard is fed the TD-012 variable",
+         lambda t: sub(t, call(ok_fn, "wPsHoverSel"), call(ok_fn, "wTdHoverSel"))),
+        ("D2 reassignment: wTbGlHoverSel is reassigned after its declaration",
+         lambda t: sub(t, 'var wTbGlHoverSel = ".tb-golive:hover";',
+                       'var wTbGlHoverSel = ".tb-golive:hover";\n        wTbGlHoverSel = ".tb-golive";')),
+        ("D3 block-comment decoy: guard fed a decoy variable whose lookup exists only in a comment",
+         lambda t: sub(t, call(ok_fn, "wTbGlHoverSel"), call(ok_fn, "wTbGlAlt"))
+         + '\n/* __cssRule(wTbGlAlt) */\nvar wTbGlAlt = ".tb-golive:hover";\n'),
+        ("D3 line-comment decoy: the same with a // comment",
+         lambda t: sub(t, call(ok_fn, "wTsHoverSel"), call(ok_fn, "wTsAlt"))
+         + '\n// __cssRule(wTsAlt)\nvar wTsAlt = ".timer-start:hover";\n'),
+        ("swapped guard functions: TD-012 gets the PP-GEN predicate and PP-GEN the TD-012 one",
+         lambda t: sub(sub(t, call(ok_fn, "wTdHoverSel"), call(nb_fn, "wTdHoverSel")),
+                       call(nb_fn, "wPpGenHoverSel"), call(ok_fn, "wPpGenHoverSel"))),
+        ("crossed guard arguments: the PSC-005 and GO-LIVE-HOVER guards exchange variables", crossed),
+        ("premise looks up a literal instead of the variable",
+         lambda t: sub(t, "__cssRule(wTsHoverSel)", '__cssRule(".timer-start:hover")')),
+        ("premise lookup duplicated",
+         lambda t: sub(t, "var wTsHoverRule = __cssRule(wTsHoverSel);",
+                       "var wTsHoverRule = __cssRule(wTsHoverSel); var wTsHoverRule2 = __cssRule(wTsHoverSel);")),
+        ("selector variable no longer bound to a string literal",
+         lambda t: sub(t, 'var wTdHoverSel = ".td-save-cta:hover";', "var wTdHoverSel = pickSelector();")),
+        ("failure message reads another site's variable",
+         lambda t: sub(t, "__cssFilterFound(wPsHoverSel)", "__cssFilterFound(wTdHoverSel)")),
+        ("a call site is deleted",
+         lambda t: sub(t, call(nb_fn, "wPpGenHoverSel"), "ok(!!(wPpGenHoverSel),")),
+        ("premise replaced by a literal while a COMMENT keeps the old lookup (only comment stripping refuses this)",
+         lambda t: sub(t, "__cssRule(wTsHoverSel)", '__cssRule(".timer-start:hover") /* __cssRule(wTsHoverSel) */')),
+    ]
+    # Texts that must be ACCEPTED (Cody N4): a comment that merely CONTAINS a call-shaped string is
+    # not a call site, so it must not be counted as a sixth one (a false red of this check).
+    accepted = [
+        ("comments containing call-shaped strings are not call sites",
+         lambda t: t + "\n/* ok(" + ok_fn + "(wFooSel), */\n// ok(" + nb_fn + "(wBarSel),\n"),
+    ]
+    return ([(name, build(js)) for name, build in controls],
+            [(name, build(js)) for name, build in accepted])
+
+
+def check_filter_guard_call_sites_share_one_selector(file_text=None):
+    if file_text is None:
+        file_text = open(os.path.abspath(__file__), encoding="utf-8").read()
+    js = _extract_driver_js(file_text)
+    if js is None:
+        print("FAIL: filter-guard-selector (17tnw2ayetm) — could not find the DRIVER JavaScript in this file")
+        return False
+    problems = filter_guard_selector_problems(js)
     if problems:
         print("FAIL: filter-guard-selector (17tnw2ayetm) — " + "; ".join(problems))
         return False
     print(
-        "PASS: filter-guard-selector (17tnw2ayetm) — all 5 filter-guard call sites pass the guard the "
-        "same single-literal selector variable their premise looked up"
+        "PASS: filter-guard-selector (17tnw2ayetm) — all 5 filter-guard call sites pass their own "
+        "distinct single-literal selector variable, assigned once and looked up by their own premise"
+    )
+    try:
+        controls, accepted = _filter_guard_negative_controls(js)
+    except AssertionError as exc:
+        print("FAIL: filter-guard-selector negative controls (17tnw2ayetm) — %s" % exc)
+        return False
+    survivors = [name for name, broken in controls if not filter_guard_selector_problems(broken)]
+    if survivors:
+        print(
+            "FAIL: filter-guard-selector negative controls (17tnw2ayetm) — the static check ACCEPTED "
+            "%d deliberately broken source(s), so it can no longer be trusted: %s" % (len(survivors), survivors)
+        )
+        return False
+    refused_good = [name for name, good in accepted if filter_guard_selector_problems(good)]
+    if refused_good:
+        print(
+            "FAIL: filter-guard-selector negative controls (17tnw2ayetm) — the static check REFUSED "
+            "%d harmless source(s) it must accept (a false red): %s" % (len(refused_good), refused_good)
+        )
+        return False
+    print(
+        "PASS: filter-guard-selector negative controls (17tnw2ayetm) — all %d deliberately broken "
+        "driver texts were refused and the %d harmless one(s) accepted" % (len(controls), len(accepted))
     )
     return True
 
@@ -269,7 +429,7 @@ def check_filter_guard_call_sites_share_one_selector(source=None):
 if not check_filter_guard_call_sites_share_one_selector():
     print(
         "\n=== filter-guard-selector static check FAILED — a filter guard's selector no longer "
-        "matches the selector its premise looked up, so the guard could be checking nothing ==="
+        "matches the selector its premise looked up, or the static check itself no longer bites ==="
     )
     sys.exit(1)
 
@@ -1645,14 +1805,16 @@ EXPECTED_MIN_CHECKS = 1952  # measured: 1952 checks, 0 FAIL (17tnw2b0ntd)
 # still reds, safe direction); the CSSOM half's cascade precision only matters for spellings the raw
 # half cannot read (CSS escapes). Review round (Cody F1-F6, Quinn m02): one selector variable per
 # call site (premise, message and guard), predicates fail CLOSED on a selector matching no rule, a
-# static check refuses a call site whose guard argument is not its premise's selector variable, an
-# explicit fixture source that is unusable THROWS instead of falling back to the real sheet, and
-# CSSOM-PARSE-07 grew @supports/nested-condition, !important-vs-!important, middle-block and
-# fail-closed controls. Count: 1952 on main (after PR #129 landed) + 48 new checks, all in the
-# CSSOM-PARSE-07/06 blocks (27 in the first cut, 21 in the review round), measured via an actual
-# clean run, not hand-summed. ANY PR that edits this constant must re-measure after the other of
-# the two lands (PR #129 edited it as well; this one was re-measured on the merged tree).
-EXPECTED_MIN_CHECKS = 2000  # measured: 2000 checks, 0 FAIL
+# static check (pre-Chrome, with its own negative controls) refuses a call site whose guard is not
+# wired to its OWN distinct, once-assigned selector variable and premise, an explicit fixture
+# source that is unusable THROWS instead of falling back to the real sheet, and CSSOM-PARSE-07
+# grew @supports/nested-condition, !important-vs-!important, middle-block, fail-closed and
+# explicit-source controls. Count: 1952 on main (after PR #129 landed) + 50 new checks, all in the
+# CSSOM-PARSE-07/06 blocks (27 in the first cut, 21 + 2 in the review rounds; the static check and
+# its negative controls print PASS/FAIL lines but are not counted), measured via an actual clean
+# run, not hand-summed. ANY PR that edits this constant must re-measure after the other of the two
+# lands (PR #129 edited it as well; this one was re-measured on the merged tree).
+EXPECTED_MIN_CHECKS = 2002  # measured: 2002 checks, 0 FAIL
 
 
 def find_chrome():
@@ -2026,11 +2188,13 @@ CSS_SRC = (
   // the aggregation moved from "last" to "all".
   //
   // This half is deliberately CONDITION-BLIND (it ignores any enclosing @media/@supports), and
-  // that must NOT be "fixed" (Shadow F3/F5, Cody 7): headless Chrome does not evaluate
-  // `prefers-color-scheme: dark`, `prefers-reduced-motion`, `forced-colors` and similar, so a
-  // hover `filter` hidden inside one of those blocks is invisible to the CSSOM half by
-  // construction, and this blind text scan is the only thing that still catches it. The false red
-  // it costs (a harmless `filter: none` inside a reduced-motion block) is the price of that.
+  // that must NOT be "fixed" (Shadow F3/F5, Cody 7): in the headless configuration this gate runs
+  // in, Chrome evaluates `prefers-color-scheme: dark`, `prefers-reduced-motion: reduce`,
+  // `forced-colors: active` and similar as NOT MATCHING (no dark scheme, no reduced-motion
+  // preference, no forced colours), so a hover `filter` hidden inside one of those blocks is
+  // dropped from the CSSOM half's candidates by construction, and this blind text scan is the
+  // only thing that still catches it. The false red it costs (a harmless `filter: none` inside a
+  // reduced-motion block) is the price of that.
   // Every matching rule's raw declaration text for `sel` (source order) straight out of the
   // source text, comments stripped — independent of whether the browser's parser accepts any of
   // it. The shared primitive `__cssRawHasFilter`/`__cssNoBrightnessFilter` are built on.
@@ -2067,8 +2231,11 @@ CSS_SRC = (
     return window.__cssEffective(sel, "filter", src);
   };
   // What the call sites' FAIL messages print as "found ...": the effective filter, or an explicit
-  // note when the guard's selector matches no rule at all (a vacuous guard — see the fail-closed
-  // note on the two predicates below), so that failure never reads as the misleading "found none".
+  // note when the selector matches no rule at all (a vacuous guard — see the fail-closed note on
+  // the two predicates below). Each call site feeds this the SAME variable it feeds its guard, so
+  // the note appears when that shared variable is stale; if only the guard's argument were a stale
+  // literal (the static check at the top of this file refuses that), the message would still read
+  // "found <the real effective filter>" or "found none" while the guard failed closed.
   window.__cssFilterFound = function(sel, src) {
     if (window.__cssRules(sel, src).length === 0) { return "NO RULE MATCHES THE GUARD SELECTOR " + sel + " (vacuous guard)"; }
     return window.__cssEffectiveFilter(sel, src);
@@ -11455,11 +11622,23 @@ DRIVER = r"""
         // An explicit source must be usable or the call THROWS (Cody F5) — it must never fall back to
         // the shipped stylesheet, or a fixture that failed to build would let a clean control pass
         // vacuously against the wrong sheet.
-        var wBadSrcThrows = [{}, null, { sheet: null, text: "" }].map(function(bad){
-          try { __cssFilterGuardOk(".tb-golive:hover", bad); return false; } catch (e) { return true; }
-        });
+        // The throw must be _cssSrc's OWN (matched by message): a missing sheet would also throw a
+        // TypeError further down, which would hide a deleted `!src.sheet` clause, and a missing
+        // `text` does not throw anywhere else at all (Cody N3: each clause pinned individually).
+        function _srcRefused(bad) {
+          try { __cssFilterGuardOk(".tb-golive:hover", bad); return false; }
+          catch (e) { return /explicit source must be/.test(String(e && e.message)); }
+        }
+        var wBadSrcThrows = [{}, null, { sheet: null, text: "" }].map(_srcRefused);
         ok(wBadSrcThrows.every(Boolean),
-           "CSSOM-PARSE-07 (explicit source): an explicit source that is {}, null or has no sheet THROWS instead of silently falling back to the real stylesheet (" + JSON.stringify(wBadSrcThrows) + ")");
+           "CSSOM-PARSE-07 (explicit source): an explicit source that is {}, null or has no sheet is refused by _cssSrc itself instead of silently falling back to the real stylesheet (" + JSON.stringify(wBadSrcThrows) + ")");
+        var wOkFx = window.__cssFixture(".__cssom_srcok__{background:#111111;}");
+        try {
+          ok(_srcRefused({ sheet: wOkFx.sheet, text: undefined }) && _srcRefused({ sheet: wOkFx.sheet }),
+             "CSSOM-PARSE-07 (explicit source, text clause): a VALID sheet with `text` undefined is refused — a source without its raw text must not run only the CSSOM half");
+          ok(_srcRefused({ sheet: undefined, text: ".x{}" }) && _srcRefused({ text: wOkFx.text }),
+             "CSSOM-PARSE-07 (explicit source, sheet clause): `text` without a sheet is refused by _cssSrc itself (not by an incidental TypeError later)");
+        } finally { wOkFx.dispose(); }
         var wNoSheetThrows = false;
         try { window.__cssFixture(".__cssom_nosheet__{filter:none;}", "div"); } catch (e) { wNoSheetThrows = true; }
         ok(wNoSheetThrows,
