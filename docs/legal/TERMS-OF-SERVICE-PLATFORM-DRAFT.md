@@ -284,9 +284,9 @@ to you, for as long as needed. We do not use it for any other purpose.
 
 - The Desktop Software includes these public-domain Bible translations: King James Version, World English
   Bible, American Standard Version, World English Bible British Edition and the Darby Translation.
-- In the United Kingdom, printing and importing printed copies of the King James Version are subject to
-  rights held under Crown letters patent. If you are in the United Kingdom and intend to print or
-  distribute King James Version text, check whether you need permission.
+- In the United Kingdom, printing of the King James Version is subject to rights held under Crown
+  letters patent. If you are in the United Kingdom and intend to print or distribute King James Version
+  text, check whether you need permission.
 - Some Plans include copyrighted translations licensed from their publishers, as shown on our pricing
   page. Each publisher's terms apply to its translation as well as these Terms. You must not extract,
   copy, export or redistribute a licensed translation except as the publisher's terms allow. If our
