@@ -2,7 +2,7 @@
 //! (FR-079; ADR-0007).
 
 use crate::{migrations, DataError, Result};
-use rusqlite::{Connection, DatabaseName, OpenFlags};
+use rusqlite::{Connection, OpenFlags, MAIN_DB};
 use std::io::Read as _;
 use std::path::Path;
 use std::time::Duration;
@@ -342,7 +342,7 @@ impl Database {
     /// rejects an unkeyed backup destination). For an encrypted source use
     /// [`backup_to_encrypted`](Self::backup_to_encrypted).
     pub fn backup_to(&self, dst: impl AsRef<Path>) -> Result<()> {
-        self.conn.backup(DatabaseName::Main, dst, None)?;
+        self.conn.backup(MAIN_DB, dst, None)?;
         Ok(())
     }
 

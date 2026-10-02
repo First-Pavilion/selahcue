@@ -9,7 +9,7 @@
 
 #![allow(clippy::unwrap_used)]
 
-use selahcue_engine::{decode_image, sniff, DecodeError, DecodeLimits, ImageFormat};
+use selahcue_engine::{decode_image, sniff, thumbnail, DecodeError, DecodeLimits, ImageFormat};
 
 // --- an in-test JPEG builder ----------------------------------------------------------
 
@@ -273,6 +273,29 @@ fn baseline_grayscale_decodes_to_rgba() {
         assert_eq!(px[1], px[2]);
         assert_eq!(px[3], 255, "opaque alpha");
     }
+}
+
+#[test]
+fn a_jpeg_thumbnail_is_bounded_opaque_and_keeps_the_aspect_ratio() {
+    // The media library accepts PNG and JPEG; the tile picture must work for both, through the
+    // same admission profile as a slide image.
+    let wide = build(32, 16, 1, &[], None, 0xC0);
+    let t = thumbnail(&wide.bytes, 8, 8).unwrap();
+    assert_eq!(
+        (t.width(), t.height()),
+        (8, 4),
+        "2:1 kept inside an 8×8 box"
+    );
+    assert_eq!(t.rgba().len(), 8 * 4 * 4);
+    for px in t.rgba().as_chunks::<4>().0 {
+        assert_eq!(px[3], 255, "a JPEG thumbnail is opaque");
+    }
+    // The admission profile is the slide path's, not a looser one: a refused variant stays refused.
+    assert_eq!(
+        thumbnail(&header_only(64, 64, 0xC9), 8, 8),
+        Err(DecodeError::UnsupportedVariant),
+        "an arithmetic-coded JPEG is refused for a tile exactly as for a slide"
+    );
 }
 
 #[test]

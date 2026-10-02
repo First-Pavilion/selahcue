@@ -188,7 +188,12 @@ mod cpal_source {
         // failure) must not be reported as "no device". Degrade the name to a placeholder, the same
         // way `CpalSource::new` does (it still captures from that device), and keep the `?` only for
         // the genuinely-absent-device case above.
-        let name = device.name().unwrap_or_else(|_| "Input device".to_string());
+        // cpal 0.18 removed `Device::name()`; `description().name()` is its replacement (the
+        // primary user-facing identifier, always present in a successful description).
+        let name = device
+            .description()
+            .map(|d| d.name().to_string())
+            .unwrap_or_else(|_| "Input device".to_string());
         let channels = device.default_input_config().ok().map(|c| c.channels());
         Some(AudioDeviceInfo { name, channels })
     }
@@ -215,11 +220,15 @@ mod cpal_source {
             let device = host
                 .default_input_device()
                 .ok_or_else(|| "no default input device".to_string())?;
-            let name = device.name().unwrap_or_else(|_| "input".to_string());
+            let name = device
+                .description()
+                .map(|d| d.name().to_string())
+                .unwrap_or_else(|_| "input".to_string());
             let config = device
                 .default_input_config()
                 .map_err(|e| format!("default input config: {e}"))?;
-            let sample_rate = config.sample_rate().0;
+            // `SampleRate` is a plain `u32` alias since cpal 0.18.
+            let sample_rate = config.sample_rate();
             let channels = config.channels();
             let ring = Arc::new(Mutex::new(PcmRing::new()));
             let cb_ring = Arc::clone(&ring);
@@ -230,7 +239,7 @@ mod cpal_source {
             // honest error rather than silently mis-decoding.
             let stream = match config.sample_format() {
                 cpal::SampleFormat::F32 => device.build_input_stream(
-                    &config.into(),
+                    config.into(), // `StreamConfig` is passed by value since cpal 0.18
                     move |data: &[f32], _| {
                         // Accumulate the peak since the last read (max), so a level poll can
                         // never miss a transient between polls.

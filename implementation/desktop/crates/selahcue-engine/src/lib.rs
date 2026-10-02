@@ -36,8 +36,8 @@ pub use fault::Fault;
 #[allow(deprecated)]
 pub use media::decode_png;
 pub use media::{
-    decode_image, probe_image, sniff, DecodeError, DecodeLimits, DecodedImage, ImageFormat,
-    ImageInfo,
+    decode_image, probe_image, sniff, thumbnail, DecodeError, DecodeLimits, DecodedImage,
+    ImageFormat, ImageInfo,
 };
 pub use raster::{render, Fit, FrameBuffer};
 pub use scene::{

@@ -52,7 +52,7 @@ rustls = { version = "0.23", optional = true, default-features = false, features
     "tls12",
     "logging",
 ] }
-tokio-tungstenite = { version = "0.24", optional = true, default-features = false, features = [
+tokio-tungstenite = { version = "0.30", optional = true, default-features = false, features = [
     "connect",
     "handshake",
     "rustls-tls-webpki-roots",

@@ -55,27 +55,31 @@ encryption = ["selahcue-data/encryption", "dep:keyring", "dep:argon2", "dep:getr
 ndi = ["dep:grafton-ndi"]
 
 [dependencies]
-fs4 = "0.13"
-mdns-sd = "0.13"
+fs4 = "1.1"
+mdns-sd = "0.21"
 # Local wall clock for the confidence monitor's Timer-only chrome (date + 12-hour time).
 # `clock` pulls the OS timezone; `std` for Display formatting. Default features off to skip
 # the unused `oldtime`/serde surface.
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"], optional = true }
-argon2 = { version = "0.5", optional = true }
-getrandom = { version = "0.2", optional = true }
+argon2 = { version = "0.6", optional = true }
+getrandom = { version = "0.4", optional = true }
 zeroize = { version = "1", optional = true }
 grafton-ndi = { version = "1", optional = true }
 selahcue-core = { path = "../selahcue-core" }
 selahcue-data = { path = "../selahcue-data" }
 selahcue-engine = { path = "../selahcue-engine" }
 selahcue-present = { path = "../selahcue-present" }
+# `warm()` the fuzzy quote-match index at startup (start_remote_control, src/main.rs) so the
+# first real IngestTranscript command doesn't pay the lazy OnceLock build cost inline inside
+# ControlClient::COMMAND_TIMEOUT. See that call site's comment; 17tnw2b1258.
+selahcue-scripture = { path = "../selahcue-scripture" }
 # The controller + pinned-TLS control server (so a remote controller drives the window).
 selahcue-app = { path = "../selahcue-app", features = ["server"] }
 selahcue-lan = { path = "../selahcue-lan", features = ["server"] }
-wgpu = "22"
+wgpu = "30"
 winit = "0.30"
-pollster = "0.3"
+pollster = "1.0"
 tokio = { version = "1", features = ["rt-multi-thread", "net", "macros", "sync", "time"] }
 
 [lints]

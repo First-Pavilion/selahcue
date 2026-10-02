@@ -72,7 +72,7 @@ import UiButton from '@/components/UiButton.vue'
 .container {
   max-width: 1140px;
   margin: 0 auto;
-  padding: 0 24px;
+  padding: 0 var(--page-gutter);
 }
 
 .hero-section {
@@ -145,6 +145,10 @@ import UiButton from '@/components/UiButton.vue'
 }
 
 .cta-card {
+  /* This element is also `.container`; its own padding below replaces the container's
+     gutter, so the gutter is taken as a margin instead (a no-op at desktop, where the
+     viewport is wider than max-width + gutters). */
+  width: min(1140px, 100% - 2 * var(--page-gutter));
   background: linear-gradient(135deg, var(--sc-surface), #1c1a3a);
   border: 1px solid var(--sc-primary);
   border-radius: 24px;
@@ -171,9 +175,20 @@ import UiButton from '@/components/UiButton.vue'
   gap: 16px;
 }
 
-@media (max-width: 768px) {
-  .hero-title { font-size: 32px; }
-  .values-grid { grid-template-columns: 1fr; }
+.values-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+
+@media (max-width: 767.98px) {
+  .about-page { padding-bottom: var(--section-pad-sm); }
+  .hero-section { padding: 48px 0 40px; }
+  .hero-title { font-size: 36px; line-height: 40px; }
+  .hero-sub { font-size: 16px; }
+  .values-section { padding: 40px 0; }
+  .section-title { font-size: 26px; margin-bottom: 32px; }
+  .values-grid { grid-template-columns: minmax(0, 1fr); gap: 20px; }
+  .value-card { padding: 24px; }
+  .cta-card { padding: 40px 24px; border-radius: 20px; }
+  .cta-card h2 { font-size: 26px; }
   .cta-btns { flex-direction: column; }
+  .cta-btns > * { width: 100%; }
 }
 </style>

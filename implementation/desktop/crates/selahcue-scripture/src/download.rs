@@ -38,11 +38,26 @@ pub const DL_CHUNK_BYTES: usize = 64 * 1024;
 /// bytes must match the pinned SHA-256); this ceiling only applies when no size is pinned.
 pub const DL_MAX_BYTES: u64 = 256 * 1024 * 1024;
 
-/// Connect/read timeouts for a translation download: a stalled connection or a trickling stream
-/// must not hang the fetch indefinitely (paired with the size cap, which bounds a fast, endless
-/// stream that never stalls).
+/// Timeouts for a translation download: a stalled connection or a trickling stream must not hang
+/// the fetch indefinitely (paired with the size cap, which bounds a fast, endless stream that
+/// never stalls).
+///
+/// ureq 3 has no per-read timeout (ureq 2's `timeout_read` reset on every read, so it caught a
+/// stall but never a slow trickle). It bounds the response *headers* (`DL_READ_TIMEOUT`) and the
+/// *whole body* instead; [`body_deadline`] sizes the latter from the expected size, which also
+/// closes the trickle case ureq 2 left open.
 const DL_CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 const DL_READ_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// The slowest sustained rate a download is allowed to average before it is abandoned (32 KiB/s,
+/// about 256 kbit/s). Generous on purpose: this is a floor for "something is wrong", not a target.
+const DL_MIN_BYTES_PER_SEC: u64 = 32 * 1024;
+
+/// The longest the response *body* of a download capped at `max_bytes` may take: the time the
+/// whole cap needs at [`DL_MIN_BYTES_PER_SEC`], and never less than [`DL_READ_TIMEOUT`].
+fn body_deadline(max_bytes: u64) -> Duration {
+    Duration::from_secs((max_bytes / DL_MIN_BYTES_PER_SEC).max(DL_READ_TIMEOUT.as_secs()))
+}
 
 /// A pinned, downloadable Bible-translation asset: a stable id, a display name, the cache
 /// file name, the source URL, the expected size, and the pinned lowercase-hex SHA-256 the
@@ -275,22 +290,31 @@ pub fn fetch_translation(
     } else {
         DL_MAX_BYTES
     };
-    let agent = ureq::AgentBuilder::new()
-        .timeout_connect(DL_CONNECT_TIMEOUT)
-        .timeout_read(DL_READ_TIMEOUT)
-        .build();
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_connect(Some(DL_CONNECT_TIMEOUT))
+        .timeout_recv_response(Some(DL_READ_TIMEOUT))
+        .timeout_recv_body(Some(body_deadline(max_bytes)))
+        // ureq 3 reads HTTP(S)_PROXY from the environment by default; ureq 2 never did. Keep
+        // the download's network path exactly what it was — routing it through a proxy is a
+        // product decision, not a side effect of a dependency bump. (The SHA-256 pin below
+        // means a proxy could not alter the bytes anyway.)
+        .proxy(None)
+        .build()
+        .into();
     let resp = agent
         .get(&asset.url)
         .call()
         .map_err(|e| TranslationFetchError::Network(format!("download {}: {e}", asset.url)))?;
     let total: u64 = resp
-        .header("Content-Length")
+        .headers()
+        .get("Content-Length")
+        .and_then(|v| v.to_str().ok())
         .and_then(|s| s.parse().ok())
         .unwrap_or(asset.size_bytes);
 
     // Stream to the `.part` file, capping the total. ANY error here (network, I/O, or over-cap)
     // discards the partial file, so a failed download never orphans bytes on disk.
-    let mut reader = resp.into_reader();
+    let mut reader = resp.into_body().into_reader();
     if let Err(e) = stream_capped(&mut reader, &tmp, max_bytes, total, &progress) {
         let _ = fs::remove_file(&tmp);
         return Err(e);
@@ -318,4 +342,25 @@ fn hex_lower(bytes: &[u8]) -> String {
         s.push(HEX[(b & 0x0f) as usize] as char);
     }
     s
+}
+
+#[cfg(test)]
+mod body_deadline_tests {
+    use super::*;
+
+    #[test]
+    fn a_small_asset_still_gets_the_header_timeout_as_its_floor() {
+        // 5 MiB at 32 KiB/s is 160 s, but a tiny pinned asset must never be cut off faster than
+        // the 30 s the old per-read timeout allowed.
+        assert_eq!(body_deadline(1), DL_READ_TIMEOUT);
+        assert_eq!(body_deadline(0), DL_READ_TIMEOUT);
+    }
+
+    #[test]
+    fn the_deadline_scales_with_the_cap_at_the_minimum_rate() {
+        assert_eq!(body_deadline(5 * 1024 * 1024), Duration::from_secs(160));
+        // The hard backstop (256 MiB) allows 8192 s: slow links finish, a stuck trickle does not
+        // run forever.
+        assert_eq!(body_deadline(DL_MAX_BYTES), Duration::from_secs(8192));
+    }
 }

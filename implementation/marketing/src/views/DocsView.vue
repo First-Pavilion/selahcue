@@ -65,12 +65,15 @@ import { readMinutes } from '@/lib/content/text.ts'
 .container {
   max-width: 1200px;
   margin: 0 auto;
-  padding: 0 24px;
+  padding: 0 var(--page-gutter);
 }
 
 .docs-layout {
   display: grid;
-  grid-template-columns: 260px 1fr;
+  /* `minmax(0, 1fr)`, not `1fr`: a `1fr` track has an automatic minimum of its content's
+     min-content, so any unbroken run inside the article column (a long word, a code line)
+     would make the whole track as wide as it and push the page sideways. */
+  grid-template-columns: 260px minmax(0, 1fr);
   gap: 48px;
   align-items: start;
 }
@@ -249,9 +252,35 @@ kbd {
   background: var(--sc-border);
 }
 
-@media (max-width: 900px) {
-  .docs-layout { grid-template-columns: 1fr; }
-  .docs-sidebar { position: static; }
+/* Below 1024 the sidebar no longer fits beside the article: it becomes a swipeable row of
+   topic chips above it (still the same links, so keyboard and AT behaviour is unchanged). */
+@media (max-width: 1023.98px) {
+  .docs-layout { grid-template-columns: minmax(0, 1fr); gap: 24px; }
+  .docs-sidebar { position: static; padding: 14px 16px; border-radius: 14px; }
+  .sidebar-title { margin-bottom: 8px; }
+  .sidebar-nav {
+    flex-direction: row;
+    gap: 6px;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+    margin: 0 -4px;
+    padding: 0 4px 2px;
+  }
+  .sidebar-nav::-webkit-scrollbar { display: none; }
+  .nav-item { flex: 0 0 auto; white-space: nowrap; min-height: 44px; display: inline-flex; align-items: center; }
+}
+
+@media (max-width: 767.98px) {
+  .docs-page { padding: 24px 0 var(--section-pad-sm); min-height: 0; }
+  .docs-content { padding: 24px 20px; border-radius: 16px; }
+  .doc-title { font-size: 32px; line-height: 38px; }
+  .doc-lead { font-size: 16px; }
+  .doc-body h2 { font-size: 20px; }
+  .callout { padding: 14px 16px; gap: 12px; }
+  .code-block { padding: 16px; font-size: 13px; }
+  .doc-feedback { flex-wrap: wrap; gap: 12px; margin-top: 32px; }
+  .feedback-btn { min-height: 44px; padding: 0 16px; }
 }
 </style>
 

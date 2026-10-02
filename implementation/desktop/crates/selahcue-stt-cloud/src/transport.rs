@@ -463,11 +463,11 @@ async fn connect(spec: &RequestSpec) -> Result<Socket, DeepgramError> {
 
     // The same cap the parser enforces, applied one layer lower so an oversized frame is
     // refused before it is buffered rather than after.
-    let ws_config = WebSocketConfig {
-        max_message_size: Some(MAX_FRAME_BYTES),
-        max_frame_size: Some(MAX_FRAME_BYTES),
-        ..Default::default()
-    };
+    // `WebSocketConfig` is `#[non_exhaustive]` since tungstenite 0.30: builder methods, not a
+    // struct expression.
+    let ws_config = WebSocketConfig::default()
+        .max_message_size(Some(MAX_FRAME_BYTES))
+        .max_frame_size(Some(MAX_FRAME_BYTES));
 
     match tokio_tungstenite::connect_async_with_config(request, Some(ws_config), false).await {
         Ok((socket, _response)) => Ok(socket),
@@ -547,7 +547,7 @@ async fn pump(
                     // costs nothing — but do not read the green suite as proof of this line.
                     let _ = tokio::time::timeout(
                         config.write_timeout,
-                        socket.send(Message::Text(CLOSE_STREAM.to_string())),
+                        socket.send(Message::Text(CLOSE_STREAM.into())),
                     )
                     .await;
                     let _ = tokio::time::timeout(config.write_timeout, socket.close(None)).await;
@@ -558,7 +558,7 @@ async fn pump(
                     if last_sent.elapsed() >= config.keep_alive_after {
                         send_bounded(
                             &mut socket,
-                            Message::Text(KEEP_ALIVE.to_string()),
+                            Message::Text(KEEP_ALIVE.into()),
                             config.write_timeout,
                             spec,
                         )
@@ -569,7 +569,7 @@ async fn pump(
                     for chunk in chunks {
                         send_bounded(
                             &mut socket,
-                            Message::Binary(chunk.as_bytes().to_vec()),
+                            Message::Binary(chunk.as_bytes().to_vec().into()),
                             config.write_timeout,
                             spec,
                         )

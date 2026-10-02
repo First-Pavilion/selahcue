@@ -3698,9 +3698,10 @@
         if (reference) loadChapter(reference, null);
       };
       // Sana's security review (PR #61) caught that __openChapterForStage is NOT read-only:
-      // loadChapter's non-range branch arms setCursor's 120ms stageTimer -> stage_scripture, and
-      // its range branch invokes stage_scripture immediately, synchronously, with no timer to
-      // cancel at all. CON-134's Edit and CON-138's History re-stage were built on the WRONG
+      // loadChapter arms setCursor's 120ms stageTimer -> stage_scripture/follow_scripture (a range
+      // used to take a second branch that invoked stage_scripture immediately, synchronously, with
+      // no timer to cancel at all; it is gone now that a range stages only its first verse).
+      // CON-134's Edit and CON-138's History re-stage were built on the WRONG
       // assumption that opening a chapter has no side effect — both were silently staging
       // content to Preview. This is the genuinely read-only entry point for both: loadChapter's
       // explicit stage=false suppresses BOTH staging paths, so browsing a reference here can
@@ -4017,10 +4018,6 @@
           // The HOST parsed the query — land/stage from ITS verse selection
           // ("gen 1 5", "Gen 1:5", "Gen 1:1-3" all resolve identically; no
           // regex guessing on the raw string).
-          const isRange =
-            ch.verse_start != null &&
-            ch.verse_end != null &&
-            ch.verse_end > ch.verse_start;
           let wantNum = null;
           if (cursorVerseNum != null) wantNum = cursorVerseNum;
           else if (ch.verse_start != null) wantNum = ch.verse_start;
@@ -4040,23 +4037,11 @@
             // the box (review 7ag).
             return true;
           }
-          if (isRange) {
-            // The whole passage stages; the cursor lands without re-staging. Gated on `stage` —
-            // this call has no timer to cancel (unlike the non-range branch below), so the
-            // guard has to sit here, not at the call site.
-            setCursor(Math.max(0, idx), false);
-            if (stage) {
-              act(() =>
-                invoke("stage_scripture", {
-                  reference:
-                    ch.reference + ":" + ch.verse_start + "-" + ch.verse_end,
-                  translation: currentTranslation,
-                })
-              );
-            }
-          } else {
-            setCursor(Math.max(0, idx), stage);
-          }
+          // ONE verse at a time: a range ("Psalms 1:2-10") only POSITIONS the cursor on its first
+          // verse and stages that verse — never the whole passage on one slide. The Up/Down
+          // stepping (setCursor) carries on from there. The host narrows a range to its first
+          // verse too (narrow_to_first_verse), so this holds for every client, not just this one.
+          setCursor(Math.max(0, idx), stage);
           return true;
         } catch (e) {
           setStatus(String(e));
@@ -4554,16 +4539,21 @@
 
       // Quinn's QA review (PR #61, bug 17tnw2axre8): a WHOLE-CHAPTER detection (e.g. a spoken
       // "Isaiah 61", no verse) never lit the on-air card, because the host narrows it before it
-      // ever goes live. controller.rs's stage_reference_for_detection (ApproveDetection handler)
-      // appends ":1" to a bare "Book Chapter" reference — "a reference that already names a
-      // verse (or doesn't parse) is returned unchanged" (its own doc comment) — so
+      // ever goes live. controller.rs's narrow_to_first_verse (ApproveDetection handler)
+      // appends ":1" to a bare "Book Chapter" reference (and cuts a range "B C:a-b" to "B C:a") —
+      // "a reference that already names a single verse (or doesn't parse) is returned unchanged"
+      // (its own doc comment) — so
       // view.live_scripture after Approve reads "Isaiah 61:1" while the DETECTION's own
       // reference (d.reference, from view.detections) is still the raw "Isaiah 61" the operator
       // approved. A bare `===` compare can therefore never match for this real, common input
-      // shape. This encodes exactly that one documented transformation — not a general fuzzy
+      // shape. This encodes exactly those documented transformations — not a general fuzzy
       // match — so it stays exact everywhere the host doesn't narrow anything.
       function detectionWentLiveAs(reference, liveScripture) {
-        return liveScripture === reference || liveScripture === reference + ":1";
+        if (liveScripture === reference || liveScripture === reference + ":1") return true;
+        // A RANGE detection ("Psalms 119:2-10") goes on air as its FIRST verse only — the host
+        // narrows it the same way it narrows a bare chapter (narrow_to_first_verse).
+        const range = /^(.+:\d+)-\d+$/.exec(reference);
+        return range !== null && liveScripture === range[1];
       }
 
       // --- CON-136/CON-137/CON-138 — client-side state layered onto the host-authoritative
@@ -6965,14 +6955,72 @@
       async function pmImportImage() {
         pmSetBusy(true);
         try {
-          pmDv = await invoke("deck_import_image");
-          pmClearError();
+          pmDv = await invoke("deck_import_images");
           renderPresentation(pmDv);
+          pmShowImportReport(pmDv && pmDv.import_report);
         } catch (e) {
           console.error("[SelahCue] deck action failed", e);
           pmShowErrorRaw(String(e && e.message ? e.message : e));
         } finally {
           pmSetBusy(false);
+        }
+      }
+
+      // What an import did, from the host's `import_report` ({imported, skipped:[{name, reason}],
+      // saved}). A clean import is a brief status toast; anything skipped is a persistent banner
+      // naming the file and the reason (a refusal is final and specific — it is not "please retry"),
+      // bounded to the first three so a large batch cannot flood the banner. `saved === false` is the
+      // honest "this library will not survive a restart" (the registry database is unavailable).
+      // A cancelled picker returns no report: just clear any stale banner.
+      function pmShowImportReport(rep) {
+        if (!rep) { pmClearError(); return; }
+        const n = rep.imported || 0;
+        const skipped = rep.skipped || [];
+        // Only when something DID land: a batch the host rolled back because the registry could not
+        // be written has imported nothing, and "these won't be kept" would describe nothing.
+        const unsaved = rep.saved === false && n > 0 ? " These won’t be kept after you quit." : "";
+        if (!skipped.length) {
+          pmClearError();
+          if (n) pmToast("Imported " + n + " image" + (n === 1 ? "" : "s") + "." + unsaved);
+          return;
+        }
+        const shown = skipped.slice(0, 3).map((s) => s.name + " — " + s.reason).join("; ");
+        const more = skipped.length > 3 ? " (+" + (skipped.length - 3) + " more)" : "";
+        pmShowErrorRaw((n ? "Imported " + n + ". " : "") + "Skipped " + skipped.length + ": " + shown + more + "." + unsaved);
+      }
+
+      // Remove an asset from the media library. Like the import it is NOT a plain `pAct`: the host
+      // refuses with a SPECIFIC reason when the library cannot be saved ("the disk may be full or
+      // read-only" — nothing was removed), which is final text to show, not "please retry"; and a
+      // success carries a `remove_report` saying whether the stored picture file was kept for other
+      // presentations. `pmLastAct` is set so the banner's Retry re-runs THIS removal, not whatever
+      // deck action happened to come before it.
+      async function pmRemoveMedia(id) {
+        pmLastAct = { fn: () => invoke("deck_remove_media", { id: id }), opName: "remove the media" };
+        pmSetBusy(true);
+        try {
+          pmDv = await invoke("deck_remove_media", { id: id });
+          pmClearError();
+          renderPresentation(pmDv);
+          pmShowRemoveReport(pmDv && pmDv.remove_report);
+        } catch (e) {
+          console.error("[SelahCue] deck action failed", e);
+          pmShowErrorRaw(String(e && e.message ? e.message : e));
+        } finally {
+          pmSetBusy(false);
+        }
+      }
+
+      // What a removal did to the stored file, from the host's `remove_report`. Silent when the file
+      // was deleted (the tile simply leaves the grid); a toast when it was KEPT, because the picture
+      // is still on disk and still showing in the presentations that use it.
+      function pmShowRemoveReport(rep) {
+        if (!rep || !rep.removed) return;
+        const decks = rep.kept_for_decks || 0;
+        if (decks > 0) {
+          pmToast("Removed from the library. The picture file is kept because " + decks + " other presentation" + (decks === 1 ? " still uses" : "s still use") + " it.");
+        } else if (rep.kept_for_deleted > 0) {
+          pmToast("Removed from the library. The picture file is kept because a presentation you recently deleted still uses it.");
         }
       }
 
@@ -7917,7 +7965,9 @@
               setBusy(false);
               showErr(
                 link
-                  ? "The host couldn't link that — check the reference or presentation and try again."
+                  ? link.kind === "scripture"
+                    ? "The host couldn't link that scripture — check the reference (e.g. Romans 8:28 or Romans 8:28-30) and try again."
+                    : "The host couldn't link that — check the reference or presentation and try again."
                   : "The host couldn't unlink this item."
               );
             });
@@ -7980,12 +8030,19 @@
           vStart = null,
           vEnd = null,
           vps = cur.verses_per_slide || null;
+        // Where the verse-range selection is. "idle": the highlighted verse(s) are a DEFAULT or a
+        // seeded existing link, not something the person picked — the next click starts a NEW
+        // selection. "anchor": a start verse was clicked, the next click at/after it sets the end.
+        // "done": a range is complete, the next click starts over. Without this, the first-verse
+        // default Browse pre-selects made the first click on verse 2 the END of 1-2, and the next
+        // click on verse 10 reset to the single verse 10: clicking 2 then 10 could never yield 2-10.
+        let pickPhase = "idle";
         const row = document.createElement("div");
         row.className = "pm-link-row";
         const input = document.createElement("input");
         input.className = "pm-insp-ctrl";
         input.type = "text";
-        input.placeholder = "Reference — e.g. Romans 8:28-30";
+        input.placeholder = "Reference — e.g. Romans 8:28 or Romans 8:28-30";
         input.value = cur.reference || "";
         input.setAttribute("aria-label", "Scripture reference");
         const trans = document.createElement("select");
@@ -8014,6 +8071,20 @@
         const hits = document.createElement("div");
         hits.className = "pm-link-hits";
         wrap.appendChild(hits);
+        // This step's own status line (role=status): the "cut back to the chapter" notice and a
+        // reference the host could not read. Deliberately NOT the dialog's role=alert error, which
+        // belongs to the commit step and lives outside this function. It stays in the DOM, EMPTY
+        // (CSS hides an empty one): a live region announces reliably when its CONTENT changes,
+        // not when the element is un-hidden in the same step that fills it. The text itself says
+        // which kind of message it is ("Error:" / "Note:"), so the cue is not colour alone.
+        const hint = document.createElement("p");
+        hint.className = "pm-link-hint";
+        hint.setAttribute("role", "status");
+        wrap.appendChild(hint);
+        const showHint = (msg, isError) => {
+          hint.textContent = msg ? (isError ? "Error: " : "Note: ") + msg : "";
+          hint.classList.toggle("pm-link-hint-err", !!isError);
+        };
 
         // Verse picker (frame 610:124): chapter nav + verse list with the selected range highlighted
         // + verses-per-slide + a gold reference preview. Hidden until a chapter is browsed/loaded.
@@ -8110,16 +8181,16 @@
             vr.appendChild(n);
             vr.appendChild(t);
             vr.onclick = () => {
-              // First click (or after a complete range) sets the start; a later click at/after the
-              // start extends the range; a click before the start resets to a new start.
-              if (vStart == null || vEnd != null) {
-                vStart = num;
-                vEnd = null;
-              } else if (num >= vStart) {
+              // Two clicks make a range, from ANY starting state (see pickPhase): the first click
+              // always picks the start; a later click at/after it picks the end; a click before it,
+              // or after a completed range, starts over.
+              if (pickPhase === "anchor" && num >= vStart) {
                 vEnd = num;
+                pickPhase = "done";
               } else {
                 vStart = num;
                 vEnd = null;
+                pickPhase = "anchor";
               }
               renderVerses();
               updatePreview();
@@ -8128,13 +8199,36 @@
           });
           updatePreview();
         };
+        // Each load (and each edit of the reference) bumps this, so a chapter that arrives AFTER the
+        // operator moved on — most visibly the seed of an existing link, which loads on open — is
+        // discarded instead of overwriting what they typed or browsed since.
+        let loadGen = 0;
         const loadCh = async (ref) => {
           if (!ref) return;
+          const gen = ++loadGen;
           try {
             const ch = await invoke("get_chapter", { reference: ref, translation: trans.value || null });
+            if (gen !== loadGen) return;
             chapter = ch;
             vStart = ch.verse_start != null ? ch.verse_start : ch.verses && ch.verses[0] ? ch.verses[0][0] : null;
             vEnd = ch.verse_end != null && ch.verse_end > (ch.verse_start || 0) ? ch.verse_end : null;
+            // The host parses a range as typed, so "Psalms 1:2-10" arrives with end 10 although
+            // Psalm 1 has six verses. Cut the selection back to the verses that exist and say so,
+            // so the preview and the committed link are the passage that will actually show.
+            showHint("");
+            const lastVerse = ch.verses && ch.verses.length ? ch.verses[ch.verses.length - 1][0] : null;
+            if (lastVerse != null && vStart != null && vStart > lastVerse) {
+              // Select NOTHING rather than falling back to verse 1: one press of Link would then
+              // commit a verse the operator never asked for. With no selection Link resolves the
+              // typed reference and refuses it with the chapter's real length.
+              showHint(ch.reference + " only has " + lastVerse + " verses.", true);
+              vStart = null;
+              vEnd = null;
+            } else if (lastVerse != null && vEnd != null && vEnd > lastVerse) {
+              vEnd = lastVerse;
+              showHint(ch.reference + " has " + lastVerse + " verses — the range is cut back to " + vStart + "-" + lastVerse + ".", false);
+            }
+            pickPhase = "idle";
             renderVerses();
           } catch (e) {
             console.error(e);
@@ -8148,9 +8242,85 @@
         };
         browse.onclick = () => loadCh(input.value.trim());
 
-        const doLink = () => {
-          const r = refString();
+        // A reference the operator TYPED is resolved through the host's own parser (get_chapter)
+        // before it is committed — the one place that knows every way a range is written ("2 to 10",
+        // an en dash, "verses 2 through 10"). That gives the plan row the CANONICAL spelling
+        // ("Romans 8:28-30", never the text as typed) and the real chapter, so a range that runs
+        // past the chapter's end is cut back — visibly, and only once the operator confirms.
+        // Resolves to {reference, note} or {error}; an unreadable reference rejects.
+        const resolveTyped = async (typed) => {
+          const ch = await invoke("get_chapter", { reference: typed, translation: trans.value || null });
+          if (ch.verse_start == null) return { reference: ch.reference, note: "" }; // a whole chapter
+          const last = ch.verses && ch.verses.length ? ch.verses[ch.verses.length - 1][0] : null;
+          if (last != null && ch.verse_start > last) {
+            return { error: ch.reference + " only has " + last + " verses." };
+          }
+          let end = ch.verse_end != null && ch.verse_end > ch.verse_start ? ch.verse_end : null;
+          let cut = false;
+          if (end != null && last != null && end > last) {
+            end = last;
+            cut = true;
+          }
+          const ref = ch.reference + ":" + ch.verse_start + (end != null && end > ch.verse_start ? "-" + end : "");
+          return {
+            reference: ref,
+            note: cut ? ch.reference + " has " + last + " verses, so this links as " + ref + ". Press Link to confirm." : "",
+          };
+        };
+        // A well-formed reference the host has no chapter for (a typo, or a translation whose text is
+        // not downloaded yet) is NOT silently refused — linking it is allowed, it just shows as
+        // Missing — but the operator is told first and presses Link again to confirm.
+        let confirmedMissing = null;
+        let resolving = false;
+        const doLink = async () => {
+          if (resolving) return;
+          let r = refString();
           if (!r) return;
+          showHint("");
+          if (!(chapter && vStart != null)) {
+            // Typed text (a browsed/picked selection is already canonical and inside the chapter).
+            resolving = true;
+            go.disabled = true;
+            let res = null;
+            let linkAsTyped = false;
+            try {
+              res = await resolveTyped(r);
+            } catch (e) {
+              console.error(e);
+              if (/no such chapter/i.test(String(e))) {
+                if (confirmedMissing === r) {
+                  linkAsTyped = true; // second press: the operator has been told and confirmed
+                } else {
+                  confirmedMissing = r;
+                  showHint("“" + r + "” isn't a chapter in this translation's text, so it would show as Missing. Press Link again to link it anyway.", false);
+                  return;
+                }
+              } else {
+                showHint("Couldn't read “" + r + "” as a scripture reference. Try Romans 8:28 or Romans 8:28-30.", true);
+                return;
+              }
+            } finally {
+              resolving = false;
+              go.disabled = false;
+            }
+            // The modal may have been closed (Escape / Cancel / backdrop) while the host was
+            // resolving — never commit a link the operator walked away from.
+            if (!wrap.isConnected) return;
+            if (!linkAsTyped) {
+              if (res.error) {
+                showHint(res.error, true);
+                return;
+              }
+              r = res.reference;
+              if (res.note) {
+                // Show what will be linked and wait for a second Link — never silently change the
+                // passage the operator asked for.
+                input.value = r;
+                showHint(res.note, false);
+                return;
+              }
+            }
+          }
           const link = { kind: "scripture", reference: r, translation: trans.value || null };
           if (vps) link.verses_per_slide = vps;
           commit(link);
@@ -8165,6 +8335,10 @@
         // Live search: clicking a hit loads its chapter so the operator can refine the verse range.
         let t = null;
         input.oninput = () => {
+          loadGen++; // invalidate any chapter still in flight
+          confirmedMissing = null;
+          showHint("");
+          pickPhase = "idle";
           // Editing the reference invalidates any browsed/seeded chapter so a freshly-typed reference
           // wins on Link — otherwise refString() would keep committing the STALE browsed reference.
           if (chapter) {
@@ -11166,8 +11340,112 @@
         }
       }
 
+      // --- Media library tile pictures -----------------------------------------------------------
+      // An image tile used to be an empty gradient box: nothing ever drew the picture. The host
+      // (`media_thumbnail`) decodes and shrinks it in Rust — the webview never reads a disk path and
+      // the asset protocol stays off — and the frame is blitted onto the tile's canvas, exactly as
+      // the slide grid does for slide thumbnails.
+      //
+      // Bounded: at most PM_MEDIA_THUMB_MAX entries (each one ≤240px frame, so the worst case is a
+      // few tens of MB), evicted oldest-first, and pruned to the assets the library still holds on
+      // every render. A tile that cannot be drawn is cached as `false` so a corrupt file is asked
+      // for once, not on every re-render. Requests are de-duplicated while in flight, and tiles past
+      // the first fold are loaded lazily when IntersectionObserver is available.
+      const PM_MEDIA_THUMB_MAX = 80;
+      const PM_MEDIA_THUMB_BOX = 240;       // matches the host's THUMB_MAX_DIM clamp
+      const PM_MEDIA_THUMB_EAGER = 12;      // first-fold tiles load immediately
+      const pmMediaThumbCache = new Map();  // asset id -> frame {w,h,rgba} | false (could not be drawn)
+      const pmMediaThumbInflight = new Map(); // asset id -> Promise<frame|false>
+      let pmMediaIO = null;
+      function pmMediaThumbPut(id, v) {
+        pmMediaThumbCache.delete(id);
+        pmMediaThumbCache.set(id, v);
+        while (pmMediaThumbCache.size > PM_MEDIA_THUMB_MAX) pmMediaThumbCache.delete(pmMediaThumbCache.keys().next().value);
+      }
+      function pmMediaThumbPrune(assets) {
+        const live = new Set((assets || []).map((a) => a.id));
+        Array.from(pmMediaThumbCache.keys()).forEach((id) => { if (!live.has(id)) pmMediaThumbCache.delete(id); });
+      }
+      // Inspection hook for the bounded-memory check: a PER-KEY accessor (true = a frame is cached,
+      // false = cached as "can't draw", null = absent), plus the entity count and its cap so a test
+      // can pin the premise "more assets were driven than the cap".
+      window.__pmMediaThumbDebug = {
+        size: () => pmMediaThumbCache.size,
+        max: () => PM_MEDIA_THUMB_MAX,
+        cached: (id) => (pmMediaThumbCache.has(id) ? pmMediaThumbCache.get(id) !== false : null),
+      };
+      function pmMediaThumbLoad(id) {
+        if (pmMediaThumbCache.has(id)) {
+          const hit = pmMediaThumbCache.get(id);
+          pmMediaThumbPut(id, hit); // a hit refreshes recency, so what is on screen is evicted last
+          return Promise.resolve(hit);
+        }
+        if (pmMediaThumbInflight.has(id)) return pmMediaThumbInflight.get(id);
+        const p = invoke("media_thumbnail", { id: id, maxW: PM_MEDIA_THUMB_BOX, maxH: PM_MEDIA_THUMB_BOX })
+          .then((r) => (r && r.available && r.frame ? r.frame : false), () => false)
+          .then((f) => { pmMediaThumbInflight.delete(id); pmMediaThumbPut(id, f); return f; });
+        pmMediaThumbInflight.set(id, p);
+        return p;
+      }
+      function pmMediaThumbFail(thumb) {
+        if (!thumb || thumb.querySelector(".pm-thumb-fail")) return;
+        const cv = thumb.querySelector("canvas"); if (cv) cv.hidden = true;
+        const s = document.createElement("span");
+        s.className = "pm-thumb-fail"; s.setAttribute("aria-hidden", "true"); s.textContent = "Can’t preview";
+        thumb.appendChild(s);
+      }
+      function pmMediaThumbPaint(thumb, cv, id) {
+        pmMediaThumbLoad(id).then((frame) => {
+          if (frame && blitFrame(cv, frame)) { thumb.classList.add("has-pic"); return; }
+          pmMediaThumbFail(thumb);
+        });
+      }
+      function pmMediaThumbSchedule(thumb, cv, id, idx) {
+        if (pmMediaIO && idx >= PM_MEDIA_THUMB_EAGER && !pmMediaThumbCache.has(id)) {
+          thumb.dataset.mid = String(id);
+          pmMediaIO.observe(thumb);
+        } else {
+          pmMediaThumbPaint(thumb, cv, id);
+        }
+      }
+
+      // The remove-media confirmation for asset `a` (a DeckView `media.assets` row). The host decides
+      // what happens to the stored file when it removes — it deletes SelahCue's copy unless another
+      // saved deck still shows it — so the dialog says which, from the counts the view carries:
+      // `uses` (slides of the OPEN deck) and `other_decks` (OTHER saved decks). When other decks
+      // use it the file is kept, so every slide that shows it keeps showing it and the "missing
+      // media" warning would be false; it is replaced by the keep notice.
+      function pmRemoveMediaConfirm(a) {
+        const other = a.other_decks || 0;
+        const slides = (n) => n + " slide" + (n === 1 ? "" : "s");
+        let warning = null;
+        let body = "This removes the image from the media library and deletes SelahCue’s copy of it. This can’t be undone.";
+        if (other > 0) {
+          body = "This removes the image from the media library. SelahCue keeps its copy of the file, because other presentations still show it.";
+          warning = (a.uses ? "Used on " + slides(a.uses) + " here and in " : "Also used in ") + other + " other presentation" + (other === 1 ? "" : "s") + " — the picture file is kept so they keep showing it.";
+        } else if (a.uses) {
+          warning = "Used on " + slides(a.uses) + " — removing it leaves " + (a.uses === 1 ? "that slide" : "those slides") + " with missing media.";
+        }
+        return {
+          title: "Remove " + a.name + "?",
+          body: body,
+          warning: warning,
+          confirmLabel: "Remove",
+          onConfirm: () => pmRemoveMedia(a.id),
+        };
+      }
+
       function pmRenderMedia(dv) {
         const m = (dv && dv.media) || { assets: [], total_label: "—", missing_count: 0, unused_count: 0 };
+        pmMediaThumbPrune(m.assets);
+        if (pmMediaIO) { pmMediaIO.disconnect(); pmMediaIO = null; }
+        if ("IntersectionObserver" in window) {
+          pmMediaIO = new IntersectionObserver((es) => es.forEach((e) => {
+            if (!e.isIntersecting) return;
+            pmMediaIO.unobserve(e.target);
+            pmMediaThumbPaint(e.target, e.target.querySelector("canvas"), Number(e.target.dataset.mid));
+          }));
+        }
         const q = pmMediaQuery.trim().toLowerCase();
         const match = (a) => {
           if (pmMediaFilter !== "all" && a.kind !== pmMediaFilter) return false;
@@ -11187,7 +11465,7 @@
         // The asset used by the currently-selected image element → mark its cell "in use".
         const selEl = dv.slide && dv.slide.selected_element != null ? dv.slide.elements[dv.slide.selected_element] : null;
         const inUsePath = selEl && selEl.kind === "image" ? selEl.source : null;
-        visual.forEach((a) => {
+        visual.forEach((a, idx) => {
           const isInUse = a.path && a.path === inUsePath;
           const cell = document.createElement("div");
           cell.className = "pm-asset" + (a.missing ? " missing" : "") + (isInUse ? " in-use" : "");
@@ -11211,6 +11489,13 @@
               b.textContent = a.duration_label;
               thumb.appendChild(b);
             }
+          } else if (a.kind === "image") {
+            // The picture itself — decorative (the button's aria-label already names the asset).
+            const cv = document.createElement("canvas");
+            cv.className = "pm-asset-canvas";
+            cv.setAttribute("aria-hidden", "true");
+            thumb.appendChild(cv);
+            pmMediaThumbSchedule(thumb, cv, a.id, idx);
           }
           // Clicking an IMAGE asset either REPLACES the selected image element's source (when a
           // Replace… flow is armed) or adds it to the current slide (video/audio: no on-slide render).
@@ -11243,17 +11528,12 @@
           rm.type = "button";
           rm.className = "pm-asset-del";
           rm.textContent = "✕";
-          rm.setAttribute("aria-label", "Remove " + a.name + " from the library" + (a.uses ? " (used on " + a.uses + " slide" + (a.uses === 1 ? "" : "s") + ")" : ""));
+          const otherDecks = a.other_decks || 0;
+          rm.setAttribute("aria-label", "Remove " + a.name + " from the library" + (a.uses ? " (used on " + a.uses + " slide" + (a.uses === 1 ? "" : "s") + ")" : "") + (otherDecks ? " (also used in " + otherDecks + " other presentation" + (otherDecks === 1 ? "" : "s") + ")" : ""));
           rm.title = "Remove from library";
           rm.onclick = (ev) => {
             ev.stopPropagation();
-            pmConfirm({
-              title: "Remove " + a.name + "?",
-              body: "This removes the file from the media library. You can undo it.",
-              warning: a.uses ? "Used on " + a.uses + " slide" + (a.uses === 1 ? "" : "s") + " — removing it leaves " + (a.uses === 1 ? "that slide" : "those slides") + " with missing media." : null,
-              confirmLabel: "Remove",
-              onConfirm: () => pAct(() => invoke("deck_remove_media", { id: a.id }), "remove the media"),
-            });
+            pmConfirm(pmRemoveMediaConfirm(a));
           };
           cell.appendChild(thumb);
           cell.appendChild(name);

@@ -137,16 +137,18 @@ async fn a_stream_authenticates_by_header_and_delivers_interim_then_final_segmen
             .expect("the upgrade succeeds");
 
         socket
-            .send(Message::Text(results("turn with me to", false)))
+            .send(Message::Text(results("turn with me to", false).into()))
             .await
             .expect("send interim");
         socket
-            .send(Message::Text(results("Turn with me to John three.", true)))
+            .send(Message::Text(
+                results("Turn with me to John three.", true).into(),
+            ))
             .await
             .expect("send final");
         // Deepgram sends empty interims during silence; the queue must refuse them.
         socket
-            .send(Message::Text(results("", false)))
+            .send(Message::Text(results("", false).into()))
             .await
             .expect("send empty interim");
 
@@ -797,7 +799,7 @@ async fn a_slow_but_steady_peer_is_healthy_rather_than_stalled() {
             for i in 0..12 {
                 tokio::time::sleep(Duration::from_millis(120)).await;
                 if socket
-                    .send(Message::Text(results(&format!("word {i}"), false)))
+                    .send(Message::Text(results(&format!("word {i}"), false).into()))
                     .await
                     .is_err()
                 {

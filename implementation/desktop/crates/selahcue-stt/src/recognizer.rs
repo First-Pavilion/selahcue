@@ -343,10 +343,15 @@ mod whisper_backend {
             if state.full(params, samples).is_err() {
                 return Vec::new();
             }
-            let n = state.full_n_segments().unwrap_or(0);
+            // whisper-rs 0.16: `full_n_segments` no longer returns a `Result`, and a segment's
+            // text comes from `get_segment(i)` + `to_str()`. `to_str()` is the STRICT accessor —
+            // like 0.14's `full_get_segment_text`, a segment whose bytes are not valid UTF-8 is
+            // skipped rather than repaired (`to_str_lossy` would silently insert U+FFFD into the
+            // transcript).
+            let n = state.full_n_segments();
             let mut out = Vec::new();
             for i in 0..n {
-                if let Ok(text) = state.full_get_segment_text(i) {
+                if let Some(Ok(text)) = state.get_segment(i).map(|seg| seg.to_str()) {
                     let trimmed = text.trim();
                     if !trimmed.is_empty() {
                         out.push(RecognizedSegment::final_text(trimmed, start_ms, end_ms));
@@ -700,10 +705,10 @@ mod whisper_backend {
             state
                 .full(baseline_params, &samples)
                 .expect("baseline decode must succeed");
-            let n = state.full_n_segments().unwrap_or(0);
+            let n = state.full_n_segments();
             let mut baseline = String::new();
             for i in 0..n {
-                if let Ok(text) = state.full_get_segment_text(i) {
+                if let Some(Ok(text)) = state.get_segment(i).map(|seg| seg.to_str()) {
                     if !baseline.is_empty() {
                         baseline.push(' ');
                     }
