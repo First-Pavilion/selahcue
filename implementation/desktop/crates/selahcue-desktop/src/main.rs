@@ -3410,11 +3410,70 @@ impl ApplicationHandler for App {
     }
 }
 
+/// Boxed future that creates the control listener (see [`ServerIo::bind`]).
+type BindFuture =
+    std::pin::Pin<Box<dyn std::future::Future<Output = std::io::Result<TcpListener>> + Send>>;
+
+/// Everything `run_server` does that reaches OUTSIDE this process — the LAN socket, the mDNS
+/// multicast, the outbound-interface probe behind the pairing QR, and the endpoint descriptor
+/// (a bearer token) in the shared OS temp dir. Production wires the real thing
+/// ([`ServerEnv::production`]); the startup-order test swaps each one for a hermetic stand-in so
+/// that `cargo test` can never bind the LAN, advertise on a real network, or overwrite the
+/// endpoint file of a live `make launch` host sitting in the same temp dir (PR #145 review).
+struct ServerIo {
+    /// Creates the control listener. Production binds every interface (`0.0.0.0:0`) so a phone
+    /// on the LAN can reach us (pairing is the gate, not the bind address); a test binds
+    /// loopback only. A seam rather than an address so a test can also observe WHEN the bind
+    /// happens relative to the scripture warm-up.
+    bind: Box<dyn FnOnce() -> BindFuture + Send>,
+    /// This machine's LAN-facing IP, for the pairing QR ([`lan_ip`] opens a UDP socket).
+    lan_ip: fn() -> std::net::IpAddr,
+    /// Advertise `_selahcue._tcp` on mDNS so a phone can discover us.
+    advertise_mdns: bool,
+    /// Where to publish the loopback endpoint descriptor the operator shell auto-discovers.
+    /// `None` writes nothing.
+    endpoint_file: Option<std::path::PathBuf>,
+}
+
+/// What [`start_remote_control_in`] runs: the one-time scripture warm-up plus the I/O seams.
+struct ServerEnv {
+    /// The scripture quote-index warm-up, run BEFORE the listener is bound (see
+    /// [`start_remote_control_in`]). Its position relative to `io.bind` is the contract.
+    warm: Box<dyn FnOnce() + Send>,
+    io: ServerIo,
+}
+
+impl ServerEnv {
+    fn production() -> Self {
+        ServerEnv {
+            warm: Box::new(selahcue_scripture::warm),
+            io: ServerIo {
+                bind: Box::new(|| -> BindFuture { Box::pin(TcpListener::bind("0.0.0.0:0")) }),
+                lan_ip,
+                advertise_mdns: true,
+                endpoint_file: Some(endpoint_path()),
+            },
+        }
+    }
+}
+
 /// Spawn the pinned-TLS control server on a background thread with its own Tokio
 /// runtime, driving the shared `controller`. If it can't start, the window still runs
 /// under local keyboard control.
 fn start_remote_control(controller: Arc<Mutex<LiveController>>, remote: Arc<RemoteShared>) {
+    start_remote_control_in(controller, remote, ServerEnv::production());
+}
+
+/// [`start_remote_control`] against an explicit [`ServerEnv`] — the body, split out so the
+/// warm-then-bind ordering can be driven by a test without touching the real network, mDNS or
+/// the shared endpoint file.
+fn start_remote_control_in(
+    controller: Arc<Mutex<LiveController>>,
+    remote: Arc<RemoteShared>,
+    env: ServerEnv,
+) {
     std::thread::spawn(move || {
+        let ServerEnv { warm, io } = env;
         let runtime = match tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()
@@ -3426,16 +3485,23 @@ fn start_remote_control(controller: Arc<Mutex<LiveController>>, remote: Arc<Remo
             }
         };
         // Pay the scripture quote-match index's one-time cold-start cost (gzip-decode +
-        // tokenize ~31k KJV verses; ~250ms release / ~1.7s debug) HERE — plain sync code on
-        // this dedicated background thread, before `run_server` below does anything, so it
-        // always finishes before the LAN listener can bind, let alone accept a connection.
-        // Without this, the first real IngestTranscript a remote controller sends pays the
-        // same cost inline inside ControlClient::COMMAND_TIMEOUT's 2s budget — and on
-        // overrun, permanently poisons that connection (see its doc comment, Sana S-8).
-        // Does not delay the output window: this thread is already independent of winit's.
+        // tokenize ~31k KJV verses) HERE — plain sync code on this dedicated background
+        // thread, before `run_server` below does anything, so it always finishes before the LAN
+        // listener can bind, let alone accept a connection. Without this, the first real
+        // IngestTranscript a remote controller sends pays the same cost inline inside
+        // ControlClient::COMMAND_TIMEOUT's 2s budget — and on overrun, permanently poisons that
+        // connection (see its doc comment, Sana S-8). Does not delay the output window: this
+        // thread is already independent of winit's.
+        //
+        // What it costs, MEASURED (PR #145 review), so the next person to touch this knows the
+        // trade: ≈0.35 s release on the ubuntu CI runner (`make nfr` cold start, i.e. launch to
+        // endpoint file: 0.047 s on main -> 0.393 s with this call; budget 3 s) and ≈2 s in a
+        // debug build; and ≈+45 MiB resident for good (VmRSS 3 -> 48 MiB in a bare process; CI's
+        // `make nfr` idle RSS 240 -> 285 MB against the 300 MB NFR-002 budget — only ≈15 MB of
+        // headroom is left, so do not add a second always-warm translation without re-measuring).
         // 17tnw2b1258 (PR #130 review follow-up); mirrors that PR's test-only warm-up.
-        selahcue_scripture::warm();
-        if let Err(e) = runtime.block_on(run_server(controller, remote)) {
+        warm();
+        if let Err(e) = runtime.block_on(run_server(controller, remote, io)) {
             eprintln!("SelahCue: remote control stopped: {e}");
         }
     });
@@ -3444,6 +3510,7 @@ fn start_remote_control(controller: Arc<Mutex<LiveController>>, remote: Arc<Remo
 async fn run_server(
     controller: Arc<Mutex<LiveController>>,
     remote: Arc<RemoteShared>,
+    io: ServerIo,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let identity = SelfSigned::generate(vec!["localhost".into()])
         .map_err(|e| format!("tls identity: {e:?}"))?;
@@ -3475,7 +3542,7 @@ async fn run_server(
 
     // Bind the LAN so a phone can reach us: joining is gated by pairing (single-use
     // TTL code + host confirmation) behind pinned TLS, so an open port grants nothing.
-    let listener = TcpListener::bind("0.0.0.0:0").await?;
+    let listener = (io.bind)().await?;
     let port = listener.local_addr()?.port();
     let _ = remote.lan.set((port, pin.to_hex()));
 
@@ -3488,16 +3555,23 @@ async fn run_server(
         ControlServer::new(&identity, remote.registry.clone(), handler_for(controller))
             .map_err(|e| format!("server: {e:?}"))?
             .with_pairing_requests()
-            .with_pairing_endpoint(lan_ip().to_string(), port, pin.to_hex()),
+            .with_pairing_endpoint((io.lan_ip)().to_string(), port, pin.to_hex()),
     );
     // Advertise on mDNS so the phone can FIND us without typing an address
     // (86ajp0b0t). The TXT carries the cert pin — public data (it is printed in
     // every QR invite); joining still requires the TTL pairing code + host
     // approval, so discovery discloses presence, never access.
-    let _mdns = advertise_mdns(port, device, &pin.to_hex());
+    let _mdns = if io.advertise_mdns {
+        advertise_mdns(port, device, &pin.to_hex())
+    } else {
+        None
+    };
     // Local clients (operator shell / CLI) connect via loopback.
     let local: SocketAddr = ([127, 0, 0, 1], port).into();
-    let endpoint = write_endpoint(local, &pin.to_hex(), device, &token);
+    let endpoint = io
+        .endpoint_file
+        .as_deref()
+        .and_then(|path| write_endpoint(path, local, &pin.to_hex(), device, &token));
     print_connect_banner(local, &pin.to_hex(), device, &token, endpoint.as_deref());
     server
         .run(listener)
@@ -3506,70 +3580,159 @@ async fn run_server(
     Ok(())
 }
 
-/// Regression coverage for 17tnw2b1258: the scripture quote-match index must already be warm
-/// by the time `start_remote_control` publishes its port, i.e. before the LAN server can ever
-/// accept a remote connection. Real windowing isn't testable in CI (see `window_lifecycle_tests`
-/// above), but `start_remote_control` itself needs no window — it runs against a real background
-/// thread, a real Tokio runtime and a real loopback listener, the same way `run_server` does in
-/// production, so this test calls it directly rather than re-implementing its startup order.
+/// Regression coverage for 17tnw2b1258: the scripture quote-match index must be warm BEFORE the
+/// LAN listener is bound, i.e. before the server can ever accept a remote connection.
+///
+/// Hermetic by construction (PR #145 review): the first cut called the real
+/// `start_remote_control`, which binds `0.0.0.0`, advertises mDNS on the real LAN and writes the
+/// shared `$TMPDIR/selahcue-operator-endpoint.json` bearer-token file — so a `cargo test` run
+/// beside a live `make launch` host overwrote that host's endpoint with a dead port and token.
+/// These tests drive [`start_remote_control_in`] (the real thread, the real Tokio runtime and the
+/// real `run_server`) through [`ServerEnv`]'s seams: loopback bind, no mDNS, no LAN-IP probe, and
+/// an endpoint file in a private scratch directory that is removed afterwards.
 #[cfg(test)]
 mod remote_control_warmup_tests {
     use super::{
-        demo_plan, start_remote_control, LiveController, RemoteShared, SessionRegistry, Theme,
+        demo_plan, start_remote_control_in, BindFuture, LiveController, RemoteShared, ServerEnv,
+        ServerIo, SessionRegistry, Theme,
     };
     use std::sync::{Arc, Mutex, OnceLock};
     use std::time::{Duration, Instant};
+    use tokio::net::TcpListener;
     use tokio::sync::Mutex as AsyncMutex;
 
-    #[test]
-    fn scripture_index_is_warm_before_the_server_can_accept_a_connection() {
-        let controller = Arc::new(Mutex::new(LiveController::new(
+    /// A private scratch directory, removed on drop — also when an assertion unwinds — so the
+    /// test leaves nothing behind in the shared temp dir.
+    struct Scratch(std::path::PathBuf);
+
+    impl Scratch {
+        fn new(tag: &str) -> Self {
+            let dir = std::env::temp_dir().join(format!(
+                "selahcue-desktop-test-{tag}-{}-{:?}",
+                std::process::id(),
+                std::thread::current().id()
+            ));
+            std::fs::create_dir_all(&dir).expect("create scratch dir");
+            Scratch(dir)
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn fresh_remote() -> Arc<RemoteShared> {
+        Arc::new(RemoteShared {
+            registry: Arc::new(AsyncMutex::new(SessionRegistry::new())),
+            lan: OnceLock::new(),
+            active_code: Mutex::new(None),
+        })
+    }
+
+    fn fresh_controller() -> Arc<Mutex<LiveController>> {
+        Arc::new(Mutex::new(LiveController::new(
             demo_plan(),
             320,
             180,
             Theme::dark(),
-        )));
-        let remote = Arc::new(RemoteShared {
-            registry: Arc::new(AsyncMutex::new(SessionRegistry::new())),
-            lan: OnceLock::new(),
-            active_code: Mutex::new(None),
-        });
+        )))
+    }
 
-        start_remote_control(controller, remote.clone());
-
-        // `remote.lan` is published only after `run_server` has bound its listener — i.e.
-        // strictly after `start_remote_control`'s warm-up call above has already returned
-        // (plain sequential code on the same background thread). Poll with a generous bound
-        // instead of a fixed sleep: this does real TLS identity generation, pairing-registry
-        // setup and a socket bind on top of a cold warm-up (~1.7s debug alone), and this repo
-        // runs several agent sessions concurrently in one checkout (CLAUDE.md), so CPU
-        // contention is routine, not exceptional — a tight bound here would make a passing
-        // regression test about a timing bug itself flaky under load. The real, discriminating
-        // assertion is the warm()-is-already-warm check below, which is cheap and CPU-bound;
-        // this loop only needs to not time out before that check gets a chance to run.
+    /// Poll `cond` with a generous bound rather than a fixed sleep: the server thread does real
+    /// TLS identity generation and pairing-registry setup, and this repo runs several agent
+    /// sessions in one checkout (CLAUDE.md), so CPU contention is routine. Nothing below asserts
+    /// on how LONG startup took — only on what order things happened in — so a long bound costs
+    /// nothing when everything is healthy.
+    fn wait_for(what: &str, mut cond: impl FnMut() -> bool) {
         let deadline = Instant::now() + Duration::from_secs(60);
-        while remote.lan.get().is_none() {
+        while !cond() {
             assert!(
                 Instant::now() < deadline,
-                "remote control server did not start within 60s"
+                "timed out after 60s waiting for {what}"
             );
             std::thread::sleep(Duration::from_millis(10));
         }
+    }
 
-        // `warm()` is idempotent: a no-op (single-digit microseconds) once the index is
-        // already built, but it pays the FULL cold-start cost (hundreds of ms+) if it is
-        // the first real call. Calling it again here, now that the server is about to
-        // accept connections, proves `start_remote_control` already warmed it — if that
-        // call is ever removed, THIS becomes the first call and the assertion below fails.
+    /// THE ordering contract, observed rather than inferred: the warm-up hook and the bind
+    /// each log themselves, so the exact sequence is asserted. Independent of the process-global
+    /// scripture `OnceLock` (a sibling test warming the real index cannot mask a miss), needs no
+    /// timing, and fails for every way of breaking the order — warm-up removed, moved after the
+    /// bind (before or after the port is published), or run on another thread.
+    #[test]
+    fn the_scripture_warm_up_runs_before_the_listener_is_bound() {
+        let events: Arc<Mutex<Vec<&'static str>>> = Arc::default();
+        let scratch = Scratch::new("warm-before-bind");
+        let endpoint = scratch.0.join("endpoint.json");
+
+        let warm_events = events.clone();
+        let bind_events = events.clone();
+        let env = ServerEnv {
+            warm: Box::new(move || warm_events.lock().expect("event log").push("warm")),
+            io: ServerIo {
+                bind: Box::new(move || -> BindFuture {
+                    bind_events.lock().expect("event log").push("bind");
+                    // Loopback + an OS-assigned port: no LAN exposure, no clash with a live host.
+                    Box::pin(TcpListener::bind("127.0.0.1:0"))
+                }),
+                lan_ip: || std::net::IpAddr::from([127, 0, 0, 1]),
+                advertise_mdns: false,
+                endpoint_file: Some(endpoint.clone()),
+            },
+        };
+
+        let remote = fresh_remote();
+        start_remote_control_in(fresh_controller(), remote.clone(), env);
+
+        // `remote.lan` is published immediately after the bind, so once it is set the bind has
+        // happened and every event it should be ordered against has already been logged.
+        wait_for("the control listener to be bound", || {
+            remote.lan.get().is_some()
+        });
+        assert_eq!(
+            *events.lock().expect("event log"),
+            ["warm", "bind"],
+            "the scripture warm-up must run exactly once and strictly BEFORE the control \
+             listener is bound; otherwise the first IngestTranscript a remote controller sends \
+             pays the cold index build inside ControlClient::COMMAND_TIMEOUT (17tnw2b1258)"
+        );
+
+        // The endpoint descriptor (a bearer token) must have gone to the INJECTED path, not the
+        // shared `$TMPDIR/selahcue-operator-endpoint.json` a live host owns.
+        let (port, _pin) = remote.lan.get().expect("published above").clone();
+        wait_for("the endpoint descriptor to be written", || {
+            endpoint.exists()
+        });
+        let written = std::fs::read_to_string(&endpoint).expect("read descriptor");
+        assert!(
+            written.contains(&format!("\"addr\":\"127.0.0.1:{port}\"")),
+            "descriptor should name this test server's loopback port {port}: {written}"
+        );
+    }
+
+    /// The wiring half: the hook `ServerEnv::production()` hands the real server genuinely
+    /// builds the quote index — the test above uses a fake and cannot see a production hook
+    /// swapped for a no-op. Runs only that hook (no server, no socket, nothing shared), then
+    /// proves the index is warm: a second `warm()` is a single-digit-microsecond `OnceLock` hit,
+    /// but the FULL cold build (≈2 s debug) if the production hook did nothing.
+    ///
+    /// Caveat, honestly: the index is process-global, so this can only bite while no sibling
+    /// test in this binary builds it first. None does today (nothing here calls
+    /// `ingest_transcript`); the ordering test above is deliberately free of that dependency.
+    #[test]
+    fn the_production_warm_hook_builds_the_scripture_quote_index() {
+        (ServerEnv::production().warm)();
+
         let started = Instant::now();
         selahcue_scripture::warm();
         let elapsed = started.elapsed();
         assert!(
             elapsed < Duration::from_millis(300),
-            "a second warm() call took {elapsed:?} after the control server started \
-             listening for connections — the scripture quote-match index was not already \
-             warm, meaning start_remote_control no longer warms it before accepting remote \
-             connections (17tnw2b1258)"
+            "a warm() call took {elapsed:?} after the production warm-up hook ran — the hook \
+             does not build the scripture quote-match index, so the first remote \
+             IngestTranscript would pay the cold build inline (17tnw2b1258)"
         );
     }
 }
@@ -3672,15 +3835,19 @@ fn print_pairing_block(uri: &str, code: &str) {
     println!();
 }
 
-/// Write a local endpoint descriptor so the operator shell on this machine can
-/// auto-discover + connect (a loopback-only convenience; real pairing is QR + host
-/// confirmation). Values are simple ASCII (addr/hex/ids), so a hand-built JSON string is
-/// safe. Returns the path written, if any.
+/// The well-known endpoint descriptor path the operator shell auto-discovers. Shared by every
+/// SelahCue host on this machine, so only [`ServerEnv::production`] and the clean-exit cleanup
+/// ever name it — nothing a test drives may.
 fn endpoint_path() -> std::path::PathBuf {
     std::env::temp_dir().join("selahcue-operator-endpoint.json")
 }
 
+/// Write a local endpoint descriptor so the operator shell on this machine can
+/// auto-discover + connect (a loopback-only convenience; real pairing is QR + host
+/// confirmation). Values are simple ASCII (addr/hex/ids), so a hand-built JSON string is
+/// safe. Returns the path written, if any.
 fn write_endpoint(
+    path: &std::path::Path,
     addr: SocketAddr,
     pin_hex: &str,
     device: &str,
@@ -3689,8 +3856,7 @@ fn write_endpoint(
     let json = format!(
         "{{\"addr\":\"{addr}\",\"pin\":\"{pin_hex}\",\"device\":\"{device}\",\"token\":\"{token}\"}}"
     );
-    let path = endpoint_path();
-    if let Err(e) = std::fs::write(&path, json) {
+    if let Err(e) = std::fs::write(path, json) {
         eprintln!("SelahCue: could not write operator endpoint file: {e}");
         return None;
     }
@@ -3701,9 +3867,9 @@ fn write_endpoint(
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
     }
-    Some(path)
+    Some(path.to_path_buf())
 }
 
 fn print_connect_banner(
