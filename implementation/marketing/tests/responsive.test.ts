@@ -427,21 +427,102 @@ describe('sideways-scrolling table wrappers are keyboard focusable', () => {
   })
 })
 
+/**
+ * Route sources the literal `{ path: '...' }` parse below CANNOT enumerate: a spread
+ * (`...articleRoutes`), an imported route array (`import articleRoutes from ...`) or a runtime
+ * `router.addRoute(...)`. Pages added that way are invisible to the path comparison, so
+ * without this a PR that adds a whole family of pages passes while the sweep never renders
+ * one of them -- which is exactly what happened to the article routes (PR #135) in review.
+ */
+export function unenumerableRouteSources(routerSource: string): string[] {
+  const code = routerSource
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .split('\n')
+    .map((line) => line.replace(/(^|\s)\/\/.*$/, ''))
+    .join('\n')
+  const found = new Set<string>()
+  for (const m of code.matchAll(/\.\.\.\s*([A-Za-z_$][\w$]*)/g)) found.add(m[1])
+  for (const m of code.matchAll(/import\s+(?:type\s+)?(\w*[Rr]outes?)\s+from/g)) found.add(m[1])
+  for (const m of code.matchAll(/import\s+(?:type\s+)?\{([^}]*)\}\s+from/g)) {
+    // Judge BOTH sides of `a as b`: aliasing a route array must not hide it.
+    for (const spec of m[1].split(',').map((n) => n.trim())) {
+      const [original, alias] = spec.split(/\s+as\s+/)
+      for (const name of [original, alias]) {
+        if (name && /^\w*[Rr]outes?$/.test(name)) found.add(name)
+      }
+    }
+  }
+  if (/\.addRoute\s*\(/.test(code)) found.add('addRoute')
+  return [...found]
+}
+
+/**
+ * Sample paths the sweep must render for each route array the router pulls in by name.
+ *
+ * THIS MAP IS EMPTY ON PURPOSE on a base with no such array. When a PR adds one
+ * (`...articleRoutes` from `src/router/articleRoutes.ts`), the test below fails loudly until
+ * the author adds an entry here AND the same concrete paths to `ROUTES` in
+ * `scripts/responsive_sweep.py`, e.g.
+ *
+ *   articleRoutes: ['/blog/<a-real-slug>', '/docs/<cat>/<slug>', '/support/<cat>/<slug>']
+ *
+ * so landing it forces the pages into the sweep instead of letting the tripwire pass over them.
+ */
+const ARRAY_ROUTES: Record<string, string[]> = {}
+
+function sweepRoutePaths(): string[] {
+  const sweep = readFileSync(new URL('../scripts/responsive_sweep.py', import.meta.url), 'utf8')
+  return [...sweep.matchAll(/^\s*\("([^"]+)",\s*(?:True|False)\),/gm)].map((m) => m[1].split('?')[0])
+}
+
 describe('every route is covered by the responsive sweep', () => {
   test('router paths and the sweep ROUTES list agree', () => {
     const router = read('router/index.ts')
-    const sweep = readFileSync(new URL('../scripts/responsive_sweep.py', import.meta.url), 'utf8')
-
     const routerPaths = [...router.matchAll(/\{\s*path:\s*'([^']+)'/g)].map((m) => m[1])
     assert.ok(routerPaths.length > 30, 'router parse found suspiciously few routes')
 
-    const sweepPaths = [...sweep.matchAll(/^\s*\("([^"]+)",\s*(?:True|False)\),/gm)].map((m) => m[1].split('?')[0])
-
+    const sweepPaths = sweepRoutePaths()
     const missing = routerPaths.filter((path) => {
       if (path === '/:pathMatch(.*)*') return !sweepPaths.some((p) => p.includes('does-not-exist'))
       if (path.includes(':id')) return !sweepPaths.some((p) => p.startsWith(path.split(':')[0]))
       return !sweepPaths.includes(path)
     })
     assert.deepEqual(missing, [], 'a route exists that the responsive sweep never renders')
+  })
+
+  test('a spread or imported route array the parse cannot enumerate fails unless the sweep has sample paths for it', () => {
+    const sources = unenumerableRouteSources(read('router/index.ts'))
+    const sweepPaths = sweepRoutePaths()
+    const problems: string[] = []
+    for (const name of sources) {
+      const samples = ARRAY_ROUTES[name]
+      if (!samples || samples.length === 0) {
+        problems.push(
+          `the router pulls in \`${name}\`, whose paths this tripwire cannot enumerate. Add ARRAY_ROUTES.${name} = [<concrete sample paths>] here AND the same paths to ROUTES in scripts/responsive_sweep.py.`,
+        )
+        continue
+      }
+      for (const sample of samples) {
+        if (!sweepPaths.includes(sample)) problems.push(`ARRAY_ROUTES.${name} lists ${sample}, but the sweep ROUTES list does not render it`)
+      }
+    }
+    for (const name of Object.keys(ARRAY_ROUTES)) {
+      if (!sources.includes(name)) problems.push(`ARRAY_ROUTES.${name} is stale: the router no longer pulls in \`${name}\``)
+    }
+    assert.deepEqual(problems, [])
+  })
+
+  test('the detector sees what it claims to (positive controls, comments and createRouter ignored)', () => {
+    // Without these, "the router has no spread" is satisfied just as well by a detector that
+    // finds nothing at all.
+    assert.deepEqual(unenumerableRouteSources("routes: [ { path: '/a' }, ...articleRoutes ]"), ['articleRoutes'])
+    assert.deepEqual(unenumerableRouteSources("import articleRoutes from './articleRoutes.ts'\nroutes: articleRoutes"), ['articleRoutes'])
+    assert.deepEqual(unenumerableRouteSources("import { articleRoutes } from './r.ts'"), ['articleRoutes'])
+    assert.deepEqual(unenumerableRouteSources("import { articleRoutes as extra } from './r.ts'"), ['articleRoutes'])
+    assert.deepEqual(unenumerableRouteSources("import { list as articleRoutes } from './r.ts'"), ['articleRoutes'])
+    assert.deepEqual(unenumerableRouteSources("router.addRoute({ path: '/x' })"), ['addRoute'])
+    assert.deepEqual(unenumerableRouteSources("import { createRouter, createWebHistory } from 'vue-router'"), [])
+    assert.deepEqual(unenumerableRouteSources("// e.g. ...articleRoutes would go here\nroutes: []"), [])
+    assert.deepEqual(unenumerableRouteSources("/* ...articleRoutes */ routes: []"), [])
   })
 })
