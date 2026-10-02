@@ -84,10 +84,15 @@ background timers fire during the run and leave two kinds of entries in the real
 So the second is removed by name after the run, narrowly. A candidate must ALL of: match the exact
 name (`fullmatch`), be a DIRECTORY (`lstat`, so a symlink is never followed), be owned by us, NOT
 have existed before this launch, and not have been written to after our browser exited (a
-directory with a newer mtime than the browser's exit belongs to some other process that is still
-at work, so it is left alone). NEVER widen this to `.com.google.Chrome.*`: those are the live
-renderer temp files of whatever Chrome the user has open (`lsof` showed fd 14 of every renderer of
-the user's own browser on them), and deleting one is damage, not cleanup.
+directory with a newer mtime than the browser's exit cannot be ours, so it is left alone; note this
+only sees a writer that was still active in the few milliseconds between our browser's exit and
+the sweep, and says nothing about one that had already finished: see the residual risk below). The
+directory check is NOT redundant: on Python 3.9 `shutil.rmtree` opens its argument before it checks
+that it is a directory, so a FIFO named like the leak would block the sweep forever (`self_test`
+runs the sweep against one, in a subprocess with a hard timeout). NEVER widen this to
+`.com.google.Chrome.*`: those are the live renderer temp files of whatever Chrome the user has
+open (`lsof` showed fd 14 of every renderer of the user's own browser on them), and deleting one
+is damage, not cleanup.
 Residual risk, accepted and written down: attribution after the fact is impossible (the process
 that created a dir is dead by the time we sweep), so a url-fetcher dir that ANOTHER Chrome created
 and finished writing inside our run window looks exactly like ours and is removed too. That other
@@ -126,8 +131,9 @@ STDERR_TAIL_BYTES = 4096
 # The ONLY entry class swept from the real temp dir. See the module docstring before touching it.
 _CHROME_URL_FETCHER_LITTER = re.compile(r"com\.google\.Chrome\.chrome_chrome_url_fetcher_\.[A-Za-z0-9]{4,12}")
 
-# A candidate whose newest mtime is later than the browser's exit by more than this belongs to
-# some other process (clock/filesystem timestamp jitter, not a design parameter).
+# A candidate whose newest mtime is later than the browser's exit by more than this was written to
+# after our browser was gone, so it cannot be ours (the slack is clock/filesystem timestamp
+# jitter, not a design parameter). It only catches a writer active between the exit and the sweep.
 _SWEEP_MTIME_SLACK_S = 0.05
 
 ChromeRun = collections.namedtuple("ChromeRun", "stdout stderr_tail returncode timed_out elapsed pid")
@@ -227,7 +233,7 @@ def _sweep_chrome_litter(tmp_root, existed_before, browser_exited_at):
         if not stat.S_ISDIR(st.st_mode) or (uid is not None and st.st_uid != uid):
             continue
         if _newest_mtime(path, st) > browser_exited_at + _SWEEP_MTIME_SLACK_S:
-            continue  # written to after our browser was gone: someone else's, and still at work
+            continue  # written to after our browser was gone, so not ours (only sees the exit-to-sweep gap)
         shutil.rmtree(path, ignore_errors=True)
         removed.append(name)
     return removed
@@ -303,8 +309,10 @@ class _SignalGuard(object):
     def restore(self):
         previous, self._previous = self._previous, {}
         for sig, handler in previous.items():
-            if handler is None:  # installed from C: nothing Python can put back
-                continue
+            if handler is None:
+                # Installed from C, so Python cannot hand it back; the default is the closest thing.
+                # Skipping it would leave THIS guard's handler installed, swallowing every later signal.
+                handler = signal.default_int_handler if sig == getattr(signal, "SIGINT", None) else signal.SIG_DFL
             try:
                 signal.signal(sig, handler)
             except (ValueError, OSError):
@@ -419,8 +427,18 @@ elif KIND == "pass_escaped_helper":
     emit(PASS)
 elif KIND == "pass_term_proof_helper":
     # A helper in OUR group that IGNORES SIGTERM: only SIGKILL (the documented signal) removes it.
-    record("helper", subprocess.Popen([sys.executable, "-c",
-           "import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(600)"]).pid)
+    # The helper writes a ready file once it IS ignoring SIGTERM, and this browser waits for it
+    # before exiting: without that handshake the launcher's group kill can land while the helper is
+    # still starting up (not yet ignoring anything), and a SIGTERM-instead-of-SIGKILL mutant passes.
+    ready = os.path.join(PID_DIR, "helper_ready")
+    helper = subprocess.Popen([sys.executable, "-c",
+           "import signal, sys, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+           "open(sys.argv[1], 'w').close(); time.sleep(600)", ready])
+    record("helper", helper.pid)
+    for _ in range(500):  # up to 10 s
+        if os.path.exists(ready):
+            break
+        time.sleep(0.02)
     emit(PASS)
 elif KIND == "ok_probe":
     emit(PASS)
@@ -451,6 +469,10 @@ elif KIND == "hang":
     time.sleep(600)
 elif KIND == "litter":
     root = CFG["litter_root"]
+    # Born well after the launch: a sweep that took the START of the run as the browser's exit time
+    # would see this dir as "written after the browser exited" and leave it behind. 0.3 s is six
+    # times the sweep's timestamp slack, so the difference is not a matter of luck.
+    time.sleep(0.3)
     leak = os.path.join(root, "com.google.Chrome.chrome_chrome_url_fetcher_.NEWLEAK")
     os.makedirs(leak)
     with open(os.path.join(leak, "payload"), "w") as f:
@@ -529,19 +551,33 @@ def _wait_dead(pid, seconds=5.0):
 
 
 def _read_pid(pid_dir, key, seconds=0.0):
-    """The int recorded by the fake under `key`, or None. Polls up to `seconds`."""
+    """The PID recorded by the fake under `key`, or None. Polls up to `seconds`. A recorded 0 or 1 is
+    not a PID we started: `killpg(0)` is the CALLER's own group and 1 is init, so it counts as none."""
     deadline = time.time() + seconds
     while True:
         try:
             with open(os.path.join(pid_dir, key)) as f:
                 text = f.read().strip()
-            if text.isdigit():
+            if text.isdigit() and int(text) > 1:
                 return int(text)
         except OSError:
             pass
         if time.time() >= deadline:
             return None
         time.sleep(0.05)
+
+
+def _kill_recorded(pids):
+    """SIGKILL each recorded PID and its process group (a browser is its own group leader, so this also
+    takes a helper it started whose PID was not yet read). Never signals a PID <= 1, even if handed one."""
+    for pid in pids:
+        if pid <= 1:
+            continue
+        for kill in (os.killpg, os.kill):
+            try:
+                kill(pid, signal.SIGKILL)
+            except OSError:
+                pass
 
 
 class _Case(object):
@@ -646,6 +682,37 @@ def self_test(verdict=None, expected_checks=3):
                 or describe_exit(None) != "none (never exited)":
             problems.append("describe_exit: got %r / %r / %r" % (describe_exit(-11), describe_exit(7),
                                                                   describe_exit(None)))
+
+        # 0a. A recorded PID of 0 or 1 (a garbled or hostile record) is not one we started: the final
+        #     cleanup kills each recorded PID's process group, and `killpg(0)` is the CALLER's OWN group.
+        #     Neither the reader nor the killer may act on it; and the killer, handed a real PID,
+        #     must still kill it (the control that the function does anything at all).
+        garbled = os.path.join(root, "garbled_pids")
+        os.makedirs(garbled)
+        for name, text in (("zero", "0"), ("one", "1"), ("negative", "-5"), ("junk", "x1")):
+            with open(os.path.join(garbled, name), "w") as f:
+                f.write(text)
+        accepted = [n for n in ("zero", "one", "negative", "junk") if _read_pid(garbled, n) is not None]
+        if accepted:
+            problems.append("recorded PIDs: %s was accepted as a PID" % accepted)
+        signalled = []
+        real_killpg, real_kill = os.killpg, os.kill
+        os.killpg = lambda *args: signalled.append(("killpg",) + args)
+        os.kill = lambda *args: signalled.append(("kill",) + args)
+        try:
+            _kill_recorded([0, 1])
+        finally:
+            os.killpg, os.kill = real_killpg, real_kill
+        if signalled:
+            problems.append("recorded PIDs: the cleanup signalled PID 0/1 (%s)" % signalled)
+        sleeper = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"], start_new_session=True)
+        gates.append(sleeper)  # reaped and, if something went wrong, killed in the final cleanup
+        _kill_recorded([sleeper.pid])
+        try:
+            if sleeper.wait(timeout=5) != -signal.SIGKILL:
+                problems.append("recorded PIDs: the cleanup did not SIGKILL a real recorded PID")
+        except subprocess.TimeoutExpired:
+            problems.append("recorded PIDs: the cleanup did not kill a real recorded PID")
 
         # 1. AC1 (17tnw2b1f32): a complete passing block, then a helper in the browser's own group
         #    keeps the inherited stdout/stderr open. Must return promptly, must not time out, and
@@ -854,6 +921,30 @@ def self_test(verdict=None, expected_checks=3):
         if case.leftovers():
             problems.append("cleanup step failure: later steps were skipped, left %s" % case.leftovers())
 
+        # 8d. A FIFO named like the leak must not hang the sweep: on Python 3.9 `shutil.rmtree` opens its
+        #     argument before it checks that it is a directory, which blocks forever on a FIFO. Run
+        #     in a subprocess with a hard timeout so a regression cannot hang the gate itself. The
+        #     real dir beside it is the control that the sweep really ran.
+        fifo_root = os.path.join(root, "fifo_sweep")
+        os.makedirs(fifo_root)
+        fifo = os.path.join(fifo_root, "com.google.Chrome.chrome_chrome_url_fetcher_.FIFOLEAK")
+        real_dir = os.path.join(fifo_root, "com.google.Chrome.chrome_chrome_url_fetcher_.REALDIR")
+        os.mkfifo(fifo)
+        os.makedirs(real_dir)
+        here = os.path.dirname(os.path.abspath(__file__))
+        sweep_code = ("import sys, time; sys.path.insert(0, %r); import headless_chrome as h; "
+                      "h._sweep_chrome_litter(%r, set(), time.time())" % (here, fifo_root))
+        try:
+            subprocess.run([sys.executable, "-c", sweep_code], stdin=subprocess.DEVNULL,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5)
+        except subprocess.TimeoutExpired:  # `run` has already killed the child
+            problems.append("FIFO sweep: the sweep hung on a FIFO named like the leak (the directory check "
+                            "must come before anything opens the entry)")
+        if not os.path.exists(fifo) or not stat.S_ISFIFO(os.lstat(fifo).st_mode):
+            problems.append("FIFO sweep: the FIFO was removed or replaced")
+        if os.path.exists(real_dir):
+            problems.append("FIFO sweep: the real url-fetcher dir beside it was not swept, so the sweep did not run")
+
         # 9. Bounded memory: 3 MB of stderr must cost at most 4096 bytes of what we hold. The number
         #    is spelled out here so raising STDERR_TAIL_BYTES is a decision made in review.
         case = _Case(root, "stderr_flood")
@@ -885,6 +976,31 @@ def self_test(verdict=None, expected_checks=3):
         finally:
             for sig, handler in originals.items():
                 signal.signal(sig, handler)
+
+        # 9c. A handler installed from C (Python reports it as None) cannot be handed back. The default
+        #     must go in its place, or the launcher's own handler stays installed and swallows every
+        #     later TERM/HUP/INT in the caller (Shadow N1). Simulated by making the guard's installs
+        #     report "previous handler: None".
+        real_signal = signal.signal
+
+        def install_reports_none(sig, handler):
+            previous = real_signal(sig, handler)
+            return None if isinstance(getattr(handler, "__self__", None), _SignalGuard) else previous
+
+        originals = {sig: signal.getsignal(sig) for sig in guarded}
+        signal.signal = install_reports_none
+        try:
+            _Case(root, "ok_probe", tag="handler_none").run(timeout=12)
+        finally:
+            signal.signal = real_signal
+        try:
+            for sig in guarded:
+                if isinstance(getattr(signal.getsignal(sig), "__self__", None), _SignalGuard):
+                    problems.append("signal handlers: %s still has the launcher's handler installed after a run "
+                                    "whose saved handler was None" % signal.Signals(sig).name)
+        finally:
+            for sig, handler in originals.items():
+                real_signal(sig, handler)
 
         # 10. Killing the GATE must unwind through the same cleanup, whichever way it is told to
         #     stop: the browser lives in its own session, so it no longer shares the gate's fate on
@@ -1025,14 +1141,7 @@ def self_test(verdict=None, expected_checks=3):
             if gate.poll() is None:
                 gate.kill()
                 gate.wait()
-        # Exact PIDs the fakes recorded, and the process group of each (a browser is its own group
-        # leader, so this also takes a helper it started that we had not yet read the PID of).
-        for pid in spawned:
-            for kill in (os.killpg, os.kill):
-                try:
-                    kill(pid, signal.SIGKILL)
-                except OSError:
-                    pass
+        _kill_recorded(spawned)
         shutil.rmtree(root, ignore_errors=True)
     return problems
 
