@@ -30,9 +30,12 @@
 //!    import continues. Disk-full mid-import degrades to a text-only deck plus an honest report,
 //!    never to a failed import or, worse, a deck referencing media that is not there (§8.4).
 //!
-//! Like `DeckLibrary`, **persistence here is best-effort**: a database error is swallowed, because
-//! losing the registry must never block editing. Losing the *files* is a different matter, which is
-//! why file errors are typed and surfaced per slot rather than swallowed.
+//! Unlike `DeckLibrary`, **a failed registry write is not swallowed**: it is returned
+//! ([`MediaStoreError::RegistryWrite`]) so the command that caused it can undo itself and tell the
+//! operator, because "Imported 3 images" over a registry that will forget them at the next launch is
+//! the very loss this module exists to prevent. Running with *no* database at all (the in-memory
+//! fallback) stays a supported, honestly-labelled mode ([`MediaStore::is_persistent`]). File errors
+//! are typed and surfaced per slot for the same reason.
 
 // DELETE THIS ALLOW once every item below has a caller. The operator is a *binary* crate, so `pub`
 // exempts nothing from `dead_code`, and its clippy gate is `-D warnings`; this module lands complete
@@ -50,7 +53,8 @@ use selahcue_data::{media_repo, Database};
 use std::fs::{self, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::Arc;
 
 /// The media root's directory name under the app data dir. A constant rather than a literal because
 /// [`is_app_owned`] and [`sweep_stale_staging`] must agree with the writer about where "app-owned"
@@ -150,6 +154,10 @@ pub enum MediaStoreError {
     /// [`MediaAsset`]/`MediaRef`, both of which are `String`-typed. Refused rather than lossily
     /// converted — a mangled path would point at a file that does not exist.
     PathNotUtf8,
+    /// The media registry could not be written to the database (disk full, a read-only location, a
+    /// locked or damaged file). Carries no detail on purpose: the database's own message can name a
+    /// path, and the operator needs the consequence, not the diagnosis (ADR-0011 / FR-082).
+    RegistryWrite,
 }
 
 impl std::fmt::Display for MediaStoreError {
@@ -164,6 +172,9 @@ impl std::fmt::Display for MediaStoreError {
             MediaStoreError::NameSpaceExhausted => "the media folder has no free file name left",
             MediaStoreError::PathTooLong => "the media folder's path is too long to store an image",
             MediaStoreError::PathNotUtf8 => "the media folder's path can't be stored",
+            MediaStoreError::RegistryWrite => {
+                "the media library couldn't be saved (the disk may be full or read-only)"
+            }
         };
         f.write_str(s)
     }
@@ -523,21 +534,26 @@ pub fn is_app_owned(path: &Path, app_data: &Path) -> bool {
     }
 }
 
-// --- persistence (best-effort; a DB error is swallowed, exactly as in `DeckLibrary`) -------------
+// --- persistence ---------------------------------------------------------------------------------
 
 /// Persist the whole media registry, replacing the stored set (`media_repo::save_all` is
 /// transactional, so a removal in memory becomes a removal on disk and a crash mid-write never
 /// leaves half a set).
 ///
-/// Best-effort by design: `db` is `None` when the operator is running its in-memory fallback, and a
-/// database error is swallowed. The registry is recovery, not a dependency — an operator whose disk
-/// is read-only must still be able to build a service, and `DeckLibrary::is_persistent` already
-/// gives the UI an honest "changes won't be saved" state to surface for both.
-pub fn save(db: Option<&Database>, library: &MediaLibrary) {
+/// `db` is `None` when the operator is running its in-memory fallback: there is nothing to write,
+/// which is **not** a failure (`Ok`) — [`MediaStore::is_persistent`] is what tells the UI the
+/// library will not survive a restart. A database that exists but **refuses the write** (disk full,
+/// a read-only location, a locked file) is a failure and is returned as
+/// [`MediaStoreError::RegistryWrite`]. It used to be swallowed (`let _ =`), so an import into an
+/// unwritable store still reported "Imported N images" and the registry forgot them at the next
+/// launch — the exact loss this module exists to prevent. The *caller* decides what a failure
+/// means for what it just did (an import rolls back and deletes its copies; a removal puts the
+/// asset back); this function only refuses to hide it.
+pub fn save(db: Option<&Database>, library: &MediaLibrary) -> Result<(), MediaStoreError> {
     let Some(db) = db else {
-        return;
+        return Ok(());
     };
-    let _ = media_repo::save_all(db, library.assets());
+    media_repo::save_all(db, library.assets()).map_err(|_| MediaStoreError::RegistryWrite)
 }
 
 /// Rehydrate the media registry at launch — the missing half that made every imported image
@@ -612,8 +628,75 @@ pub struct Thumb {
     pub rgba: Vec<u8>,
 }
 
-/// The operator's handle on its app-owned media: the folder under `<app_data>`, the (best-effort)
-/// database holding the registry, and the cursor that keeps generated file names from repeating.
+/// How many thumbnails the shell will decode **at the same time**.
+///
+/// One decode can hold up to [`MAX_THUMB_SOURCE_BYTES`] (64 MiB) of file bytes *plus* the decoder's
+/// pixel buffer (the admission profile allows roughly 40 megapixels, ≈160 MiB of RGBA) — on the
+/// order of 220 MiB transient. The webview asks for a dozen tiles at once (the first fold) and for
+/// every further tile the moment it scrolls into view, and the media modal shows many more, so
+/// with no cap twenty concurrent decodes is about a gigabyte of transient memory on a machine that
+/// may be driving live output. Two is enough to keep the grid filling in smoothly; the rest queue.
+pub const MAX_CONCURRENT_THUMBNAILS: usize = 2;
+const _: () = assert!(
+    MAX_CONCURRENT_THUMBNAILS >= 1 && MAX_CONCURRENT_THUMBNAILS <= 3,
+    "the cap must stay small: it is what bounds a media page's transient memory"
+);
+
+/// The limiter behind [`MediaStore::thumbnail_slot`]: a semaphore of [`MAX_CONCURRENT_THUMBNAILS`]
+/// permits plus **per-store** counters that let a test see the cap bite. The counters are
+/// deliberately not global — a sibling test's decodes must not be able to mask this one's.
+struct ThumbnailGate {
+    permits: Arc<tokio::sync::Semaphore>,
+    /// Decodes running right now.
+    running: AtomicUsize,
+    /// The most that were ever running at once.
+    high_water: AtomicUsize,
+    /// Decodes begun, ever.
+    started: AtomicUsize,
+    /// The decoder. [`render_thumbnail`] in production.
+    render: fn(&str, u32, u32) -> Option<Thumb>,
+}
+
+impl ThumbnailGate {
+    fn new(render: fn(&str, u32, u32) -> Option<Thumb>) -> Self {
+        ThumbnailGate {
+            permits: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_THUMBNAILS)),
+            running: AtomicUsize::new(0),
+            high_water: AtomicUsize::new(0),
+            started: AtomicUsize::new(0),
+            render,
+        }
+    }
+}
+
+/// One of the store's thumbnail decode slots, held while a decode runs.
+pub struct ThumbnailSlot {
+    _permit: tokio::sync::OwnedSemaphorePermit,
+    gate: Arc<ThumbnailGate>,
+}
+
+impl ThumbnailSlot {
+    /// Decode one thumbnail (blocking — call it from a blocking thread) and release the slot.
+    /// Same contract as [`render_thumbnail`], which it calls in production.
+    pub fn render(self, path: &str, max_w: u32, max_h: u32) -> Option<Thumb> {
+        let gate = &self.gate;
+        gate.started.fetch_add(1, Ordering::Relaxed);
+        let now = gate.running.fetch_add(1, Ordering::SeqCst) + 1;
+        gate.high_water.fetch_max(now, Ordering::SeqCst);
+        // Decrement on every exit, including a panic inside the decoder.
+        struct Running<'a>(&'a AtomicUsize);
+        impl Drop for Running<'_> {
+            fn drop(&mut self) {
+                self.0.fetch_sub(1, Ordering::SeqCst);
+            }
+        }
+        let _running = Running(&gate.running);
+        (gate.render)(path, max_w, max_h)
+    }
+}
+
+/// The operator's handle on its app-owned media: the folder under `<app_data>`, the database
+/// holding the registry, and the cursor that keeps generated file names from repeating.
 ///
 /// All the file-system work an import needs lives here so it can run on a blocking thread without
 /// holding any of the workspace's locks; registering the results in the in-memory library is the
@@ -627,6 +710,8 @@ pub struct MediaStore {
     /// could resurrect the old picture on a slide. `create_new` still makes any collision with a
     /// file from an earlier session impossible; this only closes the within-session hole.
     name_cursor: std::sync::atomic::AtomicUsize,
+    /// The one limiter every thumbnail decode goes through (see [`ThumbnailGate`]).
+    thumbs: Arc<ThumbnailGate>,
 }
 
 impl MediaStore {
@@ -634,12 +719,55 @@ impl MediaStore {
     /// directory a crash left behind (B4) — which is why this must run once at launch, before the
     /// first import.
     pub fn open(app_data: PathBuf, db: Option<Database>) -> Self {
+        Self::open_with_renderer(app_data, db, render_thumbnail)
+    }
+
+    /// [`MediaStore::open`] with the thumbnail decoder swapped out. Production always passes
+    /// [`render_thumbnail`]; it is a parameter so a test can make a decode slow enough for
+    /// concurrent decodes to actually overlap (a real 8×4 PNG decodes in microseconds, so the
+    /// in-flight cap could not otherwise be observed to bite).
+    pub(crate) fn open_with_renderer(
+        app_data: PathBuf,
+        db: Option<Database>,
+        render: fn(&str, u32, u32) -> Option<Thumb>,
+    ) -> Self {
         sweep_stale_staging(&app_data);
         MediaStore {
             app_data,
             db: db.map(std::sync::Mutex::new),
             name_cursor: std::sync::atomic::AtomicUsize::new(0),
+            thumbs: Arc::new(ThumbnailGate::new(render)),
         }
+    }
+
+    /// Wait for one of the [`MAX_CONCURRENT_THUMBNAILS`] decode slots. `None` only if the limiter
+    /// was closed, which nothing does; the caller treats it as "no picture".
+    ///
+    /// The returned slot is the **only** way to decode a thumbnail through the store, and it is
+    /// consumed by the decode ([`ThumbnailSlot::render`]), so the slot is held for exactly as long
+    /// as the decode's memory is. Move it into the blocking closure, not around the `await`: if
+    /// the command's future is dropped mid-decode (the webview went away) the decode still runs to
+    /// completion on its blocking thread, and it must keep counting against the cap until it does.
+    pub async fn thumbnail_slot(&self) -> Option<ThumbnailSlot> {
+        let permit = Arc::clone(&self.thumbs.permits)
+            .acquire_owned()
+            .await
+            .ok()?;
+        Some(ThumbnailSlot {
+            _permit: permit,
+            gate: Arc::clone(&self.thumbs),
+        })
+    }
+
+    /// How many thumbnail decodes this store has started — the positive control for the in-flight
+    /// cap: a bound on "decodes in flight" is only meaningful if every decode went through it.
+    pub fn thumbnail_decodes_started(&self) -> usize {
+        self.thumbs.started.load(Ordering::Relaxed)
+    }
+
+    /// The most thumbnail decodes this store has ever had running at the same moment.
+    pub fn thumbnail_high_water(&self) -> usize {
+        self.thumbs.high_water.load(Ordering::Relaxed)
     }
 
     /// Whether imports are being written to disk. `false` means the registry will not survive a
@@ -659,13 +787,17 @@ impl MediaStore {
         }
     }
 
-    /// Persist the whole registry (best-effort, exactly like [`save`]).
-    pub fn save_library(&self, library: &MediaLibrary) {
-        if let Some(db) = &self.db {
-            if let Ok(guard) = db.lock() {
-                save(Some(&*guard), library);
-            }
-        }
+    /// Persist the whole registry. `Ok` means it is on disk (or there is no database to write to —
+    /// see [`save`]; ask [`MediaStore::is_persistent`] whether that is the case). A failure is
+    /// returned, never swallowed, so the command that just changed the registry can undo itself and
+    /// say so; a poisoned database lock is a failure too, not a silent skip.
+    #[must_use = "a registry that failed to save must be reported, not assumed saved"]
+    pub fn save_library(&self, library: &MediaLibrary) -> Result<(), MediaStoreError> {
+        let Some(db) = &self.db else {
+            return Ok(());
+        };
+        let guard = db.lock().map_err(|_| MediaStoreError::RegistryWrite)?;
+        save(Some(&*guard), library)
     }
 
     /// Copy each picked file into the media store, validated and sniffed from the very bytes that
@@ -1252,7 +1384,7 @@ pub(crate) mod tests {
             )
             .unwrap();
 
-        save(Some(&db), &lib);
+        save(Some(&db), &lib).unwrap();
         let reloaded = load(Some(&db));
 
         assert_eq!(
@@ -1276,9 +1408,9 @@ pub(crate) mod tests {
             .unwrap();
         assert!(c > b && c > a, "next_id resumes past the persisted maximum");
 
-        // Best-effort: no database is an empty library and a silent save, never an error.
+        // No database is an empty library and a save that has nothing to write (Ok), never a panic.
         assert_eq!(load(None), MediaLibrary::new());
-        save(None, &lib);
+        save(None, &lib).unwrap();
     }
 
     #[test]
@@ -1451,6 +1583,10 @@ pub(crate) mod tests {
         assert_eq!(
             MediaStoreError::Full.to_string(),
             "the media library is full"
+        );
+        assert_eq!(
+            MediaStoreError::RegistryWrite.to_string(),
+            "the media library couldn't be saved (the disk may be full or read-only)"
         );
         let _: &dyn std::error::Error = &e; // the house error contract
     }
@@ -1662,7 +1798,7 @@ pub(crate) mod tests {
                 .import("/m/import-0.png", MediaKind::Image, 99, None, None, None, 5)
                 .unwrap();
             assert!(lib.set_name(id, "Sunday banner.png"));
-            store.save_library(&lib);
+            store.save_library(&lib).unwrap();
         } // the process "quits": everything in memory is gone
         let store = MediaStore::open(app.clone(), Some(Database::open(&path).unwrap()));
         let reloaded = store.load_library();
@@ -1680,8 +1816,60 @@ pub(crate) mod tests {
         let store = open_store(&app);
         assert!(!store.is_persistent(), "an honest 'changes won't be saved'");
         assert!(store.load_library().is_empty());
-        store.save_library(&MediaLibrary::new()); // a quiet no-op, never a panic
+        assert_eq!(
+            store.save_library(&MediaLibrary::new()),
+            Ok(()),
+            "no database is not a FAILED write — nothing was asked of one; `is_persistent` carries it"
+        );
         fs::remove_dir_all(&app).ok();
+    }
+
+    /// A database that exists and opens but **refuses every write**: SQLite's own read-only open,
+    /// which is enforced by the engine itself (a permissions-based fixture would pass as root and
+    /// fail elsewhere).
+    fn read_only_db(app: &Path) -> Database {
+        let path = app.join("selahcue.db3");
+        drop(Database::open(&path).unwrap()); // create it, schema and all
+        Database::open_existing_readonly(&path).unwrap()
+    }
+
+    #[test]
+    fn a_registry_write_the_database_refuses_is_an_error_not_a_silent_success() {
+        let app = temp_app_data("rofail");
+        let mut lib = MediaLibrary::new();
+        lib.import("/m/import-0.png", MediaKind::Image, 9, None, None, None, 1)
+            .unwrap();
+
+        // The free function and the store both refuse to hide it. (Before, `save` swallowed the
+        // error and `save_library` returned nothing, so every caller reported "saved".)
+        let ro = read_only_db(&app);
+        assert_eq!(save(Some(&ro), &lib), Err(MediaStoreError::RegistryWrite));
+        let store = MediaStore::open(app.clone(), Some(ro));
+        assert!(
+            store.is_persistent(),
+            "premise: the store HAS a database, so only the write result can say it failed"
+        );
+        assert_eq!(
+            store.save_library(&lib),
+            Err(MediaStoreError::RegistryWrite),
+            "a database that refuses the write is a failed save, whatever is_persistent says"
+        );
+
+        // Positive control: the same call against a writable database succeeds, so the refusal
+        // above is the database's, not a method that can only ever fail.
+        let rw_dir = temp_app_data("rwok");
+        let rw = MediaStore::open(
+            rw_dir.clone(),
+            Some(Database::open(rw_dir.join("selahcue.db3")).unwrap()),
+        );
+        assert_eq!(rw.save_library(&lib), Ok(()));
+        assert_eq!(
+            rw.load_library().assets(),
+            lib.assets(),
+            "and it really wrote"
+        );
+        fs::remove_dir_all(&app).ok();
+        fs::remove_dir_all(&rw_dir).ok();
     }
 
     #[test]

@@ -2183,10 +2183,33 @@ fn with_deck(
 ) -> Result<serde_json::Value, String> {
     let mut ws = state.deck.lock().map_err(|e| format!("deck lock: {e}"))?;
     f(&mut ws);
-    if let Ok(mut lib) = state.library.lock() {
-        lib.store(ws.open_deck());
+    Ok(sync_and_view(&ws, &state.library))
+}
+
+/// Autosave the open deck into the library, then build its `DeckView` — **counting every saved
+/// deck's use of each picture**, which is why the view needs the library at all (an image only
+/// another deck shows is not "unused"; see [`DeckWorkspace::view`]). The caller holds the deck lock;
+/// the library lock is taken here, AFTER it (the one order everything uses).
+///
+/// A poisoned library lock never fails the edit (persistence is best-effort): the autosave is
+/// skipped and the view degrades to the open deck's own usage, via an empty stand-in library.
+fn sync_and_view(ws: &DeckWorkspace, library: &Mutex<DeckLibrary>) -> serde_json::Value {
+    match library.lock() {
+        Ok(mut lib) => {
+            lib.store(ws.open_deck());
+            ws.view(&lib)
+        }
+        Err(_) => ws.view(&DeckLibrary::load(None)),
     }
-    Ok(ws.view())
+}
+
+/// The `DeckView` without touching the library's contents (no autosave) — what a read-only command
+/// returns. Same poisoned-lock degradation as [`sync_and_view`].
+fn read_view(ws: &DeckWorkspace, library: &Mutex<DeckLibrary>) -> serde_json::Value {
+    match library.lock() {
+        Ok(lib) => ws.view(&lib),
+        Err(_) => ws.view(&DeckLibrary::load(None)),
+    }
 }
 
 /// The workspace a real launch opens: the demo deck (so the editor opens onto content on first
@@ -3365,7 +3388,7 @@ async fn deck_new(name: String, state: State<'_, AppState>) -> Result<serde_json
     with_deck_and_library(&state, |ws, lib| {
         let deck = lib.create(&name);
         ws.load_deck(deck);
-        ws.view()
+        ws.view(lib)
     })
 }
 
@@ -3375,13 +3398,13 @@ async fn deck_new(name: String, state: State<'_, AppState>) -> Result<serde_json
 async fn deck_open(id: u64, state: State<'_, AppState>) -> Result<serde_json::Value, String> {
     with_deck_and_library(&state, |ws, lib| {
         if ws.open_deck().id() == DeckId(id) {
-            return ws.view(); // already open — don't reset the editing session (undo/selection)
+            return ws.view(lib); // already open — don't reset the editing session (undo/selection)
         }
         lib.store(ws.open_deck()); // persist the deck we are leaving
         if let Some(deck) = lib.get(DeckId(id)) {
             ws.load_deck(deck);
         }
-        ws.view()
+        ws.view(lib)
     })
 }
 
@@ -3485,9 +3508,9 @@ async fn deck_restore(id: u64, state: State<'_, AppState>) -> Result<serde_json:
 #[tauri::command]
 async fn deck_view(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
     // Read-only — lock the deck and return its view WITHOUT the library autosave (a read must not
-    // write). Mirrors `render_deck_slide`'s single-lock read path.
+    // write). The library is read (never written) so the view can count every saved deck's pictures.
     let ws = state.deck.lock().map_err(|e| format!("deck lock: {e}"))?;
-    Ok(ws.view())
+    Ok(read_view(&ws, &state.library))
 }
 #[tauri::command]
 async fn deck_add_slide(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
@@ -3646,10 +3669,7 @@ async fn deck_go_live(state: State<'_, AppState>) -> Result<serde_json::Value, S
     let (view, payload) = {
         let mut ws = state.deck.lock().map_err(|e| format!("deck lock: {e}"))?;
         ws.go_live();
-        if let Ok(mut lib) = state.library.lock() {
-            lib.store(ws.open_deck());
-        }
-        (ws.view(), ws.present_payload())
+        (sync_and_view(&ws, &state.library), ws.present_payload())
     };
     // Route the composed slide to the audience output (same compositor as the canvas preview). A
     // transport failure surfaces as the command error so the operator learns the output wasn't
@@ -3673,10 +3693,7 @@ async fn deck_go_live_delta(
     let (view, payload) = {
         let mut ws = state.deck.lock().map_err(|e| format!("deck lock: {e}"))?;
         ws.go_live_delta(delta);
-        if let Ok(mut lib) = state.library.lock() {
-            lib.store(ws.open_deck());
-        }
-        (ws.view(), ws.present_payload())
+        (sync_and_view(&ws, &state.library), ws.present_payload())
     };
     if let Some((slide_json, theme_json, next_slide_json)) = payload {
         state
@@ -3695,26 +3712,69 @@ async fn deck_remove_media(
 }
 
 /// Remove asset `id` from the library, **save the registry**, and delete the stored copy — but only
-/// if SelahCue made it (`MediaStore::delete_if_owned`): a legacy asset that points at a file the
-/// operator picked from their own folders is unregistered and its file left strictly alone.
+/// if SelahCue made it ([`media_store::MediaStore::delete_if_owned`]) **and no other deck still
+/// shows it**.
+///
+/// A legacy asset that points at a file the operator picked from their own folders is unregistered
+/// and its file left strictly alone. A stored copy that another saved deck (or a deck "Undo delete"
+/// could still restore) uses is unregistered but **kept**: the open deck is the one the operator is
+/// looking at and was warned about ("Used on k slides"), but a deck they are not looking at would
+/// silently lose its picture, with no undo. The decision is made here, at removal time, from the
+/// library as it is now — never from the count the webview rendered earlier. The cost of keeping is
+/// a file nothing lists any more (it still shows in the decks that use it); the cost of deleting
+/// was somebody's slides.
+///
+/// If the registry cannot be written the removal **did not happen**: the asset is put back and the
+/// command fails with the reason, rather than leaving a library that reappears (or a row whose file
+/// is gone) after a restart.
 ///
 /// The copy is deleted *after* the registry is saved, so a crash in between leaves a file nothing
-/// lists (swept by nobody, but harmless and bounded) rather than a library row whose file is gone.
+/// lists (harmless and bounded) rather than a library row whose file is gone. The file delete itself
+/// happens after the locks are released.
+///
+/// The view carries a `remove_report` ({removed, file_deleted, kept_for_decks, kept_for_deleted})
+/// so the console can say what became of the file.
 fn remove_media_inner(state: &AppState, id: u64) -> Result<serde_json::Value, String> {
+    // Lock order: deck, then library (same as everywhere).
     let mut ws = state.deck.lock().map_err(|e| format!("deck lock: {e}"))?;
+    let mut lib = state
+        .library
+        .lock()
+        .map_err(|e| format!("library lock: {e}"))?;
+    let before = ws.media().clone();
     let removed_path = ws.remove_media(id);
-    if let Some(store) = &state.media_store {
-        if removed_path.is_some() {
-            store.save_library(ws.media());
+    let mut to_delete: Option<String> = None;
+    let mut kept = deck_library::MediaKeepers::default();
+    if let (Some(path), Some(store)) = (&removed_path, &state.media_store) {
+        if let Err(e) = store.save_library(ws.media()) {
+            ws.set_media(before); // the removal did not take: the saved registry still lists it
+            return Err(format!("Couldn't remove the image: {e}."));
         }
-        if let Some(path) = &removed_path {
-            store.delete_if_owned(path);
+        kept = lib.media_keepers(path, ws.open_deck().id());
+        if !kept.any() {
+            to_delete = Some(path.clone());
         }
     }
-    if let Ok(mut lib) = state.library.lock() {
-        lib.store(ws.open_deck());
+    lib.store(ws.open_deck());
+    let mut view = ws.view(&lib);
+    drop(lib);
+    drop(ws);
+    let file_deleted = match (&to_delete, &state.media_store) {
+        (Some(path), Some(store)) => store.delete_if_owned(path),
+        _ => false,
+    };
+    if let Some(obj) = view.as_object_mut() {
+        obj.insert(
+            "remove_report".to_string(),
+            serde_json::json!({
+                "removed": removed_path.is_some(),
+                "file_deleted": file_deleted,
+                "kept_for_decks": kept.saved,
+                "kept_for_deleted": kept.trashed,
+            }),
+        );
     }
-    Ok(ws.view())
+    Ok(view)
 }
 
 /// Import images into the media library via the native file picker (several at once). Each picked
@@ -3785,40 +3845,80 @@ async fn import_picked_images(
         .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
         .unwrap_or(0);
     let mut ws = state.deck.lock().map_err(|e| format!("deck lock: {e}"))?;
-    let (imported, skipped) = register_batch(&store, &mut ws, batch, imported_at);
-    let mut view = ws.view();
+    let report = register_batch(&store, &mut ws, batch, imported_at);
+    let mut view = read_view(&ws, &state.library);
     if let Some(obj) = view.as_object_mut() {
         obj.insert(
             "import_report".to_string(),
             serde_json::json!({
-                "imported": imported,
-                "skipped": skipped
+                "imported": report.imported,
+                "skipped": report
+                    .skipped
                     .iter()
                     .map(|s| serde_json::json!({ "name": s.name, "reason": s.reason }))
                     .collect::<Vec<_>>(),
-                "saved": store.is_persistent(),
+                "saved": report.saved,
             }),
         );
     }
     Ok(view)
 }
 
+/// What [`register_batch`] did.
+struct BatchReport {
+    /// Files now in the library **and** (when there is a database) in the saved registry.
+    imported: usize,
+    /// Every file that did not make it, with the reason — the store's own plus these.
+    skipped: Vec<media_store::ImportSkip>,
+    /// Whether the library is actually being kept across a restart: there is a database **and** the
+    /// write just succeeded. Never `store.is_persistent()` alone — a database that refuses the
+    /// write is not saving anything, and saying otherwise was the bug.
+    saved: bool,
+}
+
 /// Register what [`media_store::MediaStore::import_files`] copied: add each file to the workspace's
-/// library, **save the registry** when anything was added, and **delete the copy of any file the
-/// library refuses** (it filled up after the size check), so a refusal can never leave a file that
-/// nothing in the app lists or can remove. Returns how many were registered and every skip — the
-/// store's own plus these refusals.
+/// library, **save the registry** when anything was added, and **delete the copy of any file that
+/// did not end up registered**, so nothing is left that the app neither lists nor can remove.
+///
+/// Two ways a copy can fail to register, both cleaned up the same way:
+/// * the library refuses it (it filled up after the size check) — reported as "library is full";
+/// * the registry **cannot be written** (read-only location, full disk). The whole batch is rolled
+///   back — unregistered, copies deleted — and each file is reported as not imported, because the
+///   alternative is "Imported 3 images" over a library the next launch forgets, with three orphaned
+///   files. With no database at all the library simply runs in memory ([`BatchReport::saved`] is
+///   `false` and the console says so); that is a different, supported state, not a failed write.
 fn register_batch(
     store: &media_store::MediaStore,
     ws: &mut DeckWorkspace,
     batch: media_store::CommittedBatch,
     imported_at: u64,
-) -> (usize, Vec<media_store::ImportSkip>) {
+) -> BatchReport {
+    let before = ws.media().clone();
     let outcome = ws.register_imported(batch.files, imported_at);
-    if !outcome.registered.is_empty() {
-        store.save_library(ws.media());
-    }
     let mut skipped = batch.skipped;
+    let mut imported = outcome.registered.len();
+    let mut saved = store.is_persistent();
+    if !outcome.registered.is_empty() && store.save_library(ws.media()).is_err() {
+        let landed: Vec<(String, Option<String>)> = outcome
+            .registered
+            .iter()
+            .filter_map(|id| {
+                ws.media()
+                    .get(selahcue_core::media::MediaId(*id))
+                    .map(|a| (a.path.clone(), a.name.clone()))
+            })
+            .collect();
+        ws.set_media(before);
+        for (path, name) in landed {
+            store.delete_if_owned(&path);
+            skipped.push(media_store::ImportSkip {
+                name: name.unwrap_or_else(|| "file".to_string()),
+                reason: media_store::MediaStoreError::RegistryWrite.to_string(),
+            });
+        }
+        imported = 0;
+        saved = false;
+    }
     for refused in outcome.refused {
         store.delete_if_owned(&refused.path);
         skipped.push(media_store::ImportSkip {
@@ -3826,7 +3926,11 @@ fn register_batch(
             reason: media_store::MediaStoreError::Full.to_string(),
         });
     }
-    (outcome.registered.len(), skipped)
+    BatchReport {
+        imported,
+        skipped,
+        saved,
+    }
 }
 
 /// One library tile's picture as base64 RGBA8 for the canvas (`blitFrame`), decoded and shrunk in
@@ -3857,13 +3961,22 @@ async fn media_thumbnail_inner(
         .lock()
         .map_err(|e| format!("deck lock: {e}"))?
         .media_path(id);
-    let thumb = match path {
-        Some(path) => tauri::async_runtime::spawn_blocking(move || {
-            media_store::render_thumbnail(&path, max_w, max_h)
-        })
-        .await
-        .map_err(|join_err| format!("internal error drawing a thumbnail: {join_err}"))?,
-        None => None,
+    // Every decode takes one of the store's few thumbnail slots (`MAX_CONCURRENT_THUMBNAILS`): the
+    // webview fires a dozen requests at once and one decode can hold ~200 MiB, so an uncapped
+    // `spawn_blocking` per request was a gigabyte of transient memory. The slot is moved INTO the
+    // blocking closure — held for exactly as long as the decode's memory is, even if this future
+    // is dropped while it runs — and requests beyond the cap wait here, holding only their path.
+    // With no store there is nothing the shell put on disk to draw.
+    let thumb = match (path, state.media_store.as_ref()) {
+        (Some(path), Some(store)) => match store.thumbnail_slot().await {
+            Some(slot) => {
+                tauri::async_runtime::spawn_blocking(move || slot.render(&path, max_w, max_h))
+                    .await
+                    .map_err(|join_err| format!("internal error drawing a thumbnail: {join_err}"))?
+            }
+            None => None,
+        },
+        _ => None,
     };
     Ok(match thumb {
         Some(t) => serde_json::json!({
@@ -3903,7 +4016,15 @@ mod media_command_tests {
     /// whatever the store saved (so a second call on the same folder is a "restart").
     fn state_with_store(app: &Path, persistent: bool) -> AppState {
         let db = persistent.then(|| Database::open(app.join("selahcue.db3")).unwrap());
-        let store = Arc::new(media_store::MediaStore::open(app.to_path_buf(), db));
+        state_over(Arc::new(media_store::MediaStore::open(
+            app.to_path_buf(),
+            db,
+        )))
+    }
+
+    /// [`state_with_store`] over a store the test built itself (a read-only database, a slow
+    /// thumbnail decoder, …).
+    fn state_over(store: Arc<media_store::MediaStore>) -> AppState {
         let ws = production_workspace(Some(&store));
         AppState {
             backend: Backend::Local(demo_shell()),
@@ -3917,6 +4038,40 @@ mod media_command_tests {
             link_next_attempt: Mutex::new(None),
             media_store: Some(store),
         }
+    }
+
+    /// The `DeckView` the console would be sent now (read-only; no autosave).
+    fn view_of(state: &AppState) -> serde_json::Value {
+        read_view(&state.deck.lock().unwrap(), &state.library)
+    }
+
+    /// The asset row with `id` in a `DeckView`.
+    fn row(v: &serde_json::Value, id: u64) -> serde_json::Value {
+        assets(v)
+            .into_iter()
+            .find(|a| a["id"] == id)
+            .unwrap_or_else(|| panic!("asset {id} is not in the view"))
+    }
+
+    /// The id of the asset named `name` in a `DeckView`.
+    fn id_named(v: &serde_json::Value, name: &str) -> u64 {
+        assets(v)
+            .iter()
+            .find(|a| a["name"] == name)
+            .and_then(|a| a["id"].as_u64())
+            .unwrap_or_else(|| panic!("no asset named {name}"))
+    }
+
+    fn path_of(v: &serde_json::Value, id: u64) -> PathBuf {
+        PathBuf::from(row(v, id)["path"].as_str().unwrap())
+    }
+
+    /// A database that exists and opens but refuses every write (SQLite's own read-only open — a
+    /// permissions-based fixture would pass as root and fail elsewhere).
+    fn read_only_db(app: &Path) -> Database {
+        let path = app.join("selahcue.db3");
+        drop(Database::open(&path).unwrap());
+        Database::open_existing_readonly(&path).unwrap()
     }
 
     fn picked(tag: &str, name: &str, bytes: &[u8]) -> PathBuf {
@@ -3954,7 +4109,7 @@ mod media_command_tests {
 
         // "Restart": a fresh store and workspace over the same folder.
         let reopened = state_with_store(&app, true);
-        let after = reopened.deck.lock().unwrap().view();
+        let after = view_of(&reopened);
         let b = assets(&after);
         assert_eq!(
             b.len(),
@@ -4019,11 +4174,11 @@ mod media_command_tests {
         }
         ws.set_media(full);
 
-        let (imported, skipped) = register_batch(&store, &mut ws, batch, 0);
+        let report = register_batch(&store, &mut ws, batch, 0);
 
-        assert_eq!(imported, 0);
-        assert_eq!(skipped.len(), 1);
-        assert!(skipped[0].reason.contains("full"));
+        assert_eq!(report.imported, 0);
+        assert_eq!(report.skipped.len(), 1);
+        assert!(report.skipped[0].reason.contains("full"));
         assert!(
             !copy.exists(),
             "the refused file's copy was deleted, not orphaned"
@@ -4099,7 +4254,7 @@ mod media_command_tests {
         assert!(theirs.exists(), "the operator's own file is never touched");
         let reopened = state_with_store(&app, true);
         assert!(
-            assets(&reopened.deck.lock().unwrap().view()).is_empty(),
+            assets(&view_of(&reopened)).is_empty(),
             "the removal was saved, so it does not come back after a restart"
         );
 
@@ -4122,6 +4277,298 @@ mod media_command_tests {
         assert!(
             legacy.exists(),
             "a file outside the media folder survives removal"
+        );
+    }
+
+    /// Put `deck_name` in the library showing the stored image `media_id`, leaving a different,
+    /// empty deck ("Sunday") open — the setup of the review's data-loss scenario: the picture is
+    /// used by a deck the operator is NOT looking at. Returns the shown deck's id.
+    fn easter_shows_it_sunday_is_open(state: &AppState, media_id: u64) -> DeckId {
+        let mut ws = state.deck.lock().unwrap();
+        let mut lib = state.library.lock().unwrap();
+        let easter = lib.create("Easter");
+        let easter_id = easter.id();
+        ws.load_deck(easter);
+        ws.add_image_element(media_id);
+        lib.store(ws.open_deck());
+        let sunday = lib.create("Sunday");
+        ws.load_deck(sunday);
+        easter_id
+    }
+
+    #[tokio::test]
+    async fn removing_media_keeps_the_stored_file_while_another_saved_deck_still_shows_it() {
+        let app = temp_dir("keep");
+        let state = state_with_store(&app, true);
+        let v = import_picked_images(
+            &state,
+            vec![
+                picked("keep-a", "banner.png", &PNG_8X4),
+                picked("keep-b", "spare.png", &PNG_8X4),
+            ],
+        )
+        .await
+        .unwrap();
+        let (banner, spare) = (id_named(&v, "banner.png"), id_named(&v, "spare.png"));
+        let (banner_file, spare_file) = (path_of(&v, banner), path_of(&v, spare));
+        let easter = easter_shows_it_sunday_is_open(&state, banner);
+
+        // What the console would have shown on Sunday: the banner is not "unused" and says which
+        // other decks need it — with only the open deck counted it read as removable-for-free.
+        let before = view_of(&state);
+        assert_eq!(
+            row(&before, banner)["uses"],
+            0,
+            "premise: Sunday does not show it"
+        );
+        assert_eq!(row(&before, banner)["other_decks"], 1);
+        assert_eq!(row(&before, banner)["unused"], false);
+        assert_eq!(
+            row(&before, spare)["unused"],
+            true,
+            "control: nobody shows the spare"
+        );
+
+        let after = remove_media_inner(&state, banner).unwrap();
+
+        assert!(
+            !assets(&after).iter().any(|a| a["id"] == banner),
+            "it left the media library"
+        );
+        assert!(
+            banner_file.exists(),
+            "but the file Easter shows was NOT deleted from under it"
+        );
+        assert_eq!(after["remove_report"]["file_deleted"], false);
+        assert_eq!(after["remove_report"]["kept_for_decks"], 1);
+        // Easter still has its picture: the slide references it and the file still decodes.
+        let easter_deck = state.library.lock().unwrap().get(easter).unwrap();
+        assert!(
+            deck_workspace::deck_image_paths(&easter_deck).contains(banner_file.to_str().unwrap()),
+            "Easter still references the stored path"
+        );
+        assert!(
+            media_store::render_thumbnail(banner_file.to_str().unwrap(), 64, 64).is_some(),
+            "and the picture is still there to draw"
+        );
+        // The removal itself was saved: the library does not bring the banner back after a restart.
+        assert!(!assets(&view_of(&state_with_store(&app, true)))
+            .iter()
+            .any(|a| a["id"] == banner));
+
+        // Positive control: an image no deck shows is still deleted, so the keep above is the
+        // cross-deck rule and not a Remove that stopped deleting anything.
+        let after = remove_media_inner(&state, spare).unwrap();
+        assert!(!spare_file.exists(), "an unshared copy is still deleted");
+        assert_eq!(after["remove_report"]["file_deleted"], true);
+        assert_eq!(after["remove_report"]["kept_for_decks"], 0);
+    }
+
+    #[tokio::test]
+    async fn removing_media_still_deletes_a_copy_only_the_open_deck_shows() {
+        // The OPEN deck's own use is the one the operator is looking at and was warned about ("Used
+        // on k slides — removing it leaves them with missing media"): unchanged, deliberately. This
+        // pins that boundary so "keep while any deck shows it" cannot quietly widen to it.
+        let app = temp_dir("openonly");
+        let state = state_with_store(&app, true);
+        let v = import_picked_images(&state, vec![picked("oo", "mine.png", &PNG_8X4)])
+            .await
+            .unwrap();
+        let id = id_named(&v, "mine.png");
+        let file = path_of(&v, id);
+        {
+            let mut ws = state.deck.lock().unwrap();
+            ws.add_image_element(id);
+            state.library.lock().unwrap().store(ws.open_deck());
+        }
+        assert_eq!(
+            row(&view_of(&state), id)["uses"],
+            1,
+            "premise: the open deck shows it"
+        );
+
+        let after = remove_media_inner(&state, id).unwrap();
+
+        assert!(!file.exists(), "deleted, as the confirm said it would be");
+        assert_eq!(after["remove_report"]["file_deleted"], true);
+    }
+
+    #[tokio::test]
+    async fn removing_media_keeps_the_file_a_just_deleted_deck_could_still_restore() {
+        let app = temp_dir("trash");
+        let state = state_with_store(&app, true);
+        let v = import_picked_images(&state, vec![picked("tr", "banner.png", &PNG_8X4)])
+            .await
+            .unwrap();
+        let banner = id_named(&v, "banner.png");
+        let file = path_of(&v, banner);
+        let easter = easter_shows_it_sunday_is_open(&state, banner);
+        // Delete Easter: out of the Library list, but "Undo delete" can still bring it back.
+        assert!(state.library.lock().unwrap().delete(easter));
+        assert_eq!(
+            row(&view_of(&state), banner)["other_decks"],
+            0,
+            "premise: no SAVED deck shows it any more, so the Library-list count is zero"
+        );
+
+        let after = remove_media_inner(&state, banner).unwrap();
+
+        assert!(file.exists(), "a restorable deck still needs the file");
+        assert_eq!(after["remove_report"]["kept_for_deleted"], 1);
+        assert_eq!(after["remove_report"]["file_deleted"], false);
+        // And the undo really does bring a working deck back.
+        assert!(state.library.lock().unwrap().restore(easter).is_some());
+        let restored = state.library.lock().unwrap().get(easter).unwrap();
+        assert!(deck_workspace::deck_image_paths(&restored).contains(file.to_str().unwrap()));
+        assert!(
+            media_store::render_thumbnail(file.to_str().unwrap(), 64, 64).is_some(),
+            "the restored deck's picture is intact"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_import_the_registry_cannot_save_is_rolled_back_reported_and_leaves_no_orphan() {
+        let app = temp_dir("rofail-import");
+        let store = Arc::new(media_store::MediaStore::open(
+            app.clone(),
+            Some(read_only_db(&app)),
+        ));
+        assert!(
+            store.is_persistent(),
+            "premise: there IS a database; it just refuses writes"
+        );
+        let state = state_over(store);
+
+        let v = import_picked_images(&state, vec![picked("ro", "Sunday banner.png", &PNG_8X4)])
+            .await
+            .unwrap();
+
+        let rep = &v["import_report"];
+        assert_eq!(
+            rep["imported"], 0,
+            "not 'Imported 1 image' over a registry that forgets it"
+        );
+        assert_eq!(rep["saved"], false, "and not claimed saved");
+        let skipped = rep["skipped"].as_array().unwrap();
+        assert_eq!(
+            skipped.len(),
+            1,
+            "the image is reported, by name, as not imported"
+        );
+        assert_eq!(skipped[0]["name"], "Sunday banner.png");
+        assert!(
+            skipped[0]["reason"]
+                .as_str()
+                .unwrap()
+                .contains("couldn't be saved"),
+            "with the reason: {}",
+            skipped[0]["reason"]
+        );
+        assert!(
+            assets(&v).is_empty(),
+            "rolled back out of the in-memory library too"
+        );
+        let stored: Vec<_> = std::fs::read_dir(app.join("media"))
+            .map(|rd| rd.flatten().filter(|e| e.path().is_file()).collect())
+            .unwrap_or_default();
+        assert!(
+            stored.is_empty(),
+            "the copy was deleted, not orphaned: {stored:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_removal_the_registry_cannot_save_does_not_happen() {
+        let app = temp_dir("rofail-remove");
+        // Seed through a writable store, then "restart" onto a database that refuses writes.
+        let (id, file) = {
+            let state = state_with_store(&app, true);
+            let v = import_picked_images(&state, vec![picked("rr", "keep.png", &PNG_8X4)])
+                .await
+                .unwrap();
+            let id = id_named(&v, "keep.png");
+            (id, path_of(&v, id))
+        };
+        let state = state_over(Arc::new(media_store::MediaStore::open(
+            app.clone(),
+            Some(read_only_db(&app)),
+        )));
+        assert_eq!(
+            assets(&view_of(&state)).len(),
+            1,
+            "premise: the saved image loaded"
+        );
+
+        let err = remove_media_inner(&state, id).unwrap_err();
+
+        assert!(
+            err.contains("couldn't be saved"),
+            "the reason is passed on: {err}"
+        );
+        assert!(
+            assets(&view_of(&state)).iter().any(|a| a["id"] == id),
+            "the asset is put back: the saved registry still lists it, so must the app"
+        );
+        assert!(
+            file.exists(),
+            "and its file is not deleted out from under that row"
+        );
+    }
+
+    /// A thumbnail decode that takes long enough for concurrent decodes to overlap (a real 8×4 PNG
+    /// decodes in microseconds, so without this the cap could never be seen to bite).
+    fn slow_render(path: &str, max_w: u32, max_h: u32) -> Option<media_store::Thumb> {
+        std::thread::sleep(std::time::Duration::from_millis(40));
+        media_store::render_thumbnail(path, max_w, max_h)
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn thumbnail_decodes_never_run_more_than_the_cap_at_once_however_many_tiles_ask() {
+        const REQUESTS: usize = 24;
+        const _: () = assert!(
+            REQUESTS >= 8 * media_store::MAX_CONCURRENT_THUMBNAILS,
+            "premise: far more tiles ask at once than the cap allows"
+        );
+        let app = temp_dir("cap");
+        let store = Arc::new(media_store::MediaStore::open_with_renderer(
+            app.clone(),
+            None,
+            slow_render,
+        ));
+        let state = state_over(Arc::clone(&store));
+        let v = import_picked_images(&state, vec![picked("cap", "a.png", &PNG_8X4)])
+            .await
+            .unwrap();
+        let id = id_named(&v, "a.png");
+
+        // Every tile of a page asks at the same moment (the first fold, plus everything the
+        // IntersectionObserver reports).
+        let answers = futures_util::future::join_all(
+            (0..REQUESTS).map(|_| media_thumbnail_inner(&state, id, 64, 64)),
+        )
+        .await;
+
+        // The cap QUEUES — it never drops a request on the floor.
+        assert!(
+            answers
+                .iter()
+                .all(|a| a.as_ref().unwrap()["available"] == true),
+            "every request was still served a real picture"
+        );
+        // Positive control: every decode went through the store's gate. Without this a decode that
+        // bypassed the gate would leave the high-water mark at zero and the bound below true by
+        // default.
+        assert_eq!(
+            store.thumbnail_decodes_started(),
+            REQUESTS,
+            "every request's decode was counted by the gate"
+        );
+        // The bound, and that it is reached (so it is the cap holding, not decodes that never
+        // overlapped).
+        assert_eq!(
+            store.thumbnail_high_water(),
+            media_store::MAX_CONCURRENT_THUMBNAILS,
+            "decodes overlapped right up to the cap and never beyond it"
         );
     }
 

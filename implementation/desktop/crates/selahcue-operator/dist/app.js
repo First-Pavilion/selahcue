@@ -6986,7 +6986,9 @@
         if (!rep) { pmClearError(); return; }
         const n = rep.imported || 0;
         const skipped = rep.skipped || [];
-        const unsaved = rep.saved === false ? " These won’t be kept after you quit." : "";
+        // Only when something DID land: a batch the host rolled back because the registry could not
+        // be written has imported nothing, and "these won't be kept" would describe nothing.
+        const unsaved = rep.saved === false && n > 0 ? " These won’t be kept after you quit." : "";
         if (!skipped.length) {
           pmClearError();
           if (n) pmToast("Imported " + n + " image" + (n === 1 ? "" : "s") + "." + unsaved);
@@ -6995,6 +6997,41 @@
         const shown = skipped.slice(0, 3).map((s) => s.name + " — " + s.reason).join("; ");
         const more = skipped.length > 3 ? " (+" + (skipped.length - 3) + " more)" : "";
         pmShowErrorRaw((n ? "Imported " + n + ". " : "") + "Skipped " + skipped.length + ": " + shown + more + "." + unsaved);
+      }
+
+      // Remove an asset from the media library. Like the import it is NOT a plain `pAct`: the host
+      // refuses with a SPECIFIC reason when the library cannot be saved ("the disk may be full or
+      // read-only" — nothing was removed), which is final text to show, not "please retry"; and a
+      // success carries a `remove_report` saying whether the stored picture file was kept for other
+      // presentations. `pmLastAct` is set so the banner's Retry re-runs THIS removal, not whatever
+      // deck action happened to come before it.
+      async function pmRemoveMedia(id) {
+        pmLastAct = { fn: () => invoke("deck_remove_media", { id: id }), opName: "remove the media" };
+        pmSetBusy(true);
+        try {
+          pmDv = await invoke("deck_remove_media", { id: id });
+          pmClearError();
+          renderPresentation(pmDv);
+          pmShowRemoveReport(pmDv && pmDv.remove_report);
+        } catch (e) {
+          console.error("[SelahCue] deck action failed", e);
+          pmShowErrorRaw(String(e && e.message ? e.message : e));
+        } finally {
+          pmSetBusy(false);
+        }
+      }
+
+      // What a removal did to the stored file, from the host's `remove_report`. Silent when the file
+      // was deleted (the tile simply leaves the grid); a toast when it was KEPT, because the picture
+      // is still on disk and still showing in the presentations that use it.
+      function pmShowRemoveReport(rep) {
+        if (!rep || !rep.removed) return;
+        const decks = rep.kept_for_decks || 0;
+        if (decks > 0) {
+          pmToast("Removed from the library. The picture file is kept because " + decks + " other presentation" + (decks === 1 ? " still uses" : "s still use") + " it.");
+        } else if (rep.kept_for_deleted > 0) {
+          pmToast("Removed from the library. The picture file is kept because a presentation you recently deleted still uses it.");
+        }
       }
 
       // Reflect the canvas loading state: `aria-busy` + a `.busy` skeleton shimmer while ANY deck
@@ -11256,6 +11293,32 @@
         }
       }
 
+      // The remove-media confirmation for asset `a` (a DeckView `media.assets` row). The host decides
+      // what happens to the stored file when it removes — it deletes SelahCue's copy unless another
+      // saved deck still shows it — so the dialog says which, from the counts the view carries:
+      // `uses` (slides of the OPEN deck) and `other_decks` (OTHER saved decks). When other decks
+      // use it the file is kept, so every slide that shows it keeps showing it and the "missing
+      // media" warning would be false; it is replaced by the keep notice.
+      function pmRemoveMediaConfirm(a) {
+        const other = a.other_decks || 0;
+        const slides = (n) => n + " slide" + (n === 1 ? "" : "s");
+        let warning = null;
+        let body = "This removes the image from the media library and deletes SelahCue’s copy of it. This can’t be undone.";
+        if (other > 0) {
+          body = "This removes the image from the media library. SelahCue keeps its copy of the file, because other presentations still show it.";
+          warning = (a.uses ? "Used on " + slides(a.uses) + " here and in " : "Also used in ") + other + " other presentation" + (other === 1 ? "" : "s") + " — the picture file is kept so they keep showing it.";
+        } else if (a.uses) {
+          warning = "Used on " + slides(a.uses) + " — removing it leaves " + (a.uses === 1 ? "that slide" : "those slides") + " with missing media.";
+        }
+        return {
+          title: "Remove " + a.name + "?",
+          body: body,
+          warning: warning,
+          confirmLabel: "Remove",
+          onConfirm: () => pmRemoveMedia(a.id),
+        };
+      }
+
       function pmRenderMedia(dv) {
         const m = (dv && dv.media) || { assets: [], total_label: "—", missing_count: 0, unused_count: 0 };
         pmMediaThumbPrune(m.assets);
@@ -11349,17 +11412,12 @@
           rm.type = "button";
           rm.className = "pm-asset-del";
           rm.textContent = "✕";
-          rm.setAttribute("aria-label", "Remove " + a.name + " from the library" + (a.uses ? " (used on " + a.uses + " slide" + (a.uses === 1 ? "" : "s") + ")" : ""));
+          const otherDecks = a.other_decks || 0;
+          rm.setAttribute("aria-label", "Remove " + a.name + " from the library" + (a.uses ? " (used on " + a.uses + " slide" + (a.uses === 1 ? "" : "s") + ")" : "") + (otherDecks ? " (also used in " + otherDecks + " other presentation" + (otherDecks === 1 ? "" : "s") + ")" : ""));
           rm.title = "Remove from library";
           rm.onclick = (ev) => {
             ev.stopPropagation();
-            pmConfirm({
-              title: "Remove " + a.name + "?",
-              body: "This removes the image from the media library and deletes SelahCue’s copy of it. This can’t be undone.",
-              warning: a.uses ? "Used on " + a.uses + " slide" + (a.uses === 1 ? "" : "s") + " — removing it leaves " + (a.uses === 1 ? "that slide" : "those slides") + " with missing media." : null,
-              confirmLabel: "Remove",
-              onConfirm: () => pAct(() => invoke("deck_remove_media", { id: a.id }), "remove the media"),
-            });
+            pmConfirm(pmRemoveMediaConfirm(a));
           };
           cell.appendChild(thumb);
           cell.appendChild(name);

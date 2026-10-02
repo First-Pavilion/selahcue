@@ -1824,6 +1824,16 @@ EXPECTED_MIN_CHECKS = 1952  # measured: 1952 checks, 0 FAIL (17tnw2b0ntd)
 # lands (PR #129 edited it as well; this one was re-measured on the merged tree).
 EXPECTED_MIN_CHECKS = 2002  # measured: 2002 checks, 0 FAIL
 
+# 17tnw2b12d8 (media library: imports persist, are copied into app storage and draw real tile
+# pictures), rebased onto main's 2002 after PR #153/#135 landed: +18 for the tile pictures + import
+# report, and +8 from the PR #146 review round — Remove no longer deletes a stored picture another
+# saved deck still shows (the dialog's wording comes from the view's `other_decks`, the toast says the
+# file was kept, a host refusal is shown as its own text, and Retry re-runs the same removal), and an
+# import the registry could not save reports the file with no "won't be kept" tail. Measured via an
+# actual clean run of the merged tree, not hand-summed; any PR that edits this constant must
+# re-measure after the other lands.
+EXPECTED_MIN_CHECKS = 2028  # measured: 2028 checks, 0 FAIL
+
 
 def find_chrome():
     """Locate a Chrome/Chromium binary across dev (macOS) and CI (Linux)."""
@@ -2492,6 +2502,10 @@ STUB = r"""
     can_undo:false, can_redo:false
   };
   var dClone = function(){ return JSON.parse(JSON.stringify(D)); };
+  // Harness-only: patch one asset row of `D` (e.g. `other_decks`), picked up by the next view.
+  window.__setAsset = function(id, patch){
+    D.media.assets.forEach(function(a){ if (a.id === id) Object.keys(patch).forEach(function(k){ a[k] = patch[k]; }); });
+  };
   var dEdit = function(){ D.can_undo = true; D.can_redo = false; return dClone(); };
   // Providers & Privacy (Settings, node 338:124) — the operator-local ProvidersView the
   // providers_* commands return. Mirrors the REAL backend default in a stock build: on-device is the
@@ -3509,6 +3523,9 @@ STUB = r"""
     // host's `import_report` (skip reasons / `saved:false`), and — like the real host — the report
     // rides on the returned view, never on the persisted DeckView `D`.
     if (cmd === "deck_import_images") {
+      // Harness-only re-render: hand back the current `D` unchanged (no report), so a check that
+      // patched an asset through `window.__setAsset` can have the surface render it.
+      if (window.__importRefresh) return Promise.resolve(dClone());
       // Harness-only cleanup: drop every imported asset (ids >= 99) so a check that floods the
       // library does not leak 100 tiles into the checks that follow it.
       if (window.__importPurge) {
@@ -3535,7 +3552,15 @@ STUB = r"""
       for (var ti = 0; ti < tw * th; ti++) tb += String.fromCharCode(200, (ti * 17) % 256, 60, 255);
       return Promise.resolve({available:true, frame:{w:tw, h:th, rgba:btoa(tb)}});
     }
-    if (cmd === "deck_remove_media") return Promise.resolve(dClone());
+    // Remove-media. `window.__removeFail` makes the host refuse with that text (the registry could
+    // not be saved: nothing was removed), `window.__removeReport` is the `remove_report` it attaches
+    // to the returned view (like the real host, never to the persisted DeckView `D`).
+    if (cmd === "deck_remove_media") {
+      if (window.__removeFail) return Promise.reject(window.__removeFail);
+      var vRm = dClone();
+      if (window.__removeReport) vRm.remove_report = window.__removeReport;
+      return Promise.resolve(vRm);
+    }
     // --- Providers & Privacy (Settings 338:124) ---
     if (cmd === "providers_view") return Promise.resolve(ppView()); // the resync read is NEVER rejected
     // One-shot rejection hook for the PP MUTATION commands only (not providers_view): lets the driver
@@ -6302,6 +6327,13 @@ DRIVER = r"""
          && getComputedStyle(failThumb.querySelector("canvas")).display === "none",
          "PM media: an undrawable picture shows 'Can’t preview' and hides the empty canvas (computed display, not just [hidden])");
       ok(window.__pmMediaThumbDebug.cached(101) === false, "PM media: an undrawable picture is cached as 'can't draw' so it is asked for once, not on every render");
+      // A batch the host rolled back because the registry could not be saved imported NOTHING, so
+      // the banner names each file and the reason and does not add "These won't be kept".
+      window.__importReport = {imported:0, skipped:[{name:"banner.png", reason:"the media library couldn’t be saved (the disk may be full or read-only)"}], saved:false};
+      el("pm-import").click();
+      await waitFor(function(){ return !el("pm-error").hidden && /couldn’t be saved/.test(el("pm-error-msg").textContent); });
+      ok(/banner\.png/.test(el("pm-error-msg").textContent) && !/won’t be kept/.test(el("pm-error-msg").textContent) && !/Imported/.test(el("pm-error-msg").textContent),
+         "PM media: a rolled-back import reports the file and reason, claims no import, and adds no 'won't be kept' tail: " + el("pm-error-msg").textContent);
       // An unsaved registry is said out loud.
       window.__thumbFailIds = [];
       window.__importReport = {imported:1, skipped:[], saved:false};
@@ -6592,6 +6624,61 @@ DRIVER = r"""
          "PM: removing an in-use asset warns 'Used on 2 slides'");
       document.querySelector('.pm-confirm .pm-btn-danger').click();
       ok(window.__calls.some(function(c){ return c.cmd === "deck_remove_media" && c.args.id === 1; }), "PM: confirming remove-media drives deck_remove_media(id)");
+
+      // --- Remove must not delete a stored picture OTHER saved decks still show (review of #146:
+      // "unused" was computed from the open deck alone, so Remove deleted Easter's banner while
+      // Sunday was open). The host now counts every saved deck (`other_decks`) and keeps the file;
+      // the dialog says so from that count, and the toast says what became of the file.
+      await waitFor(function(){ return !document.querySelector('.pm-confirm[role="alertdialog"]'); });
+      var removeCell = function(re){ return Array.from(document.querySelectorAll("#pm-media-grid .pm-asset")).filter(function(c){ return re.test(c.textContent); })[0]; };
+      var removeDialog = async function(re){
+        removeCell(re).querySelector(".pm-asset-del").click();
+        await waitFor(function(){ return !!document.querySelector('.pm-confirm[role="alertdialog"]'); });
+      };
+      var removeCalls = function(id){ return window.__calls.filter(function(c){ return c.cmd === "deck_remove_media" && c.args.id === id; }).length; };
+      // Control first: an asset NO other deck shows keeps today's wording — it deletes the copy.
+      await removeDialog(/sunrise/);
+      ok(/deletes SelahCue’s copy/.test(document.querySelector(".pm-confirm-body").textContent) && !document.querySelector(".pm-confirm-warn"),
+         "PM remove: an asset no other deck shows still says it deletes SelahCue's copy, with no keep notice");
+      document.querySelector(".pm-confirm .pm-btn-ghost").click(); // Cancel
+      await waitFor(function(){ return !document.querySelector('.pm-confirm[role="alertdialog"]'); });
+      // Now the same asset, shown by 2 other saved decks.
+      window.__setAsset(2, {other_decks: 2, unused: false});
+      window.__importRefresh = true; el("pm-import").click();
+      await waitFor(function(){ var c = removeCell(/sunrise/); return c && /also used in 2 other presentations/.test(c.querySelector(".pm-asset-del").getAttribute("aria-label")); });
+      window.__importRefresh = false;
+      ok(/also used in 2 other presentations/.test(removeCell(/sunrise/).querySelector(".pm-asset-del").getAttribute("aria-label")),
+         "PM remove: the remove affordance names the other presentations that use the asset (not colour/position only)");
+      await removeDialog(/sunrise/);
+      var keepWarn = (document.querySelector(".pm-confirm-warn") || {}).textContent || "";
+      var keepBody = document.querySelector(".pm-confirm-body").textContent;
+      ok(/2 other presentations/.test(keepWarn) && /file is kept/.test(keepWarn) && !/missing media/.test(keepWarn),
+         "PM remove: the dialog warns that 2 other presentations use it and that the file is kept: " + keepWarn);
+      ok(/keeps its copy of the file/.test(keepBody) && !/deletes SelahCue’s copy/.test(keepBody),
+         "PM remove: the body no longer claims the copy is deleted when other presentations still need it");
+      window.__removeReport = {removed:true, file_deleted:false, kept_for_decks:2, kept_for_deleted:0};
+      document.querySelector('.pm-confirm .pm-btn-danger').click();
+      await waitFor(function(){ return /file is kept/.test(el("pm-toast").textContent); });
+      ok(removeCalls(2) === 1 && /2 other presentations still use it/.test(el("pm-toast").textContent),
+         "PM remove: after a kept-file removal the toast says the picture file is kept for 2 other presentations: " + el("pm-toast").textContent);
+      // A refusal from the host (the registry could not be saved: nothing was removed) is shown as
+      // the host's own final text, not a generic "please retry".
+      window.__removeReport = null;
+      window.__removeFail = "Couldn’t remove the image: the media library couldn’t be saved (the disk may be full or read-only).";
+      await removeDialog(/sunrise/);
+      document.querySelector('.pm-confirm .pm-btn-danger').click();
+      await waitFor(function(){ return !el("pm-error").hidden && /couldn’t be saved/.test(el("pm-error-msg").textContent); });
+      ok(/Couldn’t remove the image/.test(el("pm-error-msg").textContent) && !/please retry/i.test(el("pm-error-msg").textContent),
+         "PM remove: a removal the host could not save shows the host's reason, not 'please retry': " + el("pm-error-msg").textContent);
+      window.__removeFail = null;
+      el("pm-error-retry").click(); // Retry re-runs THIS removal (the host now accepts it)
+      await waitFor(function(){ return removeCalls(2) >= 3; });
+      ok(removeCalls(2) === 3, "PM remove: Retry re-runs the same removal, not whatever deck action came before it (calls=" + removeCalls(2) + ")");
+      await waitFor(function(){ return el("pm-error").hidden; });
+      window.__setAsset(2, {other_decks: 0, unused: true});
+      window.__importRefresh = true; el("pm-import").click();
+      await waitFor(function(){ var c = removeCell(/sunrise/); return c && !/other presentation/.test(c.querySelector(".pm-asset-del").getAttribute("aria-label")); });
+      window.__importRefresh = false;
 
       // --- C-004 System states: loading (aria-busy) + error banner (role=alert) + Retry ---
       // The busy state must actually ENGAGE while a command is in flight, then clear — not merely
