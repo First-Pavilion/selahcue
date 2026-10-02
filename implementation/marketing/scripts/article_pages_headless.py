@@ -509,11 +509,14 @@ def main() -> None:
         c = new_context(viewport={"width": 1440, "height": 900})
         c.add_init_script(FONT_CONTROL)
         hp = c.new_page()
-        hp.goto(base + "/#how-it-works", wait_until="networkidle")
+        hp.goto(base + "/pricing#probe", wait_until="networkidle")
         hp.wait_for_timeout(800)
+        # The page has no #probe (the router found nothing to scroll to); one appears far below, as a
+        # late-rendering section would. A re-anchor that ran on EVERY page would now jump to it.
+        hp.evaluate("document.body.insertAdjacentHTML('beforeend', '<div id=\"probe\" style=\"margin-top:2500px;height:50px\"></div>')")
         hp.evaluate("window.__releaseFonts()")
         hp.wait_for_timeout(300)
-        check("pages outside blog/docs/support keep exactly the scroll the router gave them", hp.evaluate("window.__instant") == 0 and hp.evaluate("window.__wheel") == 0)
+        check("pages outside blog/docs/support keep exactly the scroll the router gave them", hp.evaluate("window.__instant") == 0 and hp.evaluate("window.__wheel") == 0 and hp.evaluate("window.scrollY") < 50, str(hp.evaluate("window.scrollY")))
         c.close()
 
         # ---- anchors and copy-to-clipboard ------------------------------------------------
