@@ -11,7 +11,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:crypto/crypto.dart';
-import 'package:flutter/foundation.dart' show visibleForTesting;
+import 'package:flutter/foundation.dart' show debugPrintStack, visibleForTesting;
 
 import 'pair_uri.dart';
 import 'protocol.dart';
@@ -40,6 +40,22 @@ class SessionException implements Exception {
 /// want to STOP reconnecting (and prompt a re-pair) can catch it specifically.
 class SessionRevoked extends SessionException {
   const SessionRevoked(super.message);
+}
+
+/// Record that a connect attempt failed with something that is NOT a
+/// [SessionException] — a failure nobody modelled (a parsing bug, a platform
+/// error). Callers treat any connect failure as survivable (retry, or fall back
+/// to the Connect screen), which would otherwise make such a bug invisible.
+///
+/// Writes the runtime TYPE and a bounded stack, **never** `error.toString()` or
+/// its message: a `FormatException` embeds the source text it failed to parse,
+/// which here is a frame the host chose, so it must not reach a log.
+void debugReportUnexpectedConnectFailure(Object error, StackTrace stack) {
+  debugPrintStack(
+    stackTrace: stack,
+    label: 'connect failed with an unexpected ${error.runtimeType}',
+    maxFrames: 8,
+  );
 }
 
 /// Credentials issued at pairing time (store securely; reused on reconnect).
@@ -375,7 +391,22 @@ class StreamQueue {
         throw const SessionException('timed out waiting for the host');
       }
     }
-    final decoded = jsonDecode(frame as String);
+    // A binary frame arrives as bytes, not a String, and a text frame need not
+    // be JSON. Both are the peer breaking the protocol, so surface them as the
+    // [SessionException] every caller already treats as "this link is bad".
+    // [command] already wrapped everything it caught, so it was `connect` and
+    // `pair` that leaked a raw TypeError (`frame as String`) / FormatException
+    // (`jsonDecode`) — past `_reconnect()`'s and the launch splash's
+    // SessionException-only catches, wedging both (17tnw2b0vtj).
+    if (frame is! String) {
+      throw const SessionException('malformed frame from the host');
+    }
+    final Object? decoded;
+    try {
+      decoded = jsonDecode(frame);
+    } on FormatException {
+      throw const SessionException('malformed frame from the host');
+    }
     if (decoded is! Map<String, dynamic>) {
       throw const SessionException('malformed frame from the host');
     }
