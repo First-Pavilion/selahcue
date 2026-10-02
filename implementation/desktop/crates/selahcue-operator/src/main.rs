@@ -4018,6 +4018,167 @@ fn get_chapter(reference: String, translation: Option<String>) -> Result<Chapter
         verse_end: parsed.verses.map(|r| r.end),
     })
 }
+/// `get_chapter`'s reply is a contract with the Service Plan link modal (17tnw2b0x4u): its error
+/// WORDING and the handful of fields the modal reads.
+///
+/// `dist/app.js`'s `doLink` resolves typed text through `get_chapter` before linking and decides what
+/// to tell the operator from the REJECTION STRING: "no such chapter" (a well-formed reference the
+/// corpus has no chapter for, or a translation whose text is not downloaded) is allowed, after a
+/// warning and a second press of Link; any other rejection ("not a reference", "unknown
+/// translation") is a hard refusal. The webview has no structured error to switch on, only
+/// `/no such chapter/i.test(String(e))`, so a reworded host error would not fail anything: every
+/// unresolvable chapter would silently turn into "Couldn't read that as a scripture reference" and
+/// the legitimate link-it-anyway path would be gone. These tests pin BOTH ends of that match, so
+/// changing either wording is a failing test and a deliberate two-sided change in one merge request.
+/// The success reply is pinned the same way (`the_modal_reads_...`): the headless gate's mock
+/// `get_chapter` is hand-written, so nothing else would notice the real one stop returning what the
+/// modal builds the canonical reference from.
+#[cfg(test)]
+mod get_chapter_link_modal_contract_tests {
+    use super::get_chapter;
+
+    /// The phrase `doLink` looks for. Used on both sides below, so changing it is one edit that has
+    /// to be made here, in `get_chapter`, and in `dist/app.js` together.
+    const NO_SUCH_CHAPTER: &str = "no such chapter";
+
+    /// `dist/app.js` as shipped, so the JS half of the contract is read, not remembered.
+    const APP_JS: &str = include_str!("../dist/app.js");
+
+    /// What the webview's `/no such chapter/i.test(String(e))` does to a rejection string.
+    fn webview_reads_as_no_such_chapter(err: &str) -> bool {
+        err.to_lowercase().contains(NO_SUCH_CHAPTER)
+    }
+
+    #[test]
+    fn a_well_formed_reference_with_no_chapter_is_reported_as_no_such_chapter() {
+        // Every one of these PARSES, and none names a chapter the bundled corpus has (Jude has one
+        // chapter; Psalms stops at 150), in the default translation and in an explicit one.
+        for reference in [
+            "Romans 99",
+            "Romans 99:1-3",
+            "Psalm 151",
+            "Genesis 51:1",
+            "Jude 2",
+        ] {
+            for translation in [None, Some("WEB".to_string())] {
+                let err = match get_chapter(reference.to_string(), translation.clone()) {
+                    Ok(ch) => panic!(
+                        "premise: {reference:?} in {translation:?} must have no chapter, but the host \
+                         returned {} {}",
+                        ch.book_name, ch.chapter
+                    ),
+                    Err(e) => e,
+                };
+                assert!(
+                    webview_reads_as_no_such_chapter(&err),
+                    "{reference:?} in {translation:?} was rejected with {err:?}, which the link \
+                     modal's `/{NO_SUCH_CHAPTER}/i` does not recognise — it would refuse the link \
+                     outright instead of offering to link it as Missing"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_real_chapter_resolves_so_the_rejection_checks_are_not_vacuous() {
+        // Positive control: the same entry point, a reference the corpus HAS, must succeed — else
+        // "everything is rejected as no such chapter" would satisfy the test above.
+        let ch = get_chapter("Romans 8:28-30".to_string(), None).expect("Romans 8 exists");
+        assert_eq!(
+            (ch.chapter, ch.verse_start, ch.verse_end),
+            (8, Some(28), Some(30))
+        );
+        assert!(!ch.verses.is_empty());
+        assert!(get_chapter("Psalm 119".to_string(), Some("WEB".to_string())).is_ok());
+    }
+
+    #[test]
+    fn the_modal_reads_the_canonical_reference_the_verse_selection_and_the_last_verse() {
+        // `resolveTyped` in dist/app.js builds the reference it links from `reference`,
+        // `verse_start`, `verse_end` and the last entry of `verses` (`[number, text]`), and cuts a
+        // range back to that last verse. Typed spellings must all land on the same fields. Read
+        // through the serialised reply, because that is what the webview sees.
+        for typed in [
+            "Psalms 1:2-10",
+            "Psalms 1:2 to 10",
+            "Psalms 1:2\u{2013}10", // en dash
+            "psalm 1 verses 2 through 10",
+        ] {
+            let ch = get_chapter(typed.to_string(), None)
+                .unwrap_or_else(|e| panic!("{typed:?} must resolve, got {e:?}"));
+            let v = serde_json::to_value(&ch).expect("the reply serialises");
+            assert_eq!(
+                v["reference"], "Psalms 1",
+                "{typed:?}: canonical chapter reference"
+            );
+            assert_eq!(v["verse_start"], 2, "{typed:?}");
+            assert_eq!(v["verse_end"], 10, "{typed:?}");
+            let verses = v["verses"].as_array().expect("verses is an array");
+            let last = verses.last().expect("Psalm 1 has verses");
+            assert_eq!(
+                last[0], 6,
+                "{typed:?}: the last entry of `verses` is [verse number, text] — the modal cuts the \
+                 range back to its number (Psalm 1 ends at verse 6)"
+            );
+            assert!(
+                last[1].is_string(),
+                "{typed:?}: the second element is the verse text"
+            );
+        }
+        // A whole chapter has no selection: the modal reads `verse_start == null` as "link the
+        // chapter as it is".
+        let reply = |typed: &str| {
+            let ch = get_chapter(typed.to_string(), None)
+                .unwrap_or_else(|e| panic!("{typed:?} must resolve, got {e:?}"));
+            serde_json::to_value(&ch).expect("the reply serialises")
+        };
+        let whole = reply("Psalms 1");
+        assert!(whole["verse_start"].is_null() && whole["verse_end"].is_null());
+        // A single verse has an end equal to its start (never a range).
+        let single = reply("Psalms 1:3");
+        assert_eq!(
+            (single["verse_start"].as_u64(), single["verse_end"].as_u64()),
+            (Some(3), Some(3))
+        );
+    }
+
+    #[test]
+    fn any_other_rejection_is_not_reported_as_no_such_chapter() {
+        // The modal treats these as a HARD refusal ("Couldn't read ... as a scripture reference",
+        // or a translation problem), never as a link-it-anyway Missing. If their wording ever
+        // contained the phrase they would sneak onto the permissive path.
+        for (reference, translation) in [
+            ("Hezekiah 4:4", None),
+            ("", None),
+            ("not a reference at all", None),
+            ("Romans 8", Some("NOPE".to_string())),
+        ] {
+            let err = match get_chapter(reference.to_string(), translation.clone()) {
+                Ok(_) => panic!("premise: {reference:?} / {translation:?} must be rejected"),
+                Err(e) => e,
+            };
+            assert!(
+                !webview_reads_as_no_such_chapter(&err),
+                "{reference:?} / {translation:?} was rejected with {err:?}, which the link modal \
+                 would read as an unresolvable CHAPTER and let the operator link anyway"
+            );
+        }
+    }
+
+    #[test]
+    fn the_link_modal_matches_the_same_phrase() {
+        // The JS half. `doLink` must still test the rejection against exactly the phrase the
+        // host sends; if the regex is reworded the host's wording above no longer reaches it.
+        let needle = format!("/{NO_SUCH_CHAPTER}/i.test(String(e))");
+        assert_eq!(
+            APP_JS.matches(needle.as_str()).count(),
+            1,
+            "dist/app.js must contain exactly one `{needle}` (the Service Plan link modal's \
+             `doLink`); if you reworded it, reword `get_chapter`'s error to match and update \
+             NO_SUCH_CHAPTER in this module in the same change"
+        );
+    }
+}
 #[tauri::command]
 async fn scripture_search(
     query: String,
