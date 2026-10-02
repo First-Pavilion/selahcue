@@ -1850,25 +1850,23 @@ EXPECTED_MIN_CHECKS = 2048  # measured: 2048 checks, 0 FAIL
 # re-measure after the other lands.
 EXPECTED_MIN_CHECKS = 2074  # measured: 2074 checks, 0 FAIL
 
-# 17tnw2b12d9 (media library as a modal picker), stacked on 17tnw2b12d8's review-round head (2028):
-# the modal replaces the Media/Inspector tab checks and adds its own (+30 net on the first cut's
-# 2087 base), and the PR #146 remove-media checks are carried into the modal's inline bar and status
-# line (the console's confirm dialog cannot open over the modal and its toast sits behind the scrim,
-# so the same eight checks read the bar and `#pm-media-note` instead; the console-banner Retry check
-# has no counterpart in the modal and is replaced by an Esc-closes-the-library check). Measured via
-# an actual clean run of the merged tree, not hand-summed.
-EXPECTED_MIN_CHECKS = 2058  # measured: 2058 checks, 0 FAIL
-
-# 17tnw2b12d9 re-review round: +11 on top of 2058. A refused import (no media folder) shows the host's
-# reason INSIDE the modal instead of the error banner behind the scrim (2); a file kept for a recently
-# deleted presentation is reported in the status line, not a toast (1); an identical notice repeated
-# passes through an empty status line so a live region announces it again (1); the status line is
-# role=status and stays rendered, visually hidden, while empty (2); Keep carries the bar's text as its
-# description (1); focus moves to the search field after Remove (1); and when the modal is closed
-# while a removal is in flight and the host then refuses it, the banner shows the reason and Retry
-# re-runs the REMOVAL rather than the last unrelated deck action (3, including the closed-modal
-# premise). Measured via an actual clean run, not hand-summed.
-EXPECTED_MIN_CHECKS = 2069  # measured: 2069 checks, 0 FAIL
+# 17tnw2b12d9 (media library as a modal picker), on top of main's 2074 (which already holds #146's
+# 2028 + main's own): +41 = the modal's net +30 (it replaces the Media/Inspector tab checks and adds
+# its own; the #146 remove-media checks are carried into the modal's inline bar and status line, since
+# the console's confirm dialog cannot open over the modal and its toast sits behind the scrim, and
+# the console-banner Retry check, which has no counterpart in the modal, is replaced by an
+# Esc-closes-the-library check) + 11 from the re-review round: a refused import (no media folder)
+# shows the host's reason INSIDE the modal instead of the error banner behind the scrim (2); a file
+# kept for a recently deleted presentation is reported in the status line, not a toast (1); an
+# identical notice repeated passes through an empty status line so a live region announces it again
+# (1); the status line is role=status and stays rendered, visually hidden, while empty (2); Keep
+# carries the bar's text as its description (1); focus moves to the search field after Remove (1);
+# and when the modal is closed while a removal is in flight and the host then refuses it, the banner
+# shows the reason and Retry re-runs the REMOVAL rather than the last unrelated deck action (3,
+# including the closed-modal premise). Count: 2074 + 41 = 2115, measured via an actual clean run of
+# the merged tree, not hand-summed; any PR that edits this constant must re-measure after the other
+# lands.
+EXPECTED_MIN_CHECKS = 2115  # measured: 2115 checks, 0 FAIL
 
 
 def find_chrome():
