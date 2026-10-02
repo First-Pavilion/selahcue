@@ -1695,6 +1695,21 @@ fn run_present(steps: &mut impl PresentSteps) -> bool {
     true
 }
 
+/// Write one diagnostic line to `out`, ignoring any failure to write it.
+///
+/// Every stall, skip, close and exit report goes through this instead of `eprintln!`, which PANICS
+/// when stderr is a broken pipe (a terminal or a `| tee` reader that went away). These reports sit
+/// on the output window's render path, so a panic there would take the audience screen down over
+/// a log line: a report is best-effort and must never be able to do that.
+fn write_diag(out: &mut impl std::io::Write, line: &str) {
+    let _ = writeln!(out, "{line}");
+}
+
+/// [`write_diag`] to stderr.
+fn diag(line: &str) {
+    write_diag(&mut std::io::stderr().lock(), line);
+}
+
 /// The one line a skipped frame writes to stderr: it names the window and the outcome, and says
 /// that the skip is what the console reports as a dropped frame.
 fn describe_skip(window: &str, reason: SkipReason, count: u64) -> String {
@@ -2006,7 +2021,7 @@ impl Renderer {
     /// why on stderr (see [`SkipCounts`]).
     fn note_skip(&mut self, reason: SkipReason) {
         if let Some(count) = self.skips.record(reason) {
-            eprintln!("{}", describe_skip(&self.window.title(), reason, count));
+            diag(&describe_skip(&self.window.title(), reason, count));
         }
     }
 
@@ -3376,10 +3391,10 @@ impl App {
     fn close_screen(&mut self, role: WindowRole, reason: &str) {
         // Said on stderr because a window that disappears with no explanation is indistinguishable
         // from the process dying: `reason` names which of the two callers asked for it.
-        eprintln!(
+        diag(&format!(
             "SelahCue: closing the {} window ({reason}); the process stays up.",
             role.title()
-        );
+        ));
         match role {
             WindowRole::Main => self.main = None,
             WindowRole::Stage => self.stage = None,
@@ -3473,9 +3488,7 @@ impl ApplicationHandler for App {
                             self.close_screen(role, "the window was asked to close")
                         }
                         CloseOutcome::Quit => {
-                            eprintln!(
-                                "SelahCue: the last output window was asked to close; exiting."
-                            );
+                            diag("SelahCue: the last output window was asked to close; exiting.");
                             event_loop.exit()
                         }
                     }
@@ -3616,10 +3629,9 @@ impl ApplicationHandler for App {
                         ),
                         None => ("closed", RenderPhases::default()),
                     };
-                    eprintln!(
-                        "{}",
-                        describe_redraw_stall(label, waited, held, phases, suppressed)
-                    );
+                    diag(&describe_redraw_stall(
+                        label, waited, held, phases, suppressed,
+                    ));
                 }
             }
             WindowEvent::KeyboardInput {
@@ -3650,7 +3662,7 @@ impl ApplicationHandler for App {
                     self.modifiers.control_key(),
                     cfg!(target_os = "macos"),
                 ) {
-                    eprintln!("SelahCue: the quit chord was pressed; exiting.");
+                    diag("SelahCue: the quit chord was pressed; exiting.");
                     event_loop.exit();
                     return;
                 }
@@ -3714,10 +3726,10 @@ impl ApplicationHandler for App {
     /// dies without printing this line did not exit cleanly: it panicked (the panic message is on
     /// stderr) or was killed from outside.
     fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
-        eprintln!(
+        diag(&format!(
             "SelahCue: the output event loop exited cleanly after {} s.",
             self.launched_at.elapsed().as_secs()
-        );
+        ));
     }
 
     fn new_events(&mut self, event_loop: &ActiveEventLoop, cause: StartCause) {
@@ -5343,6 +5355,37 @@ mod tests {
                 "skip line is missing `{needle}`: {line}"
             );
         }
+    }
+
+    /// A writer whose every write fails the way a closed pipe does.
+    struct BrokenPipe;
+
+    impl std::io::Write for BrokenPipe {
+        fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+            Err(std::io::ErrorKind::BrokenPipe.into())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Err(std::io::ErrorKind::BrokenPipe.into())
+        }
+    }
+
+    /// POSITIVE CONTROL for the test below: a diagnostic line is written as exactly one
+    /// newline-terminated line. Without it, a `write_diag` that wrote nothing would satisfy "never
+    /// panics on a broken stderr" vacuously.
+    #[test]
+    fn a_diagnostic_line_is_written_as_one_line() {
+        let mut out = Vec::new();
+        super::write_diag(&mut out, "SelahCue: hello");
+        assert_eq!(out, b"SelahCue: hello\n");
+    }
+
+    /// `eprintln!` PANICS when stderr is a broken pipe (a terminal or a `| tee` reader that went
+    /// away). The diagnostics added for the stall/skip/exit reports sit on the output window's
+    /// render path, so a panic there would take the audience screen down over a log line. They
+    /// must therefore swallow a write failure instead.
+    #[test]
+    fn a_broken_stderr_cannot_make_a_diagnostic_line_panic() {
+        super::write_diag(&mut BrokenPipe, "SelahCue: nobody is listening");
     }
 
     /// Records which steps of a present ran, and in what order.
