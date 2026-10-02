@@ -330,18 +330,32 @@ describe('mobile nav sheet wiring (Navbar.vue)', () => {
     assert.match(opener, /pageScrollLock\.acquire\(\)/)
   })
 
+  // The BODY of the onBeforeUnmount hook, and nothing else: from the call to the end of
+  // <script>. A bare `indexOf('onBeforeUnmount')` hits the `import { ..., onBeforeUnmount }
+  // from 'vue'` line FIRST, which made this slice the whole file -- template click handlers
+  // included -- so `assert.match(unmount, /closeMobileMenu\(/)` could never fail, even with the
+  // call deleted from the hook. The two guards below keep the slice from drifting back.
+  const unmountHook = (() => {
+    const start = navbar.indexOf('onBeforeUnmount(() =>')
+    const end = navbar.indexOf('</script>')
+    assert.ok(start > 0 && end > start, 'could not find the onBeforeUnmount hook')
+    const body = navbar.slice(start, end)
+    assert.ok(body.length < 700, `the unmount slice is ${body.length} chars: it is no longer just the hook`)
+    assert.equal(body.includes('<template'), false, 'the unmount slice swallowed the template')
+    return body
+  })()
+
   test('route change, breakpoint change, pagehide and unmount all close the sheet', () => {
     assert.match(navbar, /watch\(\s*\(\)\s*=>\s*route\.fullPath/)
     assert.match(navbar, /handleBreakpointChange/)
     assert.match(navbar, /addEventListener\('pagehide'/)
-    const unmount = navbar.slice(navbar.indexOf('onBeforeUnmount'))
-    assert.match(unmount, /closeMobileMenu\(/)
+    assert.match(unmountHook, /closeMobileMenu\(/, 'unmounting with the sheet open would leave the page locked and inert')
   })
 
   test('every listener added on mount is removed on unmount (no leak)', () => {
     const adds = navbar.match(/(?:window|mobileQuery)\.addEventListener\('(\w+)'/g) ?? []
     assert.ok(adds.length >= 3)
-    const unmount = navbar.slice(navbar.indexOf('onBeforeUnmount'))
+    const unmount = unmountHook
     for (const added of adds) {
       const event = added.match(/'(\w+)'/)![1]
       assert.match(unmount, new RegExp(`removeEventListener\\('${event}'`), `${event} listener is never removed`)
