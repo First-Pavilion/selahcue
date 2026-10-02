@@ -73,9 +73,9 @@ export function rootPaddingProblems(files: Readonly<Record<string, string>>): st
     for (const rule of text.matchAll(/([^{}]*)\{([^{}]*)\}/g)) {
       const selector = (rule[1] ?? '').trim()
       if (!/(^|[\s,>+~])(html|:root|body)\b(?![-\w])/.test(selector) && !/^(html|:root|body)\b/.test(selector)) continue
-      for (const decl of (rule[2] ?? '').matchAll(/\bscroll-padding(?:-[a-z]+)?\s*:\s*([^;}]+)/g)) {
+      for (const decl of (rule[2] ?? '').matchAll(/\bscroll-padding(?:-[a-z]+)*\s*:\s*([^;}]+)/g)) {
         const value = (decl[1] ?? '').trim()
-        if (!/^0(px)?$/.test(value)) problems.push(`${path}: \`${selector}\` sets scroll-padding: ${value}`)
+        if (!/^0(px)?(\s+0(px)?)*$/.test(value)) problems.push(`${path}: \`${selector}\` sets scroll-padding: ${value}`)
       }
     }
   }
@@ -92,6 +92,8 @@ describe('the CSS side of the same rule', () => {
     assert.match(css, /--sc-anchor-offset:\s*calc\(var\(--nav-height,\s*68px\)\s*\+\s*var\(--sc-anchor-gap\)\)/)
     assert.match(css, /\.ab-hwrap > :is\(h2, h3\)/, 'heading anchors')
     assert.match(css, /#docs-article/, 'the skip-link target')
+    assert.match(css, /\.docs-content \.topic,/, 'the docs index sections (/docs#<category>)')
+    assert.match(css, /\.category-card,/, 'the support index category cards (/support#<category>)')
     assert.match(css, /:is\(\.bp, \.da, \.sa\) :is\(a\[href\], button/, 'focusable elements on the article pages')
     assert.match(css, /:not\(\.da-skip\)/, 'the fixed skip link is excluded (margin would make focusing it scroll the page)')
     assert.match(css, /scroll-margin-top:\s*var\(--sc-anchor-offset\)/)
@@ -112,6 +114,22 @@ describe('the CSS side of the same rule', () => {
       assert.equal(rootPaddingProblems({ 'a.css': 'html{scroll-padding-top:calc(1px + 2px)}' }).length, 1)
     })
 
+    test('the logical spellings are covered too: block/inline, with or without -start/-end', () => {
+      for (const decl of [
+        'scroll-padding-block-start: 84px',
+        'scroll-padding-block-end: 84px',
+        'scroll-padding-inline-start: 84px',
+        'scroll-padding-block: 84px 0',
+        'scroll-padding-inline: 0 84px',
+        'scroll-padding-left: 84px',
+        'scroll-padding-bottom: 84px',
+      ]) {
+        assert.equal(rootPaddingProblems({ 'a.css': `html { ${decl}; }` }).length, 1, decl)
+      }
+      assert.equal(rootPaddingProblems({ 'a.css': ':root { scroll-padding-block-start: 0; }' }).length, 0, 'zero still allowed')
+      assert.equal(rootPaddingProblems({ 'a.css': 'html { scroll-padding-block: 0 0; scroll-padding-inline: 0px; }' }).length, 0, 'multi-value zero still allowed')
+    })
+
     test('zero is allowed (it only switches the padding off), and so are other selectors, margins and comments', () => {
       assert.deepEqual(rootPaddingProblems({ 'a.css': 'html:has(.legal-page) {\n  scroll-padding-top: 0;\n}' }), [])
       assert.deepEqual(rootPaddingProblems({ 'a.css': 'html { scroll-padding-top: 0px; }' }), [])
@@ -119,5 +137,19 @@ describe('the CSS side of the same rule', () => {
       assert.deepEqual(rootPaddingProblems({ 'a.css': 'h2 { scroll-margin-top: 84px; }' }), [])
       assert.deepEqual(rootPaddingProblems({ 'a.css': '/* html { scroll-padding-top: 84px; } */' }), [])
     })
+  })
+
+  test('every element the docs and support index pages expose as an #anchor target carries the margin', () => {
+    // `/docs#<category>` and `/support#<category>` come from the sidebar, the breadcrumbs and typed
+    // URLs. The element holding that id must be matched by a selector in anchors.css.
+    const css = readFileSync(join(src, 'assets/styles/anchors.css'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '')
+    const docs = readFileSync(join(src, 'views/DocsView.vue'), 'utf8')
+    const support = readFileSync(join(src, 'views/SupportView.vue'), 'utf8')
+    const docsTarget = /<section[^>]*:id="c\.id"[^>]*class="topic"/.exec(docs) ?? /<section[^>]*class="topic"[^>]*:id="c\.id"/.exec(docs)
+    const supportTarget = /<div[^>]*:id="cat\.id"[^>]*class="category-card"/.exec(support) ?? /<div[^>]*class="category-card"[^>]*:id="cat\.id"/.exec(support)
+    assert.ok(docsTarget, 'DocsView: the element that carries the category id is no longer <section class="topic">')
+    assert.ok(supportTarget, 'SupportView: the element that carries the category id is no longer <div class="category-card">')
+    assert.match(css, /\.docs-content \.topic,/)
+    assert.match(css, /\.category-card,/)
   })
 })

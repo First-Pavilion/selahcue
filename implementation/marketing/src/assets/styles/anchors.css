@@ -26,9 +26,14 @@
   --sc-anchor-offset: calc(var(--nav-height, 68px) + var(--sc-anchor-gap));
 }
 
-/* Heading anchors and the docs skip-link target. */
+/* Heading anchors, the docs skip-link target, and the sections the docs and support INDEX
+   pages are linked to by id (`/docs#<category>`, `/support#<category>`, from the sidebar, the
+   breadcrumbs and a typed URL): Chrome's own fragment scroll runs for a same-document hash
+   change and would otherwise put them ~69px under the navbar. */
 .ab-hwrap > :is(h2, h3),
 #docs-article,
+.docs-content .topic,
+.category-card,
 /* Anything focusable on an article page. The skip link is `position: fixed` just below the
    navbar, so margin would only make focusing it scroll the page; it is excluded. */
 :is(.bp, .da, .sa) :is(a[href], button, input, select, textarea, summary, [tabindex]):not(.da-skip) {

@@ -395,6 +395,37 @@ def main() -> None:
         pg.wait_for_timeout(500)
         check("support breadcrumb category link lands on an existing section", pg.url.endswith("/support#mobile-control") and pg.evaluate("!!document.getElementById('mobile-control')"), pg.url)
 
+        # ---- a same-document #hash change on the INDEX pages lands below the navbar ---------
+        # Editing the URL's fragment and pressing Enter is a same-document navigation: the
+        # browser's own fragment scroll runs (it overrides the router's smooth scroll), so the
+        # target section needs its own scroll-margin or it lands ~69px under the navbar.
+        def hash_landing(engine_name: str, make_context) -> None:
+            for width in (375, 768, 1440):
+                hp = make_context(viewport={"width": width, "height": 900}).new_page()
+                for page_path, target in [("/docs", "display-outputs"), ("/support", "display-outputs")]:
+                    hp.goto(base + page_path + "#troubleshooting", wait_until="networkidle")
+                    hp.wait_for_timeout(500)
+                    hp.evaluate("location.hash = '#" + target + "'")
+                    hp.wait_for_timeout(1200)
+                    nav_bottom = hp.evaluate("document.querySelector('header').getBoundingClientRect().bottom")
+                    top = hp.evaluate("document.getElementById('" + target + "').getBoundingClientRect().top")
+                    check(f"{engine_name} {width}px {page_path}: editing the hash to #{target} lands the section below the navbar", top >= nav_bottom - 1, f"section top {top:.1f}, navbar bottom {nav_bottom:.1f}")
+                hp.close()
+
+        hash_landing("chromium", new_context)
+        try:
+            wk = p.webkit.launch()
+        except Exception as exc:  # WebKit is optional locally
+            print(f"NOTE  WebKit not available, hash landing checked in Chromium only ({str(exc).splitlines()[0][:80]})")
+        else:
+            def new_wk_context(**kw):
+                c = wk.new_context(**kw)
+                c.set_default_timeout(60_000)
+                c.set_default_navigation_timeout(120_000)
+                return c
+            hash_landing("webkit", new_wk_context)
+            wk.close()
+
         # ---- anchors and copy-to-clipboard ------------------------------------------------
         pg.goto(base + POST, wait_until="networkidle")
         pg.click("text=Copy link")
