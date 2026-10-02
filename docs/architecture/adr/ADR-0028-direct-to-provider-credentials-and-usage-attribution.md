@@ -1,25 +1,41 @@
 # ADR-0028 — Direct-to-provider AI access: credential issue, server-side attribution and reconciliation
 
-- Status: **Proposed**, revision 3 (2026-10-02). The owner's three questions from revision 1 are **decided** (see "Owner decisions, 2026-09-27" below). One thing is still **pending**: the result of the OpenAI Realtime spike, which decides whether notes are built on option A or on fallback C. Not yet `Accepted`: the conditions are under "Open items before Accepted".
-- Date: 2026-09-27 (revisions 1 and 2); revision 3 dated 2026-10-02.
+- Status: **Proposed**, revision 4 (2026-10-02). The owner's questions from revision 1 are **decided** (see "Owner decisions, 2026-09-27" below). One thing is still **pending**: the result of the OpenAI Realtime spike, which decides whether notes are built on option A or on fallback C. Not yet `Accepted`: the conditions are under "Open items before Accepted".
+- Date: 2026-09-27 (revisions 1 and 2); revisions 3 and 4 dated 2026-10-02.
 - Confidence: **Medium for Deepgram** (the mechanism is documented; two numbers need the spike). **Low-Medium for OpenAI** until the spike reports (the chosen option rests on a capability nobody has tested for this use). The fallback, C, is well understood.
 - Owner: Software Architect (Aria). Required reviewers before `Accepted`: Security Reviewer (Sana) for D2, D3, D5 and D8; Performance Engineer (Vera) for D5 and D6; AI Engineer (Nova) for D4.
 - Relates:
   - ADR-0027 (the weekly ledger; its D5 settlement rules and D6 are replaced by this ADR), DEC-004, 86ajy04hz (hosted AI service), 86akby3xu (STT mint), 86akby344 (attribution spike), 86akby4e9 (reconciliation), 17tnw2az0gn / 17tnw2az0gq (enforcement). ClickUp epic [17tnw2az0g6](https://app.clickup.com/t/17tnw2az0g6).
   - **ADR-0010** (AI / provider abstraction, Accepted) and **ADR-0019** (transcript-provider seam): D8 says how platform-issued credentials fit their consent and key rules. ADR-0010 needs one clause (OI-8). ADR-0019 needs no change.
-  - **Platform PRD** FR-533, FR-546, FR-547, AS-P6, AS-P7 and FLOW-507: D2 and D5 demote device-reported metering to a provisional figure, and ADR-0027 replaces the monthly billing-anniversary period with a weekly one. The PRD still says the old thing (OI-7).
+  - **Platform PRD** FR-533, FR-546, FR-547, AS-P6, AS-P7 and FLOW-507: D2 and D5 demote device-reported metering to a provisional figure, and ADR-0027 replaces the monthly billing-anniversary period with a weekly one. The PRD still says the old thing (OI-7). Ticket [17tnw2az0gu](https://app.clickup.com/t/17tnw2az0gu) lists FR-546, AS-P6, FLOW-507 and the tier table in its Scope, and does not name FR-533, FR-547 or AS-P7.
   - **SelahCue PRD** FR-082, FR-132 to FR-134 and FR-177 (logging, consent, key storage, DPA): D8.
-- Decision labels. "D7", "D8" and "D9" used to mean three different things across the owner's decisions and the two ADRs, so this PR uses these labels:
+- Decision labels. These are **ClickUp's labels on [17tnw2az0gu](https://app.clickup.com/t/17tnw2az0gu), used as written**, so a reader can search for them there. Because the owner's decisions D7, D8 and D9 share numbers with this ADR's own sections, the owner's are always written "owner D7", "owner D8" and "owner D9" in this ADR. The crosswalk:
+
+  | Label | What it is | ClickUp | Where it lands |
+  |---|---|---|---|
+  | owner D7 | Plan lineup and weekly allowances, including the rule that failures are never charged | [17tnw2az0g8](https://app.clickup.com/t/17tnw2az0g8) | ADR-0027 Context |
+  | owner D7 amendment | One retry per notes session, the exception to "failures are never charged" (2026-09-27) | On 17tnw2az0g8 and 17tnw2az0gu | D5 |
+  | owner D8 | Weekly window; mid-week plan changes apply at once; no clawback on a downgrade | [17tnw2az0ga](https://app.clickup.com/t/17tnw2az0ga) | ADR-0027 D7, D8 |
+  | owner D9 | Staff plan grants | [17tnw2az0gb](https://app.clickup.com/t/17tnw2az0gb) | ADR-0027 D1 |
+  | OD-1 | How notes reach the provider: option A first, C if the spike fails, B rejected | On 17tnw2az0gu | D4 |
+  | OD-2 | Overrun carry-over: following week only, capped at one week of debt | On 17tnw2az0gu | D7 |
+  | OD-3 | Every denied credential request is recorded | On 17tnw2az0gu | D1, D5 |
+
   - `D<n>` is a decision in this ADR, and `ADR-0027 D<n>` is a decision in the companion.
-  - `OD-7`, `OD-8` and `OD-9` are the product owner's decisions D7, D8 and D9, recorded by [17tnw2az0gu](https://app.clickup.com/t/17tnw2az0gu). OD-7 is the owner's rule that failures are never charged.
-  - `OD-R1` to `OD-R3` are the owner's three answers of 2026-09-27, in the table below.
+  - `DEC-###` numbers for the owner's decisions are assigned when 17tnw2az0gu writes them into `DECISION-LOG.md`. This ADR does not guess them.
   - `OI-n` is an open item in the list under "Open items before Accepted".
-- Evidence labels: **Verified (docs)** = read in the provider's own documentation on 2026-09-27. **Revision 3 did not re-read the provider documentation, so every such line is unverified since that date until OI-6 is done.** **Verified (code)** = read on `origin/main` `f211581`; revision 3 re-checked the `openai.rs` lines it cites on `feaee70`. **Unknown** = not established, with the owner of the check named.
+- Evidence labels: **Verified (docs)** = read in the provider's own documentation on 2026-09-27. **Revisions 3 and 4 did not re-read the provider documentation, so every such line is unverified since that date until OI-6 is done.** **Verified (code)** = read on `origin/main` `f211581`; revision 3 re-checked the `openai.rs` lines it cites on `feaee70`. **Unknown** = not established, with the owner of the check named.
 
 ---
 
 ## Revision history
 
+- **Revision 4 (2026-10-02)** answers the independent re-review of head `255d042`:
+  - OD-3 is carried: D1 and D5 say every denied credential request is recorded.
+  - The owner's decision labels are ClickUp's own, with a crosswalk (revision 3's `OD-7` to `OD-9` and `OD-R1` to `OD-R3` are gone), and the owner decisions table has the OD-3 row.
+  - D5: `RELEASED` is terminal and a resend needs a new key; the replay table has `SETTLED` and "recorded as" columns; settlement under option C is stated (D4 and D5); slice renewals, reconnects and the settle point of a row with no mint are defined; the notes retry has a claim and a rollback; formulas use ADR-0027's `counted_from`; the "fail-closed" wording for held-open streams is corrected.
+  - D7: the week's limit for overrun purposes is the high-water plan's limit; whether to measure against `limit − carried_debt` is an open item (OI-11).
+  - Open items: ticket ids confirmed in ClickUp are recorded; OI-11 and OI-12 are new.
 - **Revision 3 (2026-10-02)** answers the review of revision 2 (PR #111, reviewed at `38755430`):
   - D5: the `max session` in the settle point is defined per meter, and for Deepgram transcripts it is the granted slice plus a guard for held-open streams; `NOTE_TOKEN_ENVELOPE` has no value and is an open item; the replay rules are a table; the crash window is covered; the formula uses the single source of truth of ADR-0027 D5; renewal slices have their own throttle.
   - D3: provisioning is demand-driven, rate-bounded and gated on the spike results, not triggered by a plan.
@@ -31,13 +47,14 @@
 
 ## Owner decisions, 2026-09-27 (settled; not open questions)
 
-| ID | Question in revision 1 | Owner's decision | Where it lands |
+| Label | Question | Owner's decision | Where it lands |
 |---|---|---|---|
-| OD-R1 | Sermon notes: option A, B or C | **A (Realtime text-only with a client secret), spiked first.** If the spike fails, **C** (server-side, off the web worker, 202 + poll). **B is rejected**: a real OpenAI key never goes to a church laptop, spike or no spike. | D4 |
-| OD-R2 | Retry grace for failed notes generations | **Allowed: one retry per notes session** (per ISSUED admission), within 10 minutes, against the same reservation. This is a stated exception to OD-7's "failures are never charged" rule. | D5 |
-| OD-R3 | Overrun policy | **Carry into the following week only, capped at one week of debt.** Not written off. Anything beyond the cap is written off with an alert. | D7 |
+| OD-1 | Sermon notes: option A, B or C (revision 1 question) | **A (Realtime text-only with a client secret), spiked first.** If the spike fails, **C** (server-side, off the web worker, 202 + poll). **B is rejected**: a real OpenAI key never goes to a church laptop, spike or no spike. | D4 |
+| owner D7 amendment | Retry grace for failed notes generations (revision 1 question) | **Allowed: one retry per notes session** (per ISSUED admission), within 10 minutes, against the same reservation. This is a stated exception to owner D7's "failures are never charged" rule. | D5 |
+| OD-2 | Overrun policy (revision 1 question) | **Carry into the following week only, capped at one week of debt.** Not written off. Anything beyond the cap is written off with an alert. | D7 |
+| OD-3 | Should denied credential requests be recorded? (not a revision 1 question; added in revision 4 after the owner confirmed it on 2026-09-27) | **Every denied credential request is recorded**, not only successful reservations, so a church and staff can see how often it hit its limit. Recorded through `record_audit_event` with `result=AuditResult.DENIED`. Whether anything can *read* that history is open (17tnw2az0gu, open item 8). | D1, D5 |
 
-**Still pending (not a decision):** the OpenAI spike (AI Engineer, Nova). It checks four things, listed under "What the providers actually support → OpenAI → Unknown". Its result picks A or C. It does not reopen B.
+**Still pending (not a decision):** the OpenAI spike ([17tnw2az0n2](https://app.clickup.com/t/17tnw2az0n2), AI Engineer, Nova). It checks four things, listed under "What the providers actually support → OpenAI → Unknown". Its result picks A or C. It does not reopen B.
 
 ---
 
@@ -87,6 +104,7 @@ The pivot does not fix Sana's finding by itself. Copying the current STT design 
 
 - `POST /v1/stt/session` (86akby3xu) and a new `POST /v1/notes/session` authenticate the device, reserve allowance (ADR-0027 D5), and return a provider credential plus connection details.
 - `POST /v1/notes:generate` from 86ajy04hz's contract is **withdrawn** under the directive. It comes back, in the async 202 form of D4 option C, **only if the Realtime spike fails**. In that case the next bullet's "never receives transcripts" does not hold for notes: the transcript passes through a worker transiently (D4, option C). It still does not hold note bodies at rest.
+- **Every denied credential request is recorded (OD-3).** Each request from an authenticated device writes exactly one audit event through `record_audit_event`, on a DEVICE actor with the org as target and `request_id = idempotency_key`: `result=AuditResult.SUCCESS` for a grant and `result=AuditResult.DENIED` for a refusal. The `reason` is the coded refusal: `QUOTA_EXHAUSTED` (including a week reduced by carried debt), a licence that does not permit it, `PROVIDER_UNAVAILABLE`, `PROVIDER_PROVISIONING`, `ALREADY_ISSUED` or a request-hash mismatch, or `RETRY_EXHAUSTED` (D5). `after` carries the meter, the week, and remaining and limit at decision time, and never a key, token or secret. Limits of this rule: a request with no valid device token cannot be tied to a church and is not covered (86akby3xu, open item 8, for Sana); whether requests that the throttle itself refuses are audited is open (86akby3xu, open item 7); and whether anyone can *read* the history is open (17tnw2az0gu, item 8). This ADR records, it does not expose. The volume of denied events is bounded by the budgets in ADR-0027 D5, which is one reason a refused notes retry counts against the admission budget.
 - The API never receives audio, transcripts or note bodies. Under the directive, it stores no sermon content, so the note-body replay cache from ADR-0027 (and SEC-0027-04's cache rules and Vera's byte-cap comment) **no longer exists**. The data still goes to the provider on SelahCue's account, so the DPA and disclosure work (86akby942) still applies.
 
 ### D2 — Attribution comes only from the identity of the credential the server chose
@@ -157,9 +175,9 @@ Option A (and C, if it comes to that) uses a **per-org OpenAI project**, created
 
 **Option C — Keep the call server-side, but off the web worker (the owner-approved fallback if the spike fails; an exception to the directive for notes only).**
 - `POST /v1/notes:generate` reserves allowance, enqueues a Celery task, and returns 202. The desktop polls for the result.
-- For: this also resolves Vera's finding. The key never leaves the server. Attribution is trivial, because the server reads the `usage` in the provider's response. OD-7's rule that "provider failures are never charged" stays fully enforceable, because the server sees the outcome.
+- For: this also resolves Vera's finding. The key never leaves the server. Attribution is trivial, because the server reads the `usage` in the provider's response. Owner D7's rule that "provider failures are never charged" stays fully enforceable, because the server sees the outcome.
 - Against: the backend is in the data path for notes. The transcript passes through SelahCue briefly. Transcription (Deepgram) stays direct either way.
-- If C is used: the task holds no web worker; it has its own hard timeout and a bounded queue; the result is held only until the desktop fetches it or a short TTL passes, with a byte cap and a test that bites (Vera's replay-cache comment applies again); and the D5 settlement for notes is the in-task commit and release from ADR-0027 revision 1, not reconciliation.
+- If C is used: the task holds no web worker; it has its own hard timeout and a bounded queue; the result is held only until the desktop fetches it or a short TTL passes, with a byte cap and a test that bites (Vera's replay-cache comment applies again); and the settlement is done by the task, not by reconciliation. **How a row reaches `SETTLED` under C:** no credential leaves the server, so no row is ever `ISSUED`. The task moves its row `RESERVED → SETTLED` (one unit) when it delivers a note, and `RESERVED → RELEASED` (nothing charged) when SelahCue or the provider fails, each in its own short transaction with no lock held across the provider call. When the task starts it re-checks that its row is still `RESERVED` and does nothing if it is not. `RESERVED_TTL` for these rows must exceed the task's hard timeout plus the bounded queue wait (ADR-0027 D5, timeout invariant), so a task that crashes has its row released by TTL and the church is not charged for a SelahCue failure.
 
 **Outcome, in one line.** Spike passes → build A. Spike fails → build C. There is no path to B.
 
@@ -167,52 +185,53 @@ Option A (and C, if it comes to that) uses a **per-org OpenAI project**, created
 
 The server never sees whether a provider call succeeded, so ADR-0027 D5's in-request commit and release is replaced by the following.
 
-**Reservation states:** `RESERVED` → `ISSUED` → `SETTLED`, with `RELEASED` allowed **only** from `RESERVED`.
+**Reservation states:** `RESERVED` → `ISSUED` → `SETTLED`, with `RELEASED` allowed **only** from `RESERVED`. `RELEASED` and `SETTLED` are terminal: a row never leaves them. (Under option C a notes row goes `RESERVED → SETTLED` directly; see D4.)
 
 - `RESERVED`: the allowance is held and the mint is in flight or not yet confirmed.
-- `ISSUED`: a credential has been returned to the desktop. From here, the reservation can **never** be released by time. When `expires_at` passes, it stays counted until reconciliation settles it. This is SEC-0027-02's expiry-refund fix, applied to both meters.
-- `RELEASED`: either the mint failed before any credential was issued (for example, the provider's grant call errored), or a `RESERVED` row passed its TTL and was released lazily. In the first case the server knows nothing left the building. In the second it presumes so, and the presumption can be wrong in one case: a crash between a successful mint and the move to `ISSUED`. ADR-0027 D5 step 4 gives the three reasons the ledger stays correct anyway. The main one is that charges come from provider records and never from reservation state.
-- `SETTLED`: reconciliation's watermark has passed the reservation's **settle point** (next block). The reservation's estimate then stops counting, because the provider's actual figures have replaced it.
+- `ISSUED`: the allowance has been granted to the desktop. Normally that means a credential was returned. For a transcript slice renewal on a socket that stays open, nothing is minted and the desktop is told it may keep its stream running for another slice, so the row is inserted directly as `ISSUED` (ADR-0027 D5, "Slice renewals"). From here, the reservation can **never** be released by time. When `expires_at` passes, it stays counted until reconciliation settles it. This is SEC-0027-02's expiry-refund fix, applied to both meters.
+- `RELEASED` (terminal): either the mint failed before any credential was issued (for example, the provider's grant call errored), or a `RESERVED` row passed its TTL and was released lazily. In the first case the server knows nothing left the building. In the second it presumes so, and the presumption can be wrong in one case: a crash between a successful mint and the move to `ISSUED`. ADR-0027 D5 step 4 gives the three reasons the ledger stays correct anyway. The main one is that charges come from provider records and never from reservation state. A `RELEASED` row is never reused, even under the same idempotency key (replay table below).
+- `SETTLED` (terminal): reconciliation's watermark has passed the reservation's **settle point** (next block). The reservation's estimate then stops counting, because the provider's actual figures have replaced it. Under option C the notes task settles its own row when it delivers a note (D4).
 
-**Settle point.** It is `issued_at + credential TTL + max session + measured lag`. Revision 2 left `max session` undefined, and for Deepgram it has no finite value. It is now defined per meter:
+**Settle point.** It is `issued_at + credential TTL + max session + measured lag`, where `credential TTL` is counted only for a row that had a mint (it is the time from the latest mint, `last_minted_at`, and zero for a row that was inserted as `ISSUED` with no mint). Revision 2 left `max session` undefined, and for Deepgram it has no finite value. It is now defined per meter:
 
 - **Notes: 60 minutes.** This is OpenAI's documented Realtime session limit (D4; Verified (docs) on 2026-09-27, not re-read since). If a retry credential was issued (`retry_count = 1`), the settle point is `issued_at + 10 min (the retry window) + credential TTL + 60 min + lag`. Under option C there is no held-open session, and the task's own hard timeout takes its place.
-- **Transcript: the granted slice, plus a guard for held-open streams.** A Deepgram stream "will then stay open ... until you close it" (D3), so no clock gives a maximum for a stream that a modified client holds open. For an honest client the granted time **is** the bound, because it must renew a slice to extend a stream. So a transcript slice's `max session` is its own length (default 300 s), and its settle point is `issued_at + 30 s + 300 s + lag`. A slice settles at that point **only if the church has no incomplete request record**, meaning no stream that the request log shows as started and not yet finished. While a stream is running, all of the church's open slices stay `ISSUED` and counted. Together they approximate the stream's length, so the balance stays conservative while it runs. When the stream's record completes, its recorded duration is charged to the week it happened in (D7's carry rules apply) and the slices settle.
-- **What is not known (OI-2, OI-4).** Whether the request log shows a stream that is still open, and with what duration, is Unknown (spike 86akby344). If it does not show one, a held-open stream looks like "no usage" until it ends, its slices settle at 0 on the clock, and the stream is charged late, when its record appears. Whether to add a ceiling (a maximum held-open time, after which the pinned estimate is replaced by the ceiling and the church's key is flagged) is an open item. **No figure is proposed here**, because it depends on the spike result and on the longest service the owner wants to support. Until it is closed, the rule above is the defined behaviour, and its cost is the fail-closed one.
+- **Transcript: the granted slice, plus a guard for held-open streams.** A Deepgram stream "will then stay open ... until you close it" (D3), so no clock gives a maximum for a stream that a modified client holds open. For an honest client the granted time **is** the bound, because it must renew a slice to extend a stream. So a transcript slice's `max session` is its own length (default 300 s), and its settle point is `last_minted_at + 30 s + 300 s + lag` for a row that had a mint, and `issued_at + 300 s + lag` for a renewal row inserted with no mint. A reconnect inside a live slice re-mints against that slice (ADR-0027 D5), which moves `last_minted_at` and so moves the settle point. A slice settles at that point **only if the church has no incomplete request record**, meaning no stream that the request log shows as started and not yet finished. While a stream is running, all of the church's open slices stay `ISSUED` and counted. Together they approximate the stream's length, so the balance stays conservative while it runs. When the stream's record completes, its recorded duration is charged to the week it happened in (D7's carry rules apply) and the slices settle.
+- **What is not known (OI-2, OI-4).** Whether the request log shows a stream that is still open, and with what duration, is Unknown (spike 86akby344). If it does not show one, a held-open stream looks like "no usage" until it ends, its slices settle at 0 on the clock, and the stream is charged late, when its record appears. Whether to add a ceiling (a maximum held-open time, after which the pinned estimate is replaced by the ceiling and the church's key is flagged) is an open item. **No figure is proposed here**, because it depends on the spike result and on the longest service the owner wants to support. Until it is closed, the rule above is the defined behaviour. It is **fail-closed only while the request log shows the stream as incomplete.** If open streams are invisible in the log (OI-2), the guard cannot see the stream, its slices settle at 0 on the clock, and the church's balance is **fail-open** for that stream until its record appears: in the meantime it can be admitted again. That window is the cost of the unknown, and it is why OI-2 matters.
 
 **What is charged:**
 - The weekly charge is **the sum of provider-reported usage for the org's credentials**, dated by the provider's own timestamp in the org's week boundaries (ADR-0027 D8, found by `starts_at ≤ t < ends_at` per SEC-0027-07).
 - Late records are charged to the week they happened in.
-- Formula: `remaining = max(0, limit − carried_debt − (settled_usage − reset_baseline) − Σ units of open reservations)`. `carried_debt` is the previous week's capped overrun (D7) and is 0 in most weeks. `reset_baseline` is the upgrade-reset baseline of ADR-0027 D5 and D7. "Open reservations" are the week's `RESERVED` and `ISSUED` rows. They are the **single source of truth** for held allowance: `UsageWeek` has no separate reserved counter (ADR-0027 D5).
+- Formula: `remaining = max(0, limit − carried_debt − settled_usage − Σ units of open reservations)`. `carried_debt` is the previous week's capped overrun (D7) and is 0 in most weeks. `settled_usage` counts only usage dated at or after the week's `counted_from`, the instant of the last upgrade reset (ADR-0027 D5 and D7), so a reset needs no second figure. "Open reservations" are the week's `RESERVED` and `ISSUED` rows. They are the **single source of truth** for held allowance: `UsageWeek` has no separate reserved counter (ADR-0027 D5).
 - **Transcript:** charged in seconds of `duration`.
-- **Notes:** each ISSUED admission with any usage in its window costs 1 unit. The window runs from `issued_at` to the settle point. Usage beyond `used_admissions × NOTE_TOKEN_ENVELOPE` is charged as extra units, `ceil(excess / envelope)`, and recorded as an audited overrun. An admission whose window shows **no** usage for that org is refunded (settled at 0). That is the only provider-side failure the server can see.
+- **Notes:** each ISSUED admission with any usage in its window costs 1 unit, dated by the admission's `issued_at`. The window runs from `issued_at` to the settle point. Usage beyond `used_admissions × NOTE_TOKEN_ENVELOPE` is charged as extra units, `ceil(excess / envelope)`, and recorded as an audited overrun. An admission whose window shows **no** usage for that org is refunded (settled at 0). That is the only provider-side failure the server can see.
   - **`NOTE_TOKEN_ENVELOPE` has no value yet.** It is the number of tokens one admission may use before the excess is charged as a further unit. Its source is Nova's spike: pass criterion 3 (D4) measures real token use per generated draft on representative sermon transcripts, and the figure depends on the model the spike settles on and that model's text-token pricing. It is therefore a per-model setting, held server-side, re-measured whenever the model changes, and never sent to the client. Nova proposes it and the owner approves it, because it decides how much an admission can use before it costs more (OI-3).
   - **Until it is set, the "extra units" branch of the notes charge cannot be built or switched on.** The rest of the notes charge does not depend on it: 1 unit for an admission with usage, and a refund when the window shows none. The retry's doubled envelope (below) depends on it too.
 - Because charges come from provider totals, N parallel calls cost N. The "N provider calls charged as one" attack from SEC-0027-03 is closed by construction, not by request-handling logic.
 
 **Idempotency and replay (SEC-0027-03).** The key is `(org, meter, idempotency_key)`, with `org` taken only from the authenticated device (SEC-0027-04). The reservation stores `device_id` and a hash of the request.
 
-| Replay case | Result |
-|---|---|
-| Same key, different request hash | Refused. |
-| Same key, different device | Refused. A replay must match the device that made the reservation (ADR-0027, tenant scoping). |
-| Same key, found `RESERVED` or `ISSUED` | Coded `ALREADY_ISSUED`. **No second credential is issued**, and the desktop must start a new request. |
-| Same key, found `RELEASED` | May re-reserve. If the row was released by TTL in the crash window (ADR-0027 D5 step 4), this can mean a second credential for one admission. Both are charged by reconciliation. |
-| Parallel requests, one key | Serialised by the unique constraint and the `UsageWeek` lock, so exactly one credential is issued. |
+| Replay case | Result | Audit event (OD-3) |
+|---|---|---|
+| Same key, different request hash | Refused. | `DENIED` |
+| Same key, different device | Refused. A replay must match the device that made the reservation (ADR-0027, tenant scoping). | `DENIED` |
+| Same key, found `RESERVED` or `ISSUED` | Coded `ALREADY_ISSUED`. **No second credential is issued**, and the desktop must start a new request. | `DENIED` |
+| Same key, found `SETTLED` | Coded `ALREADY_ISSUED`: that admission is complete, and the desktop must start a new request under a new key. A `SETTLED` row is kept for up to 35 days (ADR-0027, retention). After it is deleted the same key would look new, so a key must be unique per request (a fresh identifier each time). | `DENIED` |
+| Same key, found `RELEASED` | **Refused with a coded error (its name is chosen at build, beside `ALREADY_ISSUED`).** `RELEASED` is terminal and the row is not reused, because the state machine only moves forward. The desktop retries under a **new** idempotency key. If the row was released by TTL in the crash window (ADR-0027 D5 step 4), the new admission is a separate reservation and can mean one more credential. Both are charged by reconciliation. | `DENIED` |
+| Parallel requests, one key | Serialised by the unique constraint and the `UsageWeek` lock, so exactly one request is processed. The others find its row and get the result for that state, as above. | `DENIED` for each refusal |
 
 Commit and release happen only on the server. The desktop has no call for either.
 
-**OD-7's rule that "provider failures are never charged" cannot be fully kept under the directive.** (OD-7 is the owner's product decision recorded on [17tnw2az0gu](https://app.clickup.com/t/17tnw2az0gu).) OpenAI bills tokens for a generation that failed partway, or one the desktop rejected as malformed. The server cannot tell either case from success.
+**Owner D7's rule that "provider failures are never charged" cannot be fully kept under the directive.** (Owner D7 is the product owner's decision on [17tnw2az0g8](https://app.clickup.com/t/17tnw2az0g8), also recorded on [17tnw2az0gu](https://app.clickup.com/t/17tnw2az0gu).) OpenAI bills tokens for a generation that failed partway, or one the desktop rejected as malformed. The server cannot tell either case from success.
 
-**Decided by the owner, 2026-09-27 (OD-R2): one retry per notes session.** This amends OD-7 with one stated exception.
+**Decided by the owner, 2026-09-27 (owner D7 amendment): one retry per notes session.** This amends owner D7 with one stated exception.
 - A "notes session" is one ISSUED notes admission (one reservation, one paid unit).
 - Within **10 minutes** of that admission being ISSUED, the desktop may request **one** retry credential against the **same** reservation, with the same idempotency key plus a retry flag. No new unit is reserved.
-- The retry is counted under the `UsageWeek` lock (`retry_count` goes 0 → 1). A second retry request, or one after 10 minutes, is refused with a coded `RETRY_EXHAUSTED`; the desktop must start a new, paid admission.
+- The retry is claimed under the `UsageWeek` lock (`retry_count` goes 0 → 1), and the retry's mint runs outside the lock. **If that mint fails, `retry_count` is rolled back to 0** in a second short transaction, so a failed mint does not burn the church's only retry (ADR-0027 D5, reserve step). A second retry request, or one after 10 minutes, is refused with a coded `RETRY_EXHAUSTED`; the desktop must start a new, paid admission. Every retry request, granted or refused, counts against the admission budget (ADR-0027 D5, throttle table) and writes its audit event (OD-3, D1): a refused retry is recorded as `DENIED` with `RETRY_EXHAUSTED`.
 - The reservation's token envelope doubles (`2 × NOTE_TOKEN_ENVELOPE`), so the retry's usage is not charged as overrun.
 - Abuse bound, stated honestly: at most one extra generation per paid unit.
-- The retry is charged nothing whether the first attempt failed or not. The server cannot tell, so the grace is unconditional within its limits. That is the exception to OD-7: a failed generation and its retry together cost one unit, and if the retry also fails, the church is still charged that one unit.
-- **If the spike fails and notes use option C,** the server sees each outcome, so OD-7 is kept exactly and the retry grace is unnecessary. It may stay as a client convenience; it is not needed for fairness.
-- **Recording:** the OD-7 text lives on 17tnw2az0gu. Priya or Diego must add this exception there and in `DECISION-LOG.md` (OI-10). The architect does not edit that ticket.
+- The retry is charged nothing whether the first attempt failed or not. The server cannot tell, so the grace is unconditional within its limits. That is the exception to owner D7: a failed generation and its retry together cost one unit, and if the retry also fails, the church is still charged that one unit.
+- **If the spike fails and notes use option C,** the server sees each outcome, so owner D7 is kept exactly and the retry grace is unnecessary. It may stay as a client convenience; it is not needed for fairness.
+- **Recording:** the exception is **already written** on 17tnw2az0g8 and 17tnw2az0gu ("Amendment (owner, 2026-09-27)"). Only the `DECISION-LOG.md` entry is outstanding, and 17tnw2az0gu's Scope covers it (OI-10). The architect does not edit that ticket.
 
 **Reconciliation job (one per provider, in Celery beat, worker tier only).**
 1. Read provider usage **server-to-server** with the read-only credential over HTTPS. Never accept a provider callback or usage relayed by the client.
@@ -227,7 +246,7 @@ Commit and release happen only on the server. The desktop has no call for either
 
 **Transcript fairness (Vera, High 2).** Reserve STT in fixed slices (default 5 minutes) per admission, not `min(remaining, session_cap)`. A still-streaming desktop asks for the next slice through the same endpoint, and gets a fresh grant token only if it reconnects. So one device cannot lock up a church's whole balance. The slice is an admission estimate only. The charge is always Deepgram's `duration`.
 
-A request for the next slice is a **slice renewal**. It has its own throttle budget (ADR-0027 D5, "Reserve throttles": 15 per hour per device and 30 per hour per org), separate from the admission budget of 30 per hour per org and 10 per hour per device. A continuous stream needs 12 slices an hour, and a 70-minute sermon on Pro needs 14, so the admission budget alone would refuse it. A renewal that does not reconnect mints nothing and makes no provider call, so D6's capacity analysis of the mint covers admissions and reconnects only.
+A request for the next slice is a **slice renewal**. Its rows, columns and three cases (renewal on an open socket, renewal that needs a new socket, reconnect inside a live slice) are in ADR-0027 D5, "Slice renewals". It has its own throttle budget (ADR-0027 D5, "Reserve throttles": 15 per hour per device and 30 per hour per org), separate from the admission budget of 30 per hour per org and 10 per hour per device, and the desktop asks for the next slice when 60 s or less of its held slice remains. A continuous stream needs 12 slices an hour, and a 70-minute sermon on Pro needs 14, so the admission budget alone would refuse it. A renewal on an open socket mints nothing and makes no provider call, so D6's capacity analysis of the mint covers admissions, renewals that need a new socket, and reconnects only.
 
 ### D6 — Performance: Vera's worker finding is resolved; a bounded residual stays
 
@@ -246,12 +265,14 @@ A request for the next slice is a **slice renewal**. It has its own throttle bud
 - **Deepgram:** a modified client's overrun can run for as long as it holds streams open, and it can drain the shared concurrency pool (D3).
 - **OpenAI option A:** a modified client may override session instructions (and the model, if the spike finds that possible) for up to 60 minutes per admission. Attributed correctly, bounded by the session cap and the per-project rate limit, charged by reconciliation.
 
-**Overrun policy — decided by the owner, 2026-09-27: carry into the following week only, capped at one week of debt.**
-- An **overrun** is settled usage in a week beyond that week's limit: `overrun = max(0, (settled_usage − reset_baseline) − limit)`, per meter, computed when reconciliation settles the week (after `ends_at` plus the settle watermark).
-- **Carry.** The overrun is deducted from the **immediately following** week's allowance only: that week's `remaining = limit − carried_debt − (settled_usage − reset_baseline) − Σ units of open reservations` (the formula in D5).
+**Overrun policy — decided by the owner, 2026-09-27 (OD-2): carry into the following week only, capped at one week of debt.**
+- An **overrun** is settled usage in a week beyond that week's limit: `overrun = max(0, settled_usage − week_limit)`, per meter, computed when reconciliation settles the week (after `ends_at` plus the settle watermark). `settled_usage` counts only usage dated from the week's `counted_from` (ADR-0027 D5), so usage before an upgrade reset is not an overrun.
+  - **`week_limit` is the limit of the plan whose rank is the week's `high_water_rank`**, read at settlement. It is not the limit of the plan the church is on at the end of the week. Measured against the end-of-week plan, a downgrade would turn admitted usage into an overrun. Example: a Pro church uses 8 notes (limit 10), then its grant ends and it falls to Free (limit 1). Against the end-of-week plan the overrun is 7 and the carried debt is `min(7, next limit)`, which is a clawback, and owner D8 says "usage already recorded stands, with no clawback". Against the high-water plan the overrun is 0.
+  - **Measured against `limit`, not `limit − carried_debt`.** This follows the owner's wording (OD-2: "settled usage above a week's limit"). The consequence is that admission lets a church use only `limit − carried_debt`, but usage that nobody admitted, between that figure and `limit`, records no overrun. A church could burn its carried debt allowance again without a new overrun. Whether the owner means that, or means `limit − carried_debt`, is an open question for the owner (OI-11). The ADR follows the owner's wording until it is answered.
+- **Carry.** The overrun is deducted from the **immediately following** week's allowance only: that week's `remaining = limit − carried_debt − settled_usage − Σ units of open reservations` (the formula in D5).
 - **Cap.** `carried_debt = min(overrun, that following week's limit)`. At most one full week of allowance can be lost.
 - **No further roll.** Debt never passes on to a third week. Any debt the following week cannot absorb, and any overrun above the cap, is **written off**: recorded, audited (`usage.overrun_written_off`, `SERVICE` actor) and alerted. It is never charged later.
-- **Plan changes.** The cap uses the following week's limit for the plan in effect when that week's row is created. An upgrade reset in the following week (ADR-0027 D7) moves the settled baseline, **not** carried debt. Otherwise an upgrade would wipe debt. A downgrade to Free with a limit of 0 means the carried debt is 0 and the whole overrun is written off.
+- **Plan changes.** The cap uses the following week's limit for the plan in effect when that week's row is created. An upgrade reset in the following week (ADR-0027 D7) moves `counted_from`, **not** carried debt. Otherwise an upgrade would wipe debt. A downgrade to Free with a limit of 0 means the carried debt is 0 and the whole overrun is written off.
 - **Every overrun alerts,** carried or not (`usage.overrun_recorded`, per ADR-0027's audit rule).
 - Late records that settle a week after its carry has been applied adjust the carry only while the following week is still current. Once that week has ended, the extra is written off, never charged backwards.
 - Figures Priya can quote: Core notes are 5 a week, so a Core church that overruns by 7 units loses at most 5 next week and 2 are written off. Transcript minutes on Pro are 80 a week, so an overrun of 30 minutes leaves 50 the next week.
@@ -269,7 +290,7 @@ New in revision 3 (review finding k). The desktop is the other half of the bound
 - A credential is used once. The desktop does not keep a spent or expired one for reuse.
 - The church's long-lived provider credentials (the Deepgram key, the OpenAI project key) never leave the server (D3, D4), so there is nothing durable on a church laptop to extract.
 
-**What this changes elsewhere.** This PR is docs-only and edits none of these. Each is an open item (OI-7 to OI-9) with no ticket id recorded:
+**What this changes elsewhere.** This PR is docs-only and edits none of these. Each is an open item (OI-7 to OI-9). OI-7 is on 17tnw2az0gu for FR-546, AS-P6, FLOW-507 and the tier table. The rest of OI-7, OI-8 and OI-9 have no ticket id recorded:
 
 - **Platform PRD.** FR-533, FR-546, FR-547, AS-P6, AS-P7 and FLOW-507 still say the STT period is per calendar month and resets on the billing anniversary, that usage is recorded per device through `usage-events:batch` (FR-546), and that the cloud service enforces the org's balance (FR-533). They also carry the old tier table (Free 30 min, Pro 5 h, Platinum 10 h). ADR-0027 and this ADR replace these with a weekly period that resets on Monday 00:00 in the org's time zone, usage taken from the provider's own records (device-reported figures are provisional only, D2), the platform API admitting and reconciling, and Free / Core / Pro with weekly transcript minutes and note generations. FR-547 (exhaustion degrades, never blocks) and FLOW-507's shape are unchanged.
 - **ADR-0010.** Its Context (item 3), the cloud-adapters paragraph of its Decision and its Invariants paragraph say keys are user-supplied and live only in the OS secret store. That stays true for the user-supplied keys ADR-0010 describes. It needs one clause for platform-issued credentials, which are short-lived, server-issued and held in memory only (this section).
@@ -296,22 +317,24 @@ New in revision 3 (review finding k). The desktop is the other half of the bound
 
 ## Open items before Accepted
 
-Nothing here is done by this PR. "Ticket" is the ClickUp ticket that carries the item. **Where the ticket column says "None recorded", no ticket id is recorded here: the owner supplies the ids, and this ADR does not invent them.**
+Nothing here is done by this PR. "Ticket" is the ClickUp ticket that carries the item. Each ticket id below was read in ClickUp on 2026-10-02. **Where the ticket column says "None recorded", a ClickUp search that day found no ticket for the item. The owner supplies an id if one exists or is created, and this ADR does not invent one.**
 
 | ID | Item | Who checks or decides | Ticket |
 |---|---|---|---|
-| OI-1 | The four OpenAI Realtime spike criteria (D4). The result picks A or C. | Nova | Spike in progress; id not recorded here |
-| OI-2 | Deepgram unknowns: limit on durable keys per project, request-log lag, whether a stream that is still open appears in the log, and whether projects can be created through the API (D3, D5) | Spike owner | 86akby344 |
-| OI-3 | Value and source of `NOTE_TOKEN_ENVELOPE` (D5). Gates the "extra units" branch of the notes charge. | Nova proposes, owner approves | None recorded |
+| OI-1 | The four OpenAI Realtime spike criteria (D4). The result picks A or C. | Nova | [17tnw2az0n2](https://app.clickup.com/t/17tnw2az0n2) |
+| OI-2 | Deepgram unknowns: limit on durable keys per project, request-log lag, whether a stream that is still open appears in the log, and whether projects can be created through the API (D3, D5) | Spike owner | [86akby344](https://app.clickup.com/t/86akby344) |
+| OI-3 | Value and source of `NOTE_TOKEN_ENVELOPE` (D5). Gates the "extra units" branch of the notes charge. | Nova proposes, owner approves | The proposal is an acceptance criterion of 17tnw2az0n2 and open item 3 of [86akby4e9](https://app.clickup.com/t/86akby4e9). The owner's approval: none recorded |
 | OI-4 | Whether to cap how long a held-open Deepgram stream can pin an estimate, and at what figure (D5 settle point). No figure is proposed. | Owner, after OI-2 | None recorded |
 | OI-5 | `PROVIDER_PROVISIONS_PER_DAY` and the provider limits it must sit under (D3). Gates turning provisioning on. | After OI-1 and OI-2 | None recorded |
-| OI-6 | Re-read the provider documentation. Every `Verified (docs)` line is from 2026-09-27 and was not re-read in revision 3. | Spike owners | None recorded |
-| OI-7 | Platform PRD amendments: FR-533, FR-546, FR-547, AS-P6, AS-P7, FLOW-507 and the tier table (D8) | Owner to assign | None recorded |
+| OI-6 | Re-read the provider documentation. Every `Verified (docs)` line is from 2026-09-27 and was not re-read in revisions 3 or 4. | Spike owners | None recorded |
+| OI-7 | Platform PRD amendments: FR-533, FR-546, FR-547, AS-P6, AS-P7, FLOW-507 and the tier table (D8) | Priya | [17tnw2az0gu](https://app.clickup.com/t/17tnw2az0gu). Its Scope names FR-546, AS-P6, FLOW-507 and the tier table. It does **not** name FR-533, FR-547 or AS-P7 |
 | OI-8 | ADR-0010: one clause on platform-issued, memory-only credentials (D8) | Owner to assign | None recorded |
 | OI-9 | `selahcue-cloud/src/openai.rs` module-doc comment (D8). Wording depends on OI-1. | Owner to assign | None recorded |
-| OI-10 | Record the OD-7 retry exception (OD-R2) and the DEC-014 amendment (ADR-0027 D3) on 17tnw2az0gu and in `DECISION-LOG.md` | Priya or Diego | 17tnw2az0gu |
+| OI-10 | `DECISION-LOG.md` entries for owner D7 with its amendment, owner D8, owner D9 and OD-1 to OD-3. The amendment text is already written on 17tnw2az0g8 and 17tnw2az0gu. | Priya | 17tnw2az0gu. The DEC-014 amendment from ADR-0027 D3 is **not** in its Scope: none recorded |
+| OI-11 | Whether the overrun is measured against `limit` (the owner's wording, as built here) or against `limit − carried_debt` (D7) | Owner | OD-2 is on 17tnw2az0gu. No separate ticket recorded |
+| OI-12 | Ticket fallout from revisions 4 and 5 for the build tickets: see ADR-0027, "Needed before Accepted", item 7. Placed, not edited, by this PR. | Priya, Diego | 86akby4e9, 17tnw2az0gj, 86akby3xu, 17tnw2az0gn |
 
-ADR-0027's own list ("Needed before Accepted") adds the staff-authenticator ticket (SEC-0027-01) and the independent re-review.
+ADR-0027's own list ("Needed before Accepted") adds the independent re-review and the staff authenticator (SEC-0027-01, 17tnw2az0n5, which gates production use and not `Accepted`).
 
 ## Rollback
 
