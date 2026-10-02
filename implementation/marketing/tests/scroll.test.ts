@@ -98,7 +98,7 @@ describe('the CSS side of the same rule', () => {
     assert.match(readFileSync(join(src, 'main.ts'), 'utf8'), /assets\/styles\/anchors\.css/)
   })
 
-  test('NOTHING sets a non-zero scroll-padding on the root: it scrolls the page to the top when a fixed element is focused', () => {
+  test('NOTHING sets a non-zero scroll-padding on the root: it scrolls the page to the top whenever a sticky navbar control takes focus', () => {
     const files: Record<string, string> = {}
     for (const f of walk(src).filter((x) => /\.(vue|css)$/.test(x))) files[f.slice(src.length)] = readFileSync(f, 'utf8')
     assert.deepEqual(rootPaddingProblems(files), [])

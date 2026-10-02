@@ -312,9 +312,10 @@ def main() -> None:
         check("focusable article controls carry the same clearance", abs(pg.evaluate("parseFloat(getComputedStyle(document.querySelector('.bp a[href]')).scrollMarginTop)") - margin) < 0.5)
         # A ROOT scroll-padding-top makes focusing a control in the STICKY navbar scroll the page to
         # the top (the control sits inside the padded band and cannot move clear of it, so the
-        # browser scrolls as far as it can). That is what closing the mobile navigation sheet does
-        # (focus returns to the menu button), and what Shift+Tab into the header does. So the page
-        # must carry no root padding, and focusing a navbar control must leave the scroll alone.
+        # browser scrolls as far as it can; measured: scrollY 500 -> 3). That is what closing the
+        # mobile navigation sheet does (focus returns to the menu button), and what Shift+Tab into
+        # the header does. So the page must carry no root padding, and focusing a navbar control
+        # must leave the scroll alone.
         pg.evaluate("window.scrollTo(0, 500)")
         pg.wait_for_function("window.scrollY > 100")
         scroll_before = pg.evaluate("window.scrollY")
