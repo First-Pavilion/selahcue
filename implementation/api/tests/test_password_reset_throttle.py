@@ -938,7 +938,7 @@ def test_a_refused_request_does_no_work_beyond_its_budget_checks(
         assert error_code(refused) == "RATE_LIMITED"
         assert queries.count == 0, (
             f"a refusal by the {budget} budget ran {queries.count} database queries for the "
-            f"{label} address — something existence-dependent runs before the throttle refuses"
+            f"{label} address — something that reads the database runs before the throttle refuses"
         )
         shapes[label] = list(calls)
 
@@ -999,8 +999,14 @@ def test_a_throttled_refusal_is_byte_identical_for_a_known_and_an_unknown_addres
 # with Postgres and Redis in containers on a host at about twice its core count, a median read
 # +/-1 to 1.5 ms in a few percent of probes. So the verdict is "leak" only when TWO independent
 # measurements both exceed the tolerance on the SAME side: a real, constant leak exceeds it every
-# time, while a host spike rarely repeats and rarely repeats with the same sign. The second
-# measurement costs nothing unless the first one is out.
+# time, while a host spike usually does not repeat with the same sign. The second
+# measurement costs nothing unless the first one is out. That assumption holds at the load where
+# the original failures happened (about twice the core count: 0 of 192 false failures) but NOT
+# under sustained overload (Vera, 86ak65mj5 re-check: load about 3.5x the cores, a second
+# measurement landed out of tolerance on the same side 26% of the time after the first was out, so
+# about 8% of verdicts failed correct code). The count-based test is therefore the primary guard
+# and never failed in either run; treat a timing-only failure on a heavily loaded host as
+# "re-run on a quieter machine", not as a leak.
 #
 # WHAT THIS CAN AND CANNOT SEE — measured, not promised:
 #   * A planted existence-dependent delay of exactly 2.0 ms is flagged (the control below). It is
@@ -1089,8 +1095,10 @@ def test_the_refusal_timing_probe_can_see_an_existence_dependent_delay(
 
     Up to five attempts: this proves the probe CAN see a 2.0 ms leak, and a load burst on the host
     must not turn that into a false failure. Under heavy load a single verdict missed the planted
-    delay about 7% of the time, in bursts of at most two in a row, so five attempts leave no
-    realistic false failure while a blind probe would still fail all five."""
+    delay about 7% of the time at moderate load (in bursts of at most two in a row) and about 26%
+    of the time at a load of 3.5x the cores, where one execution needed four of its five attempts
+    (Vera, 86ak65mj5 re-check). Five attempts held in every measured run, while a blind probe
+    would still fail all five."""
     _only_budget_trips(settings, "address")
     known = _existing_verified_account(
         capturing_sender, email="known-control@timing.example", idem="refusal-timing-control"
