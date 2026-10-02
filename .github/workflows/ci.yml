@@ -184,7 +184,7 @@ jobs:
       - uses: docker://rhysd/actionlint:1.7.12
         with:
           args: -color
-      # Two invariants actionlint does not model, both of which shipped as real
+      # Three invariants actionlint does not model. The first two shipped as real
       # defects in this branch and were caught by human review rather than any gate:
       #   - a job declaring `permissions` loses every scope it does not list, so an
       #     `issues: write`-only job cannot check out a private repo and dies at step 1;
@@ -195,7 +195,11 @@ jobs:
       # narrow -- it checks checkout-vs-`contents` and step ordering, NOT that every
       # job's scopes match everything it does (a job declaring `contents: read` and
       # then running `gh issue create` dies the same way and is not detected).
-      - name: Checkout scopes + setup/gate ordering
+      #   - cache saves (17tnw2b1f24): in a workflow that runs on pull requests, every
+      #     Swatinem/rust-cache step must save from `main` only and flutter-action must
+      #     not cache, or each PR writes its own copy and the repo's Actions cache limit
+      #     evicts main's entries. A failure of this check shows under this step's name.
+      - name: Checkout scopes + setup/gate ordering + cache saves
         run: |
           # Pinned, matching the playwright pin below: an unpinned install makes this
           # gate's behaviour depend on whatever PyPI serves that morning.
@@ -299,9 +303,18 @@ jobs:
           # Save from `main` only (17tnw2b1f24). The cache key has no ref in it, so a pull
           # request restores main's entry exactly; what it must not do is SAVE its own copy.
           # Every PR run used to write a private 0.3-1.6 GB entry per job and OS, which put
-          # the repo over its 10 GB Actions cache limit and got main's own entries evicted,
-          # so main's jobs then started cold. Same line on every rust-cache step below;
-          # check_workflows.py fails the build if one is missing.
+          # the repo over its Actions cache limit and got main's own entries evicted, so
+          # main's jobs then started cold.
+          #
+          # THE COST, so nobody removes this in a hurry. A PR can only restore what main
+          # holds. While main has no entry for a job -- the job is red on main (a red job
+          # saves nothing; macOS operator-native today, via flaky test 17tnw2b1vyy), the
+          # entry was evicted, or a lockfile/toolchain change moved the key -- EVERY push of
+          # EVERY PR runs that job cold. Before, a PR's first push seeded an entry its later
+          # pushes reused. A cold Windows operator-native job is about 35 min against about
+          # 4 warm. The remedy is to keep main's entries whole (17tnw2b1waw), not to let PRs
+          # save again. Same line on every rust-cache step below; check_workflows.py fails
+          # the build if one is missing.
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Linux system deps (winit/wgpu + software Vulkan for GPU parity)
         if: runner.os == 'Linux'
@@ -1062,12 +1075,17 @@ jobs:
       - uses: subosito/flutter-action@v2
         with:
           channel: stable
-          # No `cache: true` (17tnw2b1f24). It saves the Flutter SDK (1.7 GB) and the pub cache
-          # from pull-request runs, and the action has no `save-if` to stop that. Over 27 recent
-          # runs the SDK cache hit 5 times: a hit saved about 35 s, a miss paid about 20 s to
-          # save, so it cost more time than it saved while taking 1.7 GB of the 10 GB budget
-          # that the operator caches (35 min cold, 4 warm on Windows) need.
-          # check_workflows.py fails the build if `cache:` is switched back on in this file.
+          # No `cache: true` (17tnw2b1f24). It saves the Flutter SDK (1.72 GB) and the pub cache
+          # (39 MB) from pull-request runs, and the action has no `save-if` to stop that. The
+          # reason to drop it is BYTES, not time: 1.76 GB is about 17.6% of a 10 GB Actions
+          # cache limit, and at the limit it would be the first entry evicted (mobile runs are
+          # rarer than desktop runs, Inferred), while the time it saves is roughly a wash (a
+          # hit saves under a minute; a miss pays about 20 s to save). The operator caches
+          # that need those bytes are worth far more (Windows: 35 min cold, 4 warm). Revisit
+          # if the limit is raised; a main-only version needs a `dry-run` step, then
+          # actions/cache/restore, the real action, and a main-only actions/cache/save.
+          # check_workflows.py fails the build if `cache:` or `pub-cache:` comes back on this
+          # action in a pull-request workflow.
       - run: flutter pub get
       - run: flutter analyze
       - run: flutter test
