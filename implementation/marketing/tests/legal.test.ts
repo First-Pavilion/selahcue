@@ -41,7 +41,8 @@ import {
   tableOfContents,
   versionLabel,
 } from '../src/lib/legal/document.ts'
-import { LegalHead, NOINDEX_SELECTOR, type HeadHost } from '../src/lib/legal/head.ts'
+import { LegalHead } from '../src/lib/legal/head.ts'
+import { fakeHost } from './fixtures/fakeHead.ts'
 import { classifyHref } from '../src/lib/legal/links.ts'
 import { isOverflowing } from '../src/lib/legal/overflow.ts'
 import { createScrollSpy, type SpyEntry, type SpyObserverCtor, type SpyTarget } from '../src/lib/legal/useScrollSpy.ts'
@@ -1085,46 +1086,6 @@ describe('"Last updated" is shown only when the document gives a real date', () 
 // ---------------------------------------------------------------------------------------
 // 5. Head handling
 // ---------------------------------------------------------------------------------------
-
-/** Just enough DOM for LegalHead: a head that holds meta elements, and a title. */
-function fakeHost(initialTitle = 'SelahCue') {
-  interface FakeMeta {
-    attrs: Map<string, string>
-    parent: FakeMeta[] | null
-    setAttribute(k: string, v: string): void
-    remove(): void
-  }
-  const metas: FakeMeta[] = []
-  const host = {
-    title: initialTitle,
-    head: {
-      appendChild(node: FakeMeta) {
-        node.parent = metas
-        metas.push(node)
-        return node
-      },
-    },
-    createElement(): FakeMeta {
-      const node: FakeMeta = {
-        attrs: new Map(),
-        parent: null,
-        setAttribute(k, v) {
-          this.attrs.set(k, v)
-        },
-        remove() {
-          const at = metas.indexOf(this)
-          if (at !== -1) metas.splice(at, 1)
-        },
-      }
-      return node
-    },
-    querySelector(selector: string): FakeMeta | null {
-      assert.equal(selector, NOINDEX_SELECTOR)
-      return metas.find((m) => m.attrs.get('name') === 'robots' && m.attrs.has('data-legal-noindex')) ?? null
-    },
-  }
-  return { host: host as unknown as HeadHost, metas, raw: host }
-}
 
 describe('noindex and title follow the page, and cannot leak or be lost', () => {
   test('a draft page adds noindex and its title; leaving removes the tag and restores the title', () => {

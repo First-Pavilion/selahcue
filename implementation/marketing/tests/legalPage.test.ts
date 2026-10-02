@@ -24,11 +24,14 @@ import { privacyPolicy } from '../src/lib/legal/privacy.generated.ts'
 import { termsOfService } from '../src/lib/legal/terms.generated.ts'
 import type { Inline, LegalDocument } from '../src/lib/legal/types.ts'
 import { parseLegalMarkdown } from '../scripts/legal_markdown.ts'
+import { fakeHost } from './fixtures/fakeHead.ts'
 
 const ROOT = fileURLToPath(new URL('../', import.meta.url))
 
 let server: ViteDevServer
 let LegalPage: Component
+/** From the SAME vite module graph as LegalPage: a direct import would be a different instance. */
+let resetLegalHead: () => void
 
 before(async () => {
   server = await createServer({
@@ -43,6 +46,7 @@ before(async () => {
   })
   const mod = (await server.ssrLoadModule('/src/components/legal/LegalPage.vue')) as { default: Component }
   LegalPage = mod.default
+  resetLegalHead = ((await server.ssrLoadModule('/src/lib/legal/useLegalHead.ts')) as { resetLegalHead: () => void }).resetLegalHead
 })
 
 after(async () => {
@@ -117,6 +121,61 @@ describe('draft treatment in the rendered page', () => {
     const html = await render(docFrom('1.1 Contact `{{CONTACT_EMAIL}}`.', false))
     assert.equal(count(html, 'data-draft-banner'), 1)
     assert.ok(html.includes(DRAFT_NOTICE))
+  })
+})
+
+/**
+ * Render with a fake `document` on globalThis, so the REAL path from LegalPage to the robots
+ * tag runs (state -> useLegalHead -> LegalHead -> <meta>): `noindex` wired to the wrong
+ * signal (say, the placeholder count alone) is only visible here, not in `legalPageState`.
+ */
+async function renderWithHead(doc: LegalDocument): Promise<{ html: string; robots: string[]; title: string }> {
+  const { host, metas, raw } = fakeHost('SelahCue (default)')
+  const g = globalThis as { document?: unknown }
+  const before = g.document
+  g.document = host
+  resetLegalHead()
+  try {
+    const html = await render(doc)
+    const robots = metas.filter((m) => m.attrs.get('name') === 'robots').map((m) => m.attrs.get('content') ?? '')
+    return { html, robots, title: raw.title }
+  } finally {
+    resetLegalHead()
+    if (before === undefined) delete g.document
+    else g.document = before
+  }
+}
+
+describe('the robots noindex tag follows EVERY draft signal (real wiring, not just the decision function)', () => {
+  const finalBanner = '> **DRAFT: NOT FINAL**\n>\n> Version 1.0 (final, 2026-01-02). Banner left in by mistake.\n\n'
+  const parse = (front: string, body: string): LegalDocument =>
+    parseLegalMarkdown(`# Synthetic Policy\n\n${front}## 1. One\n\n${body}\n`, 'synthetic.md')
+
+  test('BANNER ONLY: every placeholder filled, DRAFT banner kept (status final) => noindex is sent', async () => {
+    const r = await renderWithHead(parse(finalBanner, '1.1 Contact legal@example.com. Nothing is missing.'))
+    assert.deepEqual(r.robots, ['noindex'])
+    assert.equal(count(r.html, 'data-draft-banner'), 1)
+  })
+
+  test('STATUS ONLY: no banner, no placeholders, status "pending review" => noindex is sent', async () => {
+    const r = await renderWithHead(parse('Version 1.0 (pending review, 2026-01-02).\n\n', '1.1 Nothing is missing.'))
+    assert.deepEqual(r.robots, ['noindex'])
+  })
+
+  test('PLACEHOLDER ONLY: status final, no banner, one placeholder => noindex is sent', async () => {
+    const r = await renderWithHead(parse('Version 1.0 (final, 2026-01-02).\n\n', '1.1 Contact `{{CONTACT_EMAIL}}`.'))
+    assert.deepEqual(r.robots, ['noindex'])
+  })
+
+  test('PUBLISHED: no banner, status final, no placeholders => no robots tag at all, and the title is set', async () => {
+    const r = await renderWithHead(parse('Version 1.0 (final, 2026-01-02).\n\n', '1.1 Nothing is missing.'))
+    assert.deepEqual(r.robots, [])
+    assert.equal(r.title, 'Synthetic Policy — SelahCue')
+  })
+
+  test('the real committed drafts are sent noindex', async () => {
+    assert.deepEqual((await renderWithHead(privacyPolicy)).robots, ['noindex'])
+    assert.deepEqual((await renderWithHead(termsOfService)).robots, ['noindex'])
   })
 })
 
@@ -311,6 +370,25 @@ describe('one offset mechanism for anchors (no double offset next to a page-wide
     assert.ok(!page.includes('scrollIntoView'), 'LegalPage.vue must not use scrollIntoView')
     assert.match(anchors, /scrollMarginTop/)
   })
+})
+
+describe('a placeholder inside an external or mailto link label is counted and highlighted', () => {
+  for (const target of ['https://example.com/policy', 'mailto:privacy@example.com', '/privacy']) {
+    test(`label of [${target}]`, async () => {
+      const doc = parseLegalMarkdown(
+        `# T\n\nVersion 1.0 (final, 2026-01-02).\n\n## 1. One\n\n1.1 Write to [\`{{CONTACT_LABEL}}\`](${target}) or [plain {{SECOND_LABEL}} words](${target}).\n`,
+        't.md',
+      )
+      const state = legalPageState(doc)
+      assert.equal(state.placeholderCount, 2)
+      assert.deepEqual(state.placeholders, ['CONTACT_LABEL', 'SECOND_LABEL'])
+      assert.equal(state.draft, true, 'a placeholder in a link label keeps the page a draft')
+      const html = await render(doc)
+      assert.equal(count(html, 'data-placeholder'), 2, 'both labels render as highlighted chips')
+      const anchors = [...html.matchAll(/<a [^>]*href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/g)].filter((m) => (m[1] ?? '') === target || (m[1] ?? '') === target)
+      assert.ok(anchors.length >= 2 && anchors.every((m) => (m[2] ?? '').includes('data-placeholder')), 'the chips sit inside the links')
+    })
+  }
 })
 
 describe('rendering is inert', () => {

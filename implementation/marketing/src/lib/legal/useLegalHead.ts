@@ -9,6 +9,11 @@ function head(): LegalHead {
   return shared
 }
 
+/** Forget the shared head (tests give each render its own fake document). */
+export function resetLegalHead(): void {
+  shared = null
+}
+
 /**
  * Set `document.title` and, while `noindex()` is true, the robots `noindex` tag for the
  * lifetime of the calling page. Reactive: when `noindex()` flips (it is derived from the
