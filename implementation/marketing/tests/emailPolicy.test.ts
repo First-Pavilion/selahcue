@@ -65,7 +65,7 @@ function domainClass(address: string): DomainClass {
   if (domain === 'localhost') return 'allowlist'
   if (domain.startsWith('[')) return 'ip-literal'
   if (domain.split('.').some((label) => label.startsWith('xn--'))) return 'punycode'
-  if (/[^\u0000-\u007f]/u.test(domain)) return 'idn'
+  if (/\P{ASCII}/u.test(domain)) return 'idn'
   return 'ascii'
 }
 
