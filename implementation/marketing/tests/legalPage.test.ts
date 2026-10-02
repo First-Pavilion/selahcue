@@ -326,14 +326,23 @@ describe('breakpoints and gutters agree with the rest of the site (and with PR #
   const css = ['LegalPage.vue', 'LegalBlocks.vue', 'LegalInline.vue', 'LegalList.vue', 'LegalTable.vue'].map((f) => [f, readFileSync(`${dir}${f}`, 'utf8')] as const)
   const page = css[0]?.[1] ?? ''
 
-  test('no media query ends a range at a whole-pixel breakpoint (767px leaves a gap at 767.5px)', () => {
+  test('NO max-width media query ends at a whole pixel: every range end is the .98 form (same rule as PR #140)', () => {
+    // At a fractional viewport (browser zoom gives 767.5px) `max-width: 767px` and the next
+    // range's `min-width: 768px` both miss. #140's tripwire bans every whole-pixel max-width
+    // in @media, so this does too; the legal components have no exception to list.
     const offenders: string[] = []
     for (const [file, text] of css) {
       for (const line of text.split('\n')) {
-        if (line.includes('@media') && /max-width:\s*(767|768|1023|1024|1099|1199|1200)px/.test(line)) offenders.push(`${file}: ${line.trim()}`)
+        if (!line.includes('@media')) continue
+        for (const m of line.matchAll(/max-width:\s*(\d+)px/g)) offenders.push(`${file}: ${line.trim()} (${m[1]}px)`)
       }
     }
     assert.deepEqual(offenders, [])
+  })
+
+  test('the stacking and phone breakpoints are the .98 forms', () => {
+    assert.match(page, /@media \(max-width: 819\.98px\)/)
+    assert.match(page, /@media \(max-width: 519\.98px\)/)
   })
 
   test('the mobile and tablet range ends are the site\'s complementary .98 forms', () => {

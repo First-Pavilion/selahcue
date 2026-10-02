@@ -467,7 +467,7 @@ html:has(.legal-page) {
 /* Lists under a numbered clause align with the clause text, not the number. */
 .has-clauses > :deep(.ll) { margin-left: var(--clause-indent); }
 
-@media (max-width: 819px) {
+@media (max-width: 819.98px) {
   .legal-page { padding: 40px 0 64px; }
   .legal-layout { grid-template-columns: minmax(0, 1fr); gap: 24px; }
   .toc { position: static; max-height: none; overflow: visible; padding-right: 0; }
@@ -518,7 +518,7 @@ html:has(.legal-page) {
   .draft-banner { padding: 16px; }
 }
 
-@media (max-width: 519px) {
+@media (max-width: 519.98px) {
   /* No room for a hanging number on a phone: it sits inline before the text. */
   .legal-page { --clause-indent: 0px; --clause-gap: 8px; }
 }
