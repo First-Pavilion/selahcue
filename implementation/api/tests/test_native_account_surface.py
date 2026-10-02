@@ -1,4 +1,4 @@
-"""The native-client account surface under `/v1` (86ak5t1gw, ADR-0027).
+"""The native-client account surface under `/v1` (86ak5t1gw, ADR-0029).
 
 THE DEFECT THIS FILE EXISTS FOR. DEC-011 part 3 makes account sign-in the primary activation
 path, and the desktop reaches it as `login` then `activateDeviceWithSession` on

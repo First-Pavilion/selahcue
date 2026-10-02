@@ -124,7 +124,7 @@ def _activation_payload(result, *, operation: str) -> dict:
     }
 
 
-# --- Native-client account sign-in (86ak5t1gw, ADR-0027) -------------------------------------
+# --- Native-client account sign-in (86ak5t1gw, ADR-0029) -------------------------------------
 #
 # The two views below are `csrf_exempt` and that is SOUND only because of three properties, each
 # pinned by `tests/test_native_account_surface.py`. Break one and the exemption stops being safe:
