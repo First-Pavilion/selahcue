@@ -458,6 +458,16 @@ impl SttEngine {
     /// more likely to be something they actually said twice — the trim's one known false
     /// positive ("…we worship you, we worship you") — and interims are replaced by the final
     /// anyway. Both are left verbatim.
+    ///
+    /// ASSUMES ONE SEGMENT PER UTTERANCE. The trim runs on every segment the recognizer returns
+    /// for a force-closed utterance, which is only right because the one production recognizer
+    /// sets whisper.cpp's `single_segment`, so "per segment" and "per utterance" are the same
+    /// thing and the one segment is the one that ends at the cut. If a recognizer ever returns
+    /// several segments for one utterance (that setting dropped, or a second backend), only the
+    /// LAST of them ends at the cut: restrict the trim to it, or the earlier segments — which
+    /// end where the model chose, not where the cap fell — would be trimmed too. (A
+    /// `debug_assert!` was considered and rejected: the failure is an over-eager trim, not a
+    /// crash, and dev builds must not panic the transcript path over it.)
     fn close_utterance(&mut self, reason: CloseReason) {
         if !self.in_speech {
             return;
@@ -1080,6 +1090,44 @@ mod tests {
             let seg = only_final(&mut provider, "force-closed legitimate");
             assert_eq!(seg.text, legit, "legitimate repetition was altered on a force-closed final");
         }
+    }
+
+    /// 17tnw2b0nkq review: the trim's word comparison used to delete every non-ASCII letter, so
+    /// a force-closed final of different Yoruba words could read as a loop and lose real words.
+    /// Through the engine: a line of alternating distinct non-ASCII words and a line of tone-only
+    /// minimal pairs come through verbatim, while a real code-switched Yoruba loop is trimmed
+    /// (the positive control: "never trims non-ASCII" would otherwise pass vacuously). Texts are
+    /// written with \u escapes so the test pins which Unicode form reaches the engine.
+    #[test]
+    fn the_trailing_repeat_trim_does_not_mistake_distinct_non_ascii_words_for_a_loop() {
+        let cap_frames = frames_to_force_close();
+        let run = |text: &str| {
+            let (mut engine, mut provider) = engine_with(&[text], EngineConfig::default());
+            engine.process(&speech_chunk(cap_frames));
+            only_final(&mut provider, "force-closed non-ASCII").text
+        };
+
+        // The review's reproduction: "ọlọ ẹlẹ ọlọ ẹlẹ ọlọ ẹlẹ" (it used to come back as
+        // "ọlọ ẹlẹ ọlọ"), in precomposed form and in decomposed form.
+        for distinct in [
+            "\u{1ECD}l\u{1ECD} \u{1EB9}l\u{1EB9} \u{1ECD}l\u{1ECD} \u{1EB9}l\u{1EB9} \u{1ECD}l\u{1ECD} \u{1EB9}l\u{1EB9}",
+            "o\u{323}lo\u{323} e\u{323}le\u{323} o\u{323}lo\u{323} e\u{323}le\u{323} o\u{323}lo\u{323} e\u{323}le\u{323}",
+            // six different words that differ only in their tone mark
+            "ba\u{300} ba\u{301} be\u{300} bi\u{300} bo\u{300} bu\u{300}",
+        ] {
+            assert_eq!(run(distinct), distinct, "distinct non-ASCII words were trimmed");
+        }
+
+        // A real loop, with the repeated copies spelled in different normalisation forms.
+        let phrase = "\u{1ECD}l\u{1ECD}\u{301}run ni \u{1ECD}ba wa";
+        let phrase_nfd = "o\u{323}lo\u{323}\u{301}run ni o\u{323}ba wa";
+        let looped =
+            format!("Let us say it together, {phrase} {phrase_nfd} o\u{323}lo\u{323}\u{301}run ni");
+        assert_eq!(
+            run(&looped),
+            format!("Let us say it together, {phrase}"),
+            "a real Yoruba loop must still be trimmed to its first copy"
+        );
     }
 
     // --- 86akcgmvb: max_utterance_samples vs the whisper.cpp audio-context horizon ----------

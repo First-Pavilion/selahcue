@@ -335,6 +335,10 @@ mod whisper_backend {
             // fixture with four clauses separated by 500/650/400 ms pauses (the shape most
             // likely to trigger an early EOT) was also byte-identical across both arms
             // (86akcfp3u review, Vera + Quinn). No accuracy cost found.
+            // The engine's force-close trim (`engine.rs`, `close_utterance`, 17tnw2b0nkq) depends
+            // on this: with one segment per call, trimming "per segment" is trimming "per
+            // utterance". Dropping this setting makes that code trim every segment, not just
+            // the one that ends at the cut — read its doc comment first.
             params.set_single_segment(true);
             if state.full(params, samples).is_err() {
                 return Vec::new();
