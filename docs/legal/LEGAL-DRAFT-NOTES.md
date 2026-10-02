@@ -19,7 +19,7 @@
 | Item | Value |
 |---|---|
 | Brand | SelahCue |
-| Contracting legal entity | **Unknown** — `{{LEGAL_ENTITY_NAME}}`. Owner described as First Pavilion (firstpavitech.com), Lagos; the exact entity, its registration and its relationship to the SelahCue brand are not confirmed anywhere in the repository. |
+| Contracting legal entity | **First Pavilion Technologies**, Abeokuta, on the repository owner's statement of 2026-10-02: First Pavilion Technologies owns SelahCue, which is a product its developers built and which it trades as, so licensing and the roles of licensor, data controller and seller belong to First Pavilion Technologies. That statement is the only source; no repository file or registry extract confirms it (the API settings use `info@firstpavitech.com` as a default address). Not supplied: legal form (no Ltd, Limited or Inc is used, because no non-draft source states one), registered address (only the town is known), registration number and country of establishment. An earlier version of this row said Lagos; the owner's statement says Abeokuta and replaces it. |
 | Documents | `docs/legal/PRIVACY-POLICY-PLATFORM-DRAFT.md` (v0.3), `docs/legal/TERMS-OF-SERVICE-PLATFORM-DRAFT.md` (v0.3), this file (v0.3) |
 | Requested by | Repository owner, via the coordinating agent; ClickUp delivery ticket `17tnw2b0q93`; PR #133 |
 | Audience | Churches and other organisations worldwide; the staff and volunteers who create accounts; website visitors |
@@ -69,6 +69,12 @@
   id. It also records that Terms 12.4's "a failed note generation does not use up your allowance" does not
   match ADR-0028 D5 under option A (L-38, §8.3). Nothing in the policies was
   verified by these edits; they only record what is still unverified.
+- **v0.3, entity edit (2026-10-02).** No version bump; the policies stay drafts. Owner statement: First
+  Pavilion Technologies owns SelahCue, which is a product its developers built, so licensing and the roles
+  of licensor, data controller and seller belong to First Pavilion Technologies. `{{LEGAL_ENTITY_NAME}}` is
+  filled with that name in both policies, and `{{NDI_ATTRIBUTION_TEXT}}` with the wording the repository
+  already shows (§5). Every other placeholder is unchanged, and the launch gate in §4 is unchanged except
+  that L-1 and L-51 now record these two fills.
 
 ## 3. How to read the drafts
 
@@ -100,7 +106,7 @@ generic posture; accepted risk (§7); not a publication blocker.
 
 | # | Gate | Policy clause | What must be true at publication | Current status | Decision or ticket needed |
 |---|---|---|---|---|---|
-| L-1 | Gate | Privacy header & 13; Terms header & 25; site footer | Legal entity, address, registration number, privacy, support and legal-notice mailboxes are real and monitored; one email domain is used consistently; the footer names the entity | Undecided (no entity named; site uses `selahcue.app`, API uses `selahcue.com` and `firstpavitech.com`) | Owner decision |
+| L-1 | Gate | Privacy header & 13; Terms header & 25; site footer | Legal entity, address, registration number, privacy, support and legal-notice mailboxes are real and monitored; one email domain is used consistently; the footer names the entity | Partly decided: the owner named the entity on 2026-10-02 (First Pavilion Technologies, Abeokuta), and both policies now carry the name. Still missing: registered address, registration number, legal-notices mailbox, confirmed privacy and support mailboxes, and one email domain (site uses `selahcue.app`, API uses `selahcue.com` and `firstpavitech.com`). The site footer still reads "© 2026 SelahCue" | Owner decision |
 | L-2 | Gate | Privacy 2.3; Terms 9.4 | The desktop app includes a congregation-recording notice the church can display (PRD FR-158) | Unknown (no evidence found) | Ticket needed (FR-158) |
 | L-3 | Gate | Privacy 2.4 | Operators can delete a transcript in the operator console, and administrators can set automatic deletion after N days | Partly built (repository supports delete and `retention_days`; console UI not verified) | Engineering to confirm or build |
 | L-4 | Gate | Privacy 2.4 | Deleting a transcript deletes its sermon-note draft by default | Built in the repository; the default is flagged in `transcript_repo.rs` as awaiting owner sign-off | Owner decision |
@@ -151,7 +157,7 @@ generic posture; accepted risk (§7); not a publication blocker.
 | L-48 | Gate (part) / Deferred (part) | Privacy 9.2 | **Gate:** an internal breach-response procedure exists so affected users are told without undue delay and authorities are informed where the law requires. **Deferred:** NDPC-specific 72-hour notification mechanics | Unknown | Operations; accepted risk (deferred part, §7) |
 | L-49 | Gate | Terms 5.4 | The latest Release stays downloadable after a paid Plan ends | Ticketed (owner decision 2026-10-01: always-latest downloads) | 86ak10afm (O) |
 | L-50 | Gate | Terms 6.5, 14.3, 15.2, 16.1, 17.3, 19, 22.2, 23.2; Privacy 11.2 | The owner and counsel accept each proposal listed in §6, or change or delete the clause | Undecided | Owner + counsel |
-| L-51 | Gate | Terms 5.6, 13.1 | Open-source licence notices and the NDI attribution are published | Not built | Engineering (`{{THIRD_PARTY_NOTICES_LOCATION}}`, `{{NDI_ATTRIBUTION_TEXT}}`) |
+| L-51 | Gate | Terms 5.6, 13.1 | Open-source licence notices and the NDI attribution are published | Not built | Engineering (`{{THIRD_PARTY_NOTICES_LOCATION}}`; the NDI attribution wording is filled in Terms 13.1, §5) |
 | L-52 | Gate | Terms 10.1 | Scripture detection requires operator approval by default; AI notes show the AI-generated label and fabrication warning | Partly built (label and warning in `selahcue-core`/`selahcue-cloud`; the detection default is specified in PRD FR-115 but not verified in code) | Engineering to confirm |
 | L-53 | Gate | Terms 14.2 | The support mailbox is staffed to the published support terms | Unknown | Operations (`{{SUPPORT_TERMS}}`) |
 | L-54 | Gate | Terms 22 | Governing law and forum are chosen | Undecided | Owner + counsel |
@@ -163,7 +169,27 @@ generic posture; accepted risk (§7); not a publication blocker.
 deferred (L-9, L-42, L-43, L-44, L-45, L-46), and 2 are split between gated and deferred parts (L-37,
 L-48).
 
-## 5. Placeholder register (52 placeholders)
+## 5. Placeholder register (50 open placeholders)
+
+**Filled on 2026-10-02 (2), so no longer in the table below** (the table lists exactly the tokens still in
+the two policies):
+
+- `{{LEGAL_ENTITY_NAME}}` is now `First Pavilion Technologies` (Privacy header, 1.1 and 13; Terms header,
+  8.3 and 25), on the repository owner's statement of 2026-10-02 (§1). No legal-form suffix is added,
+  because no non-draft source states one.
+- `{{NDI_ATTRIBUTION_TEXT}}` is now "NDI® is a registered trademark of Vizrt NDI AB." (Terms 13.1). The
+  shipped operator app shows that sentence in its About page (`selahcue-operator/dist/index.html`, section
+  "NDI ATTRIBUTION"), and `implementation/desktop/vendor/ndi/README.md`, `docs/ops/DEPLOYMENT.md` and
+  `docs/ops/WINDOWS-INSTALLER.md` repeat it. `docs/research/LICENSING-REGISTER.md` §2.6 also says a link to
+  ndi.video must sit near every place NDI is used; that link is not part of this sentence.
+
+Every other token stayed open on purpose, because no non-draft source states its value without doubt. The
+grounded-looking candidates were: the privacy and support mailboxes (`privacy@selahcue.app` on the old
+`PrivacyView.vue`, `support@selahcue.app` on `ContactView.vue`), left open because §9.3 item 12 and §9.4 record that
+nothing shows those mailboxes or that domain exist and the API uses two other domains (L-1); the website
+URL (`https://selahcue.app` appears only in a sample affiliate link, while the API's tests and plans use
+`app.selahcue.com`); and the country (`docs/research/LICENSING-REGISTER.md` says only that First Pavilion
+"appears Nigeria-based").
 
 **Removed in v0.3 (13):** `DPO_NAME_AND_CONTACT`, `EU_REPRESENTATIVE`, `UK_REPRESENTATIVE`,
 `LIA_REFERENCE`, `DPA_REFERENCE`, `SENSITIVE_DATA_CONDITION`, `MODEL_TRAINING_STATEMENT`,
@@ -177,7 +203,6 @@ server-minted credential).
 
 | Placeholder | Meaning | Used in | Who decides |
 |---|---|---|---|
-| `{{LEGAL_ENTITY_NAME}}` | Exact registered name of the contracting entity and seller | Both | Owner |
 | `{{REGISTERED_ADDRESS}}` | Registered office address | Both | Owner |
 | `{{COMPANY_REGISTRATION_NUMBER}}` | CAC (or other) registration number | Both | Owner |
 | `{{EFFECTIVE_DATE}}` | Date each document takes effect | Both | Owner, at publication |
@@ -223,7 +248,6 @@ server-minted credential).
 | `{{DOWNGRADE_TIMING}}` | When a downgrade takes effect | Terms 8.11 | Owner |
 | `{{FAILED_PAYMENT_GRACE_PERIOD}}` | How long after a failed payment before suspension | Terms 8.12 | Owner |
 | `{{RETRY_ALLOWANCE_TERMS}}` | The note-retry rule (ADR-0028 D5, Proposed, records one retry within 10 minutes against the same reservation, the failed attempt and its retry together costing one unit, and the unit still being charged if the retry also fails; that is option A, and option C keeps "failures are never charged" exactly) | Terms 12.4 | Owner to confirm |
-| `{{NDI_ATTRIBUTION_TEXT}}` | Attribution and trademark wording required by the NDI licence | Terms | Owner |
 | `{{SUPPORT_TERMS}}` | Support hours and response commitments | Terms | Owner |
 | `{{MINIMUM_LIABILITY_AMOUNT}}` | Floor of the liability cap | Terms | Owner + counsel |
 | `{{GOVERNING_LAW}}` | Governing law | Terms | Owner + counsel |
@@ -555,8 +579,10 @@ in ClickUp on 2026-10-02 and exist; that shows the tickets exist, not that what 
 
 ## 12. Top 10 open questions and risks
 
-1. **Entity, contacts and domains.** No legal entity is named anywhere, and contact addresses span three
-   domains. *Owner:* supply the entity details and choose one domain and mailbox set (L-1).
+1. **Entity, contacts and domains.** No repository file named a legal entity until the owner's statement of
+   2026-10-02 (First Pavilion Technologies, now in both policies); its registered address, registration
+   number and legal form are still missing, and contact addresses span three domains. *Owner:* supply the
+   missing entity details and choose one domain and mailbox set (L-1).
 2. **The live site misleads users today.** The stub pages claim Stripe, bundled BSB, licensed
    NIV/ESV/NLT, recurring billing with portal cancellation and GPU acceleration. The contact form
    discards messages while promising a reply within 24 hours, and the pricing and download pages
