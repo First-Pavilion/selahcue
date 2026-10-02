@@ -3,7 +3,8 @@
 #![allow(clippy::unwrap_used)]
 
 use selahcue_core::media::{
-    MediaAsset, MediaId, MediaKind, MediaLibrary, MAX_MEDIA_ASSETS, MAX_MEDIA_PATH_LEN,
+    MediaAsset, MediaId, MediaKind, MediaLibrary, MAX_MEDIA_ASSETS, MAX_MEDIA_NAME_LEN,
+    MAX_MEDIA_PATH_LEN,
 };
 
 #[test]
@@ -161,6 +162,7 @@ fn asset_captures_dimensions_and_duration_metadata() {
     let audio = MediaAsset {
         id: MediaId(9),
         path: "pad.wav".to_string(),
+        name: None,
         kind: MediaKind::Audio,
         size_bytes: 100,
         width: None,
@@ -180,6 +182,7 @@ fn from_assets_rehydrates_next_id_past_the_largest() {
         MediaAsset {
             id: MediaId(4),
             path: "a".into(),
+            name: None,
             kind: MediaKind::Image,
             size_bytes: 1,
             width: None,
@@ -190,6 +193,7 @@ fn from_assets_rehydrates_next_id_past_the_largest() {
         MediaAsset {
             id: MediaId(9),
             path: "b".into(),
+            name: None,
             kind: MediaKind::Image,
             size_bytes: 1,
             width: None,
@@ -251,4 +255,92 @@ fn get_by_path_finds_the_asset_for_usage_correlation() {
     let id = img(&mut lib, "harvest.jpg", 1).unwrap();
     assert_eq!(lib.get_by_path("harvest.jpg").map(|a| a.id), Some(id));
     assert!(lib.get_by_path("nope.jpg").is_none());
+}
+
+// --- display name: the store copy is `import-<n>.png`; the user's own file name is not lost ----
+
+#[test]
+fn an_imported_asset_has_no_name_until_one_is_set() {
+    let mut lib = MediaLibrary::new();
+    let id = img(&mut lib, "/store/import-0.png", 10).unwrap();
+    assert_eq!(lib.get(id).unwrap().name, None);
+}
+
+#[test]
+fn set_name_keeps_a_trimmed_name_and_reports_whether_the_asset_exists() {
+    let mut lib = MediaLibrary::new();
+    let id = img(&mut lib, "/store/import-0.png", 10).unwrap();
+    assert!(lib.set_name(id, "  Sunday banner.png \t"));
+    assert_eq!(
+        lib.get(id).unwrap().name.as_deref(),
+        Some("Sunday banner.png")
+    );
+    assert!(
+        !lib.set_name(MediaId(999), "ghost.png"),
+        "an unknown id is refused, not invented"
+    );
+}
+
+#[test]
+fn set_name_strips_control_characters_and_clears_a_blank_name() {
+    let mut lib = MediaLibrary::new();
+    let id = img(&mut lib, "/store/import-0.png", 10).unwrap();
+    assert!(lib.set_name(id, "a\u{0}b\nc\u{7f}d"));
+    assert_eq!(
+        lib.get(id).unwrap().name.as_deref(),
+        Some("abcd"),
+        "NUL, newline and DEL never reach a stored or rendered name"
+    );
+    assert!(lib.set_name(id, "  \u{0} \n "));
+    assert_eq!(
+        lib.get(id).unwrap().name,
+        None,
+        "a name that is empty once cleaned falls back to the file name"
+    );
+}
+
+#[test]
+fn set_name_caps_at_a_char_boundary_never_splitting_a_multibyte_char() {
+    let mut lib = MediaLibrary::new();
+    let id = img(&mut lib, "/store/import-0.png", 10).unwrap();
+    // 3-byte chars: the cap lands mid-character unless the cut backs off to a boundary.
+    let long = "字".repeat(MAX_MEDIA_NAME_LEN);
+    assert!(lib.set_name(id, &long));
+    let kept = lib.get(id).unwrap().name.clone().unwrap();
+    assert!(kept.len() <= MAX_MEDIA_NAME_LEN, "bounded by bytes");
+    assert!(
+        kept.chars().all(|c| c == '字'),
+        "cut on a char boundary, not mid-codepoint"
+    );
+    assert!(
+        kept.len() > MAX_MEDIA_NAME_LEN - 3,
+        "positive control: the name is truncated to the cap, not discarded"
+    );
+}
+
+#[test]
+fn within_bounds_rejects_an_asset_whose_name_exceeds_the_cap() {
+    let ok = MediaAsset {
+        id: MediaId(1),
+        path: "p".into(),
+        name: Some("n".repeat(MAX_MEDIA_NAME_LEN)),
+        kind: MediaKind::Image,
+        size_bytes: 1,
+        width: None,
+        height: None,
+        duration_ms: None,
+        imported_at: 0,
+    };
+    assert!(
+        ok.within_bounds(),
+        "a name exactly at the cap is within bounds"
+    );
+    let over = MediaAsset {
+        name: Some("n".repeat(MAX_MEDIA_NAME_LEN + 1)),
+        ..ok
+    };
+    assert!(
+        !over.within_bounds(),
+        "one byte over the cap is out of bounds"
+    );
 }

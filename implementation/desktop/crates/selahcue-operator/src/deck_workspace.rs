@@ -14,6 +14,8 @@
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
+use crate::deck_library::DeckLibrary;
+use crate::media_store::ImportedFile;
 use selahcue_core::media::{MediaId, MediaKind, MediaLibrary};
 use selahcue_present::{
     media_usage, render_authored_slide, AuthoredSlide, Background, Element, Fit, FrameBuffer,
@@ -25,6 +27,15 @@ use serde_json::{json, Value};
 /// Upper bound on the undo/redo history (no-leak): far above the ≥20 steps FR-016 requires, and
 /// each entry is one bounded `SlideDeck` clone.
 const MAX_UNDO: usize = 60;
+
+/// What [`DeckWorkspace::register_imported`] did with a batch of freshly copied files.
+#[derive(Debug, Default)]
+pub struct RegisterOutcome {
+    /// Ids of the assets that were added.
+    pub registered: Vec<u64>,
+    /// Files the library would not hold — their copies are still on disk and must be deleted.
+    pub refused: Vec<ImportedFile>,
+}
 
 /// The authored-deck editing workspace behind the Presentation surface.
 pub struct DeckWorkspace {
@@ -691,24 +702,62 @@ impl DeckWorkspace {
 
     // --- media ------------------------------------------------------------------------------
 
-    /// Register an imported media file (its metadata). Real disk import of the file bytes uses the
-    /// native picker on the shell side; this records the asset in the library.
-    pub fn import_media(
-        &mut self,
-        path: String,
-        kind: &str,
-        size_bytes: u64,
-        width: Option<u32>,
-        height: Option<u32>,
-        duration_ms: Option<u32>,
-    ) {
-        let kind = MediaKind::from_tag(kind).unwrap_or(MediaKind::Image);
-        self.media
-            .import(path, kind, size_bytes, width, height, duration_ms, 0);
+    /// Replace the media library wholesale — how a launch swaps the demo workspace's fake
+    /// `demo://` assets for the registry the operator actually saved.
+    pub fn set_media(&mut self, media: MediaLibrary) {
+        self.media = media;
     }
 
-    pub fn remove_media(&mut self, id: u64) {
-        self.media.remove(MediaId(id));
+    /// The media library, for persisting after an import or a removal.
+    pub fn media(&self) -> &MediaLibrary {
+        &self.media
+    }
+
+    /// The stored path of asset `id`, if the library holds it (what a thumbnail is read from).
+    pub fn media_path(&self, id: u64) -> Option<String> {
+        self.media.get(MediaId(id)).map(|a| a.path.clone())
+    }
+
+    /// Register files the media store has just copied in: each becomes an image asset carrying the
+    /// operator's own name and `imported_at` (epoch milliseconds — the core takes no clock).
+    ///
+    /// A file the library will not hold (full, or a path it cannot represent) is **handed back** in
+    /// [`RegisterOutcome::refused`] rather than dropped: its copy is already on disk, and the caller
+    /// must delete it or it is an orphan nothing in the app can list or remove.
+    pub fn register_imported(
+        &mut self,
+        files: Vec<ImportedFile>,
+        imported_at: u64,
+    ) -> RegisterOutcome {
+        let mut outcome = RegisterOutcome::default();
+        for file in files {
+            let id = self.media.import(
+                file.path.clone(),
+                MediaKind::Image,
+                file.size_bytes,
+                None,
+                None,
+                None,
+                imported_at,
+            );
+            match id {
+                Some(id) => {
+                    if let Some(name) = &file.name {
+                        self.media.set_name(id, name);
+                    }
+                    outcome.registered.push(id.0);
+                }
+                None => outcome.refused.push(file),
+            }
+        }
+        outcome
+    }
+
+    /// Remove asset `id` from the library, returning the path it held so the shell can delete the
+    /// stored copy. `None` when there was no such asset (a quiet no-op).
+    pub fn remove_media(&mut self, id: u64) -> Option<String> {
+        let path = self.media_path(id)?;
+        self.media.remove(MediaId(id)).then_some(path)
     }
 
     // --- preview compose --------------------------------------------------------------------
@@ -726,8 +775,24 @@ impl DeckWorkspace {
     // --- view -------------------------------------------------------------------------------
 
     /// The `DeckView` JSON the webview renders from.
-    pub fn view(&self) -> Value {
-        let usage = media_usage(&self.media, &[&self.deck]);
+    ///
+    /// Takes the **library** on purpose: the media library is shared by every saved deck, so what
+    /// "used" and "unused" mean for an asset is a question about all of them, not just the one open
+    /// in the editor. It used to look at the open deck alone, so an image only "Easter" used showed
+    /// as unused (and removable without a warning) while "Sunday" was open. A view that cannot be
+    /// asked without the library cannot silently regress to that.
+    pub fn view(&self, library: &DeckLibrary) -> Value {
+        let others = library.saved_decks_except(self.deck.id());
+        self.view_over(&others)
+    }
+
+    /// [`DeckWorkspace::view`] over an explicit set of *other* saved decks (the open deck is always
+    /// counted, from the live editor state rather than its stored copy).
+    fn view_over(&self, others: &[&SlideDeck]) -> Value {
+        let mut decks: Vec<&SlideDeck> = Vec::with_capacity(1 + others.len());
+        decks.push(&self.deck);
+        decks.extend(others.iter().copied());
+        let usage = media_usage(&self.media, &decks);
         let unused: HashSet<u64> = usage.unused.iter().map(|m| m.0).collect();
         let missing_ids = self.media.missing(missing_probe);
         let missing: HashSet<u64> = missing_ids.iter().map(|m| m.0).collect();
@@ -765,21 +830,25 @@ impl DeckWorkspace {
             })
         });
 
-        // How many slides reference each asset path (by image element OR image background) — the
-        // "Used on k slides" warning on the remove-media confirm (C-002). Bounded by the deck size.
+        // How many slides of the OPEN deck reference each asset path (by image element OR image
+        // background) — the "Used on k slides" warning on the remove-media confirm (C-002). Bounded
+        // by the deck size.
         let mut uses: HashMap<&str, usize> = HashMap::new();
         for s in self.deck.slides() {
-            let mut seen: HashSet<&str> = HashSet::new();
-            for el in &s.elements {
-                if let Element::Image { source, .. } = el {
-                    seen.insert(source.as_str());
-                }
-            }
-            if let Some(Background::Image(bg)) = &s.background {
-                seen.insert(bg.source.as_str());
-            }
-            for path in seen {
+            for path in slide_image_sources(s) {
                 *uses.entry(path).or_insert(0) += 1;
+            }
+        }
+        // How many OTHER saved decks show each path — the second half of that warning, and the
+        // reason Remove keeps the stored file (the open deck's count says nothing about them).
+        // Skipped for an empty media library: the scan is O(every slide of every saved deck) and
+        // there is nothing to count against.
+        let mut other_decks: HashMap<&str, usize> = HashMap::new();
+        if !self.media.is_empty() {
+            for deck in others {
+                for path in deck_image_paths(deck) {
+                    *other_decks.entry(path).or_insert(0) += 1;
+                }
             }
         }
 
@@ -790,7 +859,9 @@ impl DeckWorkspace {
             .map(|a| {
                 json!({
                     "id": a.id.0,
-                    "name": file_name(&a.path),
+                    // The operator's own file name when the store kept it; the stored file's name
+                    // otherwise (an in-place legacy asset, or one imported before names existed).
+                    "name": a.name.clone().unwrap_or_else(|| file_name(&a.path)),
                     "path": a.path,
                     "kind": a.kind.as_tag(),
                     "size_label": size_label(a.size_bytes),
@@ -800,6 +871,7 @@ impl DeckWorkspace {
                     "missing": missing.contains(&a.id.0),
                     "unused": unused.contains(&a.id.0),
                     "uses": uses.get(a.path.as_str()).copied().unwrap_or(0),
+                    "other_decks": other_decks.get(a.path.as_str()).copied().unwrap_or(0),
                 })
             })
             .collect();
@@ -821,6 +893,37 @@ impl DeckWorkspace {
             "can_redo": !self.redo.is_empty(),
         })
     }
+}
+
+// --- picture usage ---------------------------------------------------------------------------
+
+/// Every picture path `slide` shows — its image elements and its image background — each once.
+///
+/// The **one** definition of "this slide shows that file". The open deck's per-asset slide counts
+/// ([`DeckWorkspace::view`]) and every other saved deck's ([`deck_image_paths`], which
+/// `DeckLibrary::media_keepers` also consumes to decide whether Remove may delete a stored copy)
+/// all come through it, so the warning the operator reads and the file the shell keeps cannot
+/// disagree about what counts as a use.
+pub(crate) fn slide_image_sources(slide: &AuthoredSlide) -> HashSet<&str> {
+    let mut seen: HashSet<&str> = HashSet::new();
+    for el in &slide.elements {
+        if let Element::Image { source, .. } = el {
+            seen.insert(source.as_str());
+        }
+    }
+    if let Some(Background::Image(bg)) = &slide.background {
+        seen.insert(bg.source.as_str());
+    }
+    seen
+}
+
+/// Every distinct picture path any slide of `deck` shows. Bounded by the deck's own caps.
+pub(crate) fn deck_image_paths(deck: &SlideDeck) -> HashSet<&str> {
+    let mut all: HashSet<&str> = HashSet::new();
+    for slide in deck.slides() {
+        all.extend(slide_image_sources(slide));
+    }
+    all
 }
 
 // --- element constructors -------------------------------------------------------------------
@@ -1322,7 +1425,7 @@ mod tests {
         // >= 1 (the "Used on k slides" source for the remove-media warning, C-002); an asset no
         // slide references reports 0.
         let ws = DeckWorkspace::demo();
-        let v = ws.view();
+        let v = ws.view(&DeckLibrary::load(None));
         let assets = v["media"]["assets"].as_array().unwrap();
         let harvest = assets
             .iter()
@@ -1466,6 +1569,183 @@ mod tests {
             next_json.is_none(),
             "the last deck slide has no coming slide"
         );
+    }
+
+    // --- imported media: names, registration, removal, the production (non-demo) library ----------
+
+    fn imported(path: &str, name: Option<&str>, size: u64) -> ImportedFile {
+        ImportedFile {
+            path: path.to_string(),
+            name: name.map(str::to_string),
+            size_bytes: size,
+        }
+    }
+
+    #[test]
+    fn registering_an_import_adds_a_named_image_asset_stamped_with_the_import_time() {
+        let mut ws = DeckWorkspace::new_empty_for_test();
+        let out = ws.register_imported(
+            vec![imported("/m/import-0.png", Some("Sunday banner.png"), 2048)],
+            1_234,
+        );
+        assert_eq!(out.registered.len(), 1);
+        assert!(out.refused.is_empty());
+        let a = &ws.media.assets()[0];
+        assert_eq!(a.kind, MediaKind::Image);
+        assert_eq!(a.imported_at, 1_234, "stamped with the caller's clock");
+        let v = ws.view(&DeckLibrary::load(None));
+        let asset = &v["media"]["assets"][0];
+        assert_eq!(
+            asset["name"], "Sunday banner.png",
+            "the operator's own name is shown"
+        );
+        assert_eq!(asset["path"], "/m/import-0.png");
+        assert_eq!(asset["kind"], "image");
+    }
+
+    #[test]
+    fn the_view_counts_every_saved_decks_use_of_a_picture_not_just_the_open_decks() {
+        let mut lib = DeckLibrary::load(None);
+        let mut ws = DeckWorkspace::new_empty_for_test();
+        let out = ws.register_imported(
+            vec![
+                imported("/m/banner.png", Some("banner.png"), 5),
+                imported("/m/spare.png", Some("spare.png"), 5),
+            ],
+            0,
+        );
+        let (banner, spare) = (out.registered[0], out.registered[1]);
+        // "Easter" (saved) shows the banner; "Sunday" is the open deck and shows nothing.
+        ws.load_deck(lib.create("Easter"));
+        ws.add_image_element(banner);
+        lib.store(ws.open_deck());
+        ws.load_deck(lib.create("Sunday"));
+
+        let v = ws.view(&lib);
+        let row = |v: &Value, id: u64| {
+            v["media"]["assets"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|a| a["id"] == id)
+                .unwrap()
+                .clone()
+        };
+        assert_eq!(
+            row(&v, banner)["uses"],
+            0,
+            "premise: the OPEN deck does not show the banner, so an open-deck-only count would call it unused"
+        );
+        assert_eq!(row(&v, banner)["other_decks"], 1, "Easter shows it");
+        assert_eq!(
+            row(&v, banner)["unused"],
+            false,
+            "an image another saved deck shows is not unused"
+        );
+        assert_eq!(
+            row(&v, spare)["unused"],
+            true,
+            "positive control: an image NO deck shows is still unused"
+        );
+        assert_eq!(row(&v, spare)["other_decks"], 0);
+        assert_eq!(
+            v["media"]["unused_count"], 1,
+            "the footer count is across all decks too"
+        );
+
+        // The open deck's own count is the LIVE editor state, not its stored copy (which lags until
+        // the next autosave): show the banner here too, without storing.
+        ws.add_image_element(banner);
+        let v = ws.view(&lib);
+        assert_eq!(row(&v, banner)["uses"], 1);
+        assert_eq!(
+            row(&v, banner)["other_decks"],
+            1,
+            "still just the one OTHER deck"
+        );
+    }
+
+    #[test]
+    fn an_unnamed_asset_falls_back_to_the_stored_file_name_in_the_view() {
+        let mut ws = DeckWorkspace::new_empty_for_test();
+        ws.register_imported(vec![imported("/m/import-7.jpg", None, 10)], 0);
+        assert_eq!(
+            ws.view(&DeckLibrary::load(None))["media"]["assets"][0]["name"],
+            "import-7.jpg"
+        );
+    }
+
+    #[test]
+    fn a_file_the_library_will_not_hold_is_handed_back_so_its_copy_can_be_deleted() {
+        // A registration refusal (library full, absurd path) must not strand the copy the store
+        // already wrote: the caller gets the file back and deletes it.
+        let mut ws = DeckWorkspace::new_empty_for_test();
+        let mut full = MediaLibrary::new();
+        for i in 0..selahcue_core::media::MAX_MEDIA_ASSETS {
+            full.import(
+                format!("/m/f{i}.png"),
+                MediaKind::Image,
+                1,
+                None,
+                None,
+                None,
+                0,
+            )
+            .unwrap();
+        }
+        ws.set_media(full);
+        let out = ws.register_imported(vec![imported("/m/one-too-many.png", None, 1)], 0);
+        assert!(out.registered.is_empty(), "nothing registered past the cap");
+        assert_eq!(out.refused.len(), 1, "the refused file comes back");
+        assert_eq!(out.refused[0].path, "/m/one-too-many.png");
+
+        let mut ws = DeckWorkspace::new_empty_for_test();
+        let too_long = format!(
+            "/m/{}",
+            "x".repeat(selahcue_core::media::MAX_MEDIA_PATH_LEN)
+        );
+        let out = ws.register_imported(vec![imported(&too_long, None, 1)], 0);
+        assert_eq!(
+            out.refused.len(),
+            1,
+            "an over-long path is refused, not dropped silently"
+        );
+    }
+
+    #[test]
+    fn removing_media_returns_the_path_so_the_shell_can_delete_its_copy() {
+        let mut ws = DeckWorkspace::new_empty_for_test();
+        let out = ws.register_imported(vec![imported("/m/import-0.png", None, 1)], 0);
+        let id = out.registered[0];
+        assert_eq!(ws.media_path(id).as_deref(), Some("/m/import-0.png"));
+        assert_eq!(ws.remove_media(id).as_deref(), Some("/m/import-0.png"));
+        assert_eq!(ws.remove_media(id), None, "removing twice is a no-op");
+        assert_eq!(
+            ws.remove_media(9_999),
+            None,
+            "an unknown id removes nothing"
+        );
+        assert_eq!(ws.media_path(id), None, "gone from the library");
+    }
+
+    #[test]
+    fn replacing_the_demo_library_leaves_a_production_launch_with_only_real_imports() {
+        let mut ws = DeckWorkspace::demo();
+        assert!(
+            !ws.view(&DeckLibrary::load(None))["media"]["assets"]
+                .as_array()
+                .unwrap()
+                .is_empty(),
+            "premise: the demo workspace ships fake demo:// assets"
+        );
+        ws.set_media(MediaLibrary::new());
+        let v = ws.view(&DeckLibrary::load(None));
+        assert!(
+            v["media"]["assets"].as_array().unwrap().is_empty(),
+            "no fake assets once the saved (empty) library replaces the demo one"
+        );
+        assert_eq!(v["media"]["missing_count"], 0);
+        assert_eq!(v["media"]["unused_count"], 0);
     }
 
     impl DeckWorkspace {

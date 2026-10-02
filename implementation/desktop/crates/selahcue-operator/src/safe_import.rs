@@ -98,9 +98,43 @@ pub fn validate_picked_image(picked: &Path) -> Result<PathBuf, SafeImportError> 
     validate_picked_image_within(picked, MAX_PICKED_FILE_BYTES)
 }
 
+/// What [`read_validated_image`] admitted: the file's real path, **the exact bytes that were
+/// checked**, and the format those bytes sniffed as.
+#[derive(Debug)]
+pub struct ValidatedImage {
+    /// The symlink-resolved, `.`/`..`-free path the bytes were read from.
+    pub canonical: PathBuf,
+    /// The whole file, no larger than the admission cap.
+    pub bytes: Vec<u8>,
+    /// The allowlisted format the bytes' magic signature identified — never the extension.
+    pub format: ImageFormat,
+}
+
+/// [`validate_picked_image`] for a caller that is going to *keep* the file (copy-on-import): the
+/// same refusals, but the admitted bytes come back with the verdict instead of being dropped.
+///
+/// That matters for the same reason the single-handle read does. A caller that validated a path and
+/// then re-opened it to copy would be trusting a second lookup of a name that a local process could
+/// have re-pointed in between; here the bytes written to the media store are, by construction, the
+/// ones that passed the size cap and the magic-byte check.
+///
+/// Peak memory is one file (at most [`MAX_PICKED_FILE_BYTES`]); a caller importing several files
+/// must hold one at a time.
+pub fn read_validated_image(picked: &Path) -> Result<ValidatedImage, SafeImportError> {
+    read_validated_image_within(picked, MAX_PICKED_FILE_BYTES)
+}
+
 /// [`validate_picked_image`]'s actual logic, parametrised on the size cap so the cap's own
 /// enforcement is testable without a multi-megabyte fixture on disk.
 fn validate_picked_image_within(picked: &Path, max_bytes: u64) -> Result<PathBuf, SafeImportError> {
+    read_validated_image_within(picked, max_bytes).map(|v| v.canonical)
+}
+
+/// The shared body of [`validate_picked_image`] and [`read_validated_image`].
+fn read_validated_image_within(
+    picked: &Path,
+    max_bytes: u64,
+) -> Result<ValidatedImage, SafeImportError> {
     let canonical = fs::canonicalize(picked).map_err(|e| match e.kind() {
         std::io::ErrorKind::NotFound => SafeImportError::NotFound,
         kind => SafeImportError::Io(kind),
@@ -143,8 +177,12 @@ fn validate_picked_image_within(picked: &Path, max_bytes: u64) -> Result<PathBuf
     if bytes.len() as u64 > max_bytes {
         return Err(SafeImportError::TooLarge);
     }
-    let _format: ImageFormat = sniff(&bytes).ok_or(SafeImportError::UnsupportedType)?;
-    Ok(canonical)
+    let format: ImageFormat = sniff(&bytes).ok_or(SafeImportError::UnsupportedType)?;
+    Ok(ValidatedImage {
+        canonical,
+        bytes,
+        format,
+    })
 }
 
 #[cfg(test)]
@@ -204,6 +242,60 @@ mod tests {
 
         let canonical = validate_picked_image(&path).expect("a real PNG must be accepted");
         assert_eq!(canonical, fs::canonicalize(&path).unwrap());
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_validated_read_returns_the_exact_bytes_and_the_format_it_sniffed() {
+        // Copy-on-import stores THESE bytes. Returning them from the same handle that decided
+        // admission means what was validated is exactly what is written — there is no second read
+        // of the path for a swapped file to slip through.
+        let dir = temp_dir("read-exact");
+        let mut png = PNG_SIGNATURE.to_vec();
+        png.extend_from_slice(b"png-body");
+        let mut jpeg = vec![0xFF, 0xD8, 0xFF, 0xE0];
+        jpeg.extend_from_slice(b"jpeg-body");
+
+        let a = read_validated_image(&write(&dir, "a.bin", &png)).unwrap();
+        assert_eq!(
+            (a.bytes.as_slice(), a.format),
+            (png.as_slice(), ImageFormat::Png)
+        );
+        let b = read_validated_image(&write(&dir, "b.bin", &jpeg)).unwrap();
+        assert_eq!(
+            (b.bytes.as_slice(), b.format),
+            (jpeg.as_slice(), ImageFormat::Jpeg)
+        );
+        assert_eq!(
+            a.canonical,
+            fs::canonicalize(dir.join("a.bin")).unwrap(),
+            "the canonical path comes back alongside the bytes"
+        );
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_validated_read_applies_every_refusal_the_path_only_check_does() {
+        let dir = temp_dir("read-refuse");
+        assert_eq!(
+            read_validated_image(&dir.join("nope.png")).err(),
+            Some(SafeImportError::NotFound)
+        );
+        assert_eq!(
+            read_validated_image(&write(&dir, "elf.png", &[0x7f, b'E', b'L', b'F', 0, 0])).err(),
+            Some(SafeImportError::UnsupportedType),
+            "by content, not by a lying .png name"
+        );
+        let mut big = PNG_SIGNATURE.to_vec();
+        big.extend_from_slice(&[0u8; 64]);
+        assert_eq!(
+            read_validated_image_within(&write(&dir, "big.png", &big), 16).err(),
+            Some(SafeImportError::TooLarge),
+            "the size cap holds on the bytes returned, not just the metadata"
+        );
+        // Positive control: the same file under a roomy cap is accepted, so the refusal above is
+        // the cap and not a broken fixture.
+        assert!(read_validated_image_within(&dir.join("big.png"), 4096).is_ok());
         fs::remove_dir_all(&dir).ok();
     }
 

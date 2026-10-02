@@ -2754,6 +2754,7 @@ mod tests {
                 secrets: crate::make_secret_store(),
                 link_status: Mutex::new(selahcue_lan::LinkStatus::local()),
                 link_next_attempt: Mutex::new(None),
+                media_store: None,
             });
 
             let stop_worker = Arc::new(AtomicBool::new(false));
@@ -3017,6 +3018,7 @@ mod tests {
             secrets: crate::make_secret_store(),
             link_status: Mutex::new(selahcue_lan::LinkStatus::local()),
             link_next_attempt: Mutex::new(None),
+            media_store: None,
         });
 
         let stop_worker = Arc::new(AtomicBool::new(false));
@@ -3169,6 +3171,7 @@ mod tests {
             secrets: crate::make_secret_store(),
             link_status: Mutex::new(selahcue_lan::LinkStatus::local()),
             link_next_attempt: Mutex::new(None),
+            media_store: None,
         });
 
         const TEST_FALLBACK_NOTE: &str = "test: engine changed for this fixture";
@@ -3352,6 +3355,7 @@ mod tests {
                 secrets: crate::make_secret_store(),
                 link_status: Mutex::new(selahcue_lan::LinkStatus::local()),
                 link_next_attempt: Mutex::new(None),
+                media_store: None,
             });
 
             let stop_worker = Arc::new(AtomicBool::new(true));
@@ -3490,6 +3494,7 @@ mod tests {
             secrets: crate::make_secret_store(),
             link_status: Mutex::new(selahcue_lan::LinkStatus::local()),
             link_next_attempt: Mutex::new(None),
+            media_store: None,
         });
 
         let stop_worker = Arc::new(AtomicBool::new(false));
@@ -3651,6 +3656,7 @@ mod tests {
                 secrets: crate::make_secret_store(),
                 link_status: Mutex::new(selahcue_lan::LinkStatus::local()),
                 link_next_attempt: Mutex::new(None),
+                media_store: None,
             });
 
             let stop_worker = Arc::new(AtomicBool::new(false));

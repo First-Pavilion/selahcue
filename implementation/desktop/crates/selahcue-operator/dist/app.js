@@ -6955,14 +6955,72 @@
       async function pmImportImage() {
         pmSetBusy(true);
         try {
-          pmDv = await invoke("deck_import_image");
-          pmClearError();
+          pmDv = await invoke("deck_import_images");
           renderPresentation(pmDv);
+          pmShowImportReport(pmDv && pmDv.import_report);
         } catch (e) {
           console.error("[SelahCue] deck action failed", e);
           pmShowErrorRaw(String(e && e.message ? e.message : e));
         } finally {
           pmSetBusy(false);
+        }
+      }
+
+      // What an import did, from the host's `import_report` ({imported, skipped:[{name, reason}],
+      // saved}). A clean import is a brief status toast; anything skipped is a persistent banner
+      // naming the file and the reason (a refusal is final and specific — it is not "please retry"),
+      // bounded to the first three so a large batch cannot flood the banner. `saved === false` is the
+      // honest "this library will not survive a restart" (the registry database is unavailable).
+      // A cancelled picker returns no report: just clear any stale banner.
+      function pmShowImportReport(rep) {
+        if (!rep) { pmClearError(); return; }
+        const n = rep.imported || 0;
+        const skipped = rep.skipped || [];
+        // Only when something DID land: a batch the host rolled back because the registry could not
+        // be written has imported nothing, and "these won't be kept" would describe nothing.
+        const unsaved = rep.saved === false && n > 0 ? " These won’t be kept after you quit." : "";
+        if (!skipped.length) {
+          pmClearError();
+          if (n) pmToast("Imported " + n + " image" + (n === 1 ? "" : "s") + "." + unsaved);
+          return;
+        }
+        const shown = skipped.slice(0, 3).map((s) => s.name + " — " + s.reason).join("; ");
+        const more = skipped.length > 3 ? " (+" + (skipped.length - 3) + " more)" : "";
+        pmShowErrorRaw((n ? "Imported " + n + ". " : "") + "Skipped " + skipped.length + ": " + shown + more + "." + unsaved);
+      }
+
+      // Remove an asset from the media library. Like the import it is NOT a plain `pAct`: the host
+      // refuses with a SPECIFIC reason when the library cannot be saved ("the disk may be full or
+      // read-only" — nothing was removed), which is final text to show, not "please retry"; and a
+      // success carries a `remove_report` saying whether the stored picture file was kept for other
+      // presentations. `pmLastAct` is set so the banner's Retry re-runs THIS removal, not whatever
+      // deck action happened to come before it.
+      async function pmRemoveMedia(id) {
+        pmLastAct = { fn: () => invoke("deck_remove_media", { id: id }), opName: "remove the media" };
+        pmSetBusy(true);
+        try {
+          pmDv = await invoke("deck_remove_media", { id: id });
+          pmClearError();
+          renderPresentation(pmDv);
+          pmShowRemoveReport(pmDv && pmDv.remove_report);
+        } catch (e) {
+          console.error("[SelahCue] deck action failed", e);
+          pmShowErrorRaw(String(e && e.message ? e.message : e));
+        } finally {
+          pmSetBusy(false);
+        }
+      }
+
+      // What a removal did to the stored file, from the host's `remove_report`. Silent when the file
+      // was deleted (the tile simply leaves the grid); a toast when it was KEPT, because the picture
+      // is still on disk and still showing in the presentations that use it.
+      function pmShowRemoveReport(rep) {
+        if (!rep || !rep.removed) return;
+        const decks = rep.kept_for_decks || 0;
+        if (decks > 0) {
+          pmToast("Removed from the library. The picture file is kept because " + decks + " other presentation" + (decks === 1 ? " still uses" : "s still use") + " it.");
+        } else if (rep.kept_for_deleted > 0) {
+          pmToast("Removed from the library. The picture file is kept because a presentation you recently deleted still uses it.");
         }
       }
 
@@ -11282,8 +11340,112 @@
         }
       }
 
+      // --- Media library tile pictures -----------------------------------------------------------
+      // An image tile used to be an empty gradient box: nothing ever drew the picture. The host
+      // (`media_thumbnail`) decodes and shrinks it in Rust — the webview never reads a disk path and
+      // the asset protocol stays off — and the frame is blitted onto the tile's canvas, exactly as
+      // the slide grid does for slide thumbnails.
+      //
+      // Bounded: at most PM_MEDIA_THUMB_MAX entries (each one ≤240px frame, so the worst case is a
+      // few tens of MB), evicted oldest-first, and pruned to the assets the library still holds on
+      // every render. A tile that cannot be drawn is cached as `false` so a corrupt file is asked
+      // for once, not on every re-render. Requests are de-duplicated while in flight, and tiles past
+      // the first fold are loaded lazily when IntersectionObserver is available.
+      const PM_MEDIA_THUMB_MAX = 80;
+      const PM_MEDIA_THUMB_BOX = 240;       // matches the host's THUMB_MAX_DIM clamp
+      const PM_MEDIA_THUMB_EAGER = 12;      // first-fold tiles load immediately
+      const pmMediaThumbCache = new Map();  // asset id -> frame {w,h,rgba} | false (could not be drawn)
+      const pmMediaThumbInflight = new Map(); // asset id -> Promise<frame|false>
+      let pmMediaIO = null;
+      function pmMediaThumbPut(id, v) {
+        pmMediaThumbCache.delete(id);
+        pmMediaThumbCache.set(id, v);
+        while (pmMediaThumbCache.size > PM_MEDIA_THUMB_MAX) pmMediaThumbCache.delete(pmMediaThumbCache.keys().next().value);
+      }
+      function pmMediaThumbPrune(assets) {
+        const live = new Set((assets || []).map((a) => a.id));
+        Array.from(pmMediaThumbCache.keys()).forEach((id) => { if (!live.has(id)) pmMediaThumbCache.delete(id); });
+      }
+      // Inspection hook for the bounded-memory check: a PER-KEY accessor (true = a frame is cached,
+      // false = cached as "can't draw", null = absent), plus the entity count and its cap so a test
+      // can pin the premise "more assets were driven than the cap".
+      window.__pmMediaThumbDebug = {
+        size: () => pmMediaThumbCache.size,
+        max: () => PM_MEDIA_THUMB_MAX,
+        cached: (id) => (pmMediaThumbCache.has(id) ? pmMediaThumbCache.get(id) !== false : null),
+      };
+      function pmMediaThumbLoad(id) {
+        if (pmMediaThumbCache.has(id)) {
+          const hit = pmMediaThumbCache.get(id);
+          pmMediaThumbPut(id, hit); // a hit refreshes recency, so what is on screen is evicted last
+          return Promise.resolve(hit);
+        }
+        if (pmMediaThumbInflight.has(id)) return pmMediaThumbInflight.get(id);
+        const p = invoke("media_thumbnail", { id: id, maxW: PM_MEDIA_THUMB_BOX, maxH: PM_MEDIA_THUMB_BOX })
+          .then((r) => (r && r.available && r.frame ? r.frame : false), () => false)
+          .then((f) => { pmMediaThumbInflight.delete(id); pmMediaThumbPut(id, f); return f; });
+        pmMediaThumbInflight.set(id, p);
+        return p;
+      }
+      function pmMediaThumbFail(thumb) {
+        if (!thumb || thumb.querySelector(".pm-thumb-fail")) return;
+        const cv = thumb.querySelector("canvas"); if (cv) cv.hidden = true;
+        const s = document.createElement("span");
+        s.className = "pm-thumb-fail"; s.setAttribute("aria-hidden", "true"); s.textContent = "Can’t preview";
+        thumb.appendChild(s);
+      }
+      function pmMediaThumbPaint(thumb, cv, id) {
+        pmMediaThumbLoad(id).then((frame) => {
+          if (frame && blitFrame(cv, frame)) { thumb.classList.add("has-pic"); return; }
+          pmMediaThumbFail(thumb);
+        });
+      }
+      function pmMediaThumbSchedule(thumb, cv, id, idx) {
+        if (pmMediaIO && idx >= PM_MEDIA_THUMB_EAGER && !pmMediaThumbCache.has(id)) {
+          thumb.dataset.mid = String(id);
+          pmMediaIO.observe(thumb);
+        } else {
+          pmMediaThumbPaint(thumb, cv, id);
+        }
+      }
+
+      // The remove-media confirmation for asset `a` (a DeckView `media.assets` row). The host decides
+      // what happens to the stored file when it removes — it deletes SelahCue's copy unless another
+      // saved deck still shows it — so the dialog says which, from the counts the view carries:
+      // `uses` (slides of the OPEN deck) and `other_decks` (OTHER saved decks). When other decks
+      // use it the file is kept, so every slide that shows it keeps showing it and the "missing
+      // media" warning would be false; it is replaced by the keep notice.
+      function pmRemoveMediaConfirm(a) {
+        const other = a.other_decks || 0;
+        const slides = (n) => n + " slide" + (n === 1 ? "" : "s");
+        let warning = null;
+        let body = "This removes the image from the media library and deletes SelahCue’s copy of it. This can’t be undone.";
+        if (other > 0) {
+          body = "This removes the image from the media library. SelahCue keeps its copy of the file, because other presentations still show it.";
+          warning = (a.uses ? "Used on " + slides(a.uses) + " here and in " : "Also used in ") + other + " other presentation" + (other === 1 ? "" : "s") + " — the picture file is kept so they keep showing it.";
+        } else if (a.uses) {
+          warning = "Used on " + slides(a.uses) + " — removing it leaves " + (a.uses === 1 ? "that slide" : "those slides") + " with missing media.";
+        }
+        return {
+          title: "Remove " + a.name + "?",
+          body: body,
+          warning: warning,
+          confirmLabel: "Remove",
+          onConfirm: () => pmRemoveMedia(a.id),
+        };
+      }
+
       function pmRenderMedia(dv) {
         const m = (dv && dv.media) || { assets: [], total_label: "—", missing_count: 0, unused_count: 0 };
+        pmMediaThumbPrune(m.assets);
+        if (pmMediaIO) { pmMediaIO.disconnect(); pmMediaIO = null; }
+        if ("IntersectionObserver" in window) {
+          pmMediaIO = new IntersectionObserver((es) => es.forEach((e) => {
+            if (!e.isIntersecting) return;
+            pmMediaIO.unobserve(e.target);
+            pmMediaThumbPaint(e.target, e.target.querySelector("canvas"), Number(e.target.dataset.mid));
+          }));
+        }
         const q = pmMediaQuery.trim().toLowerCase();
         const match = (a) => {
           if (pmMediaFilter !== "all" && a.kind !== pmMediaFilter) return false;
@@ -11303,7 +11465,7 @@
         // The asset used by the currently-selected image element → mark its cell "in use".
         const selEl = dv.slide && dv.slide.selected_element != null ? dv.slide.elements[dv.slide.selected_element] : null;
         const inUsePath = selEl && selEl.kind === "image" ? selEl.source : null;
-        visual.forEach((a) => {
+        visual.forEach((a, idx) => {
           const isInUse = a.path && a.path === inUsePath;
           const cell = document.createElement("div");
           cell.className = "pm-asset" + (a.missing ? " missing" : "") + (isInUse ? " in-use" : "");
@@ -11327,6 +11489,13 @@
               b.textContent = a.duration_label;
               thumb.appendChild(b);
             }
+          } else if (a.kind === "image") {
+            // The picture itself — decorative (the button's aria-label already names the asset).
+            const cv = document.createElement("canvas");
+            cv.className = "pm-asset-canvas";
+            cv.setAttribute("aria-hidden", "true");
+            thumb.appendChild(cv);
+            pmMediaThumbSchedule(thumb, cv, a.id, idx);
           }
           // Clicking an IMAGE asset either REPLACES the selected image element's source (when a
           // Replace… flow is armed) or adds it to the current slide (video/audio: no on-slide render).
@@ -11359,17 +11528,12 @@
           rm.type = "button";
           rm.className = "pm-asset-del";
           rm.textContent = "✕";
-          rm.setAttribute("aria-label", "Remove " + a.name + " from the library" + (a.uses ? " (used on " + a.uses + " slide" + (a.uses === 1 ? "" : "s") + ")" : ""));
+          const otherDecks = a.other_decks || 0;
+          rm.setAttribute("aria-label", "Remove " + a.name + " from the library" + (a.uses ? " (used on " + a.uses + " slide" + (a.uses === 1 ? "" : "s") + ")" : "") + (otherDecks ? " (also used in " + otherDecks + " other presentation" + (otherDecks === 1 ? "" : "s") + ")" : ""));
           rm.title = "Remove from library";
           rm.onclick = (ev) => {
             ev.stopPropagation();
-            pmConfirm({
-              title: "Remove " + a.name + "?",
-              body: "This removes the file from the media library. You can undo it.",
-              warning: a.uses ? "Used on " + a.uses + " slide" + (a.uses === 1 ? "" : "s") + " — removing it leaves " + (a.uses === 1 ? "that slide" : "those slides") + " with missing media." : null,
-              confirmLabel: "Remove",
-              onConfirm: () => pAct(() => invoke("deck_remove_media", { id: a.id }), "remove the media"),
-            });
+            pmConfirm(pmRemoveMediaConfirm(a));
           };
           cell.appendChild(thumb);
           cell.appendChild(name);

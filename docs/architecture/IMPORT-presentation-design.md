@@ -17,6 +17,8 @@ Security constraint set: `docs/security/THREAT-MODEL-presentation-import.md` (Sa
 
 One prerequisite remains and it is not optional: **`media_repo` has no production caller** (sweep of the whole tree — hits only in `lib.rs` and its own test), so the operator's `MediaLibrary` is in-memory and is lost on restart. Imported images would vanish when the app closes. There is also **no media store**: nothing in the tree ever copies image bytes into an app-owned directory, and a pptx image exists only inside the archive, so unlike `deck_import_image` there is no user path to reference in place. Both are introduced by this work (§8.4) but the persistence wiring is a distinct piece of work that must land before or with the image stage (§18).
 
+> **Update 2026-10-01 (DEC-018).** The persistence prerequisite (step 3a) has landed with the media-library fix: the operator now loads its saved media registry at launch and saves it after every import and removal, and the media panel's Import (`deck_import_images`) copies into `<app_data>/media/` like the `.pptx` route will. The paragraph above records the state of the tree when this design was written.
+
 The text half — `.txt`, pasted text, and the text and speaker notes of a `.pptx` — has no prerequisites and can start immediately.
 
 ---
@@ -475,7 +477,7 @@ Nothing is visible to the media library or the deck library until the whole pars
 
 ### 8.5 Lifecycle
 
-- Files under `<app_data>/media/` are app-owned. Files referenced at a user's own path (the `deck_import_image` route) are not.
+- Files under `<app_data>/media/` are app-owned. **Amended 2026-10-01 (DEC-018):** the media panel's Import (`deck_import_images`) now copies into that store as well, so a freshly imported picture is app-owned. Files referenced at a user's own path are not — after that change, only assets registered before it. `remove_media` deletes the file only for the app-owned case, and **only when no other deck shows it** (saved decks and decks "Undo delete" could still restore are checked at removal time; see ADR-0024 decision 8).
 - Deleting a deck does **not** delete media. Another deck may reference the same asset and there is no reference count. This matches the "degrade, never destroy" principle Bianca documents (`DOMAIN-library-organisation.md` §4.1).
 - Unused media is already first-class; orphan cleanup is a user action in a surface that already exists, not a background job.
 - **A distinction `remove_media` does not currently make and must:** deleting a `MediaAsset` whose path is inside the app media root should delete the file; deleting one that points at a user's own path must **not** touch that file. Deleting a user's photo out of their Pictures folder because they removed it from the media panel would be a serious defect.

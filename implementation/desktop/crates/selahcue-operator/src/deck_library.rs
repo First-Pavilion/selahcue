@@ -11,6 +11,7 @@
 //! **persisted by NAME** (the `deck` table PK, `deck_repo`), so names are kept **unique** (a `(n)`
 //! suffix on collision) — otherwise an upsert on a name owned by a *different* deck would clobber it.
 
+use crate::deck_workspace::deck_image_paths;
 use selahcue_data::{deck_repo, Database};
 use selahcue_present::{
     render_authored_slide, DeckId, DeckTrash, FrameBuffer, SlideDeck, SlideId, Theme,
@@ -127,6 +128,23 @@ impl std::fmt::Display for AdoptError {
 }
 
 impl std::error::Error for AdoptError {}
+
+/// The decks (other than the open one) that still show a given stored picture — see
+/// [`DeckLibrary::media_keepers`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct MediaKeepers {
+    /// Saved decks in the Library list that show it.
+    pub saved: usize,
+    /// Recently deleted decks ("Undo delete" could restore them) that show it.
+    pub trashed: usize,
+}
+
+impl MediaKeepers {
+    /// Whether anything outside the open deck still needs the file to exist.
+    pub fn any(self) -> bool {
+        self.saved > 0 || self.trashed > 0
+    }
+}
 
 /// The persisted deck library.
 pub struct DeckLibrary {
@@ -407,6 +425,41 @@ impl DeckLibrary {
         self.decks[i] = updated.clone();
         self.persist_one(&updated);
         Ok(updated)
+    }
+
+    /// The saved decks other than `except` — what the media panel counts, alongside the deck the
+    /// editor holds live, to decide whether a picture is really unused. `except` is the open deck:
+    /// its stored copy here can lag the editor by an edit, and the live one is the truth.
+    pub fn saved_decks_except(&self, except: DeckId) -> Vec<&SlideDeck> {
+        self.decks.iter().filter(|d| d.id() != except).collect()
+    }
+
+    /// The decks "Undo delete" could still bring back (the bounded in-memory trash). Gone from the
+    /// Library list, but restoring one resurrects its slides — pictures included.
+    pub fn trashed_decks(&self) -> Vec<&SlideDeck> {
+        self.trash
+            .ids()
+            .into_iter()
+            .filter_map(|id| self.trash.peek(id))
+            .collect()
+    }
+
+    /// Which decks **other than the open one** still show the picture at `path`: the saved decks
+    /// ([`DeckLibrary::saved_decks_except`]) and the restorable trashed ones. This is the question
+    /// Remove must ask before deleting a stored image: the open deck's own slides are the ones the
+    /// operator is looking at and was just warned about; the others are out of sight, and a file
+    /// deleted from under them leaves them with a missing picture and no undo.
+    pub fn media_keepers(&self, path: &str, open: DeckId) -> MediaKeepers {
+        let showing = |decks: Vec<&SlideDeck>| {
+            decks
+                .into_iter()
+                .filter(|d| deck_image_paths(d).contains(path))
+                .count()
+        };
+        MediaKeepers {
+            saved: showing(self.saved_decks_except(open)),
+            trashed: showing(self.trashed_decks()),
+        }
     }
 
     /// Sync the open deck's edited content back into the library and persist it (per-edit autosave).
@@ -759,6 +812,134 @@ mod tests {
         assert_eq!(c.name, "Untitled presentation");
         assert_eq!(a.len(), 1, "a blank deck has one editable slide");
         assert_eq!(lib.list().len(), 3);
+    }
+
+    /// An image element showing `path`.
+    fn image_el(path: &str) -> selahcue_present::Element {
+        selahcue_present::Element::Image {
+            x_permille: 0,
+            y_permille: 0,
+            w_permille: 1000,
+            h_permille: 1000,
+            source: selahcue_present::MediaRef::new(path).unwrap(),
+            opacity: 255,
+            z: 0,
+            visible: true,
+            fit: selahcue_present::ImageFit::default(),
+        }
+    }
+
+    /// A saved deck whose first slide shows `path`.
+    fn deck_showing(lib: &mut DeckLibrary, name: &str, path: &str) -> DeckId {
+        let mut deck = lib.create(name);
+        let sid = deck.slides()[0].id;
+        deck.get_mut(sid).unwrap().elements.push(image_el(path));
+        lib.store(&deck);
+        deck.id()
+    }
+
+    /// A saved deck that shows `path` ONLY as its first slide's image background — no image element
+    /// anywhere — so nothing but the background branch of "this slide shows that file" can see it.
+    fn deck_with_background_only(lib: &mut DeckLibrary, name: &str, path: &str) -> DeckId {
+        let mut deck = lib.create(name);
+        let sid = deck.slides()[0].id;
+        deck.get_mut(sid).unwrap().background = Some(selahcue_present::Background::Image(
+            selahcue_present::ImageBackground {
+                source: selahcue_present::MediaRef::new(path).unwrap(),
+            },
+        ));
+        lib.store(&deck);
+        deck.id()
+    }
+
+    #[test]
+    fn a_deck_that_shows_a_picture_only_as_its_background_still_keeps_it() {
+        let mut lib = DeckLibrary::load(None);
+        let open = deck_showing(&mut lib, "Sunday", "/m/elsewhere.png");
+        let easter = deck_with_background_only(&mut lib, "Easter", "/m/banner.png");
+        // Premise: no image ELEMENT shows it, so only the background branch can find it.
+        let easter_deck = lib.get(easter).unwrap();
+        assert!(
+            easter_deck.slides().iter().all(|s| !s
+                .elements
+                .iter()
+                .any(|e| matches!(e, selahcue_present::Element::Image { .. }))),
+            "premise: the deck has no image element"
+        );
+
+        assert_eq!(
+            lib.media_keepers("/m/banner.png", open),
+            MediaKeepers {
+                saved: 1,
+                trashed: 0
+            },
+            "a picture used as a slide BACKGROUND is a use: deleting its file blanks that slide"
+        );
+        // Positive control: the deck's other path is not kept by it.
+        assert_eq!(
+            lib.media_keepers("/m/other.png", open),
+            MediaKeepers::default()
+        );
+        // And the same through the undo-trash.
+        assert!(lib.delete(easter));
+        assert_eq!(
+            lib.media_keepers("/m/banner.png", open),
+            MediaKeepers {
+                saved: 0,
+                trashed: 1
+            }
+        );
+    }
+
+    #[test]
+    fn media_keepers_counts_other_saved_decks_and_restorable_deleted_ones_never_the_open_deck() {
+        let mut lib = DeckLibrary::load(None);
+        let open = deck_showing(&mut lib, "Sunday", "/m/banner.png");
+        let easter = deck_showing(&mut lib, "Easter", "/m/banner.png");
+        let _other = deck_showing(&mut lib, "Youth", "/m/other.png");
+
+        // The open deck's stored copy shows the banner too, and is NOT counted: the editor holds
+        // the live deck, and a stale stored copy must not keep a file alive (or shrink "unused").
+        assert_eq!(
+            lib.media_keepers("/m/banner.png", open),
+            MediaKeepers {
+                saved: 1,
+                trashed: 0
+            },
+            "Easter is the one other deck showing it"
+        );
+        assert_eq!(
+            lib.saved_decks_except(open).len(),
+            2,
+            "every saved deck except the open one"
+        );
+        // Positive control: nothing shows this path, so nothing keeps it.
+        let none = lib.media_keepers("/m/nobody.png", open);
+        assert_eq!(none, MediaKeepers::default());
+        assert!(!none.any());
+
+        // Deleting Easter takes it out of the Library list but "Undo delete" can bring it back
+        // with its pictures, so it still counts — as a trashed keeper, not a saved one.
+        assert!(lib.delete(easter));
+        let kept = lib.media_keepers("/m/banner.png", open);
+        assert_eq!(
+            kept,
+            MediaKeepers {
+                saved: 0,
+                trashed: 1
+            }
+        );
+        assert!(kept.any(), "a restorable deck is enough to keep the file");
+
+        // Restoring puts it back among the saved decks.
+        assert!(lib.restore(easter).is_some());
+        assert_eq!(
+            lib.media_keepers("/m/banner.png", open),
+            MediaKeepers {
+                saved: 1,
+                trashed: 0
+            }
+        );
     }
 
     #[test]
