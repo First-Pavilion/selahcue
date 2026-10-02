@@ -130,16 +130,17 @@ the exact change so it can be redone by hand. Services = `apps/accounts/services
 | M1a | per-address budget spent only when the account exists | 11 | bounded keys, byte+header, count-based, existing throttle tests x4, malformed, partial outage, timing, timing control |
 | M1b | all three budgets spent only when the account exists | 23 | 21st request, bounded keys, byte+header x3, count-based x3, existing throttle tests x9, malformed, partial outage, timing x3, timing control |
 | M2 | all three budgets moved after the mint and send, outside the transaction | 16 | byte+header x3, count-based x3, existing throttle tests x5, live link, spellings x3, typo/lost-email/single |
+| M2b | all three budgets moved after the mint and send, inside the transaction | 5 | count-based x3, existing throttle tests x2 |
 | M3 | per-address budget spent before the global budget | 4 | bounded keys, count-based x3 |
 | M4 | limiter fails closed when the store is down | 5 | existing throttle tests x4, partial outage |
 | M5 | per-address budget removed | 17 | bounded keys, byte+header, count-based, existing throttle tests x5, live link, malformed, partial outage, spellings x3, timing, timing control, typo/lost-email/single |
 | M6a | shipped IP budget shrunk to 2 per hour (default and setting) | 7 | 21st request, auth slice, existing throttle tests, live link, pins, typo/lost-email/single x2 |
-| M6b | shipped address budget shrunk to 1 per window (default and setting) | 6 | auth slice, existing throttle tests, live link, pins x2, typo/lost-email/single x2 |
+| M6b | shipped address budget shrunk to 1 per window (default and setting) | 6 | auth slice, existing throttle tests, live link, pins, typo/lost-email/single x2 |
+| M6c | global setting changed to 501, module default left at 500 | 1 | pins |
 | M7 | 3 ms pause before the throttle, only for registered addresses | 6 | count-based x3, timing x3 |
 | M8 | raw normalised email in the address key instead of the HMAC fingerprint | 2 | existing throttle tests, timing control |
 | M9 | a legitimate request is silently not sent | 26 | auth slice x10, byte+header x3, count-based x3, existing throttle tests x3, live link, spellings x3, typo/lost-email/single x3 |
 | M10 | a legitimate request sends twice | 17 | auth slice, byte+header x3, count-based x3, existing throttle tests x4, spellings x3, typo/lost-email/single x3 |
-| M2b | all three budgets moved after the mint and send, inside the transaction | 5 | count-based x3, existing throttle tests x2 |
 | M11 | one extra lookup plus one query, only for registered addresses, in front of the address spend | 1 | count-based |
 | M12 | account lookup moved in front of all three spends (the same one query for both addresses) | 3 | count-based x3 |
 | M13 | `or` instead of `\|=` joining the three spends | 1 | partial outage |
