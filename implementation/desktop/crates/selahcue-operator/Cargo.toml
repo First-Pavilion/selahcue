@@ -148,11 +148,11 @@ tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-base64 = "0.22"
+base64 = "0.23"
 tokio = { version = "1", features = ["sync"] }
 # Cross-platform free/total disk space for the Pre-service Check storage readiness (same crate +
 # version the desktop host uses in guard.rs). Read-only volume query; no new native toolchain.
-fs4 = "0.13"
+fs4 = "1.1"
 # `server` feature gives the RemoteOperator (pinned-TLS control client) so the shell can
 # drive the running output window; the shell falls back to an in-process demo otherwise.
 selahcue-app = { path = "../selahcue-app", features = ["server"] }
@@ -167,8 +167,8 @@ selahcue-data = { path = "../selahcue-data" }
 # `encryption` feature deps (FR-154; 86akgrz3b) — same crates/versions as
 # `selahcue-desktop/Cargo.toml`'s twin declarations, for the duplicated `src/keys.rs` module.
 keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"], optional = true }
-argon2 = { version = "0.5", optional = true }
-getrandom = { version = "0.2", optional = true }
+argon2 = { version = "0.6", optional = true }
+getrandom = { version = "0.4", optional = true }
 zeroize = { version = "1", optional = true }
 # Providers & Privacy: the SelahCue-hosted cloud client (note-generation seam), consent-gated
 # egress, graceful local fallback, and the account-token secret store (node 338:124). Default
@@ -208,7 +208,7 @@ selahcue-stt = { path = "../selahcue-stt", features = ["metal"], optional = true
 [dev-dependencies]
 tauri = { version = "2", features = ["test"] }
 tokio = { version = "1", features = ["rt-multi-thread", "net", "macros", "time"] }
-tokio-tungstenite = { version = "0.24", default-features = false, features = [
+tokio-tungstenite = { version = "0.30", default-features = false, features = [
     "connect",
     "handshake",
 ] }

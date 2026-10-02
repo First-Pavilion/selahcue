@@ -4401,6 +4401,55 @@ mod media_command_tests {
     }
 
     #[tokio::test]
+    async fn removing_media_keeps_a_file_another_deck_shows_only_as_a_slide_background() {
+        // A background is a use too: delete the file and that slide goes blank. The other keep
+        // tests put the picture on an image ELEMENT, which a keeper check that ignored backgrounds
+        // would still pass.
+        let app = temp_dir("bgkeep");
+        let state = state_with_store(&app, true);
+        let v = import_picked_images(&state, vec![picked("bg", "backdrop.png", &PNG_8X4)])
+            .await
+            .unwrap();
+        let id = id_named(&v, "backdrop.png");
+        let file = path_of(&v, id);
+        {
+            let mut ws = state.deck.lock().unwrap();
+            let mut lib = state.library.lock().unwrap();
+            let mut easter = lib.create("Easter");
+            let sid = easter.slides()[0].id;
+            easter.get_mut(sid).unwrap().background = Some(selahcue_present::Background::Image(
+                selahcue_present::ImageBackground {
+                    source: selahcue_present::MediaRef::new(file.to_str().unwrap()).unwrap(),
+                },
+            ));
+            lib.store(&easter);
+            let sunday = lib.create("Sunday");
+            ws.load_deck(sunday);
+        }
+        let before = view_of(&state);
+        assert_eq!(
+            row(&before, id)["uses"],
+            0,
+            "premise: the open deck does not show it"
+        );
+        assert_eq!(
+            row(&before, id)["other_decks"],
+            1,
+            "the other deck's background counts as a use"
+        );
+        assert_eq!(row(&before, id)["unused"], false);
+
+        let after = remove_media_inner(&state, id).unwrap();
+
+        assert!(
+            file.exists(),
+            "the file a slide background needs was not deleted"
+        );
+        assert_eq!(after["remove_report"]["file_deleted"], false);
+        assert_eq!(after["remove_report"]["kept_for_decks"], 1);
+    }
+
+    #[tokio::test]
     async fn removing_media_still_deletes_a_copy_only_the_open_deck_shows() {
         // The OPEN deck's own use is the one the operator is looking at and was warned about ("Used
         // on k slides — removing it leaves them with missing media"): unchanged, deliberately. This
@@ -5000,6 +5049,167 @@ fn get_chapter(reference: String, translation: Option<String>) -> Result<Chapter
         verse_end: parsed.verses.map(|r| r.end),
     })
 }
+/// `get_chapter`'s reply is a contract with the Service Plan link modal (17tnw2b0x4u): its error
+/// WORDING and the handful of fields the modal reads.
+///
+/// `dist/app.js`'s `doLink` resolves typed text through `get_chapter` before linking and decides what
+/// to tell the operator from the REJECTION STRING: "no such chapter" (a well-formed reference the
+/// corpus has no chapter for, or a translation whose text is not downloaded) is allowed, after a
+/// warning and a second press of Link; any other rejection ("not a reference", "unknown
+/// translation") is a hard refusal. The webview has no structured error to switch on, only
+/// `/no such chapter/i.test(String(e))`, so a reworded host error would not fail anything: every
+/// unresolvable chapter would silently turn into "Couldn't read that as a scripture reference" and
+/// the legitimate link-it-anyway path would be gone. These tests pin BOTH ends of that match, so
+/// changing either wording is a failing test and a deliberate two-sided change in one merge request.
+/// The success reply is pinned the same way (`the_modal_reads_...`): the headless gate's mock
+/// `get_chapter` is hand-written, so nothing else would notice the real one stop returning what the
+/// modal builds the canonical reference from.
+#[cfg(test)]
+mod get_chapter_link_modal_contract_tests {
+    use super::get_chapter;
+
+    /// The phrase `doLink` looks for. Used on both sides below, so changing it is one edit that has
+    /// to be made here, in `get_chapter`, and in `dist/app.js` together.
+    const NO_SUCH_CHAPTER: &str = "no such chapter";
+
+    /// `dist/app.js` as shipped, so the JS half of the contract is read, not remembered.
+    const APP_JS: &str = include_str!("../dist/app.js");
+
+    /// What the webview's `/no such chapter/i.test(String(e))` does to a rejection string.
+    fn webview_reads_as_no_such_chapter(err: &str) -> bool {
+        err.to_lowercase().contains(NO_SUCH_CHAPTER)
+    }
+
+    #[test]
+    fn a_well_formed_reference_with_no_chapter_is_reported_as_no_such_chapter() {
+        // Every one of these PARSES, and none names a chapter the bundled corpus has (Jude has one
+        // chapter; Psalms stops at 150), in the default translation and in an explicit one.
+        for reference in [
+            "Romans 99",
+            "Romans 99:1-3",
+            "Psalm 151",
+            "Genesis 51:1",
+            "Jude 2",
+        ] {
+            for translation in [None, Some("WEB".to_string())] {
+                let err = match get_chapter(reference.to_string(), translation.clone()) {
+                    Ok(ch) => panic!(
+                        "premise: {reference:?} in {translation:?} must have no chapter, but the host \
+                         returned {} {}",
+                        ch.book_name, ch.chapter
+                    ),
+                    Err(e) => e,
+                };
+                assert!(
+                    webview_reads_as_no_such_chapter(&err),
+                    "{reference:?} in {translation:?} was rejected with {err:?}, which the link \
+                     modal's `/{NO_SUCH_CHAPTER}/i` does not recognise — it would refuse the link \
+                     outright instead of offering to link it as Missing"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_real_chapter_resolves_so_the_rejection_checks_are_not_vacuous() {
+        // Positive control: the same entry point, a reference the corpus HAS, must succeed — else
+        // "everything is rejected as no such chapter" would satisfy the test above.
+        let ch = get_chapter("Romans 8:28-30".to_string(), None).expect("Romans 8 exists");
+        assert_eq!(
+            (ch.chapter, ch.verse_start, ch.verse_end),
+            (8, Some(28), Some(30))
+        );
+        assert!(!ch.verses.is_empty());
+        assert!(get_chapter("Psalm 119".to_string(), Some("WEB".to_string())).is_ok());
+    }
+
+    #[test]
+    fn the_modal_reads_the_canonical_reference_the_verse_selection_and_the_last_verse() {
+        // `resolveTyped` in dist/app.js builds the reference it links from `reference`,
+        // `verse_start`, `verse_end` and the last entry of `verses` (`[number, text]`), and cuts a
+        // range back to that last verse. Typed spellings must all land on the same fields. Read
+        // through the serialised reply, because that is what the webview sees.
+        for typed in [
+            "Psalms 1:2-10",
+            "Psalms 1:2 to 10",
+            "Psalms 1:2\u{2013}10", // en dash
+            "psalm 1 verses 2 through 10",
+        ] {
+            let ch = get_chapter(typed.to_string(), None)
+                .unwrap_or_else(|e| panic!("{typed:?} must resolve, got {e:?}"));
+            let v = serde_json::to_value(&ch).expect("the reply serialises");
+            assert_eq!(
+                v["reference"], "Psalms 1",
+                "{typed:?}: canonical chapter reference"
+            );
+            assert_eq!(v["verse_start"], 2, "{typed:?}");
+            assert_eq!(v["verse_end"], 10, "{typed:?}");
+            let verses = v["verses"].as_array().expect("verses is an array");
+            let last = verses.last().expect("Psalm 1 has verses");
+            assert_eq!(
+                last[0], 6,
+                "{typed:?}: the last entry of `verses` is [verse number, text] — the modal cuts the \
+                 range back to its number (Psalm 1 ends at verse 6)"
+            );
+            assert!(
+                last[1].is_string(),
+                "{typed:?}: the second element is the verse text"
+            );
+        }
+        // A whole chapter has no selection: the modal reads `verse_start == null` as "link the
+        // chapter as it is".
+        let reply = |typed: &str| {
+            let ch = get_chapter(typed.to_string(), None)
+                .unwrap_or_else(|e| panic!("{typed:?} must resolve, got {e:?}"));
+            serde_json::to_value(&ch).expect("the reply serialises")
+        };
+        let whole = reply("Psalms 1");
+        assert!(whole["verse_start"].is_null() && whole["verse_end"].is_null());
+        // A single verse has an end equal to its start (never a range).
+        let single = reply("Psalms 1:3");
+        assert_eq!(
+            (single["verse_start"].as_u64(), single["verse_end"].as_u64()),
+            (Some(3), Some(3))
+        );
+    }
+
+    #[test]
+    fn any_other_rejection_is_not_reported_as_no_such_chapter() {
+        // The modal treats these as a HARD refusal ("Couldn't read ... as a scripture reference",
+        // or a translation problem), never as a link-it-anyway Missing. If their wording ever
+        // contained the phrase they would sneak onto the permissive path.
+        for (reference, translation) in [
+            ("Hezekiah 4:4", None),
+            ("", None),
+            ("not a reference at all", None),
+            ("Romans 8", Some("NOPE".to_string())),
+        ] {
+            let err = match get_chapter(reference.to_string(), translation.clone()) {
+                Ok(_) => panic!("premise: {reference:?} / {translation:?} must be rejected"),
+                Err(e) => e,
+            };
+            assert!(
+                !webview_reads_as_no_such_chapter(&err),
+                "{reference:?} / {translation:?} was rejected with {err:?}, which the link modal \
+                 would read as an unresolvable CHAPTER and let the operator link anyway"
+            );
+        }
+    }
+
+    #[test]
+    fn the_link_modal_matches_the_same_phrase() {
+        // The JS half. `doLink` must still test the rejection against exactly the phrase the
+        // host sends; if the regex is reworded the host's wording above no longer reaches it.
+        let needle = format!("/{NO_SUCH_CHAPTER}/i.test(String(e))");
+        assert_eq!(
+            APP_JS.matches(needle.as_str()).count(),
+            1,
+            "dist/app.js must contain exactly one `{needle}` (the Service Plan link modal's \
+             `doLink`); if you reworded it, reword `get_chapter`'s error to match and update \
+             NO_SUCH_CHAPTER in this module in the same change"
+        );
+    }
+}
 #[tauri::command]
 async fn scripture_search(
     query: String,
@@ -5593,14 +5803,63 @@ async fn build_backend() -> Backend {
             }
             Err(e) => {
                 eprintln!("SelahCue operator: could not connect to output window ({e}); running the stand-alone demo.");
-                Backend::Local(demo_shell())
+                local_backend()
             }
         },
         None => {
             eprintln!("SelahCue operator: no running output window found; running the stand-alone demo. Start `cargo run -p selahcue-desktop` first to drive the real output.");
-            Backend::Local(demo_shell())
+            local_backend()
         }
     }
+}
+
+/// The stand-alone (`Backend::Local`) backend, with the scripture quote-match index warming in
+/// the background.
+fn local_backend() -> Backend {
+    local_backend_with(selahcue_scripture::warm)
+}
+
+/// [`local_backend`] with the warm-up injected, so a test can prove it is started WITHOUT being
+/// waited for.
+///
+/// Why warm at all: this `OperatorShell` drives a real, in-process `LiveController`, not a mock:
+/// a live-transcript final sent while running stand-alone reaches `ingest_transcript`
+/// (`controller.rs`) exactly as it would with a connected output window, including the fuzzy
+/// `selahcue_scripture::match_quote_scored` call, which builds a process-global index on first
+/// use (gzip-decode + tokenize ~31k KJV verses) while holding the controller mutex. Left lazy,
+/// the first final of a live service stalls every other command (Go Live included) for the whole
+/// build. 17tnw2b1258 (the `Backend::Remote` path is covered by selahcue-desktop's own startup
+/// warm-up instead).
+///
+/// Why NOT inline, on the setup path (PR #145 review, decided with measurements): `setup()`
+/// runs this inside `tauri::async_runtime::block_on(build_backend())` on the main thread, so
+/// everything that waits on setup — first paint included — would wait on an inline warm-up's
+/// whole cost: ≈0.35 s in a release build (the same call moved selahcue-output's launch-to-
+/// endpoint time from 0.047 s to 0.393 s on the ubuntu CI runner) and ≈2 s in a debug build.
+/// Nothing before the first paint needs the index: it is only reached once a transcript final
+/// arrives (live STT or the console's injector), i.e. after the operator is looking at a painted
+/// console. So it runs on its own thread instead. The guarantee this PR is about is kept, in the
+/// form this path can actually offer: the build starts at backend creation, before any command
+/// can be dispatched, and the index is a `OnceLock`, so a final that does race it blocks only for
+/// the REMAINDER of the one build already in flight — never a second build, never worse than the
+/// lazy path it replaces. (There is no 2 s `COMMAND_TIMEOUT` poisoning to defend against here:
+/// stand-alone commands are in-process calls with no wire timeout; that hazard exists only on
+/// the `Backend::Remote` path, which the output window's own warm-up closes before it binds.)
+///
+/// Memory: the warm index is ≈+45 MiB resident (measured), paid only in this stand-alone mode —
+/// a connected operator never builds it (the output window does).
+fn local_backend_with(warm: impl FnOnce() + Send + 'static) -> Backend {
+    if let Err(e) = std::thread::Builder::new()
+        .name("scripture-warmup".into())
+        .spawn(warm)
+    {
+        // Out of threads/memory: the index just builds lazily on first use, as it did before
+        // this warm-up existed. Never fatal to starting the console.
+        eprintln!(
+            "SelahCue operator: scripture warm-up not started ({e}); it will build on first use."
+        );
+    }
+    Backend::Local(demo_shell())
 }
 
 /// A demo service plan for the stand-alone (no output window) case.
@@ -5617,6 +5876,62 @@ fn demo_shell() -> OperatorShell {
         Theme::dark(),
     )));
     OperatorShell::new(controller)
+}
+
+/// 17tnw2b1258 / PR #145 review: the stand-alone backend must START the scripture warm-up but
+/// never WAIT for it — `setup()` blocks on `build_backend()` on the main thread, so waiting
+/// would delay first paint by the whole index build.
+#[cfg(test)]
+mod standalone_warmup_tests {
+    use super::{local_backend_with, Backend};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{mpsc, Arc};
+    use std::time::Duration;
+
+    /// Deterministic, independent of the process-global index (other tests in this binary
+    /// build `demo_shell()`s and may have warmed the real one) and of timing: the injected
+    /// warm-up parks until the test lets it go. Run inline, it would park the caller of
+    /// `local_backend_with` itself — which then returns only after the 10 s bound, with the
+    /// warm-up already finished, and the first assertion fails. Never started at all, the
+    /// `started` rendezvous below fails instead.
+    #[test]
+    fn the_standalone_backend_starts_the_warm_up_without_waiting_for_it() {
+        let (started_tx, started_rx) = mpsc::channel::<()>();
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+        let finished = Arc::new(AtomicBool::new(false));
+        let finished_in_warmup = finished.clone();
+
+        let backend = local_backend_with(move || {
+            let _ = started_tx.send(());
+            let _ = release_rx.recv_timeout(Duration::from_secs(10));
+            finished_in_warmup.store(true, Ordering::SeqCst);
+        });
+
+        assert!(
+            matches!(backend, Backend::Local(_)),
+            "the stand-alone path must yield a Local backend"
+        );
+        assert!(
+            !finished.load(Ordering::SeqCst),
+            "local_backend_with returned only after the warm-up finished: it ran inline on the \
+             setup path, delaying first paint by the whole scripture index build"
+        );
+        started_rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the scripture warm-up was never started");
+
+        // Let the parked warm-up finish and prove it was a real, running thread — not merely
+        // skipped — so the test cannot pass by dropping the call (positive control).
+        release_tx.send(()).expect("warm-up still waiting");
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while !finished.load(Ordering::SeqCst) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the released warm-up never completed"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
 }
 
 // --- Providers & Privacy (Settings, Design 2.0 node 338:124) ---------------------------------

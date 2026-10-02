@@ -46,6 +46,137 @@ fn chapter_verse_range() {
     );
 }
 
+// ---- A range, however a person writes it (Service Plan link box) ----
+
+#[test]
+fn a_range_is_accepted_however_it_is_written() {
+    let expected = r(19, "Psalms", 1, Some((2, 10)));
+    for typed in [
+        "Psalms 1:2-10",    // canonical
+        "Psalms 1:2 to 10", // the way it is SAID
+        "Psalms 1:2 through 10",
+        "Psalms 1:2 thru 10",
+        "Psalms 1:2 - 10",      // spaced hyphen
+        "Psalms 1:2- 10",       // dash glued to the first number only
+        "Psalms 1:2 -10",       // dash glued to the second number only
+        "Psalms 1:2\u{2013}10", // en dash: what the Settings copy itself shows as the example
+        "Psalms 1:2 \u{2013} 10",
+        "Psalms 1:2\u{2014}10",           // em dash
+        "Psalms 1:2\u{2010}10",           // Unicode hyphen
+        "Psalms 1:2\u{2011}10",           // non-breaking hyphen
+        "Psalms 1:2\u{2012}10",           // figure dash
+        "Psalms 1:2\u{2212}10",           // minus sign
+        "Psalms 1:2\u{00A0}-\u{00A0}10",  // non-breaking spaces around a dash (a pasted run sheet)
+        "Psalms 1:2\t-\t10",              // tabs around a dash
+        "Psalms 1:2\u{00A0}to\u{00A0}10", // non-breaking spaces around a connective
+        "Psalm chapters 1 verses 2-10",
+        "Psalm 1 verses 2 to 10",
+        "Psalm 1 verse 2 through 10",
+        "psalm chapter 1 verses 2-10",
+        "Ps 1 2-10",    // the existing space-separated shorthand
+        "Ps 1 2 to 10", // ...and with a connective
+        "PSALMS 1:2 TO 10",
+    ] {
+        assert_eq!(parse_one(typed).unwrap(), expected, "{typed:?}");
+    }
+}
+
+#[test]
+fn a_loosely_written_range_displays_canonically() {
+    // The canonical spelling is what gets stored and compared everywhere, so it must not drift
+    // with how the operator happened to type it.
+    for typed in [
+        "Romans 8:28 to 30",
+        "Romans 8:28 \u{2013} 30",
+        "Romans 8 verses 28 through 30",
+    ] {
+        assert_eq!(
+            parse_one(typed).unwrap().to_string(),
+            "Romans 8:28-30",
+            "{typed:?}"
+        );
+    }
+}
+
+#[test]
+fn a_single_verse_is_still_one_verse() {
+    // Positive control: the connective handling must not turn a lone verse into a range.
+    for typed in ["Romans 8:28", "Romans 8 28", "Romans chapter 8 verse 28"] {
+        assert_eq!(
+            parse_one(typed).unwrap(),
+            r(45, "Romans", 8, Some((28, 28))),
+            "{typed:?}"
+        );
+    }
+}
+
+#[test]
+fn the_word_verse_only_counts_as_filler_between_two_numbers() {
+    // "Romans 8 verse 28" drops the word because a chapter number precedes it and a verse number
+    // follows. "John verse 16" has no chapter number: dropping the word would silently turn it
+    // into the WHOLE of chapter 16 — a different passage — so it stays unreadable.
+    assert_eq!(
+        parse_one("Romans 8 verse 28").unwrap(),
+        r(45, "Romans", 8, Some((28, 28)))
+    );
+    for bad in ["John verse 16", "John verses 16 to 18", "Romans verse"] {
+        assert!(
+            parse_one(bad).is_err(),
+            "{bad:?} must not read as a chapter"
+        );
+    }
+}
+
+#[test]
+fn loosening_the_range_syntax_does_not_loosen_what_is_rejected() {
+    for bad in [
+        "Romans 8:30 to 28", // descending
+        "Romans 8:30 - 28",  // descending, spaced
+        "Romans 8:0 to 3",   // verse 0
+        "Romans 8 to 9",     // a span of CHAPTERS is not expressible
+        "Romans 8:28 to",    // dangling connective
+        "Romans 8:28 to to 30",
+        "Romans 8:28 -", // dangling dash
+        "Romans 8:28 \u{2013}",
+    ] {
+        assert!(parse_one(bad).is_err(), "{bad:?} must still be rejected");
+    }
+}
+
+#[test]
+fn range_syntax_handling_never_panics_on_odd_input() {
+    // The parser takes untrusted text; every one of these must return, Ok or Err, without panicking.
+    for odd in [
+        "-",
+        "\u{2013}",
+        "\u{2014}",
+        "to",
+        " to ",
+        "through",
+        "1-",
+        "-1",
+        "1 to",
+        "to 1",
+        "1 to 2",
+        "- - -",
+        "to to to",
+        "verse",
+        "verses verses",
+        "chapter chapter 1",
+        "Romans \u{2013}\u{2013} 8",
+        "Romans 8:28\u{2013}",
+        "\u{2013}8:28",
+        "\u{1F600} to \u{1F600}",
+        "Romans 8:28 to 30 to 32",
+        "Romans 8:28-30-32",
+        "Romans 99999999999 to 99999999999",
+    ] {
+        let _ = parse_one(odd);
+    }
+    let long = format!("Psalms 1:2 {}10", "to ".repeat(10_000));
+    let _ = parse_one(&long);
+}
+
 #[test]
 fn numbered_book_full_and_abbrev() {
     let expected = r(46, "1 Corinthians", 13, Some((4, 4)));

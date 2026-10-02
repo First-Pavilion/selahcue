@@ -43,7 +43,7 @@ const saveSettings = () => {
 </template>
 
 <style scoped>
-.container { max-width: 800px; margin: 0 auto; padding: 0 24px; }
+.container { max-width: 800px; margin: 0 auto; padding: 0 var(--page-gutter); }
 .page-header { margin-bottom: 32px; }
 .page-header h1 { font-size: 28px; font-weight: 700; color: var(--sc-text); margin: 0 0 8px 0; }
 .page-header p { font-size: 15px; color: var(--sc-text-secondary); margin: 0; }
@@ -52,4 +52,11 @@ const saveSettings = () => {
 .settings-card h2 { font-size: 18px; font-weight: 700; color: var(--sc-text); margin: 0 0 20px 0; }
 .section-divider { margin-top: 32px; padding-top: 24px; border-top: 1px solid var(--sc-border); }
 .form-actions { margin-top: 28px; }
+
+@media (max-width: 767.98px) {
+  .settings-card { padding: 24px 20px; border-radius: 14px; }
+  .form-actions > * { width: 100%; }
+  .page-header { margin-bottom: 24px; }
+  .page-header h1 { font-size: 24px; line-height: 30px; }
+}
 </style>

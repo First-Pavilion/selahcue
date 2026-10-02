@@ -107,20 +107,32 @@ pub fn detect(text: &str) -> Vec<String> {
 }
 
 /// Normalise transcript text into parser-ready tokens: lowercase; strip punctuation
-/// (keeping `:` so a typed `"8:28"` still parses); fold spelled-out numbers ("twenty
+/// (keeping `:` so a typed `"8:28"` still parses, and a hyphen/dash that joins two digit
+/// runs so a typed range `"1:2-10"` stays one range); fold spelled-out numbers ("twenty
 /// eight" → `28`, "one hundred nineteen" → `119`) to digits, including a
 /// **digit-by-digit reading** ("one zero three" / "one oh three" → `103` — see
-/// [`take_digit_run`]); drop "chapter"/"verse" filler (their numbers already survived
-/// the fold on their own); and join spoken ranges ("28 through 30" → `28-30`).
+/// [`take_digit_run`]); drop "chapter"/"verse"/"from" filler (their numbers already
+/// survived the fold on their own); and join spoken ranges ("28 through 30" → `28-30`).
 fn normalize_tokens(text: &str) -> Vec<String> {
-    // 1. Lowercase; keep ASCII alphanumerics and ':' (a chapter:verse separator),
-    //    everything else becomes a break.
-    let cleaned: String = text
-        .chars()
-        .map(|c| {
+    // 1. Lowercase; keep ASCII alphanumerics and ':' (a chapter:verse separator), and a
+    //    hyphen or en/em dash sitting directly between two digits (a typed verse range —
+    //    cloud engines with smart formatting write "Psalm 1:2-10"; flattening it to a space
+    //    read as the single verse 1:2 and lost the rest). Everything else becomes a break,
+    //    so a dash in ordinary prose ("well-known", "John- 3:16") still separates words.
+    let chars: Vec<char> = text.chars().collect();
+    let cleaned: String = chars
+        .iter()
+        .enumerate()
+        .map(|(i, &c)| {
             let c = c.to_ascii_lowercase();
             if c.is_ascii_alphanumeric() || c == ':' {
                 c
+            } else if matches!(c, '-' | '\u{2013}' | '\u{2014}')
+                && i > 0
+                && chars[i - 1].is_ascii_digit()
+                && chars.get(i + 1).is_some_and(|n| n.is_ascii_digit())
+            {
+                '-'
             } else {
                 ' '
             }
@@ -158,10 +170,23 @@ fn normalize_tokens(text: &str) -> Vec<String> {
     }
 
     // 3. Drop filler connectors now that any numbers straddling them have already been
-    //    folded on their own (step 2's ordering is what makes this safe).
+    //    folded on their own (step 2's ordering is what makes this safe). "from" introduces a
+    //    verse — "Psalms chapter one FROM verse two to ten" — and left in it sat between the
+    //    chapter and the verse range, so the window failed to parse and the match fell back to
+    //    the bare chapter, dropping the range. It is dropped only in that position (see below).
     let words: Vec<String> = folded
-        .into_iter()
-        .filter(|w| !matches!(w.as_str(), "chapter" | "chapters" | "verse" | "verses"))
+        .iter()
+        .enumerate()
+        .filter(|(i, w)| match w.as_str() {
+            "chapter" | "chapters" | "verse" | "verses" => false,
+            // ONLY "from verse N": a bare "from" between two numbers is ordinary speech
+            // ("John 3 from 5 of us") and must not weld them into a fabricated verse.
+            "from" => !folded
+                .get(i + 1)
+                .is_some_and(|next| next == "verse" || next == "verses"),
+            _ => true,
+        })
+        .map(|(_, w)| w.clone())
         .collect();
 
     // 4. Join spoken ranges: <digits> <range-word> <digits> → "a-b".
@@ -178,6 +203,39 @@ fn normalize_tokens(text: &str) -> Vec<String> {
         } else {
             out.push(words[j].clone());
             j += 1;
+        }
+    }
+    expand_unreadable_ranges(out)
+}
+
+/// `true` for exactly `C:A-B` (digits only, `A <= B`) — the one dashed form the parser reads as a
+/// verse range within a chapter.
+fn is_verse_range_token(tok: &str) -> bool {
+    let Some((chapter, rest)) = tok.split_once(':') else {
+        return false;
+    };
+    let Some((from, to)) = rest.split_once('-') else {
+        return false;
+    };
+    if !is_all_digits(chapter) || !is_all_digits(from) || !is_all_digits(to) {
+        return false;
+    }
+    matches!((from.parse::<u32>(), to.parse::<u32>()), (Ok(a), Ok(b)) if a <= b)
+}
+
+/// A dashed token that carries a chapter:verse but is NOT a plain verse range within one chapter
+/// — a cross-chapter span (`5:1-7:29`), a descending range (`119:176-1`), a chained one
+/// (`1:2-10-12`) — is split back into its numbers, as it always was before a digit-flanked dash was
+/// kept. The parser cannot express those, and left whole the window would fail and the passage's
+/// STARTING verse (`Matthew 5:1`) would be lost instead of offered to the operator. A dash with no
+/// colon (`Romans 8-9`) is left whole on purpose: a span of chapters must not be read as a verse.
+fn expand_unreadable_ranges(tokens: Vec<String>) -> Vec<String> {
+    let mut out = Vec::with_capacity(tokens.len());
+    for tok in tokens {
+        if tok.contains(':') && tok.contains('-') && !is_verse_range_token(&tok) {
+            out.extend(tok.split('-').filter(|p| !p.is_empty()).map(str::to_string));
+        } else {
+            out.push(tok);
         }
     }
     out

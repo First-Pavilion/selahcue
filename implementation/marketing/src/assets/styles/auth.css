@@ -348,7 +348,7 @@
 
 /* Handoff §13: the card never becomes full-bleed — the surrounding --sc-base margin is
    what marks it as a focused task. */
-@media (max-width: 767px) {
+@media (max-width: 767.98px) {
   .au-page {
     padding: 40px 0;
   }
@@ -362,5 +362,34 @@
   .au-title,
   .au-title-form {
     font-size: 22px;
+  }
+
+  /* 16px so iOS Safari does not zoom the viewport when a select is focused. */
+  .au-select {
+    font-size: 16px;
+  }
+
+  /* The line under the card ("Already verified? Back to Sign in") has no gutter of its
+     own; with a wider system font it ran to within 1px of both screen edges on a 320px
+     Linux WebKit render. Padding makes it wrap instead. */
+  .au-footer-link {
+    padding-inline: 16px;
+  }
+
+  /* The secondary links ("Create an account", "Sign in", "Back to sign in", "Forgot your
+     password?") were 21px tall: a miss-tap away from the wrong destination on a phone. */
+  .au-footer-link a,
+  .au-inline-link a {
+    display: inline-flex;
+    align-items: center;
+    min-height: 44px;
+  }
+}
+
+/* Very narrow phones (320px): the card is 92vw, so a 24px inset leaves ~246px for the
+   form -- tighten it a little rather than let a long button label or email wrap badly. */
+@media (max-width: 359px) {
+  .au-card {
+    padding: 20px 18px;
   }
 }

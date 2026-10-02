@@ -9,8 +9,8 @@ description = "SelahCue wgpu compositor: renders the selahcue-engine scene model
 
 [dependencies]
 selahcue-engine = { path = "../selahcue-engine" }
-wgpu = "22"
-pollster = "0.3"
+wgpu = "30"
+pollster = "1.0"
 bytemuck = { version = "1", features = ["derive"] }
 
 [lints]
