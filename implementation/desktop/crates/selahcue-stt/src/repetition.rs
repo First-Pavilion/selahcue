@@ -111,8 +111,9 @@ pub(crate) fn normalize_word(word: &str) -> String {
 
 /// Whether `c` is in one of the Unicode combining-diacritical-mark blocks: Combining Diacritical
 /// Marks (U+0300-036F, which holds every Yoruba tone mark and the dot below U+0323), its Extended
-/// and Supplement blocks, Combining Marks for Symbols, and Combining Half Marks. Marks in other
-/// scripts (Indic, Arabic, Hebrew vowel signs) are already `is_alphanumeric`.
+/// and Supplement blocks, Combining Marks for Symbols, and Combining Half Marks. Marks of other
+/// scripts are not listed: many Indic, Arabic and Hebrew vowel signs are `is_alphanumeric` already,
+/// and the rest are dropped like punctuation.
 fn is_combining_mark(c: char) -> bool {
     matches!(
         c,
