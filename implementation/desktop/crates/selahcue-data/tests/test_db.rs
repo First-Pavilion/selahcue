@@ -30,7 +30,40 @@ fn schema_version_is_pinned() {
     // v21 = sermon_note table (86akgqdv0; FR-123 "editable" half);
     // v22 = sermon_note.pending_* regeneration-retention columns (86akgqdx8; FR-129).
     // v23 = autosave_slot table (FR-005 "last-3" bounded autosave-slot history; 86ajy0hxg).
-    assert_eq!(migrations::target_version(), 23);
+    // v24 = media_asset.name (the operator's own file name for a copy-on-import asset).
+    assert_eq!(migrations::target_version(), 24);
+}
+
+#[test]
+fn a_v23_database_upgrades_media_asset_with_a_name_column_and_keeps_its_rows() {
+    // A database from before names existed: media_asset has no `name` column. Opening it must add
+    // the column without losing the library — the upgrade cannot cost anyone their imports.
+    let file = tempfile::NamedTempFile::new().unwrap();
+    let path = file.path().to_path_buf();
+    {
+        let _ = Database::open(&path).unwrap();
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute_batch(
+            "INSERT INTO media_asset (id, path, kind, size_bytes, imported_at) \
+                 VALUES (1, 'kept.jpg', 'image', 5, 0);
+             ALTER TABLE media_asset DROP COLUMN name;
+             PRAGMA user_version = 23;",
+        )
+        .unwrap();
+    }
+    let db = Database::open(&path).unwrap();
+    assert_eq!(db.schema_version().unwrap(), migrations::target_version());
+    let (path_col, name): (String, Option<String>) = db
+        .conn()
+        .query_row("SELECT path, name FROM media_asset WHERE id = 1", [], |r| {
+            Ok((r.get(0)?, r.get(1)?))
+        })
+        .unwrap();
+    assert_eq!(
+        path_col, "kept.jpg",
+        "the existing row survives the upgrade"
+    );
+    assert_eq!(name, None, "a pre-v24 row has no name");
 }
 
 #[test]
@@ -314,6 +347,7 @@ fn a_pre_pending_regeneration_database_upgrades_and_gains_the_pending_columns() 
              ALTER TABLE sermon_note DROP COLUMN pending_model;
              ALTER TABLE sermon_note DROP COLUMN pending_generated_at;
              DROP TABLE autosave_slot;
+             ALTER TABLE media_asset DROP COLUMN name;
              PRAGMA user_version = 21;",
         )
         .unwrap();
@@ -377,6 +411,7 @@ fn a_pre_autosave_slot_database_upgrades_and_gains_the_autosave_slot_table() {
         let conn = rusqlite::Connection::open(&path).unwrap();
         conn.execute_batch(
             "DROP TABLE autosave_slot;
+             ALTER TABLE media_asset DROP COLUMN name;
              PRAGMA user_version = 22;",
         )
         .unwrap();

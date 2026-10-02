@@ -6,7 +6,7 @@
 #![allow(clippy::unwrap_used)]
 
 use selahcue_engine::media::{
-    image_cache_stats, reset_image_cache, MAX_IMAGE_CACHE_BYTES, MAX_IMAGE_CACHE_ENTRIES,
+    image_cache_stats, reset_image_cache, thumbnail, MAX_IMAGE_CACHE_BYTES, MAX_IMAGE_CACHE_ENTRIES,
 };
 use selahcue_engine::{
     decode_image, render, DecodeError, DecodeLimits, EngineCommand, EngineEvent, Fault, Frame,
@@ -607,4 +607,153 @@ fn decoded_pixels_never_ride_the_serde_frame() {
         json.len()
     );
     assert!(json.contains("/media/very/large/background.png"));
+}
+
+// --- thumbnail: the media library's tile pictures (decode once, downscale, never cached) --------
+
+/// A `w`×`h` opaque PNG whose pixel at (x, y) is `f(x, y)`.
+fn gradient_png(w: u32, h: u32, f: impl Fn(u32, u32) -> [u8; 4]) -> Vec<u8> {
+    let mut data = Vec::with_capacity((w * h * 4) as usize);
+    for y in 0..h {
+        for x in 0..w {
+            data.extend_from_slice(&f(x, y));
+        }
+    }
+    encode_png(w, h, png::ColorType::Rgba, &data)
+}
+
+#[test]
+fn a_thumbnail_fits_the_box_and_keeps_the_aspect_ratio() {
+    let wide = gradient_png(400, 200, |_, _| [10, 20, 30, 255]);
+    let t = thumbnail(&wide, 100, 100).unwrap();
+    assert_eq!(
+        (t.width(), t.height()),
+        (100, 50),
+        "width-limited, 2:1 kept"
+    );
+    assert_eq!(t.rgba().len(), 100 * 50 * 4, "the buffer matches its dims");
+
+    let tall = gradient_png(100, 400, |_, _| [10, 20, 30, 255]);
+    let t = thumbnail(&tall, 100, 100).unwrap();
+    assert_eq!(
+        (t.width(), t.height()),
+        (25, 100),
+        "height-limited, 1:4 kept"
+    );
+
+    // A hairline strip must not collapse to nothing: at least one pixel each way.
+    let strip = gradient_png(1000, 1, |_, _| [0, 0, 0, 255]);
+    let t = thumbnail(&strip, 100, 100).unwrap();
+    assert_eq!((t.width(), t.height()), (100, 1));
+}
+
+#[test]
+fn a_small_image_is_returned_at_its_own_size_never_upscaled() {
+    let small = gradient_png(4, 2, |x, y| [x as u8 * 50, y as u8 * 100, 7, 255]);
+    let t = thumbnail(&small, 100, 100).unwrap();
+    assert_eq!(
+        (t.width(), t.height()),
+        (4, 2),
+        "a thumbnail never enlarges"
+    );
+    let original = decode_image(&small, &DecodeLimits::default()).unwrap();
+    assert_eq!(t.rgba(), original.rgba(), "and its pixels are untouched");
+}
+
+#[test]
+fn a_thumbnail_averages_the_pixels_it_covers_rather_than_dropping_them() {
+    // Black | white → one pixel: the mean, not whichever neighbour a nearest-sample would pick.
+    let bw = gradient_png(2, 1, |x, _| {
+        if x == 0 {
+            [0, 0, 0, 255]
+        } else {
+            [255, 255, 255, 255]
+        }
+    });
+    let t = thumbnail(&bw, 1, 1).unwrap();
+    assert_eq!((t.width(), t.height()), (1, 1));
+    let px = &t.rgba()[..4];
+    assert!(
+        (126..=129).contains(&px[0]) && px[0] == px[1] && px[1] == px[2],
+        "an even blend of black and white is mid grey, got {px:?}"
+    );
+    assert_eq!(px[3], 255, "opaque stays opaque");
+}
+
+#[test]
+fn a_transparent_neighbour_does_not_bleed_its_hidden_colour_into_the_pixel() {
+    // Opaque red next to fully transparent WHITE: the invisible pixel still carries colour data,
+    // which is what a naive per-channel mean would mix in (giving pink, (255,127,127)).
+    // Weighting by alpha keeps the visible colour pure red at half coverage. (A transparent
+    // *black* neighbour would not prove this: it adds 0 to the red channel either way.)
+    let mixed = gradient_png(2, 1, |x, _| {
+        if x == 0 {
+            [255, 0, 0, 255]
+        } else {
+            [255, 255, 255, 0]
+        }
+    });
+    let t = thumbnail(&mixed, 1, 1).unwrap();
+    let px = &t.rgba()[..4];
+    assert_eq!(
+        (px[0], px[1], px[2]),
+        (255, 0, 0),
+        "red stays red, got {px:?}"
+    );
+    assert!((126..=128).contains(&px[3]), "half coverage, got {px:?}");
+}
+
+#[test]
+fn making_thumbnails_never_touches_the_slide_decode_cache() {
+    // The library decodes one picture per tile, up to a thousand of them. Routed through the
+    // thread-local slide cache they would evict the images a live slide is showing and pile up to
+    // 256 MiB per worker thread. The thumbnail path must leave that cache exactly as it found it.
+    reset_image_cache();
+    let img = gradient_png(64, 64, |x, y| [x as u8, y as u8, 0, 255]);
+    for _ in 0..5 {
+        thumbnail(&img, 16, 16).unwrap();
+    }
+    assert_eq!(
+        image_cache_stats(),
+        (0, 0),
+        "no entry and no bytes were added to the decode cache"
+    );
+    // Positive control: the cache really does record a slide-path decode on this thread, so the
+    // zero above means "untouched", not "this counter is dead".
+    let p = temp_file("thumb_ctl", "png", &img);
+    let mut f = Frame::new(32, 32);
+    f.push(image_layer(&p, Rect::new(0, 0, 32, 32), 255));
+    let _ = render(&f);
+    assert_eq!(
+        image_cache_stats().0,
+        1,
+        "a slide render does populate the cache"
+    );
+    reset_image_cache();
+}
+
+#[test]
+fn a_zero_sized_target_is_clamped_to_one_pixel_not_a_panic() {
+    let img = gradient_png(10, 10, |_, _| [1, 2, 3, 255]);
+    let t = thumbnail(&img, 0, 0).unwrap();
+    assert_eq!((t.width(), t.height()), (1, 1));
+}
+
+#[test]
+fn hostile_or_broken_input_is_refused_with_a_typed_error_never_a_panic() {
+    assert_eq!(thumbnail(&[], 64, 64), Err(DecodeError::Empty));
+    assert_eq!(
+        thumbnail(b"GIF89a not an allowed image", 64, 64),
+        Err(DecodeError::Unsupported),
+        "the format allowlist applies exactly as it does to a slide image"
+    );
+    let good = gradient_png(40, 40, |_, _| [9, 9, 9, 255]);
+    assert!(
+        thumbnail(&good, 16, 16).is_ok(),
+        "positive control: valid input succeeds"
+    );
+    assert!(
+        thumbnail(&good[..good.len() / 2], 16, 16).is_err(),
+        "a truncated file is an error, not a partial thumbnail"
+    );
 }

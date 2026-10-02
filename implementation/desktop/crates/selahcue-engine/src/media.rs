@@ -58,6 +58,7 @@ use crate::scene::{MediaRef, Rgba};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::io::Read;
+use std::ops::Range;
 
 /// The 8-byte PNG signature.
 const PNG_SIGNATURE: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
@@ -269,6 +270,121 @@ pub fn decode_image(bytes: &[u8], limits: &DecodeLimits) -> Result<DecodedImage,
 )]
 pub fn decode_png(bytes: &[u8], limits: &DecodeLimits) -> Result<DecodedImage, DecodeError> {
     decode_image(bytes, limits)
+}
+
+/// Decode `bytes` and shrink the picture to fit inside `max_w` × `max_h`, keeping its aspect ratio
+/// — the media library's tile picture.
+///
+/// * **Same admission as a slide image.** It goes through [`decode_image`] under
+///   [`DecodeLimits::default`], so the format allowlist, the bomb caps and the JPEG profile apply
+///   exactly as they do when the picture is placed on a slide; a file the slide path would refuse
+///   is refused here with the same typed error, never a panic.
+/// * **Never cached.** The slide path keeps decodes in a thread-local cache; a library of up to a
+///   thousand pictures routed through it would evict whatever a live slide is showing and could
+///   hold 256 MiB per worker thread. A thumbnail decodes, shrinks and frees: the only thing that
+///   outlives the call is the small result, so peak memory is one decoded image.
+/// * **Never enlarges.** An image already inside the box comes back at its own size, untouched.
+/// * **Area average, alpha-weighted.** Each output pixel is the mean of the source pixels it
+///   covers, weighted by their alpha, so a transparent neighbour lightens a pixel's coverage
+///   instead of darkening its colour. A target of `0` in either dimension is treated as `1`.
+pub fn thumbnail(bytes: &[u8], max_w: u32, max_h: u32) -> Result<DecodedImage, DecodeError> {
+    let img = decode_image(bytes, &DecodeLimits::default())?;
+    let (max_w, max_h) = (max_w.max(1), max_h.max(1));
+    let (sw, sh) = (img.width(), img.height());
+    if sw <= max_w && sh <= max_h {
+        return Ok(img);
+    }
+    // Width-limited when the source is proportionally wider than the box, height-limited
+    // otherwise; either way the other side is scaled by the same factor (floored, minimum 1).
+    let (dw, dh) = if u64::from(sw).saturating_mul(u64::from(max_h))
+        > u64::from(sh).saturating_mul(u64::from(max_w))
+    {
+        (max_w, scaled(sh, max_w, sw))
+    } else {
+        (scaled(sw, max_h, sh), max_h)
+    };
+    shrink(&img, dw, dh).ok_or(DecodeError::Malformed)
+}
+
+/// `value * num / den`, floored, never below 1 and saturating rather than overflowing: the other
+/// side of a thumbnail once one side has been pinned to its box.
+fn scaled(value: u32, num: u32, den: u32) -> u32 {
+    let wide = u64::from(value)
+        .saturating_mul(u64::from(num))
+        .checked_div(u64::from(den))
+        .unwrap_or(1);
+    u32::try_from(wide.max(1)).unwrap_or(u32::MAX)
+}
+
+/// Area-average `img` down to `dw` × `dh` (both no larger than the source, both non-zero).
+/// `None` only if the buffer is inconsistent with its own dimensions, which `DecodedImage`'s
+/// constructor already rules out — kept as a value, not a panic, because this runs on decoder
+/// output and this module denies unchecked indexing and arithmetic.
+fn shrink(img: &DecodedImage, dw: u32, dh: u32) -> Option<DecodedImage> {
+    let (sw, sh) = (
+        usize::try_from(img.width()).ok()?,
+        usize::try_from(img.height()).ok()?,
+    );
+    let (dwz, dhz) = (usize::try_from(dw).ok()?, usize::try_from(dh).ok()?);
+    let mut out = Vec::with_capacity(dwz.checked_mul(dhz)?.checked_mul(4)?);
+    for dy in 0..dhz {
+        let (y0, y1) = cell_span(dy, dhz, sh)?;
+        for dx in 0..dwz {
+            let (x0, x1) = cell_span(dx, dwz, sw)?;
+            out.extend_from_slice(&mean_rgba(img.rgba(), sw, x0..x1, y0..y1)?);
+        }
+    }
+    DecodedImage::from_rgba(dw, dh, out)
+}
+
+/// The source span `[start, end)` that output cell `i` of `n` covers along an axis of `total`
+/// source pixels. Because the output is never larger than the source, these spans partition the
+/// axis and none is empty (`end` is forced past `start`).
+fn cell_span(i: usize, n: usize, total: usize) -> Option<(usize, usize)> {
+    let start = i.checked_mul(total)?.checked_div(n)?;
+    let end = i
+        .checked_add(1)?
+        .checked_mul(total)?
+        .checked_div(n)?
+        .max(start.checked_add(1)?)
+        .min(total);
+    Some((start, end))
+}
+
+/// The alpha-weighted mean RGBA of the source block `x` × `y` (pixel ranges) in a `stride`-pixel
+/// wide RGBA8 buffer. Fully transparent blocks come back as transparent black. `None` on any
+/// out-of-range block or an empty one.
+fn mean_rgba(src: &[u8], stride: usize, x: Range<usize>, y: Range<usize>) -> Option<[u8; 4]> {
+    let (mut a_sum, mut r_sum, mut g_sum, mut b_sum, mut count) = (0u64, 0u64, 0u64, 0u64, 0u64);
+    for row in y {
+        let base = row.checked_mul(stride)?;
+        let start = base.checked_add(x.start)?.checked_mul(4)?;
+        let end = base.checked_add(x.end)?.checked_mul(4)?;
+        for [r, g, b, a] in src.get(start..end)?.as_chunks::<4>().0 {
+            let a = u64::from(*a);
+            a_sum = a_sum.saturating_add(a);
+            r_sum = r_sum.saturating_add(u64::from(*r).saturating_mul(a));
+            g_sum = g_sum.saturating_add(u64::from(*g).saturating_mul(a));
+            b_sum = b_sum.saturating_add(u64::from(*b).saturating_mul(a));
+            count = count.saturating_add(1);
+        }
+    }
+    if count == 0 {
+        return None;
+    }
+    if a_sum == 0 {
+        return Some([0; 4]);
+    }
+    // Rounded division; each colour sum is at most `255 * a_sum`, so the quotient fits a `u8`.
+    let rounded = |sum: u64, den: u64| -> Option<u8> {
+        u8::try_from(sum.saturating_add(den.checked_div(2)?).checked_div(den)?).ok()
+    };
+    Some([
+        rounded(r_sum, a_sum)?,
+        rounded(g_sum, a_sum)?,
+        rounded(b_sum, a_sum)?,
+        rounded(a_sum, count)?,
+    ])
 }
 
 /// What a **header-only** probe established about an image: enough to admit it under every cap

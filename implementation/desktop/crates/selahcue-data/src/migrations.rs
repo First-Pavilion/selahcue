@@ -500,6 +500,14 @@ const MIGRATIONS: &[&str] = &[
     );
     CREATE INDEX idx_autosave_slot_saved_at ON autosave_slot(saved_at_ms);
     "#,
+    // v23 -> v24: the media library's DISPLAY NAME. A copy-on-import asset is stored in the app's
+    // own media folder under a generated name (`import-<n>.png`), so the operator's own file name
+    // can no longer be recovered from `path`; it is kept here instead. NULL = unnamed (the library
+    // falls back to the file name in `path`) — identical to every existing row, so an older
+    // database opens unchanged and keeps its whole library.
+    r#"
+    ALTER TABLE media_asset ADD COLUMN name TEXT;
+    "#,
 ];
 
 /// The schema version this build expects (== `MIGRATIONS.len()`).
