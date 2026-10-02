@@ -7,10 +7,10 @@
  * 1. IN-PAGE ANCHORS CLEAR THE STICKY NAVBAR. vue-router's `{ el, behavior }` scroll ignores
  *    CSS `scroll-margin`/`scroll-padding`, so a table-of-contents or "link to this section"
  *    click scrolled the heading UNDER the 68px navbar. The offset is not a constant here: it
- *    is read from the document's own `scroll-padding-top` (`assets/styles/anchors.css`, the
- *    one place that defines it from `--nav-height`), so JS and CSS cannot disagree. Only the
- *    blog/docs/support pages opt in; other pages' hash targets (the home page's
- *    `#how-it-works`) keep their previous behaviour.
+ *    is the navbar's rendered bottom edge plus `--sc-anchor-gap` (`assets/styles/anchors.css`,
+ *    which uses the same gap for the CSS side), so the navbar itself is the source of the
+ *    height. Only the blog/docs/support pages opt in; other pages' hash targets (the home
+ *    page's `#how-it-works`) keep their previous behaviour.
  * 2. REDUCED MOTION IS HONOURED. `behavior: 'smooth'` written into the scroll position
  *    overrides the CSS `scroll-behavior` that `main.css` already switches off under
  *    `prefers-reduced-motion`, so people who asked for no animation still got one. With
@@ -48,16 +48,24 @@ export function scrollFor(to: { hash: string; name?: unknown }, env: ScrollEnv):
   return { top: 0, behavior }
 }
 
-/** The document's `scroll-padding-top` in px (what `anchors.css` sets), or 0 if unreadable. */
-export function readStickyOffset(computed: { scrollPaddingTop?: string }): number {
-  const px = Number.parseFloat(computed.scrollPaddingTop ?? '')
-  return Number.isFinite(px) && px > 0 ? px : 0
+/**
+ * The clearance above an anchor target: the sticky navbar's rendered bottom edge plus the CSS
+ * gap (`--sc-anchor-gap`, a px literal). 0 when the navbar cannot be measured, which is the
+ * previous behaviour (no offset).
+ */
+export function stickyOffsetFrom(navBottom: number, gap: string): number {
+  if (!Number.isFinite(navBottom) || navBottom <= 0) return 0
+  const px = Number.parseFloat(gap)
+  return navBottom + (Number.isFinite(px) && px > 0 ? px : 0)
 }
 
 /** The real browser, for `createRouter({ scrollBehavior })`. */
 export function siteScrollBehavior(to: { hash: string; name?: unknown }): SiteScrollPosition {
+  // The first <header> in the app is the site navbar (App.vue renders it before the page).
+  const navBottom = document.querySelector('#app header')?.getBoundingClientRect().bottom ?? 0
+  const gap = getComputedStyle(document.documentElement).getPropertyValue('--sc-anchor-gap')
   return scrollFor(to, {
     reducedMotion: window.matchMedia('(prefers-reduced-motion: reduce)').matches,
-    stickyOffset: readStickyOffset(getComputedStyle(document.documentElement)),
+    stickyOffset: stickyOffsetFrom(navBottom, gap),
   })
 }

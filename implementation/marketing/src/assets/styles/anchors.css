@@ -1,23 +1,35 @@
 /*
  * Where in-page anchors and keyboard focus land, relative to the sticky site navbar.
  *
- * `scroll-padding-top` on the root tells the browser how much of the viewport the sticky
- * navbar covers, so that anything it scrolls into view (a #hash target, an element that
- * receives focus by Tab, `scrollIntoView`) stops BELOW the navbar instead of underneath it:
- * a focused control hidden behind the navbar fails WCAG 2.2 SC 2.4.11.
+ * Anything the browser scrolls into view on the article pages (a #hash target, a control
+ * reached by Tab, `scrollIntoView`) stops BELOW the navbar instead of underneath it: a focused
+ * control hidden behind the navbar fails WCAG 2.2 SC 2.4.11.
  *
- * `router/scroll.ts` reads this same computed value for router-driven anchor scrolls, so it
- * is the single definition. `--nav-height` is the navbar's height token; the fallback keeps
- * it correct while the token is not yet defined by the stylesheet that owns the navbar.
- * `tests` and `scripts/article_pages_headless.py` check the result against the navbar's real
- * rendered height, so a navbar that grows without this following fails a gate.
+ * THIS IS PER-ELEMENT `scroll-margin-top`, DELIBERATELY NOT A ROOT `scroll-padding-top`. A
+ * root padding is honoured for EVERY scroll-into-view, including focus() on a `position: fixed`
+ * element near the top: the browser tries to scroll the fixed element clear of the padding,
+ * cannot (it moves with the viewport), and scrolls the page to the top. The responsive pass's
+ * mobile navigation sheet is exactly that (focus moves to its fixed close button), so a root
+ * padding made opening the menu mid-page throw the reader back to the top, and would do the
+ * same to any future modal. Margins only apply to the elements named here.
  *
- * Per-element `scroll-margin` must NOT also be set: the two add, and anchors land too low.
+ * `router/scroll.ts` offsets router-driven anchor scrolls by the navbar's rendered bottom edge
+ * plus `--sc-anchor-gap`, so JS and CSS share the gap and the navbar itself is the height.
+ * `--nav-height` is the navbar's height token; the fallback keeps this correct while the
+ * stylesheet that owns the navbar does not define it. `scripts/article_pages_headless.py`
+ * checks the resulting margin against the navbar's real height, so a navbar that grows without
+ * this following fails a gate.
  */
 :root {
   --sc-anchor-gap: 16px;
+  --sc-anchor-offset: calc(var(--nav-height, 68px) + var(--sc-anchor-gap));
 }
 
-html {
-  scroll-padding-top: calc(var(--nav-height, 68px) + var(--sc-anchor-gap));
+/* Heading anchors and the docs skip-link target. */
+.ab-hwrap > :is(h2, h3),
+#docs-article,
+/* Anything focusable on an article page. The skip link is `position: fixed` just below the
+   navbar, so margin would only make focusing it scroll the page; it is excluded. */
+:is(.bp, .da, .sa) :is(a[href], button, input, select, textarea, summary, [tabindex]):not(.da-skip) {
+  scroll-margin-top: var(--sc-anchor-offset);
 }

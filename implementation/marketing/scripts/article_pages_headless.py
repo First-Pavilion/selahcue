@@ -307,8 +307,24 @@ def main() -> None:
         # ---- anchors clear the sticky navbar; instant under reduced motion ---------------
         pg.goto(base + POST, wait_until="networkidle")
         navbar_bottom = pg.evaluate("document.querySelector('header').getBoundingClientRect().bottom")
-        padding = pg.evaluate("parseFloat(getComputedStyle(document.documentElement).scrollPaddingTop)")
-        check("the anchor clearance is the navbar's real height plus a gap (CSS and navbar agree)", navbar_bottom + 8 <= padding <= navbar_bottom + 40, f"navbar bottom {navbar_bottom}, clearance {padding}")
+        margin = pg.evaluate("parseFloat(getComputedStyle(document.querySelector('.ab-hwrap > h2')).scrollMarginTop)")
+        check("the anchor clearance is the navbar's real height plus a gap (CSS and navbar agree)", navbar_bottom + 8 <= margin <= navbar_bottom + 40, f"navbar bottom {navbar_bottom}, heading scroll-margin-top {margin}")
+        check("focusable article controls carry the same clearance", abs(pg.evaluate("parseFloat(getComputedStyle(document.querySelector('.bp a[href]')).scrollMarginTop)") - margin) < 0.5)
+        # A root scroll-padding-top makes focus() on a position:fixed element near the top scroll
+        # the page to the top (the fixed element cannot clear the padding, and the browser tries
+        # anyway). The mobile navigation sheet is exactly that, so the page must carry no root
+        # padding, and focusing a fixed top-of-screen control must leave the scroll position alone.
+        pg.evaluate("window.scrollTo(0, 500)")
+        pg.wait_for_function("window.scrollY > 100")
+        scroll_before = pg.evaluate("window.scrollY")
+        scroll_after = pg.evaluate("""() => {
+          const b = document.createElement('button');
+          b.textContent = 'probe'; b.style.cssText = 'position:fixed;top:0;left:0;z-index:9999';
+          document.body.appendChild(b); b.focus(); const y = window.scrollY; b.remove(); return y;
+        }""")
+        check("the page has no non-zero root scroll-padding", pg.evaluate("parseFloat(getComputedStyle(document.documentElement).scrollPaddingTop) || 0") == 0)
+        check("focusing a fixed control at the top of the viewport does not move the page (the mobile menu sheet does exactly this)", scroll_after == scroll_before, f"{scroll_before} -> {scroll_after}")
+        pg.evaluate("window.scrollTo(0, 0)")
         pg.click("a.bp-toc-link:has-text('The desktop is in charge')")
         pg.wait_for_timeout(900)
         top = pg.evaluate("document.getElementById('sec-the-desktop-is-in-charge').getBoundingClientRect().top")
