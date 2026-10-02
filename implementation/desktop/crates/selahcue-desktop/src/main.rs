@@ -2763,9 +2763,13 @@ impl App {
             Fault::DiskFull,
             disk_fault_active(self.last_disk_status),
         );
-        if self.disk_critical || self.clean_mode {
+        if self.disk_critical || self.clean_mode || self.smoke {
             // Critical disk: never risk corrupting a full store. Clean mode:
-            // the preserved session must stay untouched. State stays in memory.
+            // the preserved session must stay untouched. A `--smoke` launch is a throwaway probe
+            // that "must not persist anything" (the exit save already skips it): loading a stored
+            // plan can queue a one-off save of the fitted scripture links, which this tick would
+            // otherwise write into the data dir the probe was launched against.
+            // State stays in memory.
             return;
         }
         let Ok(mut c) = self.controller.lock() else {
@@ -4543,6 +4547,64 @@ mod autosave_restore_tests {
         assert_eq!(resolved_plan_id, plan_id);
         assert_eq!(resolved_plan.len(), 2);
         assert_eq!(snap.live_idx, Some(0));
+    }
+
+    /// The controller FITS scripture links when it loads a stored plan (a whole chapter becomes its
+    /// explicit verse range, a range past the chapter's end is cut back) so they page one verse at
+    /// a time. The host fingerprints the IN-MEMORY plan when it captures a slot but compares it, on
+    /// restore, against the plan read back from STORAGE — so the fitted plan must be saved, or
+    /// crash recovery would refuse to restore for exactly the users who have such links.
+    #[test]
+    fn a_slot_captured_after_the_controller_fits_legacy_links_resolves_once_the_fit_is_saved() {
+        let db = Database::open_in_memory().unwrap();
+        let mut legacy = ServicePlan::new("Sunday");
+        for (title, reference) in [("Reading", "Psalms 1"), ("Overlong", "Psalms 1:2-10")] {
+            let id = legacy.add_item(ItemKind::Scripture, title);
+            legacy.get_mut(id).unwrap().content = Some(ItemContent::Scripture {
+                reference: reference.into(),
+                translation: Some("WEB".into()),
+                verses_per_slide: None,
+                verse_numbers: None,
+            });
+        }
+        let plan_id = plan_repo::insert(&db, &legacy).unwrap();
+
+        // Boot: the controller loads the stored plan and fits its links.
+        let mut c = selahcue_app::LiveController::new(
+            plan_repo::load(&db, plan_id).unwrap(),
+            320,
+            180,
+            selahcue_present::Theme::dark(),
+        );
+        assert_ne!(
+            super::plan_fingerprint(c.plan()),
+            super::plan_fingerprint(&plan_repo::load(&db, plan_id).unwrap()),
+            "premise: the fit changed the in-memory plan relative to storage"
+        );
+
+        // Without the save, a slot captured from the in-memory plan is REFUSED on restore — the
+        // failure this guards against, shown to be real rather than assumed.
+        push(&db, c.plan(), plan_id, Some(0), 1_000);
+        let unsaved = autosave_repo::list(&db).unwrap()[0].id;
+        assert!(
+            super::resolve_autosave_slot(&db, unsaved).is_err(),
+            "premise: an unsaved fit makes the slot's fingerprint disagree with storage"
+        );
+
+        // The controller queues the save; the host's tick does exactly this (`save_plan`).
+        assert!(c.take_plan_dirty(), "a fitted plan must queue a save");
+        plan_repo::update(&db, plan_id, c.plan()).unwrap();
+        push(&db, c.plan(), plan_id, Some(0), 2_000);
+        let saved = autosave_repo::list(&db)
+            .unwrap()
+            .into_iter()
+            .map(|s| s.id)
+            .max()
+            .unwrap();
+        assert!(
+            super::resolve_autosave_slot(&db, saved).unwrap().is_some(),
+            "once the fitted plan is saved, a slot captured from it must resolve"
+        );
     }
 
     #[test]

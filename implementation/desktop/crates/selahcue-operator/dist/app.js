@@ -3698,9 +3698,10 @@
         if (reference) loadChapter(reference, null);
       };
       // Sana's security review (PR #61) caught that __openChapterForStage is NOT read-only:
-      // loadChapter's non-range branch arms setCursor's 120ms stageTimer -> stage_scripture, and
-      // its range branch invokes stage_scripture immediately, synchronously, with no timer to
-      // cancel at all. CON-134's Edit and CON-138's History re-stage were built on the WRONG
+      // loadChapter arms setCursor's 120ms stageTimer -> stage_scripture/follow_scripture (a range
+      // used to take a second branch that invoked stage_scripture immediately, synchronously, with
+      // no timer to cancel at all; it is gone now that a range stages only its first verse).
+      // CON-134's Edit and CON-138's History re-stage were built on the WRONG
       // assumption that opening a chapter has no side effect — both were silently staging
       // content to Preview. This is the genuinely read-only entry point for both: loadChapter's
       // explicit stage=false suppresses BOTH staging paths, so browsing a reference here can
@@ -4017,10 +4018,6 @@
           // The HOST parsed the query — land/stage from ITS verse selection
           // ("gen 1 5", "Gen 1:5", "Gen 1:1-3" all resolve identically; no
           // regex guessing on the raw string).
-          const isRange =
-            ch.verse_start != null &&
-            ch.verse_end != null &&
-            ch.verse_end > ch.verse_start;
           let wantNum = null;
           if (cursorVerseNum != null) wantNum = cursorVerseNum;
           else if (ch.verse_start != null) wantNum = ch.verse_start;
@@ -4040,23 +4037,11 @@
             // the box (review 7ag).
             return true;
           }
-          if (isRange) {
-            // The whole passage stages; the cursor lands without re-staging. Gated on `stage` —
-            // this call has no timer to cancel (unlike the non-range branch below), so the
-            // guard has to sit here, not at the call site.
-            setCursor(Math.max(0, idx), false);
-            if (stage) {
-              act(() =>
-                invoke("stage_scripture", {
-                  reference:
-                    ch.reference + ":" + ch.verse_start + "-" + ch.verse_end,
-                  translation: currentTranslation,
-                })
-              );
-            }
-          } else {
-            setCursor(Math.max(0, idx), stage);
-          }
+          // ONE verse at a time: a range ("Psalms 1:2-10") only POSITIONS the cursor on its first
+          // verse and stages that verse — never the whole passage on one slide. The Up/Down
+          // stepping (setCursor) carries on from there. The host narrows a range to its first
+          // verse too (narrow_to_first_verse), so this holds for every client, not just this one.
+          setCursor(Math.max(0, idx), stage);
           return true;
         } catch (e) {
           setStatus(String(e));
@@ -4554,16 +4539,21 @@
 
       // Quinn's QA review (PR #61, bug 17tnw2axre8): a WHOLE-CHAPTER detection (e.g. a spoken
       // "Isaiah 61", no verse) never lit the on-air card, because the host narrows it before it
-      // ever goes live. controller.rs's stage_reference_for_detection (ApproveDetection handler)
-      // appends ":1" to a bare "Book Chapter" reference — "a reference that already names a
-      // verse (or doesn't parse) is returned unchanged" (its own doc comment) — so
+      // ever goes live. controller.rs's narrow_to_first_verse (ApproveDetection handler)
+      // appends ":1" to a bare "Book Chapter" reference (and cuts a range "B C:a-b" to "B C:a") —
+      // "a reference that already names a single verse (or doesn't parse) is returned unchanged"
+      // (its own doc comment) — so
       // view.live_scripture after Approve reads "Isaiah 61:1" while the DETECTION's own
       // reference (d.reference, from view.detections) is still the raw "Isaiah 61" the operator
       // approved. A bare `===` compare can therefore never match for this real, common input
-      // shape. This encodes exactly that one documented transformation — not a general fuzzy
+      // shape. This encodes exactly those documented transformations — not a general fuzzy
       // match — so it stays exact everywhere the host doesn't narrow anything.
       function detectionWentLiveAs(reference, liveScripture) {
-        return liveScripture === reference || liveScripture === reference + ":1";
+        if (liveScripture === reference || liveScripture === reference + ":1") return true;
+        // A RANGE detection ("Psalms 119:2-10") goes on air as its FIRST verse only — the host
+        // narrows it the same way it narrows a bare chapter (narrow_to_first_verse).
+        const range = /^(.+:\d+)-\d+$/.exec(reference);
+        return range !== null && liveScripture === range[1];
       }
 
       // --- CON-136/CON-137/CON-138 — client-side state layered onto the host-authoritative
