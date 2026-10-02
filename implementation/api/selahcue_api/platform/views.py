@@ -5,9 +5,17 @@ from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_GET, require_POST
 
+from selahcue_api.apps.accounts.services import (
+    MAX_PASSWORD_LENGTH,
+    LoginData,
+    actor_from_session_token,
+    login as _login_service,
+)
 from selahcue_api.apps.devices.services import (
     ActivateDeviceData,
+    ActivateDeviceWithSessionData,
     activate_device as _activate_device_service,
+    activate_device_with_session as _activate_device_with_session_service,
     refresh_license as _refresh_license_service,
 )
 from selahcue_api.apps.entitlements.services import (
@@ -77,10 +85,16 @@ def activate_device(request):
             code=error.code, surface="desktop", operation="activation"
         )
 
+    return JsonResponse(_activation_payload(result, operation="activation"), status=200)
+
+
+def _activation_payload(result, *, operation: str) -> dict:
+    """The success body shared by both activation routes, so the desktop parses one shape
+    whichever credential it activated with."""
     token = result.device_token
     # Success payload: the full token is the ONE legitimate place a device token leaves the
     # system (show-once), so this payload is deliberately NOT run through the redaction assertion.
-    payload = {
+    return {
         "created": result.created,
         # True when an existing device was issued a REPLACEMENT token (its own was expired or
         # revoked). The client should overwrite whatever it had cached: the old one is now
@@ -105,9 +119,154 @@ def activate_device(request):
             "expires_at": result.license_key.expires_at.isoformat(),
         },
         "surface": "desktop",
-        "operation": "activation",
+        "operation": operation,
     }
-    return JsonResponse(payload, status=200)
+
+
+# --- Native-client account sign-in (86ak5t1gw, ADR-0027) -------------------------------------
+#
+# The two views below are `csrf_exempt` and that is SOUND only because of three properties, each
+# pinned by `tests/test_native_account_surface.py`. Break one and the exemption stops being safe:
+#
+#   1. They read the account session from the `Authorization` header ONLY. The browser surface
+#      (`graphql/context.py::_read_account_session_token`) also falls back to the
+#      `selahcue_account_session` cookie, and that cookie is exactly the ambient credential CSRF
+#      protection exists for. Nothing here may call that function or read `request.COOKIES`.
+#   2. They never set a cookie, so a forged cross-site sign-in leaves nothing in the victim's
+#      browser (login-CSRF) and the response is unreadable cross-origin anyway.
+#   3. They require `Content-Type: application/json`, which a cross-site HTML form cannot send
+#      without a CORS preflight (and this API emits no CORS headers).
+#
+# `/graphql/account` is deliberately NOT exempted and is unchanged: it authenticates from that
+# cookie, so for it the CSRF check is load-bearing.
+
+NATIVE_AUDIT_SURFACE = "desktop_v1"
+# RFC 5321's mailbox limit; also `EmailField`'s default `max_length`.
+_MAX_EMAIL_LENGTH = 254
+
+
+def _json_object(request) -> dict | None:
+    """The body as a JSON object, or None if it is anything else (including a body that was not
+    declared `application/json` — property 3 above)."""
+    if request.content_type != "application/json":
+        return None
+    try:
+        raw = json.loads(request.body.decode("utf-8") or "{}")
+    except (ValueError, UnicodeDecodeError):
+        return None
+    return raw if isinstance(raw, dict) else None
+
+
+def _is_bounded_text(value: object, limit: int) -> bool:
+    return isinstance(value, str) and 0 < len(value) <= limit
+
+
+def _no_store(response):
+    """These responses carry (or sit next to) a show-once credential; no cache may keep one."""
+    response["Cache-Control"] = "no-store"
+    return response
+
+
+def _account_session_bearer(request) -> str:
+    """The account session token from `Authorization: Bearer <token>`, or "" when absent.
+
+    The ONLY source a native route reads a session from (property 1 above). Unlike
+    `_device_bearer_token` there is no JSON-body fallback either: a credential in a body that a
+    cross-site form can author is not a credential.
+    """
+    auth = request.headers.get("Authorization", "")
+    # RFC 7235: the auth-scheme is case-insensitive.
+    if auth[:7].lower() == "bearer ":
+        return auth[7:].strip()
+    return ""
+
+
+@csrf_exempt
+@require_POST
+# Below the method decorator on purpose: a 405 must not consume throttle budget. This is the
+# app-level per-IP limit the browser login mutation does not carry; the durable per-account
+# lockout lives in `login` itself and therefore applies here exactly as it does there.
+@throttle("session_login", "SELAHCUE_THROTTLE_SESSION_LOGIN", (10, 60))
+def create_session(request):
+    """POST /v1/sessions — exchange an account email + password for an account session token, for
+    a native client that cannot take part in the browser CSRF ceremony (DEC-011 pt 3).
+
+    Same `login` service as the GraphQL mutation, so the no-enumeration collapse (unknown email
+    and wrong password are indistinguishable), the unverified-account rule and the per-account
+    lockout are inherited, not re-implemented. Differs in transport only: bearer-out, no cookie."""
+    raw = _json_object(request)
+    email = raw.get("email") if raw is not None else None
+    password = raw.get("password") if raw is not None else None
+    if not (_is_bounded_text(email, _MAX_EMAIL_LENGTH) and _is_bounded_text(password, MAX_PASSWORD_LENGTH)):
+        return _no_store(
+            command_error_response(
+                code=ErrorCode.VALIDATION_FAILED, surface="desktop", operation="session_login"
+            )
+        )
+    try:
+        result = _login_service(
+            LoginData(email=email, password=password), source_surface=NATIVE_AUDIT_SURFACE
+        )
+    except SafeAPIError as error:
+        return _no_store(
+            command_error_response(code=error.code, surface="desktop", operation="session_login")
+        )
+    payload = {
+        # The one place the session token leaves the system (show-once).
+        "session_token": result.session_token,
+        "expires_at": result.expires_at,
+        "role": result.role,
+        "org_id": result.org_id,
+        "surface": "desktop",
+        "operation": "session_login",
+    }
+    # Nothing here is a credential but the token, and `session_token` is not on the denylist;
+    # this guards against a future field (a hash, a password echo) being added to the payload.
+    assert_no_restricted_payload_fields(payload)
+    return _no_store(JsonResponse(payload, status=200))
+
+
+@csrf_exempt
+@require_POST
+@throttle("activation_with_session", "SELAHCUE_THROTTLE_ACTIVATION", (10, 60))
+def activate_device_with_session(request):
+    """POST /v1/activations:with-session — register a device for the signed-in administrator's
+    organisation, authenticated by `Authorization: Bearer <account session token>` (DEC-005).
+
+    Same service, same instance limit, same show-once device token as the GraphQL
+    `activateDeviceWithSession`; the body is `POST /v1/activations` minus `license_key`, and the
+    response is that route's shape. Its own throttle bucket (same budget): the enrollment-key
+    path must not be able to starve the primary one."""
+    raw = _json_object(request)
+    if raw is None:
+        return _no_store(
+            command_error_response(
+                code=ErrorCode.VALIDATION_FAILED,
+                surface="desktop",
+                operation="activation_with_session",
+            )
+        )
+    actor = actor_from_session_token(_account_session_bearer(request))
+    data = ActivateDeviceWithSessionData(
+        idempotency_key=str(raw.get("idempotency_key") or ""),
+        device_fingerprint=str(raw.get("device_fingerprint") or ""),
+        platform=str(raw.get("platform") or ""),
+        app_version=str(raw.get("app_version") or ""),
+        display_name=str(raw.get("display_name") or ""),
+    )
+    try:
+        result = _activate_device_with_session_service(
+            actor, data, source_surface=NATIVE_AUDIT_SURFACE
+        )
+    except SafeAPIError as error:
+        return _no_store(
+            command_error_response(
+                code=error.code, surface="desktop", operation="activation_with_session"
+            )
+        )
+    return _no_store(
+        JsonResponse(_activation_payload(result, operation="activation_with_session"), status=200)
+    )
 
 
 def _device_bearer_token(request) -> str:
