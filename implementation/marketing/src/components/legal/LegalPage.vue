@@ -218,16 +218,25 @@ const EXAMPLE_TOKEN = '{{' + 'EXAMPLE_DETAIL' + '}}'
 }
 
 /*
- * While a legal page is mounted the page-wide `scroll-padding-top` (PR #135 sets one on
- * `html` for the article pages) is zeroed: the anchors already carry the offset, and the
- * browser would otherwise add the padding on top of it for native fragment navigation.
- * Focus-visibility under the navbar is kept by the per-element rule in the scoped block.
+ * While a legal page is mounted any page-wide `scroll-padding-top` on `html` is zeroed: the
+ * anchors already carry the offset, and the browser would otherwise add the padding on top of
+ * it for native fragment navigation. Focus-visibility under the navbar is kept by the
+ * per-element rule in the scoped block.
  *
- * WHEN #135 LANDS: this rule and `--legal-anchor-offset` are the legal pages' only offset
- * mechanism and are self-contained, so nothing needs deleting for correctness. To fold the
- * legal pages into #135's single mechanism instead: add 'privacy' and 'terms' to
- * ANCHORED_ROUTES in router/scroll.ts, then delete this rule, the lift in `.legal-anchor`
- * and `--legal-anchor-offset`.
+ * THIS IS A GUARD, NOT A FIX FOR SOMETHING THE SITE DOES TODAY. PR #135 deliberately sets no
+ * root `scroll-padding-top`, because a root padding makes focusing a control in the sticky
+ * navbar scroll the page to the top; it uses per-element `scroll-margin-top` instead
+ * (`assets/styles/anchors.css`), and `tests/scroll.test.ts` fails if anything sets a non-zero
+ * root padding. So there is currently nothing here to zero. The rule
+ * stays (pinned by `tests/legalPage.test.ts` and, with an injected padding, by
+ * `scripts/legal_pages_headless.py`) so that a root padding added later cannot stack on the
+ * anchor lift unnoticed.
+ *
+ * This rule and `--legal-anchor-offset` are the legal pages' only offset mechanism and are
+ * self-contained. The blog, docs and support pages use the router-side mechanism instead
+ * (ANCHORED_ROUTES in router/scroll.ts). To fold the legal pages into that one: add 'privacy'
+ * and 'terms' to ANCHORED_ROUTES, then delete this rule, the lift in `.legal-anchor` and
+ * `--legal-anchor-offset`.
  */
 html:has(.legal-page) {
   scroll-padding-top: 0;

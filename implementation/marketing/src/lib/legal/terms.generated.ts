@@ -1040,7 +1040,7 @@ export const termsOfService: LegalDocument = {
                 },
                 {
                   "inline": [
-                    { "kind": "text", "text": "In the United Kingdom, printing and importing printed copies of the King James Version are subject to rights held under Crown letters patent. If you are in the United Kingdom and intend to print or distribute King James Version text, check whether you need permission." }
+                    { "kind": "text", "text": "In the United Kingdom, printing of the King James Version is subject to rights held under Crown letters patent. If you are in the United Kingdom and intend to print or distribute King James Version text, check whether you need permission." }
                   ],
                   "children": []
                 },

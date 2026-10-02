@@ -9,9 +9,10 @@
  * visible. Everything else here lands in the same place because it ALSO scrolls to the
  * anchor's raw top (`scrollToElement` reads only the element's own `scroll-margin-top`,
  * never the page's `scroll-padding-top`), and LegalPage.vue zeroes the page's
- * `scroll-padding-top` while it is mounted. Without that, a stylesheet that sets
- * `scroll-padding-top` on `html` (PR #135 does) would be added on top of the lift by the
- * browser's own fragment scrolling: a double offset.
+ * `scroll-padding-top` while it is mounted. No stylesheet sets one on `html` today (PR #135
+ * uses per-element `scroll-margin-top` instead, and a test pins that); this is a guard, so
+ * that one added later is not stacked on top of the lift by the browser's own fragment
+ * scrolling: a double offset.
  */
 import { nextTick } from 'vue'
 import type { Router } from 'vue-router'

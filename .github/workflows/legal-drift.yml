@@ -17,7 +17,7 @@ on:
   # pages (the drafts, the generated content, the components, their tests). The second
   # block, from the two views down, is SHARED code that can move where those pages land or
   # how they look without touching any legal file: the router and its scroll behaviour, the
-  # global styles (a page-wide scroll-padding changes anchor offsets), the navbar whose
+  # global styles (the anchor and scroll offsets live there), the navbar whose
   # height the anchors clear, the app shell, and the build/dependency/tsconfig inputs. A
   # change there that breaks a legal page would otherwise go unnoticed until some legal
   # file next changed. It is written out twice because Actions has no shared path list.

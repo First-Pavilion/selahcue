@@ -376,8 +376,8 @@ describe('one offset mechanism for anchors (no double offset next to a page-wide
 
   test('the neutraliser is scoped to the mounted page: `html:has(.legal-page)`, and the page root carries that class', async () => {
     // Zero while mounted, restored on unmount, even next to a page-wide `html { scroll-padding-top }`
-    // (PR #135): the rule matches only while a `.legal-page` is in the document, and it beats a bare
-    // `html` rule on specificity. The browser check proves the restore on unmount for real.
+    // (the site sets none today; this is the guard): the rule matches only while a `.legal-page` is in
+    // the document, and it beats a bare `html` rule on specificity. The browser check proves the restore on unmount for real.
     assert.match(page, /html:has\(\.legal-page\)\s*\{\s*scroll-padding-top:\s*0;?\s*\}/)
     assert.equal((page.match(/scroll-padding-top\s*:/g) ?? []).length, 1, 'exactly one declaration: the neutraliser, scoped by :has(.legal-page)')
     // specificity: html:has(.legal-page) is (0,1,1), a bare `html` is (0,0,1)

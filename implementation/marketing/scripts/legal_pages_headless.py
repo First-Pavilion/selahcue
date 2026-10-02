@@ -29,7 +29,8 @@ Per page and width it asserts:
     contrast, and its target's first heading clears the navbar
   * anchors land ~88px below the top of the viewport (cold deep link, Contents click, a
     second click on the same entry, in-text link) WITH and WITHOUT a page-wide
-    `scroll-padding-top` on html (what PR #135 adds): no double offset
+    `scroll-padding-top` on html (injected: the site sets none today, so this proves the
+    guard against one being added later): no double offset
   * observers: exactly one IntersectionObserver while a legal page is mounted, and every
     observer the page created is disconnected after leaving it
   * the browser console stays clean and no request fails
@@ -180,8 +181,9 @@ OBSERVER_TRACKER = """
 })()
 """
 
-# What PR #135 adds to the site: a page-wide scroll-padding-top on <html>. Injected before any
-# page script so the legal pages are exercised next to it, not only on today's base.
+# A page-wide scroll-padding-top on <html>. The site sets none today (PR #135 uses per-element
+# scroll-margin-top and tests/scroll.test.ts pins that nothing sets a root one), so it is injected, before any
+# page script, to prove the legal pages' guard against one being added later.
 PAGE_WIDE_SCROLL_PADDING = """
 (() => {
   const add = () => { const s = document.createElement('style'); s.textContent = 'html { scroll-padding-top: 84px }'; (document.head || document.documentElement).appendChild(s) }
@@ -512,7 +514,7 @@ def run_navigation(browser, base: str, key: str, all_exp: dict) -> None:
 
 
 def run_anchor_modes(browser, base: str, key: str, exp: dict) -> None:
-    """Anchors land at ~88px next to a page-wide scroll-padding-top too (what PR #135 adds)."""
+    """Anchors land at ~88px next to an injected page-wide scroll-padding-top too (none is set today)."""
     sections = exp["tocIds"]
     for width, height in ((375, 812), (1440, 900)):
         tag = f"{key}@{width}+scroll-padding"
