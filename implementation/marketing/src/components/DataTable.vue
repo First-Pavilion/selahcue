@@ -10,7 +10,7 @@ export interface TableColumn {
 
 const props = defineProps({
   columns: { type: Array as () => TableColumn[], required: true },
-  items: { type: Array as () => Record<string, any>[], required: true },
+  items: { type: Array as () => Record<string, string | number>[], required: true },
   searchPlaceholder: { type: String, default: 'Search records...' },
   filterable: { type: Boolean, default: true },
   pageSize: { type: Number, default: 10 }
