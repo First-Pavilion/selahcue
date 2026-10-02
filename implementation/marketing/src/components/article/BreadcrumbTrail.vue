@@ -25,5 +25,11 @@ defineProps<{ items: readonly Crumb[] }>()
 .bc-link:hover { color: var(--sc-text); }
 .bc-link:focus-visible { outline: 2px solid var(--sc-primary); outline-offset: 2px; border-radius: 3px; }
 .bc-current { color: var(--sc-text); overflow-wrap: anywhere; }
+/* 44px touch targets on phones and on any coarse pointer (WCAG 2.5.8). The negative margin
+   keeps the visible spacing the same; only the hit area grows. */
+@media (max-width: 767.98px), (pointer: coarse) {
+  .bc-list { gap: 0 4px; }
+  .bc-link { display: inline-flex; align-items: center; justify-content: center; min-width: 44px; min-height: 44px; padding: 0 4px; margin-inline: -4px; }
+}
 .bc-sep { color: var(--sc-text-secondary); opacity: 0.6; }
 </style>

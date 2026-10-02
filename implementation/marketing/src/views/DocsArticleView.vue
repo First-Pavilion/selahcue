@@ -296,6 +296,7 @@ watch(
   .da-content { padding: 24px 20px 32px; border-radius: 16px; }
   .da-title { font-size: 30px; }
   .da-lead { font-size: 17px; }
+  .da-edit { padding: 12px 0; }
 }
 
 /* Desktop: >= 1200px — permanent two-column layout, sticky tree. */

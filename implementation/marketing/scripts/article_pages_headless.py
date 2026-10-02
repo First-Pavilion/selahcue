@@ -115,6 +115,26 @@ CONTRAST_JS = """
 """
 
 
+# Same rule as scripts/responsive_sweep.py's TOUCH_JS: visible, standalone interactive elements
+# in <main> are at least 44px in their smaller dimension; an inline link in running prose is exempt.
+TOUCH_JS = """
+() => {
+  const bad = [];
+  for (const el of document.querySelectorAll('main a, main button')) {
+    const cs = getComputedStyle(el);
+    if (cs.display === 'none' || cs.visibility === 'hidden') continue;
+    if (el.closest('[hidden], [aria-hidden=true]')) continue;
+    const r = el.getBoundingClientRect();
+    if (r.width === 0 || r.height === 0) continue;
+    if (r.width <= 1 && r.height <= 1) continue;
+    if (el.tagName === 'A' && cs.display === 'inline' && el.closest('p, li, dd, blockquote, label')) continue;
+    if (Math.min(r.width, r.height) < 43.5) bad.push(el.tagName.toLowerCase() + '.' + String(el.className).split(' ')[0] + ' ' + Math.round(r.width) + 'x' + Math.round(r.height));
+  }
+  return bad.slice(0, 12);
+}
+"""
+
+
 def main() -> None:
     # THREADED: Chromium opens speculative idle connections, and a one-request-at-a-time
     # server lets one of them stall every later navigation until it times out.
@@ -410,6 +430,12 @@ def main() -> None:
         for path in [POST, "/support/mobile-control/phone-wont-pair", "/blog", "/support"]:
             phone.goto(base + path, wait_until="networkidle")
             check(f"phone: {path} does not scroll sideways", not phone.evaluate("document.documentElement.scrollWidth > document.documentElement.clientWidth"))
+        # 44px touch targets on the article pages (WCAG 2.5.8), measured the way the responsive
+        # sweep measures them: every `main` link/button, bar a link inside running prose.
+        for path in [POST, "/docs/display-outputs/ndi-output", "/support/mobile-control/phone-wont-pair"]:
+            phone.goto(base + path, wait_until="networkidle")
+            small = phone.evaluate(TOUCH_JS)
+            check(f"phone: {path} has no touch target under 44px", not small, str(small[:4]))
 
         # ---- support index search -------------------------------------------------------
         sp = ctx.new_page()

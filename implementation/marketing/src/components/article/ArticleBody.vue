@@ -157,6 +157,11 @@ onBeforeUnmount(() => clearTimeout(resetTimer))
 .ab-anchor:focus-visible { outline: 2px solid var(--sc-primary); outline-offset: 2px; border-radius: 3px; }
 /* No hover on touch screens: keep the anchor discoverable there. */
 @media (hover: none) { .ab-anchor { opacity: 0.7; } }
+/* A 44 x 44 hit area on phones and coarse pointers; the negative margin stops it making the
+   heading taller. */
+@media (max-width: 767.98px), (pointer: coarse) {
+  .ab-anchor { display: inline-flex; align-items: center; justify-content: center; min-width: 44px; min-height: 44px; margin-block: -10px; }
+}
 
 .ab-list { margin: 0 0 24px; padding-left: 24px; }
 .ab-list li { margin-bottom: 10px; padding-left: 4px; }
