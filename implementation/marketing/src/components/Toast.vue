@@ -110,6 +110,16 @@ onUnmounted(() => {
   color: var(--sc-text);
 }
 
+/* A nowrap pill wider than the screen is cut off at both edges on a 320px phone. */
+@media (max-width: 767.98px) {
+  .toast-notification {
+    max-width: calc(100vw - 32px);
+    white-space: normal;
+    border-radius: 16px;
+    bottom: max(16px, env(safe-area-inset-bottom));
+  }
+}
+
 .toast-enter-active, .toast-leave-active {
   transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
 }

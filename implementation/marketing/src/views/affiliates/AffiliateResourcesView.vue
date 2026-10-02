@@ -35,18 +35,22 @@ const assets = [
 </template>
 
 <style scoped>
-.container { max-width: 1200px; margin: 0 auto; padding: 0 24px; }
+.container { max-width: 1200px; margin: 0 auto; padding: 0 var(--page-gutter); }
 .page-header { margin-bottom: 32px; }
 .page-header h1 { font-size: 28px; font-weight: 700; color: var(--sc-text); margin: 0 0 8px 0; }
 .page-header p { font-size: 15px; color: var(--sc-text-secondary); margin: 0; }
 
-.assets-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 24px; }
+.assets-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px; }
 .asset-card { background: var(--sc-surface); border: 1px solid var(--sc-border); border-radius: 16px; padding: 28px; display: flex; flex-direction: column; gap: 16px; align-items: flex-start; }
 .asset-icon { font-size: 32px; }
 .asset-info h3 { font-size: 17px; font-weight: 600; color: var(--sc-text); margin: 8px 0 4px 0; }
 .asset-size { font-size: 13px; color: var(--sc-text-muted); }
 
-@media (max-width: 768px) {
-  .assets-grid { grid-template-columns: 1fr; }
+@media (max-width: 767.98px) {
+  .assets-grid { grid-template-columns: minmax(0, 1fr); gap: 16px; }
+  .asset-card { padding: 22px; }
+  .asset-card > :last-child { align-self: stretch; }
+  .page-header { margin-bottom: 24px; }
+  .page-header h1 { font-size: 24px; line-height: 30px; }
 }
 </style>
