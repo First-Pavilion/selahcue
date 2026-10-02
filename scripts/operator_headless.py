@@ -23,7 +23,11 @@ Tauri webview stays owner-run / dev-time.
 """
 import json
 import shutil
-import subprocess, tempfile, os, re, sys
+import os, re, sys
+
+# Sibling module (scripts/ is sys.path[0] when this file is run as a script): the launch, its
+# process/temp-dir cleanup and its self-test live there. See its docstring (17tnw2b1f32).
+import headless_chrome
 
 # Repo-relative: this file lives in <repo>/scripts/, the webview in
 # <repo>/implementation/desktop/crates/selahcue-operator/dist. SELAHCUE_OPERATOR_DIST
@@ -1839,6 +1843,114 @@ def find_chrome():
         if os.path.exists(path):
             return path
     return None
+
+
+# ---------------------------------------------------------------------------------------------
+# Launching Chrome and judging what it printed (17tnw2b1f32).
+#
+# The launch itself (private work dir, files instead of pipes, process-group kill, temp-dir
+# cleanup) is `headless_chrome.run_headless_chrome`; READ THAT MODULE'S DOCSTRING for the false
+# red this replaces (Chrome's helper processes held the stdout/stderr pipes open after Chrome had
+# exited, so `subprocess.run(capture_output=True, timeout=90)` waited the full 90 s and discarded a
+# complete result) and for why a throwaway `--user-data-dir` is NOT used (it hangs headless Chrome
+# on macOS). What stays here is the part that is specific to THIS gate: the exit-code mapping.
+#
+# Before Chrome is even looked for, `check_headless_launch_contract()` runs that real launcher and
+# this real mapping against fake browsers (python scripts), so a regression of the launch or of the
+# mapping fails here in a few seconds instead of surfacing as a flaky red hours later. Its PASS
+# line is not a counted check (like the filter-guard static check above), so it does not touch
+# EXPECTED_MIN_CHECKS.
+# ---------------------------------------------------------------------------------------------
+
+# Wall-clock budget for ONE Chrome run. It bounds a hung browser, not a slow one: the 75 s
+# virtual-time budget is fast-forwarded, so a healthy run takes ~4-10 s here (the slowest passing
+# browser phase seen was 79.8 s, at a machine load of 117).
+_CHROME_TIMEOUT_S = 90
+
+_RESULTS_RE = re.compile(r"RESULTS\n(.*?)\nDONE\((\d+)\)", re.S)
+
+
+def _print_chrome_stderr(run):
+    """Chrome's stderr tail (already capped by the launcher) so an infra failure is diagnosable."""
+    tail = run.stderr_tail.strip()
+    if tail:
+        print("  chrome stderr (last %d bytes):\n%s" % (len(run.stderr_tail), tail))
+
+
+def gate_verdict(run, expected_checks):
+    """Map one `headless_chrome.ChromeRun` to this gate's exit code, printing what the gate prints.
+
+    0 = every check passed; 1 = at least one check FAILed; 2 = infra (Chrome timed out, crashed or
+    printed no results block); 4 = the number of checks drifted from `expected_checks`.
+    """
+    if run.timed_out:
+        # A hung Chrome is an INFRA failure (exit 2), distinct from a check FAIL (exit 1). It means
+        # the BROWSER process was still running at the timeout; a helper holding a pipe open no
+        # longer counts (17tnw2b1f32). It is ALWAYS red: even a complete block in the partial
+        # output does not rescue a Chrome that did not exit.
+        print("FAIL: headless Chrome timed out (infra) — no RESULTS produced")
+        print("  (browser pid %d was still running after %.0fs; it and its process group were killed)"
+              % (run.pid, run.elapsed))
+        if _RESULTS_RE.search(run.stdout):
+            print("  note: its output already held a complete RESULTS block, so Chrome produced a result "
+                  "but did not exit (a shutdown hang) — still red by design")
+        _print_chrome_stderr(run)
+        return 2
+    m = _RESULTS_RE.search(run.stdout)
+    if not m:
+        print("NO RESULTS BLOCK — dom head:\n", run.stdout[:1500])
+        print("  chrome exit code: %r" % run.returncode)
+        _print_chrome_stderr(run)
+        return 2
+    body = m.group(1)
+    count = int(m.group(2))
+    print(body)
+    fails = [line for line in body.splitlines() if line.startswith("FAIL")]
+    print("\n=== %d checks, %d FAIL ===" % (count, len(fails)))
+    # Guard against the suite count DRIFTING in either direction: a `<` floor only ever
+    # catches SHRINKING (a driver regression / early return running fewer checks). It never
+    # catches GROWING past the recorded value, which lets EXPECTED_MIN_CHECKS drift stale-low
+    # with no red build to catch it — this has happened three times (1514/1520, 1544/1589,
+    # 1589/1593), each caught only by a human/reviewer noticing an oddity, never by this gate.
+    # The third time (17tnw2axpt9, PR #63) root-caused to a merge commit (00f9a50) keeping one
+    # parallel branch's own recorded EXPECTED_MIN_CHECKS instead of re-deriving it after both
+    # branches' new checks were combined. An exact match forces every branch that adds/removes
+    # a check to conflict on this constant during rebase and re-derive it explicitly — that
+    # friction is the point; it's what was skipped at the merge that caused drift #3.
+    # Bump EXPECTED_MIN_CHECKS to the new count when you add or remove a check — always by
+    # actually running the suite, never by hand arithmetic (see the log above this constant).
+    if count != expected_checks:
+        print(
+            "FAIL: %d checks ran; expected exactly %d (bump me to %d if this is a real "
+            "add/remove — never hand-derive; re-run and use the measured count)"
+            % (count, expected_checks, count)
+        )
+        return 4
+    return 1 if fails else 0
+
+
+def check_headless_launch_contract():
+    problems = headless_chrome.self_test(verdict=gate_verdict, expected_checks=3)
+    if problems:
+        for problem in problems:
+            print("FAIL: headless-launch contract (17tnw2b1f32) — " + problem)
+        return False
+    print(
+        "PASS: headless-launch contract (17tnw2b1f32) — against fake browsers: a complete result is "
+        "returned promptly even when helper processes hold the output descriptors (in or out of the "
+        "browser's process group); a browser that never exits is red (exit 2) and leaves no process "
+        "or temp dir behind; failing block -> 1, no block -> 2, count drift -> 4; only the "
+        "url-fetcher dir this run created is swept; no --user-data-dir; SIGTERM unwinds cleanly"
+    )
+    return True
+
+
+if not check_headless_launch_contract():
+    print(
+        "\n=== headless-launch contract FAILED — the Chrome launch no longer behaves as "
+        "scripts/headless_chrome.py documents (see the FAIL lines above) ==="
+    )
+    sys.exit(1)
 
 
 CHROME = find_chrome()
@@ -14318,73 +14430,36 @@ html = html.replace("<head>", '<head><base href="file://' + DIST + '/">', 1)
 html = html.replace("</head>", STUB + CSS_SRC + RUST_CONSTS + "</head>", 1)
 html = html.replace("</body>", DRIVER + "</body>", 1)
 
-with tempfile.NamedTemporaryFile(
-    "w", suffix=".html", delete=False, dir=tempfile.gettempdir()
-) as f:
-    f.write(html)
-    path = f.name
-
-try:
-    try:
-        out = subprocess.run(
-            [CHROME, "--headless=new", "--disable-gpu", "--no-sandbox",
-             # Budget is VIRTUAL time, fast-forwarded — it costs little wall clock, but every
-             # driver step that waits on the app's own 1 s view poll spends a full second of it.
-             # Raised from 9000 with the window-semantics checks, which wait on two real polls, and
-             # again to 20000 with the Design 2.0 parity block: that block navigates surfaces and
-             # waits on host round-trips at the very end of the run, so a run in which several of
-             # its checks legitimately FAIL (each spending its wait budget) must still have time
-             # left to WRITE the results. Without the headroom a real regression surfaces as
-             # "NO RESULTS BLOCK" (exit 2, infra) instead of a named FAIL.
-             # Raised again to 60000 for the Frame G recovery block, which is wait-heavy by
-             # nature: every edge check must observe TWO successive 1 Hz polls (that is the
-             # whole point of holds/recoveries being counters), so it spends ~1s of virtual
-             # time per assertion pair and cannot be made cheaper without testing something
-             # weaker than the real poll path.
-             # Raised again to 75000 for CON-156/157/158/161/172/173 (17tnw2axptc): the NDI
-             # runtime-unavailable/restore-to-unknown pair and the console empty-plan
-             # add/restore pair are each two more real 1 Hz-poll round trips, all landing
-             # BEFORE the already wait-heavy Frame G recovery block above — without the extra
-             # headroom the run reached check ~1725 (mid-G.3) and then genuinely ran out of
-             # virtual time, which surfaced as "NO RESULTS BLOCK" (an infra failure) rather
-             # than any named FAIL, exactly the failure mode this comment block already warns
-             # about. Confirmed empirically: a debug build that writes PROGRESS every 25
-             # checks showed the run stalled inside the pre-existing G.3 edges-across-polls
-             # section, not inside anything new.
-             "--virtual-time-budget=75000", "--dump-dom", "file://" + path],
-            capture_output=True, text=True, encoding="utf-8", errors="replace",
-            timeout=90).stdout
-    except subprocess.TimeoutExpired:
-        # A hung Chrome is an INFRA failure (exit 2), distinct from a check FAIL (exit 1).
-        print("FAIL: headless Chrome timed out (infra) — no RESULTS produced")
-        sys.exit(2)
-    m = re.search(r"RESULTS\n(.*?)\nDONE\((\d+)\)", out, re.S)
-    if not m:
-        print("NO RESULTS BLOCK — dom head:\n", out[:1500]); sys.exit(2)
-    body = m.group(1)
-    count = int(m.group(2))
-    print(body)
-    fails = [line for line in body.splitlines() if line.startswith("FAIL")]
-    print("\n=== %d checks, %d FAIL ===" % (count, len(fails)))
-    # Guard against the suite count DRIFTING in either direction: a `<` floor only ever
-    # catches SHRINKING (a driver regression / early return running fewer checks). It never
-    # catches GROWING past the recorded value, which lets EXPECTED_MIN_CHECKS drift stale-low
-    # with no red build to catch it — this has happened three times (1514/1520, 1544/1589,
-    # 1589/1593), each caught only by a human/reviewer noticing an oddity, never by this gate.
-    # The third time (17tnw2axpt9, PR #63) root-caused to a merge commit (00f9a50) keeping one
-    # parallel branch's own recorded EXPECTED_MIN_CHECKS instead of re-deriving it after both
-    # branches' new checks were combined. An exact match forces every branch that adds/removes
-    # a check to conflict on this constant during rebase and re-derive it explicitly — that
-    # friction is the point; it's what was skipped at the merge that caused drift #3.
-    # Bump EXPECTED_MIN_CHECKS to the new count when you add or remove a check — always by
-    # actually running the suite, never by hand arithmetic (see the log above this constant).
-    if count != EXPECTED_MIN_CHECKS:
-        print(
-            "FAIL: %d checks ran; expected exactly %d (bump me to %d if this is a real "
-            "add/remove — never hand-derive; re-run and use the measured count)"
-            % (count, EXPECTED_MIN_CHECKS, count)
-        )
-        sys.exit(4)
-    sys.exit(1 if fails else 0)
-finally:
-    os.unlink(path)
+# `html` is handed to the launcher, which writes it into its own private work dir (removed on every
+# path, including a timeout) and loads it. Chrome's wall-clock timeout, process group and temp
+# cleanup are its business (scripts/headless_chrome.py); this file supplies the flags and judges
+# the result (`gate_verdict`, above).
+run = headless_chrome.run_headless_chrome(
+    CHROME, html,
+    ["--headless=new", "--disable-gpu", "--no-sandbox",
+     # Budget is VIRTUAL time, fast-forwarded — it costs little wall clock, but every
+     # driver step that waits on the app's own 1 s view poll spends a full second of it.
+     # Raised from 9000 with the window-semantics checks, which wait on two real polls, and
+     # again to 20000 with the Design 2.0 parity block: that block navigates surfaces and
+     # waits on host round-trips at the very end of the run, so a run in which several of
+     # its checks legitimately FAIL (each spending its wait budget) must still have time
+     # left to WRITE the results. Without the headroom a real regression surfaces as
+     # "NO RESULTS BLOCK" (exit 2, infra) instead of a named FAIL.
+     # Raised again to 60000 for the Frame G recovery block, which is wait-heavy by
+     # nature: every edge check must observe TWO successive 1 Hz polls (that is the
+     # whole point of holds/recoveries being counters), so it spends ~1s of virtual
+     # time per assertion pair and cannot be made cheaper without testing something
+     # weaker than the real poll path.
+     # Raised again to 75000 for CON-156/157/158/161/172/173 (17tnw2axptc): the NDI
+     # runtime-unavailable/restore-to-unknown pair and the console empty-plan
+     # add/restore pair are each two more real 1 Hz-poll round trips, all landing
+     # BEFORE the already wait-heavy Frame G recovery block above — without the extra
+     # headroom the run reached check ~1725 (mid-G.3) and then genuinely ran out of
+     # virtual time, which surfaced as "NO RESULTS BLOCK" (an infra failure) rather
+     # than any named FAIL, exactly the failure mode this comment block already warns
+     # about. Confirmed empirically: a debug build that writes PROGRESS every 25
+     # checks showed the run stalled inside the pre-existing G.3 edges-across-polls
+     # section, not inside anything new.
+     "--virtual-time-budget=75000"],
+    timeout=_CHROME_TIMEOUT_S)
+sys.exit(gate_verdict(run, EXPECTED_MIN_CHECKS))
