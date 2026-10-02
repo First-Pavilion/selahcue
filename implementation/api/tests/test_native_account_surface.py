@@ -33,12 +33,13 @@ import urllib.error
 import urllib.request
 
 import pytest
-from django.contrib.auth.hashers import make_password
+from django.contrib.auth.hashers import PBKDF2PasswordHasher, make_password
 from django.core.cache import cache
 from django.test import Client, override_settings
 from django.urls import get_resolver
 from django.utils import timezone
 
+from selahcue_api import settings as production_settings
 from selahcue_api.apps.accounts import services
 from selahcue_api.apps.accounts.models import (
     CustomerOrg,
@@ -48,7 +49,7 @@ from selahcue_api.apps.accounts.models import (
     CustomerUserStatus,
 )
 from selahcue_api.apps.audit.models import AuditEvent
-from selahcue_api.apps.devices.models import Device, DeviceToken
+from selahcue_api.apps.devices.models import Device, DeviceToken, DeviceTokenStatus
 from selahcue_api.apps.license_keys.models import AppLicenseKey, LicenseKeyStatus
 from selahcue_api.graphql.context import ACCOUNT_SESSION_COOKIE
 
@@ -755,3 +756,378 @@ def test_live_server_a_cookieless_client_signs_in_activates_and_refreshes(live_s
     status, _headers, body = _native_request(f"{base}/v1/license:refresh", payload={}, token=device_token)
     assert status == 200, body
     assert json.loads(body)["license"]["valid_now"] is True
+
+
+# --- PR #151 review round: guards that the first cut of this file left open -------------------
+@pytest.mark.django_db
+@pytest.mark.parametrize(
+    "content_type", ["text/plain", "application/x-www-form-urlencoded"], ids=["text-plain", "form"]
+)
+def test_forged_simple_posts_do_not_spend_the_sign_in_budget(settings, django_assert_num_queries, content_type):
+    """A cross-site HTML form can send `text/plain` or form-encoded without a preflight. If the
+    content-type refusal ran BELOW the throttle, a hostile page could burn the victim network's
+    per-IP budget with requests that can never reach a credential check, and the legitimate JSON
+    sign-in behind the same NAT would get a 429. The refusal is a string compare ABOVE the
+    throttle: no budget, and no database."""
+    settings.SELAHCUE_THROTTLE_SESSION_LOGIN = (1, 60)
+    seed_admin_with_license()
+    client = native_client()
+    forged = json.dumps({"email": EMAIL, "password": "not-the-password"})
+
+    with django_assert_num_queries(0):
+        first = client.post(SESSIONS, data=forged, content_type=content_type)
+        second = client.post(SESSIONS, data=forged, content_type=content_type)
+    legitimate = sign_in(client)
+
+    assert (first.status_code, second.status_code, legitimate.status_code) == (400, 400, 200)
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize(
+    "content_type", ["text/plain", "application/x-www-form-urlencoded"], ids=["text-plain", "form"]
+)
+def test_forged_simple_posts_do_not_spend_the_native_activation_budget(
+    settings, django_assert_num_queries, content_type
+):
+    settings.SELAHCUE_THROTTLE_ACTIVATION = (1, 60)
+    seed_admin_with_license()
+    client = native_client()
+    token = session_token(client)  # sign-in has its own, generous, budget
+    forged = json.dumps(activation_payload())
+
+    with django_assert_num_queries(0):
+        first = client.post(ACTIVATE, data=forged, content_type=content_type, **bearer(token))
+        second = client.post(ACTIVATE, data=forged, content_type=content_type, **bearer(token))
+    legitimate = post_json(client, ACTIVATE, activation_payload(), **bearer(token))
+
+    assert (first.status_code, second.status_code, legitimate.status_code) == (400, 400, 200)
+    assert Device.objects.count() == 1
+
+
+@pytest.mark.django_db
+def test_the_throttle_runs_before_the_password_hash(monkeypatch, settings):
+    """The per-IP budget is only a CPU bound if it is spent BEFORE `check_password`. 25 sign-ins
+    against a limit of 10 must cost exactly 10 PBKDF2 computations (found by performance review).
+    `PBKDF2PasswordHasher.encode` is the one place `make_password` and `check_password` both spend
+    the iterations, so counting it counts every hash."""
+    settings.SELAHCUE_THROTTLE_SESSION_LOGIN = (10, 60)
+    hashes = []
+    real_encode = PBKDF2PasswordHasher.encode
+
+    def counting_encode(self, password, salt, iterations=None):
+        hashes.append(1)
+        return real_encode(self, password, salt, iterations)
+
+    monkeypatch.setattr(PBKDF2PasswordHasher, "encode", counting_encode)
+    client = native_client()
+
+    statuses = [
+        sign_in(client, email=f"nobody{i}@grace.example", password="wrong-password-1").status_code
+        for i in range(25)
+    ]
+
+    assert statuses == [401] * 10 + [429] * 15
+    assert len(hashes) == 10
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("path", [SESSIONS, ACTIVATE], ids=["sessions", "activation"])
+def test_deeply_nested_json_is_a_validation_failure_not_a_server_error(path):
+    """~1.3 MB of `[` fits under Django's 2.5 MB body cap and recurses the JSON parser past the
+    interpreter limit. On an unauthenticated route that was an HTTP 500 for the price of one
+    request body; it is the same VALIDATION_FAILED as any other body that is not a JSON object."""
+    response = native_client().post(path, data="[" * 1_300_000, content_type="application/json")
+
+    assert response.status_code == 400
+    assert error_body(response)["code"] == "VALIDATION_FAILED"
+
+
+@pytest.mark.django_db
+def test_an_empty_bearer_header_does_not_fall_back_to_the_body_on_the_device_routes():
+    """`_device_bearer_token` shares `_bearer_from_header` with the native routes. A header that IS
+    a bearer credential but empty (`Bearer `) has always been an empty credential, not an absent
+    one, so the `device_token` body fallback must stay unreachable behind it."""
+    seed_admin_with_license()
+    client = native_client()
+    token = session_token(client)
+    device_token = post_json(client, ACTIVATE, activation_payload(), **bearer(token)).json()[
+        "activation_token"
+    ]
+
+    fallback = post_json(client, "/v1/license:refresh", {"device_token": device_token})
+    shadowed = post_json(
+        client,
+        "/v1/license:refresh",
+        {"device_token": device_token},
+        HTTP_AUTHORIZATION="Bearer ",
+    )
+
+    assert fallback.status_code == 200  # the body fallback itself is unchanged
+    assert shadowed.status_code == 401
+
+
+@pytest.mark.django_db
+def test_the_graphql_surface_still_audits_as_account_graphql():
+    """The audit provenance keyword added for the native routes must default to what the GraphQL
+    surface always recorded: nothing about WHICH surface a sign-in or an activation came in on
+    may drift for a browser caller just because a native route now exists."""
+    seed_admin_with_license()
+    browser = Client()
+    login = browser.post(
+        "/graphql/account",
+        data=json.dumps(
+            {
+                "query": "mutation($i: LoginInput!) { login(input: $i) { sessionToken } }",
+                "variables": {"i": {"email": EMAIL, "password": PASSWORD}},
+            }
+        ),
+        content_type="application/json",
+    )
+    token = login.json()["data"]["login"]["sessionToken"]
+    activate = browser.post(
+        "/graphql/account",
+        data=json.dumps(
+            {
+                "query": (
+                    "mutation($i: ActivateDeviceInput!) "
+                    "{ activateDeviceWithSession(input: $i) { created } }"
+                ),
+                "variables": {
+                    "i": {
+                        "idempotencyKey": "gql-audit-0000001",
+                        "deviceFingerprint": "gql-audit-1",
+                        "platform": "windows",
+                    }
+                },
+            }
+        ),
+        content_type="application/json",
+        **bearer(token),
+    )
+
+    assert activate.json()["data"]["activateDeviceWithSession"]["created"] is True
+    assert AuditEvent.objects.get(action="customer_user.logged_in").source_surface == "account_graphql"
+    assert AuditEvent.objects.get(action="device.activated").source_surface == "account_graphql"
+
+
+# --- QA-added pins (Quinn, PR #151 review): each kills a mutant that survived the first cut ----
+@pytest.mark.django_db
+@pytest.mark.parametrize("length,status", [(254, 401), (255, 400)])
+def test_email_length_boundary_is_exactly_254(length, status):
+    seed_admin_with_license()
+    email = "a" * (length - len("@grace.example")) + "@grace.example"
+    assert len(email) == length
+
+    response = sign_in(native_client(), email=email, password="x" * 12)
+
+    # 401 = "attempted and failed" (unknown account), 400 = "refused before any attempt".
+    assert response.status_code == status
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("length,status", [(200, 401), (201, 400)])
+def test_password_length_boundary_is_exactly_the_signup_maximum(length, status):
+    """A 200-character password can exist (signup allows it), so refusing it on the native route
+    would lock that user out of the primary activation path."""
+    seed_admin_with_license()
+
+    response = sign_in(native_client(), password="p" * length)
+
+    assert response.status_code == status
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize(
+    "body",
+    [{"email": "", "password": PASSWORD}, {"email": EMAIL, "password": ""}],
+    ids=["empty-email", "empty-password"],
+)
+def test_empty_credentials_are_refused_without_counting_as_a_failed_attempt(body):
+    _org, user = seed_admin_with_license()
+
+    response = post_json(native_client(), SESSIONS, body)
+
+    assert response.status_code == 400
+    user.refresh_from_db()
+    assert user.failed_login_count == 0
+
+
+@pytest.mark.django_db
+def test_native_activation_persists_app_version_and_display_name():
+    seed_admin_with_license()
+    client = native_client()
+    token = session_token(client)
+
+    response = post_json(
+        client,
+        ACTIVATE,
+        activation_payload(app_version="2.3.4", display_name="Balcony rack"),
+        **bearer(token),
+    )
+
+    assert response.status_code == 200
+    device = Device.objects.get()
+    assert device.app_version == "2.3.4"
+    assert device.display_name == "Balcony rack"
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize(
+    "header",
+    ["Bearer {t}", "bearer {t}", "BEARER {t}", "Bearer  {t}", "Bearer {t} "],
+    ids=["canonical", "lower", "upper", "double-space", "trailing-space"],
+)
+def test_bearer_scheme_is_case_insensitive_and_tolerates_padding(header):
+    """RFC 7235: the auth-scheme is case-insensitive."""
+    seed_admin_with_license()
+    client = native_client()
+    token = session_token(client)
+
+    response = post_json(
+        client, ACTIVATE, activation_payload(), HTTP_AUTHORIZATION=header.format(t=token)
+    )
+
+    assert response.status_code == 200, response.content
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize(
+    "header",
+    ["Basic {t}", "{t}", "Bearer\t{t}", "Bearer {t}x", "Bearer"],
+    ids=["basic", "no-scheme", "tab", "suffix", "scheme-only"],
+)
+def test_anything_else_in_the_authorization_header_is_unauthenticated(header):
+    seed_admin_with_license()
+    client = native_client()
+    token = session_token(client)
+
+    response = post_json(
+        client, ACTIVATE, activation_payload(), HTTP_AUTHORIZATION=header.format(t=token)
+    )
+
+    assert response.status_code == 401
+    assert Device.objects.count() == 0
+
+
+@pytest.mark.django_db
+def test_a_refused_method_does_not_spend_the_native_activation_budget(settings):
+    settings.SELAHCUE_THROTTLE_ACTIVATION = (1, 60)
+    seed_admin_with_license()
+    client = native_client()
+    token = session_token(client)
+
+    for method in ("get", "put", "delete"):
+        for _ in range(3):
+            assert getattr(client, method)(ACTIVATE).status_code == 405
+
+    assert post_json(client, ACTIVATE, activation_payload(), **bearer(token)).status_code == 200
+
+
+@pytest.mark.django_db
+def test_the_production_default_sign_in_budget_is_ten_per_minute(settings):
+    """The autouse fixture overrides the budget in every other test, so the value that actually
+    ships (`settings.py` / `deployments.md`: 10 per minute) would otherwise be exercised nowhere."""
+    assert production_settings.SELAHCUE_THROTTLE_SESSION_LOGIN == (10, 60)
+    settings.SELAHCUE_THROTTLE_SESSION_LOGIN = production_settings.SELAHCUE_THROTTLE_SESSION_LOGIN
+    seed_admin_with_license()
+    client = native_client()
+
+    statuses = [sign_in(client, password="not-the-password").status_code for _ in range(12)]
+
+    assert statuses == [401] * 10 + [429] * 2
+
+
+@pytest.mark.django_db
+def test_sign_in_and_activation_do_not_spend_each_others_budget(settings):
+    settings.SELAHCUE_THROTTLE_SESSION_LOGIN = (2, 60)
+    settings.SELAHCUE_THROTTLE_ACTIVATION = (2, 60)
+    seed_admin_with_license()
+    client = native_client()
+    token = session_token(client)  # one sign-in spent
+
+    # Two activation calls fit the activation budget even though sign-in has already spent one.
+    assert post_json(client, ACTIVATE, activation_payload(), **bearer(token)).status_code == 200
+    assert post_json(client, ACTIVATE, activation_payload(), **bearer(token)).status_code == 200
+    # ...and a second sign-in still fits the sign-in budget.
+    assert sign_in(client).status_code == 200
+
+
+def _application_error_cases():
+    return [
+        ("sessions-401", lambda c, t: sign_in(c, password="not-the-password")),
+        ("sessions-400", lambda c, t: post_json(c, SESSIONS, {})),
+        ("activate-401", lambda c, t: post_json(c, ACTIVATE, activation_payload())),
+        ("activate-400", lambda c, t: post_json(c, ACTIVATE, {}, **bearer(t))),
+    ]
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("name", [case[0] for case in _application_error_cases()])
+def test_application_errors_are_never_cacheable_either(name):
+    """An error body is not secret, but a cached 401 for a bearer-authenticated URL is still wrong.
+    Scope: the application responses of these two views (not 405 / 429, which are produced by
+    Django's `require_POST` and the shared throttle decorator)."""
+    seed_admin_with_license()
+    client = native_client()
+    token = session_token(client)
+
+    response = dict(_application_error_cases())[name](client, token)
+
+    assert response.status_code in (400, 401)
+    assert "no-store" in response["Cache-Control"]
+
+
+@pytest.mark.django_db
+@pytest.mark.xfail(
+    strict=True,
+    reason="Known, NOT fixed in this PR: the 429 built by the shared `@throttle` decorator "
+    "(apps/throttling/decorators.py) carries neither Cache-Control: no-store nor Retry-After. "
+    "A Retry-After needs the fixed window's remaining TTL, which the store does not expose, and "
+    "any header change in the shared decorator also changes POST /v1/activations and every other "
+    "throttled /v1 route, so it needs its own review (follow-up). strict=True turns "
+    "this into a failure the day the decorator is fixed, so the xfail cannot go stale.",
+)
+def test_a_throttled_response_is_no_store_and_says_when_to_retry(settings):
+    settings.SELAHCUE_THROTTLE_SESSION_LOGIN = (1, 60)
+    seed_admin_with_license()
+    client = native_client()
+    sign_in(client, password="not-the-password")
+
+    throttled = sign_in(client, password="not-the-password")
+
+    assert throttled.status_code == 429
+    assert "no-store" in throttled["Cache-Control"]
+    assert throttled["Retry-After"]
+
+
+@pytest.mark.django_db
+def test_a_reminted_device_token_is_attributed_to_the_native_surface():
+    seed_admin_with_license()
+    client = native_client()
+    token = session_token(client)
+    first = post_json(client, ACTIVATE, activation_payload(), **bearer(token))
+    assert first.status_code == 200
+    DeviceToken.objects.update(status=DeviceTokenStatus.REVOKED)
+
+    second = post_json(client, ACTIVATE, activation_payload(idem="native-act-0002"), **bearer(token))
+
+    assert second.status_code == 200
+    assert second.json()["reminted"] is True
+    assert AuditEvent.objects.get(action="device_token.reminted").source_surface == "desktop_v1"
+
+
+@pytest.mark.django_db
+def test_a_malformed_activation_body_is_labelled_as_the_activation_operation():
+    seed_admin_with_license()
+    client = native_client()
+    token = session_token(client)
+
+    response = client.post(
+        ACTIVATE, data="{not json", content_type="application/json", **bearer(token)
+    )
+
+    assert response.status_code == 400
+    assert (response.json()["surface"], response.json()["operation"]) == (
+        "desktop",
+        "activation_with_session",
+    )

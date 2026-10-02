@@ -1,5 +1,6 @@
 import json
 import logging
+from functools import wraps
 
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
@@ -135,7 +136,9 @@ def _activation_payload(result, *, operation: str) -> dict:
 #   2. They never set a cookie, so a forged cross-site sign-in leaves nothing in the victim's
 #      browser (login-CSRF) and the response is unreadable cross-origin anyway.
 #   3. They require `Content-Type: application/json`, which a cross-site HTML form cannot send
-#      without a CORS preflight (and this API emits no CORS headers).
+#      without a CORS preflight (and this API emits no CORS headers). That check sits ABOVE the
+#      throttle (`_json_content_type_only`), so a forged simple POST neither reaches the
+#      credential check nor spends the victim network's per-IP budget.
 #
 # `/graphql/account` is deliberately NOT exempted and is unchanged: it authenticates from that
 # cookie, so for it the CSRF check is load-bearing.
@@ -145,14 +148,40 @@ NATIVE_AUDIT_SURFACE = "desktop_v1"
 _MAX_EMAIL_LENGTH = 254
 
 
+def _json_content_type_only(operation: str):
+    """Refuse anything not declared `application/json` — property 3 above.
+
+    A string comparison on a header: no database, no cache, no budget. It is applied OUTSIDE
+    `@throttle` on purpose. A cross-site HTML form can send `text/plain` or
+    `application/x-www-form-urlencoded` without a preflight; if the refusal came after the
+    throttle, every such forged POST would spend the victim network's per-IP budget although it
+    can never reach a credential check, and a hostile page could lock real sign-ins out."""
+
+    def decorator(view):
+        @wraps(view)
+        def wrapper(request, *args, **kwargs):
+            if request.content_type != "application/json":
+                return _no_store(
+                    command_error_response(
+                        code=ErrorCode.VALIDATION_FAILED, surface="desktop", operation=operation
+                    )
+                )
+            return view(request, *args, **kwargs)
+
+        return wrapper
+
+    return decorator
+
+
 def _json_object(request) -> dict | None:
-    """The body as a JSON object, or None if it is anything else (including a body that was not
-    declared `application/json` — property 3 above)."""
-    if request.content_type != "application/json":
-        return None
+    """The body as a JSON object, or None if it is anything else.
+
+    `RecursionError` is caught with the parse errors: ~1.3 MB of `[` fits under Django's 2.5 MB
+    body cap and recurses the parser past the interpreter limit, which would otherwise surface
+    as a 500 on an unauthenticated route."""
     try:
         raw = json.loads(request.body.decode("utf-8") or "{}")
-    except (ValueError, UnicodeDecodeError):
+    except (ValueError, UnicodeDecodeError, RecursionError):
         return None
     return raw if isinstance(raw, dict) else None
 
@@ -167,6 +196,19 @@ def _no_store(response):
     return response
 
 
+def _bearer_from_header(request) -> str | None:
+    """The token in `Authorization: Bearer <token>`, or None when the header is not a bearer
+    credential at all. An empty token is `""`, which is not the same answer as None.
+
+    The auth-scheme is case-insensitive (RFC 7235). This is deliberately NOT shared with the
+    browser reader (`graphql/context.py::_read_account_session_token`), which is case-sensitive
+    and also falls back to a cookie."""
+    auth = request.headers.get("Authorization", "")
+    if auth[:7].lower() == "bearer ":
+        return auth[7:].strip()
+    return None
+
+
 def _account_session_bearer(request) -> str:
     """The account session token from `Authorization: Bearer <token>`, or "" when absent.
 
@@ -174,18 +216,16 @@ def _account_session_bearer(request) -> str:
     `_device_bearer_token` there is no JSON-body fallback either: a credential in a body that a
     cross-site form can author is not a credential.
     """
-    auth = request.headers.get("Authorization", "")
-    # RFC 7235: the auth-scheme is case-insensitive.
-    if auth[:7].lower() == "bearer ":
-        return auth[7:].strip()
-    return ""
+    return _bearer_from_header(request) or ""
 
 
 @csrf_exempt
 @require_POST
-# Below the method decorator on purpose: a 405 must not consume throttle budget. This is the
+# Both guards below `require_POST` on purpose: a 405 must not consume budget. The content-type
+# check sits ABOVE the throttle for the reason in `_json_content_type_only`. The throttle is the
 # app-level per-IP limit the browser login mutation does not carry; the durable per-account
 # lockout lives in `login` itself and therefore applies here exactly as it does there.
+@_json_content_type_only("session_login")
 @throttle("session_login", "SELAHCUE_THROTTLE_SESSION_LOGIN", (10, 60))
 def create_session(request):
     """POST /v1/sessions — exchange an account email + password for an account session token, for
@@ -228,6 +268,7 @@ def create_session(request):
 
 @csrf_exempt
 @require_POST
+@_json_content_type_only("activation_with_session")
 @throttle("activation_with_session", "SELAHCUE_THROTTLE_ACTIVATION", (10, 60))
 def activate_device_with_session(request):
     """POST /v1/activations:with-session — register a device for the signed-in administrator's
@@ -272,10 +313,9 @@ def activate_device_with_session(request):
 def _device_bearer_token(request) -> str:
     """The device token from `Authorization: Bearer <token>`, falling back to a JSON body
     `{"device_token": ...}`. Returns "" when absent (→ UNAUTHENTICATED downstream)."""
-    auth = request.headers.get("Authorization", "")
-    # RFC 7235: the auth-scheme is case-insensitive.
-    if auth[:7].lower() == "bearer ":
-        return auth[7:].strip()
+    header_token = _bearer_from_header(request)
+    if header_token is not None:
+        return header_token
     try:
         body = json.loads(request.body.decode("utf-8") or "{}")
     except (ValueError, UnicodeDecodeError):
