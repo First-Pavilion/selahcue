@@ -220,6 +220,28 @@ fn quote_index(t: Translation) -> &'static QuoteIndex {
     CELLS[t as usize].get_or_init(|| build_index(index_of(t)))
 }
 
+/// Eagerly pay the one-time cost of building `t`'s fuzzy quote-match index (gzip-decode the
+/// bundled corpus + tokenize/index every verse) — the same cache [`quote_index`] lazily
+/// builds on first use, but on the caller's own terms rather than whenever the first real
+/// query happens to arrive. Idempotent and cheap after the first call per translation (the
+/// underlying `OnceLock` makes every later call a no-op), and makes NO promise about
+/// matching any particular text.
+///
+/// This exists as its own, explicitly-contracted entry point rather than leaving callers to
+/// trigger the build as a side effect of calling [`match_quote_scored_in`] with a throwaway
+/// string: [`rank_in`] currently builds the index unconditionally before its early returns,
+/// but that is an implementation detail of the scoring path, not a promise — a future
+/// short-circuit added ahead of the index build (e.g. rejecting a too-short query before
+/// paying for it) would silently stop warming the cache for anyone depending on that order.
+pub fn warm_in(t: Translation) {
+    let _ = quote_index(t);
+}
+
+/// [`warm_in`] against the default translation (KJV).
+pub fn warm() {
+    warm_in(Translation::default());
+}
+
 /// How many **alternative** verses a quotation match reports alongside the best one.
 ///
 /// A spoken paraphrase often fits several verses — "by grace you have been saved" scores against

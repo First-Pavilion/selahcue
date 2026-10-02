@@ -14,14 +14,16 @@
  * That keeps every text pair well clear of AA and satisfies WCAG 1.4.1 — the words carry
  * the meaning, not the hue.
  */
-const props = defineProps<{
-  kind: 'info' | 'success' | 'warning' | 'danger'
+type BannerKind = 'info' | 'success' | 'warning' | 'danger'
+
+defineProps<{
+  kind: BannerKind
   title: string
   /** Card-level banners that report a failure are announced (handoff §12: R7 is role="alert"). */
   alert?: boolean
 }>()
 
-const GLYPHS: Record<typeof props.kind, string> = {
+const GLYPHS: Record<BannerKind, string> = {
   info: '◆',
   success: '✓',
   warning: '!',
