@@ -14,6 +14,10 @@ exits 0 with a LOUD SKIP notice so `make ci` on a Chrome-less box still passes �
 UNLESS SELAHCUE_HEADLESS_REQUIRE=1 (set in CI), which turns a missing Chrome into a
 hard failure so the gate can never silently no-op.
 
+Before Chrome is looked for at all, the gate runs a ~4 s self-test of its own Chrome launcher
+(scripts/headless_chrome.py) against fake browsers. That needs no Chrome, so it also runs on a
+Chrome-less box, and a failure there exits 2 (infra) without ever looking for Chrome (17tnw2b1f32).
+
 FIDELITY NOTE (known gap): this drives Blink (headless Chrome), NOT the engine Tauri
 actually ships on — WebKitGTK (Linux), WKWebView (macOS), WebView2 (Windows). It is
 therefore a gate for BROWSER-PORTABLE DOM/JS LOGIC (the behaviours asserted here:
@@ -1874,7 +1878,7 @@ def _print_chrome_stderr(run):
     """Chrome's stderr tail (already capped by the launcher) so an infra failure is diagnosable."""
     tail = run.stderr_tail.strip()
     if tail:
-        print("  chrome stderr (last %d bytes):\n%s" % (len(run.stderr_tail), tail))
+        print("  chrome stderr (tail):\n%s" % tail)
 
 
 def gate_verdict(run, expected_checks):
@@ -1887,19 +1891,22 @@ def gate_verdict(run, expected_checks):
         # A hung Chrome is an INFRA failure (exit 2), distinct from a check FAIL (exit 1). It means
         # the BROWSER process was still running at the timeout; a helper holding a pipe open no
         # longer counts (17tnw2b1f32). It is ALWAYS red: even a complete block in the partial
-        # output does not rescue a Chrome that did not exit.
-        print("FAIL: headless Chrome timed out (infra) — no RESULTS produced")
+        # output does not rescue a Chrome that did not exit. The first line keeps its old prefix
+        # (`FAIL: headless Chrome timed out (infra)`) for anyone grepping logs, and says which of
+        # the two cases this was, so it never claims "no RESULTS" about a run that had printed them.
+        if _RESULTS_RE.search(run.stdout):
+            print("FAIL: headless Chrome timed out (infra) — RESULTS were printed but Chrome never "
+                  "exited (a shutdown hang), still red by design")
+        else:
+            print("FAIL: headless Chrome timed out (infra) — no RESULTS produced")
         print("  (browser pid %d was still running after %.0fs; it and its process group were killed)"
               % (run.pid, run.elapsed))
-        if _RESULTS_RE.search(run.stdout):
-            print("  note: its output already held a complete RESULTS block, so Chrome produced a result "
-                  "but did not exit (a shutdown hang) — still red by design")
         _print_chrome_stderr(run)
         return 2
     m = _RESULTS_RE.search(run.stdout)
     if not m:
         print("NO RESULTS BLOCK — dom head:\n", run.stdout[:1500])
-        print("  chrome exit code: %r" % run.returncode)
+        print("  chrome exit code: %s" % headless_chrome.describe_exit(run.returncode))
         _print_chrome_stderr(run)
         return 2
     body = m.group(1)
@@ -1930,6 +1937,13 @@ def gate_verdict(run, expected_checks):
 
 
 def check_headless_launch_contract():
+    if not headless_chrome.self_test_supported():
+        # Say so, truthfully: nothing was checked, so nothing may print PASS.
+        print(
+            "SKIP: headless-launch contract (17tnw2b1f32) — NOT RUN: it needs POSIX process groups and "
+            "signals, and this gate is supported on macOS and Linux only"
+        )
+        return True
     problems = headless_chrome.self_test(verdict=gate_verdict, expected_checks=3)
     if problems:
         for problem in problems:
@@ -1939,18 +1953,21 @@ def check_headless_launch_contract():
         "PASS: headless-launch contract (17tnw2b1f32) — against fake browsers: a complete result is "
         "returned promptly even when helper processes hold the output descriptors (in or out of the "
         "browser's process group); a browser that never exits is red (exit 2) and leaves no process "
-        "or temp dir behind; failing block -> 1, no block -> 2, count drift -> 4; only the "
-        "url-fetcher dir this run created is swept; no --user-data-dir; SIGTERM unwinds cleanly"
+        "or temp dir behind; failing block -> 1, no block -> 2, count drift (either way) -> 4; only "
+        "the url-fetcher dir this run created is swept; no --user-data-dir; SIGTERM, SIGHUP and "
+        "SIGINT unwind cleanly, including one that lands mid-launch or mid-cleanup"
     )
     return True
 
 
 if not check_headless_launch_contract():
+    # Exit 2 (infra), not 1 (a check FAILed): this is the gate's own machinery being broken, and it
+    # is reported before Chrome is even looked for.
     print(
-        "\n=== headless-launch contract FAILED — the Chrome launch no longer behaves as "
-        "scripts/headless_chrome.py documents (see the FAIL lines above) ==="
+        "\n=== headless-launch contract FAILED (infra, exit 2) — the Chrome launch no longer behaves "
+        "as scripts/headless_chrome.py documents (see the FAIL lines above) ==="
     )
-    sys.exit(1)
+    sys.exit(2)
 
 
 CHROME = find_chrome()
