@@ -155,7 +155,11 @@ pub fn fetch_model_phased(
     }
 
     let url = asset.download_url();
-    let resp = match ureq::get(&url).call() {
+    // ureq 3 reads HTTP(S)_PROXY from the environment by default; ureq 2 never did. Keep the model
+    // download's network path exactly what it was — routing a 0.5-1.6 GB transfer through a proxy
+    // is a product decision, not a side effect of a dependency bump.
+    let agent: ureq::Agent = ureq::Agent::config_builder().proxy(None).build().into();
+    let resp = match agent.get(&url).call() {
         Ok(r) => r,
         Err(e) => {
             let reason = classify_ureq_error(&e);
@@ -163,10 +167,12 @@ pub fn fetch_model_phased(
         }
     };
     let total: u64 = resp
-        .header("Content-Length")
+        .headers()
+        .get("Content-Length")
+        .and_then(|v| v.to_str().ok())
         .and_then(|s| s.parse().ok())
         .unwrap_or(asset.size_bytes);
-    let reader = resp.into_reader();
+    let reader = resp.into_body().into_reader();
     install_from_stream(asset, cache_dir, total, reader, &mut phase, &cancel)
 }
 
@@ -283,22 +289,36 @@ fn fail(
 
 /// Classify a `ureq` download error into a [`FailReason`] for the modal.
 fn classify_ureq_error(e: &ureq::Error) -> FailReason {
-    fail_reason_for_kind(e.kind())
+    fail_reason_for_error(e)
 }
 
-/// The [`FailReason`] for a `ureq::ErrorKind` — split out so the mapping is unit-testable without
-/// a live socket. DNS failure ⇒ `Offline` (no connection to resolve the host); other
-/// transport/HTTP/timeout errors ⇒ `Connect`; a malformed URL/scheme (config, not connectivity)
-/// ⇒ `Other`. Deterministic given the error kind.
-fn fail_reason_for_kind(kind: ureq::ErrorKind) -> FailReason {
-    match kind {
-        ureq::ErrorKind::Dns => FailReason::Offline,
-        ureq::ErrorKind::ConnectionFailed
-        | ureq::ErrorKind::Io
-        | ureq::ErrorKind::HTTP
-        | ureq::ErrorKind::BadStatus
-        | ureq::ErrorKind::BadHeader
-        | ureq::ErrorKind::TooManyRedirects => FailReason::Connect,
+/// The [`FailReason`] for a `ureq::Error` — split out so the mapping is unit-testable without a
+/// live socket. DNS failure ⇒ `Offline` (no connection to resolve the host); other
+/// transport/HTTP/timeout/TLS errors ⇒ `Connect`; a malformed URL/scheme or an invalid request
+/// (config, not connectivity) ⇒ `Other`. Deterministic given the error.
+///
+/// ureq 3 replaced `ErrorKind` with a `#[non_exhaustive]` `Error` enum, so this matches the
+/// variants directly. The groups below are the ureq 2 groups carried over: `Dns` is `HostNotFound`;
+/// `ConnectionFailed`/`Io`/`HTTP`(status)/`BadStatus`/`BadHeader`/`TooManyRedirects` are
+/// `ConnectionFailed`/`Io`/`StatusCode`/`Protocol`+`LargeResponseHeader`/`TooManyRedirects`, plus
+/// `Timeout` and the TLS variants, which ureq 2 reported as `Io`/`ConnectionFailed`. Anything not
+/// named (including variants a future ureq adds) falls through to `Other`.
+fn fail_reason_for_error(e: &ureq::Error) -> FailReason {
+    use ureq::Error;
+    match e {
+        Error::HostNotFound => FailReason::Offline,
+        Error::ConnectionFailed
+        | Error::Io(_)
+        | Error::StatusCode(_)
+        | Error::Protocol(_)
+        | Error::LargeResponseHeader(..)
+        | Error::Timeout(_)
+        | Error::TooManyRedirects
+        | Error::RedirectFailed
+        | Error::Tls(_)
+        // `Rustls` exists because ureq's default `rustls` feature is on (this crate does not turn
+        // default features off); a certificate/handshake failure is a connectivity failure.
+        | Error::Rustls(_) => FailReason::Connect,
         _ => FailReason::Other,
     }
 }
@@ -649,33 +669,33 @@ mod tests {
         // Deterministic (no socket): DNS failure ⇒ Offline (nothing to connect to); other
         // transport/HTTP errors ⇒ Connect ("Couldn't connect"); a malformed URL/scheme is a config
         // bug ⇒ Other.
-        assert_eq!(
-            fail_reason_for_kind(ureq::ErrorKind::Dns),
-            FailReason::Offline
-        );
-        assert_eq!(
-            fail_reason_for_kind(ureq::ErrorKind::ConnectionFailed),
-            FailReason::Connect
-        );
-        assert_eq!(
-            fail_reason_for_kind(ureq::ErrorKind::HTTP),
-            FailReason::Connect
-        );
-        assert_eq!(
-            fail_reason_for_kind(ureq::ErrorKind::Io),
-            FailReason::Connect
-        );
-        assert_eq!(
-            fail_reason_for_kind(ureq::ErrorKind::TooManyRedirects),
-            FailReason::Connect
-        );
-        assert_eq!(
-            fail_reason_for_kind(ureq::ErrorKind::InvalidUrl),
-            FailReason::Other
-        );
-        assert_eq!(
-            fail_reason_for_kind(ureq::ErrorKind::UnknownScheme),
-            FailReason::Other
-        );
+        use ureq::Error;
+        let io = || Error::Io(std::io::Error::other("connection reset"));
+        for (e, want, why) in [
+            (Error::HostNotFound, FailReason::Offline, "DNS"),
+            (Error::ConnectionFailed, FailReason::Connect, "connect"),
+            (io(), FailReason::Connect, "io"),
+            (Error::StatusCode(503), FailReason::Connect, "http status"),
+            (Error::TooManyRedirects, FailReason::Connect, "redirects"),
+            (Error::RedirectFailed, FailReason::Connect, "redirect"),
+            (
+                Error::Timeout(ureq::Timeout::Global),
+                FailReason::Connect,
+                "timeout",
+            ),
+            (Error::Tls("handshake"), FailReason::Connect, "tls"),
+            (
+                Error::BadUri("not a url".into()),
+                FailReason::Other,
+                "bad url",
+            ),
+            (
+                Error::RequireHttpsOnly("http://x".into()),
+                FailReason::Other,
+                "https-only",
+            ),
+        ] {
+            assert_eq!(fail_reason_for_error(&e), want, "{why}: {e}");
+        }
     }
 }

@@ -75,7 +75,7 @@ fn salt(data_dir: &Path) -> Option<Vec<u8>> {
 
 fn random_bytes(n: usize) -> Option<Vec<u8>> {
     let mut buf = vec![0u8; n];
-    getrandom::getrandom(&mut buf).ok()?;
+    getrandom::fill(&mut buf).ok()?;
     Some(buf)
 }
 

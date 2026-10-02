@@ -1656,9 +1656,9 @@ impl Renderer {
             compatible_surface: Some(&surface),
             ..Default::default()
         }))
-        .ok_or_else(|| "no compatible GPU adapter".to_string())?;
+        .map_err(|e| format!("no compatible GPU adapter: {e}"))?;
         let (device, queue) =
-            pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default(), None))
+            pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))
                 .map_err(|e| format!("request device: {e}"))?;
 
         let caps = surface.get_capabilities(&adapter);
@@ -1678,6 +1678,9 @@ impl Renderer {
             alpha_mode: caps.alpha_modes[0],
             view_formats: vec![],
             desired_maximum_frame_latency: 2,
+            // `Auto` is the pre-wgpu-30 behaviour (plain SDR); wide-gamut/HDR is opt-in and we
+            // do not opt in.
+            color_space: wgpu::SurfaceColorSpace::Auto,
         };
         surface.configure(&device, &config);
 
@@ -1708,28 +1711,28 @@ impl Renderer {
         });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("blit"),
-            bind_group_layouts: &[&bind_group_layout],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&bind_group_layout)],
+            immediate_size: 0,
         });
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("blit"),
             layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &shader,
-                entry_point: "vs",
+                entry_point: Some("vs"),
                 buffers: &[],
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
             },
             fragment: Some(wgpu::FragmentState {
                 module: &shader,
-                entry_point: "fs",
+                entry_point: Some("fs"),
                 targets: &[Some(config.format.into())],
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
             }),
             primitive: wgpu::PrimitiveState::default(),
             depth_stencil: None,
             multisample: wgpu::MultisampleState::default(),
-            multiview: None,
+            multiview_mask: None,
             cache: None,
         });
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor::default());
@@ -1781,14 +1784,14 @@ impl Renderer {
             return false;
         };
         self.queue.write_texture(
-            wgpu::ImageCopyTexture {
+            wgpu::TexelCopyTextureInfo {
                 texture,
                 mip_level: 0,
                 origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
             },
             frame.bytes(),
-            wgpu::ImageDataLayout {
+            wgpu::TexelCopyBufferLayout {
                 offset: 0,
                 bytes_per_row: Some(fw * 4),
                 rows_per_image: Some(fh),
@@ -1815,18 +1818,23 @@ impl Renderer {
             ],
         });
 
+        // wgpu 30 reports the acquire outcome as an enum rather than a `Result`. Mapped onto the
+        // old behaviour exactly: a usable texture (including a merely `Suboptimal` one, which
+        // the old code also presented from) is drawn to; a stale/lost swapchain (sleep, display
+        // re-negotiation) is reconfigured; every other outcome (timeout, occluded window,
+        // validation error) just skips the frame. The paced frame loop (`new_events`)
+        // re-requests a paint next frame, so we do NOT request one here — doing so would
+        // busy-spin while the surface can't present.
         let surface_frame = match self.surface.get_current_texture() {
-            Ok(frame) => frame,
-            Err(err) => {
-                // A stale/lost swapchain (sleep, display re-negotiation) needs
-                // reconfiguring. The paced frame loop (`new_events`) re-requests a paint
-                // next frame, so we do NOT request one here — doing so would busy-spin
-                // while the surface can't present.
-                if matches!(err, wgpu::SurfaceError::Outdated | wgpu::SurfaceError::Lost) {
-                    self.surface.configure(&self.device, &self.config);
-                }
+            wgpu::CurrentSurfaceTexture::Success(frame)
+            | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => frame,
+            wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
+                self.surface.configure(&self.device, &self.config);
                 return false;
             }
+            wgpu::CurrentSurfaceTexture::Timeout
+            | wgpu::CurrentSurfaceTexture::Occluded
+            | wgpu::CurrentSurfaceTexture::Validation => return false,
         };
         let target = surface_frame
             .texture
@@ -1839,6 +1847,7 @@ impl Renderer {
                 label: Some("blit"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &target,
+                    depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
@@ -1848,13 +1857,14 @@ impl Renderer {
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
+                multiview_mask: None,
             });
             pass.set_pipeline(&self.pipeline);
             pass.set_bind_group(0, &bind_group, &[]);
             pass.draw(0..3, 0..1);
         }
         self.queue.submit(Some(encoder.finish()));
-        surface_frame.present();
+        self.queue.present(surface_frame);
         true
     }
 

@@ -1215,8 +1215,8 @@ fn a_bundled_inter_face_wins_the_family_tie_break_over_a_later_impostor() {
             .family(Family::Name("Inter"))
             .weight(Weight::NORMAL);
         let mut buffer = Buffer::new(&mut fs, Metrics::new(PX, PX));
-        buffer.set_size(&mut fs, None, None);
-        buffer.set_text(&mut fs, text, attrs, Shaping::Advanced);
+        buffer.set_size(None, None);
+        buffer.set_text(text, &attrs, Shaping::Advanced, None);
         buffer.shape_until_scroll(&mut fs, false);
         buffer
             .layout_runs()

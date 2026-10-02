@@ -20,7 +20,7 @@ selahcue-core = { path = "../selahcue-core" }
 # Bundled SQLite (compiled from source — no system libs required). Enabling the
 # `encryption` feature layers SQLCipher on top via `bundled-sqlcipher-*`; the
 # repository/migration code is unchanged, only the key pragma is added.
-rusqlite = { version = "0.32", features = ["bundled", "backup"] }
+rusqlite = { version = "0.40", features = ["bundled", "backup"] }
 # Wipes key material (and the key-bearing PRAGMA string) from memory on drop.
 zeroize = { version = "1", optional = true }
 

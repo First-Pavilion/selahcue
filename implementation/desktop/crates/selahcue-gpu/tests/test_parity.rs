@@ -131,7 +131,8 @@ fn device_loss_signals_and_recovery_renders_identically() {
     let flag = lost.clone();
     first.on_device_lost(move |_| flag.store(true, Ordering::SeqCst));
     first.simulate_device_loss();
-    // Give the backend a moment to deliver the callback (poll via drop below).
+    // `simulate_device_loss` polls the device, which is what delivers the callback (wgpu's
+    // `destroy()` only invalidates the device; see its doc comment).
     drop(first);
     assert!(
         lost.load(Ordering::SeqCst),
