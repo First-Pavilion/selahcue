@@ -1,28 +1,44 @@
 # ADR-0027 — Plan catalogue, effective plan and the weekly usage ledger (Free / Core / Pro)
 
-- Status: **Proposed**, revision 4 (2026-10-02). Not yet `Accepted`: the conditions are listed under "Needed before Accepted" below.
-- Date: 2026-09-27 (first revision); revision 4 dated 2026-10-02. What each revision changed is under "Revision history" below.
-- Confidence: **Medium-High.** The current state was verified against `origin/main` at `f211581`. Revision 4 re-checked only the claims it edits (D3's two refusals, the PRD lines and the `openai.rs` comment cited below) on `feaee70`. The rest of "What already ships" was not re-run. The ledger design is reasoned from the concurrency pattern that already ships (`select_for_update` on the licence row in `devices/services.py`). It has not been spiked.
+- Status: **Proposed**, revision 5 (2026-10-02). Not yet `Accepted`: the conditions are listed under "Needed before Accepted" below.
+- Date: 2026-09-27 (first revision); revisions 4 and 5 dated 2026-10-02. What each revision changed is under "Revision history" below.
+- Confidence: **Medium-High.** The current state was verified against `origin/main` at `f211581`. Revisions 4 and 5 re-checked only the claims they edit on `feaee70`: D3's two refusals and the tests and comments around them, the staff header bridge in the Security dependency section, and the PRD lines and `openai.rs` comment cited below. The rest of "What already ships" was not re-run. ClickUp ticket ids were read on 2026-10-02. The ledger design is reasoned from the concurrency pattern that already ships (`select_for_update` on the licence row in `devices/services.py`). It has not been spiked.
 - Owner: Software Architect (Aria). Delivery: Backend Engineer (Kenji). Required reviewers before `Accepted`: Security Reviewer (Sana) for D4–D6 and the security dependency section; Performance Engineer (Vera) for D5.
 - Companion: **ADR-0028** decides three things this ADR relies on:
   - how the desktop reaches Deepgram and OpenAI directly;
   - how usage is attributed to a church;
   - how reservations are settled from the provider's own usage figures.
-- Relates: DEC-004 (licensing model), DEC-008 (superseded in part by OD-7 and OD-8), DEC-009 (Free fallback after grace), DEC-014 (fallback plan gate; its premise is amended by D3), ADR-0021 (admin licensing platform). ClickUp: [EPIC 17tnw2az0g6](https://app.clickup.com/t/17tnw2az0g6) and its build tickets 17tnw2az0gd, 17tnw2az0gg, 17tnw2az0gh, 17tnw2az0gj, 17tnw2az0gn, 17tnw2az0gq, 17tnw2az0gr.
-- Also relates to the following, with **amendments still to be made** (they are open items under "Needed before Accepted"; this PR edits none of these documents):
-  - **Platform PRD** (`docs/product/prds/SelahCue-Platform-PRD.md`): FR-533, FR-546, FR-547, AS-P6, AS-P7 and FLOW-507. They still describe a monthly period that resets on the billing anniversary and metering that devices report. D5 and D8 below, and ADR-0028 D2, replace that with a weekly period that resets on Monday 00:00 in the org's time zone, and charging taken from the provider's own records. FR-547 (exhaustion degrades transcription and never blocks live output) is unchanged.
+- Relates: DEC-004 (licensing model), DEC-008 (tier half superseded by owner D7, billing-anniversary period superseded by owner D8), DEC-009 (Free fallback after grace), DEC-014 (fallback plan gate; its premise is amended by D3), ADR-0021 (admin licensing platform). ClickUp: [EPIC 17tnw2az0g6](https://app.clickup.com/t/17tnw2az0g6) and its build tickets 17tnw2az0gd, 17tnw2az0gg, 17tnw2az0gh, 17tnw2az0gj, 17tnw2az0gn, 17tnw2az0gq, 17tnw2az0gr.
+- Also relates to the following, with **amendments still to be made** (open items under "Needed before Accepted"; this PR edits none of these documents):
+  - **Platform PRD** (`docs/product/prds/SelahCue-Platform-PRD.md`): FR-533, FR-546, FR-547, AS-P6, AS-P7 and FLOW-507. They still describe a monthly period that resets on the billing anniversary and metering that devices report. D5 and D8 below, and ADR-0028 D2, replace that with a weekly period that resets on Monday 00:00 in the org's time zone, and charging taken from the provider's own records. FR-547 (exhaustion degrades transcription and never blocks live output) is unchanged. Ticket [17tnw2az0gu](https://app.clickup.com/t/17tnw2az0gu) lists FR-546, AS-P6, FLOW-507 and the tier table in its Scope; it does not name FR-533, FR-547 or AS-P7.
   - **ADR-0010** (AI / provider abstraction, Accepted): cloud is off by default and consent-gated per provider, and user-supplied keys live only in the OS secret store (FR-132 to FR-134). Nothing here weakens either rule. ADR-0028 D8 says how platform-issued credentials fit, and ADR-0010 needs one clause saying so.
   - **ADR-0019** (transcript-provider seam): the Deepgram adapter plugs into its `STTProvider` seam and gets its credential through ADR-0028 D1. ADR-0019 needs no change.
-- Decision labels. "D7", "D8" and "D9" used to mean three different things across the owner's decisions and the two ADRs, so this PR uses these labels:
+- Decision labels. These are **ClickUp's labels on [17tnw2az0gu](https://app.clickup.com/t/17tnw2az0gu), used as written**, so a reader can search for them there. Because the owner's decisions D7, D8 and D9 share numbers with this ADR's own sections, the owner's are always written "owner D7", "owner D8" and "owner D9" in this ADR. The crosswalk:
+
+  | Label | What it is | ClickUp | Where it lands |
+  |---|---|---|---|
+  | owner D7 | Plan lineup (Free / Core / Pro) and the weekly allowances, including the note-counting rule | [17tnw2az0g8](https://app.clickup.com/t/17tnw2az0g8) | Context, D10 |
+  | owner D7 amendment | One retry per notes session: the exception to "failures are never charged" (2026-09-27) | On 17tnw2az0g8 and 17tnw2az0gu | ADR-0028 D5 |
+  | owner D8 | Weekly window, Monday 00:00 in the account's zone; mid-week plan changes apply at once | [17tnw2az0ga](https://app.clickup.com/t/17tnw2az0ga) | D7, D8 |
+  | owner D9 | Staff plan grants | [17tnw2az0gb](https://app.clickup.com/t/17tnw2az0gb) | D1 |
+  | OD-1 | How notes reach the provider: option A first, C if the spike fails, B rejected | On 17tnw2az0gu | ADR-0028 D4 |
+  | OD-2 | Overrun carry-over: following week only, capped at one week of debt | On 17tnw2az0gu | ADR-0028 D7 |
+  | OD-3 | Every denied credential request is recorded | On 17tnw2az0gu | ADR-0028 D1 and D5 |
+
   - `D<n>` is a decision in this ADR, and `ADR-0028 D<n>` is a decision in the companion.
-  - `OD-7`, `OD-8` and `OD-9` are the product owner's decisions D7, D8 and D9. Their text is the owner's and is recorded in `DECISION-LOG.md` by [17tnw2az0gu](https://app.clickup.com/t/17tnw2az0gu). This ADR records only **how** the platform implements them.
-  - `OD-R1` to `OD-R3` are the owner's three answers of 2026-09-27 (notes provider, retry grace, overrun carry). They are recorded in ADR-0028.
+  - `DEC-###` numbers for the owner's decisions are assigned when 17tnw2az0gu writes them into `DECISION-LOG.md` (it takes the next free number at merge). This ADR does not guess them.
   - `SEC-0027-nn` are Sana's security findings on revision 1.
 
 ---
 
 ## Revision history
 
+- **Revision 5 (2026-10-02)** answers the independent re-review of head `255d042`:
+  - Ticket ids confirmed in ClickUp are recorded (staff authenticator 17tnw2az0n5, OpenAI spike 17tnw2az0n2, PRD amendment and DECISION-LOG entries 17tnw2az0gu). "None recorded" now appears only where a ClickUp search found no ticket.
+  - The owner's decision labels are ClickUp's own (owner D7, D7 amendment, owner D8, owner D9, OD-1, OD-2, OD-3), with a crosswalk. Revision 4's `OD-7` to `OD-9` and `OD-R1` to `OD-R3` are gone.
+  - D5: the upgrade reset is a timestamp (`counted_from`) and no longer a settled-figure baseline, which fixes an in-flight reservation permanently reducing the new allowance. Slice renewals, reconnects and the notes retry now have defined rows, columns and budgets. A `RELEASED` row is terminal, and settlement under option C is stated.
+  - D3 names the premise-pinning tests and stale comments, and says the issuance refusal came from the implementing code and not from DEC-014's text.
+  - SEC-0027-07's week-start rule and test are in D5 step 1.
 - **Revision 4 (2026-10-02)** answers the review of revision 3 (PR #111, reviewed at `38755430`):
   - D3 now says what happens to both fallback refusals, and in what order the change ships.
   - D5 has one source of truth for held allowance (the open reservation rows, no `*_reserved` counters), names its index, restates the reserve throttle with its arithmetic, and softens the crash-window claim about `RESERVED` rows.
@@ -31,9 +47,9 @@
   - The staff-authenticator ticket is recorded as a condition of `Accepted`.
   - The header is reordered, the owner's decisions have their own labels, and the new "Needed before Accepted" section lists what is still open.
 - **Revision 3 (2026-09-27)** recorded three owner decisions, all settled (details in ADR-0028, "Owner decisions, 2026-09-27"):
-  - **Sermon notes: ADR-0028 option A, spiked first; option C if the spike fails; option B rejected** (OD-R1). The spike (Nova) is the only thing still pending.
-  - **One retry per notes session** (OD-R2). This is an exception to OD-7's "failures are never charged" rule (see Context and D5). It must be added to 17tnw2az0gu.
-  - **Overrun carries into the following week only, capped at one week of debt** (OD-R3, ADR-0028 D7). `UsageWeek` gains two debt columns (D5).
+  - **Sermon notes: ADR-0028 option A, spiked first; option C if the spike fails; option B rejected** (OD-1). The spike (Nova, [17tnw2az0n2](https://app.clickup.com/t/17tnw2az0n2)) is the only thing still pending.
+  - **One retry per notes session** (owner D7 amendment). This is an exception to owner D7's "failures are never charged" rule (see Context and D5). The amendment is already written on 17tnw2az0g8 and 17tnw2az0gu; only the `DECISION-LOG.md` entry is outstanding.
+  - **Overrun carries into the following week only, capped at one week of debt** (OD-2, ADR-0028 D7). `UsageWeek` gains two debt columns (D5).
 - **Revision 2 (2026-09-27)** covered the owner's direct-to-provider directive, Vera's review (performance) and Sana's review (security):
   - How a spend is settled: D5's commit and release now follow ADR-0028 D5.
   - D6 is replaced by ADR-0028.
@@ -43,7 +59,7 @@
 
 ## Context
 
-The owner replaced DEC-008's Free / Pro / Platinum monthly model with Free / Core / Pro and **weekly** allowances for two cloud-only features: cloud transcript minutes (20 / 50 / 80) and sermon-note generations (1 / 5 / 10). Prices and limits must be data. A SuperAdmin can grant a plan for 1–12 months. The week resets Monday 00:00 in the account's time zone. An upgrade grants the full new allowance at once; a downgrade caps and claws nothing back. Failures caused by SelahCue or the AI provider are never charged. **Amended by the owner, 2026-09-27 (OD-R2):** under the direct-to-provider directive the server cannot see a failed notes generation, so the rule is kept by a **retry grace of one retry per notes session** (ADR-0028 D5). A failed generation and its one retry cost one unit together. The OD-7 text on 17tnw2az0gu needs this exception added.
+The owner replaced DEC-008's Free / Pro / Platinum monthly model with Free / Core / Pro and **weekly** allowances for two cloud-only features: cloud transcript minutes (20 / 50 / 80) and sermon-note generations (1 / 5 / 10). Prices and limits must be data. A SuperAdmin can grant a plan for 1–12 months. The week resets Monday 00:00 in the account's time zone. An upgrade grants the full new allowance at once; a downgrade caps and claws nothing back. Failures caused by SelahCue or the AI provider are never charged. **Amended by the owner, 2026-09-27 (owner D7 amendment):** under the direct-to-provider directive the server cannot see a failed notes generation, so the rule is kept by a **retry grace of one retry per notes session** (ADR-0028 D5). A failed generation and its one retry cost one unit together. The exception is already written on 17tnw2az0g8 and 17tnw2az0gu ("Amendment (owner, 2026-09-27)"). Only the `DECISION-LOG.md` entry is outstanding.
 
 What already ships (verified on `origin/main` `f211581`):
 
@@ -78,20 +94,24 @@ The catalogue gains `Plan.rank` (positive integer, unique). "Higher of granted a
 
 ### D3 — Free becomes the fallback; `LEGACY` is retired
 
-OD-9 says a lapsed grant reverts to "the paid plan, or Free", and DEC-009 says a lapsed licence degrades to Free. Both contradict a permissive `LEGACY` fallback. Pre-launch, with no customers, the fallback moves to Free:
+Owner D9 says a lapsed grant reverts to "the paid plan, or Free", and DEC-009 says a lapsed licence degrades to Free. Both contradict a permissive `LEGACY` fallback. Pre-launch, with no customers, the fallback moves to Free:
 
 - A new migration (never an edit to `0002`) repoints every `PlanScopeAlias` and any `LicensePlanAssignment` on `LEGACY`, `PLATINUM` or the old `PRO` to the new rows, then removes `LEGACY` and `PLATINUM`. `PROTECT` foreign keys make an unhandled reference fail loudly, which is correct.
 - Invariant, tested: **the fallback plan has the lowest rank.** This replaces the reasoning behind the two refusals below.
 - **Both fallback refusals are removed.** Revision 3 named only the first. Two refusals exist on `origin/main` (verified on `feaee70`). Both test `plan.is_fallback`, both raise `POLICY_DENIED`, and both exist for the same reason, that the fallback was the *most* permissive plan:
   - `set_license_plan_assignment` (`catalogue/services.py:766`) refuses to assign a licence to the fallback;
-  - licence issuance (`license_keys/services.py:224`, the second half of DEC-014's issuance rule) refuses to issue a licence on the fallback.
+  - licence issuance (`license_keys/services.py:224`) refuses to issue a licence on the fallback.
+
+  Both come from the implementing code, which cites DEC-014 for them. DEC-014's own text (`DECISION-LOG.md`, DEC-014) mandates only the gate before client enforcement and that new issuance must name an explicit plan. It does not mandate either refusal.
 
   Once Free is the fallback and has the lowest rank, neither protects anything: naming Free by mistake grants the least, not the most. Assigning a licence to Free and issuing one on Free become ordinary operations, and the invariant test takes the place of both refusals. The error text and log text of both refusals ("the most permissive values") would also be false, so they go with them.
 - **Ordering.** The removal ships in the same release as the migration and never before it. While `LEGACY` is still the fallback, both refusals still guard the most permissive plan.
 - **What stays.** The unknown-plan refusal (`NOT_FOUND`) and DEC-014 point 2 (new issuance must name an explicit plan) at the same site, and resolution itself: a licence with no assignment still resolves to the fallback.
 - **Tests that pin the refusals are rewritten by the ticket that lands the migration.** They assert the opposite once the refusals are gone. They are `test_issuing_on_the_designated_fallback_is_refused_and_creates_nothing`, `test_the_fallback_refusal_names_why_rather_than_only_refusing`, `test_the_fallback_refusal_reaches_the_log_where_an_operator_will_look` and `test_the_refusal_follows_the_is_fallback_FLAG_not_the_plan_code` in `tests/test_license_issuance_requires_plan.py`, and `test_assigning_a_licence_to_the_designated_fallback_is_refused` and `test_the_assignment_refusal_leaves_resolution_and_the_fallback_untouched` in `tests/test_product_catalogue_slice.py`. Their siblings that prove a sellable plan still issues and assigns stay as they are.
+- **Tests that pin the premise "the fallback is `LEGACY` and permissive" are not refusal tests, but they fail once Free is the fallback.** In `tests/test_license_issuance_requires_plan.py` they are the constant `FALLBACK_PLAN_CODE = "LEGACY"`, the helper `_assert_fallback_is_the_permissive_one` (it asserts the fallback's code and that its outputs are unlimited, and six tests call it), and `test_the_fallback_mechanism_itself_is_untouched`. The tests that call the helper include `test_a_novel_feature_scope_cannot_silently_reach_the_fallback` and `test_a_licence_that_predates_this_change_still_resolves_through_the_fallback`. They keep their purpose (a licence with no assignment reaches the fallback) and need a new premise (the fallback is the lowest-rank plan).
+- **Stale comments and messages.** Comments in `license_keys/services.py` say the fallback is "the most permissive in the catalogue" (the `plan_code` field note and the refusal at line 224, among others), and so does the refusal in `catalogue/services.py`. They are rewritten or removed with the refusals.
 
-This amends DEC-014's premise. It must be recorded with OD-7 on 17tnw2az0gu.
+This amends DEC-014's premise, and the amendment must be recorded in `DECISION-LOG.md`. The Scope of 17tnw2az0gu lists entries for owner D7, D8 and D9 and OD-1 to OD-3, but no DEC-014 amendment, so no ticket is recorded for this one.
 
 ### D4 — Price is its own effective-dated table and never enters the manifest
 
@@ -108,19 +128,17 @@ This amends DEC-014's premise. It must be recorded with OD-7 on 17tnw2az0gu.
 
 Tables (new `apps/usage`, so retention and ownership stay separate from the catalogue):
 
-- `UsageWeek(org, week_start_local, tz_name, starts_at, ends_at, stt_seconds_settled, notes_settled, stt_seconds_reset_baseline, notes_reset_baseline, stt_seconds_carried_debt, notes_carried_debt, high_water_rank, rank_at_last_reset)`. Unique on (org, week_start_local).
-  - `*_settled` is the usage reconciliation has taken from the provider's records for this week (ADR-0028 D5). It only grows within a week, so recomputing it from the records is repeatable.
-  - `*_reset_baseline` is the value of `*_settled` when D7's upgrade reset last ran. Usage that **counts** against the limit is `*_settled − *_reset_baseline`.
+- `UsageWeek(org, week_start_local, tz_name, starts_at, ends_at, counted_from, stt_seconds_settled, notes_settled, stt_seconds_carried_debt, notes_carried_debt, high_water_rank, rank_at_last_reset)`. Unique on (org, week_start_local).
+  - `counted_from` is a timestamp, equal to `starts_at` until D7's upgrade reset runs, and the instant of the last reset after that. Only usage dated at or after it counts against the limit.
+  - `*_settled` is the usage that reconciliation attributes to the church within `[counted_from, ends_at)` (ADR-0028 D5). Transcript usage is dated by the provider's own timestamp on the record. A notes admission's units are dated by its `issued_at`. `*_settled` is **recomputed** from the records on each run and never incremented, so a rerun gives the same figure. It is a sum of non-negative values, so it cannot go negative. It may fall if a provider revises a record down, and the provider's figure wins.
   - The two `carried_debt` columns (revision 3) hold the previous week's overrun, capped at this week's limit (ADR-0028 D7). The upgrade reset never touches them.
   - The time zone and both boundaries are **fixed when the row is created**. That is how "a time-zone change applies from the next reset" works without any extra state.
-  - **There are no `*_reserved` counters.** Revision 1 had `stt_seconds_charged`, `notes_committed` and two `*_reserved` columns. Revision 2 removed the `COMMITTED` state but left those names behind. Revision 4 replaces the stale names and removes the reserved counters (next paragraph).
-- `UsageReservation(org, week, meter, units, state = RESERVED | ISSUED | SETTLED | RELEASED, idempotency_key, request_hash, device_id, issued_at, retry_count, expires_at, created_at)`. Unique on (org, meter, idempotency_key).
+  - **There are no `*_reserved` counters.** Revision 1 had `stt_seconds_charged`, `notes_committed` and two `*_reserved` columns. Revision 2 removed the `COMMITTED` state but left those names behind. Revisions 4 and 5 replace the stale names and remove the reserved counters (next paragraph). Revision 4's `*_reset_baseline` columns are gone too: a baseline measured in settled usage could not tell usage dated before an upgrade from usage dated after it (see "Upgrade reset").
+- `UsageReservation(org, week, meter, units, state = RESERVED | ISSUED | SETTLED | RELEASED, idempotency_key, request_hash, device_id, issued_at, last_minted_at, renews_id, retry_count, expires_at, created_at)`. Unique on (org, meter, idempotency_key).
+  - `renews_id` is a nullable reference to the slice this row extends. It is set on a transcript slice renewal and null on an admission (see "Slice renewals").
+  - `last_minted_at` is the time of the most recent credential mint for the row, and null when nothing was minted for it.
 
-**Revision 2.** Under the owner's direct-to-provider directive, the server never calls the provider on a spend and never sees the outcome. The reservation states and settlement rules are therefore defined in **ADR-0028 D5**: `RESERVED → ISSUED → SETTLED`, with `RELEASED` allowed only from `RESERVED` (a failed mint, or a `RESERVED` row that aged out; see step 4 below). They replace revision 1's COMMITTED state. Compared with revision 1, the table gains three columns:
-
-- `request_hash`;
-- `issued_at`;
-- `retry_count`.
+**Revision 2.** Under the owner's direct-to-provider directive, the server never calls the provider on a spend and never sees the outcome. The reservation states and settlement rules are therefore defined in **ADR-0028 D5**: `RESERVED → ISSUED → SETTLED`, with `RELEASED` allowed only from `RESERVED` (a failed mint, or a `RESERVED` row that aged out; see step 4 below). They replace revision 1's COMMITTED state. Compared with revision 1, the table gains these columns: `request_hash`, `issued_at` and `retry_count` (revision 2), and `last_minted_at` and `renews_id` (revision 5).
 
 **One source of truth for held allowance: the open reservation rows.** The allowance a church is holding right now is `Σ units` over the current week's reservations in state `RESERVED` or `ISSUED`, and nowhere else. Two sources would have to agree. A stored `*_reserved` counter would need an adjustment on every transition (`RESERVED → RELEASED`, `ISSUED → SETTLED`, and each retry) from three writers (reserve, the sweeper and reconciliation), and a single missed adjustment drives it negative or leaks allowance. The sum cannot drift. It is cheap, for two reasons:
 
@@ -130,22 +148,22 @@ Tables (new `apps/usage`, so retention and ownership stay separate from the cata
 Protocol for a spend (both meters):
 
 1. **Reserve.** This is one short `transaction.atomic()`:
-   - Find the current `UsageWeek` row by `starts_at ≤ now < ends_at` (SEC-0027-07). Lock it with `select_for_update`. If it does not exist, create it with `get_or_create` and retry once on `IntegrityError`, which is the house idempotency pattern.
+   - Find the current `UsageWeek` row by `starts_at ≤ now < ends_at` (SEC-0027-07). Lock it with `select_for_update`. If no row covers `now`, create the next one with `get_or_create` and retry once on `IntegrityError`, which is the house idempotency pattern. **The next row's `starts_at` is `max(previous.ends_at, the week start computed in the org's current zone)`**, and its `ends_at` is the next local Monday 00:00 after that. A time-zone change in mid-week therefore never creates a row before the current row's `ends_at`, and rows never overlap. (Without this rule, a change from UTC−12 to UTC+14 would start the next week about 26 hours early and hand out a fresh allowance.) A test changes the zone mid-week and asserts that no new row appears before the current `ends_at`.
    - Apply D7's upgrade rule.
-   - Check `carried_debt + (settled − reset_baseline) + Σ units of open reservations + units ≤ limit`, using the `UsageWeek` row just locked and the indexed sum above.
-   - A notes **retry** (ADR-0028 D5) reserves no new unit. It only moves `retry_count` from 0 to 1 on the existing ISSUED reservation, under this same lock, within 10 minutes of `issued_at`.
-   - Insert the reservation as `RESERVED`, then commit.
+   - Check `carried_debt + settled + Σ units of open reservations + units ≤ limit`, using the `UsageWeek` row just locked and the indexed sum above. (`settled` already counts only usage dated from `counted_from`.)
+   - A notes **retry** (ADR-0028 D5) reserves no new unit and creates no row. Under this same lock it checks that the reservation is `ISSUED`, that `retry_count` is 0 and that `issued_at` is within 10 minutes, and it **claims** the retry by moving `retry_count` from 0 to 1. The claim is what makes parallel retries yield exactly one. The retry's mint then runs outside the lock. **If that mint fails, a second short transaction rolls `retry_count` back to 0**, so a church never burns its only retry on a failed mint (the retry equivalent of `RESERVED → RELEASED`). If the process dies between the claim and the mint's outcome, the retry stays claimed. That fails closed and costs at most one retry.
+   - Insert the reservation as `RESERVED`, then commit. The one exception is a transcript slice renewal on a socket that stays open, which is inserted directly as `ISSUED` (see "Slice renewals").
 
    Reads take **no** lock. A test fails if `remaining()` emits `FOR UPDATE`. Both `remaining()` and reserve have a query budget (`django_assert_num_queries`), and `effective_plan` counts inside it.
 2. **Issue.** Close the database connection, then call the provider's mint endpoint with hard timeouts (ADR-0028 D6).
    - If the mint succeeds: a second short transaction moves the reservation to `ISSUED`.
-   - If the mint fails: it moves to `RELEASED`.
-3. **Settle.** Only reconciliation settles a reservation. It uses the provider's own usage records (ADR-0028 D5).
+   - If the mint fails: it moves to `RELEASED`. `RELEASED` is terminal: the row is never reused (ADR-0028 D5, replay table).
+3. **Settle.** For transcripts, and for notes under option A, only reconciliation settles a reservation. It uses the provider's own usage records (ADR-0028 D5). Under option C (notes only) no credential leaves the server and no row is ever `ISSUED`. The notes task itself moves the row `RESERVED → SETTLED` when it delivers a note, and `RESERVED → RELEASED` when SelahCue or the provider fails (ADR-0028 D4 and D5).
 4. **Crash safety.**
    - A `RESERVED` row older than its TTL is treated as "nothing was issued", and is released lazily by the next reserve and by the sweeper. That is **almost always true, but it is not guaranteed.** The mint and the move to `ISSUED` are two transactions with a provider call between them. A process that dies after a successful mint and before the second transaction leaves a live credential behind a `RESERVED` row. Releasing the row is still safe for the ledger, for three reasons:
      - The credential cannot still be used to start a session when the row is released. `RESERVED_TTL` must be longer than the mint timeouts **plus** the longest credential TTL (the timeout invariant below), and a stream can only start while the credential is valid.
      - The charge never depends on the reservation. Usage under the credential is attributed by its identity and charged by reconciliation (ADR-0028 D2 and D5). A released row can understate the church's *held estimate* for a while. It cannot understate the *charge*.
-     - A crashed mint leaves at most one such credential, and a re-reserve under the same idempotency key (ADR-0028 D5, replay table) can add at most one more. Both are charged by reconciliation.
+     - A crashed mint leaves at most one such credential. The released row is never reused, so a resend under the same idempotency key gets a refusal and the desktop must start a new admission under a new key (ADR-0028 D5, replay table). That new admission is a separate reservation, and at most one more credential. Both are charged by reconciliation.
 
      What this does not cover is a stream that was already open when the row was released. Until reconciliation records it, it holds no estimate. That is the same exposure as any held-open stream (ADR-0028 D3 and D7).
    - An `ISSUED` row is **never** released by time. It stays counted until reconciliation settles it.
@@ -157,26 +175,42 @@ Why row locking and not optimistic concurrency. Both are correct. A conditional 
 
 The rule that makes this safe: **never hold the lock, or the transaction, across any provider call.** That covers the mint call and the reconciliation job's read of the usage API. Under the directive, the server no longer waits on a generation. Vera's worker and connection finding is resolved, with a bounded residual for the mint call; ADR-0028 D6 sets out the residual and its timeouts.
 
-Timeout invariant. `RESERVED_TTL` must be longer than the mint call's connect timeout **plus** its read timeout **plus** the longest credential TTL the mint can return (30 s for a Deepgram grant token, ADR-0028 D3; the client-secret TTL for OpenAI, ADR-0028 D4). That way, by the time a `RESERVED` row can be released, any credential minted in the crash window has expired. Assert this at import, next to all three constants, in the style of `DEGRADED_MANIFEST_TTL_SECONDS`. An `ISSUED` reservation has no time-based release, so it needs no TTL invariant. The "one unit per late success" overrun rule from revision 1 no longer applies: late usage is charged by reconciliation, in the week it happened.
+Timeout invariant. `RESERVED_TTL` must be longer than the mint call's connect timeout **plus** its read timeout **plus** the longest credential TTL the mint can return (30 s for a Deepgram grant token, ADR-0028 D3; the client-secret TTL for OpenAI, ADR-0028 D4). That way, by the time a `RESERVED` row can be released, any credential minted in the crash window has expired. Assert this at import, next to the constants it relates (the two mint timeouts, `RESERVED_TTL` and the credential TTLs), in the style of `DEGRADED_MANIFEST_TTL_SECONDS`. An `ISSUED` reservation has no time-based release, so it needs no TTL invariant. The "one unit per late success" overrun rule from revision 1 no longer applies: late usage is charged by reconciliation, in the week it happened.
 
-Upgrade reset (D7) moves `*_reset_baseline` up to the current `*_settled`, so the usage that counts restarts from 0. It **never** touches the open reservations or the carried debt, and it never lowers `*_settled`. Open reservations are allowance that is held right now for a credential already out. Releasing it on an upgrade would let a church spend the same allowance twice, and wiping the debt would turn an upgrade into a debt write-off.
+Upgrade reset (D7) sets `counted_from` to now and sets `*_settled` to 0 in the same transaction. Records dated before that instant stop counting, which is how "an upgrade grants the full new allowance at once" (owner D8) is met. The reset **never** touches the open reservations or the carried debt, and it never touches the provider records. An open reservation is allowance held right now for a credential already out, and releasing it on an upgrade would let a church spend the same allowance twice. Wiping the debt would turn an upgrade into a debt write-off.
 
-Reserve throttles. Until revision 4 there was one budget, of 30 per hour per org and 10 per hour per device. That budget could not carry transcripts, because a transcript session is reserved in 5-minute slices (ADR-0028 D5) and each slice renewal goes through the same endpoint. Reserve calls are therefore three classes with separate budgets:
+**What an upgrade does to usage that is still in flight.** An open reservation made before the reset keeps counting until it settles, and when it settles its usage is dated before `counted_from`, so it then stops counting. Example: a Free church generates its one note at 10:00 (the row is `ISSUED`; it settles no earlier than about 11:10, 60 minutes plus lag). At 10:20 it upgrades to Core. Until the note settles, `remaining = 5 − 0 − 1 open = 4`. After it settles, `remaining = 5`. So the new allowance is full once what was in flight has settled, and in the meantime it is lower by the in-flight estimate. That is the conservative reading of "straight away" and it needs no second counter. The owner should know about this interval (it is item 8 of "Needed before Accepted"). The alternative, which gives the full allowance at the instant of the upgrade, is to drop the in-flight estimate from the sum at the reset. That would let a church spend the same allowance twice, so it is not proposed.
+
+**Slice renewals (transcript only).** A transcript session is a chain of slices. A slice is one `UsageReservation` row of 300 s (the default slice), and a renewal names the slice it extends in `renews_id`. There are three cases:
+
+| Case | Row | Provider call |
+|---|---|---|
+| Renewal on a socket that stays open | A new row, **inserted directly as `ISSUED`** in the reserve transaction, with `issued_at = now` and `last_minted_at` null. It never passes through `RESERVED`, so the `RESERVED_TTL` release cannot touch it and the hold on a live stream is not dropped | None |
+| Renewal that needs a new socket (the held time has run out) | A new row with `renews_id` set: `RESERVED`, then `ISSUED` after the mint, exactly as an admission | Mint |
+| Reconnect inside a live slice (the socket dropped with time left on it) | **No new row.** The live slice is re-minted and `last_minted_at` moves to now | Mint |
+
+So a reconnect never holds a second 300 s. `ISSUED` therefore means "allowance granted to the desktop": a credential was returned, or, for a renewal on an open socket, the desktop was told it may keep its stream running for another slice. The settle point of each case is in ADR-0028 D5 (a row with no mint has no credential-TTL term). A renewal that would leave the church over its allowance is refused like any reserve, and the stream already open is not touched.
+
+**Renewal lead time.** The desktop asks for the next slice when 60 s or less remain of the slice it holds, and not earlier (`SLICE_RENEWAL_LEAD_SECONDS`, 60). The budget below depends on that. It is part of the desktop contract and belongs on 86akby3xu.
+
+Reserve throttles. Until revision 4 there was one budget, of 30 per hour per org and 10 per hour per device. That budget could not carry transcripts, because each slice renewal goes through the same endpoint. Reserve calls are therefore classes with separate budgets:
 
 | Class | What it is | Budget |
 |---|---|---|
 | Admission | A new session on either meter: a fresh idempotency key that does not extend a live session | 30 per hour per org, 10 per hour per device |
-| Slice renewal | Transcript only. Extends the device's own live session by the next slice, naming that session's latest `ISSUED` slice. A renewal that does not need a new token makes no provider call | 30 per hour per org, 15 per hour per device |
-| Notes retry | Moves `retry_count` from 0 to 1 and creates no row (ADR-0028 D5) | None. One per notes session, by rule |
+| Slice renewal | Transcript only: any of the three cases above, including a reconnect | 30 per hour per org, 15 per hour per device |
+| Notes retry | Claims `retry_count` and creates no row (ADR-0028 D5) | **Counts against the admission budget.** Every retry request, granted or refused with `RETRY_EXHAUSTED`, takes the `UsageWeek` lock and writes an audit event (OD-3), so it cannot be free |
+
+**Counting rule, for every class.** A request counts against its budget once it has passed the throttle, whether it then succeeds, is refused for allowance, or fails on the mint. A request that the throttle itself refuses (HTTP 429 with a retry-after) is not counted again. Whether such throttled requests are themselves audited is an open question on 86akby3xu (its open item 7); this ADR does not decide it.
 
 The arithmetic behind the renewal budget:
 
-- One device streaming continuously needs 60 min ÷ 5 min = **12 slices per hour**. Under the old 10-per-hour device budget it would have been refused from the 11th slice of every hour. A 70-minute sermon on Pro needs 70 ÷ 5 = **14 slices** (one admission and 13 renewals).
-- The per-device budget of 15 is those 12, plus 3 for a reconnect that asks for a slice again.
-- The per-org budget of 30 is two devices streaming at once (2 × 12 = 24), plus 6.
+- One device streaming continuously needs 60 min ÷ 5 min = **12 slices per hour** when it renews exactly as the held time ends. With the 60 s lead it renews every 300 − 60 = 240 s, which is 3,600 ÷ 240 = **15 per hour**, the per-device budget. A desktop that renewed earlier than the lead would exceed the budget. Under the old 10-per-hour device budget it would have been refused from the 11th slice of every hour. A 70-minute sermon on Pro needs 70 ÷ 5 = **14 slices** (one admission and 13 renewals).
+- The per-device budget of 15 therefore has no headroom left for a reconnect when the desktop renews at the maximum rate. A reconnect is rare, and a refused one is retried after the retry-after. If the desktop renews at the nominal 12 per hour there are 3 spare.
+- The per-org budget of 30 is two devices streaming at once (2 × 15 = 30).
 - Admissions keep their old figures. The review's finding was about renewals only, and a church starts a few sessions a day, not ten an hour.
 
-Row ceiling per org, over the 35-day retention (Consequences): admissions 30 × 24 × 35 = 25,200, plus renewals 30 × 24 × 35 = 25,200, which is **50,400 rows**. Revision 3's 25,200 counted admissions only. This is a ceiling, not a forecast. A row that stays open holds allowance (at most 26 open rows per week, above), so only `RELEASED` rows (failed mints) and rows that settle quickly can pile up at the throttle rate. A church that uses its full Pro allowance creates 16 transcript slices and 10 notes rows a week. Tests pin all three budgets, and one test asserts that a 70-minute stream on Pro (one admission and 13 renewals) is admitted without a throttle refusal. That test is the one that fails if renewals fall back under the admission budget.
+Row ceiling per org, over the 35-day retention (Consequences): admissions 30 × 24 × 35 = 25,200, plus renewals 30 × 24 × 35 = 25,200, which is **50,400 rows**. Revision 3's 25,200 counted admissions only. This is a ceiling, not a forecast. A row that stays open holds allowance (at most 26 open rows per week, above), so only `RELEASED` rows (failed mints) and rows that settle quickly can pile up at the throttle rate. A church that uses its full Pro allowance creates 16 transcript slices and 10 notes rows a week. Tests pin the budgets, and one test asserts that a 70-minute stream on Pro (one admission and 13 renewals) is admitted without a throttle refusal. That test is the one that fails if renewals fall back under the admission budget.
 
 Lock order: the org first, then the licence key (`AppLicenseKey`, as activation and the state machine lock it), then `UsageWeek`. Every path that takes more than one of these locks takes them in this order.
 
@@ -206,11 +240,11 @@ ADR-0028 replaces this section, and for both providers it decides the following:
 
 The reset is applied lazily and exactly. It is applied at reserve time, under the D5 lock, because every spend goes through reserve.
 
-If `rank(effective_plan) > high_water_rank`, set `rank_at_last_reset` and `high_water_rank` to the new rank and move each `*_reset_baseline` up to the current `*_settled`. The usage that **counts** against the new limit therefore restarts from 0 (`counted = settled − baseline`). That is the whole effect. **Open reservations and `carried_debt` are untouched** (D5): an upgrade never releases a held reservation and never wipes debt, and no settled figure goes down. Provider usage records keep their full history. A downgrade changes nothing, because `remaining = max(0, limit − carried_debt − counted − open reservations)`.
+If `rank(effective_plan) > high_water_rank`, set `rank_at_last_reset` and `high_water_rank` to the new rank, set `counted_from` to now, and set `*_settled` to 0. The usage that **counts** against the new limit therefore restarts from 0, because only usage dated at or after `counted_from` counts (D5). That is the whole effect. **Open reservations and `carried_debt` are untouched** (D5): an upgrade never releases a held reservation and never wipes debt. A reservation open at the upgrade keeps holding its estimate until it settles, and then its usage, dated before `counted_from`, stops counting (the worked example is in D5, "Upgrade reset"). A downgrade changes nothing, because `remaining = max(0, limit − carried_debt − settled − open reservations)` and `settled` is untouched. The week's **limit for overrun purposes** is the limit of the plan whose rank is `high_water_rank`, so a downgrade later in the week never turns usage that was admitted under the higher plan into an overrun (ADR-0028 D7).
 
 A limit edit (Core 5 → 6) is **not** a plan change, so it never resets anything. The comparison is on rank, never on the limit value.
 
-The high-water mark also closes the downgrade-then-upgrade loophole (open item 6 on 17tnw2az0gu). Pro → Free → Pro in one week does not reset twice, because Pro is already the week's high-water mark. Free → Core → Pro still resets at each step, as OD-8 intends. **This is a recommendation for the owner, not a decision.** Without it, the high-water check becomes "rank increased since the last spend" and the loophole stays open.
+The high-water mark also closes the downgrade-then-upgrade loophole (open item 6 on 17tnw2az0gu). Pro → Free → Pro in one week does not reset twice, because Pro is already the week's high-water mark. Free → Core → Pro still resets at each step, as owner D8 intends. **This is a recommendation for the owner, not a decision.** Without it, the high-water check becomes "rank increased since the last spend" and the loophole stays open.
 
 ### D8 — Time: IANA zone, validated on write, never raising on read
 
@@ -245,7 +279,7 @@ Under ADR-0028 the figures are eventually consistent. `remaining` includes an es
 ### D10 — Catalogue dimensions: new keys, old key deactivated, pending values explicit
 
 - Add `cloud_transcript_minutes_per_week` and `sermon_notes_per_week`, both INTEGER defaulting to `0`. Set `stt_minutes_per_period` to `is_active = False` rather than renaming it. Keys ship in signed artefacts, and a rename silently changes what an old key means. Deactivating it is safe now: no desktop code reads the old key (verified by `git grep` on `f211581`).
-- Core and Pro "pending" device, output and NDI values (OD-7 sub-item a) must be **explicit `PlanGrant` rows**, not left to fall through to the dimension default. `screen_outputs` defaults to `unlimited`, so leaving it undeclared publishes "unlimited". That breaks 17tnw2az0gd's own acceptance criterion that a pending value never resolves to unlimited. Mark them pending in the row's `reason` text and cover them with a test that fails if any active plan resolves `screen_outputs` or `ndi_outputs` to `None`. Enforcement on the desktop is gated by DEC-014 until the owner answers.
+- Core and Pro "pending" device, output and NDI values (owner D7 sub-item (a)) must be **explicit `PlanGrant` rows**, not left to fall through to the dimension default. `screen_outputs` defaults to `unlimited`, so leaving it undeclared publishes "unlimited". That breaks 17tnw2az0gd's own acceptance criterion that a pending value never resolves to unlimited. Mark them pending in the row's `reason` text and cover them with a test that fails if any active plan resolves `screen_outputs` or `ndi_outputs` to `None`. Enforcement on the desktop is gated by DEC-014 until the owner answers.
 - The tier-name sweep must exempt the **set** of seed migrations. A new seed migration necessarily contains "Core" and "CORE", and today only `0002` is exempt, so the sweep would flag the new file. The positive control must also run against the new file.
 
 ## Options considered for the ledger
@@ -284,10 +318,11 @@ So the staff-initiated writes in this ADR cannot ship to production until a **re
 
 Closing 86ajyq86g does **not** meet this. Its finding 6 is marked "Partly": the header is stripped at the edge, but that is not a login.
 
-**No ticket id is recorded for the authenticator.** A ticket must exist for it, and its id must be recorded here, before this ADR moves to `Accepted`. If one has already been created, the owner supplies its id. This revision does not invent one.
+**The ticket that delivers the authenticator is [17tnw2az0n5](https://app.clickup.com/t/17tnw2az0n5)** ("Real staff sign-in", read in ClickUp on 2026-10-02; status planning/todo). It already carries what this section requires:
 
-- Ticket id: **none recorded. Owner to supply.**
-- What it must deliver: a real staff authenticator that produces the STAFF `ActorContext`, so that `SELAHCUE_TRUST_ACTOR_HEADERS` can be off in production while staff still work.
+- It blocks every SuperAdmin pricing and grant feature from production until it is done, naming 17tnw2az0gg (price and limit edits) and 17tnw2az0gh (plan grants). Those tickets may be built and merged first, but not enabled in production.
+- Its acceptance criteria include a production-settings test that fails if header trust is on, and Sana's confirmation that it closes SEC-0027-01.
+- **Its mechanism is not decided.** The identity provider or login method, whether MFA is required, how staff permissions are assigned and audited, and session lifetime and revocation are open decisions on that ticket. This ADR does not decide them.
 - The grant and price tickets each gain one criterion: a test of the production settings fails if these mutations are enabled while header trust is on.
 
 Permissions and audit (SEC-0027-05):
@@ -330,33 +365,54 @@ Other rules:
 
 | Finding | Outcome |
 |---|---|
-| Process 1: title and body describe revision 1 only | PR title and body rewritten to cover ADR-0027 revision 4, ADR-0028 revision 3 and the goal contract, with the list below. |
+| Process 1: title and body describe revision 1 only | PR title and body rewritten to cover both ADRs and the goal contract, with the list below. Updated again for revision 5. |
 | Process 2: 18 unresolved threads; no re-review of revisions 2 and 3 | Not fixed here. Resolving threads and the independent re-review (goal contract C-008) belong to the reviewers. |
 | a. The twin refusal at `license_keys/services.py:224` | D3: both refusals are removed, in the same release as the migration, never before it. |
 | b. Throttle against 5-minute slice renewals | D5, "Reserve throttles": renewals have their own budget; the arithmetic and the new 50,400-row ceiling are shown; Consequences updated. |
 | c. Retention versus `ISSUED` rows | Consequences: the sweeper deletes only `SETTLED` and `RELEASED` rows; `ISSUED` rows never age out by time and raise an alert instead. |
-| d. Index for the open-estimates sum; two sources of truth; stale column names | D5: the open reservation rows are the single source; the `*_reserved` counters are gone; partial index on `(week_id)`; the columns are `*_settled` and `*_reset_baseline`. |
-| e. D7 wording against D5 and ADR-0028 | D7 reworded: an upgrade moves the baseline and touches nothing else. |
-| f. SEC-0027-01 names no ticket | Security dependency: the ticket must be created and its id recorded here before `Accepted`. Id: none recorded; owner to supply. |
+| d. Index for the open-estimates sum; two sources of truth; stale column names | D5: the open reservation rows are the single source; the `*_reserved` counters are gone; partial index on `(week_id)`; the columns are `*_settled`, with the upgrade reset as `counted_from` (revision 5; revision 4 had a baseline column). |
+| e. D7 wording against D5 and ADR-0028 | D7 reworded: an upgrade moves `counted_from` and touches no open reservation and no debt. |
+| f. SEC-0027-01 names no ticket | Revision 4 left the id out. Revision 5 records [17tnw2az0n5](https://app.clickup.com/t/17tnw2az0n5), confirmed in ClickUp. |
 | j. "A `RESERVED` row older than its TTL has issued nothing" | D5 step 4: softened for the mint-to-`ISSUED` crash window, with the bound and a stronger timeout invariant. |
 | k. PRD, ADR-0010, ADR-0019, desktop custody | Relates section, ADR-0028 D8, and "Needed before Accepted" below. |
-| Cosmetic: header order; D7, D8 and D9 naming | Header reordered with a revision history. Owner decisions are `OD-7` to `OD-9` and `OD-R1` to `OD-R3`. |
+| Cosmetic: header order; D7, D8 and D9 naming | Header reordered with a revision history. Revision 5 uses ClickUp's own labels (owner D7, D7 amendment, owner D8, owner D9, OD-1 to OD-3) with a crosswalk, replacing revision 4's `OD-7` to `OD-9` and `OD-R1` to `OD-R3`. |
 
 (g, h and i are in ADR-0028.)
 
+## Review dispositions (PR #111, independent re-review of head `255d042`, 2026-10-02)
+
+| Item | Outcome |
+|---|---|
+| M1. Finding f not fixed; tickets exist | Fixed. 17tnw2az0n5 (staff authenticator), 17tnw2az0n2 (OpenAI spike) and 17tnw2az0gu (PRD amendment, DECISION-LOG entries) are recorded after reading each in ClickUp. "None recorded" remains only where a ClickUp search found no ticket. The retry exception is recorded as already written on 17tnw2az0g8 and 17tnw2az0gu. |
+| M2. Labels conflict with ClickUp | Fixed. ClickUp's own labels with a crosswalk (header). ADR-0028 D1 and D5 now carry OD-3 (denied requests are recorded). |
+| S1. Slice renewal rows, `renews_id`, reconnect | D5, "Slice renewals": a renewal on an open socket is inserted directly as `ISSUED`; `renews_id` and `last_minted_at` added; a reconnect re-mints the live slice and creates no row. |
+| S2. Notes retry budget and failed mint | D5 reserve step and throttle table: retry requests count against the admission budget; the claim is rolled back if the retry's mint fails. |
+| S3. Overrun's limit across a plan change | ADR-0028 D7: the week's limit for overrun purposes is the high-water plan's limit. The question of `limit` against `limit − carried_debt` is an open item for the owner (ADR-0028 OI-11). |
+| S4. Upgrade reset against in-flight usage; negative counts | D5 "Upgrade reset" and D7: a timestamp (`counted_from`) replaces the baseline; the in-flight interval is stated, with an example; `*_settled` is recomputed and cannot go negative. |
+| S5. `RELEASED` reuse; no `SETTLED` replay row; option C settlement | ADR-0028 D5: `RELEASED` is terminal and a resend needs a new key; the replay table has a `SETTLED` row; D5 step 3 here and ADR-0028 D4 and D5 say how `RESERVED` reaches `SETTLED` under option C. |
+| S6. Renewal budget headroom | D5: renewal lead time of 60 s, the 15 per hour arithmetic, and the counting rule. |
+| Nits | Constants list in the timeout invariant; "fail-closed" wording (ADR-0028 D5); DEC-014 attribution and the premise-pinning tests and stale comments (D3); the two lists of re-checked claims aligned; ticket fallout listed (Needed before Accepted, item 7); SEC-0027-07's rule and test (D5 step 1). |
+
 ## Needed before Accepted
 
-Nothing in this list is done by this PR, except where it says so.
+Nothing in this list is done by this PR, except where it says so. Ticket ids below were read in ClickUp on 2026-10-02.
 
-1. **Independent re-review.** Sana for D4–D6 and the security dependency section; Vera for D5. This is goal contract criterion C-008. The 18 inline threads from revision 1 are to be resolved by the reviewers. Sana's earlier note that removing the assignment refusal is safe once the invariant test exists covered only that one refusal; she should confirm D3's removal of the issuance refusal too.
-2. **Staff-authenticator ticket (SEC-0027-01).** Make sure the ticket exists and record its id in the Security dependency section. Id: **none recorded; owner to supply.**
-3. **Recorded on 17tnw2az0gu and in `DECISION-LOG.md`**, by Priya or Diego (the architect does not edit that ticket):
-   - the OD-7 exception for the notes retry (OD-R2);
-   - the DEC-014 amendment from D3, including the removal of both fallback refusals;
-   - the owner's answer on D7's high-water mark (a recommendation today).
-4. **Platform PRD amendments** for FR-533, FR-546, FR-547, AS-P6, AS-P7 and FLOW-507 (see Relates). No ticket id is recorded. Ticket id: **none recorded; owner to supply.** It is an open item in ADR-0028 ("Open items").
-5. **ADR-0010 clause and the `implementation/desktop/crates/selahcue-cloud/src/openai.rs` comment (lines 6 to 7).** No ticket id is recorded for either. Both are open items in ADR-0028 ("Open items"), with ticket ids **none recorded; owner to supply**.
-6. **The open items in ADR-0028**, which also gate this ADR's settlement and enforcement tickets: the OpenAI spike, the Deepgram spike 86akby344, `NOTE_TOKEN_ENVELOPE`, the transcript held-open ceiling, the provisioning budget, and the provider facts that have not been re-read since 2026-09-27.
+1. **Independent re-review.** Sana for D4–D6 and the security dependency section; Vera for D5. This is goal contract criterion C-008. The 18 inline threads from revision 1 are to be resolved by the reviewers. Sana's earlier note that removing the assignment refusal is safe once the invariant test exists covered only that one refusal; she should confirm D3's removal of the issuance refusal too, and SEC-0027-07's week-start rule in D5 step 1.
+2. **Staff authenticator (SEC-0027-01): ticket recorded, [17tnw2az0n5](https://app.clickup.com/t/17tnw2az0n5).** Its mechanism is an open decision on the ticket. It must be done before the staff writes are enabled in production, not before this ADR is `Accepted`.
+3. **`DECISION-LOG.md` entries** by Priya (ticket [17tnw2az0gu](https://app.clickup.com/t/17tnw2az0gu), whose Scope lists entries for owner D7 with its amendment, owner D8, owner D9, OD-1, OD-2 and OD-3; the architect does not edit that ticket). The retry exception is already written on the ticket, so only the log entry is outstanding. **Not covered by that Scope:** the DEC-014 amendment from D3 (the fallback moves to Free and both refusals go). No ticket is recorded for it. The owner's answer on D7's high-water mark is item 6 of that ticket's open list.
+4. **Platform PRD amendments.** 17tnw2az0gu's Scope covers FR-546, AS-P6, FLOW-507 and the tier table. It does not name **FR-533, FR-547 or AS-P7**, so someone should confirm it covers them or add them.
+5. **ADR-0010 clause and the `implementation/desktop/crates/selahcue-cloud/src/openai.rs` comment (lines 6 to 7).** A ClickUp search found no ticket for either. Ticket ids: **none recorded; owner to supply.** Both are open items in ADR-0028 (OI-8, OI-9).
+6. **The open items in ADR-0028**, which also gate this ADR's settlement and enforcement tickets: the OpenAI spike ([17tnw2az0n2](https://app.clickup.com/t/17tnw2az0n2)), the Deepgram spike 86akby344, `NOTE_TOKEN_ENVELOPE`, the transcript held-open ceiling, the provisioning budget, and the provider facts that have not been re-read since 2026-09-27.
+7. **Ticket fallout, for Priya and Diego to place (this PR edits no ticket).** Each item below was read on the ticket on 2026-10-02:
+   - 86akby4e9 (reconciliation), step 7, still computes the overrun as `max(0, settled_usage − limit)`. Under D5 and ADR-0028 D7 it counts only usage dated from `counted_from` and measures against the high-water plan's limit.
+   - 17tnw2az0gj (ledger) still says an upgrade restarts "this week's settled-usage counter from 0", computes `remaining` from `settled_usage − Σ estimates of ISSUED reservations`, and says `RELEASED` happens only when a mint fails. It needs `counted_from`, the sum over `RESERVED` and `ISSUED` rows, the TTL release, the `last_minted_at` and `renews_id` columns, the retry claim and rollback, the `ISSUED` backlog alert and the week-start rule of D5 step 1.
+   - 86akby3xu (STT session) still provisions "when an org first holds a plan with transcript minutes above 0", says `RELEASED` happens only when the grant call fails, and has no renewal budget, renewal lead time or renewal cases. It needs D3's demand-driven, gated provisioning and D5's "Slice renewals".
+   - 17tnw2az0gn (notes enforcement) was not re-read for this revision. Its retry handling needs the claim, the rollback and the admission-budget rule.
+
+8. **Owner confirmations** (the owner's, not the architect's):
+   - D7's high-water mark (already open on 17tnw2az0gu, item 6).
+   - The upgrade interval in D5: for the time it takes in-flight usage to settle after an upgrade, the new allowance is reduced by that in-flight estimate. Owner D8 says "straight away", and this reading is conservative.
+   - ADR-0028 OI-11: whether an overrun is measured against `limit` or `limit − carried_debt`.
 
 ## Rollback
 
