@@ -1998,6 +1998,7 @@ impl Renderer {
             frame,
             drawable: None,
             bind_group: None,
+            staged_unsubmitted: false,
         })
     }
 
@@ -2047,6 +2048,21 @@ struct FramePass<'a> {
     drawable: Option<wgpu::SurfaceTexture>,
     /// The bind group [`PresentSteps::upload`] built for this frame's texture.
     bind_group: Option<wgpu::BindGroup>,
+    /// `write_texture` staged this frame and no `Queue::submit` has released it yet.
+    staged_unsubmitted: bool,
+}
+
+impl Drop for FramePass<'_> {
+    /// Safety net under [`run_present`]'s order: staging from `write_texture` is released only by a
+    /// `Queue::submit`. A pass that staged a frame and never submitted it (an early return, or a
+    /// future reordering that uploads before the acquire again) flushes it here, so the leak can
+    /// never grow past one frame. wgpu submits the pending writes on their own for an empty
+    /// submit. Costs nothing on the normal path: the flag is cleared by the real submit.
+    fn drop(&mut self) {
+        if self.staged_unsubmitted {
+            self.renderer.queue.submit(std::iter::empty());
+        }
+    }
 }
 
 impl PresentSteps for FramePass<'_> {
@@ -2128,6 +2144,7 @@ impl PresentSteps for FramePass<'_> {
                 depth_or_array_layers: 1,
             },
         );
+        self.staged_unsubmitted = true;
         let tex_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
         self.bind_group = Some(r.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("blit"),
@@ -2182,6 +2199,7 @@ impl PresentSteps for FramePass<'_> {
             pass.draw(0..3, 0..1);
         }
         r.queue.submit(Some(encoder.finish()));
+        self.staged_unsubmitted = false;
         r.phases.submit = submit_started.elapsed();
         let present_started = Instant::now();
         r.queue.present(surface_frame);
