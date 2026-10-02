@@ -37,10 +37,19 @@ a caller believed to be refused would still receive working mail.
 that closes this: it exhausts the budget against an EXISTING, VERIFIED account and asserts the
 throttled call left NO new `CredentialToken` row and sent NO new email. Mutation-verified the
 same way as the header test above (see the handoff evidence).
+
+THE 86ak65mj5 SECTION AT THE END OF THIS FILE pins the ticket's own acceptance criteria that
+the tests above do not reach: the DEFAULT budgets never block a person who mistypes their
+address (and a legitimate single request sends exactly one email), a throttled refusal is
+byte-identical AND takes the same time for a registered and an unregistered address under EACH
+of the three budgets, and the keys the limiter can create are bounded by the global budget
+rather than by attacker input.
 """
 
 import json
 import logging
+import statistics
+import time
 
 import pytest
 from django.core.cache import cache
@@ -651,3 +660,324 @@ def test_the_reset_degraded_ceiling_is_spent_whether_or_not_the_account_exists(
         )
     finally:
         services.set_email_sender(services.EmailSender())
+
+
+# =============================================================================================
+# 86ak65mj5 — the ticket's own acceptance criteria that the sections above do not reach.
+#
+# The three budgets themselves shipped under 86akcmfd4 / 86akcn8p4 / 86akcn92k, after the ticket
+# was written. What nothing proved was (a) the DEFAULT sizing against a real person's mistakes,
+# (b) that a throttled refusal is the same for a registered and an unregistered address under
+# EACH budget and in TIME, not only in bytes and only for the address budget, and (c) that the
+# keys the limiter can create are bounded by the global budget rather than by attacker input.
+# =============================================================================================
+@pytest.fixture
+def capturing_sender():
+    captured = _CapturingSender()
+    services.set_email_sender(captured)
+    yield captured
+    services.set_email_sender(services.EmailSender())
+
+
+def _live_reset_tokens(user):
+    return CredentialToken.objects.filter(
+        customer_user=user, purpose=CredentialTokenPurpose.PASSWORD_RESET, consumed_at__isnull=True
+    ).count()
+
+
+# --- AC1: the DEFAULT budgets, against what a legitimate person actually does ---------------
+@pytest.mark.django_db
+def test_one_legitimate_request_sends_exactly_one_email_and_mints_exactly_one_token(
+    client, capturing_sender
+):
+    """The throttle must cost a well-behaved caller NOTHING: one request, one email, one live
+    token — under the shipped defaults (nothing is overridden here)."""
+    email = _existing_verified_account(capturing_sender, email="single@legit.example", idem="legit-single-0001")
+    user = CustomerUser.objects.get(email=email)
+
+    response = post_account(client, REQUEST_RESET, {"e": email})
+
+    assert error_code(response) is None
+    assert body(response)["data"]["requestPasswordReset"]["accepted"] is True
+    assert len(capturing_sender.reset_tokens) == 1, "a legitimate single request must send exactly one email"
+    assert _live_reset_tokens(user) == 1
+
+
+@pytest.mark.django_db
+def test_a_person_who_mistypes_their_address_is_never_blocked_under_the_default_budgets(
+    client, capturing_sender
+):
+    """AC1: 'sized so a legitimate user who mistypes their address twice is never blocked'.
+    The shipped defaults are used as they are. The sequence is deliberately the awkward one:
+    the SAME typo twice (it looked right the first time), then a DIFFERENT typo, then the right
+    address — four calls from one source inside one window."""
+    email = _existing_verified_account(capturing_sender, email="real@typo.example", idem="typo-flow-0001")
+    user = CustomerUser.objects.get(email=email)
+    attempts = [
+        "reall@typo.example",
+        "reall@typo.example",
+        "real@typp.example",
+        email,
+    ]
+
+    responses = [post_account(client, REQUEST_RESET, {"e": address}) for address in attempts]
+
+    assert [error_code(r) for r in responses] == [None, None, None, None], (
+        "the default budgets blocked a person who only mistyped their address"
+    )
+    assert all(body(r)["data"]["requestPasswordReset"]["accepted"] is True for r in responses)
+    assert len(capturing_sender.reset_tokens) == 1, "only the one real address may receive mail"
+    assert _live_reset_tokens(user) == 1
+
+
+@pytest.mark.django_db
+def test_retrying_the_same_address_after_a_lost_email_works_three_times_then_stops(
+    client, capturing_sender
+):
+    """The other legitimate pattern: the email did not arrive, so the person asks again. The
+    default per-address budget is (3, 900): three requests are served (each really sends and
+    supersedes the link before it), the fourth inside the window is refused and sends nothing.
+    Pins the shipped trade so changing it is a visible decision rather than a silent one."""
+    email = _existing_verified_account(capturing_sender, email="lost@legit.example", idem="legit-lost-0001")
+    user = CustomerUser.objects.get(email=email)
+
+    served = [post_account(client, REQUEST_RESET, {"e": email}) for _ in range(3)]
+    refused = post_account(client, REQUEST_RESET, {"e": email})
+
+    assert [error_code(r) for r in served] == [None, None, None]
+    assert len(capturing_sender.reset_tokens) == 3, "each served retry must really send its own email"
+    assert _live_reset_tokens(user) == 1, "a new link must supersede the previous one"
+    assert error_code(refused) == "RATE_LIMITED"
+    assert len(capturing_sender.reset_tokens) == 3, "the refused fourth request must send nothing"
+
+
+@pytest.mark.parametrize(
+    ("setting_name", "module_default"),
+    [
+        ("SELAHCUE_THROTTLE_RESET_REQUEST", services.RESET_REQUEST_IP_BUDGET),
+        ("SELAHCUE_THROTTLE_RESET_REQUEST_ADDRESS", services.RESET_REQUEST_ADDRESS_BUDGET),
+        ("SELAHCUE_THROTTLE_RESET_REQUEST_GLOBAL", services.RESET_REQUEST_GLOBAL_BUDGET),
+        ("SELAHCUE_RESET_SEND_DEGRADED_CEILING", services.RESET_SEND_DEGRADED_CEILING),
+    ],
+)
+def test_the_reset_budget_settings_and_their_module_defaults_have_not_drifted(
+    settings, setting_name, module_default
+):
+    """`enforce_budget` reads the setting at call time and falls back to the module constant
+    only if the setting is missing. Two numbers for one budget is how a value gets quietly
+    changed in one place while a test pins the other (same guard resend has for its ceiling)."""
+    assert getattr(settings, setting_name) == module_default, (
+        f"settings.{setting_name} and the matching services.py default have drifted"
+    )
+
+
+# --- AC2: a throttled refusal is the same for a registered and an unregistered address -------
+# Each budget gets its own parametrized case, tightened so that budget — and ONLY that budget —
+# trips on the second call. A refusal attributed to "some budget" would not show which of the
+# three has an existence-dependent step in front of it.
+_BUDGET_SETTINGS = {
+    "ip": "SELAHCUE_THROTTLE_RESET_REQUEST",
+    "address": "SELAHCUE_THROTTLE_RESET_REQUEST_ADDRESS",
+    "global": "SELAHCUE_THROTTLE_RESET_REQUEST_GLOBAL",
+}
+_TRIPS_AT_ONE = {"ip": (1, 3600), "address": (1, 900), "global": (1, 3600)}
+_OUT_OF_REACH = {"ip": (10_000, 3600), "address": (10_000, 900), "global": (10_000, 3600)}
+
+
+def _only_budget_trips(settings, budget):
+    for name, setting_name in _BUDGET_SETTINGS.items():
+        setattr(settings, setting_name, _TRIPS_AT_ONE[name] if name == budget else _OUT_OF_REACH[name])
+
+
+def _spend_the_allowed_call(client, budget, known, ghost):
+    """Use up `budget`'s one allowed call. The REAL account goes first so that call is the one
+    that mints — the branch a mis-placed or existence-keyed throttle would treat differently.
+    The address budget is per address, so the unknown address must spend its own allowance too;
+    the IP and global budgets are shared, so the first call already spent them."""
+    first = post_account(client, REQUEST_RESET, {"e": known})
+    assert error_code(first) is None, "the within-budget call to the real account was refused"
+    if budget == "address":
+        second = post_account(client, REQUEST_RESET, {"e": ghost})
+        assert error_code(second) is None, "the within-budget call to the unknown address was refused"
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("budget", sorted(_BUDGET_SETTINGS))
+def test_a_throttled_refusal_is_byte_identical_for_a_known_and_an_unknown_address(
+    client, settings, capturing_sender, budget
+):
+    _only_budget_trips(settings, budget)
+    known = _existing_verified_account(
+        capturing_sender, email=f"known-{budget}@refusal.example", idem=f"refusal-bytes-{budget}"
+    )
+    ghost = f"ghost-{budget}@refusal.example"
+    _spend_the_allowed_call(client, budget, known, ghost)
+    mails_before = len(capturing_sender.reset_tokens)
+    assert mails_before == 1, "the real account's within-budget call did not mint — the control is dead"
+
+    known_refused = post_account(client, REQUEST_RESET, {"e": known})
+    ghost_refused = post_account(client, REQUEST_RESET, {"e": ghost})
+
+    assert error_code(known_refused) == "RATE_LIMITED"
+    assert error_code(ghost_refused) == "RATE_LIMITED"
+    assert known_refused.status_code == ghost_refused.status_code
+    assert known_refused.content == ghost_refused.content, (
+        f"the {budget} budget's refusal differs between a registered and an unregistered address"
+    )
+    assert len(capturing_sender.reset_tokens) == mails_before, "a refusal must send nothing"
+
+
+# TIMING. The paired-comparison technique, as `test_resend_verification.py` uses it: the two
+# cases are interleaved in time (and the order alternates each round) so warm-up, GC and host
+# load land on both alike, and the verdict is a MEDIAN of per-round differences rather than one
+# wall-clock delta. Every sample is asserted to really be a refusal, so the probe cannot
+# quietly time accepted calls.
+#
+# Unlike resend, the refusal path is NOT padded to a floor and must not be: padding a rejection
+# only hands an attacker a way to tie up request threads (see `request_password_reset`'s
+# docstring). It needs no padding because the three budgets are spent BEFORE anything looks the
+# address up, so both cases execute the same code up to the raise. This test is what notices if
+# a future change puts existence-dependent work (the lookup, the mint) in front of a spend.
+#
+# TOLERANCE, and what it can and cannot see. Measured on a shared 10-core dev host (load average
+# about 5, SQLite + LocMemCache, 25 runs of this probe per budget): the paired median gap on
+# the real code never left +/-0.07ms. The same probe on a throttle deliberately moved AFTER the
+# mint (refuse-after-sending) read a stable +0.44 to +1.5ms. 1ms is therefore ~14x the observed
+# noise and below a 2ms leak, which the control below injects and which must be flagged. The
+# probe's resolution is that, about a millisecond: an existence-dependent difference smaller
+# than that is not guaranteed to be seen, which is why the structural tests above — the
+# throttled call mints nothing and sends nothing — are the deterministic guard and this is the
+# second line. It is not a proof of constant time, and the UNTHROTTLED path (a +0.437ms branch
+# gap, DEC-013) is deliberately not asserted here: padding it is 86ak7kka2.
+_TIMING_WARMUP_ROUNDS = 8
+_TIMING_ROUNDS = 60
+REFUSAL_GAP_TOLERANCE_SECONDS = 0.001
+_INJECTED_DELAY_SECONDS = 0.002
+
+
+def _paired_refusal_gap(client, known, ghost):
+    """Median over rounds of (time to refuse `known`) - (time to refuse `ghost`)."""
+    gaps = []
+    for round_number in range(_TIMING_WARMUP_ROUNDS + _TIMING_ROUNDS):
+        order = (known, ghost) if round_number % 2 == 0 else (ghost, known)
+        elapsed = {}
+        for address in order:
+            started = time.perf_counter()
+            response = post_account(client, REQUEST_RESET, {"e": address})
+            elapsed[address] = time.perf_counter() - started
+            assert error_code(response) == "RATE_LIMITED", "a timed sample was not a refusal"
+        if round_number >= _TIMING_WARMUP_ROUNDS:
+            gaps.append(elapsed[known] - elapsed[ghost])
+    return statistics.median(gaps)
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("budget", sorted(_BUDGET_SETTINGS))
+def test_a_throttled_refusal_takes_the_same_time_for_a_known_and_an_unknown_address(
+    client, settings, capturing_sender, budget
+):
+    _only_budget_trips(settings, budget)
+    known = _existing_verified_account(
+        capturing_sender, email=f"known-{budget}@timing.example", idem=f"refusal-timing-{budget}"
+    )
+    ghost = f"ghost-{budget}@timing.example"
+    _spend_the_allowed_call(client, budget, known, ghost)
+
+    gap = _paired_refusal_gap(client, known, ghost)
+
+    assert abs(gap) <= REFUSAL_GAP_TOLERANCE_SECONDS, (
+        f"the {budget} budget's refusal is {gap * 1000:+.2f}ms slower for a registered address "
+        f"(tolerance {REFUSAL_GAP_TOLERANCE_SECONDS * 1000:.0f}ms) — something existence-dependent "
+        "runs before the throttle refuses"
+    )
+
+
+@pytest.mark.django_db
+def test_the_refusal_timing_probe_can_see_an_existence_dependent_delay(
+    client, settings, capturing_sender, monkeypatch
+):
+    """The positive control for the test above. Without it, a probe that is simply too noisy or
+    too coarse to see anything would pass for the wrong reason. Here the address budget is made
+    deliberately existence-dependent — a pause that happens only for the registered address —
+    and the SAME probe, with the SAME tolerance, must flag it."""
+    _only_budget_trips(settings, "address")
+    known = _existing_verified_account(
+        capturing_sender, email="known-control@timing.example", idem="refusal-timing-control"
+    )
+    ghost = "ghost-control@timing.example"
+    _spend_the_allowed_call(client, "address", known, ghost)
+
+    known_fingerprint = services._email_fingerprint(known)
+    real_spend = services.enforce_budget_reporting_outage
+
+    def existence_dependent(scope, identity, setting_name, default):
+        if scope == "password_reset_request_addr" and identity == known_fingerprint:
+            time.sleep(_INJECTED_DELAY_SECONDS)
+        return real_spend(scope, identity, setting_name, default)
+
+    monkeypatch.setattr(services, "enforce_budget_reporting_outage", existence_dependent)
+
+    gap = _paired_refusal_gap(client, known, ghost)
+
+    assert gap > REFUSAL_GAP_TOLERANCE_SECONDS, (
+        f"an injected {_INJECTED_DELAY_SECONDS * 1000:.0f}ms existence-dependent delay measured "
+        f"only {gap * 1000:+.2f}ms — the timing probe cannot see a leak of this size"
+    )
+
+
+# --- bounded memory: the limiter's key space follows the global budget, not the attacker -----
+@pytest.mark.django_db
+def test_the_keys_the_limiter_can_create_are_bounded_by_the_global_budget_not_by_attacker_input(
+    client, settings, monkeypatch
+):
+    """Every distinct address and every distinct source IP is a distinct cache key, and both are
+    attacker-chosen on an unauthenticated endpoint. What stops that being unbounded growth is
+    ORDER: the global budget is spent first and raises, so once it is exhausted no further
+    address or IP key is ever created. This sprays ten times the global limit of distinct
+    addresses from distinct sources and counts the keys the limiter actually touched.
+
+    Recorded at `evaluate_budget` rather than by listing the cache, so the test means the same
+    thing on LocMemCache (local) and Redis (CI) — `cache._cache` exists only on the former.
+    The within-budget calls are the positive control: exactly `global_limit` address and IP
+    keys must have been seen, so a recorder that saw nothing cannot pass."""
+    global_limit = 5
+    settings.SELAHCUE_THROTTLE_RESET_REQUEST_GLOBAL = (global_limit, 3600)
+    settings.SELAHCUE_THROTTLE_RESET_REQUEST = (10_000, 3600)
+    settings.SELAHCUE_THROTTLE_RESET_REQUEST_ADDRESS = (10_000, 900)
+    touched = set()
+    real_evaluate = guards.evaluate_budget
+
+    def recording(store, key, limit, window_seconds):
+        touched.add(key)
+        return real_evaluate(store, key, limit, window_seconds)
+
+    monkeypatch.setattr(guards, "evaluate_budget", recording)
+
+    outcomes = [
+        error_code(
+            post_account(
+                client, REQUEST_RESET, {"e": f"spray-{n}@bound.example"}, REMOTE_ADDR=f"203.0.113.{n + 1}"
+            )
+        )
+        for n in range(global_limit * 10)
+    ]
+    assert outcomes[:global_limit] == [None] * global_limit, "the within-budget sprays must be served"
+    assert set(outcomes[global_limit:]) == {"RATE_LIMITED"}, "the rest must be refused by the global budget"
+
+    def keys_for(scope):
+        return {key for key in touched if key.startswith(f"throttle:{scope}:")}
+
+    assert len(keys_for("password_reset_request_global")) == 1
+    assert len(keys_for("password_reset_request_addr")) == global_limit, (
+        "address keys were created beyond the global budget — attacker input, not the budget, "
+        "now decides how many keys the limiter holds"
+    )
+    assert len(keys_for("password_reset_request_ip")) == global_limit
+
+    # Malformed addresses are rejected before ANY budget is spent, so they cannot mint a key
+    # either (the validity of an address is not existence-dependent, so this leaks nothing).
+    seen = set(touched)
+    for n in range(20):
+        rejected = post_account(client, REQUEST_RESET, {"e": f"not-an-address-{n}"})
+        assert error_code(rejected) == "VALIDATION_FAILED"
+    assert touched == seen, "a malformed address created a limiter key"
