@@ -4365,6 +4365,55 @@ mod media_command_tests {
     }
 
     #[tokio::test]
+    async fn removing_media_keeps_a_file_another_deck_shows_only_as_a_slide_background() {
+        // A background is a use too: delete the file and that slide goes blank. The other keep
+        // tests put the picture on an image ELEMENT, which a keeper check that ignored backgrounds
+        // would still pass.
+        let app = temp_dir("bgkeep");
+        let state = state_with_store(&app, true);
+        let v = import_picked_images(&state, vec![picked("bg", "backdrop.png", &PNG_8X4)])
+            .await
+            .unwrap();
+        let id = id_named(&v, "backdrop.png");
+        let file = path_of(&v, id);
+        {
+            let mut ws = state.deck.lock().unwrap();
+            let mut lib = state.library.lock().unwrap();
+            let mut easter = lib.create("Easter");
+            let sid = easter.slides()[0].id;
+            easter.get_mut(sid).unwrap().background = Some(selahcue_present::Background::Image(
+                selahcue_present::ImageBackground {
+                    source: selahcue_present::MediaRef::new(file.to_str().unwrap()).unwrap(),
+                },
+            ));
+            lib.store(&easter);
+            let sunday = lib.create("Sunday");
+            ws.load_deck(sunday);
+        }
+        let before = view_of(&state);
+        assert_eq!(
+            row(&before, id)["uses"],
+            0,
+            "premise: the open deck does not show it"
+        );
+        assert_eq!(
+            row(&before, id)["other_decks"],
+            1,
+            "the other deck's background counts as a use"
+        );
+        assert_eq!(row(&before, id)["unused"], false);
+
+        let after = remove_media_inner(&state, id).unwrap();
+
+        assert!(
+            file.exists(),
+            "the file a slide background needs was not deleted"
+        );
+        assert_eq!(after["remove_report"]["file_deleted"], false);
+        assert_eq!(after["remove_report"]["kept_for_decks"], 1);
+    }
+
+    #[tokio::test]
     async fn removing_media_still_deletes_a_copy_only_the_open_deck_shows() {
         // The OPEN deck's own use is the one the operator is looking at and was warned about ("Used
         // on k slides — removing it leaves them with missing media"): unchanged, deliberately. This

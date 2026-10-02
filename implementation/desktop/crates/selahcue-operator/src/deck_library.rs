@@ -838,6 +838,59 @@ mod tests {
         deck.id()
     }
 
+    /// A saved deck that shows `path` ONLY as its first slide's image background — no image element
+    /// anywhere — so nothing but the background branch of "this slide shows that file" can see it.
+    fn deck_with_background_only(lib: &mut DeckLibrary, name: &str, path: &str) -> DeckId {
+        let mut deck = lib.create(name);
+        let sid = deck.slides()[0].id;
+        deck.get_mut(sid).unwrap().background = Some(selahcue_present::Background::Image(
+            selahcue_present::ImageBackground {
+                source: selahcue_present::MediaRef::new(path).unwrap(),
+            },
+        ));
+        lib.store(&deck);
+        deck.id()
+    }
+
+    #[test]
+    fn a_deck_that_shows_a_picture_only_as_its_background_still_keeps_it() {
+        let mut lib = DeckLibrary::load(None);
+        let open = deck_showing(&mut lib, "Sunday", "/m/elsewhere.png");
+        let easter = deck_with_background_only(&mut lib, "Easter", "/m/banner.png");
+        // Premise: no image ELEMENT shows it, so only the background branch can find it.
+        let easter_deck = lib.get(easter).unwrap();
+        assert!(
+            easter_deck.slides().iter().all(|s| !s
+                .elements
+                .iter()
+                .any(|e| matches!(e, selahcue_present::Element::Image { .. }))),
+            "premise: the deck has no image element"
+        );
+
+        assert_eq!(
+            lib.media_keepers("/m/banner.png", open),
+            MediaKeepers {
+                saved: 1,
+                trashed: 0
+            },
+            "a picture used as a slide BACKGROUND is a use: deleting its file blanks that slide"
+        );
+        // Positive control: the deck's other path is not kept by it.
+        assert_eq!(
+            lib.media_keepers("/m/other.png", open),
+            MediaKeepers::default()
+        );
+        // And the same through the undo-trash.
+        assert!(lib.delete(easter));
+        assert_eq!(
+            lib.media_keepers("/m/banner.png", open),
+            MediaKeepers {
+                saved: 0,
+                trashed: 1
+            }
+        );
+    }
+
     #[test]
     fn media_keepers_counts_other_saved_decks_and_restorable_deleted_ones_never_the_open_deck() {
         let mut lib = DeckLibrary::load(None);
