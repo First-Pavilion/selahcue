@@ -60,6 +60,34 @@ describe('the offset is read from the document', () => {
   })
 })
 
+/**
+ * Components that declare per-element `scroll-margin` ON PURPOSE because they switch the root
+ * `scroll-padding-top` off while mounted, so the two cannot add. Keyed by path under `src/`; the
+ * value is what must still be in the file for the exemption to hold.
+ *
+ * `components/legal/LegalPage.vue` (the legal pages, a separate PR) zeroes the root padding with
+ * `html:has(.legal-page) { scroll-padding-top: 0 }` in an unscoped style block and carries its
+ * own anchor offsets. An entry for a file that is not in this tree is skipped silently, so this
+ * branch stands alone and the entry only bites once that file arrives.
+ */
+const NEUTRALISERS: Readonly<Record<string, RegExp>> = {
+  'components/legal/LegalPage.vue': /html:has\(\.legal-page\)\s*\{[^}]*\bscroll-padding-top:\s*0(?:px)?\s*[;}]/,
+}
+
+/** Strip comments so a margin or a neutraliser that is only mentioned in one does not count. */
+const withoutComments = (text: string): string => text.replace(/\/\*[\s\S]*?\*\//g, '').replace(/<!--[\s\S]*?-->/g, '')
+
+export function scrollMarginProblems(files: Readonly<Record<string, string>>, neutralisers: Readonly<Record<string, RegExp>>): string[] {
+  const problems: string[] = []
+  for (const [path, text] of Object.entries(files)) {
+    if (!/^[^*\n]*\bscroll-margin(-top)?\s*:/m.test(withoutComments(text).replace(/^\s*\*.*$/gm, ''))) continue
+    const exempt = neutralisers[path]
+    if (!exempt) problems.push(`${path}: declares scroll-margin`)
+    else if (!exempt.test(withoutComments(text))) problems.push(`${path}: declares scroll-margin but no longer neutralises the root scroll-padding-top`)
+  }
+  return problems
+}
+
 describe('the CSS side of the same rule', () => {
   const src = fileURLToPath(new URL('../src/', import.meta.url))
   const walk = (d: string): string[] => readdirSync(d).flatMap((n) => (statSync(join(d, n)).isDirectory() ? walk(join(d, n)) : [join(d, n)]))
@@ -70,8 +98,40 @@ describe('the CSS side of the same rule', () => {
     assert.match(readFileSync(join(src, 'main.ts'), 'utf8'), /assets\/styles\/anchors\.css/)
   })
 
-  test('no per-element scroll-margin exists to double-count with the root padding', () => {
-    const offenders = walk(src).filter((f) => /\.(vue|css)$/.test(f) && /^[^*\n]*\bscroll-margin(-top)?\s*:/m.test(readFileSync(f, 'utf8')))
-    assert.deepEqual(offenders.map((f) => f.slice(src.length)), [])
+  test('no per-element scroll-margin exists to double-count with the root padding (bar the allowlist)', () => {
+    const files: Record<string, string> = {}
+    for (const f of walk(src).filter((x) => /\.(vue|css)$/.test(x))) files[f.slice(src.length)] = readFileSync(f, 'utf8')
+    assert.deepEqual(scrollMarginProblems(files, NEUTRALISERS), [])
+  })
+
+  describe('the rule itself (checked on in-memory files, so it needs no other PR)', () => {
+    const LEGAL = 'components/legal/LegalPage.vue'
+    const withMargin = '.x { scroll-margin-top: 10px; }'
+    const neutraliser = 'html:has(.legal-page) {\n  scroll-padding-top: 0;\n}'
+
+    test('an ordinary file with a scroll-margin is reported', () => {
+      assert.deepEqual(scrollMarginProblems({ 'views/A.vue': withMargin }, NEUTRALISERS), ['views/A.vue: declares scroll-margin'])
+    })
+
+    test('an allowlisted file is accepted only while it still neutralises the root padding', () => {
+      assert.deepEqual(scrollMarginProblems({ [LEGAL]: `${withMargin}\n${neutraliser}` }, NEUTRALISERS), [])
+      assert.deepEqual(scrollMarginProblems({ [LEGAL]: withMargin }, NEUTRALISERS), [`${LEGAL}: declares scroll-margin but no longer neutralises the root scroll-padding-top`])
+      assert.equal(scrollMarginProblems({ [LEGAL]: `${withMargin}\nhtml:has(.legal-page) { scroll-padding-top: 8px; }` }, NEUTRALISERS).length, 1, 'a non-zero padding is not a neutraliser')
+      assert.equal(scrollMarginProblems({ [LEGAL]: `${withMargin}\n/* html:has(.legal-page) { scroll-padding-top: 0; } */` }, NEUTRALISERS).length, 1, 'a commented-out neutraliser does not count')
+    })
+
+    test('an allowlisted file that does not exist is skipped silently (this PR stands alone)', () => {
+      assert.deepEqual(scrollMarginProblems({}, NEUTRALISERS), [])
+      assert.deepEqual(scrollMarginProblems({ 'views/A.vue': '.x { color: red; }' }, NEUTRALISERS), [])
+    })
+
+    test('an allowlisted file with no scroll-margin at all is fine, and so is a margin only in a comment', () => {
+      assert.deepEqual(scrollMarginProblems({ [LEGAL]: '.x { color: red; }' }, NEUTRALISERS), [])
+      assert.deepEqual(scrollMarginProblems({ 'views/A.vue': ' * scroll-margin: do not use' }, NEUTRALISERS), [])
+    })
+
+    test('the allowlist is path-based: the same text under another path is not exempt', () => {
+      assert.equal(scrollMarginProblems({ 'components/other/LegalPage.vue': `${withMargin}\n${neutraliser}` }, NEUTRALISERS).length, 1)
+    })
   })
 })
