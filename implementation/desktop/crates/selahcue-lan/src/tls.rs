@@ -85,8 +85,9 @@ impl SelfSigned {
             .map_err(|e| TransportError::Cert(e.to_string()))?;
         let cert_der = certified.cert.der().clone();
         let pin = CertPin::of_cert_der(cert_der.as_ref());
-        let key_der =
-            PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(certified.key_pair.serialize_der()));
+        let key_der = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(
+            certified.signing_key.serialize_der(),
+        ));
         Ok(Self {
             cert_der,
             key_der,
