@@ -53,7 +53,7 @@ export function countryOptions(): CountryOption[] {
   }
 
   const options = COUNTRY_CODES.map((code) => {
-    let label = code
+    let label: string
     try {
       label = names?.of(code) ?? code
     } catch {

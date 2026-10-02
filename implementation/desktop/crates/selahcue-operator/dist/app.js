@@ -4268,10 +4268,13 @@
           if (window.__gsearch) window.__gsearch.open();
           return;
         }
-        // Global ⌘/Ctrl+1–8 jump to the eight navigable sections in menu order — makes the menu's
+        // Global ⌘/Ctrl+1–7 jump to the seven navigable sections in menu order — makes the menu's
         // ⌘N badges and the Shortcuts reference REAL. Works whether the menu is open or not.
-        // (86akcffvt added Transcripts as the 8th entry — raised from 7.)
-        if (mod && !e.shiftKey && !e.altKey && e.key >= "1" && e.key <= "8") {
+        // (17tnw2b0ntd, D2: the separate ⌘8 "Transcripts" item was removed — ⌘7 "Transcript &
+        // Notes" now carries both jobs, back down to 7 digit-eligible entries. The upper bound
+        // below is "7" to match, and the Shortcuts overlay says ⌘1–7; chords stay derived from live
+        // DOM order, so the bound only needs to change if a menu item is ever added back.)
+        if (mod && !e.shiftKey && !e.altKey && e.key >= "1" && e.key <= "7") {
           const targets = navItems.filter(
             (it) =>
               it.dataset.surface &&
@@ -4288,7 +4291,7 @@
           }
         }
         // CON-080: Settings carries the fixed ⌘/Ctrl+, chord (macOS "Preferences" convention)
-        // rather than a menu-order digit — it opts out of the ⌘1–8 derivation above via
+        // rather than a menu-order digit — it opts out of the ⌘1–7 derivation above via
         // data-nodigit, so this is the only way to reach it by keyboard shortcut.
         if (mod && !e.shiftKey && !e.altKey && e.key === ",") {
           const settingsItem = navItems.find((it) => it.dataset.surface === "settings");
@@ -4478,24 +4481,11 @@
           all.length > MAX_TRANSCRIPT_ROWS ? all.slice(-MAX_TRANSCRIPT_ROWS) : all;
         const partial =
           typeof view.partial_transcript === "string" ? view.partial_transcript : "";
-        // Bridge to the Providers & Privacy "Generate" flow (settings.js), which owns no
-        // transcript store of its own and reads this global rather than a second channel
-        // (86akby7d8 defect 1: nothing ever set this before, so every Generate click sent ""
-        // and billed for a fully fabricated draft). FINALISED segments only — never `partial`,
-        // which by definition is not yet part of the "completed transcript" FR-132 promises is
-        // all that's ever sent. `all` is already the host-tailed bounded list
-        // (OPERATOR_TRANSCRIPT_TAIL), so this stays bounded exactly like the rendered log does:
-        // it is the recent tail, not a persisted full-service transcript — no such store exists
-        // on the frontend yet (that's FR-130's post-service workspace, not built here).
-        //
-        // Maps `segs` (the same MAX_TRANSCRIPT_ROWS-capped list #transcript-log renders from),
-        // not the unsliced `all` (L-3, Vera): nothing bites today — the 240-segment core log
-        // bounds `all` upstream and the 400k clamp bounds the request downstream — but bridging
-        // from the same capped list keeps this bound symmetric with the DOM cap that exists for
-        // exactly the case (a misbehaving/older/newer host skipping its own tail) that cap is for.
-        window.scCompletedTranscript = segs
-          .map((s) => (s && typeof s.text === "string") ? s.text : "")
-          .join("\n");
+        // 17tnw2b0ntd: the `window.scCompletedTranscript` bridge that used to live here was
+        // removed along with the Providers & Privacy "Generate" flow it fed (settings.js) — the
+        // ONE remaining generation entrypoint is the Transcripts page's `transcript_generate_notes`
+        // command, which reads the complete STORED transcript by id, never a live-tail bridge off
+        // this poll. Nothing in the frontend reads or sets that global any more.
         const empty = document.getElementById("transcript-empty");
         // The live in-progress line (streaming interim). Updated EVERY poll — before the log's
         // change-key early-return — so recognised words appear as they're spoken even when the
@@ -5970,7 +5960,7 @@
           }
           cmds.push({ section: "ACTIONS", label: "Keyboard shortcuts", ico: "⌨", run: () => openShortcuts() });
           // NAVIGATE — the whole top-level app menu, mirrored with each item's real icon + ⌘ badge
-          // (read from the menu DOM, so it stays in sync with the ⌘1–⌘8 order automatically).
+          // (read from the menu DOM, so it stays in sync with the ⌘1–⌘7 order automatically).
           navItems.forEach((it) => {
             if (!it.dataset.surface || it.getAttribute("aria-disabled") === "true") return;
             const t = it.querySelector(".nav-t");
