@@ -4377,14 +4377,25 @@ mod media_command_tests {
         let id = id_named(&v, "mine.png");
         let file = path_of(&v, id);
         {
+            // "Sunday" is a SAVED deck that is open in the editor, and its stored copy shows the
+            // image too: the stored copy of the open deck must not count as "another deck".
             let mut ws = state.deck.lock().unwrap();
+            let mut lib = state.library.lock().unwrap();
+            let sunday = lib.create("Sunday");
+            ws.load_deck(sunday);
             ws.add_image_element(id);
-            state.library.lock().unwrap().store(ws.open_deck());
+            lib.store(ws.open_deck());
         }
+        let before = view_of(&state);
         assert_eq!(
-            row(&view_of(&state), id)["uses"],
+            row(&before, id)["uses"],
             1,
             "premise: the open deck shows it"
+        );
+        assert_eq!(
+            row(&before, id)["other_decks"],
+            0,
+            "premise: the stored copy of the open deck is not another deck"
         );
 
         let after = remove_media_inner(&state, id).unwrap();
