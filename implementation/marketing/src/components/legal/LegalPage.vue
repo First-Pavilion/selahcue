@@ -4,9 +4,12 @@
  * generated from `docs/legal/*.md` (see `scripts/sync_legal.ts`). Nothing about the
  * document is written in this file.
  *
- * Draft treatment is automatic. While the text still contains a `{{PLACEHOLDER}}` the page
- * shows a prominent draft banner, every placeholder is a highlighted chip, and a robots
- * `noindex` tag is sent. Fill the last placeholder, regenerate, and all three disappear
+ * Draft treatment is derived from the document and FAILS CLOSED. The page shows a prominent
+ * draft banner, highlights every placeholder as a chip, and sends a robots `noindex` tag
+ * while ANY of three signals holds: a `{{PLACEHOLDER}}` remains in the text, the markdown
+ * still carries its DRAFT banner, or the version status is anything other than exactly
+ * `final`. Filling the last placeholder is therefore not enough to publish. Publishing is an
+ * explicit act in the markdown (see implementation/marketing/README.md), then regenerate,
  * with no code change (`legalPageState` is the single decision point).
  */
 import { computed, nextTick, ref, watch } from 'vue'

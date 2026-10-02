@@ -18,8 +18,10 @@ export type Inline =
   | { readonly kind: 'code'; readonly text: string }
   /**
    * A `{{NAME}}` token: a fact the owner or counsel has not supplied yet. Kept as its own
-   * node (never flattened into text) so the page can both highlight it and COUNT it —
-   * the draft banner and the `noindex` header are driven by that count.
+   * node (never flattened into text) so the page can both highlight it and COUNT it. The
+   * count is one of three signals in `legalPageState` (document.ts), which drives the draft
+   * banner and the `noindex` header; the others are the DRAFT banner and a version status
+   * other than exactly `final`.
    */
   | { readonly kind: 'placeholder'; readonly name: string }
   /** A markdown link. `href` is validated by `classifyHref` at render time as well. */

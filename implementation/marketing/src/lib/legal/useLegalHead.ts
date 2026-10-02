@@ -16,8 +16,9 @@ export function resetLegalHead(): void {
 
 /**
  * Set `document.title` and, while `noindex()` is true, the robots `noindex` tag for the
- * lifetime of the calling page. Reactive: when `noindex()` flips (it is derived from the
- * document's placeholders) the tag follows. See `head.ts` for why this is claim-based.
+ * lifetime of the calling page. Reactive: when `noindex()` flips (it is derived from
+ * `legalPageState`, document.ts: placeholders, the DRAFT banner, or a version status other
+ * than `final`) the tag follows. See `head.ts` for why this is claim-based.
  */
 export function useLegalHead(title: () => string, noindex: () => boolean): void {
   if (typeof document === 'undefined') return
