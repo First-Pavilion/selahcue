@@ -189,7 +189,7 @@ jobs:
       - uses: docker://rhysd/actionlint:1.7.12
         with:
           args: -color
-      # Two invariants actionlint does not model, both of which shipped as real
+      # Three invariants actionlint does not model. The first two shipped as real
       # defects in this branch and were caught by human review rather than any gate:
       #   - a job declaring `permissions` loses every scope it does not list, so an
       #     `issues: write`-only job cannot check out a private repo and dies at step 1;
@@ -200,7 +200,11 @@ jobs:
       # narrow -- it checks checkout-vs-`contents` and step ordering, NOT that every
       # job's scopes match everything it does (a job declaring `contents: read` and
       # then running `gh issue create` dies the same way and is not detected).
-      - name: Checkout scopes + setup/gate ordering
+      #   - cache saves (17tnw2b1f24): in a workflow that runs on pull requests, every
+      #     Swatinem/rust-cache step must save from `main` only and flutter-action must
+      #     not cache, or each PR writes its own copy and the repo's Actions cache limit
+      #     evicts main's entries. A failure of this check shows under this step's name.
+      - name: Checkout scopes + setup/gate ordering + cache saves
         run: |
           # Pinned, matching the playwright pin below: an unpinned install makes this
           # gate's behaviour depend on whatever PyPI serves that morning.
@@ -301,6 +305,22 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: implementation/desktop
+          # Save from `main` only (17tnw2b1f24). The cache key has no ref in it, so a pull
+          # request restores main's entry exactly; what it must not do is SAVE its own copy.
+          # Every PR run used to write a private 0.3-1.6 GB entry per job and OS, which put
+          # the repo over its Actions cache limit and got main's own entries evicted, so
+          # main's jobs then started cold.
+          #
+          # THE COST, so nobody removes this in a hurry. A PR can only restore what main
+          # holds. While main has no entry for a job -- the job is red on main (a red job
+          # saves nothing; macOS operator-native today, via flaky test 17tnw2b1vyy), the
+          # entry was evicted, or a lockfile/toolchain change moved the key -- EVERY push of
+          # EVERY PR runs that job cold. Before, a PR's first push seeded an entry its later
+          # pushes reused. A cold Windows operator-native job is about 35 min against about
+          # 4 warm. The remedy is to keep main's entries whole (17tnw2b1waw), not to let PRs
+          # save again. Same line on every rust-cache step below; check_workflows.py fails
+          # the build if one is missing.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Linux system deps (winit/wgpu + software Vulkan for GPU parity)
         if: runner.os == 'Linux'
         run: |
@@ -587,6 +607,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: implementation/desktop
+          # Main saves, pull requests only restore -- see the `rust` job (17tnw2b1f24).
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Linux system deps (winit/wgpu + software Vulkan + Xvfb)
         if: runner.os == 'Linux'
         # libxkbcommon-x11: winit dlopens libxkbcommon-x11.so to create a real X11
@@ -681,6 +703,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: implementation/desktop/crates/selahcue-operator
+          # Main saves, pull requests only restore -- see the `rust` job (17tnw2b1f24).
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Linux system deps (Tauri v2 webview + ALSA for cpal)
         if: runner.os == 'Linux'
         run: |
@@ -917,6 +941,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: implementation/desktop/crates/selahcue-operator
+          # Main saves, pull requests only restore -- see the `rust` job (17tnw2b1f24).
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       # Same packages as `operator`'s "Linux system deps" step above, needed here for the
       # identical reason: this job compiles the same crate (Tauri webview deps) and, from the
       # stt,cloud-stt pair below, `cpal`'s ALSA backend (`libasound2-dev`).
@@ -977,8 +1003,8 @@ jobs:
       # Without it, `listening.rs` would be exactly as "linted and tested by nothing" as
       # `selahcue-stt` itself (the standing example every feature-gate comment in this job
       # cites). whisper-rs-sys's native build needs only a C/C++ toolchain + cmake, which all
-      # three GitHub-hosted runner images carry by default -- the same reason the `stt`-only
-      # build was never separately gated before now. It is NOT true, though, that this step
+      # three GitHub-hosted runner images carry by default -- so the `stt`-only step at the end of
+      # this job (86ak4y8yr) needs no setup of its own. It is NOT true, though, that this step
       # needs no extra system packages at all: `stt` also pulls in `selahcue-stt`'s `capture`
       # feature (`CpalSource`, real microphone capture via `cpal`), and on Linux `cpal` builds
       # against ALSA -- `alsa-sys` fails to compile without the ALSA development headers.
@@ -1009,6 +1035,37 @@ jobs:
       - name: Test (stt,cloud-stt)
         if: ${{ !cancelled() }}
         run: cargo test --features stt,cloud-stt --no-fail-fast
+      # `stt` ALONE -- the configuration users actually install (86ak4y8yr). `windows-installer.yml`
+      # builds `cargo tauri build --features stt`, with no `cloud-stt` (that feature is
+      # `RELEASE: UNSAFE`, so the Makefile strips it from release builds). The `stt,cloud-stt` pair
+      # above is a DIFFERENT compilation: `cloud-stt` implies `stt`, so it lints most of
+      # `listening.rs`, but `start_listening` has a `#[cfg(not(feature = "cloud-stt"))]` arm that is
+      # compiled ONLY when `stt` is on and `cloud-stt` is off, i.e. only in the shipped build. Until
+      # this step, no push or PR compiled that arm; the first sign of a break there would have been a
+      # manual `windows-installer` run.
+      #
+      # Clippy, not a separate `cargo check`: clippy type-checks every cfg arm, so a compile error
+      # fails here too. No `Test (stt)` step: measured on macOS, `cargo test --features stt` runs 198
+      # tests and every one of them also runs in the `stt,cloud-stt` pair above (206; the 8 extras
+      # are `cloud-stt`-gated), and the only non-test code that differs is that one arm. Revisit if a
+      # test is ever gated `not(feature = "cloud-stt")`.
+      #
+      # Cost: this job already builds `whisper-rs-sys` (cmake/whisper.cpp) and the vendored OpenSSL
+      # for the steps above, with an identical `selahcue-stt` feature set, so cargo reuses those
+      # artefacts and this step re-checks only six packages -- `tungstenite`, `tokio-tungstenite`,
+      # `selahcue-stt-cloud` (its non-`deepgram` build), `selahcue-lan`, `selahcue-app` and the
+      # operator crate itself -- the same six on all three OSes. That is why it lives here, on all
+      # three OSes, rather than in a new job (a new job would pay checkout/toolchain/cache setup
+      # AND a second cold whisper.cpp + OpenSSL build per OS) and rather than Linux-only (Windows
+      # is the one OS the installer ships on, and this job's own history rejects dropping it).
+      # Measured on PR #137's run 36819129002: 5s on ubuntu (a full cache miss, so `whisper-rs-sys`
+      # had just been built cold by the step before and was still reused), 10s on windows, 16s on
+      # macOS; 7s locally on macOS arm64. If a later run shows a matrix arm near `timeout-minutes`,
+      # the fallback is a Linux-only `if:` here -- the cfg arm is platform-independent -- not
+      # removing the step.
+      - name: Clippy (stt -- the shipped configuration, no cloud-stt)
+        if: ${{ !cancelled() }}
+        run: cargo clippy --features stt --all-targets -- -D warnings
 
   flutter:
     name: flutter controller
@@ -1023,7 +1080,17 @@ jobs:
       - uses: subosito/flutter-action@v2
         with:
           channel: stable
-          cache: true
+          # No `cache: true` (17tnw2b1f24). It saves the Flutter SDK (1.72 GB) and the pub cache
+          # (39 MB) from pull-request runs, and the action has no `save-if` to stop that. The
+          # reason to drop it is BYTES, not time: 1.76 GB is about 17.6% of a 10 GB Actions
+          # cache limit, and at the limit it would be the first entry evicted (mobile runs are
+          # rarer than desktop runs, Inferred), while the time it saves is roughly a wash (a
+          # hit saves under a minute; a miss pays about 20 s to save). The operator caches
+          # that need those bytes are worth far more (Windows: 35 min cold, 4 warm). Revisit
+          # if the limit is raised; a main-only version needs a `dry-run` step, then
+          # actions/cache/restore, the real action, and a main-only actions/cache/save.
+          # check_workflows.py fails the build if `cache:` or `pub-cache:` comes back on this
+          # action in a pull-request workflow.
       - run: flutter pub get
       - run: flutter analyze
       - run: flutter test
