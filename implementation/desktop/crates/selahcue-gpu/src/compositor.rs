@@ -46,11 +46,13 @@ impl Compositor {
     /// (so callers can skip the offscreen path in a GPU-less environment).
     pub fn new() -> Option<Self> {
         let instance = wgpu::Instance::default();
+        // wgpu 30: `request_adapter` reports WHY it found nothing as a `Result`; this constructor's
+        // contract is "None when there is no usable GPU", so the reason is deliberately dropped.
         let adapter =
-            pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))?;
-        let (device, queue) =
-            pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default(), None))
+            pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
                 .ok()?;
+        let (device, queue) =
+            pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()?;
 
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("rect"),
@@ -73,8 +75,9 @@ impl Compositor {
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("rect"),
-            bind_group_layouts: &[&uniform_layout],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&uniform_layout)],
+            // No immediate (formerly "push constant") data: the resolution is a uniform buffer.
+            immediate_size: 0,
         });
 
         let attrs = wgpu::vertex_attr_array![0 => Float32x4, 1 => Float32x4];
@@ -89,13 +92,13 @@ impl Compositor {
             layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &shader,
-                entry_point: "vs",
-                buffers: &[instance_layout],
+                entry_point: Some("vs"),
+                buffers: &[Some(instance_layout)],
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
             },
             fragment: Some(wgpu::FragmentState {
                 module: &shader,
-                entry_point: "fs",
+                entry_point: Some("fs"),
                 targets: &[Some(wgpu::ColorTargetState {
                     format: wgpu::TextureFormat::Rgba8Unorm,
                     blend: Some(wgpu::BlendState::ALPHA_BLENDING),
@@ -109,7 +112,7 @@ impl Compositor {
             },
             depth_stencil: None,
             multisample: wgpu::MultisampleState::default(),
-            multiview: None,
+            multiview_mask: None,
             cache: None,
         });
 
@@ -141,6 +144,13 @@ impl Compositor {
     /// losses come from the driver.
     pub fn simulate_device_loss(&self) {
         self.device.destroy();
+        // Since wgpu follows the WebGPU spec here, `destroy()` only INVALIDATES the device: the
+        // lost callback is delivered at the next poll once the queue is empty, not from inside
+        // `destroy()` (wgpu 22 delivered it eagerly, which is what this seam used to rely on). A
+        // genuine driver loss still invokes the callback immediately, so production recovery is
+        // unaffected; this poll is what keeps the seam a faithful stand-in for it. Nothing is in
+        // flight here (`render_to_pixels` waits for its own work), so this returns promptly.
+        let _ = self.device.poll(wgpu::PollType::wait_indefinitely());
     }
 
     /// Render a frame to an offscreen texture and read the RGBA8 pixels back (the
@@ -233,6 +243,7 @@ impl Compositor {
                 label: Some("composite"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &view,
+                    depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(clear_color),
@@ -242,6 +253,7 @@ impl Compositor {
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
+                multiview_mask: None,
             });
             if !instances.is_empty() {
                 pass.set_pipeline(&self.pipeline);
@@ -251,15 +263,15 @@ impl Compositor {
             }
         }
         encoder.copy_texture_to_buffer(
-            wgpu::ImageCopyTexture {
+            wgpu::TexelCopyTextureInfo {
                 texture: &texture,
                 mip_level: 0,
                 origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
             },
-            wgpu::ImageCopyBuffer {
+            wgpu::TexelCopyBufferInfo {
                 buffer: &readback,
-                layout: wgpu::ImageDataLayout {
+                layout: wgpu::TexelCopyBufferLayout {
                     offset: 0,
                     bytes_per_row: Some(padded_row as u32),
                     rows_per_image: Some(height),
@@ -279,9 +291,16 @@ impl Compositor {
         slice.map_async(wgpu::MapMode::Read, move |r| {
             let _ = tx.send(r);
         });
-        self.device.poll(wgpu::Maintain::Wait);
+        // Block until the copy has executed and the map callback has fired. A poll error (for
+        // example a lost device) surfaces below as a failed map, which is fatal either way.
+        let _ = self.device.poll(wgpu::PollType::wait_indefinitely());
         let _ = rx.recv();
-        let mapped = slice.get_mapped_range();
+        // wgpu 30 returns a `Result` here instead of panicking inside wgpu; the contract of this
+        // method is unchanged (it has no error channel and has always panicked on a failed
+        // readback), so the failure is still fatal — it just names itself now.
+        let mapped = slice
+            .get_mapped_range()
+            .expect("the readback buffer is mapped once map_async has completed");
         let mut pixels = Vec::with_capacity((unpadded_row * height as u64) as usize);
         for row in 0..height as usize {
             let start = row * padded_row as usize;

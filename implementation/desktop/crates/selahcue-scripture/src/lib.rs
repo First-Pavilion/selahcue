@@ -317,6 +317,35 @@ pub fn passage_exists_in(t: Translation, reference: &Reference) -> bool {
     }
 }
 
+/// The first and last verse NUMBERS translation `t` has in the chapter `reference` names (its verse
+/// selection is ignored), or `None` when that chapter has no verse in `t` (outside the canon, or a
+/// downloadable translation that is not downloaded). Exactly the first and last `verse` of
+/// `verses_in(t, <the whole chapter>)`, without the cost of `verses_in`.
+///
+/// For a BUNDLED translation this answers from the same compile-time verse-run table as
+/// [`passage_exists_in`]: no decode, no allocation, no cache. It is the call to make to ask "how far
+/// does this chapter run?" on a path that must not stall (resolving a plan's links when it loads or
+/// is edited), where the answer to that question used to be a whole-translation decode (86ak84fbd).
+/// The last verse NUMBER is not the verse COUNT: a translation that omits a verse in the middle of a
+/// chapter (the WEB has no Luke 17:36 or Acts 8:37) has a last number one higher than its count.
+///
+/// A DOWNLOADABLE translation has no table, so it falls back to `verses_in` (decoding once, and only
+/// once downloaded). An exhaustive test (`tests/test_chapter_verse_bounds.rs`) pins this to
+/// `verses_in` over every chapter of every bundled translation.
+pub fn chapter_verse_bounds_in(t: Translation, reference: &Reference) -> Option<(u16, u16)> {
+    match versification::runs_of(t) {
+        Some(runs) => versification::chapter_bounds(runs, reference.book, reference.chapter),
+        None => {
+            let whole_chapter = Reference {
+                verses: None,
+                ..reference.clone()
+            };
+            let verses = verses_in(t, &whole_chapter);
+            Some((verses.first()?.verse, verses.last()?.verse))
+        }
+    }
+}
+
 /// Whether translation `t`'s full verse index has been decoded yet in this process. Never
 /// triggers a decode.
 ///

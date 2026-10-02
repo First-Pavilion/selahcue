@@ -1656,9 +1656,9 @@ impl Renderer {
             compatible_surface: Some(&surface),
             ..Default::default()
         }))
-        .ok_or_else(|| "no compatible GPU adapter".to_string())?;
+        .map_err(|e| format!("no compatible GPU adapter: {e}"))?;
         let (device, queue) =
-            pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default(), None))
+            pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))
                 .map_err(|e| format!("request device: {e}"))?;
 
         let caps = surface.get_capabilities(&adapter);
@@ -1678,6 +1678,9 @@ impl Renderer {
             alpha_mode: caps.alpha_modes[0],
             view_formats: vec![],
             desired_maximum_frame_latency: 2,
+            // `Auto` is the pre-wgpu-30 behaviour (plain SDR); wide-gamut/HDR is opt-in and we
+            // do not opt in.
+            color_space: wgpu::SurfaceColorSpace::Auto,
         };
         surface.configure(&device, &config);
 
@@ -1708,28 +1711,28 @@ impl Renderer {
         });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("blit"),
-            bind_group_layouts: &[&bind_group_layout],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&bind_group_layout)],
+            immediate_size: 0,
         });
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("blit"),
             layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &shader,
-                entry_point: "vs",
+                entry_point: Some("vs"),
                 buffers: &[],
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
             },
             fragment: Some(wgpu::FragmentState {
                 module: &shader,
-                entry_point: "fs",
+                entry_point: Some("fs"),
                 targets: &[Some(config.format.into())],
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
             }),
             primitive: wgpu::PrimitiveState::default(),
             depth_stencil: None,
             multisample: wgpu::MultisampleState::default(),
-            multiview: None,
+            multiview_mask: None,
             cache: None,
         });
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor::default());
@@ -1781,14 +1784,14 @@ impl Renderer {
             return false;
         };
         self.queue.write_texture(
-            wgpu::ImageCopyTexture {
+            wgpu::TexelCopyTextureInfo {
                 texture,
                 mip_level: 0,
                 origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
             },
             frame.bytes(),
-            wgpu::ImageDataLayout {
+            wgpu::TexelCopyBufferLayout {
                 offset: 0,
                 bytes_per_row: Some(fw * 4),
                 rows_per_image: Some(fh),
@@ -1815,18 +1818,23 @@ impl Renderer {
             ],
         });
 
+        // wgpu 30 reports the acquire outcome as an enum rather than a `Result`. Mapped onto the
+        // old behaviour exactly: a usable texture (including a merely `Suboptimal` one, which
+        // the old code also presented from) is drawn to; a stale/lost swapchain (sleep, display
+        // re-negotiation) is reconfigured; every other outcome (timeout, occluded window,
+        // validation error) just skips the frame. The paced frame loop (`new_events`)
+        // re-requests a paint next frame, so we do NOT request one here — doing so would
+        // busy-spin while the surface can't present.
         let surface_frame = match self.surface.get_current_texture() {
-            Ok(frame) => frame,
-            Err(err) => {
-                // A stale/lost swapchain (sleep, display re-negotiation) needs
-                // reconfiguring. The paced frame loop (`new_events`) re-requests a paint
-                // next frame, so we do NOT request one here — doing so would busy-spin
-                // while the surface can't present.
-                if matches!(err, wgpu::SurfaceError::Outdated | wgpu::SurfaceError::Lost) {
-                    self.surface.configure(&self.device, &self.config);
-                }
+            wgpu::CurrentSurfaceTexture::Success(frame)
+            | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => frame,
+            wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
+                self.surface.configure(&self.device, &self.config);
                 return false;
             }
+            wgpu::CurrentSurfaceTexture::Timeout
+            | wgpu::CurrentSurfaceTexture::Occluded
+            | wgpu::CurrentSurfaceTexture::Validation => return false,
         };
         let target = surface_frame
             .texture
@@ -1839,6 +1847,7 @@ impl Renderer {
                 label: Some("blit"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &target,
+                    depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
@@ -1848,13 +1857,14 @@ impl Renderer {
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
+                multiview_mask: None,
             });
             pass.set_pipeline(&self.pipeline);
             pass.set_bind_group(0, &bind_group, &[]);
             pass.draw(0..3, 0..1);
         }
         self.queue.submit(Some(encoder.finish()));
-        surface_frame.present();
+        self.queue.present(surface_frame);
         true
     }
 
@@ -2763,9 +2773,13 @@ impl App {
             Fault::DiskFull,
             disk_fault_active(self.last_disk_status),
         );
-        if self.disk_critical || self.clean_mode {
+        if self.disk_critical || self.clean_mode || self.smoke {
             // Critical disk: never risk corrupting a full store. Clean mode:
-            // the preserved session must stay untouched. State stays in memory.
+            // the preserved session must stay untouched. A `--smoke` launch is a throwaway probe
+            // that "must not persist anything" (the exit save already skips it): loading a stored
+            // plan can queue a one-off save of the fitted scripture links, which this tick would
+            // otherwise write into the data dir the probe was launched against.
+            // State stays in memory.
             return;
         }
         let Ok(mut c) = self.controller.lock() else {
@@ -4543,6 +4557,64 @@ mod autosave_restore_tests {
         assert_eq!(resolved_plan_id, plan_id);
         assert_eq!(resolved_plan.len(), 2);
         assert_eq!(snap.live_idx, Some(0));
+    }
+
+    /// The controller FITS scripture links when it loads a stored plan (a whole chapter becomes its
+    /// explicit verse range, a range past the chapter's end is cut back) so they page one verse at
+    /// a time. The host fingerprints the IN-MEMORY plan when it captures a slot but compares it, on
+    /// restore, against the plan read back from STORAGE — so the fitted plan must be saved, or
+    /// crash recovery would refuse to restore for exactly the users who have such links.
+    #[test]
+    fn a_slot_captured_after_the_controller_fits_legacy_links_resolves_once_the_fit_is_saved() {
+        let db = Database::open_in_memory().unwrap();
+        let mut legacy = ServicePlan::new("Sunday");
+        for (title, reference) in [("Reading", "Psalms 1"), ("Overlong", "Psalms 1:2-10")] {
+            let id = legacy.add_item(ItemKind::Scripture, title);
+            legacy.get_mut(id).unwrap().content = Some(ItemContent::Scripture {
+                reference: reference.into(),
+                translation: Some("WEB".into()),
+                verses_per_slide: None,
+                verse_numbers: None,
+            });
+        }
+        let plan_id = plan_repo::insert(&db, &legacy).unwrap();
+
+        // Boot: the controller loads the stored plan and fits its links.
+        let mut c = selahcue_app::LiveController::new(
+            plan_repo::load(&db, plan_id).unwrap(),
+            320,
+            180,
+            selahcue_present::Theme::dark(),
+        );
+        assert_ne!(
+            super::plan_fingerprint(c.plan()),
+            super::plan_fingerprint(&plan_repo::load(&db, plan_id).unwrap()),
+            "premise: the fit changed the in-memory plan relative to storage"
+        );
+
+        // Without the save, a slot captured from the in-memory plan is REFUSED on restore — the
+        // failure this guards against, shown to be real rather than assumed.
+        push(&db, c.plan(), plan_id, Some(0), 1_000);
+        let unsaved = autosave_repo::list(&db).unwrap()[0].id;
+        assert!(
+            super::resolve_autosave_slot(&db, unsaved).is_err(),
+            "premise: an unsaved fit makes the slot's fingerprint disagree with storage"
+        );
+
+        // The controller queues the save; the host's tick does exactly this (`save_plan`).
+        assert!(c.take_plan_dirty(), "a fitted plan must queue a save");
+        plan_repo::update(&db, plan_id, c.plan()).unwrap();
+        push(&db, c.plan(), plan_id, Some(0), 2_000);
+        let saved = autosave_repo::list(&db)
+            .unwrap()
+            .into_iter()
+            .map(|s| s.id)
+            .max()
+            .unwrap();
+        assert!(
+            super::resolve_autosave_slot(&db, saved).unwrap().is_some(),
+            "once the fitted plan is saved, a slot captured from it must resolve"
+        );
     }
 
     #[test]
