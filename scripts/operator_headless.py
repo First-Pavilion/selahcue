@@ -1874,25 +1874,29 @@ EXPECTED_MIN_CHECKS = 2074  # measured: 2074 checks, 0 FAIL
 EXPECTED_MIN_CHECKS = 2121  # measured: 2121 checks, 0 FAIL
 #
 # Notification bell + panel (docs/design/NOTIFICATION-PANEL-spec.md), on top of main's 2121 (c614637, which
-# already holds the AC-63 poll-race fix, #156): +147 = the NOTIF-* block at the end of the driver, and
+# already holds the AC-63 poll-race fix, #156): +160 = the NOTIF-* block at the end of the driver, and
 # nothing else. NO existing check was added or removed: the Frame G block now opens the notification panel
 # once (its cards live inside it, and `gOn` is computed display + a real client rect) and releases it before
 # G.6 — two setup lines, no check — and one existing message was re-worded ("Frame G: the recovery region
-# exists …", same assertion). The 147, by group (the numbers are the check ids): 10 pin the markup, the move
+# exists …", same assertion). The 160, by group (the numbers are the check ids): 10 pin the markup, the move
 # and the card wording (1-10; 9 and 10 are wording pins that PASS on the pre-change tree by design); 3 the
 # all-clear bell (11-13); 69 the bell/badge/severity mapping over 8 scenarios — number, colour, label,
 # AA ink, the red "!" + ring, summary, painted cards, empty state, toggle (20-26, 23b, 24b) — plus the badge
 # clearing on the next poll (27) and the 9+ cap (28); 6 the empty state and its Local / unknown wording
 # (30-32); 16 open/close paths, aria-expanded, focus, no scrim, Tab order, the stray-Enter hazard and the
 # dismiss button (40-55); 5 Esc and the double-Esc CLEAR ALL interaction, with its positive control
-# (60-64); 8 the live region (70-77); 25 the geometry at 1440x900, 1280x720 and 900x720, 8 per viewport
-# plus the resize re-measure (80-88); 5 surface changes and app-menu exclusivity (90-94). 2121 + 147 =
-# 2268, and that is a MEASURED number: clean runs of the merged tree print "=== 2268 checks, 0 FAIL ===".
+# (60-64); 8 the live region (70-77); 38 the geometry at 1440x900, 1280x720 and 900x720 — 8 placement
+# checks per viewport plus the resize re-measure (80-88) and the TOP BAR FIT (89a-d per viewport: all clear,
+# badge, widest state with the timer and LIVE chips, and a ~6% wider face; 89e: the pill's bounded text at 900)
+# — added after the first CI run, where WebKit's Transcripts surface at 900x720 scrolled sideways because
+# the bell's 52px landed on a bar with ~1px of slack (and none once the timer chip showed); 5 surface
+# changes and app-menu exclusivity (90-94). 2121 + 160 = 2281, and that is a MEASURED number: clean runs of
+# the merged tree print "=== 2281 checks, 0 FAIL ===".
 # The new block boots fresh same-origin srcdoc instances of the app (the gate's own window is ~780x500, below
 # the console's 900px floor) and drives them through the app's own poll steps; it needed the virtual-time
 # budget raised 75000 -> 90000 (see the flags below). Any PR that edits this constant must re-measure after
 # the other lands.
-EXPECTED_MIN_CHECKS = 2268  # measured: 2268 checks, 0 FAIL
+EXPECTED_MIN_CHECKS = 2281  # measured: 2281 checks, 0 FAIL
 
 
 def find_chrome():
@@ -15403,6 +15407,7 @@ DRIVER = r"""
         V.storage = null;
         V.output_health = {held: false};
         V.outputs = s.outputs || [NT.OK()];
+        V.timer = s.timer || null;
         F.w.__link = s.link || NT.LINK.up;
         if (real) await NT.settle(F); else await NT.pollNow(F);
       };
@@ -15448,6 +15453,27 @@ DRIVER = r"""
       };
       NT.hit = function(F, sel){ var h = NT.hitEl(F, sel); return !!h && !!h.closest && !!h.closest(sel); };
       NT.overlap = function(a, b){ return !!a && !!b && Math.min(a.right, b.right) - Math.max(a.left, b.left) > 0.5 && Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top) > 0.5; };
+      // The top bar must FIT: at the 900px floor it had ~1px of slack before the bell (and none once the timer chip
+      // showed), and WebKit's wider face turned the bell's 52px into a horizontal scrollbar on the Transcripts surface.
+      // "Fits" = the page does not scroll sideways, no top-bar control overlaps another, none leaves the window.
+      NT.TOPBAR_ITEMS = ["#app-menu-btn", "#top-prev", "#top-next", "#top-golive", "#top-blackout", "#top-timer", "#live-chip", "#clock", "#notif-bell", "#conn-pill"];
+      NT.fits = function(F){
+        var d = F.d.documentElement, h = F.d.querySelector("header"), rs = [];
+        NT.TOPBAR_ITEMS.forEach(function(sel){
+          var e = F.d.querySelector(sel);
+          if (!e || F.w.getComputedStyle(e).display === "none") return;
+          var r = e.getBoundingClientRect();
+          if (r.width > 0) rs.push({sel: sel, r: r});
+        });
+        var overlaps = [], outside = [];
+        for (var i = 0; i < rs.length; i++) {
+          if (rs[i].r.right > F.w.innerWidth + 0.5 || rs[i].r.left < -0.5) outside.push(rs[i].sel);
+          for (var j = i + 1; j < rs.length; j++) if (NT.overlap(rs[i].r, rs[j].r)) overlaps.push(rs[i].sel + " x " + rs[j].sel);
+        }
+        var scrolls = d.scrollWidth > d.clientWidth || h.scrollWidth > h.clientWidth;
+        return {ok: !scrolls && !overlaps.length && !outside.length,
+          msg: "page " + d.scrollWidth + "/" + d.clientWidth + ", bar " + h.scrollWidth + "/" + h.clientWidth + ", " + rs.length + " controls" + (overlaps.length ? ", OVERLAP " + overlaps.join(", ") : "") + (outside.length ? ", OUTSIDE " + outside.join(", ") : "")};
+      };
       NT.open = function(F){ F.d.getElementById("notif-bell").click(); };
       NT.expanded = function(F){ var b = F.d.getElementById("notif-bell"); return b ? b.getAttribute("aria-expanded") : null; };
       // aria-expanded must say exactly what the panel is doing — checked after EVERY path.
@@ -15755,7 +15781,32 @@ DRIVER = r"""
       // collapse under ~1100px, far below the 1400px product minimum) so the panel starts UNDER the
       // GO LIVE controls instead — either way it never covers them.
       NT.geometry = async function(F, tag, mode, shrinkTo){
-        await NT.set(F, {session: {restored: true}, link: NT.LINK.down, outputs: [NT.MON("no_signal")]});
+        var tCards = {session: {restored: true}, link: NT.LINK.down, outputs: [NT.MON("no_signal")]};
+        // The top bar fits in each of its states, widest last: all clear; two cards + the badge; plus the timer chip
+        // (and the LIVE chip, which is on whenever something is live — it is on here). Then the same under a ~6% wider
+        // face (letter-spacing on the whole bar) — the stand-in for WebKit's wider default face, which is what the first
+        // CI run of this change tripped on.
+        await NT.set(F, {});
+        var fa = NT.fits(F);
+        ok(fa.ok, "NOTIF-89a/" + tag + ": the top bar FITS with the bell, all clear — nothing scrolls sideways, no control overlaps another or leaves the window (" + fa.msg + ")");
+        await NT.set(F, tCards);
+        var fb = NT.fits(F);
+        ok(fb.ok, "NOTIF-89b/" + tag + ": ... and with the bell's badge showing, the connection pill at \"" + NT.tx(F, "conn-label") + "\" (" + fb.msg + ")");
+        await NT.set(F, Object.assign({timer: {remaining_secs: 754, paused: false, warn: false, time_up: false}}, tCards));
+        var fc = NT.fits(F), tWidest = !F.d.getElementById("top-timer").hidden && F.d.getElementById("live-chip").classList.contains("on");
+        ok(fc.ok && tWidest, "NOTIF-89c/" + tag + ": ... and in the WIDEST state — badge, timer chip and LIVE chip all shown (premise " + tWidest + "; " + fc.msg + ")");
+        var tWide = F.d.createElement("style"); tWide.textContent = "header, header * { letter-spacing: 0.06em !important; }"; F.d.head.appendChild(tWide);
+        var fd = NT.fits(F);
+        tWide.parentNode.removeChild(tWide);
+        ok(fd.ok, "NOTIF-89d/" + tag + ": ... and with the whole bar's text ~6% wider (the stand-in for WebKit's wider default face) (" + fd.msg + ")");
+        if (mode === "below") {
+          // The connection pill's text is BOUNDED in compact mode (110px, ellipsis): even blown up to several times its
+          // width it cannot push the bar past the window. (Only the compact widths bound it; the wide bar has room.)
+          var tPill = F.d.createElement("style"); tPill.textContent = "#conn-label { letter-spacing: 0.6em !important; }"; F.d.head.appendChild(tPill);
+          var fe = NT.fits(F), pillW = F.d.getElementById("conn-label").getBoundingClientRect().width;
+          tPill.parentNode.removeChild(tPill);
+          ok(fe.ok && pillW <= 110.5, "NOTIF-89e/" + tag + ": the connection pill's text is bounded — blown up to ~6x its width it stays <= 110px (" + Math.round(pillW) + "px) and the bar still fits (" + fe.msg + ")");
+        }
         var base = NT.snap(F, true);
         var head = NT.rect(F, "header");
         var bR = NT.rect(F, "#notif-bell"), cR = NT.rect(F, "#clock"), pR = NT.rect(F, "#conn-pill");
@@ -15803,6 +15854,7 @@ DRIVER = r"""
              "NOTIF-87/" + tag + ": shrinking the window to " + shrinkTo + "px tall RE-MEASURES the footer — the panel follows it up and still never covers it (bottom " + Math.round(p2.bottom) + " <= footer top " + Math.round(foot2.top) + " - 8; height " + Math.round(p.height) + " -> " + Math.round(p2.height) + ")");
         }
         NT.shut(F);
+        await NT.set(F, {});
       };
       await NT.geometry(F, "1440x900", "beside", 0);
 

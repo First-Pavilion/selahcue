@@ -14,6 +14,7 @@ The four Frame G cards (session notice, host link lost, output signal / held, re
 - Right-aligned to the header's 20px padding, top just under the header, at most `min(400px, 100vw − 24px)` wide, internal scroll for the card list. `app.js` measures on open, on resize and on a surface change (never assumes):
   - **bottom stops 12px above `#emergency`** — BLACKOUT and CLEAR ALL are never covered;
   - **left edge stays 8px right of Previous / GO LIVE / Next** while the console is showing (on the console this lands the panel on the right-hand column, ~384px); if the window is too narrow for that (the console's own columns collapse under ~1100px, far below the 1400×900 product minimum) the panel starts *under* those controls instead.
+- **Top bar must still fit.** The bell adds 52px to a bar that had ~1px of slack at the 900px CSS floor (and none once the timer chip shows — it already overflowed there). Below 1100px the bar compacts: tighter padding and gaps, one-line control labels, the surface name gives way behind an ellipsis (the only part that shrinks), the connection pill's text is bounded at 110px, the clock is dropped at ≤1000px. The gate pins "no sideways scroll, no overlap" at 900, 1280 and 1440 in the widest state, including under a ~6% wider face (WebKit's wider default face is what the first CI run tripped on).
 - `z-index: 70`: above the console, the app menu and the fullscreen output preview; below the command palette and dialogs. Opening the app menu closes it and vice versa.
 
 ## 3. Severity → bell, and the states

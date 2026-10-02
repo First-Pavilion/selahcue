@@ -5867,6 +5867,94 @@
       }
 
       /* ===================================================================================
+         THE TOP BAR AT THE 900px FLOOR (docs/design/NOTIFICATION-PANEL-spec.md).
+
+         The bell added 40px + a 12px gap to a bar that had ~1px of slack at the CSS floor
+         (body { min-width: 900px }) — and no slack at all once the timer chip was showing (the bar
+         already overflowed there: 925px of content in 900px). WebKit's wider face then pushed the
+         Transcripts surface into a horizontal scrollbar. Chromium only survived by wrapping the button
+         labels. So below the console's own ~1100px column collapse the bar COMPACTS and, more
+         importantly, can never overflow by construction: the one thing that shrinks is the surface name
+         (behind an ellipsis), the connection pill's text is bounded, the controls keep their labels on
+         one line and their natural width (so nothing overlaps), the clock gives way at <= 1000px, and
+         padding and gaps tighten. The hard minimum that remains (logo pill, the four transport buttons, the timer and
+         LIVE chips, the bell, the pill, bounded at 110px of text) is ~830px at the Chromium face in
+         the widest state, and the headless gate pins "no horizontal scroll" there and under a wider
+         face. At the supported 1400px minimum none of this applies.
+         =================================================================================== */
+      @media (max-width: 1100px) {
+        header {
+          padding: 0 12px;
+          gap: 8px;
+        }
+
+        /* The ONLY group that shrinks: its surface name gives way behind an ellipsis. The logo pill, the
+           transport and the status group keep their natural width, so nothing can overlap — the left
+           group shrinking is the whole of the slack mechanism. */
+        .topbar-left {
+          min-width: 0;
+          gap: 10px;
+        }
+
+        .logo-pill {
+          flex: none;
+          white-space: nowrap;
+        }
+
+        .topbar-surface {
+          min-width: 0;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+        }
+
+        .topbar-transport {
+          flex: none;
+          gap: 6px;
+        }
+
+        .topbar-transport .tb-btn {
+          flex: none;
+          padding: 9px 10px;
+          white-space: nowrap;
+        }
+
+        .topbar-status {
+          flex: none;
+          gap: 8px;
+        }
+
+        .tb-timer {
+          flex: none;
+          padding: 8px 10px;
+        }
+
+        #live-chip {
+          flex: none;
+          white-space: nowrap;
+        }
+
+        .tb-conn {
+          padding: 9px 10px;
+        }
+
+        /* Bounded, not shrunk: the pill's text can never make the status group wider than this, whatever
+           face the engine picks ("Host unreachable" is the longest state). */
+        #conn-label {
+          max-width: 110px;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+        }
+      }
+
+      @media (max-width: 1000px) {
+        #clock {
+          display: none;
+        }
+      }
+
+      /* ===================================================================================
          Review fixes (adversarial a11y + design-fidelity pass). Kept as one block, placed
          last, so it wins by source order and survives the CSS reformatter. Each rule cites
          the finding it resolves. --sc-text-muted (#6b7383) is AA-large ONLY, so essential
