@@ -1,0 +1,41 @@
+/*
+ * Where in-page anchors and keyboard focus land, relative to the sticky site navbar.
+ *
+ * Anything the browser scrolls into view on the article pages (a #hash target, a control
+ * reached by Tab, `scrollIntoView`) stops BELOW the navbar instead of underneath it: a focused
+ * control hidden behind the navbar fails WCAG 2.2 SC 2.4.11.
+ *
+ * THIS IS PER-ELEMENT `scroll-margin-top`, DELIBERATELY NOT A ROOT `scroll-padding-top`. A
+ * root padding is honoured for EVERY scroll-into-view, including focus() on a control inside
+ * the STICKY navbar: the control already sits inside the padded band at the top and cannot move
+ * clear of it, so the browser scrolls as far up as it can, to the top of the page. Measured:
+ * focusing the navbar's menu button or brand link at scrollY 400 left the page at scrollY 1-3.
+ * That is what closing the responsive pass's mobile menu does (focus returns to the menu
+ * button, so the reader lost their place), and what Shift+Tab into the header does. Margins
+ * only apply to the elements named here, so the navbar is untouched.
+ *
+ * `router/scroll.ts` offsets router-driven anchor scrolls by the navbar's rendered bottom edge
+ * plus `--sc-anchor-gap`, so JS and CSS share the gap and the navbar itself is the height.
+ * `--nav-height` is the navbar's height token; the fallback keeps this correct while the
+ * stylesheet that owns the navbar does not define it. `scripts/article_pages_headless.py`
+ * checks the resulting margin against the navbar's real height, so a navbar that grows without
+ * this following fails a gate.
+ */
+:root {
+  --sc-anchor-gap: 16px;
+  --sc-anchor-offset: calc(var(--nav-height, 68px) + var(--sc-anchor-gap));
+}
+
+/* Heading anchors, the docs skip-link target, and the sections the docs and support INDEX
+   pages are linked to by id (`/docs#<category>`, `/support#<category>`, from the sidebar, the
+   breadcrumbs and a typed URL): Chrome's own fragment scroll runs for a same-document hash
+   change and would otherwise put them ~69px under the navbar. */
+.ab-hwrap > :is(h2, h3),
+#docs-article,
+.docs-content .topic,
+.category-card,
+/* Anything focusable on an article page. The skip link is `position: fixed` just below the
+   navbar, so margin would only make focusing it scroll the page; it is excluded. */
+:is(.bp, .da, .sa) :is(a[href], button, input, select, textarea, summary, [tabindex]):not(.da-skip) {
+  scroll-margin-top: var(--sc-anchor-offset);
+}

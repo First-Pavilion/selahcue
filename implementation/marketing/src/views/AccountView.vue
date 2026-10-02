@@ -23,10 +23,20 @@ const showToast = (msg: string, variant = 'success') => {
   toastShow.value = true
 }
 
+interface Device {
+  id: string
+  name: string
+  os: string
+  ip: string
+  lastActive: string
+  version: string
+  isCurrent: boolean
+}
+
 // Dialog States
 const showCancelDialog = ref(false)
 const showDeactivateDialog = ref(false)
-const targetDevice = ref<any>(null)
+const targetDevice = ref<Device | null>(null)
 
 // User Data Mock
 const user = ref({
@@ -58,21 +68,22 @@ const copyLicenseKey = () => {
   showToast('License key copied to clipboard!')
 }
 
-const devices = ref([
+const devices = ref<Device[]>([
   { id: 'dev_1', name: 'Sanctuary Main PC', os: 'Windows 11 Pro', ip: '192.168.1.104', lastActive: 'Today at 10:45 AM', version: 'v1.2.0', isCurrent: true },
   { id: 'dev_2', name: 'Youth Room Mac Studio', os: 'macOS Sonoma 14.5', ip: '192.168.1.112', lastActive: 'Yesterday at 4:15 PM', version: 'v1.2.0', isCurrent: false }
 ])
 
-const promptDeactivateDevice = (dev: any) => {
+const promptDeactivateDevice = (dev: Device) => {
   targetDevice.value = dev
   showDeactivateDialog.value = true
 }
 
 const confirmDeactivateDevice = () => {
-  if (targetDevice.value) {
-    devices.value = devices.value.filter(d => d.id !== targetDevice.value.id)
+  const target = targetDevice.value
+  if (target) {
+    devices.value = devices.value.filter(d => d.id !== target.id)
     subscription.value.seatsUsed -= 1
-    showToast(`Deactivated "${targetDevice.value.name}" successfully`)
+    showToast(`Deactivated "${target.name}" successfully`)
     targetDevice.value = null
   }
 }
@@ -98,7 +109,7 @@ const bundledBibles = [
   { name: 'Webster Bible', language: 'English', status: 'installed' }
 ]
 
-const redownloadBible = (bible: any) => {
+const redownloadBible = (bible: { name: string; size: string }) => {
   showToast(`Initiated re-download of ${bible.name} (${bible.size})`)
 }
 

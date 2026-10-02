@@ -270,13 +270,16 @@ fn youngs_literal_loads_from_the_cache_and_reports_availability() {
     // the fixture verse resolves. The loader reads `default_cache_dir().join(YLT_FILE_NAME)`,
     // which the `SELAHCUE_SCRIPTURE_CACHE` override points at our temp dir.
     use selahcue_core::scripture::parse_one;
-    use selahcue_scripture::{is_available, passage_text_in, verses_in, Translation};
+    use selahcue_scripture::{
+        is_available, is_index_loaded, passage_exists_in, passage_text_in, verses_in, Translation,
+    };
 
     let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let dir = tmp_dir("ylt-runtime");
     std::env::set_var("SELAHCUE_SCRIPTURE_CACHE", &dir);
 
     let r = parse_one("John 3:16").unwrap();
+    let not_in_fixture = parse_one("John 3:17").unwrap();
 
     // Absent (not yet downloaded): unavailable, and every lookup degrades to nothing — no panic.
     assert!(
@@ -285,9 +288,39 @@ fn youngs_literal_loads_from_the_cache_and_reports_availability() {
     );
     assert!(verses_in(Translation::Ylt, &r).is_empty());
     assert!(passage_text_in(Translation::Ylt, &r).is_none());
+    // The existence probe agrees, and a failed load is NOT cached — the index must stay
+    // not-loaded so the download that arrives next is picked up. (Premise for the section
+    // below: nothing in this binary has loaded YLT before this point.)
+    assert!(
+        !passage_exists_in(Translation::Ylt, &r),
+        "nothing exists in a translation that has not been downloaded"
+    );
+    assert!(
+        !is_index_loaded(Translation::Ylt),
+        "a failed load must not be cached or reported as loaded"
+    );
 
     // Install the synthetic gzipped verse index where the download machinery would put it.
     std::fs::write(dir.join(YLT_FILE_NAME), YLT_FIXTURE_GZIP).unwrap();
+
+    // The existence probe's DOWNLOADED branch (the one with no compile-time table to answer from,
+    // so it falls back to the lookup): it must now say the fixture verse exists — and a verse the
+    // fixture does not hold must still not. This is deliberately the FIRST call after the install,
+    // so it is `passage_exists_in` itself that triggers the load, not a helper before it. A probe
+    // that answered `false` for every downloadable translation would pass every bundled-corpus
+    // test and report a healthy downloaded passage as missing here.
+    assert!(
+        passage_exists_in(Translation::Ylt, &r),
+        "a downloaded translation's verse exists"
+    );
+    assert!(
+        !passage_exists_in(Translation::Ylt, &not_in_fixture),
+        "a verse the downloaded fixture does not hold does not exist"
+    );
+    assert!(
+        is_index_loaded(Translation::Ylt),
+        "the downloaded translation's index is decoded now, and `is_index_loaded` sees it"
+    );
 
     // Present: available, and the verse lookup returns the fixture text (loaded from disk).
     assert!(
