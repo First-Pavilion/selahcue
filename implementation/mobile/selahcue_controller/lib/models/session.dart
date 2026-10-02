@@ -42,6 +42,14 @@ class SessionRevoked extends SessionException {
   const SessionRevoked(super.message);
 }
 
+/// What a frame the client cannot read surfaces as — not text, not JSON, not an
+/// object ([StreamQueue.nextJson]), or an auth/pair reply that is no readable
+/// verdict ([SelahSession.connect] / [SelahSession.pair]). The ONE definition of
+/// the words, so a host that breaks the protocol reads the same however it
+/// breaks it and the paths cannot drift apart.
+const SessionException _malformedFrame =
+    SessionException('malformed frame from the host');
+
 /// Record that a connect attempt failed with something that is NOT a
 /// [SessionException] — a failure nobody modelled (a parsing bug, a platform
 /// error). Callers treat any connect failure as survivable (retry, or fall back
@@ -192,6 +200,9 @@ class SelahSession implements ControllerSession {
             );
           case PairRejected(:final reason):
             throw SessionException('pairing rejected: $reason');
+          case PairMalformed():
+            // Not the operator's answer and not a save failure: say what it is.
+            throw _malformedFrame;
         }
       }
     } catch (e) {
@@ -202,6 +213,10 @@ class SelahSession implements ControllerSession {
   }
 
   /// Reconnect with previously issued credentials.
+  ///
+  /// Throws [SessionRevoked] ONLY for an explicit `"auth":"rejected"`. Any other
+  /// reply the client cannot read is a plain [SessionException] (17tnw2b1f1v) —
+  /// callers retry that and keep the credentials.
   static Future<SelahSession> connect({
     required String host,
     required int port,
@@ -220,6 +235,10 @@ class SelahSession implements ControllerSession {
           // Credentials no longer valid (revoked/unpaired) — distinct from a
           // transient network failure so the controller stops reconnecting.
           throw SessionRevoked('authentication rejected: $reason');
+        case AuthMalformed():
+          // NOT a revocation: only an explicit "rejected" is. An unreadable
+          // reply is transient, so it is retried and the credentials are kept.
+          throw _malformedFrame;
       }
     } catch (e) {
       // Never leak the socket on a failed handshake (timeout/reject/malformed).
@@ -399,16 +418,16 @@ class StreamQueue {
     // (`jsonDecode`) — past `_reconnect()`'s and the launch splash's
     // SessionException-only catches, wedging both (17tnw2b0vtj).
     if (frame is! String) {
-      throw const SessionException('malformed frame from the host');
+      throw _malformedFrame;
     }
     final Object? decoded;
     try {
       decoded = jsonDecode(frame);
     } on FormatException {
-      throw const SessionException('malformed frame from the host');
+      throw _malformedFrame;
     }
     if (decoded is! Map<String, dynamic>) {
-      throw const SessionException('malformed frame from the host');
+      throw _malformedFrame;
     }
     return decoded;
   }
