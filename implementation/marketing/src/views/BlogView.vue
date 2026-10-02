@@ -55,7 +55,7 @@ const posts = blogPosts.filter((p) => p !== featuredPost)
 
 <style scoped>
 .blog-page { background: var(--sc-base); padding-bottom: 80px; }
-.container { max-width: 1140px; margin: 0 auto; padding: 0 24px; }
+.container { max-width: 1140px; margin: 0 auto; padding: 0 var(--page-gutter); }
 .hero-section { padding: 80px 0 40px; text-align: center; }
 .hero-title { font-size: 40px; font-weight: 800; color: var(--sc-text); margin: 16px 0; }
 .hero-sub { font-size: 16px; color: var(--sc-text-secondary); }
@@ -71,7 +71,7 @@ const posts = blogPosts.filter((p) => p !== featuredPost)
 .featured-desc { font-size: 16px; color: var(--sc-text-secondary); line-height: 1.6; margin-bottom: 24px; }
 .featured-meta { display: flex; justify-content: space-between; align-items: center; font-size: 13px; color: var(--sc-text-muted); }
 
-.blog-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 28px; }
+.blog-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 28px; }
 .blog-card {
   background: var(--sc-surface);
   border: 1px solid var(--sc-border);
@@ -85,9 +85,18 @@ const posts = blogPosts.filter((p) => p !== featuredPost)
 .card-footer { display: flex; justify-content: space-between; align-items: center; font-size: 13px; color: var(--sc-text-muted); }
 .read-link { background: none; border: none; color: var(--sc-primary); font-weight: 600; cursor: pointer; }
 
-@media (max-width: 768px) {
-  .blog-grid { grid-template-columns: 1fr; }
+@media (max-width: 767.98px) {
+  .blog-page { padding-bottom: var(--section-pad-sm); }
+  .hero-section { padding: 48px 0 32px; }
+  .hero-title { font-size: 36px; line-height: 40px; }
+  .blog-grid { grid-template-columns: minmax(0, 1fr); gap: 20px; }
+  .featured-card { padding: 24px; margin-bottom: 32px; border-radius: 16px; }
+  .featured-title { font-size: 24px; }
   .featured-meta { flex-direction: column; align-items: flex-start; gap: 16px; }
+  .blog-card { padding: 24px; }
+  .card-footer { flex-wrap: wrap; gap: 8px; }
+  /* 44px tap target for the card's action without changing how it looks at rest. */
+  .read-link { min-height: 44px; padding: 0 0 0 12px; }
 }
 </style>
 

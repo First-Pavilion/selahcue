@@ -58,6 +58,15 @@
 
   /* Spacing */
   --gutter: 96px;
+  /* Horizontal page padding INSIDE a view's max-width container. 24px is what the desktop
+     design was built with; tablet and mobile step up to 48px / down to 20px (design 8a).
+     Overridden by the breakpoint blocks in main.css. */
+  --page-gutter: 24px;
+  /* Height of the sticky site navbar. Shells that stick their own bars below it offset by this. */
+  --nav-height: 68px;
+  /* Vertical rhythm for full-width sections; steps down with the viewport. */
+  --section-pad: 100px;
+  --section-pad-sm: 80px;
   --section-padding: 88px;
   --card-radius: 16px;
   --pill-radius: 999px;

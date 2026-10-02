@@ -43,7 +43,7 @@ defineProps<{ embedded?: boolean }>()
 .nf-page {
   max-width: 640px;
   margin: 0 auto;
-  padding: 96px 24px 120px;
+  padding: 96px var(--page-gutter) 120px;
   text-align: center;
 }
 
@@ -66,5 +66,12 @@ defineProps<{ embedded?: boolean }>()
   flex-wrap: wrap;
   gap: 12px;
   justify-content: center;
+}
+
+@media (max-width: 767.98px) {
+  .nf-page { padding-top: 56px; padding-bottom: 72px; }
+  .nf-title { font-size: 1.75rem; }
+  .nf-actions { flex-direction: column; }
+  .nf-actions > * { width: 100%; }
 }
 </style>

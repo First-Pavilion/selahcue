@@ -16,14 +16,15 @@ pub use compositor::Compositor;
 /// skip the offscreen path where there is no GPU).
 pub fn adapter_available() -> bool {
     let instance = wgpu::Instance::default();
-    pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).is_some()
+    pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).is_ok()
 }
 
 /// A short description of the first adapter, if any (for diagnostics).
 pub fn adapter_info() -> Option<String> {
     let instance = wgpu::Instance::default();
     let adapter =
-        pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))?;
+        pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
+            .ok()?;
     let info = adapter.get_info();
     Some(format!(
         "{:?} {} ({:?})",

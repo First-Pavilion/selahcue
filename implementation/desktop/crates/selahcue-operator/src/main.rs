@@ -4772,14 +4772,63 @@ async fn build_backend() -> Backend {
             }
             Err(e) => {
                 eprintln!("SelahCue operator: could not connect to output window ({e}); running the stand-alone demo.");
-                Backend::Local(demo_shell())
+                local_backend()
             }
         },
         None => {
             eprintln!("SelahCue operator: no running output window found; running the stand-alone demo. Start `cargo run -p selahcue-desktop` first to drive the real output.");
-            Backend::Local(demo_shell())
+            local_backend()
         }
     }
+}
+
+/// The stand-alone (`Backend::Local`) backend, with the scripture quote-match index warming in
+/// the background.
+fn local_backend() -> Backend {
+    local_backend_with(selahcue_scripture::warm)
+}
+
+/// [`local_backend`] with the warm-up injected, so a test can prove it is started WITHOUT being
+/// waited for.
+///
+/// Why warm at all: this `OperatorShell` drives a real, in-process `LiveController`, not a mock:
+/// a live-transcript final sent while running stand-alone reaches `ingest_transcript`
+/// (`controller.rs`) exactly as it would with a connected output window, including the fuzzy
+/// `selahcue_scripture::match_quote_scored` call, which builds a process-global index on first
+/// use (gzip-decode + tokenize ~31k KJV verses) while holding the controller mutex. Left lazy,
+/// the first final of a live service stalls every other command (Go Live included) for the whole
+/// build. 17tnw2b1258 (the `Backend::Remote` path is covered by selahcue-desktop's own startup
+/// warm-up instead).
+///
+/// Why NOT inline, on the setup path (PR #145 review, decided with measurements): `setup()`
+/// runs this inside `tauri::async_runtime::block_on(build_backend())` on the main thread, so
+/// everything that waits on setup — first paint included — would wait on an inline warm-up's
+/// whole cost: ≈0.35 s in a release build (the same call moved selahcue-output's launch-to-
+/// endpoint time from 0.047 s to 0.393 s on the ubuntu CI runner) and ≈2 s in a debug build.
+/// Nothing before the first paint needs the index: it is only reached once a transcript final
+/// arrives (live STT or the console's injector), i.e. after the operator is looking at a painted
+/// console. So it runs on its own thread instead. The guarantee this PR is about is kept, in the
+/// form this path can actually offer: the build starts at backend creation, before any command
+/// can be dispatched, and the index is a `OnceLock`, so a final that does race it blocks only for
+/// the REMAINDER of the one build already in flight — never a second build, never worse than the
+/// lazy path it replaces. (There is no 2 s `COMMAND_TIMEOUT` poisoning to defend against here:
+/// stand-alone commands are in-process calls with no wire timeout; that hazard exists only on
+/// the `Backend::Remote` path, which the output window's own warm-up closes before it binds.)
+///
+/// Memory: the warm index is ≈+45 MiB resident (measured), paid only in this stand-alone mode —
+/// a connected operator never builds it (the output window does).
+fn local_backend_with(warm: impl FnOnce() + Send + 'static) -> Backend {
+    if let Err(e) = std::thread::Builder::new()
+        .name("scripture-warmup".into())
+        .spawn(warm)
+    {
+        // Out of threads/memory: the index just builds lazily on first use, as it did before
+        // this warm-up existed. Never fatal to starting the console.
+        eprintln!(
+            "SelahCue operator: scripture warm-up not started ({e}); it will build on first use."
+        );
+    }
+    Backend::Local(demo_shell())
 }
 
 /// A demo service plan for the stand-alone (no output window) case.
@@ -4796,6 +4845,62 @@ fn demo_shell() -> OperatorShell {
         Theme::dark(),
     )));
     OperatorShell::new(controller)
+}
+
+/// 17tnw2b1258 / PR #145 review: the stand-alone backend must START the scripture warm-up but
+/// never WAIT for it — `setup()` blocks on `build_backend()` on the main thread, so waiting
+/// would delay first paint by the whole index build.
+#[cfg(test)]
+mod standalone_warmup_tests {
+    use super::{local_backend_with, Backend};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{mpsc, Arc};
+    use std::time::Duration;
+
+    /// Deterministic, independent of the process-global index (other tests in this binary
+    /// build `demo_shell()`s and may have warmed the real one) and of timing: the injected
+    /// warm-up parks until the test lets it go. Run inline, it would park the caller of
+    /// `local_backend_with` itself — which then returns only after the 10 s bound, with the
+    /// warm-up already finished, and the first assertion fails. Never started at all, the
+    /// `started` rendezvous below fails instead.
+    #[test]
+    fn the_standalone_backend_starts_the_warm_up_without_waiting_for_it() {
+        let (started_tx, started_rx) = mpsc::channel::<()>();
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+        let finished = Arc::new(AtomicBool::new(false));
+        let finished_in_warmup = finished.clone();
+
+        let backend = local_backend_with(move || {
+            let _ = started_tx.send(());
+            let _ = release_rx.recv_timeout(Duration::from_secs(10));
+            finished_in_warmup.store(true, Ordering::SeqCst);
+        });
+
+        assert!(
+            matches!(backend, Backend::Local(_)),
+            "the stand-alone path must yield a Local backend"
+        );
+        assert!(
+            !finished.load(Ordering::SeqCst),
+            "local_backend_with returned only after the warm-up finished: it ran inline on the \
+             setup path, delaying first paint by the whole scripture index build"
+        );
+        started_rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the scripture warm-up was never started");
+
+        // Let the parked warm-up finish and prove it was a real, running thread — not merely
+        // skipped — so the test cannot pass by dropping the call (positive control).
+        release_tx.send(()).expect("warm-up still waiting");
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while !finished.load(Ordering::SeqCst) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the released warm-up never completed"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
 }
 
 // --- Providers & Privacy (Settings, Design 2.0 node 338:124) ---------------------------------

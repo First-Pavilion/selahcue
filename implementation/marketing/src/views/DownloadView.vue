@@ -152,7 +152,7 @@ import UiButton from '@/components/UiButton.vue'
 .container {
   max-width: 1200px;
   margin: 0 auto;
-  padding: 0 1.5rem;
+  padding: 0 var(--page-gutter);
 }
 
 .hero {
@@ -182,7 +182,8 @@ import UiButton from '@/components/UiButton.vue'
   padding: 3rem;
   text-align: center;
   flex: 1;
-  min-width: 300px;
+  /* `min()` so the card can shrink below 300px inside a 320px viewport's gutters. */
+  min-width: min(300px, 100%);
   max-width: 400px;
 }
 .platform-card .icon {
@@ -327,7 +328,7 @@ import UiButton from '@/components/UiButton.vue'
 }
 .step {
   flex: 1;
-  min-width: 250px;
+  min-width: min(250px, 100%);
   max-width: 300px;
 }
 .step-num {
@@ -350,9 +351,27 @@ import UiButton from '@/components/UiButton.vue'
   color: var(--sc-text-muted);
 }
 
-@media (max-width: 768px) {
+/* Tablet: the two platform cards stay side by side, with tighter gaps. */
+@media (max-width: 1199.98px) {
+  .req-grid { gap: 2rem; }
+  .mobile-layout { gap: 2rem; }
+  .requirements-section, .mobile-section, .install-guide { padding: var(--section-pad) 0; }
+}
+
+@media (max-width: 767.98px) {
+  .hero { padding: 3rem 0 2rem; }
+  .hero h1 { font-size: 36px; line-height: 40px; }
+  .hero p { font-size: 1.1rem; }
+  .platforms-grid { flex-direction: column; align-items: stretch; margin-bottom: 3rem; }
+  .platform-card { flex: 0 0 auto; max-width: none; padding: 2rem 1.5rem; }
   .req-grid, .mobile-layout {
     flex-direction: column;
   }
+  .req-col { max-width: none; width: 100%; padding: 1.5rem; }
+  .mobile-layout { gap: 2.5rem; align-items: stretch; }
+  .mobile-text h2 { font-size: 2rem; }
+  .phone-mockup { width: min(260px, 100%); height: 480px; }
+  .requirements-section, .mobile-section, .install-guide { padding: var(--section-pad) 0; }
+  .requirements-section h2, .install-guide h2 { margin-bottom: 2rem; }
 }
 </style>

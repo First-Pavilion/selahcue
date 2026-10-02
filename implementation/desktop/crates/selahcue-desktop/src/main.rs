@@ -1656,9 +1656,9 @@ impl Renderer {
             compatible_surface: Some(&surface),
             ..Default::default()
         }))
-        .ok_or_else(|| "no compatible GPU adapter".to_string())?;
+        .map_err(|e| format!("no compatible GPU adapter: {e}"))?;
         let (device, queue) =
-            pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default(), None))
+            pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))
                 .map_err(|e| format!("request device: {e}"))?;
 
         let caps = surface.get_capabilities(&adapter);
@@ -1678,6 +1678,9 @@ impl Renderer {
             alpha_mode: caps.alpha_modes[0],
             view_formats: vec![],
             desired_maximum_frame_latency: 2,
+            // `Auto` is the pre-wgpu-30 behaviour (plain SDR); wide-gamut/HDR is opt-in and we
+            // do not opt in.
+            color_space: wgpu::SurfaceColorSpace::Auto,
         };
         surface.configure(&device, &config);
 
@@ -1708,28 +1711,28 @@ impl Renderer {
         });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("blit"),
-            bind_group_layouts: &[&bind_group_layout],
-            push_constant_ranges: &[],
+            bind_group_layouts: &[Some(&bind_group_layout)],
+            immediate_size: 0,
         });
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("blit"),
             layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &shader,
-                entry_point: "vs",
+                entry_point: Some("vs"),
                 buffers: &[],
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
             },
             fragment: Some(wgpu::FragmentState {
                 module: &shader,
-                entry_point: "fs",
+                entry_point: Some("fs"),
                 targets: &[Some(config.format.into())],
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
             }),
             primitive: wgpu::PrimitiveState::default(),
             depth_stencil: None,
             multisample: wgpu::MultisampleState::default(),
-            multiview: None,
+            multiview_mask: None,
             cache: None,
         });
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor::default());
@@ -1781,14 +1784,14 @@ impl Renderer {
             return false;
         };
         self.queue.write_texture(
-            wgpu::ImageCopyTexture {
+            wgpu::TexelCopyTextureInfo {
                 texture,
                 mip_level: 0,
                 origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
             },
             frame.bytes(),
-            wgpu::ImageDataLayout {
+            wgpu::TexelCopyBufferLayout {
                 offset: 0,
                 bytes_per_row: Some(fw * 4),
                 rows_per_image: Some(fh),
@@ -1815,18 +1818,23 @@ impl Renderer {
             ],
         });
 
+        // wgpu 30 reports the acquire outcome as an enum rather than a `Result`. Mapped onto the
+        // old behaviour exactly: a usable texture (including a merely `Suboptimal` one, which
+        // the old code also presented from) is drawn to; a stale/lost swapchain (sleep, display
+        // re-negotiation) is reconfigured; every other outcome (timeout, occluded window,
+        // validation error) just skips the frame. The paced frame loop (`new_events`)
+        // re-requests a paint next frame, so we do NOT request one here — doing so would
+        // busy-spin while the surface can't present.
         let surface_frame = match self.surface.get_current_texture() {
-            Ok(frame) => frame,
-            Err(err) => {
-                // A stale/lost swapchain (sleep, display re-negotiation) needs
-                // reconfiguring. The paced frame loop (`new_events`) re-requests a paint
-                // next frame, so we do NOT request one here — doing so would busy-spin
-                // while the surface can't present.
-                if matches!(err, wgpu::SurfaceError::Outdated | wgpu::SurfaceError::Lost) {
-                    self.surface.configure(&self.device, &self.config);
-                }
+            wgpu::CurrentSurfaceTexture::Success(frame)
+            | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => frame,
+            wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
+                self.surface.configure(&self.device, &self.config);
                 return false;
             }
+            wgpu::CurrentSurfaceTexture::Timeout
+            | wgpu::CurrentSurfaceTexture::Occluded
+            | wgpu::CurrentSurfaceTexture::Validation => return false,
         };
         let target = surface_frame
             .texture
@@ -1839,6 +1847,7 @@ impl Renderer {
                 label: Some("blit"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &target,
+                    depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
@@ -1848,13 +1857,14 @@ impl Renderer {
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
+                multiview_mask: None,
             });
             pass.set_pipeline(&self.pipeline);
             pass.set_bind_group(0, &bind_group, &[]);
             pass.draw(0..3, 0..1);
         }
         self.queue.submit(Some(encoder.finish()));
-        surface_frame.present();
+        self.queue.present(surface_frame);
         true
     }
 
@@ -2763,9 +2773,13 @@ impl App {
             Fault::DiskFull,
             disk_fault_active(self.last_disk_status),
         );
-        if self.disk_critical || self.clean_mode {
+        if self.disk_critical || self.clean_mode || self.smoke {
             // Critical disk: never risk corrupting a full store. Clean mode:
-            // the preserved session must stay untouched. State stays in memory.
+            // the preserved session must stay untouched. A `--smoke` launch is a throwaway probe
+            // that "must not persist anything" (the exit save already skips it): loading a stored
+            // plan can queue a one-off save of the fitted scripture links, which this tick would
+            // otherwise write into the data dir the probe was launched against.
+            // State stays in memory.
             return;
         }
         let Ok(mut c) = self.controller.lock() else {
@@ -3410,11 +3424,70 @@ impl ApplicationHandler for App {
     }
 }
 
+/// Boxed future that creates the control listener (see [`ServerIo::bind`]).
+type BindFuture =
+    std::pin::Pin<Box<dyn std::future::Future<Output = std::io::Result<TcpListener>> + Send>>;
+
+/// Everything `run_server` does that reaches OUTSIDE this process — the LAN socket, the mDNS
+/// multicast, the outbound-interface probe behind the pairing QR, and the endpoint descriptor
+/// (a bearer token) in the shared OS temp dir. Production wires the real thing
+/// ([`ServerEnv::production`]); the startup-order test swaps each one for a hermetic stand-in so
+/// that `cargo test` can never bind the LAN, advertise on a real network, or overwrite the
+/// endpoint file of a live `make launch` host sitting in the same temp dir (PR #145 review).
+struct ServerIo {
+    /// Creates the control listener. Production binds every interface (`0.0.0.0:0`) so a phone
+    /// on the LAN can reach us (pairing is the gate, not the bind address); a test binds
+    /// loopback only. A seam rather than an address so a test can also observe WHEN the bind
+    /// happens relative to the scripture warm-up.
+    bind: Box<dyn FnOnce() -> BindFuture + Send>,
+    /// This machine's LAN-facing IP, for the pairing QR ([`lan_ip`] opens a UDP socket).
+    lan_ip: fn() -> std::net::IpAddr,
+    /// Advertise `_selahcue._tcp` on mDNS so a phone can discover us.
+    advertise_mdns: bool,
+    /// Where to publish the loopback endpoint descriptor the operator shell auto-discovers.
+    /// `None` writes nothing.
+    endpoint_file: Option<std::path::PathBuf>,
+}
+
+/// What [`start_remote_control_in`] runs: the one-time scripture warm-up plus the I/O seams.
+struct ServerEnv {
+    /// The scripture quote-index warm-up, run BEFORE the listener is bound (see
+    /// [`start_remote_control_in`]). Its position relative to `io.bind` is the contract.
+    warm: Box<dyn FnOnce() + Send>,
+    io: ServerIo,
+}
+
+impl ServerEnv {
+    fn production() -> Self {
+        ServerEnv {
+            warm: Box::new(selahcue_scripture::warm),
+            io: ServerIo {
+                bind: Box::new(|| -> BindFuture { Box::pin(TcpListener::bind("0.0.0.0:0")) }),
+                lan_ip,
+                advertise_mdns: true,
+                endpoint_file: Some(endpoint_path()),
+            },
+        }
+    }
+}
+
 /// Spawn the pinned-TLS control server on a background thread with its own Tokio
 /// runtime, driving the shared `controller`. If it can't start, the window still runs
 /// under local keyboard control.
 fn start_remote_control(controller: Arc<Mutex<LiveController>>, remote: Arc<RemoteShared>) {
+    start_remote_control_in(controller, remote, ServerEnv::production());
+}
+
+/// [`start_remote_control`] against an explicit [`ServerEnv`] — the body, split out so the
+/// warm-then-bind ordering can be driven by a test without touching the real network, mDNS or
+/// the shared endpoint file.
+fn start_remote_control_in(
+    controller: Arc<Mutex<LiveController>>,
+    remote: Arc<RemoteShared>,
+    env: ServerEnv,
+) {
     std::thread::spawn(move || {
+        let ServerEnv { warm, io } = env;
         let runtime = match tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()
@@ -3425,7 +3498,24 @@ fn start_remote_control(controller: Arc<Mutex<LiveController>>, remote: Arc<Remo
                 return;
             }
         };
-        if let Err(e) = runtime.block_on(run_server(controller, remote)) {
+        // Pay the scripture quote-match index's one-time cold-start cost (gzip-decode +
+        // tokenize ~31k KJV verses) HERE — plain sync code on this dedicated background
+        // thread, before `run_server` below does anything, so it always finishes before the LAN
+        // listener can bind, let alone accept a connection. Without this, the first real
+        // IngestTranscript a remote controller sends pays the same cost inline inside
+        // ControlClient::COMMAND_TIMEOUT's 2s budget — and on overrun, permanently poisons that
+        // connection (see its doc comment, Sana S-8). Does not delay the output window: this
+        // thread is already independent of winit's.
+        //
+        // What it costs, MEASURED (PR #145 review), so the next person to touch this knows the
+        // trade: ≈0.35 s release on the ubuntu CI runner (`make nfr` cold start, i.e. launch to
+        // endpoint file: 0.047 s on main -> 0.393 s with this call; budget 3 s) and ≈2 s in a
+        // debug build; and ≈+45 MiB resident for good (VmRSS 3 -> 48 MiB in a bare process; CI's
+        // `make nfr` idle RSS 240 -> 285 MB against the 300 MB NFR-002 budget — only ≈15 MB of
+        // headroom is left, so do not add a second always-warm translation without re-measuring).
+        // 17tnw2b1258 (PR #130 review follow-up); mirrors that PR's test-only warm-up.
+        warm();
+        if let Err(e) = runtime.block_on(run_server(controller, remote, io)) {
             eprintln!("SelahCue: remote control stopped: {e}");
         }
     });
@@ -3434,6 +3524,7 @@ fn start_remote_control(controller: Arc<Mutex<LiveController>>, remote: Arc<Remo
 async fn run_server(
     controller: Arc<Mutex<LiveController>>,
     remote: Arc<RemoteShared>,
+    io: ServerIo,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let identity = SelfSigned::generate(vec!["localhost".into()])
         .map_err(|e| format!("tls identity: {e:?}"))?;
@@ -3465,7 +3556,7 @@ async fn run_server(
 
     // Bind the LAN so a phone can reach us: joining is gated by pairing (single-use
     // TTL code + host confirmation) behind pinned TLS, so an open port grants nothing.
-    let listener = TcpListener::bind("0.0.0.0:0").await?;
+    let listener = (io.bind)().await?;
     let port = listener.local_addr()?.port();
     let _ = remote.lan.set((port, pin.to_hex()));
 
@@ -3478,22 +3569,186 @@ async fn run_server(
         ControlServer::new(&identity, remote.registry.clone(), handler_for(controller))
             .map_err(|e| format!("server: {e:?}"))?
             .with_pairing_requests()
-            .with_pairing_endpoint(lan_ip().to_string(), port, pin.to_hex()),
+            .with_pairing_endpoint((io.lan_ip)().to_string(), port, pin.to_hex()),
     );
     // Advertise on mDNS so the phone can FIND us without typing an address
     // (86ajp0b0t). The TXT carries the cert pin — public data (it is printed in
     // every QR invite); joining still requires the TTL pairing code + host
     // approval, so discovery discloses presence, never access.
-    let _mdns = advertise_mdns(port, device, &pin.to_hex());
+    let _mdns = if io.advertise_mdns {
+        advertise_mdns(port, device, &pin.to_hex())
+    } else {
+        None
+    };
     // Local clients (operator shell / CLI) connect via loopback.
     let local: SocketAddr = ([127, 0, 0, 1], port).into();
-    let endpoint = write_endpoint(local, &pin.to_hex(), device, &token);
+    let endpoint = io
+        .endpoint_file
+        .as_deref()
+        .and_then(|path| write_endpoint(path, local, &pin.to_hex(), device, &token));
     print_connect_banner(local, &pin.to_hex(), device, &token, endpoint.as_deref());
     server
         .run(listener)
         .await
         .map_err(|e| format!("server run: {e:?}"))?;
     Ok(())
+}
+
+/// Regression coverage for 17tnw2b1258: the scripture quote-match index must be warm BEFORE the
+/// LAN listener is bound, i.e. before the server can ever accept a remote connection.
+///
+/// Hermetic by construction (PR #145 review): the first cut called the real
+/// `start_remote_control`, which binds `0.0.0.0`, advertises mDNS on the real LAN and writes the
+/// shared `$TMPDIR/selahcue-operator-endpoint.json` bearer-token file — so a `cargo test` run
+/// beside a live `make launch` host overwrote that host's endpoint with a dead port and token.
+/// These tests drive [`start_remote_control_in`] (the real thread, the real Tokio runtime and the
+/// real `run_server`) through [`ServerEnv`]'s seams: loopback bind, no mDNS, no LAN-IP probe, and
+/// an endpoint file in a private scratch directory that is removed afterwards.
+#[cfg(test)]
+mod remote_control_warmup_tests {
+    use super::{
+        demo_plan, start_remote_control_in, BindFuture, LiveController, RemoteShared, ServerEnv,
+        ServerIo, SessionRegistry, Theme,
+    };
+    use std::sync::{Arc, Mutex, OnceLock};
+    use std::time::{Duration, Instant};
+    use tokio::net::TcpListener;
+    use tokio::sync::Mutex as AsyncMutex;
+
+    /// A private scratch directory, removed on drop — also when an assertion unwinds — so the
+    /// test leaves nothing behind in the shared temp dir.
+    struct Scratch(std::path::PathBuf);
+
+    impl Scratch {
+        fn new(tag: &str) -> Self {
+            let dir = std::env::temp_dir().join(format!(
+                "selahcue-desktop-test-{tag}-{}-{:?}",
+                std::process::id(),
+                std::thread::current().id()
+            ));
+            std::fs::create_dir_all(&dir).expect("create scratch dir");
+            Scratch(dir)
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn fresh_remote() -> Arc<RemoteShared> {
+        Arc::new(RemoteShared {
+            registry: Arc::new(AsyncMutex::new(SessionRegistry::new())),
+            lan: OnceLock::new(),
+            active_code: Mutex::new(None),
+        })
+    }
+
+    fn fresh_controller() -> Arc<Mutex<LiveController>> {
+        Arc::new(Mutex::new(LiveController::new(
+            demo_plan(),
+            320,
+            180,
+            Theme::dark(),
+        )))
+    }
+
+    /// Poll `cond` with a generous bound rather than a fixed sleep: the server thread does real
+    /// TLS identity generation and pairing-registry setup, and this repo runs several agent
+    /// sessions in one checkout (CLAUDE.md), so CPU contention is routine. Nothing below asserts
+    /// on how LONG startup took — only on what order things happened in — so a long bound costs
+    /// nothing when everything is healthy.
+    fn wait_for(what: &str, mut cond: impl FnMut() -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(60);
+        while !cond() {
+            assert!(
+                Instant::now() < deadline,
+                "timed out after 60s waiting for {what}"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    /// THE ordering contract, observed rather than inferred: the warm-up hook and the bind
+    /// each log themselves, so the exact sequence is asserted. Independent of the process-global
+    /// scripture `OnceLock` (a sibling test warming the real index cannot mask a miss), needs no
+    /// timing, and fails for every way of breaking the order — warm-up removed, moved after the
+    /// bind (before or after the port is published), or run on another thread.
+    #[test]
+    fn the_scripture_warm_up_runs_before_the_listener_is_bound() {
+        let events: Arc<Mutex<Vec<&'static str>>> = Arc::default();
+        let scratch = Scratch::new("warm-before-bind");
+        let endpoint = scratch.0.join("endpoint.json");
+
+        let warm_events = events.clone();
+        let bind_events = events.clone();
+        let env = ServerEnv {
+            warm: Box::new(move || warm_events.lock().expect("event log").push("warm")),
+            io: ServerIo {
+                bind: Box::new(move || -> BindFuture {
+                    bind_events.lock().expect("event log").push("bind");
+                    // Loopback + an OS-assigned port: no LAN exposure, no clash with a live host.
+                    Box::pin(TcpListener::bind("127.0.0.1:0"))
+                }),
+                lan_ip: || std::net::IpAddr::from([127, 0, 0, 1]),
+                advertise_mdns: false,
+                endpoint_file: Some(endpoint.clone()),
+            },
+        };
+
+        let remote = fresh_remote();
+        start_remote_control_in(fresh_controller(), remote.clone(), env);
+
+        // `remote.lan` is published immediately after the bind, so once it is set the bind has
+        // happened and every event it should be ordered against has already been logged.
+        wait_for("the control listener to be bound", || {
+            remote.lan.get().is_some()
+        });
+        assert_eq!(
+            *events.lock().expect("event log"),
+            ["warm", "bind"],
+            "the scripture warm-up must run exactly once and strictly BEFORE the control \
+             listener is bound; otherwise the first IngestTranscript a remote controller sends \
+             pays the cold index build inside ControlClient::COMMAND_TIMEOUT (17tnw2b1258)"
+        );
+
+        // The endpoint descriptor (a bearer token) must have gone to the INJECTED path, not the
+        // shared `$TMPDIR/selahcue-operator-endpoint.json` a live host owns.
+        let (port, _pin) = remote.lan.get().expect("published above").clone();
+        wait_for("the endpoint descriptor to be written", || {
+            endpoint.exists()
+        });
+        let written = std::fs::read_to_string(&endpoint).expect("read descriptor");
+        assert!(
+            written.contains(&format!("\"addr\":\"127.0.0.1:{port}\"")),
+            "descriptor should name this test server's loopback port {port}: {written}"
+        );
+    }
+
+    /// The wiring half: the hook `ServerEnv::production()` hands the real server genuinely
+    /// builds the quote index — the test above uses a fake and cannot see a production hook
+    /// swapped for a no-op. Runs only that hook (no server, no socket, nothing shared), then
+    /// proves the index is warm: a second `warm()` is a single-digit-microsecond `OnceLock` hit,
+    /// but the FULL cold build (≈2 s debug) if the production hook did nothing.
+    ///
+    /// Caveat, honestly: the index is process-global, so this can only bite while no sibling
+    /// test in this binary builds it first. None does today (nothing here calls
+    /// `ingest_transcript`); the ordering test above is deliberately free of that dependency.
+    #[test]
+    fn the_production_warm_hook_builds_the_scripture_quote_index() {
+        (ServerEnv::production().warm)();
+
+        let started = Instant::now();
+        selahcue_scripture::warm();
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed < Duration::from_millis(300),
+            "a warm() call took {elapsed:?} after the production warm-up hook ran — the hook \
+             does not build the scripture quote-match index, so the first remote \
+             IngestTranscript would pay the cold build inline (17tnw2b1258)"
+        );
+    }
 }
 
 /// Advertise the control endpoint as `_selahcue._tcp.local.` while the server
@@ -3594,15 +3849,19 @@ fn print_pairing_block(uri: &str, code: &str) {
     println!();
 }
 
-/// Write a local endpoint descriptor so the operator shell on this machine can
-/// auto-discover + connect (a loopback-only convenience; real pairing is QR + host
-/// confirmation). Values are simple ASCII (addr/hex/ids), so a hand-built JSON string is
-/// safe. Returns the path written, if any.
+/// The well-known endpoint descriptor path the operator shell auto-discovers. Shared by every
+/// SelahCue host on this machine, so only [`ServerEnv::production`] and the clean-exit cleanup
+/// ever name it — nothing a test drives may.
 fn endpoint_path() -> std::path::PathBuf {
     std::env::temp_dir().join("selahcue-operator-endpoint.json")
 }
 
+/// Write a local endpoint descriptor so the operator shell on this machine can
+/// auto-discover + connect (a loopback-only convenience; real pairing is QR + host
+/// confirmation). Values are simple ASCII (addr/hex/ids), so a hand-built JSON string is
+/// safe. Returns the path written, if any.
 fn write_endpoint(
+    path: &std::path::Path,
     addr: SocketAddr,
     pin_hex: &str,
     device: &str,
@@ -3611,8 +3870,7 @@ fn write_endpoint(
     let json = format!(
         "{{\"addr\":\"{addr}\",\"pin\":\"{pin_hex}\",\"device\":\"{device}\",\"token\":\"{token}\"}}"
     );
-    let path = endpoint_path();
-    if let Err(e) = std::fs::write(&path, json) {
+    if let Err(e) = std::fs::write(path, json) {
         eprintln!("SelahCue: could not write operator endpoint file: {e}");
         return None;
     }
@@ -3623,9 +3881,9 @@ fn write_endpoint(
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
     }
-    Some(path)
+    Some(path.to_path_buf())
 }
 
 fn print_connect_banner(
@@ -4299,6 +4557,64 @@ mod autosave_restore_tests {
         assert_eq!(resolved_plan_id, plan_id);
         assert_eq!(resolved_plan.len(), 2);
         assert_eq!(snap.live_idx, Some(0));
+    }
+
+    /// The controller FITS scripture links when it loads a stored plan (a whole chapter becomes its
+    /// explicit verse range, a range past the chapter's end is cut back) so they page one verse at
+    /// a time. The host fingerprints the IN-MEMORY plan when it captures a slot but compares it, on
+    /// restore, against the plan read back from STORAGE — so the fitted plan must be saved, or
+    /// crash recovery would refuse to restore for exactly the users who have such links.
+    #[test]
+    fn a_slot_captured_after_the_controller_fits_legacy_links_resolves_once_the_fit_is_saved() {
+        let db = Database::open_in_memory().unwrap();
+        let mut legacy = ServicePlan::new("Sunday");
+        for (title, reference) in [("Reading", "Psalms 1"), ("Overlong", "Psalms 1:2-10")] {
+            let id = legacy.add_item(ItemKind::Scripture, title);
+            legacy.get_mut(id).unwrap().content = Some(ItemContent::Scripture {
+                reference: reference.into(),
+                translation: Some("WEB".into()),
+                verses_per_slide: None,
+                verse_numbers: None,
+            });
+        }
+        let plan_id = plan_repo::insert(&db, &legacy).unwrap();
+
+        // Boot: the controller loads the stored plan and fits its links.
+        let mut c = selahcue_app::LiveController::new(
+            plan_repo::load(&db, plan_id).unwrap(),
+            320,
+            180,
+            selahcue_present::Theme::dark(),
+        );
+        assert_ne!(
+            super::plan_fingerprint(c.plan()),
+            super::plan_fingerprint(&plan_repo::load(&db, plan_id).unwrap()),
+            "premise: the fit changed the in-memory plan relative to storage"
+        );
+
+        // Without the save, a slot captured from the in-memory plan is REFUSED on restore — the
+        // failure this guards against, shown to be real rather than assumed.
+        push(&db, c.plan(), plan_id, Some(0), 1_000);
+        let unsaved = autosave_repo::list(&db).unwrap()[0].id;
+        assert!(
+            super::resolve_autosave_slot(&db, unsaved).is_err(),
+            "premise: an unsaved fit makes the slot's fingerprint disagree with storage"
+        );
+
+        // The controller queues the save; the host's tick does exactly this (`save_plan`).
+        assert!(c.take_plan_dirty(), "a fitted plan must queue a save");
+        plan_repo::update(&db, plan_id, c.plan()).unwrap();
+        push(&db, c.plan(), plan_id, Some(0), 2_000);
+        let saved = autosave_repo::list(&db)
+            .unwrap()
+            .into_iter()
+            .map(|s| s.id)
+            .max()
+            .unwrap();
+        assert!(
+            super::resolve_autosave_slot(&db, saved).unwrap().is_some(),
+            "once the fitted plan is saved, a slot captured from it must resolve"
+        );
     }
 
     #[test]

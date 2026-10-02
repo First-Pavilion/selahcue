@@ -223,6 +223,119 @@ fn spoken_range_is_captured() {
 }
 
 #[test]
+fn every_spoken_range_form_is_captured_as_a_range() {
+    for spoken in [
+        "Psalm 119 verses 2 to 10",
+        "Psalm 119 verses 2 through 10",
+        "Psalm 119 verse 2 thru 10",
+        "Psalm 119 verses two to ten",
+    ] {
+        assert_eq!(detect(spoken), vec!["Psalms 119:2-10"], "{spoken:?}");
+    }
+}
+
+#[test]
+fn the_word_from_does_not_break_a_spoken_range() {
+    // How a preacher actually says it: "Psalms chapter one FROM verse two TO ten". "from" is
+    // connective filler; before it was dropped the window `psalms 1 from 2-10` failed to parse and
+    // the match fell back to the bare chapter, silently losing the range.
+    for spoken in [
+        "Psalms chapter one from verse 2 to 10",
+        "Psalms chapter 1 from verse two to ten",
+        "let us read from Psalm 1 from verse 2 through 6",
+    ] {
+        let got = detect(spoken);
+        assert!(
+            got.iter().any(|r| r.starts_with("Psalms 1:2-")),
+            "{spoken:?} must keep its range, got {got:?}"
+        );
+        assert!(
+            !got.contains(&"Psalms 1".to_string()),
+            "{spoken:?} must not degrade to the whole chapter, got {got:?}"
+        );
+    }
+    assert_eq!(
+        detect("Psalms chapter one from verse 2 to 10"),
+        vec!["Psalms 1:2-10"]
+    );
+}
+
+#[test]
+fn from_is_filler_only_and_adds_no_false_detections() {
+    // Positive control: "from" before a real reference is harmless...
+    assert_eq!(detect("a reading from John 3 16"), vec!["John 3:16"]);
+    // ...and ordinary speech containing "from" and numbers still detects nothing.
+    assert!(detect("a letter from 3 of us and 4 from the choir").is_empty());
+}
+
+#[test]
+fn a_typed_hyphen_range_survives_normalisation() {
+    // A transcript that already carries the range as `1:2-10` (cloud engines with smart
+    // formatting write it that way). The hyphen between digits used to become a space, so
+    // `psalm 1:2 10` parsed as the single verse Psalms 1:2 and the rest of the range was lost.
+    assert_eq!(detect("turn to Psalm 1:2-10 please"), vec!["Psalms 1:2-10"]);
+    assert_eq!(detect("turn to John 3:16-18"), vec!["John 3:16-18"]);
+    // An en/em dash between digits is the same range.
+    assert_eq!(detect("Psalm 1:2\u{2013}10"), vec!["Psalms 1:2-10"]);
+    assert_eq!(detect("Psalm 1:2\u{2014}10"), vec!["Psalms 1:2-10"]);
+}
+
+#[test]
+fn a_hyphen_that_is_not_between_digits_stays_a_separator() {
+    // The hyphen is kept ONLY when it joins two digit runs — a dash in prose is still a break,
+    // so it cannot weld a book to a number or invent a reference.
+    assert_eq!(detect("the well-known John 3:16"), vec!["John 3:16"]);
+    assert_eq!(detect("John- 3:16"), vec!["John 3:16"]);
+    // Each of these includes a real reference, so a detector that stopped working could not pass.
+    assert_eq!(
+        detect("John 3:16 call 555-1234 or 99-100 people"),
+        vec!["John 3:16"]
+    );
+    assert_eq!(detect("John-3:16"), vec!["John 3:16"]);
+    assert_eq!(
+        detect("John 3:16\u{2014}the best known verse"),
+        vec!["John 3:16"]
+    );
+}
+
+#[test]
+fn a_cross_chapter_range_still_detects_its_first_verse() {
+    // "Matthew 5:1-7:29" spans chapters, which the reference model cannot express. Keeping the
+    // hyphen made the whole window unparseable, so nothing was detected at all; before that it
+    // fell back to the first verse. The operator still gets the passage's starting point.
+    assert_eq!(
+        detect("turn to Matthew 5:1-7:29 please"),
+        vec!["Matthew 5:1"]
+    );
+    assert_eq!(detect("Genesis 1:1\u{2013}2:3"), vec!["Genesis 1:1"]);
+}
+
+#[test]
+fn from_only_counts_as_filler_when_it_introduces_a_verse() {
+    // "Psalms chapter one from verse 2 to 10" — "from" introduces a verse. A bare "from" between
+    // two numbers is ordinary speech ("John 3 from 5 of us") and must not weld them into a
+    // fabricated verse.
+    assert_eq!(detect("John 3 from 5 of us"), vec!["John 3"]);
+    assert_eq!(detect("Psalm 23 from 10 of them"), vec!["Psalms 23"]);
+    assert_eq!(
+        detect("Psalms chapter one from verse 2 to 10"),
+        vec!["Psalms 1:2-10"]
+    );
+}
+
+#[test]
+fn a_hyphenated_chapter_span_is_not_misread_as_a_verse() {
+    // "Romans 8-9" is a span of CHAPTERS, which the reference model cannot express. It used to
+    // be flattened to `romans 8 9` and detected as the single verse Romans 8:9 — a fabricated
+    // verse. It must never be reported as that.
+    assert!(
+        !detect("Romans 8-9").contains(&"Romans 8:9".to_string()),
+        "got {:?}",
+        detect("Romans 8-9")
+    );
+}
+
+#[test]
 fn multiple_references_in_one_utterance() {
     let got = detect("compare John 3:16 with First John four eight");
     assert_eq!(got, vec!["John 3:16", "1 John 4:8"]);

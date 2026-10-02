@@ -18,7 +18,7 @@ qrcode = { version = "0.14", default-features = false }
 serde_json = "1"
 # Encode known PNG fixtures to exercise an `Element::Image` end-to-end through
 # compose → the engine decode/blit (86ajq6j49). Transitive via selahcue-engine.
-png = "0.17"
+png = "0.18"
 
 [lints]
 workspace = true

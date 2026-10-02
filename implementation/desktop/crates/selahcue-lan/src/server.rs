@@ -333,11 +333,11 @@ impl ControlServer {
         tcp: TcpStream,
     ) -> Result<(WebSocketStream<TlsStream<TcpStream>>, Hello), TransportError> {
         let tls = self.acceptor.accept(tcp).await?;
-        let ws_config = WebSocketConfig {
-            max_message_size: Some(MAX_MESSAGE_BYTES),
-            max_frame_size: Some(MAX_MESSAGE_BYTES),
-            ..Default::default()
-        };
+        // `WebSocketConfig` is `#[non_exhaustive]` since tungstenite 0.30, so it is built with
+        // its builder methods rather than a struct expression.
+        let ws_config = WebSocketConfig::default()
+            .max_message_size(Some(MAX_MESSAGE_BYTES))
+            .max_frame_size(Some(MAX_MESSAGE_BYTES));
         let mut ws = tokio_tungstenite::accept_async_with_config(tls, Some(ws_config)).await?;
         let hello: Hello = recv_json(&mut ws).await?;
         Ok((ws, hello))

@@ -40,7 +40,7 @@ serde_json = "1"
 flate2 = "1"
 # Tiny valid PNGs for the image stage are ENCODED at test time rather than committed, for the
 # same reason every hostile input is constructed in-test. Transitive via selahcue-engine.
-png = "0.17"
+png = "0.18"
 
 [lints]
 workspace = true

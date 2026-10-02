@@ -24,6 +24,17 @@ html:focus-within {
   scroll-behavior: smooth;
 }
 
+/* Stop mobile browsers inflating text in landscape, which re-flows layouts. */
+html {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+/* Media never outgrows its container. */
+img, video {
+  max-width: 100%;
+}
+
 body {
   min-height: 100vh;
   text-rendering: optimizeSpeed;
@@ -71,17 +82,23 @@ body {
 .font-eyebrow { font: var(--font-eyebrow); }
 .font-micro { font: var(--font-micro); }
 
-@media (max-width: 1199px) {
+@media (max-width: 1199.98px) {
   :root {
     --gutter: 48px;
-    --font-h1: 700 48px/56px var(--font-family);
+    --page-gutter: 48px;
+    --section-pad: 72px;
+    --section-pad-sm: 56px;
+    --font-h1: 700 48px/52px var(--font-family);
   }
 }
 
-@media (max-width: 767px) {
+@media (max-width: 767.98px) {
   :root {
     --gutter: 20px;
-    --font-h1: 700 36px/44px var(--font-family);
+    --page-gutter: 20px;
+    --section-pad: 56px;
+    --section-pad-sm: 44px;
+    --font-h1: 700 36px/40px var(--font-family);
   }
 }
 
