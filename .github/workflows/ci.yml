@@ -1242,6 +1242,27 @@ jobs:
         env:
           SELAHCUE_HEADLESS_REQUIRE: "1"
         run: npm run test:states
+      # GAP-07 (ClickUp 17tnw2b0q9g): every route at 320/375/768/1024/1440 in a real browser --
+      # no sideways scroll, no clipped content, the mobile nav sheet's focus/Escape/scroll-lock
+      # paths, footer sections, 44px touch targets, reduced motion. Runs against the `dist/`
+      # the Build step just produced. Both engines, because the WebKit-only layout traps
+      # (flex <select>, grid implicit rows, `hidden` vs a class `display`) do not reproduce in
+      # Blink. Playwright is pinned to the same release the operator WebKit smoke uses so the
+      # engines under test are reproducible; bump them together. REQUIRE=1 makes a missing
+      # engine a hard failure instead of a silent skip that reads as a pass.
+      - name: Install Playwright (Chromium + WebKit)
+        run: |
+          python3 -m pip install --quiet playwright==1.60.0
+          python3 -m playwright install --with-deps chromium webkit
+      - name: Responsive sweep (Chromium)
+        env:
+          SELAHCUE_SWEEP_REQUIRE: "1"
+        run: python3 scripts/responsive_sweep.py --engine chromium
+      - name: Responsive sweep (WebKit)
+        if: ${{ !cancelled() }}
+        env:
+          SELAHCUE_SWEEP_REQUIRE: "1"
+        run: python3 scripts/responsive_sweep.py --engine webkit
 
   audit:
     name: dependency audit (RustSec)

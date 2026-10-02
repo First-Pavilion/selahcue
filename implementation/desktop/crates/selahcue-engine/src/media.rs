@@ -477,8 +477,9 @@ fn probe_jpeg(bytes: &[u8], limits: &DecodeLimits) -> Result<ImageInfo, DecodeEr
 fn png_header<'a>(
     bytes: &'a [u8],
     limits: &DecodeLimits,
-) -> Result<png::Reader<&'a [u8]>, DecodeError> {
-    let mut decoder = png::Decoder::new(bytes);
+) -> Result<png::Reader<std::io::Cursor<&'a [u8]>>, DecodeError> {
+    // png 0.18's decoder reads through `BufRead + Seek`; a `Cursor` over the slice is both, with no copy.
+    let mut decoder = png::Decoder::new(std::io::Cursor::new(bytes));
     // Normalise to straight 8-bit and expand palette/low-bit-gray/tRNS so the output is
     // one of Grayscale / GrayscaleAlpha / Rgb / Rgba at 8 bits — deterministic, no gamma.
     decoder.set_transformations(png::Transformations::normalize_to_color8());
@@ -528,7 +529,10 @@ fn decode_png_inner(bytes: &[u8], limits: &DecodeLimits) -> Result<DecodedImage,
     // of having exactly one copy of the admission rule.
     let mut reader = png_header(bytes, limits)?;
 
-    let mut buf = vec![0u8; reader.output_buffer_size()];
+    // png 0.18 returns `None` when the buffer size overflows `usize`. The probe above has already
+    // admitted the dimensions under `max_pixels`, so this cannot happen here, but if it ever did the
+    // right answer is to refuse the image, not to allocate something unrelated to its size.
+    let mut buf = vec![0u8; reader.output_buffer_size().ok_or(DecodeError::Oversize)?];
     let out = reader
         .next_frame(&mut buf)
         .map_err(|_| DecodeError::Malformed)?;
