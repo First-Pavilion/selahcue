@@ -360,11 +360,28 @@ fn a_worst_case_import_stays_inside_the_documented_budget() {
     // once while reading them and once inside the sink. A decode adds two {DECODED_PLANE}-byte
     // planes on top of that — several times the encoded figure — so the two outcomes are far
     // apart and this discriminates between them rather than sitting between two similar numbers.
+    // The PNG header probe also holds the decoder's own fixed working state (its inflater tables
+    // and row/window buffers), which does not depend on the image at all. Measured on png 0.18.1:
+    // exactly 150,648 bytes at 256x256, 1024x1024, 2048x2048, 4096x1024 and 1024x4096 alike — the
+    // same constant at 4 Mpx as at 65 Kpx, so it is state, not pixels. (png 0.17's was small enough
+    // to hide inside the `3 x encoded` slack, which is how this bound was first calibrated.) The
+    // allowance is 2.5x the measured constant so an allocator or platform difference cannot flake
+    // the test, and it is still ~59x below what a decode costs.
+    const PNG_PROBE_STATE_ALLOWANCE: usize = 384 * 1024;
     assert!(
-        big_peak < big_encoded * 3,
+        big_peak < big_encoded * 3 + PNG_PROBE_STATE_ALLOWANCE,
         "a 4 Mpx image peaked at {big_peak} bytes over {big_encoded} encoded; a decode would add \
          two {DECODED_PLANE}-byte planes, so the importer is decoding pixels it does not need — \
          which was over 99 % of import time"
+    );
+    // And, independent of how the encoded size and the decoder's constant are accounted: the whole
+    // import of a 4 Mpx image must cost under a SIXTEENTH of the one RGBA plane a decode would
+    // allocate (1 MiB against 16 MiB) — the property the bound above exists to protect, stated
+    // directly so a future decoder bump has to move a number that means something.
+    assert!(
+        big_peak < DECODED_PLANE / 16,
+        "a 4 Mpx image peaked at {big_peak} bytes, not far enough under the {DECODED_PLANE}-byte \
+         plane a decode would allocate"
     );
 
     // 4b. And the same weighing on the negative path, which is what makes "never handed to a

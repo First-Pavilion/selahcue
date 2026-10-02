@@ -30,9 +30,12 @@
 //!    import continues. Disk-full mid-import degrades to a text-only deck plus an honest report,
 //!    never to a failed import or, worse, a deck referencing media that is not there (§8.4).
 //!
-//! Like `DeckLibrary`, **persistence here is best-effort**: a database error is swallowed, because
-//! losing the registry must never block editing. Losing the *files* is a different matter, which is
-//! why file errors are typed and surfaced per slot rather than swallowed.
+//! Unlike `DeckLibrary`, **a failed registry write is not swallowed**: it is returned
+//! ([`MediaStoreError::RegistryWrite`]) so the command that caused it can undo itself and tell the
+//! operator, because "Imported 3 images" over a registry that will forget them at the next launch is
+//! the very loss this module exists to prevent. Running with *no* database at all (the in-memory
+//! fallback) stays a supported, honestly-labelled mode ([`MediaStore::is_persistent`]). File errors
+//! are typed and surfaced per slot for the same reason.
 
 // DELETE THIS ALLOW once every item below has a caller. The operator is a *binary* crate, so `pub`
 // exempts nothing from `dead_code`, and its clippy gate is `-D warnings`; this module lands complete
@@ -42,12 +45,16 @@
 // so the lint fires in one build and not the other.
 #![allow(dead_code)] // wired into main.rs / remove_media as the import lands (ADR-0024)
 
-use selahcue_core::media::{MediaAsset, MediaLibrary, MAX_MEDIA_ASSETS, MAX_MEDIA_PATH_LEN};
+use crate::safe_import::read_validated_image;
+use selahcue_core::media::{
+    normalize_media_name, MediaAsset, MediaLibrary, MAX_MEDIA_ASSETS, MAX_MEDIA_PATH_LEN,
+};
 use selahcue_data::{media_repo, Database};
 use std::fs::{self, OpenOptions};
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::Arc;
 
 /// The media root's directory name under the app data dir. A constant rather than a literal because
 /// [`is_app_owned`] and [`sweep_stale_staging`] must agree with the writer about where "app-owned"
@@ -147,6 +154,10 @@ pub enum MediaStoreError {
     /// [`MediaAsset`]/`MediaRef`, both of which are `String`-typed. Refused rather than lossily
     /// converted — a mangled path would point at a file that does not exist.
     PathNotUtf8,
+    /// The media registry could not be written to the database (disk full, a read-only location, a
+    /// locked or damaged file). Carries no detail on purpose: the database's own message can name a
+    /// path, and the operator needs the consequence, not the diagnosis (ADR-0011 / FR-082).
+    RegistryWrite,
 }
 
 impl std::fmt::Display for MediaStoreError {
@@ -161,6 +172,9 @@ impl std::fmt::Display for MediaStoreError {
             MediaStoreError::NameSpaceExhausted => "the media folder has no free file name left",
             MediaStoreError::PathTooLong => "the media folder's path is too long to store an image",
             MediaStoreError::PathNotUtf8 => "the media folder's path can't be stored",
+            MediaStoreError::RegistryWrite => {
+                "the media library couldn't be saved (the disk may be full or read-only)"
+            }
         };
         f.write_str(s)
     }
@@ -359,6 +373,15 @@ impl ImportStaging {
     /// Consumes the staging area: the directory (and anything still in it, such as a file whose
     /// rename failed) is removed on the way out, so a partial commit leaves no debris.
     pub fn commit(self, start_index: usize) -> CommitResult {
+        self.commit_from(start_index).0
+    }
+
+    /// [`ImportStaging::commit`], also returning the first name index this commit did **not**
+    /// claim — one past the highest `import-<n>` it tried. A caller that feeds that back as the
+    /// next `start_index` never hands a name out twice, even after the earlier file was deleted
+    /// (see [`MediaStore`]: the engine caches decodes by path, so a recycled name could resurrect a
+    /// stale picture).
+    pub fn commit_from(self, start_index: usize) -> (CommitResult, usize) {
         let mut result = CommitResult::default();
         let mut next = start_index;
         for entry in &self.staged {
@@ -372,7 +395,7 @@ impl ImportStaging {
                 }),
             }
         }
-        result
+        (result, next)
     }
 
     /// Discard everything staged: the directory and its contents go, the media root is untouched.
@@ -511,21 +534,26 @@ pub fn is_app_owned(path: &Path, app_data: &Path) -> bool {
     }
 }
 
-// --- persistence (best-effort; a DB error is swallowed, exactly as in `DeckLibrary`) -------------
+// --- persistence ---------------------------------------------------------------------------------
 
 /// Persist the whole media registry, replacing the stored set (`media_repo::save_all` is
 /// transactional, so a removal in memory becomes a removal on disk and a crash mid-write never
 /// leaves half a set).
 ///
-/// Best-effort by design: `db` is `None` when the operator is running its in-memory fallback, and a
-/// database error is swallowed. The registry is recovery, not a dependency — an operator whose disk
-/// is read-only must still be able to build a service, and `DeckLibrary::is_persistent` already
-/// gives the UI an honest "changes won't be saved" state to surface for both.
-pub fn save(db: Option<&Database>, library: &MediaLibrary) {
+/// `db` is `None` when the operator is running its in-memory fallback: there is nothing to write,
+/// which is **not** a failure (`Ok`) — [`MediaStore::is_persistent`] is what tells the UI the
+/// library will not survive a restart. A database that exists but **refuses the write** (disk full,
+/// a read-only location, a locked file) is a failure and is returned as
+/// [`MediaStoreError::RegistryWrite`]. It used to be swallowed (`let _ =`), so an import into an
+/// unwritable store still reported "Imported N images" and the registry forgot them at the next
+/// launch — the exact loss this module exists to prevent. The *caller* decides what a failure
+/// means for what it just did (an import rolls back and deletes its copies; a removal puts the
+/// asset back); this function only refuses to hide it.
+pub fn save(db: Option<&Database>, library: &MediaLibrary) -> Result<(), MediaStoreError> {
     let Some(db) = db else {
-        return;
+        return Ok(());
     };
-    let _ = media_repo::save_all(db, library.assets());
+    media_repo::save_all(db, library.assets()).map_err(|_| MediaStoreError::RegistryWrite)
 }
 
 /// Rehydrate the media registry at launch — the missing half that made every imported image
@@ -551,8 +579,344 @@ pub fn load(db: Option<&Database>) -> MediaLibrary {
     MediaLibrary::from_assets(assets)
 }
 
+// --- the shell-facing store: copy-on-import, persistence, delete-what-we-own, thumbnails ---------
+
+/// Largest side, in pixels, of any thumbnail the shell will produce. The IPC payload is base64
+/// RGBA, so this bounds it (240 × 240 × 4 ≈ 230 KiB) whatever size a caller asks for.
+pub const THUMB_MAX_DIM: u32 = 240;
+
+/// The largest file a thumbnail will read: the same cap every picked image is admitted under, so a
+/// library entry that was importable is thumbnail-able and nothing larger is slurped into memory.
+const MAX_THUMB_SOURCE_BYTES: u64 = 64 * 1024 * 1024;
+
+/// One picked image that now lives in the media store.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImportedFile {
+    /// The copy's path inside `<app_data>/media/` — what the library registers.
+    pub path: String,
+    /// The operator's own file name, cleaned; `None` only if nothing printable was left.
+    pub name: Option<String>,
+    /// The copy's size in bytes.
+    pub size_bytes: u64,
+}
+
+/// One picked file that was **not** imported, and why. Carries the file's *name* so the operator can
+/// see which one, and never its path (ADR-0011 / FR-082 redaction).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImportSkip {
+    /// The picked file's name (not path).
+    pub name: String,
+    /// Plain-English reason, from the typed errors' own `Display`.
+    pub reason: String,
+}
+
+/// What one import pass did: every file that landed and every file that did not. Never an error as
+/// a whole — a batch with one bad file is a partial success (§8.4).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CommittedBatch {
+    /// Files copied into the store, in pick order.
+    pub files: Vec<ImportedFile>,
+    /// Files refused or failed, with reasons.
+    pub skipped: Vec<ImportSkip>,
+}
+
+/// A decoded, downscaled picture: straight RGBA8, `w * h * 4` bytes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Thumb {
+    pub w: u32,
+    pub h: u32,
+    pub rgba: Vec<u8>,
+}
+
+/// How many thumbnails the shell will decode **at the same time**.
+///
+/// One decode can hold up to [`MAX_THUMB_SOURCE_BYTES`] (64 MiB) of file bytes *plus* the decoder's
+/// pixel buffer (the admission profile allows roughly 40 megapixels, ≈160 MiB of RGBA) — on the
+/// order of 220 MiB transient. The webview asks for a dozen tiles at once (the first fold) and for
+/// every further tile the moment it scrolls into view, and the media modal shows many more, so
+/// with no cap twenty concurrent decodes is about a gigabyte of transient memory on a machine that
+/// may be driving live output. Two is enough to keep the grid filling in smoothly; the rest queue.
+pub const MAX_CONCURRENT_THUMBNAILS: usize = 2;
+const _: () = assert!(
+    MAX_CONCURRENT_THUMBNAILS >= 1 && MAX_CONCURRENT_THUMBNAILS <= 3,
+    "the cap must stay small: it is what bounds a media page's transient memory"
+);
+
+/// The limiter behind [`MediaStore::thumbnail_slot`]: a semaphore of [`MAX_CONCURRENT_THUMBNAILS`]
+/// permits plus **per-store** counters that let a test see the cap bite. The counters are
+/// deliberately not global — a sibling test's decodes must not be able to mask this one's.
+struct ThumbnailGate {
+    permits: Arc<tokio::sync::Semaphore>,
+    /// Decodes running right now.
+    running: AtomicUsize,
+    /// The most that were ever running at once.
+    high_water: AtomicUsize,
+    /// Decodes begun, ever.
+    started: AtomicUsize,
+    /// The decoder. [`render_thumbnail`] in production.
+    render: fn(&str, u32, u32) -> Option<Thumb>,
+}
+
+impl ThumbnailGate {
+    fn new(render: fn(&str, u32, u32) -> Option<Thumb>) -> Self {
+        ThumbnailGate {
+            permits: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_THUMBNAILS)),
+            running: AtomicUsize::new(0),
+            high_water: AtomicUsize::new(0),
+            started: AtomicUsize::new(0),
+            render,
+        }
+    }
+}
+
+/// One of the store's thumbnail decode slots, held while a decode runs.
+pub struct ThumbnailSlot {
+    _permit: tokio::sync::OwnedSemaphorePermit,
+    gate: Arc<ThumbnailGate>,
+}
+
+impl ThumbnailSlot {
+    /// Decode one thumbnail (blocking — call it from a blocking thread) and release the slot.
+    /// Same contract as [`render_thumbnail`], which it calls in production.
+    pub fn render(self, path: &str, max_w: u32, max_h: u32) -> Option<Thumb> {
+        let gate = &self.gate;
+        gate.started.fetch_add(1, Ordering::Relaxed);
+        let now = gate.running.fetch_add(1, Ordering::SeqCst) + 1;
+        gate.high_water.fetch_max(now, Ordering::SeqCst);
+        // Decrement on every exit, including a panic inside the decoder.
+        struct Running<'a>(&'a AtomicUsize);
+        impl Drop for Running<'_> {
+            fn drop(&mut self) {
+                self.0.fetch_sub(1, Ordering::SeqCst);
+            }
+        }
+        let _running = Running(&gate.running);
+        (gate.render)(path, max_w, max_h)
+    }
+}
+
+/// The operator's handle on its app-owned media: the folder under `<app_data>`, the database
+/// holding the registry, and the cursor that keeps generated file names from repeating.
+///
+/// All the file-system work an import needs lives here so it can run on a blocking thread without
+/// holding any of the workspace's locks; registering the results in the in-memory library is the
+/// workspace's job, afterwards.
+pub struct MediaStore {
+    app_data: PathBuf,
+    /// `None` → the registry lives in memory only (honest "changes won't be saved").
+    db: Option<std::sync::Mutex<Database>>,
+    /// First `import-<n>` index not yet handed out **in this session**. Monotonic: a deleted copy's
+    /// name is never offered again, because the engine caches decodes by path and a recycled name
+    /// could resurrect the old picture on a slide. `create_new` still makes any collision with a
+    /// file from an earlier session impossible; this only closes the within-session hole.
+    name_cursor: std::sync::atomic::AtomicUsize,
+    /// The one limiter every thumbnail decode goes through (see [`ThumbnailGate`]).
+    thumbs: Arc<ThumbnailGate>,
+}
+
+impl MediaStore {
+    /// Open the store rooted at `app_data`, with an optional registry database. Sweeps any staging
+    /// directory a crash left behind (B4) — which is why this must run once at launch, before the
+    /// first import.
+    pub fn open(app_data: PathBuf, db: Option<Database>) -> Self {
+        Self::open_with_renderer(app_data, db, render_thumbnail)
+    }
+
+    /// [`MediaStore::open`] with the thumbnail decoder swapped out. Production always passes
+    /// [`render_thumbnail`]; it is a parameter so a test can make a decode slow enough for
+    /// concurrent decodes to actually overlap (a real 8×4 PNG decodes in microseconds, so the
+    /// in-flight cap could not otherwise be observed to bite).
+    pub(crate) fn open_with_renderer(
+        app_data: PathBuf,
+        db: Option<Database>,
+        render: fn(&str, u32, u32) -> Option<Thumb>,
+    ) -> Self {
+        sweep_stale_staging(&app_data);
+        MediaStore {
+            app_data,
+            db: db.map(std::sync::Mutex::new),
+            name_cursor: std::sync::atomic::AtomicUsize::new(0),
+            thumbs: Arc::new(ThumbnailGate::new(render)),
+        }
+    }
+
+    /// Wait for one of the [`MAX_CONCURRENT_THUMBNAILS`] decode slots. `None` only if the limiter
+    /// was closed, which nothing does; the caller treats it as "no picture".
+    ///
+    /// The returned slot is the **only** way to decode a thumbnail through the store, and it is
+    /// consumed by the decode ([`ThumbnailSlot::render`]), so the slot is held for exactly as long
+    /// as the decode's memory is. Move it into the blocking closure, not around the `await`: if
+    /// the command's future is dropped mid-decode (the webview went away) the decode still runs to
+    /// completion on its blocking thread, and it must keep counting against the cap until it does.
+    pub async fn thumbnail_slot(&self) -> Option<ThumbnailSlot> {
+        let permit = Arc::clone(&self.thumbs.permits)
+            .acquire_owned()
+            .await
+            .ok()?;
+        Some(ThumbnailSlot {
+            _permit: permit,
+            gate: Arc::clone(&self.thumbs),
+        })
+    }
+
+    /// How many thumbnail decodes this store has started — the positive control for the in-flight
+    /// cap: a bound on "decodes in flight" is only meaningful if every decode went through it.
+    pub fn thumbnail_decodes_started(&self) -> usize {
+        self.thumbs.started.load(Ordering::Relaxed)
+    }
+
+    /// The most thumbnail decodes this store has ever had running at the same moment.
+    pub fn thumbnail_high_water(&self) -> usize {
+        self.thumbs.high_water.load(Ordering::Relaxed)
+    }
+
+    /// Whether imports are being written to disk. `false` means the registry will not survive a
+    /// restart, which the console should say rather than imply otherwise.
+    pub fn is_persistent(&self) -> bool {
+        self.db.is_some()
+    }
+
+    /// The media registry as last saved — empty when there is no database or nothing was saved.
+    pub fn load_library(&self) -> MediaLibrary {
+        let Some(db) = &self.db else {
+            return MediaLibrary::new();
+        };
+        match db.lock() {
+            Ok(guard) => load(Some(&*guard)),
+            Err(_) => MediaLibrary::new(),
+        }
+    }
+
+    /// Persist the whole registry. `Ok` means it is on disk (or there is no database to write to —
+    /// see [`save`]; ask [`MediaStore::is_persistent`] whether that is the case). A failure is
+    /// returned, never swallowed, so the command that just changed the registry can undo itself and
+    /// say so; a poisoned database lock is a failure too, not a silent skip.
+    #[must_use = "a registry that failed to save must be reported, not assumed saved"]
+    pub fn save_library(&self, library: &MediaLibrary) -> Result<(), MediaStoreError> {
+        let Some(db) = &self.db else {
+            return Ok(());
+        };
+        let guard = db.lock().map_err(|_| MediaStoreError::RegistryWrite)?;
+        save(Some(&*guard), library)
+    }
+
+    /// Copy each picked file into the media store, validated and sniffed from the very bytes that
+    /// are written (see [`read_validated_image`]), and report what landed and what did not.
+    ///
+    /// `library_len` is the registry's current size: it caps how many files may be written, so a
+    /// full library refuses up front instead of leaving copies nothing points at.
+    ///
+    /// Sequential and streaming by construction: one file's bytes are held at a time and dropped
+    /// as soon as they are staged, so peak memory is one image whatever the batch size. Never
+    /// registers anything — the caller adds the returned files to the library, and if the library
+    /// refuses one it must [`MediaStore::delete_if_owned`] the copy so nothing is orphaned.
+    pub fn import_files(&self, picked: &[PathBuf], library_len: usize) -> CommittedBatch {
+        let mut batch = CommittedBatch::default();
+        let mut staging = match ImportStaging::begin(&self.app_data, library_len) {
+            Ok(staging) => staging,
+            Err(e) => {
+                // Cannot even open a staging area: every pick fails for the same, stated reason.
+                for path in picked {
+                    batch.skipped.push(ImportSkip {
+                        name: skip_label(path),
+                        reason: e.to_string(),
+                    });
+                }
+                return batch;
+            }
+        };
+        // The operator's name for each staged file, indexed by slot (slots count from zero in the
+        // order of staging — the contract `MediaSlot` documents).
+        let mut staged_names: Vec<Option<String>> = Vec::new();
+        for path in picked {
+            match read_validated_image(path) {
+                Err(e) => batch.skipped.push(ImportSkip {
+                    name: skip_label(path),
+                    reason: e.to_string(),
+                }),
+                Ok(image) => match staging.stage(&image.bytes, image.format) {
+                    Ok(_slot) => staged_names.push(normalize_media_name(&file_label(path))),
+                    Err(e) => batch.skipped.push(ImportSkip {
+                        name: skip_label(path),
+                        reason: e.to_string(),
+                    }),
+                },
+            }
+        }
+        let start = self.name_cursor.load(std::sync::atomic::Ordering::Relaxed);
+        let (result, next) = staging.commit_from(start);
+        self.name_cursor
+            .fetch_max(next, std::sync::atomic::Ordering::Relaxed);
+        for committed in result.committed {
+            let name = staged_names.get(committed.slot.0).cloned().flatten();
+            batch.files.push(ImportedFile {
+                path: committed.path,
+                name,
+                size_bytes: committed.size_bytes,
+            });
+        }
+        for failure in result.failed {
+            let name = staged_names
+                .get(failure.slot.0)
+                .cloned()
+                .flatten()
+                .unwrap_or_else(|| "file".to_string());
+            batch.skipped.push(ImportSkip {
+                name,
+                reason: failure.error.to_string(),
+            });
+        }
+        batch
+    }
+
+    /// Delete `path` **only if SelahCue put it in its own media folder** ([`is_app_owned`]); a file
+    /// the operator picked from their own Pictures folder is never touched. `true` when a file was
+    /// removed; a missing file or a refused path is a quiet `false`.
+    pub fn delete_if_owned(&self, path: &str) -> bool {
+        let path = Path::new(path);
+        is_app_owned(path, &self.app_data) && fs::remove_file(path).is_ok()
+    }
+}
+
+/// The file name of `path` as shown to the operator, or a placeholder when it has none.
+fn file_label(path: &Path) -> String {
+    path.file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "file".to_string())
+}
+
+/// [`file_label`], cleaned for a report line (never empty, never control characters).
+fn skip_label(path: &Path) -> String {
+    normalize_media_name(&file_label(path)).unwrap_or_else(|| "file".to_string())
+}
+
+/// Decode the image at `path` and shrink it into a box of at most `max_w` × `max_h` (each clamped
+/// to `1..=`[`THUMB_MAX_DIM`]) — one library tile's picture.
+///
+/// `None` for anything that cannot be drawn: missing, unreadable, over the size cap, or refused by
+/// the decoder's admission profile. The caller keeps the tile's existing "can't preview" state; this
+/// never panics and never caches (see `selahcue_present::thumbnail`).
+pub fn render_thumbnail(path: &str, max_w: u32, max_h: u32) -> Option<Thumb> {
+    let (max_w, max_h) = (max_w.clamp(1, THUMB_MAX_DIM), max_h.clamp(1, THUMB_MAX_DIM));
+    let mut bytes = Vec::new();
+    fs::File::open(path)
+        .ok()?
+        .take(MAX_THUMB_SOURCE_BYTES.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .ok()?;
+    if bytes.len() as u64 > MAX_THUMB_SOURCE_BYTES {
+        return None;
+    }
+    let image = selahcue_present::thumbnail(&bytes, max_w, max_h).ok()?;
+    Some(Thumb {
+        w: image.width(),
+        h: image.height(),
+        rgba: image.rgba().to_vec(),
+    })
+}
+
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
     use selahcue_core::media::{MediaId, MediaKind};
@@ -1020,7 +1384,7 @@ mod tests {
             )
             .unwrap();
 
-        save(Some(&db), &lib);
+        save(Some(&db), &lib).unwrap();
         let reloaded = load(Some(&db));
 
         assert_eq!(
@@ -1044,9 +1408,9 @@ mod tests {
             .unwrap();
         assert!(c > b && c > a, "next_id resumes past the persisted maximum");
 
-        // Best-effort: no database is an empty library and a silent save, never an error.
+        // No database is an empty library and a save that has nothing to write (Ok), never a panic.
         assert_eq!(load(None), MediaLibrary::new());
-        save(None, &lib);
+        save(None, &lib).unwrap();
     }
 
     #[test]
@@ -1061,6 +1425,7 @@ mod tests {
                 MediaAsset {
                     id: MediaId(1),
                     path: "/app/media/import-0.png".into(),
+                    name: None,
                     kind: MediaKind::Image,
                     size_bytes: 10,
                     width: None,
@@ -1071,6 +1436,7 @@ mod tests {
                 MediaAsset {
                     id: MediaId(2),
                     path: over_long,
+                    name: None,
                     kind: MediaKind::Image,
                     size_bytes: 10,
                     width: None,
@@ -1218,6 +1584,338 @@ mod tests {
             MediaStoreError::Full.to_string(),
             "the media library is full"
         );
+        assert_eq!(
+            MediaStoreError::RegistryWrite.to_string(),
+            "the media library couldn't be saved (the disk may be full or read-only)"
+        );
         let _: &dyn std::error::Error = &e; // the house error contract
+    }
+
+    // --- MediaStore: copy-on-import, persistence, delete-what-we-own, thumbnails ---------------
+
+    /// A real, decodable 8×4 RGBA PNG (generated once, embedded: the operator has no image
+    /// encoder and gains no dependency for a test fixture).
+    pub(crate) const PNG_8X4: [u8; 120] = [
+        0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44,
+        0x52, 0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00, 0x04, 0x08, 0x06, 0x00, 0x00, 0x00, 0xb3,
+        0xcd, 0x7e, 0xf0, 0x00, 0x00, 0x00, 0x3f, 0x49, 0x44, 0x41, 0x54, 0x78, 0xda, 0x15, 0xca,
+        0x31, 0x01, 0xc0, 0x30, 0x08, 0x00, 0x30, 0x94, 0x4c, 0x09, 0x4a, 0x50, 0xc2, 0x39, 0x15,
+        0x55, 0x82, 0x12, 0x0c, 0x6d, 0xe9, 0x91, 0x2f, 0x11, 0xf1, 0x7e, 0x0f, 0x49, 0xd1, 0x1c,
+        0x86, 0x25, 0x22, 0x05, 0x92, 0xa2, 0x39, 0x0c, 0x9b, 0x37, 0xb4, 0x40, 0x52, 0x34, 0x87,
+        0x61, 0xfb, 0x86, 0x11, 0x48, 0x8a, 0xe6, 0x30, 0x2c, 0x3f, 0xff, 0x54, 0x48, 0x41, 0xaf,
+        0xd2, 0xe1, 0xa6, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+    ];
+
+    /// A real 300×2 RGBA PNG — wider than [`THUMB_MAX_DIM`], so it is the only fixture that can
+    /// tell a clamped thumbnail request from an unclamped one (a smaller image is never enlarged).
+    pub(crate) const PNG_300X2: [u8; 89] = [
+        0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44,
+        0x52, 0x00, 0x00, 0x01, 0x2c, 0x00, 0x00, 0x00, 0x02, 0x08, 0x06, 0x00, 0x00, 0x00, 0xe2,
+        0xac, 0xe1, 0x87, 0x00, 0x00, 0x00, 0x20, 0x49, 0x44, 0x41, 0x54, 0x78, 0xda, 0x63, 0x38,
+        0x91, 0x62, 0xf4, 0x7f, 0x14, 0x8f, 0xe2, 0x51, 0x3c, 0x8a, 0x87, 0x02, 0x66, 0x18, 0x0d,
+        0x84, 0x51, 0x3c, 0x8a, 0x47, 0xf1, 0x50, 0xc1, 0x00, 0x4c, 0xe9, 0x8a, 0x44, 0x35, 0xbc,
+        0x38, 0x1a, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+    ];
+
+    /// Just enough of a JPEG for the magic-byte sniff (these tests never decode it).
+    pub(crate) const JPEG_STUB: [u8; 8] = [0xFF, 0xD8, 0xFF, 0xE0, 1, 2, 3, 4];
+
+    /// A user's own folder (never inside `<app_data>`) holding the files they pick from.
+    fn user_file(tag: &str, name: &str, bytes: &[u8]) -> PathBuf {
+        let dir = temp_app_data(&format!("user-{tag}"));
+        let path = dir.join(name);
+        fs::write(&path, bytes).unwrap();
+        path
+    }
+
+    fn open_store(app: &Path) -> MediaStore {
+        MediaStore::open(app.to_path_buf(), None)
+    }
+
+    #[test]
+    fn importing_copies_the_exact_bytes_into_the_store_and_leaves_the_original_alone() {
+        let app = temp_app_data("copy");
+        let original = user_file("copy", "Sunday banner.png", &PNG_8X4);
+        let store = open_store(&app);
+
+        let batch = store.import_files(std::slice::from_ref(&original), 0);
+
+        assert!(
+            batch.skipped.is_empty(),
+            "nothing refused: {:?}",
+            batch.skipped
+        );
+        assert_eq!(batch.files.len(), 1);
+        let f = &batch.files[0];
+        assert!(
+            is_app_owned(Path::new(&f.path), &app),
+            "the copy lives in the app's own media folder"
+        );
+        assert_eq!(fs::read(&f.path).unwrap(), PNG_8X4, "byte-identical copy");
+        assert_eq!(f.size_bytes, PNG_8X4.len() as u64);
+        assert_eq!(
+            fs::read(&original).unwrap(),
+            PNG_8X4,
+            "the user's own file is untouched"
+        );
+        assert_eq!(root_files(&app).len(), 1, "exactly one stored file");
+        assert!(
+            walk(&staging_root(&app)).is_empty(),
+            "no staging debris after a clean import"
+        );
+        fs::remove_dir_all(&app).ok();
+    }
+
+    #[test]
+    fn the_operators_own_file_name_is_kept_and_the_extension_comes_from_the_bytes() {
+        let app = temp_app_data("names");
+        // A JPEG that was saved with a .png name: the stored extension follows the CONTENT.
+        let liar = user_file("names", "Youth camp photo.png", &JPEG_STUB);
+        let store = open_store(&app);
+
+        let batch = store.import_files(&[liar], 0);
+
+        let f = &batch.files[0];
+        assert_eq!(f.name.as_deref(), Some("Youth camp photo.png"));
+        assert!(
+            f.path.ends_with(".jpg"),
+            "extension from the sniffed format, not the picked name: {}",
+            f.path
+        );
+        fs::remove_dir_all(&app).ok();
+    }
+
+    #[test]
+    fn one_bad_file_is_skipped_with_a_reason_and_the_rest_still_land() {
+        let app = temp_app_data("partial");
+        let elf = user_file(
+            "partial-a",
+            "notes.png",
+            &[0x7f, b'E', b'L', b'F', 0, 0, 0, 0],
+        );
+        let good = user_file("partial-b", "good.png", &PNG_8X4);
+        let gone = elf.with_file_name("vanished.png"); // never created
+        let store = open_store(&app);
+
+        let batch = store.import_files(&[elf.clone(), good, gone], 0);
+
+        assert_eq!(batch.files.len(), 1, "the good file landed");
+        assert_eq!(batch.skipped.len(), 2, "both bad files are reported");
+        for s in &batch.skipped {
+            assert!(!s.reason.is_empty(), "every skip says why");
+            assert!(
+                !s.reason.contains(std::path::MAIN_SEPARATOR)
+                    && !s.name.contains(std::path::MAIN_SEPARATOR),
+                "a skip names the file, never its path (ADR-0011): {s:?}"
+            );
+        }
+        let names: Vec<&str> = batch.skipped.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["notes.png", "vanished.png"],
+            "reported in pick order"
+        );
+        assert_eq!(
+            root_files(&app).len(),
+            1,
+            "no file written for a refused pick"
+        );
+        fs::remove_dir_all(&app).ok();
+    }
+
+    #[test]
+    fn a_full_library_refuses_every_pick_and_writes_nothing() {
+        let app = temp_app_data("full");
+        let good = user_file("full", "a.png", &PNG_8X4);
+        let store = open_store(&app);
+
+        let batch = store.import_files(&[good], MAX_MEDIA_ASSETS);
+
+        assert!(batch.files.is_empty());
+        assert_eq!(batch.skipped.len(), 1);
+        assert!(
+            batch.skipped[0].reason.contains("full"),
+            "the reason is the library cap: {:?}",
+            batch.skipped[0]
+        );
+        assert_eq!(root_files(&app), Vec::<String>::new(), "no orphan file");
+        fs::remove_dir_all(&app).ok();
+    }
+
+    #[test]
+    fn a_file_name_is_never_reused_in_a_session_even_after_its_copy_is_deleted() {
+        // The engine caches decodes by PATH. If `import-3.png` were handed out again for different
+        // pixels after the first was removed, a slide could keep showing the old picture.
+        let app = temp_app_data("reuse");
+        let a = user_file("reuse-a", "a.png", &PNG_8X4);
+        let b = user_file("reuse-b", "b.png", &PNG_8X4);
+        let store = open_store(&app);
+
+        let first = store.import_files(&[a], 0).files.remove(0);
+        assert!(store.delete_if_owned(&first.path), "the copy is deleted");
+        let second = store.import_files(&[b], 0).files.remove(0);
+
+        assert_ne!(
+            first.path, second.path,
+            "a deleted copy's name is not handed out again"
+        );
+        fs::remove_dir_all(&app).ok();
+    }
+
+    #[test]
+    fn delete_if_owned_removes_our_copy_and_never_a_users_own_file() {
+        let app = temp_app_data("delete");
+        let theirs = user_file("delete", "wedding.jpg", &JPEG_STUB);
+        let store = open_store(&app);
+        let ours = store
+            .import_files(std::slice::from_ref(&theirs), 0)
+            .files
+            .remove(0);
+
+        assert!(
+            !store.delete_if_owned(theirs.to_str().unwrap()),
+            "a path outside the media folder is never deleted"
+        );
+        assert!(theirs.exists(), "the user's file survives");
+        assert!(store.delete_if_owned(&ours.path));
+        assert!(!Path::new(&ours.path).exists(), "our copy is gone");
+        assert!(
+            !store.delete_if_owned(&ours.path),
+            "a second delete is a quiet no-op, not a panic"
+        );
+        fs::remove_dir_all(&app).ok();
+    }
+
+    #[test]
+    fn the_library_survives_a_restart_through_the_store() {
+        let app = temp_app_data("restart");
+        let path = app.join("selahcue.db3");
+        let mut lib = MediaLibrary::new();
+        {
+            let store = MediaStore::open(app.clone(), Some(Database::open(&path).unwrap()));
+            assert!(store.is_persistent());
+            let id = lib
+                .import("/m/import-0.png", MediaKind::Image, 99, None, None, None, 5)
+                .unwrap();
+            assert!(lib.set_name(id, "Sunday banner.png"));
+            store.save_library(&lib).unwrap();
+        } // the process "quits": everything in memory is gone
+        let store = MediaStore::open(app.clone(), Some(Database::open(&path).unwrap()));
+        let reloaded = store.load_library();
+        assert_eq!(
+            reloaded.assets(),
+            lib.assets(),
+            "same assets, names included, after a reopen"
+        );
+        fs::remove_dir_all(&app).ok();
+    }
+
+    #[test]
+    fn without_a_database_the_store_says_it_is_not_persistent_and_loads_empty() {
+        let app = temp_app_data("nodb");
+        let store = open_store(&app);
+        assert!(!store.is_persistent(), "an honest 'changes won't be saved'");
+        assert!(store.load_library().is_empty());
+        assert_eq!(
+            store.save_library(&MediaLibrary::new()),
+            Ok(()),
+            "no database is not a FAILED write — nothing was asked of one; `is_persistent` carries it"
+        );
+        fs::remove_dir_all(&app).ok();
+    }
+
+    /// A database that exists and opens but **refuses every write**: SQLite's own read-only open,
+    /// which is enforced by the engine itself (a permissions-based fixture would pass as root and
+    /// fail elsewhere).
+    fn read_only_db(app: &Path) -> Database {
+        let path = app.join("selahcue.db3");
+        drop(Database::open(&path).unwrap()); // create it, schema and all
+        Database::open_existing_readonly(&path).unwrap()
+    }
+
+    #[test]
+    fn a_registry_write_the_database_refuses_is_an_error_not_a_silent_success() {
+        let app = temp_app_data("rofail");
+        let mut lib = MediaLibrary::new();
+        lib.import("/m/import-0.png", MediaKind::Image, 9, None, None, None, 1)
+            .unwrap();
+
+        // The free function and the store both refuse to hide it. (Before, `save` swallowed the
+        // error and `save_library` returned nothing, so every caller reported "saved".)
+        let ro = read_only_db(&app);
+        assert_eq!(save(Some(&ro), &lib), Err(MediaStoreError::RegistryWrite));
+        let store = MediaStore::open(app.clone(), Some(ro));
+        assert!(
+            store.is_persistent(),
+            "premise: the store HAS a database, so only the write result can say it failed"
+        );
+        assert_eq!(
+            store.save_library(&lib),
+            Err(MediaStoreError::RegistryWrite),
+            "a database that refuses the write is a failed save, whatever is_persistent says"
+        );
+
+        // Positive control: the same call against a writable database succeeds, so the refusal
+        // above is the database's, not a method that can only ever fail.
+        let rw_dir = temp_app_data("rwok");
+        let rw = MediaStore::open(
+            rw_dir.clone(),
+            Some(Database::open(rw_dir.join("selahcue.db3")).unwrap()),
+        );
+        assert_eq!(rw.save_library(&lib), Ok(()));
+        assert_eq!(
+            rw.load_library().assets(),
+            lib.assets(),
+            "and it really wrote"
+        );
+        fs::remove_dir_all(&app).ok();
+        fs::remove_dir_all(&rw_dir).ok();
+    }
+
+    #[test]
+    fn opening_the_store_sweeps_staging_a_crash_left_behind() {
+        let app = temp_app_data("sweep");
+        let stale = staging_root(&app).join("123-dead-0");
+        fs::create_dir_all(&stale).unwrap();
+        fs::write(stale.join("0000.png"), b"half an import").unwrap();
+
+        let _store = open_store(&app);
+
+        assert!(!stale.exists(), "next-launch sweep (B4) ran on open");
+        fs::remove_dir_all(&app).ok();
+    }
+
+    #[test]
+    fn a_thumbnail_is_bounded_and_a_missing_or_corrupt_file_yields_none() {
+        let dir = temp_app_data("thumb");
+        let png = dir.join("pic.png");
+        fs::write(&png, PNG_8X4).unwrap();
+        let junk = dir.join("junk.png");
+        fs::write(&junk, b"definitely not an image").unwrap();
+
+        let t = render_thumbnail(png.to_str().unwrap(), 4, 4).expect("a real PNG yields pixels");
+        assert_eq!((t.w, t.h), (4, 2), "8×4 shrunk into a 4×4 box, aspect kept");
+        assert_eq!(t.rgba.len(), 4 * 2 * 4);
+
+        // A request for "as big as you like" is clamped. Only an image WIDER than the cap can show
+        // it (a smaller one is never enlarged, so it would pass with or without the clamp).
+        const _: () = assert!(THUMB_MAX_DIM < 300, "the fixture must exceed the cap");
+        let wide = dir.join("wide.png");
+        fs::write(&wide, PNG_300X2).unwrap();
+        let huge = render_thumbnail(wide.to_str().unwrap(), u32::MAX, u32::MAX).unwrap();
+        assert_eq!(
+            (huge.w, huge.h),
+            (THUMB_MAX_DIM, 1),
+            "a caller cannot ask for an unbounded thumbnail: 300×2 lands at the cap, not 300 wide"
+        );
+        assert!(
+            render_thumbnail(junk.to_str().unwrap(), 4, 4).is_none(),
+            "corrupt"
+        );
+        assert!(
+            render_thumbnail(dir.join("absent.png").to_str().unwrap(), 4, 4).is_none(),
+            "missing"
+        );
+        fs::remove_dir_all(&dir).ok();
     }
 }

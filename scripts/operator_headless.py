@@ -1824,6 +1824,32 @@ EXPECTED_MIN_CHECKS = 1952  # measured: 1952 checks, 0 FAIL (17tnw2b0ntd)
 # lands (PR #129 edited it as well; this one was re-measured on the merged tree).
 EXPECTED_MIN_CHECKS = 2002  # measured: 2002 checks, 0 FAIL
 
+# 17tnw2b0x4t (scripture one verse at a time, PR #143): +7 `range:` checks (a range detection's Stage
+# opens the first verse and stages only it, never a range; Approve narrows to the first verse while the
+# on-air card still lights, survives a later poll, and clears for a different verse). Count: 2002 on main
+# (after PR #153's launcher landed) + 7 = 2009, measured via an actual clean run on the merged tree, not
+# hand-summed. ANY PR that edits this constant must re-measure after the other of the two lands (PR #144,
+# 17tnw2b0x4u, edits it as well).
+EXPECTED_MIN_CHECKS = 2009  # measured: 2009 checks, 0 FAIL
+
+# 17tnw2b0x4u (Service Plan scripture range input, PR #144): +39 `range:` checks (the verse picker's
+# explicit idle/anchor/done click model so two clicks make a range from any starting state, typed range
+# spellings resolved through the host's own parser before linking, the chapter-end cut-back notice and
+# its second-press commit, and the refusal messages). Count: 2009 on main (after PR #143 landed, 2002 +
+# its 7) + 39 = 2048, measured via an actual clean run on the merged tree, not hand-summed. Measured on
+# its own against 2002 this PR was 2041; the tree holding both is 2048.
+EXPECTED_MIN_CHECKS = 2048  # measured: 2048 checks, 0 FAIL
+
+# 17tnw2b12d8 (media library: imports persist, are copied into app storage and draw real tile
+# pictures): +18 for the tile pictures + import report, and +8 from the PR #146 review round — Remove
+# no longer deletes a stored picture another saved deck still shows (the dialog's wording comes from
+# the view's `other_decks`, the toast says the file was kept, a host refusal is shown as its own text,
+# and Retry re-runs the same removal), and an import the registry could not save reports the file with
+# no "won't be kept" tail. Count: 2048 on main (after PR #143 and PR #144 landed) + 26 = 2074, measured
+# via an actual clean run of the merged tree, not hand-summed; any PR that edits this constant must
+# re-measure after the other lands.
+EXPECTED_MIN_CHECKS = 2074  # measured: 2074 checks, 0 FAIL
+
 
 def find_chrome():
     """Locate a Chrome/Chromium binary across dev (macOS) and CI (Linux)."""
@@ -2492,6 +2518,10 @@ STUB = r"""
     can_undo:false, can_redo:false
   };
   var dClone = function(){ return JSON.parse(JSON.stringify(D)); };
+  // Harness-only: patch one asset row of `D` (e.g. `other_decks`), picked up by the next view.
+  window.__setAsset = function(id, patch){
+    D.media.assets.forEach(function(a){ if (a.id === id) Object.keys(patch).forEach(function(k){ a[k] = patch[k]; }); });
+  };
   var dEdit = function(){ D.can_undo = true; D.can_redo = false; return dClone(); };
   // Providers & Privacy (Settings, node 338:124) — the operator-local ProvidersView the
   // providers_* commands return. Mirrors the REAL backend default in a stock build: on-device is the
@@ -2761,6 +2791,42 @@ STUB = r"""
     // containing "N-M" after the colon (e.g. "John 3:16-18") now gets a genuine range response,
     // so a test can actually exercise that branch instead of it being permanently dead code as
     // far as this suite can see.
+    // Opt-in REALISTIC get_chapter (window.__gcRealistic), used by the Service Plan link-modal checks.
+    // The default mock below hard-codes verse_start 5 and a two-verse chapter, which is fine for the
+    // checks that lean on those quirks but cannot answer "what does the host say about THIS typed
+    // reference": the modal now resolves typed text through get_chapter (the host's own parser) to
+    // get its canonical spelling and the real chapter length. This mirrors what the host returns:
+    // the book + chapter as the canonical name, the parsed verse range (end == start for a single
+    // verse, null for a whole chapter), the chapter's REAL verse list (Psalm 1 has six verses; any
+    // other chapter here has forty), the host's tolerant range syntax ("2 to 10", an en dash,
+    // "verses 2 through 10" — selahcue-core scripture.rs), and a rejection for what it cannot read.
+    if (cmd === "get_chapter" && window.__gcRealistic) {
+      var _rRef = (args && args.reference) ? String(args.reference) : "";
+      var _rNorm = _rRef.replace(/[\u2010-\u2014\u2212]/g, "-").replace(/\s*-\s*/g, "-")
+        .replace(/(\d)\s+(?:to|through|thru)\s+(\d)/gi, "$1-$2").replace(/\b(?:chapters?|verses?)\b\s*/gi, "").trim();
+      var _rm = /BADREF/i.test(_rNorm) ? null : /^(.*?)\s*(\d+)(?:[:\s]\s*(\d+)(?:-(\d+))?)?$/.exec(_rNorm);
+      if (!_rm || (_rm[4] && +_rm[4] < +_rm[3])) return Promise.reject("not a reference: " + _rRef);
+      // A well-formed reference the corpus has no chapter for (the real host: "no such chapter").
+      if (/NOCHAPTER/i.test(_rNorm)) return Promise.reject("no such chapter: " + _rRef);
+      var _rBook = _rm[1].trim().replace(/^psalm$/i, "Psalms"), _rChap = +_rm[2];
+      var _rSize = (/^psalms$/i.test(_rBook) && _rChap === 1) ? 6 : 40;
+      var _rVerses = [];
+      for (var _ri = 1; _ri <= _rSize; _ri++) _rVerses.push([_ri, "verse " + _ri + " text"]);
+      var _rResp = {
+        reference: _rBook + " " + _rChap, translation: "KJV", translations: ["KJV"], verses: _rVerses,
+        verse_start: _rm[3] ? +_rm[3] : null,
+        verse_end: _rm[4] ? +_rm[4] : (_rm[3] ? +_rm[3] : null),
+        // Like the real host: the neighbouring chapters as reference strings, null at the start.
+        prev: _rChap > 1 ? _rBook + " " + (_rChap - 1) : null, next: _rBook + " " + (_rChap + 1),
+      };
+      // One-shot DEFER hook (same contract as the default mock's): hold this fetch open so a check
+      // can close the modal / retype the input WHILE it is in flight, then release it.
+      if (window.__getChapterDeferOnce) {
+        window.__getChapterDeferOnce = false;
+        return new Promise(function (res) { window.__getChapterDeferredResolve = function () { res(_rResp); }; });
+      }
+      return Promise.resolve(_rResp);
+    }
     if (cmd === "get_chapter") {
       var _gcRef = (args && args.reference) ? String(args.reference) : "";
       var _gcRange = /:(\d+)-(\d+)/.exec(_gcRef);
@@ -2798,8 +2864,9 @@ STUB = r"""
     // called — Stage alone must never move it (CON-136's on-air card depends on this distinction:
     // it only claims on-air once view.live_scripture genuinely matches the approved reference).
     // Quinn's QA review (PR #61, bug 17tnw2axre8): the real host's ApproveDetection handler
-    // (controller.rs's stage_reference_for_detection) narrows a WHOLE-CHAPTER reference (no
-    // verse) to its first verse before staging — "Isaiah 61" goes live as "Isaiah 61:1". This
+    // (controller.rs's narrow_to_first_verse) narrows a WHOLE-CHAPTER reference (no
+    // verse) to its first verse before staging — "Isaiah 61" goes live as "Isaiah 61:1" — and
+    // a RANGE to its first verse ("Romans 8:28-30" goes live as "Romans 8:28"). This
     // mock reproduces exactly that so app.js's fix is exercised against the real transformation,
     // not a hand-picked string: a reference with no ":" names no verse (every reference string
     // used anywhere in this fixture set follows "Book Chapter:Verse" when a verse is present),
@@ -2810,9 +2877,10 @@ STUB = r"""
     if (cmd === "approve_detection") {
       var _apDet = (V.detections || []).find(function (x) { return x.id === args.detectionId; });
       if (_apDet) {
+        var _apRange = /^(.+:\d+)-\d+$/.exec(_apDet.reference);
         V.__lastApprovedRef = _apDet.reference.indexOf(":") < 0
           ? _apDet.reference + ":1"
-          : _apDet.reference;
+          : (_apRange ? _apRange[1] : _apDet.reference);
         V.detections = (V.detections || []).filter(function (x) { return x.id !== args.detectionId; });
       }
       return Promise.resolve(JSON.parse(JSON.stringify(V)));
@@ -3504,11 +3572,49 @@ STUB = r"""
     }
     if (cmd === "deck_duplicate_slide" || cmd === "deck_reorder_slide")
       return Promise.resolve(dEdit());
-    if (cmd === "deck_import_image") {
-      D.media.assets.push({id:99,name:"picked.png",kind:"image",size_label:"1.0 MB",missing:false,unused:true});
-      D.media.unused_count += 1; return Promise.resolve(dClone());
+    // Multi-file import (copy-on-import). `window.__importN` adds that many assets in one pick
+    // (default 1; the first keeps the historical id 99), `window.__importReport` overrides the
+    // host's `import_report` (skip reasons / `saved:false`), and — like the real host — the report
+    // rides on the returned view, never on the persisted DeckView `D`.
+    if (cmd === "deck_import_images") {
+      // Harness-only re-render: hand back the current `D` unchanged (no report), so a check that
+      // patched an asset through `window.__setAsset` can have the surface render it.
+      if (window.__importRefresh) return Promise.resolve(dClone());
+      // Harness-only cleanup: drop every imported asset (ids >= 99) so a check that floods the
+      // library does not leak 100 tiles into the checks that follow it.
+      if (window.__importPurge) {
+        D.media.assets = D.media.assets.filter(function(a){ return a.id < 99; });
+        D.media.unused_count = 3; window.__importSeq = 0;
+        var vPurge = dClone(); vPurge.import_report = {imported:0, skipped:[], saved:true};
+        return Promise.resolve(vPurge);
+      }
+      var nImp = window.__importN || 1;
+      for (var iImp = 0; iImp < nImp; iImp++) {
+        var idImp = (D.media.assets.some(function(a){return a.id===99;}) ? 100 + (window.__importSeq = (window.__importSeq||0) + 1) : 99);
+        D.media.assets.push({id:idImp,name:(idImp===99?"picked.png":"import "+idImp+".png"),path:"/app/media/import-"+idImp+".png",kind:"image",size_label:"1.0 MB",missing:false,unused:true,uses:0});
+        D.media.unused_count += 1;
+      }
+      var vImp = dClone();
+      vImp.import_report = window.__importReport || {imported:nImp, skipped:[], saved:true};
+      return Promise.resolve(vImp);
     }
-    if (cmd === "deck_remove_media") return Promise.resolve(dClone());
+    // One tile's picture: a real RGBA frame (non-zero pixels, so a blank canvas is detectable),
+    // or — for ids in `window.__thumbFailIds` — the host's "can't draw this" answer.
+    if (cmd === "media_thumbnail") {
+      if ((window.__thumbFailIds || []).indexOf(args.id) >= 0) return Promise.resolve({available:false, frame:null});
+      var tw = 8, th = 4, tb = "";
+      for (var ti = 0; ti < tw * th; ti++) tb += String.fromCharCode(200, (ti * 17) % 256, 60, 255);
+      return Promise.resolve({available:true, frame:{w:tw, h:th, rgba:btoa(tb)}});
+    }
+    // Remove-media. `window.__removeFail` makes the host refuse with that text (the registry could
+    // not be saved: nothing was removed), `window.__removeReport` is the `remove_report` it attaches
+    // to the returned view (like the real host, never to the persisted DeckView `D`).
+    if (cmd === "deck_remove_media") {
+      if (window.__removeFail) return Promise.reject(window.__removeFail);
+      var vRm = dClone();
+      if (window.__removeReport) vRm.remove_report = window.__removeReport;
+      return Promise.resolve(vRm);
+    }
     // --- Providers & Privacy (Settings 338:124) ---
     if (cmd === "providers_view") return Promise.resolve(ppView()); // the resync read is NEVER rejected
     // One-shot rejection hook for the PP MUTATION commands only (not providers_view): lets the driver
@@ -4878,7 +4984,7 @@ DRIVER = r"""
          "CON-134 (Sana finding 1, range coverage): Edit opens a range reference in the chapter browser");
       var callsAfterRangeEdit = window.__calls.slice(callsBeforeRangeEdit);
       ok(!callsAfterRangeEdit.some(function (c) { return c.cmd === "stage_scripture" || c.cmd === "follow_scripture"; }),
-         "CON-134 (Sana finding 1, range coverage): Edit never stages a RANGE reference either — the isRange branch's own stage=false guard, not just the single-verse one");
+         "CON-134 (Sana finding 1, range coverage): Edit never stages a RANGE reference either — the stage=false guard, not just for a single verse");
       // Sana's follow-up security review (PR #64, finding B): setCursor's own clearTimeout only
       // runs once setCursor itself is reached — but loadChapter's get_chapter fetch sits BEFORE
       // that call, so a timer already pending when a read-only load STARTS can still fire mid-
@@ -5044,7 +5150,7 @@ DRIVER = r"""
 
       // === CON-136 / Quinn's QA review (PR #61, bug 17tnw2axre8): a WHOLE-CHAPTER detection
       // (e.g. a spoken "Isaiah 61", no verse) never lit the on-air card. controller.rs's
-      // stage_reference_for_detection (the ApproveDetection handler) narrows a bare "Book
+      // narrow_to_first_verse (the ApproveDetection handler) narrows a bare "Book
       // Chapter" reference to its first verse before it goes live — d.reference stays
       // "Isaiah 61" but view.live_scripture reads "Isaiah 61:1" — so a bare === compare could
       // never match this real, common input shape. The mock's go_live already reproduces this
@@ -5073,6 +5179,52 @@ DRIVER = r"""
       render(Object.assign({}, chapterView, { live_scripture: "Isaiah 62:1" }));
       ok(el("det-onair").hidden,
          "CON-136 (Quinn, control): a genuinely different live reference still clears the card — the narrowing match is exact, not fuzzy");
+      window.__detResetForTest();
+      render(baseView);
+
+      // === ONE VERSE AT A TIME (range detections). A spoken range ("Romans 8:28-30") used to be
+      // staged as ONE slide holding all three verses, shrunk until they fit. Stage must now open the
+      // chapter at the first verse and stage ONLY that verse, and Approve must put only that verse
+      // on air — with the on-air card still lighting, because the host narrows the range exactly
+      // like it narrows a bare chapter. ===
+      window.__detResetForTest();
+      render(Object.assign({}, baseView, { detections: [
+        { id: 988, reference: "Romans 8:28-30", text: "And we know that all things work together", confidence: 90 },
+      ] }));
+      var callsBeforeRangeStage = window.__calls.length;
+      el("detections-list").querySelector(".det-stage").click();
+      await sleep(220); // > setCursor's 120ms stageTimer debounce
+      var rangeStaged = window.__calls.slice(callsBeforeRangeStage).filter(function (c) {
+        return c.cmd === "stage_scripture" || c.cmd === "follow_scripture";
+      });
+      ok(rangeStaged.length >= 1,
+         "range: Stage on a range detection does stage a verse (positive control — the one-verse guard below is not vacuous)");
+      ok(rangeStaged.every(function (c) { return c.args.reference === "Romans 8:28"; }),
+         "range: Stage stages ONLY the first verse (Romans 8:28), never the whole range on one slide — got " +
+         JSON.stringify(rangeStaged.map(function (c) { return c.args.reference; })));
+      ok(!window.__calls.slice(callsBeforeRangeStage).some(function (c) {
+           return (c.cmd === "stage_scripture" || c.cmd === "follow_scripture") && /:\d+-\d+$/.test(String(c.args.reference));
+         }),
+         "range: no staging command ever carries a verse RANGE reference");
+
+      window.__detResetForTest();
+      var rangeView = Object.assign({}, baseView, { detections: [
+        { id: 987, reference: "Romans 8:28-30", text: "And we know that all things work together", confidence: 90 },
+      ] });
+      render(rangeView);
+      V.detections = rangeView.detections;
+      el("detections-list").querySelector(".det-approve").click();
+      await sleep(15);
+      ok(V.live_scripture === "Romans 8:28",
+         "range (premise): the mock host narrowed the range detection to its first verse, like the real host");
+      ok(!el("det-onair").hidden && el("det-onair-ref").textContent === "Romans 8:28-30",
+         "range: the on-air card lights for a range detection even though live_scripture is the host-narrowed 'Romans 8:28'");
+      render(Object.assign({}, rangeView, { live_scripture: "Romans 8:28" }));
+      ok(!el("det-onair").hidden,
+         "range: the on-air card SURVIVES a later poll on the narrowed first verse");
+      render(Object.assign({}, rangeView, { live_scripture: "Romans 8:29" }));
+      ok(el("det-onair").hidden,
+         "range (control): a different verse live clears the card — the match is the range's FIRST verse only, not any verse in it");
       window.__detResetForTest();
       render(baseView);
 
@@ -5388,7 +5540,7 @@ DRIVER = r"""
          "CON-138 (range coverage): re-stage opens the range reference in the chapter browser");
       var callsAfterRangeRestage = window.__calls.slice(callsBeforeRangeRestage);
       ok(!callsAfterRangeRestage.some(function (c) { return c.cmd === "stage_scripture" || c.cmd === "follow_scripture"; }),
-         "CON-138 (Sana finding 1, range coverage): re-stage never stages a RANGE reference either — the isRange branch's own stage=false guard");
+         "CON-138 (Sana finding 1, range coverage): re-stage never stages a RANGE reference either — the stage=false guard");
       liveBtn.click();
       // DET_HISTORY_MAX bounds the log so it cannot grow without limit across a long service
       // (bounded-memory). Dismiss 60 distinct detections, OLDEST (#0) first through NEWEST
@@ -6235,6 +6387,79 @@ DRIVER = r"""
       document.querySelector('#surface-presentation .pm-mtab[data-filter="image"]').click();
       ok(!Array.from(document.querySelectorAll("#pm-media-grid .pm-asset .pm-asset-meta")).some(function(m){ return /VIDEO/.test(m.textContent); }), "PM: the Images filter hides video assets");
       document.querySelector('#surface-presentation .pm-mtab[data-filter="all"]').click();
+      // --- Media tile pictures + import report. An image tile used to be an empty gradient box:
+      // nothing ever drew the picture. The host decodes it (`media_thumbnail`); the tile blits it.
+      await waitFor(function(){ return document.querySelector("#pm-media-grid .pm-asset-thumb.has-pic"); });
+      var picThumb = document.querySelector("#pm-media-grid .pm-asset:not(.missing) .pm-asset-thumb.has-pic");
+      ok(!!picThumb, "PM media: an image tile paints its picture (it used to be an empty gradient box)");
+      var picCv = picThumb && picThumb.querySelector("canvas.pm-asset-canvas");
+      var picPx = picCv ? picCv.getContext("2d").getImageData(0, 0, picCv.width, picCv.height).data : [];
+      ok(!!picCv && picCv.width === 8 && picCv.height === 4 && picPx[0] === 200 && picPx[3] === 255,
+         "PM media: the tile's canvas holds the host's real pixels (8×4, first pixel r=200 a=255), not a blank buffer");
+      var thumbCalls = function(id){ return window.__calls.filter(function(c){ return c.cmd === "media_thumbnail" && c.args.id === id; }); };
+      ok(thumbCalls(1).length === 1, "PM media: a tile's picture is requested ONCE across many re-renders (cached), got " + thumbCalls(1).length);
+      ok(thumbCalls(1)[0].args.maxW === 240 && thumbCalls(1)[0].args.maxH === 240, "PM media: the picture is requested inside the host's 240px box (camelCase args cross to max_w/max_h)");
+      ok(thumbCalls(4).length === 0 && thumbCalls(3).length === 0, "PM media: a missing image and a video are never asked for a picture");
+      ok(window.__pmMediaThumbDebug.cached(1) === true && window.__pmMediaThumbDebug.cached(4) === null,
+         "PM media: the per-key cache accessor reports a cached id true and a never-requested id null");
+      // Import: the multi-file command, a status toast, the operator's own file name, a picture at once.
+      el("pm-import").click();
+      await waitFor(function(){ return /Imported 1 image\./.test(el("pm-toast").textContent); });
+      ok(window.__calls.some(function(c){ return c.cmd === "deck_import_images"; }) && !window.__calls.some(function(c){ return c.cmd === "deck_import_image"; }),
+         "PM media: + Import drives deck_import_images (the retired single-file command is not called)");
+      ok(/Imported 1 image\./.test(el("pm-toast").textContent) && el("pm-error").hidden, "PM media: a clean import says how many images landed and leaves no error banner");
+      var tileByName = function(re){ return Array.from(document.querySelectorAll("#pm-media-grid .pm-asset")).filter(function(c){ return re.test(c.textContent); })[0]; };
+      ok(!!tileByName(/picked\.png/), "PM media: the imported image appears under the operator's own file name");
+      await waitFor(function(){ var t = tileByName(/picked\.png/); return t && t.querySelector(".pm-asset-thumb.has-pic"); });
+      ok(!!tileByName(/picked\.png/).querySelector(".pm-asset-thumb.has-pic"), "PM media: a freshly imported image shows its picture straight away");
+      // A file the host skipped is named with its reason, in a persistent banner (not a retry prompt).
+      window.__thumbFailIds = [101];
+      window.__importReport = {imported:1, skipped:[{name:"notes.png", reason:"that file isn’t a supported image (PNG or JPEG)"}], saved:true};
+      el("pm-import").click();
+      await waitFor(function(){ return !el("pm-error").hidden; });
+      var errTxt = el("pm-error-msg").textContent;
+      ok(/Imported 1\./.test(errTxt) && /notes\.png/.test(errTxt) && /isn’t a supported image/.test(errTxt) && !/retry/i.test(errTxt),
+         "PM media: a skipped file is named with the host's reason in a persistent banner, not 'please retry': " + errTxt);
+      // A picture the host cannot draw is an honest "Can't preview", never a silent blank tile.
+      await waitFor(function(){ var t = tileByName(/import 101/); return t && t.querySelector(".pm-thumb-fail"); });
+      var failThumb = tileByName(/import 101/).querySelector(".pm-asset-thumb");
+      ok(/Can’t preview/.test(failThumb.textContent) && !failThumb.classList.contains("has-pic")
+         && getComputedStyle(failThumb.querySelector("canvas")).display === "none",
+         "PM media: an undrawable picture shows 'Can’t preview' and hides the empty canvas (computed display, not just [hidden])");
+      ok(window.__pmMediaThumbDebug.cached(101) === false, "PM media: an undrawable picture is cached as 'can't draw' so it is asked for once, not on every render");
+      // A batch the host rolled back because the registry could not be saved imported NOTHING, so
+      // the banner names each file and the reason and does not add "These won't be kept".
+      window.__importReport = {imported:0, skipped:[{name:"banner.png", reason:"the media library couldn’t be saved (the disk may be full or read-only)"}], saved:false};
+      el("pm-import").click();
+      await waitFor(function(){ return !el("pm-error").hidden && /couldn’t be saved/.test(el("pm-error-msg").textContent); });
+      ok(/banner\.png/.test(el("pm-error-msg").textContent) && !/won’t be kept/.test(el("pm-error-msg").textContent) && !/Imported/.test(el("pm-error-msg").textContent),
+         "PM media: a rolled-back import reports the file and reason, claims no import, and adds no 'won't be kept' tail: " + el("pm-error-msg").textContent);
+      // An unsaved registry is said out loud.
+      window.__thumbFailIds = [];
+      window.__importReport = {imported:1, skipped:[], saved:false};
+      el("pm-import").click();
+      await waitFor(function(){ return /won’t be kept after you quit/.test(el("pm-toast").textContent); });
+      ok(/won’t be kept after you quit/.test(el("pm-toast").textContent), "PM media: when the registry is not being saved the import says it won't survive a restart");
+      // The picture cache is BOUNDED. IntersectionObserver is switched off for this one flood so
+      // every tile loads eagerly: 100 more images against an 80-entry cap.
+      var ioSaved = window.IntersectionObserver; delete window.IntersectionObserver;
+      window.__importReport = null; window.__importN = 100;
+      el("pm-import").click();
+      var lastId = null;
+      await waitFor(function(){ lastId = 100 + (window.__importSeq || 0); return window.__pmMediaThumbDebug.cached(lastId) === true; });
+      var nPicTiles = document.querySelectorAll("#pm-media-grid canvas.pm-asset-canvas").length;
+      ok(nPicTiles > window.__pmMediaThumbDebug.max(), "PM media: premise — more picture tiles (" + nPicTiles + ") than the cache cap (" + window.__pmMediaThumbDebug.max() + ")");
+      ok(window.__pmMediaThumbDebug.size() === window.__pmMediaThumbDebug.max(),
+         "PM media: the picture cache holds exactly its cap (" + window.__pmMediaThumbDebug.size() + "), not one entry per tile");
+      ok(window.__pmMediaThumbDebug.cached(lastId) === true && window.__pmMediaThumbDebug.cached(1) === null,
+         "PM media: eviction is by entity — the newest picture is kept and the oldest id is gone");
+      // Clean up the flood, and confirm removed assets are pruned from the cache.
+      window.__importPurge = true; window.__importN = 1;
+      el("pm-import").click();
+      await waitFor(function(){ return document.querySelectorAll("#pm-media-grid canvas.pm-asset-canvas").length <= 2; });
+      window.__importPurge = false; window.IntersectionObserver = ioSaved;
+      ok(window.__pmMediaThumbDebug.cached(lastId) === null && window.__pmMediaThumbDebug.cached(99) === null,
+         "PM media: assets that left the library are pruned from the picture cache");
       // Undo/redo (buttons + the DeckView's can_undo/redo drive enablement; ≥20 steps supported host-side).
       ok(el("pm-undo") && !el("pm-undo").disabled, "PM: after edits, Undo is enabled (can_undo)");
       el("pm-undo").click();
@@ -6499,6 +6724,61 @@ DRIVER = r"""
          "PM: removing an in-use asset warns 'Used on 2 slides'");
       document.querySelector('.pm-confirm .pm-btn-danger').click();
       ok(window.__calls.some(function(c){ return c.cmd === "deck_remove_media" && c.args.id === 1; }), "PM: confirming remove-media drives deck_remove_media(id)");
+
+      // --- Remove must not delete a stored picture OTHER saved decks still show (review of #146:
+      // "unused" was computed from the open deck alone, so Remove deleted Easter's banner while
+      // Sunday was open). The host now counts every saved deck (`other_decks`) and keeps the file;
+      // the dialog says so from that count, and the toast says what became of the file.
+      await waitFor(function(){ return !document.querySelector('.pm-confirm[role="alertdialog"]'); });
+      var removeCell = function(re){ return Array.from(document.querySelectorAll("#pm-media-grid .pm-asset")).filter(function(c){ return re.test(c.textContent); })[0]; };
+      var removeDialog = async function(re){
+        removeCell(re).querySelector(".pm-asset-del").click();
+        await waitFor(function(){ return !!document.querySelector('.pm-confirm[role="alertdialog"]'); });
+      };
+      var removeCalls = function(id){ return window.__calls.filter(function(c){ return c.cmd === "deck_remove_media" && c.args.id === id; }).length; };
+      // Control first: an asset NO other deck shows keeps today's wording — it deletes the copy.
+      await removeDialog(/sunrise/);
+      ok(/deletes SelahCue’s copy/.test(document.querySelector(".pm-confirm-body").textContent) && !document.querySelector(".pm-confirm-warn"),
+         "PM remove: an asset no other deck shows still says it deletes SelahCue's copy, with no keep notice");
+      document.querySelector(".pm-confirm .pm-btn-ghost").click(); // Cancel
+      await waitFor(function(){ return !document.querySelector('.pm-confirm[role="alertdialog"]'); });
+      // Now the same asset, shown by 2 other saved decks.
+      window.__setAsset(2, {other_decks: 2, unused: false});
+      window.__importRefresh = true; el("pm-import").click();
+      await waitFor(function(){ var c = removeCell(/sunrise/); return c && /also used in 2 other presentations/.test(c.querySelector(".pm-asset-del").getAttribute("aria-label")); });
+      window.__importRefresh = false;
+      ok(/also used in 2 other presentations/.test(removeCell(/sunrise/).querySelector(".pm-asset-del").getAttribute("aria-label")),
+         "PM remove: the remove affordance names the other presentations that use the asset (not colour/position only)");
+      await removeDialog(/sunrise/);
+      var keepWarn = (document.querySelector(".pm-confirm-warn") || {}).textContent || "";
+      var keepBody = document.querySelector(".pm-confirm-body").textContent;
+      ok(/2 other presentations/.test(keepWarn) && /file is kept/.test(keepWarn) && !/missing media/.test(keepWarn),
+         "PM remove: the dialog warns that 2 other presentations use it and that the file is kept: " + keepWarn);
+      ok(/keeps its copy of the file/.test(keepBody) && !/deletes SelahCue’s copy/.test(keepBody),
+         "PM remove: the body no longer claims the copy is deleted when other presentations still need it");
+      window.__removeReport = {removed:true, file_deleted:false, kept_for_decks:2, kept_for_deleted:0};
+      document.querySelector('.pm-confirm .pm-btn-danger').click();
+      await waitFor(function(){ return /file is kept/.test(el("pm-toast").textContent); });
+      ok(removeCalls(2) === 1 && /2 other presentations still use it/.test(el("pm-toast").textContent),
+         "PM remove: after a kept-file removal the toast says the picture file is kept for 2 other presentations: " + el("pm-toast").textContent);
+      // A refusal from the host (the registry could not be saved: nothing was removed) is shown as
+      // the host's own final text, not a generic "please retry".
+      window.__removeReport = null;
+      window.__removeFail = "Couldn’t remove the image: the media library couldn’t be saved (the disk may be full or read-only).";
+      await removeDialog(/sunrise/);
+      document.querySelector('.pm-confirm .pm-btn-danger').click();
+      await waitFor(function(){ return !el("pm-error").hidden && /couldn’t be saved/.test(el("pm-error-msg").textContent); });
+      ok(/Couldn’t remove the image/.test(el("pm-error-msg").textContent) && !/please retry/i.test(el("pm-error-msg").textContent),
+         "PM remove: a removal the host could not save shows the host's reason, not 'please retry': " + el("pm-error-msg").textContent);
+      window.__removeFail = null;
+      el("pm-error-retry").click(); // Retry re-runs THIS removal (the host now accepts it)
+      await waitFor(function(){ return removeCalls(2) >= 3; });
+      ok(removeCalls(2) === 3, "PM remove: Retry re-runs the same removal, not whatever deck action came before it (calls=" + removeCalls(2) + ")");
+      await waitFor(function(){ return el("pm-error").hidden; });
+      window.__setAsset(2, {other_decks: 0, unused: true});
+      window.__importRefresh = true; el("pm-import").click();
+      await waitFor(function(){ var c = removeCell(/sunrise/); return c && !/other presentation/.test(c.querySelector(".pm-asset-del").getAttribute("aria-label")); });
+      window.__importRefresh = false;
 
       // --- C-004 System states: loading (aria-busy) + error banner (role=alert) + Retry ---
       // The busy state must actually ENGAGE while a command is in flight, then clear — not merely
@@ -8797,6 +9077,9 @@ DRIVER = r"""
       var insp2 = el("plan-b-insp");
       ok(!!insp2.querySelector(".plan-insp-unlinked"), "SP C-005: an unlinked scripture item shows the 'no reference yet' warning");
       ok(/Link a scripture/.test(insp2.textContent), "SP C-005: an unlinked item offers Link a scripture…");
+      // The link-Scripture modal resolves TYPED text through get_chapter; give those checks the
+      // realistic mock (cleared again after the host-rejection check below).
+      window.__gcRealistic = true;
       // C-003 link-Scripture flow: the modal → set_item_content{kind:scripture,reference,translation}.
       var sicBefore = window.__calls.filter(function(c){return c.cmd==="set_item_content";}).length;
       openLinkModal({id:14, kind:"scripture", title:"Closing Prayer"});
@@ -8874,6 +9157,254 @@ DRIVER = r"""
       var sicS2 = window.__calls.filter(function(c){return c.cmd==="set_item_content";});
       ok(sicS2.length > sicS && /John 3:16/.test(sicS2[sicS2.length-1].args.link.reference),
          "SP2 C-003: Link commits the freshly-typed reference, not the stale browsed one");
+      // === SERVICE PLAN RANGE INPUT (17tnw2b0x4u) ===================================================
+      // Verse picker: two clicks make a range from ANY starting state, including right after Browse
+      // (which pre-selects the first verse). Clicking verse 2 then verse 10 used to commit the
+      // single verse 10: the first click became the END of the pre-selected 1-2.
+      var linkOnce = async function (typed) { // type a reference, press Link, return the committed reference (or null)
+        openLinkModal({ id: 14, kind: "scripture", title: "Opening Word" });
+        await sleep(20);
+        var m = document.querySelector(".pm-confirm.pm-link");
+        m.querySelector('input[aria-label="Scripture reference"]').value = typed;
+        var before = window.__calls.filter(function (c) { return c.cmd === "set_item_content"; }).length;
+        Array.prototype.filter.call(m.querySelectorAll(".pm-btn-primary"), function (b) { return b.textContent === "Link"; })[0].click();
+        await sleep(40);
+        var after = window.__calls.filter(function (c) { return c.cmd === "set_item_content"; });
+        return { modal: m, committed: after.length > before ? after[after.length - 1].args.link.reference : null };
+      };
+      var browseOnce = async function (typed, link) { // open the modal and Browse a reference (optionally editing an existing link)
+        openLinkModal({ id: 14, kind: "scripture", title: "Opening Word", link: link });
+        await sleep(40);
+        var m = document.querySelector(".pm-confirm.pm-link");
+        if (typed != null) {
+          m.querySelector('input[aria-label="Scripture reference"]').value = typed;
+          Array.prototype.filter.call(m.querySelectorAll("button"), function (b) { return b.textContent === "Browse"; })[0].click();
+          await sleep(40);
+        }
+        return m;
+      };
+      var closeModal = async function () {
+        document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+        await sleep(10);
+      };
+      var previewOf = function (m) { return m.querySelector(".pm-verse-preview").textContent; };
+
+      var lmR = await browseOnce("Psalms 119");
+      var rRows = lmR.querySelectorAll(".pm-verse");
+      ok(rRows.length >= 10, "range (precondition): Browse of a bare chapter lists its verses");
+      rRows[1].click(); // verse 2
+      rRows[9].click(); // verse 10
+      ok(/Psalms 119:2-10(?!\d)/.test(previewOf(lmR)),
+         "range: clicking verse 2 then verse 10 selects 2-10 (the preview reads Psalms 119:2-10) — it was the single verse 10");
+      ok(lmR.querySelectorAll('.pm-verse[aria-selected="true"]').length === 9,
+         "range: exactly the nine verses 2..10 are highlighted");
+      var sicR0 = window.__calls.filter(function (c) { return c.cmd === "set_item_content"; }).length;
+      Array.prototype.filter.call(lmR.querySelectorAll(".pm-btn-primary"), function (b) { return b.textContent === "Link"; })[0].click();
+      await sleep(30);
+      var sicR = window.__calls.filter(function (c) { return c.cmd === "set_item_content"; });
+      ok(sicR.length > sicR0 && sicR[sicR.length - 1].args.link.reference === "Psalms 119:2-10",
+         "range: Link commits exactly the picked range, Psalms 119:2-10");
+
+      var lmS2 = await browseOnce("Psalms 119");
+      var sRows = lmS2.querySelectorAll(".pm-verse");
+      sRows[4].click(); // one click = one verse
+      ok(/Psalms 119:5(?![\d-])/.test(previewOf(lmS2)), "range (control): a single click is still a single verse, Psalms 119:5");
+      sRows[1].click(); sRows[3].click(); // 2..4
+      ok(/Psalms 119:2-4(?!\d)/.test(previewOf(lmS2)), "range: a second click at/after the start completes the range");
+      sRows[6].click(); // after a COMPLETED range → start over at 7
+      ok(/Psalms 119:7(?![\d-])/.test(previewOf(lmS2)), "range: a click after a completed range starts a new selection (not 2-7 or 4-7)");
+      sRows[2].click(); // before the pending start → a new start at 3
+      ok(/Psalms 119:3(?![\d-])/.test(previewOf(lmS2)), "range: a click BEFORE the start restarts the selection at that verse");
+      await closeModal();
+
+      var lmEd = await browseOnce(null, { kind: "scripture", reference: "Psalms 119:2-10", translation: "KJV" });
+      ok(/Psalms 119:2-10(?!\d)/.test(previewOf(lmEd)), "range (precondition): editing an existing range link opens with that range selected");
+      lmEd.querySelectorAll(".pm-verse")[4].click();
+      ok(/Psalms 119:5(?![\d-])/.test(previewOf(lmEd)),
+         "range: the first click while editing an existing range starts a NEW selection instead of extending the old one");
+      await closeModal();
+
+      // Typed text: every way of writing a range links the CANONICAL spelling (the host's parser).
+      var typedForms = [
+        ["Romans 8:28 to 30", "Romans 8:28-30"],
+        ["Romans 8:28 \u2013 30", "Romans 8:28-30"],
+        ["Romans 8 verses 28 through 30", "Romans 8:28-30"],
+        ["Romans 8:28", "Romans 8:28"],
+      ];
+      for (var tf = 0; tf < typedForms.length; tf++) {
+        var lr = await linkOnce(typedForms[tf][0]);
+        ok(lr.committed === typedForms[tf][1],
+           "range: typing " + JSON.stringify(typedForms[tf][0]) + " links " + typedForms[tf][1] + " — got " + JSON.stringify(lr.committed));
+      }
+
+      // A range past the chapter end is cut back VISIBLY and only linked once the operator confirms.
+      var lc = await linkOnce("Psalms 1:2-10");
+      var lcHint = lc.modal.querySelector(".pm-link-hint");
+      ok(lc.committed === null, "range: Psalms 1:2-10 is NOT committed on the first press (Psalm 1 has six verses)");
+      ok(lcHint && /has 6 verses/.test(lcHint.textContent) && /Psalms 1:2-6/.test(lcHint.textContent) &&
+         /^Note:/.test(lcHint.textContent) && lcHint.getAttribute("role") === "status" && !lcHint.classList.contains("pm-link-hint-err"),
+         "range: the cut-back is announced (role=status): " + (lcHint ? lcHint.textContent : "no hint"));
+      ok(lc.modal.querySelector('input[aria-label="Scripture reference"]').value === "Psalms 1:2-6",
+         "range: the input now shows exactly what will be linked, Psalms 1:2-6");
+      var sicC0 = window.__calls.filter(function (c) { return c.cmd === "set_item_content"; }).length;
+      Array.prototype.filter.call(lc.modal.querySelectorAll(".pm-btn-primary"), function (b) { return b.textContent === "Link"; })[0].click();
+      await sleep(40);
+      var sicC = window.__calls.filter(function (c) { return c.cmd === "set_item_content"; });
+      ok(sicC.length > sicC0 && sicC[sicC.length - 1].args.link.reference === "Psalms 1:2-6",
+         "range: the second Link press commits the confirmed Psalms 1:2-6");
+      var lbm = await browseOnce("Psalms 1:2-10");
+      ok(/Psalms 1:2-6(?!\d)/.test(previewOf(lbm)) && /has 6 verses/.test(lbm.querySelector(".pm-link-hint").textContent),
+         "range: Browse of a range past the chapter end also cuts the selection back and says so");
+      await closeModal();
+
+      // A reference being resolved when the modal is CLOSED must not be committed afterwards
+      // (Escape / Cancel / backdrop during the get_chapter round trip used to still send
+      // set_item_content for an item the operator had walked away from).
+      openLinkModal({ id: 14, kind: "scripture", title: "Opening Word" });
+      await sleep(20);
+      var lmX = document.querySelector(".pm-confirm.pm-link");
+      lmX.querySelector('input[aria-label="Scripture reference"]').value = "Romans 8:28";
+      var sicX0 = window.__calls.filter(function (c) { return c.cmd === "set_item_content"; }).length;
+      window.__getChapterDeferOnce = true;
+      Array.prototype.filter.call(lmX.querySelectorAll(".pm-btn-primary"), function (b) { return b.textContent === "Link"; })[0].click();
+      await sleep(10);
+      ok(typeof window.__getChapterDeferredResolve === "function", "close-race (precondition): the typed reference is still being resolved");
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); // walk away mid-resolve
+      await sleep(10);
+      window.__getChapterDeferredResolve();
+      window.__getChapterDeferredResolve = null;
+      await sleep(40);
+      ok(window.__calls.filter(function (c) { return c.cmd === "set_item_content"; }).length === sicX0,
+         "close-race: closing the modal while a typed reference resolves commits NOTHING afterwards");
+
+      // The seeded chapter of an EXISTING link loads asynchronously; if the operator retypes before
+      // it arrives, the late response must not overwrite what they typed (it used to restore the
+      // stale browsed chapter, so Link committed the OLD reference and skipped typed resolution).
+      window.__getChapterDeferOnce = true;
+      openLinkModal({ id: 14, kind: "scripture", title: "Opening Word", link: { kind: "scripture", reference: "Psalms 119:2-10", translation: "KJV" } });
+      await sleep(20);
+      var lmZ = document.querySelector(".pm-confirm.pm-link");
+      var zIn = lmZ.querySelector('input[aria-label="Scripture reference"]');
+      zIn.value = "Romans 8:28";
+      zIn.dispatchEvent(new Event("input", { bubbles: true })); // retype BEFORE the seed arrives
+      window.__getChapterDeferredResolve();
+      window.__getChapterDeferredResolve = null;
+      await sleep(40);
+      ok(lmZ.querySelector(".pm-verse-picker").hidden,
+         "seed-race: a seeded chapter that arrives AFTER the operator retyped is discarded (the picker stays hidden)");
+      var sicZ0 = window.__calls.filter(function (c) { return c.cmd === "set_item_content"; }).length;
+      Array.prototype.filter.call(lmZ.querySelectorAll(".pm-btn-primary"), function (b) { return b.textContent === "Link"; })[0].click();
+      await sleep(40);
+      var sicZ = window.__calls.filter(function (c) { return c.cmd === "set_item_content"; });
+      ok(sicZ.length > sicZ0 && sicZ[sicZ.length - 1].args.link.reference === "Romans 8:28",
+         "seed-race: Link commits what the operator TYPED (Romans 8:28), not the stale seeded Psalms 119:2-10");
+
+      // --- second review round (Cody / Quinn / Shadow on #144) ---
+      // The status line is a live region that is ALWAYS in the DOM (announced when its text
+      // changes), empty until there is something to say.
+      var lmA = await browseOnce(null);
+      var aHint = lmA.querySelector(".pm-link-hint");
+      ok(aHint && aHint.getAttribute("role") === "status" && !aHint.hasAttribute("hidden") && aHint.textContent === "",
+         "a11y: the status line is a role=status region present in the DOM from the start (not toggled with hidden), empty");
+      await closeModal();
+
+      // Chapter arrows: a half-made selection must not carry across chapters.
+      var lmN = await browseOnce("Psalms 119");
+      lmN.querySelectorAll(".pm-verse")[1].click(); // verse 2 = the pending start
+      lmN.querySelector('.pm-verse-navbtn[aria-label="Next chapter"]').click();
+      await sleep(40);
+      lmN.querySelectorAll(".pm-verse")[4].click(); // verse 5 of the NEW chapter
+      ok(/Psalms 120:5(?![\d-])/.test(previewOf(lmN)),
+         "chapter arrows: a start picked in one chapter is not extended into the next (Psalms 120:5, not 120:2-5): " + previewOf(lmN));
+      await closeModal();
+
+      // Browse of a start verse past the end selects NOTHING (it used to fall back to verse 1, which one
+      // press of Link then committed) and Link refuses with the chapter's real length.
+      var lmP = await browseOnce("Psalms 1:9");
+      ok(/only has 6 verses/.test(lmP.querySelector(".pm-link-hint").textContent) && lmP.querySelectorAll('.pm-verse[aria-selected="true"]').length === 0,
+         "past-the-end Browse: says the chapter's real length and selects no verse");
+      var sicP0 = window.__calls.filter(function (c) { return c.cmd === "set_item_content"; }).length;
+      Array.prototype.filter.call(lmP.querySelectorAll(".pm-btn-primary"), function (b) { return b.textContent === "Link"; })[0].click();
+      await sleep(40);
+      ok(window.__calls.filter(function (c) { return c.cmd === "set_item_content"; }).length === sicP0,
+         "past-the-end Browse: pressing Link links nothing (it does not fall back to verse 1)");
+      await closeModal();
+
+      // Editing the reference clears a stale notice.
+      var le = await linkOnce("Psalms 1:2-10"); // shows the cut-back note
+      ok(le.modal.querySelector(".pm-link-hint").textContent.length > 0, "stale-notice (precondition): the cut-back note is showing");
+      var eIn = le.modal.querySelector('input[aria-label="Scripture reference"]');
+      eIn.value = "Romans 8:28"; eIn.dispatchEvent(new Event("input", { bubbles: true }));
+      ok(le.modal.querySelector(".pm-link-hint").textContent === "", "stale-notice: editing the reference clears the note");
+      await closeModal();
+
+      // A whole chapter typed is still linkable.
+      var lWhole = await linkOnce("Psalms 119");
+      ok(lWhole.committed === "Psalms 119", "typed whole chapter: Psalms 119 links as a whole chapter — got " + JSON.stringify(lWhole.committed));
+
+      // Verses-per-slide of an existing link survives retyping the reference.
+      openLinkModal({ id: 14, kind: "scripture", title: "Opening Word", link: { kind: "scripture", reference: "Psalms 119:2-4", translation: "KJV", verses_per_slide: 3 } });
+      await sleep(40);
+      var lmV3 = document.querySelector(".pm-confirm.pm-link");
+      var v3In = lmV3.querySelector('input[aria-label="Scripture reference"]');
+      v3In.value = "Romans 8:28"; v3In.dispatchEvent(new Event("input", { bubbles: true }));
+      var sicV3 = window.__calls.filter(function (c) { return c.cmd === "set_item_content"; }).length;
+      Array.prototype.filter.call(lmV3.querySelectorAll(".pm-btn-primary"), function (b) { return b.textContent === "Link"; })[0].click();
+      await sleep(40);
+      var sicV3b = window.__calls.filter(function (c) { return c.cmd === "set_item_content"; });
+      ok(sicV3b.length > sicV3 && sicV3b[sicV3b.length - 1].args.link.verses_per_slide === 3 && sicV3b[sicV3b.length - 1].args.link.reference === "Romans 8:28",
+         "typed path: the existing link's verses-per-slide (3) survives retyping the reference");
+
+      // Double press while resolving links ONCE.
+      openLinkModal({ id: 14, kind: "scripture", title: "Opening Word" });
+      await sleep(20);
+      var lmD = document.querySelector(".pm-confirm.pm-link");
+      lmD.querySelector('input[aria-label="Scripture reference"]').value = "Romans 8:28";
+      var sicD0 = window.__calls.filter(function (c) { return c.cmd === "set_item_content"; }).length;
+      var gcD0 = window.__calls.filter(function (c) { return c.cmd === "get_chapter"; }).length;
+      window.__getChapterDeferOnce = true;
+      var dGo = Array.prototype.filter.call(lmD.querySelectorAll(".pm-btn-primary"), function (b) { return b.textContent === "Link"; })[0];
+      // The Link BUTTON is disabled while resolving, so a second click is swallowed there; the Enter
+      // key on the input is not, and is what the resolving guard exists for.
+      dGo.click();
+      lmD.querySelector('input[aria-label="Scripture reference"]').dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+      await sleep(10);
+      window.__getChapterDeferredResolve(); window.__getChapterDeferredResolve = null;
+      await sleep(50);
+      ok(window.__calls.filter(function (c) { return c.cmd === "set_item_content"; }).length === sicD0 + 1,
+         "double press: Link then Enter while resolving commit exactly ONE link");
+      ok(window.__calls.filter(function (c) { return c.cmd === "get_chapter"; }).length === gcD0 + 1,
+         "double press: the second press while resolving does not start a second host lookup (the resolving guard)");
+
+      // A reference the corpus has no chapter for: told first, linked anyway on a second press.
+      var lm0 = await linkOnce("NOCHAPTER 9:9");
+      var lm0Hint = lm0.modal.querySelector(".pm-link-hint");
+      ok(lm0.committed === null && /isn't a chapter/.test(lm0Hint.textContent) && /Missing/.test(lm0Hint.textContent) && /^Note:/.test(lm0Hint.textContent),
+         "nonexistent chapter: the first press explains it would show as Missing and links nothing: " + lm0Hint.textContent);
+      var sic0 = window.__calls.filter(function (c) { return c.cmd === "set_item_content"; }).length;
+      Array.prototype.filter.call(lm0.modal.querySelectorAll(".pm-btn-primary"), function (b) { return b.textContent === "Link"; })[0].click();
+      await sleep(50);
+      var sic0b = window.__calls.filter(function (c) { return c.cmd === "set_item_content"; });
+      ok(sic0b.length > sic0 && sic0b[sic0b.length - 1].args.link.reference === "NOCHAPTER 9:9",
+         "nonexistent chapter: a second press links it as typed (it is no longer silently refused)");
+
+      // What cannot be linked says WHY and what to type, and links nothing.
+      var lb = await linkOnce("BADREF 1:1");
+      var lbHint = lb.modal.querySelector(".pm-link-hint");
+      ok(lb.committed === null && document.querySelector(".pm-confirm.pm-link") === lb.modal,
+         "range: an unreadable reference commits nothing and keeps the modal open");
+      ok(lbHint && lbHint.classList.contains("pm-link-hint-err") && /^Error:/.test(lbHint.textContent) && /Couldn.t read/.test(lbHint.textContent) && /Romans 8:28-30/.test(lbHint.textContent),
+         "range: it says what to type, e.g. Romans 8:28-30: " + (lbHint ? lbHint.textContent : "no hint"));
+      await closeModal();
+      var lw = await linkOnce("Psalms 1:9");
+      ok(lw.committed === null && /only has 6 verses/.test(lw.modal.querySelector(".pm-link-hint").textContent),
+         "range: a verse past the end of the chapter is refused with the chapter's real length");
+      await closeModal();
+      var ld = await linkOnce("Romans 8:30 to 28");
+      ok(ld.committed === null && ld.modal.querySelector(".pm-link-hint").textContent.length > 0,
+         "range: a descending range is refused with a message, never silently linked");
+      await closeModal();
+
       // #8 host-rejection path: a rejected link keeps the modal OPEN and shows a role=alert error
       // (no silent close on a no-op). The one-shot __sicRejectOnce hook fails the next command.
       openLinkModal({id:14, kind:"scripture", title:"Closing Prayer"});
@@ -8889,6 +9420,7 @@ DRIVER = r"""
          "SP C-007: a rejected link surfaces an inline role=alert error");
       document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); // close before the next modal
       await sleep(10);
+      window.__gcRealistic = false; // back to the default get_chapter mock for everything after
       // C-004 link-Presentation flow: SELECT-then-confirm (handoff §4.2). Clicking a deck selects it
       // (aria-selected + "✓ Selected", NO commit); the footer "Link to item" → set_item_content{deck}.
       openLinkModal({id:12, kind:"slide_group", title:"Sermon Deck"});

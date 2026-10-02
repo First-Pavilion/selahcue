@@ -58,6 +58,10 @@ pub use selahcue_engine::fault::Fault;
 /// allowlist for a user-picked file, ahead of and separate from this same crate's own decode.
 pub use selahcue_engine::media::sniff;
 pub use selahcue_engine::media::ImageFormat;
+/// Re-exported so the operator can draw the media library's tile pictures without depending on
+/// `selahcue-engine` directly: [`thumbnail`] decodes under the slide path's own admission profile,
+/// shrinks to a bounded box, and never touches the slide decode cache.
+pub use selahcue_engine::media::{thumbnail, DecodedImage};
 /// Re-exported so consumers can name the output pixel buffer (and its pixel colour)
 /// without depending on `selahcue-engine` directly.
 pub use selahcue_engine::raster::{system_font_families, FrameBuffer};

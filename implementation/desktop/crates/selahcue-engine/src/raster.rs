@@ -1286,8 +1286,8 @@ pub fn measure_line_width(text: &str, px: u32, font: Option<&FontName>, weight: 
             Some(_) => system_fs.as_mut().expect("ensured above"),
         };
         let mut buffer = Buffer::new(shaper, Metrics::new(font_size, line_h));
-        buffer.set_size(shaper, None, None);
-        buffer.set_text(shaper, text, attrs, Shaping::Advanced);
+        buffer.set_size(None, None);
+        buffer.set_text(text, &attrs, Shaping::Advanced, None);
         buffer.shape_until_scroll(shaper, false);
         buffer
             .layout_runs()
@@ -1366,8 +1366,8 @@ fn draw_text(
         // glyph's ink stays inside the cell (see above). Unconstrained size → one
         // line, no wrap; horizontal culling below keeps the WORK frame-bounded.
         let mut buffer = Buffer::new(fs, Metrics::new(font_size, line_h));
-        buffer.set_size(fs, None, None);
-        buffer.set_text(fs, text, attrs, Shaping::Advanced);
+        buffer.set_size(None, None);
+        buffer.set_text(text, &attrs, Shaping::Advanced, None);
         buffer.shape_until_scroll(fs, false);
 
         let ink = CtColor::rgba(color.r, color.g, color.b, color.a);

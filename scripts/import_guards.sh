@@ -54,6 +54,16 @@ echo ">> checking selahcue-import's dependency graph against the allowlist (B2)"
 TREE=$("$CARGO" tree --manifest-path "$DESKTOP/Cargo.toml" -p selahcue-import -e normal --prefix none)
 
 # Every crate the importer is permitted to link, transitively. Keep sorted; add with a reason.
+#
+# Added with cosmic-text 0.19 (the text shaper selahcue-engine, and through it the importer, links
+# for rasterising slides): harfrust (the pure-Rust HarfBuzz shaper that replaced rustybuzz),
+# core_maths (libm-backed float maths for no_std), linebender_resource_handle (font blob handle
+# types), smol_str (small-string optimisation) and once_cell (lazy statics, via read-fonts).
+# Reviewed 2026-10-02: none of them touches the network, the filesystem, the process or the
+# environment (no std::net/fs/process/env/os use in their sources); harfrust, core_maths and
+# linebender_resource_handle contain no `unsafe`; once_cell and smol_str use it only for their own
+# internal data-structure operations; their optional dependencies (serde_bytes, borsh, arbitrary,
+# parking_lot_core, critical-section, portable-atomic) are not enabled, so none is in the graph.
 ALLOWED=$(cat <<'EOF'
 adler2
 arrayvec
@@ -61,6 +71,7 @@ bitflags
 bytemuck
 bytemuck_derive
 cfg-if
+core_maths
 cosmic-text
 crc32fast
 crossbeam-deque
@@ -71,13 +82,16 @@ fdeflate
 flate2
 font-types
 fontdb
+harfrust
 jpeg-decoder
 libc
 libm
+linebender_resource_handle
 log
 memchr
 memmap2
 miniz_oxide
+once_cell
 png
 proc-macro2
 qrcode
@@ -101,6 +115,7 @@ simd-adler32
 skrifa
 slotmap
 smallvec
+smol_str
 swash
 syn
 sys-locale

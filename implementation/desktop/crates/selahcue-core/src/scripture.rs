@@ -10,6 +10,7 @@
 //! `"Psalm 23:1-6"`, `"1 Corinthians 13:4"`, `"1 Cor 13:4"`, `"Jn 3:16"`,
 //! `"John 3:16; 1 Cor 13:4"`.
 
+use std::borrow::Cow;
 use std::fmt;
 
 /// A parsed scripture reference.
@@ -104,9 +105,178 @@ pub fn parse_strict(input: &str) -> Result<Vec<Reference>, ParseError> {
         .collect()
 }
 
+/// Words a person says or types BETWEEN two verse numbers to mean "up to": `2 to 10`.
+const RANGE_CONNECTIVES: [&str; 3] = ["to", "through", "thru"];
+
+/// Any dash a keyboard, a word processor or a pasted run sheet might put in a range — the ASCII
+/// hyphen, the Unicode hyphen / non-breaking hyphen / figure dash, the en and em dash, and the
+/// minus sign. (The en dash is what the Settings copy itself shows as the example.)
+fn is_range_dash(c: char) -> bool {
+    matches!(
+        c,
+        '-' | '\u{2010}' | '\u{2011}' | '\u{2012}' | '\u{2013}' | '\u{2014}' | '\u{2212}'
+    )
+}
+
+/// `true` when `input` uses range syntax [`canonicalize_range_syntax`] would rewrite. A scan with
+/// no allocation, so the common already-canonical input (the transcript detector offers `parse_one`
+/// several candidate windows per token) pays almost nothing.
+///
+/// A connective only counts when it actually sits BETWEEN two numbers — the only place the rewrite
+/// joins it — so an ordinary "to" in a spoken window ("turn to John 3:16") stays on the fast path.
+/// Anything this misses is left byte-for-byte as the parser always saw it, which is the whole
+/// point of the fast path.
+fn needs_range_canonicalization(input: &str) -> bool {
+    // A non-ASCII dash, or ANY dash touching ANY whitespace (a plain space, a tab, a non-breaking
+    // space from a pasted run sheet): the rewrite tokenises on all Unicode whitespace, so the guard
+    // must notice all of it, not just the ASCII space.
+    let mut prev: Option<char> = None;
+    for c in input.chars() {
+        let dash_needs_work =
+            is_range_dash(c) && (c != '-' || prev.is_some_and(char::is_whitespace));
+        let space_after_dash = c.is_whitespace() && prev.is_some_and(is_range_dash);
+        if dash_needs_work || space_after_dash {
+            return true;
+        }
+        prev = Some(c);
+    }
+    let mut prev: Option<&str> = None;
+    let mut tokens = input.split_whitespace().peekable();
+    while let Some(tok) = tokens.next() {
+        let next = tokens.peek().copied();
+        if filler_is_dropped(tok, prev, next) {
+            return true;
+        }
+        if RANGE_CONNECTIVES
+            .iter()
+            .any(|k| tok.eq_ignore_ascii_case(k))
+            && prev.is_some_and(ends_with_digit)
+            && next.is_some_and(starts_with_digit)
+        {
+            return true;
+        }
+        prev = Some(tok);
+    }
+    false
+}
+
+/// Whether the rewrite drops `tok` as filler, given its neighbours. `chapter(s)` introduces a
+/// number and is dropped before one; `verse(s)` is dropped only BETWEEN two numbers
+/// (`Romans 8 verse 28`): with no chapter number before it, "John verse 16" would silently become
+/// the WHOLE of chapter 16 — a different passage. The ONE definition both the fast-path scan and
+/// the rewrite consume, so they cannot disagree about what changes.
+fn filler_is_dropped(tok: &str, prev: Option<&str>, next: Option<&str>) -> bool {
+    let is = |words: &[&str]| words.iter().any(|k| tok.eq_ignore_ascii_case(k));
+    if is(&["chapter", "chapters"]) {
+        next.is_some_and(starts_with_digit)
+    } else if is(&["verse", "verses"]) {
+        prev.is_some_and(ends_with_digit) && next.is_some_and(starts_with_digit)
+    } else {
+        false
+    }
+}
+
+fn ends_with_digit(s: &str) -> bool {
+    s.chars().next_back().is_some_and(|c| c.is_ascii_digit())
+}
+
+fn starts_with_digit(s: &str) -> bool {
+    s.chars().next().is_some_and(|c| c.is_ascii_digit())
+}
+
+/// Rewrite the many ways a person writes a verse range into the one spelling the parser reads,
+/// `Book C:V-V` / `Book C V-V`:
+///
+/// - any dash (`–`, `—`, a non-breaking hyphen, …) becomes `-`;
+/// - space around a dash that joins two numbers is closed (`2 - 10`, `2 -10`, `2- 10` → `2-10`);
+/// - a connective between two numbers becomes a dash (`2 to 10`, `2 through 10`, `2 thru 10`);
+/// - the words `chapter(s)` / `verse(s)` are dropped (`Psalm 1 verses 2 to 10` → `Psalm 1 2-10`).
+///
+/// Only a dash or connective that sits BETWEEN two numbers is joined, so a dangling one
+/// (`Romans 8:28 to`) is left alone and still fails to parse, and a descending or zero range still
+/// fails in [`parse_chapter_verse`]. Total and panic-free: it only splits, compares and joins.
+fn canonicalize_range_syntax(input: &str) -> Cow<'_, str> {
+    if !needs_range_canonicalization(input) {
+        return Cow::Borrowed(input);
+    }
+    let normalised: String = input
+        .chars()
+        .map(|c| if is_range_dash(c) { '-' } else { c })
+        .collect();
+
+    // Pass 1 — close space around a dash that joins two numbers.
+    let mut closed: Vec<String> = Vec::new();
+    let mut tokens = normalised.split_whitespace().peekable();
+    while let Some(tok) = tokens.next() {
+        let prev_is_number = closed.last().is_some_and(|p| ends_with_digit(p));
+        if tok == "-" && prev_is_number && tokens.peek().is_some_and(|n| starts_with_digit(n)) {
+            // `2 - 10`
+            let next = tokens.next().unwrap_or_default();
+            if let Some(last) = closed.last_mut() {
+                last.push('-');
+                last.push_str(next);
+            }
+        } else if let Some(rest) = tok.strip_prefix('-').filter(|r| starts_with_digit(r)) {
+            if prev_is_number {
+                // `2 -10`
+                if let Some(last) = closed.last_mut() {
+                    last.push('-');
+                    last.push_str(rest);
+                }
+            } else {
+                closed.push(tok.to_string());
+            }
+        } else if closed
+            .last()
+            .is_some_and(|p| p.strip_suffix('-').is_some_and(ends_with_digit))
+            && starts_with_digit(tok)
+        {
+            // `2- 10`: the previous token is a number followed by its dash (so it ends with the
+            // dash, NOT a digit — `prev_is_number` is false here by construction).
+            if let Some(last) = closed.last_mut() {
+                last.push_str(tok);
+            }
+        } else {
+            closed.push(tok.to_string());
+        }
+    }
+
+    // Pass 2 — connectives between two numbers become a dash; introducing words are dropped.
+    let mut out: Vec<String> = Vec::new();
+    let mut tokens = closed.into_iter().peekable();
+    while let Some(tok) = tokens.next() {
+        let is_connective = RANGE_CONNECTIVES
+            .iter()
+            .any(|k| tok.eq_ignore_ascii_case(k));
+        if is_connective
+            && out.last().is_some_and(|p| ends_with_digit(p))
+            && tokens.peek().is_some_and(|n| starts_with_digit(n))
+        {
+            let next = tokens.next().unwrap_or_default();
+            if let Some(last) = out.last_mut() {
+                last.push('-');
+                last.push_str(&next);
+            }
+        } else if filler_is_dropped(
+            &tok,
+            out.last().map(String::as_str),
+            tokens.peek().map(String::as_str),
+        ) {
+            // dropped
+        } else {
+            out.push(tok);
+        }
+    }
+    Cow::Owned(out.join(" "))
+}
+
 /// Parse a single reference (no `;`).
+///
+/// Accepts a range however it is written — `Psalms 1:2-10`, `Psalms 1:2 to 10`,
+/// `Psalms 1:2 – 10`, `Psalm 1 verses 2 through 10` — see [`canonicalize_range_syntax`].
 pub fn parse_one(input: &str) -> Result<Reference, ParseError> {
-    let trimmed = input.trim();
+    let canonical = canonicalize_range_syntax(input);
+    let trimmed = canonical.trim();
     if trimmed.is_empty() {
         return Err(ParseError::Empty);
     }

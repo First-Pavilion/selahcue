@@ -8,7 +8,7 @@
 > launch-readiness condition is unmet would make it inaccurate. The SelahCue Controller mobile app
 > also has its own policy (`docs/legal/PRIVACY.md`), which this policy does not replace.
 
-- **Who we are:** `{{LEGAL_ENTITY_NAME}}`, trading as SelahCue ("SelahCue", "we", "us")
+- **Who we are:** First Pavilion Technologies, trading as SelahCue ("SelahCue", "we", "us")
 - **Registered address:** `{{REGISTERED_ADDRESS}}`
 - **Registration number:** `{{COMPANY_REGISTRATION_NUMBER}}`
 - **Privacy contact:** `{{PRIVACY_CONTACT_EMAIL}}`
@@ -47,7 +47,7 @@ This summary is part of the policy. The full sections below give the detail.
 
 ## 1. Who this policy covers
 
-1.1 This policy explains how `{{LEGAL_ENTITY_NAME}}` handles personal data when you:
+1.1 This policy explains how First Pavilion Technologies, trading as SelahCue, handles personal data when you:
 
 - visit our website at `{{WEBSITE_URL}}`;
 - create or use a SelahCue account, including signing in, verifying your email and resetting your
@@ -441,4 +441,4 @@ in the product before it takes effect. Where the law requires your consent to a 
 ## 13. Contact us
 
 - **Email:** `{{PRIVACY_CONTACT_EMAIL}}`
-- **Post:** `{{LEGAL_ENTITY_NAME}}`, `{{REGISTERED_ADDRESS}}`
+- **Post:** First Pavilion Technologies, `{{REGISTERED_ADDRESS}}`

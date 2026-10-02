@@ -8,7 +8,7 @@
 > launch-readiness condition is unmet would make them inaccurate. Clauses the owner and counsel must
 > accept as new risk allocations are listed in the notes file §6.
 
-- **Provider and seller:** `{{LEGAL_ENTITY_NAME}}`, trading as SelahCue
+- **Provider and seller:** First Pavilion Technologies, trading as SelahCue
 - **Registered address:** `{{REGISTERED_ADDRESS}}`
 - **Registration number:** `{{COMPANY_REGISTRATION_NUMBER}}`
 - **Contact:** `{{SUPPORT_CONTACT_EMAIL}}` · **Legal notices:** `{{LEGAL_NOTICES_EMAIL}}`
@@ -212,7 +212,7 @@ pricing page or in your order. Usage allowances for Cloud Features reset every
 
 8.2 **Trials.** `{{TRIAL_TERMS}}`
 
-8.3 **Who you buy from and how you pay.** You buy paid Plans from `{{LEGAL_ENTITY_NAME}}`, which is the
+8.3 **Who you buy from and how you pay.** You buy paid Plans from First Pavilion Technologies, which is the
 seller. Payments are processed by Paystack, our payment processor, on its checkout page and under its
 own terms. By buying a paid Plan, you authorise us to charge your chosen payment method, through
 Paystack, for the fees, taxes and any renewals described in this Part C. We are responsible for your
@@ -376,7 +376,7 @@ because of an error on our side or our provider's side does not use up your allo
 
 13.1 The Services rely on Third-Party Components and services, including:
 
-- **NDI** technology for network video output. `{{NDI_ATTRIBUTION_TEXT}}`
+- **NDI** technology for network video output. NDI® is a registered trademark of Vizrt NDI AB.
 - **Hugging Face**, from which the Desktop Software downloads speech-recognition model files when you
   first use live transcription.
 - **Google Fonts**, which our website uses to load a font.
@@ -548,4 +548,4 @@ English version applies, except where the law requires otherwise.
 
 - **Email:** `{{SUPPORT_CONTACT_EMAIL}}`
 - **Legal notices:** `{{LEGAL_NOTICES_EMAIL}}`
-- **Post:** `{{LEGAL_ENTITY_NAME}}`, `{{REGISTERED_ADDRESS}}`
+- **Post:** First Pavilion Technologies, `{{REGISTERED_ADDRESS}}`

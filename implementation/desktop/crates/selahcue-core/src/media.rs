@@ -25,6 +25,33 @@ pub const MAX_MEDIA_ASSETS: usize = 1000;
 /// which paths are representable (see [`MediaLibrary::import`]).
 pub const MAX_MEDIA_PATH_LEN: usize = 1024;
 
+/// Upper bound on an asset's display name **in bytes** (no-leak). The name is the file name the
+/// operator picked, kept apart from `path` because an imported copy lives in the app's own media
+/// store under a generated name; 255 is the common filesystem file-name limit, so a real file name
+/// always fits.
+pub const MAX_MEDIA_NAME_LEN: usize = 255;
+
+/// Clean a user-supplied display name: control characters (NUL, newline, DEL, …) are dropped so
+/// one can never reach a stored row or the rendered library, the result is trimmed, and it is cut
+/// to [`MAX_MEDIA_NAME_LEN`] bytes **on a char boundary** (a multi-byte character is never split).
+/// `None` when nothing is left — the library then falls back to the file name in the path.
+pub fn normalize_media_name(raw: &str) -> Option<String> {
+    let cleaned: String = raw.chars().filter(|c| !c.is_control()).collect();
+    let mut name = cleaned.trim();
+    if name.len() > MAX_MEDIA_NAME_LEN {
+        let mut end = MAX_MEDIA_NAME_LEN;
+        while !name.is_char_boundary(end) {
+            end -= 1;
+        }
+        name = name[..end].trim_end();
+    }
+    if name.is_empty() {
+        None
+    } else {
+        Some(name.to_string())
+    }
+}
+
 /// The class of a media asset. Carries a stable string tag for persistence.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum MediaKind {
@@ -71,6 +98,10 @@ pub struct MediaAsset {
     pub id: MediaId,
     /// Host-local path/reference to the file (bounded by [`MAX_MEDIA_PATH_LEN`]).
     pub path: String,
+    /// The operator-facing file name, when known (bounded by [`MAX_MEDIA_NAME_LEN`]); `None`
+    /// falls back to the file name in `path`. Persists as a NULL column, so a row written before
+    /// this field existed reads back as `None`.
+    pub name: Option<String>,
     /// Image / video / audio.
     pub kind: MediaKind,
     /// File size in bytes (for the library's storage accounting).
@@ -88,9 +119,13 @@ pub struct MediaAsset {
 
 impl MediaAsset {
     /// Whether this asset is within its content bounds (no-leak): the path is capped at
-    /// [`MAX_MEDIA_PATH_LEN`] bytes.
+    /// [`MAX_MEDIA_PATH_LEN`] bytes and the display name at [`MAX_MEDIA_NAME_LEN`].
     pub fn within_bounds(&self) -> bool {
         self.path.len() <= MAX_MEDIA_PATH_LEN
+            && self
+                .name
+                .as_ref()
+                .is_none_or(|n| n.len() <= MAX_MEDIA_NAME_LEN)
     }
 }
 
@@ -165,6 +200,7 @@ impl MediaLibrary {
         self.assets.push(MediaAsset {
             id,
             path,
+            name: None,
             kind,
             size_bytes,
             width,
@@ -173,6 +209,19 @@ impl MediaLibrary {
             imported_at,
         });
         Some(id)
+    }
+
+    /// Set (or clear) the display name of the asset with `id`, cleaned by
+    /// [`normalize_media_name`]. Returns `false` when no such asset exists. A name that is blank
+    /// once cleaned clears the name, so the library falls back to the file name in the path.
+    pub fn set_name(&mut self, id: MediaId, name: &str) -> bool {
+        match self.assets.iter_mut().find(|a| a.id == id) {
+            Some(asset) => {
+                asset.name = normalize_media_name(name);
+                true
+            }
+            None => false,
+        }
     }
 
     /// The asset with `id`, if present.

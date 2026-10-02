@@ -6,7 +6,7 @@
 
 use crate::{Database, Result};
 use rusqlite::params;
-use selahcue_core::media::{MediaAsset, MediaId, MediaKind};
+use selahcue_core::media::{normalize_media_name, MediaAsset, MediaId, MediaKind};
 
 /// Replace the persisted media library with `assets` in one transaction: the on-disk set becomes
 /// exactly the supplied set (removals honoured; a crash mid-write never leaves a partial set).
@@ -16,8 +16,8 @@ pub fn save_all(db: &Database, assets: &[MediaAsset]) -> Result<()> {
     for a in assets {
         tx.execute(
             "INSERT INTO media_asset \
-             (id, path, kind, size_bytes, width, height, duration_ms, imported_at) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+             (id, path, kind, size_bytes, width, height, duration_ms, imported_at, name) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             params![
                 a.id.0 as i64,
                 a.path,
@@ -27,6 +27,7 @@ pub fn save_all(db: &Database, assets: &[MediaAsset]) -> Result<()> {
                 a.height.map(|v| v as i64),
                 a.duration_ms.map(|v| v as i64),
                 a.imported_at as i64,
+                a.name,
             ],
         )?;
     }
@@ -40,7 +41,7 @@ pub fn save_all(db: &Database, assets: &[MediaAsset]) -> Result<()> {
 pub fn load_all(db: &Database) -> Result<Vec<MediaAsset>> {
     let conn = db.conn();
     let mut stmt = conn.prepare(
-        "SELECT id, path, kind, size_bytes, width, height, duration_ms, imported_at \
+        "SELECT id, path, kind, size_bytes, width, height, duration_ms, imported_at, name \
          FROM media_asset ORDER BY id",
     )?;
     let rows = stmt.query_map([], |r| {
@@ -52,9 +53,15 @@ pub fn load_all(db: &Database) -> Result<Vec<MediaAsset>> {
         let height: Option<i64> = r.get(5)?;
         let duration_ms: Option<i64> = r.get(6)?;
         let imported_at: i64 = r.get(7)?;
+        let name: Option<String> = r.get(8)?;
         Ok(MediaKind::from_tag(&kind_tag).map(|kind| MediaAsset {
             id: MediaId(id as u64),
             path,
+            // Cleaned on the way in, like the path bound `media_store::load` re-checks: a name
+            // another build (or a hand-edited database) wrote cannot hand the app an asset that
+            // fails its own `within_bounds`. Truncating loses nothing but a few trailing bytes of
+            // a label; dropping the asset would lose the operator's image.
+            name: name.as_deref().and_then(normalize_media_name),
             kind,
             size_bytes: size_bytes as u64,
             width: width.map(|v| v as u32),
