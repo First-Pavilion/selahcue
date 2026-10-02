@@ -365,6 +365,24 @@ describe('one offset mechanism for anchors (no double offset next to a page-wide
     assert.match(page, /html:has\(\.legal-page\)\s*\{\s*scroll-padding-top:\s*0/)
   })
 
+  test('the neutraliser is scoped to the mounted page: `html:has(.legal-page)`, and the page root carries that class', async () => {
+    // Zero while mounted, restored on unmount, even next to a page-wide `html { scroll-padding-top }`
+    // (PR #135): the rule matches only while a `.legal-page` is in the document, and it beats a bare
+    // `html` rule on specificity. The browser check proves the restore on unmount for real.
+    assert.match(page, /html:has\(\.legal-page\)\s*\{\s*scroll-padding-top:\s*0;?\s*\}/)
+    assert.equal((page.match(/scroll-padding-top\s*:/g) ?? []).length, 1, 'exactly one declaration: the neutraliser, scoped by :has(.legal-page)')
+    // specificity: html:has(.legal-page) is (0,1,1), a bare `html` is (0,0,1)
+    const spec = (sel: string): [number, number, number] => [
+      (sel.match(/#[\w-]+/g) ?? []).length,
+      (sel.match(/\.[\w-]+/g) ?? []).length,
+      sel.replace(/:has\([^)]*\)/g, '').match(/(^|[\s>+~])[a-z][a-z0-9]*/gi)?.length ?? 0,
+    ]
+    assert.deepEqual(spec('html:has(.legal-page)'), [0, 1, 1])
+    assert.deepEqual(spec('html'), [0, 0, 1])
+    const html = await render(privacyPolicy)
+    assert.match(html, /<div class="legal-page"/, 'the root element the rule keys on')
+  })
+
   test('manual scrolling reads only the element\'s own scroll-margin, never scrollIntoView (which adds the page padding)', () => {
     assert.ok(!anchors.includes('scrollIntoView'), 'anchors.ts must not use scrollIntoView')
     assert.ok(!page.includes('scrollIntoView'), 'LegalPage.vue must not use scrollIntoView')

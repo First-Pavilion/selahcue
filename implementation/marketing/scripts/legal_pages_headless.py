@@ -557,6 +557,20 @@ def run_anchor_modes(browser, base: str, key: str, exp: dict) -> None:
         check(f"{tag}: console clean", not errors, "; ".join(errors[:3]))
         ctx.close()
 
+    # The neutraliser is scoped to the mounted page: with the page-wide padding present, a legal
+    # page zeroes it WHILE MOUNTED and the site gets it back the moment the page unmounts.
+    ctx, page = new_page(browser, 1440, 900, [], scroll_padding=True)
+    page.goto(base + f"/{key}", wait_until="networkidle")
+    page.wait_for_selector("[data-legal-page]")
+    mounted = page.evaluate("getComputedStyle(document.documentElement).scrollPaddingTop")
+    page.locator('footer a[href="/pricing"]').first.click()
+    page.wait_for_function("location.pathname === '/pricing'")
+    page.wait_for_timeout(300)
+    after = page.evaluate("getComputedStyle(document.documentElement).scrollPaddingTop")
+    check(f"{key}: html scroll-padding-top is zeroed while the page is mounted", mounted in ("0px", "auto"), mounted)
+    check(f"{key}: and restored (84px, the page-wide value) once the page unmounts", after == "84px", after)
+    ctx.close()
+
 
 def main() -> int:
     ap = argparse.ArgumentParser()
