@@ -128,24 +128,39 @@ mod whisper_backend {
     /// This ONE value is used for every call — not a value picked per window length —
     /// because the FIRST decode at a new context shape rebuilds whisper.cpp's compute graph,
     /// costing an extra 1.3-2.0 s; varying the context per call would reintroduce exactly the
-    /// latency spikes this fix removes. 512 is the ticket's own measured-clean value.
+    /// latency spikes this fix removes (and did: a 512-for-interims / 1024-for-finals split
+    /// dropped 0.96 s of audio in a real-time run, 86akcgmuh spike).
+    ///
+    /// **WHY 576, NOT 86akcfp3u's ORIGINAL 512 (17tnw2b0nkq, from the 86akcgmuh spike).** A
+    /// final force-closed at the 10.000 s cap usually ends mid-word, and at 512 the encoder then
+    /// sees only 0.24 s past the cut (512 / 50 = 10.24 s). With almost no silence after the
+    /// abrupt end, greedy decoding frequently says the preceding phrase again ("…and then wait
+    /// long and then wait long and then wait"). The loop rate falls steadily as that tail grows
+    /// (spike, N = 370 ten-second windows ending mid-speech, 20 synthetic voices, 16 texts):
+    /// 512 -> 7.8%, **576 -> 3.2%**, 640 -> 2.7%, 1024 -> 1.4%, uncapped -> 0.3% (the mechanism
+    /// is Inferred from that dose-response, not proven). 576 is the cheapest step that captures
+    /// most of the gain: its measured cost against 512 is within noise, while 768 (~1.35x) and
+    /// 1024 (~1.3-1.5x) cost clearly more per 10 s final in the spike's A/B. The engine additionally trims any loop that remains on a
+    /// force-closed final (`crate::repetition::trim_trailing_repeat`); the two are independent
+    /// and `a_force_closed_final_ending_mid_word_does_not_repeat_itself` guards this constant
+    /// on its own (its raw-decode layer). 576 also satisfies the alignment constraint below.
     ///
     /// ENVELOPE COUPLING WITH `engine.rs` — READ BEFORE CHANGING EITHER CONSTANT (Cody/Vera
     /// finding, 86akcfp3u review; tracked for phase 2, 86akcfp6z, not fixed here). `audio_ctx`
     /// does not just bound cost — it bounds how much audio the encoder can see AT ALL.
     /// whisper.cpp's context units are 20 ms each (30 s of context / 1,500 positions), so
-    /// `audio_ctx` covers exactly `audio_ctx / 50` seconds of real audio: 512 -> **10.24 s**.
-    /// Feed it more than that and whisper.cpp does not slow down gradually — cost jumps ~5x
-    /// (a second internal encode+decode pass) AND the extra audio is silently NOT
-    /// transcribed. Measured on real speech: 10.0 s -> 178 chars (~400 ms); 10.24 s -> 183
-    /// chars (~2.2-3.1 s); 10.5 s and 11.0 s -> the SAME 183 chars. A full extra second of
-    /// real speech produced zero additional words past the envelope — silent content loss,
-    /// not a crash or an error.
+    /// `audio_ctx` covers exactly `audio_ctx / 50` seconds of real audio: 576 -> **11.52 s**
+    /// (512 -> 10.24 s before 17tnw2b0nkq). Feed it more than that and whisper.cpp does not
+    /// slow down gradually — cost jumps ~5x (a second internal encode+decode pass) AND the extra
+    /// audio is silently NOT transcribed. Measured on real speech at 512: 10.0 s -> 178 chars
+    /// (~400 ms); 10.24 s -> 183 chars (~2.2-3.1 s); 10.5 s and 11.0 s -> the SAME 183 chars. A
+    /// full extra second of real speech produced zero additional words past the envelope —
+    /// silent content loss, not a crash or an error.
     ///
     /// `engine.rs`'s `EngineConfig::max_utterance_samples` defaults to `10 *
     /// TARGET_SAMPLE_RATE` = exactly 10.000 s, the longest any utterance (interim or final)
-    /// ever gets before force-close — so production sits 0.24 s (2.4%) under this cliff
-    /// today, safely, but nothing in the code ties the two constants together. If
+    /// ever gets before force-close — so production sits 1.52 s (13%) under this cliff at
+    /// 576 (0.24 s at the original 512), but nothing in the code ties the two constants together. If
     /// `max_utterance_samples` is ever raised (phase 2 is scheduled to touch `engine.rs`)
     /// without revisiting `WHISPER_AUDIO_CTX` in lockstep, long utterances start silently
     /// losing trailing words while looking like a pure win. Whoever touches either constant
@@ -192,7 +207,7 @@ mod whisper_backend {
     /// The const assertion immediately below this one pins that mirrored constant EQUAL to this
     /// one, so the two cannot silently drift apart on any build that actually compiles this
     /// `whisper` module.
-    const WHISPER_AUDIO_CTX: std::os::raw::c_int = 512;
+    const WHISPER_AUDIO_CTX: std::os::raw::c_int = 576;
 
     // Pins the arithmetic half of the ALIGNMENT CONSTRAINT above at compile time: a future
     // retune to a misaligned or out-of-range value fails the build instead of SIGABRT-ing
@@ -320,6 +335,10 @@ mod whisper_backend {
             // fixture with four clauses separated by 500/650/400 ms pauses (the shape most
             // likely to trigger an early EOT) was also byte-identical across both arms
             // (86akcfp3u review, Vera + Quinn). No accuracy cost found.
+            // The engine's force-close trim (`engine.rs`, `close_utterance`, 17tnw2b0nkq) depends
+            // on this: with one segment per call, trimming "per segment" is trimming "per
+            // utterance". Dropping this setting makes that code trim every segment, not just
+            // the one that ends at the cut — read its doc comment first.
             params.set_single_segment(true);
             if state.full(params, samples).is_err() {
                 return Vec::new();
@@ -484,7 +503,8 @@ mod whisper_backend {
         /// (1.3-3.0 s) at 9.5 s, proving the cost tracked the REPEAT FRACTION, not the window
         /// length or `audio_ctx`. This is what produced this PR's earlier (wrong) claim of a
         /// "10 s regression" — see `WHISPER_AUDIO_CTX`'s doc comment for the real boundary
-        /// (a 10.24 s content-loss envelope, not a 10.0 s slowdown).
+        /// (an `audio_ctx / 50` s content-loss envelope — 10.24 s at the then-current 512, 11.52 s
+        /// at 576 since 17tnw2b0nkq — not a 10.0 s slowdown).
         ///
         /// Fixed by slicing prefixes of a long (~22 s), never-repeated recording instead of
         /// cycling a short one. Panics rather than silently tiling if a future caller asks
@@ -512,7 +532,7 @@ mod whisper_backend {
         /// call measured 791-899 ms here, noisier and closer to the threshold than the
         /// ~360-520 ms steady state this same window measures after a warm-up).
         ///
-        /// 8 s (well under the 10 s `max_utterance_samples` ceiling AND the 10.24 s
+        /// 8 s (well under the 10 s `max_utterance_samples` ceiling AND the 11.52 s
         /// `audio_ctx` envelope — see `WHISPER_AUDIO_CTX`'s doc comment) is a representative
         /// mid-range window; `capped_audio_ctx_bounds_a_ten_second_decode_at_the_\
         /// max_utterance_ceiling` below covers the ceiling itself. Mutation-verify by
@@ -558,9 +578,10 @@ mod whisper_backend {
         /// rebuild and this test would go red.
         ///
         /// Window lengths are drawn from the confirmed-fast range (independently measured on
-        /// real, non-repeating speech: 6-9s all land at ~360-460ms at `WHISPER_AUDIO_CTX`=512;
-        /// see the dedicated ten-second-ceiling test below for the `max_utterance_samples`
-        /// boundary, and `WHISPER_AUDIO_CTX`'s doc comment for the real 10.24s envelope).
+        /// real, non-repeating speech: 6-9s all land at ~360-460ms at the original
+        /// `WHISPER_AUDIO_CTX`=512, 86akcfp3u; see the dedicated ten-second-ceiling test below for
+        /// the `max_utterance_samples` boundary, and `WHISPER_AUDIO_CTX`'s doc comment for the real
+        /// `audio_ctx / 50` s envelope).
         #[test]
         fn capped_audio_ctx_stays_fast_across_varying_window_lengths_in_one_session() {
             let Some(model_path) = cached_model_path() else {
@@ -605,12 +626,12 @@ mod whisper_backend {
         /// regression on the final path at 10.0s.
         ///
         /// The real, DIFFERENT boundary this fix has is documented at `WHISPER_AUDIO_CTX`'s
-        /// doc comment: `audio_ctx=512` gives the encoder a hard 10.24s horizon, past which
-        /// cost jumps ~5x AND transcription silently stops growing (content loss, not
-        /// slowness). This test's 10.0s window sits 0.24s (2.4%) under that envelope, which
-        /// is exactly production's real margin (`engine.rs`'s force-close), and does not
-        /// itself probe the 10.24s envelope — it confirms production's actual ceiling is
-        /// fast and safe, nothing more.
+        /// doc comment: `audio_ctx` gives the encoder a hard `audio_ctx / 50` s horizon (11.52 s
+        /// at 576 since 17tnw2b0nkq; 10.24 s at the original 512), past which cost jumps ~5x AND
+        /// transcription silently stops growing (content loss, not slowness). This test's 10.0s
+        /// window sits 1.52 s (13%) under that envelope, which is exactly production's real
+        /// margin (`engine.rs`'s force-close), and does not itself probe the envelope — it
+        /// confirms production's actual ceiling is fast and safe, nothing more.
         #[test]
         fn capped_audio_ctx_bounds_a_ten_second_decode_at_the_max_utterance_ceiling() {
             let Some(model_path) = cached_model_path() else {
@@ -702,6 +723,147 @@ mod whisper_backend {
                 baseline.trim(),
                 "capping audio_ctx/single_segment changed the recognized text vs. the pre-fix \
                  baseline on a >= 4s fixture — the final's accuracy path must be unaffected"
+            );
+        }
+
+        /// 86akcgmuh REPRODUCTION FIXTURES: continuous speech that the REAL `SttEngine`
+        /// force-closes at exactly 10.000 s, mid-word. Each file is
+        /// `[300 ms silence][the 10.000 s window][up to 2 s of the same speaker continuing][600
+        /// ms silence]`, 16 kHz mono PCM16, and the 10 s window is one the production engine
+        /// (EnergyVad, default `EngineConfig`) itself force-closed when it heard the source
+        /// recording — the 300 ms lead-in is a whole number of 20 ms VAD frames, so the replayed
+        /// fixture force-closes on exactly the same audio.
+        ///
+        /// Each pair is (fixture file, an anchor phrase the correct force-closed final contains).
+        /// Observed on `main` (large-v3-turbo, Metal, `WHISPER_AUDIO_CTX` = 512, 86akcgmuh spike):
+        /// - A: "...Ask them how they are really doing, and then wait long and then wait long and
+        ///   then wait" (the uncapped reference ends "...and then wait long")
+        /// - B: "...Do not just sing the words on the screen. Look at the one the words on the
+        ///   screen. Look at the one the words on the" (reference: "...Look at the one the words")
+        ///
+        /// LICENSING — READ BEFORE MERGING: both files are macOS `say`-derived (voices "Karen" and
+        /// "Daniel"; original text written for the spike, not copyrighted material). They inherit
+        /// the replacement obligation tracked on 86akcmmc1 exactly like the two existing
+        /// `say`-derived fixtures. Replacing them means re-finding a window that loops on real
+        /// speech — the harness and method are on 86akcgmuh.
+        const FORCE_CLOSE_LOOP_FIXTURES: [(&str, &str); 2] = [
+            (
+                "tests/fixtures/force_close_loop_a_16k_mono.wav",
+                "ask them how they are really doing and then wait",
+            ),
+            (
+                "tests/fixtures/force_close_loop_b_16k_mono.wav",
+                "do not just sing the words on the screen look at the one",
+            ),
+        ];
+
+        /// 86akcgmuh / 17tnw2b0nkq — the defect, end to end: a final the engine FORCE-CLOSED at
+        /// 10 s, mid-word, must not repeat a span of itself back-to-back. Drives the real
+        /// `SttEngine` (production VAD and default `EngineConfig`, so the 10 s force-close is the
+        /// production path) over each fixture with the real `WhisperRecognizer`.
+        ///
+        /// Checks TWO layers, because the fix has two independent parts:
+        /// 1. The raw decode — `WhisperRecognizer::transcribe` on exactly the samples the engine
+        ///    force-closed, before any engine post-processing — must not loop. This is what
+        ///    `WHISPER_AUDIO_CTX` = 576 fixes (both fixtures loop at 512, 86akcgmuh), and the
+        ///    only assertion here that reddens if the constant is reverted: the engine's trim
+        ///    (part 2 of the fix) would otherwise hide a reverted constant on these fixtures.
+        /// 2. The engine's emitted finals must not loop — the end-to-end user-visible outcome,
+        ///    whatever combination of levers delivers it.
+        ///
+        /// The trim itself is guarded separately, without a model, by
+        /// `engine::tests::the_trailing_repeat_trim_applies_only_to_force_closed_finals`.
+        ///
+        /// Positive controls stop this passing vacuously: (1) the first final must span >= 9 s,
+        /// i.e. the fixture still reaches the force-close path rather than closing early on a
+        /// pause; (2) both the raw decode and the final must still contain the fixture's anchor
+        /// phrase, so an empty or truncated transcript cannot read as "no loop". The loop detector
+        /// is `repetition::back_to_back_repeat`, whose own positive and negative controls run in
+        /// the default build.
+        ///
+        /// Mutation check (17tnw2b0nkq): with `WHISPER_AUDIO_CTX` (and its engine mirror) set back
+        /// to 512 this goes RED on the raw-decode layer. Runs only when the model is cached, like
+        /// every test in this module; no CI job compiles this module at all (86ak5rjh7).
+        #[test]
+        fn a_force_closed_final_ending_mid_word_does_not_repeat_itself() {
+            use crate::audio::AudioChunk;
+            use crate::engine::{EngineConfig, SttEngine};
+            use crate::guard::FeedbackGuard;
+            use crate::repetition::{back_to_back_repeat, normalized_words};
+            use crate::vad::EnergyVad;
+            use selahcue_core::transcript::TranscriptProvider;
+
+            let Some(model_path) = cached_model_path() else {
+                eprintln!("skipping: no cached model");
+                return;
+            };
+            let _guard = lock_whisper_gpu();
+            let shared = load_test_recognizer(&model_path).context();
+            let mut loops = Vec::new();
+            for (file, anchor) in FORCE_CLOSE_LOOP_FIXTURES {
+                let audio =
+                    read_wav_pcm16_mono(&PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(file));
+                let (mut engine, mut provider) = SttEngine::build(
+                    EngineConfig::default(),
+                    Box::new(EnergyVad::new()),
+                    Box::new(WhisperRecognizer::from_context(
+                        Arc::clone(&shared),
+                        &production_selection(),
+                    )),
+                    FeedbackGuard::new(),
+                );
+                engine.process(&AudioChunk::new(audio.clone(), 16_000, 1));
+                engine.flush();
+                let finals: Vec<_> = provider.poll().into_iter().filter(|s| s.is_final).collect();
+                for s in &finals {
+                    eprintln!("{file} [{}-{} ms]: {:?}", s.start_ms, s.end_ms, s.text);
+                }
+                let first = finals
+                    .first()
+                    .unwrap_or_else(|| panic!("{file}: the engine produced no final at all"));
+                assert!(
+                    first.end_ms - first.start_ms >= 9_000,
+                    "{file}: the first final spans only {} ms — the fixture no longer reaches the \
+                     10 s force-close path, so this test would no longer exercise 86akcgmuh",
+                    first.end_ms - first.start_ms
+                );
+                assert!(
+                    normalized_words(&first.text).join(" ").contains(anchor),
+                    "{file}: the force-closed final lost its anchor phrase {anchor:?} — a \
+                     truncated or empty final must not pass as 'no loop'. Got {:?}",
+                    first.text
+                );
+
+                // Layer 1: the raw decode of exactly the samples the engine force-closed (the
+                // transcript clock is 16 samples per ms), with no engine post-processing.
+                let window = &audio[(first.start_ms * 16) as usize..(first.end_ms * 16) as usize];
+                let raw =
+                    WhisperRecognizer::from_context(Arc::clone(&shared), &production_selection())
+                        .transcribe(window, first.start_ms, first.end_ms)
+                        .into_iter()
+                        .map(|s| s.text)
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                eprintln!("{file} raw decode: {raw:?}");
+                assert!(
+                    normalized_words(&raw).join(" ").contains(anchor),
+                    "{file}: the raw decode lost its anchor phrase {anchor:?}. Got {raw:?}"
+                );
+                if let Some((span, times)) = back_to_back_repeat(&raw) {
+                    loops.push(format!("{file} (raw decode): {span:?} x{times} in {raw:?}"));
+                }
+
+                // Layer 2: every final the engine emitted.
+                for s in &finals {
+                    if let Some((span, times)) = back_to_back_repeat(&s.text) {
+                        loops.push(format!("{file}: {span:?} x{times} in {:?}", s.text));
+                    }
+                }
+            }
+            assert!(
+                loops.is_empty(),
+                "86akcgmuh: force-closed final(s) repeat themselves back-to-back:\n{}",
+                loops.join("\n")
             );
         }
     }
