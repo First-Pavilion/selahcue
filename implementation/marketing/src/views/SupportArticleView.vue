@@ -113,10 +113,10 @@ useFocusHeading(heading, () => `${props.category}/${props.slug}`)
 .sa-stuck-title { font-size: 24px; font-weight: 700; color: var(--sc-text); margin: 0 0 8px; }
 .sa-stuck-text { font-size: 15px; color: var(--sc-text-secondary); margin: 0 0 20px; }
 
-@media (max-width: 1199px) {
+@media (max-width: 1199.98px) {
   .sa-title { font-size: 40px; }
 }
-@media (max-width: 767px) {
+@media (max-width: 767.98px) {
   .sa { padding: 24px 0 64px; }
   .sa-title { font-size: 30px; }
   .sa-lead { font-size: 17px; }

@@ -285,13 +285,13 @@ watch(
 }
 
 /* Tablet: 768 - 1199px — sidebar is the collapsed menu above the article. */
-@media (max-width: 1199px) {
+@media (max-width: 1199.98px) {
   .da-content { padding: 32px 32px 40px; }
   .da-title { font-size: 36px; }
 }
 
 /* Mobile: < 768px */
-@media (max-width: 767px) {
+@media (max-width: 767.98px) {
   .da { padding: 20px 0 64px; }
   .da-content { padding: 24px 20px 32px; border-radius: 16px; }
   .da-title { font-size: 30px; }

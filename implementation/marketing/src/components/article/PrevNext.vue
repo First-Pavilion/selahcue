@@ -37,7 +37,7 @@ defineProps<{ prev: Neighbour | null; next: Neighbour | null; label?: string }>(
 .pn-link.is-next { text-align: right; grid-column: 2; }
 .pn-dir { font-size: 13px; color: var(--sc-text-secondary); }
 .pn-title { font-size: 16px; font-weight: 600; color: var(--sc-text); line-height: 1.35; }
-@media (max-width: 767px) {
+@media (max-width: 767.98px) {
   .pn { grid-template-columns: 1fr; }
   .pn-link.is-next { grid-column: auto; text-align: left; }
   .pn-gap { display: none; }

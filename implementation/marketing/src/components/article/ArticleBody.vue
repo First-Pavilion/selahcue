@@ -235,7 +235,7 @@ ol.ab-steps li::marker { color: var(--sc-primary-hover); font-weight: 600; }
   white-space: nowrap;
 }
 
-@media (max-width: 767px) {
+@media (max-width: 767.98px) {
   .ab { font-size: 16px; }
   .ab-h2 { font-size: 22px; }
   .ab-hwrap-2 { margin-top: 36px; }

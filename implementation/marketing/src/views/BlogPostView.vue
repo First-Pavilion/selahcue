@@ -254,13 +254,13 @@ onBeforeUnmount(() => clearTimeout(copyTimer))
 .bp-related-title { font-size: 15px; font-weight: 600; line-height: 1.4; color: var(--sc-text); }
 
 /* Tablet: 768 - 1199px (handoff §8a). Related posts go 2-up under the article. */
-@media (max-width: 1199px) {
+@media (max-width: 1199.98px) {
   .bp { padding-top: 40px; }
   .bp-related-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
 /* Mobile: < 768px. Everything single-column; h1 follows the 36/44 token. */
-@media (max-width: 767px) {
+@media (max-width: 767.98px) {
   .bp { padding: 28px 0 64px; }
   .bp-header { margin-bottom: 28px; }
   .bp-summary { font-size: 17px; }
