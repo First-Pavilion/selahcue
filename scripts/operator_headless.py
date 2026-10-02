@@ -4124,6 +4124,21 @@ DRIVER = r"""
   // the gate then waits exactly as long as the boot render needs and stays deterministic
   // (bounded) — a fixed sleep would spuriously RED the gate if app.js boot timing ever grew.
   var waitFor=async function(pred, tries){ tries=tries||150; for(var i=0;i<tries;i++){ if(pred()) return true; await sleep(20); } return pred(); };
+  // Settle the promise chain a SYNCHRONOUS click/call just started, WITHOUT returning to the event
+  // loop. `await sleep(n)` and `waitFor` yield to the TIMER queue, and the app's real 1 Hz poll
+  // (`setInterval(view -> render -> planSyncPublishFromPoll ...)`) is a timer: a tick that lands in
+  // that yield runs BEFORE the assertions after it and rewrites plan state under them -- it redraws
+  // the summary from the harness's default `view` (no changed publish, so the "Plan updated" banner
+  // goes), and it adds a second `view` call to __calls. Under --virtual-time-budget the tick's phase
+  // against the driver drifts by tens of ms between runs, so a 20 ms window that sits within a few ms
+  // of the tick fails about every other run, loaded or not (PL AC-63 reddened main at ae5f416, alarm
+  // issue #155). Awaiting an already-settled promise drains MICROtasks only, so no timer, the poll
+  // included, can run until the caller's next real await. The mocked `invoke` settles purely on
+  // microtasks (Promise.resolve / Promise.reject), so the chain completes inside this call.
+  // Bounded by hop count, never by time: if `pred` stays false the caller's own assertions then run
+  // and name what is missing, so this can neither hang nor hide a failure. Use it ONLY for a
+  // mock-settled invoke(); anything that needs a real timer, rAF or layout still wants waitFor.
+  var settleMicro=async function(pred, hops){ hops=hops||64; for(var i=0;i<hops;i++){ if(pred()) return true; await Promise.resolve(); } return pred(); };
   // The toolbar Image button opens the media library MODAL (it used to add the first library image
   // directly). Drive the whole flow: open, select the first placeable image, Insert, wait for it to
   // close. Every check that just needs "an image element on the slide" goes through this.
@@ -10981,7 +10996,10 @@ DRIVER = r"""
       // instant the click fires, not merely "eventually re-enabled".
       ok(reloadBtn2.disabled === true,
          "PL AC-63 (Vera LOW-1): Reload disables itself the instant it is clicked, so a second click cannot queue a second in-flight `view` request in front of the 1 Hz poll");
-      await sleep(20);
+      // NOT `await sleep(20)`: that yield let the app's 1 Hz poll tick in and add a second `view` call
+      // to the count below (see settleMicro). The Reload is done once its handler has torn down and
+      // rebuilt the button it was clicked on.
+      await settleMicro(function () { return !reloadBtn2.isConnected; });
       ok(window.__calls.filter(function (c) { return c.cmd === "view"; }).length === callsBeforeReload + 1,
          "PL AC-63 (Reload): clicking Reload genuinely calls invoke(\"view\") — not a fake dismissal wearing a different label");
       ok(el("plan-insp-h").textContent === "PLAN SUMMARY",
@@ -10991,18 +11009,39 @@ DRIVER = r"""
       // discipline every other lifecycle send-site on this surface already follows.
       openPlan(lifeView({ publish: { revision: 19, published_revision: 5, version: 4, changed: true } }));
       var reloadBtn3 = el("plan-pub-reload");
-      window.__viewRejectOnce = true;
-      reloadBtn3.click();
-      await sleep(20);
-      ok(reloadBtn3.disabled === false,
-         "PL AC-63 (Vera LOW-1): a refused Reload re-enables the button rather than leaving it stuck disabled");
-      ok(!!el("plan-notice").querySelector("p[role=alert]"),
-         "PL AC-63: a refused Reload is announced through the plan surface's own alert region");
-      // ...and the banner is UNCHANGED by the failure — planReviewDismissedSig is only ever
-      // cleared on a SUCCESSFUL fetch now, never pre-emptively on click, so a failed attempt
-      // cannot silently re-arm (or leave mid-dismissed) a signature it never actually reloaded.
-      ok(!!el("plan-pub-reload"),
-         "PL AC-63 (control): the banner is still showing after the refusal — nothing about the dismissal state moved on a failed fetch");
+      var reloadAlert = function () { return !!el("plan-notice").querySelector("p[role=alert]"); };
+      // A live region that already holds an alert from an earlier block would let the alert check
+      // below pass for the wrong reason; start it empty so the only alert it can see is this refusal's.
+      planNotice("");
+      // Park a sentinel in the dismissal state, for a signature that is NOT this banner's, so the
+      // control below can see whether a refused Reload moves it. Without one the state is already
+      // null here, and a Reload that cleared it pre-emptively changes nothing anyone can observe.
+      var dismissedBefore = planReviewDismissedSig;
+      planReviewDismissedSig = "0/0/0";
+      try {
+        window.__viewRejectOnce = true;
+        reloadBtn3.click();
+        // Settle on microtasks ONLY, then assert with no await between the three checks. The old
+        // `await sleep(20)` here let the app's real 1 Hz poll tick land inside the window about every
+        // other run (see settleMicro): the harness's default `view` carries no changed publish, so
+        // planSyncPublishFromPoll saw a new signature and redrew the summary WITHOUT the banner, and
+        // the control below failed although the code under test was right. The one-shot reject is
+        // consumed by Reload's own synchronous invoke("view"), never by a poll, and `finally` clears
+        // it so a Reload that never reached `view` cannot leak it into a later block.
+        await settleMicro(function () { return reloadBtn3.disabled === false && reloadAlert(); });
+        ok(reloadBtn3.disabled === false,
+           "PL AC-63 (Vera LOW-1): a refused Reload re-enables the button rather than leaving it stuck disabled");
+        ok(reloadAlert(),
+           "PL AC-63: a refused Reload is announced through the plan surface's own alert region");
+        // ...and the banner is UNCHANGED by the failure — planReviewDismissedSig is only ever
+        // cleared on a SUCCESSFUL fetch now, never pre-emptively on click, so a failed attempt
+        // cannot silently re-arm (or leave mid-dismissed) a signature it never actually reloaded.
+        ok(!!el("plan-pub-reload") && planReviewDismissedSig === "0/0/0",
+           "PL AC-63 (control): the banner is still showing after the refusal — nothing about the dismissal state moved on a failed fetch");
+      } finally {
+        window.__viewRejectOnce = false;
+        planReviewDismissedSig = dismissedBefore;
+      }
 
       // === 86ak8467m frame 612:584 (AC-6): item-delete Undo, conditional on backend kind =======
       var undoView = lifeView({ items: [
