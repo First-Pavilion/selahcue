@@ -1,6 +1,6 @@
 # ADR-0029: Native-client account sign-in — a cookie-free, CSRF-exempt `/v1` route pair, not an exemption of `/graphql/account`
 
-- Status: Proposed — implemented on PR #151 (draft) and endorsed by code, performance, security and QA review; stays Proposed until the product owner confirms the wire shape (REST under `/v1` rather than a second GraphQL mount) and accepts or rejects the residual risks listed below, on ClickUp 86ak5t1gw
+- Status: Proposed — implemented on PR #151 (draft) and reviewed by code, performance, security and QA (verdicts are on the PR and ClickUp 86ak5t1gw); stays Proposed until the product owner confirms the wire shape (REST under `/v1` rather than a second GraphQL mount) and accepts or rejects the residual risks listed below, on ClickUp 86ak5t1gw
 - Date: 2026-10-02
 - Confidence: High on the safety argument; Medium on the wire shape (a reasoned choice between two sound shapes)
 - Owner: Backend Engineer
@@ -64,7 +64,7 @@ None of these is a CSRF problem and none is new in kind; they are stated so that
 - **The per-IP budget fails open.** If the limiter store (Redis) is unreachable, `evaluate_budget` (`apps/throttling/services.py`) permits the request and logs one line per minute. During an outage the only brake on guessing is the per-account lockout. The same is true of every throttled `/v1` route; a degraded-ceiling treatment (as the resend and reset budgets have) is tracked separately.
 - **The per-account lockout can be used against a named victim.** Anyone who knows an email address can lock that account for the lockout window (default 15 minutes) with five failed attempts per window, from any single address. This is identical on the browser surface and is the price of a lockout that does not leak whether an account exists.
 - **A distributed guess across many source IPs** is bounded only by the per-account lockout, as on any login. (A hostile page cannot recruit visitors' browsers to do this — see above.)
-- **A 30-day account session the native client cannot revoke.** `POST /v1/sessions` hands the desktop a session that is valid for 30 days (DEC-007) on every session-bound operation of the account surface, and no native route ends it; the desktop uses it once to activate. Revoking it needs an authorised owner decision — a native revoke route and/or an activation-only grant (ClickUp 17tnw2b1wf2). Until then, signing out locally does not invalidate it server-side; a web logout or a password change does.
+- **A 30-day account session the native client cannot revoke.** `POST /v1/sessions` hands the desktop a session that is valid for 30 days (DEC-007) on every session-bound operation of the account surface, and no native route ends it; the desktop uses it once to activate. Revoking it needs an authorised owner decision — a native revoke route and/or an activation-only grant (ClickUp 17tnw2b1wf2). Until then, signing out locally does not invalidate it server-side; only a logout of all sessions (`logout(allSessions: true)`) or a password change does, and a plain web logout of one browser session does not.
 - **No logging of failed native sign-ins or of sustained `429`s on these routes.** Tracked separately.
 
 ## Consequences
