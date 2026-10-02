@@ -396,16 +396,19 @@ def main() -> None:
         check("support breadcrumb category link lands on an existing section", pg.url.endswith("/support#mobile-control") and pg.evaluate("!!document.getElementById('mobile-control')"), pg.url)
 
         # ---- a same-document #hash change on the INDEX pages lands below the navbar ---------
-        # Editing the URL's fragment and pressing Enter is a same-document navigation: the
-        # browser's own fragment scroll runs (it overrides the router's smooth scroll), so the
-        # target section needs its own scroll-margin or it lands ~69px under the navbar.
+        # Editing the URL's fragment and pressing Enter is a same-document navigation: in Chrome
+        # the browser's own fragment scroll overrides the router's smooth scroll, so the target
+        # section needs its own scroll-margin or it lands ~69px under the navbar.
         def hash_landing(engine_name: str, make_context) -> None:
             for width in (375, 768, 1440):
                 hp = make_context(viewport={"width": width, "height": 900}).new_page()
                 for page_path, target in [("/docs", "display-outputs"), ("/support", "display-outputs")]:
                     hp.goto(base + page_path + "#troubleshooting", wait_until="networkidle")
                     hp.wait_for_timeout(500)
-                    hp.evaluate("location.hash = '#" + target + "'")
+                    # A browser-initiated navigation to the same page with another fragment: what Enter
+                    # in the URL bar does. (Assigning `location.hash` from script does NOT reproduce
+                    # the bug: there the router's own scroll wins; measured.)
+                    hp.goto(base + page_path + "#" + target)
                     hp.wait_for_timeout(1200)
                     nav_bottom = hp.evaluate("document.querySelector('header').getBoundingClientRect().bottom")
                     top = hp.evaluate("document.getElementById('" + target + "').getBoundingClientRect().top")
