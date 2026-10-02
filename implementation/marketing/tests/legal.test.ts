@@ -1040,7 +1040,11 @@ describe('draft treatment is derived from the remaining placeholders', () => {
       const s = legalPageState(doc)
       assert.equal(s.draft, true)
       assert.equal(s.noindex, true)
-      assert.ok(s.placeholders.includes('LEGAL_ENTITY_NAME'))
+      assert.ok(s.placeholderCount > 0, 'open placeholders are what keep the real page a draft')
+      // Name a token that is still open in BOTH drafts: the postal address. (LEGAL_ENTITY_NAME and
+      // NDI_ATTRIBUTION_TEXT were filled on 2026-10-02, which is why this no longer names them.)
+      // If a later fill closes it, point this at another token that is open in both drafts.
+      assert.ok(s.placeholders.includes('REGISTERED_ADDRESS'), `REGISTERED_ADDRESS is still open in ${doc.title}`)
       assert.ok(s.bannerHeadline?.startsWith('DRAFT'))
     }
   })

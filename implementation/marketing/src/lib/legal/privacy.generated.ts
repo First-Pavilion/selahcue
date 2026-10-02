@@ -40,9 +40,7 @@ export const privacyPolicy: LegalDocument = {
     {
       "inline": [
         { "kind": "strong", "children": [{ "kind": "text", "text": "Who we are:" }] },
-        { "kind": "text", "text": " " },
-        { "kind": "placeholder", "name": "LEGAL_ENTITY_NAME" },
-        { "kind": "text", "text": ", trading as SelahCue (\"SelahCue\", \"we\", \"us\")" }
+        { "kind": "text", "text": " First Pavilion Technologies, trading as SelahCue (\"SelahCue\", \"we\", \"us\")" }
       ],
       "children": []
     },
@@ -212,9 +210,7 @@ export const privacyPolicy: LegalDocument = {
             {
               "kind": "paragraph",
               "inline": [
-                { "kind": "text", "text": "This policy explains how " },
-                { "kind": "placeholder", "name": "LEGAL_ENTITY_NAME" },
-                { "kind": "text", "text": " handles personal data when you:" }
+                { "kind": "text", "text": "This policy explains how First Pavilion Technologies, trading as SelahCue, handles personal data when you:" }
               ],
               "clause": "1.1",
               "anchor": "s-1-1"
@@ -1747,9 +1743,7 @@ export const privacyPolicy: LegalDocument = {
                 {
                   "inline": [
                     { "kind": "strong", "children": [{ "kind": "text", "text": "Post:" }] },
-                    { "kind": "text", "text": " " },
-                    { "kind": "placeholder", "name": "LEGAL_ENTITY_NAME" },
-                    { "kind": "text", "text": ", " },
+                    { "kind": "text", "text": " First Pavilion Technologies, " },
                     { "kind": "placeholder", "name": "REGISTERED_ADDRESS" }
                   ],
                   "children": []

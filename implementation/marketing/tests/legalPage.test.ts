@@ -321,7 +321,7 @@ describe('the skip link is hidden by clipping, not by parking it off-screen', ()
   })
 })
 
-describe('breakpoints and gutters agree with the rest of the site (and with PR #140 once it lands)', () => {
+describe('breakpoints and gutters agree with the rest of the site (and with PR #140)', () => {
   const dir = fileURLToPath(new URL('../src/components/legal/', import.meta.url))
   const css = ['LegalPage.vue', 'LegalBlocks.vue', 'LegalInline.vue', 'LegalList.vue', 'LegalTable.vue'].map((f) => [f, readFileSync(`${dir}${f}`, 'utf8')] as const)
   const page = css[0]?.[1] ?? ''

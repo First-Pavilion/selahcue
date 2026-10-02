@@ -38,9 +38,7 @@ export const termsOfService: LegalDocument = {
     {
       "inline": [
         { "kind": "strong", "children": [{ "kind": "text", "text": "Provider and seller:" }] },
-        { "kind": "text", "text": " " },
-        { "kind": "placeholder", "name": "LEGAL_ENTITY_NAME" },
-        { "kind": "text", "text": ", trading as SelahCue" }
+        { "kind": "text", "text": " First Pavilion Technologies, trading as SelahCue" }
       ],
       "children": []
     },
@@ -810,9 +808,7 @@ export const termsOfService: LegalDocument = {
                   "kind": "strong",
                   "children": [{ "kind": "text", "text": "Who you buy from and how you pay." }]
                 },
-                { "kind": "text", "text": " You buy paid Plans from " },
-                { "kind": "placeholder", "name": "LEGAL_ENTITY_NAME" },
-                { "kind": "text", "text": ", which is the seller. Payments are processed by Paystack, our payment processor, on its checkout page and under its own terms. By buying a paid Plan, you authorise us to charge your chosen payment method, through Paystack, for the fees, taxes and any renewals described in this Part C. We are responsible for your invoices, for the taxes we must collect, for refunds and for handling failed payments." }
+                { "kind": "text", "text": " You buy paid Plans from First Pavilion Technologies, which is the seller. Payments are processed by Paystack, our payment processor, on its checkout page and under its own terms. By buying a paid Plan, you authorise us to charge your chosen payment method, through Paystack, for the fees, taxes and any renewals described in this Part C. We are responsible for your invoices, for the taxes we must collect, for refunds and for handling failed payments." }
               ],
               "clause": "8.3",
               "anchor": "s-8-3"
@@ -1357,8 +1353,7 @@ export const termsOfService: LegalDocument = {
                 {
                   "inline": [
                     { "kind": "strong", "children": [{ "kind": "text", "text": "NDI" }] },
-                    { "kind": "text", "text": " technology for network video output. " },
-                    { "kind": "placeholder", "name": "NDI_ATTRIBUTION_TEXT" }
+                    { "kind": "text", "text": " technology for network video output. NDI® is a registered trademark of Vizrt NDI AB." }
                   ],
                   "children": []
                 },
@@ -2019,9 +2014,7 @@ export const termsOfService: LegalDocument = {
                 {
                   "inline": [
                     { "kind": "strong", "children": [{ "kind": "text", "text": "Post:" }] },
-                    { "kind": "text", "text": " " },
-                    { "kind": "placeholder", "name": "LEGAL_ENTITY_NAME" },
-                    { "kind": "text", "text": ", " },
+                    { "kind": "text", "text": " First Pavilion Technologies, " },
                     { "kind": "placeholder", "name": "REGISTERED_ADDRESS" }
                   ],
                   "children": []
