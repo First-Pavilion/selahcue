@@ -18,15 +18,32 @@ import UiButton from '@/components/UiButton.vue'
             <div class="icon">🪟</div>
             <h2>Windows</h2>
             <p>Windows 10 / 11 (64-bit)</p>
-            <UiButton variant="primary">Download for Windows</UiButton>
-            <span class="version">Version 1.2.0 (Stable)</span>
+            <!--
+              No installer is served from this page yet: the downloads backend is not built
+              (ClickUp 86ak10afm) and both of its endpoints still return 501. So the button is
+              honestly disabled rather than a button that does nothing, and the version line
+              that claimed a stable release is replaced with the real status. Wire this to the
+              downloads backend when that lands.
+            -->
+            <UiButton
+              variant="primary"
+              disabled
+              aria-disabled="true"
+              aria-describedby="windows-availability"
+            >Download for Windows</UiButton>
+            <span id="windows-availability" class="version availability">Not available to download yet</span>
           </div>
           <div class="platform-card">
             <div class="icon">🍎</div>
             <h2>macOS</h2>
             <p>macOS 11.0 or later (Intel & Apple Silicon)</p>
-            <UiButton variant="primary">Download for macOS</UiButton>
-            <span class="version">Version 1.2.0 (Stable)</span>
+            <UiButton
+              variant="primary"
+              disabled
+              aria-disabled="true"
+              aria-describedby="macos-availability"
+            >Download for macOS</UiButton>
+            <span id="macos-availability" class="version availability">Not available to download yet</span>
           </div>
         </div>
       </div>
@@ -65,10 +82,40 @@ import UiButton from '@/components/UiButton.vue'
         <div class="mobile-text">
           <h2>Mobile Control</h2>
           <p>Control your presentation from anywhere on the stage or in the auditorium using our mobile apps. Connects seamlessly over your local network.</p>
-          <div class="app-badges">
-            <div class="badge-placeholder">App Store</div>
-            <div class="badge-placeholder">Google Play</div>
+          <!--
+            Neither store listing exists yet (mobile store publishing is still open work:
+            signing, store accounts, legal sign-off), so these are honest disabled states, not
+            links. No href, no handler. They are native disabled buttons on purpose: that gives
+            assistive tech the real "unavailable" state, keeps them out of the tab order (a tab
+            stop that does nothing is noise), and the visible "Coming soon" text plus the note
+            below carry the meaning for everyone, not just screen-reader users.
+            When a listing goes live, turn the matching badge into a real <a> to that URL.
+          -->
+          <div class="app-badges" role="group" aria-label="Mobile app availability">
+            <button
+              type="button"
+              class="store-badge"
+              disabled
+              aria-disabled="true"
+              aria-describedby="store-availability"
+            >
+              <span class="store-name">App Store</span>
+              <span class="store-status">Coming soon</span>
+            </button>
+            <button
+              type="button"
+              class="store-badge"
+              disabled
+              aria-disabled="true"
+              aria-describedby="store-availability"
+            >
+              <span class="store-name">Google Play</span>
+              <span class="store-status">Coming soon</span>
+            </button>
           </div>
+          <p id="store-availability" class="store-note">
+            The SelahCue Controller app is not in the App Store or Google Play yet.
+          </p>
         </div>
         <div class="mobile-visual">
           <div class="phone-mockup">Mobile App Mockup</div>
@@ -156,6 +203,11 @@ import UiButton from '@/components/UiButton.vue'
   font-size: 0.875rem;
   color: var(--sc-text-muted);
 }
+/* The status line now carries information (the button is disabled and this says why), so it
+   uses the secondary text colour, which clears AA on the card surface; the muted token does not. */
+.platform-card .availability {
+  color: var(--sc-text-secondary);
+}
 
 .requirements-section {
   padding: 5rem 0;
@@ -215,12 +267,33 @@ import UiButton from '@/components/UiButton.vue'
   display: flex;
   gap: 1rem;
 }
-.badge-placeholder {
+/* Deliberately NOT styled like a filled button: transparent with a dashed outline, no hover,
+   not-allowed cursor, so nothing here reads as something to click. The status text uses the
+   secondary text colour (not opacity) so "Coming soon" keeps readable contrast. */
+.store-badge {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
   padding: 0.75rem 1.5rem;
-  background: #000;
-  color: #fff;
+  background: transparent;
+  border: 1px dashed var(--sc-border-strong);
   border-radius: 8px;
-  font-weight: bold;
+  color: var(--sc-text);
+  font: inherit;
+  text-align: left;
+  cursor: not-allowed;
+}
+.store-name {
+  font-weight: 700;
+}
+.store-status {
+  font-size: 0.8125rem;
+  color: var(--sc-text-secondary);
+}
+.mobile-text .store-note {
+  margin: 1rem 0 0;
+  font-size: 0.9375rem;
 }
 .mobile-visual {
   flex: 1;

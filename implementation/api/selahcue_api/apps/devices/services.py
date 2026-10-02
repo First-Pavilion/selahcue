@@ -552,7 +552,10 @@ def _resolve_org_active_license_key(org_id: str) -> AppLicenseKey:
 
 
 def activate_device_with_session(
-    actor: ActorContext | None, data: ActivateDeviceWithSessionData
+    actor: ActorContext | None,
+    data: ActivateDeviceWithSessionData,
+    *,
+    source_surface: str = "account_graphql",
 ) -> ActivateDeviceResult:
     """Account-based device activation (DEC-005): a signed-in ADMIN customer activates a device
     WITHOUT the enrollment key — identity comes from their session. Delegates into the shared core,
@@ -577,7 +580,7 @@ def activate_device_with_session(
         display_name=data.display_name,
         activated_by_actor_id=checked.actor_id,
         audit_actor=checked,
-        source_surface="account_graphql",
+        source_surface=source_surface,
     )
 
 

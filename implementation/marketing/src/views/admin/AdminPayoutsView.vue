@@ -23,7 +23,7 @@ const payouts = ref([
   { id: '2', affiliate: 'Church Tech Today (churchtech)', method: 'PayPal (info@churchtech.com)', amount: '$380.00', cycle: 'August 2026', status: 'Pending Approval' }
 ])
 
-const releasePayout = (row: any) => {
+const releasePayout = (row: Record<string, string | number>) => {
   payouts.value = payouts.value.filter(p => p.id !== row.id)
   toastMessage.value = `Released payout of ${row.amount} to ${row.affiliate}`
   toastShow.value = true

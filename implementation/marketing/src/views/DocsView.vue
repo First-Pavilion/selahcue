@@ -1,16 +1,10 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { docsCategories, docsIn, docsPath } from '@/lib/content/docs.ts'
+import { readMinutes } from '@/lib/content/text.ts'
 
-const activeDoc = ref('getting-started')
-
-const topics = [
-  { id: 'getting-started', title: 'Getting Started', desc: 'Overview, installation & system requirements' },
-  { id: 'display-outputs', title: 'Display & Outputs', desc: 'Configuring main projector, stage monitor & NDI' },
-  { id: 'scripture-bibles', title: 'Scripture & Bibles', desc: 'Built-in Bibles & copyrighted entitlement downloads' },
-  { id: 'timers-clocks', title: 'Timers & Service Plans', desc: 'Setting up service order & stage countdown timers' },
-  { id: 'mobile-control', title: 'Mobile Control App', desc: 'Pairing Flutter mobile controller via local LAN' },
-  { id: 'troubleshooting', title: 'Troubleshooting', desc: 'Graphics drivers, performance tuning & logs' }
-]
+// The topics and every article link below come from the local content source, so each
+// entry resolves to a real article (GAP-08). Category sections carry the id the article
+// breadcrumbs link to (`/docs#<category>`).
 </script>
 
 <template>
@@ -22,70 +16,40 @@ const topics = [
           <div class="sidebar-header">
             <span class="sidebar-title">Documentation</span>
           </div>
-          <nav class="sidebar-nav">
-            <button 
-              v-for="item in topics" 
-              :key="item.id"
-              :class="['nav-item', { active: activeDoc === item.id }]"
-              @click="activeDoc = item.id"
+          <nav class="sidebar-nav" aria-label="Documentation topics">
+            <router-link
+              v-for="c in docsCategories"
+              :key="c.id"
+              class="nav-item"
+              :to="{ hash: '#' + c.id }"
+              aria-current-value="false"
             >
-              {{ item.title }}
-            </button>
+              {{ c.title }}
+            </router-link>
           </nav>
         </aside>
 
-        <!-- Right Content Area -->
-        <main class="docs-content">
-          <div class="breadcrumb">Docs &gt; {{ topics.find(t => t.id === activeDoc)?.title }}</div>
-          
-          <h1 class="doc-title">{{ topics.find(t => t.id === activeDoc)?.title }}</h1>
-          <p class="doc-lead">{{ topics.find(t => t.id === activeDoc)?.desc }}</p>
+        <!-- Right Content Area. The site shell already provides <main>. -->
+        <div class="docs-content">
+          <div class="breadcrumb">Docs</div>
 
-          <div class="doc-body">
-            <h2>Overview</h2>
-            <p>
-              SelahCue is an offline-first presentation application built specifically for church environments. 
-              The application separates the staged <strong>Preview</strong> content from the <strong>Live Program</strong> output to ensure full confidence during live worship.
-            </p>
+          <h1 class="doc-title">Documentation</h1>
+          <p class="doc-lead">How-to guides for running SelahCue, written from what the app actually does.</p>
 
-            <div class="callout tip">
-              <span class="callout-icon">💡</span>
-              <div>
-                <strong>Pro Tip:</strong> You can stage any scripture verse or song slide by double-clicking it, or press <kbd>Enter</kbd> to send the staged preview directly to live.
-              </div>
-            </div>
-
-            <h2>Key Hardware &amp; System Requirements</h2>
-            <ul>
-              <li><strong>Operating System:</strong> Windows 10/11 (64-bit) or macOS 12+ (Apple Silicon or Intel)</li>
-              <li><strong>GPU / Decoders:</strong> Direct3D 12 (Windows) / Metal (macOS) hardware decoder support</li>
-              <li><strong>Network:</strong> Gigabit Ethernet or 5GHz Wi-Fi (only required for NDI output and mobile pairing over LAN)</li>
+          <section v-for="c in docsCategories" :id="c.id" :key="c.id" class="topic" :aria-labelledby="'topic-' + c.id">
+            <h2 :id="'topic-' + c.id" class="topic-title">{{ c.title }}</h2>
+            <p class="topic-desc">{{ c.desc }}</p>
+            <ul class="topic-list">
+              <li v-for="a in docsIn(c.id)" :key="a.slug">
+                <router-link class="topic-link" :to="docsPath(a)">
+                  <span class="topic-link-title">{{ a.title }}</span>
+                  <span class="topic-link-sum">{{ a.summary }}</span>
+                  <span class="topic-link-meta">{{ readMinutes(a.body) }} min read</span>
+                </router-link>
+              </li>
             </ul>
-
-            <div class="callout warning">
-              <span class="callout-icon">⚠️</span>
-              <div>
-                <strong>Copyrighted Bible Entitlements:</strong> Licensed translations (such as NIV, ESV, or NLT) are downloaded post-activation into an encrypted local store. Public-domain versions (WEB, ASV, BSB) are bundled offline out of the box.
-              </div>
-            </div>
-
-            <h2>Code Example: NDI Configuration</h2>
-            <pre class="code-block" tabindex="0"><code>// selahcue-output.json
-{
-  "outputs": [
-    { "name": "Audience Main", "target": "Display 2", "resolution": "1920x1080" },
-    { "name": "Stage Display", "target": "Display 3", "mode": "confidence" },
-    { "name": "NDI Stream", "target": "ndi://selahcue-program", "fps": 60 }
-  ]
-}</code></pre>
-          </div>
-
-          <div class="doc-feedback">
-            <span>Was this article helpful?</span>
-            <button type="button" class="feedback-btn">👍 Yes</button>
-            <button type="button" class="feedback-btn">👎 No</button>
-          </div>
-        </main>
+          </section>
+        </div>
       </div>
     </div>
   </div>
@@ -107,8 +71,8 @@ const topics = [
 .docs-layout {
   display: grid;
   /* `minmax(0, 1fr)`, not `1fr`: a `1fr` track has an automatic minimum of its content's
-     min-content, so the unbroken code sample below made the whole article track as wide
-     as its longest line and pushed the page sideways. */
+     min-content, so any unbroken run inside the article column (a long word, a code line)
+     would make the whole track as wide as it and push the page sideways. */
   grid-template-columns: 260px minmax(0, 1fr);
   gap: 48px;
   align-items: start;
@@ -289,7 +253,7 @@ kbd {
 }
 
 /* Below 1024 the sidebar no longer fits beside the article: it becomes a swipeable row of
-   topic chips above it (still the same buttons, so keyboard and AT behaviour is unchanged). */
+   topic chips above it (still the same links, so keyboard and AT behaviour is unchanged). */
 @media (max-width: 1023.98px) {
   .docs-layout { grid-template-columns: minmax(0, 1fr); gap: 24px; }
   .docs-sidebar { position: static; padding: 14px 16px; border-radius: 14px; }
@@ -318,4 +282,30 @@ kbd {
   .doc-feedback { flex-wrap: wrap; gap: 12px; margin-top: 32px; }
   .feedback-btn { min-height: 44px; padding: 0 16px; }
 }
+</style>
+
+<style scoped>
+/* GAP-08: the index lists real articles. Appended as its own block so it does not sit
+   inside the rules the responsive pass is editing above. */
+.nav-item { display: block; text-decoration: none; }
+.nav-item:focus-visible, .topic-link:focus-visible { outline: 2px solid var(--sc-primary); outline-offset: 2px; }
+.topic { margin-top: 40px; }
+.topic-title { font-size: 22px; font-weight: 700; color: var(--sc-text); margin: 0 0 6px; }
+.topic-desc { font-size: 15px; color: var(--sc-text-secondary); margin: 0 0 16px; }
+.topic-list { display: flex; flex-direction: column; gap: 10px; }
+.topic-link {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 16px 18px;
+  min-height: 44px;
+  background: var(--sc-elevated);
+  border: 1px solid var(--sc-border);
+  border-radius: 12px;
+  transition: border-color var(--transition-base);
+}
+.topic-link:hover { border-color: var(--sc-primary); }
+.topic-link-title { font-size: 16px; font-weight: 600; color: var(--sc-text); }
+.topic-link-sum { font-size: 14px; line-height: 1.55; color: var(--sc-text-secondary); }
+.topic-link-meta { font-size: 13px; color: var(--sc-text-secondary); }
 </style>

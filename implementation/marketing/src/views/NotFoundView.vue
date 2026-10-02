@@ -15,10 +15,18 @@
  * carry on browsing rather than be dropped into a bare card.
  */
 import UiButton from '@/components/UiButton.vue'
+
+/**
+ * `embedded` is set by the blog / docs / support detail views, which show this when an
+ * article slug names nothing. The site shell (App.vue) already provides the page's <main>,
+ * so an embedded copy must not open a second one. The catch-all route renders it with no
+ * prop and keeps its own <main>, exactly as before.
+ */
+defineProps<{ embedded?: boolean }>()
 </script>
 
 <template>
-  <main class="nf-page">
+  <component :is="embedded ? 'div' : 'main'" class="nf-page">
     <h1 class="nf-title">We couldn't find that page</h1>
     <p class="nf-body">
       The link may be out of date, or the address may have a typo in it. Nothing is wrong
@@ -28,7 +36,7 @@ import UiButton from '@/components/UiButton.vue'
       <UiButton to="/" variant="primary" size="lg">Go to the home page</UiButton>
       <UiButton to="/support" variant="secondary" size="lg">Contact support</UiButton>
     </div>
-  </main>
+  </component>
 </template>
 
 <style scoped>
