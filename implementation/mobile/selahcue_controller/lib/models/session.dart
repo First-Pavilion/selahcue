@@ -11,7 +11,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:crypto/crypto.dart';
-import 'package:flutter/foundation.dart' show visibleForTesting;
+import 'package:flutter/foundation.dart' show debugPrintStack, visibleForTesting;
 
 import 'pair_uri.dart';
 import 'protocol.dart';
@@ -40,6 +40,30 @@ class SessionException implements Exception {
 /// want to STOP reconnecting (and prompt a re-pair) can catch it specifically.
 class SessionRevoked extends SessionException {
   const SessionRevoked(super.message);
+}
+
+/// What a frame the client cannot read surfaces as — not text, not JSON, not an
+/// object ([StreamQueue.nextJson]), or an auth/pair reply that is no readable
+/// verdict ([SelahSession.connect] / [SelahSession.pair]). The ONE definition of
+/// the words, so a host that breaks the protocol reads the same however it
+/// breaks it and the paths cannot drift apart.
+const SessionException _malformedFrame =
+    SessionException('malformed frame from the host');
+
+/// Record that a connect attempt failed with something that is NOT a
+/// [SessionException] — a failure nobody modelled (a parsing bug, a platform
+/// error). Callers treat any connect failure as survivable (retry, or fall back
+/// to the Connect screen), which would otherwise make such a bug invisible.
+///
+/// Writes the runtime TYPE and a bounded stack, **never** `error.toString()` or
+/// its message: a `FormatException` embeds the source text it failed to parse,
+/// which here is a frame the host chose, so it must not reach a log.
+void debugReportUnexpectedConnectFailure(Object error, StackTrace stack) {
+  debugPrintStack(
+    stackTrace: stack,
+    label: 'connect failed with an unexpected ${error.runtimeType}',
+    maxFrames: 8,
+  );
 }
 
 /// Credentials issued at pairing time (store securely; reused on reconnect).
@@ -176,6 +200,9 @@ class SelahSession implements ControllerSession {
             );
           case PairRejected(:final reason):
             throw SessionException('pairing rejected: $reason');
+          case PairMalformed():
+            // Not the operator's answer and not a save failure: say what it is.
+            throw _malformedFrame;
         }
       }
     } catch (e) {
@@ -186,6 +213,10 @@ class SelahSession implements ControllerSession {
   }
 
   /// Reconnect with previously issued credentials.
+  ///
+  /// Throws [SessionRevoked] ONLY for an explicit `"auth":"rejected"`. Any other
+  /// reply the client cannot read is a plain [SessionException] (17tnw2b1f1v) —
+  /// callers retry that and keep the credentials.
   static Future<SelahSession> connect({
     required String host,
     required int port,
@@ -204,6 +235,10 @@ class SelahSession implements ControllerSession {
           // Credentials no longer valid (revoked/unpaired) — distinct from a
           // transient network failure so the controller stops reconnecting.
           throw SessionRevoked('authentication rejected: $reason');
+        case AuthMalformed():
+          // NOT a revocation: only an explicit "rejected" is. An unreadable
+          // reply is transient, so it is retried and the credentials are kept.
+          throw _malformedFrame;
       }
     } catch (e) {
       // Never leak the socket on a failed handshake (timeout/reject/malformed).
@@ -375,9 +410,24 @@ class StreamQueue {
         throw const SessionException('timed out waiting for the host');
       }
     }
-    final decoded = jsonDecode(frame as String);
+    // A binary frame arrives as bytes, not a String, and a text frame need not
+    // be JSON. Both are the peer breaking the protocol, so surface them as the
+    // [SessionException] every caller already treats as "this link is bad".
+    // [command] already wrapped everything it caught, so it was `connect` and
+    // `pair` that leaked a raw TypeError (`frame as String`) / FormatException
+    // (`jsonDecode`) — past `_reconnect()`'s and the launch splash's
+    // SessionException-only catches, wedging both (17tnw2b0vtj).
+    if (frame is! String) {
+      throw _malformedFrame;
+    }
+    final Object? decoded;
+    try {
+      decoded = jsonDecode(frame);
+    } on FormatException {
+      throw _malformedFrame;
+    }
     if (decoded is! Map<String, dynamic>) {
-      throw const SessionException('malformed frame from the host');
+      throw _malformedFrame;
     }
     return decoded;
   }

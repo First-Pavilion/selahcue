@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
+import { buttonElement } from '@/lib/ui/buttonElement.ts'
 
 const props = defineProps({
   variant: {
@@ -30,19 +31,18 @@ const props = defineProps({
   }
 })
 
-const component = computed(() => {
-  if (props.to) return 'router-link'
-  if (props.href) return 'a'
-  return 'button'
-})
+/**
+ * Which element to render and with which attributes: see `lib/ui/buttonElement.ts` for why a
+ * router link must keep its own href, and why a disabled or loading link is rendered without
+ * one (so it cannot be tabbed to or followed).
+ */
+const element = computed(() => buttonElement(props))
 </script>
 
 <template>
   <component
-    :is="component"
-    :to="to"
-    :href="href"
-    :disabled="disabled || loading"
+    :is="element.tag"
+    v-bind="element.attrs"
     :class="['ui-button', `variant-${variant}`, `size-${size}`, { 'is-loading': loading, 'is-disabled': disabled }]"
   >
     <div v-if="loading" class="spinner"></div>

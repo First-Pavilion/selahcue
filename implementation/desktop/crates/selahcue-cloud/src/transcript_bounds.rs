@@ -120,4 +120,40 @@ mod tests {
         assert_eq!(owned, expected_slice);
         assert_eq!(owned.chars().count(), MAX_TRANSCRIPT_CHARS);
     }
+
+    /// QA D5 (17tnw2b0ntd): the other tests use `"a".repeat(..)` and so cannot tell the head from
+    /// the tail. This input has a distinct HEAD marker and a distinct TAIL marker, so keeping the
+    /// wrong end fails.
+    fn marked(extra: usize) -> String {
+        let filler = MAX_TRANSCRIPT_CHARS + extra - "HEAD".len() - "TAIL".len();
+        format!("HEAD{}TAIL", "m".repeat(filler))
+    }
+
+    #[test]
+    fn bounded_transcript_keeps_the_head_and_drops_the_tail() {
+        let t = marked(5_000);
+        let (slice, dropped) = bounded_transcript(&t);
+        assert_eq!(dropped, Some(5_000));
+        assert!(
+            slice.starts_with("HEAD"),
+            "the START of the transcript is kept"
+        );
+        assert!(
+            !slice.contains("TAIL"),
+            "the END of the transcript is what is dropped"
+        );
+        assert_eq!(slice.chars().count(), MAX_TRANSCRIPT_CHARS);
+    }
+
+    #[test]
+    fn clamp_in_place_keeps_the_head_and_drops_the_tail() {
+        let mut s = marked(5_000);
+        assert_eq!(clamp_transcript_in_place(&mut s), Some(5_000));
+        assert!(s.starts_with("HEAD"), "the START of the transcript is kept");
+        assert!(
+            !s.contains("TAIL"),
+            "the END of the transcript is what is dropped"
+        );
+        assert_eq!(s.chars().count(), MAX_TRANSCRIPT_CHARS);
+    }
 }

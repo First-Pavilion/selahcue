@@ -444,8 +444,14 @@ impl ItemContent {
     ///
     /// `deck_exists` / `media_exists` return `Some(true)`/`Some(false)` when the caller CAN
     /// check, and **`None` when it cannot** — which is the host's situation for both, since
-    /// decks and media are operator-owned and the host has no store for either. Scripture is
-    /// always answerable here, because resolving it is a pure parse.
+    /// decks and media are operator-owned and the host has no store for either.
+    ///
+    /// Scripture is answered in two steps. A reference that does not **parse** is `Missing`
+    /// without asking anyone. One that parses is then put to `passage_exists` — the corpus probe
+    /// — because parsing is syntax only (`Jude 2:1` parses and names no verse). That probe, like
+    /// the deck and media ones, returns `None` when the caller cannot check, so the host, which
+    /// owns the bundled corpus, answers it for real and a caller without a corpus reports
+    /// `Unknown` rather than guessing.
     pub fn resolve(
         &self,
         passage_exists: impl Fn(&str, Option<&str>) -> Option<bool>,
