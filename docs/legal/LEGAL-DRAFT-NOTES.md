@@ -65,6 +65,13 @@
 - Everything else in the policies is written as true at launch. Whether it is actually true is tracked
   in §4, not in the policy text.
 - New risk allocations and commitments the owner and counsel must accept are listed in §6.
+- **The site pages are generated from these files.** After editing either policy, run
+  `npm run sync:legal` in `implementation/marketing` and commit the generated files; CI fails if they are out
+  of sync. A page stays in draft mode (banner, highlighted placeholders, `noindex`) while any placeholder
+  remains, while the DRAFT banner is still in the markdown, or while the version line is not `final`.
+  To publish: fill every placeholder, clear every gated row in §4, get lawyer sign-off, delete the DRAFT
+  banner, add a `Version X.Y (final, YYYY-MM-DD).` paragraph directly under the title, then regenerate. The
+  full procedure is in `implementation/marketing/README.md`.
 
 ## 4. Launch-readiness conditions
 
@@ -331,8 +338,11 @@ project memory notes, not verified in the tree · **O** = owner decision relayed
 
 ## 9. Claims on the old stub pages
 
-Sources: `implementation/marketing/src/views/PrivacyView.vue` and `TermsView.vue`. These pages are live
-today and are not replaced by these drafts until published.
+Sources: `implementation/marketing/src/views/PrivacyView.vue` and `TermsView.vue` as they were before the
+legal pages were wired to these drafts (ClickUp 17tnw2b0x3g, PR #142). Those stubs are replaced by the
+generated pages when that PR merges; until a draft is published, the pages show a "Draft, pending legal
+review" banner and are sent with `noindex`. The claims below describe the old stub text, kept so counsel can
+see what was wrong.
 
 ### 9.1 False, or not true today
 
