@@ -1025,11 +1025,14 @@ def self_test(verdict=None, expected_checks=3):
             if gate.poll() is None:
                 gate.kill()
                 gate.wait()
+        # Exact PIDs the fakes recorded, and the process group of each (a browser is its own group
+        # leader, so this also takes a helper it started that we had not yet read the PID of).
         for pid in spawned:
-            try:
-                os.kill(pid, signal.SIGKILL)
-            except OSError:
-                pass
+            for kill in (os.killpg, os.kill):
+                try:
+                    kill(pid, signal.SIGKILL)
+                except OSError:
+                    pass
         shutil.rmtree(root, ignore_errors=True)
     return problems
 
