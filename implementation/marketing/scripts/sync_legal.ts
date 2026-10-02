@@ -13,7 +13,7 @@
  * AFTER EDITING A DRAFT IN docs/legal: run `npm run sync:legal` (in implementation/marketing)
  * and commit the regenerated files. The legal-drift workflow and `tests/legal.test.ts` fail
  * until you do. PUBLISHING is also an edit to the markdown (delete the DRAFT banner, set the
- * version status to something other than `draft`, keep a "Version X (status, date)." line
+ * version status to exactly `final`, keep a "Version X (status, date)." line
  * under the title) followed by this command; see README.md and src/lib/legal/document.ts.
  *
  * Deterministic: same markdown in, byte-identical TypeScript out. No timestamps, no paths

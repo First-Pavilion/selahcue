@@ -418,6 +418,12 @@ describe('the markdown parser', () => {
     }
   })
 
+  test('the status is read lower-cased and trimmed', () => {
+    assert.equal(parseVersionLine('Version 1.0 (Final, 2026-01-02).')?.status, 'final')
+    assert.equal(parseVersionLine('Version 1.0 (FINAL DRAFT, 2026-01-02).')?.status, 'final draft')
+    assert.equal(parseVersionLine('Version 1.0 (final , 2026-01-02).')?.status, 'final')
+  })
+
   test('the version is REQUIRED and generation fails loudly without one (it can never silently vanish)', () => {
     assert.throws(
       () => parseLegalMarkdown('# T\n\n> **DRAFT**\n>\n> No version line here.\n\n## 1. One\n\nBody.\n', 't.md'),
@@ -847,7 +853,7 @@ describe('draft treatment is derived from the remaining placeholders', () => {
     const state = legalPageState(docWith('1.1 Contact privacy@example.com. Nothing is missing.', false))
     assert.equal(state.draft, false)
     assert.equal(state.noindex, false)
-    assert.deepEqual(state.reasons, { placeholders: false, banner: false, versionDraft: false })
+    assert.deepEqual(state.reasons, { placeholders: false, banner: false, versionNotFinal: false })
     assert.deepEqual(state.placeholders, [])
     assert.equal(state.placeholderCount, 0)
   })
@@ -865,8 +871,35 @@ describe('draft treatment is derived from the remaining placeholders', () => {
     const draftStatus: LegalDocument = { ...doc, version: { number: '0.9', status: 'draft', date: '2026-01-02' } }
     const finalStatus: LegalDocument = { ...doc, version: { number: '1.0', status: 'final', date: '2026-01-02' } }
     assert.equal(legalPageState(draftStatus).draft, true)
-    assert.equal(legalPageState(draftStatus).reasons.versionDraft, true)
+    assert.equal(legalPageState(draftStatus).reasons.versionNotFinal, true)
     assert.equal(legalPageState(finalStatus).draft, false)
+  })
+
+  test('FAILS CLOSED: ONLY the exact status "final" (any case) counts as final; every other status stays a draft', () => {
+    const base = parseLegalMarkdown('# T\n\nVersion 1.0 (final, 2026-01-02).\n\n## 1. One\n\n1.1 Body.\n', 't.md')
+    const withStatus = (status: string): LegalDocument => ({ ...base, version: { ...base.version, status } })
+    for (const ok of ['final', 'Final', 'FINAL', ' final ']) {
+      assert.equal(legalPageState(withStatus(ok.trim().toLowerCase())).draft, false, `"${ok}" is final`)
+      assert.equal(legalPageState(withStatus(ok)).draft, false, `"${ok}" as written is final`)
+    }
+    for (const notFinal of ['draft', 'final draft', 'draft-final', 'pending review', 'unreviewed', 'drfat', 'finalised', 'approved', 'final-', 'finel', '']) {
+      const state = legalPageState(withStatus(notFinal))
+      assert.equal(state.draft, true, `"${notFinal}" must stay a draft`)
+      assert.equal(state.noindex, true)
+      assert.equal(state.reasons.versionNotFinal, true)
+    }
+  })
+
+  test('the same holds when the status is PARSED from markdown, with the banner removed and no placeholders', () => {
+    const parse = (status: string): LegalDocument =>
+      parseLegalMarkdown(`# T\n\nVersion 1.0 (${status}, 2026-01-02).\n\n## 1. One\n\n1.1 Body, nothing missing.\n`, 't.md')
+    for (const final of ['final', 'Final', 'FINAL']) assert.equal(legalPageState(parse(final)).draft, false, final)
+    for (const bad of ['final draft', 'draft-final', 'pending review', 'unreviewed', 'drfat', 'draft', 'Draft']) {
+      const doc = parse(bad)
+      assert.equal(doc.banner, null)
+      assert.equal(placeholderOccurrences(doc).length, 0)
+      assert.equal(legalPageState(doc).draft, true, `"${bad}" published a page with no banner and no placeholders`)
+    }
   })
 
   test('FAILS CLOSED: the banner alone keeps the page a draft even when the version status says final', () => {
@@ -875,7 +908,7 @@ describe('draft treatment is derived from the remaining placeholders', () => {
       't.md',
     )
     const state = legalPageState(doc)
-    assert.deepEqual(state.reasons, { placeholders: false, banner: true, versionDraft: false })
+    assert.deepEqual(state.reasons, { placeholders: false, banner: true, versionNotFinal: false })
     assert.equal(state.draft, true)
     assert.equal(state.noindex, true)
   })
@@ -884,7 +917,7 @@ describe('draft treatment is derived from the remaining placeholders', () => {
     const state = legalPageState(docWith('1.1 Contact `{{CONTACT_EMAIL}}`.', false))
     assert.equal(state.draft, true)
     assert.equal(state.noindex, true)
-    assert.deepEqual(state.reasons, { placeholders: true, banner: false, versionDraft: false })
+    assert.deepEqual(state.reasons, { placeholders: true, banner: false, versionNotFinal: false })
   })
 
   test('publishing is explicit: the same text flips to final only when the banner is removed AND no placeholder remains', () => {

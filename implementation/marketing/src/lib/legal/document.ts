@@ -7,14 +7,15 @@
  *
  *   1. a `{{PLACEHOLDER}}` remains in the text a visitor reads, or
  *   2. the document still carries its own DRAFT banner, or
- *   3. its version line says the status is `draft`.
+ *   3. its version status is anything other than exactly `final` (case-insensitive): an
+ *      allowlist, so `final draft`, `pending review` or a typo like `drfat` stay drafts.
  *
  * Why not placeholders alone (the original ticket wording): filling every placeholder does
  * not make a policy publishable. LEGAL-DRAFT-NOTES section 4 lists about fifty launch-gate
  * conditions that are facts about the product, not blanks in the text, so a draft with
  * every blank filled would have turned its own banner and `noindex` off while still
  * describing features that do not exist yet. Publishing is therefore an explicit act in
- * the markdown: delete the DRAFT banner and change the version status from `draft`, then
+ * the markdown: delete the DRAFT banner and set the version status to `final`, then
  * `npm run sync:legal`. No code changes either way.
  */
 import type { Block, DocumentVersion, Inline, LegalDocument, ListItem, Section } from './types.ts'
@@ -96,7 +97,8 @@ export interface LegalPageState {
   readonly reasons: {
     readonly placeholders: boolean
     readonly banner: boolean
-    readonly versionDraft: boolean
+    /** The version status is anything other than exactly `final` (case-insensitive). */
+    readonly versionNotFinal: boolean
   }
   /** Distinct placeholder names, in order of first appearance. */
   readonly placeholders: readonly string[]
@@ -113,9 +115,12 @@ export function legalPageState(doc: LegalDocument): LegalPageState {
   const reasons = {
     placeholders: all.length > 0,
     banner: doc.banner !== null,
-    versionDraft: doc.version?.status === 'draft',
+    // An ALLOWLIST, not a blocklist: only the exact word `final` counts as final. Any other
+    // status (`draft`, `final draft`, `pending review`, `unreviewed`, a typo such as `drfat`)
+    // keeps the page a draft, so a mistyped publication cannot publish.
+    versionNotFinal: doc.version.status.trim().toLowerCase() !== 'final',
   }
-  const draft = reasons.placeholders || reasons.banner || reasons.versionDraft
+  const draft = reasons.placeholders || reasons.banner || reasons.versionNotFinal
   return {
     draft,
     reasons,

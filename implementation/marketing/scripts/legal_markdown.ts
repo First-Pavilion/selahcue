@@ -486,7 +486,7 @@ export function parseVersionLine(text: string): ParsedVersion | null {
   if (!m) return null
   const date = m[3] ?? ''
   if (!validDate(date)) return null
-  return { number: m[1] ?? '', status: (m[2] ?? '').toLowerCase(), date, line: m[0] }
+  return { number: m[1] ?? '', status: (m[2] ?? '').trim().toLowerCase(), date, line: m[0] }
 }
 
 export function parseLegalMarkdown(markdown: string, source: string): LegalDocument {

@@ -20,7 +20,7 @@ templates only (no `v-html`).
   links and the DRAFT blockquote; see the header of `scripts/legal_markdown.ts`.
 - **A draft fails closed.** A page shows the draft banner, highlights placeholders and sends `noindex`
   while ANY of these holds: a `{{PLACEHOLDER}}` remains, the document still has its DRAFT banner, or its
-  version status is `draft`. Filling every placeholder is not publishing.
+  version status is anything other than exactly `final` (so `final draft`, `pending review` or a typo stay drafts). Filling every placeholder is not publishing.
 - **To publish** (only once the launch-readiness conditions in `docs/legal/LEGAL-DRAFT-NOTES.md`
   section 4 are met): in the markdown, delete the DRAFT `>` banner, make sure a
   `Version X.Y (final, YYYY-MM-DD).` paragraph sits directly under the `#` title (generation fails if there
