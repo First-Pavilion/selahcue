@@ -230,7 +230,7 @@ import UiBadge from '@/components/UiBadge.vue'
 .container {
   max-width: 1140px;
   margin: 0 auto;
-  padding: 0 24px;
+  padding: 0 var(--page-gutter);
 }
 
 .hero-section {
@@ -269,7 +269,7 @@ import UiBadge from '@/components/UiBadge.vue'
 
 .row-layout {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 60px;
   align-items: center;
 }
@@ -393,13 +393,30 @@ import UiBadge from '@/components/UiBadge.vue'
 .mock-tag { position: absolute; bottom: 16px; right: 16px; }
 
 .cta-section { padding: 80px 0 0 0; }
-.cta-card { background: linear-gradient(135deg, var(--sc-surface), #1c1a3a); border: 1px solid var(--sc-primary); border-radius: 24px; padding: 60px 40px; text-align: center; }
+.cta-card { width: min(1140px, 100% - 2 * var(--page-gutter)); background: linear-gradient(135deg, var(--sc-surface), #1c1a3a); border: 1px solid var(--sc-primary); border-radius: 24px; padding: 60px 40px; text-align: center; }
 .cta-card h2 { font-size: 32px; font-weight: 800; color: var(--sc-text); margin: 0 0 12px 0; }
 .cta-card p { font-size: 16px; color: var(--sc-text-secondary); margin: 0 0 32px 0; }
 .cta-btns { display: flex; justify-content: center; gap: 16px; }
 
-@media (max-width: 900px) {
-  .row-layout { grid-template-columns: 1fr; gap: 32px; }
+@media (max-width: 1023.98px) {
+  .row-layout { grid-template-columns: minmax(0, 1fr); gap: 32px; }
+}
+
+@media (max-width: 767.98px) {
+  .features-view { padding-bottom: var(--section-pad-sm); }
+  .hero-section { padding: 48px 0 32px; }
+  .hero-title { font-size: 36px; line-height: 40px; }
+  .hero-sub { font-size: 16px; }
+  .feature-row { padding: 48px 0; }
+  .text-content h2 { font-size: 26px; }
+  .feature-list li { align-items: flex-start; }
+  .check { flex-shrink: 0; }
+  .mock-body { height: auto; min-height: 200px; padding: 20px; }
+  .timer-value { font-size: 40px; }
+  .cta-section { padding-top: 48px; }
+  .cta-card { padding: 40px 24px; border-radius: 20px; }
+  .cta-card h2 { font-size: 26px; }
   .cta-btns { flex-direction: column; }
+  .cta-btns > * { width: 100%; }
 }
 </style>

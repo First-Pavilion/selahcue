@@ -140,6 +140,10 @@ onUnmounted(() => {
   box-shadow: 0 20px 60px rgba(0,0,0,0.5);
   text-align: center;
   animation: slideUp 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+  /* A tall dialog (consequence list + type-to-confirm) on a short landscape phone scrolls
+     inside itself instead of running off the top and bottom of the screen. */
+  max-height: 100%;
+  overflow-y: auto;
 }
 
 .dialog-icon-wrapper {
@@ -245,6 +249,14 @@ onUnmounted(() => {
   display: flex;
   gap: 12px;
   justify-content: flex-end;
+}
+
+@media (max-width: 767.98px) {
+  .dialog-scrim { padding: 16px; }
+  .dialog-card { padding: 24px 20px; }
+  .dialog-actions { flex-direction: column-reverse; }
+  .dialog-actions > * { width: 100%; }
+  .type-input { min-height: 44px; font-size: 16px; }
 }
 
 .confirm-btn.danger {

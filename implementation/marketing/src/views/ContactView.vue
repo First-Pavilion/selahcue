@@ -149,12 +149,12 @@ const handleSubmit = () => {
 .container {
   max-width: 1140px;
   margin: 0 auto;
-  padding: 0 24px;
+  padding: 0 var(--page-gutter);
 }
 
 .contact-layout {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 60px;
   align-items: start;
 }
@@ -266,9 +266,20 @@ const handleSubmit = () => {
   margin-bottom: 28px;
 }
 
-@media (max-width: 900px) {
+@media (max-width: 1023.98px) {
   .contact-layout {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 40px;
   }
+}
+
+@media (max-width: 767.98px) {
+  .contact-page { padding: 40px 0 var(--section-pad-sm); }
+  .info-title { font-size: 36px; line-height: 40px; }
+  .info-sub { margin-bottom: 28px; }
+  .method-card { padding: 16px; }
+  .method-link { display: inline-flex; align-items: center; min-height: 44px; }
+  .contact-form-card { padding: 24px 20px; border-radius: 16px; }
+  .success-state { padding: 24px 0; }
 }
 </style>
