@@ -1872,6 +1872,27 @@ EXPECTED_MIN_CHECKS = 2074  # measured: 2074 checks, 0 FAIL
 # via an actual clean run of the merged tree, not hand-summed; any PR that edits this constant must
 # re-measure after the other lands.
 EXPECTED_MIN_CHECKS = 2121  # measured: 2121 checks, 0 FAIL
+#
+# Notification bell + panel (docs/design/NOTIFICATION-PANEL-spec.md), on top of main's 2121 (c614637, which
+# already holds the AC-63 poll-race fix, #156): +147 = the NOTIF-* block at the end of the driver, and
+# nothing else. NO existing check was added or removed: the Frame G block now opens the notification panel
+# once (its cards live inside it, and `gOn` is computed display + a real client rect) and releases it before
+# G.6 — two setup lines, no check — and one existing message was re-worded ("Frame G: the recovery region
+# exists …", same assertion). The 147, by group (the numbers are the check ids): 10 pin the markup, the move
+# and the card wording (1-10; 9 and 10 are wording pins that PASS on the pre-change tree by design); 3 the
+# all-clear bell (11-13); 69 the bell/badge/severity mapping over 8 scenarios — number, colour, label,
+# AA ink, the red "!" + ring, summary, painted cards, empty state, toggle (20-26, 23b, 24b) — plus the badge
+# clearing on the next poll (27) and the 9+ cap (28); 6 the empty state and its Local / unknown wording
+# (30-32); 16 open/close paths, aria-expanded, focus, no scrim, Tab order, the stray-Enter hazard and the
+# dismiss button (40-55); 5 Esc and the double-Esc CLEAR ALL interaction, with its positive control
+# (60-64); 8 the live region (70-77); 25 the geometry at 1440x900, 1280x720 and 900x720, 8 per viewport
+# plus the resize re-measure (80-88); 5 surface changes and app-menu exclusivity (90-94). 2121 + 147 =
+# 2268, and that is a MEASURED number: clean runs of the merged tree print "=== 2268 checks, 0 FAIL ===".
+# The new block boots fresh same-origin srcdoc instances of the app (the gate's own window is ~780x500, below
+# the console's 900px floor) and drives them through the app's own poll steps; it needed the virtual-time
+# budget raised 75000 -> 90000 (see the flags below). Any PR that edits this constant must re-measure after
+# the other lands.
+EXPECTED_MIN_CHECKS = 2268  # measured: 2268 checks, 0 FAIL
 
 
 def find_chrome():
@@ -1915,7 +1936,7 @@ def find_chrome():
 # EXPECTED_MIN_CHECKS.
 # ---------------------------------------------------------------------------------------------
 
-# Wall-clock budget for ONE Chrome run. It bounds a hung browser, not a slow one: the 75 s
+# Wall-clock budget for ONE Chrome run. It bounds a hung browser, not a slow one: the 90 s
 # virtual-time budget is fast-forwarded, so a healthy run takes ~4-10 s here (the slowest passing
 # browser phase seen was 79.8 s, at a machine load of 117).
 _CHROME_TIMEOUT_S = 90
@@ -14202,8 +14223,16 @@ DRIVER = r"""
       document.querySelector('.nav-item[data-surface="console"]').click();
       await gPoll(function(){ return el("surface-console").classList.contains("active"); });
 
+      // The recovery region now lives INSIDE the notification panel (docs/design/NOTIFICATION-PANEL-spec.md),
+      // a closed popover by default, so `gOn` — computed display AND a real client rect — can only be
+      // true while the panel is OPEN. Open it once and hold it open for this whole block: every check
+      // below then pins exactly what it pinned before (is the card painted, with this wording), and the
+      // popover is non-modal, so nothing in the block is blocked by it. It is closed again before G.6.
+      el("notif-bell").click();
+      await gPoll(function(){ return !el("notif-panel").hidden; });
+
       // ---- resting state -------------------------------------------------------------
-      ok(!!el("recovery"), "Frame G: the recovery region exists in the console");
+      ok(!!el("recovery"), "Frame G: the recovery region exists (it now lives inside the notification panel, which this block holds open — NOTIF-7 pins where)");
       ok(!gOn("recovery"),
          "Frame G (control): with a healthy host NOTHING is painted — the region stays out of the way, so every 'it appeared' below means something");
 
@@ -14386,6 +14415,7 @@ DRIVER = r"""
 
       V.output_health = {held:false}; V.session = null; V.storage = null;
       V.outputs = [{role:"main", assigned:true, assigned_key:"d1", display:"Main", width:1920, height:1080, signal:"healthy"}];
+      if (!el("notif-panel").hidden) el("notif-bell").click();   // setup: release the panel held open for G.2-G.3
 
       // ---- G.6 missing-media fallback (347:165) --------------------------------------
       // The inspector already NAMED a missing file. What it never said is the only thing that
@@ -15281,6 +15311,564 @@ DRIVER = r"""
          (con153Input ? getComputedStyle(con153Input).maxWidth : "(missing)"));
       document.querySelector('.nav-item[data-surface="console"]').click();
 
+      // NOTIF-BLOCK-BEGIN
+      // ===================================================================================
+      // NOTIFICATION BELL + PANEL (docs/design/NOTIFICATION-PANEL-spec.md).
+      //
+      // The owner's request, in his words: the system messages ("Host link lost", "Monitor
+      // #41057 DEGRADED") "should not take up space ... design a dashboard-like notification
+      // panel where these messages go ... I just click on a bell icon and the panel shows up."
+      //
+      // WHAT THESE CHECKS DEFEND, in the order the spec states its rules:
+      //   1. the messages take NO page space in any state (zero layout shift, closed AND open);
+      //   2. the panel never covers the emergency chrome (BLACKOUT / CLEAR ALL) or the GO LIVE row
+      //      — UX-CANONICAL §3 / UX-STATE-MATRIX invariant 2 — at every viewport we test;
+      //   3. Esc is consumed by the panel and DISARMS the double-Esc window, so Esc,Esc with the
+      //      panel open can never send `clear` (the bell must not become a way to wipe the output);
+      //   4. the bell's badge is a live computed read of what is visible NOW, never a latched event;
+      //   5. a card that appears while the panel is closed is announced ONCE, on the edge;
+      //   6. the empty state says only what is true (Local / absent telemetry is never "healthy").
+      //
+      // HOW: the geometry and focus checks need a viewport this gate does not have (it runs at
+      // Chrome's default ~800x600, narrower than the console's own 900px floor), and the session
+      // notice is dismissed for good by the Frame G block above. So the viewport-dependent checks
+      // run in FRESH same-origin srcdoc instances of the real app (index.html + the same mock
+      // host, NO driver) sized exactly as named — a real layout engine at 1440x900, 1280x720 and
+      // 900x720, each with its own V / __link / __calls. window.__NOTIF_FRAME_HTML is that page.
+      // Everything is driven through the app's own 1 Hz poll, never by calling render() directly.
+      // ===================================================================================
+      var NT = {};
+      NT.fail = function(e, where){ ok(false, "NOTIF: section '" + where + "' threw — " + (e && e.message) + " @ " + (((e && e.stack) || "").split("\n")[1] || "")); };
+      // ONE live instance at a time, always. app.js keeps focus on its own <body> (grabFocus: a window
+      // `focus` listener plus a focusout -> setTimeout(0) re-grab, for WKWebView), so two live instances
+      // fight over focus forever and starve the whole run — measured: with two frames alive Chrome spun
+      // at 100% CPU until the wall-clock timeout. boot() therefore reaps the previous instance first.
+      NT.live = null;
+      NT.reap = function(){ if (NT.live && NT.live.f.parentNode) NT.live.f.parentNode.removeChild(NT.live.f); NT.live = null; };
+      NT.boot = async function(w, h){
+        NT.reap();
+        var f = document.createElement("iframe");
+        f.setAttribute("aria-hidden", "true");
+        f.tabIndex = -1;
+        f.style.cssText = "position:fixed;left:-20000px;top:0;border:0;width:" + w + "px;height:" + h + "px";
+        f.srcdoc = window.__NOTIF_FRAME_HTML;
+        document.body.appendChild(f);
+        var F = {f: f, w: f.contentWindow, d: null};
+        NT.live = F;
+        F.count = function(cmd){ return F.w.__calls.filter(function(c){ return c.cmd === cmd; }).length; };
+        await waitFor(function(){ try { return F.w.__calls.length > 2 && !!F.w.document.getElementById("td-bg"); } catch (e) { return false; } }, 400);
+        F.d = F.w.document;
+        return F;
+      };
+      NT.ticks = function(F, n){ var t = F.count("view"); return waitFor(function(){ return F.count("view") >= t + n; }, 400); };
+      // A change is "settled" once a poll that STARTED after it has fully landed: one new view call,
+      // then a short wait for that poll's promises (they resolve in microtasks, not on a timer).
+      NT.settle = async function(F){ await NT.ticks(F, 1); await sleep(120); };
+      NT.id = function(F, id){ return F.d.getElementById(id); };
+      NT.painted = function(F, id){ var e = F.d.getElementById(id); return !!e && F.w.getComputedStyle(e).display !== "none" && e.getClientRects().length > 0; };
+      NT.tx = function(F, id){ var e = F.d.getElementById(id); return e ? e.textContent.replace(/\s+/g, " ").trim() : ""; };
+      NT.key = function(F, target, key, init){
+        var ev = new F.w.KeyboardEvent("keydown", Object.assign({key: key, bubbles: true, cancelable: true}, init || {}));
+        (target || F.d).dispatchEvent(ev);
+        return ev;
+      };
+      NT.isOpen = function(F){ return NT.painted(F, "notif-panel"); };
+      // Esc is ONLY sent while the panel is open: an Esc on a closed panel is a real first tap of the
+      // double-Esc CLEAR ALL window, and a helper that sprayed them would be arming the very thing under test.
+      NT.shut = function(F){ if (NT.isOpen(F)) NT.key(F, F.d, "Escape"); };
+      NT.tok = function(F, name){
+        var s = F.d.createElement("span"); s.style.color = "var(" + name + ")"; F.d.body.appendChild(s);
+        var c = F.w.getComputedStyle(s).color; F.d.body.removeChild(s); return c;
+      };
+      NT.OK = function(){ return {role:"main", assigned:true, assigned_key:"d1", display:"Main", width:1920, height:1080, signal:"healthy"}; };
+      NT.MON = function(sig){ return {role:"main", assigned:true, assigned_key:"d1", display:"Monitor #41057", width:1920, height:1080, signal:sig, dropped_frames:(sig === "degraded" ? 1055 : 0)}; };
+      NT.LINK = {
+        up:   {state:"connected", epoch:1, attempts:0, last_error:null},
+        down: {state:"disconnected", epoch:1, attempts:0, last_error:"connection closed"},
+        local:{state:"local", epoch:0, attempts:0, last_error:null},
+        unk:  {state:"unknown", epoch:0, attempts:0, last_error:null}
+      };
+      // One poll, driven now: exactly what the app's own 1 Hz callback does (view -> render() -> link_status ->
+      // refreshLinkSurfaces()), minus the wait for the timer. Used for the bulk of the state changes so this
+      // block spends virtual time only where the TIMER is the thing under test (NT.set(F, s, true) does wait
+      // for a REAL poll; so do the "clears on the next poll" and "announced once" checks).
+      NT.pollNow = async function(F){
+        var v = await F.w.__TAURI__.core.invoke("view");
+        F.w.render(v);
+        await F.w.readLinkStatus();
+      };
+      NT.set = async function(F, s, real){
+        var V = F.w.V;
+        V.session = ("session" in s) ? s.session : null;
+        V.storage = null;
+        V.output_health = {held: false};
+        V.outputs = s.outputs || [NT.OK()];
+        F.w.__link = s.link || NT.LINK.up;
+        if (real) await NT.settle(F); else await NT.pollNow(F);
+      };
+      NT.CARDS = ["rcv-session", "rcv-link", "rcv-output", "rcv-recovered"];
+      NT.visible = function(F){ return NT.CARDS.filter(function(id){ var c = F.d.getElementById(id); return !!c && !c.hidden; }); };
+      NT.obs = function(F){
+        var b = F.d.getElementById("notif-bell"), g = F.d.getElementById("notif-badge");
+        return {
+          label: b ? b.getAttribute("aria-label") : null,
+          badgePainted: NT.painted(F, "notif-badge"),
+          badge: g ? g.textContent : null,
+          sev: g ? g.getAttribute("data-sev") : null,
+          bg: g ? F.w.getComputedStyle(g).backgroundColor : "",
+          fg: g ? F.w.getComputedStyle(g).color : "",
+          summary: NT.tx(F, "notif-summary")
+        };
+      };
+      // The snapshot compares the console chain the old in-flow region pushed down (and the chrome
+      // that must never move). Right-hand column deliberately excluded: its output pill changes
+      // text with the scenario, which is real content, not displacement.
+      // BODY = the console chain. TOPBAR = the header and its groups, which legitimately move when the
+      // connection pill's own text changes width ("Connected" -> "Host unreachable", space-between):
+      // that is the pill, not the panel, so it is compared only between two states with the SAME pill.
+      NT.BODY = ["main", ".zone-left", ".zone-center", "#preview-panel", "#live-panel", ".golive-row", "#golive", "#prev", "#next", "#content-tabs", "#emergency", "#blackout", "#clear-all"];
+      NT.TOPBAR = ["header", "#top-prev", "#top-golive", "#top-blackout", ".topbar-status", "#conn-pill"];
+      NT.snap = function(F, withTopbar){
+        var out = {};
+        NT.BODY.concat(withTopbar ? NT.TOPBAR : []).forEach(function(s){
+          var e = F.d.querySelector(s);
+          if (!e) { out[s] = "missing"; return; }
+          var r = e.getBoundingClientRect();
+          out[s] = [r.left, r.top, r.width, r.height].map(function(v){ return Math.round(v * 100) / 100; }).join(",");
+        });
+        out["document"] = [F.d.documentElement.scrollWidth, F.d.documentElement.scrollHeight, F.w.scrollX, F.w.scrollY].join(",");
+        return out;
+      };
+      NT.diff = function(a, b){ var d = []; Object.keys(a).forEach(function(k){ if (a[k] !== b[k]) d.push(k + " " + a[k] + " -> " + b[k]); }); return d; };
+      NT.rect = function(F, sel){ var e = F.d.querySelector(sel); return e ? e.getBoundingClientRect() : null; };
+      NT.hitEl = function(F, sel){
+        var e = F.d.querySelector(sel); if (!e) return null;
+        var r = e.getBoundingClientRect();
+        return F.d.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+      };
+      NT.hit = function(F, sel){ var h = NT.hitEl(F, sel); return !!h && !!h.closest && !!h.closest(sel); };
+      NT.overlap = function(a, b){ return !!a && !!b && Math.min(a.right, b.right) - Math.max(a.left, b.left) > 0.5 && Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top) > 0.5; };
+      NT.open = function(F){ F.d.getElementById("notif-bell").click(); };
+      NT.expanded = function(F){ var b = F.d.getElementById("notif-bell"); return b ? b.getAttribute("aria-expanded") : null; };
+      // aria-expanded must say exactly what the panel is doing — checked after EVERY path.
+      NT.synced = function(F){ return NT.expanded(F) === (NT.isOpen(F) ? "true" : "false"); };
+
+      try {
+      // ---- 0. the page itself: markup, relocation, wording -------------------------------------
+      var tBell = el("notif-bell"), tPanel = el("notif-panel");
+      ok(!!tBell && tBell.tagName === "BUTTON" && !!el("clock") && el("clock").nextElementSibling === tBell
+         && tBell.nextElementSibling === el("conn-pill") && tBell.parentNode.classList.contains("topbar-status"),
+         "NOTIF-1: #notif-bell is a <button> in .topbar-status, between #clock and #conn-pill");
+      ok(!!tBell && tBell.getAttribute("aria-haspopup") === "dialog" && tBell.getAttribute("aria-expanded") === "false"
+         && tBell.getAttribute("aria-controls") === "notif-panel" && /^Notifications: /.test(tBell.getAttribute("aria-label") || ""),
+         "NOTIF-2: the bell is aria-haspopup=dialog, aria-expanded=false, aria-controls=notif-panel, and its aria-label states the state (\"" + (tBell && tBell.getAttribute("aria-label")) + "\")");
+      ok(!!tBell && !!tBell.querySelector("svg") && !tBell.querySelector("img") && !/[^\x00-\x7f]/.test((tBell.textContent || "").replace(/\s+/g, "")),
+         "NOTIF-3: the bell is an inline <svg> — no emoji, no external asset, no glyph text");
+      var tCs = tBell ? getComputedStyle(tBell) : null, tR = tBell ? tBell.getBoundingClientRect() : {width: 0, height: 0};
+      ok(!!tCs && tCs.backgroundColor === "rgb(28, 31, 40)" && tCs.borderTopWidth === "1px" && tCs.borderTopColor === "rgb(38, 42, 52)"
+         && tCs.borderTopLeftRadius === "10px" && Math.abs(tR.width - 40) <= 1 && Math.abs(tR.height - 40) <= 1,
+         "NOTIF-4: the bell is in the .tb-btn family — --sc-elevated fill, 1px --sc-border, 10px radius, ~40x40 (got " + (tCs && tCs.backgroundColor) + " / " + (tCs && tCs.borderTopLeftRadius) + " / " + Math.round(tR.width) + "x" + Math.round(tR.height) + ")");
+      ok(!!tPanel && tPanel.getAttribute("role") === "dialog" && tPanel.getAttribute("aria-modal") === "false" && tPanel.getAttribute("tabindex") === "-1"
+         && !!el(tPanel.getAttribute("aria-labelledby") || "_none_") && /^Notifications$/.test(el(tPanel.getAttribute("aria-labelledby") || "_none_").textContent.trim()),
+         "NOTIF-5: #notif-panel is a NON-modal dialog (aria-modal=false), labelled \"Notifications\", focusable by script (tabindex=-1)");
+      ok(!!tPanel && getComputedStyle(tPanel).position === "fixed" && getComputedStyle(tPanel).display === "none" && el("notif-bell").getAttribute("aria-expanded") === "false",
+         "NOTIF-6: the panel is position:fixed (out of flow) and CLOSED by default (computed display, not just [hidden])");
+      ok(!!tPanel && tPanel.contains(el("recovery")) && !document.querySelector("main").contains(el("recovery"))
+         && ["rcv-session", "rcv-link", "rcv-output", "rcv-recovered"].every(function(id){ return !!el(id) && el("recovery").contains(el(id)); }),
+         "NOTIF-7: the existing #recovery section — and all four of its cards, ids intact — now lives INSIDE the panel and no longer inside <main>");
+      var tLive = el("notif-live");
+      ok(!!tLive && /^(polite|assertive)$/.test(tLive.getAttribute("aria-live") || "") && tLive.classList.contains("sr-only") && getComputedStyle(tLive).position === "absolute"
+         && tLive.getBoundingClientRect().width <= 1 && !tPanel.contains(tLive),
+         "NOTIF-8: #notif-live is one always-present, visually-hidden live region OUTSIDE the (hidden) panel — a closed panel's cards cannot announce, so it must not live inside it");
+      var tW = function(sel){ var e = document.querySelector(sel); return e ? e.textContent.replace(/\s+/g, " ").trim() : "(missing " + sel + ")"; };
+      ok(tW("#rcv-link .rcv-title") === "Host link lost" && tW("#rcv-link-sub") === "This console cannot reach the host."
+         && tW("#rcv-link .rcv-row-ok span:last-child") === "The host keeps presenting — slides, outputs and timers are unaffected."
+         && tW("#rcv-link-retry span:last-child") === "No automatic reconnect — restart the console to reconnect.",
+         "NOTIF-9: the Host link lost card's wording is BYTE-IDENTICAL to what shipped (marketing's content-sources pins the retry sentence)");
+      ok(tW("#rcv-output-held span:last-child") === "Live output is holding its last good frame — the audience still sees content."
+         && tW("#rcv-output-reattach span:last-child") === "Reattaches automatically, with its content, when the display is reconnected."
+         && document.getElementById("rcv-session-x").getAttribute("aria-label") === "Dismiss session notice"
+         && el("rcv-link").getAttribute("role") === "status" && el("rcv-output").getAttribute("role") === "alert"
+         && el("rcv-session").getAttribute("role") === "status" && el("rcv-recovered").getAttribute("role") === "status",
+         "NOTIF-10: the output card's held / reattach rows, the session dismiss label and every card's own role (status / alert) are unchanged by the move");
+
+      } catch (e) { NT.fail(e, "markup and wording"); }
+      try {
+      // ---- 1. a fresh 1440x900 instance: the badge, the panel, the keys ------------------------
+      var F = await NT.boot(1440, 900);
+      await NT.pollNow(F);
+      var A0 = NT.snap(F);                      // all-clear layout: the baseline "no message" console
+      var o0 = NT.obs(F);
+      ok(o0.label === "Notifications: all clear" && !o0.badgePainted && o0.badge === "",
+         "NOTIF-11: all clear -> NO badge, bell aria-label \"Notifications: all clear\" (got \"" + o0.label + "\", badge painted " + o0.badgePainted + ")");
+      var tMuted = NT.tok(F, "--sc-text-muted");
+      var tIco = F.w.getComputedStyle(F.d.querySelector("#notif-bell svg")).color;
+      ok(tIco === tMuted && _cr(_rgba(tIco), _rgba(F.w.getComputedStyle(F.d.getElementById("notif-bell")).backgroundColor)) >= 3,
+         "NOTIF-12: all clear -> a MUTED bell (--sc-text-muted), still >= 3:1 non-text contrast on its own ground (" + _f(_cr(_rgba(tIco), _rgba(F.w.getComputedStyle(F.d.getElementById("notif-bell")).backgroundColor))) + ":1)");
+      ok(!NT.isOpen(F) && !NT.painted(F, "recovery") && NT.synced(F),
+         "NOTIF-13: closed by default — the panel and the whole recovery region are unpainted, aria-expanded=false");
+
+      // ---- 1a. the severity -> bell mapping, one scenario at a time (panel CLOSED) -------------
+      // Each row: what the host reports -> number, severity, label. `info` cards never take a number.
+      var tScn = [
+        {n: "link lost only",              s: {link: NT.LINK.down},                                   faults: 1, crit: 0, notes: 0, sev: "warn", num: "1", label: "Notifications: 1 active",
+         texts: [["rcv-link-sub", "This console cannot reach the host."]]},
+        {n: "degraded only",               s: {outputs: [NT.MON("degraded")]},                         faults: 1, crit: 0, notes: 0, sev: "warn", num: "1", label: "Notifications: 1 active",
+         texts: [["rcv-output-name", "Monitor #41057"], ["rcv-output-pill-label", "DEGRADED"], ["rcv-output-text", "Monitor #41057 is dropping frames (1055 dropped)."]]},
+        {n: "signal lost",                 s: {outputs: [NT.MON("no_signal")]},                        faults: 1, crit: 1, notes: 0, sev: "live", num: "1", label: "Notifications: 1 active, 1 critical",
+         texts: [["rcv-output-pill-label", "SIGNAL LOST"], ["rcv-output-text", "Monitor #41057 reports no display signal."]]},
+        {n: "link lost + degraded",        s: {link: NT.LINK.down, outputs: [NT.MON("degraded")]},     faults: 2, crit: 0, notes: 0, sev: "warn", num: "2", label: "Notifications: 2 active"},
+        {n: "link lost + signal lost",     s: {link: NT.LINK.down, outputs: [NT.MON("no_signal")]},    faults: 2, crit: 1, notes: 0, sev: "live", num: "2", label: "Notifications: 2 active, 1 critical"},
+        {n: "session notice only (info)",  s: {session: {restored: true}},                            faults: 0, crit: 0, notes: 1, sev: "info", num: "",  label: "Notifications: 1 notice",
+         texts: [["rcv-session-title", "Session restored"], ["rcv-session-text", "Your plan, themes, slides and edits were restored from the last autosave."]]},
+        {n: "info + link lost",            s: {session: {restored: true}, link: NT.LINK.down},        faults: 1, crit: 0, notes: 1, sev: "warn", num: "1", label: "Notifications: 1 active, 1 notice"},
+        {n: "all three kinds",             s: {session: {restored: true}, link: NT.LINK.down, outputs: [NT.MON("no_signal")]}, faults: 2, crit: 1, notes: 1, sev: "live", num: "2", label: "Notifications: 2 active, 1 critical, 1 notice"}
+      ];
+      var tSummary = function(sc){ return sc.faults + sc.notes === 0 ? "All clear" : (sc.faults ? sc.faults + " active" + (sc.crit ? ", " + sc.crit + " critical" : "") + (sc.notes ? ", " + sc.notes + " notice" : "") : sc.notes + " notice"); };
+      var tTokWarn = NT.tok(F, "--sc-warn"), tTokLive = NT.tok(F, "--sc-live"), tTokInfo = NT.tok(F, "--sc-info");
+      var tEmptyOk = 0, tEmptyN = 0;
+      for (var si = 0; si < tScn.length; si++) {
+        var sc = tScn[si];
+        await NT.set(F, sc.s, si === 0);   // the first scenario waits for the app's REAL 1 Hz poll; the rest drive the same poll now
+        var ob = NT.obs(F);
+        var tokWant = sc.sev === "warn" ? tTokWarn : sc.sev === "live" ? tTokLive : tTokInfo;
+        ok(ob.badgePainted && ob.badge === sc.num && ob.sev === sc.sev && ob.bg === tokWant,
+           "NOTIF-20/" + sc.n + ": badge " + (sc.num === "" ? "is a number-less dot" : "reads \"" + sc.num + "\"") + " in " + sc.sev + " (" + tokWant + ") — got \"" + ob.badge + "\" " + ob.sev + " " + ob.bg + " painted=" + ob.badgePainted);
+        ok(ob.label === sc.label, "NOTIF-21/" + sc.n + ": the bell's aria-label states it (\"" + sc.label + "\") — got \"" + ob.label + "\"");
+        ok(!NT.isOpen(F) && !NT.painted(F, "recovery") && NT.visible(F).length === sc.faults + sc.notes,
+           "NOTIF-22/" + sc.n + ": panel CLOSED -> the " + (sc.faults + sc.notes) + " active card(s) are mounted but unpainted (they take no page space) — visible cards " + NT.visible(F).length);
+        if (sc.num !== "") {
+          ok(_cr(_rgba(ob.fg), _rgba(ob.bg)) >= 4.5,
+             "NOTIF-23/" + sc.n + ": the badge number clears AA-NORMAL on its fill (" + _f(_cr(_rgba(ob.fg), _rgba(ob.bg))) + ":1)");
+        }
+        // Colour is never the only signal: red adds a "!" and a light ring; amber and the info dot add neither.
+        var tBadgeEl = F.d.getElementById("notif-badge");
+        var tPseudo = F.w.getComputedStyle(tBadgeEl, "::before").content, tShadow = F.w.getComputedStyle(tBadgeEl).boxShadow;
+        var tRing = NT.tok(F, "--sc-text");
+        ok(sc.sev === "live" ? (/!/.test(tPseudo) && tShadow.indexOf(tRing) >= 0 && tShadow.split("rgb").length - 1 >= 2) : (!/!/.test(tPseudo) && tShadow.indexOf(tRing) < 0),
+           "NOTIF-23b/" + sc.n + ": " + (sc.sev === "live" ? "the RED badge is not colour-only — a leading \"!\" and a light outer ring" : "the " + (sc.sev === "warn" ? "amber" : "info") + " badge carries no \"!\" and no ring (that cue is reserved for critical)") + " — ::before " + tPseudo + ", shadow " + tShadow.slice(0, 60));
+        // The same state, panel OPEN: summary, painted cards, empty state exactly when none is visible.
+        NT.open(F);
+        var vis = NT.visible(F);
+        var emptyShown = NT.painted(F, "notif-empty");
+        ok(ob.summary === tSummary(sc) && NT.tx(F, "notif-summary") === tSummary(sc) && vis.every(function(id){ return NT.painted(F, id); }) && NT.painted(F, "recovery"),
+           "NOTIF-24/" + sc.n + ": panel OPEN -> summary reads \"" + tSummary(sc) + "\" and every active card is actually painted — got \"" + NT.tx(F, "notif-summary") + "\"");
+        tEmptyN++; if (emptyShown === (vis.length === 0)) tEmptyOk++;
+        ok(emptyShown === false, "NOTIF-25/" + sc.n + ": the empty state is NOT painted while a card is visible (painted=" + emptyShown + ")");
+        if (sc.texts) {
+          var tBad = sc.texts.filter(function(t){ return NT.tx(F, t[0]) !== t[1]; });
+          ok(tBad.length === 0,
+             "NOTIF-24b/" + sc.n + ": the card's own wording is byte-identical after the move — " + sc.texts.map(function(t){ return "\"" + t[1] + "\""; }).join(", ") + (tBad.length ? " (got \"" + NT.tx(F, tBad[0][0]) + "\")" : ""));
+        }
+        NT.open(F);   // toggle closed again
+        ok(!NT.isOpen(F) && NT.synced(F), "NOTIF-26/" + sc.n + ": the bell toggles the panel closed again, aria-expanded in sync");
+      }
+
+      // The badge is a live read, not a latch: when the condition clears, it goes on the NEXT poll.
+      await NT.set(F, {}, true);   // REAL poll: the condition clears and the badge must follow on the next one
+      var oc = NT.obs(F);
+      ok(!oc.badgePainted && oc.badge === "" && oc.sev === null && oc.label === "Notifications: all clear" && NT.visible(F).length === 0,
+         "NOTIF-27: when every condition clears the badge is gone on the next poll and the label returns to all clear — a live computed read, never a latched event (badge \"" + oc.badge + "\", sev " + oc.sev + ")");
+
+      // The count is read from the cards in the DOM, so it also holds for a card kind added later; the cap is "9+".
+      await NT.set(F, {link: NT.LINK.down});
+      var tLinkCard = NT.id(F, "rcv-link"), tClones = [];
+      for (var ci = 0; ci < 10; ci++) { var cc = tLinkCard.cloneNode(true); cc.removeAttribute("id"); tLinkCard.parentNode.appendChild(cc); tClones.push(cc); }
+      await NT.pollNow(F);
+      var tCap = NT.obs(F);
+      tClones.forEach(function(c){ c.parentNode.removeChild(c); });
+      await NT.pollNow(F);
+      var tCap2 = NT.obs(F);
+      ok(tCap.badge === "9+" && tCap.label === "Notifications: 11 active" && tCap2.badge === "1",
+         "NOTIF-28: the badge caps at \"9+\" (11 fault cards in the DOM -> \"" + tCap.badge + "\", label \"" + tCap.label + "\") and comes straight back to \"" + tCap2.badge + "\" when they go");
+      await NT.set(F, {});
+
+      // ---- 1b. the empty state: exactly when nothing is visible, and only ever TRUE ------------
+      NT.open(F);
+      ok(NT.painted(F, "notif-empty") && NT.tx(F, "notif-empty").indexOf("All clear") === 0 && !NT.painted(F, "recovery") && NT.visible(F).length === 0,
+         "NOTIF-30: with no card visible the empty state is painted (\"All clear\" + one line) and the cards' region is not");
+      ok(tEmptyOk === tEmptyN && tEmptyN === tScn.length,
+         "NOTIF-31: across all " + tScn.length + " scenarios the empty state was painted if and only if no card was visible (" + tEmptyOk + "/" + tEmptyN + ")");
+      var tEmptyLines = [
+        {n: "link up + outputs reporting healthy", s: {link: NT.LINK.up, outputs: [NT.OK()]}, want: function(t){ return t === "All clear Nothing needs attention. The host link and outputs are reporting normally."; }},
+        {n: "link up, outputs silent (no signal key)", s: {link: NT.LINK.up, outputs: [{role: "main", assigned: true, assigned_key: "d1", display: "Main", width: 1920, height: 1080}]}, want: function(t){ return !/reporting normally/.test(t) && /Output status is not being reported/.test(t) && /host link is up/i.test(t); }},
+        {n: "Local backend (no host link)", s: {link: NT.LINK.local, outputs: [NT.OK()]}, want: function(t){ return /No host link to report/.test(t) && !/host link and outputs are reporting normally/.test(t) && !/Nothing needs attention/.test(t); }},
+        {n: "link not reported yet (unknown)", s: {link: NT.LINK.unk, outputs: [NT.OK()]}, want: function(t){ return /Awaiting host telemetry/.test(t) && !/host link and outputs are reporting normally/.test(t) && !/Nothing needs attention/.test(t); }}
+      ];
+      for (var ei = 0; ei < tEmptyLines.length; ei++) {
+        await NT.set(F, tEmptyLines[ei].s);
+        var etx = NT.tx(F, "notif-empty");
+        ok(NT.painted(F, "notif-empty") && tEmptyLines[ei].want(etx),
+           "NOTIF-32/" + tEmptyLines[ei].n + ": the empty state says what is TRUE, never 'healthy' for an unknown (\"" + etx + "\")");
+      }
+      NT.open(F);   // close
+
+      } catch (e) { NT.fail(e, "badge sweep + empty state"); }
+      try {
+      // ---- 1c. open / close paths, aria-expanded, focus ----------------------------------------
+      await NT.set(F, {session: {restored: true}, link: NT.LINK.down, outputs: [NT.MON("no_signal")]});   // the worst-case panel: 3 cards
+      var S0 = NT.snap(F), S0t = NT.snap(F, true);
+      var tDiffClosed = NT.diff(A0, S0);
+      ok(tDiffClosed.length === 0,
+         "NOTIF-40: THE OWNER'S COMPLAINT — with all three messages active and the panel CLOSED, the console chain is exactly where it was with none: zero layout shift (" + (tDiffClosed.join("; ") || "no differences") + ")");
+      var bell = NT.id(F, "notif-bell"), panel = NT.id(F, "notif-panel");
+      NT.open(F);
+      ok(NT.isOpen(F) && NT.synced(F) && NT.expanded(F) === "true" && F.d.activeElement === panel,
+         "NOTIF-41: a click on the bell OPENS the panel, aria-expanded=true, and focus moves to the panel container (activeElement=" + (F.d.activeElement && (F.d.activeElement.id || F.d.activeElement.tagName)) + ")");
+      var S1 = NT.snap(F, true), tDiffOpen = NT.diff(S0t, S1);
+      ok(tDiffOpen.length === 0,
+         "NOTIF-42: opening the panel causes ZERO layout shift of the console (header and its groups, main, zones, monitors, GO LIVE row, tabs, emergency footer, scroll position) — " + (tDiffOpen.join("; ") || "no differences"));
+      NT.open(F);
+      ok(!NT.isOpen(F) && NT.synced(F), "NOTIF-43: a second click on the bell closes it, aria-expanded back to false");
+      var evBellEnter = NT.key(F, bell, "Enter"), evBellSpace = NT.key(F, bell, " ");
+      ok(evBellEnter.defaultPrevented === false && evBellSpace.defaultPrevented === false && F.count("go_live") === 0 && F.count("next") === 0,
+         "NOTIF-44: Enter / Space on the focused bell are left to the native button (never preventDefault-ed, and never fire GO LIVE / Next) — the browser's resulting click toggles the panel");
+      NT.open(F);
+      var ctl0 = F.count("go_live") + F.count("next") + F.count("previous");
+      NT.key(F, panel, "Enter"); NT.key(F, panel, " "); NT.key(F, panel, "ArrowRight"); NT.key(F, panel, "ArrowLeft");
+      await sleep(60);
+      ok(F.count("go_live") + F.count("next") + F.count("previous") === ctl0,
+         "NOTIF-45: with focus INSIDE the panel, Enter / Space / arrows do not drive the live console — focusing a popover must never make a stray Enter send GO LIVE");
+      NT.shut(F);
+      var ctl1 = F.count("go_live") + F.count("next");
+      NT.key(F, F.d.body, "Enter");
+      await sleep(60);
+      ok(F.count("go_live") + F.count("next") === ctl1 + 1,
+         "NOTIF-46 (positive control for NOTIF-45): with the panel CLOSED the same Enter on the page DOES go live — so the panel's silence above is the panel, not a dead key path");
+      NT.open(F);
+      NT.shut(F);
+      ok(!NT.isOpen(F) && NT.synced(F) && F.d.activeElement === bell,
+         "NOTIF-47: Esc closes the panel, aria-expanded=false, and focus RETURNS TO THE BELL (activeElement=" + (F.d.activeElement && (F.d.activeElement.id || F.d.activeElement.tagName)) + ")");
+      NT.open(F);
+      F.d.getElementById("notif-close").click();
+      ok(!NT.isOpen(F) && NT.synced(F) && F.d.activeElement === bell,
+         "NOTIF-48: the panel's own close button closes it and returns focus to the bell");
+      NT.open(F);
+      F.d.querySelector("#plan-wrap").click();
+      ok(!NT.isOpen(F) && NT.synced(F),
+         "NOTIF-49: a click OUTSIDE the panel closes it (a scrim-less popover — not a modal)");
+      NT.open(F);
+      F.d.getElementById("notif-summary").click();
+      ok(NT.isOpen(F) && NT.synced(F), "NOTIF-50 (control): a click INSIDE the panel does not close it");
+      var pr = panel.getBoundingClientRect();
+      var tFar = F.d.elementFromPoint(Math.max(2, pr.left - 40), Math.round(pr.top + pr.height / 2));
+      ok(!!tFar && !panel.contains(tFar) && !!tFar.closest("main"),
+         "NOTIF-51: there is no scrim — the point just outside the panel hits the console underneath (" + (tFar && (tFar.id || tFar.className || tFar.tagName)) + "), so nothing is blocked");
+      var gl0 = F.count("go_live");
+      F.d.getElementById("golive").click();
+      await sleep(60);
+      ok(F.count("go_live") === gl0 + 1 && !NT.isOpen(F) && NT.synced(F),
+         "NOTIF-52: GO LIVE works with the panel open on the FIRST click (the click is not swallowed by an overlay) and that click also dismisses the popover");
+
+      } catch (e) { NT.fail(e, "open/close paths"); }
+      try {
+      // ---- 1d. Esc and the double-Esc CLEAR ALL ------------------------------------------------
+      // The console's double-Esc = CLEAR ALL (UX-CANONICAL §1, 1000 ms window). The panel's Esc must be
+      // CONSUMED by the panel and must DISARM that window, or the bell becomes a way to wipe the output.
+      await NT.set(F, {link: NT.LINK.down});
+      await sleep(1010);
+      var cl0 = F.count("clear");
+      NT.open(F);
+      NT.key(F, F.d, "Escape");
+      ok(!NT.isOpen(F) && !F.d.getElementById("clear-all").classList.contains("armed"),
+         "NOTIF-60: the FIRST Esc with the panel open is consumed by the panel — it closes it and does NOT arm Clear output (armed=" + F.d.getElementById("clear-all").classList.contains("armed") + ")");
+      NT.key(F, F.d, "Escape");
+      await sleep(60);
+      ok(F.count("clear") === cl0,
+         "NOTIF-61: Esc,Esc with the panel OPEN sends NO clear — the second Esc is only a first tap (clear calls " + cl0 + " -> " + F.count("clear") + ")");
+      await sleep(1010);
+      var cl1 = F.count("clear");
+      NT.key(F, F.d, "Escape");              // arms the double-tap window ...
+      NT.open(F);                            // ... the operator opens the panel inside it ...
+      NT.key(F, F.d, "Escape");              // ... this Esc is consumed by the panel and must DISARM ...
+      NT.key(F, F.d, "Escape");              // ... so this one, still inside the first one's 1000 ms, is a fresh first tap.
+      await sleep(60);
+      ok(F.count("clear") === cl1 && !NT.isOpen(F),
+         "NOTIF-62: an Esc armed BEFORE the panel opened is DISARMED by the Esc that closes it — Esc, open, Esc, Esc sends no clear (clear calls " + cl1 + " -> " + F.count("clear") + ")");
+      await sleep(1010);
+      var cl2 = F.count("clear");
+      NT.key(F, F.d, "Escape"); NT.key(F, F.d, "Escape");
+      await sleep(60);
+      ok(F.count("clear") === cl2 + 1,
+         "NOTIF-63 (positive control): a clean Esc,Esc with the panel CLOSED still sends clear — the double-Esc contract is intact (clear calls " + cl2 + " -> " + F.count("clear") + ")");
+      await sleep(1010);
+      NT.open(F);
+      var bo0 = F.count("blackout"), cl3 = F.count("clear");
+      NT.key(F, F.d, "B", {ctrlKey: true, shiftKey: true, code: "KeyB"});
+      NT.key(F, F.d, "b");
+      NT.key(F, F.d, ">", {ctrlKey: true, shiftKey: true, code: "Period"});
+      await sleep(80);
+      ok(F.count("blackout") === bo0 + 2 && F.count("clear") === cl3 + 1,
+         "NOTIF-64: with the panel OPEN, Ctrl/Cmd+Shift+B, plain B and Ctrl/Cmd+Shift+. all still reach the host (blackout " + bo0 + " -> " + F.count("blackout") + ", clear " + cl3 + " -> " + F.count("clear") + ")");
+      NT.shut(F);
+      await sleep(1010);
+
+      } catch (e) { NT.fail(e, "Esc and double-Esc"); }
+      try {
+      // ---- 1e. announcements: once, on the edge, only while the panel is closed -----------------
+      await NT.set(F, {});
+      var nAnn = [];
+      var live = NT.id(F, "notif-live");
+      var mo = new F.w.MutationObserver(function(recs){
+        recs.forEach(function(r){ for (var i = 0; i < r.addedNodes.length; i++) { var t = r.addedNodes[i].textContent; if (t) nAnn.push({text: t, live: live.getAttribute("aria-live")}); } });
+      });
+      mo.observe(live, {childList: true, characterData: true, subtree: true});
+      await NT.set(F, {link: NT.LINK.down}, true);
+      var a1 = nAnn.length;
+      await NT.ticks(F, 3);
+      ok(a1 === 1 && nAnn[0].text === "Notification: Host link lost" && nAnn[0].live === "polite",
+         "NOTIF-70: a card that BECOMES visible while the panel is closed is announced (politely): \"" + (nAnn[0] && nAnn[0].text) + "\" [" + (nAnn[0] && nAnn[0].live) + "] — " + a1 + " announcement(s)");
+      ok(nAnn.length === 1,
+         "NOTIF-71: and it is announced ONCE — three further 1 Hz polls with the card still showing announced nothing more (" + nAnn.length + " total)");
+      await NT.set(F, {link: NT.LINK.down, outputs: [NT.MON("no_signal")]});
+      ok(nAnn.length === 2 && nAnn[1].text === "Notification: Monitor #41057 SIGNAL LOST" && nAnn[1].live === "assertive",
+         "NOTIF-72: a NEW red / signal-lost card is announced ASSERTIVELY and by name: \"" + (nAnn[1] && nAnn[1].text) + "\" [" + (nAnn[1] && nAnn[1].live) + "] (" + nAnn.length + " total)");
+      await NT.set(F, {});
+      ok(nAnn.length === 2 && !NT.obs(F).badgePainted,
+         "NOTIF-73: a card going AWAY announces nothing (only a card becoming visible does) (" + nAnn.length + " total)");
+      await NT.set(F, {outputs: [NT.MON("degraded")]});
+      await NT.set(F, {outputs: [NT.MON("no_signal")]});
+      ok(nAnn.length === 4 && nAnn[2].text === "Notification: Monitor #41057 DEGRADED" && nAnn[2].live === "polite" && nAnn[3].live === "assertive" && /SIGNAL LOST/.test(nAnn[3].text),
+         "NOTIF-74: a card that ESCALATES amber -> red while already showing is announced again, assertively — operators on a screen reader are not left on 'DEGRADED' (" + nAnn.map(function(a){ return a.live[0]; }).join("") + ")");
+      var n75 = nAnn.length;
+      await NT.set(F, {});
+      NT.open(F);
+      await NT.set(F, {link: NT.LINK.down});
+      ok(nAnn.length === n75 && NT.painted(F, "rcv-link"),
+         "NOTIF-75: while the panel is OPEN the live region stays silent — the card's own role announces it, so nothing is spoken twice (" + nAnn.length + " total)");
+      ok(live.childNodes.length <= 1 && live.textContent === nAnn[nAnn.length - 1].text,
+         "NOTIF-76: after " + nAnn.length + " announcements the live region holds ONLY the latest message — no history list, bounded memory (child nodes " + live.childNodes.length + ")");
+      NT.shut(F);
+      mo.disconnect();
+      await NT.set(F, {});
+
+      // ---- 1f. the bell is calm: no motion anywhere --------------------------------------------
+      var tMot = ["notif-bell", "notif-badge", "notif-panel"].map(function(id){ var cs = F.w.getComputedStyle(F.d.getElementById(id)); return cs.animationName + "|" + cs.transitionDuration; });
+      ok(tMot.every(function(m){ return m === "none|0s"; }),
+         "NOTIF-77: the bell, badge and panel carry no animation or transition at all (seizure-safety default; prefers-reduced-motion has nothing left to honour) — " + tMot.join(", "));
+
+      } catch (e) { NT.fail(e, "announcements + motion"); }
+      try {
+      // ---- 2. geometry at three real viewports, panel carrying its WORST-CASE content ----------
+      // "beside": the console's three columns fit, so the panel sits just under the header, right of
+      // the GO LIVE controls. "below": the window is too narrow for that (the console's own columns
+      // collapse under ~1100px, far below the 1400px product minimum) so the panel starts UNDER the
+      // GO LIVE controls instead — either way it never covers them.
+      NT.geometry = async function(F, tag, mode, shrinkTo){
+        await NT.set(F, {session: {restored: true}, link: NT.LINK.down, outputs: [NT.MON("no_signal")]});
+        var base = NT.snap(F, true);
+        var head = NT.rect(F, "header");
+        var bR = NT.rect(F, "#notif-bell"), cR = NT.rect(F, "#clock"), pR = NT.rect(F, "#conn-pill");
+        ok(!!bR && bR.right <= F.w.innerWidth && !NT.overlap(bR, cR) && !NT.overlap(bR, pR) && head.height === 64 && bR.left >= cR.right - 0.5 && bR.right <= pR.left + 0.5,
+           "NOTIF-80/" + tag + ": the bell sits fully inside the header between the clock and the connection pill, overlapping neither, header still 64px (bell " + (bR && Math.round(bR.left) + "-" + Math.round(bR.right)) + " in " + F.w.innerWidth + "px)");
+        var hitsClosed = ["#blackout", "#clear-all", "#golive"].map(function(sel){ return NT.hitEl(F, sel); });
+        NT.open(F);
+        var p = NT.rect(F, "#notif-panel"), foot = NT.rect(F, "#emergency"), row = NT.rect(F, ".golive-row");
+        var cp = NT.rect(F, "#prev"), cg = NT.rect(F, "#golive"), cn = NT.rect(F, "#next");
+        var ctl = {left: Math.min(cp.left, cg.left, cn.left), right: Math.max(cp.right, cg.right, cn.right), bottom: Math.max(cp.bottom, cg.bottom, cn.bottom)};
+        var placed = mode === "beside"
+          ? (p.top - head.bottom <= 16 && p.left >= ctl.right + 8 - 0.5)
+          : (p.top >= ctl.bottom + 8 - 0.5);
+        ok(NT.isOpen(F) && p.top >= head.bottom + 8 - 0.5 && placed && Math.abs((F.w.innerWidth - 20) - p.right) <= 1 && p.width <= 400.5 && p.width <= F.w.innerWidth - 24 + 0.5,
+           "NOTIF-81/" + tag + ": placed '" + mode + "' — right-aligned to the header's 20px padding, <= min(400, 100vw-24) wide, " + (mode === "beside" ? "just under the header and clear of the GO LIVE controls" : "under the GO LIVE controls") + " (top " + Math.round(p.top) + ", left " + Math.round(p.left) + ", right " + Math.round(p.right) + "/" + (F.w.innerWidth - 20) + ", width " + Math.round(p.width) + "; controls right " + Math.round(ctl.right) + " bottom " + Math.round(ctl.bottom) + ")");
+        ok(p.bottom <= foot.top - 8 + 0.5 && p.bottom <= F.w.innerHeight,
+           "NOTIF-82/" + tag + ": the panel stops ABOVE the emergency footer with a gap (panel bottom " + Math.round(p.bottom) + " <= footer top " + Math.round(foot.top) + " - 8)");
+        var hitsOpen = ["#blackout", "#clear-all", "#golive"].map(function(sel){ return NT.hitEl(F, sel); });
+        var tPanelEl = F.d.getElementById("notif-panel");
+        var notCovered = hitsOpen.every(function(h, k){ return h === hitsClosed[k] && !!h && !tPanelEl.contains(h); });
+        // At the supported sizes the hit must be the control itself. Under ~1100px the console's OWN columns
+        // collapse and overlap (on the untouched baseline the GO LIVE centre already hits the Service Timer
+        // there), so at that size the honest invariant is the relative one above: opening the panel changes
+        // NOTHING about what sits at those three points.
+        var isControl = mode === "beside" ? (NT.hit(F, "#blackout") === true && NT.hit(F, "#clear-all") === true && NT.hit(F, "#golive") === true) : true;
+        ok(notCovered && isControl,
+           "NOTIF-83/" + tag + ": with the panel OPEN the centre of BLACKOUT, CLEAR ALL and GO LIVE still hits exactly what it hit with the panel closed, and none of it is the panel" + (mode === "beside" ? " — each IS the control itself (elementFromPoint)" : " (this width is outside the console's supported layout, so the control-itself assertion is the relative one)") + " — emergency chrome and the GO LIVE row are never occluded");
+        ok(!NT.overlap(p, foot) && !NT.overlap(p, row) && !NT.overlap(p, cp) && !NT.overlap(p, cg) && !NT.overlap(p, cn) && NT.hit(F, "#top-golive") === true && NT.hit(F, "#top-blackout") === true,
+           "NOTIF-84/" + tag + ": the panel's rectangle intersects neither the emergency footer, nor the WHOLE GO LIVE row (Previous / GO LIVE / Next), nor the header's global transport");
+        var scrollEl = F.d.querySelector("#notif-panel .notif-body");
+        var tOv = scrollEl ? F.w.getComputedStyle(scrollEl).overflowY : "";
+        ok(!!scrollEl && /^(auto|scroll)$/.test(tOv) && p.bottom - p.top <= foot.top - head.bottom,
+           "NOTIF-85/" + tag + ": the card list scrolls INSIDE the panel (overflow-y " + tOv + ") rather than growing past the footer (panel " + Math.round(p.height) + "px of " + Math.round(foot.top - head.bottom) + "px; list content " + (scrollEl ? scrollEl.scrollHeight : "?") + "px in " + (scrollEl ? scrollEl.clientHeight : "?") + "px)");
+        var mid = F.d.elementFromPoint(p.left + p.width / 2, p.top + 24);
+        ok(!!mid && tPanelEl.contains(mid) && NT.hit(F, "#notif-bell") === true && F.w.getComputedStyle(tPanelEl).zIndex !== "auto" && parseInt(F.w.getComputedStyle(tPanelEl).zIndex, 10) >= 70,
+           "NOTIF-88/" + tag + ": the panel is on top of the console it floats over (z-index " + F.w.getComputedStyle(tPanelEl).zIndex + ", its own header is what a click at its top hits) and the bell stays clickable beneath its anchor");
+        var diff = NT.diff(base, NT.snap(F, true));
+        ok(diff.length === 0, "NOTIF-86/" + tag + ": opening it moved nothing — zero layout shift at this viewport too (" + (diff.join("; ") || "no differences") + ")");
+        if (shrinkTo) {
+          F.f.style.height = shrinkTo + "px";
+          F.w.dispatchEvent(new F.w.Event("resize"));
+          await sleep(60);
+          var p2 = NT.rect(F, "#notif-panel"), foot2 = NT.rect(F, "#emergency");
+          ok(NT.isOpen(F) && p2.bottom <= foot2.top - 8 + 0.5 && p2.height < p.height && NT.hit(F, "#blackout") === true && NT.hit(F, "#clear-all") === true,
+             "NOTIF-87/" + tag + ": shrinking the window to " + shrinkTo + "px tall RE-MEASURES the footer — the panel follows it up and still never covers it (bottom " + Math.round(p2.bottom) + " <= footer top " + Math.round(foot2.top) + " - 8; height " + Math.round(p.height) + " -> " + Math.round(p2.height) + ")");
+        }
+        NT.shut(F);
+      };
+      await NT.geometry(F, "1440x900", "beside", 0);
+
+      } catch (e) { NT.fail(e, "geometry 1440x900"); }
+      try {
+      // ---- 2b. the bell is global chrome: it works on every surface, and re-measures when the surface changes
+      await NT.set(F, {session: {restored: true}, link: NT.LINK.down, outputs: [NT.MON("no_signal")]});
+      NT.open(F);
+      var pConsole = NT.rect(F, "#notif-panel");
+      NT.key(F, F.d, "5", {ctrlKey: true});                  // Ctrl+5 -> Service Plan: no GO LIVE controls laid out there
+      await sleep(80);
+      var pPlan = NT.rect(F, "#notif-panel");
+      ok(F.d.getElementById("surface-plan").classList.contains("active") && NT.isOpen(F) && NT.synced(F) && Math.abs(pPlan.width - 400) <= 0.5 && pPlan.width > pConsole.width && Math.abs(pPlan.top - 72) <= 0.5,
+         "NOTIF-90: a surface change leaves the panel open and RE-MEASURES it — on the Service Plan there is no GO LIVE row to keep clear of, so it is the full 400px again (console " + Math.round(pConsole.width) + " -> plan " + Math.round(pPlan.width) + ")");
+      NT.key(F, F.d, "Escape");
+      ok(!NT.isOpen(F) && NT.synced(F) && F.d.activeElement === F.d.getElementById("notif-bell"),
+         "NOTIF-91: Esc closes the panel on a NON-console surface too (the bell is global; the console-only key guard must not swallow it) and focus returns to the bell");
+      NT.open(F);
+      NT.key(F, F.d, "1", {ctrlKey: true});                  // Ctrl+1 -> back to the Live Console
+      await sleep(80);
+      var pBack = NT.rect(F, "#notif-panel"), cBack = NT.rect(F, "#next");
+      ok(F.d.getElementById("surface-console").classList.contains("active") && NT.isOpen(F) && pBack.left >= cBack.right + 8 - 0.5 && pBack.width < 400,
+         "NOTIF-92: coming back to the console, the open panel tucks in right of the GO LIVE controls again (left " + Math.round(pBack.left) + " >= Next's right " + Math.round(cBack.right) + " + 8; width " + Math.round(pBack.width) + ")");
+      // two popovers never stack: F10 opens the app menu and the panel gives way; the bell takes the menu back.
+      NT.key(F, F.d, "F10");
+      await sleep(40);
+      ok(F.d.getElementById("app-menu").classList.contains("open") && !NT.isOpen(F) && NT.synced(F),
+         "NOTIF-93: opening the app menu (F10) closes the notification panel — two popovers never stack");
+      NT.open(F);
+      ok(NT.isOpen(F) && !F.d.getElementById("app-menu").classList.contains("open") && NT.synced(F),
+         "NOTIF-94: opening the panel closes the app menu");
+      NT.shut(F);
+      await sleep(1010);
+      } catch (e) { NT.fail(e, "surface switch + app menu"); }
+      try {
+      // ---- 3. Tab order and the dismiss button, last — dismissing the session notice is permanent for this instance
+      await NT.set(F, {session: {restored: true}});
+      NT.open(F);
+      var tabbables = Array.prototype.filter.call(F.d.querySelectorAll('a[href],button,input,select,textarea,[tabindex]'), function(e){
+        return e.tabIndex >= 0 && !e.disabled && F.w.getComputedStyle(e).display !== "none" && e.getClientRects().length > 0 && F.w.getComputedStyle(e).visibility !== "hidden";
+      });
+      var ib = tabbables.indexOf(bell);
+      var tabIds = tabbables.slice(ib, ib + 4).map(function(e){ return e.id || e.tagName; });
+      ok(ib >= 0 && tabIds[1] === "notif-close" && tabIds[2] === "rcv-session-x" && !panel.contains(tabbables[ib + 3]) && tabIds.length === 4,
+         "NOTIF-53: Tab from the bell walks the panel's real controls in order — close, then the session notice's dismiss — and then LEAVES the panel (no focus trap); order " + tabIds.join(" > "));
+      var evTab = NT.key(F, F.d.getElementById("rcv-session-x"), "Tab");
+      ok(evTab.defaultPrevented === false && NT.isOpen(F), "NOTIF-54: Tab is never intercepted by the panel (a non-modal popover owns no focus loop)");
+      F.d.getElementById("rcv-session-x").click();
+      await sleep(60);
+      ok(NT.id(F, "rcv-session").hidden === true && NT.isOpen(F) && NT.painted(F, "notif-empty") && !NT.obs(F).badgePainted,
+         "NOTIF-55: dismissing the session notice from inside the panel works — the card goes, the badge goes with it, the panel stays open on its empty state");
+      NT.shut(F);
+
+      } catch (e) { NT.fail(e, "Tab order + dismiss"); }
+      try {
+      var F2 = await NT.boot(1280, 720); await NT.pollNow(F2);
+      await NT.geometry(F2, "1280x720", "beside", 640);
+      } catch (e) { NT.fail(e, "geometry 1280x720"); }
+      NT.reap();
+      try {
+      var F3 = await NT.boot(900, 720); await NT.pollNow(F3);
+      await NT.geometry(F3, "900x720", "below", 0);
+      } catch (e) { NT.fail(e, "geometry 900x720"); }
+      NT.reap();
+      // NOTIF-BLOCK-END
+
     } catch(e){ R.push("FAIL: exception "+e.message+" @ "+(e.stack||"").split("\n")[1]); }
     el("__r").textContent = "RESULTS\n"+R.join("\n")+"\nDONE("+R.length+")";
   }
@@ -15303,8 +15891,16 @@ DRIVER = r"""
 # resolving against the /tmp temp file (never loading). Inject it right after <head> so the
 # real app.css (and app.js) load and CSS-dependent checks are meaningful.
 html = html.replace("<head>", '<head><base href="file://' + DIST + '/">', 1)
+# The notification-panel checks (the "NOTIFICATION BELL + PANEL" block at the end of DRIVER) need a viewport
+# this gate does not have: it runs at Chrome's default ~800x600, narrower than the console's own 900px floor,
+# and a dismissed session notice (the Frame G block above) never comes back. So they boot FRESH same-origin
+# srcdoc instances of the real app at 1440x900 / 1280x720 / 900x600. This is that page: the real index.html
+# plus the same mock host, WITHOUT the driver, the CSS probe or the Rust constants (the iframe must not run
+# the suite again). "</" is escaped so the JSON string cannot close the <script> it is embedded in.
+NOTIF_FRAME_HTML = html.replace("</head>", STUB + "</head>", 1)
+NOTIF_FRAME_SCRIPT = "<script>window.__NOTIF_FRAME_HTML = " + json.dumps(NOTIF_FRAME_HTML).replace("</", "<\\/") + ";</script>"
 html = html.replace("</head>", STUB + CSS_SRC + RUST_CONSTS + "</head>", 1)
-html = html.replace("</body>", DRIVER + "</body>", 1)
+html = html.replace("</body>", NOTIF_FRAME_SCRIPT + DRIVER + "</body>", 1)
 
 # `html` is handed to the launcher, which writes it into its own private work dir (removed on every
 # path, including a timeout) and loads it. Chrome's wall-clock timeout, process group and temp
@@ -15336,6 +15932,15 @@ run = headless_chrome.run_headless_chrome(
      # about. Confirmed empirically: a debug build that writes PROGRESS every 25
      # checks showed the run stalled inside the pre-existing G.3 edges-across-polls
      # section, not inside anything new.
-     "--virtual-time-budget=75000"],
+     # Raised again to 90000 for the notification bell + panel block: it boots fresh app instances
+     # (1440x900, 1280x720, 900x720) and drives each through ~30 states. Most state changes call the
+     # app's own poll steps directly (view -> render() -> link_status), so the block costs ~12 s of
+     # virtual time rather than ~45: it waits for the REAL 1 Hz timer only where the timer is what is
+     # under test, and for the 1000 ms double-Esc window. The run had used 61.3 s of the old 75 s
+     # (measured by reading performance.now() at the end), ~14 s of headroom, and the block took
+     # it to ~73 s: 90 s leaves the same ~17 s. Keep the budget TIGHT — unused budget is not free:
+     # Chrome fast-forwards the remainder too, and a 150 s budget made the same run take ~38 s of wall
+     # clock instead of ~20 s.
+     "--virtual-time-budget=90000"],
     timeout=_CHROME_TIMEOUT_S)
 sys.exit(gate_verdict(run, EXPECTED_MIN_CHECKS))

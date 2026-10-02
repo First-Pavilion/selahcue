@@ -105,8 +105,9 @@ Separately, `UX-CANONICAL.md` — which is authoritative where it conflicts with
 prohibits blocking modals over the live-control chrome during a service, and requires the
 emergency controls to stay visible and operable at all times.
 
-**Shipped:** a dismissible, non-blocking **notice** inside the console card, below the monitors
-and above the GO LIVE row, so it can never obscure the emergency footer. Three cases:
+**Shipped:** a dismissible, non-blocking **notice** — originally inside the console card, below the
+monitors and above the GO LIVE row (it now renders in the notification panel; see "Where these states
+render now") — so it can never obscure the emergency footer. Three cases:
 
 - `restored` → "Session restored", with no claim about *why*.
 - `crash_loop` → "Started clean after repeated restarts", with the real launch count **and** the
@@ -199,6 +200,25 @@ baseline is dropped, so the next known sample cannot read as one enormous delta.
 
 Retained state for the whole feature is four scalars and one string. No queues, no history, no
 timer handles — the transient confirmation is cleared by a later poll comparing timestamps.
+
+## Where these states render now
+
+The cards above no longer sit in the console's flow. Every active message pushed the whole console down
+(owner, 2026-10-02: they "should not take up space"), so all four cards — session notice, host link lost,
+output signal lost / held / degraded, recovered — now live inside a **notification panel** opened from a
+bell in the top bar (`docs/design/NOTIFICATION-PANEL-spec.md`).
+
+- **Unchanged:** every card id, every producer (`syncRecovery`, `refreshLinkSurfaces`, the dismiss
+  handler), every word, and the three-way rule in this document. `#recovery` was *moved*, not rewritten.
+- **Changed:** where they paint. The panel is `position: fixed` and non-modal, so no state takes page
+  space and none can cover BLACKOUT, CLEAR ALL or the GO LIVE row (it measures the header, the GO LIVE
+  controls and the footer on open and on resize). The bell's badge counts the visible *fault* cards
+  (host link, output) in amber, or red for signal lost / held; the session notice and the recovery line are
+  a number-less dot. A card that appears while the panel is closed is announced once through
+  `#notif-live`, because a closed panel's cards cannot announce themselves.
+- **New, and held to the same rule:** the panel's empty state. "The host link and outputs are reporting
+  normally" appears only when both really are; a Local backend or absent telemetry says that instead —
+  an unknown is never healthy.
 
 ## Verification
 
