@@ -1514,6 +1514,251 @@ impl OutputTelemetry {
     }
 }
 
+/// Rate-limited reporter for a redraw that waited on, or held, the controller lock for
+/// suspiciously long.
+///
+/// WHY IT EXISTS. `RedrawRequested` holds the controller `Mutex` across the whole present —
+/// `surface.get_current_texture()`, the GPU upload and `queue.present` — because the live frame
+/// it draws is borrowed out of the guard. The LAN command handler takes the SAME mutex for every
+/// command, so a present that blocks (on macOS the Metal layer is configured with no
+/// next-drawable timeout, so an acquire against a display that is asleep or not consuming frames
+/// can wait indefinitely) also blocks every reply to the operator console. The console's client
+/// declares the host dead after 2 s with no reply, which is the "Host unreachable" disconnect.
+/// That chain is a hypothesis built from reading the code, not an observation: this reporter is
+/// what turns it into one. A long WAIT points at another thread (a slow LAN command) as the
+/// holder; a long HOLD with a long acquire points at the GPU/compositor.
+///
+/// Bounded by construction: the state is one `Option<Instant>` and one counter. A blocked
+/// acquire is retried by the paced frame loop, so without the rate limit a stall would write a
+/// line to stderr at ~60 Hz for as long as it lasted. What the limiter drops is counted and
+/// reported with the next line rather than lost. The clock is injected (`now`) like every other
+/// time-dependent piece of this crate.
+#[derive(Debug, Default)]
+struct StallReporter {
+    last_report: Option<Instant>,
+    suppressed: u64,
+}
+
+impl StallReporter {
+    /// The longest wait-or-hold that is still ordinary. A paced 60 Hz frame takes ~16 ms, so this
+    /// is ~15 frames; and it is well inside the operator link's 2 s command timeout
+    /// (`selahcue-lan`'s `ControlClient::COMMAND_TIMEOUT`), so the line appears BEFORE the link is
+    /// declared dead rather than only explaining it afterwards. Both bounds are pinned at compile
+    /// time in the tests.
+    const THRESHOLD: Duration = Duration::from_millis(250);
+
+    /// The quiet window after a report, during which further stalls are only counted.
+    const MIN_INTERVAL: Duration = Duration::from_secs(1);
+
+    /// Feed one redraw's worst figure (`waited.max(held)`). Returns `Some(n)` when a line should
+    /// be written now, `n` being how many stalls the rate limit swallowed since the previous
+    /// line; `None` when the redraw was ordinary or is inside the quiet window.
+    fn observe(&mut self, now: Instant, worst: Duration) -> Option<u64> {
+        if worst < Self::THRESHOLD {
+            return None;
+        }
+        if let Some(last) = self.last_report {
+            if now.saturating_duration_since(last) < Self::MIN_INTERVAL {
+                self.suppressed = self.suppressed.saturating_add(1);
+                return None;
+            }
+        }
+        self.last_report = Some(now);
+        Some(std::mem::take(&mut self.suppressed))
+    }
+}
+
+/// Where one present spent its time, measured by the [`Renderer`] while the controller lock is
+/// held. The first field report of [`StallReporter`] showed stalls of 2.8 s and 5.5 s with a
+/// surface acquire of ~0 ms, so "the acquire blocked" was only part of the story: each call that
+/// can wait on the GPU or the compositor is timed separately. Fixed-size and `Copy`, so recording
+/// it allocates nothing and cannot grow.
+#[derive(Debug, Default, Clone, Copy)]
+struct RenderPhases {
+    /// CPU orientation / mirror / fit applied to the frame before upload (`apply_output_config`).
+    transform: Duration,
+    /// `surface.get_current_texture()`. Taken BEFORE the upload (the order is load-bearing, see
+    /// [`run_present`]).
+    acquire: Duration,
+    /// Frame upload: `write_texture` and the bind group. Includes any wait for the controller lock
+    /// the upload step needs.
+    upload: Duration,
+    /// Encoding the blit and `queue.submit`.
+    submit: Duration,
+    /// `queue.present`.
+    present: Duration,
+}
+
+impl RenderPhases {
+    /// The part of a hold that none of the timed phases explains. A large value here means the
+    /// time went somewhere this did not look (not a GPU call), which is itself the finding.
+    /// Saturates: it is derived from two separate clock reads.
+    fn unaccounted(&self, held: Duration) -> Duration {
+        let timed = self.transform + self.upload + self.acquire + self.submit + self.present;
+        held.saturating_sub(timed)
+    }
+}
+
+/// Why a present attempt put no frame on screen: every non-success outcome of
+/// `surface.get_current_texture()`. Each one makes `Renderer::render` return `false`, which
+/// [`OutputTelemetry::record`] counts as a dropped frame and which turns the monitor DEGRADED in
+/// the console, with no hint of WHICH outcome it was. The first field report was a DEGRADED
+/// warning "immediately at launch" with a single dropped frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SkipReason {
+    /// The surface configuration is stale (resize, scale-factor or display change): reconfigured.
+    Outdated,
+    /// The swapchain was lost (sleep, display re-negotiation): reconfigured.
+    Lost,
+    /// No drawable could be acquired.
+    Timeout,
+    /// The window is not visible (minimised, behind another window, on an inactive Space). wgpu 30
+    /// reports this outcome on macOS; wgpu 22 did not.
+    Occluded,
+    /// wgpu reported a validation error for the acquire.
+    Validation,
+}
+
+impl SkipReason {
+    /// How many reasons there are: the size of [`SkipCounts`] and of the test-only `ALL`, so a
+    /// sixth variant cannot be added without a compile error in `ALL` (and `label` is an
+    /// exhaustive match).
+    const COUNT: usize = 5;
+
+    /// Every reason, so the tests can prove each has its own label and counter slot.
+    #[cfg(test)]
+    const ALL: [SkipReason; Self::COUNT] = [
+        SkipReason::Outdated,
+        SkipReason::Lost,
+        SkipReason::Timeout,
+        SkipReason::Occluded,
+        SkipReason::Validation,
+    ];
+
+    fn label(self) -> &'static str {
+        match self {
+            SkipReason::Outdated => "Outdated",
+            SkipReason::Lost => "Lost",
+            SkipReason::Timeout => "Timeout",
+            SkipReason::Occluded => "Occluded",
+            SkipReason::Validation => "Validation",
+        }
+    }
+}
+
+/// How many times each [`SkipReason`] has skipped a frame. Fixed-size, so nothing can grow: an
+/// occluded window skips every frame at 60 Hz, which is why [`SkipCounts::record`] only asks for a
+/// log line on the 1st, 10th, 100th, ... occurrence of each reason.
+#[derive(Debug, Default)]
+struct SkipCounts([u64; SkipReason::COUNT]);
+
+impl SkipCounts {
+    /// Count one skip. Returns `Some(count)` when it should be logged now: the first occurrence of
+    /// this reason and every power of ten after it. Never panics: a reason with no slot (only
+    /// possible if `COUNT` were left behind a new variant) is simply not counted.
+    fn record(&mut self, reason: SkipReason) -> Option<u64> {
+        let slot = self.0.get_mut(reason as usize)?;
+        *slot = slot.saturating_add(1);
+        let n = *slot;
+        let mut power = 1u64;
+        loop {
+            if n == power {
+                return Some(n);
+            }
+            match power.checked_mul(10) {
+                Some(next) if next <= n => power = next,
+                _ => return None,
+            }
+        }
+    }
+}
+
+/// The steps of one present, in the order [`run_present`] takes them. A trait only so the ORDER
+/// can be tested without a GPU: a real surface cannot be unit-tested, and the order is exactly what
+/// went wrong.
+trait PresentSteps {
+    /// Try to take a drawable from the surface. `Err` means no frame will be drawn this tick, and
+    /// nothing may have been queued on the GPU by then.
+    fn acquire(&mut self) -> Result<(), SkipReason>;
+    /// Copy the frame into the GPU texture and build its bind group.
+    fn upload(&mut self);
+    /// Encode the blit, submit it, and present the drawable.
+    fn submit_and_present(&mut self);
+}
+
+/// Run one present: ACQUIRE FIRST, and queue GPU work only once a drawable is in hand.
+///
+/// This order is load-bearing. `Queue::write_texture` copies the whole frame (~8 MB at 1080p) into
+/// staging memory that is released only by the next `Queue::submit`. The renderer used to upload
+/// before it acquired, so a window that wgpu 30 reports as `Occluded` (a new outcome on macOS)
+/// returned early having staged a frame it never submitted: ~8 MB per skipped frame, ~500 MB/s at
+/// 60 Hz. A real run reached a 29 GB footprint, all of it graphics memory, and macOS killed the
+/// host at 56 GB, which is what closed every output window and dropped the console's link.
+fn run_present(steps: &mut impl PresentSteps) -> bool {
+    if steps.acquire().is_err() {
+        return false;
+    }
+    steps.upload();
+    steps.submit_and_present();
+    true
+}
+
+/// Write one diagnostic line to `out`, ignoring any failure to write it.
+///
+/// Every stall, skip, close and exit report goes through this instead of `eprintln!`, which PANICS
+/// when stderr is a broken pipe (a terminal or a `| tee` reader that went away). These reports sit
+/// on the output window's render path, so a panic there would take the audience screen down over
+/// a log line: a report is best-effort and must never be able to do that.
+fn write_diag(out: &mut impl std::io::Write, line: &str) {
+    let _ = writeln!(out, "{line}");
+}
+
+/// [`write_diag`] to stderr.
+fn diag(line: &str) {
+    write_diag(&mut std::io::stderr().lock(), line);
+}
+
+/// The one line a skipped frame writes to stderr: it names the window and the outcome, and says
+/// that the skip is what the console reports as a dropped frame.
+fn describe_skip(window: &str, reason: SkipReason, count: u64) -> String {
+    format!(
+        "SelahCue: {window}: surface acquire returned {} ({count} so far). The frame was skipped; \
+         each skipped frame is what the console reports as a dropped frame and a DEGRADED monitor.",
+        reason.label(),
+    )
+}
+
+/// The one line a stall writes to stderr. It carries every figure needed to tell the causes apart
+/// (see [`StallReporter`]), because it is what gets pasted back from a user's terminal.
+fn describe_redraw_stall(
+    role: &str,
+    waited: Duration,
+    held: Duration,
+    phases: RenderPhases,
+    suppressed: u64,
+) -> String {
+    let mut line = format!(
+        "SelahCue: output stall: the {role} window waited {} ms for the controller lock, then \
+         held it for {} ms (transform {} ms, acquire {} ms, upload {} ms, submit {} ms, present \
+         {} ms, unaccounted {} ms). LAN commands from the operator console are blocked while it \
+         is held.",
+        waited.as_millis(),
+        held.as_millis(),
+        phases.transform.as_millis(),
+        phases.acquire.as_millis(),
+        phases.upload.as_millis(),
+        phases.submit.as_millis(),
+        phases.present.as_millis(),
+        phases.unaccounted(held).as_millis(),
+    );
+    if suppressed > 0 {
+        line.push_str(&format!(
+            " ({suppressed} similar stall(s) since the last report.)"
+        ));
+    }
+    line
+}
+
 /// Apply a screen's per-output GEOMETRIC config to its composed frame, targeting the
 /// `win_w × win_h` output surface: rotate (orientation) → mirror → fit (scaling). Returns
 /// `None` when the config is geometrically default (orientation 0, no mirror, `Fill`) so the
@@ -1639,6 +1884,13 @@ struct Renderer {
     frame_texture: Option<(wgpu::Texture, u32, u32)>,
     /// Measured present telemetry (Screens page signal-health).
     telemetry: OutputTelemetry,
+    /// Where the most recent present spent its time. Reset at the top of every
+    /// [`Renderer::present_output`], so a frame that stopped early (a frame-rate skip, a failed
+    /// acquire) cannot report a stale figure for a phase it never reached. Read only by the stall
+    /// report in `RedrawRequested` (see [`StallReporter`]).
+    phases: RenderPhases,
+    /// Why frames have been skipped, per outcome (see [`SkipReason`]).
+    skips: SkipCounts,
 }
 
 impl Renderer {
@@ -1748,6 +2000,8 @@ impl Renderer {
             sampler,
             frame_texture: None,
             telemetry: OutputTelemetry::new(),
+            phases: RenderPhases::default(),
+            skips: SkipCounts::default(),
         })
     }
 
@@ -1762,9 +2016,122 @@ impl Renderer {
     /// paint is deferred to the next tick) — the smoke mode uses this to know the
     /// window really produced a visible frame before exiting.
     fn render(&mut self, frame: &FrameBuffer) -> bool {
+        run_present(&mut FramePass {
+            renderer: self,
+            frame,
+            drawable: None,
+            bind_group: None,
+            staged_unsubmitted: false,
+        })
+    }
+
+    /// Count a skipped frame by outcome and, on its first and every power-of-ten occurrence, say
+    /// why on stderr (see [`SkipCounts`]).
+    fn note_skip(&mut self, reason: SkipReason) {
+        if let Some(count) = self.skips.record(reason) {
+            diag(&describe_skip(&self.window.title(), reason, count));
+        }
+    }
+
+    /// Present `base` under this output's per-screen `cfg` (Screens page): honor the
+    /// frame-rate cap, apply the geometric transform (orientation/mirror/fit), blit, and
+    /// record telemetry. Returns whether a frame was actually presented. A frame-rate SKIP
+    /// (the configured interval has not elapsed) is intentional — it returns `false` but is
+    /// NOT counted as a dropped frame.
+    fn present_output(&mut self, base: &FrameBuffer, cfg: &OutputConfigView, now: Instant) -> bool {
+        self.phases = RenderPhases::default();
+        // Frame-rate gate. Default 60fps at the 60 Hz loop never gates (5% slack); only an
+        // explicitly LOWER target skips presents.
+        let target = cfg.frame_rate.max(1) as f32;
+        if let Some(prev) = self.telemetry.last_present {
+            let min_dt = (1.0 / target) * 0.95;
+            if now.duration_since(prev).as_secs_f32() < min_dt {
+                return false; // intentional frame-rate skip — not a drop
+            }
+        }
+        let (win_w, win_h) = {
+            let s = self.window.inner_size();
+            (s.width.max(1), s.height.max(1))
+        };
+        let transform_started = Instant::now();
+        let transformed = apply_output_config(base, cfg, win_w, win_h);
+        self.phases.transform = transform_started.elapsed();
+        let frame = transformed.as_ref().unwrap_or(base);
+        let presented = self.render(frame);
+        self.telemetry.record(now, presented);
+        presented
+    }
+}
+
+/// One present of `frame` on a [`Renderer`]'s surface, as the steps [`run_present`] orders.
+struct FramePass<'a> {
+    renderer: &'a mut Renderer,
+    frame: &'a FrameBuffer,
+    /// The drawable [`PresentSteps::acquire`] took, held until it is presented.
+    drawable: Option<wgpu::SurfaceTexture>,
+    /// The bind group [`PresentSteps::upload`] built for this frame's texture.
+    bind_group: Option<wgpu::BindGroup>,
+    /// `write_texture` staged this frame and no `Queue::submit` has released it yet.
+    staged_unsubmitted: bool,
+}
+
+impl Drop for FramePass<'_> {
+    /// Safety net under [`run_present`]'s order: staging from `write_texture` is released only by a
+    /// `Queue::submit`. A pass that staged a frame and never submitted it (an early return, or a
+    /// future reordering that uploads before the acquire again) flushes it here, so the leak can
+    /// never grow past one frame. wgpu submits the pending writes on their own for an empty
+    /// submit. Costs nothing on the normal path: the flag is cleared by the real submit.
+    fn drop(&mut self) {
+        // Not while a panic is already unwinding: wgpu's default error handler panics, so a second
+        // panic from this submit would abort instead of unwinding, hiding the first message.
+        if self.staged_unsubmitted && !std::thread::panicking() {
+            self.renderer.queue.submit(std::iter::empty());
+        }
+    }
+}
+
+impl PresentSteps for FramePass<'_> {
+    fn acquire(&mut self) -> Result<(), SkipReason> {
+        let r = &mut *self.renderer;
+        // wgpu 30 reports the acquire outcome as an enum rather than a `Result`. A usable texture
+        // (including a merely `Suboptimal` one, which was always presented from) is drawn
+        // to; a stale/lost swapchain (sleep, display re-negotiation) is reconfigured; every other
+        // outcome (timeout, occluded window, validation error) just skips the frame. The paced
+        // frame loop (`new_events`) re-requests a paint next frame, so we do NOT request one here:
+        // doing so would busy-spin while the surface can't present.
+        let acquire_started = Instant::now();
+        let acquired = r.surface.get_current_texture();
+        r.phases.acquire = acquire_started.elapsed();
+        let reason = match acquired {
+            wgpu::CurrentSurfaceTexture::Success(frame)
+            | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => {
+                self.drawable = Some(frame);
+                return Ok(());
+            }
+            wgpu::CurrentSurfaceTexture::Outdated => {
+                r.surface.configure(&r.device, &r.config);
+                SkipReason::Outdated
+            }
+            wgpu::CurrentSurfaceTexture::Lost => {
+                r.surface.configure(&r.device, &r.config);
+                SkipReason::Lost
+            }
+            wgpu::CurrentSurfaceTexture::Timeout => SkipReason::Timeout,
+            wgpu::CurrentSurfaceTexture::Occluded => SkipReason::Occluded,
+            wgpu::CurrentSurfaceTexture::Validation => SkipReason::Validation,
+        };
+        r.note_skip(reason);
+        Err(reason)
+    }
+
+    fn upload(&mut self) {
+        let r = &mut *self.renderer;
+        let frame = self.frame;
+        // Timed from here so re-creating the frame texture on a resize counts as upload.
+        let upload_started = Instant::now();
         let (fw, fh) = (frame.width(), frame.height());
-        if self.frame_texture.as_ref().map(|(_, w, h)| (*w, *h)) != Some((fw, fh)) {
-            let texture = self.device.create_texture(&wgpu::TextureDescriptor {
+        if r.frame_texture.as_ref().map(|(_, w, h)| (*w, *h)) != Some((fw, fh)) {
+            let texture = r.device.create_texture(&wgpu::TextureDescriptor {
                 label: Some("frame"),
                 size: wgpu::Extent3d {
                     width: fw,
@@ -1778,12 +2145,12 @@ impl Renderer {
                 usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
                 view_formats: &[],
             });
-            self.frame_texture = Some((texture, fw, fh));
+            r.frame_texture = Some((texture, fw, fh));
         }
-        let Some((texture, _, _)) = self.frame_texture.as_ref() else {
-            return false;
+        let Some((texture, _, _)) = r.frame_texture.as_ref() else {
+            return;
         };
-        self.queue.write_texture(
+        r.queue.write_texture(
             wgpu::TexelCopyTextureInfo {
                 texture,
                 mip_level: 0,
@@ -1802,10 +2169,11 @@ impl Renderer {
                 depth_or_array_layers: 1,
             },
         );
+        self.staged_unsubmitted = true;
         let tex_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+        self.bind_group = Some(r.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("blit"),
-            layout: &self.bind_group_layout,
+            layout: &r.bind_group_layout,
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
@@ -1813,33 +2181,25 @@ impl Renderer {
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
-                    resource: wgpu::BindingResource::Sampler(&self.sampler),
+                    resource: wgpu::BindingResource::Sampler(&r.sampler),
                 },
             ],
-        });
+        }));
+        r.phases.upload = upload_started.elapsed();
+    }
 
-        // wgpu 30 reports the acquire outcome as an enum rather than a `Result`. Mapped onto the
-        // old behaviour exactly: a usable texture (including a merely `Suboptimal` one, which
-        // the old code also presented from) is drawn to; a stale/lost swapchain (sleep, display
-        // re-negotiation) is reconfigured; every other outcome (timeout, occluded window,
-        // validation error) just skips the frame. The paced frame loop (`new_events`)
-        // re-requests a paint next frame, so we do NOT request one here — doing so would
-        // busy-spin while the surface can't present.
-        let surface_frame = match self.surface.get_current_texture() {
-            wgpu::CurrentSurfaceTexture::Success(frame)
-            | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => frame,
-            wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
-                self.surface.configure(&self.device, &self.config);
-                return false;
-            }
-            wgpu::CurrentSurfaceTexture::Timeout
-            | wgpu::CurrentSurfaceTexture::Occluded
-            | wgpu::CurrentSurfaceTexture::Validation => return false,
+    fn submit_and_present(&mut self) {
+        let (Some(surface_frame), Some(bind_group)) =
+            (self.drawable.take(), self.bind_group.take())
+        else {
+            return;
         };
+        let r = &mut *self.renderer;
+        let submit_started = Instant::now();
         let target = surface_frame
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
-        let mut encoder = self
+        let mut encoder = r
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
         {
@@ -1859,39 +2219,16 @@ impl Renderer {
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
-            pass.set_pipeline(&self.pipeline);
+            pass.set_pipeline(&r.pipeline);
             pass.set_bind_group(0, &bind_group, &[]);
             pass.draw(0..3, 0..1);
         }
-        self.queue.submit(Some(encoder.finish()));
-        self.queue.present(surface_frame);
-        true
-    }
-
-    /// Present `base` under this output's per-screen `cfg` (Screens page): honor the
-    /// frame-rate cap, apply the geometric transform (orientation/mirror/fit), blit, and
-    /// record telemetry. Returns whether a frame was actually presented. A frame-rate SKIP
-    /// (the configured interval has not elapsed) is intentional — it returns `false` but is
-    /// NOT counted as a dropped frame.
-    fn present_output(&mut self, base: &FrameBuffer, cfg: &OutputConfigView, now: Instant) -> bool {
-        // Frame-rate gate. Default 60fps at the 60 Hz loop never gates (5% slack); only an
-        // explicitly LOWER target skips presents.
-        let target = cfg.frame_rate.max(1) as f32;
-        if let Some(prev) = self.telemetry.last_present {
-            let min_dt = (1.0 / target) * 0.95;
-            if now.duration_since(prev).as_secs_f32() < min_dt {
-                return false; // intentional frame-rate skip — not a drop
-            }
-        }
-        let (win_w, win_h) = {
-            let s = self.window.inner_size();
-            (s.width.max(1), s.height.max(1))
-        };
-        let transformed = apply_output_config(base, cfg, win_w, win_h);
-        let frame = transformed.as_ref().unwrap_or(base);
-        let presented = self.render(frame);
-        self.telemetry.record(now, presented);
-        presented
+        r.queue.submit(Some(encoder.finish()));
+        self.staged_unsubmitted = false;
+        r.phases.submit = submit_started.elapsed();
+        let present_started = Instant::now();
+        r.queue.present(surface_frame);
+        r.phases.present = present_started.elapsed();
     }
 }
 
@@ -2002,6 +2339,9 @@ struct App {
     /// condition so a fault that lasts a whole service counts as one hold, not as one per
     /// frame.
     output_faults: FaultLatch,
+    /// Rate-limited stderr report for a redraw that waited on or held the controller lock for
+    /// too long. One reporter for both windows, so the two outputs share the quiet window.
+    stall_reporter: StallReporter,
 }
 
 /// Apply one command to the shared controller (a poisoned lock just drops the input
@@ -2438,6 +2778,7 @@ impl App {
             ndi_frames: std::collections::HashMap::new(),
             open_failures: OpenFailures::default(),
             output_faults: FaultLatch::default(),
+            stall_reporter: StallReporter::default(),
         }
     }
 
@@ -3057,7 +3398,13 @@ impl App {
     /// This is the single code path shared by the Screens toggle and the window's own close
     /// button, so the two can never drift. The process stays alive: it still owns the other
     /// window, the LAN server, and the presentation state paired controllers depend on.
-    fn close_screen(&mut self, role: WindowRole) {
+    fn close_screen(&mut self, role: WindowRole, reason: &str) {
+        // Said on stderr because a window that disappears with no explanation is indistinguishable
+        // from the process dying: `reason` names which of the two callers asked for it.
+        diag(&format!(
+            "SelahCue: closing the {} window ({reason}); the process stays up.",
+            role.title()
+        ));
         match role {
             WindowRole::Main => self.main = None,
             WindowRole::Stage => self.stage = None,
@@ -3093,7 +3440,9 @@ impl App {
         for action in actions {
             match action {
                 WindowAction::Open(role) => self.open_screen(event_loop, role),
-                WindowAction::Close(role) => self.close_screen(role),
+                WindowAction::Close(role) => {
+                    self.close_screen(role, "the screen is switched off in the registry")
+                }
             }
         }
     }
@@ -3145,8 +3494,13 @@ impl ApplicationHandler for App {
             WindowEvent::CloseRequested => {
                 if let Some(role) = self.window_role_of(id) {
                     match close_button_outcome(self.main.is_some(), self.stage.is_some(), role) {
-                        CloseOutcome::CloseScreen => self.close_screen(role),
-                        CloseOutcome::Quit => event_loop.exit(),
+                        CloseOutcome::CloseScreen => {
+                            self.close_screen(role, "the window was asked to close")
+                        }
+                        CloseOutcome::Quit => {
+                            diag("SelahCue: the last output window was asked to close; exiting.");
+                            event_loop.exit()
+                        }
                     }
                 }
             }
@@ -3165,6 +3519,13 @@ impl ApplicationHandler for App {
                 self.publish_output_status();
             }
             WindowEvent::RedrawRequested => {
+                // Started HERE, before the identify check's own brief controller lock, not at the
+                // lock held across the present below: a redraw queued behind a slow LAN command
+                // blocks on that FIRST lock, so a timer started later would read ~0 and a long
+                // WAIT (another thread held the mutex) would be invisible. It therefore also
+                // includes the identify read itself (microseconds). It does not cover the frame
+                // tick's own lock in `about_to_wait`, which is not timed at all.
+                let wait_started = Instant::now();
                 // Identify (FR-040): while active, each window blits its number
                 // INSTEAD of its scene — presentation state is untouched, so the
                 // outputs resume by themselves when the overlay expires.
@@ -3215,9 +3576,14 @@ impl ApplicationHandler for App {
                 } else {
                     self.identify_frames = None;
                 }
+                // Timed so a present that blocks while holding this lock is visible rather than
+                // inferred (see [`StallReporter`]): the LAN handler takes the same mutex, so a
+                // long WAIT (measured from `wait_started` above) means another thread held it, a
+                // long HOLD means the present did.
                 let Ok(c) = self.controller.lock() else {
                     return;
                 };
+                let lock_acquired = Instant::now();
                 // Each window presents its own surface from the same shared live state.
                 // A DISABLED built-in screen has NO window at all (see `close_screen`), so
                 // there is nothing to mute here — a redraw only ever arrives for a window
@@ -3226,7 +3592,8 @@ impl ApplicationHandler for App {
                 // Match on the window that raised this redraw. A stale event for a window
                 // closed a moment ago matches neither and is dropped — it must never present
                 // one screen's composition on the other's surface.
-                match self.window_role_of(id) {
+                let role = self.window_role_of(id);
+                match role {
                     Some(WindowRole::Main) => {
                         let live = c.presenter().live_output();
                         let cfg = c.output_config("main");
@@ -3254,6 +3621,34 @@ impl ApplicationHandler for App {
                         }
                     }
                     None => {}
+                }
+                // Release the lock BEFORE measuring and reporting: a stderr that is itself slow
+                // must never extend the very stall being reported.
+                drop(c);
+                let held = lock_acquired.elapsed();
+                let waited = lock_acquired.duration_since(wait_started);
+                if let Some(suppressed) = self
+                    .stall_reporter
+                    .observe(Instant::now(), waited.max(held))
+                {
+                    let (label, phases) = match role {
+                        Some(WindowRole::Main) => (
+                            "main",
+                            self.main
+                                .as_ref()
+                                .map_or_else(RenderPhases::default, |r| r.phases),
+                        ),
+                        Some(WindowRole::Stage) => (
+                            "stage",
+                            self.stage
+                                .as_ref()
+                                .map_or_else(RenderPhases::default, |r| r.phases),
+                        ),
+                        None => ("closed", RenderPhases::default()),
+                    };
+                    diag(&describe_redraw_stall(
+                        label, waited, held, phases, suppressed,
+                    ));
                 }
             }
             WindowEvent::KeyboardInput {
@@ -3284,6 +3679,7 @@ impl ApplicationHandler for App {
                     self.modifiers.control_key(),
                     cfg!(target_os = "macos"),
                 ) {
+                    diag("SelahCue: the quit chord was pressed; exiting.");
                     event_loop.exit();
                     return;
                 }
@@ -3341,6 +3737,16 @@ impl ApplicationHandler for App {
             }
             _ => {}
         }
+    }
+
+    /// Reached on EVERY clean exit of the event loop, whichever path asked for it. A process that
+    /// dies without printing this line did not exit cleanly: it panicked (the panic message is on
+    /// stderr) or was killed from outside.
+    fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
+        diag(&format!(
+            "SelahCue: the output event loop exited cleanly after {} s.",
+            self.launched_at.elapsed().as_secs()
+        ));
     }
 
     fn new_events(&mut self, event_loop: &ActiveEventLoop, cause: StartCause) {
@@ -4764,6 +5170,331 @@ mod autosave_restore_tests {
 
 #[cfg(test)]
 mod tests {
+    use std::time::{Duration, Instant};
+
+    const _: () = assert!(
+        super::StallReporter::THRESHOLD.as_millis() < 2000,
+        "the report must fire BEFORE the operator link's 2 s command timeout declares the host dead, \
+         otherwise it only ever explains a disconnect after the fact"
+    );
+    const _: () = assert!(
+        super::StallReporter::THRESHOLD.as_millis() >= 100,
+        "a paced 60 Hz frame takes ~16 ms; a threshold of a few frames would report ordinary jitter"
+    );
+
+    /// A normal frame must stay silent and a real stall must speak — and the threshold is the ONLY
+    /// thing separating the two, so the "speaks" half is the positive control: without it a
+    /// reporter that never fires would pass the "silent" half and every other test here vacuously.
+    #[test]
+    fn a_normal_frame_is_silent_and_a_stall_is_reported() {
+        let mut r = super::StallReporter::default();
+        let t0 = Instant::now();
+        let just_under = super::StallReporter::THRESHOLD - Duration::from_millis(1);
+        assert_eq!(
+            r.observe(t0, super::StallReporter::THRESHOLD),
+            Some(0),
+            "a stall AT the threshold was not reported — the reporter is dead, so the silence \
+             asserted below proves nothing"
+        );
+        // A fresh reporter, so the rate limiter cannot be what made the frame below silent.
+        let mut fresh = super::StallReporter::default();
+        assert_eq!(
+            fresh.observe(t0, just_under),
+            None,
+            "a frame just under the threshold must not be reported"
+        );
+        assert_eq!(
+            fresh.observe(t0, Duration::from_millis(16)),
+            None,
+            "an ordinary 60 Hz frame must not be reported"
+        );
+    }
+
+    /// A blocked surface acquire is retried by the paced frame loop, so without a rate limit a
+    /// stall would write a line to stderr at ~60 Hz for as long as it lasts — and a stderr that is
+    /// itself slow (a terminal under load, a full pipe) would then become a second stall. The
+    /// state is a fixed-size struct (an `Option<Instant>` and one counter): nothing is buffered, so
+    /// there is nothing to grow, and what the limiter drops is COUNTED rather than lost.
+    #[test]
+    fn a_repeating_stall_is_rate_limited_and_the_dropped_reports_are_counted() {
+        let mut r = super::StallReporter::default();
+        let t0 = Instant::now();
+        let stall = super::StallReporter::THRESHOLD * 4;
+        assert_eq!(
+            r.observe(t0, stall),
+            Some(0),
+            "the first stall must be reported"
+        );
+
+        // 59 further redraws at 60 Hz, all inside the quiet window: none may speak. Pin the
+        // premise so a changed MIN_INTERVAL cannot silently turn this loop into one that never
+        // leaves the window.
+        let frame = Duration::from_millis(16);
+        assert!(frame * 59 < super::StallReporter::MIN_INTERVAL);
+        for i in 1..=59u32 {
+            assert_eq!(
+                r.observe(t0 + frame * i, stall),
+                None,
+                "redraw {i} inside the quiet window was reported — a stalled acquire retried every \
+                 frame would flood stderr"
+            );
+        }
+
+        // Once the window has passed it speaks again, and says how many it swallowed.
+        assert_eq!(
+            r.observe(t0 + super::StallReporter::MIN_INTERVAL, stall),
+            Some(59),
+            "the report after the quiet window must carry the number of suppressed stalls"
+        );
+        // …and the count was reset by speaking: it is a per-report figure, not a lifetime total.
+        assert_eq!(
+            r.observe(t0 + super::StallReporter::MIN_INTERVAL * 2, stall),
+            Some(0),
+            "the suppressed count must reset once it has been reported"
+        );
+    }
+
+    /// The line is what gets pasted back from a user's terminal, so it has to carry every figure
+    /// that tells the causes apart: a long WAIT means another thread (a slow LAN command) held the
+    /// lock; a long HOLD is then attributed to ONE phase of the present, or to `unaccounted` when
+    /// none of the timed phases explains it (which means the time is somewhere this did not look).
+    ///
+    /// Every phase gets a DISTINCT value so a swapped or dropped figure cannot pass: the first
+    /// field-report of this line had acquire at ~0 ms for two of its three longest stalls, which is
+    /// exactly the evidence that a single `acquire` figure was not enough to name the blocker.
+    #[test]
+    fn the_stall_line_carries_every_figure_needed_to_tell_the_causes_apart() {
+        let phases = super::RenderPhases {
+            transform: Duration::from_millis(11),
+            upload: Duration::from_millis(22),
+            acquire: Duration::from_millis(33),
+            submit: Duration::from_millis(44),
+            present: Duration::from_millis(55),
+        };
+        let line = super::describe_redraw_stall(
+            "main",
+            Duration::from_millis(7),
+            Duration::from_millis(2000),
+            phases,
+            0,
+        );
+        for needle in [
+            "main",
+            "waited 7 ms",
+            "held it for 2000 ms",
+            "transform 11 ms",
+            "upload 22 ms",
+            "acquire 33 ms",
+            "submit 44 ms",
+            "present 55 ms",
+            // 2000 - (11 + 22 + 33 + 44 + 55): the part no timed phase explains.
+            "unaccounted 1835 ms",
+        ] {
+            assert!(
+                line.contains(needle),
+                "stall line is missing `{needle}`: {line}"
+            );
+        }
+        // The phases are listed in the order they RUN (transform, acquire, upload, submit,
+        // present): the acquire is taken before the upload, and a reader following the line top to
+        // bottom must see the same sequence the code executes.
+        let at = |needle: &str| line.find(needle).expect(needle);
+        assert!(
+            at("transform") < at("acquire")
+                && at("acquire") < at("upload")
+                && at("upload") < at("submit")
+                && at("submit") < at("present"),
+            "stall line lists phases out of execution order: {line}"
+        );
+        assert!(
+            !line.contains("similar"),
+            "with nothing suppressed the line must not claim earlier stalls: {line}"
+        );
+
+        let with_dropped = super::describe_redraw_stall(
+            "stage",
+            Duration::ZERO,
+            Duration::from_millis(500),
+            super::RenderPhases::default(),
+            59,
+        );
+        assert!(
+            with_dropped.contains("59 similar"),
+            "suppressed stalls must be named: {with_dropped}"
+        );
+    }
+
+    /// A skipped frame counts as "dropped" and is what turns a monitor DEGRADED in the console, so
+    /// the operator needs to know WHICH acquire outcome skipped it. But an occluded window skips
+    /// every frame at 60 Hz, so the line is written on the 1st, 10th, 100th, ... occurrence of each
+    /// outcome, never per frame: a handful of lines an hour, with no clock and nothing that grows.
+    #[test]
+    fn a_skip_is_logged_on_its_first_and_every_power_of_ten_occurrence_per_reason() {
+        use super::SkipReason::{Occluded, Timeout};
+        let mut c = super::SkipCounts::default();
+        assert_eq!(
+            c.record(Occluded),
+            Some(1),
+            "positive control: the first skip must be logged, or every `None` below proves nothing"
+        );
+        for n in 2..=9 {
+            assert_eq!(
+                c.record(Occluded),
+                None,
+                "occurrence {n} must not be logged"
+            );
+        }
+        assert_eq!(c.record(Occluded), Some(10), "the 10th must be logged");
+        // Each outcome has its own counter: a first Timeout is news even though Occluded is at 10.
+        assert_eq!(c.record(Timeout), Some(1));
+        for n in 11..=99 {
+            assert_eq!(
+                c.record(Occluded),
+                None,
+                "occurrence {n} must not be logged"
+            );
+        }
+        assert_eq!(c.record(Occluded), Some(100), "the 100th must be logged");
+    }
+
+    /// Two outcomes sharing a label would make the log line ambiguous, and two sharing an index
+    /// would share a counter and silently swallow each other's first occurrence.
+    #[test]
+    fn every_skip_reason_has_its_own_label_and_its_own_counter() {
+        let labels: std::collections::HashSet<_> =
+            super::SkipReason::ALL.iter().map(|r| r.label()).collect();
+        let slots: std::collections::HashSet<_> =
+            super::SkipReason::ALL.iter().map(|r| *r as usize).collect();
+        assert_eq!(labels.len(), super::SkipReason::ALL.len());
+        assert_eq!(slots.len(), super::SkipReason::ALL.len());
+        assert!(super::SkipReason::ALL
+            .iter()
+            .all(|r| (*r as usize) < super::SkipCounts::default().0.len()));
+    }
+
+    /// The skip line is what explains a DEGRADED monitor, so it must name the window, the outcome
+    /// and the running count, and say that the skip is what the console reports as dropped.
+    #[test]
+    fn the_skip_line_names_the_window_the_outcome_and_the_count() {
+        let line = super::describe_skip("SelahCue Output", super::SkipReason::Occluded, 100);
+        for needle in ["SelahCue Output", "Occluded", "100", "dropped"] {
+            assert!(
+                line.contains(needle),
+                "skip line is missing `{needle}`: {line}"
+            );
+        }
+    }
+
+    /// A writer whose every write fails the way a closed pipe does.
+    struct BrokenPipe;
+
+    impl std::io::Write for BrokenPipe {
+        fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+            Err(std::io::ErrorKind::BrokenPipe.into())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Err(std::io::ErrorKind::BrokenPipe.into())
+        }
+    }
+
+    /// POSITIVE CONTROL for the test below: a diagnostic line is written as exactly one
+    /// newline-terminated line. Without it, a `write_diag` that wrote nothing would satisfy "never
+    /// panics on a broken stderr" vacuously.
+    #[test]
+    fn a_diagnostic_line_is_written_as_one_line() {
+        let mut out = Vec::new();
+        super::write_diag(&mut out, "SelahCue: hello");
+        assert_eq!(out, b"SelahCue: hello\n");
+    }
+
+    /// `eprintln!` PANICS when stderr is a broken pipe (a terminal or a `| tee` reader that went
+    /// away). The diagnostics added for the stall/skip/exit reports sit on the output window's
+    /// render path, so a panic there would take the audience screen down over a log line. They
+    /// must therefore swallow a write failure instead.
+    #[test]
+    fn a_broken_stderr_cannot_make_a_diagnostic_line_panic() {
+        super::write_diag(&mut BrokenPipe, "SelahCue: nobody is listening");
+    }
+
+    /// Records which steps of a present ran, and in what order.
+    #[derive(Default)]
+    struct RecordingSteps {
+        calls: Vec<&'static str>,
+        /// `Some(reason)` makes the acquire fail with that outcome.
+        skip: Option<super::SkipReason>,
+    }
+
+    impl super::PresentSteps for RecordingSteps {
+        fn acquire(&mut self) -> Result<(), super::SkipReason> {
+            self.calls.push("acquire");
+            self.skip.map_or(Ok(()), Err)
+        }
+        fn upload(&mut self) {
+            self.calls.push("upload");
+        }
+        fn submit_and_present(&mut self) {
+            self.calls.push("submit_and_present");
+        }
+    }
+
+    /// POSITIVE CONTROL for the test below: a present whose acquire succeeds must still go on to
+    /// upload, submit and present, in that order. Without it, a `run_present` that did nothing at
+    /// all would satisfy "a skipped acquire queues no GPU work" vacuously.
+    #[test]
+    fn a_successful_acquire_uploads_then_submits_and_presents() {
+        let mut steps = RecordingSteps::default();
+        assert!(super::run_present(&mut steps));
+        assert_eq!(steps.calls, ["acquire", "upload", "submit_and_present"]);
+    }
+
+    /// THE leak. `Queue::write_texture` copies the whole frame (~8 MB at 1080p) into staging memory
+    /// that is only released by the next `Queue::submit`. The renderer used to upload BEFORE it
+    /// acquired a drawable, so a window wgpu 30 reported as `Occluded` returned early having staged
+    /// a frame it never submitted: ~8 MB per skipped frame, ~500 MB/s at 60 Hz. A real run reached a
+    /// 29 GB footprint (all of it graphics memory, 3979 regions) and macOS killed the host at 56 GB.
+    /// So for EVERY outcome that skips a frame, nothing may be queued on the GPU.
+    #[test]
+    fn a_skipped_acquire_queues_no_gpu_work_for_any_reason() {
+        for reason in super::SkipReason::ALL {
+            let mut steps = RecordingSteps {
+                skip: Some(reason),
+                ..Default::default()
+            };
+            assert!(
+                !super::run_present(&mut steps),
+                "a skipped acquire ({}) must report that no frame was presented",
+                reason.label()
+            );
+            assert_eq!(
+                steps.calls,
+                ["acquire"],
+                "a frame skipped as {} staged GPU work it never submits: that memory is not \
+                 released until the next submit, so a window that stays skipped leaks ~8 MB a frame",
+                reason.label()
+            );
+        }
+    }
+
+    /// `unaccounted` is hold minus the timed phases. The phases are measured INSIDE the hold, so it
+    /// is never negative in practice — but it is computed from two separate clock reads, so it must
+    /// saturate rather than panic or wrap if they ever disagree by a tick.
+    #[test]
+    fn unaccounted_time_saturates_instead_of_underflowing() {
+        let phases = super::RenderPhases {
+            acquire: Duration::from_millis(300),
+            ..Default::default()
+        };
+        assert_eq!(
+            phases.unaccounted(Duration::from_millis(1000)),
+            Duration::from_millis(700),
+            "positive control: the unexplained part of a hold is the hold minus the timed phases"
+        );
+        assert_eq!(
+            phases.unaccounted(Duration::from_millis(100)),
+            Duration::ZERO,
+            "phases summing past the hold must saturate to zero"
+        );
+    }
 
     /// The storage guard's verdict must reach the operator as FOUR outcomes, not three.
     ///
