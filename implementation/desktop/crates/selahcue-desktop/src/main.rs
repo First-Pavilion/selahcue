@@ -1540,8 +1540,8 @@ struct StallReporter {
 
 impl StallReporter {
     /// The longest redraw (or lock wait, or hold) that is still ordinary. A paced 60 Hz frame
-    /// takes ~16 ms, so this is ~15 frames; and it is well inside the operator link's 2 s command timeout
-    /// (`selahcue-lan`'s `ControlClient::COMMAND_TIMEOUT`), so the line appears BEFORE the link is
+    /// takes ~16 ms, so this is ~15 frames; and it is well inside the operator link's 2 s command
+    /// timeout (`selahcue-lan`'s `ControlClient::COMMAND_TIMEOUT`), so the line appears BEFORE the link is
     /// declared dead rather than only explaining it afterwards. Both bounds are pinned at compile
     /// time in the tests.
     const THRESHOLD: Duration = Duration::from_millis(250);
@@ -1552,8 +1552,8 @@ impl StallReporter {
     /// Feed one redraw's total time. Returns `Some(n)` when a line should
     /// be written now, `n` being how many stalls the rate limit swallowed since the previous
     /// line; `None` when the redraw was ordinary or is inside the quiet window.
-    fn observe(&mut self, now: Instant, worst: Duration) -> Option<u64> {
-        if worst < Self::THRESHOLD {
+    fn observe(&mut self, now: Instant, total: Duration) -> Option<u64> {
+        if total < Self::THRESHOLD {
             return None;
         }
         if let Some(last) = self.last_report {
@@ -5835,8 +5835,8 @@ mod tests {
     }
 
     /// A controller that cannot be read (a poisoned lock) gives no frame. The present must then
-    /// report that nothing was presented and must not submit: it used to return early the same way
-    /// and the telemetry must not count a frame that never reached the screen.
+    /// report that nothing was presented and must not submit. (The renderer records that as one
+    /// dropped frame: a poisoned controller really cannot put a frame on the screen.)
     #[test]
     fn an_unreadable_controller_gives_no_frame_so_nothing_is_uploaded_or_presented() {
         let (presented, calls) = drive(None, false, None);
@@ -5921,17 +5921,19 @@ mod tests {
         };
         let mut times = super::LockTimes::default();
         let mut seen: Option<(u32, u32, *const super::FrameBuffer)> = None;
-        let lent = super::FrameSource::with_frame(
-            &mut shared_frame(&controller, &cfg, (180, 320), &mut times),
-            &mut |f| {
-                assert!(
-                    controller.try_lock().is_ok(),
-                    "the controller must be FREE while a transformed frame is being used"
-                );
-                seen = Some((f.width(), f.height(), f as *const _));
-            },
-        );
+        let mut frames = shared_frame(&controller, &cfg, (180, 320), &mut times);
+        let lent = super::FrameSource::with_frame(&mut frames, &mut |f| {
+            assert!(
+                controller.try_lock().is_ok(),
+                "the controller must be FREE while a transformed frame is being used"
+            );
+            seen = Some((f.width(), f.height(), f as *const _));
+        });
         assert!(lent);
+        assert!(
+            frames.transform > Duration::ZERO,
+            "the time the transform took must be recorded (the stall line prints it)"
+        );
         let (w, h, ptr) = seen.expect("the frame was lent");
         assert_eq!((w, h), (180, 320), "the transform must still be applied");
         let guard = controller.lock().expect("controller");
@@ -6083,6 +6085,54 @@ mod tests {
             times.waited >= Duration::from_millis(80),
             "waited {:?} behind a 120 ms hold by another thread",
             times.waited
+        );
+    }
+
+    /// One redraw takes SEVERAL controller locks (the identify read, the config read, the frame
+    /// read) into ONE `LockTimes`, so the figures must accumulate: waits and holds ADD, and
+    /// `longest` is the maximum single hold, not the total. A section that overwrote instead of
+    /// adding would hide an earlier section's wait: a redraw that spent 2 s queued at the identify
+    /// lock would print "waited 0 ms". The first section here waits behind another thread for
+    /// ~80 ms and holds for ~40 ms; the second is uncontended and holds ~5 ms.
+    #[test]
+    fn several_locks_in_one_redraw_add_their_waits_and_holds_and_keep_the_longest_hold() {
+        let controller = shared_controller();
+        let mut times = super::LockTimes::default();
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let guard = controller.lock().expect("controller");
+        std::thread::scope(|s| {
+            let redraw = s.spawn(|| {
+                started_tx.send(()).expect("signal");
+                {
+                    let first = super::lock_controller(&controller, &mut times).expect("first");
+                    std::thread::sleep(Duration::from_millis(40));
+                    drop(first);
+                }
+                {
+                    let _second = super::lock_controller(&controller, &mut times).expect("second");
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+            });
+            started_rx.recv().expect("the redraw started");
+            std::thread::sleep(Duration::from_millis(80));
+            drop(guard);
+            redraw.join().expect("redraw");
+        });
+        assert!(
+            times.waited >= Duration::from_millis(60),
+            "the first section's ~80 ms wait must survive the second section: {:?}",
+            times.waited
+        );
+        assert!(
+            times.held >= Duration::from_millis(44),
+            "holds must ADD (40 ms + 5 ms): {:?}",
+            times.held
+        );
+        assert!(
+            times.longest >= Duration::from_millis(38) && times.longest < times.held,
+            "longest must be the single longest hold (~40 ms), not the total {:?}: {:?}",
+            times.held,
+            times.longest
         );
     }
 
