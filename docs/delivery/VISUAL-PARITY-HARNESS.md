@@ -13,6 +13,8 @@ python3 scripts/visual_parity.py --engine webkit # closest-to-shipped web engine
 python3 scripts/visual_parity.py --only console  # one surface
 python3 scripts/vp_selftest.py                  # prove the harness itself still bites
 open .visual-parity/run-*/report.html
+
+python3 scripts/visual_parity.py --suite marketing   # the marketing site + account screens (section 11)
 ```
 
 ---
@@ -26,7 +28,7 @@ open .visual-parity/run-*/report.html
 | `scripts/vp_capture_web.py` | screenshot the real operator `dist/` under **Blink** and **WebKit** |
 | `scripts/vp_capture_native.py` | run the Rust renderer for the stage + audience output |
 | `scripts/vp_compare.py` | pair, score, diff, run the deviation gate + contrast survey, write the report |
-| `scripts/vp_selftest.py` | the harness's own gate — 45 controls, each demonstrated in both directions |
+| `scripts/vp_selftest.py` | the harness's own gate — 112 controls (45 operator, 67 marketing), each demonstrated in both directions |
 | `scripts/visual_parity.py` | orchestrator |
 | `implementation/desktop/crates/selahcue-present/tests/visual_parity_render.rs` | the native renderer (also a real `cargo test` gate) |
 | `docs/design/visual-parity/surfaces.json` | the capture catalogue — what, at what size, against which node |
@@ -402,7 +404,7 @@ Two things are already CI-safe and cheap, and are the sensible first step:
 
 ```bash
 cargo test -p selahcue-present --test visual_parity_render   # native captures render + are non-blank
-python3 scripts/vp_selftest.py                               # 45 harness controls, no browser needed
+python3 scripts/vp_selftest.py                               # 112 harness controls, no browser needed
 ```
 
 `scripts/operator_headless.py` is untouched and still reports **640 checks, 0 FAIL**;
@@ -439,3 +441,111 @@ WKWebView shots matter now rather than later.
 
 Captured but deliberately not scored: `console-blackout`, `screens-closed`, `plan`,
 `audience-scripture-live`, `audience-blackout` — no 1:1 Figma frame depicts them.
+
+---
+
+## 11. The `marketing` suite — the website and account screens (ClickUp 17tnw2b2c75)
+
+The harness was written for the desktop operator. The marketing site (16 pages) and the auth/account/device
+states (19 frames) are a **second suite of the same instrument**: same comparator, same bounded stores, same
+deviation gate. Each suite names its own catalogue, deviation list, reference store and caps
+(`vp_core.get_suite`), so growing one cannot push the other over its bound.
+
+```bash
+(cd implementation/marketing && npm ci && npm run build)    # the capture serves dist/ and refuses a stale one
+python3 scripts/visual_parity.py --suite marketing           # capture 35 surfaces (Chromium) + compare; ~2 min
+python3 scripts/visual_parity.py --suite marketing --engine both --only home pricing
+python3 scripts/vp_style_diff.py --slug signin --dom .visual-parity/run-<stamp>/marketing/signin.blink.dom.json --limit 0
+python3 scripts/vp_slice.py --slug home --run .visual-parity/run-<stamp> --y 900 --h 900 --out /tmp/home-900.png
+python3 scripts/vp_reference.py --suite marketing verify     # 35 references + 35 style dumps, caps, checksums
+python3 scripts/check_fidelity_audit.py                      # the audit data is complete and consistent
+```
+
+### The parts that are new
+
+| File | Role |
+|---|---|
+| `scripts/vp_capture_marketing.py` | serves `dist/` with SPA fallback, drives Playwright at 1440 wide, scripts the account API (`page.route`), writes a full-page PNG and a bounded DOM/computed-style dump per surface |
+| `scripts/vp_style_diff.py` | compares **values**: Figma's text/box styles against the DOM dump (size, weight, line height, colour, alignment, position, radius, fill, border, copy only on one side) |
+| `scripts/figma_extract_style.js` | the **read-only** `use_figma` snippet that produces the Figma side of that comparison |
+| `scripts/vp_slice.py` | Figma and build side by side for one slice of a long page, for a human to read |
+| `scripts/check_fidelity_audit.py` | structural checker, summariser and report writer for the audit data; self-tested (34 controls) |
+| `scripts/build_fidelity_artifact.py` | builds the stand-alone side-by-side page (Figma beside the build, every finding) from the audit data and a run |
+| `docs/design/visual-parity/marketing/surfaces.json` | the 35 frames: node id, route, scripted state, status (`captured` / `unbuilt` / `not-rendered`) |
+| `docs/design/visual-parity/marketing/reference/` | 35 committed Figma PNGs at native size + `manifest.json` (node ids, sizes, SHA-256) |
+| `docs/design/visual-parity/marketing/figma-style/` | 35 committed style dumps, one per frame, registered in the same manifest |
+| `docs/design/visual-parity/marketing/findings/*.json` | the audit's findings, one file per area; `tickets.json` maps each area to its fix ticket |
+| `docs/design/visual-parity/marketing/deviations.json` | the marketing allowed-deviation gate (metrics below) |
+
+### What is different from the operator suite, and why
+
+* **Pages are long and their height legitimately differs from the frame's** (the build carries the real legal
+  drafts where Figma drew a placeholder). Stretching one image to the other would turn a content difference into a
+  phantom layout difference everywhere, so the pair is compared **top-aligned over the shared height** and the
+  height delta is reported as its own number (`vp_compare.align_top_crop`; self-tested against a stretch).
+* **Inter must have loaded.** Figma is drawn in Inter; a fallback face re-wraps text and invents layout differences
+  the code does not have. A capture whose `document.fonts.check("600 16px Inter")` is false is refused.
+* **A stale bundle is refused.** A screenshot of last week's build would score as a result and describe nothing
+  that ships (`vp_capture_marketing.dist_problem`).
+* **Two statuses besides `captured`, each gated both ways.** `unbuilt` (the Manage Devices states): the capture
+  visits the route and **fails if it stops rendering the site's 404 view**, so the flag cannot outlive the screen.
+  `not-rendered` (V4 and R5, which the handoff says are deliberately not shipped until the backend can prove expiry):
+  `vp_compare` probes the **shipped bundle** (`dist/assets/*.js`, not source comments) for the forbidden copy and
+  fails if it appears; the probe carries a control string that must be present, or a probe over the wrong folder
+  would pass for every state.
+* **The deviation gate reads the page, not the pixels.** Metrics: `doc_height` (the page is at least N px tall),
+  `text_present` and `text_absent` (a regex over every rendered text node: the honest-content decisions).
+  Each can fail and each is demonstrated failing in `vp_selftest.py`.
+* **Contrast is surveyed, not gated.** `vp_compare` lists every text node whose colour-on-backdrop is below the
+  AA threshold its own size demands. A gradient/image backdrop is reported `unknown`, never given a made-up number.
+  It is reported rather than gated because the audit exists to record those findings; gate it per page once a page
+  has been through the accessibility fix.
+* **The Figma legacy colours versus the code `--sc-*` tokens are a deliberate layer**
+  (`AUTH-LANDING-PAGES-HANDOFF` 2.2). `vp_style_diff` labels a colour `colour~` only when the build's value equals
+  the mapped token; a colour used in the wrong *role* is `colour`, not excused.
+
+### Bounds
+
+| store | cap | enforced by |
+|---|---|---|
+| reference store (PNGs **and** style dumps) | 48 entries, 12 MB (35 entries, 5.9 MB today) | `ReferenceStore.ingest` / `register_style` refuse, never evict |
+| style dump | 2500 nodes (the extractor caps itself at 1500 and the registration refuses a capped dump) | `register_style` |
+| run | 200 files; 5 runs kept | `vp_compare` (per-suite cap), `prune_runs` |
+| DOM dump | 1500 items per page; GraphQL calls recorded: 50 | `vp_capture_marketing` |
+| capture server | one daemon thread, serves `dist/` only, no cache, path-traversal guarded | self-tested |
+
+### Extracting a Figma frame's style dump
+
+`use_figma` is used **read-only**. Paste `scripts/figma_extract_style.js` with `__NODE_ID__` replaced, save the JSON it
+returns verbatim as `docs/design/visual-parity/marketing/figma-style/<slug>.json`, then
+`python3 scripts/vp_reference.py --suite marketing style --slug <slug>` (or `--all`). Registration checks that the dump names the
+reference's node, has text and box lists, and was not capped.
+
+### Using it for a fix ticket
+
+A fix ticket for an area re-runs `visual_parity.py --suite marketing --only <its slugs>` and `vp_style_diff.py` for each,
+and shows that every remaining difference is a documented B (with its source), C or D. A fix is not finished while a class A
+line is still printed for its surfaces. `docs/delivery/FIGMA-FIDELITY-AUDIT-marketing-account-2026-10-03.md` is the starting list.
+
+### The deviation gate was proven to go red on real captures
+
+Each marketing entry was mutated on a scratch copy of a real run and the comparator re-run (`vp_compare --suite marketing`, with
+`SELAHCUE_MARKETING_DIST` pointing at a copied `dist/`): the privacy page's height set back to the Figma placeholder's 1772px turned
+`legal-pages-render-the-real-drafts-privacy` red; removing the disabled-state copy turned `download-actions-are-honest-disabled-states` red; adding
+"Continue with Google" to the Sign in dump turned `signin-has-no-google-button` red; appending V4's title to a copy of the bundle turned the
+`verify-v4` bundle probe red. In every run only the mutated entry failed; its siblings stayed `INTENTIONAL`. Never mutate the real `dist/` or a
+committed run: the checkout is shared.
+
+### The audit data
+
+`findings/*.json` (one file per audit area) hold every difference, each with a class A to E, severity, Figma and build values, evidence and fix/source/
+decision as the class requires. A finding may carry `dup_of` (the same defect seen again on another page: shown, counted once under the canonical
+finding) or `owned_by` (a ClickUp id: an A that another ticket already owns, so it raises no fix here). `check_fidelity_audit.py` enforces the rules and
+`--write-report` renders `docs/delivery/FIGMA-FIDELITY-AUDIT-marketing-account-2026-10-03.md` from the data.
+
+### Self-test
+
+`python3 scripts/vp_selftest.py` now carries the marketing controls alongside the operator ones (suite caps, style registration,
+top-crop alignment, bundle probe and freshness, the three deviation metrics, DOM contrast, style-diff pairing and detection, box
+diff, catalogue validation, server confinement, committed references). `python3 scripts/check_fidelity_audit.py --self-test`
+proves the audit checker rejects each kind of incomplete audit.

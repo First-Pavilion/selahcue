@@ -1,0 +1,636 @@
+{
+  "_comment": "Figma reference exports for the visual-parity harness. Regenerate with scripts/vp_reference.py (see docs/delivery/VISUAL-PARITY-HARNESS.md). Figma asset URLs expire in ~7 days, which is why the BYTES are committed.",
+  "entries": {
+    "about": {
+      "bytes": 511379,
+      "exported_utc": "2026-10-03T20:07:58Z",
+      "file_key": "SYQn5hFY8YVQKm3c6rw0eJ",
+      "height": 2177,
+      "node_id": "496:124",
+      "note": "About (page)",
+      "sha256": "92b4d34b1b3657d8d2c39c9b97fa9fa2d3458b1a49dc6a19637772d629344698",
+      "style": {
+        "boxes": 45,
+        "bytes": 12350,
+        "exported_utc": "2026-10-03T20:54:16Z",
+        "file": "about.json",
+        "sha256": "c24b1c8e95565a1a4066b14763b8e115761957ea79251151195d14a7fa39927f",
+        "texts": 49
+      },
+      "width": 1440
+    },
+    "account": {
+      "bytes": 142765,
+      "exported_utc": "2026-10-03T20:07:58Z",
+      "file_key": "SYQn5hFY8YVQKm3c6rw0eJ",
+      "height": 1639,
+      "node_id": "506:124",
+      "note": "Account dashboard (page)",
+      "sha256": "d0967436f342a88984f2be94e5c5f87bc195c36c470030f959371ae4931bf925",
+      "style": {
+        "boxes": 83,
+        "bytes": 20233,
+        "exported_utc": "2026-10-03T20:54:16Z",
+        "file": "account.json",
+        "sha256": "7726c83c3bc30bab04774e78f4d0a2e20e6b83b0d5ab6aeee3fd2514c6ec07da",
+        "texts": 86
+      },
+      "width": 1440
+    },
+    "affiliates": {
+      "bytes": 511510,
+      "exported_utc": "2026-10-03T20:07:58Z",
+      "file_key": "SYQn5hFY8YVQKm3c6rw0eJ",
+      "height": 3424,
+      "node_id": "541:124",
+      "note": "Affiliate program (page)",
+      "sha256": "d9909a6f25567196903170bd49b4e27e1733c0b466807aa6ec5967dc3b82b72f",
+      "style": {
+        "boxes": 100,
+        "bytes": 24532,
+        "exported_utc": "2026-10-03T20:54:16Z",
+        "file": "affiliates.json",
+        "sha256": "4d227accd690a537918077e28711b69586cbd5c9bfc53e69dce7d49aa8fbab7d",
+        "texts": 90
+      },
+      "width": 1440
+    },
+    "blog": {
+      "bytes": 156418,
+      "exported_utc": "2026-10-03T20:07:58Z",
+      "file_key": "SYQn5hFY8YVQKm3c6rw0eJ",
+      "height": 1862,
+      "node_id": "502:124",
+      "note": "Blog (page)",
+      "sha256": "be203d7ab578172d1968f9f7daffdfdb64fc03de3d33bb2b4fff87ce713a71f8",
+      "style": {
+        "boxes": 76,
+        "bytes": 16387,
+        "exported_utc": "2026-10-03T20:54:16Z",
+        "file": "blog.json",
+        "sha256": "9babdd337922b28501d50aaea0390414bb165936a991c53e539dda50321b6a8e",
+        "texts": 55
+      },
+      "width": 1440
+    },
+    "careers": {
+      "bytes": 154809,
+      "exported_utc": "2026-10-03T20:07:58Z",
+      "file_key": "SYQn5hFY8YVQKm3c6rw0eJ",
+      "height": 1830,
+      "node_id": "503:124",
+      "note": "Careers (page)",
+      "sha256": "3a0ba10ad4f7c60af517bbebd0bc68a5d103aeccd480a94f97c6e6d6b096bc2b",
+      "style": {
+        "boxes": 75,
+        "bytes": 17760,
+        "exported_utc": "2026-10-03T20:54:16Z",
+        "file": "careers.json",
+        "sha256": "b76536d890226fff0ec8ad9df7dbdcd928b6b0d90683a1bfd2314dc443d280c1",
+        "texts": 67
+      },
+      "width": 1440
+    },
+    "changelog": {
+      "bytes": 149629,
+      "exported_utc": "2026-10-03T20:07:58Z",
+      "file_key": "SYQn5hFY8YVQKm3c6rw0eJ",
+      "height": 1781,
+      "node_id": "501:124",
+      "note": "Changelog (page)",
+      "sha256": "db231cc2a0fdfabbb28ed4d6de739f037f39fb0dde511670de251e591c0893bd",
+      "style": {
+        "boxes": 107,
+        "bytes": 20356,
+        "exported_utc": "2026-10-03T20:54:16Z",
+        "file": "changelog.json",
+        "sha256": "67e53b20881735dc20f125bdda5fca59c30e6cff95969b0fdbc57dfc126235b3",
+        "texts": 64
+      },
+      "width": 1440
+    },
+    "contact": {
+      "bytes": 126826,
+      "exported_utc": "2026-10-03T20:07:58Z",
+      "file_key": "SYQn5hFY8YVQKm3c6rw0eJ",
+      "height": 1457,
+      "node_id": "497:124",
+      "note": "Contact (page)",
+      "sha256": "16e4d3842c37ead7dfda17dec7743e3bea47b4040c62ead976804364d9bdaf52",
+      "style": {
+        "boxes": 50,
+        "bytes": 12978,
+        "exported_utc": "2026-10-03T20:54:16Z",
+        "file": "contact.json",
+        "sha256": "739230558eb5602215f6ef311164b921f39fb67094f607f57d8ccae0c4b1c7b0",
+        "texts": 54
+      },
+      "width": 1440
+    },
+    "devices-d1": {
+      "bytes": 113007,
+      "exported_utc": "2026-10-03T20:07:59Z",
+      "file_key": "SYQn5hFY8YVQKm3c6rw0eJ",
+      "height": 1054,
+      "node_id": "753:124",
+      "note": "D1 Populated (3 of 5) (state)",
+      "sha256": "8f0c1c8b67e083ccf802dd8f3cd321c2282664a1fd9583d161edad79b7c37937",
+      "style": {
+        "boxes": 59,
+        "bytes": 14001,
+        "exported_utc": "2026-10-03T20:54:16Z",
+        "file": "devices-d1.json",
+        "sha256": "99f0eea19b78632fdf4735f89d4bfba7927afb40c08c325909567eed0d6ae794",
+        "texts": 56
+      },
+      "width": 1440
+    },
+    "devices-d2": {
+      "bytes": 126974,
+      "exported_utc": "2026-10-03T20:07:59Z",
+      "file_key": "SYQn5hFY8YVQKm3c6rw0eJ",
+      "height": 1054,
+      "node_id": "754:124",
+      "note": "D2 Deactivate confirm (state)",
+      "sha256": "66e84b1a7d650d6600cbf8d408518742539141d7038f7925ea263d2933fb45bf",
+      "style": {
+        "boxes": 66,
+        "bytes": 16131,
+        "exported_utc": "2026-10-03T20:54:16Z",
+        "file": "devices-d2.json",
+        "sha256": "7b8c511d3eb0e284030154c9dfe21bee54d062903c9d0bf7dd6515c2c25ccbbc",
+        "texts": 65
+      },
+      "width": 1440
+    },
+    "devices-d3": {
+      "bytes": 146040,
+      "exported_utc": "2026-10-03T20:07:59Z",
+      "file_key": "SYQn5hFY8YVQKm3c6rw0eJ",
+      "height": 1350,
+      "node_id": "754:257",
+      "note": "D3 All slots in use (5 of 5) (state)",
+      "sha256": "c83e6c74378b39ef485989c669fd6d5a3ca2eb45443d160aec629f093d589d3d",
+      "style": {
+        "boxes": 72,
+        "bytes": 17096,
+        "exported_utc": "2026-10-03T20:54:16Z",
+        "file": "devices-d3.json",
+        "sha256": "fb22d2b7304a8b7acb0b7654a2c7296b59d2b926d1d5d75c688b0028769f202a",
+        "texts": 67
+      },
+      "width": 1440
+    },
+    "devices-d4": {
+      "bytes": 114300,
+      "exported_utc": "2026-10-03T20:07:59Z",
+      "file_key": "SYQn5hFY8YVQKm3c6rw0eJ",
+      "height": 1167,
+      "node_id": "755:124",
+      "note": "D4 No devices (0 of 5) (state)",
+      "sha256": "a245e8efd5188fdba834061fc1d0da89ba3ba44520cfac2ecc34134d2953cd4a",
+      "style": {
+        "boxes": 52,
+        "bytes": 12987,
+        "exported_utc": "2026-10-03T20:54:16Z",
+        "file": "devices-d4.json",
+        "sha256": "e575bf51767198e792daf1b9867b620d6d82c5a1e7965847d87e2f608f5a97a9",
+        "texts": 53
+      },
+      "width": 1440
+    },
+    "devices-d5": {
+      "bytes": 101248,
+      "exported_utc": "2026-10-03T20:07:59Z",
+      "file_key": "SYQn5hFY8YVQKm3c6rw0eJ",
+      "height": 1115,
+      "node_id": "755:256",
+      "note": "D5 Could not load devices (state)",
+      "sha256": "07c1da0415eab9774a509c7de145259d9b33790ad5d6591123d73051b7465d4c",
+      "style": {
+        "boxes": 41,
+        "bytes": 11166,
+        "exported_utc": "2026-10-03T20:54:16Z",
+        "file": "devices-d5.json",
+        "sha256": "a4c50c279723839d75c9ee31778d8d828b9c98bc0fb6a0180d3ef6f3d84a8ca7",
+        "texts": 49
+      },
+      "width": 1440
+    },
+    "devices-d6": {
+      "bytes": 148397,
+      "exported_utc": "2026-10-03T20:07:59Z",
+      "file_key": "SYQn5hFY8YVQKm3c6rw0eJ",
+      "height": 1350,
+      "node_id": "755:385",
+      "note": "D6 Over the plan limit (5 of 3) (state)",
+      "sha256": "9f450b94d12c30b52e8b0071623b310c63746d15b84c9e279753c9321e88fc55",
+      "style": {
+        "boxes": 72,
+        "bytes": 17120,
+        "exported_utc": "2026-10-03T20:54:16Z",
+        "file": "devices-d6.json",
+        "sha256": "cf557836de8b1ea23fd92e08e610c20f99276645295a2764ce3916342f755c4d",
+        "texts": 67
+      },
+      "width": 1440
+    },
+    "docs": {
+      "bytes": 148947,
+      "exported_utc": "2026-10-03T20:07:58Z",
+      "file_key": "SYQn5hFY8YVQKm3c6rw0eJ",
+      "height": 1349,
+      "node_id": "499:124",
+      "note": "Documentation (page)",
+      "sha256": "620e5e8d10fd6bef3790ade5b7d09c737da51ff8334e7ff719fe190aa1001fb9",
+      "style": {
+        "boxes": 73,
+        "bytes": 16680,
+        "exported_utc": "2026-10-03T20:54:16Z",
+        "file": "docs.json",
+        "sha256": "b5cf741629144bea212550a66b999b4e2663fd627e94d35f9a87dbf6c631aa62",
+        "texts": 62
+      },
+      "width": 1440
+    },
+    "download": {
+      "bytes": 223970,
+      "exported_utc": "2026-10-03T20:07:58Z",
+      "file_key": "SYQn5hFY8YVQKm3c6rw0eJ",
+      "height": 2588,
+      "node_id": "487:124",
+      "note": "Download (page)",
+      "sha256": "cd10fc22ee28b7b8e7eba7379fc3ad64c49f415986ed1c30967acca895123765",
+      "style": {
+        "boxes": 91,
+        "bytes": 22583,
+        "exported_utc": "2026-10-03T20:54:16Z",
+        "file": "download.json",
+        "sha256": "fab58d650b3add265eb4ad02b50391d8e33e57060d332ca2fe421c9c4e59aa01",
+        "texts": 91
+      },
+      "width": 1440
+    },
+    "features": {
+      "bytes": 625199,
+      "exported_utc": "2026-10-03T20:07:58Z",
+      "file_key": "SYQn5hFY8YVQKm3c6rw0eJ",
+      "height": 3407,
+      "node_id": "485:124",
+      "note": "Features (page)",
+      "sha256": "4ecf82d1ecc140d7b880498dd5439b669771c6004285b6d097543eb84ac1aba2",
+      "style": {
+        "boxes": 169,
+        "bytes": 31028,
+        "exported_utc": "2026-10-03T20:54:16Z",
+        "file": "features.json",
+        "sha256": "e8d0ac369e345e27923701ac1cce88b8ba03efe5610130670cbbfb7c85c5b7d7",
+        "texts": 84
+      },
+      "width": 1440
+    },
+    "home": {
+      "bytes": 1022161,
+      "exported_utc": "2026-10-03T20:07:58Z",
+      "file_key": "SYQn5hFY8YVQKm3c6rw0eJ",
+      "height": 6814,
+      "node_id": "468:125",
+      "note": "Home (page)",
+      "sha256": "b1a08aec53e6a1375d849e9292bb49483c0294970fedb466453f272fc8728685",
+      "style": {
+        "boxes": 207,
+        "bytes": 49511,
+        "exported_utc": "2026-10-03T20:54:16Z",
+        "file": "home.json",
+        "sha256": "ff0870e283010f9b7dd409aaa0b125f0a3bfcbcaa43dde6202acfa21f6bbc1d8",
+        "texts": 171
+      },
+      "width": 1440
+    },
+    "pricing": {
+      "bytes": 188139,
+      "exported_utc": "2026-10-03T20:07:58Z",
+      "file_key": "SYQn5hFY8YVQKm3c6rw0eJ",
+      "height": 2130,
+      "node_id": "483:124",
+      "note": "Pricing (page)",
+      "sha256": "886838cbcf4a28c40541d8f4a91fa77c4d8b10cc0b68f375b45dc118563d5886",
+      "style": {
+        "boxes": 138,
+        "bytes": 27699,
+        "exported_utc": "2026-10-03T20:54:16Z",
+        "file": "pricing.json",
+        "sha256": "966cf73b344659f3b7b7c1e59c20a6bfa8f4d2e4729d82db6e3e01e79f7942b3",
+        "texts": 89
+      },
+      "width": 1440
+    },
+    "privacy": {
+      "bytes": 198885,
+      "exported_utc": "2026-10-03T20:07:58Z",
+      "file_key": "SYQn5hFY8YVQKm3c6rw0eJ",
+      "height": 1772,
+      "node_id": "504:124",
+      "note": "Privacy Policy (page)",
+      "sha256": "8142c627fe02206a1fda96fdedcf336834439fc4f973dbd412df596afb1a6c52",
+      "style": {
+        "boxes": 30,
+        "bytes": 10453,
+        "exported_utc": "2026-10-03T20:54:16Z",
+        "file": "privacy.json",
+        "sha256": "3a44035aba4f3a5f95e2f35b917ea26ba76312354d1ad1bbd7509e73504ddc22",
+        "texts": 49
+      },
+      "width": 1440
+    },
+    "reset-r1": {
+      "bytes": 54335,
+      "exported_utc": "2026-10-03T20:07:59Z",
+      "file_key": "SYQn5hFY8YVQKm3c6rw0eJ",
+      "height": 900,
+      "node_id": "747:143",
+      "note": "R1 Choose a new password (state)",
+      "sha256": "ee83c68761985a351481e02ad67e7eef9b950d8e1d79371748cf8259d30ab476",
+      "style": {
+        "boxes": 13,
+        "bytes": 3978,
+        "exported_utc": "2026-10-03T20:54:16Z",
+        "file": "reset-r1.json",
+        "sha256": "d7a06e784f13754aa59f234cbd6589eea2a85505a8a47b750c08c460dd6d652f",
+        "texts": 16
+      },
+      "width": 1440
+    },
+    "reset-r2": {
+      "bytes": 43545,
+      "exported_utc": "2026-10-03T20:07:59Z",
+      "file_key": "SYQn5hFY8YVQKm3c6rw0eJ",
+      "height": 900,
+      "node_id": "747:173",
+      "note": "R2 Validation errors (state)",
+      "sha256": "e26d05043248da0299a5e71efa85f4719b672131bb571f85c4e65f76a74f017a",
+      "style": {
+        "boxes": 11,
+        "bytes": 3429,
+        "exported_utc": "2026-10-03T20:54:16Z",
+        "file": "reset-r2.json",
+        "sha256": "90fb2f325d57d4cf2144c03e97039bdd3cccfde82c724afe573f43a8cc0b70f2",
+        "texts": 14
+      },
+      "width": 1440
+    },
+    "reset-r3": {
+      "bytes": 38711,
+      "exported_utc": "2026-10-03T20:07:59Z",
+      "file_key": "SYQn5hFY8YVQKm3c6rw0eJ",
+      "height": 900,
+      "node_id": "749:124",
+      "note": "R3 Updating password (state)",
+      "sha256": "13f76ae80e1671c4d5a2ab8ce48000b6cb000fda4aed2bcaa8846b38e1589925",
+      "style": {
+        "boxes": 11,
+        "bytes": 3380,
+        "exported_utc": "2026-10-03T20:54:16Z",
+        "file": "reset-r3.json",
+        "sha256": "76f1c554e176bc2953d3060e6473c523ddb7871f4c56175d55c52e2673213bab",
+        "texts": 14
+      },
+      "width": 1440
+    },
+    "reset-r4": {
+      "bytes": 48782,
+      "exported_utc": "2026-10-03T20:07:59Z",
+      "file_key": "SYQn5hFY8YVQKm3c6rw0eJ",
+      "height": 900,
+      "node_id": "749:150",
+      "note": "R4 Link no longer valid (state)",
+      "sha256": "1322b5e1e8d9dcb66213af898dab7dcecf0c4b47c9ecf4ee0e9e2d0e9aa44e5a",
+      "style": {
+        "boxes": 11,
+        "bytes": 3223,
+        "exported_utc": "2026-10-03T20:54:16Z",
+        "file": "reset-r4.json",
+        "sha256": "9ffec774ab8e6ca234b388dd0c74e801e69949aa23b2fc401af722ebec2ef756",
+        "texts": 12
+      },
+      "width": 1440
+    },
+    "reset-r5": {
+      "bytes": 50737,
+      "exported_utc": "2026-10-03T20:07:59Z",
+      "file_key": "SYQn5hFY8YVQKm3c6rw0eJ",
+      "height": 900,
+      "node_id": "749:174",
+      "note": "R5 Link expired (1h) (state)",
+      "sha256": "0ed43d263eff98407109d912e30dcafb72e2b21e1d2f2677eb23c7efb7b261f5",
+      "style": {
+        "boxes": 11,
+        "bytes": 3225,
+        "exported_utc": "2026-10-03T20:54:16Z",
+        "file": "reset-r5.json",
+        "sha256": "4a8441d23cfaba80e111d709ae6a5031bcfac148a3a8e362de192e07638a7fd7",
+        "texts": 12
+      },
+      "width": 1440
+    },
+    "reset-r6": {
+      "bytes": 45094,
+      "exported_utc": "2026-10-03T20:07:59Z",
+      "file_key": "SYQn5hFY8YVQKm3c6rw0eJ",
+      "height": 900,
+      "node_id": "749:198",
+      "note": "R6 Password updated (state)",
+      "sha256": "17c4b63a42502d67488ce37aaf50643dc6df3b415a2c027954542f3979668e54",
+      "style": {
+        "boxes": 8,
+        "bytes": 2607,
+        "exported_utc": "2026-10-03T20:54:16Z",
+        "file": "reset-r6.json",
+        "sha256": "a703b82df4da8aad340ea3a675525080e6be1580dd94be4ce7cf90c23ea43a49",
+        "texts": 10
+      },
+      "width": 1440
+    },
+    "reset-r7": {
+      "bytes": 50933,
+      "exported_utc": "2026-10-03T20:07:59Z",
+      "file_key": "SYQn5hFY8YVQKm3c6rw0eJ",
+      "height": 900,
+      "node_id": "749:217",
+      "note": "R7 Server error (state)",
+      "sha256": "36dbaa785ad00d5994df82fb4d80bfe13ec640453d7a96781914a19d3241c1bb",
+      "style": {
+        "boxes": 13,
+        "bytes": 3992,
+        "exported_utc": "2026-10-03T20:54:16Z",
+        "file": "reset-r7.json",
+        "sha256": "9a96e305a0a03429352c040e280c67377c086efebd8bb6aa814cdc291e1b91fd",
+        "texts": 16
+      },
+      "width": 1440
+    },
+    "signin": {
+      "bytes": 41739,
+      "exported_utc": "2026-10-03T20:07:58Z",
+      "file_key": "SYQn5hFY8YVQKm3c6rw0eJ",
+      "height": 900,
+      "node_id": "505:124",
+      "note": "Sign in (page)",
+      "sha256": "e2ba909c450b6f9107ebcfb1d2a0b4ea3ac020e422fb04f99681c2e7b2474237",
+      "style": {
+        "boxes": 16,
+        "bytes": 3786,
+        "exported_utc": "2026-10-03T20:54:16Z",
+        "file": "signin.json",
+        "sha256": "f9d4e8f28692dbda1ec16e3939c2287b42dad25d058993fa9c9402678f3b65db",
+        "texts": 13
+      },
+      "width": 1440
+    },
+    "support": {
+      "bytes": 134144,
+      "exported_utc": "2026-10-03T20:07:58Z",
+      "file_key": "SYQn5hFY8YVQKm3c6rw0eJ",
+      "height": 1670,
+      "node_id": "498:124",
+      "note": "Support (Help Center) (page)",
+      "sha256": "1bbe8d1c964d6091d7e9aa93a23fd7cda839b70a587a5d2f91df3564c2a704b6",
+      "style": {
+        "boxes": 62,
+        "bytes": 14027,
+        "exported_utc": "2026-10-03T20:54:16Z",
+        "file": "support.json",
+        "sha256": "d153a7a0b7ebb2bf4848ee1cf35ad1beaa3b3dc0196902e2b2a5299a0a03c84f",
+        "texts": 52
+      },
+      "width": 1440
+    },
+    "terms": {
+      "bytes": 225192,
+      "exported_utc": "2026-10-03T20:07:58Z",
+      "file_key": "SYQn5hFY8YVQKm3c6rw0eJ",
+      "height": 1959,
+      "node_id": "504:203",
+      "note": "Terms of Service (page)",
+      "sha256": "bbf7db50108b7c24ddc419e50207c966c91e9f1962574b919e73b73884e0a7ec",
+      "style": {
+        "boxes": 37,
+        "bytes": 11917,
+        "exported_utc": "2026-10-03T20:54:16Z",
+        "file": "terms.json",
+        "sha256": "e58b2007905d824aaf55b0792b1143acf2cdc5aa98a4ba3b25a320084847b78b",
+        "texts": 53
+      },
+      "width": 1440
+    },
+    "verify-v1": {
+      "bytes": 25290,
+      "exported_utc": "2026-10-03T20:07:58Z",
+      "file_key": "SYQn5hFY8YVQKm3c6rw0eJ",
+      "height": 900,
+      "node_id": "743:125",
+      "note": "V1 Verifying (state)",
+      "sha256": "db17737f414232b928455de018e50ad8cf4abfecfbc75088434c7bcf21fea31a",
+      "style": {
+        "boxes": 7,
+        "bytes": 1807,
+        "exported_utc": "2026-10-03T20:54:16Z",
+        "file": "verify-v1.json",
+        "sha256": "d53b815f0ceb39fcafb327f2ba81ed88fa388245c22324d1594236f9c02558f5",
+        "texts": 6
+      },
+      "width": 1440
+    },
+    "verify-v2": {
+      "bytes": 42591,
+      "exported_utc": "2026-10-03T20:07:58Z",
+      "file_key": "SYQn5hFY8YVQKm3c6rw0eJ",
+      "height": 900,
+      "node_id": "743:139",
+      "note": "V2 Verified (state)",
+      "sha256": "9ecc9360425602494c9f6e949b3b87d38ada5210c3f0cf706e60ec9fe470635b",
+      "style": {
+        "boxes": 8,
+        "bytes": 2586,
+        "exported_utc": "2026-10-03T20:54:16Z",
+        "file": "verify-v2.json",
+        "sha256": "aeffb282bb93d14fe8069eb50093f1cb0524c05415e6b89f5f07c737d9062961",
+        "texts": 10
+      },
+      "width": 1440
+    },
+    "verify-v3": {
+      "bytes": 52621,
+      "exported_utc": "2026-10-03T20:07:59Z",
+      "file_key": "SYQn5hFY8YVQKm3c6rw0eJ",
+      "height": 900,
+      "node_id": "746:124",
+      "note": "V3 Link no longer valid (state)",
+      "sha256": "8009bb28f8d1e465fb6545dd1d5f544185ffd080b06a7d95e63c5f48a7d7d89d",
+      "style": {
+        "boxes": 11,
+        "bytes": 3288,
+        "exported_utc": "2026-10-03T20:54:16Z",
+        "file": "verify-v3.json",
+        "sha256": "370183e0233e12b6e719f0d7809dc0d0be5db032c7f3eaeb575e8c21aaf4eb8e",
+        "texts": 12
+      },
+      "width": 1440
+    },
+    "verify-v4": {
+      "bytes": 45748,
+      "exported_utc": "2026-10-03T20:07:59Z",
+      "file_key": "SYQn5hFY8YVQKm3c6rw0eJ",
+      "height": 900,
+      "node_id": "746:148",
+      "note": "V4 Link expired (24h) (state)",
+      "sha256": "574293247aa2f4293a293b56523ffb2c1a5ea94c9fcc72a18b3a4819689e445f",
+      "style": {
+        "boxes": 11,
+        "bytes": 3191,
+        "exported_utc": "2026-10-03T20:54:16Z",
+        "file": "verify-v4.json",
+        "sha256": "26732e0aa84f421120b18f709f6a78a7598b15a1b32aa38d55c3e8aefe84741c",
+        "texts": 12
+      },
+      "width": 1440
+    },
+    "verify-v5": {
+      "bytes": 46644,
+      "exported_utc": "2026-10-03T20:07:59Z",
+      "file_key": "SYQn5hFY8YVQKm3c6rw0eJ",
+      "height": 900,
+      "node_id": "746:172",
+      "note": "V5 New link sent (state)",
+      "sha256": "a868d9ba8e6a3fcba2c1070e821f5f881c54d7540e08da7b04cad60d23a3a586",
+      "style": {
+        "boxes": 8,
+        "bytes": 2764,
+        "exported_utc": "2026-10-03T20:54:16Z",
+        "file": "verify-v5.json",
+        "sha256": "6ff60e7b035d04250d2583acd602627d43cdb97a803e0ccf7f5ad15bfe9ec8f7",
+        "texts": 11
+      },
+      "width": 1440
+    },
+    "verify-v6": {
+      "bytes": 37721,
+      "exported_utc": "2026-10-03T20:07:59Z",
+      "file_key": "SYQn5hFY8YVQKm3c6rw0eJ",
+      "height": 900,
+      "node_id": "747:124",
+      "note": "V6 No verification link (state)",
+      "sha256": "2ffa01feb233c2531fa15dfeb68e538d2ceb08491f14e2216be45991775fc85b",
+      "style": {
+        "boxes": 9,
+        "bytes": 2556,
+        "exported_utc": "2026-10-03T20:54:16Z",
+        "file": "verify-v6.json",
+        "sha256": "b430dcdf8a42014f5512d56e742eb830e539f2df3c083150d352862532975ef2",
+        "texts": 9
+      },
+      "width": 1440
+    }
+  },
+  "file_key": "SYQn5hFY8YVQKm3c6rw0eJ"
+}

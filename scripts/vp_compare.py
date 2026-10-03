@@ -11,7 +11,14 @@ pairs every capture with its committed Figma reference, and emits:
     actually applies to its rendered text size
   * `report.html` (images side by side) and `report.md`
 
-    python3 scripts/vp_compare.py --run DIR [--min-ssim 0.90]
+    python3 scripts/vp_compare.py --run DIR [--min-ssim 0.90] [--suite marketing]
+
+SUITES. `--suite operator` (default) is the desktop operator. `--suite marketing` pairs the
+marketing site's full-page captures with their Figma frames. Pages there are LONG and their
+height legitimately differs from the frame's (the code carries real content where Figma drew
+a placeholder), so the pair is compared TOP-ALIGNED over the shared height and the height
+delta is reported as a measurement of its own, rather than stretching one image to fit the
+other — which would turn a content difference into a phantom layout difference everywhere.
 
 WHAT MAKES A RUN FAIL (exit 1)
   * a capture that did not happen, or came back blank/uniform when it should
@@ -31,6 +38,7 @@ import argparse
 import html
 import json
 import os
+import re
 import sys
 import time
 
@@ -44,9 +52,9 @@ from PIL import Image  # noqa: E402
 # ---------------------------------------------------------------------------
 
 
-def load_captures(run):
+def load_captures(run, groups=("web", "native")):
     out = []
-    for group in ("web", "native"):
+    for group in groups:
         path = os.path.join(run, group, "captures.json")
         if not os.path.exists(path):
             continue
@@ -75,7 +83,20 @@ def image_of(cap, hi=False):
 # ---------------------------------------------------------------------------
 
 
-def compare_pair(cap, ref_path, out_dir, min_ssim):
+def align_top_crop(ref, act):
+    """Crop both images to their shared top-left rectangle. Pure; returns (ref, act, delta).
+
+    `delta` is `act.height - ref.height`: positive when the build is TALLER than the frame.
+    A width mismatch is not cropped here (it is a different problem and the caller resizes).
+    """
+    h = min(ref.height, act.height)
+    delta = act.height - ref.height
+    if ref.width != act.width:
+        return ref, act, delta
+    return ref.crop((0, 0, ref.width, h)), act.crop((0, 0, act.width, h)), delta
+
+
+def compare_pair(cap, ref_path, out_dir, min_ssim, align="stretch"):
     result = {"reference": os.path.basename(ref_path)}
     actual = image_of(cap)
     with Image.open(ref_path) as ref_im:
@@ -83,7 +104,13 @@ def compare_pair(cap, ref_path, out_dir, min_ssim):
     act = actual.convert("RGB")
     result["reference_size"] = list(ref.size)
     result["actual_size"] = list(act.size)
-    if ref.size != act.size:
+    if align == "top-crop" and ref.width == act.width:
+        ref, act, delta = align_top_crop(ref, act)
+        result["height_delta"] = delta
+        result["compared_height"] = ref.height
+        if delta:
+            result["size_mismatch"] = True
+    elif ref.size != act.size:
         result["size_mismatch"] = True
         ref = ref.resize(act.size, Image.LANCZOS)
     mean, blocks, grid = vp.block_ssim(ref, act)
@@ -235,10 +262,8 @@ def gate_deviations(deviations, regions_by_capture):
                 text = rec.get("text", "")
                 pattern = dev["requires"]["pattern"]
                 forbidden = dev["requires"].get("must_not_match")
-                import re as _re
-
-                ok = bool(_re.search(pattern, text))
-                if ok and forbidden and _re.search(forbidden, text):
+                ok = bool(re.search(pattern, text))
+                if ok and forbidden and re.search(forbidden, text):
                     ok = False
                 row["value"] = text
                 row["status"] = "INTENTIONAL" if ok else "FAIL"
@@ -334,7 +359,7 @@ def write_html(path, report):
             esc(d["status"]),
             esc(d.get("engine", "")),
             esc(d["id"]),
-            esc(d["region"]),
+            esc(d.get("region", d.get("capture", ""))),
             esc(d.get("value", "")),
             esc(d["requires"].get("min", d["requires"].get("equals", d["requires"].get("pattern", "")))),
             esc(d.get("permanence", "")),
@@ -412,8 +437,8 @@ def write_md(path, report):
         bound = d["requires"].get("min", d["requires"].get("equals", d["requires"].get("pattern", "")))
         L.append(
             "| %s | %s | %s | %s | %s | %s | %s |\n"
-            % (d["status"], d.get("engine", ""), d["id"], d["region"], d.get("value", ""), bound,
-               d.get("permanence", ""))
+            % (d["status"], d.get("engine", ""), d["id"], d.get("region", d.get("capture", "")),
+               d.get("value", ""), bound, d.get("permanence", ""))
         )
     L.append("\n## Pairs\n")
     L.append("| capture | engine | reference | size | SSIM | mean delta | >12/px | verdict |\n|---|---|---|---|---|---|---|---|\n")
@@ -435,6 +460,16 @@ def write_md(path, report):
         fh.writelines(L)
 
 
+MARKETING_CAVEAT = (
+    "Pages are captured full-page at 1440 wide by Playwright (Blink and/or WebKit) from the built "
+    "`dist/` with the account API scripted; they say nothing about Safari on iOS, real devices, "
+    "other widths, or a signed-in session against a real API. Similarity is computed over the top "
+    "of each page where the build and the frame share a height, so a taller build (real content "
+    "where Figma drew a placeholder) is reported as a height difference, not as a low score for "
+    "the shared part. A low SSIM is a pointer to look, not a verdict: classification is in the "
+    "audit report. Inter must have loaded for a capture to be accepted."
+)
+
 CAVEAT = (
     "A Blink screenshot is not evidence about WKWebView, which is what Tauri ships on macOS; "
     "recorded defects in this codebase (a class `display` rule defeating the `hidden` attribute, "
@@ -445,12 +480,160 @@ CAVEAT = (
 )
 
 
+# ---------------------------------------------------------------------------
+# Marketing suite: DOM-backed gate, contrast survey, source probe
+# ---------------------------------------------------------------------------
+
+
+def load_dom(cap):
+    """The capture's DOM/style dump, or None."""
+    name = cap.get("dom")
+    if not name:
+        return None
+    path = os.path.join(cap["dir"], name)
+    if not os.path.exists(path):
+        return None
+    return vp.load_json(path)
+
+
+def dom_text(dom):
+    """All rendered text on the page, joined — what a visitor could read."""
+    return "\n".join(it.get("text", "") for it in (dom or {}).get("items", []) if it.get("text"))
+
+
+def gate_marketing_deviations(deviations, by_capture):
+    """Re-measure every marketing deviation entry against THIS run's capture.
+
+    `by_capture` maps slug -> {"doc": {...}, "text": "...all rendered text..."}.
+
+    Same contract as the operator gate: an entry that cannot fail would authorise the
+    drift it exists to prevent. Metrics:
+
+      doc_height    the rendered page is at least `requires.min` px tall (a documented
+                    "the build carries real content where Figma drew a placeholder")
+      text_present  `requires.pattern` matches the page's rendered text
+      text_absent   `requires.pattern` matches NOTHING in the page's rendered text
+                    (an honest-content decision: the build must not say this)
+    """
+    rows = []
+    for dev in deviations.get("deviations", []):
+        row = {
+            "id": dev["id"], "capture": dev["capture"], "metric": dev["metric"],
+            "category": dev.get("category", ""), "permanence": dev.get("permanence", ""),
+            "retire_when": dev.get("retire_when", ""), "requires": dev["requires"],
+            "source": dev.get("source", ""), "reason": dev.get("reason", ""),
+        }
+        got = by_capture.get(dev["capture"])
+        if got is None:
+            row.update(status="UNCHECKED", detail="capture %r was not produced in this run" % dev["capture"])
+            rows.append(row)
+            continue
+        metric = dev["metric"]
+        if metric == "doc_height":
+            value = (got.get("doc") or {}).get("h")
+            need = int(dev["requires"]["min"])
+            ok = isinstance(value, (int, float)) and value >= need
+            row.update(value=value, status="INTENTIONAL" if ok else "FAIL",
+                       detail="rendered height %s px, required >= %d px" % (value, need))
+        elif metric in ("text_present", "text_absent"):
+            pattern = dev["requires"]["pattern"]
+            found = bool(re.search(pattern, got.get("text", ""), re.I))
+            ok = found if metric == "text_present" else not found
+            row.update(value=("present" if found else "absent"), status="INTENTIONAL" if ok else "FAIL",
+                       detail="/%s/ is %s in the rendered text; required %s" % (
+                           pattern, "present" if found else "absent",
+                           "present" if metric == "text_present" else "absent"))
+        else:
+            row.update(status="FAIL", detail="unknown metric %r" % metric)
+        rows.append(row)
+    return rows
+
+
+def survey_dom_contrast(dom, limit=25):
+    """Text-vs-backdrop contrast for every text node in a DOM dump, judged by its own size.
+
+    Reported, not gated, for the marketing suite: the site has not been through an
+    accessibility sweep against these frames, and a gate here would fail the run for
+    findings this audit exists to RECORD rather than fix. A node whose backdrop crosses a
+    gradient/image is reported as `unknown`, never given an invented number.
+    Returns {"checked", "unknown", "failing": [...up to limit...], "failing_total"}.
+    """
+    checked = unknown = failing_total = 0
+    failing = []
+    for it in (dom or {}).get("items", []):
+        if not it.get("text") or not it.get("color"):
+            continue
+        fg = vp.parse_css_color(it["color"])
+        bg = vp.composite_layers(it.get("bgl") or [], base=(14, 17, 22))
+        if fg is None or bg is None or it.get("bgg"):
+            unknown += 1
+            continue
+        fg_flat = vp.blend_over(fg, bg)
+        ratio = vp.contrast_ratio(fg_flat, bg)
+        try:
+            px = float(str(it.get("fs", "0")).replace("px", ""))
+        except ValueError:
+            px = 0.0
+        need, label = vp.required_ratio("text", px, it.get("fw"))
+        checked += 1
+        if ratio < need:
+            failing_total += 1
+            if len(failing) < limit:
+                failing.append({"text": it["text"][:50], "ratio": round(ratio, 2), "need": need,
+                                "threshold": label, "px": px, "weight": it.get("fw"),
+                                "color": it["color"], "bg": "rgb(%d, %d, %d)" % bg, "y": it.get("y")})
+    return {"checked": checked, "unknown": unknown, "failing_total": failing_total, "failing": failing}
+
+
+MAX_PROBE_JS_FILES = 400
+
+
+def source_probe_problem(probe, dist=None):
+    """For a `not-rendered` surface: the problem if its state has appeared in the SHIPPED bundle.
+
+    Probes the built `dist/assets/*.js`, not `src/`: source also holds comments and tests that
+    quote the very copy a deliberate non-render is about (VerifyView.vue's own comment quotes
+    V4's title), and a probe that fires on a comment is a probe nobody trusts. The minifier
+    strips comments, so what remains in the bundle is copy a visitor can actually be shown.
+
+    `probe["control"]` is a string that MUST be in the bundle. It proves the probe is reading
+    the shipped copy at all; a probe over an empty or wrong directory would otherwise pass
+    for every state, forever.
+    """
+    dist = dist or os.environ.get("SELAHCUE_MARKETING_DIST") or os.path.join(
+        vp.REPO, "implementation", "marketing", "dist")
+    assets = os.path.join(dist, "assets")
+    if not os.path.isdir(assets):
+        return "no built bundle under %s to probe — run `npm run build`" % assets
+    chunks = []
+    for count, name in enumerate(sorted(os.listdir(assets))):
+        if count >= MAX_PROBE_JS_FILES:
+            break
+        if name.endswith(".js"):
+            with open(os.path.join(assets, name), "r", encoding="utf-8", errors="replace") as fh:
+                chunks.append(fh.read())
+    text = "\n".join(chunks)
+    control = probe.get("control")
+    if not control:
+        return "source probe has no `control` string, so it cannot prove it is reading the bundle"
+    if control not in text:
+        return "probe control %r is not in the bundle — the probe is not reading the shipped copy" % control
+    hits = [needle for needle in probe.get("must_not_contain", []) if needle in text]
+    if hits:
+        return (
+            "the shipped bundle now contains %r — the state exists, so it is no longer a documented "
+            "non-render: capture it and compare it" % hits[0]
+        )
+    return None
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--run", required=True, help="run directory containing web/ and/or native/")
+    ap.add_argument("--run", required=True, help="run directory containing the capture group(s)")
+    ap.add_argument("--suite", default="operator", choices=list(vp.SUITE_NAMES))
     ap.add_argument("--min-ssim", type=float, default=None, help="gate similarity at this value (default: report only)")
-    ap.add_argument("--deviations", default=vp.DEVIATIONS_PATH)
-    ap.add_argument("--surfaces", default=vp.SURFACES_PATH)
+    ap.add_argument("--deviations", default=None)
+    ap.add_argument("--surfaces", default=None)
     ap.add_argument(
         "--allow-missing",
         action="store_true",
@@ -458,33 +641,71 @@ def main():
     )
     args = ap.parse_args()
 
+    suite = vp.get_suite(args.suite)
+    marketing = suite.name == "marketing"
     run = os.path.abspath(args.run)
-    captures = load_captures(run)
+    captures = load_captures(run, suite.groups)
     if not captures:
         print("FAIL: no captures found under " + run)
         return 2
-    store = vp.ReferenceStore()
+    store = suite.store()
     ok_store, store_problems = store.verify()
-    deviations = vp.load_json(args.deviations)
-    min_ssim = args.min_ssim if args.min_ssim is not None else 0.90
+    deviations = vp.load_json(args.deviations or suite.deviations_path)
+    min_ssim = args.min_ssim if args.min_ssim is not None else suite.default_min_ssim
+    align = "top-crop" if marketing else "stretch"
+    # The catalogue is read ONCE, up front, and is the authority for probe definitions: a
+    # probe copied into captures.json at capture time would be a stale copy of a thing the
+    # reviewer is looking at in surfaces.json.
+    catalogue = vp.load_json(args.surfaces or suite.surfaces_path)
+    cat_by_slug = {e["slug"]: e for group in suite.groups for e in catalogue.get(group, [])}
 
     failures = []
     pairs = []
     regions_by_capture = {}
+    dom_by_capture = {}
+    contrast_dom = {}
     engines = {}
 
     for cap in sorted(captures, key=lambda c: (c["group"], c["slug"], c.get("engine", ""))):
         if cap.get("scale", 1) != 1:
             continue
-        engines[cap.get("engine", "?")] = ENGINE_NOTE.get(cap.get("engine"), cap.get("engine_detail", ""))
+        engines[cap.get("engine", "?")] = (
+            cap.get("engine_detail", "") if marketing
+            else ENGINE_NOTE.get(cap.get("engine"), cap.get("engine_detail", ""))
+        )
+        status = cap.get("status", "captured")
         entry = {
             "slug": cap["slug"],
             "engine": cap.get("engine"),
             "engine_detail": cap.get("engine_detail"),
             "node": cap.get("node"),
+            "status": status,
+            "area": cap.get("area"),
             "actual_size": cap.get("actual_size"),
             "actual_path": os.path.relpath(os.path.join(cap["dir"], cap["png"]), run) if cap.get("png") else None,
         }
+
+        # --- a surface that is catalogued as not built: assert the probe, show Figma only ---
+        if status == "unbuilt":
+            probe = cap.get("probe") or {}
+            ref_slug = cap.get("reference")
+            ref_path = store.path_for(ref_slug) if ref_slug else None
+            if ref_path and os.path.exists(ref_path):
+                entry["reference_path"] = os.path.relpath(ref_path, run)
+            if probe.get("confirmed"):
+                entry["summary"] = (
+                    "NOT BUILT (class E) — %s renders the site's 404 view (h1 %r); the Figma frame is "
+                    "exported for the fix ticket, not scored" % (probe.get("path"), (probe.get("h1") or [""])[0])
+                )
+            else:
+                entry["summary"] = "UNBUILT BUT THE ROUTE RESPONDS — probe %s" % json.dumps(probe)
+                failures.append("%s: catalogued as unbuilt but the probe did not confirm it" % cap["slug"])
+            for e in cap.get("errors", []):
+                if e not in failures:
+                    failures.append(e)
+            pairs.append(entry)
+            continue
+
         img = image_of(cap)
 
         # --- capture liveness FIRST. A blank frame scores like a result. ---
@@ -493,7 +714,7 @@ def main():
             failures.append("%s (%s): no image" % (cap["slug"], cap.get("engine")))
             pairs.append(entry)
             continue
-        expect_uniform = cap["slug"].endswith("blackout") or cap.get("state") == "blackout"
+        expect_uniform = (not marketing) and (cap["slug"].endswith("blackout") or cap.get("state") == "blackout")
         uniform = vp.is_uniform(img)
         ink, _bg = vp.ink_coverage(img)
         entry["ink_coverage"] = round(ink, 4)
@@ -515,6 +736,21 @@ def main():
         if regions:
             regions_by_capture.setdefault(cap["slug"], {})[cap.get("engine", "?")] = regions
 
+        if marketing:
+            dom = load_dom(cap)
+            if dom is not None:
+                dom_by_capture.setdefault(cap["slug"], {"doc": cap.get("doc"), "text": dom_text(dom)})
+                survey = survey_dom_contrast(dom)
+                contrast_dom[(cap["slug"], cap.get("engine", "?"))] = survey
+                entry["contrast"] = {k: survey[k] for k in ("checked", "unknown", "failing_total")}
+            if status == "not-rendered":
+                probe_def = (cat_by_slug.get(cap["slug"]) or {}).get("source_probe")
+                problem = source_probe_problem(probe_def) if probe_def else \
+                    "not-rendered surface has no source_probe in the catalogue"
+                if problem:
+                    failures.append("%s: %s" % (cap["slug"], problem))
+                    entry["probe_failed"] = True
+
         ref_slug = cap.get("reference")
         kind = cap.get("reference_kind", "screen")
         if not ref_slug or kind != "screen":
@@ -531,15 +767,22 @@ def main():
             pairs.append(entry)
             continue
         cmp_out = os.path.join(cap["dir"])
-        res = compare_pair(cap, ref_path, cmp_out, min_ssim)
+        res = compare_pair(cap, ref_path, cmp_out, min_ssim, align=align)
         entry.update(res)
         entry["reference_path"] = os.path.relpath(ref_path, run)
         entry["diff_path"] = os.path.relpath(os.path.join(cmp_out, res["diff"]), run)
         entry["summary"] = "SSIM %.4f (local, 8x8) · mean delta %.1f/255 · %.1f%% of pixels differ >12 · %s" % (
             res["ssim"], res["pixel_delta_mean"], 100 * res["pixel_delta_fraction_over_12"], res["verdict"],
         )
-        if res.get("size_mismatch"):
+        if marketing and res.get("height_delta"):
+            entry["summary"] += " · build is %+d px vs the frame (compared over the top %d px)" % (
+                res["height_delta"], res["compared_height"])
+        elif res.get("size_mismatch"):
             entry["summary"] += " · SIZE MISMATCH (reference resized to compare)"
+        if status == "not-rendered":
+            entry["summary"] += " · NOT RENDERED BY DESIGN: compared against the shipped substitute state"
+            if entry.get("probe_failed"):
+                entry["summary"] += " · SOURCE PROBE FAILED"
         if args.min_ssim is not None and res["ssim"] < args.min_ssim:
             failures.append("%s (%s): SSIM %.4f < %.4f" % (cap["slug"], cap.get("engine"), res["ssim"], args.min_ssim))
         pairs.append(entry)
@@ -549,11 +792,10 @@ def main():
     # as a blank frame, one level up: the harness scores what it has and says
     # nothing about what it never captured. (This fired for real the first time
     # the native crate failed to compile mid-run.)
-    catalogue = vp.load_json(args.surfaces)
     captured_slugs = {c["slug"] for c in captures}
     missing = [
         e["slug"]
-        for group in ("web", "native")
+        for group in suite.groups
         for e in catalogue.get(group, [])
         if e["slug"] not in captured_slugs
     ]
@@ -565,20 +807,31 @@ def main():
             )
 
     files_in_run = vp.count_run_files(run)
-    if files_in_run > vp.MAX_FILES_PER_RUN:
+    if files_in_run > suite.max_files_per_run:
         failures.append(
-            "this run wrote %d files, over MAX_FILES_PER_RUN=%d — run eviction caps how many runs "
+            "this run wrote %d files, over the suite's cap of %d — run eviction caps how many runs "
             "survive, not how large one run may get, so a per-state loop could grow a single run "
-            "without limit" % (files_in_run, vp.MAX_FILES_PER_RUN)
+            "without limit" % (files_in_run, suite.max_files_per_run)
         )
 
-    dev_rows = gate_deviations(deviations, regions_by_capture)
-    exempt = {(d["capture"], d["region"]) for d in dev_rows}
-    survey = survey_contrast(regions_by_capture, exempt)
+    if marketing:
+        dev_rows = gate_marketing_deviations(deviations, dom_by_capture)
+        survey = []
+        for (slug, engine), sv in sorted(contrast_dom.items()):
+            for f in sv["failing"]:
+                survey.append({"capture": slug, "engine": engine, "region": f["text"],
+                               "font": "%spx / %s" % (f["px"], f["weight"]), "threshold": f["threshold"],
+                               "required": f["need"], "value": f["ratio"], "pixel": None,
+                               "status": "reported"})
+    else:
+        dev_rows = gate_deviations(deviations, regions_by_capture)
+        exempt = {(d["capture"], d["region"]) for d in dev_rows}
+        survey = survey_contrast(regions_by_capture, exempt)
 
     for row in dev_rows:
         if row["status"] == "FAIL":
-            failures.append("deviation %s/%s [%s]: %s" % (row["id"], row["region"], row.get("engine", ""), row.get("detail", "")))
+            failures.append("deviation %s/%s [%s]: %s" % (row["id"], row.get("region", row.get("capture", "")),
+                                                          row.get("engine", ""), row.get("detail", "")))
     for row in survey:
         if row["status"] == "FAIL":
             failures.append(
@@ -590,9 +843,10 @@ def main():
         failures.append("reference store: " + p)
 
     report = {
+        "suite": suite.name,
         "run": os.path.basename(run),
         "generated_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        "caveat": CAVEAT,
+        "caveat": MARKETING_CAVEAT if marketing else CAVEAT,
         "engines": engines,
         "pairs": pairs,
         "deviations": dev_rows,
@@ -600,7 +854,7 @@ def main():
         "reference_store_ok": ok_store,
         "missing_captures": missing,
         "files_in_run": files_in_run,
-        "max_files_per_run": vp.MAX_FILES_PER_RUN,
+        "max_files_per_run": suite.max_files_per_run,
         "failures": failures,
     }
     vp.dump_json(os.path.join(run, "report.json"), report)
@@ -609,12 +863,13 @@ def main():
 
     print("\n--- allowed deviations ---")
     for row in dev_rows:
-        print("%-12s %-8s %-38s %-22s %s" % (row["status"], row.get("engine", ""), row["id"], row["region"], row.get("detail", "")[:100]))
-    print("\n--- contrast survey (threshold by rendered size) ---")
-    for row in survey:
+        print("%-12s %-8s %-38s %-22s %s" % (row["status"], row.get("engine", ""), row["id"],
+                                             row.get("region", row.get("capture", "")), row.get("detail", "")[:100]))
+    print("\n--- contrast survey (%s) ---" % ("reported, not gated" if marketing else "threshold by rendered size"))
+    for row in survey[:60 if marketing else None]:
         print(
-            "%-7s %-8s %-16s %-22s %-12s need %.1f (%-28s) got %.2f"
-            % (row["status"], row.get("engine", ""), row["capture"], row["region"], row["font"],
+            "%-8s %-8s %-16s %-22s %-12s need %.1f (%-28s) got %.2f"
+            % (row["status"], row.get("engine", ""), row["capture"], str(row["region"])[:22], row["font"],
                row["required"], row["threshold"], row["value"])
         )
     print("\n--- pairs ---")
@@ -627,8 +882,8 @@ def main():
         for f in failures:
             print("FAIL: " + f)
         return 1
-    print("\n=== visual parity: 0 failures (similarity is reported, not gated%s) ===" % (
-        "" if args.min_ssim is None else "; SSIM gated at %.2f" % args.min_ssim))
+    print("\n=== visual parity [%s]: 0 failures (similarity is reported, not gated%s) ===" % (
+        suite.name, "" if args.min_ssim is None else "; SSIM gated at %.2f" % args.min_ssim))
     return 0
 
 

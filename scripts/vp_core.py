@@ -8,6 +8,7 @@ intentional?* It has four parts, each its own script:
   vp_reference.py      ingest/verify the committed Figma reference PNGs
   vp_capture_web.py    screenshot the real operator `dist/` under headless Chrome
   vp_capture_native.py render the Rust stage/audience output to PNG
+  vp_capture_marketing.py screenshot the marketing site `dist/` (suite `marketing`)
   vp_compare.py        block-SSIM + diff image + deviation gate + HTML/MD report
   vp_selftest.py       the "does the harness actually bite" gate
   visual_parity.py     orchestrator that runs the above in order
@@ -58,6 +59,71 @@ ARTIFACT_ROOT = os.environ.get("SELAHCUE_VISUAL_ARTIFACTS") or os.path.join(
 FIGMA_FILE_KEY = "SYQn5hFY8YVQKm3c6rw0eJ"
 
 # ---------------------------------------------------------------------------
+# Suites. The harness was written for the desktop operator; the marketing site and
+# account screens are a second SUITE of the same instrument (same comparator, same
+# bounded stores, same deviation gate) rather than a second tool. A suite names its
+# own catalogue, deviation list, reference store and caps, so growing one suite can
+# never push the other past its bound.
+# ---------------------------------------------------------------------------
+
+MARKETING_DIR = os.path.join(DESIGN_DIR, "marketing")
+
+# 16 pages + 19 states = 35 frames today, 5.8 MB. The caps leave roughly a third
+# more room in count and twice the bytes, and `MARKETING_ENTRY_HEADROOM` pins that
+# premise: a store that is full before it is useful turns every ingest test into a
+# test of the refusal path only.
+MARKETING_MAX_REFERENCE_ENTRIES = 48
+MARKETING_MAX_REFERENCE_BYTES = 12 * 1024 * 1024
+MARKETING_ENTRY_HEADROOM = 8
+# 35 surfaces x 2 engines x (capture + diff) = 140, plus captures.json and the
+# three report files. Sized under the operator's cap on purpose: the per-run cap
+# exists to flag a structural change (a per-state loop), not to be raised to fit one.
+MARKETING_MAX_FILES_PER_RUN = 200
+# A Figma style dump larger than this is a sign the extractor walked something it should not
+# (a whole page instead of one frame); the extractor caps itself at 1500 and refuses to be saved.
+MAX_STYLE_NODES = 2500
+
+
+class Suite:
+    """One catalogue + one deviation list + one bounded reference store."""
+
+    def __init__(self, name, directory, groups, max_entries, max_bytes, max_files_per_run,
+                 default_min_ssim=0.90, require_style=False):
+        self.name = name
+        self.dir = directory
+        self.groups = tuple(groups)
+        self.surfaces_path = os.path.join(directory, "surfaces.json")
+        self.deviations_path = os.path.join(directory, "deviations.json")
+        self.reference_dir = os.path.join(directory, "reference")
+        self.max_entries = max_entries
+        self.max_bytes = max_bytes
+        self.max_files_per_run = max_files_per_run
+        self.default_min_ssim = default_min_ssim
+        # The marketing suite compares VALUES as well as pixels, so every reference must carry
+        # the Figma style dump (scripts/figma_extract_style.js) the comparison reads.
+        self.require_style = require_style
+        self.style_dir = os.path.join(directory, "figma-style")
+
+    def store(self):
+        return ReferenceStore(root=self.reference_dir, max_entries=self.max_entries,
+                              max_bytes=self.max_bytes, style_dir=self.style_dir,
+                              require_style=self.require_style)
+
+
+def get_suite(name):
+    """Resolve a suite by name. `operator` is the original, undirected default."""
+    if name in (None, "", "operator"):
+        return Suite("operator", DESIGN_DIR, ("web", "native"), MAX_REFERENCE_ENTRIES,
+                     MAX_REFERENCE_BYTES, MAX_FILES_PER_RUN)
+    if name == "marketing":
+        return Suite("marketing", MARKETING_DIR, ("marketing",), MARKETING_MAX_REFERENCE_ENTRIES,
+                     MARKETING_MAX_REFERENCE_BYTES, MARKETING_MAX_FILES_PER_RUN, require_style=True)
+    raise SystemExit("unknown visual-parity suite %r (known: operator, marketing)" % (name,))
+
+
+SUITE_NAMES = ("operator", "marketing")
+
+# ---------------------------------------------------------------------------
 # Bounds. Both stores are hard-capped; neither may grow without limit.
 # ---------------------------------------------------------------------------
 
@@ -85,6 +151,7 @@ MAX_FILES_PER_RUN = 200
 
 assert MAX_REFERENCE_ENTRIES > REFERENCE_ENTRY_HEADROOM
 assert MAX_RUNS_KEPT >= 1
+assert MARKETING_MAX_REFERENCE_ENTRIES > MARKETING_ENTRY_HEADROOM
 
 
 class StoreFull(Exception):
@@ -138,9 +205,16 @@ class ReferenceStore:
     because every entry here is a checked-in artefact somebody chose to keep.
     """
 
-    def __init__(self, root=REFERENCE_DIR):
+    def __init__(self, root=REFERENCE_DIR, max_entries=None, max_bytes=None, style_dir=None,
+                 require_style=False):
         self.root = root
+        self.style_dir = style_dir
+        self.require_style = require_style
         self.manifest_path = os.path.join(root, "manifest.json")
+        # Looked up at construction, not definition, so a suite's caps are its own and
+        # the module-level operator caps remain what `ReferenceStore()` means.
+        self.max_entries = MAX_REFERENCE_ENTRIES if max_entries is None else max_entries
+        self.max_bytes = MAX_REFERENCE_BYTES if max_bytes is None else max_bytes
 
     def manifest(self):
         return load_json(self.manifest_path, default={"entries": {}})
@@ -152,8 +226,67 @@ class ReferenceStore:
         return os.path.join(self.root, slug + ".png")
 
     def total_bytes(self, entries=None):
+        """Every committed byte this store owns: the PNGs AND the style dumps beside them."""
         entries = self.entries() if entries is None else entries
-        return sum(int(e.get("bytes", 0)) for e in entries.values())
+        return sum(int(e.get("bytes", 0)) + int((e.get("style") or {}).get("bytes", 0))
+                   for e in entries.values())
+
+    def style_path_for(self, slug):
+        if not self.style_dir:
+            raise ValueError("this store has no style directory")
+        return os.path.join(self.style_dir, slug + ".json")
+
+    def register_style(self, slug):
+        """Record `<style_dir>/<slug>.json` (already written there) against its reference.
+
+        Validated, not trusted: it must name the same Figma node as the reference, carry
+        text/box lists, and fit the node cap. Bounded by the store's byte cap like a PNG, and
+        like a PNG it REFUSES rather than evicts.
+        """
+        entries = dict(self.entries())
+        if slug not in entries:
+            raise ValueError("no reference %r to attach a style dump to" % slug)
+        path = self.style_path_for(slug)
+        if not os.path.isfile(path):
+            raise ValueError("no style file at %s" % path)
+        data = load_json(path)
+        if data.get("error"):
+            raise ValueError("%s is an extractor error, not a style dump: %s" % (path, data["error"]))
+        if data.get("node") != entries[slug].get("node_id"):
+            raise ValueError("%s names node %r but the reference is %r" % (
+                path, data.get("node"), entries[slug].get("node_id")))
+        texts, boxes = data.get("texts"), data.get("boxes")
+        if not isinstance(texts, list) or not isinstance(boxes, list):
+            raise ValueError("%s has no texts/boxes lists" % path)
+        if len(texts) + len(boxes) > MAX_STYLE_NODES:
+            raise ValueError("%s has %d nodes, over MAX_STYLE_NODES=%d" % (path, len(texts) + len(boxes), MAX_STYLE_NODES))
+        if (data.get("counts") or {}).get("capped"):
+            raise ValueError("%s was capped by the extractor: it is an incomplete picture of the frame" % path)
+        size = os.path.getsize(path)
+        old = int((entries[slug].get("style") or {}).get("bytes", 0))
+        if self.total_bytes(entries) - old + size > self.max_bytes:
+            raise StoreFull("reference store full: the style dump would exceed the byte cap of %d" % self.max_bytes)
+        entries[slug]["style"] = {
+            "file": os.path.basename(path), "bytes": size, "sha256": sha256_file(path),
+            "texts": len(texts), "boxes": len(boxes),
+            "exported_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        }
+        self._write_manifest(entries)
+        return entries[slug]["style"]
+
+    def _write_manifest(self, entries):
+        dump_json(
+            self.manifest_path,
+            {
+                "_comment": (
+                    "Figma reference exports for the visual-parity harness. Regenerate with "
+                    "scripts/vp_reference.py (see docs/delivery/VISUAL-PARITY-HARNESS.md). "
+                    "Figma asset URLs expire in ~7 days, which is why the BYTES are committed."
+                ),
+                "file_key": FIGMA_FILE_KEY,
+                "entries": entries,
+            },
+        )
 
     def ingest(self, slug, src_path, node_id, note=""):
         """Copy `src_path` in as `slug`.png and record it. Bounded; may raise StoreFull."""
@@ -171,15 +304,15 @@ class ReferenceStore:
         projected_bytes = self.total_bytes(entries) - (
             int(entries[slug].get("bytes", 0)) if replacing else 0
         ) + size
-        if projected_count > MAX_REFERENCE_ENTRIES:
+        if projected_count > self.max_entries:
             raise StoreFull(
-                "reference store full: %d entries would exceed MAX_REFERENCE_ENTRIES=%d"
-                % (projected_count, MAX_REFERENCE_ENTRIES)
+                "reference store full: %d entries would exceed the cap of %d"
+                % (projected_count, self.max_entries)
             )
-        if projected_bytes > MAX_REFERENCE_BYTES:
+        if projected_bytes > self.max_bytes:
             raise StoreFull(
-                "reference store full: %d bytes would exceed MAX_REFERENCE_BYTES=%d"
-                % (projected_bytes, MAX_REFERENCE_BYTES)
+                "reference store full: %d bytes would exceed the cap of %d"
+                % (projected_bytes, self.max_bytes)
             )
         os.makedirs(self.root, exist_ok=True)
         dst = self.path_for(slug)
@@ -194,18 +327,7 @@ class ReferenceStore:
             "exported_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "note": note,
         }
-        dump_json(
-            self.manifest_path,
-            {
-                "_comment": (
-                    "Figma reference exports for the visual-parity harness. Regenerate with "
-                    "scripts/vp_reference.py (see docs/delivery/VISUAL-PARITY-HARNESS.md). "
-                    "Figma asset URLs expire in ~7 days, which is why the BYTES are committed."
-                ),
-                "file_key": FIGMA_FILE_KEY,
-                "entries": entries,
-            },
-        )
+        self._write_manifest(entries)
         return entries[slug]
 
     def verify(self):
@@ -229,16 +351,30 @@ class ReferenceStore:
                         "%s: dimensions %dx%d != manifest %sx%s"
                         % (slug, im.width, im.height, meta.get("width"), meta.get("height"))
                     )
-        if len(entries) > MAX_REFERENCE_ENTRIES:
+        if len(entries) > self.max_entries:
             problems.append(
-                "store over cap: %d entries > MAX_REFERENCE_ENTRIES=%d"
-                % (len(entries), MAX_REFERENCE_ENTRIES)
+                "store over cap: %d entries > the cap of %d" % (len(entries), self.max_entries)
             )
-        if self.total_bytes(entries) > MAX_REFERENCE_BYTES:
+        if self.total_bytes(entries) > self.max_bytes:
             problems.append(
-                "store over cap: %d bytes > MAX_REFERENCE_BYTES=%d"
-                % (self.total_bytes(entries), MAX_REFERENCE_BYTES)
+                "store over cap: %d bytes > the cap of %d" % (self.total_bytes(entries), self.max_bytes)
             )
+        for slug, meta in sorted(entries.items()):
+            style = meta.get("style")
+            if not style:
+                if self.require_style:
+                    problems.append("%s: no figma-style dump registered (scripts/figma_extract_style.js)" % slug)
+                continue
+            spath = self.style_path_for(slug)
+            if not os.path.exists(spath):
+                problems.append("%s: style file missing (%s)" % (slug, spath))
+            elif sha256_file(spath) != style.get("sha256"):
+                problems.append("%s: style sha256 mismatch (manifest %s)" % (slug, str(style.get("sha256"))[:12]))
+        if self.style_dir and os.path.isdir(self.style_dir):
+            registered = {(m.get("style") or {}).get("file") for m in entries.values()}
+            for name in sorted(os.listdir(self.style_dir)):
+                if name.endswith(".json") and name not in registered:
+                    problems.append("%s: orphan style dump with no manifest entry" % name)
         # Orphans: PNGs on disk with no manifest entry are unbounded growth by
         # another name — they are never verified and never evicted.
         if os.path.isdir(self.root):
@@ -495,6 +631,21 @@ def blend_over(fg_rgba, bg_rgb, opacity=1.0):
     a = float(fg_rgba[3]) / 255.0 if len(fg_rgba) > 3 else 1.0
     a = max(0.0, min(1.0, a * float(opacity)))
     return tuple(round(fg_rgba[i] * a + bg_rgb[i] * (1.0 - a)) for i in range(3))
+
+
+def composite_layers(layers_nearest_first, base=(255, 255, 255)):
+    """Flatten CSS colour strings (nearest layer first) over an opaque `base`; returns (r, g, b).
+
+    Used for the marketing contrast survey, where a text node's backdrop is a short stack of
+    translucent fills ending at an opaque one. Returns None if any layer is unparseable.
+    """
+    out = tuple(base)
+    for value in reversed(list(layers_nearest_first or [])):
+        rgba = parse_css_color(value)
+        if rgba is None:
+            return None
+        out = blend_over(rgba, out)
+    return out
 
 
 def parse_css_color(value):
