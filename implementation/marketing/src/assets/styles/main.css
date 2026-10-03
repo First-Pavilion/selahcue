@@ -24,6 +24,23 @@ html:focus-within {
   scroll-behavior: smooth;
 }
 
+/* KEYBOARD FOCUS, ONE DEFAULT. A 2px brand ring with a 2px offset on anything a keyboard can land on
+   (the handoff's sections 5 and 6), so a component that forgets its own ring still shows one instead of
+   falling back to the browser's. `:where()` keeps the specificity at zero: any component rule wins, and
+   form fields (which draw their own focus state) are deliberately not in the list. An OUTLINE, not a
+   shadow, so forced-colors (Windows High Contrast) keeps it. */
+:where(a, button, summary, [role='button'], [tabindex='0']):focus-visible {
+  outline: 2px solid var(--sc-primary);
+  outline-offset: 2px;
+}
+
+/* The "How it works" link in the navbar goes to this section from every page; the router offsets its
+   own scroll (router/scroll.ts), this covers the browser's native fragment jump (a cold load of
+   /#how-it-works) so the heading never lands under the sticky bar. */
+#how-it-works {
+  scroll-margin-top: var(--sc-anchor-offset);
+}
+
 /* Stop mobile browsers inflating text in landscape, which re-flows layouts. */
 html {
   -webkit-text-size-adjust: 100%;
@@ -65,13 +82,37 @@ body {
 }
 
 .container {
-  max-width: 1280px;
+  /* The content width plus a gutter each side: at 1440 the container is the frame and the content runs
+     96..1344, exactly as Figma draws every section. */
+  max-width: calc(var(--content-max) + 2 * var(--gutter));
   margin-inline: auto;
   padding-inline: var(--gutter);
 }
 
 .section {
-  padding-block: var(--section-padding);
+  padding-block: var(--section-pad);
+}
+
+/* The brand mark: a square window onto the logo file, which carries about a third of transparent padding
+   (its artwork spans 760x835 of 1254x1254 at x=247,y=215). Sized to the artwork's height and centred, so
+   the VISIBLE mark is `--mark-size` tall: 32px in the navbar, 28px in the footer (Figma 494:124, 494:128).
+   The file is not edited (it is shared with the favicon and the apps); the crop lives here. */
+.brand-mark {
+  position: relative;
+  display: inline-block;
+  flex-shrink: 0;
+  width: var(--mark-size, 32px);
+  height: var(--mark-size, 32px);
+  overflow: hidden;
+}
+
+.brand-mark img {
+  position: absolute;
+  max-width: none;
+  width: calc(var(--mark-size, 32px) * 1.5018);
+  height: calc(var(--mark-size, 32px) * 1.5018);
+  left: calc(var(--mark-size, 32px) * -0.2509);
+  top: calc(var(--mark-size, 32px) * -0.2575);
 }
 
 .font-h1 { font: var(--font-h1); }
@@ -79,16 +120,28 @@ body {
 .font-h3 { font: var(--font-h3); }
 .font-body { font: var(--font-body); }
 .font-small { font: var(--font-small); }
-.font-eyebrow { font: var(--font-eyebrow); }
+.font-h1-page { font: var(--font-h1-page); }
+.font-eyebrow { font: var(--font-eyebrow); letter-spacing: var(--letter-spacing-eyebrow); }
 .font-micro { font: var(--font-micro); }
+
+/* The bar with its links (768 and up) is 79px, as Figma draws it; the phone bar is the 69px base. */
+@media (min-width: 768px) {
+  :root {
+    --nav-height: 79px;
+  }
+}
 
 @media (max-width: 1199.98px) {
   :root {
     --gutter: 48px;
     --page-gutter: 48px;
+    /* The bar stays denser than the page through tablet: the signed-in state (Account, Sign out, the
+       CTA) only fits 768px at 24. */
+    --nav-gutter: 24px;
     --section-pad: 72px;
     --section-pad-sm: 56px;
     --font-h1: 700 48px/52px var(--font-family);
+    --font-h1-page: 700 44px/50px var(--font-family);
   }
 }
 
@@ -96,9 +149,11 @@ body {
   :root {
     --gutter: 20px;
     --page-gutter: 20px;
+    --nav-gutter: 20px;
     --section-pad: 56px;
     --section-pad-sm: 44px;
     --font-h1: 700 36px/40px var(--font-family);
+    --font-h1-page: 700 36px/42px var(--font-family);
   }
 }
 
