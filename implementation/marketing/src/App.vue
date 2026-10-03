@@ -25,7 +25,7 @@ const isBare = computed(() => route.meta.bare === true)
           <RouterView />
         </template>
         <template #fallback>
-          <div class="loading">Loading...</div>
+          <div class="loading" role="status">Loading...</div>
         </template>
       </Suspense>
     </main>
@@ -52,6 +52,7 @@ const isBare = computed(() => route.meta.bare === true)
   align-items: center;
   flex-grow: 1;
   font-size: 1.2rem;
-  color: var(--sc-text-muted);
+  /* The secondary ink, not --sc-text-muted: 4.08:1 at this size is below AA and it is not large text. */
+  color: var(--sc-text-secondary);
 }
 </style>

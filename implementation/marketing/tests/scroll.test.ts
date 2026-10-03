@@ -27,11 +27,19 @@ describe('anchors clear the sticky navbar', () => {
     assert.equal((scrollFor({ hash: '#a', name: 'docs-article' }, { reducedMotion: false, stickyOffset: 0 }) as { top: number }).top, 0)
   })
 
+  test('the navbar\'s "How it works" link lands on the Home steps section CLEAR of the sticky bar, from every page (shared-chrome-07)', () => {
+    // The link is `{ path: '/', hash: '#how-it-works' }`, so the navigation that scrolls is always to
+    // the `home` route, whichever page the click came from.
+    assert.deepEqual(scrollFor({ hash: '#how-it-works', name: 'home' }, MOTION), { el: '#how-it-works', top: 84, behavior: 'smooth' })
+    assert.deepEqual(scrollFor({ hash: '#how-it-works', name: 'home' }, { reducedMotion: true, stickyOffset: 95 }), { el: '#how-it-works', top: 95, behavior: 'auto' })
+    assert.equal(isAnchoredRoute('home'), true)
+  })
+
   test('other pages keep their previous behaviour: no offset', () => {
-    for (const name of ['home', 'pricing', 'account', 'not-found', undefined, Symbol('x'), 42]) {
+    for (const name of ['pricing', 'account', 'not-found', undefined, Symbol('x'), 42]) {
       assert.deepEqual(scrollFor({ hash: '#how-it-works', name }, MOTION), { el: '#how-it-works', top: 0, behavior: 'smooth' }, String(name))
     }
-    assert.equal(isAnchoredRoute('home'), false)
+    assert.equal(isAnchoredRoute('pricing'), false)
     assert.equal(isAnchoredRoute('docs-article'), true)
   })
 
@@ -43,7 +51,7 @@ describe('anchors clear the sticky navbar', () => {
 describe('reduced motion is honoured', () => {
   test('behaviour is "auto" (defer to CSS, which is instant under reduce), never "smooth"', () => {
     assert.deepEqual(scrollFor({ hash: '#a', name: 'docs-article' }, REDUCED), { el: '#a', top: 84, behavior: 'auto' })
-    assert.deepEqual(scrollFor({ hash: '#a', name: 'home' }, REDUCED), { el: '#a', top: 0, behavior: 'auto' })
+    assert.deepEqual(scrollFor({ hash: '#a', name: 'pricing' }, REDUCED), { el: '#a', top: 0, behavior: 'auto' })
     assert.deepEqual(scrollFor({ hash: '', name: 'docs' }, REDUCED), { top: 0, behavior: 'auto' })
   })
 
@@ -54,6 +62,7 @@ describe('reduced motion is honoured', () => {
 
 describe('the offset is the navbar plus the gap', () => {
   test('it adds the measured navbar bottom to the px gap', () => {
+    assert.equal(stickyOffsetFrom(79, '16px'), 95, 'the 79px desktop bar (Figma) plus the gap')
     assert.equal(stickyOffsetFrom(68, '16px'), 84)
     assert.equal(stickyOffsetFrom(68.5, ' 16px'), 84.5, 'custom property values keep leading whitespace')
     assert.equal(stickyOffsetFrom(92, '16px'), 108, 'a taller navbar moves the clearance with it: the navbar is the height, not a constant')
