@@ -315,9 +315,10 @@ def run_page(browser, base: str, key: str, all_exp: dict, shots: Path | None, on
         check(f"{tag}: banner says the page is not final", DRAFT_NOTICE in banner.inner_text(), banner.inner_text()[:120])
         chips = page.locator("[data-placeholder]").count()
         check(f"{tag}: placeholder chips == placeholders in the text", chips == exp["placeholderCount"], f"{chips} vs {exp['placeholderCount']}")
-        chip_bg = page.evaluate("getComputedStyle(document.querySelector('[data-placeholder]')).backgroundColor")
-        body_bg = page.evaluate("getComputedStyle(document.body).backgroundColor")
-        check(f"{tag}: chips are visibly highlighted", chip_bg != body_bg and chip_bg != "rgba(0, 0, 0, 0)", f"{chip_bg} on {body_bg}")
+        if exp["placeholderCount"] > 0:
+            chip_bg = page.evaluate("getComputedStyle(document.querySelector('[data-placeholder]')).backgroundColor")
+            body_bg = page.evaluate("getComputedStyle(document.body).backgroundColor")
+            check(f"{tag}: chips are visibly highlighted", chip_bg != body_bg and chip_bg != "rgba(0, 0, 0, 0)", f"{chip_bg} on {body_bg}")
         noindex = page.locator('meta[name="robots"][content="noindex"]').count()
         check(f"{tag}: noindex meta present (exactly one)", noindex == 1, f"{noindex}")
 
