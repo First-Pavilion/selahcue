@@ -9,10 +9,10 @@
 > accept as new risk allocations are listed in the notes file §6.
 
 - **Provider and seller:** First Pavilion Technologies, trading as SelahCue
-- **Registered address:** `{{REGISTERED_ADDRESS}}`
-- **Registration number:** `{{COMPANY_REGISTRATION_NUMBER}}`
-- **Contact:** `{{SUPPORT_CONTACT_EMAIL}}` · **Legal notices:** `{{LEGAL_NOTICES_EMAIL}}`
-- **Effective date:** `{{EFFECTIVE_DATE}}`
+- **Registered address:** 4, Law Castle, Taiwo Street, Omida, Abeokuta, Ogun State, Nigeria
+- **Registration number:** 1557879
+- **Contact:** `support@selahcueapp.com` · **Legal notices:** `support@selahcueapp.com`
+- **Effective date:** October 31, 2026
 
 ---
 
@@ -58,7 +58,7 @@ apply.
 
 - the SelahCue desktop application, including its operator console and output window (the "**Desktop
   Software**");
-- the SelahCue website at `{{WEBSITE_URL}}`, including sign-up, sign-in, checkout and the customer
+- the SelahCue website at `https://selahcueapp.com`, including sign-up, sign-in, checkout and the customer
   portal;
 - SelahCue accounts and platform services, including plans, billing, licences, device activation and
   downloads (the "**Platform Services**"); and
@@ -66,14 +66,12 @@ apply.
 
 together, the "**Services**".
 
-1.2 The SelahCue Controller mobile app is also governed by the SelahCue Controller Terms of Use at
-`{{CONTROLLER_TERMS_URL}}`. If those terms conflict with these Terms about the mobile app, the Controller
-Terms of Use apply. If you got the app from an app store, that store's terms also apply to your
-download.
+1.2 The SelahCue Controller mobile app is part of the Services and is governed by these Terms. If you
+got the app from an app store, that store's terms also apply to your download.
 
 1.3 These Terms include, by reference:
 
-- our Privacy Policy at `{{PRIVACY_POLICY_URL}}`;
+- our Privacy Policy at `https://selahcueapp.com/privacy-policy`;
 - the plan details on our pricing page or in your order (the "**Plan Terms**"); and
 - the publisher terms for any licensed Bible translation your plan includes (section 9.3).
 
@@ -86,7 +84,7 @@ and us; the Plan Terms; these Terms; then the Documentation.
 individual who creates an account, installs the Desktop Software or clicks to accept these Terms
 confirms that they:
 
-- are at least `{{MINIMUM_ACCOUNT_AGE}}` years old; and
+- are at least 18 years old; and
 - have authority to accept these Terms for the organisation.
 
 2.2 If you use the Services only for yourself and not for an organisation, "you" means you personally.
@@ -133,7 +131,7 @@ manage a Plan, activate Devices, manage your Devices, and use the Cloud Features
 - verify your email address;
 - keep passwords, enrolment keys and other credentials secret, and not share logins;
 - make sure only people you authorise use your Account; and
-- tell us promptly at `{{SUPPORT_CONTACT_EMAIL}}` if you think your Account has been misused.
+- tell us promptly at `support@selahcueapp.com` if you think your Account has been misused.
 
 4.4 You are responsible for what your users do with your Account, and for choosing who has the
 Administrator role.
@@ -173,7 +171,7 @@ make an earlier Release the one you download until the problem is fixed.
 
 5.6 **Third-Party Components.** The Desktop Software includes Third-Party Components, including
 open-source software. They are licensed under their own terms, which are listed in
-`{{THIRD_PARTY_NOTICES_LOCATION}}`. Nothing in these Terms limits your rights under those licences.
+the Third-Party Notices included with SelahCue. Nothing in these Terms limits your rights under those licences.
 
 5.7 We and our licensors keep all rights not expressly granted to you.
 
@@ -208,7 +206,7 @@ it.
 
 8.1 **Plans.** The features, device allowance, usage allowances and price of each Plan are shown on our
 pricing page or in your order. Usage allowances for Cloud Features reset every
-`{{ALLOWANCE_RESET_PERIOD}}`, in your Account's time zone.
+week, in your Account's time zone.
 
 8.2 **Trials.** `{{TRIAL_TERMS}}`
 
@@ -219,20 +217,20 @@ Paystack, for the fees, taxes and any renewals described in this Part C. We are 
 invoices, for the taxes we must collect, for refunds and for handling failed payments.
 
 8.4 **Billing Periods.** Paid Plans are billed in advance for each Billing Period. The Billing Periods
-available are `{{BILLING_PERIODS}}`. Prices are in `{{CURRENCY}}`.
+available are monthly, quarterly and annual. Prices are in US dollars (USD) and Nigerian naira (NGN).
 
-8.5 **Renewal.** `{{RENEWAL_TERMS}}` Before a renewal, we send any reminder the law requires. You can
+8.5 **Renewal.** Paid Plans renew through a Paystack subscription or by manual renewal. Before a renewal, we send any reminder the law requires. You can
 cancel at any time in the customer portal, which stops all future renewals.
 
 8.6 **Cancellation.** You can cancel a paid Plan at any time in the customer portal or by emailing
-`{{SUPPORT_CONTACT_EMAIL}}`. Cancellation takes effect at the end of the current Billing Period. Your paid
+`support@selahcueapp.com`. Cancellation takes effect at the end of the current Billing Period. Your paid
 features stay available until then. After that, section 8.13 applies.
 
-8.7 **Refunds.** `{{REFUND_POLICY}}` We pay refunds to the payment method you used, through Paystack.
+8.7 **Refunds.** No refunds are given. Unused time in a Billing Period is not refunded if you cancel before the renewal date. If we ever refund you, for example after a billing error, we pay it to the payment method you used, through Paystack.
 This does not affect any right to a refund you have under law.
 
 8.8 **Price changes.** We may change prices for future Billing Periods. We will give you at least
-`{{PRICE_CHANGE_NOTICE_DAYS}}` days' notice by email. A new price applies from your next renewal. If you
+7 days' notice by email. A new price applies from your next renewal. If you
 do not agree, you can cancel before it takes effect.
 
 8.9 **Taxes.** Prices exclude taxes unless the pricing page or your order says otherwise. Where we must
@@ -244,9 +242,9 @@ none, to your Administrators. You can see your billing history in the customer p
 
 8.11 **Upgrades and downgrades.**
 
-- **Upgrade.** An upgrade takes effect immediately. `{{PRORATION_TERMS}}` The new Plan's full usage
+- **Upgrade.** An upgrade takes effect immediately. The upgrade is charged immediately for the rest of the current Billing Period, and the base rate applies from the next renewal. The new Plan's full usage
   allowance applies from the time of the upgrade for the rest of the current allowance period.
-- **Downgrade.** A downgrade takes effect `{{DOWNGRADE_TIMING}}`. Your remaining usage allowance for the
+- **Downgrade.** A downgrade takes effect at the end of the current Billing Period. Your remaining usage allowance for the
   current allowance period becomes the new Plan's allowance less what you have already used, and not
   less than zero.
 - **Devices.** A downgrade never deactivates or deletes your Devices. If you have more activated Devices
@@ -255,7 +253,7 @@ none, to your Administrators. You can see your billing history in the customer p
   of them without re-activation.
 
 8.12 **Failed payments and suspension.** If a payment fails, we tell you by email and ask you to update
-your payment method or pay again. If it is still unpaid after `{{FAILED_PAYMENT_GRACE_PERIOD}}`, we may
+your payment method or pay again. If it is still unpaid after 14 days, we may
 suspend your paid Plan. During a suspension:
 
 - Devices that are already activated keep presenting;
@@ -367,8 +365,8 @@ unavailable at times. If a Cloud Feature fails, your presentation is not affecte
 
 12.4 Cloud Features have usage allowances under your Plan. When an allowance runs out, the feature stops
 until the allowance resets or you upgrade. Presentation features continue. A note generation that fails
-because of an error on our side or our provider's side does not use up your allowance;
-`{{RETRY_ALLOWANCE_TERMS}}`
+because of an error on our side or our provider's side does not use up more than one unit of your allowance:
+you can retry a failed note generation within 10 minutes, and the failed attempt and its retry together use one unit of your allowance.
 
 ## Part E — Third parties, availability and support
 
@@ -382,7 +380,7 @@ because of an error on our side or our provider's side does not use up your allo
 - **Google Fonts**, which our website uses to load a font.
 - **Paystack**, which processes payments.
 - **Deepgram** and **OpenAI**, which provide the Cloud Features.
-- **`{{DOWNLOAD_HOSTING_PROVIDER}}`**, which stores and delivers our installers.
+- **DigitalOcean Spaces**, which stores and delivers our installers.
 - Bible publishers, for licensed translations.
 - App stores, if you download the SelahCue Controller app.
 
@@ -396,7 +394,7 @@ Platform Services and Cloud Features are provided online and may sometimes be un
 during maintenance or outages. We try to keep interruptions short. If our Platform Services are
 unavailable, activated Devices keep running on their licence files.
 
-14.2 Support is available by email at `{{SUPPORT_CONTACT_EMAIL}}`. `{{SUPPORT_TERMS}}`
+14.2 Support is available by email at `support@selahcueapp.com`. We aim to reply within 48 business hours, and we reply on a best-effort basis outside those hours.
 
 14.3 We may change, add or remove features. If a change materially reduces the features of a paid Plan
 you have already paid for, we will tell you in advance and, if you cancel because of it, refund the
@@ -408,7 +406,7 @@ unused part of your fees.
 
 15.1 **By you.** You can stop using the Services at any time. You can delete your user account in your
 account settings, and an Administrator can close your organisation's Account in the customer portal or
-by emailing `{{SUPPORT_CONTACT_EMAIL}}`. Closing the Account cancels any paid Plan under section 8.6. To
+by emailing `support@selahcueapp.com`. Closing the Account cancels any paid Plan under section 8.6. To
 get a copy of your data first, follow the steps in our Privacy Policy.
 
 15.2 **By us.** We may suspend or end your access to the Platform Services or Cloud Features, or end these
@@ -462,7 +460,7 @@ Services. This does not limit your obligation to pay fees.
 Services in any 12-month period is limited to the greater of:
 
 - the fees you paid us for the Services in the 12 months before the event that caused the claim; and
-- `{{MINIMUM_LIABILITY_AMOUNT}}`.
+- US$25,000.
 
 17.4 Where you use only the free Plan, this cap still applies, subject to section 17.1 and to consumer
 rights under section 18.
@@ -499,10 +497,10 @@ under your organisation's control.
 
 ### 22. Governing law and disputes
 
-22.1 These Terms are governed by the laws of `{{GOVERNING_LAW}}`.
+22.1 These Terms are governed by the laws of the Federal Republic of Nigeria.
 
 22.2 If a dispute arises, each party will first try in good faith to resolve it by contacting the other
-in writing. If it is not resolved within 30 days, either party may refer it to `{{DISPUTE_FORUM}}`.
+in writing. If it is not resolved within 30 days, either party may refer it to the courts of Abeokuta, Ogun State, Nigeria.
 
 22.3 If you are a consumer, you may also have the right to bring a claim in the courts where you live.
 Nothing in this section removes that right.
@@ -511,9 +509,9 @@ Nothing in this section removes that right.
 
 ### 23. Changes to these Terms
 
-23.1 We may update these Terms. We post the new version at `{{TERMS_URL}}` and change the effective date.
+23.1 We may update these Terms. We post the new version at `https://selahcueapp.com/terms` and change the effective date.
 
-23.2 For material changes, we give account holders at least `{{TERMS_CHANGE_NOTICE_DAYS}}` days' notice
+23.2 For material changes, we give account holders at least 7 days' notice
 by email or in the product, unless the change is required by law sooner or is needed for security. We
 ask Administrators to accept material changes before they continue to use the Platform Services, and we
 record that acceptance. If you do not agree, you can stop using the Services and, if you have prepaid,
@@ -536,7 +534,7 @@ outside its reasonable control. This does not excuse payment obligations.
 24.5 **No waiver.** If we do not enforce a right straight away, we can still enforce it later.
 
 24.6 **Notices.** We send notices to the email address of your Account's Administrators. You must send
-legal notices to `{{LEGAL_NOTICES_EMAIL}}` or to `{{REGISTERED_ADDRESS}}`.
+legal notices to `support@selahcueapp.com` or to 4, Law Castle, Taiwo Street, Omida, Abeokuta, Ogun State, Nigeria.
 
 24.7 **Compliance with law.** You must comply with the laws that apply to your use of the Services,
 including export control and sanctions laws.
@@ -546,6 +544,6 @@ English version applies, except where the law requires otherwise.
 
 ### 25. Contact
 
-- **Email:** `{{SUPPORT_CONTACT_EMAIL}}`
-- **Legal notices:** `{{LEGAL_NOTICES_EMAIL}}`
-- **Post:** First Pavilion Technologies, `{{REGISTERED_ADDRESS}}`
+- **Email:** `support@selahcueapp.com`
+- **Legal notices:** `support@selahcueapp.com`
+- **Post:** First Pavilion Technologies, 4, Law Castle, Taiwo Street, Omida, Abeokuta, Ogun State, Nigeria

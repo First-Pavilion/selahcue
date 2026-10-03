@@ -45,16 +45,14 @@ export const termsOfService: LegalDocument = {
     {
       "inline": [
         { "kind": "strong", "children": [{ "kind": "text", "text": "Registered address:" }] },
-        { "kind": "text", "text": " " },
-        { "kind": "placeholder", "name": "REGISTERED_ADDRESS" }
+        { "kind": "text", "text": " 4, Law Castle, Taiwo Street, Omida, Abeokuta, Ogun State, Nigeria" }
       ],
       "children": []
     },
     {
       "inline": [
         { "kind": "strong", "children": [{ "kind": "text", "text": "Registration number:" }] },
-        { "kind": "text", "text": " " },
-        { "kind": "placeholder", "name": "COMPANY_REGISTRATION_NUMBER" }
+        { "kind": "text", "text": " 1557879" }
       ],
       "children": []
     },
@@ -62,19 +60,18 @@ export const termsOfService: LegalDocument = {
       "inline": [
         { "kind": "strong", "children": [{ "kind": "text", "text": "Contact:" }] },
         { "kind": "text", "text": " " },
-        { "kind": "placeholder", "name": "SUPPORT_CONTACT_EMAIL" },
+        { "kind": "code", "text": "support@selahcueapp.com" },
         { "kind": "text", "text": " · " },
         { "kind": "strong", "children": [{ "kind": "text", "text": "Legal notices:" }] },
         { "kind": "text", "text": " " },
-        { "kind": "placeholder", "name": "LEGAL_NOTICES_EMAIL" }
+        { "kind": "code", "text": "support@selahcueapp.com" }
       ],
       "children": []
     },
     {
       "inline": [
         { "kind": "strong", "children": [{ "kind": "text", "text": "Effective date:" }] },
-        { "kind": "text", "text": " " },
-        { "kind": "placeholder", "name": "EFFECTIVE_DATE" }
+        { "kind": "text", "text": " October 31, 2026" }
       ],
       "children": []
     }
@@ -209,7 +206,7 @@ export const termsOfService: LegalDocument = {
                 {
                   "inline": [
                     { "kind": "text", "text": "the SelahCue website at " },
-                    { "kind": "placeholder", "name": "WEBSITE_URL" },
+                    { "kind": "code", "text": "https://selahcueapp.com" },
                     { "kind": "text", "text": ", including sign-up, sign-in, checkout and the customer portal;" }
                   ],
                   "children": []
@@ -248,9 +245,7 @@ export const termsOfService: LegalDocument = {
             {
               "kind": "paragraph",
               "inline": [
-                { "kind": "text", "text": "The SelahCue Controller mobile app is also governed by the SelahCue Controller Terms of Use at " },
-                { "kind": "placeholder", "name": "CONTROLLER_TERMS_URL" },
-                { "kind": "text", "text": ". If those terms conflict with these Terms about the mobile app, the Controller Terms of Use apply. If you got the app from an app store, that store's terms also apply to your download." }
+                { "kind": "text", "text": "The SelahCue Controller mobile app is part of the Services and is governed by these Terms. If you got the app from an app store, that store's terms also apply to your download." }
               ],
               "clause": "1.2",
               "anchor": "s-1-2"
@@ -267,7 +262,7 @@ export const termsOfService: LegalDocument = {
                 {
                   "inline": [
                     { "kind": "text", "text": "our Privacy Policy at " },
-                    { "kind": "placeholder", "name": "PRIVACY_POLICY_URL" },
+                    { "kind": "code", "text": "https://selahcueapp.com/privacy-policy" },
                     { "kind": "text", "text": ";" }
                   ],
                   "children": []
@@ -327,11 +322,7 @@ export const termsOfService: LegalDocument = {
               "kind": "list",
               "items": [
                 {
-                  "inline": [
-                    { "kind": "text", "text": "are at least " },
-                    { "kind": "placeholder", "name": "MINIMUM_ACCOUNT_AGE" },
-                    { "kind": "text", "text": " years old; and" }
-                  ],
+                  "inline": [{ "kind": "text", "text": "are at least 18 years old; and" }],
                   "children": []
                 },
                 {
@@ -532,7 +523,7 @@ export const termsOfService: LegalDocument = {
                 {
                   "inline": [
                     { "kind": "text", "text": "tell us promptly at " },
-                    { "kind": "placeholder", "name": "SUPPORT_CONTACT_EMAIL" },
+                    { "kind": "code", "text": "support@selahcueapp.com" },
                     { "kind": "text", "text": " if you think your Account has been misused." }
                   ],
                   "children": []
@@ -672,9 +663,7 @@ export const termsOfService: LegalDocument = {
                   "kind": "strong",
                   "children": [{ "kind": "text", "text": "Third-Party Components." }]
                 },
-                { "kind": "text", "text": " The Desktop Software includes Third-Party Components, including open-source software. They are licensed under their own terms, which are listed in " },
-                { "kind": "placeholder", "name": "THIRD_PARTY_NOTICES_LOCATION" },
-                { "kind": "text", "text": ". Nothing in these Terms limits your rights under those licences." }
+                { "kind": "text", "text": " The Desktop Software includes Third-Party Components, including open-source software. They are licensed under their own terms, which are listed in the Third-Party Notices included with SelahCue. Nothing in these Terms limits your rights under those licences." }
               ],
               "clause": "5.6",
               "anchor": "s-5-6"
@@ -784,9 +773,7 @@ export const termsOfService: LegalDocument = {
               "kind": "paragraph",
               "inline": [
                 { "kind": "strong", "children": [{ "kind": "text", "text": "Plans." }] },
-                { "kind": "text", "text": " The features, device allowance, usage allowances and price of each Plan are shown on our pricing page or in your order. Usage allowances for Cloud Features reset every " },
-                { "kind": "placeholder", "name": "ALLOWANCE_RESET_PERIOD" },
-                { "kind": "text", "text": ", in your Account's time zone." }
+                { "kind": "text", "text": " The features, device allowance, usage allowances and price of each Plan are shown on our pricing page or in your order. Usage allowances for Cloud Features reset every week, in your Account's time zone." }
               ],
               "clause": "8.1",
               "anchor": "s-8-1"
@@ -817,11 +804,7 @@ export const termsOfService: LegalDocument = {
               "kind": "paragraph",
               "inline": [
                 { "kind": "strong", "children": [{ "kind": "text", "text": "Billing Periods." }] },
-                { "kind": "text", "text": " Paid Plans are billed in advance for each Billing Period. The Billing Periods available are " },
-                { "kind": "placeholder", "name": "BILLING_PERIODS" },
-                { "kind": "text", "text": ". Prices are in " },
-                { "kind": "placeholder", "name": "CURRENCY" },
-                { "kind": "text", "text": "." }
+                { "kind": "text", "text": " Paid Plans are billed in advance for each Billing Period. The Billing Periods available are monthly, quarterly and annual. Prices are in US dollars (USD) and Nigerian naira (NGN)." }
               ],
               "clause": "8.4",
               "anchor": "s-8-4"
@@ -830,9 +813,7 @@ export const termsOfService: LegalDocument = {
               "kind": "paragraph",
               "inline": [
                 { "kind": "strong", "children": [{ "kind": "text", "text": "Renewal." }] },
-                { "kind": "text", "text": " " },
-                { "kind": "placeholder", "name": "RENEWAL_TERMS" },
-                { "kind": "text", "text": " Before a renewal, we send any reminder the law requires. You can cancel at any time in the customer portal, which stops all future renewals." }
+                { "kind": "text", "text": " Paid Plans renew through a Paystack subscription or by manual renewal. Before a renewal, we send any reminder the law requires. You can cancel at any time in the customer portal, which stops all future renewals." }
               ],
               "clause": "8.5",
               "anchor": "s-8-5"
@@ -842,7 +823,7 @@ export const termsOfService: LegalDocument = {
               "inline": [
                 { "kind": "strong", "children": [{ "kind": "text", "text": "Cancellation." }] },
                 { "kind": "text", "text": " You can cancel a paid Plan at any time in the customer portal or by emailing " },
-                { "kind": "placeholder", "name": "SUPPORT_CONTACT_EMAIL" },
+                { "kind": "code", "text": "support@selahcueapp.com" },
                 { "kind": "text", "text": ". Cancellation takes effect at the end of the current Billing Period. Your paid features stay available until then. After that, section " },
                 { "kind": "ref", "anchor": "s-8-13", "text": "8.13" },
                 { "kind": "text", "text": " applies." }
@@ -854,9 +835,7 @@ export const termsOfService: LegalDocument = {
               "kind": "paragraph",
               "inline": [
                 { "kind": "strong", "children": [{ "kind": "text", "text": "Refunds." }] },
-                { "kind": "text", "text": " " },
-                { "kind": "placeholder", "name": "REFUND_POLICY" },
-                { "kind": "text", "text": " We pay refunds to the payment method you used, through Paystack. This does not affect any right to a refund you have under law." }
+                { "kind": "text", "text": " No refunds are given. Unused time in a Billing Period is not refunded if you cancel before the renewal date. If we ever refund you, for example after a billing error, we pay it to the payment method you used, through Paystack. This does not affect any right to a refund you have under law." }
               ],
               "clause": "8.7",
               "anchor": "s-8-7"
@@ -865,9 +844,7 @@ export const termsOfService: LegalDocument = {
               "kind": "paragraph",
               "inline": [
                 { "kind": "strong", "children": [{ "kind": "text", "text": "Price changes." }] },
-                { "kind": "text", "text": " We may change prices for future Billing Periods. We will give you at least " },
-                { "kind": "placeholder", "name": "PRICE_CHANGE_NOTICE_DAYS" },
-                { "kind": "text", "text": " days' notice by email. A new price applies from your next renewal. If you do not agree, you can cancel before it takes effect." }
+                { "kind": "text", "text": " We may change prices for future Billing Periods. We will give you at least 7 days' notice by email. A new price applies from your next renewal. If you do not agree, you can cancel before it takes effect." }
               ],
               "clause": "8.8",
               "anchor": "s-8-8"
@@ -907,18 +884,14 @@ export const termsOfService: LegalDocument = {
                 {
                   "inline": [
                     { "kind": "strong", "children": [{ "kind": "text", "text": "Upgrade." }] },
-                    { "kind": "text", "text": " An upgrade takes effect immediately. " },
-                    { "kind": "placeholder", "name": "PRORATION_TERMS" },
-                    { "kind": "text", "text": " The new Plan's full usage allowance applies from the time of the upgrade for the rest of the current allowance period." }
+                    { "kind": "text", "text": " An upgrade takes effect immediately. The upgrade is charged immediately for the rest of the current Billing Period, and the base rate applies from the next renewal. The new Plan's full usage allowance applies from the time of the upgrade for the rest of the current allowance period." }
                   ],
                   "children": []
                 },
                 {
                   "inline": [
                     { "kind": "strong", "children": [{ "kind": "text", "text": "Downgrade." }] },
-                    { "kind": "text", "text": " A downgrade takes effect " },
-                    { "kind": "placeholder", "name": "DOWNGRADE_TIMING" },
-                    { "kind": "text", "text": ". Your remaining usage allowance for the current allowance period becomes the new Plan's allowance less what you have already used, and not less than zero." }
+                    { "kind": "text", "text": " A downgrade takes effect at the end of the current Billing Period. Your remaining usage allowance for the current allowance period becomes the new Plan's allowance less what you have already used, and not less than zero." }
                   ],
                   "children": []
                 },
@@ -938,9 +911,7 @@ export const termsOfService: LegalDocument = {
                   "kind": "strong",
                   "children": [{ "kind": "text", "text": "Failed payments and suspension." }]
                 },
-                { "kind": "text", "text": " If a payment fails, we tell you by email and ask you to update your payment method or pay again. If it is still unpaid after " },
-                { "kind": "placeholder", "name": "FAILED_PAYMENT_GRACE_PERIOD" },
-                { "kind": "text", "text": ", we may suspend your paid Plan. During a suspension:" }
+                { "kind": "text", "text": " If a payment fails, we tell you by email and ask you to update your payment method or pay again. If it is still unpaid after 14 days, we may suspend your paid Plan. During a suspension:" }
               ],
               "clause": "8.12",
               "anchor": "s-8-12"
@@ -1318,8 +1289,7 @@ export const termsOfService: LegalDocument = {
             {
               "kind": "paragraph",
               "inline": [
-                { "kind": "text", "text": "Cloud Features have usage allowances under your Plan. When an allowance runs out, the feature stops until the allowance resets or you upgrade. Presentation features continue. A note generation that fails because of an error on our side or our provider's side does not use up your allowance; " },
-                { "kind": "placeholder", "name": "RETRY_ALLOWANCE_TERMS" }
+                { "kind": "text", "text": "Cloud Features have usage allowances under your Plan. When an allowance runs out, the feature stops until the allowance resets or you upgrade. Presentation features continue. A note generation that fails because of an error on our side or our provider's side does not use up more than one unit of your allowance: you can retry a failed note generation within 10 minutes, and the failed attempt and its retry together use one unit of your allowance." }
               ],
               "clause": "12.4",
               "anchor": "s-12-4"
@@ -1391,7 +1361,7 @@ export const termsOfService: LegalDocument = {
                   "inline": [
                     {
                       "kind": "strong",
-                      "children": [{ "kind": "placeholder", "name": "DOWNLOAD_HOSTING_PROVIDER" }]
+                      "children": [{ "kind": "text", "text": "DigitalOcean Spaces" }]
                     },
                     { "kind": "text", "text": ", which stores and delivers our installers." }
                   ],
@@ -1438,9 +1408,8 @@ export const termsOfService: LegalDocument = {
               "kind": "paragraph",
               "inline": [
                 { "kind": "text", "text": "Support is available by email at " },
-                { "kind": "placeholder", "name": "SUPPORT_CONTACT_EMAIL" },
-                { "kind": "text", "text": ". " },
-                { "kind": "placeholder", "name": "SUPPORT_TERMS" }
+                { "kind": "code", "text": "support@selahcueapp.com" },
+                { "kind": "text", "text": ". We aim to reply within 48 business hours, and we reply on a best-effort basis outside those hours." }
               ],
               "clause": "14.2",
               "anchor": "s-14-2"
@@ -1473,7 +1442,7 @@ export const termsOfService: LegalDocument = {
               "inline": [
                 { "kind": "strong", "children": [{ "kind": "text", "text": "By you." }] },
                 { "kind": "text", "text": " You can stop using the Services at any time. You can delete your user account in your account settings, and an Administrator can close your organisation's Account in the customer portal or by emailing " },
-                { "kind": "placeholder", "name": "SUPPORT_CONTACT_EMAIL" },
+                { "kind": "code", "text": "support@selahcueapp.com" },
                 { "kind": "text", "text": ". Closing the Account cancels any paid Plan under section " },
                 { "kind": "ref", "anchor": "s-8-6", "text": "8.6" },
                 { "kind": "text", "text": ". To get a copy of your data first, follow the steps in our Privacy Policy." }
@@ -1698,13 +1667,7 @@ export const termsOfService: LegalDocument = {
                   ],
                   "children": []
                 },
-                {
-                  "inline": [
-                    { "kind": "placeholder", "name": "MINIMUM_LIABILITY_AMOUNT" },
-                    { "kind": "text", "text": "." }
-                  ],
-                  "children": []
-                }
+                { "inline": [{ "kind": "text", "text": "US$25,000." }], "children": [] }
               ]
             },
             {
@@ -1828,9 +1791,7 @@ export const termsOfService: LegalDocument = {
             {
               "kind": "paragraph",
               "inline": [
-                { "kind": "text", "text": "These Terms are governed by the laws of " },
-                { "kind": "placeholder", "name": "GOVERNING_LAW" },
-                { "kind": "text", "text": "." }
+                { "kind": "text", "text": "These Terms are governed by the laws of the Federal Republic of Nigeria." }
               ],
               "clause": "22.1",
               "anchor": "s-22-1"
@@ -1838,9 +1799,7 @@ export const termsOfService: LegalDocument = {
             {
               "kind": "paragraph",
               "inline": [
-                { "kind": "text", "text": "If a dispute arises, each party will first try in good faith to resolve it by contacting the other in writing. If it is not resolved within 30 days, either party may refer it to " },
-                { "kind": "placeholder", "name": "DISPUTE_FORUM" },
-                { "kind": "text", "text": "." }
+                { "kind": "text", "text": "If a dispute arises, each party will first try in good faith to resolve it by contacting the other in writing. If it is not resolved within 30 days, either party may refer it to the courts of Abeokuta, Ogun State, Nigeria." }
               ],
               "clause": "22.2",
               "anchor": "s-22-2"
@@ -1874,7 +1833,7 @@ export const termsOfService: LegalDocument = {
               "kind": "paragraph",
               "inline": [
                 { "kind": "text", "text": "We may update these Terms. We post the new version at " },
-                { "kind": "placeholder", "name": "TERMS_URL" },
+                { "kind": "code", "text": "https://selahcueapp.com/terms" },
                 { "kind": "text", "text": " and change the effective date." }
               ],
               "clause": "23.1",
@@ -1883,9 +1842,7 @@ export const termsOfService: LegalDocument = {
             {
               "kind": "paragraph",
               "inline": [
-                { "kind": "text", "text": "For material changes, we give account holders at least " },
-                { "kind": "placeholder", "name": "TERMS_CHANGE_NOTICE_DAYS" },
-                { "kind": "text", "text": " days' notice by email or in the product, unless the change is required by law sooner or is needed for security. We ask Administrators to accept material changes before they continue to use the Platform Services, and we record that acceptance. If you do not agree, you can stop using the Services and, if you have prepaid, receive a refund of unused fees." }
+                { "kind": "text", "text": "For material changes, we give account holders at least 7 days' notice by email or in the product, unless the change is required by law sooner or is needed for security. We ask Administrators to accept material changes before they continue to use the Platform Services, and we record that acceptance. If you do not agree, you can stop using the Services and, if you have prepaid, receive a refund of unused fees." }
               ],
               "clause": "23.2",
               "anchor": "s-23-2"
@@ -1954,10 +1911,8 @@ export const termsOfService: LegalDocument = {
               "inline": [
                 { "kind": "strong", "children": [{ "kind": "text", "text": "Notices." }] },
                 { "kind": "text", "text": " We send notices to the email address of your Account's Administrators. You must send legal notices to " },
-                { "kind": "placeholder", "name": "LEGAL_NOTICES_EMAIL" },
-                { "kind": "text", "text": " or to " },
-                { "kind": "placeholder", "name": "REGISTERED_ADDRESS" },
-                { "kind": "text", "text": "." }
+                { "kind": "code", "text": "support@selahcueapp.com" },
+                { "kind": "text", "text": " or to 4, Law Castle, Taiwo Street, Omida, Abeokuta, Ogun State, Nigeria." }
               ],
               "clause": "24.6",
               "anchor": "s-24-6"
@@ -1999,7 +1954,7 @@ export const termsOfService: LegalDocument = {
                   "inline": [
                     { "kind": "strong", "children": [{ "kind": "text", "text": "Email:" }] },
                     { "kind": "text", "text": " " },
-                    { "kind": "placeholder", "name": "SUPPORT_CONTACT_EMAIL" }
+                    { "kind": "code", "text": "support@selahcueapp.com" }
                   ],
                   "children": []
                 },
@@ -2007,15 +1962,14 @@ export const termsOfService: LegalDocument = {
                   "inline": [
                     { "kind": "strong", "children": [{ "kind": "text", "text": "Legal notices:" }] },
                     { "kind": "text", "text": " " },
-                    { "kind": "placeholder", "name": "LEGAL_NOTICES_EMAIL" }
+                    { "kind": "code", "text": "support@selahcueapp.com" }
                   ],
                   "children": []
                 },
                 {
                   "inline": [
                     { "kind": "strong", "children": [{ "kind": "text", "text": "Post:" }] },
-                    { "kind": "text", "text": " First Pavilion Technologies, " },
-                    { "kind": "placeholder", "name": "REGISTERED_ADDRESS" }
+                    { "kind": "text", "text": " First Pavilion Technologies, 4, Law Castle, Taiwo Street, Omida, Abeokuta, Ogun State, Nigeria" }
                   ],
                   "children": []
                 }
