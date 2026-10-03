@@ -208,7 +208,7 @@ it.
 pricing page or in your order. Usage allowances for Cloud Features reset every
 week, in your Account's time zone.
 
-8.2 **Trials.** `{{TRIAL_TERMS}}`
+8.2 **Trials.** New Accounts can try the full features, including Cloud Features, free for 14 days. At the end of the trial, your Account moves to the free Plan unless you buy a paid Plan.
 
 8.3 **Who you buy from and how you pay.** You buy paid Plans from First Pavilion Technologies, which is the
 seller. Payments are processed by Paystack, our payment processor, on its checkout page and under its

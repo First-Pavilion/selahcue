@@ -263,7 +263,7 @@ When you use these features, your sermon audio or transcript leaves your church'
 processed on Deepgram's or OpenAI's servers, which can be in a different country from yours. Deepgram
 and OpenAI handle this data under their own terms and privacy policies, which say how long they keep it
 and whether they use it to improve their services. We and they handle it only to provide the feature to
-your church. Data sent to cloud features is kept for `{{PROVIDER_RETENTION}}`.
+your church. We do not store it; Deepgram and OpenAI keep it under their own terms.
 
 To apply your plan's usage allowances, we record how much of each feature your organisation uses (for
 example, transcription time and number of note drafts), and each request that was allowed or refused,
@@ -366,7 +366,7 @@ rules where you live. To protect data processed abroad, we choose providers that
 | Data | How long |
 |---|---|
 | Account details | While your account is open, then six months |
-| Accounts that are never verified | `{{UNVERIFIED_SIGNUP_RETENTION}}` |
+| Accounts that are never verified | 7 days |
 | Sign-in sessions | Until you sign out or they expire (up to 30 days); expired records are deleted by a nightly job |
 | Email-verification and password-reset links | Until used or expired (24 hours and 1 hour); expired records are deleted by a nightly job |
 | Rate-limiting counters | Up to 1 hour |
@@ -375,7 +375,7 @@ rules where you live. To protect data processed abroad, we choose providers that
 | Licence, device, download and usage records | While your organisation's account is open, then two years |
 | Payment, invoice and tax records | Seven years, as tax law requires |
 | Support messages | 60 days |
-| Audio and transcripts sent to cloud features | `{{PROVIDER_RETENTION}}` |
+| Audio and transcripts sent to cloud features | We do not store it; Deepgram and OpenAI keep it under their own terms |
 
 When we no longer need personal data, we delete it or make it anonymous. We may keep some data for longer
 if the law requires it or if we need it to establish, exercise or defend legal claims.

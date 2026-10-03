@@ -782,8 +782,7 @@ export const termsOfService: LegalDocument = {
               "kind": "paragraph",
               "inline": [
                 { "kind": "strong", "children": [{ "kind": "text", "text": "Trials." }] },
-                { "kind": "text", "text": " " },
-                { "kind": "placeholder", "name": "TRIAL_TERMS" }
+                { "kind": "text", "text": " New Accounts can try the full features, including Cloud Features, free for 14 days. At the end of the trial, your Account moves to the free Plan unless you buy a paid Plan." }
               ],
               "clause": "8.2",
               "anchor": "s-8-2"

@@ -982,9 +982,7 @@ export const privacyPolicy: LegalDocument = {
                 {
                   "kind": "paragraph",
                   "inline": [
-                    { "kind": "text", "text": "When you use these features, your sermon audio or transcript leaves your church's network and is processed on Deepgram's or OpenAI's servers, which can be in a different country from yours. Deepgram and OpenAI handle this data under their own terms and privacy policies, which say how long they keep it and whether they use it to improve their services. We and they handle it only to provide the feature to your church. Data sent to cloud features is kept for " },
-                    { "kind": "placeholder", "name": "PROVIDER_RETENTION" },
-                    { "kind": "text", "text": "." }
+                    { "kind": "text", "text": "When you use these features, your sermon audio or transcript leaves your church's network and is processed on Deepgram's or OpenAI's servers, which can be in a different country from yours. Deepgram and OpenAI handle this data under their own terms and privacy policies, which say how long they keep it and whether they use it to improve their services. We and they handle it only to provide the feature to your church. We do not store it; Deepgram and OpenAI keep it under their own terms." }
                   ]
                 },
                 {
@@ -1384,7 +1382,7 @@ export const privacyPolicy: LegalDocument = {
                 ],
                 [
                   [{ "kind": "text", "text": "Accounts that are never verified" }],
-                  [{ "kind": "placeholder", "name": "UNVERIFIED_SIGNUP_RETENTION" }]
+                  [{ "kind": "text", "text": "7 days" }]
                 ],
                 [
                   [{ "kind": "text", "text": "Sign-in sessions" }],
@@ -1426,7 +1424,9 @@ export const privacyPolicy: LegalDocument = {
                 ],
                 [
                   [{ "kind": "text", "text": "Audio and transcripts sent to cloud features" }],
-                  [{ "kind": "placeholder", "name": "PROVIDER_RETENTION" }]
+                  [
+                    { "kind": "text", "text": "We do not store it; Deepgram and OpenAI keep it under their own terms" }
+                  ]
                 ]
               ]
             },

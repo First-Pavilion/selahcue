@@ -1035,16 +1035,15 @@ describe('draft treatment is derived from the remaining placeholders', () => {
     assert.deepEqual(placeholderOccurrences(doc), ['WHO', 'SUMMARY_FACT'])
   })
 
-  test('the real drafts are drafts today (placeholders remain) and say so', () => {
+  test('the real drafts stay drafts until the banner and version status are cleared', () => {
     for (const doc of [privacyPolicy, termsOfService]) {
       const s = legalPageState(doc)
       assert.equal(s.draft, true)
       assert.equal(s.noindex, true)
-      assert.ok(s.placeholderCount > 0, 'open placeholders are what keep the real page a draft')
-      // Name a token that is still open in each draft (the two drafts no longer share one). When a
-      // later fill closes it, point this at another token still open in that draft.
-      const stillOpen = doc === privacyPolicy ? 'PROVIDER_RETENTION' : 'TRIAL_TERMS'
-      assert.ok(s.placeholders.includes(stillOpen), `${stillOpen} is still open in ${doc.title}`)
+      // Every placeholder is filled, so what keeps the real page a draft now is the DRAFT banner
+      // and the non-final version status. Both go when the owner publishes.
+      assert.equal(s.placeholderCount, 0, `no placeholder is open in ${doc.title}`)
+      assert.equal(s.reasons.banner, true)
       assert.ok(s.bannerHeadline?.startsWith('DRAFT'))
     }
   })
