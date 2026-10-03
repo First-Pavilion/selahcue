@@ -1909,13 +1909,16 @@ fn describe_redraw_stall(
     phases: RenderPhases,
     suppressed: u64,
 ) -> String {
-    // The consequence is stated, not implied: the point of taking the lock only for short reads is
-    // that a slow redraw no longer blocks commands, and a line that said "blocked" for a stall that
-    // merely took long (or "not blocked" for one that held the lock) would mislead the reader.
+    // The consequence is stated, but only as far as the figures prove it. A command waits behind
+    // ONE hold, so a single hold at or over the threshold did block commands for that long. Short
+    // holds that run back to back can still add up for a command that arrives at the start of the
+    // run (QA measured two back-to-back 130 ms holds delaying commands by 188 to 272 ms), so the
+    // short case says what is known (no single hold was that long) and leaves the total, which is
+    // printed on the same line, to say the rest. Claiming "not blocked" would overstate it.
     let consequence = if locks.longest >= StallReporter::THRESHOLD {
         "which blocked LAN commands from the operator console for that long"
     } else {
-        "so LAN commands from the operator console were not blocked by it"
+        "so no single hold lasted long enough to block LAN commands from the operator console"
     };
     let mut line =
         format!(
@@ -5517,10 +5520,13 @@ mod tests {
     /// The whole point of the controller-lock change is that a slow acquire no longer blocks LAN
     /// commands, so the line must say which it was: a redraw that merely took long (the lock held
     /// only briefly) versus one that held the lock for as long as the stall (a command really was
-    /// blocked). Saying "blocked" for the first would be a lie, and "not blocked" for the second
-    /// would hide the very bug this line exists to catch. A command waits behind ONE hold, not the
-    /// sum of them, so the verdict is the LONGEST single hold: three 90 ms holds are not a 270 ms
-    /// block.
+    /// blocked). Saying "blocked" for the first would be a lie, and hiding the second would hide
+    /// the very bug this line exists to catch. A command waits behind ONE hold, so the verdict is
+    /// the LONGEST single hold: three 90 ms holds are not a 270 ms block. But the line must not
+    /// claim MORE than that: back-to-back short holds can still add up for a command that arrives
+    /// at the start of the run (QA measured two 130 ms holds delaying commands by 188 to 272 ms), so
+    /// the short case says only that no single hold was long enough, never "not blocked", and the
+    /// total stays on the line.
     #[test]
     fn the_stall_line_says_whether_lan_commands_were_blocked() {
         let describe = |locks: super::LockTimes| {
@@ -5538,8 +5544,9 @@ mod tests {
             longest: Duration::from_millis(3),
         });
         assert!(
-            brief.contains("not blocked"),
-            "a stall with the lock held for 3 ms must say commands were not blocked: {brief}"
+            brief.contains("no single hold lasted long enough")
+                && !brief.contains("blocked LAN commands"),
+            "a stall with the lock held for 3 ms must not say commands were blocked: {brief}"
         );
 
         let long = describe(super::LockTimes {
@@ -5548,20 +5555,24 @@ mod tests {
             longest: super::StallReporter::THRESHOLD,
         });
         assert!(
-            long.contains("blocked LAN commands") && !long.contains("not blocked"),
+            long.contains("blocked LAN commands") && !long.contains("no single hold"),
             "a stall that held the lock for the threshold must say commands were blocked: {long}"
         );
 
-        // Three 90 ms holds sum past the threshold but no command waited behind more than one.
+        // Three 90 ms holds sum past the threshold but a command waits behind one hold at a time:
+        // the verdict is the longest single hold, the total stays on the line, and the line never
+        // says "not blocked".
         let three_short = describe(super::LockTimes {
             waited: Duration::ZERO,
             held: Duration::from_millis(270),
             longest: Duration::from_millis(90),
         });
         assert!(
-            three_short.contains("not blocked")
-                && three_short.contains("longest single hold 90 ms"),
-            "three 90 ms holds must not read as a 270 ms block: {three_short}"
+            three_short.contains("no single hold lasted long enough")
+                && three_short.contains("longest single hold 90 ms")
+                && three_short.contains("held it for 270 ms in total")
+                && !three_short.contains("not blocked"),
+            "three 90 ms holds must not read as a 270 ms block, nor as 'not blocked': {three_short}"
         );
     }
 
