@@ -172,7 +172,7 @@ const answerId = (index: number) => `${uid}-a-${index}`
 /*
  * The boxed card (Affiliates, Figma 542:199): 880 wide, radius 16, --sc-base fill and a 1px
  * --sc-border; rows ruled by the same 1px; question 16/600, answer 15/23 with the answer
- * text 790 wide; a 10.5px icon at 1.5px stroke, primary when open. Row heights come out as
+ * text 790 wide; a 10.5px plus at 1.5px stroke, primary when open. Row heights come out as
  * drawn: 55 closed, 113 open with a two-line answer.
  */
 .faq-accordion.is-boxed {
@@ -197,10 +197,12 @@ const answerId = (index: number) => `${uid}-a-${index}`
 }
 
 .is-boxed .toggle-icon {
-  width: 11px;
-  height: 11px;
-  margin-right: 4px;
-  stroke-width: 1.5px;
+  width: 16px;
+  height: 16px;
+  margin-right: 1px;
+  /* The plus fills two thirds of the icon's 24-unit box: 16px draws it 10.7px across (Figma
+     10.5), and a 2.25-unit stroke scales to the drawn 1.5px. */
+  stroke-width: 2.25px;
 }
 
 .is-boxed .faq-answer p {

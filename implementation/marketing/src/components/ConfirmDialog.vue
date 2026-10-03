@@ -489,6 +489,8 @@ onUnmounted(() => {
 }
 
 .layout-left .dialog-actions .confirm-btn {
+  /* the same border width as Cancel, so the two buttons are exactly the same width */
+  border: 1.5px solid transparent;
   background: var(--dialog-destructive-fill, var(--sc-live)) !important;
   color: var(--dialog-destructive-ink, var(--sc-base)) !important;
 }
