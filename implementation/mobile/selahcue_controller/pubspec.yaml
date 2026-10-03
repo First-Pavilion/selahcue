@@ -35,14 +35,14 @@ dependencies:
   # Camera QR scanning of the pairing invite.
   mobile_scanner: ^7.4.2
   # Keychain/Keystore storage for the issued bearer token.
-  flutter_secure_storage: ^10.3.4
+  flutter_secure_storage: ^11.2.0
 
   # The following adds the Cupertino Icons font to your application.
   # Use with the CupertinoIcons class for iOS style icons.
   cupertino_icons: ^1.0.8
   multicast_dns: ^0.3.3+1
-  wakelock_plus: ^1.5.2
-  package_info_plus: ^9.0.1
+  wakelock_plus: ^1.8.1
+  package_info_plus: ^10.2.2
 
 dev_dependencies:
   flutter_test:
