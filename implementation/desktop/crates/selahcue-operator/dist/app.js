@@ -6992,7 +6992,24 @@
       const planOpenLive = document.getElementById("plan-open-live");
       if (planOpenLive) planOpenLive.onclick = () => showSurface("console");
       // Poll so a running countdown ticks in the UI (the host advances it each frame).
+      // One poll round at a time. The three host calls below share ONE client behind a mutex, and the
+      // client treats a reply slower than 2 s as a desynchronised link. Without this guard a slow host
+      // (a GPU present stalled on the output window, a long disk write) let every 1 s tick queue three
+      // more calls behind the stuck one: the queue grew without bound, the webview filled with pending
+      // promises and re-renders, and the link flipped to "Host unreachable — restart the console".
+      // A tick that finds the previous round still running is skipped, so at most one round is ever
+      // in flight and memory stays bounded.
+      let pollInFlight = false;
       setInterval(async () => {
+        if (pollInFlight) return;
+        pollInFlight = true;
+        try {
+          await pollOnce();
+        } finally {
+          pollInFlight = false;
+        }
+      }, 1000);
+      async function pollOnce() {
         try {
           const polled = await invoke("view");
           render(polled);
@@ -7006,9 +7023,8 @@
           setConn(false);
           refreshLinkSurfaces();
         }
-        readDetectionHealth();
-        readLinkStatus();
-      }, 1000);
+        await Promise.all([readDetectionHealth(), readLinkStatus()]);
+      }
       readDetectionHealth();
       readLinkStatus();
 
