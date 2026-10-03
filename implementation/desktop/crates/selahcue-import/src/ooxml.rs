@@ -177,21 +177,14 @@ impl<'a> Pull<'a> {
             Event::Empty(e) => Owned::Start(local(&e), attrs(&e), true),
             Event::End(e) => {
                 self.depth = self.depth.saturating_sub(1);
-                Owned::End(String::from_utf8_lossy(e.local_name().as_ref()).into_owned())
+                Owned::End(e.local_name().as_ref().to_owned())
             }
-            Event::Text(e) => {
-                Owned::Text(e.decode().map_err(|_| XmlError::Malformed)?.into_owned())
-            }
-            Event::CData(e) => {
-                Owned::Text(String::from_utf8_lossy(e.into_inner().as_ref()).into_owned())
-            }
+            Event::Text(e) => Owned::Text(e.xml10_content().into_owned()),
+            Event::CData(e) => Owned::Text(e.into_inner().into_owned()),
             // quick-xml surfaces `&entity;` as its own event. Only the XML built-ins and numeric
             // references can appear, because a DTD-declared entity would have needed a DOCTYPE,
             // which is refused above — so this resolver is total and cannot amplify.
-            Event::GeneralRef(e) => {
-                let name = e.decode().map_err(|_| XmlError::Malformed)?;
-                Owned::Text(resolve_entity(&name))
-            }
+            Event::GeneralRef(e) => Owned::Text(resolve_entity(&e.xml10_content())),
             Event::DocType(_) => return Err(XmlError::Doctype),
             _ => Owned::Other,
         };
@@ -210,14 +203,14 @@ enum Owned {
 }
 
 fn local(e: &BytesStart<'_>) -> String {
-    String::from_utf8_lossy(e.local_name().as_ref()).into_owned()
+    e.local_name().as_ref().to_owned()
 }
 
 fn attrs(e: &BytesStart<'_>) -> Vec<(String, String)> {
     e.attributes()
         .flatten()
         .map(|a| {
-            let key = String::from_utf8_lossy(a.key.local_name().as_ref()).into_owned();
+            let key = a.key.local_name().as_ref().to_owned();
             // Attribute-value normalisation per XML 1.0 — quick-xml resolves the built-in
             // entities and folds whitespace; a DTD-declared entity cannot appear, because a
             // DOCTYPE is refused before the parser is constructed.
