@@ -1700,8 +1700,9 @@ struct RenderPhases {
     /// `surface.get_current_texture()`. Taken BEFORE the upload (the order is load-bearing, see
     /// [`run_present`]).
     acquire: Duration,
-    /// Frame upload: `write_texture` and the bind group. Includes any wait for the controller lock
-    /// the upload step needs.
+    /// Frame upload: re-creating the frame texture on a resize, the `write_texture` copy and the
+    /// bind group. The controller lock is NOT part of it: the upload step takes none, and the
+    /// lock's wait and hold are timed separately (see [`LockTimes`]).
     upload: Duration,
     /// Encoding the blit and `queue.submit`.
     submit: Duration,
@@ -1739,10 +1740,15 @@ enum SkipReason {
     Validation,
 }
 
+// `Validation` is the last variant, so its discriminant plus one is the variant count: a new last
+// variant that leaves `SkipReason::COUNT` behind fails to compile here.
+const _: () = assert!(SkipReason::Validation as usize + 1 == SkipReason::COUNT);
+
 impl SkipReason {
-    /// How many reasons there are: the size of [`SkipCounts`] and of the test-only `ALL`, so a
-    /// sixth variant cannot be added without a compile error in `ALL` (and `label` is an
-    /// exhaustive match).
+    /// How many reasons there are: the size of [`SkipCounts`] and of the test-only `ALL`, so
+    /// `ALL` and `COUNT` cannot disagree (a compile error), `label` is an exhaustive match, and the
+    /// assertion below pins `COUNT` to the last variant, so a new last variant that leaves `COUNT`
+    /// behind fails to compile.
     const COUNT: usize = 5;
 
     /// Every reason, so the tests can prove each has its own label and counter slot.
@@ -2256,7 +2262,7 @@ impl Drop for FramePass<'_> {
     /// submit. Costs nothing on the normal path: the flag is cleared by the real submit.
     fn drop(&mut self) {
         // Not while a panic is already unwinding: wgpu's default error handler panics, so a second
-        // panic from this submit would abort instead of unwinding, hiding the first message.
+        // panic from this submit would abort instead of unwinding.
         if self.staged_unsubmitted && !std::thread::panicking() {
             self.renderer.queue.submit(std::iter::empty());
         }
