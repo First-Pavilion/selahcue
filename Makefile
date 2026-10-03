@@ -278,7 +278,7 @@ endif
 ENCRYPTION_STATUS := on (SQLCipher; key via OS secret store, or Argon2id from SELAHCUE_PASSPHRASE)
 
 .DEFAULT_GOAL := help
-.PHONY: help launch run run-release launch-release output-release output output-ndi ndi-preflight operator operator-headless stt-preflight release-ai-guard stage-operator-binaries verify-stage-operator-binaries-create-only remote timer stop-timer demo mobile mobile-test marketing-install marketing-check ci nfr build build-output build-operator test test-stt-real-model check clippy fmt clean
+.PHONY: help launch run run-release launch-release output-release output output-ndi ndi-preflight operator operator-headless stt-preflight release-ai-guard stage-operator-binaries verify-stage-operator-binaries-create-only remote timer stop-timer demo mobile mobile-test marketing-install marketing-check up down ci nfr build build-output build-operator test test-stt-real-model check clippy fmt clean
 
 # Recursive-make calls that must NOT get GNU Make's special "$(MAKE) literal text" handling
 # (documented in the GNU Make manual, "How the MAKE Variable Works": a recipe LINE containing
@@ -635,6 +635,15 @@ mobile-test: ## Analyze + unit-test the Flutter controller
 # SELAHCUE_HEADLESS_REQUIRE=1 and is therefore not something to leave to an optional local run).
 MARKETING := implementation/marketing
 NPM       ?= npm
+
+COMPOSE_FILE := implementation/docker-compose.yml
+
+up: ## Build and start the local Docker stack (api, celery, db, redis, mailhog, marketing site) without cd-ing into implementation/
+	@[ -f implementation/api/.env ] || { cp implementation/api/.env.sample implementation/api/.env; echo "created implementation/api/.env from .env.sample"; }
+	docker compose -f $(COMPOSE_FILE) up --build
+
+down: ## Stop the local Docker stack started by `make up`
+	docker compose -f $(COMPOSE_FILE) down
 
 marketing-install: ## Install the marketing site's pinned dependencies (npm ci); needed once per clone/worktree and after a lockfile change
 	cd $(MARKETING) && $(NPM) ci
