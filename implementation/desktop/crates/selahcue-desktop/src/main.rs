@@ -1518,7 +1518,7 @@ impl OutputTelemetry {
 /// suspiciously long.
 ///
 /// WHY IT EXISTS. `RedrawRequested` holds the controller `Mutex` across the whole present —
-/// the GPU upload, `surface.get_current_texture()` and `queue.present` — because the live frame
+/// `surface.get_current_texture()`, the GPU upload and `queue.present` — because the live frame
 /// it draws is borrowed out of the guard. The LAN command handler takes the SAME mutex for every
 /// command, so a present that blocks (on macOS the Metal layer is configured with no
 /// next-drawable timeout, so an acquire against a display that is asleep or not consuming frames
@@ -1577,10 +1577,12 @@ impl StallReporter {
 struct RenderPhases {
     /// CPU orientation / mirror / fit applied to the frame before upload (`apply_output_config`).
     transform: Duration,
-    /// Frame upload: `write_texture` and the bind group.
-    upload: Duration,
-    /// `surface.get_current_texture()`.
+    /// `surface.get_current_texture()`. Taken BEFORE the upload (the order is load-bearing, see
+    /// [`run_present`]).
     acquire: Duration,
+    /// Frame upload: `write_texture` and the bind group. Includes any wait for the controller lock
+    /// the upload step needs.
+    upload: Duration,
     /// Encoding the blit and `queue.submit`.
     submit: Duration,
     /// `queue.present`.
@@ -1618,9 +1620,14 @@ enum SkipReason {
 }
 
 impl SkipReason {
+    /// How many reasons there are: the size of [`SkipCounts`] and of the test-only `ALL`, so a
+    /// sixth variant cannot be added without a compile error in `ALL` (and `label` is an
+    /// exhaustive match).
+    const COUNT: usize = 5;
+
     /// Every reason, so the tests can prove each has its own label and counter slot.
     #[cfg(test)]
-    const ALL: [SkipReason; 5] = [
+    const ALL: [SkipReason; Self::COUNT] = [
         SkipReason::Outdated,
         SkipReason::Lost,
         SkipReason::Timeout,
@@ -1643,13 +1650,14 @@ impl SkipReason {
 /// occluded window skips every frame at 60 Hz, which is why [`SkipCounts::record`] only asks for a
 /// log line on the 1st, 10th, 100th, ... occurrence of each reason.
 #[derive(Debug, Default)]
-struct SkipCounts([u64; 5]);
+struct SkipCounts([u64; SkipReason::COUNT]);
 
 impl SkipCounts {
     /// Count one skip. Returns `Some(count)` when it should be logged now: the first occurrence of
-    /// this reason and every power of ten after it.
+    /// this reason and every power of ten after it. Never panics: a reason with no slot (only
+    /// possible if `COUNT` were left behind a new variant) is simply not counted.
     fn record(&mut self, reason: SkipReason) -> Option<u64> {
-        let slot = &mut self.0[reason as usize];
+        let slot = self.0.get_mut(reason as usize)?;
         *slot = slot.saturating_add(1);
         let n = *slot;
         let mut power = 1u64;
@@ -1731,14 +1739,14 @@ fn describe_redraw_stall(
 ) -> String {
     let mut line = format!(
         "SelahCue: output stall: the {role} window waited {} ms for the controller lock, then \
-         held it for {} ms (transform {} ms, upload {} ms, acquire {} ms, submit {} ms, present \
+         held it for {} ms (transform {} ms, acquire {} ms, upload {} ms, submit {} ms, present \
          {} ms, unaccounted {} ms). LAN commands from the operator console are blocked while it \
          is held.",
         waited.as_millis(),
         held.as_millis(),
         phases.transform.as_millis(),
-        phases.upload.as_millis(),
         phases.acquire.as_millis(),
+        phases.upload.as_millis(),
         phases.submit.as_millis(),
         phases.present.as_millis(),
         phases.unaccounted(held).as_millis(),
@@ -2074,7 +2082,9 @@ impl Drop for FramePass<'_> {
     /// never grow past one frame. wgpu submits the pending writes on their own for an empty
     /// submit. Costs nothing on the normal path: the flag is cleared by the real submit.
     fn drop(&mut self) {
-        if self.staged_unsubmitted {
+        // Not while a panic is already unwinding: wgpu's default error handler panics, so a second
+        // panic from this submit would abort instead of unwinding, hiding the first message.
+        if self.staged_unsubmitted && !std::thread::panicking() {
             self.renderer.queue.submit(std::iter::empty());
         }
     }
@@ -2084,7 +2094,7 @@ impl PresentSteps for FramePass<'_> {
     fn acquire(&mut self) -> Result<(), SkipReason> {
         let r = &mut *self.renderer;
         // wgpu 30 reports the acquire outcome as an enum rather than a `Result`. A usable texture
-        // (including a merely `Suboptimal` one, which the old code also presented from) is drawn
+        // (including a merely `Suboptimal` one, which was always presented from) is drawn
         // to; a stale/lost swapchain (sleep, display re-negotiation) is reconfigured; every other
         // outcome (timeout, occluded window, validation error) just skips the frame. The paced
         // frame loop (`new_events`) re-requests a paint next frame, so we do NOT request one here:
@@ -3509,6 +3519,13 @@ impl ApplicationHandler for App {
                 self.publish_output_status();
             }
             WindowEvent::RedrawRequested => {
+                // Started HERE, before the identify check's own brief controller lock, not at the
+                // lock held across the present below: a redraw queued behind a slow LAN command
+                // blocks on that FIRST lock, so a timer started later would read ~0 and a long
+                // WAIT (another thread held the mutex) would be invisible. It therefore also
+                // includes the identify read itself (microseconds). It does not cover the frame
+                // tick's own lock in `about_to_wait`, which is not timed at all.
+                let wait_started = Instant::now();
                 // Identify (FR-040): while active, each window blits its number
                 // INSTEAD of its scene — presentation state is untouched, so the
                 // outputs resume by themselves when the overlay expires.
@@ -3561,8 +3578,8 @@ impl ApplicationHandler for App {
                 }
                 // Timed so a present that blocks while holding this lock is visible rather than
                 // inferred (see [`StallReporter`]): the LAN handler takes the same mutex, so a
-                // long WAIT here means another thread held it, a long HOLD means the present did.
-                let wait_started = Instant::now();
+                // long WAIT (measured from `wait_started` above) means another thread held it, a
+                // long HOLD means the present did.
                 let Ok(c) = self.controller.lock() else {
                     return;
                 };
@@ -5278,6 +5295,17 @@ mod tests {
                 "stall line is missing `{needle}`: {line}"
             );
         }
+        // The phases are listed in the order they RUN (transform, acquire, upload, submit,
+        // present): the acquire is taken before the upload, and a reader following the line top to
+        // bottom must see the same sequence the code executes.
+        let at = |needle: &str| line.find(needle).expect(needle);
+        assert!(
+            at("transform") < at("acquire")
+                && at("acquire") < at("upload")
+                && at("upload") < at("submit")
+                && at("submit") < at("present"),
+            "stall line lists phases out of execution order: {line}"
+        );
         assert!(
             !line.contains("similar"),
             "with nothing suppressed the line must not claim earlier stalls: {line}"
