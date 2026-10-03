@@ -160,6 +160,7 @@ footer{margin-top:48px;color:var(--ink-2);font-size:12.5px;border-top:1px solid 
   dl.fd{grid-template-columns:minmax(0,1fr)} dl.fd dt{padding-top:6px}
   details.surface>summary{grid-template-columns:minmax(0,1fr)} .s-right{justify-content:flex-start}
   .count{margin-left:0;width:100%}
+  .controls{position:static}
 }
 @media (prefers-reduced-motion:reduce){*{scroll-behavior:auto!important;transition:none!important}}
 """
@@ -324,6 +325,13 @@ def build(run_dir, out_dir, meta):
             label += ' · <a href="%s">%s</a>' % (esc(t["url"]), esc(t["id"]))
         w("<tr><td>%s</td>%s</tr>" % (label, "".join('<td class="num">%d</td>' % c[k] for k in cfa.CLASSES)))
     w("</tbody></table></div>")
+    extra = [(k, tickets.get("tickets", {}).get(k)) for k in ("decisions", "devices-api", "sign-out-bug")]
+    extra = [(k, t) for k, t in extra if t]
+    if extra:
+        w('<ul class="tickets">')
+        for k, t in extra:
+            w('<li><a href="%s">%s</a> %s</li>' % (esc(t["url"]), esc(t["id"]), esc(t["title"])))
+        w("</ul>")
     w('<p class="empty">Counted once each. Set aside: %d duplicates (the same defect seen on another page, each pointing at its canonical finding) '
       'and %d findings that another ticket already owns.</p>' % (set_aside["duplicates"], set_aside["owned elsewhere"]))
 

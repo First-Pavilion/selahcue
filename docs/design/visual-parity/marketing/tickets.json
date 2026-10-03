@@ -1,0 +1,97 @@
+{
+  "_comment": "Fix tickets raised from the audit (ClickUp list SelahCue - Delivery, epic 86ajy5v6k). Keys are the ticket groups used by check_fidelity_audit.py. depends_on lists groups that must merge first.",
+  "tickets": {
+    "chrome": {
+      "id": "17tnw2b2cev",
+      "url": "https://app.clickup.com/t/17tnw2b2cev",
+      "title": "[Web] Figma fidelity: shared chrome and tokens (Nav, Footer, UiButton, tokens.css, app shell)",
+      "branch": "web/17tnw2b2cev-shared-chrome",
+      "footprint": "`implementation/marketing/src/components/Navbar.vue`, `Footer.vue`, `UiButton.vue`; `src/assets/styles/tokens.css` and the global rules in `main.css`; `src/App.vue`; `src/router/scroll.ts`; their tests under `tests/`.",
+      "parallel": "Runs in parallel with the shared-components ticket. All six area tickets wait for this one to merge before they finish (they may start earlier and rebase)."
+    },
+    "components": {
+      "id": "17tnw2b2cew",
+      "url": "https://app.clickup.com/t/17tnw2b2cew",
+      "title": "[Web] Figma fidelity: shared components (UiBadge, FormField, FaqAccordion, PricingCard, ConfirmDialog)",
+      "branch": "web/17tnw2b2cew-shared-components",
+      "footprint": "`implementation/marketing/src/components/UiBadge.vue`, `FormField.vue`, `FaqAccordion.vue`, `PricingCard.vue`, `ConfirmDialog.vue`; their tests.",
+      "parallel": "Runs in parallel with the chrome ticket (different files). All area tickets wait for it."
+    },
+    "home": {
+      "id": "17tnw2b2cex",
+      "url": "https://app.clickup.com/t/17tnw2b2cex",
+      "title": "[Web] Figma fidelity: Home page",
+      "branch": "web/17tnw2b2cex-home",
+      "footprint": "`implementation/marketing/src/views/HomeView.vue`, `src/components/ConsoleMockup.vue`, `OutputManagerMockup.vue`, `TestimonialCard.vue`, `FeatureCard.vue`, `ReliabilityPillar.vue` (the Features page must not edit the two mockups: it builds its own panels), `tests/`.",
+      "parallel": "Runs in parallel with the other area tickets once the chrome and components tickets have merged.",
+      "depends_on": [
+        "chrome",
+        "components"
+      ]
+    },
+    "core": {
+      "id": "17tnw2b2cey",
+      "url": "https://app.clickup.com/t/17tnw2b2cey",
+      "title": "[Web] Figma fidelity: Pricing, Features, Download and About",
+      "branch": "web/17tnw2b2cey-pricing-features-download-about",
+      "footprint": "`implementation/marketing/src/views/PricingView.vue`, `FeaturesView.vue`, `DownloadView.vue`, `AboutView.vue`; new page-local components if needed (do NOT edit ConsoleMockup or OutputManagerMockup: the Home ticket owns them); `tests/` including `downloadView.test.ts`.",
+      "parallel": "Runs in parallel with the other area tickets once the chrome and components tickets have merged.",
+      "depends_on": [
+        "chrome",
+        "components"
+      ]
+    },
+    "secondary": {
+      "id": "17tnw2b2cez",
+      "url": "https://app.clickup.com/t/17tnw2b2cez",
+      "title": "[Web] Figma fidelity: Contact, Support, Docs, Changelog, Blog, Careers, Privacy, Terms and Affiliates",
+      "branch": "web/17tnw2b2cez-secondary-pages",
+      "footprint": "`implementation/marketing/src/views/ContactView.vue`, `SupportView.vue`, `DocsView.vue`, `ChangelogView.vue`, `BlogView.vue`, `CareersView.vue`, `PrivacyView.vue`, `TermsView.vue`, `AffiliatesView.vue`, `src/components/legal/*`, `src/components/article/*`; `tests/`.",
+      "parallel": "Runs in parallel with the other area tickets once the chrome and components tickets have merged.",
+      "depends_on": [
+        "chrome",
+        "components"
+      ]
+    },
+    "auth": {
+      "id": "17tnw2b2cf1",
+      "url": "https://app.clickup.com/t/17tnw2b2cf1",
+      "title": "[Web] Figma fidelity: Sign in, Verify (V1-V6) and Reset (R1-R7)",
+      "branch": "web/17tnw2b2cf1-auth-pages",
+      "footprint": "`implementation/marketing/src/views/SignInView.vue`, `VerifyView.vue`, `ResetView.vue`, `src/components/auth/*`, `src/assets/styles/auth.css`; `tests/authCopy.test.ts`, `authViews.test.ts`, `scripts/auth_pages_headless.py` (raise `EXPECTED_MIN_CHECKS` honestly).",
+      "parallel": "Runs in parallel with the other area tickets once the chrome and components tickets have merged.",
+      "depends_on": [
+        "chrome",
+        "components"
+      ]
+    },
+    "account": {
+      "id": "17tnw2b2cf2",
+      "url": "https://app.clickup.com/t/17tnw2b2cf2",
+      "title": "[Web] Figma fidelity: Account page and Manage Devices (D1-D6)",
+      "branch": "web/17tnw2b2cf2-account-and-devices",
+      "footprint": "`implementation/marketing/src/views/AccountView.vue`, a new `src/views/AccountDevicesView.vue`, the new `/account/devices` route in `src/router/index.ts`, `src/lib/api/account.ts` (device operations once the API exists), `tests/`, `scripts/auth_pages_headless.py` scenarios for the new states.",
+      "parallel": "Runs in parallel with the other area tickets once the chrome and components tickets have merged. Starts after the Sign Out bug ticket lands (same file).",
+      "depends_on": [
+        "chrome",
+        "components",
+        "sign-out-bug"
+      ]
+    },
+    "decisions": {
+      "id": "17tnw2b2cf3",
+      "url": "https://app.clickup.com/t/17tnw2b2cf3",
+      "title": "[Design] Decisions needed from the Figma audit: claims the repo does not back (class C) and gaps in the designs (class D)"
+    },
+    "devices-api": {
+      "id": "17tnw2b2cf4",
+      "url": "https://app.clickup.com/t/17tnw2b2cf4",
+      "title": "[Backend] Customer-session GraphQL for Manage Devices: list devices, last seen, limit and used, deactivate, viewer role"
+    },
+    "sign-out-bug": {
+      "id": "17tnw2b2cbr",
+      "url": "https://app.clickup.com/t/17tnw2b2cbr",
+      "title": "[Web] Account page \"Sign Out\" button never signs out: it only navigates to /signin"
+    }
+  }
+}

@@ -232,7 +232,7 @@ def check(catalogue, findings, tickets=None, require_tickets=False):
     if tickets is not None:
         known = tickets.get("tickets", {})
         for group, t in known.items():
-            if group not in TICKET_GROUPS and group not in ("sign-out-bug", "devices-api"):
+            if group not in TICKET_GROUPS and group not in ("sign-out-bug", "devices-api", "decisions"):
                 problems.append("tickets.json: unknown group %r" % group)
             if not TICKET_RE.match(str(t.get("id", ""))):
                 problems.append("tickets.json: %s has no valid ClickUp id" % group)
@@ -313,8 +313,9 @@ def render_report(catalogue, findings, tickets, meta):
     if tickets.get("tickets"):
         w("## Fix tickets raised from this audit\n")
         for g, t in tickets["tickets"].items():
-            w("- **%s** — [%s](%s) · branch `%s` · %s%s" % (
-                g, t.get("id"), t.get("url", ""), t.get("branch", ""), _one_line(t.get("title", ""), 120),
+            w("- **%s** — [%s](%s)%s · %s%s" % (
+                g, t.get("id"), t.get("url", ""), (" · branch `%s`" % t["branch"]) if t.get("branch") else "",
+                _one_line(t.get("title", ""), 120),
                 (" · depends on: " + ", ".join(t.get("depends_on", []))) if t.get("depends_on") else ""))
             if t.get("footprint"):
                 w("  - footprint: %s" % t["footprint"])
@@ -368,6 +369,21 @@ def render_report(catalogue, findings, tickets, meta):
             w("- **%s** %s — %s (evidence: %s). Fix: %s" % (x.get("id"), x.get("title"), "", x.get("evidence"), x.get("fix")))
         w("")
 
+    w("## Index: every page and state, its Figma node and its verdict\n")
+    w("| surface | Figma node | route | verdict | A | B | C | D | E |\n|---|---|---|---|---|---|---|---|---|")
+    area_by_slug = {}
+    for area, data in findings.items():
+        for slug in data.get("surfaces", {}):
+            area_by_slug[slug] = area
+    for slug, cat in catalogue.items():
+        surf = findings[area_by_slug[slug]]["surfaces"][slug] if slug in area_by_slug else None
+        cnt = collections.Counter(f["class"] for f in (surf or {}).get("findings", []) if is_counted(f))
+        w("| %s (`%s`) | `%s` | `%s` | %s | %d | %d | %d | %d | %d |" % (
+            cat.get("label") or slug, slug, cat["node"], cat.get("path", ""), (surf or {}).get("verdict", "—"),
+            cnt["A"], cnt["B"], cnt["C"], cnt["D"], cnt["E"]))
+    w("")
+    w("Counts here are per surface and exclude duplicates. They include findings that are fixed in the shared chrome or shared components "
+      "tickets, which is why the per-ticket totals above differ.\n")
     w("## Surfaces\n")
     order = list(catalogue)
     area_of = {}
