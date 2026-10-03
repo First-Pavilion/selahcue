@@ -1523,7 +1523,7 @@ impl OutputTelemetry {
 /// that was the "Host unreachable" disconnect (a 1.0 s surface-acquire hang was measured when a
 /// window became covered; memory pressure made far longer ones). The redraw now takes the lock only
 /// for short reads (see [`FrameSource`]), but it can still take long, and the line this reporter
-/// writes says which of two things happened: a long WAIT points at another thread (a slow
+/// writes says which of three things happened: a long WAIT points at another thread (a slow
 /// command) as the holder; a long total with a short HOLD is the GPU or the compositor and no
 /// command was blocked; a long HOLD would be this bug coming back.
 ///
@@ -1539,8 +1539,8 @@ struct StallReporter {
 }
 
 impl StallReporter {
-    /// The longest redraw (or lock wait, or hold) that is still ordinary. A paced 60 Hz frame takes ~16 ms, so this
-    /// is ~15 frames; and it is well inside the operator link's 2 s command timeout
+    /// The longest redraw (or lock wait, or hold) that is still ordinary. A paced 60 Hz frame
+    /// takes ~16 ms, so this is ~15 frames; and it is well inside the operator link's 2 s command timeout
     /// (`selahcue-lan`'s `ControlClient::COMMAND_TIMEOUT`), so the line appears BEFORE the link is
     /// declared dead rather than only explaining it afterwards. Both bounds are pinned at compile
     /// time in the tests.
@@ -1549,7 +1549,7 @@ impl StallReporter {
     /// The quiet window after a report, during which further stalls are only counted.
     const MIN_INTERVAL: Duration = Duration::from_secs(1);
 
-    /// Feed one redraw's worst figure (`total.max(waited).max(held)`). Returns `Some(n)` when a line should
+    /// Feed one redraw's total time. Returns `Some(n)` when a line should
     /// be written now, `n` being how many stalls the rate limit swallowed since the previous
     /// line; `None` when the redraw was ordinary or is inside the quiet window.
     fn observe(&mut self, now: Instant, worst: Duration) -> Option<u64> {
@@ -1575,14 +1575,9 @@ impl StallReporter {
 struct LockTimes {
     waited: Duration,
     held: Duration,
-}
-
-impl LockTimes {
-    /// Add another section's figures. Saturating: these are sums of separate clock reads.
-    fn add(&mut self, other: LockTimes) {
-        self.waited = self.waited.saturating_add(other.waited);
-        self.held = self.held.saturating_add(other.held);
-    }
+    /// The longest SINGLE hold. A command waits behind one hold, not the sum of several, so this
+    /// (not `held`) is what says whether a command was blocked.
+    longest: Duration,
 }
 
 /// The shared controller, locked for one short read and timed into a [`LockTimes`].
@@ -1600,7 +1595,9 @@ impl TimedLock<'_> {
 
 impl Drop for TimedLock<'_> {
     fn drop(&mut self) {
-        self.times.held = self.times.held.saturating_add(self.acquired.elapsed());
+        let hold = self.acquired.elapsed();
+        self.times.held = self.times.held.saturating_add(hold);
+        self.times.longest = self.times.longest.max(hold);
     }
 }
 
@@ -1632,6 +1629,15 @@ fn output_frame(controller: &LiveController, role: WindowRole) -> &FrameBuffer {
     }
 }
 
+/// The per-window value for `role`: one lookup, so the role and the slot it selects cannot
+/// disagree.
+fn by_role<'a, T>(main: &'a mut T, stage: &'a mut T, role: WindowRole) -> &'a mut T {
+    match role {
+        WindowRole::Main => main,
+        WindowRole::Stage => stage,
+    }
+}
+
 /// Where a present gets the frame it uploads. The controller lock, if there is one, lives ENTIRELY
 /// inside [`FrameSource::with_frame`]: it is taken, the frame is lent to `use_frame` (the upload),
 /// and the lock is released before `with_frame` returns. The GPU half of a present
@@ -1647,32 +1653,44 @@ trait FrameSource {
     fn with_frame(&mut self, use_frame: &mut dyn FnMut(&FrameBuffer)) -> bool;
 }
 
-/// The shared live frame of one output, read under the controller lock. Applies the output's
-/// geometric transform (orientation / mirror / fit) to a frame that needs one, inside the same
-/// critical section: for the default geometry that costs nothing (`apply_output_config` returns
-/// `None` and the live frame is lent as is).
+/// The shared live frame of one output, read under the controller lock. The lock is held ONLY to
+/// read the frame. For the default geometry the live frame is lent as it is, straight from under
+/// the lock (the upload's copy into staging memory is all that runs there). For a transformed
+/// screen (rotate, mirror, fit) the frame is COPIED under the lock and the lock is released before
+/// the copy is transformed, because the transform is CPU work that took 33 ms in release and about
+/// 500 ms in a debug build for a quarter turn of a 1080p frame, and holding the controller for it
+/// would block every console command for that long on every redraw.
 struct SharedFrame<'a> {
     controller: &'a Mutex<LiveController>,
     role: WindowRole,
     cfg: &'a OutputConfigView,
     /// The window's size in pixels, for the geometric transform.
     window: (u32, u32),
-    /// Filled in by `with_frame`: the lock figures for this read.
-    locks: LockTimes,
+    /// The redraw's lock figures, owned by the caller and added to by every lock taken here. One
+    /// set per redraw, passed down, so there is nothing to reset and nothing to add together.
+    locks: &'a mut LockTimes,
     /// Filled in by `with_frame`: how long the geometric transform took (zero for the default).
     transform: Duration,
 }
 
 impl FrameSource for SharedFrame<'_> {
     fn with_frame(&mut self, use_frame: &mut dyn FnMut(&FrameBuffer)) -> bool {
-        let Some(lock) = lock_controller(self.controller, &mut self.locks) else {
+        let Some(lock) = lock_controller(self.controller, &mut *self.locks) else {
             return false;
         };
         let base = output_frame(lock.controller(), self.role);
+        if geometry_is_default(self.cfg) {
+            // Nothing to transform: lend the live frame itself, no copy.
+            use_frame(base);
+            return true;
+        }
+        // A transformed screen: the copy is the only work done under the lock.
+        let owned = base.clone();
+        drop(lock);
         let transform_started = Instant::now();
-        let transformed = apply_output_config(base, self.cfg, self.window.0, self.window.1);
+        let transformed = apply_output_config(&owned, self.cfg, self.window.0, self.window.1);
         self.transform = transform_started.elapsed();
-        use_frame(transformed.as_ref().unwrap_or(base));
+        use_frame(transformed.as_ref().unwrap_or(&owned));
         true
     }
 }
@@ -1711,12 +1729,31 @@ struct RenderPhases {
 }
 
 impl RenderPhases {
-    /// The part of a hold that none of the timed phases explains. A large value here means the
-    /// time went somewhere this did not look (not a GPU call), which is itself the finding.
-    /// Saturates: it is derived from two separate clock reads.
-    fn unaccounted(&self, held: Duration) -> Duration {
+    /// The part of a redraw's time that none of the timed phases explains. A large value here
+    /// means the time went somewhere this did not look (not a GPU call), which is itself the
+    /// finding. Saturates: it is derived from separate clock reads.
+    fn unaccounted(&self, total: Duration) -> Duration {
         let timed = self.transform + self.upload + self.acquire + self.submit + self.present;
-        held.saturating_sub(timed)
+        total.saturating_sub(timed)
+    }
+}
+
+/// What one [`Renderer::present_output`] did: whether a frame reached the screen, and where the
+/// time went. It is RETURNED rather than stored on the renderer, so a stale figure from an
+/// earlier present can never be reported and there is nothing to reset.
+#[derive(Debug, Clone, Copy)]
+struct PresentReport {
+    presented: bool,
+    phases: RenderPhases,
+}
+
+impl PresentReport {
+    /// A present that did nothing (a frame-rate skip, an unreadable controller).
+    fn none() -> Self {
+        PresentReport {
+            presented: false,
+            phases: RenderPhases::default(),
+        }
     }
 }
 
@@ -1875,24 +1912,28 @@ fn describe_redraw_stall(
     // The consequence is stated, not implied: the point of taking the lock only for short reads is
     // that a slow redraw no longer blocks commands, and a line that said "blocked" for a stall that
     // merely took long (or "not blocked" for one that held the lock) would mislead the reader.
-    let consequence = if locks.held >= StallReporter::THRESHOLD {
+    let consequence = if locks.longest >= StallReporter::THRESHOLD {
         "which blocked LAN commands from the operator console for that long"
     } else {
         "so LAN commands from the operator console were not blocked by it"
     };
-    let mut line = format!(
+    let mut line =
+        format!(
         "SelahCue: output stall: the {role} window's redraw took {} ms (transform {} ms, acquire \
          {} ms, upload {} ms, submit {} ms, present {} ms, unaccounted {} ms). It waited {} ms for \
-         the controller lock and held it for {} ms in total, {consequence}.",
+         the controller lock and held it for {} ms in total (longest single hold {} ms), \
+         {consequence}.",
         total.as_millis(),
         phases.transform.as_millis(),
         phases.acquire.as_millis(),
         phases.upload.as_millis(),
         phases.submit.as_millis(),
         phases.present.as_millis(),
-        phases.unaccounted(total).as_millis(),
+        // A lock wait is printed on its own, so it is not also "unaccounted" time.
+        phases.unaccounted(total.saturating_sub(locks.waited)).as_millis(),
         locks.waited.as_millis(),
         locks.held.as_millis(),
+        locks.longest.as_millis(),
     );
     if suppressed > 0 {
         line.push_str(&format!(
@@ -1900,6 +1941,12 @@ fn describe_redraw_stall(
         ));
     }
     line
+}
+
+/// Whether an output's geometry is untouched (no rotation beyond full turns, no mirror, fill): such
+/// a frame needs no transform, is lent as it is, and is never copied.
+fn geometry_is_default(cfg: &OutputConfigView) -> bool {
+    cfg.orientation.is_multiple_of(4) && !cfg.mirror && matches!(cfg.scale_fit, ScaleFit::Fill)
 }
 
 /// Apply a screen's per-output GEOMETRIC config to its composed frame, targeting the
@@ -1921,9 +1968,7 @@ fn apply_output_config(
     win_w: u32,
     win_h: u32,
 ) -> Option<FrameBuffer> {
-    let geometry_default =
-        cfg.orientation.is_multiple_of(4) && !cfg.mirror && matches!(cfg.scale_fit, ScaleFit::Fill);
-    if geometry_default {
+    if geometry_is_default(cfg) {
         return None;
     }
     let (win_w, win_h) = (win_w.max(1), win_h.max(1));
@@ -2027,14 +2072,6 @@ struct Renderer {
     frame_texture: Option<(wgpu::Texture, u32, u32)>,
     /// Measured present telemetry (Screens page signal-health).
     telemetry: OutputTelemetry,
-    /// Where the most recent present spent its time. Reset at the top of every
-    /// [`Renderer::present_output`], so a frame that stopped early (a frame-rate skip, a failed
-    /// acquire) cannot report a stale figure for a phase it never reached. Read only by the stall
-    /// report in `RedrawRequested` (see [`StallReporter`]).
-    phases: RenderPhases,
-    /// How long the most recent present waited for, and held, the controller (see [`LockTimes`]).
-    /// Reset at the top of every [`Renderer::present_output`].
-    lock_times: LockTimes,
     /// Why frames have been skipped, per outcome (see [`SkipReason`]).
     skips: SkipCounts,
 }
@@ -2146,8 +2183,6 @@ impl Renderer {
             sampler,
             frame_texture: None,
             telemetry: OutputTelemetry::new(),
-            phases: RenderPhases::default(),
-            lock_times: LockTimes::default(),
             skips: SkipCounts::default(),
         })
     }
@@ -2166,6 +2201,7 @@ impl Renderer {
         run_present(
             &mut FramePass {
                 renderer: self,
+                phases: RenderPhases::default(),
                 drawable: None,
                 bind_group: None,
                 staged_unsubmitted: false,
@@ -2184,24 +2220,24 @@ impl Renderer {
 
     /// Present the live frame of `role` under this output's per-screen config (Screens page):
     /// honor the frame-rate cap, apply the geometric transform (orientation/mirror/fit), blit, and
-    /// record telemetry. Returns whether a frame was actually presented. A frame-rate SKIP
-    /// (the configured interval has not elapsed) is intentional — it returns `false` but is
-    /// NOT counted as a dropped frame.
+    /// record telemetry. Returns whether a frame was actually presented, and where the time went.
+    /// A frame-rate SKIP (the configured interval has not elapsed) is intentional: it presents
+    /// nothing but is NOT counted as a dropped frame.
     ///
     /// The controller is locked only for two short reads: the output config here, and the frame
     /// inside the upload (see [`FrameSource`]). It is free for the surface acquire, the submit and
-    /// the present, so a slow GPU or compositor cannot block the LAN command handler.
+    /// the present, so a slow GPU or compositor cannot block the LAN command handler. Every lock
+    /// taken is recorded into the caller's `locks`, one set of figures per redraw.
     fn present_output(
         &mut self,
         controller: &Mutex<LiveController>,
         role: WindowRole,
         now: Instant,
-    ) -> bool {
-        self.phases = RenderPhases::default();
-        self.lock_times = LockTimes::default();
+        locks: &mut LockTimes,
+    ) -> PresentReport {
         let cfg = {
-            let Some(lock) = lock_controller(controller, &mut self.lock_times) else {
-                return false;
+            let Some(lock) = lock_controller(controller, &mut *locks) else {
+                return PresentReport::none();
             };
             lock.controller().output_config(role.screen_id())
         };
@@ -2211,7 +2247,7 @@ impl Renderer {
         if let Some(prev) = self.telemetry.last_present {
             let min_dt = (1.0 / target) * 0.95;
             if now.duration_since(prev).as_secs_f32() < min_dt {
-                return false; // intentional frame-rate skip — not a drop
+                return PresentReport::none(); // intentional frame-rate skip: not a drop
             }
         }
         let window = {
@@ -2223,22 +2259,23 @@ impl Renderer {
             role,
             cfg: &cfg,
             window,
-            locks: LockTimes::default(),
+            locks,
             transform: Duration::ZERO,
         };
-        let presented = run_present(
-            &mut FramePass {
-                renderer: self,
-                drawable: None,
-                bind_group: None,
-                staged_unsubmitted: false,
-            },
-            &mut frames,
-        );
-        self.phases.transform = frames.transform;
-        self.lock_times.add(frames.locks);
+        let mut pass = FramePass {
+            renderer: self,
+            phases: RenderPhases::default(),
+            drawable: None,
+            bind_group: None,
+            staged_unsubmitted: false,
+        };
+        let presented = run_present(&mut pass, &mut frames);
+        let mut phases = pass.phases;
+        // Release the renderer (and run the pass's safety net) before touching it again.
+        drop(pass);
+        phases.transform = frames.transform;
         self.telemetry.record(now, presented);
-        presented
+        PresentReport { presented, phases }
     }
 }
 
@@ -2246,6 +2283,8 @@ impl Renderer {
 /// It holds no controller and no frame of its own: the frame is lent to [`PresentSteps::upload`].
 struct FramePass<'a> {
     renderer: &'a mut Renderer,
+    /// Where this pass spent its time (the transform is filled in by the caller, which owns it).
+    phases: RenderPhases,
     /// The drawable [`PresentSteps::acquire`] took, held until it is presented.
     drawable: Option<wgpu::SurfaceTexture>,
     /// The bind group [`PresentSteps::upload`] built for this frame's texture.
@@ -2280,7 +2319,7 @@ impl PresentSteps for FramePass<'_> {
         // doing so would busy-spin while the surface can't present.
         let acquire_started = Instant::now();
         let acquired = r.surface.get_current_texture();
-        r.phases.acquire = acquire_started.elapsed();
+        self.phases.acquire = acquire_started.elapsed();
         let reason = match acquired {
             wgpu::CurrentSurfaceTexture::Success(frame)
             | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => {
@@ -2363,7 +2402,7 @@ impl PresentSteps for FramePass<'_> {
                 },
             ],
         }));
-        r.phases.upload = upload_started.elapsed();
+        self.phases.upload = upload_started.elapsed();
     }
 
     fn submit_and_present(&mut self) {
@@ -2403,10 +2442,10 @@ impl PresentSteps for FramePass<'_> {
         }
         r.queue.submit(Some(encoder.finish()));
         self.staged_unsubmitted = false;
-        r.phases.submit = submit_started.elapsed();
+        self.phases.submit = submit_started.elapsed();
         let present_started = Instant::now();
         r.queue.present(surface_frame);
-        r.phases.present = present_started.elapsed();
+        self.phases.present = present_started.elapsed();
     }
 }
 
@@ -3760,33 +3799,25 @@ impl ApplicationHandler for App {
                 // one screen's composition on the other's surface.
                 let role = self.window_role_of(id);
                 // The controller is NOT held here: `present_output` takes it only for short reads
-                // (see [`FrameSource`]), so a slow surface acquire cannot block a LAN command.
-                let (label, presented, phases, present_locks) = match role {
+                // (see [`FrameSource`]), so a slow surface acquire cannot block a LAN command. It
+                // records every lock it takes into `locks`, this redraw's one set of figures.
+                let (label, report) = match role {
                     Some(role) => {
-                        let (label, slot) = match role {
-                            WindowRole::Main => ("main", &mut self.main),
-                            WindowRole::Stage => ("stage", &mut self.stage),
+                        let slot = by_role(&mut self.main, &mut self.stage, role);
+                        let report = match slot.as_mut() {
+                            Some(r) => r.present_output(&self.controller, role, now, &mut locks),
+                            // A redraw for a window that has just closed: nothing to draw.
+                            None => PresentReport::none(),
                         };
-                        match slot.as_mut() {
-                            Some(r) => {
-                                let presented = r.present_output(&self.controller, role, now);
-                                (label, presented, r.phases, r.lock_times)
-                            }
-                            None => (label, false, RenderPhases::default(), LockTimes::default()),
-                        }
+                        (role.screen_id(), report)
                     }
-                    None => (
-                        "closed",
-                        false,
-                        RenderPhases::default(),
-                        LockTimes::default(),
-                    ),
+                    None => ("closed", PresentReport::none()),
                 };
                 // Smoke mode (86ajpevzp): the main window produced a real frame —
                 // report time-to-first-frame (from App init) and exit cleanly (0).
                 if matches!(role, Some(WindowRole::Main))
                     && self.smoke
-                    && presented
+                    && report.presented
                     && !self.smoke_done
                 {
                     self.smoke_done = true;
@@ -3796,14 +3827,14 @@ impl ApplicationHandler for App {
                     );
                     event_loop.exit();
                 }
-                locks.add(present_locks);
                 let total = redraw_started.elapsed();
-                if let Some(suppressed) = self
-                    .stall_reporter
-                    .observe(Instant::now(), total.max(locks.waited).max(locks.held))
-                {
+                if let Some(suppressed) = self.stall_reporter.observe(Instant::now(), total) {
                     diag(&describe_redraw_stall(
-                        label, total, locks, phases, suppressed,
+                        label,
+                        total,
+                        locks,
+                        report.phases,
+                        suppressed,
                     ));
                 }
             }
@@ -5431,6 +5462,7 @@ mod tests {
         let locks = super::LockTimes {
             waited: Duration::from_millis(7),
             held: Duration::from_millis(9),
+            longest: Duration::from_millis(9),
         };
         let line =
             super::describe_redraw_stall("main", Duration::from_millis(2000), locks, phases, 0);
@@ -5444,8 +5476,9 @@ mod tests {
             "acquire 33 ms",
             "submit 44 ms",
             "present 55 ms",
-            // 2000 - (11 + 22 + 33 + 44 + 55): the part no timed phase explains.
-            "unaccounted 1835 ms",
+            // 2000 - 7 (waiting for the controller lock, printed separately) - (11 + 22 + 33 + 44 +
+            // 55): the part neither a timed phase nor a lock wait explains.
+            "unaccounted 1828 ms",
         ] {
             assert!(
                 line.contains(needle),
@@ -5485,39 +5518,75 @@ mod tests {
     /// commands, so the line must say which it was: a redraw that merely took long (the lock held
     /// only briefly) versus one that held the lock for as long as the stall (a command really was
     /// blocked). Saying "blocked" for the first would be a lie, and "not blocked" for the second
-    /// would hide the very bug this line exists to catch.
+    /// would hide the very bug this line exists to catch. A command waits behind ONE hold, not the
+    /// sum of them, so the verdict is the LONGEST single hold: three 90 ms holds are not a 270 ms
+    /// block.
     #[test]
     fn the_stall_line_says_whether_lan_commands_were_blocked() {
-        let brief = super::LockTimes {
+        let describe = |locks: super::LockTimes| {
+            super::describe_redraw_stall(
+                "main",
+                Duration::from_millis(1001),
+                locks,
+                super::RenderPhases::default(),
+                0,
+            )
+        };
+        let brief = describe(super::LockTimes {
             waited: Duration::ZERO,
             held: Duration::from_millis(3),
-        };
-        let line = super::describe_redraw_stall(
-            "main",
-            Duration::from_millis(1001),
-            brief,
-            super::RenderPhases::default(),
-            0,
-        );
+            longest: Duration::from_millis(3),
+        });
         assert!(
-            line.contains("not blocked"),
-            "a stall with the lock held for 3 ms must say commands were not blocked: {line}"
+            brief.contains("not blocked"),
+            "a stall with the lock held for 3 ms must say commands were not blocked: {brief}"
         );
 
-        let long = super::LockTimes {
+        let long = describe(super::LockTimes {
             waited: Duration::ZERO,
             held: super::StallReporter::THRESHOLD,
-        };
-        let line = super::describe_redraw_stall(
-            "main",
-            Duration::from_millis(1001),
-            long,
-            super::RenderPhases::default(),
-            0,
-        );
+            longest: super::StallReporter::THRESHOLD,
+        });
         assert!(
-            line.contains("blocked LAN commands") && !line.contains("not blocked"),
-            "a stall that held the lock for the threshold must say commands were blocked: {line}"
+            long.contains("blocked LAN commands") && !long.contains("not blocked"),
+            "a stall that held the lock for the threshold must say commands were blocked: {long}"
+        );
+
+        // Three 90 ms holds sum past the threshold but no command waited behind more than one.
+        let three_short = describe(super::LockTimes {
+            waited: Duration::ZERO,
+            held: Duration::from_millis(270),
+            longest: Duration::from_millis(90),
+        });
+        assert!(
+            three_short.contains("not blocked")
+                && three_short.contains("longest single hold 90 ms"),
+            "three 90 ms holds must not read as a 270 ms block: {three_short}"
+        );
+    }
+
+    /// A lock WAIT is printed on its own, so it must not also be counted as unexplained time: a
+    /// redraw that spent 600 ms queued behind a slow LAN command and 165 ms in timed phases has
+    /// 1235 ms of a 2000 ms redraw left that nothing explains, not 1835.
+    #[test]
+    fn a_lock_wait_is_not_reported_as_unaccounted_time() {
+        let phases = super::RenderPhases {
+            transform: Duration::from_millis(11),
+            acquire: Duration::from_millis(33),
+            upload: Duration::from_millis(22),
+            submit: Duration::from_millis(44),
+            present: Duration::from_millis(55),
+        };
+        let locks = super::LockTimes {
+            waited: Duration::from_millis(600),
+            held: Duration::ZERO,
+            longest: Duration::ZERO,
+        };
+        let line =
+            super::describe_redraw_stall("main", Duration::from_millis(2000), locks, phases, 0);
+        assert!(
+            line.contains("unaccounted 1235 ms"),
+            "unaccounted must exclude the 600 ms lock wait: {line}"
         );
     }
 
@@ -5785,87 +5854,235 @@ mod tests {
         ))
     }
 
-    /// A `SharedFrame` over `controller` for the main output at its native size, so the default
-    /// geometry applies no transform and the live frame is lent as is.
+    /// A `SharedFrame` over `controller` for the main output, recording its lock figures into
+    /// `locks` (the caller owns them, exactly as the redraw handler does in production).
     fn shared_frame<'a>(
         controller: &'a Mutex<selahcue_app::LiveController>,
         cfg: &'a selahcue_lan::protocol::OutputConfigView,
+        window: (u32, u32),
+        locks: &'a mut super::LockTimes,
     ) -> super::SharedFrame<'a> {
         super::SharedFrame {
             controller,
             role: super::WindowRole::Main,
             cfg,
-            window: (320, 180),
-            locks: super::LockTimes::default(),
+            window,
+            locks,
             transform: Duration::ZERO,
         }
     }
 
-    /// The real frame source must lend the live frame and release the controller the moment the
-    /// caller is done with it, not when the whole present ends.
+    /// The default geometry (no rotation, no mirror, fill) applies no transform, so the live frame
+    /// is lent AS IT IS, straight from under the lock: the copy into the GPU's staging memory is all
+    /// the upload does. Lending a copy instead would add a full-frame memcpy per redraw for the
+    /// common case, which the 4 GB target cannot afford.
     #[test]
-    fn the_shared_frame_is_lent_and_the_lock_is_released_as_soon_as_it_is_used() {
+    fn the_default_geometry_lends_the_live_frame_itself_under_the_lock() {
         let controller = shared_controller();
         let cfg = selahcue_lan::protocol::OutputConfigView::default();
-        let mut frames = shared_frame(&controller, &cfg);
-        let mut seen = None;
-        let lent = super::FrameSource::with_frame(&mut frames, &mut |f| {
-            // Inside the callback the lock IS held (positive control for the assertion after it).
-            assert!(
-                controller.try_lock().is_err(),
-                "the controller must be locked while the frame is lent"
-            );
-            seen = Some((f.width(), f.height()));
-        });
+        let mut times = super::LockTimes::default();
+        let mut seen: Option<*const super::FrameBuffer> = None;
+        let lent = super::FrameSource::with_frame(
+            &mut shared_frame(&controller, &cfg, (320, 180), &mut times),
+            &mut |f| {
+                // Inside the callback the lock IS held (positive control for the transformed case).
+                assert!(
+                    controller.try_lock().is_err(),
+                    "the default geometry lends the frame from under the lock"
+                );
+                seen = Some(f as *const _);
+            },
+        );
         assert!(
             lent,
             "an uncontended, healthy controller must lend its frame"
         );
-        assert_eq!(seen, Some((320, 180)), "the live frame's size");
+        let guard = controller.lock().expect("controller");
         assert!(
-            controller.try_lock().is_ok(),
-            "the controller must be free again as soon as the frame has been used"
+            std::ptr::eq(
+                seen.expect("the frame was lent"),
+                super::output_frame(&guard, super::WindowRole::Main)
+            ),
+            "the default geometry must lend the live frame itself, not a copy"
         );
     }
 
+    /// A transformed screen (rotate, mirror, fit) is the case that used to hold the controller for
+    /// the whole transform: 33 ms for a 90-degree rotation of a 1080p frame in release and about
+    /// 500 ms in a debug build, on every redraw. The frame is now copied under the lock and the
+    /// COPY is transformed after the lock is released, so the lock is free while the transform and
+    /// the upload run.
+    #[test]
+    fn a_transformed_screen_is_copied_under_the_lock_and_transformed_after_releasing_it() {
+        let controller = shared_controller();
+        let cfg = selahcue_lan::protocol::OutputConfigView {
+            orientation: 1, // a quarter turn: a 320x180 frame becomes 180x320
+            ..Default::default()
+        };
+        let mut times = super::LockTimes::default();
+        let mut seen: Option<(u32, u32, *const super::FrameBuffer)> = None;
+        let lent = super::FrameSource::with_frame(
+            &mut shared_frame(&controller, &cfg, (180, 320), &mut times),
+            &mut |f| {
+                assert!(
+                    controller.try_lock().is_ok(),
+                    "the controller must be FREE while a transformed frame is being used"
+                );
+                seen = Some((f.width(), f.height(), f as *const _));
+            },
+        );
+        assert!(lent);
+        let (w, h, ptr) = seen.expect("the frame was lent");
+        assert_eq!((w, h), (180, 320), "the transform must still be applied");
+        let guard = controller.lock().expect("controller");
+        assert!(
+            !std::ptr::eq(ptr, super::output_frame(&guard, super::WindowRole::Main)),
+            "a transformed screen is lent a transformed COPY, not the live frame"
+        );
+    }
+
+    /// What counts as "default geometry" decides whether a frame is copied at all.
+    #[test]
+    fn only_the_untouched_geometry_is_default() {
+        use selahcue_lan::protocol::{OutputConfigView, ScaleFit};
+        let default = OutputConfigView::default();
+        assert!(super::geometry_is_default(&default));
+        assert!(
+            super::geometry_is_default(&OutputConfigView {
+                orientation: 4, // a full turn is no turn
+                ..default.clone()
+            }),
+            "a full turn is the default orientation"
+        );
+        for changed in [
+            OutputConfigView {
+                orientation: 1,
+                ..default.clone()
+            },
+            OutputConfigView {
+                mirror: true,
+                ..default.clone()
+            },
+            OutputConfigView {
+                scale_fit: ScaleFit::Fit,
+                ..default.clone()
+            },
+            OutputConfigView {
+                scale_fit: ScaleFit::Stretch,
+                ..default
+            },
+        ] {
+            assert!(
+                !super::geometry_is_default(&changed),
+                "{changed:?} changes the geometry and must be transformed"
+            );
+        }
+    }
+
+    /// The audience output must show the LIVE frame and the stage monitor the stage view. Swapping
+    /// them would put the confidence monitor in front of the congregation.
+    #[test]
+    fn each_role_shows_its_own_frame() {
+        let controller = shared_controller();
+        let c = controller.lock().expect("controller");
+        let main = super::output_frame(&c, super::WindowRole::Main);
+        let stage = super::output_frame(&c, super::WindowRole::Stage);
+        assert!(std::ptr::eq(main, c.presenter().live_output()));
+        assert!(std::ptr::eq(stage, c.stage_output()));
+        assert!(
+            !std::ptr::eq(main, stage),
+            "positive control: the two roles must be backed by different frames"
+        );
+    }
+
+    /// An identify overlay frame is lent as it is, and the lend reports success: if it did not, the
+    /// overlay would present nothing.
+    #[test]
+    fn an_owned_frame_is_lent_as_it_is() {
+        let frame = tiny_frame();
+        let mut seen: Option<*const super::FrameBuffer> = None;
+        let lent = super::FrameSource::with_frame(&mut super::OwnedFrame(&frame), &mut |f| {
+            seen = Some(f as *const _);
+        });
+        assert!(lent, "an owned frame is always available");
+        assert_eq!(seen, Some(&frame as *const _));
+    }
+
+    /// Picking a window's value by role is one lookup, so the role and the renderer it selects
+    /// cannot disagree.
+    #[test]
+    fn by_role_picks_the_slot_that_belongs_to_the_role() {
+        let (mut main, mut stage) = (1, 2);
+        assert_eq!(
+            *super::by_role(&mut main, &mut stage, super::WindowRole::Main),
+            1
+        );
+        assert_eq!(
+            *super::by_role(&mut main, &mut stage, super::WindowRole::Stage),
+            2
+        );
+    }
+
+    /// The registry ids the roles map to are what the controller keys output configs by.
+    #[test]
+    fn each_role_has_its_own_screen_id() {
+        assert_eq!(super::WindowRole::Main.screen_id(), "main");
+        assert_eq!(super::WindowRole::Stage.screen_id(), "stage");
+    }
+
     /// The figures the stall line prints must be real: HELD is the time the lock was actually held
-    /// (here, a callback that sleeps), so a line that says "held it for 3 ms" can be believed.
+    /// (here, a callback that sleeps), so a line that says "held it for 3 ms" can be believed, and
+    /// LONGEST is the longest single hold.
     #[test]
     fn the_shared_frame_times_how_long_it_holds_the_controller() {
         let controller = shared_controller();
         let cfg = selahcue_lan::protocol::OutputConfigView::default();
-        let mut frames = shared_frame(&controller, &cfg);
-        super::FrameSource::with_frame(&mut frames, &mut |_| {
-            std::thread::sleep(Duration::from_millis(30));
-        });
+        let mut times = super::LockTimes::default();
+        super::FrameSource::with_frame(
+            &mut shared_frame(&controller, &cfg, (320, 180), &mut times),
+            &mut |_| {
+                std::thread::sleep(Duration::from_millis(30));
+            },
+        );
         assert!(
-            frames.locks.held >= Duration::from_millis(25),
+            times.held >= Duration::from_millis(25),
             "held {:?} after a 30 ms hold",
-            frames.locks.held
+            times.held
+        );
+        assert_eq!(
+            times.longest, times.held,
+            "with one hold, the longest hold is the total"
         );
     }
 
     /// ...and WAITED is the time spent blocked behind another thread, which is how a slow LAN
-    /// command shows up on the redraw side.
+    /// command shows up on the redraw side. The waiter signals once it is running, so the 120 ms the
+    /// other thread holds the lock is spent with the waiter already blocked (no thread-spawn slack
+    /// for a loaded machine to eat into the assertion).
     #[test]
     fn the_shared_frame_times_how_long_it_waits_behind_another_thread() {
         let controller = shared_controller();
         let cfg = selahcue_lan::protocol::OutputConfigView::default();
-        let mut frames = shared_frame(&controller, &cfg);
+        let mut times = super::LockTimes::default();
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
         let guard = controller.lock().expect("controller");
-        let locks = std::thread::scope(|s| {
+        std::thread::scope(|s| {
             let waiter = s.spawn(|| {
-                super::FrameSource::with_frame(&mut frames, &mut |_| {});
-                frames.locks
+                started_tx.send(()).expect("signal");
+                super::FrameSource::with_frame(
+                    &mut shared_frame(&controller, &cfg, (320, 180), &mut times),
+                    &mut |_| {},
+                );
             });
+            started_rx.recv().expect("the waiter started");
             std::thread::sleep(Duration::from_millis(120));
             drop(guard);
-            waiter.join().expect("waiter")
+            waiter.join().expect("waiter");
         });
         assert!(
-            locks.waited >= Duration::from_millis(80),
+            times.waited >= Duration::from_millis(80),
             "waited {:?} behind a 120 ms hold by another thread",
-            locks.waited
+            times.waited
         );
     }
 
@@ -5882,9 +6099,12 @@ mod tests {
             .join()
         });
         let cfg = selahcue_lan::protocol::OutputConfigView::default();
-        let mut frames = shared_frame(&controller, &cfg);
+        let mut times = super::LockTimes::default();
         let mut called = false;
-        let lent = super::FrameSource::with_frame(&mut frames, &mut |_| called = true);
+        let lent = super::FrameSource::with_frame(
+            &mut shared_frame(&controller, &cfg, (320, 180), &mut times),
+            &mut |_| called = true,
+        );
         assert!(!lent && !called, "a poisoned controller must lend no frame");
     }
 
