@@ -504,6 +504,13 @@ python3 scripts/check_fidelity_audit.py                      # the audit data is
   (`AUTH-LANDING-PAGES-HANDOFF` 2.2). `vp_style_diff` labels a colour `colour~` only when the build's value equals
   the mapped token; a colour used in the wrong *role* is `colour`, not excused.
 
+### Environment (verified 2026-10-03)
+
+The Python scripts need Pillow and Playwright (Chromium; WebKit for `--engine both`) in the interpreter that runs them. On this box that is
+`/usr/bin/python3` 3.9.6 (Pillow 11.3, Playwright with Chromium 148 and WebKit 26.4). A Homebrew `python3` earlier on `PATH` has neither: the scripts then stop
+with "visual-parity harness needs Pillow", which is the right outcome and not a defect. The capture also needs network to load Inter from Google Fonts (a capture
+without Inter is refused), and `npm run build` in `implementation/marketing` first.
+
 ### Bounds
 
 | store | cap | enforced by |
