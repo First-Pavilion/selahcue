@@ -746,5 +746,15 @@
         }
       ]
     }
-  }
+  },
+  "bugs": [
+    {
+      "id": "home-bug-01",
+      "title": "Heading levels skip on Home: h2 jumps to h4 for the output cards and the testimonial names",
+      "evidence": "home.blink.dom.json: h2 then h4 'Audience - Main' (y 2871) and h4 'Sarah Jenkins' (y 5213); found by QA (Quinn Q-1) and re-measured here",
+      "fix": "Make those headings h3 (or plain strong text where they are not section headings) so the outline never skips a level; a code accessibility defect independent of Figma",
+      "group": "home",
+      "ticket": "17tnw2b2cex"
+    }
+  ]
 }

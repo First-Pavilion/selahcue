@@ -172,7 +172,7 @@
           "source": "MARKETING-PORTAL-GAP-FILL-HANDOFF 10a (FormField: label 14px Semi Bold --sc-text, input --sc-elevated background, focus ring). FLAG FOR UMA: AUTH-LANDING-PAGES-HANDOFF 2.2/2.3 say the opposite for field wells (input well -> --sc-inset, label 13/500 --sc-text-secondary) and the Contact frame follows 2.3; the two handoffs conflict, so one decision should settle FormField for contact and auth together.",
           "decision": null,
           "a11y": false,
-          "link": null
+          "link": "contact-19"
         },
         {
           "id": "contact-11",
@@ -308,6 +308,22 @@
           "a11y": false,
           "link": "17tnw2b0x3h",
           "dup_of": "shared-chrome-19"
+        },
+        {
+          "id": "contact-19",
+          "class": "D",
+          "scope": "page",
+          "component": null,
+          "severity": "medium",
+          "title": "FormField styling: two handoffs disagree and one decision has to settle it for Contact and the auth pages",
+          "figma": "Contact (497:124) and every auth frame draw the field label as Inter Medium 13 in the secondary text colour and the input well on the inset fill, 44 high (AUTH-LANDING-PAGES-HANDOFF 2.2 and 2.3).",
+          "build": "FormField.vue follows MARKETING-PORTAL-GAP-FILL-HANDOFF 10a: label 14/600 in the primary text colour, input on --sc-elevated, 3px focus glow. It is used by Contact, Sign up, Forgot password, Sign in, Reset and the affiliate and admin settings pages.",
+          "evidence": "contact-10 (class B, follows 10a), signin-06 and signin-07 (class A, follow AUTH 2.3); the cited sections quote opposite values; reported by the code review of PR 171 (finding 6)",
+          "fix": null,
+          "source": null,
+          "decision": "Uma: which spec governs FormField for Contact and the auth pages together? If AUTH-LANDING 2.3: the auth variant (signin-06, signin-07) is built and contact-10 flips from class B to class A. If GAP-FILL 10a: signin-06 and signin-07 become class B citing it, and the frames are the ones to redraw. Settle it before the shared-components ticket (FormField) and the auth ticket finish.",
+          "a11y": false,
+          "link": "contact-10; signin-06; signin-07"
         }
       ]
     },
@@ -859,5 +875,23 @@
         }
       ]
     }
-  }
+  },
+  "bugs": [
+    {
+      "id": "contact-bug-01",
+      "title": "Heading levels skip on Contact: h1 jumps to h4 for the contact-method cards",
+      "evidence": "contact.blink.dom.json heading sequence 1 4 4 4 2 3 3 3 3: 'Community & Discord' (y 412) is an h4 directly under the h1; found by QA (Quinn Q-1) and re-measured here",
+      "fix": "Make the contact-method card titles h2 or h3 to match the page outline so no level is skipped; a code accessibility defect independent of Figma",
+      "group": "secondary",
+      "ticket": "17tnw2b2cez"
+    },
+    {
+      "id": "changelog-bug-01",
+      "title": "Heading levels skip on Changelog: h1 jumps to h3 for each change",
+      "evidence": "changelog.blink.dom.json heading sequence 1 3 3 3 3 3 3 3 3 3 3 3 3: 'Native NDI 5 Output Engine' (y 372) is an h3 directly under the h1; found by QA (Quinn Q-1) and re-measured here",
+      "fix": "Make the release version headings h2 and keep the per-change titles h3 so the outline never skips a level; a code accessibility defect independent of Figma",
+      "group": "secondary",
+      "ticket": "17tnw2b2cez"
+    }
+  ]
 }

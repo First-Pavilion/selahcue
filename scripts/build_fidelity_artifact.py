@@ -284,7 +284,8 @@ def build(run_dir, out_dir, meta):
     catalogue = cfa.load_catalogue()
     findings = cfa.load_findings()
     tickets = cfa.load_tickets()
-    problems = cfa.check(catalogue, findings, tickets)
+    problems = cfa.check(catalogue, findings, tickets, expected_surfaces=cfa.EXPECTED_SURFACES)
+    problems += cfa.meta_problems(findings)
     if problems:
         raise SystemExit("the audit data is not complete; fix it first:\n  " + "\n  ".join(problems[:15]))
     store = vp.get_suite("marketing").store()
@@ -471,12 +472,13 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--run", required=True)
     ap.add_argument("--out", required=True)
-    ap.add_argument("--ticket", default="17tnw2b2c75")
-    ap.add_argument("--origin-main", default="3fb96da8")
-    ap.add_argument("--date", default="2026-10-03")
     args = ap.parse_args()
-    files, total = build(os.path.abspath(args.run), os.path.abspath(args.out),
-                         {"ticket": args.ticket, "origin_main": args.origin_main, "date": args.date})
+    # The audited commit and date come from the findings files themselves (checked for agreement and for the
+    # commit existing), never from a default on the command line.
+    meta, problems = cfa.audit_meta(cfa.load_findings())
+    if problems:
+        raise SystemExit("; ".join(problems))
+    files, total = build(os.path.abspath(args.run), os.path.abspath(args.out), meta)
     print("wrote %s/index.html and %d images, %.1f MB" % (args.out, len(files), total / 1048576.0))
     print("files: " + ", ".join(files[:3]) + (" ..." if len(files) > 3 else ""))
     return 0

@@ -775,6 +775,114 @@ def test_style_diff_finds_what_it_claims():
        "style diff: a short banner that merely appears inside a long design paragraph is NOT paired with it")
 
 
+def test_style_diff_review_fixes():
+    # radius: effective radii (Cody 7: a circle's `50%` was reported as radius 0)
+    box = {"n": "Frame", "ty": "FRAME", "id": "1:2", "x": 100, "y": 100, "w": 44, "h": 44, "f": "#171b22", "r": 999}
+    text = dict(_dt("Go", x=110, y=112, tw=20), p=0)
+
+    def radius_kinds(figma_r, dom_radius, w=44, h=44):
+        """The text must sit INSIDE the Figma box or no box is matched and every assertion below is vacuous."""
+        fb = dict(box, r=figma_r, w=w, h=h)
+        card = {"tag": "div", "x": 100, "y": 100, "w": w, "h": h, "cls": "c", "bg": "rgb(20, 22, 29)", "radius": dom_radius}
+        res = vsd.diff(_figma([_ft("Go", x=110, y=112, w=20, h=16)], [fb]), {"items": [card, text]})
+        assert res["summary"]["paired"] == 1 and res["boxes"] is not None
+        return {d["kind"] for b in res["boxes"] for d in b["diffs"]}
+
+    matched = vsd.diff(_figma([_ft("Go", x=110, y=112, w=20, h=16)], [dict(box, r=4)]),
+                       {"items": [{"tag": "div", "x": 100, "y": 100, "w": 44, "h": 44, "cls": "c", "bg": "rgb(20, 22, 29)", "radius": "50%"}, text]})
+    ok(matched["boxes"], "style diff radius: the harness really matches the Figma box to the DOM box (a pill drawn as r=4 against 50% is reported), "
+                         "so the 'not reported' controls below are not vacuous")
+
+    ok("radius" not in radius_kinds(999, "50%"), "style diff radius: Figma's 999 on a 44px circle equals CSS `border-radius: 50%` (was reported as 0)")
+    ok("radius" not in radius_kinds(999, "999px"), "style diff radius: Figma 999 equals CSS 999px on a pill (both clamp to half the shorter side)")
+    ok("radius" not in radius_kinds(22, "22px", 430, 300), "style diff radius: an ordinary matching radius reports nothing")
+    ok("radius" in radius_kinds(22, "16px", 430, 300), "style diff radius: 22 against 16 is still reported (positive control)")
+    ok("radius" in radius_kinds(999, "4px"), "style diff radius: a pill drawn but a square built is still reported")
+
+    # apostrophes: curly vs straight is not a case difference (Cody 7)
+    curly = vsd.diff(_figma([_ft("Don\u2019t panic here")]), {"items": [_dt("Don't panic here")]})
+    ok(not _kinds(curly), "style diff copy: a curly apostrophe against a straight one is NOT a copy or case difference")
+    ok("copy-case" in _kinds(vsd.diff(_figma([_ft("Don't panic here")]), {"items": [_dt("don't panic here")]})),
+       "style diff copy: a real case difference is still reported (positive control)")
+
+    # text-align condition (Cody 7)
+    def align_kinds(ta, w, dom_ta, tw):
+        res = vsd.diff(_figma([_ft("Centred line", ta=ta, w=w)]), {"items": [_dt("Centred line", tw=tw, ta=dom_ta)]})
+        return _kinds(res)
+
+    ok("text-align" in align_kinds("CENTER", 300, "left", 120), "style diff align: a centred design built left-aligned is reported")
+    ok("text-align" not in align_kinds("LEFT", 120, "center", 118), "style diff align: a LEFT text box that merely hugs its ink is not a difference")
+    ok("text-align" in align_kinds("LEFT", 400, "center", 118), "style diff align: a LEFT box far wider than its ink built centred is reported")
+    ok("text-align" not in align_kinds("LEFT", 300, "left", 120), "style diff align: matching left alignment reports nothing")
+
+    # pair_texts contract (Cody 7): three lists, pairs are 3-tuples
+    pairs, f_only, d_only = vsd.pair_texts([_ft("Hello world")], [_dt("Hello world")])
+    ok(len(pairs) == 1 and len(pairs[0]) == 3 and f_only == [] and d_only == [],
+       "style diff pairing: pair_texts returns (pairs, figma_only, build_only) and each pair is a 3-tuple, as its docstring says")
+
+    # the fuzzy prefilter can never discard a pair that would have reached the threshold (Vera N4)
+    import_difflib = vsd.difflib
+    rng = random.Random(11)
+    words = "the church service scripture output screen live stage download version install account sign in".split()
+    wrongly_skipped = skipped = 0
+    for _ in range(3000):
+        a_txt = " ".join(rng.choice(words) for _ in range(rng.randint(2, 9)))
+        b_txt = a_txt if rng.random() < 0.3 else " ".join(rng.choice(words) for _ in range(rng.randint(2, 9)))
+        if rng.random() < 0.4 and len(a_txt) > 6:
+            i = rng.randint(0, len(a_txt) - 2)
+            b_txt = a_txt[:i] + a_txt[i + 1:]
+        reach = vsd.may_reach(vsd.collections.Counter(a_txt), len(a_txt), vsd.collections.Counter(b_txt), len(b_txt), vsd.FUZZY)
+        ratio = import_difflib.SequenceMatcher(None, a_txt, b_txt).ratio()
+        if not reach:
+            skipped += 1
+            if ratio >= vsd.FUZZY:
+                wrongly_skipped += 1
+    ok(wrongly_skipped == 0 and skipped > 200,
+       "fuzzy prefilter: over 3000 random pairs it skipped %d and wrongly skipped %d that would have reached the threshold "
+       "(it must be 0; and it must actually skip, or it is not a prefilter)" % (skipped, wrongly_skipped))
+    ok(not vsd.may_reach(vsd.collections.Counter("abcdef"), 6, vsd.collections.Counter("uvwxyz"), 6, 0.8)
+       and vsd.may_reach(vsd.collections.Counter("hello world"), 11, vsd.collections.Counter("hello world"), 11, 0.8),
+       "fuzzy prefilter: disjoint text is skipped and identical text is kept")
+
+
+def test_reingest_keeps_style_registration():
+    root = tempfile.mkdtemp(prefix="vp-reingest-")
+    src = os.path.join(root, "s.png")
+    Image.new("RGB", (8, 8), (1, 2, 3)).save(src)
+    try:
+        store = vp.ReferenceStore(root=os.path.join(root, "ref"), max_entries=5, max_bytes=10 ** 7,
+                                  style_dir=os.path.join(root, "style"), require_style=True)
+        store.ingest("page", src, "5:1")
+        os.makedirs(store.style_dir)
+        with open(store.style_path_for("page"), "w") as fh:
+            json.dump({"node": "5:1", "texts": [{"t": "x", "x": 0, "y": 0, "w": 1, "h": 1}], "boxes": [], "counts": {"capped": False}}, fh)
+        store.register_style("page")
+        store.ingest("page", src, "5:1")
+        ok(store.entries()["page"].get("style") and store.verify()[0],
+           "re-ingest: re-exporting a frame keeps its style registration, and the store still verifies")
+        store.ingest("page", src, "5:99")
+        ok(not store.entries()["page"].get("style") and not store.verify()[0],
+           "re-ingest: a re-export under a DIFFERENT node drops the style (it described another node) and verify says so")
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def test_orchestrator_rejects_operator_only_flags_for_marketing():
+    import_vp = __import__("visual_parity")
+    old = sys.argv
+    out = io.StringIO()
+    try:
+        results = []
+        for flag in ("--skip-web", "--skip-native"):
+            sys.argv = ["visual_parity.py", "--suite", "marketing", flag]
+            with contextlib.redirect_stdout(out):
+                results.append(import_vp.main())
+    finally:
+        sys.argv = old
+    ok(results == [2, 2] and "operator suite only" in out.getvalue(),
+       "orchestrator: --skip-web and --skip-native are REJECTED for the marketing suite (exit 2), not silently ignored")
+
+
 def test_style_diff_boxes():
     figma = _figma([_ft("Card title", x=140, y=140)],
                    [{"n": "Frame", "ty": "FRAME", "id": "1:2", "x": 100, "y": 100, "w": 430, "h": 300,
@@ -1216,6 +1324,17 @@ def test_style_and_figma_node_caps_bite():
         shutil.rmtree(root, ignore_errors=True)
 
 
+def test_artifact_links_only_exact_ticket_urls():
+    good = bfa.linked(cfa.CLICKUP_TASK_URL + "86abc1234", "86abc1234", "T")
+    ok(good == '<a href="%s86abc1234">T</a>' % cfa.CLICKUP_TASK_URL,
+       "artifact links: a ticket's exact ClickUp URL becomes an anchor")
+    for label, url in (("a javascript: URL", "javascript:alert(1)"), ("another ticket's URL", cfa.CLICKUP_TASK_URL + "86other999"),
+                       ("a lookalike host", "https://app.clickup.com.evil.example/t/86abc1234"), ("no URL", None)):
+        out = bfa.linked(url, "86abc1234", "T")
+        ok("<a" not in out and "href" not in out and out == "T",
+           "artifact links: %s renders as plain text, never an href (HTML-escaping does not stop javascript: URLs)" % label)
+
+
 def test_artifact_builder_caps_refuse_before_writing():
     root = tempfile.mkdtemp(prefix="vp-art-")
     saved = (bfa.MAX_IMAGES, bfa.MAX_TOTAL_BYTES, bfa.encode_image)
@@ -1482,6 +1601,9 @@ def main():
         test_marketing_deviation_gate_can_fail,
         test_dom_contrast_survey,
         test_style_diff_finds_what_it_claims,
+        test_style_diff_review_fixes,
+        test_reingest_keeps_style_registration,
+        test_orchestrator_rejects_operator_only_flags_for_marketing,
         test_style_diff_boxes,
         test_marketing_catalogue_is_usable,
         test_capture_server_is_confined,
@@ -1494,6 +1616,7 @@ def main():
         test_dump_and_call_caps_bite,
         test_capture_entry_wiring,
         test_style_and_figma_node_caps_bite,
+        test_artifact_links_only_exact_ticket_urls,
         test_artifact_builder_caps_refuse_before_writing,
         test_comparator_main_wiring,
     ):

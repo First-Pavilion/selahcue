@@ -63,6 +63,12 @@ def main():
     ap.add_argument("--min-ssim", type=float, default=None)
     ap.add_argument("--name", default=None, help="run directory name (default: a UTC timestamp)")
     args = ap.parse_args()
+    if args.suite == "marketing" and (args.skip_web or args.skip_native):
+        # They narrow the operator suite's capture groups. The marketing suite has one group, so honouring them
+        # would mean "capture nothing", and ignoring them silently (as this used to) hides a typo.
+        print("FAIL: --skip-web and --skip-native apply to the operator suite only; use --only SLUG ... to narrow "
+              "a marketing run")
+        return 2
     if args.engine is None:
         args.engine = "both" if args.suite == "operator" else "blink"
 

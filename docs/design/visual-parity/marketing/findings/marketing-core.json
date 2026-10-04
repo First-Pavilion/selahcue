@@ -32,11 +32,11 @@
           "scope": "page",
           "component": null,
           "severity": "high",
-          "title": "Church card shows '$0 / month' where Figma shows 'Custom'",
+          "title": "Third plan card prints '$0 / month', a price nobody decided; Figma's 'Custom' tier is not shipped until D1 closes",
           "figma": "Church card 483:214: plan name 'Church', price text 'Custom' 44/700 in the price slot (170w), no period text, description 'For multi-site teams and larger ministries.'",
           "build": "src/views/PricingView.vue:28-35 declares the Church plan with price: 0, period: 'month'; PricingCard.vue:26-29 renders every numeric price as '$' + value + '/ period', so the Church card reads '$0 / month' (and stays $0 when Annual is toggled because the discount only applies when price > 0). A string price renders .price-val.custom at 36px (PricingCard.vue:99-101) instead of Figma's 44.",
           "evidence": "vp_style_diff pricing, 'in the build, not in the design': y=468 44px '$0' (price-val) and y=496 15px '/ month' (price-period) with no Figma pair; slice pricing-0.png (Church card).",
-          "fix": "Set the Church plan's price to the string 'Custom' (no period) and make .price-val.custom 44/700 to match Figma. Do not show a numeric price for a tier that has none.",
+          "fix": "Stop printing a numeric price on the third card: in PricingView.vue pass a string for the price slot (PricingCard already renders a string as .price-val.custom, so no card change is needed) and make it 44/700 as Figma draws it. Do NOT build a 'Church' or 'Custom' tier or name: the tier set and names are open (pricing-15; DEC-008 decides Free/Pro/Platinum and leaves prices and names to D1). Until D1 closes the string is an honest 'Pricing to be announced' (or drop the card); the layout, slot size and spacing still follow the frame. Annual must not change it.",
           "source": null,
           "decision": null,
           "a11y": false,
@@ -87,7 +87,7 @@
           "figma": "483:144/143: segmented pill 257x42, fill #1e232c, 1px #2b323d, radius 999, 4px inset; selected segment 483:145 90x34 filled #5b6bd6, radius 999, label 'Monthly' 13.5/600 white; unselected 'Annual · save 20%' 13.5/600 muted #9aa4b2. Only the Monthly-selected state is drawn.",
           "build": "PricingView.vue:53-60: 'Monthly' text, a 50x24 slider switch (.switch/.slider, lines 192-239), then 'Annual <UiBadge text=\"Save 20%\" variant=\"accent\"/>'. UiBadge has no `text` prop and the badge has no slot content, so it renders an empty pill: the dom shows 'Annual' only. Labels are 16/400 #f4f6fb, both identical in weight and colour, so nothing marks the active side except the knob.",
           "evidence": "dom pricing.blink.dom.json: spans 'Monthly' (16/400) and 'Annual' (box 74.8w holding only 'Annual'); vp_style_diff Monthly: font-size 13.5 vs 16, weight 600 vs 400; design-only 'Annual · save 20%' y=412.",
-          "fix": "Rebuild the control as the Figma segmented pill: two segments, active one filled brand with white 13.5/600 text, inactive muted; put the label 'Annual · save 20%' (or the decided wording, see pricing-18) inside the segment instead of an empty badge.",
+          "fix": "Rebuild the control to Figma's STRUCTURE: a segmented pill with two segments, the active one filled with the brand colour and white 13.5/600 text, the inactive one muted, with a group name and arrow-key operation (pricing-06). The wording follows pricing-18, not the frame: label the segments 'Monthly' and 'Annual' and ship NO discount ('Save 20%' / 'Annual · save 20%') until an annual price exists and the owner has decided it; remove the empty UiBadge rather than filling it.",
           "source": null,
           "decision": null,
           "a11y": false,
@@ -155,7 +155,7 @@
           "figma": "Free (4): Live audience output + stage display / Bundled public-domain scripture + search / Service plans, timers & themes / One physical output. Pro (6): Everything in Free / NDI + multiple simultaneous outputs / Mobile control over your local network / Theme Designer & saved templates / On-device transcript & scripture detection / Always on the latest version. Church (4): Everything in Pro / Multi-campus / site licensing / Guided onboarding & training / Priority support. Descriptions: 'Everything to run a service on one machine.' / 'For multi-output and streaming churches. Billed monthly, or save 20% yearly.' / 'For multi-site teams and larger ministries.'",
           "build": "PricingView.vue:9-37: Free (3): Basic presentation / Built-in Bible / Offline support. Pro (4): Multi-screen output / NDI support / Stage monitor / Priority support. Church (4): Unlimited campuses / Enterprise deployment / Custom integrations / 24/7 SLA. Descriptions: 'Everything you need to get started' / 'For churches ready to go further' / 'For multi-campus and enterprise'. Build-only claims with no repo backing: 'Priority support' (Pro), '24/7 SLA', 'Custom integrations', 'Unlimited campuses'.",
           "evidence": "vp_style_diff 'in the design, not in the build' y=752..932 (14x400 bullets) and y=631/634 descriptions; 'in the build' y=531.5 plan-desc, y=696.5-799.3 bullets.",
-          "fix": "Replace the plan data in PricingView.vue with the Figma bullets and descriptions (card order and Pro-first on mobile unchanged). The tier/entitlement content itself is subject to pricing-15/16; do not carry 24/7 SLA, priority support or custom integrations into the rewrite.",
+          "fix": "Rebuild the cards to Figma's STRUCTURE (card geometry, type, spacing, bullet rhythm, Pro-first on mobile) with wording that follows pricing-15/16/18, not the frame. Backed today (DEC-008): tiers Free/Pro/Platinum; outputs 2/5/10; NDI outputs none/5/10; speech-to-text 30 min/5 h/10 h; a watermark on all Free output; 1/3/7 seats; prices and tier names open under D1. So do NOT copy Figma's 'One physical output' (Free gets 2), 'Always on the latest version', 'Priority support' or 'Guided onboarding' (no source), and drop the build's '24/7 SLA', 'Priority support', 'Custom integrations', 'Unlimited campuses', 'Enterprise deployment'. Each bullet is either a DEC-008 fact or is left out / marked 'to be confirmed'.",
           "source": null,
           "decision": null,
           "a11y": false,
@@ -206,7 +206,7 @@
           "figma": "10 rows: Live output + stage display; Bundled scripture + keyword search; Service plans, timers & themes; Simultaneous physical outputs (1 / Unlimited / Unlimited); NDI streaming output; Mobile control over your network; Theme Designer & saved templates; On-device transcript & detection; Multi-campus / site licensing; Onboarding & priority support.",
           "build": "PricingView.vue:97-144, 8 rows: Audience Output; Offline Support; Built-in Scripture; Stage Monitor; NDI Output; Timers & Clocks; Priority Support; Custom SLA. 'Custom SLA' is an unbacked claim.",
           "evidence": "vp_style_diff design-only y=1219..1651 (14.5x500 row labels) vs build-only y=1212.3..1667.3 'Audience Output' ... 'Custom SLA'.",
-          "fix": "Replace the table rows with Figma's ten rows and cell values (the tier assignments are subject to pricing-16).",
+          "fix": "Rebuild the comparison table to Figma's STRUCTURE (full-bleed band, header treatment, row height, check and dash icons, column widths) with row labels and cell values that follow pricing-15/16, not the frame. Keep rows the repo backs (live output and stage display, bundled scripture and search, service plans and timers, simultaneous outputs with the DEC-008 values 2 / 5 / 10, NDI output none / 5 / 10, mobile control, Theme Designer, on-device transcript) and leave out or mark 'to be confirmed' the rows with no source ('Multi-campus / site licensing', 'Onboarding & priority support', 'Unlimited' outputs) and the build's 'Custom SLA' and 'Priority Support'.",
           "source": null,
           "decision": null,
           "a11y": false,
@@ -930,7 +930,7 @@
           "figma": "Band 496:151 full width (y917-1302, fill #171b22, pad 40/96/56, gap 28): H2 'What we stand for' 32/700 centred; four cards in one row 496:154/161/167/173, each 294x222, radius 18, fill #0e1116, 1px border, pad 26/24, gap 14: 52x52 radius-14 tile (green shield, brand wifi, gold sparkle, red gauge; white stroke glyph), title 18/600/24, body 14.5/22 muted. Copy: 'Reliability comes first' / 'Offline by default' / 'AI assists, never gates' / 'Bounded & respectful' with their one-sentence bodies.",
           "build": "AboutView.vue:19-50, 99-141: no band; H2 'The Principles Behind SelahCue' 32/700; 2x2 grid (28 gap), cards radius 16, pad 32, emoji icons 🛡️ 📶 ⚡ 📖 at 36px, titles 20/700, bodies 15/24. Different values: 'Never Blank the Screen', 'Offline First, Always', 'Volunteer-Friendly Speed' ('run a service within 5 minutes'), 'Scripture & Rights Protection' ('copyrighted translations are safely entitled and encrypted post-activation').",
           "evidence": "vp_style_diff design-only y=957 32x700 'What we stand for', y=1116 18x600 x4, y=1154 14.5x400 x4; build-only y=508.1 'The Principles Behind SelahCue', y=706-984 20px titles, y=638-916 emoji. Slice about-0.png. Repo: PRD METRIC-006 target is time-to-first-slide <= 10 minutes (not 5); copyrighted translations are R4 / API-only (FR-034).",
-          "fix": "Build the full-bleed band with the Figma heading and four 294x222 radius-18 cards in one row, SVG icon tiles in green/brand/gold/red, Figma titles and bodies. The two build-only claims (5 minutes; entitled and encrypted copyrighted translations) are dropped with the rewrite.",
+          "fix": "Build the full-bleed band and four 294x222 radius-18 cards in one row to Figma's STRUCTURE (SVG icon tiles in green/brand/gold/red, titles 18/600, bodies 14.5/22 muted). Copy follows what the repo backs, not the frame wholesale: 'Reliability comes first' (NFR-024, never blank) and 'Offline by default' (NFR-015) are backed; check 'AI assists, never gates' against the AI ADRs before shipping its body; for 'Bounded & respectful' keep the card and title but ship only the backed part (memory is bounded, NFR-002/003) and leave out 'fast cold start' and 'no account or tracking required' until about-08 is answered. The two build-only claims (5 minutes; entitled and encrypted copyrighted translations) are dropped.",
           "source": null,
           "decision": null,
           "a11y": false,
@@ -1023,5 +1023,23 @@
         }
       ]
     }
-  }
+  },
+  "bugs": [
+    {
+      "id": "pricing-bug-01",
+      "title": "Heading levels skip on Pricing: h1 jumps to h3 for the plan names",
+      "evidence": "pricing.blink.dom.json heading sequence 1 3 3 3 2 2 3 3 3 3: the plan-name headings (y 424) are h3 directly under the h1; found by QA (Quinn Q-1) and re-measured here",
+      "fix": "Make the plan names h2 (or add a visually hidden h2 'Plans' above them) so the outline never skips a level; this is a code accessibility defect independent of Figma, which draws no heading levels",
+      "group": "core",
+      "ticket": "17tnw2b2cey"
+    },
+    {
+      "id": "download-bug-01",
+      "title": "Heading levels skip on Download: h2 jumps to h4 for the install steps",
+      "evidence": "download.blink.dom.json heading sequence 1 2 2 2 3 3 2 2 4 4 4 3 3 3 3: 'Download the installer' (y 2360) is an h4 under an h2; found by QA (Quinn Q-1) and re-measured here",
+      "fix": "Make the install-step titles h3 so the outline never skips a level; a code accessibility defect independent of Figma",
+      "group": "core",
+      "ticket": "17tnw2b2cey"
+    }
+  ]
 }
