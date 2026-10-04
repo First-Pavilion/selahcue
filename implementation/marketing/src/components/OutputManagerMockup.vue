@@ -1,136 +1,174 @@
 <script setup lang="ts">
-import UiBadge from './UiBadge.vue'
+/**
+ * A picture of the Screens & Outputs window (Figma 475:142). The rows say only what the frame says: a
+ * name, a tag and a status. The old sub-lines ("1920x1080 · 60fps", "NDI 5 Stream · Alpha Channel")
+ * carried claims the repo cannot back (audit home-42) and are gone.
+ */
+const rows = [
+  { name: 'Audience — Main', tag: 'MAIN', tagTone: 'brand', status: 'LIVE', statusTone: 'live', canvas: 'main' },
+  { name: 'Stage Display', tag: 'STAGE', tagTone: 'preview', status: 'READY', statusTone: 'warn', canvas: 'stage' },
+  { name: 'Livestream Program', tag: 'NDI', tagTone: 'preview', status: 'BROADCASTING', statusTone: 'preview', canvas: 'ndi' },
+]
 </script>
 
 <template>
-  <div class="output-manager-card">
-    <div class="card-header">
-      <span class="card-title">OUTPUT MANAGER</span>
-      <UiBadge variant="accent" size="sm">3 OUTPUTS ACTIVE</UiBadge>
+  <!-- One image for assistive technology: the name says what it shows; the words inside it are a drawing
+       of the product. The "+ Add output" is a picture of a button, so it is not one. -->
+  <div
+    class="output-window"
+    role="img"
+    aria-label="Screens & Outputs window listing three outputs: the audience projector, the stage display and an NDI stream"
+  >
+    <div class="window-bar">
+      <span class="window-title">Screens &amp; Outputs</span>
+      <span class="add-output">+ Add output</span>
     </div>
 
     <div class="output-rows">
-      <!-- Row 1: Main Output -->
-      <div class="output-row">
-        <div class="row-left">
-          <div class="output-icon live">📺</div>
-          <div>
-            <h4 class="output-name">Audience - Main</h4>
-            <span class="output-sub">Display 2 &middot; 1920x1080 &middot; 60fps</span>
+      <div v-for="row in rows" :key="row.name" class="output-row">
+        <span :class="['thumb', row.canvas]"></span>
+        <div class="row-main">
+          <div class="row-name">
+            <span class="output-name">{{ row.name }}</span>
+            <span :class="['pill', 'tag', row.tagTone]">{{ row.tag }}</span>
           </div>
+          <span :class="['pill', 'status', row.statusTone]"><span class="dot"></span>{{ row.status }}</span>
         </div>
-        <UiBadge variant="live">MAIN &middot; LIVE</UiBadge>
-      </div>
-
-      <!-- Row 2: Stage Display -->
-      <div class="output-row">
-        <div class="row-left">
-          <div class="output-icon ready">🖥️</div>
-          <div>
-            <h4 class="output-name">Stage Display</h4>
-            <span class="output-sub">Display 3 &middot; Confidence View</span>
-          </div>
-        </div>
-        <UiBadge variant="ready">STAGE &middot; READY</UiBadge>
-      </div>
-
-      <!-- Row 3: NDI Stream -->
-      <div class="output-row">
-        <div class="row-left">
-          <div class="output-icon ndi">📡</div>
-          <div>
-            <h4 class="output-name">Livestream Program</h4>
-            <span class="output-sub">NDI 5 Stream &middot; Alpha Channel</span>
-          </div>
-        </div>
-        <UiBadge variant="ndi">NDI &middot; BROADCASTING</UiBadge>
       </div>
     </div>
   </div>
 </template>
 
 <style scoped>
-.output-manager-card {
-  background: #12151e;
-  border: 1px solid rgba(255, 255, 255, 0.1);
+/*
+ * Figma 475:142: 706 wide at 1440, radius 16, 1px border, shadow (0 24 56 -14). A 52px bar with the title
+ * (14/600) and a brand "+ Add output" button (11.5/600, radius 8), then three 68px rows (radius 11) each
+ * with a 78x46 slide thumbnail, the output name (14/600) and a tag chip, and a status chip on the right.
+ */
+.output-window {
+  background: var(--sc-surface);
+  border: 1px solid var(--sc-border);
   border-radius: 16px;
   overflow: hidden;
-  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.5);
+  box-shadow: 0 24px 56px -14px rgba(5, 8, 15, 0.6);
+  text-align: left;
+  /* The accessible light indigo for small brand text on a dark pill (the same ink as the hero pill in
+     HomeView): Figma's #5b6bd6 is 3.4:1 on this one (audit home-44, class D: Uma picks the final tint).
+     Declared here too because a custom property declared in another component does not reach this one. */
+  --mock-brand-ink: #a5b4fc;
 }
 
-.card-header {
-  height: 48px;
-  background: #181c28;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+.window-bar {
   display: flex;
-  justify-content: space-between;
   align-items: center;
-  padding: 0 20px;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 13px 16px;
+  background: var(--sc-elevated);
 }
 
-.card-title {
-  font-size: 12px;
-  font-weight: 700;
-  color: #717d93;
-  letter-spacing: 0.06em;
+.window-title {
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 17px;
+  color: var(--sc-text);
+}
+
+.add-output {
+  padding: 6px 11px;
+  border-radius: 8px;
+  background: var(--sc-primary);
+  /* Pure white on the brand fill: 4.7:1. */
+  color: #fff;
+  font-size: 11.5px;
+  font-weight: 600;
+  line-height: 14px;
+  white-space: nowrap;
 }
 
 .output-rows {
-  padding: 16px 20px;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 11px;
+  padding: 14px;
+  background: var(--sc-base);
 }
 
 .output-row {
   display: flex;
-  justify-content: space-between;
   align-items: center;
-  flex-wrap: wrap;
-  gap: 10px 12px;
-  background: #191d2a;
-  border: 1px solid rgba(255, 255, 255, 0.06);
-  border-radius: 12px;
-  padding: 16px 18px;
+  gap: 13px;
+  padding: 11px;
+  background: var(--sc-surface);
+  border: 1px solid var(--sc-border);
+  border-radius: 11px;
 }
 
-.row-left {
+/* The thumbnails are the slide canvases each output shows (content, not site chrome). */
+.thumb {
+  width: 78px;
+  height: 46px;
+  flex-shrink: 0;
+  border-radius: 7px;
+}
+.thumb.main { background: #241c4a; }
+.thumb.stage { background: #0f121a; }
+.thumb.ndi { background: #0d1221; }
+
+.row-main {
+  flex: 1;
+  min-width: 0;
   display: flex;
   align-items: center;
-  gap: 14px;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 6px 8px;
+}
+
+.row-name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   min-width: 0;
 }
 
-.output-icon {
-  width: 40px;
-  height: 40px;
-  border-radius: 10px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 18px;
-}
-
-.output-icon.live { background: rgba(239, 68, 68, 0.15); border: 1px solid rgba(239, 68, 68, 0.25); }
-.output-icon.ready { background: rgba(245, 165, 36, 0.15); border: 1px solid rgba(245, 165, 36, 0.25); }
-.output-icon.ndi { background: rgba(43, 182, 115, 0.15); border: 1px solid rgba(43, 182, 115, 0.25); }
-
 .output-name {
-  font-size: 15px;
-  font-weight: 700;
-  color: #ffffff;
-  margin: 0 0 4px 0;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 17px;
+  color: var(--sc-text);
 }
 
-.output-sub {
-  font-size: 12px;
-  color: #717d93;
+/* A tag or status chip: an elevated pill and a bold 9.5px word in a status ink that clears 4.5:1 there. */
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 9px 3px 8px;
+  border-radius: 999px;
+  background: var(--sc-elevated);
+  font-size: 9.5px;
+  font-weight: 700;
+  line-height: 11px;
+  letter-spacing: 0.005em;
+  white-space: nowrap;
+}
+
+/* The MAIN tag: brand ink, in the accessible tint above. */
+.pill.brand { color: var(--mock-brand-ink); }
+.pill.preview { color: var(--sc-preview); }
+.pill.live { color: var(--sc-live); }
+.pill.warn { color: var(--sc-warn); }
+
+.dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: currentColor;
 }
 
 @media (max-width: 767.98px) {
-  .card-header { padding: 0 16px; gap: 8px; }
-  .output-rows { padding: 14px 16px; }
-  .output-row { padding: 14px; }
-  .output-icon { flex-shrink: 0; }
+  .output-row { padding: 10px; gap: 10px; }
+  .thumb { width: 56px; height: 36px; }
 }
 </style>

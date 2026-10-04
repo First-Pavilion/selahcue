@@ -4,6 +4,7 @@ import { computed } from 'vue'
 const props = defineProps({
   quote: { type: String, required: true },
   author: { type: String, required: true },
+  /** "Role · Church", the frame's separator. */
   role: { type: String, required: true },
   avatarColor: { type: String, default: 'blue' } // 'blue' | 'green' | 'amber'
 })
@@ -19,71 +20,90 @@ const initials = computed(() => {
 </script>
 
 <template>
-  <div class="testimonial-card">
-    <p class="quote-text">{{ quote }}</p>
-    <div class="author-row">
-      <div :class="['avatar-circle', avatarColor]">
+  <!-- A quotation and its source: figure, blockquote, figcaption. The name is not a heading (it used
+       to be an h4 under an h2, which skipped a level), and the initials repeat it, so they are hidden. -->
+  <figure class="testimonial-card">
+    <blockquote class="quote-text">“{{ quote }}”</blockquote>
+    <figcaption class="author-row">
+      <div :class="['avatar-circle', avatarColor]" aria-hidden="true">
         {{ initials }}
       </div>
       <div class="author-info">
-        <h4 class="author-name">{{ author }}</h4>
+        <p class="author-name">{{ author }}</p>
         <p class="author-role">{{ role }}</p>
       </div>
-    </div>
-  </div>
+    </figcaption>
+  </figure>
 </template>
 
 <style scoped>
+/*
+ * Figma 478:129: 400 wide at 1440, radius 16, padding 28, 22px between quote and source, on the base
+ * ground inside the panel band, 1px border. Quote 17/26 regular in the primary ink, with typographic
+ * marks and no italics; avatar a 42px circle; name 14.5/600; role 12.5 in the secondary ink.
+ */
 .testimonial-card {
-  background: #12151e;
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  margin: 0;
+  background: var(--sc-base);
+  border: 1px solid var(--sc-border);
   border-radius: 16px;
-  padding: 32px 28px;
+  padding: 28px;
   display: flex;
   flex-direction: column;
-  justify-content: space-between;
+  gap: 22px;
 }
 
 .quote-text {
-  font-size: 15px;
-  color: #c5cedc;
-  line-height: 1.6;
-  margin: 0 0 28px 0;
-  font-style: italic;
+  margin: 0;
+  font-size: 17px;
+  line-height: 26px;
+  color: var(--sc-text);
 }
 
 .author-row {
   display: flex;
   align-items: center;
-  gap: 14px;
+  gap: 12px;
+  margin-top: auto;
 }
 
 .avatar-circle {
-  width: 40px;
-  height: 40px;
+  width: 42px;
+  height: 42px;
+  flex-shrink: 0;
   border-radius: 50%;
   display: flex;
   align-items: center;
   justify-content: center;
   font-size: 14px;
   font-weight: 700;
-  color: #ffffff;
+  /* Pure white on the brand fill (4.7:1). The green and gold fills take the dark ink instead: Figma's
+     white initials are 2.3:1 and 2.0:1 on them (audit home-44, class D); 8.4:1 and 10.9:1 here. */
+  color: #fff;
 }
 
-.avatar-circle.blue { background: #5b6bd6; }
-.avatar-circle.green { background: #2bb673; }
-.avatar-circle.amber { background: #f2b53c; }
+.avatar-circle.blue { background: var(--sc-primary); }
+.avatar-circle.green { background: var(--sc-preview); color: var(--sc-base); }
+.avatar-circle.amber { background: var(--sc-gold); color: var(--sc-base); }
+
+.author-info {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
 
 .author-name {
-  font-size: 15px;
-  font-weight: 700;
-  color: #ffffff;
-  margin: 0 0 2px 0;
+  margin: 0;
+  font-size: 14.5px;
+  font-weight: 600;
+  line-height: 18px;
+  color: var(--sc-text);
 }
 
 .author-role {
-  font-size: 13px;
-  color: #717d93;
   margin: 0;
+  font-size: 12.5px;
+  line-height: 15px;
+  color: var(--sc-text-secondary);
 }
 </style>
