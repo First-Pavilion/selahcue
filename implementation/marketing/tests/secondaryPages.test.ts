@@ -827,17 +827,55 @@ describe('Affiliates (541:124): hero and CTAs, four stat cards, How it works, au
     assert.equal(declaration(css, '.hero-sub', 'max-width'), '760px')
   })
 
-  test('the hero buttons are Apply now and Affiliate sign in, neither going to the customer sign-in (affiliates-06)', async () => {
+  /**
+   * Every link and every button destination on /affiliates. The affiliate Apply and Sign in screens do not exist, and the
+   * only affiliate pages (`/affiliates/dashboard` and its family) are presentation shells full of sample churches and
+   * a sample balance that read as a live account. No control on this page may send anyone to the customer sign-in or into
+   * those shells. One definition, used by the page checks and by the control below it.
+   */
+  function forbiddenDestinations(links: ReadonlyArray<{ href: string; text: string }>): string[] {
+    return links
+      .filter((l) => /^\/signin(\/|\?|#|$)/.test(l.href) || /^\/affiliates\/[^/]/.test(l.href))
+      .map((l) => `"${l.text}" goes to ${l.href}`)
+  }
+
+  const linksIn = (markup: string): Array<{ href: string; text: string }> =>
+    [...markup.matchAll(/<a [^>]*href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/g)].map((m) => ({ href: m[1] ?? '', text: textOf(m[2] ?? '') }))
+
+  test('the hero has Apply now as a link and Affiliate sign in as a DISABLED button that says why (affiliates-06, owner review round 1)', async () => {
     const page = await html('AffiliatesView.vue')
     const hero = sectionOf(page, 'hero-section')
-    const links = [...hero.matchAll(/<a [^>]*href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/g)].map((m) => ({ href: m[1] ?? '', text: textOf(m[2] ?? '') }))
-    assert.deepEqual(links.map((l) => l.text), ['Apply now', 'Affiliate sign in'])
-    for (const l of links) assert.ok(!l.href.startsWith('/signin'), `"${l.text}" must not go to the customer account sign-in`)
+    assert.deepEqual(linksIn(hero).map((l) => [l.text, l.href]), [['Apply now', '/contact']], 'one link: the interim Apply, which already existed as a CTA')
+    const signIn = tagsOf(hero).find((t) => t.name === 'button')
+    assert.ok(signIn, 'Affiliate sign in is a button, not a link')
+    assert.ok('disabled' in signIn.attrs, 'and it is disabled')
+    const note = signIn.attrs['aria-describedby']
+    assert.ok(note && hero.includes(`id="${note}"`), 'tied to a visible explanation')
+    assert.match(textOf(hero), /Affiliate sign in: not available yet/)
     assert.ok(!textOf(page).includes('Calculate Earnings'))
     const sfc = readSrc('views/AffiliatesView.vue')
     const buttons = elementsOf(sfc).filter((el) => el.tag === 'UiButton')
     const apply = buttons.find((el) => valueOf(prop(el, 'size')) === 'lg' && valueOf(prop(el, 'variant')) === 'primary')
     assert.ok(apply, 'Apply now is a large primary button')
+  })
+
+  test('no link or button on /affiliates goes to the customer sign-in or into the affiliate portal shells', async () => {
+    const page = await html('AffiliatesView.vue')
+    assert.deepEqual(forbiddenDestinations(linksIn(page)), [])
+    const sfc = readSrc('views/AffiliatesView.vue')
+    const targets = elementsOf(sfc)
+      .filter((el) => el.tag === 'UiButton' || el.tag === 'router-link' || el.tag === 'RouterLink' || el.tag === 'a')
+      .flatMap((el) => [prop(el, 'to'), prop(el, 'href')])
+      .map((p) => valueOf(p))
+      .filter((v): v is string => typeof v === 'string' && v !== '')
+      .map((href) => ({ href, text: href }))
+    assert.deepEqual(forbiddenDestinations(targets), [], 'the template source names none either')
+  })
+
+  test('CONTROL: forbiddenDestinations() rejects the sign-in, the dashboard and every sibling of it, and passes the contact page', () => {
+    const f = (href: string) => forbiddenDestinations([{ href, text: 'x' }]).length
+    for (const bad of ['/signin', '/signin?next=/account', '/affiliates/dashboard', '/affiliates/payouts', '/affiliates/referrals', '/affiliates/resources', '/affiliates/settings', '/affiliates/help']) assert.equal(f(bad), 1, bad)
+    for (const good of ['/contact', '/affiliates', '/affiliates#faq', '/signing-off']) assert.equal(f(good), 0, good)
   })
 
   test('the footnote line under the buttons is not shipped: it is made of the unbacked terms (affiliates-13)', async () => {
@@ -889,7 +927,9 @@ describe('Affiliates (541:124): hero and CTAs, four stat cards, How it works, au
     const section = sectionOf(page, 'why-section')
     assert.equal(withClass(section, 'check-row').length, 2)
     const text = textOf(section)
-    assert.ok(text.includes('no internet required'))
+    assert.ok(text.includes('with no network'), 'the offline line says what runs offline, in the repo\'s own terms')
+    assert.ok(!/no internet/i.test(textOf(page)), 'nowhere on the page: a new activation or a licensed download needs the network once, so "no internet" says too much')
+    assert.match(text, /Designed so a fault never blanks the live screen/)
     for (const bad of ['actually keep using', 'Recurring commission for a year', 'Banners, links and email copy']) assert.ok(!text.includes(bad), bad)
   })
 
@@ -914,16 +954,31 @@ describe('Affiliates (541:124): hero and CTAs, four stat cards, How it works, au
     assert.ok(faq && prop(faq, 'boxed'), 'the view opts into boxed')
   })
 
-  test('the closing band: gradient card, h2, a white Apply now, and no Read the terms (no terms document exists) (affiliates-04, affiliates-14)', async () => {
+  test('the closing band: gradient card, h2, a white Apply now that is disabled and says why, no Read the terms (affiliates-04, affiliates-14)', async () => {
     const page = await html('AffiliatesView.vue')
-    assert.ok(headingsOf(page).some((h) => h.level === 2 && h.text === 'Ready to start earning?'))
+    assert.ok(headingsOf(page).some((h) => h.level === 2 && h.text === 'Ready to get started?'))
+    const band = sectionOf(page, 'cta-section')
     const text = textOf(page)
     assert.ok(!text.includes('Read the terms'))
     const sfc = readSrc('views/AffiliatesView.vue')
     const inverse = elementsOf(sfc).filter((el) => el.tag === 'UiButton' && valueOf(prop(el, 'variant')) === 'inverse')
     assert.equal(inverse.length, 1, 'one white button on the band')
+    assert.ok(!prop(inverse[0]!, 'to') && !prop(inverse[0]!, 'href'), 'it has no destination: the page newly added this button and the contact form sends nothing')
+    assert.ok(prop(inverse[0]!, 'disabled'), 'so it is disabled')
+    const btn = tagsOf(band).find((t) => t.name === 'button')
+    assert.ok(btn && 'disabled' in btn.attrs, 'a real disabled button in the markup')
+    assert.ok(band.includes(`id="${btn.attrs['aria-describedby']}"`) && textOf(band).includes('Not available yet'), 'with a visible reason')
+    assert.equal(linksIn(band).length, 0, 'no link in the band')
     assert.match(styleOf(sfc), /\.cta-band\s*\{[^}]*background:\s*var\(--gradient-cta\)/)
-    assert.ok(!/free/i.test(textOf(sectionOf(page, 'cta-section'))), 'the band does not promise a free programme')
+    assert.ok(!/free/i.test(textOf(band)), 'the band does not promise a free programme')
+    assert.ok(!/recurring|earning|income/i.test(textOf(band)), 'and does not restate the programme promise (that claim is the live page\'s, removed by the claims ticket)')
+  })
+
+  test('the new Affiliates sections restate no earnings promise: the steps and the section lines say what the visitor does', async () => {
+    const page = await html('AffiliatesView.vue')
+    const steps = textOf(sectionOf(page, 'steps-section'))
+    assert.ok(!/earn|commission|income|recurring|paid|payout/i.test(steps), 'the How it works section has no earning, commission or payout words')
+    assert.match(steps, /Refer a church/)
   })
 
   test('the section order follows the frame', async () => {

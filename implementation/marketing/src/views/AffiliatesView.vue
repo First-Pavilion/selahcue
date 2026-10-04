@@ -34,14 +34,18 @@ const highlights = [
   { value: '20%', caption: 'Recurring Commission', tone: 'is-brand' },
   { value: '60 Days', caption: 'Cookie Attribution', tone: 'is-preview' },
   { value: '$50', caption: 'Low Payout Threshold', tone: 'is-warn' },
-  { value: 'Offline', caption: 'The app works with no internet', tone: 'is-brand' }
+  { value: 'Offline', caption: 'Slides and timers run offline', tone: 'is-brand' }
 ]
 
-/** How it works (Figma 541:163): the frame's three steps, with no review time, rate or threshold in them. */
+/**
+ * How it works (Figma 541:163): the frame's three steps, each saying what the VISITOR does. None says what happens
+ * to money, how often or how much: the programme's terms are undecided, so a step that restated "earn" would be a
+ * second copy of the claim the page already carries (ClickUp 17tnw2b0x3h owns removing that one).
+ */
 const steps = [
   { n: '01', title: 'Apply to join', body: "Tell us how you'll share SelahCue." },
   { n: '02', title: 'Share SelahCue', body: 'Recommend it anywhere your audience is.' },
-  { n: '03', title: 'Earn on referrals', body: 'Earn recurring commission on the churches you refer.' }
+  { n: '03', title: 'Refer a church', body: 'Introduce SelahCue to a church that could use it.' }
 ]
 
 /** Made for people who talk to churches (Figma 542:124): audience descriptions, not product claims. */
@@ -52,10 +56,14 @@ const audiences = [
   { icon: 'briefcase', tone: 'brand', title: 'Consultants & integrators', body: 'You set up church production rigs — bundle SelahCue into your builds.' }
 ] as const
 
-/** The checklist (Figma 542:154): the two lines the repo backs (the screen never blanks; offline-first). */
+/**
+ * The checklist (Figma 542:154): the two lines the repo backs, in the repo's own terms. The live output is DESIGNED
+ * never to blank on a fault (a requirement, not a guarantee), and the live core runs on the desktop with no network
+ * (a new activation or a licensed download still needs one once, so "no internet" alone would say too much).
+ */
 const reasons = [
-  'A product that never blanks the screen on Sunday',
-  'Offline-first reliability that sells itself, no internet required'
+  'Designed so a fault never blanks the live screen',
+  'Offline-first: slides, scripture and timers run on the desktop with no network'
 ]
 </script>
 
@@ -66,11 +74,16 @@ const reasons = [
       <h1 class="hero-title">Recommend SelahCue. Earn 20% Recurring Commission.</h1>
       <p class="hero-sub">Help churches upgrade their live worship presentation. Earn passive recurring income on every paid referral for 12 months.</p>
 
-      <!-- Neither target is the customer sign-in: the affiliate Apply and Sign in screens have no route yet
-           (audit affiliates-06, a missing screen). Interim targets: the contact page, and the affiliate portal. -->
-      <div class="hero-ctas">
-        <UiButton variant="primary" size="lg" to="/contact">Apply now</UiButton>
-        <UiButton variant="outline" size="lg" to="/affiliates/dashboard">Affiliate sign in</UiButton>
+      <!-- The affiliate Apply and Sign in screens have no route yet (audit affiliates-06, a missing screen). Apply goes
+           to the contact page, as an interim, because a CTA to Apply already existed here. Sign in goes NOWHERE: the
+           only affiliate pages are presentation shells full of sample figures that look like a live account, so the
+           button is disabled and says so, as the Pro plan does on the pricing page. -->
+      <div class="hero-actions">
+        <div class="hero-ctas">
+          <UiButton variant="primary" size="lg" to="/contact">Apply now</UiButton>
+          <UiButton variant="outline" size="lg" disabled aria-describedby="signin-note">Affiliate sign in</UiButton>
+        </div>
+        <p id="signin-note" class="cta-note">Affiliate sign in: not available yet</p>
       </div>
     </section>
 
@@ -89,7 +102,7 @@ const reasons = [
       <div class="container steps-inner">
         <div class="section-head">
           <h2 id="steps-heading" class="section-title">How it works</h2>
-          <p class="section-sub">Three steps, from applying to earning.</p>
+          <p class="section-sub">Three steps to get started.</p>
         </div>
         <div class="steps-grid">
           <article v-for="s in steps" :key="s.n" class="step-card">
@@ -170,10 +183,13 @@ const reasons = [
     <!-- Closing band -->
     <section class="cta-section container" aria-labelledby="cta-heading">
       <div class="cta-band">
-        <h2 id="cta-heading" class="cta-title">Ready to start earning?</h2>
-        <p class="cta-sub">Join the SelahCue affiliate program and turn your recommendations into recurring income.</p>
+        <h2 id="cta-heading" class="cta-title">Ready to get started?</h2>
+        <p class="cta-sub">Apply to join the SelahCue affiliate program.</p>
         <div class="cta-actions">
-          <UiButton variant="inverse" size="lg" to="/contact">Apply now</UiButton>
+          <!-- No destination: a button this page newly adds does not point at a form that sends nothing. It is
+               disabled and says why, until the application exists. -->
+          <UiButton variant="inverse" size="lg" disabled aria-describedby="apply-note">Apply now</UiButton>
+          <p id="apply-note" class="cta-note on-band">Not available yet</p>
         </div>
       </div>
     </section>
@@ -205,7 +221,12 @@ const reasons = [
 }
 
 .hero-sub { max-width: 760px; font-size: 19px; line-height: 30px; color: var(--sc-text-secondary); }
+.hero-actions { display: flex; flex-direction: column; align-items: center; gap: 10px; }
 .hero-ctas { display: flex; justify-content: center; gap: 14px; padding-top: 6px; }
+
+/* The note that explains a disabled button (the same line the pricing plans use). */
+.cta-note { font-size: 13px; line-height: 19px; color: var(--sc-text-secondary); }
+.cta-note.on-band { color: #fff; }
 
 /* STAT CARDS (Figma 541:150): four 295.5 cards, 22px apart, radius 18, padding 26 / 24 from the edge, left aligned,
    a 34/700 value over a one-line caption. */
@@ -352,7 +373,7 @@ const reasons = [
 
 .cta-title { font-size: 40px; font-weight: 700; line-height: 48px; color: #fff; }
 .cta-sub { max-width: 640px; font-size: 18px; line-height: 27px; color: #fff; }
-.cta-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 14px; padding-top: 6px; }
+.cta-actions { display: flex; flex-direction: column; align-items: center; gap: 10px; padding-top: 6px; }
 
 @media (max-width: 1199.98px) {
   .highlights-grid, .audience-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -364,6 +385,7 @@ const reasons = [
 @media (max-width: 767.98px) {
   .hero-section { padding-top: 56px; padding-bottom: 36px; gap: 18px; }
   .hero-sub { font-size: 16px; line-height: 26px; }
+  .hero-actions { align-self: stretch; }
   .hero-ctas { flex-direction: column; align-self: stretch; }
   .hero-ctas > * { width: 100%; }
   .highlights-section { padding-bottom: 40px; }
@@ -383,6 +405,7 @@ const reasons = [
   .cta-band { padding: 32px 20px; border-radius: 20px; }
   .cta-title { font-size: 30px; line-height: 38px; }
   .cta-sub { font-size: 16px; line-height: 24px; }
-  .cta-actions > * { width: 100%; }
+  .cta-actions { align-self: stretch; }
+  .cta-actions .ui-button { width: 100%; }
 }
 </style>

@@ -459,7 +459,18 @@ def check_affiliates(page, c: Checks, base: str) -> None:
     c.eq(btn["background-color"], "rgb(255, 255, 255)", "affiliates: the band button is white")
     c.near(box(page, ".cta-band .ui-button")["h"], 49, 0.6, "affiliates: band button 49 high")
     link = page.locator(".hero-ctas a").first
-    c.ok(not (link.get_attribute("href") or "").startswith("/signin"), "affiliates: Apply does not go to the customer sign-in")
+    c.eq(link.get_attribute("href"), "/contact", "affiliates: Apply now is the interim link to the contact page")
+    # Affiliate sign in has no destination (the only affiliate pages are shells of sample data): a disabled button that says why
+    c.eq(page.locator(".hero-ctas button[disabled]").count(), 1, "affiliates: Affiliate sign in is a disabled button")
+    c.eq(page.locator(".hero-ctas a").count(), 1, "affiliates: and the hero has just the one link")
+    c.ok("not available yet" in page.locator("#signin-note").inner_text().lower(), "affiliates: the reason is visible beside it")
+    c.eq(page.get_by_role("button", name="Affiliate sign in").is_disabled(), True, "affiliates: the browser reports it disabled")
+    bad = page.locator("main a[href^='/signin'], main a[href^='/affiliates/']").count()
+    c.eq(bad, 0, "affiliates: no link on the page goes to the customer sign-in or into the affiliate portal shells")
+    c.eq(page.locator(".cta-band button[disabled]").count(), 1, "affiliates: the band's Apply now is disabled")
+    c.eq(page.locator(".cta-band a").count(), 0, "affiliates: and the band has no link")
+    c.ok("not available yet" in page.locator("#apply-note").inner_text().lower(), "affiliates: with its reason visible")
+    c.ok(text_contrast(page, "#signin-note") >= 4.5, "affiliates: the sign-in note passes AA")
 
 
 def check_no_sideways_scroll(page, c: Checks, base: str) -> None:
