@@ -74,6 +74,19 @@ TICKET_GROUP = {
 }
 TICKET_GROUPS = ("chrome", "components", "home", "core", "secondary", "auth", "account")
 TICKET_RE = re.compile(r"^[0-9a-z]{8,12}$")
+CLICKUP_TASK_URL = "https://app.clickup.com/t/"
+
+
+def safe_ticket_url(ticket):
+    """The ticket's URL if it is EXACTLY `https://app.clickup.com/t/<its own id>`, else None.
+
+    A ticket's `url` becomes an `href` on the artifact page. HTML-escaping does not stop a `javascript:` URL,
+    so the only URL ever linked is the one ClickUp's own task link takes for this ticket.
+    """
+    tid, url = str((ticket or {}).get("id", "")), (ticket or {}).get("url")
+    if TICKET_RE.match(tid) and url == CLICKUP_TASK_URL + tid:
+        return url
+    return None
 
 
 def _load(path):

@@ -13,7 +13,14 @@ Data comes from the audit's own files (`surfaces.json`, `findings/*.json`, `tick
 screenshots of a `visual_parity.py --suite marketing` run; nothing here is typed by hand.
 
 Bounded: at most MAX_IMAGES images, each downscaled to IMG_WIDTH px wide as JPEG, and the whole output
-is refused if it would exceed MAX_TOTAL_BYTES (the Artifact limit is 16 MB; this leaves headroom).
+is refused if it would exceed MAX_TOTAL_BYTES (the Artifact limit is 16 MB; this leaves headroom). Both
+bounds are checked BEFORE anything is written (the image count before any image is encoded, the byte total
+after encoding in memory and before the first file is created), so a refused build leaves nothing behind;
+`vp_selftest.py` drives both refusals.
+
+Links: a ticket's `url` becomes an `href` only if it is exactly `https://app.clickup.com/t/<its id>`
+(`check_fidelity_audit.safe_ticket_url`); anything else renders as plain text. HTML escaping alone does not
+stop a `javascript:` URL.
 """
 
 from __future__ import annotations
@@ -21,6 +28,7 @@ from __future__ import annotations
 import argparse
 import collections
 import html
+import io
 import os
 import sys
 
@@ -206,14 +214,26 @@ def esc(v):
     return html.escape(str(v if v is not None else ""), quote=True)
 
 
-def make_image(src, dst):
+def encode_image(src):
+    """The page JPEG for one PNG, as bytes (nothing is written here)."""
     with Image.open(src) as im:
+        problem = vp.pixel_budget_problem(im.size, os.path.basename(src))
+        if problem:
+            raise SystemExit(problem)
         im = im.convert("RGB")
         if im.width > IMG_WIDTH:
             im = im.resize((IMG_WIDTH, max(1, round(im.height * IMG_WIDTH / im.width))), Image.LANCZOS)
-        os.makedirs(os.path.dirname(dst), exist_ok=True)
-        im.save(dst, "JPEG", quality=JPEG_QUALITY, optimize=True, progressive=True)
-    return os.path.getsize(dst)
+        buf = io.BytesIO()
+        im.save(buf, "JPEG", quality=JPEG_QUALITY, optimize=True, progressive=True)
+    return buf.getvalue()
+
+
+def linked(url, tid, label):
+    """An anchor for a ticket, or plain text when the URL is not exactly its ClickUp URL."""
+    safe = cfa.safe_ticket_url({"id": tid, "url": url})
+    if safe:
+        return '<a href="%s">%s</a>' % (esc(safe), label)
+    return label
 
 
 def finding_html(f):
@@ -275,24 +295,29 @@ def build(run_dir, out_dir, meta):
             surf_of[slug] = surf
     by_group, total, sev, set_aside = cfa.summarise(findings)
 
-    img_dir = os.path.join(out_dir, "img")
-    images, total_bytes, files = {}, 0, []
+    # PLAN first: which images, from where. Count and existence are checked before any is encoded.
+    plan = []
     for slug, cat in catalogue.items():
-        ref = store.path_for(slug)
-        built = os.path.join(run_dir, "marketing", "%s.blink.png" % slug)
-        entry = {}
-        for key, src in (("figma", ref), ("build", built)):
+        for key, src in (("figma", store.path_for(slug)),
+                         ("build", os.path.join(run_dir, "marketing", "%s.blink.png" % slug))):
             if cat.get("status") == "unbuilt" and key == "build":
                 continue
             if not os.path.exists(src):
                 raise SystemExit("missing image: " + src)
-            dst = os.path.join(img_dir, "%s.%s.jpg" % (slug, key))
-            total_bytes += make_image(src, dst)
-            entry[key] = "img/%s.%s.jpg" % (slug, key)
-            files.append(entry[key])
-        images[slug] = entry
-    if len(files) > MAX_IMAGES or total_bytes > MAX_TOTAL_BYTES:
-        raise SystemExit("output over bounds: %d images, %d bytes" % (len(files), total_bytes))
+            plan.append((slug, key, src, "img/%s.%s.jpg" % (slug, key)))
+    if len(plan) > MAX_IMAGES:
+        raise SystemExit("output over bounds: %d images planned, MAX_IMAGES=%d (nothing written)" % (len(plan), MAX_IMAGES))
+    # ENCODE in memory; refuse as soon as the running total passes the cap, before any file exists.
+    encoded, images, total_bytes, files = {}, {}, 0, []
+    for slug, key, src, rel in plan:
+        data = encode_image(src)
+        total_bytes += len(data)
+        if total_bytes > MAX_TOTAL_BYTES:
+            raise SystemExit("output over bounds: images alone reach %d bytes, MAX_TOTAL_BYTES=%d (nothing written)"
+                             % (total_bytes, MAX_TOTAL_BYTES))
+        encoded[rel] = data
+        images.setdefault(slug, {})[key] = rel
+        files.append(rel)
 
     H = []
     w = H.append
@@ -322,7 +347,7 @@ def build(run_dir, out_dir, meta):
         t = tickets.get("tickets", {}).get(g)
         label = esc(AREA_LABEL.get(g, g))
         if t and t.get("url"):
-            label += ' · <a href="%s">%s</a>' % (esc(t["url"]), esc(t["id"]))
+            label += " · " + linked(t.get("url"), t["id"], esc(t["id"]))
         w("<tr><td>%s</td>%s</tr>" % (label, "".join('<td class="num">%d</td>' % c[k] for k in cfa.CLASSES)))
     w("</tbody></table></div>")
     extra = [(k, tickets.get("tickets", {}).get(k)) for k in ("decisions", "devices-api", "sign-out-bug")]
@@ -330,7 +355,7 @@ def build(run_dir, out_dir, meta):
     if extra:
         w('<ul class="tickets">')
         for k, t in extra:
-            w('<li><a href="%s">%s</a> %s</li>' % (esc(t["url"]), esc(t["id"]), esc(t["title"])))
+            w("<li>%s %s</li>" % (linked(t.get("url"), t["id"], esc(t["id"])), esc(t["title"])))
         w("</ul>")
     w('<p class="empty">Counted once each. Set aside: %d duplicates (the same defect seen on another page, each pointing at its canonical finding) '
       'and %d findings that another ticket already owns.</p>' % (set_aside["duplicates"], set_aside["owned elsewhere"]))
@@ -428,13 +453,17 @@ def build(run_dir, out_dir, meta):
     w("</ul><footer>Generated from the audit's own data files and a harness run at origin/main <code>%s</code>.</footer></div>" % esc(meta["origin_main"]))
     w("<script>%s</script>" % JS)
 
-    os.makedirs(out_dir, exist_ok=True)
     page = "\n".join(H)
-    with open(os.path.join(out_dir, "index.html"), "w", encoding="utf-8") as fh:
-        fh.write(page)
     total = total_bytes + len(page.encode("utf-8"))
     if total > MAX_TOTAL_BYTES:
-        raise SystemExit("artifact would be %d bytes, over MAX_TOTAL_BYTES=%d" % (total, MAX_TOTAL_BYTES))
+        raise SystemExit("artifact would be %d bytes, over MAX_TOTAL_BYTES=%d (nothing written)" % (total, MAX_TOTAL_BYTES))
+    # Only now does anything touch the disk.
+    os.makedirs(os.path.join(out_dir, "img"), exist_ok=True)
+    for rel, data in encoded.items():
+        with open(os.path.join(out_dir, rel), "wb") as fh:
+            fh.write(data)
+    with open(os.path.join(out_dir, "index.html"), "w", encoding="utf-8") as fh:
+        fh.write(page)
     return files, total
 
 

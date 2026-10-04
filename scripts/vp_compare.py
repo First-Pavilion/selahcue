@@ -84,16 +84,17 @@ def image_of(cap, hi=False):
 
 
 def align_top_crop(ref, act):
-    """Crop both images to their shared top-left rectangle. Pure; returns (ref, act, delta).
+    """Crop both images to their shared top-left rectangle. Pure; returns (ref, act, height_delta, width_delta).
 
-    `delta` is `act.height - ref.height`: positive when the build is TALLER than the frame.
-    A width mismatch is not cropped here (it is a different problem and the caller resizes).
+    `height_delta` is `act.height - ref.height` and `width_delta` is `act.width - ref.width`: positive
+    when the build is TALLER / WIDER than the frame. A page that overflows horizontally is a finding,
+    and is compared over the shared width rather than stretched: stretching a 1,959px frame to a
+    14,441px capture (the old behaviour) cost 1.6 GB and produced a higher, wrong score.
     """
+    w = min(ref.width, act.width)
     h = min(ref.height, act.height)
-    delta = act.height - ref.height
-    if ref.width != act.width:
-        return ref, act, delta
-    return ref.crop((0, 0, ref.width, h)), act.crop((0, 0, act.width, h)), delta
+    box = (0, 0, w, h)
+    return ref.crop(box), act.crop(box), act.height - ref.height, act.width - ref.width
 
 
 def compare_pair(cap, ref_path, out_dir, min_ssim, align="stretch"):
@@ -104,11 +105,12 @@ def compare_pair(cap, ref_path, out_dir, min_ssim, align="stretch"):
     act = actual.convert("RGB")
     result["reference_size"] = list(ref.size)
     result["actual_size"] = list(act.size)
-    if align == "top-crop" and ref.width == act.width:
-        ref, act, delta = align_top_crop(ref, act)
+    if align == "top-crop":
+        ref, act, delta, width_delta = align_top_crop(ref, act)
         result["height_delta"] = delta
+        result["width_delta"] = width_delta
         result["compared_height"] = ref.height
-        if delta:
+        if delta or width_delta:
             result["size_mismatch"] = True
     elif ref.size != act.size:
         result["size_mismatch"] = True
@@ -487,13 +489,33 @@ CAVEAT = (
 
 def load_dom(cap):
     """The capture's DOM/style dump, or None."""
+    dom, _problem = load_dom_checked(cap)
+    return dom
+
+
+def load_dom_checked(cap):
+    """(dump, problem). A dump that is missing, unreadable, or truncated is a PROBLEM, not a skip.
+
+    The marketing deviation gate reads these dumps. A gate that quietly treats "no dump" as "nothing
+    to check" can be switched off by deleting a file (it was: two dumps deleted from a copy of a run
+    left exit 0 and "0 failures"), and a truncated dump makes `text_absent` read part of a page.
+    """
     name = cap.get("dom")
     if not name:
-        return None
+        return None, "the capture record names no DOM dump"
     path = os.path.join(cap["dir"], name)
     if not os.path.exists(path):
-        return None
-    return vp.load_json(path)
+        return None, "DOM dump %s is missing" % name
+    try:
+        dom = vp.load_json(path)
+    except (OSError, ValueError, SystemExit) as exc:
+        return None, "DOM dump %s is unreadable (%s)" % (name, str(exc)[:80])
+    if not isinstance(dom, dict) or not isinstance(dom.get("items"), list):
+        return None, "DOM dump %s has no items list" % name
+    if dom.get("truncated"):
+        return None, ("DOM dump %s is TRUNCATED at %d items: the text and contrast checks would read part of "
+                      "the page" % (name, len(dom["items"])))
+    return dom, None
 
 
 def dom_text(dom):
@@ -502,12 +524,13 @@ def dom_text(dom):
 
 
 def gate_marketing_deviations(deviations, by_capture):
-    """Re-measure every marketing deviation entry against THIS run's capture.
+    """Re-measure every marketing deviation entry against THIS run's captures, once per engine.
 
-    `by_capture` maps slug -> {"doc": {...}, "text": "...all rendered text..."}.
+    `by_capture` maps slug -> {engine: {"doc": {...}, "text": "...all rendered text..."}}.
 
-    Same contract as the operator gate: an entry that cannot fail would authorise the
-    drift it exists to prevent. Metrics:
+    Same contract as the operator gate, including the per-engine rows: collapsing the engines would
+    let a WebKit-only regression hide behind a green Blink row. An entry that cannot fail would
+    authorise the drift it exists to prevent. Metrics:
 
       doc_height    the rendered page is at least `requires.min` px tall (a documented
                     "the build carries real content where Figma drew a placeholder")
@@ -517,35 +540,37 @@ def gate_marketing_deviations(deviations, by_capture):
     """
     rows = []
     for dev in deviations.get("deviations", []):
-        row = {
+        base = {
             "id": dev["id"], "capture": dev["capture"], "metric": dev["metric"],
             "category": dev.get("category", ""), "permanence": dev.get("permanence", ""),
             "retire_when": dev.get("retire_when", ""), "requires": dev["requires"],
             "source": dev.get("source", ""), "reason": dev.get("reason", ""),
         }
-        got = by_capture.get(dev["capture"])
-        if got is None:
-            row.update(status="UNCHECKED", detail="capture %r was not produced in this run" % dev["capture"])
-            rows.append(row)
+        by_engine = by_capture.get(dev["capture"])
+        if not by_engine:
+            rows.append(dict(base, engine="", status="UNCHECKED",
+                             detail="capture %r was not produced in this run" % dev["capture"]))
             continue
-        metric = dev["metric"]
-        if metric == "doc_height":
-            value = (got.get("doc") or {}).get("h")
-            need = int(dev["requires"]["min"])
-            ok = isinstance(value, (int, float)) and value >= need
-            row.update(value=value, status="INTENTIONAL" if ok else "FAIL",
-                       detail="rendered height %s px, required >= %d px" % (value, need))
-        elif metric in ("text_present", "text_absent"):
-            pattern = dev["requires"]["pattern"]
-            found = bool(re.search(pattern, got.get("text", ""), re.I))
-            ok = found if metric == "text_present" else not found
-            row.update(value=("present" if found else "absent"), status="INTENTIONAL" if ok else "FAIL",
-                       detail="/%s/ is %s in the rendered text; required %s" % (
-                           pattern, "present" if found else "absent",
-                           "present" if metric == "text_present" else "absent"))
-        else:
-            row.update(status="FAIL", detail="unknown metric %r" % metric)
-        rows.append(row)
+        for engine, got in sorted(by_engine.items()):
+            row = dict(base, engine=engine)
+            metric = dev["metric"]
+            if metric == "doc_height":
+                value = (got.get("doc") or {}).get("h")
+                need = int(dev["requires"]["min"])
+                ok = isinstance(value, (int, float)) and value >= need
+                row.update(value=value, status="INTENTIONAL" if ok else "FAIL",
+                           detail="rendered height %s px, required >= %d px" % (value, need))
+            elif metric in ("text_present", "text_absent"):
+                pattern = dev["requires"]["pattern"]
+                found = bool(re.search(pattern, got.get("text", ""), re.I))
+                ok = found if metric == "text_present" else not found
+                row.update(value=("present" if found else "absent"), status="INTENTIONAL" if ok else "FAIL",
+                           detail="/%s/ is %s in the rendered text; required %s" % (
+                               pattern, "present" if found else "absent",
+                               "present" if metric == "text_present" else "absent"))
+            else:
+                row.update(status="FAIL", detail="unknown metric %r" % metric)
+            rows.append(row)
     return rows
 
 
@@ -599,19 +624,27 @@ def source_probe_problem(probe, dist=None):
     `probe["control"]` is a string that MUST be in the bundle. It proves the probe is reading
     the shipped copy at all; a probe over an empty or wrong directory would otherwise pass
     for every state, forever.
+
+    BOUND: at most MAX_PROBE_JS_FILES `.js` files are read, counting ONLY `.js` files, and a bundle with
+    more is a FAILURE, not a pass: a probe that stops reading part-way would clear a state that is in
+    the part it never read. (The first version counted every file in the folder and passed silently
+    once 400 non-JS assets sorted ahead of the chunk holding the forbidden copy.)
     """
     dist = dist or os.environ.get("SELAHCUE_MARKETING_DIST") or os.path.join(
         vp.REPO, "implementation", "marketing", "dist")
     assets = os.path.join(dist, "assets")
     if not os.path.isdir(assets):
         return "no built bundle under %s to probe — run `npm run build`" % assets
+    js_files = sorted(n for n in os.listdir(assets) if n.endswith(".js"))
+    if len(js_files) > MAX_PROBE_JS_FILES:
+        return (
+            "the bundle has %d .js files, over MAX_PROBE_JS_FILES=%d: the probe will not claim it read the whole "
+            "bundle, so it cannot clear a state; raise the cap deliberately" % (len(js_files), MAX_PROBE_JS_FILES)
+        )
     chunks = []
-    for count, name in enumerate(sorted(os.listdir(assets))):
-        if count >= MAX_PROBE_JS_FILES:
-            break
-        if name.endswith(".js"):
-            with open(os.path.join(assets, name), "r", encoding="utf-8", errors="replace") as fh:
-                chunks.append(fh.read())
+    for name in js_files:
+        with open(os.path.join(assets, name), "r", encoding="utf-8", errors="replace") as fh:
+            chunks.append(fh.read())
     text = "\n".join(chunks)
     control = probe.get("control")
     if not control:
@@ -623,6 +656,25 @@ def source_probe_problem(probe, dist=None):
         return (
             "the shipped bundle now contains %r — the state exists, so it is no longer a documented "
             "non-render: capture it and compare it" % hits[0]
+        )
+    return None
+
+
+def run_files_problem(run, suite):
+    """A sentence if this run holds more files than the suite's cap, counting the report files still to be written.
+
+    Run eviction caps how many runs survive, not how large one run may get, so a per-state loop could
+    grow a single run without limit. The three report files (and captures.json) are written AFTER this
+    check, so they are counted up front. Pulled out of `main` so `vp_selftest.py` can drive it AND drive
+    `main` end to end (the old self-test only looked for the word in this file's source).
+    """
+    files = vp.count_run_files(run)
+    expected = files + suite.report_files
+    if expected > suite.max_files_per_run:
+        return (
+            "this run wrote %d files (+%d report files still to come = %d), over the suite's cap of %d — run "
+            "eviction caps how many runs survive, not how large one run may get, so a per-state loop could "
+            "grow a single run without limit" % (files, suite.report_files, expected, suite.max_files_per_run)
         )
     return None
 
@@ -714,6 +766,13 @@ def main():
             failures.append("%s (%s): no image" % (cap["slug"], cap.get("engine")))
             pairs.append(entry)
             continue
+        # Header-only size, checked BEFORE any pixel is decoded (see vp_core.MAX_CAPTURE_PIXELS).
+        too_big = vp.pixel_budget_problem(img.size, "capture %s (%s)" % (cap["slug"], cap.get("engine")))
+        if too_big:
+            entry["summary"] = "NOT DECODED — " + too_big
+            failures.append(too_big)
+            pairs.append(entry)
+            continue
         expect_uniform = (not marketing) and (cap["slug"].endswith("blackout") or cap.get("state") == "blackout")
         uniform = vp.is_uniform(img)
         ink, _bg = vp.ink_coverage(img)
@@ -737,9 +796,15 @@ def main():
             regions_by_capture.setdefault(cap["slug"], {})[cap.get("engine", "?")] = regions
 
         if marketing:
-            dom = load_dom(cap)
-            if dom is not None:
-                dom_by_capture.setdefault(cap["slug"], {"doc": cap.get("doc"), "text": dom_text(dom)})
+            dom, dom_problem = load_dom_checked(cap)
+            if dom_problem:
+                # FAIL CLOSED. A missing, unreadable or truncated dump must not turn the deviation
+                # gate into "unchecked, exit 0".
+                failures.append("%s (%s): %s" % (cap["slug"], cap.get("engine"), dom_problem))
+                entry["dom_problem"] = dom_problem
+            else:
+                dom_by_capture.setdefault(cap["slug"], {})[cap.get("engine", "?")] = {
+                    "doc": cap.get("doc") or dom.get("doc"), "text": dom_text(dom)}
                 survey = survey_dom_contrast(dom)
                 contrast_dom[(cap["slug"], cap.get("engine", "?"))] = survey
                 entry["contrast"] = {k: survey[k] for k in ("checked", "unknown", "failing_total")}
@@ -774,9 +839,9 @@ def main():
         entry["summary"] = "SSIM %.4f (local, 8x8) · mean delta %.1f/255 · %.1f%% of pixels differ >12 · %s" % (
             res["ssim"], res["pixel_delta_mean"], 100 * res["pixel_delta_fraction_over_12"], res["verdict"],
         )
-        if marketing and res.get("height_delta"):
-            entry["summary"] += " · build is %+d px vs the frame (compared over the top %d px)" % (
-                res["height_delta"], res["compared_height"])
+        if marketing and (res.get("height_delta") or res.get("width_delta")):
+            entry["summary"] += " · build is %+d px tall and %+d px wide vs the frame (compared over the shared %d px height)" % (
+                res.get("height_delta", 0), res.get("width_delta", 0), res["compared_height"])
         elif res.get("size_mismatch"):
             entry["summary"] += " · SIZE MISMATCH (reference resized to compare)"
         if status == "not-rendered":
@@ -807,12 +872,9 @@ def main():
             )
 
     files_in_run = vp.count_run_files(run)
-    if files_in_run > suite.max_files_per_run:
-        failures.append(
-            "this run wrote %d files, over the suite's cap of %d — run eviction caps how many runs "
-            "survive, not how large one run may get, so a per-state loop could grow a single run "
-            "without limit" % (files_in_run, suite.max_files_per_run)
-        )
+    cap_problem = run_files_problem(run, suite)
+    if cap_problem:
+        failures.append(cap_problem)
 
     if marketing:
         dev_rows = gate_marketing_deviations(deviations, dom_by_capture)
@@ -829,6 +891,10 @@ def main():
         survey = survey_contrast(regions_by_capture, exempt)
 
     for row in dev_rows:
+        if row["status"] == "UNCHECKED" and not args.allow_missing:
+            # An unchecked entry is only acceptable in a deliberately narrowed run.
+            failures.append("deviation %s/%s was not checked: %s" % (
+                row["id"], row.get("region", row.get("capture", "")), row.get("detail", "")))
         if row["status"] == "FAIL":
             failures.append("deviation %s/%s [%s]: %s" % (row["id"], row.get("region", row.get("capture", "")),
                                                           row.get("engine", ""), row.get("detail", "")))

@@ -20,6 +20,12 @@ HOW THE API IS STUBBED
   "verifying" and "updating password" states are held still long enough to photograph.
   Nothing touches a real API.
 
+NETWORK: the capture needs the internet for exactly one thing, Inter from Google Fonts
+  (`implementation/marketing/index.html` loads it from fonts.googleapis.com and fonts.gstatic.com).
+  That is the only egress: every other request is the loopback server below or a stubbed API call.
+  Offline it fails CLOSED: Inter does not load, so every capture is refused (exit 1) rather than
+  photographed in a fallback face.
+
 WHAT MAKES A CAPTURE FAIL (and therefore the run)
   * the bundle is missing or STALE (older than `src/`) — a screenshot of last week's build
     would score as a result and describe nothing that ships;
@@ -31,10 +37,15 @@ WHAT MAKES A CAPTURE FAIL (and therefore the run)
     (the screen now exists: it must be captured and compared, not catalogued as missing).
 
 BOUNDS
-  The server is a single daemon thread that serves files from `dist/` only (path-traversal
-  guarded) and keeps no cache. Per surface the DOM dump is capped at MAX_DOM_ITEMS and the
-  recorded GraphQL calls at MAX_CALLS. The run writes at most one PNG and one DOM file per
-  surface per engine; `vp_compare.py` fails the run if it exceeds the suite's file cap.
+  The server is one daemon thread running `serve_forever` on 127.0.0.1 with one short-lived daemon
+  handler thread per connection (`ThreadingMixIn`); it serves files from `dist/` only
+  (path-traversal guarded) and keeps no cache. Per surface the DOM dump is capped at MAX_DOM_ITEMS
+  (the cap is applied in the page AND re-imposed here by `enforce_dump_caps`, and a truncated dump
+  fails the capture), the focus list at MAX_FOCUS_ITEMS, the recorded GraphQL calls at MAX_CALLS and
+  the settle wait at MAX_SETTLE_MS; a page larger than vp_core.MAX_CAPTURE_PIXELS is refused before it is
+  photographed. The run writes three files per surface per engine (screenshot, diff, DOM dump);
+  `vp_compare.py` fails the run if it exceeds the suite's file cap. Ctrl-C exits at once without the
+  Playwright teardown, which otherwise spins at 100% CPU with the browsers still alive (Vera, N2).
 
 Exit codes: 0 all captures ok, 1 at least one capture failed, 2 infrastructure (no/stale
 dist, no engine), 3 SELAHCUE_VISUAL_REQUIRE=1 and an engine is missing.
@@ -407,10 +418,6 @@ DOM_DUMP_JS = r"""
 # ---------------------------------------------------------------------------
 
 
-def _slug_ok(entry):
-    return bool(entry.get("slug")) and vp.slug_ok(entry["slug"])
-
-
 STATUSES = ("captured", "unbuilt", "not-rendered")
 
 
@@ -482,6 +489,41 @@ def _bind_api(ctx, scenario_name, calls, held):
     ctx.route("**/graphql/**", handler)
 
 
+def inter_problem(slug, dump, require_inter=True):
+    """A sentence if Inter did not load on the page (so the capture must be refused), else None.
+
+    Figma is drawn in Inter; a fallback face re-wraps text and invents layout differences the code does
+    not have. A function so `vp_selftest.py` can call it with a stubbed page result.
+    """
+    if require_inter and not (dump.get("doc") or {}).get("inter"):
+        return (
+            "%s: Inter did not load (document.fonts.check(%r) is false) — Figma is drawn in "
+            "Inter and a fallback face would invent layout differences; refusing to capture"
+            % (slug, INTER_PROBE)
+        )
+    return None
+
+
+def enforce_dump_caps(dump):
+    """Re-impose the DOM/focus caps on what the page returned, and flag it when they bite.
+
+    The page applies MAX_DOM_ITEMS / MAX_FOCUS_ITEMS itself, but that is JavaScript running in someone
+    else's page: a bug there (or a page that returns more) must not become an unbounded file. Returns the
+    same dict, trimmed. `truncated` is set when the DOM list was cut (the capture then FAILS: the text and
+    contrast checks would read part of the page); `focus_capped` is informational.
+    """
+    items = dump.get("items") or []
+    if len(items) > MAX_DOM_ITEMS:
+        dump["items"] = items[:MAX_DOM_ITEMS]
+        dump["truncated"] = True
+    focus = dump.get("focus") or []
+    if len(focus) > MAX_FOCUS_ITEMS:
+        dump["focus"] = focus[:MAX_FOCUS_ITEMS]
+    if len(dump.get("focus") or []) >= MAX_FOCUS_ITEMS:
+        dump["focus_capped"] = True
+    return dump
+
+
 def capture_entry(browser, base, entry, out_dir, engine, require_inter=True, settle_cap=MAX_SETTLE_MS):
     """Capture one surface. Returns (record, error_list)."""
     errors = []
@@ -507,6 +549,7 @@ def capture_entry(browser, base, entry, out_dir, engine, require_inter=True, set
     held = []
     page_errors = []
     record = {"calls": calls, "page_errors": page_errors}
+    interrupted = False
     try:
         _bind_api(ctx, scenario_name, calls, held)
         if entry.get("session"):
@@ -539,13 +582,20 @@ def capture_entry(browser, base, entry, out_dir, engine, require_inter=True, set
             except Exception as exc:  # noqa: BLE001
                 errors.append("%s: wait_for %r never appeared (%s)" % (slug, entry["wait_for"], str(exc).splitlines()[0][:80]))
 
-        dump = page.evaluate(DOM_DUMP_JS, [MAX_DOM_ITEMS, MAX_FOCUS_ITEMS])
-        if require_inter and not (dump.get("doc") or {}).get("inter"):
+        dump = enforce_dump_caps(page.evaluate(DOM_DUMP_JS, [MAX_DOM_ITEMS, MAX_FOCUS_ITEMS]))
+        inter_err = inter_problem(slug, dump, require_inter)
+        if inter_err:
+            errors.append(inter_err)
+        if dump.get("truncated"):
             errors.append(
-                "%s: Inter did not load (document.fonts.check(%r) is false) — Figma is drawn in "
-                "Inter and a fallback face would invent layout differences; refusing to capture"
-                % (slug, INTER_PROBE)
-            )
+                "%s: the DOM dump hit MAX_DOM_ITEMS=%d and was truncated; the text and contrast checks would "
+                "read part of the page, so this capture fails (raise the cap deliberately)" % (slug, MAX_DOM_ITEMS))
+        doc = dump.get("doc") or {}
+        too_big = vp.pixel_budget_problem((int(doc.get("w") or 0), int(doc.get("h") or 0)), "%s page" % slug)
+        if too_big:
+            errors.append(too_big)
+            record.update({"png": None, "doc": doc})
+            return record, errors
         page.screenshot(path=png_path, full_page=True, animations="disabled")
         dom_name = "%s.%s.dom.json" % (slug, engine)
         vp.dump_json(os.path.join(out_dir, dom_name), {
@@ -554,17 +604,24 @@ def capture_entry(browser, base, entry, out_dir, engine, require_inter=True, set
         })
         record.update({"png": png_name, "dom": dom_name, "doc": dump.get("doc"),
                        "inter_loaded": bool((dump.get("doc") or {}).get("inter"))})
+    except KeyboardInterrupt:
+        # Ctrl-C: do NOT run the teardown below. Playwright's `ctx.close()` after a KeyboardInterrupt spins
+        # at 100% CPU with the driver and every browser still alive (reproduced 3 of 3 by Vera, N2).
+        # Skipping it and re-raising lets the `with sync_playwright()` exit stop the driver cleanly.
+        interrupted = True
+        raise
     except Exception as exc:  # noqa: BLE001 - any driver failure is a failed capture, surfaced loudly
         errors.append("%s: capture raised %s: %s" % (slug, type(exc).__name__, str(exc).splitlines()[0][:160]))
     finally:
-        # A HANG scenario leaves requests unanswered on purpose. Abort them explicitly now
-        # that the frame is taken, so closing the context abandons nothing.
-        for route in held:
-            try:
-                route.abort()
-            except Exception:  # noqa: BLE001 - teardown must never mask the capture's own result
-                pass
-        ctx.close()
+        if not interrupted:
+            # A HANG scenario leaves requests unanswered on purpose. Abort them explicitly now
+            # that the frame is taken, so closing the context abandons nothing.
+            for route in held:
+                try:
+                    route.abort()
+                except Exception:  # noqa: BLE001 - teardown must never mask the capture's own result
+                    pass
+            ctx.close()
     if page_errors:
         errors.append("%s: page errors: %s" % (slug, "; ".join(page_errors)[:200]))
     return record, errors
@@ -636,6 +693,42 @@ def result_record(entry, engine, engine_detail, rec, errors, out_dir):
     }
 
 
+def capture_all(engines, entries, args, base, require, results):
+    """Run every entry under every engine, appending records to `results`.
+
+    Returns an exit code to stop with (3: a required engine is missing), or None to carry on.
+    """
+    with sync_playwright() as p:
+        for engine in engines:
+            try:
+                browser, detail = launch(p, engine)
+            except Exception as exc:  # noqa: BLE001 - a missing engine is loud, not a crash
+                msg = "%s engine unavailable (%s)" % (engine, str(exc).splitlines()[0][:110])
+                if require:
+                    print("FAIL: SELAHCUE_VISUAL_REQUIRE=1 but " + msg)
+                    return 3
+                print("!! %s CAPTURE SKIPPED — %s" % (engine.upper(), msg))
+                continue
+            detail = "%s %s" % (detail, browser.version)
+            for entry in entries:
+                if engine == "webkit" and entry.get("status", "captured") != "captured":
+                    continue  # the probe is engine-independent; run it once, under blink
+                rec, errs = capture_entry(browser, base, entry, args.out, engine,
+                                          require_inter=not args.allow_fallback_font)
+                if rec is None:
+                    res = {"slug": entry["slug"], "engine": engine, "ok": False, "png": None,
+                           "errors": errs, "status": entry.get("status", "captured")}
+                else:
+                    res = result_record(entry, engine, detail, rec, errs, args.out)
+                results.append(res)
+                print("%s %-26s %-7s %-34s %s" % (
+                    "ok  " if res["ok"] else "FAIL", res["slug"], engine,
+                    res.get("png") or "(%s)" % res.get("status", "no png"),
+                    "; ".join(res["errors"])[:160]))
+            browser.close()
+    return None
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--out", required=True, help="directory to write PNGs, DOM dumps and captures.json into")
@@ -670,38 +763,22 @@ def main():
     engines = ["blink", "webkit"] if args.engine == "both" else [args.engine]
     server, base = start_server(DIST)
     results = []
+    interrupted = False
     try:
-        with sync_playwright() as p:
-            for engine in engines:
-                try:
-                    browser, detail = launch(p, engine)
-                except Exception as exc:  # noqa: BLE001 - a missing engine is loud, not a crash
-                    msg = "%s engine unavailable (%s)" % (engine, str(exc).splitlines()[0][:110])
-                    if require:
-                        print("FAIL: SELAHCUE_VISUAL_REQUIRE=1 but " + msg)
-                        return 3
-                    print("!! %s CAPTURE SKIPPED — %s" % (engine.upper(), msg))
-                    continue
-                detail = "%s %s" % (detail, browser.version)
-                for entry in entries:
-                    if engine == "webkit" and entry.get("status", "captured") != "captured":
-                        continue  # the probe is engine-independent; run it once, under blink
-                    rec, errs = capture_entry(browser, base, entry, args.out, engine,
-                                              require_inter=not args.allow_fallback_font)
-                    if rec is None:
-                        res = {"slug": entry["slug"], "engine": engine, "ok": False, "png": None,
-                               "errors": errs, "status": entry.get("status", "captured")}
-                    else:
-                        res = result_record(entry, engine, detail, rec, errs, args.out)
-                    results.append(res)
-                    print("%s %-26s %-7s %-34s %s" % (
-                        "ok  " if res["ok"] else "FAIL", res["slug"], engine,
-                        res.get("png") or "(%s)" % res.get("status", "no png"),
-                        "; ".join(res["errors"])[:160]))
-                browser.close()
+        try:
+            status = capture_all(engines, entries, args, base, require, results)
+        except KeyboardInterrupt:
+            # capture_entry skipped its teardown on purpose; leaving the `with` in capture_all stopped the driver.
+            interrupted = True
+            status = None
     finally:
         server.shutdown()
         server.server_close()
+    if status is not None:
+        return status
+    if interrupted:
+        print("interrupted: no captures.json written; nothing left running")
+        return 130
 
     vp.dump_json(os.path.join(args.out, "captures.json"), {
         "suite": "marketing", "dist": DIST, "generated_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),

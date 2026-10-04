@@ -283,7 +283,9 @@ Two stores, two different correct behaviours:
   that was never ingested.
 * **Run store** (`.visual-parity/`, gitignored): `prune_runs` keeps the newest
   `MAX_RUNS_KEPT = 5` run directories and deletes the rest. Each run writes ~30 images; without
-  eviction the artefact root grows linearly and forever. Ceiling ≈ 35 MB (31 MB at 5 runs today).
+  eviction the artefact root grows linearly and forever. The five kept runs are shared by BOTH suites: the operator
+  suite writes ~31 MB at 5 runs, and one marketing run is 18.5 MB on Blink and 39.7 MB with `--engine both`, so the
+  ceiling is about 200 MB (5 x 39.7 MB), not 35 MB (§11).
 * **Per-run file cap** (`MAX_FILES_PER_RUN = 200`): a *second, independent* bound, because run
   eviction caps how many runs survive, not how large one run may get — a per-state loop writing N
   images per surface would grow a single run without limit and never trip the run-count cap.
@@ -513,13 +515,37 @@ without Inter is refused), and `npm run build` in `implementation/marketing` fir
 
 ### Bounds
 
-| store | cap | enforced by |
-|---|---|---|
-| reference store (PNGs **and** style dumps) | 48 entries, 12 MB (35 entries, 5.9 MB today) | `ReferenceStore.ingest` / `register_style` refuse, never evict |
-| style dump | 2500 nodes (the extractor caps itself at 1500 and the registration refuses a capped dump) | `register_style` |
-| run | 200 files; 5 runs kept | `vp_compare` (per-suite cap), `prune_runs` |
-| DOM dump | 1500 items per page; GraphQL calls recorded: 50 | `vp_capture_marketing` |
-| capture server | one daemon thread, serves `dist/` only, no cache, path-traversal guarded | self-tested |
+Every cap below has a control in `vp_selftest.py` that **fails when the cap is removed**; each was proved by deleting the cap on a scratch copy
+of `scripts/` and watching the named control go red (the mutation list is in the PR, review round 1 remediation). A cap with no such control
+is not listed here.
+
+| bound | cap | what refuses | the control that fails without it |
+|---|---|---|---|
+| reference store: PNGs **and** style dumps | 48 entries, 12 MB (35 entries, 6,335,237 bytes today) | `ReferenceStore.ingest` / `register_style` refuse, never evict | `test_marketing_suite_has_its_own_bounded_store`, `test_style_dump_registration_is_validated_and_bounded` |
+| style dump | 2500 nodes (`MAX_STYLE_NODES`); the extractor caps itself at 1500 and a capped dump is refused | `register_style` | `test_style_and_figma_node_caps_bite` |
+| style diff inputs | 2500 nodes per file (`vp_style_diff.MAX_NODES`) | `load_figma`, `load_dom` | `test_style_and_figma_node_caps_bite` |
+| DOM dump | 1500 items (`MAX_DOM_ITEMS`) and 80 focus entries (`MAX_FOCUS_ITEMS`), re-imposed in Python after the page returns; a truncated dump **fails the capture and the comparison** | `enforce_dump_caps`, `capture_entry`, `load_dom_checked` | `test_dump_and_call_caps_bite`, `test_capture_entry_wiring`, `test_comparator_main_wiring` |
+| recorded GraphQL calls and held requests | 50 each (`MAX_CALLS`) | `_bind_api` | `test_dump_and_call_caps_bite` |
+| settle wait | 5000 ms (`MAX_SETTLE_MS`) | `capture_entry` | `test_capture_entry_wiring` |
+| decoded pixels | 60 Mpx (`MAX_CAPTURE_PIXELS`), read from the file header and refused **before** decoding; a page that large is also refused before it is photographed | `pixel_budget_problem`, `vp_compare.main`, `capture_entry`, `encode_image` | `test_pixel_budget_refuses_before_decoding`, `test_capture_entry_wiring` |
+| comparator memory | similarity, the diff picture and pixel statistics are computed in 512/1024-row bands; peak 623 MB on today's 35 surfaces (was 1.16 GB), same scores to 1e-9 | `block_ssim`, `diff_image`, `pixel_delta_stats`, `ink_coverage` | `test_banded_similarity_equals_the_whole_image_result`, `test_pixel_statistics_are_pinned` |
+| run size | 300 files per marketing run (`MARKETING_MAX_FILES_PER_RUN`): 35 surfaces x 3 files (screenshot, diff, DOM dump) x 2 engines + 4 run-level files = 214 at the most; 172 today; the 3 report files still to be written are counted; the oldest of 5 runs is evicted | `vp_compare.run_files_problem` (driven end to end through `main`), `prune_runs` | `test_per_run_file_cap_is_enforced`, `test_comparator_main_wiring` |
+| bundle probe | at most 400 `.js` files (`MAX_PROBE_JS_FILES`), counting only `.js`; a bundle over the cap **fails** the probe | `source_probe_problem` | `test_bundle_probe_counts_only_js_and_fails_at_its_cap` |
+| `vp_slice` output | 12 Mpx (`MAX_OUT_PIXELS`), computed from the requested numbers **before any crop is allocated** | `plan_slice` | `test_slice_output_cap_is_checked_before_allocation` |
+| artifact page | 80 images and 13 MB (`MAX_IMAGES`, `MAX_TOTAL_BYTES`), both checked before any file is written; encoding stops at the image that crosses the byte cap | `build_fidelity_artifact.build` | `test_artifact_builder_caps_refuse_before_writing` |
+| capture server | one daemon thread running `serve_forever` on 127.0.0.1 with one short-lived daemon handler thread per connection (`ThreadingMixIn`); serves `dist/` only, no cache, path-traversal guarded | `_Handler._serve` | `test_capture_server_is_confined` |
+
+**Ctrl-C.** A KeyboardInterrupt during a capture skips the Playwright teardown and exits 130: closing a context after an interrupt spins
+at 100% CPU with the driver and every browser still alive (reproduced 3 of 3 by the performance review). The skip is covered by
+`test_capture_entry_wiring` (the context is not closed on an interrupt); the end-to-end behaviour (no process left, checked by exact PID)
+was verified by hand on a real run, not by the self-test, because it needs a browser.
+
+**Scores are reproducible to about +-0.001.** The same code on the same machine produced fourth-decimal differences on 7 of 29 pairs
+(up to 0.0010, e.g. Home 0.6439 then 0.6431): text edges antialias slightly differently between runs. No verdict changes at that size.
+Quote a score to two decimals.
+
+**Disk.** The reference store adds 6.3 MB to every clone for good (history keeps replaced exports): re-ingest only the frames that changed, and
+consider Git LFS before adding a second viewport suite.
 
 ### Extracting a Figma frame's style dump
 

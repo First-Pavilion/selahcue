@@ -18,8 +18,11 @@ Exit 0 = every control demonstrated live. Exit 1 = at least one is dead or wrong
 
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import os
+import random
 import shutil
 import sys
 import tempfile
@@ -32,6 +35,9 @@ import vp_core as vp  # noqa: E402
 import vp_compare  # noqa: E402
 import vp_capture_marketing as vcm  # noqa: E402
 import vp_style_diff as vsd  # noqa: E402
+import vp_slice  # noqa: E402
+import build_fidelity_artifact as bfa  # noqa: E402
+import check_fidelity_audit as cfa  # noqa: E402
 from PIL import Image, ImageDraw  # noqa: E402
 
 RESULTS = []
@@ -154,10 +160,13 @@ def test_run_store_is_bounded():
 
 
 def test_per_run_file_cap_is_enforced():
-    """The per-run file cap must be CHECKED, not merely declared.
+    """The per-run file cap must be CHECKED by the real comparator, not merely declared.
 
-    Run eviction caps how many runs survive, not how large one run may get. Both
-    bounds are needed, and a bound nothing reads is decoration.
+    Run eviction caps how many runs survive, not how large one run may get. Both bounds are needed, and
+    a bound nothing reads is decoration. (This used to test that the string `suite.max_files_per_run`
+    appeared in vp_compare.py's source, which passed with the check switched off.) The behavioural test
+    of `vp_compare.main` over an over-cap run is in `test_comparator_main_wiring`; here: the counter, the
+    suite caps, and the sizing arithmetic.
     """
     root = tempfile.mkdtemp(prefix="vp-files-")
     try:
@@ -166,21 +175,26 @@ def test_per_run_file_cap_is_enforced():
             open(os.path.join(root, "web", "f%d.png" % i), "wb").close()
         ok(vp.count_run_files(root) == 3,
            "per-run cap: the file counter walks the run tree (%d files)" % vp.count_run_files(root))
+        suite = vp.get_suite("operator")
+        ok(vp_compare.run_files_problem(root, suite) is None,
+           "per-run cap: a small run is accepted by run_files_problem")
         for i in range(vp.MAX_FILES_PER_RUN + 5):
             open(os.path.join(root, "web", "x%04d.png" % i), "wb").close()
-        ok(vp.count_run_files(root) > vp.MAX_FILES_PER_RUN,
-           "per-run cap: an over-cap run is detectable (%d > %d) — vp_compare.py turns this into "
-           "a failure" % (vp.count_run_files(root), vp.MAX_FILES_PER_RUN))
+        got = vp_compare.run_files_problem(root, suite)
+        ok(got is not None and "cap of %d" % vp.MAX_FILES_PER_RUN in got,
+           "per-run cap: an over-cap run is REFUSED by run_files_problem (%s)" % (got or "")[:60])
     finally:
         shutil.rmtree(root, ignore_errors=True)
-    compare_src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "vp_compare.py")).read()
-    ok("suite.max_files_per_run" in compare_src,
-       "per-run cap: vp_compare.py actually READS the suite's cap (a declared-but-unchecked bound is "
-       "decoration)")
     ok(vp.get_suite("operator").max_files_per_run == vp.MAX_FILES_PER_RUN
        and vp.get_suite("marketing").max_files_per_run == vp.MARKETING_MAX_FILES_PER_RUN,
        "per-run cap: each suite carries its own cap (operator %d, marketing %d), so growing one "
        "cannot raise the other's" % (vp.MAX_FILES_PER_RUN, vp.MARKETING_MAX_FILES_PER_RUN))
+    n = len(vp.load_json(vp.get_suite("marketing").surfaces_path)["marketing"])
+    worst = n * vp.MARKETING_FILES_PER_SURFACE * 2 + vp.MARKETING_REPORT_FILES
+    ok(worst <= vp.MARKETING_MAX_FILES_PER_RUN <= 2 * worst,
+       "per-run cap: the marketing cap (%d) holds the real worst case (%d surfaces x %d files x 2 engines + %d "
+       "report files = %d) and is not absurdly above it" % (
+           vp.MARKETING_MAX_FILES_PER_RUN, n, vp.MARKETING_FILES_PER_SURFACE, vp.MARKETING_REPORT_FILES, worst))
 
 
 def test_reference_store_refuses_to_overflow():
@@ -569,8 +583,8 @@ def test_top_crop_alignment_reports_height_not_a_phantom_diff():
     a = synthetic_frame(0)
     taller = Image.new("RGB", (a.width, a.height + 120), (11, 13, 23))
     taller.paste(a, (0, 0))
-    ref_c, act_c, delta = vp_compare.align_top_crop(a, taller)
-    ok(delta == 120 and ref_c.size == act_c.size == a.size,
+    ref_c, act_c, delta, wdelta = vp_compare.align_top_crop(a, taller)
+    ok(delta == 120 and wdelta == 0 and ref_c.size == act_c.size == a.size,
        "top-crop: a build 120px taller than the frame is cropped to the shared %s and reports +%d" % (a.size, delta))
     same, _v, _g = vp.block_ssim(ref_c, act_c)
     ok(same > 0.999, "top-crop: identical shared content scores %.4f — extra page height does not lower it" % same)
@@ -579,13 +593,19 @@ def test_top_crop_alignment_reports_height_not_a_phantom_diff():
     ok(stretch_score < same - 0.02,
        "top-crop: stretching the taller page to fit scores %.4f, worse than cropping — the phantom layout "
        "diff the alignment exists to avoid" % stretch_score)
-    wrong_ref, wrong_act, _d = vp_compare.align_top_crop(synthetic_frame(37), taller)
+    wrong_ref, wrong_act, _d, _w = vp_compare.align_top_crop(synthetic_frame(37), taller)
     wrong, _v, _g = vp.block_ssim(wrong_ref, wrong_act)
     ok(wrong < 0.9, "top-crop: a genuinely different top still scores badly (%.4f)" % wrong)
-    narrow = Image.new("RGB", (a.width - 10, a.height))
-    r2, a2, _d = vp_compare.align_top_crop(a, narrow)
-    ok(r2.size == a.size and a2.size == narrow.size,
-       "top-crop: a WIDTH mismatch is not cropped (it is a different problem and the caller resizes)")
+    wide = Image.new("RGB", (a.width + 24, a.height + 5000), (11, 13, 23))
+    wide.paste(a, (0, 0))
+    r2, a2, dh, dw = vp_compare.align_top_crop(a, wide)
+    narrow = Image.new("RGB", (a.width - 16, a.height), (11, 13, 23))
+    r3, a3, dh3, dw3 = vp_compare.align_top_crop(a, narrow)
+    ok(r3.size == narrow.size and a3.size == narrow.size and dw3 == -16 and dh3 == 0,
+       "top-crop: a build NARROWER than the frame is compared over the build's width (no padded blank strip): %s %s" % (r3.size, a3.size))
+    ok(r2.size == a.size and a2.size == a.size and dw == 24 and dh == 5000,
+       "top-crop: a page 24px WIDER (a horizontal overflow) is cropped to the shared width, never stretched, "
+       "and both deltas are reported (+%dw +%dh); stretching it cost 1.6 GB and scored higher than the real page" % (dw, dh))
 
 
 def test_bundle_probe_and_freshness():
@@ -636,30 +656,36 @@ def test_bundle_probe_and_freshness():
         shutil.rmtree(root, ignore_errors=True)
 
 
+def _bc(slug, text="", h=13407, engine="blink"):
+    return {slug: {engine: {"doc": {"h": h}, "text": text}}}
+
+
 def test_marketing_deviation_gate_can_fail():
-    doc = {"h": 13407}
-    cap = {"privacy": {"doc": doc, "text": "Privacy Policy\nLast updated"}}
+    gate = vp_compare.gate_marketing_deviations
     height = {"id": "legal-full-drafts", "capture": "privacy", "metric": "doc_height", "requires": {"min": 5000}}
-    rows = vp_compare.gate_marketing_deviations({"deviations": [height]}, cap)
+    rows = gate({"deviations": [height]}, _bc("privacy", "Privacy Policy"))
     ok(rows[0]["status"] == "INTENTIONAL", "marketing gate: a page at the documented height is INTENTIONAL (%s px)" % rows[0]["value"])
-    rows = vp_compare.gate_marketing_deviations({"deviations": [height]}, {"privacy": {"doc": {"h": 1772}, "text": ""}})
+    rows = gate({"deviations": [height]}, _bc("privacy", h=1772))
     ok(rows[0]["status"] == "FAIL", "marketing gate: reverting to the Figma placeholder height (1772px) turns it RED")
     absent = {"id": "no-pro-price", "capture": "pricing", "metric": "text_absent", "requires": {"pattern": r"\$19"}}
-    clean = {"pricing": {"doc": doc, "text": "Free\nChurch\nCustom"}}
-    dirty = {"pricing": {"doc": doc, "text": "Pro\n$19 / month"}}
-    ok(vp_compare.gate_marketing_deviations({"deviations": [absent]}, clean)[0]["status"] == "INTENTIONAL",
+    ok(gate({"deviations": [absent]}, _bc("pricing", "Free\nChurch\nCustom"))[0]["status"] == "INTENTIONAL",
        "marketing gate: an honest page (no $19) satisfies text_absent")
-    ok(vp_compare.gate_marketing_deviations({"deviations": [absent]}, dirty)[0]["status"] == "FAIL",
+    ok(gate({"deviations": [absent]}, _bc("pricing", "Pro\n$19 / month"))[0]["status"] == "FAIL",
        "marketing gate: the invented price reappearing turns text_absent RED")
     present = {"id": "resend-cta", "capture": "verify-v3", "metric": "text_present", "requires": {"pattern": "send a new verification link"}}
-    ok(vp_compare.gate_marketing_deviations({"deviations": [present]}, {"verify-v3": {"doc": doc, "text": "Send a new verification link"}})[0]["status"] == "INTENTIONAL",
+    ok(gate({"deviations": [present]}, _bc("verify-v3", "Send a new verification link"))[0]["status"] == "INTENTIONAL",
        "marketing gate: text_present is case-insensitive and passes when the copy is there")
-    ok(vp_compare.gate_marketing_deviations({"deviations": [present]}, {"verify-v3": {"doc": doc, "text": ""}})[0]["status"] == "FAIL",
+    ok(gate({"deviations": [present]}, _bc("verify-v3", ""))[0]["status"] == "FAIL",
        "marketing gate: text_present FAILS when the copy is gone")
-    ok(vp_compare.gate_marketing_deviations({"deviations": [absent]}, {})[0]["status"] == "UNCHECKED",
+    ok(gate({"deviations": [absent]}, {})[0]["status"] == "UNCHECKED",
        "marketing gate: a capture that was not produced is UNCHECKED, never a quiet pass")
-    ok(vp_compare.gate_marketing_deviations({"deviations": [dict(absent, metric="nope")]}, clean)[0]["status"] == "FAIL",
+    ok(gate({"deviations": [dict(absent, metric="nope")]}, _bc("pricing", "x"))[0]["status"] == "FAIL",
        "marketing gate: an unknown metric fails rather than passing vacuously")
+    both = {"pricing": {"blink": {"doc": {"h": 1}, "text": "Free"}, "webkit": {"doc": {"h": 1}, "text": "Pro $19"}}}
+    by_engine = {r["engine"]: r["status"] for r in gate({"deviations": [absent]}, both)}
+    ok(by_engine == {"blink": "INTENTIONAL", "webkit": "FAIL"},
+       "marketing gate: with --engine both a WebKit-only regression is its own FAIL row (blink=%s, webkit=%s); "
+       "the gate used to read only the first engine's page" % (by_engine.get("blink"), by_engine.get("webkit")))
 
 
 def test_dom_contrast_survey():
@@ -821,6 +847,620 @@ def test_committed_marketing_references():
     ok(len(store.entries()) == 35, "marketing store: all 35 Figma frames are committed (%d)" % len(store.entries()))
 
 
+# ---------------------------------------------------------------------------
+# 8. Every new cap bites (Vera B1: a cap with no test that fails when it is removed is decoration)
+# ---------------------------------------------------------------------------
+
+
+def _rand_frame(w, h, seed):
+    rng = random.Random(seed)
+    img = Image.new("RGB", (w, h), (10, 12, 20))
+    d = ImageDraw.Draw(img)
+    for _ in range(60):
+        x0, y0 = rng.randint(0, w - 2), rng.randint(0, h - 2)
+        d.rectangle([x0, y0, rng.randint(x0, w), rng.randint(y0, h)],
+                    fill=(rng.randint(0, 255), rng.randint(0, 255), rng.randint(0, 255)))
+    return img
+
+
+def test_banded_similarity_equals_the_whole_image_result():
+    a, b = _rand_frame(701, 1301, 1), _rand_frame(701, 1301, 2)
+    m_band, v_band, g_band = vp.block_ssim(a, b)
+    m_whole, v_whole, g_whole = vp._block_ssim_whole(a, b)
+    ok(g_band == g_whole and len(v_band) == len(v_whole) and abs(m_band - m_whole) < 1e-9
+       and max(abs(x - y) for x, y in zip(v_band, v_whole)) < 1e-9,
+       "banded SSIM: %d blocks over 3 bands score %.9f, the same as the whole-image oracle (%.9f), block for block "
+       "— the bands exist to cut peak memory, not to change the answer" % (len(v_band), m_band, m_whole))
+    ok(vp.diff_image(a, b, v_band, g_band).tobytes() == vp._diff_image_whole(a, b, v_whole, g_whole).tobytes(),
+       "banded diff picture: byte-identical to the whole-image oracle")
+    flat = Image.new("RGB", (701, 1301), (30, 30, 30))
+    ok(abs(vp.block_ssim(flat, flat.copy())[0] - 1.0) < 1e-9, "banded SSIM: identical images still score 1.0")
+
+
+def test_pixel_statistics_are_pinned():
+    """`pixel_delta_stats` and `ink_coverage` print on every pair; replacing either with a constant must go red (Quinn Q-5)."""
+    a = Image.new("RGB", (40, 3000), (0, 0, 0))
+    ok(vp.pixel_delta_stats(a, a.copy()) == (0.0, 0.0),
+       "pixel stats: identical frames are exactly (0, 0)")
+    white = Image.new("RGB", (40, 3000), (255, 255, 255))
+    mean, frac = vp.pixel_delta_stats(a, white)
+    ok(abs(mean - 255.0) < 1e-9 and frac == 1.0,
+       "pixel stats: black vs white is mean 255 and 100%% over threshold (got %.3f, %.3f)" % (mean, frac))
+    half = a.copy()
+    half.paste(Image.new("RGB", (40, 1500), (100, 0, 0)), (0, 0))
+    mean, frac = vp.pixel_delta_stats(a, half)
+    ok(abs(mean - 50.0) < 1e-9 and abs(frac - 0.5) < 1e-9,
+       "pixel stats: half the rows differing by 100 is mean 50 and 50%% over threshold, across 3 bands (got %.3f, %.3f)" % (mean, frac))
+    ok(vp.ink_coverage(a)[0] == 0.0, "ink coverage: a flat frame has none")
+    inked = a.copy()
+    inked.paste(Image.new("RGB", (40, 750), (200, 200, 200)), (0, 0))
+    cover, bg = vp.ink_coverage(inked)
+    ok(abs(cover - 0.25) < 1e-9 and tuple(bg) == (0, 0, 0),
+       "ink coverage: a quarter of the frame inked reads exactly 0.25 over band boundaries (got %.4f)" % cover)
+
+
+def test_pixel_budget_refuses_before_decoding():
+    ok(vp.pixel_budget_problem((1440, 14441)) is None,
+       "pixel budget: today's largest capture (Terms, 1440x14441, 20.8 Mpx) is inside the cap")
+    got = vp.pixel_budget_problem((3000, 40000), "capture x")
+    ok(got is not None and "MAX_CAPTURE_PIXELS" in got and "refusing to decode" in got,
+       "pixel budget: a 120 Mpx capture is refused with a clear message, from the header size alone")
+    # the comparator wires it in: lower the cap under the committed signin frame and run the real main()
+    root = tempfile.mkdtemp(prefix="vp-px-")
+    old = vp.MAX_CAPTURE_PIXELS
+    try:
+        run, surf, dev = _synth_run(root, [{"slug": "signin"}])
+        vp.MAX_CAPTURE_PIXELS = 1000
+        code, out = _compare(run, surf, dev)
+        ok(code == 1 and "MAX_CAPTURE_PIXELS" in out,
+           "pixel budget: vp_compare.main FAILS a capture over the cap instead of decoding it (exit %d)" % code)
+    finally:
+        vp.MAX_CAPTURE_PIXELS = old
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def test_slice_output_cap_is_checked_before_allocation():
+    try:
+        vp_slice.plan_slice((1440, 900), (1440, 900), 0, 0, 0, 100000, 900, 0.5)
+        refused = False
+    except vp_slice.SliceTooLarge:
+        refused = True
+    ok(refused, "slice cap: a 100,000px-wide request is refused by plan_slice from the numbers alone")
+    ref_box, build_box, pw, ph = vp_slice.plan_slice((1440, 900), (1440, 900), 0, 0, 0, 1440, 900, 0.5)
+    ok(ref_box == (0, 0, 1440, 900) and pw == 720 and ph == 450,
+       "slice cap: a normal request is planned (%s, panel %dx%d)" % (ref_box, pw, ph))
+    clipped = vp_slice.plan_slice((1440, 900), (1440, 900), 5000, 5000, 5000, 1440, 900, 0.5)[0]
+    ok(clipped[2] - clipped[0] == 0 and clipped[3] - clipped[1] == 0,
+       "slice cap: a crop box far outside the image is clipped to nothing, so PIL cannot pad a huge blank crop")
+    # end to end through main(): the refusal must happen before ANY crop is allocated
+    root = tempfile.mkdtemp(prefix="vp-slice-")
+    calls = []
+    real_crop = Image.Image.crop
+
+    def counting_crop(self, *args, **kw):
+        calls.append(args)
+        return real_crop(self, *args, **kw)
+
+    try:
+        shutil.copyfile(vp.get_suite("marketing").store().path_for("signin"),
+                        os.path.join(root, "x.png"))
+        os.makedirs(os.path.join(root, "marketing"))
+        shutil.copyfile(os.path.join(root, "x.png"), os.path.join(root, "marketing", "signin.blink.png"))
+        Image.Image.crop = counting_crop
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = vp_slice.main(["--slug", "signin", "--run", root, "--w", "100000", "--out", os.path.join(root, "o.png")])
+        ok(code == 2 and not calls and "MAX_OUT_PIXELS" in out.getvalue(),
+           "slice cap: main() refuses a huge --w with exit 2 and allocates NO crop (%d crop calls) — it used "
+           "to allocate 902 MB first and refuse afterwards" % len(calls))
+        with contextlib.redirect_stdout(io.StringIO()):
+            code = vp_slice.main(["--slug", "signin", "--run", root, "--out", os.path.join(root, "o.png")])
+        ok(code == 0 and len(calls) >= 2 and os.path.exists(os.path.join(root, "o.png")),
+           "slice cap: a normal call still crops and writes the image (positive control)")
+    finally:
+        Image.Image.crop = real_crop
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def test_bundle_probe_counts_only_js_and_fails_at_its_cap():
+    root = tempfile.mkdtemp(prefix="vp-probe-")
+    try:
+        assets = os.path.join(root, "assets")
+        os.makedirs(assets)
+        for i in range(vp_compare.MAX_PROBE_JS_FILES):  # non-JS assets sorting BEFORE the real chunk
+            open(os.path.join(assets, "a%04d.css" % i), "w").close()
+        with open(os.path.join(assets, "z.js"), "w") as fh:
+            fh.write('const t="Email address verified"; const v="This verification link has expired";')
+        probe = {"control": "Email address verified", "must_not_contain": ["This verification link has expired"]}
+        got = vp_compare.source_probe_problem(probe, dist=root)
+        ok(got is not None and "no longer a documented non-render" in got,
+           "probe cap: 400 CSS files ahead of the one JS chunk do not stop the probe reading it — the "
+           "forbidden copy is still found (the first version counted every file and PASSED here)")
+        for i in range(vp_compare.MAX_PROBE_JS_FILES + 1):
+            open(os.path.join(assets, "chunk%04d.js" % i), "w").write("var x=%d" % i)
+        got = vp_compare.source_probe_problem(probe, dist=root)
+        ok(got is not None and "MAX_PROBE_JS_FILES" in got,
+           "probe cap: more than MAX_PROBE_JS_FILES .js files is a FAILURE ('%s...'), not a probe that quietly "
+           "stops reading part-way" % (got or "")[:50])
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def test_dump_and_call_caps_bite():
+    big = {"items": [{"tag": "p", "text": "x"}] * (vcm.MAX_DOM_ITEMS + 5), "focus": [{"tag": "a"}] * (vcm.MAX_FOCUS_ITEMS + 3)}
+    got = vcm.enforce_dump_caps(big)
+    ok(len(got["items"]) == vcm.MAX_DOM_ITEMS and got.get("truncated") is True,
+       "dump cap: a page returning %d items is cut to MAX_DOM_ITEMS=%d and flagged truncated (re-imposed in "
+       "Python, so a bug in the page-side cap cannot make an unbounded file)" % (vcm.MAX_DOM_ITEMS + 5, vcm.MAX_DOM_ITEMS))
+    ok(len(got["focus"]) == vcm.MAX_FOCUS_ITEMS and got.get("focus_capped") is True,
+       "focus cap: the focus list is cut to MAX_FOCUS_ITEMS=%d and flagged" % vcm.MAX_FOCUS_ITEMS)
+    small = vcm.enforce_dump_caps({"items": [{"tag": "p"}], "focus": []})
+    ok(not small.get("truncated") and not small.get("focus_capped"),
+       "dump cap: a small dump is left alone and not flagged (positive control)")
+
+    class Ctx:
+        handler = None
+
+        def route(self, _pattern, handler):
+            self.handler = handler
+
+    class Req:
+        method = "POST"
+        post_data_json = {"query": "mutation VerifyEmail($t: String!) { verifyEmail(token: $t) { verified } }"}
+
+    class Route:
+        def fulfill(self, **_kw):
+            pass
+
+        def abort(self):
+            pass
+
+    for scenario in ("signed-out", "verify-loading"):
+        ctx, calls, held = Ctx(), [], []
+        vcm._bind_api(ctx, scenario, calls, held)
+        for _ in range(vcm.MAX_CALLS + 30):
+            ctx.handler(Route(), Req())
+        ok(len(calls) == vcm.MAX_CALLS and len(held) <= vcm.MAX_CALLS,
+           "call cap: %d GraphQL calls under scenario %r record at most MAX_CALLS=%d (calls %d, held %d)" % (
+               vcm.MAX_CALLS + 30, scenario, vcm.MAX_CALLS, len(calls), len(held)))
+
+
+class _FakePage:
+    """Just enough of a Playwright page for capture_entry: no browser, no network."""
+
+    def __init__(self, dump, h1s=None, screenshot_raises=None):
+        self.dump, self.h1s, self.waits, self.shots = dump, h1s or [], [], 0
+        self.screenshot_raises = screenshot_raises
+
+    def on(self, *_a, **_k):
+        pass
+
+    def goto(self, *_a, **_k):
+        pass
+
+    def evaluate(self, js, arg=None):
+        if js == vcm.DOM_DUMP_JS:
+            return json.loads(json.dumps(self.dump))
+        if "document.fonts" in js:
+            return None
+        return list(self.h1s)
+
+    def wait_for_selector(self, *_a, **_k):
+        pass
+
+    def wait_for_timeout(self, ms):
+        self.waits.append(ms)
+
+    def screenshot(self, path=None, **_k):
+        if self.screenshot_raises:
+            raise self.screenshot_raises
+        self.shots += 1
+        Image.new("RGB", (8, 8), (1, 2, 3)).save(path)
+
+
+class _FakeCtx:
+    def __init__(self, page):
+        self.page, self.closed = page, False
+
+    def route(self, *_a, **_k):
+        pass
+
+    def add_init_script(self, *_a, **_k):
+        pass
+
+    def new_page(self):
+        return self.page
+
+    def close(self):
+        self.closed = True
+
+
+class _FakeBrowser:
+    def __init__(self, page):
+        self.ctx = _FakeCtx(page)
+
+    def new_context(self, **_k):
+        return self.ctx
+
+
+def _dump(inter=True, truncated=False, w=1440, h=900, items=3):
+    return {"items": [{"tag": "p", "x": 0, "y": 0, "w": 1, "h": 1, "text": "t%d" % i} for i in range(items)],
+            "focus": [], "truncated": truncated,
+            "doc": {"w": w, "h": h, "title": "t", "h1": [], "mains": 1, "inter": inter, "overflowX": False}}
+
+
+def _capture(page, entry_extra=None, **kw):
+    entry = {"slug": "signin", "path": "/signin", "width": 1440, "height": 900}
+    entry.update(entry_extra or {})
+    root = tempfile.mkdtemp(prefix="vp-cap-")
+    try:
+        browser = _FakeBrowser(page)
+        rec, errs = vcm.capture_entry(browser, "http://127.0.0.1:1", entry, root, "blink", **kw)
+        return rec, errs, browser.ctx, root
+    except BaseException:
+        shutil.rmtree(root, ignore_errors=True)
+        raise
+
+
+def test_capture_entry_wiring():
+    page = _FakePage(_dump())
+    rec, errs, ctx, root = _capture(page, {"settle_ms": 10 ** 6})
+    try:
+        ok(not errs and rec["png"] and os.path.exists(os.path.join(root, rec["png"])) and ctx.closed,
+           "capture wiring: a healthy page captures, writes the screenshot and its DOM dump, and closes its context")
+        ok(page.waits == [vcm.MAX_SETTLE_MS],
+           "settle cap: a catalogue settle_ms of 1,000,000 waits only MAX_SETTLE_MS=%d (waited %s)" % (vcm.MAX_SETTLE_MS, page.waits))
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+    rec, errs, _c, root = _capture(_FakePage(_dump(inter=False)))
+    shutil.rmtree(root, ignore_errors=True)
+    ok(any("Inter did not load" in e for e in errs),
+       "Inter gate: a page where Inter did not load FAILS the capture through capture_entry itself, not just the helper")
+    rec, errs, _c, root = _capture(_FakePage(_dump(inter=False)), require_inter=False)
+    shutil.rmtree(root, ignore_errors=True)
+    ok(not any("Inter" in e for e in errs), "Inter gate: --allow-fallback-font lets a fallback capture through (positive control)")
+    ok(vcm.inter_problem("x", {"doc": {"inter": True}}) is None and vcm.inter_problem("x", {"doc": {"inter": False}}) is not None
+       and vcm.inter_problem("x", {}) is not None and vcm.inter_problem("x", {}, require_inter=False) is None,
+       "Inter gate: inter_problem is True/False/missing/overridden as documented")
+
+    rec, errs, _c, root = _capture(_FakePage(_dump(truncated=True)))
+    shutil.rmtree(root, ignore_errors=True)
+    ok(any("truncated" in e for e in errs), "truncated dump: a dump the page flagged truncated FAILS the capture")
+    rec, errs, _c, root = _capture(_FakePage(_dump(items=vcm.MAX_DOM_ITEMS + 10)))
+    shutil.rmtree(root, ignore_errors=True)
+    ok(any("truncated" in e for e in errs), "truncated dump: an over-cap dump is cut AND fails the capture")
+
+    huge = _FakePage(_dump(w=1440, h=60000))
+    rec, errs, _c, root = _capture(huge)
+    shutil.rmtree(root, ignore_errors=True)
+    ok(huge.shots == 0 and not rec["png"] and any("MAX_CAPTURE_PIXELS" in e for e in errs),
+       "pixel cap: a page 1440x60000 (86 Mpx) is refused BEFORE it is photographed (screenshots taken: %d)" % huge.shots)
+
+    interrupter = _FakePage(_dump(), screenshot_raises=KeyboardInterrupt())
+    browser = _FakeBrowser(interrupter)
+    root = tempfile.mkdtemp(prefix="vp-cap-")
+    try:
+        try:
+            vcm.capture_entry(browser, "http://x", {"slug": "signin", "path": "/signin", "width": 1440, "height": 900},
+                              root, "blink")
+            raised = False
+        except KeyboardInterrupt:
+            raised = True
+        ok(raised and not browser.ctx.closed,
+           "Ctrl-C: KeyboardInterrupt propagates and the context is NOT closed (Playwright's close() after an "
+           "interrupt spins at 100%% CPU with the browsers alive; closed=%s)" % browser.ctx.closed)
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+    probe_page = _FakePage(_dump(), h1s=["We couldn't find that page"])
+    rec, errs, _c, root = _capture(probe_page, {"status": "unbuilt", "path": "/account/devices"})
+    shutil.rmtree(root, ignore_errors=True)
+    ok(not errs and rec["probe"]["confirmed"] is True,
+       "unbuilt probe: a route that renders the 404 view is confirmed unbuilt")
+    probe_page = _FakePage(_dump(), h1s=["Manage devices"])
+    rec, errs, _c, root = _capture(probe_page, {"status": "unbuilt", "path": "/account/devices"})
+    shutil.rmtree(root, ignore_errors=True)
+    ok(rec["probe"]["confirmed"] is False and any("now renders" in e for e in errs),
+       "unbuilt probe: a route that now renders a real page FAILS ('capture it and compare it')")
+
+
+def test_style_and_figma_node_caps_bite():
+    root = tempfile.mkdtemp(prefix="vp-nodes-")
+    src = os.path.join(root, "s.png")
+    Image.new("RGB", (8, 8), (1, 2, 3)).save(src)
+    try:
+        store = vp.ReferenceStore(root=os.path.join(root, "ref"), max_entries=5, max_bytes=10 ** 9,
+                                  style_dir=os.path.join(root, "style"))
+        store.ingest("page", src, "5:1")
+        os.makedirs(store.style_dir)
+
+        def dump(n):
+            return {"node": "5:1", "texts": [{"t": "x", "x": 0, "y": 0, "w": 1, "h": 1}] * n, "boxes": [],
+                    "counts": {"capped": False}}
+
+        with open(store.style_path_for("page"), "w") as fh:
+            json.dump(dump(vp.MAX_STYLE_NODES + 1), fh)
+        try:
+            store.register_style("page")
+            refused = False
+        except ValueError as exc:
+            refused = "MAX_STYLE_NODES" in str(exc)
+        ok(refused, "style cap: a dump of MAX_STYLE_NODES+1 (%d) nodes is refused" % (vp.MAX_STYLE_NODES + 1))
+        with open(store.style_path_for("page"), "w") as fh:
+            json.dump(dump(vp.MAX_STYLE_NODES), fh)
+        ok(store.register_style("page")["texts"] == vp.MAX_STYLE_NODES,
+           "style cap: exactly MAX_STYLE_NODES (%d) is accepted (positive control)" % vp.MAX_STYLE_NODES)
+
+        over = os.path.join(root, "over.json")
+        with open(over, "w") as fh:
+            json.dump({"items": [{"tag": "p", "text": "x"}] * (vsd.MAX_NODES + 1)}, fh)
+        try:
+            vsd.load_dom(over)
+            refused = False
+        except SystemExit as exc:
+            refused = "MAX_NODES" in str(exc)
+        ok(refused, "style diff cap: a DOM dump of MAX_NODES+1 (%d) items is refused" % (vsd.MAX_NODES + 1))
+        with open(over, "w") as fh:
+            json.dump({"node": "1:1", "texts": [{"t": "x", "x": 0, "y": 0, "w": 1, "h": 1}] * (vsd.MAX_NODES + 1), "boxes": []}, fh)
+        try:
+            vsd.load_figma("x", over)
+            refused = False
+        except SystemExit as exc:
+            refused = "MAX_NODES" in str(exc)
+        ok(refused, "style diff cap: a Figma style dump of MAX_NODES+1 nodes is refused")
+        with open(over, "w") as fh:
+            json.dump({"items": [{"tag": "p", "text": "x"}] * vsd.MAX_NODES}, fh)
+        ok(len(vsd.load_dom(over)["items"]) == vsd.MAX_NODES, "style diff cap: exactly MAX_NODES is accepted (positive control)")
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def test_artifact_builder_caps_refuse_before_writing():
+    root = tempfile.mkdtemp(prefix="vp-art-")
+    saved = (bfa.MAX_IMAGES, bfa.MAX_TOTAL_BYTES, bfa.encode_image)
+    try:
+        run = os.path.join(root, "run")
+        os.makedirs(os.path.join(run, "marketing"))
+        cat = vp.load_json(vp.get_suite("marketing").surfaces_path)["marketing"]
+        for e in cat:
+            if e.get("status") != "unbuilt":
+                open(os.path.join(run, "marketing", "%s.blink.png" % e["slug"]), "wb").close()
+        meta = {"ticket": "17tnw2b2c75", "origin_main": "3fb96da8", "date": "2026-10-03"}
+        bfa.encode_image = lambda src: b"j" * 100
+        out = os.path.join(root, "out-images")
+        bfa.MAX_IMAGES = 3
+        try:
+            bfa.build(run, out, meta)
+            refused = False
+        except SystemExit as exc:
+            refused = "MAX_IMAGES" in str(exc)
+        ok(refused and not os.path.exists(out),
+           "artifact cap: more images than MAX_IMAGES is refused BEFORE encoding and nothing is written")
+        bfa.MAX_IMAGES = saved[0]
+        bfa.MAX_TOTAL_BYTES = 1000
+        encoded_calls = []
+
+        def counting_encode(src):
+            encoded_calls.append(src)
+            return b"j" * 600
+
+        bfa.encode_image = counting_encode
+        out2 = os.path.join(root, "out-bytes")
+        try:
+            bfa.build(run, out2, meta)
+            refused = False
+        except SystemExit as exc:
+            refused = "MAX_TOTAL_BYTES" in str(exc)
+        ok(refused and not os.path.exists(out2),
+           "artifact cap: images over MAX_TOTAL_BYTES are refused and NOTHING is written (it used to write first, check after)")
+        ok(len(encoded_calls) <= 2,
+           "artifact cap: the byte cap stops ENCODING at the image that crosses it (%d of the planned images encoded), "
+           "not after all of them" % len(encoded_calls))
+        # images alone fit, but images + the page do not: only the final page-size check can catch this
+        bfa.encode_image = lambda src: b"j" * 100
+        n_images = len([e for e in cat if e.get("status") != "unbuilt"]) + len(cat)
+        bfa.MAX_TOTAL_BYTES = n_images * 100 + 1000
+        out4 = os.path.join(root, "out-page")
+        try:
+            bfa.build(run, out4, meta)
+            refused = False
+        except SystemExit as exc:
+            refused = "artifact would be" in str(exc)
+        ok(refused and not os.path.exists(out4),
+           "artifact cap: images that fit but a page that tips the total over MAX_TOTAL_BYTES is refused with nothing written")
+        bfa.encode_image = lambda src: b"j" * 100
+        bfa.MAX_TOTAL_BYTES = saved[1]
+        out3 = os.path.join(root, "out-ok")
+        files, total = bfa.build(run, out3, meta)
+        ok(os.path.exists(os.path.join(out3, "index.html")) and len(files) == len(os.listdir(os.path.join(out3, "img")))
+           and len(files) <= saved[0],
+           "artifact cap: within both caps the build writes the page and %d images (positive control)" % len(files))
+    finally:
+        bfa.MAX_IMAGES, bfa.MAX_TOTAL_BYTES, bfa.encode_image = saved
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def _synth_run(root, caps, pad_files=0, deviations=None, dist_forbidden=None):
+    """A minimal marketing run + a matching synthetic catalogue, built from the COMMITTED references.
+
+    Lets `vp_compare.main` be driven end to end with no browser. Returns (run, surfaces_path, deviations_path).
+    Each cap: slug, status (captured/unbuilt/not-rendered), engine, dom (dict | "missing" | "garbage" | None
+    for the default healthy dump), probe, source_probe.
+    """
+    suite = vp.get_suite("marketing")
+    real = {e["slug"]: e for e in vp.load_json(suite.surfaces_path)["marketing"]}
+    run = os.path.join(root, "run-synth")
+    d = os.path.join(run, "marketing")
+    os.makedirs(d)
+    records, entries = [], {}
+    for c in caps:
+        slug, status, engine = c["slug"], c.get("status", "captured"), c.get("engine", "blink")
+        entry = dict(real[slug])
+        entry["status"] = status
+        if c.get("source_probe"):
+            entry["source_probe"] = c["source_probe"]
+        entries[slug] = entry
+        rec = {"slug": slug, "kind": entry["kind"], "area": entry["area"], "state": "x/none", "status": status,
+               "node": entry["node"], "reference": slug, "reference_kind": "screen",
+               "expected_size": [1440, entry["height"]], "scale": 1, "engine": engine, "engine_detail": "stub",
+               "driver": {"ok": True, "errors": [], "regions": []}, "errors": [], "ok": True, "calls": [],
+               "png": None, "dom": None, "doc": None, "probe": c.get("probe")}
+        if status != "unbuilt":
+            png = "%s.%s.png" % (slug, engine)
+            shutil.copyfile(suite.store().path_for(slug), os.path.join(d, png))
+            rec["png"], rec["actual_size"] = png, [1440, entry["height"]]
+            dom = c.get("dom")
+            doc = {"w": 1440, "h": entry["height"], "inter": True}
+            rec["doc"] = doc
+            rec["dom"] = "%s.%s.dom.json" % (slug, engine)
+            if dom != "missing":
+                path = os.path.join(d, rec["dom"])
+                if dom == "garbage":
+                    open(path, "w").write("{not json")
+                else:
+                    body = dom or {"items": [{"tag": "p", "x": 0, "y": 0, "w": 10, "h": 10, "text": "hello"}],
+                                   "doc": doc, "truncated": False}
+                    with open(path, "w") as fh:
+                        json.dump(body, fh)
+        records.append(rec)
+    vp.dump_json(os.path.join(d, "captures.json"), {"suite": "marketing", "captures": records})
+    for i in range(pad_files):
+        open(os.path.join(d, "pad%04d.txt" % i), "w").close()
+    surf = os.path.join(root, "surfaces.json")
+    vp.dump_json(surf, {"marketing": list(entries.values())})
+    dev = os.path.join(root, "deviations.json")
+    vp.dump_json(dev, {"deviations": deviations or []})
+    return run, surf, dev
+
+
+def _compare(run, surfaces, deviations, *extra, dist=None):
+    argv = ["vp_compare.py", "--run", run, "--suite", "marketing", "--surfaces", surfaces,
+            "--deviations", deviations] + list(extra)
+    old_argv, old_env = sys.argv, os.environ.get("SELAHCUE_MARKETING_DIST")
+    buf = io.StringIO()
+    try:
+        sys.argv = argv
+        if dist:
+            os.environ["SELAHCUE_MARKETING_DIST"] = dist
+        with contextlib.redirect_stdout(buf):
+            code = vp_compare.main()
+    finally:
+        sys.argv = old_argv
+        if old_env is None:
+            os.environ.pop("SELAHCUE_MARKETING_DIST", None)
+        else:
+            os.environ["SELAHCUE_MARKETING_DIST"] = old_env
+    return code, buf.getvalue()
+
+
+def _synth_dist(root, forbidden=False):
+    assets = os.path.join(root, "dist", "assets")
+    os.makedirs(assets)
+    with open(os.path.join(assets, "a.js"), "w") as fh:
+        fh.write('const a="Email address verified";' + ('const b="This verification link has expired";' if forbidden else ""))
+    return os.path.join(root, "dist")
+
+
+def test_comparator_main_wiring():
+    """Drive the REAL vp_compare.main over synthetic runs: each wiring path must turn the run red when broken."""
+    absent = {"id": "no-google", "capture": "signin", "metric": "text_absent", "requires": {"pattern": "Continue with Google"}}
+    mk = lambda: tempfile.mkdtemp(prefix="vp-main-")  # noqa: E731
+    cases = []
+
+    root = mk()
+    cases.append(root)
+    run, surf, dev = _synth_run(root, [{"slug": "signin"}])
+    code, out = _compare(run, surf, dev)
+    ok(code == 0, "main wiring: a healthy synthetic run exits 0 (positive control; exit %d)" % code)
+
+    root = mk()
+    cases.append(root)
+    run, surf, dev = _synth_run(root, [{"slug": "signin"}], pad_files=vp.MARKETING_MAX_FILES_PER_RUN)
+    code, out = _compare(run, surf, dev)
+    ok(code == 1 and "cap of %d" % vp.MARKETING_MAX_FILES_PER_RUN in out,
+       "per-run cap: the real comparator FAILS a run with %d files (exit %d) — the old test only looked for the "
+       "word in the source and passed with the check switched off" % (vp.MARKETING_MAX_FILES_PER_RUN + 4, code))
+    root = mk()
+    cases.append(root)
+    run, surf, dev = _synth_run(root, [{"slug": "signin"}], pad_files=vp.MARKETING_MAX_FILES_PER_RUN - 8)
+    code, out = _compare(run, surf, dev)
+    ok(code == 0, "per-run cap: a run just under the cap passes (positive control; exit %d)" % code)
+    root = mk()
+    cases.append(root)
+    # captures.json + the screenshot + its DOM dump + the diff picture compare writes = 4 files besides the pad,
+    # so pad = cap - 6 leaves the run at cap - 2: under the cap by itself, over it once the 3 reports are counted.
+    run, surf, dev = _synth_run(root, [{"slug": "signin"}], pad_files=vp.MARKETING_MAX_FILES_PER_RUN - 6)
+    code, out = _compare(run, surf, dev)
+    ok(code == 1,
+       "per-run cap: the 3 report files still to be written are COUNTED (the run is at cap-2 on disk and over the "
+       "cap with them: exit %d); ignoring them lets a run through that then writes past its cap" % code)
+
+    for label, kw, expect in (
+        ("a missing DOM dump", {"dom": "missing"}, "missing"),
+        ("an unreadable DOM dump", {"dom": "garbage"}, "unreadable"),
+        ("a truncated DOM dump", {"dom": {"items": [{"tag": "p", "text": "x"}], "truncated": True,
+                                        "doc": {"w": 1440, "h": 900}}}, "TRUNCATED"),
+    ):
+        root = mk()
+        cases.append(root)
+        run, surf, dev = _synth_run(root, [dict(slug="signin", **kw)], deviations=[absent])
+        code, out = _compare(run, surf, dev)
+        ok(code == 1 and expect in out,
+           "fail closed: %s turns the run RED (exit %d); the deviation gate cannot be switched off by deleting a file" % (label, code))
+
+    root = mk()
+    cases.append(root)
+    dirty = {"items": [{"tag": "button", "x": 0, "y": 0, "w": 1, "h": 1, "text": "Continue with Google"}],
+             "doc": {"w": 1440, "h": 900}, "truncated": False}
+    run, surf, dev = _synth_run(root, [{"slug": "signin", "dom": dirty}], deviations=[absent])
+    code, out = _compare(run, surf, dev)
+    ok(code == 1 and "FAIL" in out, "deviation gate via main: the forbidden copy on the page turns the run RED (exit %d)" % code)
+
+    root = mk()
+    cases.append(root)
+    run, surf, dev = _synth_run(root, [{"slug": "signin"}], deviations=[dict(absent, id="x2", capture="pricing")])
+    code, out = _compare(run, surf, dev)
+    ok(code == 1 and "was not checked" in out,
+       "unchecked entry: a deviation whose capture was not produced FAILS a full run (exit %d)" % code)
+    code2, _o = _compare(run, surf, dev, "--allow-missing")
+    ok(code2 == 0, "unchecked entry: ... and is tolerated only under --allow-missing (exit %d)" % code2)
+
+    root = mk()
+    cases.append(root)
+    both_bad = {"items": [{"tag": "button", "x": 0, "y": 0, "w": 1, "h": 1, "text": "Continue with Google"}],
+                "doc": {"w": 1440, "h": 900}, "truncated": False}
+    run, surf, dev = _synth_run(root, [{"slug": "signin"}, {"slug": "signin", "engine": "webkit", "dom": both_bad}],
+                                deviations=[absent])
+    code, out = _compare(run, surf, dev)
+    ok(code == 1 and "webkit" in out,
+       "engine-aware gate: a regression in the WebKit capture alone fails the run (exit %d); the gate used to keep only the first engine" % code)
+
+    for confirmed, want in ((False, 1), (True, 0)):
+        root = mk()
+        cases.append(root)
+        probe = {"path": "/account/devices", "h1": ["We couldn't find that page" if confirmed else "Manage devices"],
+                 "expected_h1": "We couldn't find that page", "confirmed": confirmed}
+        run, surf, dev = _synth_run(root, [{"slug": "devices-d1", "status": "unbuilt", "probe": probe}])
+        code, out = _compare(run, surf, dev)
+        ok(code == want,
+           "unbuilt probe wiring: confirmed=%s exits %d (want %d); forcing the probe to 'confirmed' in main() turns "
+           "the False case green and fails this" % (confirmed, code, want))
+
+    sp = {"scope": "dist", "control": "Email address verified", "must_not_contain": ["This verification link has expired"]}
+    for forbidden, want in ((True, 1), (False, 0)):
+        root = mk()
+        cases.append(root)
+        dist = _synth_dist(root, forbidden=forbidden)
+        run, surf, dev = _synth_run(root, [{"slug": "verify-v4", "status": "not-rendered", "source_probe": sp}])
+        code, out = _compare(run, surf, dev, dist=dist)
+        ok(code == want and (not forbidden or "no longer a documented non-render" in out),
+           "not-rendered probe wiring: forbidden copy in the bundle exits %d (want %d); removing the probe call from "
+           "main() turns the forbidden case green and fails this" % (code, want))
+    for c in cases:
+        shutil.rmtree(c, ignore_errors=True)
+
+
 def main():
     for fn in (
         test_comparator,
@@ -846,6 +1486,16 @@ def main():
         test_marketing_catalogue_is_usable,
         test_capture_server_is_confined,
         test_committed_marketing_references,
+        test_banded_similarity_equals_the_whole_image_result,
+        test_pixel_statistics_are_pinned,
+        test_pixel_budget_refuses_before_decoding,
+        test_slice_output_cap_is_checked_before_allocation,
+        test_bundle_probe_counts_only_js_and_fails_at_its_cap,
+        test_dump_and_call_caps_bite,
+        test_capture_entry_wiring,
+        test_style_and_figma_node_caps_bite,
+        test_artifact_builder_caps_refuse_before_writing,
+        test_comparator_main_wiring,
     ):
         try:
             fn()
