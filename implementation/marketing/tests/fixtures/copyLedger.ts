@@ -134,34 +134,18 @@ export const LEDGER: Readonly<Record<string, PageLedger>> = {
   },
 
   Changelog: {
-    newCopy: ['CHANGELOG', "What's new", 'New', 'Improved', 'Fixed'],
-    unbacked: [
-      // Every release, date, tag and entry: invented, restyled (audit changelog-04, 05). Includes a security claim about an
-      // unshipped feature ("Encrypted post-activation downloads for NIV, ESV, and NLT") and a benchmark nobody ran.
-      'v1.2.0',
-      'August 8, 2026',
-      'Latest Release',
-      'Native NDI 5 Output Engine',
-      'Direct broadcast-quality NDI streaming to OBS, vMix, and Wirecast without extra plugins.',
-      'Licensed Bible Entitlement Sync',
-      'Encrypted post-activation downloads for NIV, ESV, and NLT translations.',
-      'Hardware Decode Optimization',
-      'Reduced GPU VRAM usage by 35% on 4K motion backgrounds.',
-      'Stage Monitor Timer Overrun',
-      'Fixed edge case where stage countdown timer held at 00:00 instead of triggering TIME UP state.',
-      'v1.1.0',
-      'June 15, 2026',
-      'Flutter Mobile Companion App',
-      'Pair iOS and Android devices over local Wi-Fi to control slides and stage timers.',
-      'Scripture Verse-by-Verse Paging',
-      'Faster keyboard navigation using Arrow keys and spacebar.',
-      'Display Reconnect Recovery',
-      'Restored automatic venue display matching upon HDMI reconnect.',
-      'v1.0.0',
-      'March 1, 2026',
-      'SelahCue Initial Launch',
-      'Cross-platform offline presentation software for churches.',
+    // The group labels ("New", "Improved", "Fixed") are drawn only when a release exists; they are not rendered today, so they
+    // are not listed. The first release adds them, with its entries, in the same change.
+    newCopy: [
+      'CHANGELOG',
+      "What's new",
+      // ClickUp 17tnw2b0x3h: the empty state that replaced three invented releases.
+      'No release notes yet',
+      'New features, improvements and fixes will be listed here with each release.',
     ],
+    // Empty on purpose: v1.2.0 "Latest Release", v1.1.0, v1.0.0, their dates and every entry (an NDI engine, encrypted licensed
+    // downloads, a GPU benchmark) were invented and removed by ClickUp 17tnw2b0x3h; they are banned in NAMED_CLAIMS.
+    unbacked: [],
     harmless: ['Stay up to date with new features, performance improvements, and bug fixes in SelahCue.'],
   },
 
@@ -179,42 +163,20 @@ export const LEDGER: Readonly<Record<string, PageLedger>> = {
   },
 
   Careers: {
+    // Only what renders with no role open. The role rows, their tags, the Apply buttons and the "Don't see your role?" line are
+    // drawn only when a role exists; the first real role adds them to the ledger in the same change.
     newCopy: [
       'CAREERS',
       'Build tools churches rely on',
-      'Built to Work Offline',
-      'A service cannot be repeated, so slides, scripture and timers run on the desktop with no network.',
-      // The heading stays while roles exist; it needs an empty state when 17tnw2b0x3h removes them.
+      // ClickUp 17tnw2b0x3h: the hero line now says only what the product is (it was a remote-first company claim), and the roles
+      // band says plainly that nothing is open.
+      'SelahCue is offline-first presentation software for churches.',
       'Open roles',
-      // No "reach out": the line names no way to reach anyone because the form does not send (review round 2, Quinn Q6).
-      "Don't see your role? We're glad to meet thoughtful people.",
-      // The visually hidden tail that names a role on its Apply button (the role titles themselves are the live ones), and the
-      // accessible name of the list of roles.
-      /^for (Rust Systems & Graphics Engineer|Senior Vue \/ Frontend Engineer|Worship Tech Solutions Specialist)$/,
-      'Role details',
+      'There are no open roles right now.',
     ],
-    unbacked: [
-      // The hero subline and three culture cards: remote policy, a usage claim ("thousands of volunteer tech teams"), "zero
-      // compromise" (audit careers-08).
-      'We are an engineering-driven, remote-first team committed to high-performance, offline-first worship presentation technology.',
-      'Fully Remote & Flexible',
-      'Work from anywhere in the world with flexible hours built around your life and family.',
-      'High Technical Standards',
-      'We write Rust, wgpu, and Vue 3 TypeScript. Zero compromise on memory safety, frame latency, or UX quality.',
-      'Impact for the Local Church',
-      'Your work directly supports thousands of volunteer tech teams and worship leaders every single Sunday.',
-      // The three invented roles, their tags (the old single meta line, split) and the Apply buttons (audit careers-07, 09).
-      'Rust Systems & Graphics Engineer',
-      'Senior Vue / Frontend Engineer',
-      'Worship Tech Solutions Specialist',
-      'Core Engine',
-      'Web & Dashboard',
-      'Customer Success',
-      'Remote (US/EU/Africa)',
-      'Remote',
-      'Full-time',
-      'Apply Now →',
-    ],
+    // Empty on purpose: the remote-first line, the three culture cards ("thousands of volunteer tech teams"), the three invented
+    // roles with their tags and Apply buttons were removed by ClickUp 17tnw2b0x3h; they are banned in NAMED_CLAIMS.
+    unbacked: [],
     harmless: [],
   },
 

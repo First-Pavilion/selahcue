@@ -520,7 +520,7 @@ describe('CategoryIcon: every name a view asks for has its own icon, and every i
   const asked = new Map(views.map((v) => [v, namesAsked(v, readSrc(`views/${v}`))] as const))
 
   test('the table was read: it has entries and no duplicates', () => {
-    assert.ok(table.length >= 20, `only ${table.length} icons were found: the reader is looking in the wrong place`)
+    assert.ok(table.length >= 15, `only ${table.length} icons were found: the reader is looking in the wrong place`)
     assert.equal(new Set(table).size, table.length)
   })
 
@@ -529,7 +529,7 @@ describe('CategoryIcon: every name a view asks for has its own icon, and every i
     assert.ok(asked.get('SupportView.vue')!.length >= 6, 'the six help categories')
     assert.ok(asked.get('DocsView.vue')!.includes('getting-started') && asked.get('DocsView.vue')!.length >= 6)
     assert.ok(asked.get('BlogView.vue')!.includes('shield-check'))
-    assert.deepEqual([...asked.get('CareersView.vue')!].sort(), ['check-circle', 'globe', 'heart', 'wifi-off'])
+    assert.deepEqual([...asked.get('CareersView.vue')!].sort(), [], 'Careers draws no icon now that its culture strip is gone (17tnw2b0x3h)')
     assert.deepEqual([...asked.get('AffiliatesView.vue')!].sort(), ['briefcase', 'package', 'users', 'video'])
   })
 
@@ -889,6 +889,26 @@ function badgesOf(page: string): Array<{ variant: string; text: string; classes:
   return out
 }
 
+/**
+ * FIXTURE releases, only to render the card layout the page keeps for its first real release (Figma 501:154). They are test
+ * data, not copy: they never go through the ledger, and no real release looks like these.
+ */
+const FIXTURE_RELEASES = [
+  { version: 'v9.9.9', date: 'January 1, 2000', tag: 'Fixture tag', highlights: [
+    { type: 'new', title: 'Fixture change one', desc: 'Fixture text one.' },
+    { type: 'new', title: 'Fixture change two', desc: 'Fixture text two.' },
+    { type: 'improved', title: 'Fixture change three', desc: 'Fixture text three.' },
+    { type: 'fixed', title: 'Fixture change four', desc: 'Fixture text four.' },
+  ] },
+  { version: 'v9.9.8', date: 'January 2, 2000', tag: 'Fixture tag', highlights: [
+    { type: 'new', title: 'Fixture change five', desc: 'Fixture text five.' },
+    { type: 'improved', title: 'Fixture change six', desc: 'Fixture text six.' },
+    { type: 'fixed', title: 'Fixture change seven', desc: 'Fixture text seven.' },
+  ] },
+  { version: 'v9.9.7', date: 'January 3, 2000', tag: 'Fixture tag', highlights: [{ type: 'new', title: 'Fixture change eight', desc: 'Fixture text eight.' }] },
+]
+const changelogWithReleases = (): Promise<string> => renderView(server, 'ChangelogView.vue', '/changelog', { set: { releases: FIXTURE_RELEASES } })
+
 describe('Changelog (501:124): hero, then one grouped card per release', () => {
   test('the hero is a CHANGELOG pill and the h1 "What\'s new" (changelog-01)', async () => {
     const page = await html('ChangelogView.vue')
@@ -903,26 +923,43 @@ describe('Changelog (501:124): hero, then one grouped card per release', () => {
     assert.ok(!text.includes('always on the latest'))
   })
 
-  test('one card per release, each led by an h2 version, and no sticky meta column (changelog-02, changelog-bug-01)', async () => {
+  // ClickUp 17tnw2b0x3h: nothing has shipped, so the page lists no release, no date and no "latest" tag.
+  test('with no release shipped the page shows an honest empty state, not an invented release', async () => {
     const page = await html('ChangelogView.vue')
+    assert.equal(withClass(page, 'release-card').length, 0, 'no release card')
+    assert.equal(withClass(page, 'release-empty').length, 1, 'one empty state')
+    const heads = headingsOf(page)
+    assert.deepEqual(heads.filter((h) => h.level === 2).map((h) => h.text), ['No release notes yet'])
+    assert.deepEqual(outlineProblems(heads), [])
+    assert.doesNotMatch(textOf(page), /\bv\d+\.\d+\.\d+\b|Latest Release/i, 'no version number and no "latest" tag')
+  })
+
+  test('the release list in the source is empty: an invented release cannot return without a deliberate edit', () => {
+    const script = descriptorOf(readSrc('views/ChangelogView.vue'), 'ChangelogView.vue').scriptSetup?.content ?? ''
+    assert.match(script, /const releases: Release\[\] = \[\]/, 'the releases array must stay empty until a real release ships')
+  })
+
+  test('one card per release, each led by an h2 version, and no sticky meta column (changelog-02, changelog-bug-01)', async () => {
+    const page = await changelogWithReleases()
     const cards = withClass(page, 'release-card')
     assert.equal(cards.length, 3)
+    assert.equal(withClass(page, 'release-empty').length, 0, 'the empty state is gone once a release exists')
     assert.equal(withClass(page, 'timeline-meta').length, 0, 'the left meta column is gone')
     const heads = headingsOf(page)
-    assert.deepEqual(heads.filter((h) => h.level === 2).map((h) => h.text), ['v1.2.0', 'v1.1.0', 'v1.0.0'])
+    assert.deepEqual(heads.filter((h) => h.level === 2).map((h) => h.text), ['v9.9.9', 'v9.9.8', 'v9.9.7'])
     assert.ok(heads.filter((h) => h.level === 3).length >= 8, 'the per-change titles stay h3')
     assert.deepEqual(outlineProblems(heads), [])
   })
 
   test('changes are grouped by type: one label per group, not one per change (changelog-02)', async () => {
-    const page = await html('ChangelogView.vue')
+    const page = await changelogWithReleases()
     const labels = badgesOf(page).filter((b) => b.classes.includes('change-label'))
     assert.deepEqual(labels.map((b) => b.text), ['New', 'Improved', 'Fixed', 'New', 'Improved', 'Fixed', 'New'])
     assert.equal(withClass(page, 'change-group').length, 7)
   })
 
   test('the type labels use the variants PR 173 defined: New preview, Improved accent, Fixed warn (changelog-03)', async () => {
-    const page = await html('ChangelogView.vue')
+    const page = await changelogWithReleases()
     const labels = badgesOf(page).filter((b) => b.classes.includes('change-label'))
     const variantOf = (text: string): Set<string> => new Set(labels.filter((b) => b.text === text).map((b) => b.variant))
     assert.deepEqual([...variantOf('New')], ['preview'])
@@ -931,7 +968,7 @@ describe('Changelog (501:124): hero, then one grouped card per release', () => {
   })
 
   test('only the newest release carries a tag pill beside its date', async () => {
-    const page = await html('ChangelogView.vue')
+    const page = await changelogWithReleases()
     const tags = badgesOf(page).filter((b) => !b.classes.includes('change-label') && b.variant !== 'featured')
     assert.equal(tags.length, 1, 'one pill, on the newest release')
     const cards = withClass(page, 'release-card')
@@ -1032,7 +1069,18 @@ describe('Blog (502:124): hero, featured post with a media panel, three-column g
 
 // --------------------------------------------------------------------------- Careers
 
-describe('Careers (503:124): hero, four icon-tile culture cards, a full-bleed roles band', () => {
+/**
+ * FIXTURE roles, only to render the row layout the page keeps for its first real role (Figma 503:173). Test data, not copy:
+ * they never go through the ledger, and no real role looks like these.
+ */
+const FIXTURE_ROLES = [
+  { title: 'Fixture role one', dept: 'Fixture dept A', location: 'Fixture place', type: 'Fixture type' },
+  { title: 'Fixture role two', dept: 'Fixture dept B', location: 'Fixture place', type: 'Fixture type' },
+  { title: 'Fixture role three', dept: 'Fixture dept C', location: 'Fixture place', type: 'Fixture type' },
+]
+const careersWithRoles = (): Promise<string> => renderView(server, 'CareersView.vue', '/careers', { set: { roles: FIXTURE_ROLES } })
+
+describe('Careers (503:124): hero and a full-bleed roles band', () => {
   test('the hero is a CAREERS pill and the h1 "Build tools churches rely on" at the frame\'s 50/56 (careers-01)', async () => {
     const page = await html('CareersView.vue')
     const [h1] = headingsOf(page)
@@ -1043,19 +1091,15 @@ describe('Careers (503:124): hero, four icon-tile culture cards, a full-bleed ro
     assert.match(css, /\.hero-title\s*\{[^}]*max-width:\s*500px/)
   })
 
-  test('four culture cards with a coloured icon tile holding an SVG, no emoji, no extra heading above them (careers-03)', async () => {
+  // ClickUp 17tnw2b0x3h: no company claim the repo does not back (remote-first, "zero compromise", "thousands of volunteer tech teams").
+  test('the page makes no company claim: the culture strip is gone and the hero names only the product', async () => {
     const page = await html('CareersView.vue')
-    const cards = withClass(page, 'culture-card')
-    assert.equal(cards.length, 4)
-    const tiles = withClass(page, 'culture-icon')
-    assert.equal(tiles.length, 4)
-    for (const tile of tiles) {
-      const inner = page.slice(tile.at, page.indexOf('</div></div>', tile.at))
-      assert.ok(/<svg[\s>]/.test(inner), 'each tile holds an inline SVG')
-    }
-    assert.ok(!/\p{Extended_Pictographic}/u.test(textOf(page)), 'no emoji remains')
-    assert.ok(!textOf(page).includes('Why Work With Us'), 'the frame draws no heading over the strip')
-    assert.match(styleOf(readSrc('views/CareersView.vue')), /\.culture-grid\s*\{[^}]*grid-template-columns:\s*repeat\(4, minmax\(0, 1fr\)\)/)
+    assert.equal(withClass(page, 'culture-card').length, 0)
+    assert.equal(withClass(page, 'culture-grid').length, 0)
+    const text = textOf(page)
+    assert.doesNotMatch(text, /remote|thousands|zero compromise|every single Sunday|flexible hours/i)
+    assert.ok(!/\p{Extended_Pictographic}/u.test(text), 'no emoji')
+    assert.doesNotMatch(styleOf(readSrc('views/CareersView.vue')), /culture/, 'and no style is left for it')
   })
 
   test('the roles sit in a full-bleed band under a centred "Open roles" heading (careers-04)', async () => {
@@ -1067,19 +1111,37 @@ describe('Careers (503:124): hero, four icon-tile culture cards, a full-bleed ro
     assert.match(css, /\.roles-list\s*\{[^}]*max-width:\s*940px/)
   })
 
-  test('each role row has three tag pills (department, place, type) and no single meta line (careers-04, careers-05)', async () => {
+  test('with no role open the band says so: no role, no tag, no Apply button, no "don\'t see your role" invitation', async () => {
     const page = await html('CareersView.vue')
+    assert.equal(withClass(page, 'role-row').length, 0)
+    assert.equal(withClass(page, 'role-tag').length, 0)
+    assert.equal(withClass(page, 'roles-note').length, 0, 'the closing line invites people to a role that does not exist')
+    const empty = withClass(page, 'roles-empty')[0]
+    assert.ok(empty, 'the empty line is there')
+    assert.ok(textOf(page.slice(empty.at, page.indexOf('</p>', empty.at))).startsWith('There are no open roles right now.'))
+    assert.ok(!tagsOf(page).some((t) => t.name === 'a'), 'and nothing on the page links anywhere')
+    assert.deepEqual(outlineProblems(headingsOf(page)), [])
+  })
+
+  test('the role list in the source is empty: an invented role cannot return without a deliberate edit', () => {
+    const script = descriptorOf(readSrc('views/CareersView.vue'), 'CareersView.vue').scriptSetup?.content ?? ''
+    assert.match(script, /const roles: Role\[\] = \[\]/, 'the roles array must stay empty until a real role opens')
+  })
+
+  test('each role row has three tag pills (department, place, type) and no single meta line (careers-04, careers-05)', async () => {
+    const page = await careersWithRoles()
     const rows = withClass(page, 'role-row')
-    assert.equal(rows.length, 3, 'the roles the build already shows; the Figma roles are not added (careers-07)')
+    assert.equal(rows.length, 3)
     assert.equal(withClass(page, 'role-tag').length, 9)
     assert.equal(withClass(page, 'role-meta').length, 0)
+    assert.equal(withClass(page, 'roles-empty').length, 0, 'the empty line is gone once a role exists')
     const css = styleOf(readSrc('views/CareersView.vue'))
     assert.match(css, /\.role-tag\s*\{[^}]*color:\s*var\(--sc-text-secondary\)/)
     assert.match(css, /\.role-tag\s*\{[^}]*background:\s*var\(--sc-elevated\)/)
   })
 
   test('the Apply links are distinct: each name carries its role, and still contains the visible text (careers-06)', async () => {
-    const page = await html('CareersView.vue')
+    const page = await careersWithRoles()
     const names: string[] = []
     for (const row of withClass(page, 'role-row')) {
       const slice = page.slice(row.at, page.indexOf('</article>', row.at))
@@ -1093,18 +1155,17 @@ describe('Careers (503:124): hero, four icon-tile culture cards, a full-bleed ro
     roleTitles.forEach((title, i) => assert.ok((names[i] ?? '').includes(title), `link ${i} names its role "${title}"`))
   })
 
-  test('the closing line is plain text: no link to a form that sends nothing, and no mailbox (careers-04, careers-08, review round 1 M1)', async () => {
-    const page = await html('CareersView.vue')
+  test('the closing line is plain text: no link to a form that cannot send, and no mailbox (careers-04, careers-08, review round 1 M1)', async () => {
+    const page = await careersWithRoles()
     const note = withClass(page, 'roles-note')[0]
     assert.ok(note, 'the closing line is there')
     const line = page.slice(note.at, page.indexOf('</p>', note.at))
     assert.ok(textOf(line).startsWith("Don't see your role?"))
-    assert.ok(!/reach out|contact us|get in touch|write to|email|apply/i.test(textOf(line)), 'it names no way to reach anyone: the contact page is a form that sends nothing (review round 2, Quinn Q6)')
-    assert.ok(!/<a[\s>]/.test(line), 'it carries no link: this line is new, and the contact page is a form that sends nothing')
-    assert.ok(!/@selahcue/.test(textOf(page).replace('support@selahcue', '')), 'no invented mailbox')
-    // The Apply links already existed (to the contact page) and keep that interim destination.
+    assert.ok(!/reach out|contact us|get in touch|write to|email|apply/i.test(textOf(line)), 'it names no way to reach anyone')
+    assert.ok(!/<a[\s>]/.test(line), 'it carries no link')
+    assert.ok(!/@selahcue/.test(textOf(page)), 'no invented mailbox')
     const apply = tagsOf(page).filter((t) => t.name === 'a' && (t.attrs['href'] ?? '') === '/contact')
-    assert.equal(apply.length, 3, 'the three role buttons keep the destination they had')
+    assert.equal(apply.length, 3, 'the role buttons keep their destination, the contact page')
   })
 })
 
