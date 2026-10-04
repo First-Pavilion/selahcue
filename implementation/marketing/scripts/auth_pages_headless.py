@@ -112,16 +112,16 @@ DIST = Path(os.environ.get("SELAHCUE_MARKETING_DIST") or (MARKETING / "dist"))
 # sweep itself, and the old name-based check kept as a complement. Measured on the tree
 # that ships it, not derived from the arithmetic.
 #
-# 1751 -> 2266 in the Figma auth ticket (17tnw2b2cf1), measured on the tree that ships it: 60 scenarios and 1751 checks became
-# 64 scenarios and 2266. What was added: computed-style checks, read in real Chrome with running transitions finished
+# 1751 -> 2505 in the Figma auth ticket (17tnw2b2cf1), measured on the tree that ships it: 60 scenarios and 1751 checks became
+# 67 scenarios and 2505 (2266 at the first head; the review round added three scenarios and the checks below). What was added: computed-style checks, read in real Chrome with running transitions finished
 # first, for the Sign in, Verify and Reset findings (the field label, input well, 7px / 18px rhythm and placeholder on six
 # states; the centring of V1 and V2 and the left alignment of every other state; the R1 focus, Show / Hide and hint; the R2
 # cross, held button and banner; the Forgot link in the label row, its target and the tab order); five checks on EVERY state
-# through `universalChecks` (the primary and the secondary button heights, the 358px column, the size of every drawn mark and the banner glyph column), and FOUR new scenarios: `reset-both-errors`,
-# `reset-submitting`, `signin-submitting` and `verify-resend-pending` (the in-flight states, held with `gated()`, which
-# nothing measured before). The enumeration pairs were not touched; the Sign in in-flight checks are their own scenario
+# through `universalChecks` (the primary and the secondary button heights, the 358px column, the size of every drawn mark and the banner glyph column), and SEVEN new scenarios: `reset-both-errors`,
+# `reset-submitting`, `signin-submitting`, `verify-resend-pending`, and (review round 1) `signup-submitting`,
+# `signup-resend-pending` and `forgot-submitting` (the in-flight states, held with `gated()`, which nothing measured before). The enumeration pairs were not touched; the Sign in in-flight checks are their own scenario
 # so that no measurement is added to one half of a pair.
-EXPECTED_MIN_CHECKS = 2266
+EXPECTED_MIN_CHECKS = 2505
 
 
 def find_chrome() -> str | None:
