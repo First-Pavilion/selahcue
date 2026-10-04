@@ -44,6 +44,7 @@ import {
 /** Grows as each page is brought to its frame; the final list is all nine. */
 const PAGES = [
   { file: 'ContactView.vue', route: '/contact' },
+  { file: 'SupportView.vue', route: '/support' },
 ] as const
 
 let server: ViteDevServer
@@ -88,6 +89,20 @@ function localContainerRules(sfc: string): string[] {
   return found
 }
 
+/**
+ * A rule in the view's own <style> that colours text with `--sc-text-muted`. Figma's text/muted
+ * (#9aa4b2) maps to `--sc-text-secondary` (AUTH-LANDING-PAGES-HANDOFF 2.2); the build's muted token
+ * is a quieter grey that the audit found in the wrong role on meta lines, dates, placeholders and
+ * counters (contact-13, support-10, careers-05, docs-07, changelog-06, blog-07).
+ */
+function mutedInkRules(sfc: string): string[] {
+  const out: string[] = []
+  for (const m of styleOf(sfc).matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+    if (/(^|[;\s])color\s*:\s*var\(--sc-text-muted\)/.test(m[2] ?? '')) out.push((m[1] ?? '').trim())
+  }
+  return out
+}
+
 /** Whether the template puts the shared `.container` on any element. */
 function usesSharedContainer(sfc: string): boolean {
   return elementsOf(sfc).some((el) => (valueOf(prop(el, 'class')) ?? '').split(/\s+/).includes('container'))
@@ -124,6 +139,10 @@ describe('the nine pages: heading outline, buttons and container', () => {
       assert.deepEqual(localContainerRules(readSrc(`views/${file}`)), [], `${file} redeclares .container in its own style block`)
     })
 
+    test(`${file}: no text is coloured with the muted ink (the secondary ink is Figma's text/muted)`, () => {
+      assert.deepEqual(mutedInkRules(readSrc(`views/${file}`)), [], `${file} colours text with --sc-text-muted`)
+    })
+
     test(`${file}: no claim the audit marks unbacked is added`, async () => {
       assert.deepEqual(addedClaims(textOf(await html(file))), [], `${file} shows a string Figma draws and the repo does not back`)
     })
@@ -148,6 +167,10 @@ describe('the nine pages: heading outline, buttons and container', () => {
   test('CONTROL: headingsOf reads nested markup and attributes', () => {
     const got = headingsOf('<h1 class="a" id="x">Let<span> us</span> talk</h1><div><h2>Two</h2></div>')
     assert.deepEqual(got.map((x) => [x.level, x.text]), [[1, 'Let us talk'], [2, 'Two']])
+  })
+
+  test('CONTROL: the muted-ink predicate fires on a planted rule and not on a border or background', () => {
+    assert.deepEqual(mutedInkRules('<template><p/></template><style scoped>.meta { font-size: 13px; color: var(--sc-text-muted); }\n.ok { color: var(--sc-text-secondary); }\n.b { border-color: var(--sc-text-muted); }</style>'), ['.meta'])
   })
 
   test('CONTROL: the gradient, container and claim predicates fire on a planted fault', () => {
@@ -243,3 +266,78 @@ describe('Contact (497:124): centred hero, then the form, then the method cards'
   })
 })
 
+
+// --------------------------------------------------------------------------- Support
+
+describe('Support (498:124): hero, search, category cards, one grouped article panel', () => {
+  test('the hero is a HELP CENTER pill, "How can we help?" and the subline, with no radial glow (support-01)', async () => {
+    const page = await html('SupportView.vue')
+    const [h1] = headingsOf(page)
+    assert.equal(h1?.text, 'How can we help?')
+    const text = textOf(page)
+    assert.ok(text.includes('HELP CENTER'))
+    assert.ok(text.includes('Guides, answers and troubleshooting for running SelahCue on Sunday.'))
+    assert.ok(!/radial-gradient/.test(styleOf(readSrc('views/SupportView.vue'))), 'the frame draws a flat background')
+  })
+
+  test('the search field keeps type=search, role=search and its label, with the frame placeholder (support-02)', async () => {
+    const page = await html('SupportView.vue')
+    const input = tagsOf(page).find((t) => t.name === 'input')
+    assert.equal(input?.attrs['type'], 'search')
+    assert.equal(input?.attrs['aria-label'], 'Search help articles')
+    assert.equal(input?.attrs['placeholder'], 'Search help articles…')
+    assert.ok(tagsOf(page).some((t) => t.attrs['role'] === 'search'))
+  })
+
+  test('the placeholder is not the browser grey and focus draws a ring, not only a border (support-03)', () => {
+    const css = styleOf(readSrc('views/SupportView.vue'))
+    assert.match(css, /\.search-input::placeholder\s*\{[^}]*color:\s*var\(--sc-text-secondary\)/)
+    assert.match(css, /\.search-input:focus-visible\s*\{[^}]*outline:\s*2px solid var\(--sc-primary\)/)
+    assert.ok(!/\.search-input:focus\s*\{[^}]*outline:\s*none/.test(css), 'focus must not remove the outline')
+  })
+
+  test('six category cards with a coloured icon tile holding an SVG, no emoji, no section heading above them (support-04)', async () => {
+    const page = await html('SupportView.vue')
+    const cards = withClass(page, 'category-card')
+    assert.equal(cards.length, 6)
+    const tiles = withClass(page, 'cat-icon')
+    assert.equal(tiles.length, 6)
+    for (const tile of tiles) {
+      const inner = page.slice(tile.at, page.indexOf('</div>', tile.at))
+      assert.ok(/<svg[\s>]/.test(inner), 'each tile holds an inline SVG')
+    }
+    assert.ok(!/\p{Extended_Pictographic}/u.test(textOf(page)), 'no emoji remains')
+    assert.ok(!textOf(page).includes('Knowledge Base Categories'), 'the frame draws no heading above the grid')
+    const heads = headingsOf(page)
+    assert.ok(heads.filter((h) => h.level === 2).length >= 7, 'six card titles and Start here are h2')
+  })
+
+  test('the Start here articles are ONE grouped panel of whole-row links with a chevron (support-07)', async () => {
+    const page = await html('SupportView.vue')
+    const panels = withClass(page, 'articles-panel')
+    assert.equal(panels.length, 1, 'one grouped panel, not a stack of cards')
+    const rows = withClass(page, 'article-row')
+    assert.ok(rows.length >= 2)
+    for (const row of rows) {
+      assert.equal(row.name, 'a', 'the whole row is the link')
+      assert.ok((row.attrs['href'] ?? '').startsWith('/support/'), 'and it goes to the article')
+    }
+    assert.ok(!textOf(page).includes('Read article'), 'no separate Read article button inside the row')
+  })
+
+  test('the article list sits in a full-width band', () => {
+    const css = styleOf(readSrc('views/SupportView.vue'))
+    assert.match(css, /\.articles-band\s*\{[^}]*background:\s*var\(--sc-surface-alt\)/)
+  })
+
+  test('the category counts and article meta are not in the brand ink (support-10)', () => {
+    const css = styleOf(readSrc('views/SupportView.vue'))
+    assert.match(css, /\.cat-count\s*\{[^}]*color:\s*var\(--sc-text-secondary\)/)
+  })
+
+  test('the build\'s own content layer stays: counts, article lists, search results (support-05, 09 are decisions)', async () => {
+    const page = await html('SupportView.vue')
+    assert.ok(/\d+ articles?/.test(textOf(page)))
+    assert.ok(withClass(page, 'cat-article-link').length >= 11, 'every real article is still linked from its category card')
+  })
+})
