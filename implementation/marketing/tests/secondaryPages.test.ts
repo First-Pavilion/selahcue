@@ -53,6 +53,7 @@ const PAGES = [
   { file: 'CareersView.vue', route: '/careers' },
   { file: 'PrivacyView.vue', route: '/privacy' },
   { file: 'TermsView.vue', route: '/terms' },
+  { file: 'AffiliatesView.vue', route: '/affiliates' },
 ] as const
 
 /** The pages that render the generated legal drafts. */
@@ -782,5 +783,142 @@ describe('Privacy and Terms (504:124, 504:203): type scale, header spacing, mark
     assert.equal(declaration(css, '.a', 'font-size'), '10px', 'a comment above the rule is not part of its selector')
     assert.equal(declaration(css, '.a', 'margin'), undefined)
     assert.equal(declaration(css, '.b .a', 'font-size'), '99px')
+  })
+})
+
+// --------------------------------------------------------------------------- Affiliates
+
+/** The markup of one `<section class="...">` of the rendered page (to the section's close), by its class. */
+function sectionOf(page: string, cls: string): string {
+  const tag = withClass(page, cls)[0]
+  assert.ok(tag, `a section with class ${cls}`)
+  return page.slice(tag.at, page.indexOf('</section>', tag.at))
+}
+
+/** Programme figures: a percentage, a dollar amount, a day count or a month count. */
+const hasFigure = (text: string): boolean => /\d+\s*%|\$\s*\d|\d+[- ]days?\b|\d+[- ]months?\b/i.test(text)
+
+describe('Affiliates (541:124): hero and CTAs, four stat cards, How it works, audiences, checklist, boxed FAQ, closing band', () => {
+  test('the hero is an AFFILIATE PROGRAM pill and the h1 at the frame\'s 54/60 (affiliates-05, affiliates-11)', async () => {
+    const page = await html('AffiliatesView.vue')
+    assert.ok(textOf(page).includes('AFFILIATE PROGRAM'))
+    const css = styleOf(readSrc('views/AffiliatesView.vue'))
+    assert.match(css, /@media \(min-width: 1200px\)\s*\{\s*\.hero-title\s*\{[^}]*font-size:\s*54px[^}]*line-height:\s*60px/)
+    assert.equal(declaration(css, '.hero-title', 'max-width'), '880px', 'two lines for the build\'s sentence')
+    assert.equal(declaration(css, '.hero-sub', 'font-size'), '19px')
+    assert.equal(declaration(css, '.hero-sub', 'line-height'), '30px')
+    assert.equal(declaration(css, '.hero-sub', 'max-width'), '760px')
+  })
+
+  test('the hero buttons are Apply now and Affiliate sign in, neither going to the customer sign-in (affiliates-06)', async () => {
+    const page = await html('AffiliatesView.vue')
+    const hero = sectionOf(page, 'hero-section')
+    const links = [...hero.matchAll(/<a [^>]*href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/g)].map((m) => ({ href: m[1] ?? '', text: textOf(m[2] ?? '') }))
+    assert.deepEqual(links.map((l) => l.text), ['Apply now', 'Affiliate sign in'])
+    for (const l of links) assert.ok(!l.href.startsWith('/signin'), `"${l.text}" must not go to the customer account sign-in`)
+    assert.ok(!textOf(page).includes('Calculate Earnings'))
+    const sfc = readSrc('views/AffiliatesView.vue')
+    const buttons = elementsOf(sfc).filter((el) => el.tag === 'UiButton')
+    const apply = buttons.find((el) => valueOf(prop(el, 'size')) === 'lg' && valueOf(prop(el, 'variant')) === 'primary')
+    assert.ok(apply, 'Apply now is a large primary button')
+  })
+
+  test('the footnote line under the buttons is not shipped: it is made of the unbacked terms (affiliates-13)', async () => {
+    const text = textOf(await html('AffiliatesView.vue'))
+    for (const bad of ['Free to join', 'No audience minimum', 'PayPal, Wise or bank']) assert.ok(!text.includes(bad), bad)
+  })
+
+  test('four stat cards, left aligned, with no h3 inside them (affiliates-07)', async () => {
+    const page = await html('AffiliatesView.vue')
+    const cards = withClass(page, 'highlight-card')
+    assert.equal(cards.length, 4)
+    for (const card of cards) {
+      const inner = page.slice(card.at, page.indexOf('</p>', card.at))
+      assert.ok(/<p[\s>]/.test(inner) && !/<h3[\s>]/.test(inner), 'the caption is a paragraph, so heading order stays h1 then h2')
+    }
+    const css = styleOf(readSrc('views/AffiliatesView.vue'))
+    assert.match(css, /\.highlights-grid\s*\{[^}]*grid-template-columns:\s*repeat\(4, minmax\(0, 1fr\)\)[^}]*gap:\s*22px/)
+    assert.ok(!/\.highlight-card\s*\{[^}]*text-align:\s*center/.test(css))
+  })
+
+  test('How it works: an h2, a line under it and three numbered step cards with h3 titles and no figure (affiliates-01, affiliates-13)', async () => {
+    const page = await html('AffiliatesView.vue')
+    assert.ok(headingsOf(page).some((h) => h.level === 2 && h.text === 'How it works'))
+    const section = sectionOf(page, 'steps-section')
+    const cards = withClass(section, 'step-card')
+    assert.equal(cards.length, 3)
+    assert.ok(['01', '02', '03'].every((n) => section.includes(`>${n}<`)), 'the 01, 02 and 03 chips')
+    assert.ok(!hasFigure(textOf(section)), 'no commission rate, threshold, window or review time in the steps')
+    for (const bad of ['within a couple of days', 'ready-made banners', 'pass $50']) assert.ok(!textOf(section).includes(bad), bad)
+  })
+
+  test('Made for people who talk to churches: four icon-tile cards with the frame\'s titles (affiliates-02)', async () => {
+    const page = await html('AffiliatesView.vue')
+    assert.ok(headingsOf(page).some((h) => h.level === 2 && h.text === 'Made for people who talk to churches'))
+    const section = sectionOf(page, 'audience-section')
+    const cards = withClass(section, 'audience-card')
+    assert.equal(cards.length, 4)
+    for (const c of cards) {
+      const inner = section.slice(c.at, section.indexOf('</article>', c.at))
+      assert.ok(/<svg[\s>]/.test(inner), 'an inline SVG icon in the tile')
+    }
+    const titles = headingsOf(section).filter((h) => h.level === 3).map((h) => h.text)
+    assert.deepEqual(titles, ['Church tech creators', 'AV & gear resellers', 'Ministry networks', 'Consultants & integrators'])
+  })
+
+  test('Why it is easy to recommend: only the two lines the repo backs, each with a check (affiliates-03, affiliates-15)', async () => {
+    const page = await html('AffiliatesView.vue')
+    assert.ok(headingsOf(page).some((h) => h.level === 2 && h.text === "Why it's easy to recommend"))
+    const section = sectionOf(page, 'why-section')
+    assert.equal(withClass(section, 'check-row').length, 2)
+    const text = textOf(section)
+    assert.ok(text.includes('no internet required'))
+    for (const bad of ['actually keep using', 'Recurring commission for a year', 'Banners, links and email copy']) assert.ok(!text.includes(bad), bad)
+  })
+
+  test('the calculator stays beside the checklist, with a named slider (affiliates-10 is a decision; the unnamed input is a defect)', async () => {
+    const page = await html('AffiliatesView.vue')
+    const section = sectionOf(page, 'why-section')
+    assert.equal(withClass(section, 'calc-card').length, 1, 'the existing calculator sits in the right column')
+    const range = tagsOf(section).find((t) => t.name === 'input' && t.attrs['type'] === 'range')
+    assert.ok(range, 'the slider')
+    const labelled = range.attrs['aria-labelledby'] ?? ''
+    assert.ok(labelled && section.includes(`id="${labelled}"`), 'the slider is named by visible text on the page')
+  })
+
+  test('the FAQ is the boxed accordion under its own h2 "Affiliate FAQ" (affiliates-08, affiliates-09)', async () => {
+    const page = await html('AffiliatesView.vue')
+    assert.ok(headingsOf(page).some((h) => h.level === 2 && h.text === 'Affiliate FAQ'))
+    assert.ok(withClass(page, 'is-boxed').length === 1, 'FaqAccordion rendered with the boxed option')
+    const buttons = tagsOf(page).filter((t) => t.name === 'button' && t.attrs['aria-controls'])
+    assert.ok(buttons.length >= 4, 'each question controls its answer')
+    const sfc = readSrc('views/AffiliatesView.vue')
+    const faq = elementsOf(sfc).find((el) => el.tag === 'FaqAccordion')
+    assert.ok(faq && prop(faq, 'boxed'), 'the view opts into boxed')
+  })
+
+  test('the closing band: gradient card, h2, a white Apply now, and no Read the terms (no terms document exists) (affiliates-04, affiliates-14)', async () => {
+    const page = await html('AffiliatesView.vue')
+    assert.ok(headingsOf(page).some((h) => h.level === 2 && h.text === 'Ready to start earning?'))
+    const text = textOf(page)
+    assert.ok(!text.includes('Read the terms'))
+    const sfc = readSrc('views/AffiliatesView.vue')
+    const inverse = elementsOf(sfc).filter((el) => el.tag === 'UiButton' && valueOf(prop(el, 'variant')) === 'inverse')
+    assert.equal(inverse.length, 1, 'one white button on the band')
+    assert.match(styleOf(sfc), /\.cta-band\s*\{[^}]*background:\s*var\(--gradient-cta\)/)
+    assert.ok(!/free/i.test(textOf(sectionOf(page, 'cta-section'))), 'the band does not promise a free programme')
+  })
+
+  test('the section order follows the frame', async () => {
+    const page = await html('AffiliatesView.vue')
+    const at = (cls: string): number => withClass(page, cls)[0]?.at ?? -1
+    const order = ['hero-section', 'highlights-section', 'steps-section', 'audience-section', 'why-section', 'faq-section', 'cta-section'].map(at)
+    assert.ok(order.every((n) => n > 0), 'every section exists')
+    assert.deepEqual([...order].sort((a, b) => a - b), order)
+  })
+
+  test('CONTROL: hasFigure() recognises each kind of programme figure and passes ordinary words', () => {
+    for (const t of ['Earn 20% recurring', 'a $50 threshold', 'a 60-day window', 'for 12 months', 'in 3 days']) assert.ok(hasFigure(t), t)
+    for (const t of ['Tell us how you will share SelahCue.', 'Step 03 of the process', 'Share it anywhere']) assert.ok(!hasFigure(t), t)
   })
 })

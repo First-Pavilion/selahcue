@@ -3,6 +3,7 @@ import { ref, computed } from 'vue'
 import UiBadge from '@/components/UiBadge.vue'
 import UiButton from '@/components/UiButton.vue'
 import FaqAccordion from '@/components/FaqAccordion.vue'
+import CategoryIcon from '@/components/article/CategoryIcon.vue'
 
 const monthlyReferrals = ref(10)
 
@@ -15,93 +16,164 @@ const estimatedAnnualEarnings = computed(() => {
   return estimatedMonthlyEarnings.value * 12
 })
 
+/**
+ * Every figure on this page (the rate, the window, the threshold, the payout rails) is the build's own and is
+ * unbacked: the programme is NOT-V1 and its terms are undecided (audit affiliates-12 to 14, ClickUp 17tnw2b0x3h
+ * owns removing them). This ticket restyles what is already here and adds none: the sections the frame draws
+ * that the build lacked carry copy without a figure, a rate, a price or a promise.
+ */
 const faqItems = [
   { question: 'What is the commission rate?', answer: 'You earn a 20% recurring commission for 12 months on every paid subscription that signs up using your referral link.' },
   { question: 'How long does the referral cookie last?', answer: 'Our referral tracking uses a 60-day last-click attribution window.' },
   { question: 'When are affiliate payouts made?', answer: 'Payouts are processed on the 1st of every month via PayPal or Direct Bank Transfer once you reach the $50 minimum threshold.' },
   { question: 'Who can join the affiliate program?', answer: 'Worship leaders, tech consultants, Christian bloggers, YouTubers, and church network leaders are welcome to apply!' }
 ]
+
+/** The stat cards (Figma 541:150): four, the value in the frame's inks in turn. The first three are the build's own. */
+const highlights = [
+  { value: '20%', caption: 'Recurring Commission', tone: 'is-brand' },
+  { value: '60 Days', caption: 'Cookie Attribution', tone: 'is-preview' },
+  { value: '$50', caption: 'Low Payout Threshold', tone: 'is-warn' },
+  { value: 'Offline', caption: 'The app works with no internet', tone: 'is-brand' }
+]
+
+/** How it works (Figma 541:163): the frame's three steps, with no review time, rate or threshold in them. */
+const steps = [
+  { n: '01', title: 'Apply to join', body: "Tell us how you'll share SelahCue." },
+  { n: '02', title: 'Share SelahCue', body: 'Recommend it anywhere your audience is.' },
+  { n: '03', title: 'Earn on referrals', body: 'Earn recurring commission on the churches you refer.' }
+]
+
+/** Made for people who talk to churches (Figma 542:124): audience descriptions, not product claims. */
+const audiences = [
+  { icon: 'video', tone: 'brand', title: 'Church tech creators', body: 'Bloggers, YouTubers and newsletter writers in the worship-tech space.' },
+  { icon: 'package', tone: 'preview', title: 'AV & gear resellers', body: 'Sell projectors, mixers and stage gear? Add software your customers need.' },
+  { icon: 'users', tone: 'warn', title: 'Ministry networks', body: 'Denominations and multi-site networks recommending tools to member churches.' },
+  { icon: 'briefcase', tone: 'brand', title: 'Consultants & integrators', body: 'You set up church production rigs — bundle SelahCue into your builds.' }
+] as const
+
+/** The checklist (Figma 542:154): the two lines the repo backs (the screen never blanks; offline-first). */
+const reasons = [
+  'A product that never blanks the screen on Sunday',
+  'Offline-first reliability that sells itself, no internet required'
+]
 </script>
 
 <template>
   <div class="affiliates-page">
-    <section class="hero-section">
-      <div class="container">
-        <UiBadge variant="featured">SelahCue Partner Program</UiBadge>
-        <h1 class="hero-title">Recommend SelahCue. Earn 20% Recurring Commission.</h1>
-        <p class="hero-sub">Help churches upgrade their live worship presentation. Earn passive recurring income on every paid referral for 12 months.</p>
-        
-        <div class="hero-ctas">
-          <UiButton variant="gradient" size="lg" to="/signin">Apply to Join Program</UiButton>
-          <UiButton variant="outline" size="lg" href="#calculator">Calculate Earnings</UiButton>
+    <section class="hero-section container">
+      <UiBadge variant="featured">AFFILIATE PROGRAM</UiBadge>
+      <h1 class="hero-title">Recommend SelahCue. Earn 20% Recurring Commission.</h1>
+      <p class="hero-sub">Help churches upgrade their live worship presentation. Earn passive recurring income on every paid referral for 12 months.</p>
+
+      <!-- Neither target is the customer sign-in: the affiliate Apply and Sign in screens have no route yet
+           (audit affiliates-06, a missing screen). Interim targets: the contact page, and the affiliate portal. -->
+      <div class="hero-ctas">
+        <UiButton variant="primary" size="lg" to="/contact">Apply now</UiButton>
+        <UiButton variant="outline" size="lg" to="/affiliates/dashboard">Affiliate sign in</UiButton>
+      </div>
+    </section>
+
+    <!-- Highlights: four stat cards -->
+    <section class="highlights-section container">
+      <div class="highlights-grid">
+        <div v-for="h in highlights" :key="h.value" class="highlight-card">
+          <div :class="['hl-value', h.tone]">{{ h.value }}</div>
+          <p>{{ h.caption }}</p>
         </div>
       </div>
     </section>
 
-    <!-- Highlights Grid -->
-    <section class="highlights-section">
-      <div class="container">
-        <div class="highlights-grid">
-          <div class="highlight-card">
-            <div class="hl-value">20%</div>
-            <h3>Recurring Commission</h3>
-            <p>Earn monthly recurring commission for up to 12 months per referred church.</p>
+    <!-- How it works -->
+    <section class="steps-section" aria-labelledby="steps-heading">
+      <div class="container steps-inner">
+        <div class="section-head">
+          <h2 id="steps-heading" class="section-title">How it works</h2>
+          <p class="section-sub">Three steps, from applying to earning.</p>
+        </div>
+        <div class="steps-grid">
+          <article v-for="s in steps" :key="s.n" class="step-card">
+            <span class="step-chip" aria-hidden="true">{{ s.n }}</span>
+            <h3 class="step-title">{{ s.title }}</h3>
+            <p class="step-body">{{ s.body }}</p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <!-- Audiences -->
+    <section class="audience-section container" aria-labelledby="audience-heading">
+      <h2 id="audience-heading" class="audience-title">Made for people who talk to churches</h2>
+      <div class="audience-grid">
+        <article v-for="a in audiences" :key="a.title" class="audience-card">
+          <CategoryIcon :name="a.icon" :tone="a.tone" size="audience" />
+          <h3 class="audience-card-title">{{ a.title }}</h3>
+          <p class="audience-card-body">{{ a.body }}</p>
+        </article>
+      </div>
+    </section>
+
+    <!-- Why it's easy to recommend, with the calculator beside it (the owner decides what stays: affiliates-10) -->
+    <section class="why-section container" aria-labelledby="why-heading">
+      <div class="why-main">
+        <h2 id="why-heading" class="why-title">Why it's easy to recommend</h2>
+        <ul class="check-list">
+          <li v-for="r in reasons" :key="r" class="check-row">
+            <svg class="check-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <polyline points="20 6 9 17 4 12" />
+            </svg>
+            <span>{{ r }}</span>
+          </li>
+        </ul>
+      </div>
+
+      <div id="calculator" class="calc-card">
+        <h2 class="calc-title">Estimate Your Earnings</h2>
+        <p class="calc-sub">Slide to see how much you could earn by recommending SelahCue to churches:</p>
+
+        <div class="slider-wrapper">
+          <div class="slider-label">
+            <span id="calc-slider-label">Referred Active Churches:</span>
+            <strong class="count-badge">{{ monthlyReferrals }} churches</strong>
           </div>
-          <div class="highlight-card">
-            <div class="hl-value">60 Days</div>
-            <h3>Cookie Attribution</h3>
-            <p>Generous 60-day tracking window so you get credited even if they try free first.</p>
+          <input
+            v-model.number="monthlyReferrals"
+            type="range"
+            min="1"
+            max="100"
+            class="range-slider"
+            aria-labelledby="calc-slider-label"
+          />
+        </div>
+
+        <div class="results-grid">
+          <div class="result-box">
+            <span class="res-label">Monthly Recurring Income</span>
+            <span class="res-amount">${{ Math.round(estimatedMonthlyEarnings) }}/mo</span>
           </div>
-          <div class="highlight-card">
-            <div class="hl-value">$50</div>
-            <h3>Low Payout Threshold</h3>
-            <p>Monthly payouts direct to your PayPal or bank account with clear real-time reporting.</p>
+          <div class="result-box highlight">
+            <span class="res-label">Estimated Annual Payout</span>
+            <span class="res-amount">${{ Math.round(estimatedAnnualEarnings) }}/yr</span>
           </div>
         </div>
       </div>
     </section>
 
-    <!-- Earnings Calculator -->
-    <section id="calculator" class="calc-section">
-      <div class="container">
-        <div class="calc-card">
-          <h2>Estimate Your Earnings</h2>
-          <p class="calc-sub">Slide to see how much you could earn by recommending SelahCue to churches:</p>
-
-          <div class="slider-wrapper">
-            <div class="slider-label">
-              <span>Referred Active Churches:</span>
-              <strong class="count-badge">{{ monthlyReferrals }} churches</strong>
-            </div>
-            <input 
-              v-model.number="monthlyReferrals" 
-              type="range" 
-              min="1" 
-              max="100" 
-              class="range-slider"
-            />
-          </div>
-
-          <div class="results-grid">
-            <div class="result-box">
-              <span class="res-label">Monthly Recurring Income</span>
-              <span class="res-amount">${{ Math.round(estimatedMonthlyEarnings) }}/mo</span>
-            </div>
-            <div class="result-box highlight">
-              <span class="res-label">Estimated Annual Payout</span>
-              <span class="res-amount">${{ Math.round(estimatedAnnualEarnings) }}/yr</span>
-            </div>
-          </div>
-        </div>
+    <!-- FAQ: the boxed card on a panel band -->
+    <section class="faq-section" aria-labelledby="faq-heading">
+      <div class="container faq-inner">
+        <h2 id="faq-heading" class="faq-title">Affiliate FAQ</h2>
+        <FaqAccordion boxed :items="faqItems" :defaultOpen="0" />
       </div>
     </section>
 
-    <!-- FAQ -->
-    <section class="faq-section">
-      <div class="container">
-        <h2 class="section-title">Affiliate Program FAQ</h2>
-        <div class="faq-wrapper">
-          <FaqAccordion :items="faqItems" :defaultOpen="0" />
+    <!-- Closing band -->
+    <section class="cta-section container" aria-labelledby="cta-heading">
+      <div class="cta-band">
+        <h2 id="cta-heading" class="cta-title">Ready to start earning?</h2>
+        <p class="cta-sub">Join the SelahCue affiliate program and turn your recommendations into recurring income.</p>
+        <div class="cta-actions">
+          <UiButton variant="inverse" size="lg" to="/contact">Apply now</UiButton>
         </div>
       </div>
     </section>
@@ -109,61 +181,208 @@ const faqItems = [
 </template>
 
 <style scoped>
-.affiliates-page { background: var(--sc-base); padding-bottom: 80px; }
-.container { max-width: 1140px; margin: 0 auto; padding: 0 var(--page-gutter); }
-.hero-section { padding: 80px 0 60px; text-align: center; }
-.hero-title { font-size: 42px; font-weight: 800; color: var(--sc-text); margin: 20px 0; line-height: 1.25; }
-.hero-sub { font-size: 18px; color: var(--sc-text-secondary); max-width: 720px; margin: 0 auto 36px; line-height: 1.6; }
-.hero-ctas { display: flex; justify-content: center; gap: 16px; }
+.affiliates-page { background: var(--sc-base); }
 
-.highlights-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 24px; margin-bottom: 60px; }
-.highlight-card { background: var(--sc-surface); border: 1px solid var(--sc-border); border-radius: 16px; padding: 32px; text-align: center; }
-.hl-value { font-size: 36px; font-weight: 800; color: var(--sc-primary); margin-bottom: 8px; }
-.highlight-card h3 { font-size: 18px; color: var(--sc-text); margin: 0 0 8px 0; }
-.highlight-card p { font-size: 14px; color: var(--sc-text-secondary); margin: 0; }
+/* HERO (Figma 541:139): padding 96 top / 56 bottom, 22px between the pill, the headline, the subline and the
+   buttons, all centred. The headline takes the shared page-hero token, set to the frame's 54/60 from the desktop
+   breakpoint up, and is held to two lines (the frame's own sentence is shorter, so its box is about 600 wide; the
+   build's sentence needs 880). The two buttons are one flex row that stretches them
+   to the same height, as the frame draws both at 49. */
+.hero-section {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 22px;
+  padding-top: 96px;
+  padding-bottom: 56px;
+  text-align: center;
+}
 
-.calc-section { padding: 40px 0; }
-.calc-card { background: var(--sc-surface); border: 1px solid var(--sc-border); border-radius: 24px; padding: 48px; max-width: 700px; margin: 0 auto; }
-.calc-card h2 { font-size: 28px; font-weight: 700; color: var(--sc-text); text-align: center; margin: 0 0 8px 0; }
-.calc-sub { font-size: 15px; color: var(--sc-text-secondary); text-align: center; margin: 0 0 32px 0; }
+.hero-title { font: var(--font-h1-page); color: var(--sc-text); max-width: 880px; }
 
-.slider-wrapper { margin-bottom: 36px; }
-.slider-label { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; font-size: 15px; color: var(--sc-text); }
-.count-badge { font-size: 18px; color: var(--sc-primary); }
+@media (min-width: 1200px) {
+  .hero-title { font-size: 54px; line-height: 60px; }
+}
+
+.hero-sub { max-width: 760px; font-size: 19px; line-height: 30px; color: var(--sc-text-secondary); }
+.hero-ctas { display: flex; justify-content: center; gap: 14px; padding-top: 6px; }
+
+/* STAT CARDS (Figma 541:150): four 295.5 cards, 22px apart, radius 18, padding 26 / 24 from the edge, left aligned,
+   a 34/700 value over a one-line caption. */
+.highlights-section { padding-bottom: 64px; }
+.highlights-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 22px; }
+
+.highlight-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  background: var(--sc-surface);
+  border: 1px solid var(--sc-border);
+  border-radius: 18px;
+  padding: 25px 23px;
+}
+
+.hl-value { font-size: 34px; font-weight: 700; line-height: 41px; color: var(--sc-primary); }
+.hl-value.is-preview { color: var(--sc-preview); }
+.hl-value.is-warn { color: var(--sc-warn); }
+.highlight-card p { font-size: 14.5px; line-height: 21px; color: var(--sc-text-secondary); }
+
+/* HOW IT WORKS (Figma 541:163): a full-bleed panel band, padding 64 / 64, 32px between the heading block and the
+   steps; steps are 400 wide on the page fill, 24px apart, radius 18, padding 28 / 26 from the edge. */
+.steps-section { background: var(--sc-surface-alt); }
+.steps-inner { display: flex; flex-direction: column; gap: 32px; padding-top: 64px; padding-bottom: 64px; }
+.section-head { display: flex; flex-direction: column; align-items: center; gap: 12px; text-align: center; }
+.section-title { font-size: 38px; font-weight: 700; line-height: 46px; color: var(--sc-text); }
+.section-sub { font-size: 18px; line-height: 22px; color: var(--sc-text-secondary); }
+
+.steps-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 24px; align-items: start; }
+
+.step-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 14px;
+  background: var(--sc-base);
+  border: 1px solid var(--sc-border);
+  border-radius: 18px;
+  padding: 27px 25px;
+}
+
+/* The brand ink of the frame's number is 3.4:1 on the chip; the chip takes the text colour until Uma chooses an
+   accessible brand ink (class D). */
+.step-chip {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 46px;
+  height: 46px;
+  border-radius: 12px;
+  background: var(--sc-elevated);
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--sc-text);
+}
+
+.step-title { font-size: 20px; font-weight: 600; line-height: 24px; color: var(--sc-text); }
+.step-body { font-size: 15.5px; line-height: 24px; color: var(--sc-text-secondary); }
+
+/* AUDIENCES (Figma 542:124): padding 64 / 56, 32px between the centred heading and four 295.5 cards 22px apart. */
+.audience-section { display: flex; flex-direction: column; gap: 32px; padding-top: 64px; padding-bottom: 56px; }
+.audience-title { font-size: 34px; font-weight: 700; line-height: 41px; text-align: center; color: var(--sc-text); }
+.audience-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 22px; align-items: start; }
+
+.audience-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 13px;
+  background: var(--sc-surface);
+  border: 1px solid var(--sc-border);
+  border-radius: 18px;
+  padding: 25px 23px;
+}
+
+.audience-card-title { font-size: 17.5px; font-weight: 600; line-height: 21px; color: var(--sc-text); }
+.audience-card-body { font-size: 14.5px; line-height: 22px; color: var(--sc-text-secondary); }
+
+/* WHY IT'S EASY TO RECOMMEND (Figma 542:154): padding 56 top / 64 bottom, two columns 56px apart: the heading and
+   the checklist on the left, a 420px card on the right. */
+.why-section {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 420px;
+  gap: 56px;
+  align-items: start;
+  padding-top: 56px;
+  padding-bottom: 64px;
+}
+
+.why-main { display: flex; flex-direction: column; gap: 18px; }
+.why-title { font-size: 30px; font-weight: 700; line-height: 36px; color: var(--sc-text); }
+.check-list { display: flex; flex-direction: column; gap: 14px; }
+.check-row { display: flex; align-items: flex-start; gap: 12px; font-size: 16.5px; line-height: 24px; color: var(--sc-text); }
+.check-icon { flex-shrink: 0; width: 18px; height: 20px; margin-top: 2px; color: var(--sc-preview); }
+
+/* The calculator is the build's own (affiliates-10: whether it stays is the owner's and Uma's decision). It
+   takes the frame's card geometry (420 wide, radius 20, padding 28 from the edge) and its labels and count the
+   readable inks; the slider now has a name. */
+.calc-card {
+  background: var(--sc-surface);
+  border: 1px solid var(--sc-border);
+  border-radius: 20px;
+  padding: 27px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.calc-title { font-size: 17px; font-weight: 600; line-height: 21px; color: var(--sc-text); }
+.calc-sub { font-size: 14.5px; line-height: 21px; color: var(--sc-text-secondary); }
+
+.slider-label { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; font-size: 14.5px; color: var(--sc-text); }
+.count-badge { font-size: 18px; color: var(--sc-text); }
 
 .range-slider { width: 100%; height: 8px; border-radius: 4px; background: var(--sc-elevated); accent-color: var(--sc-primary); cursor: pointer; }
 
-.results-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; }
-.result-box { background: var(--sc-elevated); border: 1px solid var(--sc-border); border-radius: 12px; padding: 20px; text-align: center; }
+.results-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.result-box { background: var(--sc-elevated); border: 1px solid var(--sc-border); border-radius: 12px; padding: 16px 12px; text-align: center; }
 .result-box.highlight { background: var(--sc-accent-soft); border-color: var(--sc-primary); }
-.res-label { font-size: 12px; text-transform: uppercase; color: var(--sc-text-muted); display: block; margin-bottom: 6px; }
-.res-amount { font-size: 28px; font-weight: 800; color: var(--sc-text); }
+.res-label { font-size: 12px; text-transform: uppercase; color: var(--sc-text-secondary); display: block; margin-bottom: 6px; }
+.res-amount { font-size: 24px; font-weight: 800; color: var(--sc-text); }
 
-.faq-section { padding: 60px 0; }
-.section-title { text-align: center; font-size: 28px; font-weight: 700; color: var(--sc-text); margin-bottom: 32px; }
-.faq-wrapper { max-width: 800px; margin: 0 auto; }
+/* FAQ (Figma 542:197): a full-bleed panel band, padding 56 / 64, 28px between the centred heading and the boxed
+   card (the boxed look is FaqAccordion's own option). */
+.faq-section { background: var(--sc-surface-alt); }
+.faq-inner { display: flex; flex-direction: column; gap: 28px; padding-top: 56px; padding-bottom: 64px; }
+.faq-title { font-size: 34px; font-weight: 700; line-height: 41px; text-align: center; color: var(--sc-text); }
+
+/* CLOSING BAND (Figma 542:227): a 1248 gradient card, radius 24, padding 48 / 64, 20px between its parts, all
+   centred, on the page fill with 64px above and below. The subline is solid white (the frame draws it at 90%,
+   which is 4.3:1 on the lighter end of the gradient). */
+.cta-section { padding-top: 64px; padding-bottom: 64px; }
+
+.cta-band {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 20px;
+  background: var(--gradient-cta);
+  border-radius: 24px;
+  padding: 48px 64px;
+  text-align: center;
+}
+
+.cta-title { font-size: 40px; font-weight: 700; line-height: 48px; color: #fff; }
+.cta-sub { max-width: 640px; font-size: 18px; line-height: 27px; color: #fff; }
+.cta-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 14px; padding-top: 6px; }
 
 @media (max-width: 1199.98px) {
-  .highlights-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .highlights-grid, .audience-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .steps-grid { grid-template-columns: minmax(0, 1fr); }
+  .why-section { grid-template-columns: minmax(0, 1fr); gap: 32px; }
+  .calc-card { max-width: 560px; }
 }
 
 @media (max-width: 767.98px) {
-  .affiliates-page { padding-bottom: var(--section-pad-sm); }
-  .hero-section { padding: 48px 0 40px; }
-  .hero-title { font-size: 36px; line-height: 40px; }
-  .hero-sub { font-size: 16px; }
-  .highlights-grid { grid-template-columns: minmax(0, 1fr); gap: 16px; margin-bottom: 40px; }
-  .highlight-card { padding: 24px; }
-  .results-grid { grid-template-columns: minmax(0, 1fr); }
-  .hero-ctas { flex-direction: column; }
+  .hero-section { padding-top: 56px; padding-bottom: 36px; gap: 18px; }
+  .hero-sub { font-size: 16px; line-height: 26px; }
+  .hero-ctas { flex-direction: column; align-self: stretch; }
   .hero-ctas > * { width: 100%; }
-  .calc-card { padding: 28px 20px; border-radius: 20px; }
-  .calc-card h2 { font-size: 24px; }
-  .slider-label { flex-wrap: wrap; gap: 4px 12px; }
-  .res-amount { font-size: 24px; }
+  .highlights-section { padding-bottom: 40px; }
+  .highlights-grid, .audience-grid { grid-template-columns: minmax(0, 1fr); gap: 16px; }
+  .steps-inner { padding-top: 44px; padding-bottom: 44px; }
+  .section-title { font-size: 30px; line-height: 38px; }
+  .audience-section { padding-top: 44px; padding-bottom: 40px; }
+  .audience-title, .faq-title { font-size: 28px; line-height: 34px; }
+  .why-section { padding-top: 36px; padding-bottom: 44px; }
+  .why-title { font-size: 26px; line-height: 32px; }
+  .results-grid { grid-template-columns: minmax(0, 1fr); }
   /* The native range input's box IS its hit area; 8px is untappable. Make the box 44px
      and let the thumb + accent-color carry the look instead of a painted 8px bar. */
   .range-slider { height: 44px; background: transparent; }
-  .faq-section { padding: 40px 0; }
+  .faq-inner { padding-top: 40px; padding-bottom: 44px; }
+  .cta-section { padding-top: 40px; padding-bottom: 40px; }
+  .cta-band { padding: 32px 20px; border-radius: 20px; }
+  .cta-title { font-size: 30px; line-height: 38px; }
+  .cta-sub { font-size: 16px; line-height: 24px; }
+  .cta-actions > * { width: 100%; }
 }
 </style>

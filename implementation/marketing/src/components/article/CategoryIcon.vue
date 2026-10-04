@@ -7,7 +7,7 @@
  * the first icon. Decorative: hidden from assistive technology (the title next to it names it).
  *
  * Sizes: `md` the Docs hub tile (40px, radius 11), `lg` the Support card tile (48px, radius 13), `tile` the
- * Careers culture tile (50px, radius 13), `thumb` the Blog card thumbnail tile (51px, radius 14), `xl` the
+ * Careers culture tile (50px, radius 13), `audience` the Affiliates audience tile (50px, radius 14), `thumb` the Blog card thumbnail tile (51px, radius 14), `xl` the
  * Blog featured tile (102px, radius 14).
  */
 import { computed } from 'vue'
@@ -75,6 +75,26 @@ const ICONS: Record<string, readonly Shape[]> = {
   heart: [
     ['path', { d: 'M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z' }]
   ],
+  users: [
+    ['path', { d: 'M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2' }],
+    ['circle', { cx: '9', cy: '7', r: '4' }],
+    ['path', { d: 'M23 21v-2a4 4 0 0 0-3-3.87' }],
+    ['path', { d: 'M16 3.13a4 4 0 0 1 0 7.75' }]
+  ],
+  video: [
+    ['polygon', { points: '23 7 16 12 23 17 23 7' }],
+    ['rect', { x: '1', y: '5', width: '15', height: '14', rx: '2', ry: '2' }]
+  ],
+  package: [
+    ['line', { x1: '16.5', y1: '9.4', x2: '7.5', y2: '4.21' }],
+    ['path', { d: 'M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z' }],
+    ['polyline', { points: '3.27 6.96 12 12.01 20.73 6.96' }],
+    ['line', { x1: '12', y1: '22.08', x2: '12', y2: '12' }]
+  ],
+  briefcase: [
+    ['rect', { x: '2', y: '7', width: '20', height: '14', rx: '2', ry: '2' }],
+    ['path', { d: 'M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16' }]
+  ],
   'wifi-off': [
     ['line', { x1: '1', y1: '1', x2: '23', y2: '23' }],
     ['path', { d: 'M16.72 11.06A10.94 10.94 0 0 1 19 12.55' }],
@@ -90,7 +110,7 @@ const props = withDefaults(
   defineProps<{
     name: string
     tone?: 'brand' | 'preview' | 'warn' | 'live'
-    size?: 'md' | 'lg' | 'tile' | 'thumb' | 'xl'
+    size?: 'md' | 'lg' | 'tile' | 'audience' | 'thumb' | 'xl'
   }>(),
   { tone: 'brand', size: 'lg' }
 )
@@ -133,6 +153,12 @@ const shapes = computed<readonly Shape[]>(() => ICONS[props.name] ?? ICONS['gett
   border-radius: 13px;
 }
 
+.cat-icon.is-audience {
+  width: 50px;
+  height: 50px;
+  border-radius: 14px;
+}
+
 .cat-icon.is-thumb {
   width: 51px;
   height: 51px;
@@ -157,7 +183,8 @@ const shapes = computed<readonly Shape[]>(() => ICONS[props.name] ?? ICONS['gett
   height: 21px;
 }
 
-.cat-icon.is-tile svg {
+.cat-icon.is-tile svg,
+.cat-icon.is-audience svg {
   width: 23px;
   height: 23px;
 }
