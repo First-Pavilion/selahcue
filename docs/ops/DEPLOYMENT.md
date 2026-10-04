@@ -222,6 +222,8 @@ Key names follow the **First Pavilion house convention** — the same ones yhara
 | `CELERY_BROKER_URL` | `redis://redis:6379/2` | Point at the real Redis |
 | `CELERY_RESULT_BACKEND` | `redis://redis:6379/2` | Point at the real Redis |
 | `CACHE_URL` | empty → LocMemCache | **Set it.** `redis://…/1` — db **1**, never the broker's db 2. See §6b |
+| `CACHE_SOCKET_CONNECT_TIMEOUT` | `0.5` (seconds) | Leave the default. How long the cache waits to open a connection to Redis. Must be > 0; a bad value refuses to boot. See §6b |
+| `CACHE_SOCKET_TIMEOUT` | `0.5` (seconds) | Leave the default. How long the cache waits for Redis to answer one command. Must be > 0; a bad value refuses to boot. See §6b |
 | `SELAHCUE_TRUSTED_PROXY_COUNT` | `0` | Number of *your own* proxies in front of Django. See §6b |
 | `MAIL_HOST` / `MAIL_PORT` / `MAIL_USERNAME` / `MAIL_PASSWORD` | mailhog on `:1025` in dev | **Required** to send email |
 | `DEFAULT_FROM_EMAIL` / `DEFAULT_EMAIL` | SelahCue defaults | Set to your verified sending domain |
@@ -350,6 +352,45 @@ alone exposes those tokens in flight.
 Keep the two on separate databases as configured. `CACHE_URL` ends in `/1` and the Celery URLs
 end in `/2` so that a `FLUSHDB` on either — during an incident, say, to clear a poisoned queue —
 cannot take the other with it.
+
+### A Redis that stops answering must not stall requests
+
+"Fails open when Redis is unavailable" (above) is only true if the app gives up on a Redis that has
+gone quiet. A Redis that is **up but wedged** — a failing node, a network partition, memory pressure
+— still accepts the connection and then never replies. With no socket timeout the app waits forever
+for that reply, so the limiter never gets to fail open: every request that touches a throttle
+(native sign-in, activation, licence refresh, the entitlement manifest, both password-reset
+mutations, resend-verification) holds a web worker until the worker's own timeout, and a cache
+fault becomes a full API outage.
+
+The cache connection therefore carries two timeouts, in seconds, both read from the environment:
+
+| Variable | Default | What it bounds |
+|----------|---------|----------------|
+| `CACHE_SOCKET_CONNECT_TIMEOUT` | `0.5` | Opening a connection to Redis |
+| `CACHE_SOCKET_TIMEOUT` | `0.5` | Waiting for Redis to answer one command, once connected |
+
+- A healthy Redis answers one command in about a millisecond, so the default is hundreds of times a
+  normal round trip. Nothing changes while Redis is healthy.
+- A stalled Redis is then treated exactly like a down one: the call raises, the throttle **permits
+  the request**, the degraded send ceilings apply (`SELAHCUE_RESEND_DEGRADED_SEND_CEILING`,
+  `SELAHCUE_RESET_SEND_DEGRADED_CEILING`), and the same one-line `rate-limit store unavailable`
+  warning is logged (once a minute per worker; for a stall it names `TimeoutError`).
+- **What a stall costs a request.** Each budget a route spends waits up to one timeout before it
+  fails open. The `/v1` routes spend one budget (about 0.5 s extra at the defaults); the
+  password-reset request and resend-verification mutations spend three (about 1.5 s). It is a
+  ceiling, not a retry: a timed-out call is not repeated.
+- **Tuning.** Keep the defaults unless Redis is genuinely remote or often slow under load. Raising a
+  timeout tolerates a slow-but-working Redis at the price of a longer stall; keep the timeout times
+  the number of budgets a route spends well under the web worker's own timeout. Each value must be a
+  positive number: `0` is not "no timeout" (redis-py reads it as non-blocking, so every call would
+  fail at once), and an invalid value makes the API refuse to start with an error naming the
+  variable. A blank value means the default.
+- **Scope.** These settings cover `CACHE_URL` — the throttle counters in db 1 — only. They do not
+  reach the Celery broker or result backend (`CELERY_BROKER_URL`, `CELERY_RESULT_BACKEND`). Those
+  connections have no socket timeout either, so a stalled broker can still hold a request that
+  publishes a task (such as the transactional email dispatch); that is a separate problem and is not
+  addressed here.
 
 ---
 

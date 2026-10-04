@@ -1,5 +1,8 @@
+import math
 import os
 from pathlib import Path
+
+from django.core.exceptions import ImproperlyConfigured
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -221,12 +224,70 @@ CELERY_BEAT_SCHEDULE = {
 # unset so a bare `pytest` needs no Redis. That fallback is only safe because the
 # throttle's logic tests inject their own store.
 _cache_url = os.getenv("CACHE_URL", "")
+
+
+def _socket_timeout_seconds(name: str, default: str) -> float:
+    """A positive, finite number of seconds from the environment, or the default when the
+    variable is unset or blank. Anything else refuses to boot.
+
+    Strict on purpose, because this knob guards the throttle's fail-open path and its wrong
+    values are not harmless: `0` is NOT "no timeout" to redis-py, it is non-blocking mode (every
+    command fails at once, so the limiter would permanently fail open); a negative or non-finite
+    value is rejected by the socket layer only on first use, under load. A deploy should find out
+    now, from a startup error that names the variable.
+    """
+    raw = (os.getenv(name) or "").strip() or default
+    try:
+        value = float(raw)
+    except ValueError:
+        value = math.nan
+    if not math.isfinite(value) or value <= 0:
+        raise ImproperlyConfigured(
+            f"{name} must be a positive, finite number of seconds (got {raw!r}). It bounds how "
+            "long a stalled cache store can hold a request; see docs/ops/DEPLOYMENT.md §6b."
+        )
+    return value
+
+
+# A Redis that is UP but WEDGED accepts the connection and never answers (17tnw2b1wrx). redis-py
+# has no socket timeout by default, so every cache call blocked until the web worker's own
+# timeout and the throttle's fail-open path — which only runs when the store RAISES — never ran:
+# a cache fault became a full API outage. These two bound it. A call that runs past either one
+# raises, `evaluate_budget` reads that as "store unavailable", and the request proceeds exactly as
+# it does for a store that is down (degraded send ceilings and the outage warning included).
+#
+# 0.5s: a healthy Redis answers a single command in about a millisecond, so this is hundreds of
+# times a normal round trip while still short enough that a stall costs a request half a second
+# per budget it spends, not a worker. The worst case per request is that times the number of
+# budgets the route spends (one for /v1 routes, three for the password-reset and resend mutations),
+# and it is a ceiling, not a retry: redis-py 6.4's default connection policy retries nothing, and
+# tests/test_cache_socket_timeouts.py asserts a stalled call opens exactly one connection, so a
+# redis-py upgrade that starts retrying fails it rather than silently multiplying the stall.
+# Raising these buys tolerance of a slow-but-working Redis at the cost of a longer stall; keep the
+# product with the budgets-per-request well under the worker timeout.
+CACHE_SOCKET_CONNECT_TIMEOUT = _socket_timeout_seconds("CACHE_SOCKET_CONNECT_TIMEOUT", "0.5")
+CACHE_SOCKET_TIMEOUT = _socket_timeout_seconds("CACHE_SOCKET_TIMEOUT", "0.5")
+
+
+def _cache_config(url: str, connect_timeout: float, socket_timeout: float) -> dict:
+    """The default cache: Redis (with bounded socket timeouts) when `url` is set, else the
+    per-process LocMemCache. LocMem never blocks on I/O, so it needs no timeouts. A function so
+    tests can aim the identical configuration at a stalled stub."""
+    if not url:
+        return {"BACKEND": "django.core.cache.backends.locmem.LocMemCache", "LOCATION": "selahcue"}
+    return {
+        "BACKEND": "django.core.cache.backends.redis.RedisCache",
+        "LOCATION": url,
+        # Django forwards OPTIONS to `redis.ConnectionPool.from_url(url, **OPTIONS)`.
+        "OPTIONS": {
+            "socket_connect_timeout": connect_timeout,
+            "socket_timeout": socket_timeout,
+        },
+    }
+
+
 CACHES = {
-    "default": (
-        {"BACKEND": "django.core.cache.backends.redis.RedisCache", "LOCATION": _cache_url}
-        if _cache_url
-        else {"BACKEND": "django.core.cache.backends.locmem.LocMemCache", "LOCATION": "selahcue"}
-    )
+    "default": _cache_config(_cache_url, CACHE_SOCKET_CONNECT_TIMEOUT, CACHE_SOCKET_TIMEOUT)
 }
 
 # 0 = trust REMOTE_ADDR only. Raise to the number of proxies in front of Django BEFORE
