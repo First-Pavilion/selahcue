@@ -29,6 +29,7 @@ from __future__ import annotations
 import argparse
 import http.server
 import json
+import math
 import os
 import re
 import socketserver
@@ -149,8 +150,6 @@ def parse_rgb(s: str):
 
 def gradient_colour_at(box, stops, point):
     """The colour of a CSS `linear-gradient(135deg, a, b)` at a page point inside `box`."""
-    import math
-
     theta = math.radians(135)
     sx, sy = math.sin(theta), -math.cos(theta)
     length = abs(box["w"] * math.sin(theta)) + abs(box["h"] * math.cos(theta))
@@ -198,7 +197,10 @@ def check_pricing(page, base: str, engine: str) -> None:
     )
     check("pricing: Free goes to /download", buttons[0]["href"] == "/download", str(buttons[0]))
     check("pricing: Pro is a disabled button", buttons[1]["tag"] == "button" and buttons[1]["disabled"], str(buttons[1]))
-    check("pricing: Platinum goes to /contact", buttons[2]["href"] == "/contact", str(buttons[2]))
+    # /contact shows "Message Received" without sending anything (contact-04, -06, -07, 17tnw2b0x3h), so Platinum
+    # has no destination until that form sends: a disabled button, like Pro (review round 1, Cody B1).
+    check("pricing: Platinum is a disabled button (the contact form does not send)", buttons[2]["tag"] == "button" and buttons[2]["disabled"], str(buttons[2]))
+    check("pricing: no plan button links to /contact", all(b["href"] != "/contact" for b in buttons), str(buttons))
     near("pricing: plan button is 340 wide (Figma 483:157)", buttons[0]["width"], 340)
 
     # The billing toggle: a named radio group, one tab stop, arrows move choice AND focus.
@@ -220,6 +222,13 @@ def check_pricing(page, base: str, engine: str) -> None:
                       note: (document.querySelector('.billing-note') || {}).textContent || ''})"""
         )
 
+    # The live note is in the accessibility tree from the first render, only invisible (a region that is
+    # display:none until its text arrives is often not announced: Cody N6).
+    note = page.evaluate(
+        """() => { const n = document.querySelector('.billing-note'); const cs = getComputedStyle(n);
+                    return {role: n.getAttribute('role'), live: n.getAttribute('aria-live'), display: cs.display, visibility: cs.visibility, text: n.textContent}; }"""
+    )
+    check("pricing: the empty billing note is rendered (not display: none) and is a polite status region", note["role"] == "status" and note["live"] == "polite" and note["display"] != "none" and note["visibility"] == "visible" and note["text"] == "", str(note))
     s = state()
     check("pricing: Monthly is the drawn state", s["checked"] == ["true", "false"], str(s))
     check("pricing: only the checked radio is in the tab order", s["tab"] == [0, -1], str(s))
@@ -249,7 +258,7 @@ def check_pricing(page, base: str, engine: str) -> None:
     for _ in range(4):
         page.keyboard.press(TAB)
         stops.append(page.evaluate("(document.activeElement.innerText || document.activeElement.getAttribute('aria-label') || '').trim().slice(0, 40)"))
-    check("pricing: Tab goes Free, then Platinum (Pro is disabled), then the table", stops[0] == "Download free" and stops[1] == "Talk to us", str(stops))
+    check("pricing: Tab goes to Free, then skips Pro and Platinum (both disabled) to the table", stops[0] == "Download free" and "Plan comparison" in stops[1] and "Talk to us" not in stops and "Get Pro" not in stops, str(stops))
 
     # The comparison card: 1040 wide at x=200, 45px header band, 48px rows (Figma 484:126/127/135).
     card = rect(page, ".comparison-card")
@@ -427,7 +436,11 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--engine", choices=["chromium", "webkit", "both"], default="both")
     ap.add_argument("--shots", help="write a full-page screenshot of every page and engine here")
+    ap.add_argument("--require", action="store_true", help="a missing Playwright or engine is a failure, not a skip (npm run test:core)")
     args = ap.parse_args()
+    global REQUIRE
+    if args.require:
+        REQUIRE = True
 
     if not (DIST / "index.html").is_file():
         print(f"FAIL: {DIST} has no build. Run `npm run build` first.")

@@ -16,7 +16,7 @@
   <div class="controller-mock" aria-hidden="true">
     <div class="screen">
       <div class="top">
-        <span class="brand-mark" style="--mark-size: 16px"><img src="/selahcue-logo.png" alt="" /></span>
+        <span class="brand-mark"><img src="/selahcue-logo.png" alt="" /></span>
         <span class="name">Controller</span>
         <span class="state"><i class="state-dot"></i>CONNECTED</span>
       </div>
@@ -37,6 +37,9 @@
 
 <style scoped>
 .controller-mock {
+  /* The operator's BLACKOUT red (operator dist/app.css `#clear-all.armed`, white on it 7.19:1). No token
+     exists for it, so it is named once here (review round 1, Cody N16). */
+  --mock-blank: #a3283a;
   box-sizing: border-box;
   width: 280px;
   max-width: 100%;
@@ -61,6 +64,13 @@
   align-items: center;
   gap: 8px;
   height: 19px;
+}
+
+/* 16px, as drawn. A scoped rule, not a static `style=` attribute: Vue hoists a fully static subtree into an
+   HTML string, so the attribute would ship as markup and a `style-src` policy without 'unsafe-inline' would
+   drop it (review round 1, Shadow F3). */
+.top .brand-mark {
+  --mark-size: 16px;
 }
 
 .name {
@@ -160,7 +170,7 @@
 }
 
 .blank {
-  background: #a3283a;
+  background: var(--mock-blank);
   color: #fff;
 }
 

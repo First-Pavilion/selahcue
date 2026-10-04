@@ -12,9 +12,14 @@ import CtaBand from '@/components/core/CtaBand.vue'
  *  - "Unlimited virtual outputs" and "Per-output theme & framing" are not shipped: DEC-008 caps
  *    outputs at 2, 5 and 10 by plan, and per-output configuration is R2 (FR-038). The NDI row says
  *    what ships.
- *  - "nothing leaves the machine / entirely on the machine" is stated as absolute. The PRD says
- *    transcription runs on-device by default and cloud is off unless turned on (FR-101, FR-131 to 133),
- *    so the row says that.
+ *  - "nothing leaves the machine / entirely on the machine" is stated as absolute. The row says what a
+ *    release build does: transcription runs on the machine (FR-101). It does NOT advertise cloud
+ *    transcription: `cloud-stt` is RELEASE: UNSAFE and stripped from release builds (selahcue-operator
+ *    Cargo.toml, Makefile `release-ai-guard`), so a release has no cloud path to describe (review round 1,
+ *    Cody N4). Bring it back only when a release ships it.
+ *  - "Never-blank guarantee" and "the screen never blanks" are stronger than NFR-024 (failure isolation;
+ *    the emergency blackout exists), so the row says it is designed so a fault cannot black out live
+ *    output (review round 1, Cody N19).
  *  - The internal requirement id "NFR-024" is not customer copy (features-12).
  *
  * The invented capability claims the old build carried ("NDI 5", "4K 60fps", "1080p60", alpha channel,
@@ -42,8 +47,8 @@ import CtaBand from '@/components/core/CtaBand.vue'
         tone="live"
         eyebrow="OUTPUTS"
         title="Live presentation & outputs"
-        text="Stage everything in Preview, then Go Live with a single tap. Audience projector and stage display run from the same deck — and the screen never blanks."
-        :bullets="['Preview → Live with one Go Live', 'Never-blank guarantee', 'Audience + stage from one deck']"
+        text="Stage everything in Preview, then Go Live with a single tap. Audience projector and stage display run from the same deck, and live output is designed to stay up when something else fails."
+        :bullets="['Preview → Live with one Go Live', 'Designed so a fault cannot black out live output', 'Audience + stage from one deck']"
         panel-title="OUTPUTS"
         panel-chip="LIVE"
       >
@@ -57,7 +62,7 @@ import CtaBand from '@/components/core/CtaBand.vue'
         eyebrow="SCRIPTURE"
         title="Scripture at your fingertips"
         text="A full public-domain translation is bundled in the app. Type a reference or search by keyword — it works with no internet at all."
-        :bullets="['Bundled WEB translation, fully offline', 'Reference parsing + keyword search', 'Send to Preview, then push Live']"
+        :bullets="['Bundled WEB translation, no internet needed', 'Reference parsing + keyword search', 'Send to Preview, then push Live']"
         panel-title="SCRIPTURE"
         panel-chip="WEB"
         reverse
@@ -114,8 +119,8 @@ import CtaBand from '@/components/core/CtaBand.vue'
         tone="ready"
         eyebrow="ASSIST"
         title="On-device transcript & detection"
-        text="An optional live transcript runs on your machine by default; cloud is off unless you turn it on. It assists the operator but never gates core controls."
-        :bullets="['Live transcript, on-device by default', 'Cloud transcription only if you turn it on', 'Assists — never gates — core controls']"
+        text="An optional live transcript runs on your machine. It assists the operator but never gates your core controls."
+        :bullets="['Live transcript, on-device', 'Scripture detection that assists the operator', 'Assists — never gates — core controls']"
         panel-title="ASSIST"
         panel-chip="ON-DEVICE"
         reverse

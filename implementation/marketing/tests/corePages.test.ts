@@ -34,6 +34,7 @@ import test, { after, before, describe } from 'node:test'
 import { fileURLToPath } from 'node:url'
 
 import vue from '@vitejs/plugin-vue'
+import ts from 'typescript'
 import { createSSRApp, h, type Component } from 'vue'
 import { parse } from 'vue/compiler-sfc'
 import { renderToString } from 'vue/server-renderer'
@@ -162,15 +163,24 @@ interface Banned {
  * visitor reads, case-insensitive.
  */
 const BANNED: readonly Banned[] = [
-  { id: 'a dollar price', pattern: /\$\s?\d/, because: 'pricing-15, owner decision: no price until D1 closes' },
+  // Currency-agnostic (review round 1, Cody N8): a dollar sign alone let "£19 per month" and a naira price through.
+  { id: 'a price or currency amount', pattern: /[$€£¥₦₹]\s?\d|\b(usd|eur|gbp|ngn|naira|dollars?|pounds?|euros?)\b|\bper\s+(month|year|seat|user|device)\b|\/\s?(mo|yr|month|year)\b/, because: 'pricing-15, owner decision: no price until D1 closes' },
   { id: 'an annual discount', pattern: /save\s*\d+\s*%|\d+\s*%\s*yearly/, because: 'pricing-18: no annual plan exists' },
-  { id: 'a free trial', pattern: /free trial/, because: 'pricing-17: no trial is decided' },
+  { id: 'a trial', pattern: /\btrial\b/, because: 'pricing-17: no trial is decided' },
   { id: 'a Custom or Church tier', pattern: /\bcustom\b|\bchurch\s+(plan|tier)\b/, because: 'pricing-02, -15: no Church tier until D1 decides' },
   { id: 'an SLA', pattern: /\bsla\b|24\/7/, because: 'pricing-09: no SLA exists' },
-  { id: 'priority support, onboarding or site licensing', pattern: /priority support|onboarding|site licensing|multi-campus|unlimited campuses|custom integrations|enterprise deployment/, because: 'pricing-09, -12, -16: no source' },
+  { id: 'priority support, onboarding or site licensing', pattern: /priority (support|response|queue|service|access)|response time|respond within|within 24 hours|dedicated (support|manager)|onboarding|site licensing|multi-campus|unlimited campuses|custom integrations|enterprise deployment/, because: 'pricing-09, -12, -16: no source' },
+  { id: 'an enterprise, compliance or customer-proof claim', pattern: /\benterprise\b|\bsoc\s?2\b|\bgdpr\b|certified|compliant|trusted by|\baward/, because: 'no source in the repo' },
+  { id: 'an uptime or percentage claim', pattern: /uptime|\d+(\.\d+)?\s?%/, because: 'no measurement backs a percentage, and no SLA is decided' },
+  { id: 'a guarantee', pattern: /\bguarantee/, because: 'NFR-024 is failure isolation, not a guarantee (review round 1, Cody N19)' },
+  { id: 'never blanks (stronger than NFR-024)', pattern: /never[- ]blank|never blanks/, because: 'say it is designed so a fault cannot black out live output (Cody N19)' },
+  { id: 'forever or lifetime', pattern: /\bforever\b|lifetime/, because: 'pricing-15: "free forever" is not decided' },
+  { id: 'fully offline', pattern: /fully offline|completely offline|100\s?% offline/, because: 'NFR-015 backs core live functions only; sign-in, activation, hosted speech-to-text and the model download need the network (Shadow F1)' },
+  { id: 'cloud transcription', pattern: /\bcloud\b/, because: 'cloud-stt is RELEASE: UNSAFE and stripped from release builds (Cody N4)' },
+  { id: 'jargon the owner did not choose', pattern: /compositor|desktop-authoritative/, because: 'plain English (Cody N19)' },
   { id: 'unlimited outputs', pattern: /unlimited/, because: 'features-10, pricing-16: DEC-008 caps outputs at 2, 5 and 10' },
   { id: 'always on the latest version', pattern: /latest version/, because: 'pricing-09: no source' },
-  { id: 'cancel anytime', pattern: /cancel anytime/, because: 'no billing exists to cancel (pricing-18)' },
+  { id: 'cancel anytime or a refund', pattern: /\bcancel|refund|money.back/, because: 'no billing exists to cancel or refund (pricing-18)' },
   { id: 'a community or customer count', pattern: /thousands of|join thousands|\d[\d,]*\+? (churches|members|users)/, because: 'about-04: no evidence of any customer count' },
   { id: 'NDI 5', pattern: /ndi 5\b/, pages: ['features'], because: 'features-07: the PRD cites NDI 6.x' },
   { id: 'a resolution or frame rate', pattern: /\b4k\b|1080p|720p|60\s?fps/, pages: ['features'], because: 'features-07: no figure exists' },
@@ -178,7 +188,8 @@ const BANNED: readonly Banned[] = [
   { id: 'a vendor the repo does not name', pattern: /wirecast|whisper|pastor john/, pages: ['features'], because: 'features-07: invented person and product names' },
   { id: 'an internal requirement id', pattern: /\bnfr-\d+|\bfr-\d+/, pages: ['features', 'about'], because: 'features-12: an internal PRD identifier in customer copy' },
   { id: 'per-output theme and framing', pattern: /per-output|own theme and framing/, pages: ['features'], because: 'features-10: not shipped (FR-038 is R2)' },
-  { id: 'nothing leaves the machine', pattern: /nothing leaves|entirely on the machine|zero cloud/, pages: ['features'], because: 'features-11: a cloud path exists and is opt-in' },
+  // Every page (review round 1, Cody N12): the Copy rule names it for all four, not only Features.
+  { id: 'nothing leaves the machine', pattern: /nothing leaves|never leaves|entirely on the machine|zero cloud|stays on your (machine|computer|device)/, because: 'features-11: stated as absolute, and not backed' },
   { id: 'an installer version, format or size', pattern: /\bv\d+\.\d|\.msi\b|\.dmg\b|\bnsis\b|~\s?\d+\s?mb|universal/, pages: ['download'], because: 'download-04: no release exists' },
   { id: 'an OS floor', pattern: /windows 1[01]|macos\s+1\d|monterey|or later/, pages: ['download'], because: 'download-04: no documented minimum' },
   { id: 'a hardware requirement', pattern: /\d+\s?(gb|mb|ghz)\b|dual-core|quad-core|intel|apple silicon|directx|integrated gpu|discrete gpu|\bssd\b/, pages: ['download'], because: 'download-05: no single backed figure' },
@@ -230,15 +241,15 @@ describe('no claim the repo does not back is on the page', () => {
 
   test('CONTROL: every banned pattern fires on a string that contains it, and a clean string passes', () => {
     const planted: Record<string, { text: string; page: Page }> = {
-      'a dollar price': { text: 'Pro $19 / month', page: 'pricing' },
+      'a price or currency amount': { text: 'Pro $19 / month', page: 'pricing' },
       'an annual discount': { text: 'Annual · save 20%', page: 'pricing' },
-      'a free trial': { text: 'Start free trial', page: 'pricing' },
+      'a trial': { text: 'Start free trial', page: 'pricing' },
       'a Custom or Church tier': { text: 'Church Custom', page: 'pricing' },
       'an SLA': { text: 'Custom SLA and 24/7 support', page: 'pricing' },
       'priority support, onboarding or site licensing': { text: 'Priority support', page: 'pricing' },
       'unlimited outputs': { text: 'Unlimited virtual outputs', page: 'features' },
       'always on the latest version': { text: 'Always on the latest version', page: 'pricing' },
-      'cancel anytime': { text: 'Cancel anytime', page: 'about' },
+      'cancel anytime or a refund': { text: 'Cancel anytime', page: 'about' },
       'a community or customer count': { text: 'Join thousands of churches', page: 'about' },
       'NDI 5': { text: 'NDI 5 & Multi-Output', page: 'features' },
       'a resolution or frame rate': { text: 'Audience Output · 4K 60fps', page: 'features' },
@@ -246,7 +257,15 @@ describe('no claim the repo does not back is on the page', () => {
       'a vendor the repo does not name': { text: 'Pastor John Davies', page: 'features' },
       'an internal requirement id': { text: 'Never-blank guarantee (NFR-024)', page: 'features' },
       'per-output theme and framing': { text: 'Per-output theme & framing', page: 'features' },
-      'nothing leaves the machine': { text: 'Nothing leaves the machine', page: 'features' },
+      'nothing leaves the machine': { text: 'Nothing leaves your machine', page: 'download' },
+      'an enterprise, compliance or customer-proof claim': { text: 'Trusted by enterprise teams', page: 'pricing' },
+      'an uptime or percentage claim': { text: '99.9% uptime', page: 'pricing' },
+      'a guarantee': { text: 'Never-blank guarantee', page: 'features' },
+      'never blanks (stronger than NFR-024)': { text: 'The screen never blanks.', page: 'about' },
+      'forever or lifetime': { text: 'Start free forever', page: 'pricing' },
+      'fully offline': { text: 'SelahCue runs fully offline', page: 'download' },
+      'cloud transcription': { text: 'Cloud transcription only if you turn it on', page: 'features' },
+      'jargon the owner did not choose': { text: 'where the compositor never blanks', page: 'about' },
       'an installer version, format or size': { text: 'v1.0 · .msi installer · ~84 MB', page: 'download' },
       'an OS floor': { text: 'macOS 12 Monterey+', page: 'download' },
       'a hardware requirement': { text: '4 GB RAM', page: 'download' },
@@ -270,6 +289,32 @@ describe('no claim the repo does not back is on the page', () => {
       )
     }
     assert.deepEqual(bannedHits('Pricing that grows with your church. Up to 2 outputs. To be confirmed.', 'pricing'), [])
+  })
+
+  test('CONTROL (review round 1, Cody N8 and N12): the price ban is currency-agnostic and the deny-list reaches the phrases that slipped through', () => {
+    const must: Array<[string, Page]> = [
+      ['£19 per month', 'pricing'],
+      ['USD 19', 'pricing'],
+      ['₦15,000 a month', 'pricing'],
+      ['19 naira', 'pricing'],
+      ['€19', 'pricing'],
+      ['billed per year', 'pricing'],
+      ['$19/mo', 'pricing'],
+      ['30 day trial', 'pricing'],
+      ['Priority response', 'pricing'],
+      ['99.9% uptime guarantee', 'pricing'],
+      ['Nothing leaves your machine', 'download'],
+      ['Nothing leaves the machine', 'about'],
+      ['Nothing leaves the machine', 'pricing'],
+      ['Works fully offline', 'download'],
+      ['Works fully offline', 'about'],
+      ['Works fully offline', 'features'],
+    ]
+    for (const [text, page] of must) assert.ok(bannedHits(text, page).length > 0, `"${text}" on ${page} should be flagged`)
+    // ...and ordinary copy that happens to contain a word nearby is not.
+    for (const ok of ['Monthly', 'Up to 5 outputs', 'Annual billing is not available yet.', 'monthly allowance', 'OBS / vMix', 'current / next / timer']) {
+      assert.deepEqual(bannedHits(ok, 'pricing'), [], `"${ok}" is ordinary copy`)
+    }
   })
 
   test('CONTROL: a banned string is only banned on the pages it names', () => {
@@ -316,13 +361,59 @@ describe('Pricing', () => {
     }
   })
 
-  test('Free goes to /download, the third plan to /contact, and Pro has no destination (no billing exists)', () => {
+  test('Free goes to /download; Pro (no billing) and Platinum (the contact form sends nothing) are disabled and say "Not available yet"', () => {
     const [free, pro, third] = cards().map((c) => byClass(c, 'ui-button')[0] as HtmlNode) as [HtmlNode, HtmlNode, HtmlNode]
     assert.equal(free.attrs['href'], '/download')
-    assert.equal(third.attrs['href'], '/contact')
-    assert.equal(pro.tag, 'button')
-    assert.ok('disabled' in pro.attrs)
-    assert.ok(textOf(cards()[1] as HtmlNode).includes('Not available yet'))
+    for (const [name, btn, card] of [['Pro', pro, cards()[1]], ['Platinum', third, cards()[2]]] as const) {
+      assert.equal(btn.tag, 'button', `${name} has a destination`)
+      assert.ok('disabled' in btn.attrs, `${name}'s button is not disabled`)
+      assert.ok(textOf(card as HtmlNode).includes('Not available yet'), `${name} does not say why`)
+    }
+  })
+
+  test('review round 1, Cody B1: no plan button leads to /contact, which shows "Message Received" and sends nothing', () => {
+    const hrefs = cards().flatMap((c) => byClass(c, 'ui-button').map((b) => b.attrs['href']))
+    assert.ok(!hrefs.includes('/contact'), `a plan button links to /contact: ${hrefs.join(', ')}`)
+    const { descriptor } = parse(readFileSync(path.join(SRC, 'views/PricingView.vue'), 'utf8'), { filename: 'PricingView.vue' })
+    const code = (descriptor.scriptSetup?.content ?? '').replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '')
+    assert.ok(!/to:\s*['"]\/contact['"]/.test(code), 'PricingView passes to: /contact again')
+  })
+
+  // The expected text is typed here independently of PricingView's `LIMITS`, so the cards and the table cannot
+  // drift together without this file noticing (review round 1, Cody N7: four changed limits stayed green).
+  const DEC008_CARDS: Record<string, string[]> = {
+    Free: ['1 device', 'Up to 2 outputs', 'Hosted speech-to-text, monthly allowance'],
+    Pro: [
+      'Everything in Free, without the watermark',
+      '3 devices',
+      'Up to 5 outputs',
+      'Up to 5 NDI outputs',
+      'A larger monthly allowance of hosted speech-to-text',
+    ],
+    Platinum: [
+      'Everything in Pro',
+      '7 devices',
+      'Up to 10 outputs',
+      'Up to 10 NDI outputs',
+      'The largest monthly allowance of hosted speech-to-text',
+    ],
+  }
+
+  test('the card bullets are exactly DEC-008\'s limits (devices 1/3/7, outputs 2/5/10, NDI 5/10), nothing else', () => {
+    const got = Object.fromEntries(cards().map((c) => [plan(c), byTag(c, 'li').map((li) => textOf(li))]))
+    assert.deepEqual(got, DEC008_CARDS)
+  })
+
+  test('review round 1, Shadow F2: the allowance is named as the HOSTED path, and a note says on-device transcription is not metered', () => {
+    for (const [name, bullets] of Object.entries(DEC008_CARDS)) {
+      assert.ok(bullets.some((b) => /hosted speech-to-text/i.test(b)), `${name}: no bullet names hosted speech-to-text`)
+    }
+    const row = byTag(byTag(byTag(pages.pricing, 'table')[0] as HtmlNode, 'tbody')[0] as HtmlNode, 'tr').find((r) => /speech-to-text/i.test(textOf(byTag(r, 'th')[0] as HtmlNode)))
+    assert.ok(row, 'no speech-to-text row')
+    assert.match(textOf(byTag(row as HtmlNode, 'th')[0] as HtmlNode), /^Hosted speech-to-text/)
+    const note = byClass(pages.pricing, 'table-note')[0]
+    assert.ok(note, 'no note under the table')
+    assert.match(textOf(note as HtmlNode), /on-device transcription is not metered/i)
   })
 
   test('the Free plan says its output carries a watermark (DEC-008), and Pro says it does not', () => {
@@ -532,10 +623,11 @@ describe('Features', () => {
     ])
   })
 
-  test('features-11: the transcript row says on-device by default and cloud only if turned on', () => {
+  test('features-11 and review round 1, Cody N4: the transcript row says the transcript runs on the machine and mentions no cloud path (cloud-stt is stripped from release builds)', () => {
     const last = textOf(rows()[5] as HtmlNode).toLowerCase()
-    assert.match(last, /by default/)
-    assert.match(last, /only if you turn it on/)
+    assert.match(last, /on-device|on your machine/)
+    assert.match(last, /never gates/)
+    assert.doesNotMatch(last, /cloud/)
   })
 })
 
@@ -568,7 +660,8 @@ describe('Download', () => {
 
   test('download-06: two requirement cards, MINIMUM and RECOMMENDED, with five rows each and no invented figure', () => {
     const cards = byClass(pages.download, 'req-card')
-    assert.deepEqual(cards.map((c) => textOf(byTag(c, 'h3')[0] as HtmlNode)), ['MINIMUM', 'RECOMMENDED'])
+    // The chip is the visible label; the heading reads "MINIMUM requirements" (review round 1, Cody N15).
+    assert.deepEqual(cards.map((c) => textOf(byTag(c, 'h3')[0] as HtmlNode)), ['MINIMUM requirements', 'RECOMMENDED requirements'])
     for (const c of cards) {
       const rows = byTag(c, 'dt').map((t) => textOf(t))
       assert.deepEqual(rows, ['Processor', 'Memory', 'Graphics', 'Storage', 'Display'])
@@ -666,6 +759,113 @@ function layoutProblems(sfc: string, where: string): string[] {
   if (/<UiBadge\b[^>]*\btext=/.test(template)) out.push(`${where}: passes a \`text\` attribute to UiBadge (it never rendered it)`)
   return out
 }
+
+// ------------------------------------------------ review round 1: guards that only a browser used to give
+
+/** Every `<section>` must hold the shared `.container` as a direct child (the 1248 column and its gutters). */
+function sectionProblems(root: HtmlNode, where: string): string[] {
+  const out: string[] = []
+  for (const sec of all(root, (n) => n.tag === 'section')) {
+    const direct = sec.children.some((c) => c.tag !== '#text' && hasClass(c, 'container'))
+    if (!direct) out.push(`${where}: <section class="${sec.attrs['class'] ?? ''}"> has no shared .container child`)
+  }
+  return out
+}
+
+/** The live note must not be `display: none` when empty: a region absent from the accessibility tree is often not announced. */
+function liveRegionProblems(css: string): string[] {
+  const out: string[] = []
+  for (const m of css.matchAll(/\.billing-note[^{]*\{([^}]*)\}/g)) {
+    if (/display:\s*none/.test(m[1] as string)) out.push('a .billing-note rule sets display: none, so the live region leaves the accessibility tree while empty')
+  }
+  return out
+}
+
+/**
+ * A tripwire, not a behaviour test (the behaviour is `npm run test:core`): the key handler must emit the new
+ * choice and then move focus to that radio, in that order. Removing the `.focus()` line strands a keyboard user on
+ * a radio that is no longer in the tab order, and type-check, lint and every node test used to stay green.
+ */
+function focusMovementProblems(script: string): string[] {
+  const file = ts.createSourceFile('toggle.ts', script, ts.ScriptTarget.ES2023, true)
+  let handler: ts.FunctionDeclaration | undefined
+  file.forEachChild((n) => {
+    if (ts.isFunctionDeclaration(n) && n.name?.text === 'onKeydown') handler = n
+  })
+  if (!handler || !handler.body) return ['no onKeydown function to read']
+  let emitAt = -1
+  let focusAt = -1
+  const walk = (n: ts.Node): void => {
+    if (ts.isCallExpression(n)) {
+      if (ts.isIdentifier(n.expression) && n.expression.text === 'emit') emitAt = emitAt === -1 ? n.getStart() : emitAt
+      if (ts.isPropertyAccessExpression(n.expression) && n.expression.name.text === 'focus') focusAt = n.getStart()
+    }
+    n.forEachChild(walk)
+  }
+  walk(handler.body)
+  const out: string[] = []
+  if (emitAt === -1) out.push('onKeydown never emits the new choice')
+  if (focusAt === -1) out.push('onKeydown never moves focus to the chosen radio (the keyboard user is stranded on a radio that left the tab order)')
+  else if (emitAt !== -1 && focusAt < emitAt) out.push('onKeydown moves focus before it emits the choice')
+  return out
+}
+
+describe('review round 1: guards that only a browser used to give', () => {
+  test('N11: every section of the four pages holds the shared .container as a direct child', () => {
+    const problems = (Object.keys(VIEWS) as Page[]).flatMap((p) => sectionProblems(pages[p], p))
+    assert.deepEqual(problems, [])
+    assert.ok(all(pages.about, (n) => n.tag === 'section').length >= 4, 'About has too few sections: the scan is not reading the page')
+  })
+
+  test('CONTROL (N11): a section without the container is flagged, and one with it is not', () => {
+    assert.equal(sectionProblems(parseHtml('<div><section class="s"><div class="x"></div></section></div>'), 'f').length, 1)
+    assert.equal(sectionProblems(parseHtml('<section class="s"><div class="container x"></div></section>'), 'f').length, 0)
+  })
+
+  test('N6: the billing note is a polite status region that is never display: none (source), and is rendered from the first render', () => {
+    const { css } = sfcSource(read('views/PricingView.vue'), 'PricingView.vue')
+    assert.deepEqual(liveRegionProblems(css), [])
+    assert.equal(all(pages.pricing, (n) => n.attrs['role'] === 'status' && n.attrs['aria-live'] === 'polite' && hasClass(n, 'billing-note')).length, 1)
+  })
+
+  test('CONTROL (N6): the predicate flags display: none on the note, and accepts a visually hidden one', () => {
+    assert.equal(liveRegionProblems('.billing-note:empty { display: none; }').length, 1)
+    assert.deepEqual(liveRegionProblems('.billing-note:empty { position: absolute; clip: rect(0,0,0,0); }'), [])
+  })
+
+  test('N9: the toggle emits the new choice and then moves focus to it (a tripwire; the behaviour is `npm run test:core`)', () => {
+    const { descriptor } = parse(read('components/core/SegmentedToggle.vue'), { filename: 'SegmentedToggle.vue' })
+    assert.deepEqual(focusMovementProblems(descriptor.scriptSetup?.content ?? ''), [])
+  })
+
+  test('CONTROL (N9): the predicate flags a handler with no focus move, focus before emit, and no emit', () => {
+    const wrap = (body: string): string => `function onKeydown(e: KeyboardEvent, at: number) { ${body} }`
+    assert.equal(focusMovementProblems(wrap("emit('update:modelValue', 'a')")).length, 1)
+    assert.equal(focusMovementProblems(wrap("radios?.[to]?.focus(); emit('update:modelValue', 'a')")).length, 1)
+    assert.equal(focusMovementProblems(wrap('radios?.[to]?.focus()')).length, 1)
+    assert.deepEqual(focusMovementProblems(wrap("emit('update:modelValue', 'a'); radios?.[to]?.focus()")), [])
+  })
+
+  test('Shadow F3: no static style attribute ships in the templates (Vue hoists it into markup a style-src policy would drop)', () => {
+    const files = [...['Pricing', 'Features', 'Download', 'About'].map((n) => `views/${n}View.vue`), ...['ControllerMock', 'CtaBand', 'FeatureRow', 'PageHero', 'SegmentedToggle', 'ToneChip'].map((n) => `components/core/${n}.vue`)]
+    const bad = files.filter((f) => /(^|[\s<])style="/.test(sfcSource(read(f), f).template))
+    assert.deepEqual(bad, [], 'a template has a static style="..." attribute; move it to a scoped rule')
+  })
+
+  test('Cody N16: no view reaches into UiButton\'s private classes, and the mock names its one hard-coded red once', () => {
+    for (const f of ['views/DownloadView.vue', 'views/PricingView.vue']) assert.ok(!/:deep\(\s*\.content/.test(sfcSource(read(f), f).css), `${f} reaches into UiButton's .content`)
+    const mock = sfcSource(read('components/core/ControllerMock.vue'), 'ControllerMock.vue').css
+    assert.equal((mock.match(/#a3283a/gi) ?? []).length, 1, 'the BLACKOUT red must appear once, as --mock-blank')
+    assert.match(mock, /--mock-blank:\s*#a3283a/)
+    assert.match(mock, /background:\s*var\(--mock-blank\)/)
+  })
+
+  test('CONTROL: the static-style and private-class predicates fire on planted source', () => {
+    assert.ok(/(^|[\s<])style="/.test('<span class="brand-mark" style="--mark-size: 16px">'))
+    assert.ok(!/(^|[\s<])style="/.test('<section :style="vars">'))
+    assert.ok(/:deep\(\s*\.content/.test('.x :deep(.content) { gap: 10px }'))
+  })
+})
 
 describe('the views use the shared layout', () => {
   const files = ['views/PricingView.vue', 'views/FeaturesView.vue', 'views/DownloadView.vue', 'views/AboutView.vue']

@@ -16,6 +16,10 @@ import ControllerMock from '@/components/core/ControllerMock.vue'
  *    value reads "To be confirmed" until the owner chooses (download-05);
  *  - the apps are not in the stores (download-09), so the bullet and the badges say so.
  *
+ * "Offline" is claimed only as far as NFR-015 backs it: every CORE LIVE function works with the network
+ * off. Sign-in, device activation, hosted speech-to-text and the speech model's first download need the
+ * network (docs/ops/WINDOWS-INSTALLER.md), so nothing here says "fully offline" (review round 1, Shadow F1).
+ *
  * The download buttons stay DISABLED (ClickUp 17tnw2b0q9j, PR 134; `tests/downloadView.test.ts`). The
  * product confirmed on 2026-10-04 that the app is available for Windows, Linux and macOS, but it is not
  * known that a downloadable installer exists for each, so no page may claim a macOS or Linux installer
@@ -36,9 +40,9 @@ import ControllerMock from '@/components/core/ControllerMock.vue'
       <template #eyebrow>
         <UiBadge variant="featured">DOWNLOAD</UiBadge>
       </template>
-      Desktop installers are not available to download yet. SelahCue runs fully offline, and mobile control pairs with your desktop over your local network.
+      Desktop installers are not available to download yet. Every core live control works with no network, and mobile control pairs with your desktop over your local network.
       <template #after>
-        <p class="trust-line">Free plan · Works fully offline</p>
+        <p class="trust-line">Free plan · Core live controls work offline</p>
       </template>
     </PageHero>
 
@@ -65,8 +69,10 @@ import ControllerMock from '@/components/core/ControllerMock.vue'
               aria-disabled="true"
               aria-describedby="windows-availability"
             >
-              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v11M7 11l5 5 5-5M5 20h14" /></svg>
-              Download for Windows
+              <span class="action-label">
+                <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v11M7 11l5 5 5-5M5 20h14" /></svg>
+                Download for Windows
+              </span>
             </UiButton>
             <span id="windows-availability" class="platform-status">Not available to download yet</span>
           </div>
@@ -84,8 +90,10 @@ import ControllerMock from '@/components/core/ControllerMock.vue'
               aria-disabled="true"
               aria-describedby="macos-availability"
             >
-              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v11M7 11l5 5 5-5M5 20h14" /></svg>
-              Download for macOS
+              <span class="action-label">
+                <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v11M7 11l5 5 5-5M5 20h14" /></svg>
+                Download for macOS
+              </span>
             </UiButton>
             <span id="macos-availability" class="platform-status">Not available to download yet</span>
           </div>
@@ -99,7 +107,7 @@ import ControllerMock from '@/components/core/ControllerMock.vue'
         <h2>System requirements</h2>
         <div class="req-grid">
           <div class="req-card">
-            <h3 class="req-title"><ToneChip kind="req" tone="muted">MINIMUM</ToneChip></h3>
+            <h3 class="req-title"><ToneChip kind="req" tone="muted">MINIMUM</ToneChip><span class="sr-only"> requirements</span></h3>
             <dl class="req-rows">
               <div class="req-row"><dt>Processor</dt><dd>To be confirmed</dd></div>
               <div class="req-row"><dt>Memory</dt><dd>To be confirmed</dd></div>
@@ -109,7 +117,7 @@ import ControllerMock from '@/components/core/ControllerMock.vue'
             </dl>
           </div>
           <div class="req-card">
-            <h3 class="req-title"><ToneChip kind="req" tone="ready">RECOMMENDED</ToneChip></h3>
+            <h3 class="req-title"><ToneChip kind="req" tone="ready">RECOMMENDED</ToneChip><span class="sr-only"> requirements</span></h3>
             <dl class="req-rows">
               <div class="req-row"><dt>Processor</dt><dd>To be confirmed</dd></div>
               <div class="req-row"><dt>Memory</dt><dd>To be confirmed</dd></div>
@@ -194,7 +202,7 @@ import ControllerMock from '@/components/core/ControllerMock.vue'
           <div class="step-card">
             <span class="step-num">01</span>
             <h3>Download &amp; install</h3>
-            <p>Get the installer for your platform and run it.</p>
+            <p>Run the installer for your platform once it is available.</p>
           </div>
           <div class="step-card">
             <span class="step-num">02</span>
@@ -213,6 +221,18 @@ import ControllerMock from '@/components/core/ControllerMock.vue'
 </template>
 
 <style scoped>
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 .trust-line {
   margin: 0;
   font-size: 14px;
@@ -279,7 +299,9 @@ import ControllerMock from '@/components/core/ControllerMock.vue'
   font-size: 15.5px;
   font-weight: 600;
 }
-.platform-card .platform-action :deep(.content) {
+.action-label {
+  display: inline-flex;
+  align-items: center;
   gap: 10px;
 }
 
@@ -312,6 +334,7 @@ import ControllerMock from '@/components/core/ControllerMock.vue'
 }
 
 .req-card {
+  position: relative;
   box-sizing: border-box;
   display: flex;
   flex-direction: column;

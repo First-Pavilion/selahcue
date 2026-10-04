@@ -3,8 +3,10 @@ import UiButton from '@/components/UiButton.vue'
 
 /*
  * The closing band shared by Features (Figma 486:345) and About (496:181): one gradient card, a
- * heading, a line, and two actions. One component, so the wording and the destinations live in one
- * place (the claims ticket 17tnw2b0x3h edits "Download free" site-wide in one file).
+ * heading, a line, and two actions. One component for these two pages, so their wording and
+ * destinations live in one place. "Download free" is also in the nav, the Home page and the Pricing
+ * card: the owner decided (2026-10-04) to keep that label everywhere, since it links to /download,
+ * which says plainly that nothing downloads yet.
  *
  * The line is Figma's with two changes the repo forces (audit features-06, about-04): "Cancel
  * anytime" is gone (no billing exists to cancel) and "go live this Sunday" is gone (nothing downloads

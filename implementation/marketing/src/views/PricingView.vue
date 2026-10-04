@@ -18,6 +18,23 @@ import SegmentedToggle from '@/components/core/SegmentedToggle.vue'
  * Audit: pricing-02, -05, -09, -12 (Copy rule on ClickUp 17tnw2b2cey); claims removal on the live
  * site is 17tnw2b0x3h.
  */
+/*
+ * DEC-008's limits, typed ONCE. The plan cards and the comparison table both read this, so the number
+ * on a card cannot drift from the number in the table (review round 1, Cody N7); `tests/corePages.test.ts`
+ * holds an independent, exact copy of the expected text. Order: Free, Pro, Platinum. Zero NDI outputs
+ * means "none". Outputs are worded "up to": what an output counts is still open (AS-P9). The
+ * speech-to-text HOURS are not shown: the final values are open under D1.
+ */
+const LIMITS = {
+  devices: [1, 3, 7],
+  outputs: [2, 5, 10],
+  ndi: [0, 5, 10],
+} as const
+
+const devicesText = (n: number): string => `${n} ${n === 1 ? 'device' : 'devices'}`
+const outputsText = (n: number): string => `Up to ${n} outputs`
+const ndiText = (n: number): string => `Up to ${n} NDI outputs`
+
 interface Plan {
   name: string
   price: string
@@ -29,15 +46,27 @@ interface Plan {
   popular: boolean
 }
 
+/*
+ * Only Free has a destination. Pro has none because no purchase flow exists (audit pricing-17).
+ * Platinum has none because the only place it could go, /contact, shows "Message Received" and says a
+ * specialist will answer within 24 hours without sending anything (audit contact-04, -06, -07, class C,
+ * ClickUp 17tnw2b0x3h): a button must not lead to a form that throws the visitor's words away (review
+ * round 1, Cody B1). It gets `to: '/contact'` back when that form really sends. Without `to` the card
+ * shows a disabled button and the note "Not available yet".
+ */
 const plans: Plan[] = [
   {
     name: 'Free',
     price: 'No charge',
     description: 'For running a service from one device. A SelahCue watermark appears on all output.',
-    features: ['1 device', 'Up to 2 outputs', 'Speech-to-text with a monthly allowance'],
+    features: [
+      devicesText(LIMITS.devices[0]),
+      outputsText(LIMITS.outputs[0]),
+      'Hosted speech-to-text, monthly allowance',
+    ],
     cta: 'Download free',
-    // The Download page says plainly that nothing downloads yet (PR 134); the wording of every
-    // "Download free" button site-wide is 17tnw2b0x3h's. The nav says the same.
+    // The Download page says plainly that nothing downloads yet (PR 134). The label is Figma's, and the
+    // owner decided (2026-10-04) to keep "Download free" everywhere; the nav says the same.
     to: '/download',
     popular: false,
   },
@@ -47,13 +76,12 @@ const plans: Plan[] = [
     description: 'Price to be announced. For churches that need more outputs and NDI output.',
     features: [
       'Everything in Free, without the watermark',
-      '3 devices',
-      'Up to 5 outputs',
-      'Up to 5 NDI outputs',
-      'A larger monthly speech-to-text allowance',
+      devicesText(LIMITS.devices[1]),
+      outputsText(LIMITS.outputs[1]),
+      ndiText(LIMITS.ndi[1]),
+      'A larger monthly allowance of hosted speech-to-text',
     ],
     cta: 'Get Pro',
-    // No `to`: no purchase flow exists (audit pricing-17), so the card shows "Not available yet".
     popular: true,
   },
   {
@@ -62,13 +90,12 @@ const plans: Plan[] = [
     description: 'Price to be announced. For larger teams.',
     features: [
       'Everything in Pro',
-      '7 devices',
-      'Up to 10 outputs',
-      'Up to 10 NDI outputs',
-      'The largest monthly speech-to-text allowance',
+      devicesText(LIMITS.devices[2]),
+      outputsText(LIMITS.outputs[2]),
+      ndiText(LIMITS.ndi[2]),
+      'The largest monthly allowance of hosted speech-to-text',
     ],
     cta: 'Talk to us',
-    to: '/contact',
     popular: false,
   },
 ]
@@ -99,10 +126,10 @@ const rows: { label: string; cells: [Cell, Cell, Cell] }[] = [
   { label: 'Live output + stage display', cells: [yes, yes, yes] },
   { label: 'Bundled scripture + keyword search', cells: [yes, yes, yes] },
   { label: 'Service plans, timers & themes', cells: [yes, yes, yes] },
-  { label: 'Devices', cells: [value('1'), value('3'), value('7')] },
-  { label: 'Simultaneous outputs', cells: [value('2'), value('5'), value('10')] },
-  { label: 'NDI streaming output', cells: [no, value('5'), value('10')] },
-  { label: 'Speech-to-text, monthly allowance', cells: [yes, yes, yes] },
+  { label: 'Devices', cells: LIMITS.devices.map((n) => value(String(n))) as [Cell, Cell, Cell] },
+  { label: 'Simultaneous outputs', cells: LIMITS.outputs.map((n) => value(String(n))) as [Cell, Cell, Cell] },
+  { label: 'NDI streaming output', cells: LIMITS.ndi.map((n) => (n === 0 ? no : value(String(n)))) as [Cell, Cell, Cell] },
+  { label: 'Hosted speech-to-text, monthly allowance', cells: [yes, yes, yes] },
   { label: 'No watermark on output', cells: [no, yes, yes] },
 ]
 
@@ -205,6 +232,8 @@ const pricingFaqItems = [
             </table>
           </div>
         </div>
+        <!-- The allowance is the HOSTED path's (FR-533, FR-546); on-device transcription has no quota. -->
+        <p class="table-note">On-device transcription is not metered. The allowance is for hosted speech-to-text only.</p>
       </div>
     </section>
 
@@ -248,8 +277,18 @@ const pricingFaqItems = [
   line-height: 18px;
   color: var(--sc-text-secondary);
 }
+/* An empty note stays IN the accessibility tree, only invisible: a live region that is not rendered before
+   its text arrives is often not announced (review round 1, Cody N6). Not `display: none`. */
 .billing-note:empty {
-  display: none;
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
 
 /* Figma 483:240: pad 40/96/80 around the cards; 24px between them. */
@@ -378,6 +417,14 @@ const pricingFaqItems = [
   font-size: 13.5px;
   font-weight: 600;
   color: var(--ui-badge-ink, var(--sc-text));
+}
+
+.table-note {
+  max-width: 1040px;
+  margin: 12px auto 0;
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--sc-text-secondary);
 }
 
 .faq-section {
