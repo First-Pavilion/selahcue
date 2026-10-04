@@ -263,7 +263,7 @@ const faqItems = [
         <div class="section-header">
           <UiBadge variant="eyebrow">WHY SELAHCUE</UiBadge>
           <!-- Figma draws the break after "moment" (two lines of 760px); phones let it wrap. -->
-          <h2 class="section-title is-reliability">Built for the one moment<br />you can't repeat</h2>
+          <h2 class="section-title is-reliability">Built for the one moment <br />you can't repeat</h2>
           <p class="section-subtitle">Sunday morning doesn't wait for a spinning cursor. SelahCue is engineered so the audience output is always up — reliable, offline, and fast.</p>
         </div>
 

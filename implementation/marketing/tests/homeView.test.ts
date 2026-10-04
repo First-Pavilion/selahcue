@@ -279,6 +279,24 @@ describe('the heading outline never skips a level (home-bug-01)', () => {
     }
   })
 
+  test('a designed line break leaves the words apart for anything that reads the text without drawing it (search, copy, a reader that ignores <br>)', () => {
+    const joined = (el: El): string => {
+      // Text nodes only, in order, with NO spacing for the <br> in between: what textContent gives.
+      let out = ''
+      const go = (e: El): void => {
+        for (const c of e.children) {
+          if (typeof c === 'string') out += c
+          else go(c)
+        }
+      }
+      go(el)
+      return out.replace(/\s+/g, ' ').trim()
+    }
+    const withBreak = findAll(page, (e) => /^h[1-6]$/.test(e.tag) && findAll(e, (c) => c.tag === 'br').length > 0)
+    assert.ok(withBreak.length >= 2, 'the hero and Reliability titles have a designed break')
+    for (const h of withBreak) assert.equal(joined(h), textOf(h), `"${textOf(h)}" runs two words together without its <br>`)
+  })
+
   test('CONTROL: a skipped level, a second h1 and an outline that starts below h1 are each reported', () => {
     assert.deepEqual(headingProblems(parseHtml('<main><h1>A</h1><h2>B</h2><h4>C</h4></main>')), ['h4 "C" follows an h2: a level is skipped'])
     assert.deepEqual(headingProblems(parseHtml('<main><h1>A</h1><h1>B</h1></main>')), ['expected exactly one h1, found 2'])
