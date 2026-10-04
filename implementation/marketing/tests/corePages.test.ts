@@ -1230,6 +1230,86 @@ describe('review round 1: guards that only a browser used to give', () => {
   })
 })
 
+// ------------------------------------------------ review round 3: the pinned heading and the reserved note
+
+/** The text between the braces of the first `@media (query) { ... }`, braces balanced; '' when there is none. */
+function mediaBlock(css: string, query: string): string {
+  const at = css.indexOf(`@media ${query}`)
+  if (at === -1) return ''
+  const open = css.indexOf('{', at)
+  let depth = 0
+  for (let i = open; i < css.length; i++) {
+    if (css[i] === '{') depth++
+    else if (css[i] === '}' && --depth === 0) return css.slice(open + 1, i)
+  }
+  return ''
+}
+
+/** The css with every `@media ... { ... }` block removed: the rules that apply at every width. */
+function outsideMedia(css: string): string {
+  let out = css
+  for (;;) {
+    const at = out.indexOf('@media')
+    if (at === -1) return out
+    const open = out.indexOf('{', at)
+    let depth = 0
+    let end = out.length
+    for (let i = open; i < out.length; i++) {
+      if (out[i] === '{') depth++
+      else if (out[i] === '}' && --depth === 0) {
+        end = i + 1
+        break
+      }
+    }
+    out = out.slice(0, at) + out.slice(end)
+  }
+}
+
+/** On a phone the label column AND its heading cell are pinned, each with a fill of its own. Empty when sound. */
+function pinnedColumnProblems(css: string): string[] {
+  const block = mediaBlock(css, '(max-width: 767.98px)')
+  const rules = [...block.matchAll(/([^{}]+)\{([^{}]*)\}/g)].map((m) => ({ sel: (m[1] as string).trim(), body: m[2] as string }))
+  const out: string[] = []
+  const pins = (needle: string): boolean => rules.some((r) => r.sel.includes(needle) && /position:\s*sticky/.test(r.body) && /left:\s*0/.test(r.body))
+  const fills = (needle: string): boolean => rules.some((r) => r.sel.includes(needle) && /background:\s*var\(--sc-(surface|elevated)\)/.test(r.body))
+  if (!pins('tbody th')) out.push('the row labels are not pinned on a phone')
+  if (!pins('thead th.plans-label')) out.push('the PLANS heading cell is not pinned: the Free and Pro headings slide over the row labels')
+  if (!fills('tbody th')) out.push('the pinned row labels have no fill of their own')
+  if (!fills('thead th.plans-label')) out.push('the pinned heading cell has no fill of its own (the band\'s fill is on the row and scrolls away)')
+  return out
+}
+
+/** The billing note's line is reserved at every width below 1200px, so choosing Annual moves nothing. */
+function noteReservationProblems(css: string): string[] {
+  const rule = [...outsideMedia(css).matchAll(/\.billing-note\s*\{([^}]*)\}/g)].map((m) => m[1] as string).join(' ')
+  return /min-height:\s*(1[0-9]|[2-9][0-9])px/.test(rule) ? [] : ['the .billing-note has no min-height at every width, so choosing Annual pushes the cards down below 1200px']
+}
+
+describe('review round 3 (Vera): the pinned heading cell and the reserved billing note', () => {
+  test('the PLANS heading cell is pinned on a phone with the row labels, each with its own fill (a regression against the base)', () => {
+    assert.deepEqual(pinnedColumnProblems(sfcSource(read('views/PricingView.vue'), 'PricingView.vue').css), [])
+  })
+
+  test('CONTROL: the predicate flags a missing header pin, a missing fill, and accepts both pinned', () => {
+    const only = '@media (max-width: 767.98px) { .t tbody th { position: sticky; left: 0; background: var(--sc-surface); } }'
+    assert.equal(pinnedColumnProblems(only).length, 2)
+    const noFill = '@media (max-width: 767.98px) { .t tbody th, .t thead th.plans-label { position: sticky; left: 0; } .t tbody th { background: var(--sc-surface); } }'
+    assert.equal(pinnedColumnProblems(noFill).length, 1)
+    const both = '@media (max-width: 767.98px) { .t tbody th, .t thead th.plans-label { position: sticky; left: 0; } .t tbody th { background: var(--sc-surface); } .t thead th.plans-label { background: var(--sc-elevated); } }'
+    assert.deepEqual(pinnedColumnProblems(both), [])
+  })
+
+  test('the billing note has a min-height at every width, so choosing Annual cannot push the plan cards down', () => {
+    assert.deepEqual(noteReservationProblems(sfcSource(read('views/PricingView.vue'), 'PricingView.vue').css), [])
+  })
+
+  test('CONTROL: the predicate flags a note with no reserved line, or one reserved only inside a media query', () => {
+    assert.equal(noteReservationProblems('.billing-note { margin: 8px 0 0; }').length, 1)
+    assert.equal(noteReservationProblems('@media (min-width: 1200px) { .billing-note { min-height: 18px; } }').length, 1)
+    assert.deepEqual(noteReservationProblems('.billing-note { min-height: 18px; margin: 8px 0 0; } @media (min-width: 1200px) { .billing-note { min-height: 0; } }'), [])
+  })
+})
+
 describe('review round 2: one visually-hidden rule', () => {
   test('Cody N22: no view carries its own copy of `.sr-only`; the one rule lives in SrOnly.vue', () => {
     for (const f of ['views/PricingView.vue', 'views/FeaturesView.vue', 'views/DownloadView.vue', 'views/AboutView.vue']) {

@@ -310,6 +310,56 @@ def check_pricing(page, base: str, engine: str) -> None:
     check("pricing: a tick is drawn in the success green, not the inherited white", bool(ticks) and all(c == "rgb(53, 192, 138)" for c in ticks), str(set(ticks)))
 
 
+def check_pricing_table_pin_and_note(page, base: str, engine: str) -> None:
+    """Review round 3 (Vera): the pinned PLANS heading on a phone, and a billing note that moves nothing."""
+    print(f"[{engine}] pricing: pinned heading and reserved note")
+    go(page, base, "/pricing", width=375)
+    # Scroll the table all the way right, then read where everything sits.
+    state = page.evaluate(
+        """() => {
+          const scroller = document.querySelector('.table-scroll');
+          // On screen first: elementFromPoint answers null for a point below the fold.
+          document.querySelector('.comparison-table thead').scrollIntoView({block: 'center'});
+          scroller.scrollLeft = scroller.scrollWidth;
+          const box = (el) => { const r = el.getBoundingClientRect(); return {l: r.left, r: r.right, t: r.top, b: r.bottom, w: r.width}; };
+          const head = document.querySelector('.comparison-table thead th.plans-label');
+          const rowLabel = document.querySelector('.comparison-table tbody th');
+          const heads = [...document.querySelectorAll('.comparison-table thead th:not(.plans-label)')];
+          const cells = [...document.querySelectorAll('.comparison-table tbody tr:first-child td')];
+          const hb = box(head);
+          const hit = document.elementFromPoint((hb.l + hb.r) / 2, (hb.t + hb.b) / 2);
+          return {
+            scrolled: scroller.scrollLeft, scroller: box(scroller), head: hb, rowLabel: box(rowLabel),
+            heads: heads.map(box), cells: cells.map(box),
+            hitIsHeading: !!hit && !!hit.closest('th.plans-label'),
+          };
+        }"""
+    )
+    check("pricing at 375: the table really scrolled sideways for this check", state["scrolled"] > 50, str(state["scrolled"]))
+    near("pricing at 375: the PLANS heading cell stays pinned at the card's left edge", state["head"]["l"], state["scroller"]["l"], 1.5)
+    near("pricing at 375: the pinned row labels are at the same left edge", state["rowLabel"]["l"], state["scroller"]["l"], 1.5)
+    near("pricing at 375: the heading cell is as wide as the row-label column under it", state["head"]["w"], state["rowLabel"]["w"], 1)
+    check("pricing at 375: the pinned heading cell is on top (the Free and Pro headings do not slide over it)", state["hitIsHeading"], str(state["head"]))
+    for i, (h, c) in enumerate(zip(state["heads"], state["cells"])):
+        near(f"pricing at 375: column heading {i + 1} stays aligned with its cells", (h["l"] + h["r"]) / 2, (c["l"] + c["r"]) / 2, 1)
+
+    # Choosing Annual must move nothing at any width: record the cards' top before and after, and after going back.
+    for width in (375, 768, 1024, 1199, 1200, 1440):
+        go(page, base, "/pricing", width=width)
+        top = lambda: page.evaluate("document.querySelector('.pricing-grid').getBoundingClientRect().top + scrollY")  # noqa: E731
+        before = top()
+        page.locator("[role=radio]").nth(1).click()
+        page.wait_for_timeout(200)
+        note = page.evaluate("document.querySelector('.billing-note').textContent")
+        after = top()
+        page.locator("[role=radio]").nth(0).click()
+        page.wait_for_timeout(200)
+        back = top()
+        check(f"pricing at {width}: choosing Annual shows the note", "not available yet" in note.lower(), note)
+        near(f"pricing at {width}: choosing Annual moves the plan cards by nothing", after, before, 0.5)
+        near(f"pricing at {width}: choosing Monthly again moves them by nothing", back, before, 0.5)
+
+
 def check_features(page, base: str, engine: str) -> None:
     print(f"[{engine}] features")
     go(page, base, "/features")
@@ -515,6 +565,7 @@ def main() -> int:
                 page.on("pageerror", lambda e: errors.append(str(e)))
                 try:
                     check_pricing(page, base, engine)
+                    check_pricing_table_pin_and_note(page, base, engine)
                     check_features(page, base, engine)
                     check_download(page, base, engine)
                     check_about(page, base, engine)

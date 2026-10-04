@@ -250,8 +250,9 @@ const pricingFaqItems = [
 </template>
 
 <style scoped>
-/* The toggle frame (Figma 483:144): 10px above the 42px pill. The note under it is positioned out of the
-   flow on desktop, in the 48px gap above the cards, so choosing Annual moves nothing. */
+/* The toggle frame (Figma 483:144): 10px above the 42px pill. The note under it never moves the cards: from
+   1200px it is out of the flow, in the 48px gap above them; below 1200px its line (8px + 18px) is RESERVED
+   whether or not it has text (review round 3, Vera N1: it used to push the cards down 26px on a phone). */
 .billing {
   position: relative;
   display: flex;
@@ -261,23 +262,11 @@ const pricingFaqItems = [
 }
 
 .billing-note {
+  min-height: 18px;
   margin: 8px 0 0;
   font-size: 13px;
   line-height: 18px;
   color: var(--sc-text-secondary);
-}
-/* An empty note stays IN the accessibility tree, only invisible: a live region that is not rendered before
-   its text arrives is often not announced (review round 1, Cody N6). Not `display: none`. */
-.billing-note:empty {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  margin: -1px;
-  padding: 0;
-  overflow: hidden;
-  clip: rect(0, 0, 0, 0);
-  white-space: nowrap;
-  border: 0;
 }
 
 /* Figma 483:240: pad 40/96/80 around the cards; 24px between them. */
@@ -465,9 +454,22 @@ const pricingFaqItems = [
     position: absolute;
     top: 100%;
     left: 50%;
+    min-height: 0;
     margin: 8px 0 0;
     transform: translateX(-50%);
     white-space: nowrap;
+  }
+  /* An empty note stays IN the accessibility tree, only invisible: a live region that is not rendered before
+     its text arrives is often not announced (review round 1, Cody N6). Not `display: none`. Below 1200px
+     the empty note is an ordinary, reserved line instead. */
+  .billing-note:empty {
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    padding: 0;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    border: 0;
   }
   .plans-section {
     padding-block: 40px 80px;
@@ -489,14 +491,22 @@ const pricingFaqItems = [
   }
 }
 
-/* A phone: the feature column stays pinned so a row is still readable at the far right. */
+/* A phone: the label column stays pinned so a row is still readable at the far right, and so does its
+   heading cell ("PLANS"): without it the Free and Pro headings slide over the row labels (the base pinned
+   both; review round 3, Vera). The pinned cells need a fill of their own: the band's fill is on the row. */
 @media (max-width: 767.98px) {
-  .comparison-table tbody th {
+  .comparison-table tbody th,
+  .comparison-table thead th.plans-label {
     position: sticky;
     left: 0;
     z-index: 1;
-    background: var(--sc-surface);
     box-shadow: 1px 0 0 var(--sc-border);
+  }
+  .comparison-table tbody th {
+    background: var(--sc-surface);
+  }
+  .comparison-table thead th.plans-label {
+    background: var(--sc-elevated);
   }
 }
 </style>
