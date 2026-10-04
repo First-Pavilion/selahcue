@@ -90,7 +90,7 @@ const steps = [
     description: 'Stage the next item in Preview, then Go Live. The audience, stage, and NDI outputs all update together.'
   },
   {
-    title: 'Control from the console or phone',
+    title: 'Control from your phone',
     description: 'Drive it from the console — or pair your phone over the local network. No internet needed.'
   }
 ]

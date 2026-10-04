@@ -7,12 +7,10 @@
  *   1. from the CONTENT LAYER (`src/lib/content`: article, post and category titles and summaries, each already
  *      guarded by `tests/content.test.ts` and its cited sources), or
  *   2. in `newCopy` below: words written in THIS pull request, each reviewed as carrying no promise, or
- *   3. in `unbacked` below: words that were live BEFORE this pull request (or are on a button or line this PR cannot make
- *      true) and CLAIM something the repo does not back: a 24-hour reply, 1,200+ members, versions that do not exist, three
- *      invented roles, a 20% rate, an application that does not exist. They are NOT this ticket's to remove: owner decision
- *      2026-10-04, ClickUp 17tnw2b0x3h removes them in a branch on top of the four area PRs and joins the merge gate. THAT
- *      TICKET'S CHECK IS "`unbacked` is empty" on every page, and its test fails on a line that is no longer rendered, so
- *      the list can only shrink, and each entry has to be deleted by whoever removes the words, or
+ *   3. in `unbacked` below: words that CLAIM something the repo does not back (a 24-hour reply, 1,200+ members, versions that
+ *      do not exist, invented roles, a 20% rate, an application that does not exist). THE LIST IS EMPTY ON EVERY PAGE, and a
+ *      test fails if an entry is ever added: ClickUp 17tnw2b0x3h removed every such line from the seven pages. It stays in the
+ *      type so the check is one line ("`unbacked` is empty"), and `NAMED_CLAIMS` below bans each removed claim by name, or
  *   4. in `harmless` below: everything else that was already there, restyled and not changed in substance (a heading, a
  *      count, a validation message, an accessible name). It claims nothing; a test fails on a promise word in it, so a claim
  *      cannot hide in this list.
@@ -22,7 +20,8 @@
  * declaration in the scoped styles of every view and every component this ticket owns (anything but an empty string fails).
  *
  * WHAT IT DOES NOT SEE (so nobody reads a green ledger as more than it is): copy a state not listed in the test would show
- * (the Contact success card after a REAL send, which does not exist yet; the Docs and Blog pages' own hash states);
+ * (what Contact will say after a REAL send, which does not exist yet; the Docs and Blog pages' own hash states; the Changelog
+ * release cards and the Careers role rows, which render only when a release or a role exists and are tested with fixtures);
  * copy that only a script writes after load; the document title and meta description, which the router and the head code
  * set outside these views; text inside the content layer (it is accepted by name, and guarded by `tests/content.test.ts`);
  * text in the shared components themselves (UiButton, FormField, FaqAccordion, the footer: other tickets), except where they
@@ -30,8 +29,8 @@
  * not say any line is true.
  *
  * Tests keep the ledger honest: `newCopy` and `harmless` carry no time, money, earnings or reply word (a pattern ban); no entry
- * is on two lists; every entry is still rendered; and the named claims the reviewers listed are on `unbacked`. A regular
- * expression stands for a computed line (a count, a read time, a date, a typed name).
+ * is on two lists; every entry is still rendered; `unbacked` is empty; and the claims the reviewers named are on NO list and
+ * rendered by NO page state. A regular expression stands for a computed line (a count, a read time, a date, a typed name).
  */
 
 export type Entry = string | RegExp
@@ -39,7 +38,7 @@ export type Entry = string | RegExp
 export interface PageLedger {
   /** Written in this pull request. */
   readonly newCopy: readonly Entry[]
-  /** Claims the repo does not back (or an affordance that does not work). ClickUp 17tnw2b0x3h removes them: "empty" is its check. */
+  /** Claims the repo does not back. Empty on every page (ClickUp 17tnw2b0x3h); a test fails if it is not. */
   readonly unbacked: readonly Entry[]
   /** Already live, restyled, claiming nothing. */
   readonly harmless: readonly Entry[]
@@ -226,8 +225,9 @@ export const PROMISE_PATTERN =
   /\bwithin\b|\bhours?\b|\bdays?\b|\bweeks?\b|\bmonthly\b|\bguarantee|\bfree\b|\bforever\b|for life|%|\$|\bearn|\bcommission|\bincome|\brecurring|\bpayouts?\b|\bpaid\b|\breply|\brespond|\bresponse\b|\banswer(?:ed|ing)?\b|\balways\b|\binstant|\bimmediate|\bnever\s+(?:share|sell|send|store|collect|track)/i
 
 /**
- * The claims the reviewers named, as a sample run each. A test requires each to be matched by `unbacked` of its page, so that
- * moving one of them to `harmless` (where the claims ticket would never look) fails.
+ * The claims the reviewers named, as a sample run each: the BAN LIST of ClickUp 17tnw2b0x3h. A test requires that no entry on
+ * any list of the page matches a sample and that no state of the page renders it, so a removed claim cannot be allow-listed or
+ * quietly written again.
  */
 export const NAMED_CLAIMS: ReadonlyArray<readonly [page: string, sample: string]> = [
   ['Contact', 'Thank you for reaching out, Ana. A SelahCue specialist will respond within 24 hours.'],
@@ -235,14 +235,20 @@ export const NAMED_CLAIMS: ReadonlyArray<readonly [page: string, sample: string]
   ['Contact', 'Join 1,200+ worship tech leaders on Discord for instant help.'],
   ['Contact', 'Join Discord Community'],
   ['Contact', 'Schedule a Demo Call'],
+  ['Contact', 'Talk to our church solutions architect for enterprise SLAs.'],
+  ['Contact', 'support@selahcue.app'],
   ['Support', 'Our support team is available to assist your church with technical questions.'],
   ['Changelog', 'v1.2.0'],
   ['Changelog', 'Latest Release'],
   ['Changelog', 'Encrypted post-activation downloads for NIV, ESV, and NLT translations.'],
+  ['Changelog', 'Native NDI 5 Output Engine'],
+  ['Changelog', 'Reduced GPU VRAM usage by 35% on 4K motion backgrounds.'],
+  ['Changelog', 'SelahCue Initial Launch'],
   ['Careers', 'Rust Systems & Graphics Engineer'],
   ['Careers', 'Senior Vue / Frontend Engineer'],
   ['Careers', 'Worship Tech Solutions Specialist'],
   ['Careers', 'Apply Now →'],
+  ['Careers', 'Fully Remote & Flexible'],
   ['Careers', 'Your work directly supports thousands of volunteer tech teams and worship leaders every single Sunday.'],
   ['Affiliates', 'Recommend SelahCue. Earn 20% Recurring Commission.'],
   ['Affiliates', '60 Days'],

@@ -70,7 +70,7 @@ watch(
 </script>
 
 <template>
-  <NotFoundView embedded v-if="!article || !category" />
+  <NotFoundView v-if="!article || !category" />
   <div v-else class="da">
     <a class="da-skip" href="#docs-article" @click.prevent="skipToArticle">Skip to article</a>
     <div class="da-wrap">

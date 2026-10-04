@@ -17,26 +17,22 @@
 import UiButton from '@/components/UiButton.vue'
 
 /**
- * `embedded` is set by the blog / docs / support detail views, which show this when an
- * article slug names nothing. The site shell (App.vue) already provides the page's <main>,
- * so an embedded copy must not open a second one. The catch-all route renders it with no
- * prop and keeps its own <main>, exactly as before.
+ * The root is ALWAYS a <div>: the site shell (App.vue) already provides the page's <main>, and this view is shown both by the
+ * catch-all route and, inside the blog / docs / support detail views, when an article slug names nothing. A <main> here
+ * nested a second one in the shell's (audit shared-chrome-32, ClickUp 17tnw2b0x3h).
  */
-defineProps<{ embedded?: boolean }>()
 </script>
 
 <template>
-  <component :is="embedded ? 'div' : 'main'" class="nf-page">
+  <div class="nf-page">
     <h1 class="nf-title">We couldn't find that page</h1>
-    <p class="nf-body">
-      The link may be out of date, or the address may have a typo in it. Nothing is wrong
-      with your account, and any devices you have activated are still presenting.
-    </p>
+    <!-- Says nothing about the visitor's account or devices: this page cannot know anything about either. -->
+    <p class="nf-body">The link may be out of date, or the address may have a typo in it.</p>
     <div class="nf-actions">
       <UiButton to="/" variant="primary" size="lg">Go to the home page</UiButton>
       <UiButton to="/support" variant="secondary" size="lg">Contact support</UiButton>
     </div>
-  </component>
+  </div>
 </template>
 
 <style scoped>

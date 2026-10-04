@@ -361,6 +361,7 @@ const LEDGER: Readonly<Record<Page, readonly string[]>> = {
   pricing: [
     "PRICING",
     "Pricing that grows with your church",
+    "Plans and pricing",
     "Plans and prices have not been published yet.",
   ],
   features: [
@@ -579,7 +580,9 @@ describe('copy follows the ledger (review round 2, Quinn N4): nothing is on the 
         const root = parseHtml(`<div><p>${plant}</p></div>`)
         assert.deepEqual(unlistedBlocks(root, page), [plant], `"${plant}" should be reported on ${page}`)
       }
-      const reworded = (LEDGER[page][2] as string).replace(/\.$/, '!')
+      const sentence = LEDGER[page].find((line) => line.endsWith('.')) as string
+      assert.ok(sentence, `${page} has no sentence on its ledger to reword`)
+      const reworded = sentence.replace(/\.$/, '!')
       assert.equal(unlistedBlocks(parseHtml(`<p>${reworded}</p>`), page).length, 1, `a reworded ledger line on ${page} should be reported`)
       assert.deepEqual(unlistedBlocks(parseHtml(`<p>${LEDGER[page][1]}</p>`), page), [], 'a ledger line is not reported')
     }
@@ -592,13 +595,15 @@ describe('copy follows the ledger (review round 2, Quinn N4): nothing is on the 
 // ------------------------------------------------------------------------------------ Pricing
 
 describe('Pricing', () => {
-  test('hero: the PRICING eyebrow, the Figma headline and a subline', () => {
+  test('hero: the PRICING eyebrow and the Figma headline, then an h2 over the empty state that says plans and prices are not published', () => {
     const h1 = byTag(pages.pricing, 'h1')[0] as HtmlNode
     assert.equal(textOf(h1), 'Pricing that grows with your church')
     assert.ok(textOf(pages.pricing).includes('PRICING'), 'no PRICING eyebrow')
-    const lead = byClass(pages.pricing, 'hero-lead')[0]
-    assert.ok(lead && textOf(lead).length > 40, 'no subline under the headline')
-    assert.equal(textOf(lead as HtmlNode), 'Plans and prices have not been published yet.')
+    assert.deepEqual(byClass(pages.pricing, 'hero-lead'), [], 'the subline went with the plans it introduced')
+    assert.deepEqual(byTag(pages.pricing, 'h2').map((h) => textOf(h)), ['Plans and pricing'], 'the h2 keeps the outline from skipping to the footer h3s')
+    const empty = byClass(pages.pricing, 'plans-empty')[0]
+    assert.ok(empty, 'no empty state')
+    assert.equal(textOf(empty as HtmlNode), 'Plans and prices have not been published yet.')
   })
 
   // ClickUp 17tnw2b0x3h: plan names, prices and limits are the API catalogue's data, so until it serves them the page shows none.

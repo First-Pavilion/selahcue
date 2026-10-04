@@ -169,7 +169,12 @@ def main() -> None:
         entry_src = re.search(r'<script[^>]+type="module"[^>]+src="/(assets/[^"]+\.js)"', html)
         entry = (DIST / entry_src.group(1)).read_text(encoding="utf-8") if entry_src else ""
         check("entry chunk found", bool(entry), str(entry_src))
-        check("entry chunk is under 120 kB (it was 161 kB with the corpus in it)", 0 < len(entry.encode()) < 120_000, str(len(entry.encode())))
+        # Recalibrated by ClickUp 17tnw2b0x3h. The bound was 120 kB when Rollup kept the Vue runtime in a shared
+        # `_plugin-vue_export-helper` chunk (entry 89 kB, 161 kB once the corpus was bundled into it). Removing the Pricing
+        # table, plan cards and testimonials left too few lazy chunks sharing that helper, so Rollup folded it into the entry
+        # (152 kB) while the TOTAL JS shrank from 520 kB to 498 kB. A visitor downloads the same code. 180 kB still fails a
+        # bundled corpus (about 70 kB on top), and the two checks below assert the corpus is absent by content, not size.
+        check("entry chunk is under 180 kB (it was 152 kB after the Pricing and Home cuts, ~220 kB with the corpus in it)", 0 < len(entry.encode()) < 180_000, str(len(entry.encode())))
         check("entry chunk carries no article text", "Connections drop" not in entry and "Stage theme" not in entry)
         check("entry chunk carries no citation paths or notes", "implementation/desktop/crates" not in entry and "supports:" not in entry)
         every_js = "".join(f.read_text(encoding="utf-8") for f in (DIST / "assets").glob("*.js"))

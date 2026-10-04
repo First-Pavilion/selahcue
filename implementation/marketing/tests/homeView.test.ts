@@ -257,7 +257,7 @@ describe('the heading outline never skips a level (home-bug-01)', () => {
       'Fast & bounded',
       'Plan your service',
       'Go live with one tap',
-      'Control from the console or phone',
+      'Control from your phone',
     ])
     assert.deepEqual(findAll(page, (e) => e.tag === 'h4' || e.tag === 'h5' || e.tag === 'h6'), [])
     for (const name of ['Audience — Main', 'Stage Display', 'Livestream Program']) {
@@ -658,7 +658,7 @@ const LEDGER: Readonly<Record<SectionClass, readonly string[]>> = {
     'Stage the next item in Preview, then Go Live. The audience, stage, and NDI outputs all update together.',
     '3',
     // "Control from anywhere" is gone: mobile control is LAN-based (PRD NG-5). "No lag" went earlier: unmeasured (NFR-009).
-    'Control from the console or phone',
+    'Control from your phone',
     'Drive it from the console — or pair your phone over the local network. No internet needed.',
   ],
   // The plan cards, prices, tier names, "MOST POPULAR" and "Cancel anytime" are gone (ClickUp 17tnw2b0x3h): plan names and
