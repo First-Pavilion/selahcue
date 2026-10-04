@@ -51,7 +51,12 @@ const PAGES = [
   { file: 'ChangelogView.vue', route: '/changelog' },
   { file: 'BlogView.vue', route: '/blog' },
   { file: 'CareersView.vue', route: '/careers' },
+  { file: 'PrivacyView.vue', route: '/privacy' },
+  { file: 'TermsView.vue', route: '/terms' },
 ] as const
+
+/** The pages that render the generated legal drafts. */
+const LEGAL_PAGES: ReadonlySet<string> = new Set(['PrivacyView.vue', 'TermsView.vue'])
 
 let server: ViteDevServer
 const rendered = new Map<string, string>()
@@ -160,9 +165,14 @@ describe('the nine pages: heading outline, buttons and container', () => {
       assert.deepEqual(mutedInkRules(readSrc(`views/${file}`)), [], `${file} colours text with --sc-text-muted`)
     })
 
-    test(`${file}: no claim the audit marks unbacked is added`, async () => {
-      assert.deepEqual(addedClaims(textOf(await html(file))), [], `${file} shows a string Figma draws and the repo does not back`)
-    })
+    // The two legal pages render the generated legal drafts, which are owned by ClickUp 17tnw2b0x3g and
+    // checked by `npm run check:legal`: their text is not this ticket's and may contain any of these words
+    // in its own context (the Terms mention "10 minutes" of a different thing).
+    if (!LEGAL_PAGES.has(file)) {
+      test(`${file}: no claim the audit marks unbacked is added`, async () => {
+        assert.deepEqual(addedClaims(textOf(await html(file))), [], `${file} shows a string Figma draws and the repo does not back`)
+      })
+    }
   }
 
   for (const { file } of PAGES.filter((p) => p.file !== 'PrivacyView.vue' && p.file !== 'TermsView.vue')) {
@@ -669,5 +679,108 @@ describe('Careers (503:124): hero, four icon-tile culture cards, a full-bleed ro
     const link = tagsOf(page).find((t) => t.name === 'a' && classesOf(t).includes('closing-link'))
     assert.equal(link?.attrs['href'], '/contact')
     assert.ok(!/@selahcue/.test(textOf(page).replace('support@selahcue', '')), 'no invented mailbox')
+  })
+})
+
+// --------------------------------------------------------------------------- Privacy and Terms
+
+/** The CSS of one legal component, from its own style blocks. */
+const legalCss = (name: string): string => styleOf(readSrc(`components/legal/${name}.vue`), `${name}.vue`)
+
+/** The value of one declaration in the FIRST rule whose selector is exactly `selector`; undefined when absent. */
+function declaration(css: string, selector: string, property: string): string | undefined {
+  const bare = css.replace(/\/\*[\s\S]*?\*\//g, '')
+  for (const m of bare.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+    if ((m[1] ?? '').trim() !== selector) continue
+    const d = new RegExp(`(?:^|[;\\s])${property}\\s*:\\s*([^;]+)`).exec(m[2] ?? '')
+    if (d) return (d[1] ?? '').trim()
+  }
+  return undefined
+}
+
+describe('Privacy and Terms (504:124, 504:203): type scale, header spacing, markers (the document and the contents sidebar stay)', () => {
+  const page = legalCss('LegalPage')
+
+  test('the page title is 44/700 on a 50px line, 16px above the version line (privacy-05, terms-05)', () => {
+    assert.equal(declaration(page, '.legal-title', 'font-size'), '44px')
+    assert.equal(declaration(page, '.legal-title', 'font-weight'), '700')
+    assert.equal(declaration(page, '.legal-title', 'line-height'), '50px')
+    assert.equal(declaration(page, '.legal-title', 'margin'), '16px 0 16px')
+  })
+
+  test('the title keeps a smaller size on a phone', () => {
+    assert.match(page, /@media \(max-width: 767\.98px\)\s*\{[^}]*\.legal-title\s*\{[^}]*font-size:\s*30px/)
+  })
+
+  test('the header sits 96px below the navbar and has no divider rule (privacy-07, terms-07)', () => {
+    assert.match(declaration(page, '.legal-page', 'padding') ?? '', /^96px 0 /)
+    assert.equal(declaration(page, '.legal-header', 'border-bottom'), undefined, 'the rule under the header is gone')
+    assert.equal(declaration(page, '.legal-header', 'padding-bottom'), '0')
+    assert.equal(declaration(page, '.legal-header', 'margin-bottom'), '40px')
+  })
+
+  test('the section headings are 20/600 on a 26px line with the number in the heading ink (privacy-08, terms-08)', () => {
+    assert.equal(declaration(page, '.sec-main', 'font-size'), '20px')
+    assert.equal(declaration(page, '.sec-main', 'font-weight'), '600')
+    assert.equal(declaration(page, '.sec-main', 'line-height'), '26px')
+    assert.equal(declaration(page, '.sec-main', 'margin'), '28px 0 10px')
+    assert.equal(declaration(page, '.sec-num', 'color'), 'inherit')
+  })
+
+  test('the text column is 780 wide (privacy-09, terms-09)', () => {
+    assert.equal(declaration(page, '.legal-text', 'max-width'), '780px')
+  })
+
+  test('body paragraphs and list items are 16px on a 26px line (privacy-09, terms-09)', () => {
+    const blocks = legalCss('LegalBlocks')
+    assert.equal(declaration(blocks, '.lb-p', 'font-size'), '16px')
+    assert.equal(declaration(blocks, '.lb-p', 'line-height'), '26px')
+    const list = legalCss('LegalList')
+    assert.equal(declaration(list, '.ll-item', 'font-size'), '16px')
+    assert.equal(declaration(list, '.ll-item', 'line-height'), '26px')
+  })
+
+  test('list markers are the primary colour, flush left, 10px from the text (terms-11)', () => {
+    const list = legalCss('LegalList')
+    assert.equal(declaration(list, '.ll-item::before', 'background'), 'var(--sc-primary)')
+    assert.equal(declaration(list, '.ll-item::before', 'left'), '0')
+    assert.equal(declaration(list, '.ll-item', 'padding-left'), '15px')
+  })
+
+  for (const { file, label, children } of [
+    { file: 'PrivacyView.vue', label: 'privacy', children: 11 },
+    { file: 'TermsView.vue', label: 'terms', children: 0 },
+  ]) {
+    test(`${label}: the eyebrow is the page pill reading LEGAL, not the green status badge (${label}-06)`, async () => {
+      const out = await html(file)
+      const badge = badgesOf(out).find((b) => b.text === 'LEGAL')
+      assert.ok(badge, 'a pill reading LEGAL')
+      assert.equal(badge?.variant, 'featured')
+      assert.ok(!badgesOf(out).some((b) => b.variant === 'preview' && /Legal/.test(b.text)), 'no green Legal badge')
+    })
+
+    test(`${label}: every section heading carries the section class, and child headings do not (${label}-08)`, async () => {
+      const out = await html(file)
+      const sections = withClass(out, 'sec-main')
+      assert.ok(sections.length >= 13, 'every numbered section')
+      for (const h of sections) assert.match(h.name, /^h[23]$/)
+      const kids = withClass(out, 'sec-child')
+      assert.equal(kids.length, children, `${children} child headings (the generated draft's sub-sections)`)
+      assert.ok(kids.every((h) => h.name === 'h3'))
+      assert.ok(kids.every((h) => !classesOf(h).includes('sec-main')), 'a child heading is never the section style')
+    })
+  }
+
+  test('the document text itself is untouched: the generated files are not part of this change', () => {
+    // check:legal and test:legal-pages are the gates; this only pins that the views still pass the generated document.
+    assert.match(readSrc('views/PrivacyView.vue'), /privacyPolicy/)
+    assert.match(readSrc('views/TermsView.vue'), /termsOfService/)
+  })
+
+  test('CONTROL: declaration() reads the first matching rule and reports an absent property', () => {
+    const css = '/* a note */\n.a { color: red; font-size: 10px; }\n.b .a { font-size: 99px; }\n.a { font-size: 77px; }'
+    assert.equal(declaration(css, '.a', 'font-size'), '10px', 'a comment above the rule is not part of its selector')
+    assert.equal(declaration(css, '.a', 'margin'), undefined)
+    assert.equal(declaration(css, '.b .a', 'font-size'), '99px')
   })
 })

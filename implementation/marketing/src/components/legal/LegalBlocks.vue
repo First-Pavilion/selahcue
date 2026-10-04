@@ -28,9 +28,9 @@ defineProps<{ blocks: readonly Block[]; tableLabel: string }>()
 
 <style scoped>
 .lb-p {
-  font-size: 15px;
+  font-size: 16px;
   color: var(--sc-text-secondary);
-  line-height: 1.7;
+  line-height: 26px;
   margin: 0 0 16px;
 }
 .lb-clause {
