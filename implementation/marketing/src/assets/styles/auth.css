@@ -194,8 +194,6 @@
 .au-banner-danger { background: var(--sc-live-soft); }
 .au-banner-danger .au-banner-glyph { color: var(--sc-live); }
 
-/* --------------------------------------------------------------------- actions ----- */
-
 /* ---------------------------------------------------------------------- fields ----- */
 
 /*
@@ -226,6 +224,13 @@
 /* The label row ("Forgot?" opposite the label): the grid FormField switches to when it is given the slot. */
 .au-card form .form-field.has-label-action {
   gap: 7px 12px;
+}
+
+/* The link is 13px text on a 16px row, which is a 16px-tall target on a desktop (the handoff asks for 44px, WCAG 2.2 for
+   24px). Vertical padding on an INLINE box widens what can be clicked without moving a pixel of the layout; 5px stays
+   inside the 7px gap above the input, so it never covers the field. (Phones get 44px from FormField's own rule.) */
+.au-card form .label-action a {
+  padding-block: 5px;
 }
 
 /* The two password fields sit in a fieldset so that, while a request is out, ONE attribute disables their
@@ -320,6 +325,8 @@
   opacity: 0.5;
   cursor: not-allowed;
 }
+
+/* --------------------------------------------------------------------- actions ----- */
 
 /* The terms checkbox on create-account. The whole row is the label, and the 6px padding
    plus the 20px line box carries it to the 44px effective target the auth handoff §12

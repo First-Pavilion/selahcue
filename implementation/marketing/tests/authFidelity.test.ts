@@ -208,6 +208,10 @@ describe('auth fields: label, input well, stroke and rhythm (signin-06, -07, -09
     }
   })
 
+  test('the Forgot link has a 24px-tall target (5px of padding on an inline box, inside the 7px gap above the input)', () => {
+    assertRule('.au-card form .label-action a', { 'padding-block': '5px' })
+  })
+
   test('the text Show / Hide toggle keeps its room: the input is padded 64px on the right under the new padding', () => {
     assertRule('.au-card form .field-input.has-reveal-text', { 'padding-right': '64px' })
   })

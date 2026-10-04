@@ -111,7 +111,17 @@ DIST = Path(os.environ.get("SELAHCUE_MARKETING_DIST") or (MARKETING / "dist"))
 # non-vacuity row, one asserting the scenario typed a credential at all, the value-based
 # sweep itself, and the old name-based check kept as a complement. Measured on the tree
 # that ships it, not derived from the arithmetic.
-EXPECTED_MIN_CHECKS = 1751
+#
+# 1751 -> 2213 in the Figma auth ticket (17tnw2b2cf1), measured on the tree that ships it: 60 scenarios and 1751 checks became
+# 64 scenarios and 2213. What was added: computed-style checks, read in real Chrome with running transitions finished
+# first, for the Sign in, Verify and Reset findings (the field label, input well, 7px / 18px rhythm and placeholder on six
+# states; the centring of V1 and V2 and the left alignment of every other state; the R1 focus, Show / Hide and hint; the R2
+# cross, held button and banner; the Forgot link in the label row, its target and the tab order); two checks on EVERY state
+# through `universalChecks` (the button heights and the 358px column), and FOUR new scenarios: `reset-both-errors`,
+# `reset-submitting`, `signin-submitting` and `verify-resend-pending` (the in-flight states, held with `gated()`, which
+# nothing measured before). The enumeration pairs were not touched; the Sign in in-flight checks are their own scenario
+# so that no measurement is added to one half of a pair.
+EXPECTED_MIN_CHECKS = 2213
 
 
 def find_chrome() -> str | None:
@@ -366,6 +376,7 @@ DRIVER = r"""
     },
     // Held in flight, so the submitting state (R3) actually paints and can be measured.
     'reset-submitting':    gated(function () { return json({ data: { confirmPasswordReset: { reset: true } } }); }),
+    'reset-both-errors':   function () { return json({ data: { confirmPasswordReset: { reset: true } } }); },
     'reset-success':       function () { return json({ data: { confirmPasswordReset: { reset: true } } }); },
     'reset-invalid':       function () { return json({ errors: [{ extensions: { code: 'VALIDATION_FAILED' } }] }); },
     // FR-551 / DEC-017. `confirm_password_reset` reaches its password check only after the
@@ -386,6 +397,7 @@ DRIVER = r"""
     // actually paints and can be compared. See `gated()` for why these six and not a timer.
     'signin-rejected-unknown':        gated(function () { return UNAUTHENTICATED(); }),
     'signin-rejected-wrong-password': gated(function () { return UNAUTHENTICATED(); }),
+    'signin-submitting':              gated(function () { return UNAUTHENTICATED(); }),
     'signin-unverified':   function () { return json({ errors: [{ extensions: { code: 'POLICY_DENIED' } }] }); },
     'signin-resend':       function (op) {
       if (op === 'Login') return json({ errors: [{ extensions: { code: 'POLICY_DENIED' } }] });
@@ -1269,7 +1281,29 @@ DRIVER = r"""
    * (which refuses a capture without Inter) is where card heights are measured. What is asserted
    * is what does not depend on the glyphs: a box height, a gap, a colour, an alignment, a state.
    */
-  function css(el, prop, pseudo) { return getComputedStyle(el, pseudo || null)[prop]; }
+  /**
+   * Finish every running CSS TRANSITION, so a read returns the value the cascade ARRIVES at, not a frame on the way.
+   *
+   * The button, the fields and the focus stroke all transition opacity, colour and shadow over 150ms, and this driver
+   * runs under `--virtual-time-budget`, which fast-forwards TIMERS but not the animation clock: a read taken after a
+   * 400ms `wait()` still saw `opacity: 1` on a button whose rule says 0.5, and, worse, saw the label of a button whose
+   * rule says 0 as fully visible. The first version of these checks passed a mutant that hid the label again (found
+   * by planting it), and failed correct code depending on how loaded the machine was. Only CSSTransition is finished;
+   * the infinite CSSAnimations (the progress bar, the spinner) are left running.
+   */
+  function settleTransitions() {
+    var running = document.getAnimations ? document.getAnimations() : [];
+    for (var i = 0; i < running.length; i += 1) {
+      if (typeof CSSTransition !== 'undefined' && running[i] instanceof CSSTransition) {
+        try { running[i].finish(); } catch (e) { /* already finished */ }
+      }
+    }
+  }
+
+  function css(el, prop, pseudo) {
+    settleTransitions();
+    return getComputedStyle(el, pseudo || null)[prop];
+  }
 
   function rgbaOf(value) {
     var m = /rgba?\(([^)]+)\)/.exec(String(value));
@@ -1703,6 +1737,7 @@ DRIVER = r"""
       check('submitted the resend form', submit());
       var deadline = Date.now() + 3000;
       while (!document.querySelector('.au-card .au-btn.is-loading') && Date.now() < deadline) await wait(20);
+      await wait(120);
       loadingButtonChecks('V3 resend in flight', 'Send a new verification link');
       submittingFieldChecks('V3 resend in flight', false, '');
       releaseGate();
@@ -1804,37 +1839,20 @@ DRIVER = r"""
       check('errored password field is marked invalid', first.getAttribute('aria-invalid') === 'true');
       check('errored password field points at its message', !!first.getAttribute('aria-describedby'));
 
-      // ---- Figma fidelity (17tnw2b2cf1) ----
-      var errorLines = document.querySelectorAll('.au-card .field-error');
-      check('R2 each field error begins with the cross, in the message text', errorLines.length === 2 &&
-            Array.prototype.every.call(errorLines, function (e) { return squash(e.textContent).indexOf('\u2715 ') === 0; }),
-            Array.prototype.map.call(errorLines, function (e) { return squash(e.textContent); }).join(' | '));
-      check('R2 each error is 12.5px / 500 on a 17px line',
-            Array.prototype.every.call(errorLines, function (e) {
-              return css(e, 'fontSize') === '12.5px' && css(e, 'fontWeight') === '500' && css(e, 'lineHeight') === '17px'; }));
-      check('R2 each error is still announced as an alert',
-            Array.prototype.every.call(errorLines, function (e) { return e.getAttribute('role') === 'alert'; }));
-      check('R2 both fields draw the 1.5px live stroke and no halo',
-            Array.prototype.every.call(document.querySelectorAll('input[type="password"]'), function (i) {
-              var bs = css(i, 'boxShadow');
-              return css(i, 'borderTopColor') === LIVE && bs.indexOf('inset') !== -1 && bs.indexOf('3px') === -1; }));
-      var held = document.querySelector('.au-card .au-btn-primary');
-      check('R2 the submit button is held: aria-disabled, but still focusable', !!held &&
-            held.getAttribute('aria-disabled') === 'true' && !held.disabled && held.tabIndex >= 0,
-            'aria-disabled=' + (held && held.getAttribute('aria-disabled')) + ' disabled=' + (held && held.disabled));
-      check('R2 the submit button is dimmed to 45%', !!held && css(held, 'opacity') === '0.45',
-            'opacity: ' + (held ? css(held, 'opacity') : 'no button'));
-      check('R2 the "signs you out everywhere" banner is gone while errors show',
-            document.querySelectorAll('.au-card .au-banner-info').length === 0);
-      // The user edits a field: the stale messages and the held button go, the banner comes back, and
-      // nothing was submitted (submitting re-validates).
-      typeInto(document.querySelectorAll('input[type="password"]')[0], 'abc1234');
-      await wait(120);
-      held = document.querySelector('.au-card .au-btn-primary');
-      check('R2 editing a field clears both messages', document.querySelectorAll('.au-card .field-error').length === 0);
-      check('R2 editing a field releases the button', !!held && !held.hasAttribute('aria-disabled') && css(held, 'opacity') === '1');
-      check('R2 editing a field brings the banner back', document.querySelectorAll('.au-card .au-banner-info').length === 1);
-      check('R2 editing a field sent nothing', calls.length === 0, 'calls=' + calls.length);
+      // ---- Figma fidelity (17tnw2b2cf1): one error shown. The two-error frame is `reset-both-errors`. ----
+      var oneError = document.querySelectorAll('.au-card .field-error');
+      check('R2 the field error begins with the cross, in the message text', oneError.length === 1 &&
+            squash(oneError[0].textContent).indexOf('\u2715 ') === 0,
+            Array.prototype.map.call(oneError, function (e) { return squash(e.textContent); }).join(' | '));
+      check('R2 the error is 12.5px / 500 on a 17px line, and still announced as an alert', oneError.length === 1 &&
+            css(oneError[0], 'fontSize') === '12.5px' && css(oneError[0], 'fontWeight') === '500' &&
+            css(oneError[0], 'lineHeight') === '17px' && oneError[0].getAttribute('role') === 'alert');
+      var pwFields = document.querySelectorAll('input[type="password"]');
+      var shadowOne = css(pwFields[0], 'boxShadow');
+      check('R2 the errored field draws the 1.5px live stroke and no halo; the other field keeps its own stroke',
+            css(pwFields[0], 'borderTopColor') === LIVE && shadowOne.indexOf('inset') !== -1 && shadowOne.indexOf('3px') === -1 &&
+            css(pwFields[1], 'borderTopColor') !== LIVE,
+            'first ' + css(pwFields[0], 'borderTopColor') + ', second ' + css(pwFields[1], 'borderTopColor'));
       universalChecks();
     },
 
@@ -1872,6 +1890,51 @@ DRIVER = r"""
     },
 
     /*
+     * R2 as Figma draws it (747:173): BOTH fields in error, the "signs you out everywhere" banner gone and the
+     * submit button held at 45%. One too short and one that does not match is the pair the harness types too.
+     */
+    'reset-both-errors': async function () {
+      await wait(500);
+      var fields = document.querySelectorAll('input[type="password"]');
+      typeInto(fields[0], 'abc123');
+      typeInto(fields[1], 'different');
+      await wait(50);
+      check('submitted two bad passwords', submit());
+      await wait(500);
+      var errorLines = document.querySelectorAll('.au-card .field-error');
+      check('R2 both fields carry an error that begins with the cross', errorLines.length === 2 &&
+            Array.prototype.every.call(errorLines, function (e) { return squash(e.textContent).indexOf('\u2715 ') === 0; }),
+            Array.prototype.map.call(errorLines, function (e) { return squash(e.textContent); }).join(' | '));
+      check('R2 both fields draw the 1.5px live stroke and no halo',
+            Array.prototype.every.call(document.querySelectorAll('input[type="password"]'), function (i) {
+              var bs = css(i, 'boxShadow');
+              return css(i, 'borderTopColor') === LIVE && bs.indexOf('inset') !== -1 && bs.indexOf('3px') === -1; }));
+      var held = document.querySelector('.au-card .au-btn-primary');
+      check('R2 the submit button is held: aria-disabled, but still focusable', !!held &&
+            held.getAttribute('aria-disabled') === 'true' && !held.disabled && held.tabIndex >= 0,
+            'aria-disabled=' + (held && held.getAttribute('aria-disabled')) + ' disabled=' + (held && held.disabled));
+      await wait(120);
+      check('R2 the submit button is dimmed to 45%', !!held && css(held, 'opacity') === '0.45',
+            'opacity: ' + (held ? css(held, 'opacity') : 'no button'));
+      check('R2 the "signs you out everywhere" banner is gone while errors show',
+            document.querySelectorAll('.au-card .au-banner-info').length === 0);
+      var cardH = box(document.querySelector('.au-card')).h;
+      check('R2 no request was made', calls.length === 0, 'calls=' + calls.length);
+      // The user edits a field: the stale messages and the held button go, the banner comes back, and
+      // nothing was submitted (submitting re-validates).
+      typeInto(document.querySelectorAll('input[type="password"]')[0], 'abc1234');
+      await wait(200);
+      held = document.querySelector('.au-card .au-btn-primary');
+      check('R2 editing a field clears both messages', document.querySelectorAll('.au-card .field-error').length === 0);
+      check('R2 editing a field releases the button', !!held && !held.hasAttribute('aria-disabled') && css(held, 'opacity') === '1',
+            'aria-disabled=' + (held && held.getAttribute('aria-disabled')) + ' opacity ' + (held && css(held, 'opacity')));
+      check('R2 editing a field brings the banner back', document.querySelectorAll('.au-card .au-banner-info').length === 1);
+      check('R2 editing a field sent nothing', calls.length === 0, 'calls=' + calls.length);
+      check('R2 the card grew back by the banner (it was ' + cardH + 'px)', box(document.querySelector('.au-card')).h > cardH);
+      universalChecks();
+    },
+
+    /*
      * R3, held in flight (reset-r3-01, reset-r3-02): the reply is gated, so the submitting state really paints
      * and can be measured. Before this, nothing in the suite looked at it at all.
      */
@@ -1883,6 +1946,7 @@ DRIVER = r"""
       await wait(50);
       submit();
       check('the in-flight state was reached', await settleInFlight());
+      await wait(120);
       var form = document.querySelector('.au-card form');
       check('R3 the form reports itself busy', !!form && form.getAttribute('aria-busy') === 'true');
       loadingButtonChecks('R3', 'Updating password…');
@@ -2117,6 +2181,9 @@ DRIVER = r"""
             box(forgot).l > box(pwLabel).l + 40,
             forgot && pwLabel ? 'link ' + box(forgot).l + '..' + box(forgot).r + ' y ' + box(forgot).cy +
                                 ', label y ' + box(pwLabel).cy + ', input right ' + box(pwInput).r : 'missing');
+      check('Forgot is at least a 24px-tall target without moving the layout (WCAG 2.2 target size)',
+            !!forgot && box(forgot).h >= 24 && box(forgot).b <= box(pwInput).t + 0.5,
+            forgot ? 'link ' + box(forgot).t + '..' + box(forgot).b + ' (' + box(forgot).h + 'px), input top ' + box(pwInput).t : 'missing');
       check('Forgot comes AFTER the input in the DOM, so the tab order is unchanged',
             !!forgot && (pwInput.compareDocumentPosition(forgot) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0);
       check('tab order is Email, Password, Show password, Forgot your password?, Sign in',
@@ -2129,6 +2196,7 @@ DRIVER = r"""
             !!eye && !!eye.querySelector('svg') && squash(eye.textContent) === '', 'toggle text "' + (eye && squash(eye.textContent)) + '"');
       var signinEmail = document.querySelector('input[type="email"]');
       signinEmail.focus();
+      await wait(120);
       var focusShadow = css(signinEmail, 'boxShadow');
       check('a focused Sign in field draws the 1.5px brand stroke and no halo',
             css(signinEmail, 'borderTopColor') === BRAND && focusShadow.indexOf('inset') !== -1 &&
@@ -2193,9 +2261,6 @@ DRIVER = r"""
       // IN FLIGHT. The reply is gated, so this is a real paint of the submitting state.
       check('the in-flight state was reached', await settleInFlight());
       recordSurface('signin-rejected-unknown-inflight');
-      // reset-r3-01 / reset-r3-02 on Sign in: the label stays, the fields dim once, the toggle is out of the tab order.
-      loadingButtonChecks('Sign in in flight', 'Signing in…');
-      submittingFieldChecks('Sign in in flight', true, 'Forgot your password?');
       releaseGate();
       check('the rejection settled', await settle('Invalid email or password'));
       var text = cardText();
@@ -2207,6 +2272,28 @@ DRIVER = r"""
             document.querySelector('input[type="email"]').value !== '');
       forwardPathCheck('rejected credentials');
       recordBranch('signin-rejected-unknown');
+      universalChecks();
+    },
+
+    /*
+     * Sign in in flight (reset-r3-01 and reset-r3-02 applied to Sign in): the reply is held, so the state paints. Its OWN
+     * scenario, not a line in the enumeration pair above: that pair compares what two branches render and how long they take,
+     * and the one thing a measurement added to ONE of them must never do is add a delay to one of them.
+     */
+    'signin-submitting': async function () {
+      await wait(400);
+      fillSignIn('pastor@yourchurch.org', REJECTED_PASSWORD);
+      await wait(50);
+      submit();
+      check('the in-flight state was reached', await settleInFlight());
+      await wait(120);
+      loadingButtonChecks('Sign in in flight', 'Signing in…');
+      submittingFieldChecks('Sign in in flight', true, 'Forgot your password?');
+      var signing = document.querySelector('.au-card .au-note[role="status"]');
+      check('Sign in says "Signing you in…" in a polite live region',
+            !!signing && signing.getAttribute('aria-live') === 'polite' && has(squash(signing.textContent), 'Signing you in…'));
+      releaseGate();
+      check('the rejection settled', await settle('Invalid email or password'));
       universalChecks();
     },
 
@@ -3099,6 +3186,7 @@ SCENARIOS: list[tuple[str, str]] = [
     ("reset-short-password", f"/reset?token={RESET_TOKEN}"),
     ("reset-whitespace-password", f"/reset?token={RESET_TOKEN}"),
     ("reset-mismatch", f"/reset?token={RESET_TOKEN}"),
+    ("reset-both-errors", f"/reset?token={RESET_TOKEN}"),
     ("reset-submitting", f"/reset?token={RESET_TOKEN}"),
     ("reset-success", f"/reset?token={RESET_TOKEN}"),
     ("reset-invalid", f"/reset?token={RESET_TOKEN}"),
@@ -3112,6 +3200,7 @@ SCENARIOS: list[tuple[str, str]] = [
     ("signin-expired", "/signin?reason=expired"),
     ("signin-rejected-unknown", "/signin"),
     ("signin-rejected-wrong-password", "/signin"),
+    ("signin-submitting", "/signin"),
     ("signin-unreachable", "/signin"),
     ("signin-rate-limited", "/signin"),
     ("signin-unverified", "/signin"),
