@@ -57,6 +57,7 @@ Class A and E findings that raise fix work, by severity: high 84, medium 82, low
 - **decisions** — [17tnw2b2cf3](https://app.clickup.com/t/17tnw2b2cf3) · [Design] Decisions needed from the Figma audit: claims the repo does not back (class C) and gaps in the designs (class …
 - **devices-api** — [17tnw2b2cf4](https://app.clickup.com/t/17tnw2b2cf4) · [Backend] Customer-session GraphQL for Manage Devices: list devices, last seen, limit and used, deactivate, viewer role
 - **sign-out-bug** — [17tnw2b2cbr](https://app.clickup.com/t/17tnw2b2cbr) · [Web] Account page "Sign Out" button never signs out: it only navigates to /signin
+- **selftest-ci** — [17tnw2b2fum](https://app.clickup.com/t/17tnw2b2fum) · [CI] Run the visual-parity self-test and the audit checker's self-test in make ci and CI (no browser, about 1 second)
 
 ## Class C — Figma content the repo does not back (for Uma and the owner)
 
