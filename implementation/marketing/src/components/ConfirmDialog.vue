@@ -1,6 +1,29 @@
+<script lang="ts">
+/**
+ * The dialogs that are open right now, oldest first, shared by every instance.
+ *
+ * Two dialogs can be open at once (one opened from the other, or two `show`s set together).
+ * Each one pulls stray focus back into itself, so with two enforcing it they fought over
+ * focus until the stack overflowed (review of PR 173, Vera 1). Only the NEWEST dialog
+ * enforces focus, handles Tab and answers Escape; an older one waits until it is on top.
+ * An entry is added on open and removed on close or unmount, so the list never outgrows the
+ * number of dialogs that are open.
+ */
+const openDialogs: OpenDialog[] = []
+
+/** What one open dialog lets the others ask of it. */
+interface OpenDialog {
+  /** Is keyboard focus inside this dialog right now? */
+  holdsFocus: () => boolean
+  /** Put focus back inside it (its safe action). */
+  refocus: () => void
+}
+</script>
+
 <script setup lang="ts">
-import { ref, watch, onMounted, onUnmounted } from 'vue'
+import { ref, computed, watch, nextTick, onMounted, onUnmounted, useId } from 'vue'
 import UiButton from './UiButton.vue'
+import { pageScrollLock } from '@/lib/ui/scrollLock.ts'
 
 const props = defineProps({
   show: { type: Boolean, default: false },
@@ -10,12 +33,44 @@ const props = defineProps({
   confirmLabel: { type: String, default: 'Confirm' },
   cancelLabel: { type: String, default: 'Cancel' },
   requireType: { type: String, default: '' }, // String user must type to confirm (e.g. "cancel")
-  variant: { type: String, default: 'danger' } // 'danger' | 'warning'
+  variant: { type: String, default: 'danger' }, // 'danger' | 'warning'
+  /**
+   * `centered` (the default) is the existing dialog: 440px, a tinted disc icon, centred text.
+   * `left` is the Manage Devices confirm (Figma D2, 754:242): 420px, a bare `!`, left-aligned
+   * text, a banner under the text, two equal buttons and a hint under them. Same component,
+   * same behaviour; only the look differs.
+   */
+  layout: {
+    type: String,
+    default: 'centered',
+    validator: (val: string) => ['centered', 'left'].includes(val)
+  },
+  /** A muted line under the buttons ("Esc keeps the device active."). */
+  hint: { type: String, default: '' },
+  /**
+   * Where focus goes when the dialog closes and whatever opened it is GONE from the page: a
+   * CSS selector for a stable element that can take focus (a heading with tabindex="-1", the
+   * list). Deactivating a device removes its row, and its Deactivate button with it; without
+   * this focus would drop to the page body and a keyboard user would start again from the top.
+   * Unused when the opener is still there.
+   */
+  fallbackFocus: { type: String, default: '' }
 })
 
 const emit = defineEmits(['confirm', 'cancel', 'update:show'])
 
 const typedValue = ref('')
+
+/** Anything but an exact `left` is the existing look. */
+const isLeft = computed(() => props.layout === 'left')
+
+/** The dialog names itself and its description for assistive technology. */
+const uid = useId()
+const titleId = `${uid}-title`
+const descId = `${uid}-desc`
+const typeId = `${uid}-type`
+
+const card = ref<HTMLElement | null>(null)
 
 const isConfirmDisabled = () => {
   if (props.requireType) {
@@ -36,47 +91,161 @@ const handleCancel = () => {
   emit('update:show', false)
 }
 
-const handleKeydown = (e: KeyboardEvent) => {
-  if (props.show && e.key === 'Escape') {
-    handleCancel()
+/*
+ * Modal behaviour (GAP-FILL 7a/7b, AUTH-LANDING-PAGES-HANDOFF 7.2 and 12): the safe action,
+ * Cancel, takes the initial focus; Tab and Shift+Tab stay inside the dialog; Escape is Cancel;
+ * the page behind does not scroll; and focus goes back to whatever opened the dialog.
+ */
+const FOCUSABLE =
+  'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+
+let opener: HTMLElement | null = null
+let releaseScroll: (() => void) | null = null
+
+const focusables = (): HTMLElement[] =>
+  card.value ? Array.from(card.value.querySelectorAll<HTMLElement>(FOCUSABLE)) : []
+
+const focusInitial = () => {
+  const cancel = card.value?.querySelector<HTMLElement>('.dialog-cancel')
+  ;(cancel ?? focusables()[0] ?? card.value)?.focus()
+}
+
+const me: OpenDialog = {
+  holdsFocus: () => !!card.value?.contains(document.activeElement),
+  refocus: focusInitial,
+}
+
+const isNewest = () => openDialogs[openDialogs.length - 1] === me
+
+const trapTab = (e: KeyboardEvent) => {
+  const items = focusables()
+  const first = items[0]
+  const last = items[items.length - 1]
+  if (!first || !last) {
+    e.preventDefault()
+    card.value?.focus()
+    return
   }
+  const active = document.activeElement
+  if (!card.value?.contains(active)) {
+    e.preventDefault()
+    ;(e.shiftKey ? last : first).focus()
+  } else if (e.shiftKey && active === first) {
+    e.preventDefault()
+    last.focus()
+  } else if (!e.shiftKey && active === last) {
+    e.preventDefault()
+    first.focus()
+  }
+}
+
+/** Focus that lands outside the dialog (a script, a click on the scrim) is brought back in. */
+const keepFocusInside = (e: FocusEvent) => {
+  if (!props.show || !isNewest()) return
+  if (card.value && e.target instanceof Node && !card.value.contains(e.target)) focusInitial()
+}
+
+const handleKeydown = (e: KeyboardEvent) => {
+  if (!props.show || !isNewest()) return
+  if (e.key === 'Escape') handleCancel()
+  else if (e.key === 'Tab') trapTab(e)
+}
+
+let engaged = false
+
+const engage = () => {
+  if (engaged) return
+  engaged = true
+  openDialogs.push(me)
+  // The page body is not an opener. It is what `activeElement` says when nothing was focused: a
+  // script opened the dialog, or a mouse click that does not focus a button (Safari and WebKit).
+  // Treating it as one would make the fallback focus below dead, because the body is never
+  // removed from the page.
+  const active = document.activeElement
+  opener = active instanceof HTMLElement && active !== document.body && active !== document.documentElement ? active : null
+  // The repo's reference-counted lock (the mobile nav sheet holds it too): two holders keep the
+  // page locked until BOTH let go, whichever order they close in, and the page's own inline
+  // overflow comes back exactly as it was.
+  releaseScroll = pageScrollLock.acquire()
+  document.addEventListener('focusin', keepFocusInside)
+  void nextTick(focusInitial)
+}
+
+const release = () => {
+  if (!engaged) return
+  engaged = false
+  const at = openDialogs.indexOf(me)
+  if (at !== -1) openDialogs.splice(at, 1)
+  document.removeEventListener('focusin', keepFocusInside)
+  releaseScroll?.()
+  releaseScroll = null
+  const back = opener
+  opener = null
+  // After the page has re-rendered: the confirm handler may remove the opener (a device's row)
+  // in this same tick, and only then can it be told from one that is still there.
+  void nextTick(() => {
+    // Another dialog is still open (this one was the newest of two): focus belongs inside it, not
+    // behind it. With an opener that held focus the focus-in guard of the remaining dialog already
+    // pulls it back; with none (a script, a mouse in WebKit) nothing would, and focus would sit
+    // on the page body until the next Tab (review of PR 173, Quinn N1).
+    const remaining = openDialogs[openDialogs.length - 1]
+    if (back?.isConnected) back.focus()
+    else if (!remaining && props.fallbackFocus) {
+      try {
+        document.querySelector<HTMLElement>(props.fallbackFocus)?.focus()
+      } catch {
+        // A selector the browser cannot parse is the caller's mistake; closing the dialog must not
+        // throw because of it, so focus simply stays where the browser put it.
+      }
+    }
+    if (remaining && !remaining.holdsFocus()) remaining.refocus()
+  })
 }
 
 watch(() => props.show, (newVal) => {
   if (newVal) {
     typedValue.value = ''
+    engage()
+  } else {
+    release()
   }
 })
 
 onMounted(() => {
   window.addEventListener('keydown', handleKeydown)
+  if (props.show) engage()
 })
 
 onUnmounted(() => {
   window.removeEventListener('keydown', handleKeydown)
+  release()
 })
 </script>
 
 <template>
   <Teleport to="body">
     <Transition name="fade">
-      <div v-if="show" class="dialog-scrim" @click.self="handleCancel">
-        <div 
+      <div v-if="show" class="dialog-scrim" :class="{ 'layout-left': isLeft }" @click.self="handleCancel">
+        <div
+          ref="card"
           class="dialog-card"
           role="alertdialog"
           aria-modal="true"
-          :aria-label="title"
+          :aria-labelledby="titleId"
+          :aria-describedby="description ? descId : undefined"
+          tabindex="-1"
         >
-          <div class="dialog-icon-wrapper" :class="variant">
+          <div v-if="!isLeft" class="dialog-icon-wrapper" :class="variant">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="dialog-icon">
               <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
               <line x1="12" y1="9" x2="12" y2="13"/>
               <line x1="12" y1="17" x2="12.01" y2="17"/>
             </svg>
           </div>
+          <div v-else class="dialog-glyph" :class="variant" aria-hidden="true">!</div>
 
-          <h3 class="dialog-title">{{ title }}</h3>
-          <p v-if="description" class="dialog-desc">{{ description }}</p>
+          <h3 :id="titleId" class="dialog-title">{{ title }}</h3>
+          <p v-if="description" :id="descId" class="dialog-desc">{{ description }}</p>
 
           <ul v-if="consequences.length > 0" class="consequence-list">
             <li v-for="(item, idx) in consequences" :key="idx" class="consequence-item">
@@ -84,11 +253,16 @@ onUnmounted(() => {
             </li>
           </ul>
 
+          <div v-if="$slots.banner" class="dialog-banner">
+            <slot name="banner"></slot>
+          </div>
+
           <div v-if="requireType" class="type-confirm-wrapper">
-            <label class="type-label">
+            <label class="type-label" :for="typeId">
               Type <strong>"{{ requireType }}"</strong> to confirm:
             </label>
-            <input 
+            <input
+              :id="typeId"
               v-model="typedValue"
               type="text"
               class="type-input"
@@ -98,7 +272,7 @@ onUnmounted(() => {
           </div>
 
           <div class="dialog-actions">
-            <UiButton variant="ghost" @click="handleCancel">
+            <UiButton variant="ghost" class="dialog-cancel" @click="handleCancel">
               {{ cancelLabel }}
             </UiButton>
             <UiButton 
@@ -111,6 +285,8 @@ onUnmounted(() => {
               {{ confirmLabel }}
             </UiButton>
           </div>
+
+          <p v-if="hint" class="dialog-hint">{{ hint }}</p>
         </div>
       </div>
     </Transition>
@@ -278,5 +454,129 @@ onUnmounted(() => {
 @keyframes slideUp {
   from { transform: translateY(12px) scale(0.97); opacity: 0; }
   to { transform: translateY(0) scale(1); opacity: 1; }
+}
+.dialog-hint {
+  margin: 16px 0 0;
+  font-size: 12px;
+  line-height: 15px;
+  color: var(--sc-text-secondary);
+}
+
+/*
+ * layout="left": the Manage Devices confirm (Figma D2, 754:242). Everything here is opt-in;
+ * the dialogs above are untouched. 420px, --sc-elevated, padding 28/28/24/28, 16px between
+ * blocks; scrim --sc-base at 72% and no blur (none is drawn).
+ */
+.layout-left {
+  background: rgba(11, 13, 18, 0.72);
+  backdrop-filter: none;
+}
+
+.layout-left .dialog-card {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  max-width: 420px;
+  /* Figma measures the padding from the OUTER edge (28/28/24/28, content 364 wide); the 1px
+     border is inside that, so it comes off the padding. The buttons are then 177 wide each. */
+  padding: 27px 27px 23px;
+  background: var(--sc-elevated);
+  text-align: left;
+}
+
+.layout-left .dialog-title,
+.layout-left .dialog-desc,
+.layout-left .consequence-list,
+.layout-left .type-confirm-wrapper,
+.layout-left .dialog-hint {
+  margin: 0;
+}
+
+/* The bare `!` (30/700, no disc), in the variant's tone. */
+.dialog-glyph {
+  font-size: 30px;
+  font-weight: 700;
+  line-height: 36px;
+}
+
+.dialog-glyph.warning {
+  color: var(--sc-warn);
+}
+
+.dialog-glyph.danger {
+  color: var(--sc-live);
+}
+
+.layout-left .dialog-title {
+  font-size: 18px;
+  font-weight: 600;
+  line-height: 22px;
+}
+
+.layout-left .dialog-desc {
+  font-size: 14px;
+  line-height: 20px;
+}
+
+/*
+ * Two equal buttons. Cancel is the outline with the 1.5px brand ring; Confirm is the live
+ * red. 44px tall, not the drawn 41px: the handoff (section 12) and the responsive sweep both
+ * hold every target to 44.
+ *
+ * THE CONFIRM LABEL: Figma draws white on #ef4444, 3.76:1, which fails WCAG AA (audit
+ * account-31, class D: Uma chooses the accessible destructive button). The accessible dark
+ * ink stays until she does (--sc-base on --sc-live is 5.9:1). The fill and the ink are each
+ * one property, `--dialog-destructive-fill` and `--dialog-destructive-ink`, deliberately not
+ * declared here so that a line in tokens.css sets them. `!important` is the existing
+ * `.confirm-btn.danger` rule's own, which this has to outrank.
+ */
+.layout-left .dialog-actions {
+  gap: 10px;
+  justify-content: stretch;
+}
+
+.layout-left .dialog-actions > * {
+  flex: 1 1 0;
+  min-width: 0;
+  height: 44px;
+  min-height: 44px;
+  padding: 0 16px;
+  border-radius: 10px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.layout-left .dialog-actions .dialog-cancel {
+  border: 1.5px solid var(--sc-primary);
+  background: transparent;
+  color: var(--sc-text);
+}
+
+.layout-left .dialog-actions .dialog-cancel:hover {
+  background: var(--sc-accent-soft);
+}
+
+.layout-left .dialog-actions .confirm-btn {
+  /* the same border width as Cancel, so the two buttons are exactly the same width */
+  border: 1.5px solid transparent;
+  background: var(--dialog-destructive-fill, var(--sc-live)) !important;
+  color: var(--dialog-destructive-ink, var(--sc-base)) !important;
+}
+
+.layout-left .dialog-actions .confirm-btn:hover {
+  filter: brightness(1.08);
+}
+
+@media (max-width: 767.98px) {
+  .layout-left .dialog-card { padding: 24px 20px 20px; }
+  .layout-left .dialog-actions { flex-direction: row; }
+}
+
+/* Below 480px two buttons side by side stop fitting a longer label: stack them in DOM order,
+   so the safe action (Cancel, which has the initial focus) is on top and Tab runs downhill
+   to the destructive one. (The centred dialog still reverses its stack; it predates this.) */
+@media (max-width: 479.98px) {
+  .layout-left .dialog-actions { flex-direction: column; }
+  .layout-left .dialog-actions > * { flex: 0 0 auto; width: 100%; }
 }
 </style>

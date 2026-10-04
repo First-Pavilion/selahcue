@@ -18,7 +18,8 @@
     "test:legal-pages": "npm run build && python3 scripts/legal_pages_headless.py",
     "test:mirrors": "python3 scripts/service_text_reference.py",
     "test:states": "npm run build && python3 scripts/auth_pages_headless.py",
-    "test:responsive": "npm run build && python3 scripts/responsive_sweep.py"
+    "test:responsive": "npm run build && python3 scripts/responsive_sweep.py",
+    "test:components": "python3 scripts/shared_components_headless.py --engine both --require"
   },
   "dependencies": {
     "vue": "^3.5.43",
