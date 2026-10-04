@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { useId } from 'vue'
 import UiBadge from '@/components/UiBadge.vue'
 import UiButton from '@/components/UiButton.vue'
 import ConsoleMockup from '@/components/ConsoleMockup.vue'
@@ -9,96 +9,191 @@ import ReliabilityPillar from '@/components/ReliabilityPillar.vue'
 import PricingCard from '@/components/PricingCard.vue'
 import TestimonialCard from '@/components/TestimonialCard.vue'
 import FaqAccordion from '@/components/FaqAccordion.vue'
+import HomeIcon from '@/components/home/HomeIcon.vue'
 
-const isAnnual = ref(false)
+/*
+ * COPY. Figma frame 468:125 is the wording wherever the repo backs it. Where Figma claims more than the
+ * repo can show, the backed part is what ships (the ledger in docs/delivery/goals/17tnw2b2cex-figma-home.md
+ * lists each line and why; tests/homeView.test.ts pins it). Sentences no finding replaces are left exactly
+ * as they were: removing a claim the live page already makes is ClickUp 17tnw2b0x3h, not this change.
+ */
 
+/** Ties the disabled demo button to the sentence that says why (read after it in the page). */
+const demoNoteId = `${useId()}-demo-note`
+
+const features = [
+  {
+    icon: 'monitor',
+    title: 'Live presentation & outputs',
+    description: 'Stage scripture, songs, and slides in Preview, then Go Live to the audience — the output never blanks, even on a fault.'
+  },
+  {
+    icon: 'book',
+    title: 'Scripture at your fingertips',
+    description: 'A bundled public-domain Bible with instant reference parsing and keyword search.'
+  },
+  {
+    icon: 'list',
+    title: 'Service plans & timers',
+    description: 'Build the order of service, run countdowns, and keep every segment on time from the console or your phone.'
+  },
+  {
+    icon: 'layout',
+    title: 'Stage & confidence monitor',
+    description: "A dedicated speaker view — current line, what's next, and the service timer — that the audience never sees."
+  },
+  {
+    icon: 'radio',
+    title: 'NDI & multi-output',
+    description: 'Broadcast your program as an NDI source for OBS or vMix, with per-output orientation, scaling, mirror, and visible layers.'
+  },
+  {
+    icon: 'mic',
+    title: 'On-device transcript',
+    description: 'AI that assists but never gates: a live transcript and spoken-scripture suggestions, on your machine by default.'
+  }
+]
+
+const pillars = [
+  {
+    icon: 'shield-check',
+    title: 'Never blanks the screen',
+    description: 'No component failure — a bad slide, a lost GPU, a dropped controller — is ever allowed to black the live output.',
+    variant: 'primary'
+  },
+  {
+    icon: 'wifi-off',
+    title: 'Works fully offline',
+    description: 'Every core live control works with no internet and no cloud dependency during the service. It just works.',
+    variant: 'preview'
+  },
+  {
+    icon: 'zap',
+    title: 'Fast & bounded',
+    description: 'Starts fast and keeps memory bounded. No runaway caches, no creeping slowdown.',
+    variant: 'warn'
+  }
+]
+
+const outputChecks = [
+  'Audience projector — the program the room sees',
+  'Stage display — current, next & timer, for the speaker only',
+  'NDI output — broadcast to OBS, vMix, or another machine'
+]
+
+const steps = [
+  {
+    title: 'Plan your service',
+    description: 'Add songs, scripture, and sections to the order of service. Set countdowns and give any item its own theme.'
+  },
+  {
+    title: 'Go live with one tap',
+    description: 'Stage the next item in Preview, then Go Live. The audience, stage, and NDI outputs all update together.'
+  },
+  {
+    title: 'Control from anywhere',
+    description: 'Drive it from the console — or pair your phone over the local network. No internet needed.'
+  }
+]
+
+/*
+ * `to` is only set where a real destination exists. Free goes to /download, which says honestly that
+ * nothing downloads yet (the hero and navbar buttons already go there; the owner keeps the label
+ * "Download free"). Pro and Church have none, so PricingCard shows its disabled "Not available yet" state:
+ *  - Pro: no billing exists.
+ *  - Church: /contact is not a real destination. It waits 800 ms, says "Message Received ... we will
+ *    respond within 24 hours" and sends nothing (audit contact-04, 06, 07; ClickUp 17tnw2b0x3h), so it
+ *    would collect a visitor's details under a false promise. Church gets `to: '/contact'` back once that
+ *    form really sends (the same answer as Pricing, PR 178).
+ * The price, `/ month` and MOST POPULAR are as they were (audit home-33; removal is 17tnw2b0x3h).
+ */
 const pricingPlans = [
   {
     name: 'Free',
     price: 0,
-    period: 'month',
-    description: 'Everything your church needs to start presenting',
+    period: 'forever',
+    description: 'Everything to run a service on one machine.',
     features: [
-      '1 Venue Device seat',
-      'Bundled Public Domain Bibles',
-      'Basic service plan run-sheet',
-      'Single display projector output'
+      'Live audience output + stage display',
+      'Bundled public-domain scripture + search',
+      'Service plans, timers & themes'
     ],
     cta: 'Download free',
-    popular: false
+    popular: false,
+    to: '/download'
   },
   {
     name: 'Pro',
     price: 19,
     period: 'month',
-    description: 'For churches requiring NDI, stage monitors, and multi-output',
+    description: 'For multi-output and streaming churches.',
     features: [
-      'Up to 5 Venue Device seats',
-      'Licensed Bible Entitlements',
-      'NDI 5 direct broadcast streaming',
-      'Stage confidence monitor & timers',
-      'Mobile controller pairing over LAN'
+      'Everything in Free',
+      'NDI + multiple simultaneous outputs',
+      'Mobile control over your local network'
     ],
     cta: 'Get Pro',
-    popular: true
+    popular: true,
+    to: undefined
   },
   {
     name: 'Church',
     price: 'Custom',
     period: '',
-    description: 'For multi-campus ministries and large enterprises',
+    description: 'For multi-site teams and larger ministries.',
     features: [
-      'Unlimited Venue Device seats',
-      'Multi-campus organization',
-      'Custom Bible entitlement SLAs',
-      'Dedicated Solutions Architect'
+      'Everything in Pro',
+      'Multi-campus / site licensing'
     ],
     cta: 'Talk to us',
-    popular: false
+    popular: false,
+    to: undefined
   }
 ]
 
+/* The quotes, names and churches are as they were (audit home-36: removal is 17tnw2b0x3h). */
 const testimonials = [
   {
     quote: "SelahCue changed how our tech team operates on Sunday. The volunteer onboarding time dropped to zero, and the platform is rock-solid.",
     author: "Sarah Jenkins",
-    role: "Worship Director @ Grace Community",
+    role: "Worship Director · Grace Community",
     color: "blue"
   },
   {
     quote: "We finally have a presentation tool that works 100% offline. No more Sunday morning panic when the church internet backhaul fails.",
     author: "Mark Davis",
-    role: "Technical Director @ Redeemer Church",
+    role: "Technical Director · Redeemer Church",
     color: "green"
   },
   {
     quote: "The stage confidence monitor and built-in countdown timers keep our pastors and worship leaders synchronized throughout every service.",
     author: "Pastor Paul Miller",
-    role: "Lead Pastor @ Hope Chapel",
+    role: "Lead Pastor · Hope Chapel",
     color: "amber"
   }
 ]
 
+/* The platforms answer is as it was until Uma redraws it (audit home-38, 40 and 45). */
 const faqItems = [
-  { 
-    question: 'Does SelahCue work fully offline on Sunday morning?', 
-    answer: 'Yes! SelahCue is built desktop-authoritative and offline-first. All core features—scripture search, song slides, service plans, stage monitors, and NDI outputs—run 100% locally on your venue hardware without requiring an internet connection.' 
+  {
+    question: 'Do I need an internet connection?',
+    answer: 'No. SelahCue is offline-first — every core live control works with no internet, so a dropped connection never stops the service.'
   },
-  { 
-    question: 'What platforms and operating systems are supported?', 
-    answer: 'SelahCue supports Windows 10/11 (64-bit) and macOS 12+ (Apple Silicon & Intel). Additionally, you can pair any iOS or Android phone over your local Wi-Fi network to control slides remotely.' 
+  {
+    question: 'Which platforms are supported?',
+    answer: 'SelahCue supports Windows 10/11 (64-bit) and macOS 12+ (Apple Silicon & Intel). Additionally, you can pair any iOS or Android phone over your local Wi-Fi network to control slides remotely.'
   },
-  { 
-    question: 'How do copyrighted Bible translation entitlements work?', 
-    answer: 'Public-domain Bibles (WEB, ASV, BSB) are bundled for unlimited use right out of the box. Copyrighted translations (NIV, ESV, NLT) are granted via post-activation entitlement and downloaded to an encrypted local store on your venue hardware.' 
+  {
+    question: 'Can I use my own songs, slides, and designs?',
+    answer: 'Yes. Build multi-slide song lyrics, stage any scripture, and design your own slide templates in the Theme Designer.'
   },
-  { 
-    question: 'Does SelahCue support NDI streaming to OBS and vMix?', 
-    answer: 'Yes! SelahCue includes native NDI 5 broadcast output support, allowing you to stream transparent lower-third lyrics and sermon notes directly to OBS, vMix, Wirecast, or hardware video switchers.' 
+  {
+    question: 'What is NDI, and do I need it?',
+    answer: "NDI sends your program video over the local network to software like OBS or vMix — no capture card required. It's optional."
   },
-  { 
-    question: 'How does billing work and can I cancel anytime?', 
-    answer: 'Our Free tier is free forever. Pro subscriptions can be billed monthly or annually (save 20%). You can upgrade, downgrade, or cancel anytime from your account portal, and your software will continue running offline on Sunday.' 
+  {
+    question: 'How does billing work?',
+    answer: 'SelahCue Pro is a simple monthly subscription; the Free plan is free forever. Cancel anytime — and the app keeps running fully offline during your service either way.'
   }
 ]
 </script>
@@ -107,10 +202,10 @@ const faqItems = [
   <div class="home">
     <!-- Section 1: Hero -->
     <section class="hero-section">
-      <div class="hero-bg-glow"></div>
+      <div class="hero-bg-glow" aria-hidden="true"></div>
       <div class="container hero-content">
         <div class="hero-eyebrow">
-          <span class="sparkle">✨</span>
+          <span class="brand-mark"><img src="/selahcue-logo.png" alt="" aria-hidden="true" /></span>
           <span>Church presentation, reengineered</span>
         </div>
 
@@ -124,21 +219,25 @@ const faqItems = [
         </p>
 
         <div class="hero-actions">
-          <UiButton variant="gradient" size="lg" to="/download">
+          <UiButton variant="primary" size="lg" to="/download">
             Download free
           </UiButton>
-          <UiButton variant="outline" size="lg" href="#demo">
-            Watch 2-min demo
-          </UiButton>
+          <!-- The demo video does not exist yet (audit home-18). It was a link to #demo, which did nothing. The
+               owner's decision (2026-10-04): keep the button, disabled, with the reason VISIBLE, as the Pro
+               plan's "Not available yet" is, and described to assistive technology by the same note. -->
+          <div class="demo-action">
+            <UiButton variant="secondary" size="lg" disabled :aria-describedby="demoNoteId">
+              <HomeIcon class="demo-play" name="play" :size="11" />
+              Watch 2-min demo
+            </UiButton>
+            <span :id="demoNoteId" class="demo-note">Demo video not available yet</span>
+          </div>
         </div>
 
-        <p class="hero-trust">
-          <span>Free to start</span>
-          <span class="dot">&middot;</span>
-          <span>Works fully offline</span>
-          <span class="dot">&middot;</span>
-          <span>Windows, macOS &amp; mobile control</span>
-        </p>
+        <!-- One text node, as Figma draws it. Inside an item every space is a non-breaking one and the two spaces
+             either side of a dot are non-breaking too except the last, which is the place a narrow phone breaks:
+             between items, never inside one ("Free to start · Works fully / offline · ..." is what a plain space did). -->
+        <p class="hero-trust">Free&nbsp;to&nbsp;start&nbsp;&nbsp;&middot;&nbsp; Works&nbsp;fully&nbsp;offline&nbsp;&nbsp;&middot;&nbsp; Windows,&nbsp;macOS&nbsp;&amp;&nbsp;mobile&nbsp;control</p>
 
         <!-- Product Window Mockup -->
         <div class="hero-mockup-frame">
@@ -151,41 +250,18 @@ const faqItems = [
     <section class="features-section">
       <div class="container">
         <div class="section-header">
-          <UiBadge variant="accent" size="sm">FEATURES</UiBadge>
+          <UiBadge variant="eyebrow">FEATURES</UiBadge>
           <h2 class="section-title">Everything you need to run the service</h2>
-          <p class="section-subtitle">All the tools you need to run a seamless service, built into one reliable application.</p>
+          <p class="section-subtitle">One app for the whole ministry moment — from planning the order of service to the last slide, on stage and online.</p>
         </div>
 
         <div class="features-grid">
-          <FeatureCard 
-            icon="📊" 
-            title="Live presentation & outputs" 
-            description="Real-time multi-screen output with a zero-blank hardware buffer guarantee." 
-          />
-          <FeatureCard 
-            icon="📖" 
-            title="Scripture at your fingertips" 
-            description="Built-in WEB Bible with instant verse-by-verse reference lookup and quick search." 
-          />
-          <FeatureCard 
-            icon="📋" 
-            title="Service plans & timers" 
-            description="Bounded run-sheet planning with automated stage countdown timers and TIME UP alerts." 
-          />
-          <FeatureCard 
-            icon="🖥️" 
-            title="Stage & confidence monitor" 
-            description="Dedicated stage display showing current lyrics, next slide, presenter notes, and service clocks." 
-          />
-          <FeatureCard 
-            icon="📡" 
-            title="NDI & multi-output" 
-            description="Direct NDI 5 broadcast streams to OBS, vMix, and Wirecast with transparent lower thirds." 
-          />
-          <FeatureCard 
-            icon="🎤" 
-            title="On-device transcript" 
-            description="100% offline speech-to-text powered by local Whisper AI without relying on cloud services." 
+          <FeatureCard
+            v-for="feature in features"
+            :key="feature.title"
+            :icon="feature.icon"
+            :title="feature.title"
+            :description="feature.description"
           />
         </div>
       </div>
@@ -195,32 +271,20 @@ const faqItems = [
     <section class="reliability-section">
       <div class="container">
         <div class="section-header">
-          <UiBadge variant="accent" size="sm">RELIABILITY</UiBadge>
-          <h2 class="section-title">Built for the one moment you can't repeat</h2>
-          <p class="section-subtitle">Core engineering guarantees designed for live Sunday worship environments.</p>
+          <UiBadge variant="eyebrow">WHY SELAHCUE</UiBadge>
+          <!-- Figma draws the break after "moment" (two lines of 760px); phones let it wrap. -->
+          <h2 class="section-title is-reliability">Built for the one moment <br />you can't repeat</h2>
+          <p class="section-subtitle">Sunday morning doesn't wait for a spinning cursor. SelahCue is engineered so the audience output is always up — reliable, offline, and fast.</p>
         </div>
 
         <div class="reliability-grid">
-          <ReliabilityPillar 
-            icon="⚡" 
-            title="Never blanks the screen" 
-            description="Hardware frame buffer holds the last-good image if any output glitches (NFR-024)." 
-            metric="0 Blanks" 
-            variant="primary"
-          />
-          <ReliabilityPillar 
-            icon="📶" 
-            title="Works fully offline" 
-            description="100% local presentation engine. Internet backhaul drops will never stop your service (NFR-015)." 
-            metric="100% Offline" 
-            variant="preview"
-          />
-          <ReliabilityPillar 
-            icon="⚡" 
-            title="Fast & bounded" 
-            description="≤3s cold start, capped GPU memory usage, and zero lag when triggering live slides." 
-            metric="≤3s Start" 
-            variant="warn"
+          <ReliabilityPillar
+            v-for="pillar in pillars"
+            :key="pillar.title"
+            :icon="pillar.icon"
+            :title="pillar.title"
+            :description="pillar.description"
+            :variant="pillar.variant"
           />
         </div>
       </div>
@@ -231,24 +295,17 @@ const faqItems = [
       <div class="container">
         <div class="outputs-layout">
           <div class="outputs-content">
-            <UiBadge variant="accent" size="sm">SCREENS &amp; OUTPUTS</UiBadge>
-            <h2 class="outputs-title">One live moment, every output</h2>
+            <UiBadge variant="eyebrow">SCREENS &amp; OUTPUTS</UiBadge>
+            <!-- Figma breaks after "moment," (two lines of 470px); phones let it wrap. -->
+            <h2 class="outputs-title">One live moment, <br />every output</h2>
             <p class="outputs-body">
-              Send clean lyrics to your main venue projectors, custom current/next slides to stage monitors, and transparent lower thirds to your livestream switcher — all simultaneously from one seat.
+              Send the same live content to your projector, a stage confidence monitor, and an NDI stream — each with its own theme, orientation, scaling, and visible layers.
             </p>
 
             <ul class="outputs-checklist">
-              <li class="checklist-item">
-                <span class="check-icon">✓</span>
-                <span><strong>Audience projector</strong> &middot; Full 4K resolution, clean typography, motion backgrounds</span>
-              </li>
-              <li class="checklist-item">
-                <span class="check-icon">✓</span>
-                <span><strong>Stage display (current/next/timer)</strong> &middot; Current slide, next item preview, countdown clock</span>
-              </li>
-              <li class="checklist-item">
-                <span class="check-icon">✓</span>
-                <span><strong>NDI output to OBS / vMix / Wirecast</strong> &middot; Direct IP feed with alpha channel transparency</span>
+              <li v-for="check in outputChecks" :key="check" class="checklist-item">
+                <HomeIcon class="check-icon" name="check" :size="18" :stroke="1.8" />
+                <span>{{ check }}</span>
               </li>
             </ul>
           </div>
@@ -260,32 +317,23 @@ const faqItems = [
       </div>
     </section>
 
-    <!-- Section 5: How It Works (3 Steps) -->
-    <section class="steps-section">
+    <!-- Section 5: How It Works (3 Steps). The id is the target of the navbar's "How it works" link
+         (/#how-it-works) from every page; main.css gives it its scroll offset under the sticky bar. -->
+    <section id="how-it-works" class="steps-section">
       <div class="container">
         <div class="section-header">
-          <UiBadge variant="accent" size="sm">HOW IT WORKS</UiBadge>
+          <UiBadge variant="eyebrow">HOW IT WORKS</UiBadge>
           <h2 class="section-title">Live in three steps</h2>
-          <p class="section-subtitle">Designed for volunteer simplicity without sacrificing professional control.</p>
+          <p class="section-subtitle">From an empty plan to a running service in minutes — no manual, no setup weekend.</p>
         </div>
 
-        <div class="steps-grid">
-          <div class="step-card">
-            <div class="step-icon-box">01</div>
-            <h3>Plan your service</h3>
-            <p>Import songs, search scripture, add media, and set countdown timer thresholds in minutes.</p>
-          </div>
-          <div class="step-card">
-            <div class="step-icon-box green">02</div>
-            <h3>Go live with one tap</h3>
-            <p>Stage content safely in Preview before sending to Live with a single click or keyboard shortcut.</p>
-          </div>
-          <div class="step-card">
-            <div class="step-icon-box">03</div>
-            <h3>Control from anywhere</h3>
-            <p>Drive slides from the desktop operator console or pair any mobile phone over local Wi-Fi.</p>
-          </div>
-        </div>
+        <ol class="steps-grid" role="list">
+          <li v-for="(step, index) in steps" :key="step.title" class="step-card">
+            <span class="step-marker" aria-hidden="true">{{ index + 1 }}</span>
+            <h3 class="step-title">{{ step.title }}</h3>
+            <p class="step-body">{{ step.description }}</p>
+          </li>
+        </ol>
       </div>
     </section>
 
@@ -293,14 +341,14 @@ const faqItems = [
     <section class="pricing-section">
       <div class="container">
         <div class="section-header">
-          <UiBadge variant="accent" size="sm">PRICING</UiBadge>
+          <UiBadge variant="eyebrow">PRICING</UiBadge>
           <h2 class="section-title">Simple pricing. Cancel anytime.</h2>
-          <p class="section-subtitle">Start free, upgrade when your church is ready, cancel anytime. Billed monthly or save 20% annually.</p>
+          <p class="section-subtitle">Start free, upgrade when you're ready, and cancel anytime — it still runs fully offline on Sunday.</p>
         </div>
 
         <div class="pricing-grid">
-          <PricingCard 
-            v-for="plan in pricingPlans" 
+          <PricingCard
+            v-for="plan in pricingPlans"
             :key="plan.name"
             :name="plan.name"
             :price="plan.price"
@@ -309,7 +357,7 @@ const faqItems = [
             :features="plan.features"
             :cta="plan.cta"
             :popular="plan.popular"
-            :annual="isAnnual"
+            :to="plan.to"
           />
         </div>
       </div>
@@ -319,17 +367,17 @@ const faqItems = [
     <section class="testimonials-section">
       <div class="container">
         <div class="section-header">
-          <UiBadge variant="accent" size="sm">TESTIMONIALS</UiBadge>
-          <h2 class="section-title">Run by volunteers. Trusted on Sunday.</h2>
+          <UiBadge variant="eyebrow">TESTIMONIALS</UiBadge>
+          <h2 class="section-title is-compact">Run by volunteers. Trusted on Sunday.</h2>
         </div>
 
         <div class="testimonials-grid">
-          <TestimonialCard 
-            v-for="t in testimonials" 
+          <TestimonialCard
+            v-for="t in testimonials"
             :key="t.author"
-            :quote="t.quote" 
-            :author="t.author" 
-            :role="t.role" 
+            :quote="t.quote"
+            :author="t.author"
+            :role="t.role"
             :avatarColor="t.color"
           />
         </div>
@@ -340,7 +388,7 @@ const faqItems = [
     <section class="faq-section">
       <div class="container">
         <div class="section-header">
-          <h2 class="section-title">Questions, answered</h2>
+          <h2 class="section-title is-compact">Questions, answered</h2>
         </div>
 
         <div class="faq-wrapper">
@@ -358,8 +406,8 @@ const faqItems = [
             Start free and go live this Sunday. Cancel anytime — and it runs fully offline when it matters most.
           </p>
           <div class="cta-btn-group">
-            <UiButton variant="ghost" size="lg" class="cta-btn-white" to="/download">Download free</UiButton>
-            <UiButton variant="outline" size="lg" to="/pricing">View pricing</UiButton>
+            <UiButton variant="inverse" size="lg" to="/download">Download free</UiButton>
+            <UiButton variant="inverse-outline" size="lg" to="/pricing">See pricing</UiButton>
           </div>
         </div>
       </div>
@@ -368,57 +416,77 @@ const faqItems = [
 </template>
 
 <style scoped>
-/* No `overflow-x: hidden` here any more. It used to paper over the oversized glow below
-   (and anything else that ever overflowed), which also hid real clipping bugs from the
-   responsive sweep. The glow is contained by the hero itself, and every grid track is
-   `minmax(0, 1fr)` so content can never widen a column. */
+/*
+ * The page ground is the body's (--sc-base); each section sits on it, and Reliability and Testimonials
+ * are full-width panel bands. The content column is the shared `.container` (main.css: 1248 of content
+ * at 96px gutters, stepping to 48 and 20), not a local rule: the local one was 1092 wide and overrode it.
+ *
+ * No `overflow-x: hidden` here: it would hide real clipping bugs from the responsive sweep. The glow is
+ * contained by the hero itself, and every grid track is `minmax(0, 1fr)` so content can never widen a
+ * column.
+ */
 .home {
-  background: #090a0f;
-  color: #ffffff;
+  color: var(--sc-text);
+  /* The accessible light indigo for small brand text on a dark pill: Figma's #5b6bd6 is 3.7:1 there
+     (audit home-15, class B; home-44, class D: Uma picks the final tint). 9.6:1 on the hero pill. */
+  --home-brand-ink: #a5b4fc;
 }
 
-.container {
-  max-width: 1140px;
-  margin: 0 auto;
-  padding: 0 var(--page-gutter);
-}
-
+/*
+ * Section headers (Figma 472:125 and its siblings): eyebrow, title and subtitle, centred, 14px apart
+ * (15 on Reliability, 13 on Testimonials), then a gap to the content that is different in every
+ * section (48 / 52 / 50 / 48 / 46 / 40). Each section declares its own numbers in custom properties.
+ */
 .section-header {
-  text-align: center;
-  max-width: 720px;
-  margin: 0 auto 56px auto;
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 12px;
+  gap: var(--header-gap-inner, 14px);
+  max-width: 760px;
+  margin: 0 auto var(--header-gap, 48px);
+  text-align: center;
 }
 
 .section-title {
-  font-size: 38px;
-  font-weight: 800;
-  color: #ffffff;
-  line-height: 1.2;
   margin: 0;
-  letter-spacing: -0.01em;
+  font-size: 40px;
+  font-weight: 700;
+  /* Figma's titles are 46px tall, except How it works and Pricing, which have no fixed line height and
+     measure 48 (the section sets --title-lh). */
+  line-height: var(--title-lh, 46px);
+  letter-spacing: 0;
+  color: var(--sc-text);
+}
+
+/* Reliability's title is the handoff's H2 token (42/48). */
+.section-title.is-reliability {
+  font: var(--font-h2);
+}
+
+/* Testimonials and FAQ draw a 38px title. */
+.section-title.is-compact {
+  font-size: 38px;
 }
 
 .section-subtitle {
-  font-size: 16px;
-  color: #8c97a8;
-  line-height: 1.6;
   margin: 0;
+  max-width: var(--sub-width, 640px);
+  font-size: 18px;
+  line-height: 27px;
+  color: var(--sc-text-secondary);
 }
 
-/* Section 1: Hero */
+/* Section 1: Hero (Figma 469:124: padding 96 / 72, 26px between the blocks) */
 .hero-section {
   position: relative;
-  padding: 90px 0 80px 0;
+  padding: 96px 0 72px;
   text-align: center;
   /* Clip the glow at the top edge of the page (as the old page-wide overflow did) without
      creating a scroll container, and without clipping the mockup's drop shadow below. */
   clip-path: inset(0 0 -120px 0);
 }
 
+/* Not drawn in Figma (audit home-19, class D: Uma decides whether it stays). Kept as it was. */
 .hero-bg-glow {
   position: absolute;
   top: -100px;
@@ -428,7 +496,7 @@ const faqItems = [
      ever overflowed here, and clipping it with overflow:hidden would hide real bugs too. */
   width: min(900px, 100%);
   height: 600px;
-  background: radial-gradient(circle at center, rgba(110, 92, 240, 0.15) 0%, transparent 70%);
+  background: radial-gradient(circle at center, color-mix(in srgb, var(--sc-primary) 15%, transparent) 0%, transparent 70%);
   pointer-events: none;
   z-index: 0;
 }
@@ -439,224 +507,266 @@ const faqItems = [
   display: flex;
   flex-direction: column;
   align-items: center;
+  gap: 26px;
 }
 
+/* Figma 469:125: a 32px pill (darkened ground, darkened edge) with the 18px logo mark and 12.5/600 words.
+   Figma measures padding from the OUTER edge, so the 1px border comes off it (7/16/7/14 becomes 6/15/6/13). */
 .hero-eyebrow {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  background: #141722;
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  padding: 6px 16px;
+  padding: 6px 15px 6px 13px;
+  line-height: 15px;
   border-radius: 999px;
-  font-size: 13px;
+  background: rgba(0, 0, 0, 0.1);
+  border: 1px solid rgba(0, 0, 0, 0.4);
+  font-size: 12.5px;
   font-weight: 600;
-  color: #a5b4fc;
-  margin-bottom: 24px;
+  letter-spacing: 0.01em;
+  color: var(--home-brand-ink);
 }
 
-.sparkle {
-  font-size: 12px;
+/* The 18px logo mark (Figma 494:132). A scoped rule, not a style attribute: a strict style-src would drop the
+   attribute and the mark would fall back to the 32px of the navbar. */
+.hero-eyebrow .brand-mark {
+  --mark-size: 18px;
 }
 
 .hero-title {
-  font-size: 58px;
-  font-weight: 800;
-  color: #ffffff;
-  line-height: 1.12;
-  letter-spacing: -0.02em;
-  max-width: 900px;
-  margin: 0 0 24px 0;
+  max-width: 920px;
+  margin: 0;
+  font: var(--font-h1);
+  letter-spacing: 0;
+  color: var(--sc-text);
 }
 
 .hero-subtitle {
-  font-size: 18px;
-  color: #8c97a8;
-  max-width: 780px;
-  line-height: 1.6;
-  margin: 0 0 36px 0;
+  max-width: 720px;
+  margin: 0;
+  font-size: 19px;
+  line-height: 29px;
+  color: var(--sc-text-secondary);
 }
 
+/* Centred, so the quiet 47px button is not stretched to the 49px solid one beside it (PR 172 review). */
 .hero-actions {
+  position: relative;
   display: flex;
-  gap: 16px;
+  align-items: center;
   justify-content: center;
-  margin-bottom: 20px;
+  gap: 14px;
+  padding-top: 8px;
+}
+
+.demo-action {
+  position: relative;
+}
+
+/* The reason the demo button is disabled, in plain sight under it. Taken out of the flow so the hero keeps
+   Figma's geometry (the row is 57px tall and the trust line sits 26px below it); there is room for one line
+   in that gap. On a phone it joins the column. */
+.demo-note {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 12px;
+  line-height: 14px;
+  color: var(--sc-text-secondary);
+  white-space: nowrap;
+}
+
+.demo-play {
+  /* The frame's gap between the glyph and the label is 9, the button's own is 8. */
+  margin-right: 1px;
 }
 
 .hero-trust {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  font-size: 14px;
-  color: #717d93;
-  margin-bottom: 60px;
-}
-
-.dot {
-  opacity: 0.5;
+  margin: 0;
+  font-size: 13.5px;
+  line-height: 16px;
+  letter-spacing: 0.005em;
+  color: var(--sc-text-secondary);
 }
 
 .hero-mockup-frame {
   width: 100%;
-  max-width: 1040px;
+  max-width: 1140px;
   margin: 0 auto;
 }
 
-/* Section 2: Features */
+/* Section 2: Features (Figma 472:124: 88px, header gap 48, cards 20 apart) */
 .features-section {
-  padding: var(--section-pad) 0;
+  padding-block: var(--section-pad);
+  --header-gap: 48px;
+  --sub-width: 640px;
 }
 
 .features-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 24px;
+  gap: 20px;
 }
 
-/* Section 3: Reliability */
+/* Section 3: Reliability (Figma 474:124: a full-width panel band, 90px, header gap 52, cards 28 apart) */
+/* The band's 1px edge rules count towards Figma's 90: Figma draws the stroke inside the frame. */
 .reliability-section {
-  padding: var(--section-pad) 0;
+  padding-block: calc(var(--section-pad) + 1px);
+  background: var(--sc-surface);
+  border-block: 1px solid var(--sc-border);
+  --header-gap: 52px;
+  --header-gap-inner: 15px;
+  --sub-width: 660px;
 }
 
 .reliability-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 24px;
+  gap: 28px;
 }
 
-/* Section 4: Outputs Showcase */
+/* Section 4: Outputs Showcase (Figma 475:124: 90px, text 470 | window 706, 72 apart, centred) */
 .outputs-section {
-  padding: var(--section-pad) 0;
+  padding-block: calc(var(--section-pad) + 2px);
 }
 
 .outputs-layout {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 60px;
+  grid-template-columns: 470px minmax(0, 1fr);
+  gap: 72px;
   align-items: center;
 }
 
+.outputs-content {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 22px;
+  min-width: 0;
+}
+
 .outputs-title {
-  font-size: 38px;
-  font-weight: 800;
-  color: #ffffff;
-  margin: 16px 0;
-  line-height: 1.2;
+  margin: 0;
+  font-size: 40px;
+  font-weight: 700;
+  line-height: 46px;
+  letter-spacing: 0;
+  color: var(--sc-text);
 }
 
 .outputs-body {
-  font-size: 16px;
-  color: #8c97a8;
-  line-height: 1.6;
-  margin-bottom: 32px;
+  margin: 0;
+  font-size: 17px;
+  line-height: 26px;
+  color: var(--sc-text-secondary);
 }
 
 .outputs-checklist {
-  list-style: none;
-  padding: 0;
-  margin: 0;
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 13px;
+  width: 100%;
+  padding-top: 4px;
+  list-style: none;
+  margin: 0;
 }
 
 .checklist-item {
   display: flex;
-  align-items: flex-start;
-  gap: 12px;
+  align-items: center;
+  gap: 11px;
   font-size: 15px;
-  color: #8c97a8;
-  line-height: 1.5;
-}
-
-.checklist-item strong {
-  color: #ffffff;
+  line-height: 18px;
+  color: var(--sc-text);
 }
 
 .check-icon {
-  width: 22px;
-  height: 22px;
-  border-radius: 50%;
-  background: rgba(43, 182, 115, 0.15);
-  color: #2bb673;
-  font-size: 12px;
-  font-weight: 800;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-  margin-top: 2px;
+  color: var(--sc-preview);
 }
 
-/* Section 5: Steps */
+.outputs-visual {
+  min-width: 0;
+}
+
+/* Section 5: Steps (Figma 476:124: 88px, header gap 50, cards 28 apart) */
 .steps-section {
-  padding: var(--section-pad) 0;
+  padding-block: var(--section-pad);
+  --title-lh: 48px;
+  --header-gap: 50px;
+  --sub-width: 600px;
 }
 
 .steps-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 24px;
+  gap: 28px;
 }
 
 .step-card {
-  background: #12151e;
-  border: 1px solid rgba(255, 255, 255, 0.07);
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 16px;
+  /* Figma's 30/28 is measured from the outer edge: the 1px border comes off it. */
+  padding: 29px 27px;
+  background: var(--sc-surface);
+  border: 1px solid var(--sc-border);
   border-radius: 16px;
-  padding: 32px 28px;
 }
 
-.step-icon-box {
-  width: 44px;
-  height: 44px;
-  border-radius: 10px;
-  background: rgba(110, 92, 240, 0.15);
-  border: 1px solid rgba(110, 92, 240, 0.3);
-  color: #a5b4fc;
-  font-weight: 800;
-  font-size: 16px;
+/* Figma 476:131: a 46px brand circle holding a white 21/700 numeral, the same on all three. */
+.step-marker {
   display: flex;
   align-items: center;
   justify-content: center;
-  margin-bottom: 20px;
-}
-
-.step-icon-box.green {
-  background: rgba(43, 182, 115, 0.15);
-  border: 1px solid rgba(43, 182, 115, 0.3);
-  color: #2bb673;
-}
-
-.step-card h3 {
-  font-size: 18px;
+  width: 46px;
+  height: 46px;
+  border-radius: 999px;
+  background: var(--sc-primary);
+  /* Pure white on the brand fill (4.7:1). */
+  color: #fff;
+  font-size: 21px;
   font-weight: 700;
-  color: #ffffff;
-  margin: 0 0 10px 0;
+  line-height: 25px;
 }
 
-.step-card p {
-  font-size: 14px;
-  color: #8c97a8;
-  line-height: 1.6;
+.step-title {
   margin: 0;
+  font: var(--font-h3);
+  line-height: 25px;
+  color: var(--sc-text);
 }
 
-/* Section 6: Pricing */
+.step-body {
+  margin: 0;
+  font-size: 15px;
+  line-height: 23px;
+  color: var(--sc-text-secondary);
+}
+
+/* Section 6: Pricing (Figma 477:124: 90px, header gap 48, cards 24 apart) */
 .pricing-section {
-  padding: var(--section-pad) 0;
+  padding-block: calc(var(--section-pad) + 2px);
+  --title-lh: 48px;
+  --header-gap: 48px;
+  --sub-width: 620px;
 }
 
 .pricing-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 24px;
-  align-items: stretch;
+  align-items: start;
 }
 
-/* Section 7: Testimonials */
+/* Section 7: Testimonials (Figma 478:124: a full-width panel band, 90px, header gap 46, cards 24 apart) */
 .testimonials-section {
-  padding: var(--section-pad) 0;
+  padding-block: calc(var(--section-pad) + 1px);
+  background: var(--sc-surface);
+  border-block: 1px solid var(--sc-border);
+  --header-gap: 46px;
+  --header-gap-inner: 13px;
 }
 
 .testimonials-grid {
@@ -665,62 +775,91 @@ const faqItems = [
   gap: 24px;
 }
 
-/* Section 8: FAQ */
+/* Section 8: FAQ (Figma 478:153: 90px, header gap 40, a 780px list) */
 .faq-section {
-  padding: var(--section-pad) 0;
+  padding-block: calc(var(--section-pad) + 2px);
+  --header-gap: 40px;
 }
 
 .faq-wrapper {
-  max-width: 800px;
+  max-width: 780px;
   margin: 0 auto;
 }
 
-/* Section 9: Final CTA Band */
+/*
+ * The shared accordion draws 17/600 questions, 15/1.6 answers and a 24px gap between an open question
+ * and its answer; Figma 478:155 draws 18/600, 15.5/24 and 10px. Pricing draws the same rows, so the
+ * proper home for this is FaqAccordion's defaults (a shared file, reported rather than edited here);
+ * until then the page skins it.
+ */
+.faq-wrapper :deep(.faq-question) {
+  font-size: 18px;
+}
+
+.faq-wrapper :deep(.faq-item.open .faq-question) {
+  padding-bottom: 10px;
+}
+
+.faq-wrapper :deep(.faq-answer p) {
+  font-size: 15.5px;
+  line-height: 24px;
+}
+
+/* Section 9: Final CTA Band (Figma 479:124: 90px; the card 1248 wide, radius 24, gradient, no shadow) */
 .final-cta-section {
-  padding: 40px 0 var(--section-pad) 0;
+  padding-block: calc(var(--section-pad) + 2px);
 }
 
 .final-cta-card {
-  background: linear-gradient(135deg, #4f46e5 0%, #312e81 100%);
-  border-radius: 24px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 22px;
   padding: 64px 48px;
+  border-radius: 24px;
+  background: var(--gradient-cta);
   text-align: center;
-  box-shadow: 0 25px 60px rgba(79, 70, 229, 0.3);
 }
 
+/* Pure white on the gradient: the handoff's second non-token colour (section 3). */
 .cta-title {
-  font-size: 40px;
-  font-weight: 800;
-  color: #ffffff;
-  margin: 0 0 16px 0;
+  max-width: 760px;
+  margin: 0;
+  font-size: 44px;
+  font-weight: 700;
+  line-height: 50px;
+  letter-spacing: 0;
+  color: #fff;
 }
 
+/* White, not Figma's #dbe0fa: that is 3.6:1 on the lightest end of the gradient and 4.2:1 where the copy
+   sits on a phone; white is 4.7:1 or better everywhere (class B, flagged to Uma). */
 .cta-subtitle {
-  font-size: 18px;
-  color: rgba(255, 255, 255, 0.85);
-  max-width: 680px;
-  margin: 0 auto 36px auto;
-  line-height: 1.6;
+  max-width: 600px;
+  margin: 0;
+  font-size: 19px;
+  line-height: 28px;
+  color: #fff;
 }
 
 .cta-btn-group {
   display: flex;
-  gap: 16px;
+  align-items: center;
   justify-content: center;
-}
-
-.cta-btn-white {
-  background: #ffffff !important;
-  color: #312e81 !important;
-  font-weight: 700;
+  gap: 14px;
+  padding-top: 10px;
 }
 
 /* Tablet (768-1199): grids go 2-up (a third card wraps), pricing goes 1-up with the Pro
    card first, the outputs image drops below its text, and the H1 steps down (design 8a/8d). */
 @media (max-width: 1199.98px) {
-  .hero-title { font-size: 48px; line-height: 52px; }
-  .section-header { margin-bottom: 44px; }
-  .section-title, .outputs-title { font-size: 34px; }
+  .section-title,
+  .section-title.is-reliability,
+  .section-title.is-compact,
+  .outputs-title {
+    font-size: 34px;
+    line-height: 40px;
+  }
   .features-grid, .reliability-grid, .steps-grid, .testimonials-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -736,35 +875,51 @@ const faqItems = [
   }
   .hero-section { padding: 72px 0 64px; }
   .final-cta-card { padding: 56px 40px; }
+  .cta-title { font-size: 38px; line-height: 44px; }
 }
 
 /* Mobile (<768): everything 1-up, 20px gutters, H1 36/40, CTAs stack full-width. */
 @media (max-width: 767.98px) {
   .hero-section { padding: 48px 0 48px; }
-  .hero-eyebrow { margin-bottom: 20px; }
-  .hero-title { font-size: 36px; line-height: 40px; margin-bottom: 20px; }
+  .hero-content { gap: 20px; }
   /* The designed line break leaves an orphaned "with" on its own line at phone widths. */
-  .hero-title br { display: none; }
-  .hero-subtitle { font-size: 16px; margin-bottom: 28px; }
-  .hero-actions { flex-direction: column; align-self: stretch; margin-bottom: 20px; }
-  .hero-actions > * { width: 100%; }
-  .hero-trust { flex-direction: column; gap: 4px; margin-bottom: 40px; font-size: 13px; }
-  .hero-trust .dot { display: none; }
+  .hero-title br,
+  .section-title br,
+  .outputs-title br { display: none; }
+  .hero-subtitle { font-size: 16px; line-height: 26px; }
+  .hero-actions { flex-direction: column; align-self: stretch; padding-top: 0; }
+  .hero-actions > .ui-button,
+  .hero-actions > .demo-action,
+  .demo-action .ui-button { width: 100%; }
+  .demo-note {
+    position: static;
+    display: block;
+    margin-top: 8px;
+    transform: none;
+    text-align: center;
+    white-space: normal;
+  }
+  .hero-trust { font-size: 13px; line-height: 18px; text-wrap: balance; }
   .section-header { margin-bottom: 32px; }
-  .section-title, .outputs-title { font-size: 28px; }
-  .section-subtitle { font-size: 15px; }
+  .section-title,
+  .section-title.is-reliability,
+  .section-title.is-compact,
+  .outputs-title {
+    font-size: 28px;
+    line-height: 34px;
+  }
+  .section-subtitle { font-size: 15px; line-height: 24px; }
   .features-grid, .reliability-grid, .steps-grid, .testimonials-grid {
     grid-template-columns: minmax(0, 1fr);
     gap: 16px;
   }
   .pricing-grid { gap: 20px; }
   .outputs-layout { gap: 32px; }
-  .step-card { padding: 24px 20px; }
-  .final-cta-section { padding-top: 24px; }
+  .step-card { padding: 23px 19px; }
   .final-cta-card { padding: 40px 24px; border-radius: 20px; }
-  .cta-title { font-size: 28px; }
-  .cta-subtitle { font-size: 16px; margin-bottom: 28px; }
-  .cta-btn-group { flex-direction: column; }
-  .cta-btn-group > * { width: 100%; }
+  .cta-title { font-size: 28px; line-height: 34px; }
+  .cta-subtitle { font-size: 16px; line-height: 24px; }
+  .cta-btn-group { flex-direction: column; align-self: stretch; padding-top: 0; }
+  .cta-btn-group > .ui-button { width: 100%; }
 }
 </style>

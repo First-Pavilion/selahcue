@@ -82,6 +82,19 @@ export function anchorScrollTop(elementTop: number, scrollY: number, clearance: 
   return Math.max(0, elementTop + scrollY - clearance)
 }
 
+/**
+ * The element id a URL hash names: the hash without its `#`, percent-decoded. A hash that cannot be
+ * decoded (`#%`) is used as written, so it simply finds nothing instead of throwing.
+ */
+export function fragmentId(hash: string): string {
+  const raw = hash.startsWith('#') ? hash.slice(1) : hash
+  try {
+    return decodeURIComponent(raw)
+  } catch {
+    return raw
+  }
+}
+
 const INPUT_EVENTS = ['wheel', 'touchstart', 'keydown', 'pointerdown'] as const
 
 /** The real browser. `route.name` decides whether the anchor clearance applies (router/scroll.ts). */
@@ -103,7 +116,10 @@ export function reanchorForBrowser(route: { name?: unknown }): Promise<ReanchorO
     reapply: () => {
       const position = siteScrollBehavior({ hash: window.location.hash, name: route.name })
       if (!('el' in position)) return
-      const target = document.querySelector(position.el)
+      // By id, on the DECODED fragment: what vue-router does. A fragment is not a selector, so
+      // `querySelector` threw on `#1abc` and `#%` (valid fragments, invalid selectors) and the one
+      // correction ended as `reapply-failed` on a URL a visitor can type.
+      const target = document.getElementById(fragmentId(window.location.hash))
       if (!target) return
       // `instant`, not the router's smooth: this is a correction, not a navigation.
       window.scrollTo({
