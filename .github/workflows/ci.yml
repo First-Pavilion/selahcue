@@ -244,7 +244,7 @@ jobs:
       - name: Free disk space and report it at job start (Linux)
         if: runner.os == 'Linux'
         working-directory: ${{ github.workspace }}
-        run: sh scripts/ci_disk.sh free
+        run: sh scripts/ci_disk.sh report control-no-free-job-start
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: ${{ needs.changes.outputs.rust }}
