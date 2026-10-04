@@ -6,11 +6,13 @@
  *
  * 1. IN-PAGE ANCHORS CLEAR THE STICKY NAVBAR. vue-router's `{ el, behavior }` scroll ignores
  *    CSS `scroll-margin`/`scroll-padding`, so a table-of-contents or "link to this section"
- *    click scrolled the heading UNDER the 68px navbar. The offset is not a constant here: it
+ *    click scrolled the heading UNDER the sticky navbar. The offset is not a constant here: it
  *    is the navbar's rendered bottom edge plus `--sc-anchor-gap` (`assets/styles/anchors.css`,
  *    which uses the same gap for the CSS side), so the navbar itself is the source of the
- *    height. Only the blog/docs/support pages opt in; other pages' hash targets (the home
- *    page's `#how-it-works`) keep their previous behaviour.
+ *    height. The blog/docs/support pages opt in, and so does Home: the navbar's "How it works"
+ *    link is `{ path: '/', hash: '#how-it-works' }`, so from every page it is a navigation TO
+ *    the `home` route, and that heading must clear the 79px bar too. Other pages' hash targets
+ *    keep their previous behaviour.
  * 2. REDUCED MOTION IS HONOURED. `behavior: 'smooth'` written into the scroll position
  *    overrides the CSS `scroll-behavior` that `main.css` already switches off under
  *    `prefers-reduced-motion`, so people who asked for no animation still got one. With
@@ -30,6 +32,7 @@ export type SiteScrollPosition =
 
 /** Route names whose in-page anchors sit below the sticky navbar and need the offset. */
 const ANCHORED_ROUTES: ReadonlySet<string> = new Set([
+  'home',
   'blog',
   'blog-post',
   'docs',

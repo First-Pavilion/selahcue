@@ -30,7 +30,7 @@ It also exercises, in the real browser, the behaviours CSS alone cannot prove:
     document-level keydown handler is gone afterwards: a cancelable Escape dispatched on
     <body> must come back not-defaultPrevented);
   * the footer (collapsed sections on mobile with working `aria-expanded` toggles, 2x2 on
-    tablet, 4 across on desktop, and following a LIVE resize across 768 in both directions);
+    tablet, 3 across on desktop, and following a LIVE resize across 768 in both directions);
   * the confirm dialog and toast on a phone (both `position: fixed`, so the scrollWidth
     check cannot see them overflow);
   * both sides of every breakpoint (767/768, 1199/1200): the layout that renders must be the
@@ -578,6 +578,11 @@ def check_nav_sheet(context, base: str, width: int, fail, count) -> None:
         expect(st["sheetRight"] == st["innerWidth"], "sheet is not anchored to the right edge")
         expect(all(h >= 56 for h in st["linkHeights"]) and st["linkHeights"], f"sheet rows under 56px: {st['linkHeights']}")
         expect(st["cta"] is not None and st["cta"]["bottom"] <= st["innerHeight"], "Download CTA is not inside the viewport")
+        # On Home, "How it works" is a link to `/#how-it-works`: the router matches the PATH and ignores the
+        # hash, so a plain router-link announced it as the current page while sighted users saw no active state.
+        hiw = page.evaluate("(() => { const l = [...document.querySelectorAll('#mobile-nav-sheet .mobile-link')].find((a) => a.textContent.trim() === 'How it works'); return l ? [l.getAttribute('aria-current')] : null })()")
+        expect(hiw is not None, "the sheet has no How it works link")
+        expect(hiw is None or hiw[0] is None, f"the sheet announces How it works as the current page on Home (aria-current={hiw})")
         expect(st["cta"] is not None and abs(st["cta"]["width"] - st["cta"]["sheetWidth"]) <= 2, "CTA is not full-width")
         expect(page.evaluate("window.scrollY") > 0, "scroll position was reset when the sheet opened")
 
@@ -724,7 +729,7 @@ def check_footer(context, base: str, width: int, fail, count) -> None:
           const lefts = new Set([...document.querySelectorAll('.footer .link-column')].map((c) => Math.round(c.getBoundingClientRect().left))).size;
           const hidden = [...document.querySelectorAll('.footer .footer-link')].filter((a) => a.getBoundingClientRect().height === 0).length;
           const ok = mobile
-            ? f.classList.contains('is-mobile') && toggles === 4 && lefts === 1
+            ? f.classList.contains('is-mobile') && toggles === 3 && lefts === 1
             : !f.classList.contains('is-mobile') && toggles === 0 && lefts >= 2 && hidden === 0;
           return ok;
         }"""
@@ -745,11 +750,11 @@ def check_footer(context, base: str, width: int, fail, count) -> None:
         if wrong:
             fail(f"{tag}: after a live resize to {step_width}px the footer {wrong} (media query listener not re-read)")
     # restore the starting state for the assertions below
-    page.wait_for_function("document.querySelectorAll('.footer .link-column').length === 4")
+    page.wait_for_function("document.querySelectorAll('.footer .link-column').length === 3")
 
     st = page.evaluate(FOOTER_STATE_JS)
     if page.evaluate(IS_MOBILE_JS):
-        expect(len(st["toggles"]) == 4, f"expected 4 collapsible headings, got {len(st['toggles'])}")
+        expect(len(st["toggles"]) == 3, f"expected 3 collapsible headings, got {len(st['toggles'])}")
         expect(all(t["expanded"] == "false" and not t["controlsVisible"] for t in st["toggles"]), "sections are not collapsed by default on mobile")
         expect(all(t["height"] >= 44 for t in st["toggles"]), f"footer headings under 44px: {[t['height'] for t in st['toggles']]}")
         expect(len(st["lefts"]) == 1, f"mobile columns do not stack (distinct left edges: {st['lefts']})")
@@ -761,7 +766,7 @@ def check_footer(context, base: str, width: int, fail, count) -> None:
         st = page.evaluate(FOOTER_STATE_JS)
         expect(st["toggles"][0]["expanded"] == "false" and not st["toggles"][0]["controlsVisible"], "second tap did not collapse the section")
         # expand everything so the touch-target audit sees every footer link
-        for i in range(4):
+        for i in range(3):
             page.locator(".footer .column-toggle").nth(i).click()
         st = page.evaluate(FOOTER_STATE_JS)
         expect(st["linksVisible"] == st["linksTotal"], "expanding all sections did not show every link")
@@ -770,7 +775,7 @@ def check_footer(context, base: str, width: int, fail, count) -> None:
     else:
         expect(not st["toggles"], "desktop/tablet footer renders collapse controls")
         expect(st["linksVisible"] == st["linksTotal"], "desktop/tablet footer hides links")
-        want = 4 if width >= 1200 else 2
+        want = 3 if width >= 1200 else 2
         expect(len(st["lefts"]) == want, f"expected {want} column left edges at {width}px, got {st['lefts']}")
     page.close()
 
@@ -787,7 +792,7 @@ def check_signed_in_nav(context, base: str, width: int, fail, count) -> None:
     if not page.evaluate(IS_MOBILE_JS):
         if not info["signedIn"]:
             fail(f"{tag}: sweep could not establish the signed-in hint")
-        elif info["spread"] > 6 or info["lastRight"] > info["vw"] - 8 or info["barHeight"] != 68:
+        elif info["spread"] > 6 or info["lastRight"] > info["vw"] - 8 or info["barHeight"] != 78:
             fail(f"{tag}: navbar wrapped or overflowed {info}")
     page.close()
 
@@ -965,7 +970,7 @@ def check_boundaries(browser, base: str, engine: str, fail, count) -> None:
                 fail(f"{tag}: nav shows the wrong mode for {mode} (toggle={st['toggle']}, desktopNav={st['desktopNav']})")
             if st["footerCols"] is not None:
                 count()
-                want_footer = {"mobile": 1, "tablet": 2, "desktop": 4}[mode]
+                want_footer = {"mobile": 1, "tablet": 2, "desktop": 3}[mode]
                 if st["footerCols"] != want_footer or (st["footerToggles"] > 0) != (mode == "mobile"):
                     fail(f"{tag}: footer layout is not the {mode} one (columns={st['footerCols']}, want {want_footer}; collapse controls={st['footerToggles']})")
             if st["featureCols"] is not None:
@@ -1117,6 +1122,22 @@ def main() -> int:
                                     f"{tag}: nav mode wrong (toggle={nav['toggleVisible']}, "
                                     f"desktopNav={nav['desktopNavVisible']}, expected mobile={is_mobile})"
                                 )
+                        if path == "/":
+                            checks += 1
+                            hiw = page.evaluate("(() => { const l = [...document.querySelectorAll('header .desktop-nav a')].find((a) => a.textContent.trim() === 'How it works'); return l ? [l.getAttribute('aria-current')] : null })()")
+                            if hiw is None:
+                                failures.append(f"{tag}: the navbar has no How it works link")
+                            elif hiw[0] is not None:
+                                failures.append(f"{tag}: the navbar announces How it works as the current page on Home (aria-current={hiw[0]})")
+                    else:
+                        # The auth and token pages are BARE on purpose (handoff section 2.1): someone mid-task
+                        # gets no nav to wander off with, and a token-bearing URL has no outbound footer links
+                        # to leak a referrer from. Only `App.vue` enforces it, and nothing else asserted it.
+                        # The non-bare branch above is the positive control: the same selectors find the chrome there.
+                        chrome = page.evaluate("({header: !!document.querySelector('#app header.navbar-header'), footer: !!document.querySelector('#app footer')})")
+                        checks += 1
+                        if chrome["header"] or chrome["footer"]:
+                            failures.append(f"{tag}: a bare route renders the site chrome (navbar: {chrome['header']}, footer: {chrome['footer']})")
 
                     if is_mobile:
                         checks += 1
