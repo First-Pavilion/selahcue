@@ -6,11 +6,11 @@
 - Parent goal ID: 17tnw2b2c75-figma-fidelity-audit
 - Title: The marketing site's shared chrome (navbar, footer, UiButton, design tokens, app shell) matches the Figma chrome that every page frame shares, without regressing accessibility, and the harness shows each class A finding of this ticket closed
 - Role: frontend-engineer
-- Status: DRAFT
+- Status: IN_REVIEW
 - Execution engine: goal
 - ClickUp task: https://app.clickup.com/t/17tnw2b2cev
 - Created: 2026-10-03
-- Updated: 2026-10-03
+- Updated: 2026-10-04
 - Maximum iterations: 8
 - Independent verification required: yes
 
@@ -89,21 +89,21 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
 
 | ID | Mandatory | Criterion | Verifier | Expected result | Evidence | Status |
 |---|---|---|---|---|---|---|
-| C-001 | yes | At 1440 the navbar is 79px tall, runs at 48px gutters, the mark is visibly 32px, the active route is Semi Bold in the primary text colour, Sign in is the primary text colour with an 18px gap, Download free is a 10px rectangle at weight 700 (shared-chrome-01 to 06) | harness run plus `vp_style_diff.py` on home, pricing, features, about | no printed line for the nav texts or the nav CTA box | style-diff output in the scratchpad and the run path | PENDING |
-| C-002 | yes | Nav How it works is a router link to the Home route with the hash and Home scrolls it clear of the sticky bar (shared-chrome-07) | `node --test tests/scroll.test.ts tests/chrome.test.ts` and a browser run with the id stubbed | tests pass; stubbed target lands below the 79px bar | test output; browser measurement | PENDING |
-| C-003 | yes | The footer has Figma's three columns and bottom bar with exactly the listed entries; Privacy and Terms are in the bottom bar; every footer link resolves to a real route (shared-chrome-14, 15) | `node --test tests/chrome.test.ts` (walks footer links against the router table) | exit 0; a missing target fails the test | test output | PENDING |
-| C-004 | yes | Footer layout and type match (3 hugging columns at 96px gutters, 56px top padding, 30px link pitch, muted 12px uppercase headings over bright links, page-colour fill) (shared-chrome-16, 17, 18) | harness DOM and `vp_style_diff.py` on the footer | no printed footer line for these findings | style-diff output | PENDING |
-| C-005 | yes | Footer copyright, the route-loading fallback and every small text in nav and footer measure at least 4.5:1; the harness contrast survey lists no failing nav or footer text on any page (shared-chrome-20, 21, 34, pricing-25) | harness contrast survey in `report.json` for all captured pages; a unit test pins the token ratios | survey lists no nav, footer or loading entry; token ratio at least 4.5 on every surface | report.json filter output; test output | PENDING |
-| C-006 | yes | UiButton renders radius 10 (compact, sm) and 11 (md, lg), fixed heights 39, 41, 44, 47, 49 independent of the parent line-height, variants primary, secondary (bordered), ghost, outline, inverse and inverse-outline, and a focus ring that shows in forced-colors mode (shared-chrome-27 to 30) | `node --test tests/uiButton.test.ts` and a browser measurement in a parent with a hostile line-height | tests pass; measured heights equal the table | test output; browser measurement | PENDING |
-| C-007 | yes | One 1248px content-width token with 96, 48 and 20px gutters and one shared container exist; section padding is 88px; `--sc-surface-alt` and `--sc-success` are defined; a test fails if a `var(--x)` used in `src/` has no definition (shared-chrome-22, 23, 24, 25, pricing-25) | `node --test tests/tokens.test.ts` (and a mutation: an undefined var makes it fail) | exit 0; the mutation turns it red | test output | PENDING |
-| C-008 | yes | Desktop nav links, brand and CTA show a visible focus-visible ring and the nav surface uses tokens, not the hard-coded dark band (shared-chrome-08, 09) | `node --test tests/chrome.test.ts` and a browser keyboard pass | tests pass; ring present on each control; computed header background equals the base token | test output; browser measurement | PENDING |
-| C-009 | yes | After `npm run build`, `visual_parity.py --suite marketing --only home pricing features` exits 0 and `vp_style_diff.py` prints no line belonging to a class A finding of this ticket; the full suite on both engines shows no regression on any surface | `python3 scripts/visual_parity.py --suite marketing --engine both` and `vp_style_diff.py` per slug, before and after | exit 0; remaining chrome lines are documented class B, C or D | run directory, before and after diff summary | PENDING |
-| C-010 | yes | `make marketing-check`, `npm test`, `npm run test:states` and `npm run test:responsive` pass (headless required) | each command with its exit code captured to a file, never piped | all exit 0 | exit codes and counts | PENDING |
-| C-011 | yes | No horizontal page scroll at 375, 768 and 1440 on the changed pages and the mobile nav sheet and 44px touch targets still pass | `npm run test:responsive` and real renders | sweep reports none; renders checked | sweep output; screenshots | PENDING |
-| C-012 | yes | The PR touches only this ticket's footprint plus the two named gate edits; shared files owned by other tickets are untouched | `git diff --name-only origin/web/17tnw2b2c75-figma-fidelity-audit` | every path is in the footprint or the named gate script | the file list | PENDING |
-| C-013 | yes | A Draft PR is open against the audit branch, stacked and labelled as such, and the branch is not behind the audit branch | `gh pr view` and `git rev-list --count HEAD..origin/web/17tnw2b2c75-figma-fidelity-audit` | isDraft true; base is the audit branch; behind count 0 | PR URL; command output | PENDING |
-| C-014 | yes | ClickUp 17tnw2b2cev is in progress with a start comment and carries the handoff comment with QA steps as a list | ClickUp read-back | both comments present, no dropped table | comment ids | PENDING |
-| C-015 | yes | Independent review (code, performance, security, QA) has passed and blocking findings are remediated | Cody, Vera, Shadow, Quinn brokered by the coordinator | all four report; no open blocking finding | not requested by this role | PENDING |
+| C-001 | yes | At 1440 the navbar is 79px tall, runs at 48px gutters, the mark is visibly 32px, the active route is Semi Bold in the primary text colour, Sign in is the primary text colour with an 18px gap, Download free is a 10px rectangle at weight 700 (shared-chrome-01 to 06) | harness run plus `vp_style_diff.py` on every page that carries the chrome; browser measurement | no printed line for the nav texts or the nav CTA box other than the token-layer colour lines | browser: header 79, container 78, mark 32x32, active 600, Sign in 18px gap, CTA 137.5x39 radius 10px weight 700 (Blink and WebKit); style diff: nav text lines are only `colour~` (class B) on all 15 pages | PASS |
+| C-002 | yes | Nav How it works is a router link to the Home route with the hash and Home scrolls it clear of the sticky bar (shared-chrome-07) | `node --test tests/scroll.test.ts tests/chrome.test.ts` and a browser run with the id stubbed | tests pass; stubbed target lands below the 79px bar | tests pass (699 of 699); browser with the id stubbed: target top 94.5px (79 bar plus 16 gap) from Pricing, on Home, and on a cold load of the hash; not marked active on Home | PASS |
+| C-003 | yes | The footer has Figma's three columns and bottom bar with exactly the listed entries; Privacy and Terms are in the bottom bar; every footer link resolves to a real route (shared-chrome-14, 15) | `node --test tests/chrome.test.ts` (walks footer links against the router table) | exit 0; a missing target fails the test | tests pass; the walk has a control that turns red on a path with no route; browser footer link list matches (16 links, none `/how-it-works`) | PASS |
+| C-004 | yes | Footer layout and type match (3 hugging columns at 96px gutters, 55px plus border top padding, 30px link pitch, muted 12px uppercase headings over bright links, page-colour fill) (shared-chrome-16, 17, 18) | harness DOM and `vp_style_diff.py` on the footer; browser measurement | no printed footer line for these findings | browser: columns at x=974, 1109, 1280 (Figma 973, 1109, 1280), link pitch 30, headings 12px 700 uppercase 0.1px; footer 358px (Figma 358); style diff footer box: only the token-layer border line | PASS |
+| C-005 | yes | Footer copyright, the route-loading fallback and every small text in nav and footer measure at least 4.5:1; the harness contrast survey lists no failing nav or footer text on any page (shared-chrome-20, 21, 34, pricing-25) | harness contrast survey in `report.json` for all captured pages; node tests pin the pairs | survey lists no nav, footer or loading entry; every chrome pair at least 4.5 | survey (Blink) 166 entries before, 74 after, none in nav, footer or loading; chrome pair test passes; token ratios 5.9, 5.5, 5.0 | PASS |
+| C-006 | yes | UiButton renders radius 10 (compact, sm) and 11 (md, lg), fixed heights 39, 41, 44, 47, 49 independent of the parent line-height, variants primary, secondary (bordered), ghost, outline, inverse and inverse-outline, and a focus ring that shows in forced-colors mode (shared-chrome-27 to 30) | `node --test tests/uiButton.test.ts` and a browser measurement in a parent with a hostile line-height | tests pass; measured heights equal the table | 28 tests pass, four mutations shown red; browser heights identical with line-height 3 forced on every container (6 pages, Blink and WebKit); forced-colors emulation shows a 2px solid outline and no box-shadow | PASS |
+| C-007 | yes | One 1248px content-width token with 96, 48 and 20px gutters and one shared container exist; section padding is 88px; `--sc-surface-alt` and `--sc-success` are defined; a test fails if a `var(--x)` used in `src/` has no definition (shared-chrome-22, 23, 24, 25, pricing-25) | `node --test tests/tokens.test.ts` (and a mutation: an undefined var makes it fail) | exit 0; the mutation turns it red | the guard was red before the change on exactly `--sc-surface-alt` and `--sc-success`, green after; in-memory controls cover undefined, fallback, other-file and comment cases | PASS |
+| C-008 | yes | Desktop nav links, brand and CTA show a visible focus-visible ring and the nav surface uses tokens, not the hard-coded dark band (shared-chrome-08, 09) | `node --test tests/chrome.test.ts` and a browser keyboard pass | tests pass; ring present on each control; computed header background equals the base token | Tab order measured in Blink: brand, Features, How it works, Pricing, Download, Sign in, Download free each show a 2px solid brand ring at 2px offset; header background rgb(11, 13, 18) = base; scrolled state computed on a hash jump | PASS |
+| C-009 | yes | After `npm run build`, `visual_parity.py --suite marketing --only home pricing features` exits 0 and `vp_style_diff.py` prints no line belonging to a class A finding of this ticket; the full suite on both engines shows no regression on any surface | `python3 scripts/visual_parity.py --suite marketing --engine both` and `vp_style_diff.py` per slug, before and after | exit 0; remaining chrome lines are documented class B, C or D | runs `.visual-parity/run-20261003-213858` (only home pricing features, exit 0) and `.visual-parity/run-20261003-215149` (all surfaces, both engines, exit 0); baseline `run-20261003-212326`; chrome lines not in the token layer 1023 to 150 over 15 pages (about 8 each: the nav border read as top-only by the harness, Affiliates ink, class C wording, page text pairings); Blink and WebKit identical | PASS |
+| C-010 | yes | `make marketing-check`, `npm test`, `npm run test:states` and `npm run test:responsive` pass (headless required) | each command with its exit code captured to a file, never piped | all exit 0 | `make marketing-check` exit 0 (699 pass, 0 fail); `npm test` exit 0 (699); `test:states` exit 0 (60 scenarios, 1751 checks, 0 FAIL); `test:responsive` exit 0 (Chromium 2281 checks, 0 failed) and `--engine webkit` exit 0 (2281, 0 failed); `vp_selftest.py` 112 checks 0 FAIL; `check_fidelity_audit.py --self-test` 34 checks 0 FAIL | PASS |
+| C-011 | yes | No horizontal page scroll at 375, 768 and 1440 on the changed pages and the mobile nav sheet and 44px touch targets still pass | `npm run test:responsive` and real renders | sweep reports none; renders checked | sweep above (it caught the 37px Terms link on phones, fixed); renders at 1440, 1024, 768 and 375 read; scrollWidth equals innerWidth at 1440, 1024, 768, 375 | PASS |
+| C-012 | yes | The PR touches only this ticket's footprint plus the named gate edit; shared files owned by other tickets are untouched | `git diff --name-only origin/web/17tnw2b2c75-figma-fidelity-audit` | every path is in the footprint or the named gate script | the file list: Navbar.vue, Footer.vue, UiButton.vue, tokens.css, main.css, App.vue, scroll.ts, five test files plus the css test helper, `responsive_sweep.py`, and this contract | PASS |
+| C-013 | yes | A Draft PR is open against the audit branch, stacked and labelled as such, and the branch is not behind the audit branch | `gh pr view` and `git rev-list --count HEAD..origin/web/17tnw2b2c75-figma-fidelity-audit` | isDraft true; base is the audit branch; behind count 0 | https://github.com/First-Pavilion/selahcue/pull/172 draft, base `web/17tnw2b2c75-figma-fidelity-audit`; behind count 0 at the last fetch (see the final message for the head) | PASS |
+| C-014 | yes | ClickUp 17tnw2b2cev is in progress with a start comment and carries the handoff comment with QA steps as a list | ClickUp read-back | both comments present, no dropped table | start comment 1400430000059199; handoff comment 1400430000059466 (read back, lists render, no table); ticket moved to code review | PASS |
+| C-015 | yes | Independent review (code, performance, security, QA) has passed and blocking findings are remediated | Cody, Vera, Shadow, Quinn brokered by the coordinator | all four report; no open blocking finding | not requested by this role; the coordinator brokers it on the PR head | PENDING |
 
 Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABLE`.
 
@@ -126,6 +126,36 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
 - New evidence: `responsive_sweep.py` asserts a 68px bar and four footer columns
 - Decision: iterate
 
+### Iteration 2
+
+- Target criterion: C-006, C-007
+- Hypothesis: heights, radius, variants and the focus ring can be resolved from the stylesheet, so a test can fail on each; and the undefined-property guard fails before the tokens exist
+- Change or investigation: a small CSS resolver for tests (cascade, media blocks, px arithmetic); `uiButton.test.ts` and `tokens.test.ts` written first and seen red (16 and 14 failures for the right reasons); then `UiButton.vue`, `tokens.css`, `main.css`
+- Verifier executed: `node --test tests/uiButton.test.ts tests/tokens.test.ts`; four UiButton mutations (padding, line-height, outline, radius)
+- Result: green; each mutation turned a test red; one pinned-props test updated on purpose (`block` added)
+- New evidence: the guard names exactly the two undefined properties the audit found
+- Decision: iterate
+
+### Iteration 3
+
+- Target criterion: C-001 to C-005, C-008
+- Hypothesis: navbar, footer and shell can be rebuilt to the Figma values with the existing mobile sheet and phone footer left alone
+- Change or investigation: `chrome.test.ts` written first (36 of 42 red); `Navbar.vue`, `Footer.vue`, `App.vue`, `scroll.ts`; sweep gate updated in its own commit
+- Verifier executed: `npm test`; `test:responsive`; browser measurement in Blink and WebKit; style diff before and after
+- Result: the first sweep failed on a real defect (the Terms link was 37px wide on phones), fixed with a test; browser check found the scrolled bar had no blur in Chrome (a hand-written prefix made the minifier drop the unprefixed property), fixed with a test; footer height trimmed to Figma's 358
+- New evidence: the harness reads only the top border, so the bottom-bordered bar always prints a border line (a measurement limit, not a defect)
+- Decision: iterate
+
+### Iteration 4
+
+- Target criterion: C-009, C-010, C-011, C-013, C-014
+- Hypothesis: every gate is green on the final code and the PR can be opened stacked
+- Change or investigation: all gates re-run fresh on the final head; label contrast test added for every UiButton variant and hover; PR 172 opened as Draft against the audit branch
+- Verifier executed: see the predicate table
+- Result: all PASS except the handoff comment (written next) and independent review (brokered)
+- New evidence: contrast survey 166 to 74 entries with none in nav, footer or loading
+- Decision: gate-review
+
 ## Risks and rollback
 
 - Risks: the chrome is on every page, so a layout regression is site-wide; the shared `.container` and section tokens move page rhythm for pages that consume them; raising the muted ink changes every consumer by a few percent luminance
@@ -140,8 +170,8 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
 ## Final evaluation
 
 - Validator command: `python3 ~/.claude/skills/goal/scripts/validate_goal_contract.py docs/delivery/goals/17tnw2b2cev-figma-shared-chrome.md --completion`
-- Validator result: pending
-- Independent verification result: pending
-- Terminal state: pending
-- Remaining failed or blocked criteria: pending
-- ClickUp final evidence comment: pending
+- Validator result: the structural check passes; the completion check fails on C-015 only (independent review is brokered by the coordinator, not requested by this role)
+- Independent verification result: pending (Cody, Vera, Shadow and Quinn, brokered by the coordinator on PR 172)
+- Terminal state: GATE_REVIEW (all verifiable work done; independent review pending)
+- Remaining failed or blocked criteria: C-015
+- ClickUp final evidence comment: 1400430000059466 on https://app.clickup.com/t/17tnw2b2cev
