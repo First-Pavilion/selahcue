@@ -82,10 +82,9 @@ const culture = [
             <UiButton variant="secondary" size="sm" to="/contact">Apply Now →<span class="sr-only"> for {{ r.title }}</span></UiButton>
           </article>
         </div>
-        <p class="roles-note">
-          Don't see your role? We're always glad to meet thoughtful people —
-          <router-link class="closing-link" to="/contact">reach out</router-link>.
-        </p>
+        <!-- Plain text, no link: this line is new, and the one place it could send people (the contact page) is a form
+             that sends nothing. A destination returns when the contact form is honest (ClickUp 17tnw2b0x3h). -->
+        <p class="roles-note">Don't see your role? We're always glad to meet thoughtful people — reach out.</p>
       </div>
     </section>
   </div>
@@ -180,8 +179,6 @@ const culture = [
 }
 
 .roles-note { max-width: 640px; font-size: 15px; line-height: 22px; text-align: center; color: var(--sc-text-secondary); }
-.closing-link { color: var(--sc-text); text-decoration: underline; text-underline-offset: 3px; }
-.closing-link:hover { color: var(--sc-primary-hover); }
 
 .sr-only {
   position: absolute;

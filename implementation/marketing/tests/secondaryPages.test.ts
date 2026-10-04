@@ -691,12 +691,17 @@ describe('Careers (503:124): hero, four icon-tile culture cards, a full-bleed ro
     roleTitles.forEach((title, i) => assert.ok((names[i] ?? '').includes(title), `link ${i} names its role "${title}"`))
   })
 
-  test('the closing line sends people to the contact page and names no mailbox (careers-04, careers-08)', async () => {
+  test('the closing line is plain text: no link to a form that sends nothing, and no mailbox (careers-04, careers-08, review round 1 M1)', async () => {
     const page = await html('CareersView.vue')
-    assert.ok(textOf(page).includes("Don't see your role?"))
-    const link = tagsOf(page).find((t) => t.name === 'a' && classesOf(t).includes('closing-link'))
-    assert.equal(link?.attrs['href'], '/contact')
+    const note = withClass(page, 'roles-note')[0]
+    assert.ok(note, 'the closing line is there')
+    const line = page.slice(note.at, page.indexOf('</p>', note.at))
+    assert.ok(textOf(line).startsWith("Don't see your role?"))
+    assert.ok(!/<a[\s>]/.test(line), 'it carries no link: this line is new, and the contact page is a form that sends nothing')
     assert.ok(!/@selahcue/.test(textOf(page).replace('support@selahcue', '')), 'no invented mailbox')
+    // The Apply links already existed (to the contact page) and keep that interim destination.
+    const apply = tagsOf(page).filter((t) => t.name === 'a' && (t.attrs['href'] ?? '') === '/contact')
+    assert.equal(apply.length, 3, 'the three role buttons keep the destination they had')
   })
 })
 
