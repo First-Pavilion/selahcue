@@ -6,6 +6,7 @@ import { pageScrollLock } from '@/lib/ui/scrollLock.ts'
 import { pageInertLock } from '@/lib/ui/inertLock.ts'
 import { FOCUSABLE_SELECTOR, nextTrapIndex } from '@/lib/ui/focusTrap.ts'
 import { MOBILE_QUERY } from '@/lib/ui/breakpoints.ts'
+import UiButton from '@/components/UiButton.vue'
 
 const router = useRouter()
 const route = useRoute()
@@ -13,6 +14,7 @@ const route = useRoute()
 const isScrolled = ref(false)
 const isMobileMenuOpen = ref(false)
 
+const sentinelEl = ref<HTMLElement | null>(null)
 const toggleEl = ref<HTMLButtonElement | null>(null)
 const closeEl = ref<HTMLButtonElement | null>(null)
 const sheetEl = ref<HTMLElement | null>(null)
@@ -68,6 +70,20 @@ const handleSignOut = async () => {
     window.location.assign('/')
   }
 }
+
+/**
+ * THE SCROLLED STATE. Observed, not read: an IntersectionObserver watches a 10px sentinel at the very top of
+ * the document, so the bar is "scrolled" exactly when `window.scrollY > 10` (the old rule) without anything
+ * reading `scrollY`. Reading it in `onMounted` forced a style and layout pass inside the app's first script
+ * task and pushed that task over the 50ms long-task line on Pricing and Terms (+18-20ms of layout at 4x CPU,
+ * performance review of PR 172), and a scroll listener fires on every wheel tick. The observer's first
+ * callback reports the state the page OPENED in, so a reload in the middle of a page, a cold load onto a
+ * deep anchor and back-navigation all start right, and it is delivered with the frame's own work.
+ *
+ * `handleScroll` is only the fallback for a browser with no IntersectionObserver, which keeps the previous
+ * behaviour: a scroll listener, no read at mount.
+ */
+let scrollObserver: IntersectionObserver | null = null
 
 const handleScroll = () => {
   isScrolled.value = window.scrollY > 10
@@ -161,13 +177,22 @@ const handleBreakpointChange = (event: MediaQueryListEvent) => {
 const handlePageHide = () => closeMobileMenu({ restoreFocus: false })
 
 onMounted(() => {
-  window.addEventListener('scroll', handleScroll, { passive: true })
+  if (typeof IntersectionObserver === 'function' && sentinelEl.value) {
+    scrollObserver = new IntersectionObserver(([entry]) => {
+      isScrolled.value = !(entry?.isIntersecting ?? true)
+    })
+    scrollObserver.observe(sentinelEl.value)
+  } else {
+    window.addEventListener('scroll', handleScroll, { passive: true })
+  }
   window.addEventListener('pagehide', handlePageHide)
   mobileQuery = window.matchMedia(MOBILE_QUERY)
   mobileQuery.addEventListener('change', handleBreakpointChange)
 })
 
 onBeforeUnmount(() => {
+  scrollObserver?.disconnect()
+  scrollObserver = null
   window.removeEventListener('scroll', handleScroll)
   window.removeEventListener('pagehide', handlePageHide)
   mobileQuery?.removeEventListener('change', handleBreakpointChange)
@@ -177,18 +202,29 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
+  <!-- Zero-size marker at the top of the document: the bar is "scrolled" when it is out of view (see `scrollObserver`). -->
+  <div ref="sentinelEl" class="scroll-sentinel" aria-hidden="true"></div>
   <header :class="['navbar-header', { 'is-scrolled': isScrolled }]">
     <div class="navbar-container">
       <!-- Left Group: Brand Logo + Nav Links -->
       <div class="left-group">
         <router-link to="/" class="brand">
-          <img src="/selahcue-logo.png" alt="SelahCue Logo" class="brand-logo" />
+          <!-- The wordmark names the link; the mark is decoration, so it is hidden from assistive tech
+               (announcing "SelahCue Logo" and then "SelahCue" said it twice). -->
+          <span class="brand-mark"><img src="/selahcue-logo.png" alt="" aria-hidden="true" /></span>
           <span class="brand-wordmark">SelahCue</span>
         </router-link>
 
         <nav class="desktop-nav" aria-label="Primary">
           <router-link to="/features" class="nav-item" active-class="active">Features</router-link>
-          <a href="#how-it-works" class="nav-item">How it works</a>
+          <!-- To the Home route WITH the hash: a bare #how-it-works only works on Home, and on every other
+               page it just appended the fragment to the URL. Never "current": the router matches the PATH
+               and ignores the hash, so on Home a default router-link carries aria-current="page" (and the
+               active class) while sighted users see no active state. `custom` renders the plain <a> below,
+               which only navigates. -->
+          <router-link :to="{ path: '/', hash: '#how-it-works' }" custom v-slot="{ href, navigate }">
+            <a :href="href" class="nav-item" @click="navigate">How it works</a>
+          </router-link>
           <router-link to="/pricing" class="nav-item" active-class="active">Pricing</router-link>
           <router-link to="/download" class="nav-item" active-class="active">Download</router-link>
         </nav>
@@ -213,7 +249,7 @@ onBeforeUnmount(() => {
           </button>
         </template>
         <router-link v-else to="/signin" class="signin-btn">Sign in</router-link>
-        <router-link to="/download" class="download-cta">Download free</router-link>
+        <UiButton to="/download" size="compact" class="download-cta">Download free</UiButton>
       </div>
 
       <!-- Mobile Hamburger Toggle (< 768px) -->
@@ -241,7 +277,7 @@ onBeforeUnmount(() => {
   <!-- Mobile sheet. Teleported to <body> because the header is `backdrop-filter`ed once
        scrolled, and a `backdrop-filter` makes its element the containing block for
        `position: fixed` descendants -- a fixed sheet left inside the header would be
-       clipped to the 68px bar instead of covering the viewport. -->
+       clipped to the bar instead of covering the viewport. -->
   <Teleport to="body">
     <Transition name="nav-sheet">
       <div v-if="isMobileMenuOpen" class="mobile-layer">
@@ -258,7 +294,9 @@ onBeforeUnmount(() => {
 
           <nav class="sheet-links" aria-label="Primary">
             <router-link to="/features" class="mobile-link" @click="closeMobileMenu()">Features</router-link>
-            <a href="#how-it-works" class="mobile-link" @click="closeMobileMenu()">How it works</a>
+            <router-link :to="{ path: '/', hash: '#how-it-works' }" custom v-slot="{ href, navigate }">
+              <a :href="href" class="mobile-link" @click="navigate($event); closeMobileMenu()">How it works</a>
+            </router-link>
             <router-link to="/pricing" class="mobile-link" @click="closeMobileMenu()">Pricing</router-link>
             <router-link to="/download" class="mobile-link" @click="closeMobileMenu()">Download</router-link>
           </nav>
@@ -286,28 +324,41 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
+/* Absolute against the initial containing block (nothing above it is positioned), so it sits at the very top of
+   the DOCUMENT and scrolls away with it. 10px tall = the old `scrollY > 10`. Out of flow: no layout effect. */
+.scroll-sentinel {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 1px;
+  height: 10px;
+  pointer-events: none;
+}
+
 .navbar-header {
   position: sticky;
   top: 0;
   z-index: 100;
-  background: #090a0f;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  /* The page colour with the token border, as Figma draws it (468:126 has no fill of its own). */
+  background: var(--sc-base);
+  border-bottom: 1px solid var(--sc-border);
   transition: background 0.2s ease, backdrop-filter 0.2s ease;
 }
 
 .navbar-header.is-scrolled {
-  background: rgba(9, 10, 15, 0.9);
+  background: color-mix(in srgb, var(--sc-base) 90%, transparent);
   backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
 }
 
+/* The bar is the height token, border included: 79px from 768px up (Figma), 69px on the phone bar.
+   Gutters are the --nav-gutter token (48 desktop, 24 tablet, 20 mobile; the bar stays denser than the
+   page on purpose: the signed-in state -- Account, Sign out, CTA -- only fits 768px at 24). The 1440
+   cap is the design width: past it the content centres instead of stretching edge to edge. */
 .navbar-container {
-  max-width: 1240px;
+  max-width: 1440px;
   margin: 0 auto;
-  /* The bar keeps 24px through tablet (denser than the page gutter on purpose: the
-     signed-in state -- Account, Sign out, CTA -- only fits 768px at 24) and 20px on mobile. */
-  padding: 0 24px;
-  height: 68px;
+  padding: 0 var(--nav-gutter);
+  height: calc(var(--nav-height) - 1px);
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -317,29 +368,25 @@ onBeforeUnmount(() => {
 .left-group {
   display: flex;
   align-items: center;
-  gap: 44px;
+  gap: 40px;
   min-width: 0;
 }
 
 .brand {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   text-decoration: none;
   /* 44px: the touch target is the whole lockup, not just the glyphs. */
   min-height: 44px;
 }
 
-.brand-logo {
-  height: 24px;
-  width: auto;
-}
-
+/* The 32px mark is `.brand-mark` (main.css), which crops the logo file's transparent padding. */
 .brand-wordmark {
   font-size: 19px;
   font-weight: 700;
-  color: #ffffff;
-  letter-spacing: -0.01em;
+  color: var(--sc-text);
+  letter-spacing: 0;
 }
 
 .desktop-nav {
@@ -352,38 +399,46 @@ onBeforeUnmount(() => {
   display: inline-flex;
   align-items: center;
   min-height: 44px;
-  color: #9aa4b2;
+  color: var(--sc-text-secondary);
   font-size: 14px;
   font-weight: 500;
   text-decoration: none;
   transition: color 0.15s ease;
 }
 
-.nav-item:hover,
+.nav-item:hover {
+  color: var(--sc-text);
+}
+
+/* The current route: Semi Bold in the primary text colour (Figma 485:125). No underline is drawn in
+   any frame; whether it should carry one is a held decision (shared-chrome-11, Uma). */
 .nav-item.active {
-  color: #ffffff;
+  color: var(--sc-text);
+  font-weight: 600;
 }
 
 /* Right Group */
 .right-group {
   display: none;
   align-items: center;
-  gap: 24px;
+  gap: 18px;
 }
 
 .signin-btn {
   display: inline-flex;
   align-items: center;
   min-height: 44px;
-  color: #9aa4b2;
+  color: var(--sc-text);
   font-size: 14px;
   font-weight: 500;
   text-decoration: none;
-  transition: color 0.15s ease;
 }
 
-.signin-btn:hover {
-  color: #ffffff;
+/* Already the brightest ink, so the hover cue cannot be a colour change. */
+.signin-btn:hover,
+.signout-btn:hover:not(:disabled) {
+  text-decoration: underline;
+  text-underline-offset: 4px;
 }
 
 /* Matches `.signin-btn`'s ink and weight so the pair reads as one control group, but it
@@ -393,16 +448,11 @@ onBeforeUnmount(() => {
   border: none;
   padding: 0;
   min-height: 44px;
-  color: #9aa4b2;
+  color: var(--sc-text);
   font-family: inherit;
   font-size: 14px;
   font-weight: 500;
   cursor: pointer;
-  transition: color 0.15s ease;
-}
-
-.signout-btn:hover:not(:disabled) {
-  color: #ffffff;
 }
 
 .signout-btn:disabled {
@@ -419,26 +469,10 @@ onBeforeUnmount(() => {
   text-align: center;
 }
 
+/* The CTA is a UiButton (primary, compact: 39px, 10px radius, 14/700, brand fill, the shared AA hover), so the
+   bar carries no private copy of the button. Only what is the bar's own is here. */
 .download-cta {
-  display: inline-flex;
-  align-items: center;
-  background: #5b6bd6;
-  color: #ffffff;
-  font-size: 14px;
-  font-weight: 600;
-  padding: 9px 20px;
-  border-radius: 999px;
-  text-decoration: none;
   white-space: nowrap;
-  transition: background 0.15s ease, transform 0.15s ease;
-}
-
-.download-cta:hover {
-  background: #4f5ec7;
-}
-
-.download-cta:active {
-  transform: scale(0.98);
 }
 
 /* Mobile Toggle: 44x44, the minimum touch target. */
@@ -455,6 +489,15 @@ onBeforeUnmount(() => {
   cursor: pointer;
 }
 
+.brand:focus-visible,
+.nav-item:focus-visible,
+.signin-btn:focus-visible,
+.signout-btn:focus-visible {
+  outline: 2px solid var(--sc-primary);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+
 .mobile-toggle:focus-visible,
 .sheet-close:focus-visible {
   outline: 2px solid var(--sc-primary);
@@ -464,7 +507,7 @@ onBeforeUnmount(() => {
 .hamburger {
   width: 22px;
   height: 2px;
-  background: #ffffff;
+  background: var(--sc-text);
   position: relative;
 }
 
@@ -475,7 +518,7 @@ onBeforeUnmount(() => {
   left: 0;
   width: 100%;
   height: 2px;
-  background: #ffffff;
+  background: var(--sc-text);
 }
 
 .hamburger::before { top: -6px; }
@@ -645,7 +688,6 @@ onBeforeUnmount(() => {
 }
 
 @media (max-width: 767.98px) {
-  .navbar-container { padding: 0 20px; }
   .signout-error { padding-inline: 20px; }
 }
 
@@ -667,13 +709,7 @@ onBeforeUnmount(() => {
   .desktop-nav { gap: 12px; }
   .right-group { gap: 12px; }
   .nav-item, .signin-btn, .signout-btn { font-size: 13.5px; }
-  .download-cta { padding: 9px 14px; font-size: 13.5px; }
-}
-
-/* Coarse pointers above the breakpoint (tablets) get the 44px target on the CTA too;
-   a fine pointer keeps the designed 38px pill, so the desktop is visually unchanged. */
-@media (min-width: 768px) and (pointer: coarse) {
-  .download-cta { min-height: 44px; }
+  .download-cta.size-compact { padding-inline: 14px; font-size: 13.5px; }
 }
 
 @media (prefers-reduced-motion: reduce) {

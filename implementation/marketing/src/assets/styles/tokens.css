@@ -3,6 +3,9 @@
   --sc-base: #0b0d12;
   --sc-surface: #14161d;
   --sc-elevated: #1c1f28;
+  /* The alternating section band (Figma bg/panel, the Download requirements band). It was used by a
+     view and defined nowhere, so the band silently had no fill. The same tone as the panel surface. */
+  --sc-surface-alt: var(--sc-surface);
   --sc-inset: #0f1116;
   --sc-border: #262a34;
   --sc-border-strong: #363b47;
@@ -10,11 +13,21 @@
   /* Text */
   --sc-text: #f4f6fb;
   --sc-text-secondary: #a7aebe;
-  --sc-text-muted: #6b7383;
+  /* Raised from #6b7383 (3.79:1 on --sc-surface, 3.45:1 on --sc-elevated: below AA for small text
+     on every surface it sits on, with 40+ consumers) to clear 4.5:1 on every surface: 5.9 on base,
+     5.5 on surface, 5.0 on elevated. WEB ONLY: the cross-platform Design 2.0 token (DESIGN-TOKENS.md,
+     the operator console, the Rust and Flutter copies) is untouched, and Figma's own text/muted
+     (#9aa4b2) maps to --sc-text-secondary, which the shared chrome uses. Flagged to Uma. */
+  --sc-text-muted: #868ea0;
 
   /* Brand */
   --sc-primary: #6e5cf0;
+  /* LINK INK on dark surfaces (14 consumers); NOT a button fill: white on it is 3.78:1. */
   --sc-primary-hover: #7e6eff;
+  /* The primary BUTTON's hover fill (web only): darker than --sc-primary, white label 5.69:1. A lighter hover
+     cannot hold a white label at 4.5:1 on this indigo (reset-r2-04). Which exact hover every primary gets is
+     Uma's under shared-chrome-31; whatever she picks must keep 4.5:1 (tests/tokens.test.ts fails below it). */
+  --sc-primary-hover-fill: #5f4de6;
   --sc-accent-soft: #201f3a;
 
   /* Scripture */
@@ -26,6 +39,8 @@
   --sc-live-soft: #2a1416;
   --sc-live-border: #5a2327;
   --sc-preview: #35c08a;
+  /* Used by the Pricing check marks and defined nowhere, so they fell back to white. */
+  --sc-success: var(--sc-preview);
   --sc-preview-soft: #10231c;
   --sc-preview-border: #1c3a2e;
   --sc-warn: #f5a524;
@@ -53,21 +68,33 @@
   --font-h3: 600 21px/28px var(--font-family);
   --font-body: 400 17px/26px var(--font-family);
   --font-small: 400 15px/22px var(--font-family);
+  /* Sub-page hero (Features, Download, Pricing, Contact, Support ... measure 46-54 in Figma; 52/58 is
+     the census mode). The Home hero keeps --font-h1. Steps down in main.css. */
+  --font-h1-page: 700 52px/58px var(--font-family);
   --font-eyebrow: 700 13px/16px var(--font-family);
+  /* A font shorthand cannot carry tracking, so the eyebrow's +0.3px lives beside it (.font-eyebrow). */
+  --letter-spacing-eyebrow: 0.3px;
   --font-micro: 500 11px/14px var(--font-family);
 
   /* Spacing */
+  /* ONE content width (Figma: 96..1344 at 1440 wide) and the gutter either side of it (96 / 48 / 20px,
+     stepped in main.css). The shared `.container` is built from these two; pages adopt it instead of
+     declaring their own 1000-1240px max-width and 24px padding. */
+  --content-max: 1248px;
   --gutter: 96px;
+  /* The navbar bar has its own, tighter gutter than the page body (Figma: 48px nav against 96px body). */
+  --nav-gutter: 48px;
   /* Horizontal page padding INSIDE a view's max-width container. 24px is what the desktop
      design was built with; tablet and mobile step up to 48px / down to 20px (design 8a).
      Overridden by the breakpoint blocks in main.css. */
   --page-gutter: 24px;
-  /* Height of the sticky site navbar. Shells that stick their own bars below it offset by this. */
-  --nav-height: 68px;
-  /* Vertical rhythm for full-width sections; steps down with the viewport. */
-  --section-pad: 100px;
+  /* Height of the sticky site navbar INCLUDING its 1px bottom border. Shells that stick their own bars
+     below it, and the anchor clearance, offset by this. 69px is the phone bar; main.css makes it 79px
+     from 768px up, where Figma draws the bar with its links. */
+  --nav-height: 69px;
+  /* Vertical rhythm for full-width sections; steps down with the viewport. Figma sections are 88-90px. */
+  --section-pad: 88px;
   --section-pad-sm: 80px;
-  --section-padding: 88px;
   --card-radius: 16px;
   --pill-radius: 999px;
   --grid-gap: 24px;
@@ -78,5 +105,6 @@
   --transition-slow: 400ms cubic-bezier(0.16, 1, 0.3, 1);
 
   /* CTA Gradient */
-  --gradient-cta: linear-gradient(135deg, #5b6bd6, #2b2a6b);
+  /* Brand ink to the deep indigo, the card behind the CTA band buttons (Figma 479:125), not the buttons. */
+  --gradient-cta: linear-gradient(135deg, var(--sc-primary), #2b2a6b);
 }

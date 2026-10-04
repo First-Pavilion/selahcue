@@ -74,9 +74,9 @@ describe('UiButton uses it, and its public props are unchanged', () => {
     assert.ok(!/:href="/.test(src) && !/:to="/.test(src), 'UiButton must not bind :href / :to itself again')
   })
 
-  test('the public props are exactly the ones callers already use', () => {
+  test('the public props are exactly the ones callers use (`block` was added: PricingCard already passed it and it did nothing)', () => {
     const block = /defineProps\(\{([\s\S]*?)\n\}\)/.exec(src)?.[1] ?? ''
     const keys = [...block.matchAll(/^ {2}(\w+): \{/gm)].map((m) => m[1])
-    assert.deepEqual(keys, ['variant', 'size', 'to', 'href', 'disabled', 'loading'])
+    assert.deepEqual(keys, ['variant', 'size', 'to', 'href', 'disabled', 'loading', 'block'])
   })
 })
