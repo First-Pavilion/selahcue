@@ -226,6 +226,25 @@ jobs:
         working-directory: implementation/desktop
     steps:
       - uses: actions/checkout@v7
+      # Disk headroom on the hosted Linux runner (17tnw2b2k23). From about 21:00 UTC on
+      # 2026-10-04 this job failed on every run, always at or just after the "LAN server + app
+      # server features" step, with the same code, the same runner image and the same Rust
+      # cache that had passed an hour earlier: the runner's disk filled up ("No space left on
+      # device", written against the runner agent's own log, which is also why the step logs
+      # of those runs were never uploaded and cannot be read back). This workspace builds
+      # debug test binaries for ~120 test targets under several feature sets, and all of it
+      # lands on the one disk that also holds the image's tens of GB of preinstalled
+      # toolchains. `free` deletes the ones this job never uses (Android SDK, .NET, GHC,
+      # CodeQL) BEFORE anything is built, and prints where the disk stands before and after.
+      # `report` steps below print it again as the build goes; each one also posts an
+      # annotation, because annotations survive a full disk and the log does not. Linux only:
+      # macOS and Windows runners did not fail and are left alone. Setup zone (implicit
+      # success()), so it sits above the first `!cancelled()` gate as check_workflows.py
+      # requires.
+      - name: Free disk space and report it at job start (Linux)
+        if: runner.os == 'Linux'
+        working-directory: ${{ github.workspace }}
+        run: sh scripts/ci_disk.sh free
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: ${{ needs.changes.outputs.rust }}
@@ -389,6 +408,10 @@ jobs:
           # fontdb scans, NOT that fontdb resolves it or that it measures differently from the
           # bundled face. Those two are asserted at runtime by `verdict()` in installed_serif.
           test -f /usr/share/fonts/truetype/liberation/LiberationSerif-Regular.ttf
+      - name: Disk space before the gates, cache restored (Linux)
+        if: runner.os == 'Linux'
+        working-directory: ${{ github.workspace }}
+        run: sh scripts/ci_disk.sh report before-gates-cache-restored
       # From the first GATE step onward, `!cancelled()`. Setup steps above deliberately
       # keep the default `success()`: if checkout, the toolchain install or the pin
       # assertion fails, every downstream result is meaningless or measured on the wrong
@@ -412,6 +435,10 @@ jobs:
           cargo clippy -p selahcue-scripture --features download --all-targets -- -D warnings
           cargo clippy -p selahcue-cloud --features openai --all-targets -- -D warnings
           cargo clippy -p selahcue-stt-cloud --features deepgram --all-targets -- -D warnings
+      - name: Disk space after clippy (Linux)
+        if: ${{ !cancelled() && runner.os == 'Linux' }}
+        working-directory: ${{ github.workspace }}
+        run: sh scripts/ci_disk.sh report after-clippy
       - name: Test (workspace, incl. GPU parity where an adapter exists)
         if: ${{ !cancelled() }}
         # --no-fail-fast: without it cargo stops at the first failing test BINARY, so a
@@ -427,6 +454,10 @@ jobs:
         # exist -- in a comment justifying a flag whose purpose is to stop results going
         # missing.)
         run: cargo test --workspace --no-fail-fast
+      - name: Disk space after the workspace tests (Linux)
+        if: ${{ !cancelled() && runner.os == 'Linux' }}
+        working-directory: ${{ github.workspace }}
+        run: sh scripts/ci_disk.sh report after-workspace-tests
       # Structural merge gates for the presentation importer (threat model B2 + the design's
       # no-I/O rule + the ADR-0025 decoder pin). These are one-line checks only because the
       # importer is its own crate; inside the operator, whose graph legitimately contains a TLS
@@ -503,6 +534,10 @@ jobs:
         run: |
           cargo test -p selahcue-lan --features server --no-fail-fast
           cargo test -p selahcue-app --features server --no-fail-fast
+      - name: Disk space after the LAN and app server tests (Linux)
+        if: ${{ !cancelled() && runner.os == 'Linux' }}
+        working-directory: ${{ github.workspace }}
+        run: sh scripts/ci_disk.sh report after-lan-and-app-server-tests
       - name: Test (scripture download — feature-gated, loopback only)
         if: ${{ !cancelled() }}
         run: cargo test -p selahcue-scripture --features download --no-fail-fast
@@ -565,6 +600,12 @@ jobs:
         run: |
           cargo test -p selahcue-data --features encryption --no-fail-fast
           cargo test -p selahcue-desktop --features encryption --no-fail-fast
+      # Last step of the job, `always()` so a failed or cancelled run still says where the disk
+      # ended up. Printed before the cache's post step, which on main tars `target` up.
+      - name: Disk space at job end (Linux)
+        if: ${{ always() && runner.os == 'Linux' }}
+        working-directory: ${{ github.workspace }}
+        run: sh scripts/ci_disk.sh report job-end
 
   # Proves the app actually LAUNCHES (windows created, first frame presented, exit
   # 0) on every OS — not just build+test — and records a per-OS cold-start figure
