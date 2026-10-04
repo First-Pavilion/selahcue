@@ -64,31 +64,21 @@ export const LEDGER: Readonly<Record<string, PageLedger>> = {
       // The two length rules this PR added to the form (contact-12).
       'Name must be 100 characters or fewer',
       'Church / organization must be 100 characters or fewer',
+      // ClickUp 17tnw2b0x3h: the form sends nothing (no endpoint yet), so the page says so and names the one address the owner
+      // confirmed (2026-10-04). No reply time, no person, no channel that does not exist.
+      'The contact form is not available yet. Please email us instead.',
+      'Email us',
+      'Write to us at this address.',
+      'support@selahcueapp.com',
     ],
-    unbacked: [
-      // The three method cards: a staffing claim, a member count and "instant help", a person and SLAs. The two links go nowhere
-      // (`href="#"`). Unbacked and restyled (audit contact-04, 07); the arrow glyph that ended each link was dropped.
-      'Email our dedicated support team directly.',
-      'Join 1,200+ worship tech leaders on Discord for instant help.',
-      'Join Discord Community',
-      'Talk to our church solutions architect for enterprise SLAs.',
-      'Schedule a Demo Call',
-      // The success card: it renders after a form that sends NOTHING (an 800 ms timer), says the message was received and promises
-      // a reply inside 24 hours (audit contact-06). Visible only after a submit, which is why the test renders that state.
-      '✓',
-      'Message Received!',
-      /^Thank you for reaching out, .*\. A SelahCue specialist will respond within 24 hours\.$/,
-    ],
+    // Empty on purpose: the claims that were here (a 24-hour reply, "Message Received!", 1,200+ Discord members, two links that
+    // went nowhere, "enterprise SLAs", a "dedicated support team") were removed by ClickUp 17tnw2b0x3h and are banned in NAMED_CLAIMS.
+    unbacked: [],
     harmless: [
       'Send us a message',
       '*',
       '0/2000',
-      'Support & Sales Email',
-      'support@selahcue.app',
-      'Community & Discord',
-      'Enterprise & Multi-Campus',
       'Grace Community Church',
-      'Send Another Message',
       // The form's own validation messages from before this PR.
       'Name is required',
       'Email is required',
@@ -98,11 +88,15 @@ export const LEDGER: Readonly<Record<string, PageLedger>> = {
   },
 
   Support: {
-    newCopy: ['HELP CENTER', 'How can we help?', 'Guides, answers and troubleshooting for running SelahCue on Sunday.', 'Search help articles…'],
-    unbacked: [
-      // "Available to assist" is a staffing claim the repo does not back (audit support-08: the Figma line promised a reply time).
-      'Our support team is available to assist your church with technical questions.',
+    newCopy: [
+      'HELP CENTER',
+      'How can we help?',
+      'Guides, answers and troubleshooting for running SelahCue on Sunday.',
+      'Search help articles…',
+      // ClickUp 17tnw2b0x3h: replaces "Our support team is available to assist your church" (a staffing claim, audit support-08).
+      "Can't find what you need? Get in touch.",
     ],
+    unbacked: [],
     harmless: [
       'Start here',
       'Still need help?',

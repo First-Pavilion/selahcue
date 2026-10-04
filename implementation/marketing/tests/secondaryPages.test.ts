@@ -174,8 +174,6 @@ interface PageState {
 }
 const STATES: Readonly<Record<string, readonly PageState[]>> = {
   Contact: [
-    { label: 'submitted: the success card', state: { set: { isSubmitted: true, name: 'Ana' } }, reached: /Message Received!/ },
-    { label: 'submitting: the button while the timer runs', state: { set: { isSubmitting: true } }, reached: /<input[^>]* disabled/ },
     { label: 'submitted empty: every required message', state: { call: [['handleSubmit']] }, reached: /Name is required[\s\S]*Email is required[\s\S]*Message is required/ },
     {
       label: 'submitted with bad values: the length and email messages',
@@ -527,7 +525,7 @@ describe('CategoryIcon: every name a view asks for has its own icon, and every i
   })
 
   test('the reader finds the names each view uses (so a view cannot stop being checked)', () => {
-    assert.deepEqual([...asked.get('ContactView.vue')!].sort(), ['briefcase', 'mail', 'users'])
+    assert.deepEqual([...asked.get('ContactView.vue')!].sort(), ['mail'])
     assert.ok(asked.get('SupportView.vue')!.length >= 6, 'the six help categories')
     assert.ok(asked.get('DocsView.vue')!.includes('getting-started') && asked.get('DocsView.vue')!.length >= 6)
     assert.ok(asked.get('BlogView.vue')!.includes('shield-check'))
@@ -545,9 +543,9 @@ describe('CategoryIcon: every name a view asks for has its own icon, and every i
     assert.deepEqual(table.filter((n) => !used.has(n)), [], 'icons no view draws: delete them')
   })
 
-  test('Contact draws its three method tiles with CategoryIcon, not inline paths', async () => {
+  test('Contact draws its one method tile with CategoryIcon, not inline paths', async () => {
     const sfc = readSrc('views/ContactView.vue')
-    assert.equal(elementsOf(sfc).filter((el) => el.tag === 'CategoryIcon').length, 3)
+    assert.equal(elementsOf(sfc).filter((el) => el.tag === 'CategoryIcon').length, 1)
     assert.ok(!elementsOf(sfc).some((el) => el.tag === 'svg'), 'no inline svg is left in the view')
   })
 
@@ -589,7 +587,7 @@ describe('Contact (497:124): centred hero, then the form, then the method cards'
   test('the method-card titles are h2 and every other heading follows (contact-bug-01)', async () => {
     const page = await html('ContactView.vue')
     const cards = withClass(page, 'method-card')
-    assert.equal(cards.length, 3, 'the three channels the build already shows stay (contact-04, 07 are decisions)')
+    assert.equal(cards.length, 1, 'one channel works today, the email address; the Discord and enterprise cards claimed channels that do not exist (17tnw2b0x3h)')
     const heads = headingsOf(page)
     assert.deepEqual(outlineProblems(heads), [])
     assert.ok(!heads.some((h) => h.level >= 4), 'no h4 left on the page')
@@ -598,7 +596,7 @@ describe('Contact (497:124): centred hero, then the form, then the method cards'
   test('the method cards carry an icon tile with an SVG, not an emoji (contact-03)', async () => {
     const page = await html('ContactView.vue')
     const tiles = withClass(page, 'method-icon')
-    assert.equal(tiles.length, 3)
+    assert.equal(tiles.length, 1)
     for (const tile of tiles) {
       const after = page.slice(tile.at, page.indexOf('</div>', tile.at))
       assert.ok(/<svg[\s>]/.test(after), 'each tile holds an inline SVG')
@@ -633,6 +631,25 @@ describe('Contact (497:124): centred hero, then the form, then the method cards'
   test('the hero has no promise of a reply or of a person: the sentence is reworded (contact-01, honest content)', async () => {
     const text = textOf(await html('ContactView.vue')).toLowerCase()
     assert.ok(!text.includes('real person'), 'Figma says "a real person"; the repo does not back who answers')
+  })
+
+  // ClickUp 17tnw2b0x3h. The form sends nothing (there is no endpoint), so the page must never say it did.
+  test('nothing is sent and the page says so: Send is disabled and described by a visible note; there is no success card, no timer and no reply promise', async () => {
+    const page = await html('ContactView.vue')
+    const sfc = readSrc('views/ContactView.vue')
+    const send = elementsOf(sfc).find((el) => el.tag === 'UiButton' && valueOf(prop(el, 'size')) === 'lg')
+    assert.ok(send && prop(send, 'disabled'), 'the Send button is disabled until a send exists')
+    assert.equal(valueOf(prop(send, 'aria-describedby')), 'send-note', 'and described by the note')
+    assert.ok(tagsOf(page).some((t) => t.attrs['id'] === 'send-note'), 'the note is on the page')
+    assert.ok(textOf(page).includes('The contact form is not available yet.'), 'and says the form is not available')
+    const script = descriptorOf(sfc, 'ContactView.vue').scriptSetup?.content ?? ''
+    assert.doesNotMatch(script, /setTimeout|isSubmitted|isSubmitting/, 'no fake send: no timer and no submitted state')
+    assert.doesNotMatch(sfc, /success-state|Message Received|respond within/i, 'no success card and no reply promise')
+  })
+
+  test('the only link on the page is the one address the owner confirmed; no link goes nowhere', async () => {
+    const hrefs = tagsOf(await html('ContactView.vue')).filter((t) => t.name === 'a').map((t) => t.attrs['href'])
+    assert.deepEqual(hrefs, ['mailto:support@selahcueapp.com'])
   })
 
   test('every field takes its own error away when its value changes, and the form hears the pointer go down (review round 2, Quinn Q1)', () => {
