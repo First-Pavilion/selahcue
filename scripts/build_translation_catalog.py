@@ -150,6 +150,7 @@ _CLOSING_PUNCT = ",;:.!?)\u201d\u2019"
 _QUOTES_THAT_OPEN_WORDS = "\u201d\u2019"
 _MARKER_AHEAD = re.compile(r"[ \t]*\\\+?[A-Za-z][A-Za-z0-9]*(?:\*|[ \t]?)")  # spaces, then one inline marker
 _SPACES = re.compile(r"[ \t]*")
+_BARE_MARKER = re.compile(r"\\\+?[A-Za-z][A-Za-z0-9]*(?:\*|[ \t]?)")  # one inline marker, nothing before it
 _VERSE_TOKEN = re.compile(r"\\v\s+(\S+)\s*")
 # `\w word|strong="H1"\w*` -> `word`. USFM defines ONE delimiter space after the marker; `\s+` here let the
 # lazy class that follows also match whitespace, which is quadratic on an unclosed `\w` (10,000 spaces took a
@@ -164,6 +165,8 @@ _INLINE_MARKER = re.compile(r"\\\+?([A-Za-z][A-Za-z0-9]*)(\*|[ \t]?)")
 _TABLE_CELL = re.compile(r"tr|tc\d|tcr\d|th\d|thr\d")
 # What Psalm 119's `\qc` letter label looks like once cleaned: a Hebrew letter, then one to three Latin words ("\u05d0 ALEPH.").
 # The Hebrew letter is REQUIRED: without it, any short line ("Amen.", "forever.") would pass as a label and vanish.
+# One upper-case Latin word with no Hebrew letter ("HHETH.") is neither: it is refused (see parse_book).
+_LATIN_LABEL_LOOKALIKE = re.compile(r"[A-Z]{2,12}\.?")
 _LABEL_SHAPE = re.compile(r"[\u0590-\u05ff]+ [A-Za-z]+(?: [A-Za-z]+){0,2}\.?")
 # Where the headings that the parser skips are recorded, to prove none of them fused into a verse.
 _ORACLE_MARKERS = {"d", "qa"}
@@ -190,7 +193,13 @@ def _closes_phrase(text, i):
     if i >= len(text) or text[i] not in _CLOSING_PUNCT:
         return False
     if text[i] in _QUOTES_THAT_OPEN_WORDS:
-        following = text[i + 1:i + 2]
+        j = i + 1
+        while True:  # `'\wj yar\wj*`: the marker is not text, so look at what is behind it
+            marker = _BARE_MARKER.match(text, j)
+            if marker is None:
+                break
+            j = marker.end()
+        following = text[j:j + 1]
         return not (following and following.isalnum())
     return True
 
@@ -314,6 +323,12 @@ def parse_book(usfm, label):
             if _LABEL_SHAPE.fullmatch(rest):
                 skipping, last_heading = True, [chapter, rest]
                 headings.append(last_heading)
+                continue
+            if _LATIN_LABEL_LOOKALIKE.fullmatch(rest):
+                # "HHETH." with no Hebrew letter: a label in some translation, or one upper-case word of a verse. Either
+                # guess is a silent error (kept, it fuses into the verse; dropped, it deletes text), so neither is made.
+                bad(f"chapter {chapter}: {rest!r} looks like a Psalm 119 letter label but has no Hebrew letter; "
+                    f"refusing to guess whether it is a label or verse text")
                 continue
         if marker is not None and _SKIP.fullmatch(marker):
             skipping, last_heading = True, None
@@ -523,18 +538,79 @@ def tsv_bytes(rows):
 
 # --- allowlist, gates, catalogue ---------------------------------------------------------------
 def load_allowlist(path):
-    data = json.loads(pathlib.Path(path).read_text(encoding="utf-8"))
-    if data.get("schema") != 1:
-        raise Mismatch([f"{path}: unsupported allowlist schema {data.get('schema')!r}"])
+    try:
+        data = json.loads(pathlib.Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError) as e:  # ValueError covers a JSON syntax error and bad UTF-8
+        raise Mismatch([f"{path}: not a readable allowlist ({type(e).__name__}: {e})"])
+    if not isinstance(data, dict) or data.get("schema") != 1:
+        raise Mismatch([f"{path}: unsupported allowlist schema {data.get('schema') if isinstance(data, dict) else data!r}"])
     return data
 
 
+def check_allowlist_shape(allow):
+    """Refuse an allowlist whose STRUCTURE would crash the gate or the builder, naming every problem.
+
+    This is only the shape (a list is a list, a code is a string, a licence has the fields the catalogue copies); what
+    a licence or a copyright line must SAY is the gate's job."""
+    problems = []
+    if not isinstance(allow.get("licences"), dict):
+        problems.append("allowlist: `licences` must be an object")
+    else:
+        for key, lic in allow["licences"].items():
+            if not isinstance(lic, dict):
+                problems.append(f"allowlist: licence {key!r} must be an object")
+                continue
+            for field, kind in (("name", str), ("summary", str), ("permitted", bool), ("attribution_required", bool),
+                                ("share_alike", bool)):
+                if not isinstance(lic.get(field), kind):
+                    problems.append(f"allowlist: licence {key!r} needs `{field}` as {kind.__name__}")
+    if not isinstance(allow.get("translations"), list):
+        problems.append("allowlist: `translations` must be a list")
+    else:
+        for i, spec in enumerate(allow["translations"]):
+            if not isinstance(spec, dict):
+                problems.append(f"allowlist: translations[{i}] must be an object")
+                continue
+            for field in ("code", "name", "language"):
+                if not isinstance(spec.get(field), str):
+                    problems.append(f"allowlist: translations[{i}] needs `{field}` as a string")
+            if "verses" in spec and not isinstance(spec["verses"], dict):
+                problems.append(f"allowlist: translations[{i}] `verses` must be an object")
+    excluded = allow.get("excluded", [])
+    if not isinstance(excluded, list):
+        problems.append("allowlist: `excluded` must be a list")
+    else:
+        for i, entry in enumerate(excluded):
+            if not (isinstance(entry, dict) and isinstance(entry.get("ebible_id"), str)):
+                problems.append(f"allowlist: excluded[{i}] needs `ebible_id` as a string")
+    if problems:
+        raise Mismatch(problems)
+
+
+# The columns the gate and the catalogue read. A file without one is refused up front, not with a KeyError later.
+CATALOG_COLUMNS = ("translationId", "languageCode", "title", "Redistributable", "downloadable", "Copyright", "UpdateDate")
+
+
 def load_catalog_csv(path):
-    """eBible's `translations.csv` as {translationId: row}. A corrupt or hostile file is a refusal, not a traceback."""
+    """eBible's `translations.csv` as {translationId: row}. A corrupt or hostile file is a refusal, not a traceback.
+
+    Refused: unreadable or non-UTF-8 text, a csv error (a field over the csv limit), a missing column the gate reads,
+    and a translationId that appears twice (the last row would silently win)."""
     try:
         text = pathlib.Path(path).read_text(encoding="utf-8-sig")  # eBible's file starts with a UTF-8 BOM
-        return {r["translationId"]: r for r in csv.DictReader(io.StringIO(text))}
-    except (OSError, UnicodeDecodeError, csv.Error, KeyError) as e:
+        reader = csv.DictReader(io.StringIO(text))
+        missing = [c for c in CATALOG_COLUMNS if c not in (reader.fieldnames or [])]
+        if missing:
+            raise Mismatch([f"{path}: not a usable eBible catalogue (missing columns {missing})"])
+        rows = {}
+        for row in reader:
+            if None in row or any(row[c] is None for c in CATALOG_COLUMNS):  # extra values, or a row cut short
+                raise Mismatch([f"{path}: not a usable eBible catalogue (line {reader.line_num} has the wrong number of columns)"])
+            if row["translationId"] in rows:
+                raise Mismatch([f"{path}: not a usable eBible catalogue (translationId {row['translationId']!r} appears twice)"])
+            rows[row["translationId"]] = row
+        return rows
+    except (OSError, UnicodeDecodeError, csv.Error) as e:  # (no KeyError: the columns were checked above)
         raise Mismatch([f"{path}: not a usable eBible catalogue ({type(e).__name__}: {e})"])
 
 
@@ -565,6 +641,7 @@ def gate(allow, rows, require_cleared, only=None):
     Everything is checked for every entry (a bad allowlist is a bad allowlist) EXCEPT `--require-cleared`, which
     applies only to the entries being built (`only`; None means all), so a cleared translation can be published
     while another is still waiting on legal review."""
+    check_allowlist_shape(allow)
     problems, seen = [], set()
     licences = allow.get("licences", {})
     excluded = {e["ebible_id"] for e in allow.get("excluded", [])}
@@ -721,6 +798,8 @@ def fetch(url, dest, opener=None, max_bytes=MAX_ZIP_BYTES):
     and not by the clock (accepted: this is an owner-run build, not a service)."""
     part = dest.with_suffix(dest.suffix + ".part")
     opener = opener or _OPENER.open
+    if urllib.parse.urlsplit(url).scheme != "https":  # redirects are pinned to https; so is the URL they start from
+        raise Mismatch([f"{url}: not an HTTPS URL; refusing to download"])
     try:
         req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
         total = 0
@@ -878,9 +957,11 @@ def main():
     ap.add_argument("--out-dir", type=pathlib.Path, help="where assets and catalog.json are written")
     ap.add_argument("--only", nargs="+", metavar="CODE", help="build just these allowlist codes")
     ap.add_argument("--base-url", help="URL prefix the app will download assets from (recorded in catalog.json)")
-    ap.add_argument("--require-cleared", action="store_true", help="publish run: refuse any legal_review=pending entry")
+    ap.add_argument("--require-cleared", action="store_true",
+                    help="publish run: refuse a selected entry whose legal_review is pending, and refetch the catalogue "
+                         "and the selected zips (not with --offline)")
     ap.add_argument("--offline", action="store_true", help="never touch the network; missing inputs are an error")
-    ap.add_argument("--refresh", action="store_true", help="re-download translations.csv and every zip, even if cached")
+    ap.add_argument("--refresh", action="store_true", help="re-download translations.csv and the zips of the selected translations, even if cached")
     ap.add_argument("--verify-bundled", action="store_true", help="positive control against the five bundled assets")
     ap.add_argument("--self-test", action="store_true")
     args = ap.parse_args()
@@ -956,6 +1037,7 @@ def _fixture_zip(path, patch=None, drop=(), duplicate=(), licence_page=LICENCE_P
         if sidecars:  # macOS resource-fork debris: not UTF-8, not a book
             zf.writestr("__MACOSX/._01-GEN.usfm", b"\xff\xfe\x00junk")
             zf.writestr("._02-EXO.usfm", b"\xff\xfe\x00junk")
+            zf.writestr("__MACOSX/03-LEV.usfm", b"\xff\xfe\x00junk")  # in the sidecar folder, not named `._`
         for n in range(1, 67):
             if CANON[n - 1] not in drop:
                 name = f"{n:02d}-{CANON[n - 1]}." + ("USFM" if CANON[n - 1] in upper else "usfm")
@@ -1100,18 +1182,25 @@ def self_test():
         def linear(work_for, size):
             """`work_for(n)` must scale LINEARLY: four times the input may take about four times as long, never sixteen.
 
-            A ratio, not a wall-clock bound, so a slow or busy machine does not make it flaky; the floor stops timer noise
-            on a fast one. (A quadratic regex ran 16x slower at 4x the input: 0.25 s then 4 s.)"""
-            def timed_run(n):
-                start = time.perf_counter()
-                try:
-                    work_for(n)
-                except Mismatch:
-                    pass  # refusing the input is fine; being slow about it is not
-                return time.perf_counter() - start
+            A ratio rather than a fixed limit, so a slow machine does not fail it. It is still a timing test and can in
+            principle flake on a machine that stalls: one earlier version (floor 20 ms, a single run each) failed once in
+            144 runs (18 ms then 246 ms: 14x). So each size is run three times and the FASTEST counts (a stall hurts one
+            run, not all three), and the floor is 0.1 s, so the big run may take a full second before it fails. A
+            quadratic regex still fails it by a wide margin (16x at 4x the input: 0.25 s then 4 s)."""
+            def fastest_of_three(n):
+                best = None
+                for _ in range(3):
+                    start = time.perf_counter()
+                    try:
+                        work_for(n)
+                    except Mismatch:
+                        pass  # refusing the input is fine; being slow about it is not
+                    took = time.perf_counter() - start
+                    best = took if best is None else min(best, took)
+                return best
 
-            small_took, big_took = timed_run(size), timed_run(size * 4)
-            assert big_took < 10 * max(small_took, 0.02), \
+            small_took, big_took = fastest_of_three(size), fastest_of_three(size * 4)
+            assert big_took < 10 * max(small_took, 0.1), \
                 f"{size} -> {size * 4}: {small_took:.3f}s -> {big_took:.3f}s ({big_took / max(small_took, 1e-9):.0f}x for 4x the input)"
 
         linear(lambda n: clean("\\w" + " " * n + "x"), 5_000)
@@ -1120,6 +1209,7 @@ def self_test():
         linear(lambda n: clean("word\\f + n\\f* " * n), 25_000)
         linear(lambda n: clean("word \\f + n\\f* \\wj ?\\wj* " * n), 15_000)
         raises(lambda: clean("\\f + a " * 20_000), "unterminated \\f note")
+        linear(lambda n: clean("\\f + a " * n), 50_000)  # refusing is instant; a regression to a slow refusal is not allowed
         raises(lambda: parse("\\c 1\n\\p\n\\v 1 x\\f + a " * 20_000), "GEN: unterminated \\f note")
         assert strip_notes("a\\f + x\\f* b\\x - y\\x* c\\fe + z\\fe* d") == "a b c d"
         assert strip_notes("no notes here") == "no notes here" and strip_notes("") == ""
@@ -1152,6 +1242,15 @@ def self_test():
         assert clean("Abiya \\f + n\\f* \u2019yar Zakariya") == "Abiya \u2019yar Zakariya"
         assert clean("x \\f + n\\f*\u2019 y") == "x\u2019 y" and clean("x \\f + n\\f*?\u2019\u201d") == "x?\u2019\u201d"
         assert clean("x \\f + n\\f*\u2019") == "x\u2019" and clean("x \\f + n\\f*\u201d, y") == "x\u201d, y"
+        quote = chr(0x201d)
+        assert clean("x \\f + n\\f* " + quote + "1") == "x " + quote + "1", "a digit after a quote is not a closer"
+        assert clean("x \\f + n\\f* " + quote + "y") == "x " + quote + "y", "nor is a letter after a right double quote"
+        # A note at the END of a line does not reach for punctuation on the NEXT line: the look-ahead stays on its line.
+        assert strip_notes("a \\f + n\\f*\n,") == "a \n,"
+        # A quote, then an inline marker, then a letter: the marker is not text, so the word still begins with the quote.
+        apostrophe = chr(0x2019)
+        assert clean("x \\f + n\\f*" + apostrophe + "\\wj yar\\wj*") == "x " + apostrophe + "yar"
+        assert clean("x \\f + n\\f*" + apostrophe + "\\wj ?\\wj*") == "x" + apostrophe + "?", "...but a closer behind a marker closes"
         # Each closing mark closes (a literal list: the code's own set must not be the thing under test).
         for mark in ",;:.!?)":
             assert clean(f"x \\f + n\\f*{mark}") == f"x{mark}", mark
@@ -1184,6 +1283,14 @@ def self_test():
         assert v119c[(119, 8)] == "Last words. Amen." and not [h for c, h in h119c if c == 119], (v119c[(119, 8)], h119c)
         v119d, h119d, _ = parse(psa119 + "\n\\c 119\n\\q1\n\\v 5 Five.\n\\qc \u05d1 HHETH.\n\\v 6 Six.", "PSA")
         assert v119d[(119, 5)] == "Five. \u05d1 HHETH." and not [h for c, h in h119d if c == 119], "a label mid-section is text"
+        # One upper-case Latin word with no Hebrew letter at a section start is refused, never guessed (label or verse text?).
+        raises(lambda: parse(psa119 + "\n\\c 119\n\\q1\n\\v 8 Last.\n\\qc HHETH.\n\\v 9 Next.", "PSA"), "looks like a Psalm 119 letter label")
+        # A Hebrew-letter line of more than three Latin words is verse text, and the rule belongs to Psalm 119 alone.
+        v119e, _, _ = parse(psa119 + "\n\\c 119\n\\q1\n\\v 8 Last.\n\\qc " + chr(0x5d1) + " ONE TWO THREE FOUR.\n\\v 9 Next.", "PSA")
+        assert v119e[(119, 8)].endswith("ONE TWO THREE FOUR."), v119e[(119, 8)]
+        psa41 = "\n".join(f"\\c {c}\n\\p\n\\v 1 x" for c in range(1, 41))
+        v41, h41, _ = parse(psa41 + "\n\\c 41\n\\q1\n\\v 8 Last.\n\\qc " + chr(0x5d1) + " HHETH.\n\\v 9 Next.", "PSA")
+        assert v41[(41, 8)].endswith("HHETH.") and not [h for c, h in h41 if c == 41], "outside Psalm 119 it is verse text"
 
         # ---- convert(): the whole translation, every post-check ----
         counts = _fixture_counts()
@@ -1315,12 +1422,30 @@ def self_test():
         bad_schema = d / "schema2.json"
         bad_schema.write_text(json.dumps({"schema": 2}), encoding="utf-8")
         raises(lambda: load_allowlist(bad_schema), "unsupported allowlist schema")
+        # A malformed allowlist is a refusal that names the problem, not a traceback.
+        for label, content in [("not JSON", b"{oops"), ("a list", b"[1, 2]"), ("not UTF-8", b"\xff\xfe\x00"), ("empty", b"")]:
+            (d / "bad.json").write_bytes(content)
+            raises(lambda: load_allowlist(d / "bad.json"), "allowlist", label)
+        raises(lambda: load_allowlist(d / "gone.json"), "not a readable allowlist")
+        for label, broken in [("translations is not a list", {**real, "translations": {}}),
+                              ("a translation that is not an object", {**real, "translations": [1]}),
+                              ("a code that is a number", allow(code=5)), ("a code that is null", allow(code=None)),
+                              ("a translation without a name", allow(name=None)), ("a language that is a number", allow(language=7)),
+                              ("verses that are a list", allow(verses=[1])),
+                              ("an excluded entry without an id", {**real, "excluded": [{}]}),
+                              ("excluded is not a list", {**real, "excluded": {}}),
+                              ("licences is not an object", {**real, "licences": []}),
+                              ("a licence that is not an object", {**real, "licences": {"x": 1}}),
+                              ("a licence missing its fields", {**real, "licences": {"public-domain": {"name": "n"}}})]:
+            raises(lambda: gate(broken, {}, False), "allowlist: ", label)
 
         # ---- the licence page inside eBible's zip: what the allowlist entry relies on must still be there ----
         def page(html_text):
             return _fixture_zip(d / "page.zip", licence_page=html_text)
 
         check_licence_text(page(LICENCE_PAGE), entry)  # <p>, &nbsp; and wrapping do not matter
+        # The licence page may sit in a folder and be named in any case.
+        check_licence_text(_fixture_zip(d / "sub.zip", licence_page=None, extras={"docs/COPR.HTM": LICENCE_PAGE}), entry)
         cc = {**entry, "licence_text": ["creative commons attribution-sharealike 4.0"]}
         check_licence_text(page("<p>Creative Commons Attribution-ShareAlike 4\u202a.0\n International (CC BY-SA)</p>"), cc)
         raises(lambda: check_licence_text(page("<p>Creative Commons Attribution 4.0</p>"), cc), "no longer contains")
@@ -1380,6 +1505,8 @@ def self_test():
 
         raises(lambda: fetch("https://example.invalid/y", d / "y.bin", refuse), "could not download")
         assert not (d / "y.bin").exists() and not list(d.glob("*.part"))
+        raises(lambda: fetch("http://example.invalid/x", d / "h.bin", serve(b"x")), "not an HTTPS URL")
+        assert not (d / "h.bin").exists(), "a plain-http URL is refused before anything is requested"
         # A `.part` that is a planted symlink is removed, never followed: its target is not written.
         victim = d / "victim.txt"
         victim.write_text("keep me")
@@ -1437,8 +1564,13 @@ def self_test():
         (work / "translations.csv").write_text(_csv_text([row]), encoding="utf-8")
         # A corrupt or hostile catalogue is a refusal, not a traceback.
         bad_csv = d / "bad.csv"
-        for label, content in [("a field over the csv limit", ("translationId\n" + "x" * 200_000 + "\n").encode()),
-                               ("no translationId column", b"foo,bar\n1,2\n"), ("not UTF-8", b"\xff\xfe\x00")]:
+        header = ",".join(CATALOG_COLUMNS)  # a valid header, so these reach the error they are meant to reach
+        for label, content in [("a field over the csv limit", (header + "\n" + "x,x,x,x,x,x," + "y" * 200_000 + "\n").encode()),
+                               ("no translationId column", b"foo,bar\n1,2\n"), ("not UTF-8", b"\xff\xfe\x00"),
+                               ("a column the gate reads is missing", b"translationId,languageCode\nx,eng\n"),
+                               ("a row cut short", (header + "\nx,eng\n").encode()),
+                               ("a row with extra values", (header + "\nx,x,x,x,x,x,x,extra\n").encode()),
+                               ("a translationId twice", _csv_text([row, row]).encode("utf-8"))]:
             bad_csv.write_bytes(content)
             raises(lambda: load_catalog_csv(bad_csv), "not a usable eBible catalogue", label)
         raises(lambda: load_catalog_csv(d / "missing.csv"), "not a usable eBible catalogue")
