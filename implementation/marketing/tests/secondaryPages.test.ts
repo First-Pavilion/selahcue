@@ -1289,13 +1289,13 @@ function sectionOf(page: string, cls: string): string {
 /** Programme figures: a percentage, a dollar amount, a day count or a month count. */
 const hasFigure = (text: string): boolean => /\d+\s*%|\$\s*\d|\d+[- ]days?\b|\d+[- ]months?\b/i.test(text)
 
-describe('Affiliates (541:124): hero and CTAs, four stat cards, How it works, audiences, checklist, boxed FAQ, closing band', () => {
+describe('Affiliates (541:124): hero, How it works, audiences, checklist (no programme terms, no calculator, no FAQ, no apply)', () => {
   test('the hero is an AFFILIATE PROGRAM pill and the h1 at the frame\'s 54/60 (affiliates-05, affiliates-11)', async () => {
     const page = await html('AffiliatesView.vue')
     assert.ok(textOf(page).includes('AFFILIATE PROGRAM'))
     const css = styleOf(readSrc('views/AffiliatesView.vue'))
     assert.match(css, /@media \(min-width: 1200px\)\s*\{\s*\.hero-title\s*\{[^}]*font-size:\s*54px[^}]*line-height:\s*60px/)
-    assert.equal(declaration(css, '.hero-title', 'max-width'), '880px', 'two lines for the build\'s sentence')
+    assert.equal(declaration(css, '.hero-title', 'max-width'), '880px')
     assert.equal(declaration(css, '.hero-sub', 'font-size'), '19px')
     assert.equal(declaration(css, '.hero-sub', 'line-height'), '30px')
     assert.equal(declaration(css, '.hero-sub', 'max-width'), '760px')
@@ -1316,21 +1316,20 @@ describe('Affiliates (541:124): hero and CTAs, four stat cards, How it works, au
   const linksIn = (markup: string): Array<{ href: string; text: string }> =>
     [...markup.matchAll(/<a [^>]*href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/g)].map((m) => ({ href: m[1] ?? '', text: textOf(m[2] ?? '') }))
 
-  test('the hero has Apply now as a link and Affiliate sign in as a DISABLED button that says why (affiliates-06, owner review round 1)', async () => {
+  // ClickUp 17tnw2b0x3h: nothing can be applied to, so nothing says "apply" and nothing links to the contact form from here.
+  test('the hero has Affiliate sign in as a DISABLED button that says why, and no Apply: no application exists (affiliates-06)', async () => {
     const page = await html('AffiliatesView.vue')
     const hero = sectionOf(page, 'hero-section')
-    assert.deepEqual(linksIn(hero).map((l) => [l.text, l.href]), [['Apply now', '/contact']], 'one link: the interim Apply, which already existed as a CTA')
+    assert.deepEqual(linksIn(hero), [], 'no link in the hero: the interim Apply that led to a form that sends nothing is gone')
     const signIn = tagsOf(hero).find((t) => t.name === 'button')
     assert.ok(signIn, 'Affiliate sign in is a button, not a link')
     assert.ok('disabled' in signIn.attrs, 'and it is disabled')
     const note = signIn.attrs['aria-describedby']
     assert.ok(note && hero.includes(`id="${note}"`), 'tied to a visible explanation')
     assert.match(textOf(hero), /Affiliate sign in: not available yet/)
-    assert.ok(!textOf(page).includes('Calculate Earnings'))
-    const sfc = readSrc('views/AffiliatesView.vue')
-    const buttons = elementsOf(sfc).filter((el) => el.tag === 'UiButton')
-    const apply = buttons.find((el) => valueOf(prop(el, 'size')) === 'lg' && valueOf(prop(el, 'variant')) === 'primary')
-    assert.ok(apply, 'Apply now is a large primary button')
+    assert.match(textOf(hero), /The affiliate program is not open yet\./, 'and the page says the programme is not open')
+    assert.doesNotMatch(textOf(page), /\bapply\b|\bapplication\b|Calculate Earnings/i, 'nowhere does the page invite anyone to apply: no application exists')
+    assert.equal(tagsOf(page).filter((t) => t.name === 'button').length, 1, 'the one button on the page is the disabled sign-in')
   })
 
   test('no link or button on /affiliates goes to the customer sign-in or into the affiliate portal shells', async () => {
@@ -1357,28 +1356,31 @@ describe('Affiliates (541:124): hero and CTAs, four stat cards, How it works, au
     for (const bad of ['Free to join', 'No audience minimum', 'PayPal, Wise or bank']) assert.ok(!text.includes(bad), bad)
   })
 
-  test('four stat cards, left aligned, with no h3 inside them (affiliates-07)', async () => {
+  // ClickUp 17tnw2b0x3h: "states no rate, window, threshold or payout rail and has no calculator".
+  test('the page states no programme figure and no earnings or payout word, anywhere, including accessible names', async () => {
     const page = await html('AffiliatesView.vue')
-    const cards = withClass(page, 'highlight-card')
-    assert.equal(cards.length, 4)
-    for (const card of cards) {
-      const inner = page.slice(card.at, page.indexOf('</p>', card.at))
-      assert.ok(/<p[\s>]/.test(inner) && !/<h3[\s>]/.test(inner), 'the caption is a paragraph, so heading order stays h1 then h2')
-    }
-    const css = styleOf(readSrc('views/AffiliatesView.vue'))
-    assert.match(css, /\.highlights-grid\s*\{[^}]*grid-template-columns:\s*repeat\(4, minmax\(0, 1fr\)\)[^}]*gap:\s*22px/)
-    assert.ok(!/\.highlight-card\s*\{[^}]*text-align:\s*center/.test(css))
+    const everything = [textOf(page), ...attributeRunsOf(page)].join('\n')
+    assert.ok(!hasFigure(everything), 'no percentage, dollar amount, day count or month count')
+    assert.doesNotMatch(everything, /earn|commission|income|recurring|payout|payouts|PayPal|bank transfer|cookie|attribution|threshold/i)
   })
 
-  test('How it works: an h2, a line under it and three numbered step cards with h3 titles and no figure (affiliates-01, affiliates-13)', async () => {
+  test('there are no stat cards: the three that carried the rate, the window and the threshold are gone with the fourth', async () => {
+    const page = await html('AffiliatesView.vue')
+    assert.equal(withClass(page, 'highlight-card').length, 0)
+    assert.equal(withClass(page, 'highlights-section').length, 0)
+    assert.doesNotMatch(styleOf(readSrc('views/AffiliatesView.vue')), /highlight|hl-value/, 'and no style is left for them')
+  })
+
+  test('How it works: an h2, a line under it and two numbered step cards with h3 titles and no figure (affiliates-01, affiliates-13)', async () => {
     const page = await html('AffiliatesView.vue')
     assert.ok(headingsOf(page).some((h) => h.level === 2 && h.text === 'How it works'))
     const section = sectionOf(page, 'steps-section')
     const cards = withClass(section, 'step-card')
-    assert.equal(cards.length, 3)
-    assert.ok(['01', '02', '03'].every((n) => section.includes(`>${n}<`)), 'the 01, 02 and 03 chips')
+    assert.equal(cards.length, 2, 'share, then refer: there is no apply step because nothing can be applied to')
+    assert.ok(['01', '02'].every((n) => section.includes(`>${n}<`)), 'the 01 and 02 chips')
+    assert.ok(!section.includes('>03<'), 'no third chip')
     assert.ok(!hasFigure(textOf(section)), 'no commission rate, threshold, window or review time in the steps')
-    for (const bad of ['within a couple of days', 'ready-made banners', 'pass $50']) assert.ok(!textOf(section).includes(bad), bad)
+    for (const bad of ['within a couple of days', 'ready-made banners', 'pass $50', 'Apply to join']) assert.ok(!textOf(section).includes(bad), bad)
   })
 
   test('Made for people who talk to churches: four icon-tile cards with the frame\'s titles (affiliates-02)', async () => {
@@ -1407,45 +1409,25 @@ describe('Affiliates (541:124): hero and CTAs, four stat cards, How it works, au
     for (const bad of ['actually keep using', 'Recurring commission for a year', 'Banners, links and email copy']) assert.ok(!text.includes(bad), bad)
   })
 
-  test('the calculator stays beside the checklist, with a named slider (affiliates-10 is a decision; the unnamed input is a defect)', async () => {
+  test('there is no earnings calculator: no slider, no calculator card, no result amounts', async () => {
     const page = await html('AffiliatesView.vue')
-    const section = sectionOf(page, 'why-section')
-    assert.equal(withClass(section, 'calc-card').length, 1, 'the existing calculator sits in the right column')
-    const range = tagsOf(section).find((t) => t.name === 'input' && t.attrs['type'] === 'range')
-    assert.ok(range, 'the slider')
-    const labelled = range.attrs['aria-labelledby'] ?? ''
-    assert.ok(labelled && section.includes(`id="${labelled}"`), 'the slider is named by visible text on the page')
+    assert.equal(withClass(page, 'calc-card').length, 0)
+    assert.ok(!tagsOf(page).some((t) => t.name === 'input'), 'no input at all, so no slider')
+    assert.ok(!tagsOf(page).some((t) => t.attrs['id'] === 'calculator'), 'and nothing to link to')
+    const sfc = readSrc('views/AffiliatesView.vue')
+    assert.doesNotMatch(descriptorOf(sfc, 'AffiliatesView.vue').scriptSetup?.content ?? '', /monthlyReferrals|estimated(Monthly|Annual)Earnings/, 'no earnings arithmetic is left in the script')
+    assert.doesNotMatch(styleOf(sfc), /calc-card|range-slider|results-grid|result-box/, 'and no style is left for it')
   })
 
-  test('the FAQ is the boxed accordion under its own h2 "Affiliate FAQ" (affiliates-08, affiliates-09)', async () => {
+  test('there is no FAQ and no closing band: the FAQ answers restated the unbacked terms, and the band asked people to apply', async () => {
     const page = await html('AffiliatesView.vue')
-    assert.ok(headingsOf(page).some((h) => h.level === 2 && h.text === 'Affiliate FAQ'))
-    assert.ok(withClass(page, 'is-boxed').length === 1, 'FaqAccordion rendered with the boxed option')
-    const buttons = tagsOf(page).filter((t) => t.name === 'button' && t.attrs['aria-controls'])
-    assert.ok(buttons.length >= 4, 'each question controls its answer')
+    assert.equal(withClass(page, 'faq-section').length, 0)
+    assert.equal(withClass(page, 'is-boxed').length, 0)
+    assert.equal(withClass(page, 'cta-section').length, 0)
+    assert.ok(!headingsOf(page).some((h) => h.text === 'Affiliate FAQ' || h.text === 'Ready to get started?'))
     const sfc = readSrc('views/AffiliatesView.vue')
-    const faq = elementsOf(sfc).find((el) => el.tag === 'FaqAccordion')
-    assert.ok(faq && prop(faq, 'boxed'), 'the view opts into boxed')
-  })
-
-  test('the closing band: gradient card, h2, a white Apply now that is disabled and says why, no Read the terms (affiliates-04, affiliates-14)', async () => {
-    const page = await html('AffiliatesView.vue')
-    assert.ok(headingsOf(page).some((h) => h.level === 2 && h.text === 'Ready to get started?'))
-    const band = sectionOf(page, 'cta-section')
-    const text = textOf(page)
-    assert.ok(!text.includes('Read the terms'))
-    const sfc = readSrc('views/AffiliatesView.vue')
-    const inverse = elementsOf(sfc).filter((el) => el.tag === 'UiButton' && valueOf(prop(el, 'variant')) === 'inverse')
-    assert.equal(inverse.length, 1, 'one white button on the band')
-    assert.ok(!prop(inverse[0]!, 'to') && !prop(inverse[0]!, 'href'), 'it has no destination: the page newly added this button and the contact form sends nothing')
-    assert.ok(prop(inverse[0]!, 'disabled'), 'so it is disabled')
-    const btn = tagsOf(band).find((t) => t.name === 'button')
-    assert.ok(btn && 'disabled' in btn.attrs, 'a real disabled button in the markup')
-    assert.ok(band.includes(`id="${btn.attrs['aria-describedby']}"`) && textOf(band).includes('Not available yet'), 'with a visible reason')
-    assert.equal(linksIn(band).length, 0, 'no link in the band')
-    assert.match(styleOf(sfc), /\.cta-band\s*\{[^}]*background:\s*var\(--gradient-cta\)/)
-    assert.ok(!/free/i.test(textOf(band)), 'the band does not promise a free programme')
-    assert.ok(!/recurring|earning|income/i.test(textOf(band)), 'and does not restate the programme promise (that claim is the live page\'s, removed by the claims ticket)')
+    assert.ok(!elementsOf(sfc).some((el) => el.tag === 'FaqAccordion'), 'the view no longer uses the accordion')
+    assert.doesNotMatch(styleOf(sfc), /faq-|cta-band|cta-title|cta-sub|cta-actions/, 'and no style is left for them')
   })
 
   test('the new Affiliates sections restate no earnings promise: the steps and the section lines say what the visitor does', async () => {
@@ -1455,10 +1437,10 @@ describe('Affiliates (541:124): hero and CTAs, four stat cards, How it works, au
     assert.match(steps, /Refer a church/)
   })
 
-  test('the section order follows the frame', async () => {
+  test('the section order follows the frame, without the sections that carried the terms', async () => {
     const page = await html('AffiliatesView.vue')
     const at = (cls: string): number => withClass(page, cls)[0]?.at ?? -1
-    const order = ['hero-section', 'highlights-section', 'steps-section', 'audience-section', 'why-section', 'faq-section', 'cta-section'].map(at)
+    const order = ['hero-section', 'steps-section', 'audience-section', 'why-section'].map(at)
     assert.ok(order.every((n) => n > 0), 'every section exists')
     assert.deepEqual([...order].sort((a, b) => a - b), order)
   })

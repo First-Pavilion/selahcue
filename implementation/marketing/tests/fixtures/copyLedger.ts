@@ -183,17 +183,17 @@ export const LEDGER: Readonly<Record<string, PageLedger>> = {
   Affiliates: {
     newCopy: [
       'AFFILIATE PROGRAM',
+      // ClickUp 17tnw2b0x3h: the headline and subline no longer state a rate or an income, and say the programme is not open.
+      'Recommend SelahCue to churches.',
+      'Help churches upgrade their live worship presentation. The affiliate program is not open yet.',
       'Affiliate sign in',
       'Affiliate sign in: not available yet',
-      'Offline',
-      'Slides and timers run offline',
       'How it works',
-      'Three steps to get started.',
+      'Two steps to get started.',
       '01',
       '02',
       'Share SelahCue',
       'Recommend it anywhere your audience is.',
-      '03',
       'Refer a church',
       'Introduce SelahCue to a church that could use it.',
       'Made for people who talk to churches',
@@ -208,45 +208,11 @@ export const LEDGER: Readonly<Record<string, PageLedger>> = {
       "Why it's easy to recommend",
       'Designed so a fault never blanks the live screen',
       'Offline-first: slides, scripture and timers run on the desktop with no network',
-      'Affiliate FAQ',
-      'Ready to get started?',
-      'Not available yet',
     ],
-    unbacked: [
-      // The page tells two stories about Apply (review round 2, Quinn Q5, Cody N4): the hero "Apply now" opens the Contact form,
-      // which sends nothing; the band's button is disabled ("Not available yet"); step 01 and the band's line describe an
-      // application that does not exist. Words this PR wrote, listed here because the claims ticket must settle them.
-      'Apply now',
-      'Apply to join',
-      "Tell us how you'll share SelahCue.",
-      'Apply to join the SelahCue affiliate program.',
-      // The programme's figures, rate, window, threshold, payout rails and calculator: NOT-V1, terms undecided (audit
-      // affiliates-10, 12 to 15). Restyled; none added.
-      'Recommend SelahCue. Earn 20% Recurring Commission.',
-      'Help churches upgrade their live worship presentation. Earn passive recurring income on every paid referral for 12 months.',
-      '20%',
-      'Recurring Commission',
-      '60 Days',
-      'Cookie Attribution',
-      '$50',
-      'Low Payout Threshold',
-      'Estimate Your Earnings',
-      'Slide to see how much you could earn by recommending SelahCue to churches:',
-      'Referred Active Churches:',
-      /^\d+ churches$/,
-      'Monthly Recurring Income',
-      /^\$\d+\/mo$/,
-      'Estimated Annual Payout',
-      /^\$\d+\/yr$/,
-      'What is the commission rate?',
-      'You earn a 20% recurring commission for 12 months on every paid subscription that signs up using your referral link.',
-      'How long does the referral cookie last?',
-      'Our referral tracking uses a 60-day last-click attribution window.',
-      'When are affiliate payouts made?',
-      'Payouts are processed on the 1st of every month via PayPal or Direct Bank Transfer once you reach the $50 minimum threshold.',
-      'Who can join the affiliate program?',
-      'Worship leaders, tech consultants, Christian bloggers, YouTubers, and church network leaders are welcome to apply!',
-    ],
+    // Empty on purpose: the 20% rate, the 60-day window, the $50 threshold, the PayPal / bank payout rails, "12 months", the
+    // earnings calculator, the four FAQ answers restating them and every "Apply" line were removed by ClickUp 17tnw2b0x3h (the
+    // programme is NOT-V1, its terms undecided, and no application exists); they are banned in NAMED_CLAIMS.
+    unbacked: [],
     harmless: [],
   },
 }
