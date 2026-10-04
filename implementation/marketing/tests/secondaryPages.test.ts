@@ -48,6 +48,7 @@ const PAGES = [
   { file: 'ContactView.vue', route: '/contact' },
   { file: 'SupportView.vue', route: '/support' },
   { file: 'DocsView.vue', route: '/docs' },
+  { file: 'ChangelogView.vue', route: '/changelog' },
 ] as const
 
 let server: ViteDevServer
@@ -431,5 +432,79 @@ describe('Docs (499:124): centred hero, grouped sidebar with an active item, get
     const page = await html('DocsView.vue')
     assert.ok(withClass(page, 'topic-link').length >= 11)
     assert.equal(withClass(page, 'topic').length, 6)
+  })
+})
+
+// --------------------------------------------------------------------------- Changelog
+
+/** Every `<span class="ui-badge variant-X ...">text</span>` in the markup, as [variant, text, classes]. */
+function badgesOf(page: string): Array<{ variant: string; text: string; classes: string[] }> {
+  const out: Array<{ variant: string; text: string; classes: string[] }> = []
+  for (const m of page.matchAll(/<span class="([^"]*\bui-badge\b[^"]*)"[^>]*>([\s\S]*?)<\/span>/g)) {
+    const classes = (m[1] ?? '').split(/\s+/)
+    const variant = classes.find((c) => c.startsWith('variant-'))?.slice('variant-'.length) ?? ''
+    out.push({ variant, text: textOf(m[2] ?? ''), classes })
+  }
+  return out
+}
+
+describe('Changelog (501:124): hero, then one grouped card per release', () => {
+  test('the hero is a CHANGELOG pill and the h1 "What\'s new" (changelog-01)', async () => {
+    const page = await html('ChangelogView.vue')
+    const [h1] = headingsOf(page)
+    assert.equal(h1?.text, "What's new")
+    assert.ok(textOf(page).includes('CHANGELOG'))
+  })
+
+  test('the subline does not promise free updates or an always-latest version (changelog-05 is the owner\'s call)', async () => {
+    const text = textOf(await html('ChangelogView.vue')).toLowerCase()
+    assert.ok(!text.includes('free on your plan'))
+    assert.ok(!text.includes('always on the latest'))
+  })
+
+  test('one card per release, each led by an h2 version, and no sticky meta column (changelog-02, changelog-bug-01)', async () => {
+    const page = await html('ChangelogView.vue')
+    const cards = withClass(page, 'release-card')
+    assert.equal(cards.length, 3)
+    assert.equal(withClass(page, 'timeline-meta').length, 0, 'the left meta column is gone')
+    const heads = headingsOf(page)
+    assert.deepEqual(heads.filter((h) => h.level === 2).map((h) => h.text), ['v1.2.0', 'v1.1.0', 'v1.0.0'])
+    assert.ok(heads.filter((h) => h.level === 3).length >= 8, 'the per-change titles stay h3')
+    assert.deepEqual(outlineProblems(heads), [])
+  })
+
+  test('changes are grouped by type: one label per group, not one per change (changelog-02)', async () => {
+    const page = await html('ChangelogView.vue')
+    const labels = badgesOf(page).filter((b) => b.classes.includes('change-label'))
+    assert.deepEqual(labels.map((b) => b.text), ['New', 'Improved', 'Fixed', 'New', 'Improved', 'Fixed', 'New'])
+    assert.equal(withClass(page, 'change-group').length, 7)
+  })
+
+  test('the type labels use the variants PR 173 defined: New preview, Improved accent, Fixed warn (changelog-03)', async () => {
+    const page = await html('ChangelogView.vue')
+    const labels = badgesOf(page).filter((b) => b.classes.includes('change-label'))
+    const variantOf = (text: string): Set<string> => new Set(labels.filter((b) => b.text === text).map((b) => b.variant))
+    assert.deepEqual([...variantOf('New')], ['preview'])
+    assert.deepEqual([...variantOf('Improved')], ['accent'])
+    assert.deepEqual([...variantOf('Fixed')], ['warn'])
+  })
+
+  test('only the newest release carries a tag pill beside its date', async () => {
+    const page = await html('ChangelogView.vue')
+    const tags = badgesOf(page).filter((b) => !b.classes.includes('change-label') && b.variant !== 'featured')
+    assert.equal(tags.length, 1, 'one pill, on the newest release')
+    const cards = withClass(page, 'release-card')
+    const firstEnd = page.indexOf('</article>', cards[0]!.at)
+    assert.ok(page.indexOf('release-tag') > 0 && page.indexOf('release-tag') < firstEnd, 'and it sits in the first card')
+  })
+
+  test('the release date is in the secondary ink, 14px (changelog-06)', () => {
+    const css = styleOf(readSrc('views/ChangelogView.vue'))
+    assert.match(css, /\.release-date\s*\{[^}]*font-size:\s*14px[^}]*color:\s*var\(--sc-text-secondary\)/)
+  })
+
+  test('the release column is 900 wide and centred on the shared container', () => {
+    const css = styleOf(readSrc('views/ChangelogView.vue'))
+    assert.match(css, /\.release-list\s*\{[^}]*max-width:\s*900px[^}]*margin-inline:\s*auto/)
   })
 })
