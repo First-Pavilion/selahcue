@@ -973,7 +973,15 @@ def _rand_frame(w, h, seed):
 
 def test_banded_similarity_equals_the_whole_image_result():
     a, b = _rand_frame(701, 1301, 1), _rand_frame(701, 1301, 2)
-    m_band, v_band, g_band = vp.block_ssim(a, b)
+    seen = []
+    real_band = vp._block_ssim_band
+    vp._block_ssim_band = lambda *args: (seen.append(args[0].size[1]), real_band(*args))[1]
+    try:
+        m_band, v_band, g_band = vp.block_ssim(a, b)
+    finally:
+        vp._block_ssim_band = real_band
+    ok(len(seen) == 3 and sum(seen) == (1301 // vp.SSIM_BLOCK) * vp.SSIM_BLOCK,
+       "banded SSIM: a 1301-row frame is processed in exactly 3 bands (%s rows), as the message below says" % seen)
     m_whole, v_whole, g_whole = vp._block_ssim_whole(a, b)
     ok(g_band == g_whole and len(v_band) == len(v_whole) and abs(m_band - m_whole) < 1e-9
        and max(abs(x - y) for x, y in zip(v_band, v_whole)) < 1e-9,
@@ -983,6 +991,66 @@ def test_banded_similarity_equals_the_whole_image_result():
        "banded diff picture: byte-identical to the whole-image oracle")
     flat = Image.new("RGB", (701, 1301), (30, 30, 30))
     ok(abs(vp.block_ssim(flat, flat.copy())[0] - 1.0) < 1e-9, "banded SSIM: identical images still score 1.0")
+
+
+def _spy_band_heights(img_a, img_b):
+    """Run each banded step on (img_a, img_b) with a spy on what it hands to the per-band worker.
+
+    Returns {"ssim": [...], "stats": [...], "ink": [...], "diff": [...]}: the row count of every band each step
+    processed. A step that stops banding processes the whole image as ONE band, so the lists collapse to one entry.
+    """
+    heights = {"ssim": [], "stats": [], "ink": [], "diff": []}
+    real_band, real_diff_band, real_difference = vp._block_ssim_band, vp._diff_band, vp.ImageChops.difference
+
+    def band(a_rgb, b_rgb, bw, nb, block):
+        heights["ssim"].append(a_rgb.size[1])
+        return real_band(a_rgb, b_rgb, bw, nb, block)
+
+    def diff_band(ref_band, act_band, marks_band):
+        heights["diff"].append(act_band.size[1])
+        return real_diff_band(ref_band, act_band, marks_band)
+
+    which = {"now": None}
+
+    def difference(a, b):
+        heights.setdefault(which["now"] or "_other", []).append(a.size[1])  # diff_image calls it from _diff_band too
+        return real_difference(a, b)
+
+    vp._block_ssim_band, vp._diff_band, vp.ImageChops.difference = band, diff_band, difference
+    try:
+        vp.block_ssim(img_a, img_b)
+        vp.diff_image(img_a, img_b)
+        which["now"] = "stats"
+        vp.pixel_delta_stats(img_a, img_b)
+        which["now"] = "ink"
+        vp.ink_coverage(img_a)
+    finally:
+        vp._block_ssim_band, vp._diff_band, vp.ImageChops.difference = real_band, real_diff_band, real_difference
+    return heights
+
+
+def test_banding_bounds_the_rows_each_step_holds():
+    """The memory saving is the point of banding, so it needs its own control (Vera R2-1): with the band size
+    set to 10**9 every other check still passed while the comparator's peak went from 0.66 to 1.25 GB."""
+    ok(vp.SSIM_BAND_ROWS <= 1024 and vp.STAT_BAND_ROWS <= 2048,
+       "banding: the band sizes are bounded (SSIM %d rows, stats %d rows); a band size of 10**9 switches banding off"
+       % (vp.SSIM_BAND_ROWS, vp.STAT_BAND_ROWS))
+    ok(vp.SSIM_BAND_ROWS % vp.SSIM_BLOCK == 0, "banding: the SSIM band is a whole number of blocks")
+    # 1100 rows is more than one SSIM band and 2300 more than one stats band at the ceilings above
+    tall = Image.new("RGB", (64, 2300), (10, 20, 30))
+    other = Image.new("RGB", (64, 2300), (200, 20, 30))
+    h = _spy_band_heights(tall, other)
+    bh = 2300 // vp.SSIM_BLOCK
+    want_ssim = -(-bh // (vp.SSIM_BAND_ROWS // vp.SSIM_BLOCK))
+    want_stat = -(-2300 // vp.STAT_BAND_ROWS)
+    ok(len(h["ssim"]) == want_ssim and len(h["ssim"]) >= 3,
+       "banding: SSIM on a 2300-row image runs in %d bands (want %d, at least 3), not as one slab" % (len(h["ssim"]), want_ssim))
+    ok(max(h["ssim"]) <= vp.SSIM_BAND_ROWS and sum(h["ssim"]) == bh * vp.SSIM_BLOCK,
+       "banding: no SSIM band is taller than %d rows and together the bands cover every block row" % vp.SSIM_BAND_ROWS)
+    for step in ("stats", "ink", "diff"):
+        ok(len(h[step]) == want_stat and len(h[step]) >= 2 and max(h[step]) <= vp.STAT_BAND_ROWS and sum(h[step]) == 2300,
+           "banding: %s on a 2300-row image runs in %d bands of at most %d rows (want %d) covering all 2300 rows"
+           % (step, len(h[step]), vp.STAT_BAND_ROWS, want_stat))
 
 
 def test_pixel_statistics_are_pinned():
@@ -1013,6 +1081,14 @@ def test_pixel_budget_refuses_before_decoding():
     got = vp.pixel_budget_problem((3000, 40000), "capture x")
     ok(got is not None and "MAX_CAPTURE_PIXELS" in got and "refusing to decode" in got,
        "pixel budget: a 120 Mpx capture is refused with a clear message, from the header size alone")
+    # the cost it quotes is the MEASURED fit (vp_core.COMPARE_BASE_MB + COMPARE_MB_PER_MPX x Mpx), not the old
+    # 21 MB/Mpx guess (which would say 2520 MB here): the real comparator measured 489 MB at 20.8 Mpx, 947 MB at 58.2
+    import re as _re
+    quoted = _re.search(r"peak at about (\d+) MB", got or "")
+    want = int(vp.COMPARE_BASE_MB + vp.COMPARE_MB_PER_MPX * 120)
+    ok(quoted is not None and int(quoted.group(1)) == want and 1500 < want < 1900,
+       "pixel budget: the quoted comparison cost for 120 Mpx is the measured estimate (%s MB; want %d, from 234 MB + 12.2 MB per Mpx)"
+       % (quoted.group(1) if quoted else None, want))
     # the comparator wires it in: lower the cap under the committed signin frame and run the real main()
     root = tempfile.mkdtemp(prefix="vp-px-")
     old = vp.MAX_CAPTURE_PIXELS
@@ -1609,6 +1685,7 @@ def main():
         test_capture_server_is_confined,
         test_committed_marketing_references,
         test_banded_similarity_equals_the_whole_image_result,
+        test_banding_bounds_the_rows_each_step_holds,
         test_pixel_statistics_are_pinned,
         test_pixel_budget_refuses_before_decoding,
         test_slice_output_cap_is_checked_before_allocation,

@@ -517,10 +517,15 @@ without Inter is refused), and `npm run build` in `implementation/marketing` fir
 
 Every cap below has a control in `vp_selftest.py` that **fails when the cap is removed**; each was proved by deleting the cap on a scratch copy
 of `scripts/` and watching the named control go red. That proof is repeatable, not a one-off: `docs/design/visual-parity/marketing/mutations.json`
-lists one edit per control (62 today: the caps, the fail-closed gates, the wiring paths, the checker's rules) and
-`python3 scripts/vp_mutation_proof.py` applies each to a scratch copy of `scripts/` (docs, implementation and `.git` are symlinks, so nothing real can be
-written) and requires the named self-test to exit non-zero. A mutation that does not apply (the code moved) or that the self-test survives fails the run;
-`--only ID ...` runs some, `--list` prints them. It takes about 4 minutes (248 seconds measured, 62 of 62 red), which is why it is not in `make ci`: re-run it after changing a cap, a gate or a
+lists one edit per control (75 today: the caps, the banding, the fail-closed gates, the wiring paths, the checker's rules and the proof tool's own guarantees) and
+`python3 scripts/vp_mutation_proof.py` applies each to a scratch copy and requires the named self-test to exit non-zero. These all fail the run: a mutation that does not
+apply (the code moved), a self-test that survives, a self-test that **hangs** (a hang proves nothing; it is killed with everything it started, in its own process group),
+and an **unmutated** copy that does not pass its own self-test first (the baseline). The scratch copy holds real copies of `scripts/`, `docs/` and `implementation/marketing/`
+(no `node_modules` or `dist`) and a scratch git repository that reads the real object store through git's `alternates` file; an earlier version symlinked `docs/`,
+`implementation/` and `.git`, and a symlink writes through, so that guarantee was false. As belt and braces the real checkout's HEAD, `git status` and a digest of every
+modified or untracked file's content are compared before the first and after the last mutation, and the run fails if anything changed (do not edit the tree while it runs).
+`--self-check` (about 20 seconds) proves those guarantees with synthetic cases, and each is itself in `mutations.json`. `--only ID ...` runs some, `--list` prints them.
+The full run takes about 5 to 6 minutes (248 seconds at 62 mutations), which is why it is not in `make ci`: re-run it after changing a cap, a gate or a
 checker rule. A cap with no such control is not listed here.
 
 | bound | cap | what refuses | the control that fails without it |
@@ -531,8 +536,8 @@ checker rule. A cap with no such control is not listed here.
 | DOM dump | 1500 items (`MAX_DOM_ITEMS`) and 80 focus entries (`MAX_FOCUS_ITEMS`), re-imposed in Python after the page returns; a truncated dump **fails the capture and the comparison** | `enforce_dump_caps`, `capture_entry`, `load_dom_checked` | `test_dump_and_call_caps_bite`, `test_capture_entry_wiring`, `test_comparator_main_wiring` |
 | recorded GraphQL calls and held requests | 50 each (`MAX_CALLS`) | `_bind_api` | `test_dump_and_call_caps_bite` |
 | settle wait | 5000 ms (`MAX_SETTLE_MS`) | `capture_entry` | `test_capture_entry_wiring` |
-| decoded pixels | 60 Mpx (`MAX_CAPTURE_PIXELS`), read from the file header and refused **before** decoding; a page that large is also refused before it is photographed | `pixel_budget_problem`, `vp_compare.main`, `capture_entry`, `encode_image` | `test_pixel_budget_refuses_before_decoding`, `test_capture_entry_wiring` |
-| comparator memory | similarity, the diff picture and pixel statistics are computed in 512/1024-row bands; peak 623 MB on today's 35 surfaces (was 1.16 GB), same scores to 1e-9 | `block_ssim`, `diff_image`, `pixel_delta_stats`, `ink_coverage` | `test_banded_similarity_equals_the_whole_image_result`, `test_pixel_statistics_are_pinned` |
+| decoded pixels | 60 Mpx (`MAX_CAPTURE_PIXELS`), read from the file header and refused **before** decoding; a page that large is also refused before it is photographed; the refusal quotes the measured comparison cost (234 MB + 12.2 MB per Mpx), pinned by the same test | `pixel_budget_problem`, `vp_compare.main`, `capture_entry`, `encode_image` | `test_pixel_budget_refuses_before_decoding`, `test_capture_entry_wiring` |
+| comparator memory | similarity, the diff picture and pixel statistics are computed in 512/1024-row bands; peak 623 MB on today's 35 surfaces (was 1.16 GB), same scores to 1e-9; switching banding off costs 745 MB to 971 MB on a 41.6 Mpx capture; measured cost model: peak = 234 MB + 12.2 MB per captured Mpx (489 MB at 20.8 Mpx, 947 MB at 58.2 Mpx) | `block_ssim`, `diff_image`, `pixel_delta_stats`, `ink_coverage` | `test_banded_similarity_equals_the_whole_image_result`, `test_banding_bounds_the_rows_each_step_holds` (the band count and band height of every step), `test_pixel_statistics_are_pinned` |
 | run size | 300 files per marketing run (`MARKETING_MAX_FILES_PER_RUN`): 35 surfaces x 3 files (screenshot, diff, DOM dump) x 2 engines + 4 run-level files = 214 at the most; 172 today; the 3 report files still to be written are counted; the oldest of 5 runs is evicted | `vp_compare.run_files_problem` (driven end to end through `main`), `prune_runs` | `test_per_run_file_cap_is_enforced`, `test_comparator_main_wiring` |
 | bundle probe | at most 400 `.js` files (`MAX_PROBE_JS_FILES`), counting only `.js`; a bundle over the cap **fails** the probe | `source_probe_problem` | `test_bundle_probe_counts_only_js_and_fails_at_its_cap` |
 | `vp_slice` output | 12 Mpx (`MAX_OUT_PIXELS`), computed from the requested numbers **before any crop is allocated** | `plan_slice` | `test_slice_output_cap_is_checked_before_allocation` |
@@ -591,12 +596,14 @@ does not exist or belongs to another group; a ticket url that is not exactly `ht
 page, and `javascript:` would run); a bug with no group; an api gap with an invented status; and findings files that audited different commits.
 `--require-tickets` adds that every class A and E finding names its ticket. Each rule has a control in `--self-test` and a mutation in `mutations.json`.
 
+**Shallow clones.** The commit checks (a class B source that cites `commit <sha>`, and the audited `origin_main`) need history. In a shallow clone, which is what `actions/checkout` makes by default, a commit that is not reachable may just be cut off, so there it means "cannot tell" (the same answer as when git is missing) and does not fail; in a full clone a made-up commit still fails. The controls run against a scratch repository built inside the self-test (a full one and a `--depth 1` clone of it), so none depends on this repository's history; a `--depth 1` clone of the branch passes `--check-report`, `--self-test` and `vp_selftest.py`. Any CI job that runs these should still check out with `fetch-depth: 0`, so the commit checks actually run.
+
 ### Self-test
 
-`python3 scripts/vp_selftest.py` (197 checks) carries the marketing controls alongside the operator ones (suite caps, style registration,
+`python3 scripts/vp_selftest.py` (206 checks) carries the marketing controls alongside the operator ones (suite caps, style registration,
 top-crop alignment, bundle probe and freshness, the three deviation metrics, DOM contrast, style-diff pairing and detection, box
 diff, catalogue validation, server confinement, committed references, and the capture and comparator wiring driven through the real entry points with
-fake pages and synthetic runs). `python3 scripts/check_fidelity_audit.py --self-test` (90 checks) proves the audit checker rejects each kind of
+fake pages and synthetic runs). `python3 scripts/check_fidelity_audit.py --self-test` (97 checks) proves the audit checker rejects each kind of
 incomplete audit. Neither is in `make ci` yet: that is a separate ticket, [CI] Run the visual-parity self-test and the audit checker's self-test in
 `make ci` and CI (ClickUp 17tnw2b2fum, linked to the CI-masking ticket 86ak5rjh7); it was kept out of this change on purpose, so that a change to
 what `make ci` runs is reviewed on its own.
