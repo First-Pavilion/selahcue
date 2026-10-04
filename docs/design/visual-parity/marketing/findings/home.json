@@ -639,7 +639,7 @@
           "figma": "478:155 five rows (18/600 questions, 15.5/24 answers): 'Do I need an internet connection?' / 'Which platforms are supported?' / 'Can I use my own songs, slides, and designs?' / 'What is NDI, and do I need it?' / 'How does billing work?' with the Figma answers (internet, Windows+macOS with mobile companion and Linux on the roadmap, multi-slide lyrics and Theme Designer, NDI optional and off by default, free forever / cancel anytime).",
           "build": "'Does SelahCue work fully offline on Sunday morning?' / 'What platforms and operating systems are supported?' / 'How do copyrighted Bible translation entitlements work?' (replaces 'own songs, slides...') / 'Does SelahCue support NDI streaming to OBS and vMix?' (replaces 'What is NDI...') / 'How does billing work and can I cancel anytime?' with different answers; questions 17/600, answers 15/1.6; list 800 wide vs 780. HomeView.vue:82-103, FaqAccordion.vue:84, :125.",
           "evidence": "vp_style_diff figma-only: all five Figma questions and answers (y=5210.5 ... 5777); build-only: 'Does SelahCue work fully offline on Sunday morning?', 'What platforms and operating systems are supported?', 'How do copyrighted Bible translation entitlements work?', 'Does SelahCue support NDI streaming to OBS and vMix?', 'How does billing work and can I cancel anytime?' and five answers. Slice home-8.png.",
-          "fix": "HomeView.vue:82-103: restore the five Figma Q&As verbatim (subject to home-33/43 for billing and offline wording); FaqAccordion: question 18/600, answer 15.5/24, list width 780.",
+          "fix": "HomeView.vue:82-103: restore the five Figma Q&As verbatim EXCEPT the platforms answer: Figma's 'Linux is on the roadmap' contradicts product (available for Windows, Linux and macOS, 2026-10-04) and waits for Uma (shared-chrome-35), so keep the build's platforms wording until it is redrawn and claim no downloadable macOS or Linux installer (home-40); billing and offline wording per home-33/43; FaqAccordion: question 18/600, answer 15.5/24, list width 780.",
           "source": null,
           "decision": null,
           "a11y": false,
@@ -675,7 +675,7 @@
           "evidence": "docs/legal/LEGAL-DRAFT-NOTES.md section 9.1: #3 'BSB is not bundled; the bundled set is KJV, WEB, ASV, WEBBE and Darby', #2 'no licensed translation, publisher agreement or download pipeline exists'; grep for 'macOS 12' / 'Windows 10' in docs, tauri config and CI returns no supported-version statement.",
           "fix": null,
           "source": null,
-          "decision": "Owner: remove the licensed-translation answer (restore Figma Q3) and either cite real minimum OS versions from a release matrix or drop the version numbers.",
+          "decision": "Owner: remove the licensed-translation answer (restore Figma Q3) and either cite real minimum OS versions from a release matrix or drop the version numbers. Platforms: product says Windows, Linux and macOS are available (2026-10-04), so naming the platforms is backed; the version numbers are not.",
           "a11y": false,
           "link": "17tnw2b0x3h"
         },
@@ -743,8 +743,35 @@
           "decision": "Uma: choose accessible inks for small brand text (e.g. a lighter brand tint such as the #a5b4fc already used in the hero pill, 8.96:1), for LIVE/READY chips, and dark initials on the green/gold avatars (#0e1116 gives >7:1). This decides the fix for home-10 and home-15.",
           "a11y": true,
           "link": null
+        },
+        {
+          "id": "home-45",
+          "class": "D",
+          "scope": "page",
+          "component": null,
+          "severity": "medium",
+          "title": "Home FAQ 'Which platforms are supported?' says Linux is on the roadmap; product says it is available",
+          "figma": "478:155 row 2, 'Which platforms are supported?': Windows and macOS with the mobile companion, and Linux on the roadmap.",
+          "build": "HomeView.vue:86-89 answer: Windows 10/11 (64-bit) and macOS 12+ with the mobile companion; Linux is not mentioned.",
+          "evidence": "Product (owner, 2026-10-04): SelahCue is available for Windows, Linux and macOS. The Figma line 'Linux is on the roadmap' contradicts it. See shared-chrome-35.",
+          "fix": null,
+          "source": null,
+          "decision": "Uma: redraw the answer to match product (Windows, Linux and macOS), without claiming a downloadable installer for each until the owner confirms (support-11).",
+          "a11y": false,
+          "link": null,
+          "dup_of": "shared-chrome-35"
         }
       ]
     }
-  }
+  },
+  "bugs": [
+    {
+      "id": "home-bug-01",
+      "title": "Heading levels skip on Home: h2 jumps to h4 for the output cards and the testimonial names",
+      "evidence": "home.blink.dom.json: h2 then h4 'Audience - Main' (y 2871) and h4 'Sarah Jenkins' (y 5213); found by QA (Quinn Q-1) and re-measured here",
+      "fix": "Make those headings h3 (or plain strong text where they are not section headings) so the outline never skips a level; a code accessibility defect independent of Figma",
+      "group": "home",
+      "ticket": "17tnw2b2cex"
+    }
+  ]
 }

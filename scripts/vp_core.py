@@ -68,27 +68,41 @@ FIGMA_FILE_KEY = "SYQn5hFY8YVQKm3c6rw0eJ"
 
 MARKETING_DIR = os.path.join(DESIGN_DIR, "marketing")
 
-# 16 pages + 19 states = 35 frames today, 5.8 MB. The caps leave roughly a third
-# more room in count and twice the bytes, and `MARKETING_ENTRY_HEADROOM` pins that
-# premise: a store that is full before it is useful turns every ingest test into a
-# test of the refusal path only.
+# 16 pages + 19 states = 35 frames today, 6,335,237 bytes (PNGs 5,894,430 + style dumps).
+# The caps leave roughly a third more room in count and about twice the bytes, and
+# `MARKETING_ENTRY_HEADROOM` pins that premise: a store that is full before it is useful
+# turns every ingest test into a test of the refusal path only.
 MARKETING_MAX_REFERENCE_ENTRIES = 48
 MARKETING_MAX_REFERENCE_BYTES = 12 * 1024 * 1024
 MARKETING_ENTRY_HEADROOM = 8
-# 35 surfaces x 2 engines x (capture + diff) = 140, plus captures.json and the
-# three report files. Sized under the operator's cap on purpose: the per-run cap
-# exists to flag a structural change (a per-state loop), not to be raised to fit one.
-MARKETING_MAX_FILES_PER_RUN = 200
+# THE ARITHMETIC (it was wrong once: the first sizing counted 2 files per surface, and a
+# surface writes 3: the screenshot, its diff and its DOM dump):
+#   35 catalogued surfaces x 3 files x 2 engines  = 210   (Blink alone is 105)
+#   + captures.json, report.json, report.html, report.md =   4
+#   = 214 files once EVERY surface is captured on both engines.
+# Today the six Manage Devices screens are `unbuilt` and write nothing, so a both-engines run is
+# 172 files; building them adds 6 x 3 x 2 = 36 and reaches 208 to 214. The cap is 300: about 40%
+# over that, low enough that a per-state loop (a structural change) still trips it, and
+# `vp_selftest.py` recomputes the 214 from the real catalogue so the cap cannot drift away from it.
+MARKETING_FILES_PER_SURFACE = 3
+MARKETING_REPORT_FILES = 4
+MARKETING_MAX_FILES_PER_RUN = 300
 # A Figma style dump larger than this is a sign the extractor walked something it should not
 # (a whole page instead of one frame); the extractor caps itself at 1500 and refuses to be saved.
 MAX_STYLE_NODES = 2500
+# Decoded-pixel ceiling for any image the comparator is asked to decode. A reference's
+# compressed bytes are capped by the store, but a full-page capture has no height of its own:
+# a page that grows (or a stretch path that multiplies it) costs about 21 MB of peak memory per
+# megapixel in the comparator. Today's largest capture is 20.8 Mpx (Terms); 60 Mpx leaves
+# ~3x headroom and refuses before decoding, with a clear failure.
+MAX_CAPTURE_PIXELS = 60_000_000
 
 
 class Suite:
     """One catalogue + one deviation list + one bounded reference store."""
 
     def __init__(self, name, directory, groups, max_entries, max_bytes, max_files_per_run,
-                 default_min_ssim=0.90, require_style=False):
+                 default_min_ssim=0.90, require_style=False, report_files=3):
         self.name = name
         self.dir = directory
         self.groups = tuple(groups)
@@ -98,6 +112,9 @@ class Suite:
         self.max_entries = max_entries
         self.max_bytes = max_bytes
         self.max_files_per_run = max_files_per_run
+        # report.json / report.html / report.md (and, for marketing, captures.json is written by the
+        # capture step, before the compare) are written after the cap check, so they are counted up front.
+        self.report_files = report_files
         self.default_min_ssim = default_min_ssim
         # The marketing suite compares VALUES as well as pixels, so every reference must carry
         # the Figma style dump (scripts/figma_extract_style.js) the comparison reads.
@@ -117,7 +134,7 @@ def get_suite(name):
                      MAX_REFERENCE_BYTES, MAX_FILES_PER_RUN)
     if name == "marketing":
         return Suite("marketing", MARKETING_DIR, ("marketing",), MARKETING_MAX_REFERENCE_ENTRIES,
-                     MARKETING_MAX_REFERENCE_BYTES, MARKETING_MAX_FILES_PER_RUN, require_style=True)
+                     MARKETING_MAX_REFERENCE_BYTES, MARKETING_MAX_FILES_PER_RUN, require_style=True, report_files=3)
     raise SystemExit("unknown visual-parity suite %r (known: operator, marketing)" % (name,))
 
 
@@ -156,6 +173,21 @@ assert MARKETING_MAX_REFERENCE_ENTRIES > MARKETING_ENTRY_HEADROOM
 
 class StoreFull(Exception):
     """Raised when an ingest would push a bounded store past its cap."""
+
+
+def pixel_budget_problem(size, label="image"):
+    """A sentence if decoding an image of `size` (w, h) would exceed MAX_CAPTURE_PIXELS, else None.
+
+    Called with the size read from the file HEADER, before any pixel is decoded.
+    """
+    w, h = size
+    if w * h > MAX_CAPTURE_PIXELS:
+        return (
+            "%s is %d x %d = %.1f Mpx, over MAX_CAPTURE_PIXELS=%d; refusing to decode it (a page this tall or "
+            "wide is itself a finding, and decoding it would cost about %d MB)"
+            % (label, w, h, w * h / 1e6, MAX_CAPTURE_PIXELS, int(21 * w * h / 1e6))
+        )
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -317,6 +349,7 @@ class ReferenceStore:
         os.makedirs(self.root, exist_ok=True)
         dst = self.path_for(slug)
         shutil.copyfile(src_path, dst)
+        previous_style = (entries.get(slug) or {}).get("style") if entries.get(slug, {}).get("node_id") == node_id else None
         entries[slug] = {
             "node_id": node_id,
             "file_key": FIGMA_FILE_KEY,
@@ -327,6 +360,11 @@ class ReferenceStore:
             "exported_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "note": note,
         }
+        if previous_style:
+            # Re-exporting a frame must not silently drop its style registration (verify would
+            # then fail on a store that was fine a minute ago). The style dump belongs to the
+            # NODE, so it is kept when the node is the same and dropped when it is not.
+            entries[slug]["style"] = previous_style
         self._write_manifest(entries)
         return entries[slug]
 
@@ -466,14 +504,65 @@ def _channel_block_ssim(a_f, b_f, bw, bh, block):
     )
 
 
-def block_ssim(img_a, img_b, block=SSIM_BLOCK):
-    """Local SSIM of two same-size RGB images.
+# Rows per band when similarity, the diff picture and pixel statistics are computed. A whole
+# 1440 x 14441 page needs ~21 MB per megapixel at once; a band needs a few hundred MB less at the
+# same answer (the score is a mean of per-block values, and a block never straddles a band because
+# the band height is a multiple of the block). A multiple of SSIM_BLOCK, checked below.
+SSIM_BAND_ROWS = 512
+STAT_BAND_ROWS = 1024
+assert SSIM_BAND_ROWS % SSIM_BLOCK == 0
+
+
+def _as_rgb(img):
+    """RGB view without copying when the image already is RGB."""
+    return img if img.mode == "RGB" else img.convert("RGB")
+
+
+def _block_ssim_band(a_rgb, b_rgb, bw, nb, block):
+    """Per-block SSIM values (row-major list) of one band already cropped to bw*block x nb*block."""
+    per_channel = []
+    for ch_idx in range(3):
+        a_f = a_rgb.getchannel(ch_idx).convert("F")
+        b_f = b_rgb.getchannel(ch_idx).convert("F")
+        per_channel.append(_channel_block_ssim(a_f, b_f, bw, nb, block))
+    combined = per_channel[0]
+    for other in per_channel[1:]:
+        # ImageChops rejects "F" images, so reduce with ImageMath's min() instead.
+        combined = ImageMath.unsafe_eval("min(a, b)", a=combined, b=other)
+    return list(combined.getdata())
+
+
+def block_ssim(img_a, img_b, block=SSIM_BLOCK, band_rows=SSIM_BAND_ROWS):
+    """Local SSIM of two same-size RGB images, computed in horizontal bands.
 
     Returns (mean_ssim, block_map, (bw, bh)) where `block_map` is a flat list of
     per-block SSIM values in row-major order, each the MINIMUM across R/G/B — the
     same channel-reduction `analysis::ssim` uses, so a chroma-only divergence
     (right luminance, wrong hue) cannot pass.
+
+    Banded so peak memory is that of one band, not of the page; the result is the same
+    as `_block_ssim_whole` (pinned by `vp_selftest.py`, which compares the two).
     """
+    if img_a.size != img_b.size:
+        raise ValueError("block_ssim needs equal sizes, got %r vs %r" % (img_a.size, img_b.size))
+    w, h = img_a.size
+    bw, bh = max(1, w // block), max(1, h // block)
+    cw = bw * block
+    a_rgb, b_rgb = _as_rgb(img_a), _as_rgb(img_b)
+    band_blocks = max(1, band_rows // block)
+    values = []
+    total = 0.0
+    for by0 in range(0, bh, band_blocks):
+        nb = min(band_blocks, bh - by0)
+        y0, y1 = by0 * block, (by0 + nb) * block
+        vals = _block_ssim_band(a_rgb.crop((0, y0, cw, y1)), b_rgb.crop((0, y0, cw, y1)), bw, nb, block)
+        values.extend(vals)
+        total += sum(vals)
+    return total / len(values), values, (bw, bh)
+
+
+def _block_ssim_whole(img_a, img_b, block=SSIM_BLOCK):
+    """The un-banded implementation, kept as the oracle `block_ssim` is tested against."""
     if img_a.size != img_b.size:
         raise ValueError("block_ssim needs equal sizes, got %r vs %r" % (img_a.size, img_b.size))
     w, h = img_a.size
@@ -481,28 +570,28 @@ def block_ssim(img_a, img_b, block=SSIM_BLOCK):
     cw, ch = bw * block, bh * block
     a = img_a.convert("RGB").crop((0, 0, cw, ch))
     b = img_b.convert("RGB").crop((0, 0, cw, ch))
-    per_channel = []
-    for ch_idx in range(3):
-        a_f = a.getchannel(ch_idx).convert("F")
-        b_f = b.getchannel(ch_idx).convert("F")
-        per_channel.append(_channel_block_ssim(a_f, b_f, bw, bh, block))
-    combined = per_channel[0]
-    for other in per_channel[1:]:
-        # ImageChops rejects "F" images, so reduce with ImageMath's min() instead.
-        combined = ImageMath.unsafe_eval("min(a, b)", a=combined, b=other)
-    values = list(combined.getdata())
-    mean = _mean_of(combined)
-    return mean, values, (bw, bh)
+    values = _block_ssim_band(a, b, bw, bh, block)
+    return _mean_of_list(values), values, (bw, bh)
 
 
-def pixel_delta_stats(img_a, img_b, threshold=12):
-    """Per-pixel max-channel delta: (mean_delta, fraction_over_threshold)."""
-    a = img_a.convert("RGB")
-    b = img_b.convert("RGB")
-    d = ImageChops.difference(a, b)
-    r, g, bl = d.split()
-    m = ImageChops.lighter(ImageChops.lighter(r, g), bl)
-    hist = m.histogram()
+def _mean_of_list(values):
+    return sum(values) / len(values)
+
+
+def pixel_delta_stats(img_a, img_b, threshold=12, band_rows=STAT_BAND_ROWS):
+    """Per-pixel max-channel delta: (mean_delta, fraction_over_threshold), in horizontal bands."""
+    if img_a.size != img_b.size:
+        raise ValueError("pixel_delta_stats needs equal sizes, got %r vs %r" % (img_a.size, img_b.size))
+    a_rgb, b_rgb = _as_rgb(img_a), _as_rgb(img_b)
+    w, h = a_rgb.size
+    hist = [0] * 256
+    for y0 in range(0, h, band_rows):
+        y1 = min(h, y0 + band_rows)
+        d = ImageChops.difference(a_rgb.crop((0, y0, w, y1)), b_rgb.crop((0, y0, w, y1)))
+        r, g, bl = d.split()
+        m = ImageChops.lighter(ImageChops.lighter(r, g), bl)
+        for i, n in enumerate(m.histogram()):
+            hist[i] += n
     total = sum(hist) or 1
     mean = sum(i * n for i, n in enumerate(hist)) / total
     over = sum(n for i, n in enumerate(hist) if i > threshold)
@@ -517,56 +606,87 @@ def is_uniform(img, tolerance=2):
     Callers assert on this BEFORE similarity so a dead capture cannot be read as
     a diff result.
     """
-    ext = img.convert("RGB").getextrema()
+    ext = _as_rgb(img).getextrema()
     return all((hi - lo) <= tolerance for lo, hi in ext)
 
 
-def ink_coverage(img, background=None, tolerance=24):
-    """Fraction of pixels that differ from the modal (background) colour."""
-    rgb = img.convert("RGB")
+def ink_coverage(img, background=None, tolerance=24, band_rows=STAT_BAND_ROWS):
+    """Fraction of pixels that differ from the modal (background) colour, in horizontal bands."""
+    rgb = _as_rgb(img)
     if background is None:
         colors = rgb.getcolors(maxcolors=1 << 20)
         if not colors:
             small = rgb.resize((min(rgb.width, 256), min(rgb.height, 256)), Image.BOX)
             colors = small.getcolors(maxcolors=1 << 20) or [(1, (0, 0, 0))]
         background = max(colors)[1]
-    flat = Image.new("RGB", rgb.size, tuple(background))
-    d = ImageChops.difference(rgb, flat)
+    w, h = rgb.size
+    over = 0
+    for y0 in range(0, h, band_rows):
+        band = rgb.crop((0, y0, w, min(h, y0 + band_rows)))
+        flat = Image.new("RGB", band.size, tuple(background))
+        d = ImageChops.difference(band, flat)
+        r, g, b = d.split()
+        m = ImageChops.lighter(ImageChops.lighter(r, g), b)
+        over += sum(n for i, n in enumerate(m.histogram()) if i > tolerance)
+    return over / ((w * h) or 1), background
+
+
+def _diff_band(ref_band, act_band, marks_band):
+    """One band of the diff picture: the capture desaturated, differences red, low-SSIM blocks blue."""
+    grey = act_band.convert("L").point(lambda v: 40 + v // 4).convert("RGB")
+    d = ImageChops.difference(ref_band, act_band)
     r, g, b = d.split()
-    m = ImageChops.lighter(ImageChops.lighter(r, g), b)
-    hist = m.histogram()
-    total = sum(hist) or 1
-    return sum(n for i, n in enumerate(hist) if i > tolerance) / total, background
+    mag = ImageChops.lighter(ImageChops.lighter(r, g), b)
+    boosted = mag.point(lambda v: min(255, v * 3))
+    zero = Image.new("L", act_band.size, 0)
+    out = ImageChops.add(grey, Image.merge("RGB", (boosted, zero, zero)))
+    if marks_band is not None:
+        blue = Image.merge("RGB", (zero, zero, marks_band.point(lambda v: v // 3)))
+        out = ImageChops.add(out, blue)
+    return out
 
 
-def diff_image(img_ref, img_actual, block_values=None, grid=None, block=SSIM_BLOCK):
+def diff_image(img_ref, img_actual, block_values=None, grid=None, block=SSIM_BLOCK, band_rows=STAT_BAND_ROWS):
     """A red-over-grey diff: the actual frame desaturated, differences in red.
 
     Where a block map is supplied, blocks with low SSIM are outlined so a
     structural (displacement) difference is visible even when the per-pixel delta
     is small — the case a raw pixel diff misses.
+
+    Built in horizontal bands (the output is the same as `_diff_image_whole`, which `vp_selftest.py`
+    compares it against), so peak memory is the output plus one band, not several full copies.
     """
+    ref = _as_rgb(img_ref)
+    act = _as_rgb(img_actual)
+    if ref.size != act.size:
+        ref = ref.resize(act.size, Image.LANCZOS)
+    w, h = act.size
+    marks = None
+    if block_values and grid:
+        bw, bh = grid
+        small = Image.new("L", (bw, bh), 0)
+        small.putdata([255 if v < 0.90 else 0 for v in block_values])
+        marks = small.resize(act.size, Image.NEAREST)  # one byte per pixel
+    out = Image.new("RGB", act.size)
+    for y0 in range(0, h, band_rows):
+        box = (0, y0, w, min(h, y0 + band_rows))
+        out.paste(_diff_band(ref.crop(box), act.crop(box), marks.crop(box) if marks is not None else None), box[:2])
+    return out
+
+
+def _diff_image_whole(img_ref, img_actual, block_values=None, grid=None, block=SSIM_BLOCK):
+    """The un-banded implementation, kept as the oracle `diff_image` is tested against."""
     ref = img_ref.convert("RGB")
     act = img_actual.convert("RGB")
     if ref.size != act.size:
         ref = ref.resize(act.size, Image.LANCZOS)
-    grey = act.convert("L").point(lambda v: 40 + v // 4).convert("RGB")
-    d = ImageChops.difference(ref, act)
-    r, g, b = d.split()
-    mag = ImageChops.lighter(ImageChops.lighter(r, g), b)
-    boosted = mag.point(lambda v: min(255, v * 3))
-    red = Image.merge("RGB", (boosted, Image.new("L", act.size, 0), Image.new("L", act.size, 0)))
-    out = ImageChops.add(grey, red)
+    marks = None
     if block_values and grid:
         bw, bh = grid
-        marks = Image.new("L", (bw, bh), 0)
-        marks.putdata([255 if v < 0.90 else 0 for v in block_values])
-        marks = marks.resize(act.size, Image.NEAREST)
-        blue = Image.merge(
-            "RGB", (Image.new("L", act.size, 0), Image.new("L", act.size, 0), marks.point(lambda v: v // 3))
-        )
-        out = ImageChops.add(out, blue)
-    return out
+        small = Image.new("L", (bw, bh), 0)
+        small.putdata([255 if v < 0.90 else 0 for v in block_values])
+        marks = small.resize(act.size, Image.NEAREST)
+    return _diff_band(ref, act, marks)
 
 
 # ---------------------------------------------------------------------------

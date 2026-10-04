@@ -851,31 +851,49 @@
       "id": "bug-01",
       "title": "Account page 'Sign Out' never signs out - it is a link to /signin",
       "evidence": "src/views/AccountView.vue:136 `<UiButton variant=\"outline\" size=\"sm\" to=\"/signin\">Sign Out</UiButton>`; UiButton renders `to` as a router-link (src/lib/ui/buttonElement.ts:31). AccountView.vue imports nothing from lib/auth (grep signOut|sessionStore: no match). The real sign-out is Navbar.vue:34-70 `handleSignOut` -> sessionStore.ts:137 `signOut()` -> logout mutation (account_schema.py:222-229 revokes the session and deletes the HttpOnly cookie). Because the cookie is HttpOnly only that mutation can end the session (sessionStore.ts header). Result: clicking the page's Sign Out leaves the session live, the navbar still shows 'Account / Sign out' (DOM focus list), and the visitor lands on /signin still signed in - on the shared church-office PCs the Navbar comment is written for.",
-      "fix": "Replace the link with a <button> that runs the same sign-out as the navbar: extract handleSignOut (pending flag, SIGN_OUT_FAILED role=\"alert\" message, router.push('/') with the window.location.assign('/') fallback, Navbar.vue:34-70) into a shared composable and call it from Navbar and the account header; label 'Sign out'; do not clear local state unless the mutation succeeded."
+      "fix": "Replace the link with a <button> that runs the same sign-out as the navbar: extract handleSignOut (pending flag, SIGN_OUT_FAILED role=\"alert\" message, router.push('/') with the window.location.assign('/') fallback, Navbar.vue:34-70) into a shared composable and call it from Navbar and the account header; label 'Sign out'; do not clear local state unless the mutation succeeded.",
+      "group": "sign-out-bug",
+      "ticket": "17tnw2b2cbr"
     },
     {
       "id": "bug-02",
       "title": "Account tabs expose no selected state to assistive technology",
       "evidence": "src/views/AccountView.vue:150-160: six <button class=\"tab-btn\"> with `active` as a CSS class only; no aria-current, aria-selected or role=\"tab\". A screen-reader user cannot tell which section is showing. Moot if account-01 (sidebar with aria-current=\"page\") is built.",
-      "fix": "Until the sidebar replaces the tabs: aria-current=\"true\" on the active button."
+      "fix": "Until the sidebar replaces the tabs: aria-current=\"true\" on the active button.",
+      "group": "account",
+      "ticket": "17tnw2b2cf2"
     },
     {
       "id": "bug-03",
       "title": "Mock actions report success as if real; several buttons are dead",
       "evidence": "src/views/AccountView.vue: copyLicenseKey toasts 'License key copied to clipboard!' without awaiting or catching navigator.clipboard.writeText and copies a hard-coded key (66-69); confirmDeactivateDevice only filters a local array and toasts 'Deactivated \"X\" successfully' (81-89) - no request is made; confirmCancelSubscription flips a local flag and toasts 'Subscription cancelled. Pro access ends on 1 Sep 2026.' (91-94); redownloadBible toasts 'Initiated re-download...' (112-114); invoice 'Download PDF' toasts 'Downloading PDF invoice...' (351); Settings form toasts 'Settings saved successfully!' (370). 'Change Plan' (199), 'Update Payment Method' (200) and the past-due banner 'Update Payment' (146) have no handlers. The page makes no API call at all and `isLoading` (line 13) is never set.",
-      "fix": "Until each API exists, disable the control with an honest 'Not available yet' state or remove it; never toast success for an action that did not happen. When wired, await the mutation and report its real outcome."
+      "fix": "Until each API exists, disable the control with an honest 'Not available yet' state or remove it; never toast success for an action that did not happen. When wired, await the mutation and report its real outcome.",
+      "group": "account",
+      "ticket": "17tnw2b2cf2"
     },
     {
       "id": "bug-04",
       "title": "Existing Deactivate dialog tells the user the device 'will lose access to Pro features'; ConfirmDialog has no focus management",
       "evidence": "src/views/AccountView.vue:412-420 copy 'Are you sure you want to deactivate \"{name}\"? It will lose access to Pro features.' contradicts AUTH-LANDING-PAGES-HANDOFF 1 (never imply blocking of live presentation) and D2's copy (8.4); its confirm button is 'secondary' grey (ConfirmDialog.vue variant 'warning'). components/ConfirmDialog.vue has no focus trap, no initial focus on the safe action and no aria-describedby although GAP-FILL 7a and AUTH-LANDING 12 require them (grep focus|trap|inert|aria-describedby: only a .type-input:focus style).",
-      "fix": "Use the D2 copy (devices-d2-01) and add focus trap / initial focus on 'Keep active' / aria-describedby to ConfirmDialog; also fixes the Cancel-subscription dialog."
+      "fix": "Use the D2 copy (devices-d2-01) and add focus trap / initial focus on 'Keep active' / aria-describedby to ConfirmDialog; also fixes the Cancel-subscription dialog.",
+      "group": "account",
+      "ticket": "17tnw2b2cf2"
     },
     {
       "id": "bug-05",
       "title": "Hard-coded customer identity, key, devices and invoices are shown as the signed-in user's own data",
       "evidence": "src/views/AccountView.vue:42-74,97-101,117-120 (user, subscription, licenseKey, devices, bibles, invoices refs). Every visitor with a session sees 'Grace Community Church / Sarah Jenkins' and a '$15/month' plan; accountViewer returns only org_id (account_schema.py:33-37). Tracked by 17tnw2b0x3h ('Account mock data'); recorded here because it is a mock presented as real, not a styling difference.",
-      "fix": "Render only API-backed values; show neutral loading/empty states for the rest (see account-17..20)."
+      "fix": "Render only API-backed values; show neutral loading/empty states for the rest (see account-17..20).",
+      "group": "account",
+      "ticket": "17tnw2b2cf2"
+    },
+    {
+      "id": "account-bug-06",
+      "title": "Heading levels skip on Account: h2 jumps to h4 for the Bible translations",
+      "evidence": "account.blink.dom.json: h2 then h4 'New International Version (NIV)' (y 1275); same class of defect QA found on five other pages (Quinn Q-1)",
+      "fix": "Make the entitlement titles h3 so the outline never skips a level; a code accessibility defect independent of Figma",
+      "group": "account",
+      "ticket": "17tnw2b2cf2"
     }
   ]
 }

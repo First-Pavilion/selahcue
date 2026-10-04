@@ -36,8 +36,8 @@ and prints at most --limit lines.
 from __future__ import annotations
 
 import argparse
+import collections
 import difflib
-import json
 import os
 import re
 import sys
@@ -73,10 +73,18 @@ SIZE_TOL = 6.0
 FUZZY = 0.80
 
 
+def fold_punct(text):
+    """Typographic quotes, non-breaking spaces and the ellipsis folded to their plain forms.
+
+    A curly apostrophe against a straight one is NOT a copy difference (the copy deck uses straight, Figma
+    draws curly: AUTH-LANDING 6 / audit finding verify-v2-02, class D), so it must not read as one.
+    """
+    t = (text or "").replace("\u2019", "'").replace("\u2018", "'").replace("\u201c", '"').replace("\u201d", '"')
+    return t.replace("\u00a0", " ").replace("\u2026", "...")
+
+
 def norm(text):
-    t = (text or "").replace("’", "'").replace("‘", "'").replace("“", '"').replace("”", '"')
-    t = t.replace(" ", " ").replace("…", "...")
-    return re.sub(r"\s+", " ", t).strip().lower()
+    return re.sub(r"\s+", " ", fold_punct(text)).strip().lower()
 
 
 def hex_rgb(value):
@@ -156,8 +164,25 @@ def load_dom(path):
 # ---------------------------------------------------------------------------
 
 
+def may_reach(count_a, len_a, count_b, len_b, threshold):
+    """False only when `difflib.SequenceMatcher(a, b).ratio()` provably cannot reach `threshold`.
+
+    ratio = 2*M/T where M is the number of matched characters. M can be no more than the size of the
+    multiset intersection (what `quick_ratio` computes), and no more than the shorter length. Both are upper
+    bounds, so a pair under the threshold on the bound is under it for real.
+    """
+    total = len_a + len_b
+    if total == 0:
+        return True
+    if 2.0 * min(len_a, len_b) / total < threshold:
+        return False
+    matches = sum(min(n, count_b.get(ch, 0)) for ch, n in count_a.items())
+    return 2.0 * matches / total >= threshold
+
+
 def pair_texts(f_texts, d_items):
-    """Return (pairs, figma_only, dom_only, notes) — pairs are (figma_idx, dom_idx, how)."""
+    """Return (pairs, figma_only, dom_only). `pairs` are 3-tuples (figma_idx, dom_idx, how); the two
+    `*_only` lists are the indexes left unpaired, in reading order."""
     f_order = sorted(range(len(f_texts)), key=lambda i: (f_texts[i]["y"], f_texts[i]["x"]))
     d_text_idx = [i for i, it in enumerate(d_items) if it.get("text")]
     d_order = sorted(d_text_idx, key=lambda i: (d_items[i].get("ty", d_items[i]["y"]), d_items[i].get("tx", d_items[i]["x"])))
@@ -176,19 +201,28 @@ def pair_texts(f_texts, d_items):
             used_f.add(fi)
             used_d.add(di)
 
-    # fuzzy: same-ish copy
+    # fuzzy: same-ish copy. `difflib.ratio()` is the expensive part, and it is quadratic over the pairs; its
+    # cheap upper bounds (`real_quick_ratio` from lengths, `quick_ratio` from the character multiset) can
+    # never be below the real ratio, so a pair whose BOUND is under FUZZY cannot reach it and is skipped.
+    # The pairs that remain are scored by the unchanged `SequenceMatcher(None, ft, dt).ratio()`, so the
+    # output is identical (checked on all real captures and by a property test in vp_selftest.py).
     left_f = [i for i in f_order if i not in used_f]
     left_d = [i for i in d_order if i not in used_d]
+    d_norm = {di: norm(d_items[di]["text"]) for di in left_d}
+    d_count = {di: collections.Counter(t) for di, t in d_norm.items()}
     for fi in left_f:
         ft = norm(f_texts[fi]["t"])
         if len(ft) < 6:
             continue
+        f_count = collections.Counter(ft)
         best, best_r = None, 0.0
         for di in left_d:
             if di in used_d:
                 continue
-            dt = norm(d_items[di]["text"])
+            dt = d_norm[di]
             if abs(len(dt) - len(ft)) > max(12, len(ft) * 0.5):
+                continue
+            if not may_reach(f_count, len(ft), d_count[di], len(dt), FUZZY):
                 continue
             r = difflib.SequenceMatcher(None, ft, dt).ratio()
             if r > best_r:
@@ -224,7 +258,8 @@ def text_diffs(ft, dt):
     out = []
     if norm(ft["t"]) != norm(dt["text"]):
         out.append(("copy", "figma %r vs build %r" % (ft["t"][:70], dt["text"][:70])))
-    elif ft["t"].strip() != dt["text"].strip() and dt.get("tt", "none") == "none":
+    elif fold_punct(ft["t"]).strip() != fold_punct(dt["text"]).strip() and dt.get("tt", "none") == "none":
+        # Compared after folding typographic punctuation, so a curly vs straight apostrophe is not "case".
         out.append(("copy-case", "figma %r vs build %r" % (ft["t"][:50], dt["text"][:50])))
     f_fs, d_fs = ft.get("fs"), px(dt.get("fs"))
     if f_fs is not None and d_fs is not None and abs(f_fs - d_fs) > FS_TOL:
@@ -240,12 +275,14 @@ def text_diffs(ft, dt):
         out.append(("letter-spacing", "figma %spx vs build %spx" % (ft.get("ls") or 0, d_ls)))
     f_ta = {"LEFT": "left", "CENTER": "center", "RIGHT": "right", "JUSTIFIED": "justify"}.get(ft.get("ta"), "left")
     d_ta = dt.get("ta", "left")
-    if d_ta in ("start",):
+    if d_ta == "start":
         d_ta = "left"
-    if f_ta != d_ta and not (f_ta == "left" and d_ta == "left"):
-        # Figma text hugging its content reports LEFT even when the frame centres it; only a
-        # build that is plainly aligned differently from a design that says so is a finding.
-        if ft.get("w") and dt.get("tw") and ft["w"] > dt["tw"] + 20 or f_ta != "left":
+    if f_ta != d_ta:
+        # Figma reports LEFT for text that merely hugs its content inside a centring frame, so a LEFT
+        # design only counts as a difference when its text box is clearly wider than the ink (a box that
+        # could have been aligned); a design that says centre, right or justify always does.
+        wide_box = bool(ft.get("w") and dt.get("tw") and ft["w"] > dt["tw"] + 20)
+        if f_ta != "left" or wide_box:
             out.append(("text-align", "figma %s vs build %s" % (f_ta, d_ta)))
     return out
 
@@ -305,6 +342,21 @@ def dom_box_for(items, member_idx):
     return None
 
 
+def effective_radius(value, w, h):
+    """A border radius in px, as it renders: percentages resolved against the box, capped at half its shorter side."""
+    half = min(w, h) / 2.0
+    if isinstance(value, str) and value.strip().endswith("%"):
+        try:
+            return min(half, float(value.strip().rstrip("%")) / 100.0 * min(w, h))
+        except ValueError:
+            return 0.0
+    try:
+        r = float(str(value).replace("px", "")) if isinstance(value, str) else float(value)
+    except ValueError:
+        return 0.0
+    return min(half, r)
+
+
 def box_diffs(fb, db):
     out = []
     f_fill = fb.get("f")
@@ -334,9 +386,14 @@ def box_diffs(fb, db):
         else:
             out.append(("border", "figma %s %spx vs build none" % (f_s, fb.get("sw"))))
     fr = fb.get("r")
-    d_r = px(db.get("radius", "0px")) or 0.0
-    if fr is not None and not isinstance(fr, list) and abs(fr - d_r) > 0.6:
-        out.append(("radius", "figma %s vs build %s" % (fr, d_r)))
+    if fr is not None and not isinstance(fr, list):
+        # Compare EFFECTIVE radii: a radius can never exceed half the shorter side, so Figma's 999 on a
+        # 44px pill and CSS's `50%` on a circle both mean "fully round" and must compare equal.
+        f_eff = effective_radius(fr, fb["w"], fb["h"])
+        d_eff = effective_radius(db.get("radius", "0px"), db["w"], db["h"])
+        if abs(f_eff - d_eff) > 0.6:
+            out.append(("radius", "figma %s (effective %.1f) vs build %s (effective %.1f)" % (
+                fr, f_eff, db.get("radius", "0px"), d_eff)))
     if abs(fb["w"] - db["w"]) > SIZE_TOL:
         out.append(("width", "figma %s vs build %s" % (fb["w"], db["w"])))
     if abs(fb["h"] - db["h"]) > SIZE_TOL:
