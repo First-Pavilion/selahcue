@@ -2964,14 +2964,19 @@ mod tests {
         // Metal resource was already freed ("most likely you haven't deallocated all Metal
         // resources before exiting", ggml-metal-device.m, `ggml_metal_rsets_free`). With the cache
         // still holding the context that assert fires: the test reports `1 passed` and then the
-        // process aborts with exit 101, which stops `make ci` before its last two gates
-        // (17tnw2b2gdr). Declared before anything that could hold a second `Arc` to the context
-        // (the app, the runtime, the worker), so it drops AFTER all of them; on the success path
-        // the worker is already joined by then, so this releases the last reference.
+        // process aborts (SIGABRT; cargo reports exit 101), which stops `make ci` before its last
+        // two gates (17tnw2b2gdr). This guard clears the cache after the `worker.join()` below
+        // returns. By then the recognition thread, the only other holder of the `Arc` (through
+        // `SttEngine`), has been joined, so clearing drops the last reference. It is the join that
+        // makes this work, not drop order: if the test panics or times out before the join, a
+        // still-running worker keeps its own `Arc` and this cannot free the model.
         struct ReleaseResidentModel;
         impl Drop for ReleaseResidentModel {
             fn drop(&mut self) {
-                *model_cache_lock() = None;
+                // Take it out and drop it after the guard is released, so the ~1.6 GB `whisper_free`
+                // does not run while the cache mutex is held.
+                let released = model_cache_lock().take();
+                drop(released);
             }
         }
         let _release_model = ReleaseResidentModel;
