@@ -5878,13 +5878,14 @@
          (behind an ellipsis), the connection pill's text is bounded, the controls keep their labels on
          one line and their natural width (so nothing overlaps), the clock gives way at <= 1000px, and
          padding and gaps tighten. The hard minimum that remains (logo pill, the four transport buttons, the timer and
-         LIVE chips, the bell, the pill, bounded at 110px of text) was measured at ~830px at the Linux
-         Chromium face in the widest state, and the headless gate pins "no horizontal scroll" there and
-         under a wider face. That number does not hold on a Mac: measured with real Chrome on macOS at
-         900px, the same state needed ~877px, and ~916px under the gate's +6% wider face, which put the
-         logo pill 16px over the first transport button (NOTIF-89d, invisible on Linux CI). The
-         max-width: 1000px block below takes ~34px out of it, so the Mac face now needs ~843px, and
-         ~882px under +6%. At the supported 1400px minimum none of this applies.
+         LIVE chips, the bell, the pill, bounded at 110px of text) was first recorded as ~830px "at the
+         Chromium face" in the widest state (the OS was not recorded), and the headless gate pins "no
+         horizontal scroll" there and under a wider face. That number does not hold on a Mac: measured with
+         real Chrome and real WebKit on macOS, the top bar's own floor in that state is ~877px, and ~916px
+         under the gate's +6% wider face, which put the logo pill 16px over the first transport button
+         (NOTIF-89d; Linux CI does not run into it). The max-width: 1000px block below takes ~28px out
+         of it, so the Mac face now needs ~849px, and ~888px under +6%. At the supported 1400px minimum
+         none of this applies.
          =================================================================================== */
       @media (max-width: 1100px) {
         header {
@@ -5957,16 +5958,15 @@
           display: none;
         }
 
-        /* Spacing only (17tnw2b2gdu): no size, label or order changes. The 900-1000px band is below the
-           1400px window minimum, so this is hardening of the CSS floor, and it sits after the 1100px
-           block so it wins by source order. Together: 4px x 4 transport buttons, 2px x 3 transport gaps,
-           2px x 3 status gaps, 4px on the pill, 2px on the logo pill = ~34px. */
+        /* Spacing only (17tnw2b2gdu): no font-size, height, label or order change. The 900-1000px band
+           is below the 1400px window minimum, so this is hardening of the CSS floor, and it sits after
+           the 1100px block so it wins by source order. In the widest state (the 3 status gaps exist
+           only while the timer chip shows): 4px x 4 transport buttons, 2px x 3 status gaps, 4px on the
+           pill, 2px on the logo pill = ~28px. The transport gap is deliberately NOT tightened: the
+           global focus ring (2px outline + 2px offset) reaches 4px out, so a gap below ~6px would put
+           a focused button's ring flush against its neighbour's border. */
         .logo-pill {
           padding-right: 10px;
-        }
-
-        .topbar-transport {
-          gap: 4px;
         }
 
         .topbar-transport .tb-btn {
