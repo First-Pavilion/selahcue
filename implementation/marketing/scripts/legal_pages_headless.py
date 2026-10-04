@@ -27,7 +27,7 @@ Per page and width it asserts:
     notes are on the page; few landmarks, no unnamed aside
   * the skip link is clipped (inside the viewport at rest), visible on focus with >= 4.5:1
     contrast, and its target's first heading clears the navbar
-  * anchors land ~88px below the top of the viewport (cold deep link, Contents click, a
+  * anchors land 20px below the navbar (the bar is 79px from 768 up, 69px below) (cold deep link, Contents click, a
     second click on the same entry, in-text link) WITH and WITHOUT a page-wide
     `scroll-padding-top` on html (injected: the site sets none today, so this proves the
     guard against one being added later): no double offset
@@ -70,7 +70,18 @@ DIST = Path(os.environ.get("SELAHCUE_MARKETING_DIST") or (MARKETING / "dist"))
 
 WIDTHS = [(320, 800), (375, 812), (768, 1024), (1024, 800), (1440, 900)]
 DESKTOP_MIN = 820  # the stacking breakpoint (handoff section 8)
-NAVBAR_BOTTOM = 69  # sticky navbar: 68px + 1px border
+NAV_BAR_MIN_WIDTH = 768  # the bar with its links starts here; below it the phone bar is shorter (--nav-height in main.css)
+
+
+def navbar_bottom(width: int) -> int:
+    """The sticky navbar's bottom edge: 79px from 768 up (Figma draws the bar at 79), the 69px phone bar below.
+
+    It follows the real bar. A constant here was a second copy of the bar's height (it said 69 until the
+    bar became 79) and turned the anchor checks red for exactly the viewports whose bar changed.
+    """
+    return 79 if width >= NAV_BAR_MIN_WIDTH else 69
+
+
 DRAFT_NOTICE = "Draft, pending legal review. This page is not our final policy."
 
 # The real values, from the real modules.
@@ -263,8 +274,15 @@ def contrast(fg: str, bg: str) -> float:
     return (hi + 0.05) / (lo + 0.05)
 
 
-# The heading sits `--legal-anchor-offset` (68 navbar + 20 air = 88px) below the top edge.
-ANCHOR_LOW, ANCHOR_HIGH = 82, 96
+# The heading sits `--legal-anchor-offset` (the navbar height token + 20px of air) below the top edge:
+# 99px beside the 79px bar, 89px beside the 69px phone bar. The window is the offset -6 / +8, as it has
+# always been (82..96 around 88).
+def anchor_offset(width: int) -> int:
+    return navbar_bottom(width) + 20
+
+
+def in_anchor_window(top, width: int) -> bool:
+    return top is not None and anchor_offset(width) - 6 <= top <= anchor_offset(width) + 8
 
 
 def stable_top(page, anchor_id: str, timeout_ms: int = 9000):
@@ -336,7 +354,7 @@ def run_page(browser, base: str, key: str, all_exp: dict, shots: Path | None, on
             page.mouse.wheel(0, 1600)
             wait_settled(page, 400)
             toc2 = rect(page, ".toc")
-            check(f"{tag}: sidebar is sticky below the navbar", toc2 is not None and NAVBAR_BOTTOM <= toc2["top"] <= 110, f"{toc2}")
+            check(f"{tag}: sidebar is sticky below the navbar", toc2 is not None and navbar_bottom(width) <= toc2["top"] <= navbar_bottom(width) + 41, f"{toc2}")
             page.evaluate("window.scrollTo(0, 0)")
         else:
             check(f"{tag}: sidebar is stacked above the text", toc is not None and text is not None and toc["bottom"] <= text["top"] + 1, f"{toc} {text}")
@@ -398,7 +416,7 @@ def run_page(browser, base: str, key: str, all_exp: dict, shots: Path | None, on
         page.keyboard.press("Enter")
         wait_settled(page, 900)
         first = page.evaluate("(() => { const h = document.querySelector('#legal-text h2'); return h ? h.getBoundingClientRect().top : null })()")
-        check(f"{tag}: after the skip link the first heading clears the navbar", first is not None and first >= NAVBAR_BOTTOM + 8, f"top={first}")
+        check(f"{tag}: after the skip link the first heading clears the navbar", first is not None and first >= navbar_bottom(width) + 8, f"top={first}")
         check(f"{tag}: the skip link moves focus to the document text", page.evaluate("document.activeElement && document.activeElement.id") == "legal-text")
         page.evaluate("window.scrollTo({top: 0, behavior: 'instant'})")
 
@@ -409,7 +427,7 @@ def run_page(browser, base: str, key: str, all_exp: dict, shots: Path | None, on
         page2.goto(f"{base}{path}#{deep}", wait_until="networkidle")
         page2.wait_for_selector("[data-legal-page]")
         top = stable_top(page2, deep)
-        check(f"{tag}: cold deep link #{deep} lands at ~88px (below the navbar, not under it, not double-offset)", top is not None and ANCHOR_LOW <= top <= ANCHOR_HIGH, f"top={top}")
+        check(f"{tag}: cold deep link #{deep} lands 20px below the navbar (not under it, not double-offset)", in_anchor_window(top, width), f"top={top}")
         sw, cw = hscroll(page2)
         check(f"{tag}: no horizontal scroll after deep link", sw <= cw)
         check(f"{tag}: cold deep link console clean", not errors_cold, "; ".join(errors_cold[:3]))
@@ -425,7 +443,7 @@ def run_page(browser, base: str, key: str, all_exp: dict, shots: Path | None, on
         wait_settled(page, 1400)
         check(f"{tag}: Contents click sets the URL hash", page.evaluate("location.hash") == f"#{target}", page.evaluate("location.hash"))
         top = stable_top(page, target)
-        check(f"{tag}: Contents click lands the section at ~88px", top is not None and ANCHOR_LOW <= top <= ANCHOR_HIGH, f"top={top}")
+        check(f"{tag}: Contents click lands the section 20px below the navbar", in_anchor_window(top, width), f"top={top}")
         focused = page.evaluate("document.activeElement && document.activeElement.id")
         check(f"{tag}: Contents click focuses the section heading", focused == f"{target}-title", f"{focused}")
         if not desktop:
@@ -461,7 +479,7 @@ def run_page(browser, base: str, key: str, all_exp: dict, shots: Path | None, on
             ref.click()
             rid = href[1:]
             top = stable_top(page, rid)
-            check(f"{tag}: an in-text 'section N' link jumps to {rid} at ~88px", top is not None and ANCHOR_LOW <= top <= ANCHOR_HIGH, f"top={top}")
+            check(f"{tag}: an in-text 'section N' link jumps to {rid} 20px below the navbar", in_anchor_window(top, width), f"top={top}")
 
         if shots and width in (320, 375, 768, 1024, 1440):
             page.evaluate("window.scrollTo(0, 0)")
@@ -515,7 +533,7 @@ def run_navigation(browser, base: str, key: str, all_exp: dict) -> None:
 
 
 def run_anchor_modes(browser, base: str, key: str, exp: dict) -> None:
-    """Anchors land at ~88px next to an injected page-wide scroll-padding-top too (none is set today)."""
+    """Anchors land 20px below the navbar next to an injected page-wide scroll-padding-top too (none is set today)."""
     sections = exp["tocIds"]
     for width, height in ((375, 812), (1440, 900)):
         tag = f"{key}@{width}+scroll-padding"
@@ -532,14 +550,14 @@ def run_anchor_modes(browser, base: str, key: str, exp: dict) -> None:
         page.goto(f"{base}/{key}#{deep}", wait_until="networkidle")
         page.wait_for_selector("[data-legal-page]")
         top = stable_top(page, deep)
-        check(f"{tag}: cold deep link #{deep} lands at ~88px (no double offset)", top is not None and ANCHOR_LOW <= top <= ANCHOR_HIGH, f"top={top}")
+        check(f"{tag}: cold deep link #{deep} lands 20px below the navbar (no double offset)", in_anchor_window(top, width), f"top={top}")
 
         target = sections[len(sections) // 2]
         if width < DESKTOP_MIN:
             page.locator(".toc-toggle").click()
         page.locator(f'.toc-link[href="#{target}"]').click()
         top = stable_top(page, target)
-        check(f"{tag}: Contents click lands at ~88px", top is not None and ANCHOR_LOW <= top <= ANCHOR_HIGH, f"top={top}")
+        check(f"{tag}: Contents click lands 20px below the navbar", in_anchor_window(top, width), f"top={top}")
 
         # a SECOND click on the same entry after scrolling away: the router will not navigate, so
         # the page scrolls itself; it must land in the same place
@@ -549,14 +567,14 @@ def run_anchor_modes(browser, base: str, key: str, exp: dict) -> None:
             page.locator(".toc-toggle").click()
         page.locator(f'.toc-link[href="#{target}"]').click()
         top = stable_top(page, target)
-        check(f"{tag}: a second click on the same entry lands at ~88px", top is not None and ANCHOR_LOW <= top <= ANCHOR_HIGH, f"top={top}")
+        check(f"{tag}: a second click on the same entry lands 20px below the navbar", in_anchor_window(top, width), f"top={top}")
 
         page.evaluate("window.scrollTo({top: 0, behavior: 'instant'})")
         page.focus(".skip-link")
         page.keyboard.press("Enter")
         wait_settled(page, 900)
         first = page.evaluate("(() => { const h = document.querySelector('#legal-text h2'); return h ? h.getBoundingClientRect().top : null })()")
-        check(f"{tag}: the skip link lands the first heading below the navbar", first is not None and first >= NAVBAR_BOTTOM + 8, f"top={first}")
+        check(f"{tag}: the skip link lands the first heading below the navbar", first is not None and first >= navbar_bottom(width) + 8, f"top={first}")
         check(f"{tag}: console clean", not errors, "; ".join(errors[:3]))
         ctx.close()
 
