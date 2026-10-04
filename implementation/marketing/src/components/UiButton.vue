@@ -171,13 +171,11 @@ const element = computed(() => buttonElement(props))
   background: var(--sc-primary);
   color: #fff;
 }
-.variant-primary:hover {
-  background: var(--sc-primary-hover);
-}
-/* The old gradient's hover was a glow, which leaves the label contrast where it is. Kept for the
-   call sites that still pass `gradient`; the primary hover colour is a decision for Uma. */
+/* DARKER on hover, not lighter: the platform --sc-primary-hover (#7e6eff) under the white label is 3.78:1 and
+   failed AA (reset-r2-04); this fill holds 5.69:1. The alias hovers like the button it stands for. */
+.variant-primary:hover,
 .variant-gradient:hover {
-  box-shadow: 0 0 20px rgba(110, 92, 240, 0.4);
+  background: var(--sc-primary-hover-fill);
 }
 
 .variant-secondary {

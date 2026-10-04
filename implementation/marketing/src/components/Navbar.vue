@@ -469,18 +469,10 @@ onBeforeUnmount(() => {
   text-align: center;
 }
 
-/* The CTA is a UiButton (primary, compact: 39px, 10px radius, 14/700, brand fill), so the bar carries
-   no private copy of the button. Only what is the bar's own is here. */
+/* The CTA is a UiButton (primary, compact: 39px, 10px radius, 14/700, brand fill, the shared AA hover), so the
+   bar carries no private copy of the button. Only what is the bar's own is here. */
 .download-cta {
   white-space: nowrap;
-  /* The hover keeps the value this button had (#4f5ec7, 5.59:1 with the white label). UiButton's own
-     primary hover (--sc-primary-hover) is 3.78:1 and so is not used here. Which hover every primary
-     gets is a decision for Uma (shared-chrome-31); until then this value is kept, by name. */
-  --nav-cta-hover: #4f5ec7;
-}
-
-.download-cta.variant-primary:hover {
-  background: var(--nav-cta-hover);
 }
 
 /* Mobile Toggle: 44x44, the minimum touch target. */

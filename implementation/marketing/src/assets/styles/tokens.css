@@ -22,7 +22,12 @@
 
   /* Brand */
   --sc-primary: #6e5cf0;
+  /* LINK INK on dark surfaces (14 consumers); NOT a button fill: white on it is 3.78:1. */
   --sc-primary-hover: #7e6eff;
+  /* The primary BUTTON's hover fill (web only): darker than --sc-primary, white label 5.69:1. A lighter hover
+     cannot hold a white label at 4.5:1 on this indigo (reset-r2-04). Which exact hover every primary gets is
+     Uma's under shared-chrome-31; whatever she picks must keep 4.5:1 (tests/tokens.test.ts fails below it). */
+  --sc-primary-hover-fill: #5f4de6;
   --sc-accent-soft: #201f3a;
 
   /* Scripture */

@@ -21,7 +21,7 @@ import { join } from 'node:path'
 import test, { describe } from 'node:test'
 import { fileURLToPath } from 'node:url'
 
-import { contrast, effective, parseCss, resolvePx, rootProperties, stripComments, type Env } from './fixtures/cssSource.ts'
+import { contrast, effective, luminance, parseCss, resolvePx, rootProperties, stripComments, type Env } from './fixtures/cssSource.ts'
 
 const SRC = fileURLToPath(new URL('../src/', import.meta.url))
 const read = (relative: string) => readFileSync(join(SRC, relative), 'utf8')
@@ -205,6 +205,22 @@ describe('the type ramp can be consumed (shared-chrome-24)', () => {
     assert.equal(p['--letter-spacing-eyebrow'], '0.3px')
     assert.equal(effective(rules, ['font-eyebrow'], DESKTOP)['letter-spacing'], 'var(--letter-spacing-eyebrow)')
     assert.equal(effective(rules, ['font-h1-page'], DESKTOP)['font'], 'var(--font-h1-page)')
+  })
+})
+
+describe('the primary button hover fill is AA (reset-r2-04)', () => {
+  const p = props(DESKTOP)
+
+  test('--sc-primary-hover-fill is darker than the rest fill and holds the white label at 4.5:1 (the old hover was 3.78:1)', () => {
+    const fill = p['--sc-primary-hover-fill'] ?? ''
+    assert.match(fill, /^#[0-9a-f]{6}$/i)
+    assert.ok(contrast('#ffffff', fill) >= 4.5, `${fill} is ${contrast('#ffffff', fill).toFixed(2)}:1 with white`)
+    assert.ok(luminance(fill) < luminance(p['--sc-primary'] ?? ''), 'must be darker than --sc-primary')
+    assert.ok(contrast('#ffffff', p['--sc-primary-hover'] ?? '') < 4.5, 'control: the old hover really was below AA')
+  })
+
+  test('the platform --sc-primary-hover (link ink on dark surfaces, 14 consumers) is unchanged', () => {
+    assert.equal(p['--sc-primary-hover'], '#7e6eff')
   })
 })
 

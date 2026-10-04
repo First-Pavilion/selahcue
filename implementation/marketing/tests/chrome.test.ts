@@ -140,21 +140,20 @@ describe('navbar: the Download free button (shared-chrome-06, 25)', () => {
     assert.match(navbar, /import UiButton from '@\/components\/UiButton\.vue'/)
   })
 
-  test('it carries no rule of its own for radius, weight, padding or fill: those come from UiButton', () => {
+  test('it carries no rule of its own for radius, weight, padding or fill, hover included: those come from UiButton', () => {
     for (const rule of navRules) {
       if (!rule.selectors.some((s) => /\.download-cta/.test(s))) continue
-      for (const banned of ['border-radius', 'font-weight', 'background']) {
-        if (rule.selectors.every((s) => /:hover/.test(s)) && banned === 'background') continue
+      for (const banned of ['border-radius', 'font-weight', 'background', 'background-color', 'padding']) {
+        // the tablet step trims the side padding to fit the signed-in state at 768; nothing else may
+        if (banned === 'padding' && /size-compact/.test(rule.selectors.join(','))) continue
         assert.equal(rule.decls[banned], undefined, `${rule.selectors.join(',')} sets ${banned}`)
       }
     }
   })
 
-  test('its hover keeps the value it had (#4f5ec7, 5.59:1), held for Uma (shared-chrome-31): named, not hard-coded in the rule', () => {
-    assert.match(styleOf(navbar), /--nav-cta-hover:\s*#4f5ec7/)
-    const hover = effective(navRules, ['download-cta', 'variant-primary'], DESKTOP, 'hover')
-    assert.equal(hover['background'], 'var(--nav-cta-hover)')
-    assert.ok(contrast('#ffffff', '#4f5ec7') >= 4.5)
+  test('its hover is the ONE primary hover (an AA fill, reset-r2-04): no private hover colour is left in the bar', () => {
+    assert.doesNotMatch(styleOf(navbar), /--nav-cta-hover/)
+    assert.deepEqual(effective(navRules, ['download-cta', 'variant-primary'], DESKTOP, 'hover'), {})
   })
 })
 
@@ -212,7 +211,7 @@ describe('navbar: surface and tokens (shared-chrome-09, 25)', () => {
   })
 
   test('no hard-coded brand or neutral colour is left in the bar: the token layer is used', () => {
-    const style = stripComments(styleOf(navbar)).replace(/--nav-cta-hover:[^;]*;/, '')
+    const style = stripComments(styleOf(navbar))
     for (const literal of ['#090a0f', '#9aa4b2', '#5b6bd6', '#4f5ec7', 'rgba(255, 255, 255, 0.08)']) {
       assert.ok(!style.includes(literal), `${literal} is hard-coded in Navbar.vue`)
     }
@@ -472,7 +471,7 @@ describe('contrast of the small text in the chrome (shared-chrome-20, 21, 34)', 
       ['nav wordmark', resolveInk(nav(['brand-wordmark'])['color']), base],
       ['route loading fallback', resolveInk(effective(appRules, ['loading'], DESKTOP)['color']), base],
       ['nav CTA label (white on brand)', '#ffffff', p['--sc-primary'] ?? ''],
-      ['nav CTA label on hover', '#ffffff', '#4f5ec7'],
+      ['nav CTA label on hover (the shared primary hover fill)', '#ffffff', p['--sc-primary-hover-fill'] ?? ''],
     ]
     for (const [what, ink, fill] of pairs) {
       const ratio = contrast(ink, fill)

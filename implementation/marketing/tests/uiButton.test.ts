@@ -16,7 +16,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test, { describe } from 'node:test'
 
-import { box, contrast, effective, hexToRgb, parseCss, px, rootProperties, styleOf, type Env } from './fixtures/cssSource.ts'
+import { box, contrast, effective, hexToRgb, luminance as luminanceOf, parseCss, px, rootProperties, styleOf, type Env } from './fixtures/cssSource.ts'
 
 const src = readFileSync(new URL('../src/components/UiButton.vue', import.meta.url), 'utf8')
 const rules = parseCss(styleOf(src))
@@ -254,16 +254,16 @@ describe('every label is readable on its fill (small text: 4.5:1)', () => {
 
   test('on hover: the ones that change colour keep 4.5:1, and the ones that would not are not colour changes', () => {
     const hover = (v: string) => look('md', v, DESKTOP, 'hover')
+    assert.ok(contrast(hex(look('md', 'primary')['color']), hex(hover('primary')['background'])) >= 4.5, 'primary (was 3.78:1 with --sc-primary-hover)')
+    assert.ok(contrast(hex(look('md', 'gradient')['color']), hex(hover('gradient')['background'])) >= 4.5, 'gradient (alias of primary)')
     assert.ok(contrast(hex(look('md', 'secondary')['color']), hex(hover('secondary')['background'])) >= 4.5, 'secondary')
     assert.ok(contrast(hex(look('md', 'ghost')['color']), hex(hover('ghost')['background'])) >= 4.5, 'ghost')
     assert.ok(contrast(hex(look('md', 'outline')['color']), hex(hover('outline')['background'])) >= 4.5, 'outline')
     // white over the band darkened by the hover wash: never lower than at rest
     const washed = over(hover('inverse-outline')['background'] ?? '', hex(tokens['--sc-primary']))
     assert.ok(contrast('#ffffff', washed) >= contrast('#ffffff', hex(tokens['--sc-primary'])), 'inverse-outline')
-    // inverse and gradient hover with a shadow only, so the label contrast cannot move
-    for (const v of ['inverse', 'gradient']) assert.equal(hover(v)['background'], undefined, `${v} hover must not change the fill`)
-    // NOT asserted: the primary hover (--sc-primary-hover, 3.78:1 with the white label). Its direction is
-    // held for Uma (shared-chrome-31); this file keeps the value it had.
+    // inverse hovers with a shadow only, so the label contrast cannot move
+    assert.equal(hover('inverse')['background'], undefined, 'inverse hover must not change the fill')
   })
 
   test('control: the check bites. White on the old Design 2.0 muted ink is caught', () => {
@@ -278,8 +278,21 @@ describe('what did not change', () => {
     assert.equal(effective(rules, ['ui-button'], DESKTOP)['min-height'], undefined, 'a fine pointer at desktop keeps the designed heights')
   })
 
-  test('hover colours are untouched: primary still goes to --sc-primary-hover (decision shared-chrome-31 is Uma\'s)', () => {
-    assert.equal(look('md', 'primary', DESKTOP, 'hover')['background'], 'var(--sc-primary-hover)')
+  test('the primary hover is darker than the rest fill and keeps the white label at 4.5:1 (reset-r2-04); the colour itself is still Uma\'s to choose (shared-chrome-31)', () => {
+    const tokenRules = [
+      ...parseCss(readFileSync(new URL('../src/assets/styles/tokens.css', import.meta.url), 'utf8')),
+      ...parseCss(readFileSync(new URL('../src/assets/styles/main.css', import.meta.url), 'utf8')),
+    ]
+    const tokens = rootProperties(tokenRules, DESKTOP)
+    for (const variant of ['primary', 'gradient']) {
+      assert.equal(look('md', variant, DESKTOP, 'hover')['background'], 'var(--sc-primary-hover-fill)', variant)
+    }
+    const fill = tokens['--sc-primary-hover-fill'] ?? ''
+    assert.ok(contrast('#ffffff', fill) >= 4.5, `white on the hover fill ${fill} is ${contrast('#ffffff', fill).toFixed(2)}:1`)
+    assert.ok(luminanceOf(fill) < luminanceOf(tokens['--sc-primary'] ?? ''), 'a hover that gets lighter cannot hold a white label at 4.5:1 on this indigo')
+    // --sc-primary-hover (#7e6eff) is the platform token the site uses as LINK INK on dark surfaces; no button fill uses it
+    assert.doesNotMatch(src.replace(/\/\*[\s\S]*?\*\//g, ''), /--sc-primary-hover\b(?!-fill)/)
+    assert.equal(tokens['--sc-primary-hover'], '#7e6eff', 'the platform token must not move: link ink on 14 other files')
   })
 
   test('disabled still dims and ignores the pointer', () => {
