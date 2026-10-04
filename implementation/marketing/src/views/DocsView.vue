@@ -73,8 +73,10 @@ const startArticle = docsArticles.find((a) => a.startHere) ?? docsArticles[0]
           </nav>
         </aside>
 
-        <!-- Right Content Area. The site shell already provides <main>. -->
-        <div class="docs-main">
+        <!-- Right Content Area. The site shell already provides <main>. `docs-content` is the name the global anchor
+             rule (`assets/styles/anchors.css`: `.docs-content .topic`) gives the sections their scroll margin by;
+             it is a plain column now, not the card it used to be. -->
+        <div class="docs-content">
           <section class="docs-intro">
             <h2 class="intro-title">Getting started</h2>
             <p class="intro-text">
@@ -97,6 +99,7 @@ const startArticle = docsArticles.find((a) => a.startHere) ?? docsArticles[0]
                 :key="c.id"
                 class="topic-tile"
                 :to="{ hash: '#' + c.id }"
+                aria-current-value="false"
               >
                 <CategoryIcon :name="c.id" :tone="toneFor(index)" size="md" />
                 <div class="tile-body">

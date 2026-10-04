@@ -379,9 +379,26 @@ describe('Docs (499:124): centred hero, grouped sidebar with an active item, get
     assert.equal(h1?.level, 1)
     assert.equal(h1?.text, 'Documentation')
     assert.ok(textOf(page).includes('DOCS'))
-    assert.equal(withClass(page, 'docs-content').length, 0, 'the old one-card wrapper is gone')
+    const css = styleOf(readSrc('views/DocsView.vue'))
+    assert.equal(declaration(css, '.docs-content', 'background'), undefined, 'the content column is no longer a card (no fill)')
+    assert.equal(declaration(css, '.docs-content', 'border'), undefined, 'and has no border')
+    assert.ok(page.indexOf('Documentation</h1>') < page.indexOf('class="docs-content"'), 'the hero is outside the column')
     assert.equal(withClass(page, 'breadcrumb').length, 0, 'the frame draws no breadcrumb')
     assert.ok(page.indexOf('Documentation</h1>') < page.indexOf('docs-sidebar'), 'the hero is above the sidebar')
+  })
+
+  test('the sections keep the class the global anchor rule uses, so a typed #hash lands below the navbar', async () => {
+    const anchors = readSrc('assets/styles/anchors.css')
+    assert.match(anchors, /\.docs-content \.topic/, 'anchors.css still gives `.docs-content .topic` its scroll margin')
+    const page = await html('DocsView.vue')
+    const column = withClass(page, 'docs-content')
+    assert.equal(column.length, 1)
+    assert.equal(withClass(page, 'topic').filter((t) => t.at > column[0]!.at).length, 6, 'all six sections sit inside it')
+  })
+
+  test('no link in the hub claims aria-current=page: the router would mark every same-page hash link as the current page', async () => {
+    const page = await html('DocsView.vue')
+    assert.equal(tagsOf(page).filter((t) => t.name === 'a' && t.attrs['aria-current'] === 'page').length, 0)
   })
 
   test('the lead makes no promise the content layer does not back (docs-01, docs-04)', async () => {

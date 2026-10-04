@@ -295,7 +295,7 @@ def check_support(page, c: Checks, base: str) -> None:
 
 def check_docs(page, c: Checks, base: str) -> None:
     open_page(page, base, "/docs", ".docs-sidebar")
-    sb, main = box(page, ".docs-sidebar"), box(page, ".docs-main")
+    sb, main = box(page, ".docs-sidebar"), box(page, ".docs-content")
     c.near(sb["w"], 248, 1, "docs: sidebar 248 wide (Figma 499:145)")
     c.near(sb["x"], 96, 1, "docs: sidebar x 96")
     c.near(main["x"] - sb["right"], 40, 1, "docs: 40px between the sidebar and the content (Figma)")

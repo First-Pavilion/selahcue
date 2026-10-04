@@ -209,9 +209,12 @@ def main() -> None:
                 break
         check("Tab reaches the 'Contact support' button, as a real link", reached)
         pg.goto(base + "/blog", wait_until="networkidle")
-        check("featured 'Read story' is a real link to the post", pg.locator("a:has-text('Read story')").get_attribute("href") == POST)
+        # The Figma frames (blog-02, support-07; ClickUp 17tnw2b2cez) draw no 'Read story' button and no 'Read article'
+        # button: the featured post's TITLE is its one link, and each 'Start here' row is one whole-row link.
+        check("featured post title is a real link to the post", pg.locator("a.featured-link").get_attribute("href") == POST)
         pg.goto(base + "/support", wait_until="networkidle")
-        check("support 'Start here' rows are real links", all(pg.eval_on_selector_all("a:has-text('Read article')", "els => els.map(e => !!e.getAttribute('href'))")))
+        rows = pg.eval_on_selector_all(".articles-band a.article-row", "els => els.map(e => e.getAttribute('href') || '')")
+        check("support 'Start here' rows are real links", len(rows) >= 2 and all(h.startswith("/support/") for h in rows), str(rows))
 
         # ---- every internal link navigates somewhere real --------------------------------
         links_checked = 0
@@ -270,7 +273,7 @@ def main() -> None:
         pg.goto(base + "/blog", wait_until="networkidle")
         default_title = pg.title()
         default_description = pg.get_attribute("meta[name=description]", "content")
-        pg.click("text=Read story")
+        pg.click("a.featured-link")
         pg.wait_for_url("**" + POST)
         pg.wait_for_timeout(300)
         check("article sets its own document.title", pg.title() == "Why offline-first matters for Sunday morning \u2014 SelahCue", pg.title())
@@ -283,7 +286,7 @@ def main() -> None:
         check("article -> article navigation keeps the NEW title", pg.title().startswith(NEXT_POST_TITLE), pg.title())
         pg.goto(base + "/blog", wait_until="networkidle")
         check("index page gets the default title back", pg.title() == default_title, pg.title())
-        pg.click("text=Read story")
+        pg.click("a.featured-link")
         pg.wait_for_url("**" + POST)
         pg.click("nav[aria-label=Breadcrumb] >> text=Blog")
         pg.wait_for_url("**/blog")
