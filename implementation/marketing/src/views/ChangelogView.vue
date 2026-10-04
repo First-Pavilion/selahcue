@@ -32,44 +32,64 @@ const releases = [
     ]
   }
 ]
+
+
+type ChangeType = 'new' | 'improved' | 'fixed'
+
+/**
+ * The change-type labels (Figma 501:154): one pill per GROUP of changes, in this order. The variants are
+ * the ones UiBadge defines, chosen in the template as a plain choice between literals (the shared tree test
+ * can only check a variant it can read): New is the green `preview` tone, Improved is the brand `accent` tone
+ * and Fixed is the amber `warn` tone. The dot beside each change takes the same colour.
+ */
+const TYPES: Array<{ type: ChangeType; label: string }> = [
+  { type: 'new', label: 'New' },
+  { type: 'improved', label: 'Improved' },
+  { type: 'fixed', label: 'Fixed' }
+]
+
+/** A release's changes grouped by type, in the frame's order, leaving out a type it has no changes of. */
+const groupsOf = (rel: (typeof releases)[number]) =>
+  TYPES.map((t) => ({ ...t, items: rel.highlights.filter((h) => h.type === t.type) })).filter((g) => g.items.length > 0)
 </script>
 
 <template>
   <div class="changelog-page">
-    <section class="hero-section">
-      <div class="container">
-        <UiBadge variant="featured">Product Updates</UiBadge>
-        <h1 class="hero-title">Changelog &amp; Release Notes</h1>
-        <p class="hero-sub">Stay up to date with new features, performance improvements, and bug fixes in SelahCue.</p>
-      </div>
+    <section class="hero-section container">
+      <UiBadge variant="featured">CHANGELOG</UiBadge>
+      <h1 class="hero-title">What's new</h1>
+      <p class="hero-sub">Stay up to date with new features, performance improvements, and bug fixes in SelahCue.</p>
     </section>
 
-    <section class="timeline-section">
-      <div class="container">
-        <div class="timeline">
-          <div v-for="rel in releases" :key="rel.version" class="timeline-item">
-            <div class="timeline-meta">
-              <span class="version-code">{{ rel.version }}</span>
-              <span class="release-date">{{ rel.date }}</span>
-              <UiBadge variant="preview" size="sm">{{ rel.tag }}</UiBadge>
-            </div>
+    <section class="release-section container">
+      <div class="release-list">
+        <article v-for="(rel, index) in releases" :key="rel.version" class="release-card">
+          <header class="release-head">
+            <h2 class="version-code">{{ rel.version }}</h2>
+            <span class="release-date">{{ rel.date }}</span>
+            <UiBadge v-if="index === 0" class="release-tag" variant="preview" size="sm">{{ rel.tag }}</UiBadge>
+          </header>
 
-            <div class="timeline-content">
-              <div v-for="(item, idx) in rel.highlights" :key="idx" class="change-entry">
-                <UiBadge 
-                  :variant="item.type === 'new' ? 'preview' : item.type === 'improved' ? 'ndi' : 'warn'"
-                  size="sm"
-                >
-                  {{ item.type.toUpperCase() }}
-                </UiBadge>
+          <div class="release-rule" aria-hidden="true"></div>
+
+          <div v-for="group in groupsOf(rel)" :key="group.type" :class="['change-group', 'is-' + group.type]">
+            <UiBadge
+              class="change-label"
+              :variant="group.type === 'new' ? 'preview' : group.type === 'improved' ? 'accent' : 'warn'"
+              size="sm"
+              >{{ group.label }}</UiBadge
+            >
+            <ul class="change-list">
+              <li v-for="(item, idx) in group.items" :key="idx" class="change-entry">
+                <span class="change-dot" aria-hidden="true"></span>
                 <div class="entry-body">
                   <h3 class="entry-title">{{ item.title }}</h3>
                   <p class="entry-desc">{{ item.desc }}</p>
                 </div>
-              </div>
-            </div>
+              </li>
+            </ul>
           </div>
-        </div>
+        </article>
       </div>
     </section>
   </div>
@@ -78,110 +98,155 @@ const releases = [
 <style scoped>
 .changelog-page {
   background: var(--sc-base);
-  padding-bottom: 80px;
+  padding-bottom: 64px;
 }
 
-.container {
-  max-width: 900px;
-  margin: 0 auto;
-  padding: 0 var(--page-gutter);
-}
-
+/* HERO (Figma 501:139): padding 96 top / 40 bottom, 18px between the pill, the headline and the subline,
+   all centred. The headline takes the shared page-hero token and is set to the frame's 48/54 from the
+   desktop breakpoint up. */
 .hero-section {
-  padding: 80px 0 50px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 18px;
+  padding-top: 96px;
+  padding-bottom: 40px;
   text-align: center;
 }
 
 .hero-title {
-  font-size: 40px;
-  font-weight: 800;
+  font: var(--font-h1-page);
   color: var(--sc-text);
-  margin: 16px 0;
+}
+
+@media (min-width: 1200px) {
+  .hero-title {
+    font-size: 48px;
+    line-height: 54px;
+  }
 }
 
 .hero-sub {
-  font-size: 16px;
+  max-width: 620px;
+  font-size: 18px;
+  line-height: 28px;
   color: var(--sc-text-secondary);
 }
 
-.timeline {
-  display: flex;
-  flex-direction: column;
-  gap: 48px;
-  position: relative;
+/* THE RELEASES (Figma 501:144): padding 24 top, one card per release, 900 wide and centred, 24px apart. */
+.release-section {
+  padding-top: 24px;
 }
 
-.timeline-item {
-  display: grid;
-  grid-template-columns: 200px minmax(0, 1fr);
-  gap: 36px;
-  align-items: start;
-}
-
-.timeline-meta {
+.release-list {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  align-items: flex-start;
-  position: sticky;
-  top: 100px;
+  gap: 24px;
+  max-width: 900px;
+  margin-inline: auto;
+}
+
+/* A release card (Figma 501:145): the panel surface, a 1px border, radius 20, padding 28 / 30 from the edge
+   (the stroke is drawn inside), 18px between the header, the rule and each group of changes. */
+.release-card {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  background: var(--sc-surface);
+  border: 1px solid var(--sc-border);
+  border-radius: 20px;
+  padding: 27px 29px;
+}
+
+.release-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
 }
 
 .version-code {
-  font-size: 24px;
-  font-weight: 800;
+  font-size: 22px;
+  font-weight: 700;
+  line-height: 27px;
   color: var(--sc-text);
 }
 
 .release-date {
-  font-size: 13px;
-  color: var(--sc-text-muted);
+  font-size: 14px;
+  line-height: 17px;
+  color: var(--sc-text-secondary);
 }
 
-.timeline-content {
-  background: var(--sc-surface);
-  border: 1px solid var(--sc-border);
-  border-radius: 16px;
-  padding: 28px;
+.release-rule {
+  height: 1px;
+  background: var(--sc-border);
+}
+
+/* A group: its label pill, then the list 16px to the right of it (the frame does not align the lists, so
+   neither does this). The pill is sentence case in the frame; UiBadge uppercases, so this turns that off. */
+.change-group {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+}
+
+.change-label {
+  flex-shrink: 0;
+  text-transform: none;
+}
+
+.change-list {
+  flex: 1;
+  min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 20px;
+  gap: 9px;
 }
 
 .change-entry {
   display: flex;
   align-items: flex-start;
-  gap: 14px;
-  padding-bottom: 16px;
-  border-bottom: 1px solid var(--sc-border);
+  gap: 10px;
 }
 
-.change-entry:last-child {
-  border-bottom: none;
-  padding-bottom: 0;
+/* The 6px dot in the type's colour, centred on the first line (23px tall). */
+.change-dot {
+  flex-shrink: 0;
+  width: 6px;
+  height: 6px;
+  margin-top: 9px;
+  border-radius: 50%;
+  background: var(--sc-preview);
+}
+
+.is-improved .change-dot { background: var(--sc-primary); }
+.is-fixed .change-dot { background: var(--sc-warn); }
+
+.entry-body {
+  min-width: 0;
 }
 
 .entry-title {
-  font-size: 16px;
-  font-weight: 600;
+  font-size: 15px;
+  font-weight: 400;
+  line-height: 23px;
   color: var(--sc-text);
-  margin: 0 0 4px 0;
 }
 
 .entry-desc {
+  margin-top: 1px;
   font-size: 14px;
+  line-height: 21px;
   color: var(--sc-text-secondary);
-  line-height: 1.5;
-  margin: 0;
 }
 
 @media (max-width: 767.98px) {
   .changelog-page { padding-bottom: var(--section-pad-sm); }
-  .hero-section { padding: 48px 0 36px; }
-  .hero-title { font-size: 36px; line-height: 40px; }
-  .timeline { gap: 36px; }
-  .timeline-item { grid-template-columns: minmax(0, 1fr); gap: 16px; }
-  .timeline-meta { position: static; flex-direction: row; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
-  .timeline-content { padding: 20px; border-radius: 14px; }
+  .hero-section { padding-top: 56px; padding-bottom: 28px; gap: 14px; }
+  .hero-sub { font-size: 16px; line-height: 24px; }
+  .release-section { padding-top: 8px; }
+  .release-card { padding: 21px 19px; border-radius: 16px; }
+  .change-group { flex-direction: column; gap: 10px; }
 }
 </style>

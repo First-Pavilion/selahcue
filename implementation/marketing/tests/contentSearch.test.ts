@@ -53,17 +53,33 @@ describe('every word must match', () => {
 })
 
 describe('the promise in the search box placeholder', () => {
+  /**
+   * The examples a placeholder offers ("Search help articles (e.g. a, b, c)..."), or none when it offers none.
+   * The Figma frame (498:144, audit support-02) draws a bare "Search help articles…", so today the view makes no
+   * promise; the rule stays for the day an example is added back: it must find an article.
+   */
+  const examplesIn = (source: string): { found: boolean; examples: string[] } => {
+    const m = /placeholder="(Search help articles[^"]*)"/.exec(source)
+    const text = m?.[1] ?? ''
+    const eg = /\(e\.g\. ([^)]*)\)/.exec(text)?.[1] ?? ''
+    return { found: Boolean(m), examples: eg.split(',').map((x) => x.trim()).filter(Boolean) }
+  }
   const view = readFileSync(fileURLToPath(new URL('../src/views/SupportView.vue', import.meta.url)), 'utf8')
-  const placeholder = /placeholder="Search help articles \(e\.g\. ([^)]*)\)/.exec(view)?.[1]
-  const examples = (placeholder ?? '').split(',').map((s) => s.trim()).filter(Boolean)
+  const real = examplesIn(view)
 
-  test('the placeholder offers examples at all (positive control)', () => {
-    assert.ok(placeholder, 'could not find the placeholder in SupportView.vue')
-    assert.ok(examples.length >= 3, `only ${examples.length} examples`)
+  test('the extractor reads examples out of a placeholder that offers them, and finds none in one that does not (positive control)', () => {
+    const old = examplesIn('<input placeholder="Search help articles (e.g. stage display, pairing, crash recovery)..." />')
+    assert.deepEqual(old.examples, ['stage display', 'pairing', 'crash recovery'])
+    assert.deepEqual(examplesIn('<input placeholder="Search help articles…" />'), { found: true, examples: [] })
+    assert.equal(examplesIn('<input placeholder="Something else" />').found, false)
+  })
+
+  test('the view still has its search placeholder', () => {
+    assert.ok(real.found, 'could not find the placeholder in SupportView.vue')
   })
 
   test('every example in it returns at least one article', () => {
-    for (const ex of examples) assert.ok((searchSupport(ex) ?? []).length >= 1, `"${ex}" returns nothing`)
+    for (const ex of real.examples) assert.ok((searchSupport(ex) ?? []).length >= 1, `"${ex}" returns nothing`)
   })
 
   test('so do the other words people reach for first', () => {

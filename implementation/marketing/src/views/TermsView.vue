@@ -4,5 +4,5 @@ import { termsOfService } from '@/lib/legal/terms.generated.ts'
 </script>
 
 <template>
-  <LegalPage :doc="termsOfService" badge="Legal Terms" />
+  <LegalPage :doc="termsOfService" badge="LEGAL" />
 </template>

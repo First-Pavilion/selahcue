@@ -97,7 +97,7 @@ const EXAMPLE_TOKEN = '{{' + 'EXAMPLE_DETAIL' + '}}'
 
     <div class="legal-shell">
       <header class="legal-header">
-        <UiBadge variant="preview">{{ badge }}</UiBadge>
+        <UiBadge variant="featured">{{ badge }}</UiBadge>
         <h1 class="legal-title">{{ doc.title }}</h1>
         <p v-if="version" class="legal-version">
           <time :datetime="version.iso">{{ version.text }}</time>
@@ -184,13 +184,13 @@ const EXAMPLE_TOKEN = '{{' + 'EXAMPLE_DETAIL' + '}}'
               :data-spy="s.id"
             >
               <span :id="s.id" class="legal-anchor" aria-hidden="true"></span>
-              <component :is="`h${s.level}`" :id="`${s.id}-title`" :class="['sec-title', `sec-h${s.level}`]">
+              <component :is="`h${s.level}`" :id="`${s.id}-title`" class="sec-title sec-main">
                 <span v-if="s.number" class="sec-num">{{ s.number }}.</span> {{ s.title }}
               </component>
               <LegalBlocks :blocks="s.blocks" :table-label="s.title" />
               <template v-for="c in s.children" :key="c.id">
                 <span :id="c.id" class="legal-anchor" aria-hidden="true"></span>
-                <h3 :id="`${c.id}-title`" class="sec-title sec-h3">
+                <h3 :id="`${c.id}-title`" class="sec-title sec-h3 sec-child">
                   <span v-if="c.number" class="sec-num">{{ c.number }}</span> {{ c.title }}
                 </h3>
                 <LegalBlocks :blocks="c.blocks" :table-label="c.title" />
@@ -249,7 +249,8 @@ html:has(.legal-page) {
 <style scoped>
 .legal-page {
   background: var(--sc-base);
-  padding: 60px 0 80px;
+  /* 96px from the navbar to the pill, as every other page frame draws it (Figma 504:139). */
+  padding: 96px 0 80px;
   --clause-indent: 3em;
   --clause-gap: 10px;
   /* Navbar height (the shared --nav-height token when a stylesheet defines it; 68px is the
@@ -273,8 +274,10 @@ html:has(.legal-page) {
 #legal-text {
   scroll-margin-top: var(--legal-anchor-offset);
 }
+/* 1136 = 24 + 24 gutters + the 260 contents column + its 48 gap + the 780 text column Figma draws (504:144), so the
+   text measures 780 at 1440 and not the 764 a 1120 shell left it. The contents sidebar is build-only (privacy-03). */
 .legal-shell {
-  max-width: 1120px;
+  max-width: 1136px;
   margin: 0 auto;
   /* The site's page gutter when a stylesheet defines the token (24 desktop / 48 tablet / 20
      mobile, PR #140's tokens.css/main.css); otherwise the same three values locally, stepped
@@ -320,18 +323,19 @@ html:has(.legal-page) {
   outline-offset: 2px;
 }
 
+/* The header block (Figma 504:139): the pill, the title 16px below it, the version line 16px below that,
+   and the first text 40px under the version line. The frame draws no rule under the header. */
 .legal-header {
   text-align: center;
-  margin-bottom: 32px;
-  border-bottom: 1px solid var(--sc-border);
-  padding-bottom: 32px;
+  margin-bottom: 40px;
+  padding-bottom: 0;
 }
 .legal-title {
-  font-size: 36px;
-  font-weight: 800;
-  line-height: 1.15;
+  font-size: 44px;
+  font-weight: 700;
+  line-height: 50px;
   color: var(--sc-text);
-  margin: 16px 0 8px;
+  margin: 16px 0 16px;
   overflow-wrap: anywhere;
 }
 .legal-version { font-size: 14px; color: var(--sc-text-secondary); }
@@ -442,7 +446,7 @@ html:has(.legal-page) {
   outline-offset: 2px;
 }
 
-.legal-text { min-width: 0; max-width: 760px; outline: none; overflow-wrap: break-word; }
+.legal-text { min-width: 0; max-width: 780px; outline: none; overflow-wrap: break-word; }
 
 .summary-box {
   background: var(--sc-surface);
@@ -469,11 +473,14 @@ html:has(.legal-page) {
 
 .legal-section { margin-bottom: 8px; }
 .sec-title { color: var(--sc-text); }
-.sec-h2 { font-size: 22px; font-weight: 700; line-height: 1.3; margin: 36px 0 12px; }
+/* A SECTION heading (an h2 on the Privacy page, an h3 under a Part on the Terms page) is one text run, 20/600 on
+   a 26px line, 10px above its text and 28px below the section before (Figma 504:124 and 504:203); the number
+   takes the heading's own ink. A child heading under a section (the Privacy page's 1.1 style titles) stays the
+   smaller 17/600 so it still reads as a step down. */
 .sec-h3 { font-size: 17px; font-weight: 600; line-height: 1.4; margin: 22px 0 8px; }
-.legal-section:first-of-type .sec-h2,
-.legal-section:first-of-type .sec-h3 { margin-top: 24px; }
-.sec-num { color: var(--sc-text-secondary); font-variant-numeric: tabular-nums; margin-right: 2px; }
+.sec-main { font-size: 20px; font-weight: 600; line-height: 26px; margin: 28px 0 10px; }
+.legal-section:first-of-type .sec-main { margin-top: 24px; }
+.sec-num { color: inherit; font-variant-numeric: tabular-nums; margin-right: 2px; }
 .sec-title:focus { outline: none; }
 
 /* Lists under a numbered clause align with the clause text, not the number. */
@@ -524,7 +531,7 @@ html:has(.legal-page) {
 }
 
 @media (max-width: 767.98px) {
-  .legal-title { font-size: 30px; }
+  .legal-title { font-size: 30px; line-height: 36px; }
   .summary-box { padding: 20px 18px 4px; }
   .legal-facts { padding: 12px 16px; }
   .draft-banner { padding: 16px; }

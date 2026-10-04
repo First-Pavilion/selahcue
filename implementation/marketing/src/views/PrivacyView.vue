@@ -4,5 +4,5 @@ import { privacyPolicy } from '@/lib/legal/privacy.generated.ts'
 </script>
 
 <template>
-  <LegalPage :doc="privacyPolicy" badge="Legal Notice" />
+  <LegalPage :doc="privacyPolicy" badge="LEGAL" />
 </template>
