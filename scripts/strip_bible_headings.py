@@ -65,6 +65,7 @@ import re
 import sys
 import tempfile
 import zipfile
+from unittest import mock
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 ASSETS = ROOT / "implementation/desktop/crates/selahcue-scripture/assets"
@@ -134,8 +135,10 @@ def headings_from_usfm(text):
             # text (`\q1 Maschil, ...`) continues the heading. A truncated heading still passes a
             # prefix check, so refuse rather than take only its first line.
             if not ends or (not _CARRIES_TEXT.match(line) and line[ends.end():].strip()):
-                raise Mismatch([f"Psalm {chapter}: heading {pending[-1]!r} continues on the next line "
-                                f"({line[:40]!r}); the parser does not join continuation lines"])
+                raise Mismatch([f"Psalm {chapter}: heading {pending[-1]!r} is followed by {line[:40]!r}, which "
+                                f"the parser does not accept after a heading (a continuation line, a character "
+                                f"marker, a poetry/prose marker carrying text, or a milestone/remark line). It "
+                                f"does not join continuation lines; refusing rather than truncating the heading"])
         m = re.match(r"\\c\s+(\d+)\b", line)
         if m:
             if pending:
@@ -336,23 +339,36 @@ def run(usfm_dir, assets, write, report=None, names=None):
     if write:
         # Stage every file first; only when ALL are staged do the (cheap, atomic) renames start. A
         # failure while staging removes whatever was staged and leaves every asset untouched.
-        tmps = []
+        tmps, current = [], None
         try:
             for name, (out, _, _) in results.items():
                 asset = assets / f"{name}.tsv.gz"
-                tmp = asset.with_suffix(asset.suffix + ".tmp")
+                tmp = current = asset.with_suffix(asset.suffix + ".tmp")
                 tmp.write_bytes(out)
                 tmps.append((tmp, asset))  # only files this run actually staged are ever removed
+                current = None
         except OSError as e:
-            for tmp, _ in tmps:
+            # Remove what was fully staged, plus the half-written file if (and only if) it is a file.
+            for tmp in [t for t, _ in tmps] + ([current] if current is not None else []):
                 try:
-                    tmp.unlink()
+                    if tmp.is_file():
+                        tmp.unlink()
                 except OSError:
                     pass
             print(f"WRITE FAILED while staging ({type(e).__name__}: {e}); NOTHING WRITTEN, assets untouched.")
             return 1
-        for tmp, asset in tmps:
-            tmp.replace(asset)
+        replaced = []
+        try:
+            for tmp, asset in tmps:
+                tmp.replace(asset)
+                replaced.append(asset.name)
+        except OSError as e:
+            # A rename can fail midway only on a locked or immutable target; it cannot be rolled back
+            # here, so say exactly what state the tree is in and how to get out of it.
+            print(f"RENAME FAILED ({type(e).__name__}: {e}). Replaced so far: {replaced or 'none'}; staged "
+                  f"files still on disk: {[t.name for t, _ in tmps if t.exists()]}. Recover with "
+                  f"`git checkout -- <the assets>`, delete the *.tmp files, fix the cause, and re-run.")
+            return 1
     if report:
         report.write_text("\n".join(report_md) + "\n", encoding="utf-8")
     return 0
@@ -464,18 +480,25 @@ def self_test():
     spacey_old = tsv((19, 1, 1, "Title.  Verse"))
     raises(lambda: verify(spacey_old, tsv((19, 1, 1, " Verse")), [((19, 1, 1), "Title.", 0, "start")]),
            "verify() accepted a leading space", "bad remainder")
+    # Direction matters: text removed from the END must not be accepted as a "start" removal, nor the reverse.
+    raises(lambda: verify(tsv((19, 1, 1, "Verse text. TITLE")), tsv((19, 1, 1, "Verse text.")),
+                          [((19, 1, 1), "TITLE", 0, "start")]),
+           "verify() accepted a suffix removal recorded as a start removal", "removed from the start")
+    raises(lambda: verify(tsv((19, 1, 1, "TITLE Verse text.")), tsv((19, 1, 1, "Verse text.")),
+                          [((19, 1, 1), "TITLE", 0, "end")]),
+           "verify() accepted a prefix removal recorded as an end removal", "removed from the end")
 
     # Parser guards: a heading with no verse after it, and a heading that continues on a second line.
     raises(lambda: headings_from_usfm("\\c 5 \n\\d Orphan title.\n\\c 6 \n\\v 1 Text"), "orphan heading accepted")
     raises(lambda: headings_from_usfm("\\c 5 \n\\d A title that runs\nonto a second line.\n\\v 1 Text"),
-           "a continued heading was truncated silently", "continues on the next line")
+           "a continued heading was truncated silently", "refusing rather than truncating")
     # ...including continuations that start with a marker: a character marker, or a poetry/prose
     # marker that carries the heading's remainder as text (`\\q1 Maschil, ...`). A bare `\\q1` between
     # the heading and its verse is the normal case and must still be accepted.
     raises(lambda: headings_from_usfm("\\c 5 \n\\d A title that runs\n\\w on|strong=\"H1\"\\w* here.\n\\v 1 Text"),
-           "a heading continued by a character marker was truncated silently", "continues on the next line")
+           "a heading continued by a character marker was truncated silently", "refusing rather than truncating")
     raises(lambda: headings_from_usfm("\\c 5 \n\\d To the chief Musician,\n\\q1 Maschil, for the sons of Korah.\n\\v 1 Text"),
-           "a heading continued on a poetry line was truncated silently", "continues on the next line")
+           "a heading continued on a poetry line was truncated silently", "refusing rather than truncating")
     assert headings_from_usfm("\\c 5 \n\\d A title.\n\\q1\n\\v 1 Text") == {(5, 1): "A title."}
     assert headings_from_usfm("\\c 5 \n\\d A title.\n\\s1 A section heading\n\\v 1 Text") == {(5, 1): "A title."}
 
@@ -541,6 +564,34 @@ def self_test():
             assert (d / "kjv.tsv.gz").read_bytes() == kjv_before and (d / "web.tsv.gz").read_bytes() == web_before
             assert not (d / "kjv.tsv.gz.tmp").exists(), "left kjv's temp file behind"
             (d / "web.tsv.gz.tmp").rmdir()
+            # A half-written temp file is removed too (here web's staging write dies midway) ...
+            real_write = pathlib.Path.write_bytes
+
+            def dying_write(self, data):
+                real_write(self, data[: len(data) // 2])
+                if self.name.startswith("web"):
+                    raise OSError("simulated disk full")
+                return len(data)
+
+            with mock.patch.object(pathlib.Path, "write_bytes", dying_write):
+                assert quiet_run(d, d, write=True, names=["kjv", "web"]) == 1
+            assert not list(d.glob("*.tmp")), "left a (partial) temp file behind"
+            assert (d / "kjv.tsv.gz").read_bytes() == kjv_before and (d / "web.tsv.gz").read_bytes() == web_before
+            # ... and a rename that fails midway says exactly what state the tree is in, with no traceback.
+            real_replace = pathlib.Path.replace
+
+            def locked_replace(self, target):
+                if str(target).endswith("web.tsv.gz"):
+                    raise PermissionError("simulated immutable target")
+                return real_replace(self, target)
+
+            buf = io.StringIO()
+            with mock.patch.object(pathlib.Path, "replace", locked_replace), contextlib.redirect_stdout(buf):
+                assert run(d, d, write=True, names=["kjv", "web"]) == 1
+            assert "RENAME FAILED" in buf.getvalue() and "git checkout" in buf.getvalue(), buf.getvalue()
+            for leftover in d.glob("*.tmp"):
+                leftover.unlink()
+            (d / "kjv.tsv.gz").write_bytes(kjv_before)
             # A missing asset is a tidy abort too.
             assert quiet_run(d, d / "nowhere", write=False, names=["kjv"]) == 1
 
