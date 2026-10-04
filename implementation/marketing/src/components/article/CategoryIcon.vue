@@ -6,8 +6,9 @@
  * draw this instead, keyed by the category id or by an icon name, and a name with no entry falls back to
  * the first icon. Decorative: hidden from assistive technology (the title next to it names it).
  *
- * Sizes: `md` the Docs hub tile (40px, radius 11), `lg` the Support card tile (48px, radius 13), `thumb` the
- * Blog card thumbnail tile (51px, radius 14), `xl` the Blog featured tile (102px, radius 14).
+ * Sizes: `md` the Docs hub tile (40px, radius 11), `lg` the Support card tile (48px, radius 13), `tile` the
+ * Careers culture tile (50px, radius 13), `thumb` the Blog card thumbnail tile (51px, radius 14), `xl` the
+ * Blog featured tile (102px, radius 14).
  */
 import { computed } from 'vue'
 
@@ -61,6 +62,27 @@ const ICONS: Record<string, readonly Shape[]> = {
   'book-open': [
     ['path', { d: 'M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z' }],
     ['path', { d: 'M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z' }]
+  ],
+  globe: [
+    ['circle', { cx: '12', cy: '12', r: '10' }],
+    ['line', { x1: '2', y1: '12', x2: '22', y2: '12' }],
+    ['path', { d: 'M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z' }]
+  ],
+  'check-circle': [
+    ['path', { d: 'M22 11.08V12a10 10 0 1 1-5.93-9.14' }],
+    ['polyline', { points: '22 4 12 14.01 9 11.01' }]
+  ],
+  heart: [
+    ['path', { d: 'M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z' }]
+  ],
+  'wifi-off': [
+    ['line', { x1: '1', y1: '1', x2: '23', y2: '23' }],
+    ['path', { d: 'M16.72 11.06A10.94 10.94 0 0 1 19 12.55' }],
+    ['path', { d: 'M5 12.55a10.94 10.94 0 0 1 5.17-2.39' }],
+    ['path', { d: 'M10.71 5.05A16 16 0 0 1 22.58 9' }],
+    ['path', { d: 'M1.42 9a15.91 15.91 0 0 1 4.7-2.88' }],
+    ['path', { d: 'M8.53 16.11a6 6 0 0 1 6.95 0' }],
+    ['line', { x1: '12', y1: '20', x2: '12.01', y2: '20' }]
   ]
 }
 
@@ -68,7 +90,7 @@ const props = withDefaults(
   defineProps<{
     name: string
     tone?: 'brand' | 'preview' | 'warn' | 'live'
-    size?: 'md' | 'lg' | 'thumb' | 'xl'
+    size?: 'md' | 'lg' | 'tile' | 'thumb' | 'xl'
   }>(),
   { tone: 'brand', size: 'lg' }
 )
@@ -105,6 +127,12 @@ const shapes = computed<readonly Shape[]>(() => ICONS[props.name] ?? ICONS['gett
   border-radius: 11px;
 }
 
+.cat-icon.is-tile {
+  width: 50px;
+  height: 50px;
+  border-radius: 13px;
+}
+
 .cat-icon.is-thumb {
   width: 51px;
   height: 51px;
@@ -127,6 +155,11 @@ const shapes = computed<readonly Shape[]>(() => ICONS[props.name] ?? ICONS['gett
 .cat-icon.is-md svg {
   width: 21px;
   height: 21px;
+}
+
+.cat-icon.is-tile svg {
+  width: 23px;
+  height: 23px;
 }
 
 .cat-icon.is-thumb svg {

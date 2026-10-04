@@ -50,6 +50,7 @@ const PAGES = [
   { file: 'DocsView.vue', route: '/docs' },
   { file: 'ChangelogView.vue', route: '/changelog' },
   { file: 'BlogView.vue', route: '/blog' },
+  { file: 'CareersView.vue', route: '/careers' },
 ] as const
 
 let server: ViteDevServer
@@ -122,6 +123,15 @@ const UNBACKED_FIGMA_STRINGS = [
   'Response time',
   '10 minutes',
   'Windows & macOS install',
+  'careers@selahcue.app',
+  "We're a small, remote team",
+  'Ship features churches use live',
+  'Sustainable pace',
+  'Senior Rust Engineer',
+  'Flutter / Mobile Engineer',
+  'Product Designer',
+  'Developer Advocate',
+  'Support Specialist',
 ] as const
 
 function addedClaims(text: string): string[] {
@@ -587,5 +597,77 @@ describe('Blog (502:124): hero, featured post with a media panel, three-column g
       assert.equal(links.length, 1)
       assert.match(links[0]!.attrs['href'] ?? '', /^\/blog\/[a-z0-9-]+$/)
     }
+  })
+})
+
+// --------------------------------------------------------------------------- Careers
+
+describe('Careers (503:124): hero, four icon-tile culture cards, a full-bleed roles band', () => {
+  test('the hero is a CAREERS pill and the h1 "Build tools churches rely on" at the frame\'s 50/56 (careers-01)', async () => {
+    const page = await html('CareersView.vue')
+    const [h1] = headingsOf(page)
+    assert.equal(h1?.text, 'Build tools churches rely on')
+    assert.ok(textOf(page).includes('CAREERS'))
+    const css = styleOf(readSrc('views/CareersView.vue'))
+    assert.match(css, /@media \(min-width: 1200px\)\s*\{\s*\.hero-title\s*\{[^}]*font-size:\s*50px[^}]*line-height:\s*56px/)
+    assert.match(css, /\.hero-title\s*\{[^}]*max-width:\s*500px/)
+  })
+
+  test('four culture cards with a coloured icon tile holding an SVG, no emoji, no extra heading above them (careers-03)', async () => {
+    const page = await html('CareersView.vue')
+    const cards = withClass(page, 'culture-card')
+    assert.equal(cards.length, 4)
+    const tiles = withClass(page, 'culture-icon')
+    assert.equal(tiles.length, 4)
+    for (const tile of tiles) {
+      const inner = page.slice(tile.at, page.indexOf('</div></div>', tile.at))
+      assert.ok(/<svg[\s>]/.test(inner), 'each tile holds an inline SVG')
+    }
+    assert.ok(!/\p{Extended_Pictographic}/u.test(textOf(page)), 'no emoji remains')
+    assert.ok(!textOf(page).includes('Why Work With Us'), 'the frame draws no heading over the strip')
+    assert.match(styleOf(readSrc('views/CareersView.vue')), /\.culture-grid\s*\{[^}]*grid-template-columns:\s*repeat\(4, minmax\(0, 1fr\)\)/)
+  })
+
+  test('the roles sit in a full-bleed band under a centred "Open roles" heading (careers-04)', async () => {
+    const page = await html('CareersView.vue')
+    assert.ok(headingsOf(page).some((h) => h.level === 2 && h.text === 'Open roles'))
+    assert.equal(withClass(page, 'roles-band').length, 1)
+    const css = styleOf(readSrc('views/CareersView.vue'))
+    assert.match(css, /\.roles-band\s*\{[^}]*background:\s*var\(--sc-surface-alt\)/)
+    assert.match(css, /\.roles-list\s*\{[^}]*max-width:\s*940px/)
+  })
+
+  test('each role row has three tag pills (department, place, type) and no single meta line (careers-04, careers-05)', async () => {
+    const page = await html('CareersView.vue')
+    const rows = withClass(page, 'role-row')
+    assert.equal(rows.length, 3, 'the roles the build already shows; the Figma roles are not added (careers-07)')
+    assert.equal(withClass(page, 'role-tag').length, 9)
+    assert.equal(withClass(page, 'role-meta').length, 0)
+    const css = styleOf(readSrc('views/CareersView.vue'))
+    assert.match(css, /\.role-tag\s*\{[^}]*color:\s*var\(--sc-text-secondary\)/)
+    assert.match(css, /\.role-tag\s*\{[^}]*background:\s*var\(--sc-elevated\)/)
+  })
+
+  test('the Apply links are distinct: each name carries its role, and still contains the visible text (careers-06)', async () => {
+    const page = await html('CareersView.vue')
+    const names: string[] = []
+    for (const row of withClass(page, 'role-row')) {
+      const slice = page.slice(row.at, page.indexOf('</article>', row.at))
+      const link = /<a [^>]*>([\s\S]*?)<\/a>/.exec(slice)
+      assert.ok(link, 'the row has a link')
+      names.push(textOf(link[1] ?? ''))
+    }
+    assert.equal(new Set(names).size, 3, 'three different accessible names')
+    for (const name of names) assert.ok(/^Apply/i.test(name), 'the visible label leads the name')
+    const roleTitles = headingsOf(page).filter((h) => h.level === 3).map((h) => h.text)
+    roleTitles.forEach((title, i) => assert.ok((names[i] ?? '').includes(title), `link ${i} names its role "${title}"`))
+  })
+
+  test('the closing line sends people to the contact page and names no mailbox (careers-04, careers-08)', async () => {
+    const page = await html('CareersView.vue')
+    assert.ok(textOf(page).includes("Don't see your role?"))
+    const link = tagsOf(page).find((t) => t.name === 'a' && classesOf(t).includes('closing-link'))
+    assert.equal(link?.attrs['href'], '/contact')
+    assert.ok(!/@selahcue/.test(textOf(page).replace('support@selahcue', '')), 'no invented mailbox')
   })
 })
