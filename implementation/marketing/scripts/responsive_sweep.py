@@ -1082,15 +1082,26 @@ def main() -> int:
                         failures.append(f"{tag}: text/controls within 8px of the screen edge (missing gutter): {'; '.join(info['edge'])}")
 
                     expected_gutter = {"mobile": "20", "tablet": "48", "desktop": "24"}[info["mode"]]
+                    # The shared `.container` (main.css, ClickUp 17tnw2b2cev) is built from `--gutter`: 96px at desktop
+                    # (Figma draws every section 96..1344), 48 at tablet and 20 on a phone. A page that adopts it
+                    # (ClickUp 17tnw2b2cey and the other area tickets) pads 96/96 at desktop, not the 24px `--page-gutter`
+                    # of the scoped containers it replaces; both are right until every page has moved.
+                    shared_container_gutter = {"mobile": "20", "tablet": "48", "desktop": "96"}[info["mode"]]
                     checks += 1
                     if info["gutterToken"] != f"{expected_gutter}px":
                         failures.append(f"{tag}: --page-gutter is {info['gutterToken']!r}, design wants {expected_gutter}px at {info['mode']}")
                     checks += 1
                     # Bare auth/landing pages are exempt: their geometry is the auth handoff's
                     # own (a 92vw card in a 20px-padded page), not the marketing gutter.
-                    wrong = [] if bare else [b for b in info["fullBleed"] if f"padding {expected_gutter}/{expected_gutter}" not in b]
+                    allowed_gutters = (expected_gutter, shared_container_gutter)
+                    wrong = [] if bare else [
+                        b for b in info["fullBleed"] if not any(f"padding {g}/{g}" in b for g in allowed_gutters)
+                    ]
                     if wrong:
-                        failures.append(f"{tag}: page container padding is not the {expected_gutter}px {info['mode']} gutter: {'; '.join(wrong[:4])}")
+                        failures.append(
+                            f"{tag}: page container padding is not the {' or '.join(sorted(set(allowed_gutters)))}px {info['mode']} gutter: "
+                            f"{'; '.join(wrong[:4])}"
+                        )
                     checks += 1
                     if info["smallInputs"]:
                         failures.append(f"{tag}: text inputs under 16px on a phone (iOS zooms on focus): {'; '.join(info['smallInputs'][:4])}")
