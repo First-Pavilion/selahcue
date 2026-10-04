@@ -3,6 +3,7 @@ import { ref } from 'vue'
 import FormField from '@/components/FormField.vue'
 import UiButton from '@/components/UiButton.vue'
 import UiBadge from '@/components/UiBadge.vue'
+import CategoryIcon from '@/components/article/CategoryIcon.vue'
 
 const name = ref('')
 const email = ref('')
@@ -139,12 +140,7 @@ const handleSubmit = () => {
         <!-- Right: the other ways to get in touch. -->
         <div class="method-cards">
           <div class="method-card">
-            <div class="method-icon is-brand" aria-hidden="true">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z" />
-                <polyline points="22,6 12,13 2,6" />
-              </svg>
-            </div>
+            <CategoryIcon class="method-icon" name="mail" tone="brand" size="method" />
             <div class="method-body">
               <h2>Support & Sales Email</h2>
               <p>Email our dedicated support team directly.</p>
@@ -153,14 +149,7 @@ const handleSubmit = () => {
           </div>
 
           <div class="method-card">
-            <div class="method-icon is-warn" aria-hidden="true">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
-                <circle cx="9" cy="7" r="4" />
-                <path d="M23 21v-2a4 4 0 0 0-3-3.87" />
-                <path d="M16 3.13a4 4 0 0 1 0 7.75" />
-              </svg>
-            </div>
+            <CategoryIcon class="method-icon" name="users" tone="warn" size="method" />
             <div class="method-body">
               <h2>Community & Discord</h2>
               <p>Join 1,200+ worship tech leaders on Discord for instant help.</p>
@@ -169,12 +158,7 @@ const handleSubmit = () => {
           </div>
 
           <div class="method-card">
-            <div class="method-icon is-preview" aria-hidden="true">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <rect x="2" y="7" width="20" height="14" rx="2" ry="2" />
-                <path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16" />
-              </svg>
-            </div>
+            <CategoryIcon class="method-icon" name="briefcase" tone="preview" size="method" />
             <div class="method-body">
               <h2>Enterprise & Multi-Campus</h2>
               <p>Talk to our church solutions architect for enterprise SLAs.</p>
@@ -254,26 +238,6 @@ const handleSubmit = () => {
      one pixel less each side to put the icon and the text where the frame does. */
   padding: 19px 21px;
 }
-
-.method-icon {
-  flex-shrink: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 46px;
-  height: 46px;
-  border-radius: 12px;
-  color: #fff;
-}
-
-.method-icon svg {
-  width: 22px;
-  height: 22px;
-}
-
-.method-icon.is-brand { background: var(--sc-primary); }
-.method-icon.is-preview { background: var(--sc-preview); }
-.method-icon.is-warn { background: var(--sc-warn); }
 
 .method-body {
   display: flex;

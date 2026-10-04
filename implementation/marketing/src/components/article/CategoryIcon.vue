@@ -6,7 +6,7 @@
  * draw this instead, keyed by the category id or by an icon name, and a name with no entry falls back to
  * the first icon. Decorative: hidden from assistive technology (the title next to it names it).
  *
- * Sizes: `md` the Docs hub tile (40px, radius 11), `lg` the Support card tile (48px, radius 13), `tile` the
+ * Sizes: `md` the Docs hub tile (40px, radius 11), `method` the Contact card tile (46px, radius 12), `lg` the Support card tile (48px, radius 13), `tile` the
  * Careers culture tile (50px, radius 13), `audience` the Affiliates audience tile (50px, radius 14), `thumb` the Blog card thumbnail tile (51px, radius 14), `xl` the
  * Blog featured tile (102px, radius 14).
  */
@@ -75,6 +75,10 @@ const ICONS: Record<string, readonly Shape[]> = {
   heart: [
     ['path', { d: 'M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z' }]
   ],
+  mail: [
+    ['path', { d: 'M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z' }],
+    ['polyline', { points: '22,6 12,13 2,6' }]
+  ],
   users: [
     ['path', { d: 'M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2' }],
     ['circle', { cx: '9', cy: '7', r: '4' }],
@@ -110,11 +114,16 @@ const props = withDefaults(
   defineProps<{
     name: string
     tone?: 'brand' | 'preview' | 'warn' | 'live'
-    size?: 'md' | 'lg' | 'tile' | 'audience' | 'thumb' | 'xl'
+    size?: 'md' | 'method' | 'lg' | 'tile' | 'audience' | 'thumb' | 'xl'
   }>(),
   { tone: 'brand', size: 'lg' }
 )
 
+/**
+ * An unknown name draws the first icon rather than nothing, so a page never shows an empty tile. That fallback hid a typo
+ * in a name until a review found it, so `tests/secondaryPages.test.ts` asks every view which names it uses and fails on
+ * a name this table lacks (and on a table entry no view asks for).
+ */
 const shapes = computed<readonly Shape[]>(() => ICONS[props.name] ?? ICONS['getting-started'] ?? [])
 </script>
 
@@ -145,6 +154,12 @@ const shapes = computed<readonly Shape[]>(() => ICONS[props.name] ?? ICONS['gett
   width: 40px;
   height: 40px;
   border-radius: 11px;
+}
+
+.cat-icon.is-method {
+  width: 46px;
+  height: 46px;
+  border-radius: 12px;
 }
 
 .cat-icon.is-tile {
@@ -181,6 +196,11 @@ const shapes = computed<readonly Shape[]>(() => ICONS[props.name] ?? ICONS['gett
 .cat-icon.is-md svg {
   width: 21px;
   height: 21px;
+}
+
+.cat-icon.is-method svg {
+  width: 22px;
+  height: 22px;
 }
 
 .cat-icon.is-tile svg,

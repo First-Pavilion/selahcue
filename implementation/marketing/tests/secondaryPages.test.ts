@@ -33,7 +33,7 @@ import { docsArticles, docsCategories } from '../src/lib/content/docs.ts'
 import { blogPosts } from '../src/lib/content/blog.ts'
 import { supportArticles, supportCategories } from '../src/lib/content/support.ts'
 import { LEDGER, PROMISE_PATTERN, type Entry } from './fixtures/copyLedger.ts'
-import { elementsOf, prop, readSrc, styleOf, valueOf } from './fixtures/sfcSource.ts'
+import { descriptorOf, elementsOf, prop, readSrc, styleOf, valueOf } from './fixtures/sfcSource.ts'
 import {
   classesOf,
   headingsOf,
@@ -269,6 +269,83 @@ describe('the copy ledger: no sentence appears on the seven pages that nobody li
     for (const claim of LEDGER['Affiliates']!.preexisting.filter((e): e is string => typeof e === 'string' && /20%|\$50|60-day|Earn/.test(e))) {
       assert.ok(PROMISE_PATTERN.test(claim), `${claim} would be caught`)
     }
+  })
+})
+
+// --------------------------------------------------------------------------- CategoryIcon names
+
+/** The icon names `CategoryIcon.vue` has an entry for, read from its own table. */
+function iconTable(source: string): string[] {
+  const script = descriptorOf(source, 'CategoryIcon.vue').scriptSetup?.content ?? ''
+  const body = script.slice(script.indexOf('const ICONS'), script.indexOf('const props'))
+  return [...body.matchAll(/^ {2}'?([a-z][a-z-]*)'?: \[/gm)].map((m) => m[1] as string)
+}
+
+/**
+ * Every icon name a view asks CategoryIcon for. A static `name="x"` is read from the template; a bound `:name` takes its
+ * values from where the view gets them: `icon: 'x'` pairs in its own script, or the content layer's category ids (Support
+ * and Docs draw the tile for each help category by its id).
+ */
+function namesAsked(view: string, sfc: string): string[] {
+  const tags = elementsOf(sfc, view).filter((el) => el.tag === 'CategoryIcon')
+  if (tags.length === 0) return []
+  const names = new Set<string>()
+  const script = descriptorOf(sfc, view).scriptSetup?.content ?? ''
+  for (const el of tags) {
+    const p = prop(el, 'name')
+    if (p?.type === 6) names.add(p.value?.content ?? '')
+    else if (p) {
+      for (const m of script.matchAll(/\bicon:\s*'([a-z][a-z-]*)'/g)) names.add(m[1] as string)
+      if (/\.id\b/.test((p as { exp?: { content: string } }).exp?.content ?? '')) {
+        const ids = view === 'SupportView.vue' ? supportCategories : view === 'DocsView.vue' ? docsCategories : []
+        for (const c of ids) names.add(c.id)
+      }
+    }
+  }
+  return [...names]
+}
+
+describe('CategoryIcon: every name a view asks for has its own icon, and every icon is asked for (review round 1 M7)', () => {
+  const table = iconTable(readSrc('components/article/CategoryIcon.vue'))
+  const views = PAGES.map((p) => p.file).filter((f) => !LEGAL_PAGES.has(f))
+  const asked = new Map(views.map((v) => [v, namesAsked(v, readSrc(`views/${v}`))] as const))
+
+  test('the table was read: it has entries and no duplicates', () => {
+    assert.ok(table.length >= 20, `only ${table.length} icons were found: the reader is looking in the wrong place`)
+    assert.equal(new Set(table).size, table.length)
+  })
+
+  test('the reader finds the names each view uses (so a view cannot stop being checked)', () => {
+    assert.deepEqual([...asked.get('ContactView.vue')!].sort(), ['briefcase', 'mail', 'users'])
+    assert.ok(asked.get('SupportView.vue')!.length >= 6, 'the six help categories')
+    assert.ok(asked.get('DocsView.vue')!.includes('getting-started') && asked.get('DocsView.vue')!.length >= 6)
+    assert.ok(asked.get('BlogView.vue')!.includes('shield-check'))
+    assert.deepEqual([...asked.get('CareersView.vue')!].sort(), ['check-circle', 'globe', 'heart', 'wifi-off'])
+    assert.deepEqual([...asked.get('AffiliatesView.vue')!].sort(), ['briefcase', 'package', 'users', 'video'])
+  })
+
+  test('every icon name any view asks for is in the table (a typo silently drew the lightning bolt)', () => {
+    const unknown = [...asked].flatMap(([view, names]) => names.filter((n) => !table.includes(n)).map((n) => `${view}: "${n}"`))
+    assert.deepEqual(unknown, [], 'a name CategoryIcon has no entry for')
+  })
+
+  test('every icon in the table is asked for by some view (no dead icon)', () => {
+    const used = new Set([...asked.values()].flat())
+    assert.deepEqual(table.filter((n) => !used.has(n)), [], 'icons no view draws: delete them')
+  })
+
+  test('Contact draws its three method tiles with CategoryIcon, not inline paths', async () => {
+    const sfc = readSrc('views/ContactView.vue')
+    assert.equal(elementsOf(sfc).filter((el) => el.tag === 'CategoryIcon').length, 3)
+    assert.ok(!elementsOf(sfc).some((el) => el.tag === 'svg'), 'no inline svg is left in the view')
+  })
+
+  test('CONTROL: the reader reports a misspelt name in a view and a misspelt key in the table', () => {
+    const view = '<script setup lang="ts">\nconst x = [{ icon: \'globee\' }]\n</script>\n<template><CategoryIcon :name="x.icon" /><CategoryIcon name="vidro" /></template>'
+    assert.deepEqual(namesAsked('FakeView.vue', view).sort(), ['globee', 'vidro'])
+    const tbl = iconTable("<script setup lang=\"ts\">\nconst ICONS = {\n  globee: [['circle', {}]],\n  'wifi-off': [['line', {}]]\n}\nconst props = 1\n</script>")
+    assert.deepEqual(tbl, ['globee', 'wifi-off'])
+    assert.ok(!tbl.includes('globe'), 'a table with the typo does not contain the real name')
   })
 })
 
