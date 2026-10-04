@@ -79,34 +79,51 @@ pub struct DetectedReference {
 /// left them adjacent — e.g. "romans eight ten more minutes" reads as `Romans 8:10`, even
 /// though "ten" is the first word of "ten more minutes", not a verse.
 ///
-/// Neither the fold nor the shorthand parser has any concept of a clause boundary (a real
-/// fix needs one — see the linked follow-up ticket), and a purely positional signal is not
-/// enough on its own: plenty of legitimate citations also have ordinary trailing speech
-/// after a bare, single-word verse number (`"as Romans eight twenty-eight reminds us"`,
-/// `"john chapter three four oh how i love it"`). What *does* separate the fabricated case
-/// from those is that every legitimate one carries at least one of three positive signals
-/// this scan checks for on the **verse token specifically** (never the chapter, which is
-/// always trusted as the number right after the book — that convention is what every
-/// citation, spoken or typed, already relies on):
+/// Neither the fold nor the shorthand parser has any concept of a clause boundary. The
+/// structural fix is clause-aware windowing, tracked as **86akdc10d**; until then this
+/// guard is a deliberately narrow stop-gap (see [`is_coincidental_weld`], the single
+/// definition of the rule). A purely positional signal is not enough on its own: plenty of
+/// legitimate citations also have ordinary trailing speech after a bare, single-word verse
+/// number (`"as Romans eight twenty-eight reminds us"`, `"john chapter three four oh how i
+/// love it"`). A bare-shorthand candidate is therefore refused only when **none** of these
+/// positive signals is present:
 ///
-/// 1. **A "chapter"/"verse" marker occurred anywhere in this candidate's own span**
-///    (stripped by [`normalize_tokens`] before folding, but remembered via
-///    [`NormToken::after_marker`]) — explicit citation vocabulary the coincidental case
-///    never has.
-/// 2. **The verse was a multi-word fold** (`"twenty eight"` → 28, a digit-by-digit run) —
-///    no such fold is ever produced by two coincidentally-adjacent, unrelated numbers, so
-///    it is trusted regardless of what follows.
-/// 3. **Nothing follows the verse in the token stream** — there is nothing left for a bare
-///    number to be mistaken for the start of.
+/// 1. **A "chapter"/"verse" marker immediately before the chapter number or the verse
+///    number** (stripped by [`normalize_tokens`] before folding, but remembered via
+///    [`NormToken::after_marker`]). Only those two positions count: a marker before the
+///    BOOK (`"that verse romans eight ten more minutes"`) is about something else, and a
+///    marker in an earlier citation does not carry over to a later one.
+/// 2. **The verse was not a single bare word** — a multi-word fold (`"twenty eight"` → 28,
+///    a digit-by-digit run), a spoken range (`"ten to twelve"`) or a typed dashed range
+///    (`"10-12"`). Two coincidentally-adjacent numbers never produce one of those.
+/// 3. **A colon anywhere in the candidate** (`"1:2 to 10"`): that is the punctuated
+///    standard path, not the bare-digits shorthand.
+/// 4. **Nothing follows the verse in this piece of text** — nothing left for a bare number
+///    to be mistaken for the start of. This escape is exactly as good as the segment
+///    boundary: a final segment cut mid-sentence (`"and so romans eight ten"`) defeats it.
+///    That is the same accepted segment-cut class **86akdpw83** documents for
+///    [`take_digit_run`]'s Rule 4, and it is fixed the same way (thread `speech_final`
+///    through), not here.
 ///
-/// A bare single spoken/typed number word (`atomic`) in the verse position, with none of
-/// the above, is indistinguishable from the start of an unrelated clause and is refused —
-/// the window shrinks and tries again, same as any other non-match (it typically still
-/// finds the chapter alone, e.g. "Romans 8", the same missed-verse-not-wrong-verse
-/// direction the digit-by-digit guards above already prefer). This only ever removes
-/// acceptances, never adds one, and only for the space shorthand's own bare-adjacent-digits
-/// case: a punctuated `"8:10"` never reaches here with an unmet guard, since a colon in the
-/// verse token proves the standard (not shorthand) path parsed it.
+/// Accepted limits, all tracked on 86akdc10d rather than papered over here:
+///
+/// - **Recall cost.** A deliberate `<book> <chapter> <verse>` with plain words after it and
+///   no marker loses its verse and degrades to the chapter, because it has the same shape
+///   as the bug: `"romans 8 28 is great"` → `Romans 8`, `"john three sixteen for god so
+///   loved the world"` → `John 3`. Punctuation does not help (it is stripped before this
+///   scan). A colon (`"john 3:16"`) is unaffected.
+/// - **A marker on the chapter alone still trusts a bare verse.** `"romans chapter eight
+///   ten more minutes"` still reads `Romans 8:10`, exactly as it did before this guard.
+///   Tightening it to the verse position alone would lose `"john chapter three four oh how
+///   i love it"`, which is a documented legitimate form.
+/// - **Multi-word verses stay trusted** (`"romans eight twenty five more minutes"`).
+///
+/// When the guard refuses, the window shrinks and tries again, so the chapter alone usually
+/// survives (`Romans 8`): a missed verse, not a wrong one, the same direction the
+/// digit-by-digit guards below prefer. The guard narrows what is accepted, but it is not a
+/// strict subset of what `main` accepted: a refused verse digit is re-scanned and can join
+/// the NEXT book as a numbered-book prefix (`"genesis one one john three sixteen"` →
+/// `Genesis 1` then `1 John 3:16`, where it used to be `Genesis 1:1` then `John 3:16`).
 pub fn detect(text: &str) -> Vec<String> {
     let tokens = normalize_tokens(text);
     let mut found: Vec<String> = Vec::new();
@@ -129,16 +146,8 @@ pub fn detect(text: &str) -> Vec<String> {
                     .collect::<Vec<_>>()
                     .join(" ");
                 if let Ok(r) = parse_one(&candidate) {
-                    // A colon in the verse token proves this came from the punctuated
-                    // standard path, not the bare-digits shorthand — never guarded.
-                    let last = window.last();
-                    let via_bare_shorthand =
-                        r.verses.is_some() && last.is_some_and(|t| !t.text.contains(':'));
-                    let marker_in_span = window.iter().any(|t| t.after_marker);
-                    let welded_without_positive_signal = via_bare_shorthand
-                        && !marker_in_span
-                        && last.is_some_and(|t| t.atomic)
-                        && end < tokens.len();
+                    let welded_without_positive_signal =
+                        is_coincidental_weld(window, r.verses.is_some(), end < tokens.len());
                     if !welded_without_positive_signal {
                         matched = Some((r.to_string(), end));
                         break;
@@ -160,19 +169,50 @@ pub fn detect(text: &str) -> Vec<String> {
     found
 }
 
-/// One normalised token, plus two provenance flags [`detect`]'s anti-fabrication guard
-/// consults for a candidate's **verse** position (never the chapter — see that guard's
-/// doc):
+/// `true` when a candidate window that [`parse_one`] accepted should be **refused** because
+/// it is a chapter and a verse that were merely adjacent (86akdc0p7). This is the single
+/// definition of the guard, so a test of it cannot drift onto a copy; every clause is
+/// explained on [`detect`].
 ///
-/// - `atomic` — folded from **exactly one** underlying input word (a bare typed digit, or
-///   a single spoken number word like "ten"), as opposed to a multi-word fold (a combined
-///   cardinal like "twenty eight", a digit-by-digit run, or a joined range, all of which
-///   always consume 2+ words).
+/// - `window` — the candidate's tokens, book first (always 2 or more).
+/// - `is_verse_selection` — the parser read the candidate as a verse or verse range, not a
+///   whole chapter. A whole-chapter reading has no second number to be coincidental.
+/// - `input_follows` — more tokens follow this window in the same piece of text.
+fn is_coincidental_weld(
+    window: &[NormToken],
+    is_verse_selection: bool,
+    input_follows: bool,
+) -> bool {
+    // A colon anywhere proves the punctuated standard path ("1:2", "1:2 to 10" which the
+    // parser merges into a range): the verse is not a bare number.
+    let via_bare_shorthand = is_verse_selection && !window.iter().any(|t| t.text.contains(':'));
+    // Only the chapter and verse positions (the last two tokens) can carry citation
+    // vocabulary for THIS reference. The book token(s) cannot: a marker before the book is
+    // about something else.
+    let marker_on_chapter_or_verse = window.iter().rev().take(2).any(|t| t.after_marker);
+    via_bare_shorthand
+        && !marker_on_chapter_or_verse
+        && window.last().is_some_and(|t| t.atomic)
+        // "Nothing follows" is only as good as the segment boundary: a final segment cut
+        // mid-sentence ("and so romans eight ten") still reads as nothing following. That is
+        // the accepted segment-cut class tracked as 86akdpw83 (see `take_digit_run`'s
+        // Rule 4), not something this predicate can see.
+        && input_follows
+}
+
+/// One normalised token, plus two provenance flags [`is_coincidental_weld`] consults for a
+/// candidate's chapter and verse positions:
+///
+/// - `atomic` — folded from **exactly one** underlying input word that is not a typed
+///   range: a bare typed digit, or a single spoken number word like "ten". Everything
+///   else is `false`: a combined cardinal ("twenty eight"), a digit-by-digit run, a joined
+///   spoken range, a typed dashed range ("10-12", one input word but explicit range
+///   syntax) and the pieces of a split range. Ordinary non-numeric words are `true`; the
+///   flag is only ever read for the last token of a candidate that the parser read as
+///   chapter + verse.
 /// - `after_marker` — an explicit "chapter"/"verse" marker word immediately preceded this
-///   token before [`normalize_tokens`] stripped it (step 3). Ordinary non-numeric words get
-///   both flags set the same as any other token (each is exactly one input word, and may or
-///   may not follow a marker), but they are only ever consulted for a token in the verse
-///   position of a candidate match.
+///   token before [`normalize_tokens`] stripped it (step 3). Set in step 3 for every token;
+///   the value any earlier step gives it is overwritten there.
 #[derive(Debug, Clone)]
 struct NormToken {
     text: String,
@@ -253,9 +293,17 @@ fn normalize_tokens(text: &str) -> Vec<NormToken> {
             });
             i += consumed;
         } else {
+            // Not a number word and not all digits (a bare typed digit takes the `take_number`
+            // branch above, as one atomic word): a non-numeric word, or a typed dashed range
+            // ("1-3", "28-30"). Step 1 keeps a dash only when it sits directly between two
+            // digits, so a `-` here always means the speaker/engine wrote an explicit range.
+            // That is a positive signal, never two coincidentally-adjacent numbers, so a
+            // dashed token is not "atomic" (the guard must leave "gen 1 1-3 and more" alone).
+            // The flag on a non-numeric word is never read: `parse_one` cannot accept one as
+            // the verse of a chapter + verse candidate.
             folded.push(NormToken {
                 text: raw[i].to_string(),
-                atomic: true,
+                atomic: !raw[i].contains('-'),
                 after_marker: false,
             });
             i += 1;

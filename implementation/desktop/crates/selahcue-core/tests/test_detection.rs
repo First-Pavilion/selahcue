@@ -208,15 +208,15 @@ fn digit_by_digit_run_is_bounded_and_never_panics() {
     // fold of all ten words would instead have produced the ten-digit chapter
     // "0123456789" — this exact string proves it did not.
     //
-    // REVISED (86akdc0p7): this used to assert "Psalms 12345:6" — detect()'s pre-existing
-    // space-shorthand chapter:verse reading picking up the leftover "6" (bare, single-word,
-    // no "verse" marker, with "7 8 9" trailing) as if it were a deliberately-cited verse.
-    // That is a smaller instance of the exact fabrication class 86akdc0p7 fixes (see
-    // `detect`'s anti-fabrication guard doc): a bare number coincidentally adjacent to
-    // another number, with more input following and no positive signal they belong
-    // together. The fixed behaviour degrades to the chapter alone — bounded and
-    // non-panicking either way, which is this test's actual purpose, but no longer
-    // fabricating a verse nobody cited.
+    // REVISED (86akdc0p7): this used to assert "Psalms 12345:6". The normalised tokens are
+    // `[psalm, 12345, 6, 7, 8, 9]`: the candidate `psalm 12345 6` has a bare single-word
+    // verse ("6", a plain digit from the leftover run), no "chapter"/"verse" marker, and
+    // "7 8 9" still following it. That is exactly the shape the guard refuses (see
+    // `is_coincidental_weld` and `detect`'s guard doc): "6" is the first of four unrelated
+    // single digits, not a verse anyone cited, so reading it as `Psalms 12345:6` was a
+    // smaller instance of the same fabrication this ticket fixes, and the old value pinned
+    // that drift in place. The window now shrinks to the chapter alone. Bounded and
+    // non-panicking either way, which is this test's actual purpose.
     assert_eq!(
         detect("psalm zero one two three four five six seven eight nine"),
         vec!["Psalms 12345"]
@@ -1032,5 +1032,212 @@ fn the_from_verse_filler_drop_still_leaves_the_verse_marker_in_force() {
     assert_eq!(
         detect("psalm one from verse two more minutes"),
         vec!["Psalms 1:2"]
+    );
+}
+
+// ---- Review round 1 on PR #185 (86akdc0p7): scope of the marker signal, the colon and
+// dash exemptions, and the controls the first six tests left unpinned. Every test below
+// was written against a named mutant of `is_coincidental_weld` / `normalize_tokens` that the
+// first 80 tests let through; each is recorded in the PR with its red run. ----
+
+#[test]
+fn a_marker_word_before_the_book_does_not_legitimise_the_pair_after_it() {
+    // "chapter"/"verse" attach to the token that FOLLOWS them. Before the book, that token is
+    // the book itself, so a marker there is about something else entirely ("this verse",
+    // "the next chapter") and is not citation vocabulary for the numbers that follow. Every
+    // one of these fabricated `Romans 8:10` while the marker scan read the whole window.
+    assert_eq!(
+        detect("chapter. romans eight ten more minutes"),
+        vec!["Romans 8"]
+    );
+    assert_eq!(
+        detect("that verse romans eight ten more minutes"),
+        vec!["Romans 8"]
+    );
+    assert_eq!(
+        detect("chapter and verse romans eight ten more minutes"),
+        vec!["Romans 8"]
+    );
+    // A real citation before it must not rescue the unrelated one after it either.
+    assert_eq!(
+        detect("john 3:16 verse romans eight ten more minutes"),
+        vec!["John 3:16", "Romans 8"]
+    );
+    // A numbered book is the case that makes the position matter: the marker lands on the
+    // FIRST book word, not on a chapter or verse.
+    assert_eq!(
+        detect("that chapter first corinthians thirteen four more words"),
+        vec!["1 Corinthians 13"]
+    );
+    // Positive controls: the same sentences with the marker where it belongs still resolve.
+    assert_eq!(
+        detect("romans chapter eight verse ten more minutes"),
+        vec!["Romans 8:10"]
+    );
+    assert_eq!(
+        detect("psalm one verse two more minutes"),
+        vec!["Psalms 1:2"]
+    );
+    assert_eq!(
+        detect("turn to first corinthians chapter thirteen verse four and more"),
+        vec!["1 Corinthians 13:4"]
+    );
+}
+
+#[test]
+fn a_marker_between_the_words_of_a_book_name_does_not_count_either() {
+    // The marker scope is the chapter and verse positions only (the last two tokens), not
+    // "everything after the first book word". Here the marker lands on the SECOND word of a
+    // numbered book's name, which is still not a chapter or a verse.
+    assert_eq!(
+        detect("second chapter timothy three four more words"),
+        vec!["2 Timothy 3"]
+    );
+}
+
+#[test]
+fn a_marker_in_an_earlier_citation_does_not_carry_over_to_a_later_one() {
+    // The marker flag is cleared after the token it applies to. A marker leaking forward
+    // (or a lookup over the whole text instead of the candidate's own window) would make
+    // the first citation's "verse" vouch for the unrelated pair after it.
+    assert_eq!(
+        detect("psalm one verse two. romans eight ten more minutes"),
+        vec!["Psalms 1:2", "Romans 8"]
+    );
+    assert_eq!(
+        detect("verse one. romans eight ten more minutes"),
+        vec!["Romans 8"]
+    );
+}
+
+#[test]
+fn a_colon_anywhere_in_the_candidate_proves_the_standard_path() {
+    // `parse_one` merges "1:2 to 10" into one range itself, so the LAST token of the window
+    // is the bare number "10" even though the citation is punctuated. The colon is two
+    // tokens back. A colon check on the last token alone read this as the bare shorthand
+    // and dropped the range end whenever speech followed.
+    assert_eq!(
+        detect("Psalm 1:2 to 10 and more words"),
+        vec!["Psalms 1:2-10"]
+    );
+    assert_eq!(
+        detect("John 3:16 through 18 then he said"),
+        vec!["John 3:16-18"]
+    );
+    assert_eq!(
+        detect("Romans 8:28 thru 30 and more"),
+        vec!["Romans 8:28-30"]
+    );
+}
+
+#[test]
+fn a_typed_dashed_range_is_a_positive_signal() {
+    // "1-3" is ONE input word but explicit range syntax: two coincidentally-adjacent numbers
+    // are never joined by a hyphen. Treating it as a bare single word refused the whole
+    // citation whenever speech followed and cost the range.
+    assert_eq!(detect("gen 1 1-3 and more"), vec!["Genesis 1:1-3"]);
+    assert_eq!(detect("romans 8 28-30 is great"), vec!["Romans 8:28-30"]);
+    assert_eq!(
+        detect("Romans 8 10-12 more minutes"),
+        vec!["Romans 8:10-12"]
+    );
+    assert_eq!(detect("Psalm 1 2-10 and more"), vec!["Psalms 1:2-10"]);
+}
+
+#[test]
+fn the_pieces_of_a_split_typed_range_are_not_bare_words() {
+    // `expand_unreadable_ranges` splits a range the parser cannot express ("1-7:29": a span
+    // across chapters) back into its numbers. A piece can sit right after a bare chapter, and
+    // it came out of explicit range syntax, so it must not be refused as a coincidental
+    // number. This is NOT unobservable (the first version of the PR claimed it was):
+    // marking the pieces atomic turns this into `Matthew 5`.
+    assert_eq!(detect("matthew 5 1-7:29 and more"), vec!["Matthew 5:1"]);
+}
+
+#[test]
+fn a_digit_by_digit_verse_is_a_multi_word_fold_and_stays_trusted() {
+    // Signal 2 names "a digit-by-digit run" as well as a cardinal like "twenty eight", but
+    // only the cardinal was tested. "one zero one" is three words folded into 101; no pair of
+    // coincidentally-adjacent numbers produces one.
+    assert_eq!(
+        detect("psalm 3 one zero one more minutes"),
+        vec!["Psalms 3:101"]
+    );
+    assert_eq!(
+        detect("psalm twenty three one zero three more words"),
+        vec!["Psalms 23:103"]
+    );
+}
+
+#[test]
+fn exactly_one_word_after_the_verse_is_still_input_that_follows() {
+    // The end-of-input escape is "nothing follows", not "fewer than two words follow". One
+    // trailing word is enough to be the start of an unrelated clause. (This is the segment
+    // boundary class tracked as 86akdpw83: a final segment cut mid-sentence still defeats
+    // the escape, and that is accepted, not fixed here.)
+    assert_eq!(detect("romans eight ten more"), vec!["Romans 8"]);
+    assert_eq!(detect("romans 8 28 amen"), vec!["Romans 8"]);
+    // ...and the same sentence with nothing after the verse still resolves.
+    assert_eq!(detect("romans eight ten"), vec!["Romans 8:10"]);
+}
+
+#[test]
+fn from_verses_in_the_plural_is_dropped_like_from_verse() {
+    // Main drops "from" only when it introduces "verse" or "verses". The plural was untested,
+    // and dropping only the singular reads "psalm 1 from verses 2 ..." as the chapter alone.
+    assert_eq!(
+        detect("psalm 1 from verses 2 more minutes"),
+        vec!["Psalms 1:2"]
+    );
+    assert_eq!(
+        detect("psalm 1 from verses 2 to 10 more minutes"),
+        vec!["Psalms 1:2-10"]
+    );
+}
+
+// ---- Known recall cost, pinned so that 86akdc10d flips it on purpose ----
+//
+// A deliberate `<book> <chapter> <verse>` with plain words after it and no "chapter"/"verse"
+// marker is indistinguishable, by shape, from the bug string `romans eight ten more
+// minutes`. The guard therefore degrades it to the chapter. This is the ACCEPTED trade-off of
+// the stop-gap, not a behaviour anyone wants: the structural fix is clause-aware windowing
+// (86akdc10d). These assertions exist so that when that lands, the change in them is a
+// deliberate edit in the same diff and not a silent one. They are not a specification.
+
+#[test]
+fn known_recall_cost_a_bare_citation_with_speech_after_it_degrades_to_the_chapter() {
+    // Typed digits and a single spoken number word cost the same.
+    assert_eq!(detect("Romans 8 28 is great"), vec!["Romans 8"]);
+    assert_eq!(detect("gen 1 1 in the beginning"), vec!["Genesis 1"]);
+    assert_eq!(
+        detect("john three sixteen for god so loved the world"),
+        vec!["John 3"]
+    );
+    // Punctuation is stripped before the guard, so it does not rescue the verse.
+    assert_eq!(
+        detect("John 3, 16. For God so loved the world"),
+        vec!["John 3"]
+    );
+    // Each citation in a segment is judged on its own trailing words.
+    assert_eq!(
+        detect("romans 8 28 and john 3 16 are great"),
+        vec!["Romans 8", "John 3"]
+    );
+}
+
+#[test]
+fn known_residual_a_chapter_marker_alone_still_trusts_a_bare_verse() {
+    // Not fixed by this change: a marker on the CHAPTER counts, so the bug's near variant
+    // still fabricates exactly as it did on main. Tightening it to the verse position would
+    // lose "john chapter three four oh how i love it" (a legitimate form, tested above) and
+    // 240 of 300 chapter-marker citations in QA's corpus. Tracked on 86akdc10d.
+    assert_eq!(
+        detect("romans chapter eight ten more minutes"),
+        vec!["Romans 8:10"]
+    );
+    // Multi-word verses stay trusted too, as on main.
+    assert_eq!(
+        detect("romans eight twenty five more minutes"),
+        vec!["Romans 8:25"]
     );
 }
