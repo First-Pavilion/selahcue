@@ -1,422 +1,147 @@
 <script setup lang="ts">
-import UiButton from '@/components/UiButton.vue'
 import UiBadge from '@/components/UiBadge.vue'
+import PageHero from '@/components/core/PageHero.vue'
+import FeatureRow from '@/components/core/FeatureRow.vue'
+import CtaBand from '@/components/core/CtaBand.vue'
+
+/*
+ * Figma 485:124: a hero, six capability rows with abstract skeleton panels, a closing band. The
+ * words are Figma's except where the repo does not back them (audit features-10, -11, -12, and the
+ * Copy rule on ClickUp 17tnw2b2cey):
+ *
+ *  - "Unlimited virtual outputs" and "Per-output theme & framing" are not shipped: DEC-008 caps
+ *    outputs at 2, 5 and 10 by plan, and per-output configuration is R2 (FR-038). The NDI row says
+ *    what ships.
+ *  - "nothing leaves the machine / entirely on the machine" is stated as absolute. The row says what a
+ *    release build does: transcription runs on the machine (FR-101). It does NOT advertise cloud
+ *    transcription: `cloud-stt` is RELEASE: UNSAFE and stripped from release builds (selahcue-operator
+ *    Cargo.toml, Makefile `release-ai-guard`), so a release has no cloud path to describe (review round 1,
+ *    Cody N4). Bring it back only when a release ships it.
+ *  - "Never-blank guarantee" and "the screen never blanks" are stronger than NFR-024 (failure isolation;
+ *    the emergency blackout exists), so the row says it is designed so a fault cannot black out live
+ *    output (review round 1, Cody N19).
+ *  - The internal requirement id "NFR-024" is not customer copy (features-12).
+ *
+ * The invented capability claims the old build carried ("NDI 5", "4K 60fps", "1080p60", alpha channel,
+ * "zero latency", a named pastor) go with the old mockups (features-03, features-07).
+ */
 </script>
 
 <template>
   <div class="features-view">
-    <!-- Hero Header -->
-    <section class="hero-section">
-      <div class="container">
-        <UiBadge variant="featured">CAPABILITIES DEEP DIVE</UiBadge>
-        <h1 class="hero-title">Powerful features for modern worship</h1>
-        <p class="hero-sub">Everything you need to run a flawless Sunday service, built into one reliable application.</p>
-      </div>
-    </section>
+    <PageHero
+      title="Everything you need to run a confident service"
+      :pad-top="96"
+      :pad-bottom="64"
+      :gap="22"
+      :title-max="720"
+    >
+      <template #eyebrow>
+        <UiBadge variant="featured">FEATURES</UiBadge>
+      </template>
+      From the first slide to the final blessing, SelahCue keeps your scripture, songs, timers, stage display and streaming outputs in one offline-first console — with a phone in your hand as the remote.
+    </PageHero>
 
-    <!-- Feature Rows -->
     <div class="feature-rows">
-      <!-- Feature 1: Live Outputs -->
-      <section class="feature-row">
-        <div class="container row-layout">
-          <div class="text-content">
-            <UiBadge variant="live" size="sm">ZERO-BLANK GUARANTEE</UiBadge>
-            <h2>Live Presentation &amp; Outputs</h2>
-            <p>Multi-screen support with our hardware buffer protection. Keep the focus on worship without technical glitches or black screens.</p>
-            <ul class="feature-list">
-              <li><span class="check">✓</span> Zero-blank hardware frame buffer protection (NFR-024)</li>
-              <li><span class="check">✓</span> Independent audience, stage, and stream display routing</li>
-              <li><span class="check">✓</span> Smooth hardware-accelerated crossfades and motion backgrounds</li>
-            </ul>
-          </div>
-          <div class="visual-content">
-            <div class="mock-card">
-              <div class="mock-bar">
-                <span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span>
-                <span class="mock-title">Audience Output &middot; 4K 60fps</span>
-              </div>
-              <div class="mock-body slide-bg">
-                <h3 class="slide-text">"Great are You, Lord"</h3>
-                <p class="slide-sub">It's Your breath in our lungs</p>
-                <div class="mock-tag"><UiBadge variant="live">LIVE ON MAIN</UiBadge></div>
-              </div>
-            </div>
-          </div>
-        </div>
-      </section>
+      <FeatureRow
+        tone="live"
+        eyebrow="OUTPUTS"
+        title="Live presentation & outputs"
+        text="Stage everything in Preview, then Go Live with a single tap. Audience projector and stage display run from one deck, with live output built to stay up."
+        :bullets="['Preview → Live with one Go Live', 'Designed so a fault cannot black out live output', 'Audience + stage from one deck']"
+        panel-title="OUTPUTS"
+        panel-chip="LIVE"
+      >
+        <template #icon>
+          <svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="12" rx="2" /><path d="M8 20h8M12 16v4" /></svg>
+        </template>
+      </FeatureRow>
 
-      <!-- Feature 2: Scripture -->
-      <section class="feature-row alt">
-        <div class="container row-layout reverse">
-          <div class="text-content">
-            <UiBadge variant="preview" size="sm">SCRIPTURE SEARCH</UiBadge>
-            <h2>Scripture at Your Fingertips</h2>
-            <p>Built-in WEB Bible with instant verse-by-verse lookup. Navigate passages seamlessly during sermon delivery.</p>
-            <ul class="feature-list">
-              <li><span class="check">✓</span> Sub-second fuzzy and reference search (e.g. Rom 8:28)</li>
-              <li><span class="check">✓</span> Copyrighted Bible entitlements (NIV, ESV, NLT) post-activation</li>
-              <li><span class="check">✓</span> Customizable typography, verse numbers, and translations</li>
-            </ul>
-          </div>
-          <div class="visual-content">
-            <div class="mock-card">
-              <div class="mock-bar">
-                <span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span>
-                <span class="mock-title">Scripture Search &middot; Romans 8:28</span>
-              </div>
-              <div class="mock-body scripture-bg">
-                <div class="scripture-box">
-                  <span class="verse-num">28</span>
-                  <p class="verse-text">And we know that in all things God works for the good of those who love him...</p>
-                </div>
-                <div class="mock-tag"><UiBadge variant="preview">WEB BIBLE &middot; INSTANT</UiBadge></div>
-              </div>
-            </div>
-          </div>
-        </div>
-      </section>
+      <FeatureRow
+        tone="brand"
+        eyebrow="SCRIPTURE"
+        title="Scripture at your fingertips"
+        text="A full public-domain translation is bundled in the app. Type a reference or search by keyword — it works with no internet at all."
+        :bullets="['Bundled WEB translation, no internet needed', 'Reference parsing + keyword search', 'Send to Preview, then push Live']"
+        panel-title="SCRIPTURE"
+        panel-chip="WEB"
+        reverse
+      >
+        <template #icon>
+          <svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 4.5A1.5 1.5 0 0 1 6.5 3H19v15H6.5A1.5 1.5 0 0 0 5 19.5z" /><path d="M5 19.5A1.5 1.5 0 0 0 6.5 21H19v-3M9 7h6" /></svg>
+        </template>
+      </FeatureRow>
 
-      <!-- Feature 3: Service Plans & Timers -->
-      <section class="feature-row">
-        <div class="container row-layout">
-          <div class="text-content">
-            <UiBadge variant="warn" size="sm">BOUNDED WORKFLOW</UiBadge>
-            <h2>Service Plans &amp; Timers</h2>
-            <p>Structured service flows with countdown timers to keep pastors, musicians, and tech teams on schedule.</p>
-            <ul class="feature-list">
-              <li><span class="check">✓</span> Drag-and-drop service order planning</li>
-              <li><span class="check">✓</span> Automated segment countdown clocks &amp; TIME UP alerts</li>
-              <li><span class="check">✓</span> Monotonic clock accuracy independent of frame rendering</li>
-            </ul>
-          </div>
-          <div class="visual-content">
-            <div class="mock-card">
-              <div class="mock-bar">
-                <span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span>
-                <span class="mock-title">Service Run Sheet &middot; Sunday 10 AM</span>
-              </div>
-              <div class="mock-body timer-bg">
-                <div class="timer-display">
-                  <span class="timer-label">SERMON COUNTDOWN</span>
-                  <span class="timer-value">24:13</span>
-                </div>
-                <div class="mock-tag"><UiBadge variant="warn">RUNNING</UiBadge></div>
-              </div>
-            </div>
-          </div>
-        </div>
-      </section>
+      <FeatureRow
+        tone="warn"
+        eyebrow="PLANNING"
+        title="Service plans & timers"
+        text="Order your whole service ahead of time, then run it with countdown and count-up timers so you always land on time."
+        :bullets="['Plan the full order of service', 'Countdown + count-up timers', 'Reorder on the fly, mid-service']"
+        panel-title="PLANNING"
+        panel-chip="TIMERS"
+      >
+        <template #icon>
+          <svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6h11M9 12h11M9 18h11M4.5 6h.01M4.5 12h.01M4.5 18h.01" /></svg>
+        </template>
+      </FeatureRow>
 
-      <!-- Feature 4: Stage Monitor -->
-      <section class="feature-row alt">
-        <div class="container row-layout reverse">
-          <div class="text-content">
-            <UiBadge variant="ndi" size="sm">CONFIDENCE DISPLAY</UiBadge>
-            <h2>Stage &amp; Confidence Monitor</h2>
-            <p>Dedicated stage display showing current lyrics, next slide, presenter notes, and private operator messages.</p>
-            <ul class="feature-list">
-              <li><span class="check">✓</span> High-contrast confidence view for worship leaders</li>
-              <li><span class="check">✓</span> Next slide preview so singers are never caught off guard</li>
-              <li><span class="check">✓</span> Private stage alerts and timer warnings</li>
-            </ul>
-          </div>
-          <div class="visual-content">
-            <div class="mock-card">
-              <div class="mock-bar">
-                <span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span>
-                <span class="mock-title">Stage Monitor Output</span>
-              </div>
-              <div class="mock-body stage-bg">
-                <div class="stage-split">
-                  <div class="stage-col">
-                    <span class="st-tag">CURRENT</span>
-                    <p class="st-text">Holy, Holy, Holy is the Lord</p>
-                  </div>
-                  <div class="stage-col">
-                    <span class="st-tag muted">NEXT</span>
-                    <p class="st-text muted">Singing Holy, Holy, Holy</p>
-                  </div>
-                </div>
-                <div class="mock-tag"><UiBadge variant="ready">STAGE READY</UiBadge></div>
-              </div>
-            </div>
-          </div>
-        </div>
-      </section>
+      <FeatureRow
+        tone="ready"
+        eyebrow="STAGE"
+        title="Stage & confidence monitor"
+        text="Give your platform team a clear current / next / timer view — high-contrast and independent, so a change to the audience screen never disrupts it."
+        :bullets="['Current / next / timer for the platform', 'High-contrast, glanceable layout', 'Independent of audience output']"
+        panel-title="STAGE"
+        panel-chip="READY"
+        reverse
+      >
+        <template #icon>
+          <svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="7" width="18" height="13" rx="2" /><path d="M8 3l4 4 4-4" /></svg>
+        </template>
+      </FeatureRow>
 
-      <!-- Feature 5: NDI & Multi-Output -->
-      <section class="feature-row">
-        <div class="container row-layout">
-          <div class="text-content">
-            <UiBadge variant="ndi" size="sm">BROADCAST INTEGRATION</UiBadge>
-            <h2>NDI 5 &amp; Multi-Output</h2>
-            <p>Direct broadcast streaming to send lower-thirds and lyrics into OBS, vMix, Wirecast, or hardware switchers.</p>
-            <ul class="feature-list">
-              <li><span class="check">✓</span> Alpha channel transparency for lower-third overlays</li>
-              <li><span class="check">✓</span> Zero capture-card latency over Gigabit Ethernet</li>
-              <li><span class="check">✓</span> Independent graphics styling for house vs. broadcast</li>
-            </ul>
-          </div>
-          <div class="visual-content">
-            <div class="mock-card">
-              <div class="mock-bar">
-                <span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span>
-                <span class="mock-title">NDI Broadcast Feed &middot; 1080p60</span>
-              </div>
-              <div class="mock-body stream-bg">
-                <div class="lower-third-overlay">
-                  <span class="lt-title">Pastor John Davies</span>
-                  <span class="lt-sub">"Walking in Grace" — Series</span>
-                </div>
-                <div class="mock-tag"><UiBadge variant="ndi">NDI STREAMING</UiBadge></div>
-              </div>
-            </div>
-          </div>
-        </div>
-      </section>
+      <FeatureRow
+        tone="brand"
+        eyebrow="STREAMING"
+        title="NDI & multi-output"
+        text="Send your program over NDI straight into OBS or vMix, and drive more than one output from the same deck."
+        :bullets="['Program over NDI to OBS / vMix', 'More outputs on higher plans', 'NDI output on the Pro and Platinum plans']"
+        panel-title="STREAMING"
+        panel-chip="NDI"
+      >
+        <template #icon>
+          <svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="2" /><path d="M7.8 7.8a6 6 0 0 0 0 8.4M16.2 7.8a6 6 0 0 1 0 8.4M4.9 4.9a10 10 0 0 0 0 14.2M19.1 4.9a10 10 0 0 1 0 14.2" /></svg>
+        </template>
+      </FeatureRow>
 
-      <!-- Feature 6: On-Device Transcript -->
-      <section class="feature-row alt">
-        <div class="container row-layout reverse">
-          <div class="text-content">
-            <UiBadge variant="preview" size="sm">LOCAL AI SPEECH</UiBadge>
-            <h2>On-Device AI Transcript</h2>
-            <p>Offline speech-to-text powered by local Whisper AI without relying on cloud services or internet latency.</p>
-            <ul class="feature-list">
-              <li><span class="check">✓</span> Real-time speech-to-text with zero cloud data transmission</li>
-              <li><span class="check">✓</span> Automatic sermon transcript generation</li>
-              <li><span class="check">✓</span> Local GPU hardware acceleration (Metal / Direct3D)</li>
-            </ul>
-          </div>
-          <div class="visual-content">
-            <div class="mock-card">
-              <div class="mock-bar">
-                <span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span>
-                <span class="mock-title">Whisper AI &middot; Local Engine</span>
-              </div>
-              <div class="mock-body transcript-bg">
-                <div class="transcript-box">
-                  <span class="tr-label">LIVE TRANSCRIPT</span>
-                  <p class="tr-text">"...and we see throughout scripture that grace is not earned, but freely given."</p>
-                </div>
-                <div class="mock-tag"><UiBadge variant="preview">OFFLINE WHISPER AI</UiBadge></div>
-              </div>
-            </div>
-          </div>
-        </div>
-      </section>
+      <FeatureRow
+        tone="ready"
+        eyebrow="ASSIST"
+        title="On-device transcript & detection"
+        text="An optional live transcript runs on your machine. It assists the operator but never gates your core controls."
+        :bullets="['Live transcript, on-device', 'Scripture detection that assists the operator', 'Assists — never gates — core controls']"
+        panel-title="ASSIST"
+        panel-chip="ON-DEVICE"
+        reverse
+      >
+        <template #icon>
+          <svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="3" width="6" height="11" rx="3" /><path d="M5 11a7 7 0 0 0 14 0M12 18v3" /></svg>
+        </template>
+      </FeatureRow>
     </div>
 
-    <!-- Final CTA Section -->
-    <section class="cta-section">
-      <div class="container cta-card">
-        <h2>Experience the SelahCue difference</h2>
-        <p>Start free today and experience flawless Sunday services.</p>
-        <div class="cta-btns">
-          <UiButton variant="gradient" size="lg" to="/download">Download SelahCue Free</UiButton>
-          <UiButton variant="outline" size="lg" to="/pricing">View Pricing</UiButton>
-        </div>
-      </div>
-    </section>
+    <CtaBand />
   </div>
 </template>
 
 <style scoped>
 .features-view {
   background: var(--sc-base);
-  padding-bottom: 80px;
-}
-
-.container {
-  max-width: 1140px;
-  margin: 0 auto;
-  padding: 0 var(--page-gutter);
-}
-
-.hero-section {
-  padding: 80px 0 50px;
-  text-align: center;
-}
-
-.hero-title {
-  font-size: 44px;
-  font-weight: 800;
-  color: var(--sc-text);
-  margin: 16px 0;
-}
-
-.hero-sub {
-  font-size: 18px;
-  color: var(--sc-text-secondary);
-  max-width: 640px;
-  margin: 0 auto;
 }
 
 .feature-rows {
   display: flex;
   flex-direction: column;
-}
-
-.feature-row {
-  padding: 80px 0;
-}
-
-.feature-row.alt {
-  background: var(--sc-surface);
-  border-top: 1px solid var(--sc-border);
-  border-bottom: 1px solid var(--sc-border);
-}
-
-.row-layout {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 60px;
-  align-items: center;
-}
-
-.row-layout.reverse {
-  direction: ltr;
-}
-
-.text-content h2 {
-  font-size: 32px;
-  font-weight: 800;
-  color: var(--sc-text);
-  margin: 16px 0;
-  line-height: 1.25;
-}
-
-.text-content p {
-  font-size: 16px;
-  color: var(--sc-text-secondary);
-  line-height: 1.6;
-  margin-bottom: 24px;
-}
-
-.feature-list {
-  list-style: none;
-  padding: 0;
-  margin: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-
-.feature-list li {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  font-size: 15px;
-  color: var(--sc-text);
-}
-
-.check {
-  color: var(--sc-preview);
-  font-weight: 800;
-}
-
-/* Mock Card Styles */
-.mock-card {
-  background: var(--sc-surface);
-  border: 1px solid var(--sc-border);
-  border-radius: 16px;
-  overflow: hidden;
-  box-shadow: 0 20px 40px rgba(0,0,0,0.4);
-}
-
-.mock-bar {
-  height: 36px;
-  background: var(--sc-elevated);
-  border-bottom: 1px solid var(--sc-border);
-  display: flex;
-  align-items: center;
-  padding: 0 14px;
-  gap: 8px;
-}
-
-.dot {
-  width: 10px;
-  height: 10px;
-  border-radius: 50%;
-}
-.dot.red { background: #ff5f56; }
-.dot.yellow { background: #ffbd2e; }
-.dot.green { background: #27c93f; }
-
-.mock-title {
-  margin-left: 8px;
-  font-size: 12px;
-  color: var(--sc-text-muted);
-  font-family: monospace;
-}
-
-.mock-body {
-  height: 220px;
-  padding: 24px;
-  display: flex;
-  flex-direction: column;
-  justify-content: space-between;
-  position: relative;
-}
-
-.slide-bg { background: linear-gradient(135deg, #1b1b36, #0e0d21); text-align: center; justify-content: center; }
-.slide-text { font-size: 24px; font-weight: 700; color: #fff; margin: 0 0 8px 0; }
-.slide-sub { font-size: 14px; color: var(--sc-text-muted); margin: 0; }
-
-.scripture-bg { background: #12141a; }
-.scripture-box { background: var(--sc-elevated); border-left: 4px solid var(--sc-primary); padding: 16px; border-radius: 8px; }
-.verse-num { font-weight: 700; color: var(--sc-gold); font-size: 14px; margin-right: 8px; }
-.verse-text { font-size: 15px; color: var(--sc-text); margin: 0; display: inline; }
-
-.timer-bg { background: #0b0d12; align-items: center; justify-content: center; }
-.timer-display { text-align: center; }
-.timer-label { font-size: 11px; font-weight: 700; color: var(--sc-warn); letter-spacing: 0.05em; display: block; margin-bottom: 4px; }
-.timer-value { font-size: 48px; font-weight: 800; font-family: monospace; color: var(--sc-text); }
-
-.stage-bg { background: #000; }
-.stage-split { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
-.st-tag { font-size: 11px; font-weight: 700; color: var(--sc-preview); display: block; margin-bottom: 4px; }
-.st-tag.muted { color: var(--sc-text-muted); }
-.st-text { font-size: 16px; color: #fff; margin: 0; }
-.st-text.muted { color: var(--sc-text-muted); font-size: 14px; }
-
-.stream-bg { background: #090b10; justify-content: flex-end; }
-.lower-third-overlay { background: rgba(20, 22, 29, 0.9); border-left: 4px solid var(--sc-primary); padding: 12px 18px; border-radius: 6px; }
-.lt-title { font-weight: 700; font-size: 15px; color: #fff; display: block; }
-.lt-sub { font-size: 13px; color: var(--sc-gold); }
-
-.transcript-bg { background: #14161d; }
-.transcript-box { background: var(--sc-elevated); padding: 16px; border-radius: 8px; border: 1px solid var(--sc-border); }
-.tr-label { font-size: 10px; font-weight: 700; color: var(--sc-preview); letter-spacing: 0.05em; display: block; margin-bottom: 6px; }
-.tr-text { font-size: 14px; font-style: italic; color: var(--sc-text); margin: 0; }
-
-.mock-tag { position: absolute; bottom: 16px; right: 16px; }
-
-.cta-section { padding: 80px 0 0 0; }
-.cta-card { width: min(1140px, 100% - 2 * var(--page-gutter)); background: linear-gradient(135deg, var(--sc-surface), #1c1a3a); border: 1px solid var(--sc-primary); border-radius: 24px; padding: 60px 40px; text-align: center; }
-.cta-card h2 { font-size: 32px; font-weight: 800; color: var(--sc-text); margin: 0 0 12px 0; }
-.cta-card p { font-size: 16px; color: var(--sc-text-secondary); margin: 0 0 32px 0; }
-.cta-btns { display: flex; justify-content: center; gap: 16px; }
-
-@media (max-width: 1023.98px) {
-  .row-layout { grid-template-columns: minmax(0, 1fr); gap: 32px; }
-}
-
-@media (max-width: 767.98px) {
-  .features-view { padding-bottom: var(--section-pad-sm); }
-  .hero-section { padding: 48px 0 32px; }
-  .hero-title { font-size: 36px; line-height: 40px; }
-  .hero-sub { font-size: 16px; }
-  .feature-row { padding: 48px 0; }
-  .text-content h2 { font-size: 26px; }
-  .feature-list li { align-items: flex-start; }
-  .check { flex-shrink: 0; }
-  .mock-body { height: auto; min-height: 200px; padding: 20px; }
-  .timer-value { font-size: 40px; }
-  .cta-section { padding-top: 48px; }
-  .cta-card { padding: 40px 24px; border-radius: 20px; }
-  .cta-card h2 { font-size: 26px; }
-  .cta-btns { flex-direction: column; }
-  .cta-btns > * { width: 100%; }
 }
 </style>

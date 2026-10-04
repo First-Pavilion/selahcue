@@ -169,6 +169,21 @@ describe('the Download page shows no control that looks clickable and does nothi
   test('every button is disabled or has a click handler, and says so to assistive tech', () => {
     assert.deepEqual(violations(DOWNLOAD_VIEW), [])
   })
+
+  // The page was rebuilt to the Figma frame (ClickUp 17tnw2b2cey) and the platform cards must stay in
+  // THIS file, where the checks above can see them: a card moved into a child component would take its
+  // buttons out of the AST this file reads, and every check above would still pass.
+  test('the two platform download buttons and the two store badges are all in this template, disabled and described', () => {
+    const els = elementsOf(DOWNLOAD_VIEW)
+    const platform = els.filter((el) => isUiButton(el.tag) && prop(el, 'disabled'))
+    const stores = els.filter((el) => el.tag === 'button' && prop(el, 'disabled'))
+    assert.deepEqual(
+      platform.map((el) => staticValue(prop(el, 'aria-describedby'))),
+      ['windows-availability', 'macos-availability'],
+    )
+    assert.equal(stores.length, 2, 'the two store badges are not both native disabled buttons here')
+    for (const el of [...platform, ...stores]) assert.equal(staticValue(prop(el, 'aria-disabled')), 'true')
+  })
 })
 
 describe('the checks themselves reject what they are meant to reject', () => {
