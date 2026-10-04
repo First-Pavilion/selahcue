@@ -28,6 +28,7 @@ import { nextTick, onBeforeUnmount, ref } from 'vue'
 import AuthShell from '@/components/auth/AuthShell.vue'
 import AuthBanner from '@/components/auth/AuthBanner.vue'
 import StatusDisc from '@/components/auth/StatusDisc.vue'
+import AuthSpinner from '@/components/auth/AuthSpinner.vue'
 import FormField from '@/components/FormField.vue'
 import UiButton from '@/components/UiButton.vue'
 import { requestPasswordReset } from '@/lib/api/account.ts'
@@ -147,7 +148,7 @@ onBeforeUnmount(() => {
             class="au-btn au-btn-primary"
             :loading="state === 'submitting'"
           >
-            <template v-if="state === 'submitting'">Sending…</template>
+            <template v-if="state === 'submitting'"><AuthSpinner />Sending…</template>
             <template v-else>Send reset link</template>
           </UiButton>
         </div>

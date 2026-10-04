@@ -162,9 +162,18 @@
 
 .au-banner-glyph {
   flex-shrink: 0;
+  /* A flex box so a drawn mark (the diamond, the cross) sits in the middle of the glyph column whatever its size, while a
+     text glyph (the tick, the exclamation mark) starts at the left edge as Figma sets it. */
+  display: flex;
+  align-items: center;
+  height: 18px;
   font-size: 15px;
   font-weight: 700;
   line-height: 18px;
+}
+
+.au-banner-glyph .au-icon {
+  margin: 0 auto;
 }
 
 .au-banner-title {
@@ -243,6 +252,15 @@
   padding-block: 5px;
 }
 
+/* The wrapper is a plain div, so it inherits the page's 16px/24px line and made the label row 24px tall (the Sign in Password
+   field 75px; Figma's label row is 16px and the field 67px). A 16px line alone is not enough: the empty strut at the page's 16px
+   font sits on the same baseline as the 13px link and stretches the line box to 17px (a 68px field), so the wrapper takes the
+   link's own 13px as well. (Review of PR 179, Quinn Q2.) */
+.au-card form .label-action {
+  font-size: 13px;
+  line-height: 16px;
+}
+
 /* The two password fields sit in a fieldset so that, while a request is out, ONE attribute disables their
    Show / Hide controls too (a disabled fieldset disables every button inside it; FormField only disables its
    input). A fieldset has UA borders, padding and `min-width: min-content`, none of which belongs here, and is kept
@@ -274,11 +292,6 @@
   background: var(--sc-inset);
 }
 
-/* Room for the text Show / Hide control, which the 13px above would otherwise let a long password run under. */
-.au-card form .field-input.has-reveal-text {
-  padding-right: 64px;
-}
-
 /* The secondary ink: 8.49:1 on the inset well. The muted ink read 3.45:1 on the chip (signin-08). */
 .au-card form .field-input::placeholder {
   color: var(--sc-text-secondary);
@@ -303,16 +316,6 @@
 .au-card form .has-error .field-input:focus {
   border-color: var(--sc-live);
   box-shadow: inset 0 0 0 0.5px var(--sc-live);
-}
-
-/* Forced-colors mode deletes box-shadows and re-colours borders, so the stroke above would leave a keyboard user
-   with no indicator at all. An outline is kept in that mode (FormField turns the browser's own off). */
-@media (forced-colors: active) {
-  .au-card form .field-input:focus,
-  .au-card form .au-select:focus {
-    outline: 2px solid Highlight;
-    outline-offset: 1px;
-  }
 }
 
 .au-card form .field-hint {
@@ -389,6 +392,18 @@
   box-shadow: inset 0 0 0 0.5px var(--sc-primary);
 }
 
+/* Forced-colors mode deletes box-shadows and re-colours borders, so the stroke on the fields would leave a keyboard user
+   with no indicator at all. An outline is kept in that mode (FormField turns the browser's own off). This block sits AFTER
+   the select's own `outline: none` above: at equal specificity the later rule wins, and a first version of it, placed
+   with the input rules, never reached the Country select (review of PR 179: Cody 2, Quinn Q7). */
+@media (forced-colors: active) {
+  .au-card form .field-input:focus,
+  .au-card form .au-select:focus {
+    outline: 2px solid Highlight;
+    outline-offset: 1px;
+  }
+}
+
 .au-field-error {
   display: flex;
   align-items: center;
@@ -455,12 +470,22 @@
   display: none;
 }
 
-/* A button held by field errors (R2, Figma 747:194: 45%). aria-disabled, not `disabled`: it stays focusable, and
-   pressing it re-validates, so a keyboard user is never left on a dead control with no reason. */
+/* A button held by field errors (R2, Figma 747:194: opacity 0.5; R3's 749:143 is 0.5 too). The handoff prose says 45% (AUTH-LANDING-PAGES-HANDOFF
+   5.2) and the Figma file says 50%: the file is followed, and the difference is recorded on the decisions ticket. aria-disabled, not
+   `disabled`: it stays focusable, and pressing it re-validates and moves focus to the first invalid field, so a keyboard user is never
+   left on a dead control with no reason. */
 .au-card .au-btn[aria-disabled="true"] {
-  opacity: 0.45;
+  opacity: 0.5;
 }
 
+/*
+ * The busy glyph (`AuthSpinner.vue`): a 14px bold ↻ in front of the label (Figma 749:143). With the label kept visible and the
+ * button dimmed, the same words alone read as DISABLED, not busy; this is what says "working". It turns, and holds still
+ * under `prefers-reduced-motion`. Hidden from assistive technology: the label and the page's polite status line are
+ * what a screen reader gets. It was a hand-written span at seven call sites and two pages (Sign up, Forgot password) were
+ * missed when the rule changed (review of PR 179, Cody 1 and Quinn Q1), so it is one component and a test holds every
+ * `UiButton` with `:loading` in the five auth views to it.
+ */
 .au-btn .au-spinner {
   font-size: 14px;
   font-weight: 700;

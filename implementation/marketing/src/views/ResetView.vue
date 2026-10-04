@@ -60,6 +60,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import AuthShell from '@/components/auth/AuthShell.vue'
 import AuthBanner from '@/components/auth/AuthBanner.vue'
 import StatusDisc from '@/components/auth/StatusDisc.vue'
+import AuthSpinner from '@/components/auth/AuthSpinner.vue'
 import FormField from '@/components/FormField.vue'
 import UiButton from '@/components/UiButton.vue'
 import { confirmPasswordReset, requestPasswordReset } from '@/lib/api/account.ts'
@@ -149,8 +150,9 @@ const showsInfoBanner = computed(
   () => !showsErrorBanner.value && state.value !== 'submitting' && !hasFieldErrors.value,
 )
 
-/** The first field's id, so arrival can focus it (R1 is drawn with New password focused). */
+/** The two fields' ids, so arrival can focus the first (R1 is drawn with New password focused) and a failed re-check the invalid one. */
 const NEW_PASSWORD_ID = 'reset-new-password'
+const CONFIRM_PASSWORD_ID = 'reset-confirm-password'
 
 async function focusHeading(): Promise<void> {
   await nextTick()
@@ -169,6 +171,19 @@ async function focusNewPassword(): Promise<void> {
 }
 
 /**
+ * A re-check that fails moves focus to the first invalid field (review of PR 179: Cody 7, Quinn Q6). The held button is only
+ * `aria-disabled`, so pressing it runs the check again and the same two messages replace themselves: nothing in the DOM changes,
+ * and a screen reader user is left on the button hearing nothing. The field is described by its message (`aria-describedby`), so
+ * landing on it reads the reason. `nextTick`, not a timer: it waits for the messages to be in the document, and the auth path
+ * bans timers (`tests/authViews.test.ts`).
+ */
+async function focusFirstInvalid(): Promise<void> {
+  await nextTick()
+  if (unmounted) return
+  document.getElementById(errors.value.password ? NEW_PASSWORD_ID : CONFIRM_PASSWORD_ID)?.focus()
+}
+
+/**
  * R2 -> R1: once the user edits either field the messages are stale, so they go, the held button is released and
  * the banner returns. Nothing is submitted by this: pressing the button re-validates from scratch.
  */
@@ -183,6 +198,7 @@ async function submitNewPassword(): Promise<void> {
   if (Object.keys(errors.value).length > 0) {
     // R2. Stay on the form; the field-level messages carry the correction.
     state.value = 'form'
+    void focusFirstInvalid()
     return
   }
 
@@ -326,6 +342,7 @@ onBeforeUnmount(() => {
             :disabled="state === 'submitting'"
           />
           <FormField
+            :id="CONFIRM_PASSWORD_ID"
             v-model="confirmPassword"
             type="password"
             label="Confirm new password"
@@ -346,7 +363,7 @@ onBeforeUnmount(() => {
             :aria-disabled="hasFieldErrors ? 'true' : undefined"
             :loading="state === 'submitting'"
           >
-            <template v-if="state === 'submitting'"><span class="au-spinner" aria-hidden="true">↻</span>Updating password…</template>
+            <template v-if="state === 'submitting'"><AuthSpinner />Updating password…</template>
             <template v-else-if="state === 'serverError'">Try again</template>
             <template v-else>Update password</template>
           </UiButton>
@@ -394,7 +411,7 @@ onBeforeUnmount(() => {
             class="au-btn au-btn-primary"
             :loading="requestPending"
           >
-            <span v-if="requestPending" class="au-spinner" aria-hidden="true">↻</span>Send a new reset link
+            <AuthSpinner v-if="requestPending" />Send a new reset link
           </UiButton>
         </div>
       </form>
@@ -454,7 +471,7 @@ onBeforeUnmount(() => {
             class="au-btn au-btn-primary"
             :loading="requestPending"
           >
-            <span v-if="requestPending" class="au-spinner" aria-hidden="true">↻</span>Send a reset link
+            <AuthSpinner v-if="requestPending" />Send a reset link
           </UiButton>
         </div>
       </form>
@@ -463,7 +480,7 @@ onBeforeUnmount(() => {
 
     <!-- ============================================= fresh link sent (V5 analogue) -->
     <template v-else>
-      <StatusDisc tone="brand" glyph="✉︎" />
+      <StatusDisc tone="brand" glyph="✉" />
       <h1 ref="heading" tabindex="-1" class="au-title">Check your inbox</h1>
       <!-- Conditional by construction, exactly as V5. `request_password_reset` returns
            accepted:true for an address with no account, so any direct claim would be an

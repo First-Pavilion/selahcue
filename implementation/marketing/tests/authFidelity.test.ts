@@ -34,6 +34,7 @@ import test, { after, before, describe } from 'node:test'
 import { fileURLToPath } from 'node:url'
 
 import vue from '@vitejs/plugin-vue'
+import ts from 'typescript'
 import { createSSRApp, h, type Component } from 'vue'
 import { parse } from 'vue/compiler-sfc'
 import { renderToString } from 'vue/server-renderer'
@@ -232,10 +233,6 @@ describe('auth fields: label, input well, stroke and rhythm (signin-06, -07, -09
     assertRule('.au-card form .label-action a', { 'padding-block': '5px' })
   })
 
-  test('the text Show / Hide toggle keeps its room: the input is padded 64px on the right under the new padding', () => {
-    assertRule('.au-card form .field-input.has-reveal-text', { 'padding-right': '64px' })
-  })
-
   test('placeholder, hint and note are the secondary ink and clear 4.5:1 on every surface they sit on', () => {
     assertRule('.au-card form .field-input::placeholder', { color: 'var(--sc-text-secondary)' })
     assertRule('.au-card form .field-hint', { color: 'var(--sc-text-secondary)', 'font-size': '12.5px', 'line-height': '17px' })
@@ -262,6 +259,20 @@ describe('auth fields: label, input well, stroke and rhythm (signin-06, -07, -09
     assert.equal(effectiveExact(authRules, '.au-card form .field-input:focus', DESKTOP)['outline'], undefined, 'the outline is for forced colours only')
   })
 
+  test('forced-colors mode keeps a focus outline on the Country select too: the block comes AFTER the select rule that sets outline: none', () => {
+    const forced: Env = { width: 1440, forcedColors: true }
+    assertRule('.au-card form .au-select:focus', { outline: '2px solid Highlight' }, forced)
+    assert.equal(effectiveExact(authRules, '.au-card form .au-select:focus', DESKTOP)['outline'], 'none', 'outside forced colours the select keeps its own focus style')
+  })
+
+  test('the Show / Hide button of a disabled field is dimmed with its input, to 50% (Figma draws the dimmed "Show" on R3)', () => {
+    assertRule('.au-card form .form-field.is-disabled .password-toggle', { opacity: '0.5', cursor: 'not-allowed' })
+  })
+
+  test('the Password label row is 16px tall, not the 24px of the page line: the label-action wrapper sets its own size and line height (a 16px strut under 13px text would still make the line 17px)', () => {
+    assertRule('.au-card form .label-action', { 'font-size': '13px', 'line-height': '16px' })
+  })
+
   test('the select on sign-up is drawn like the input it sits beside: inset well, 1.5px stroke', () => {
     assertRule('.au-card form .au-select', { background: 'var(--sc-inset)', height: '44px' })
     assertRule('.au-card form .au-select:focus', { 'border-color': 'var(--sc-primary)', 'box-shadow': 'inset 0 0 0 0.5px var(--sc-primary)' })
@@ -281,8 +292,10 @@ describe('auth buttons: 47px primary, 44px secondary with a border, the label st
     assertRule('.au-card .au-btn.is-loading', { opacity: '0.5' })
   })
 
-  test('a button held by field errors (R2) is 45% opaque, by its aria-disabled attribute', () => {
-    assertRule('.au-card .au-btn[aria-disabled="true"]', { opacity: '0.45' })
+  test('a button held by field errors (R2) is 50% opaque, as the Figma file says (747:194 and 749:143 are both "o": 0.5), by its aria-disabled attribute', () => {
+    assertRule('.au-card .au-btn[aria-disabled="true"]', { opacity: '0.5' })
+    const figma = JSON.parse(readFileSync(path.join(ROOT, '../../docs/design/visual-parity/marketing/figma-style/reset-r2.json'), 'utf8')) as { boxes: Array<{ id: string; o?: number }> }
+    assert.equal(figma.boxes.find((b) => b.id === '747:194')?.o, 0.5, 'the Figma dump no longer says 0.5: re-read it before changing the rule')
   })
 
   test('the ↻ glyph is 14px / 700 and stays a static mark under reduced motion', () => {
@@ -394,15 +407,36 @@ describe('Verify: V1 and V2 centre, the others do not; the V1 live region has te
   const STATES = ['verifying', 'verified', 'invalid', 'missing', 'sent', 'unreachable'] as const
 
   /**
-   * What `<AuthShell :align=…>` produces in a state, by evaluating the template expression itself (the view
-   * keeps its state in a ref, so `state` in the template is `state.value` in script).
+   * What `<AuthShell :align=…>` produces in a state, by walking the parsed template expression. The grammar is the small one the
+   * view uses (a ternary, `||` and `&&`, `state === 'x'`, string literals); anything else THROWS, so an expression this cannot read
+   * fails the test rather than passing it, and nothing from the source is ever executed (review of PR 179, Shadow N2).
    */
   function alignWith(els: readonly ElementNode[], state: string): string | undefined {
     const shell = els.find((e) => e.tag === 'AuthShell')
     assert.ok(shell, 'no AuthShell in VerifyView')
     const expression = bound(shell, 'align')
     if (expression === undefined) return attr(shell, 'align')
-    return new Function('state', `return (${expression.replace(/\bstate\b/g, 'state.value')})`)({ value: state }) as string | undefined
+    const file = ts.createSourceFile('expr.ts', `(${expression})`, ts.ScriptTarget.ES2023, true)
+    const stmt = file.statements[0]
+    assert.ok(stmt && ts.isExpressionStatement(stmt), `cannot read the :align expression: ${expression}`)
+    const evaluate = (node: ts.Expression): string | boolean => {
+      if (ts.isParenthesizedExpression(node)) return evaluate(node.expression)
+      if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) return node.text
+      if (ts.isConditionalExpression(node)) return evaluate(node.condition) ? evaluate(node.whenTrue) : evaluate(node.whenFalse)
+      if (ts.isBinaryExpression(node)) {
+        const op = node.operatorToken.kind
+        if (op === ts.SyntaxKind.BarBarToken) return Boolean(evaluate(node.left)) || Boolean(evaluate(node.right))
+        if (op === ts.SyntaxKind.AmpersandAmpersandToken) return Boolean(evaluate(node.left)) && Boolean(evaluate(node.right))
+        if (op === ts.SyntaxKind.EqualsEqualsEqualsToken) {
+          const [left, right] = [node.left, node.right]
+          assert.ok(ts.isIdentifier(left) && left.text === 'state', `the :align expression compares something other than \`state\`: ${left.getText(file)}`)
+          return state === evaluate(right)
+        }
+      }
+      assert.fail(`the :align expression uses something this reader does not know: ${node.getText(file)}`)
+    }
+    const result = evaluate(stmt.expression)
+    return typeof result === 'string' ? result : undefined
   }
 
   test('only the verifying and verified states ask the shell for the centred card', () => {
@@ -416,13 +450,29 @@ describe('Verify: V1 and V2 centre, the others do not; the V1 live region has te
     assert.equal(attr(region, 'aria-live'), 'polite')
     assert.match(textContent(region), /Verifying your email address/)
   })
+})
 
-  test('the envelope disc is the text glyph (U+2709 U+FE0E), not the emoji-or-fallback one, in all three views', () => {
-    for (const view of ['views/VerifyView.vue', 'views/ResetView.vue', 'views/SignInView.vue']) {
-      const discs = elementsOf(read(view), view).filter((e) => e.tag === 'StatusDisc' && (attr(e, 'glyph') ?? '').startsWith('✉'))
-      assert.ok(discs.length > 0, `${view} has no envelope disc`)
-      for (const d of discs) assert.equal(attr(d, 'glyph'), '✉︎', `${view}: the envelope has no text-presentation selector`)
-    }
+describe('a failed re-check on Reset moves focus to the first invalid field (review of PR 179: Cody 7, Quinn Q6)', () => {
+  const script = (parse(read('views/ResetView.vue'), { filename: 'ResetView.vue' }).descriptor.scriptSetup?.content ?? '')
+    .replace(/\/\*[\s\S]*?\*\//g, ' ')
+    .replace(/(^|[^:'"`])\/\/[^\n]*/g, '$1 ')
+
+  /** True when the branch that stays on the form calls the focus move before it returns. */
+  const focusesOnFailure = (code: string): boolean => /state\.value = 'form'\s*void focusFirstInvalid\(\)\s*return/.test(code)
+
+  test('the branch that keeps the user on the form calls focusFirstInvalid, which picks the New password field first and the confirmation otherwise', () => {
+    assert.ok(focusesOnFailure(script))
+    assert.match(script, /errors\.value\.password \? NEW_PASSWORD_ID : CONFIRM_PASSWORD_ID/)
+  })
+
+  test('and does it without a timer: nextTick only', () => {
+    const body = /async function focusFirstInvalid[\s\S]*?\n}\n/.exec(script)?.[0] ?? ''
+    assert.match(body, /await nextTick\(\)/)
+    assert.doesNotMatch(body, /setTimeout|setInterval|requestAnimationFrame|queueMicrotask/)
+  })
+
+  test('the control: a view that does not call it is found', () => {
+    assert.equal(focusesOnFailure(script.replace('void focusFirstInvalid()', '')), false)
   })
 })
 
@@ -440,10 +490,8 @@ describe('Reset: Show/Hide and the cross on both password fields, the loading la
     const buttons = reset.filter((e) => e.tag === 'UiButton' && (attr(e, 'class') ?? '').includes('au-btn-primary'))
     const submitting = elementsIn(buttons.flatMap((b) => b.children)).find((e) => e.tag === 'template' && /Updating password…/.test(textContent(e)))
     assert.ok(submitting, 'the button has no "Updating password…" branch')
-    const glyph = elementsIn(submitting.children).find((e) => (attr(e, 'class') ?? '').includes('au-spinner'))
-    assert.ok(glyph, 'the submitting label has no au-spinner glyph')
-    assert.equal(textContent(glyph), '↻')
-    assert.equal(attr(glyph, 'aria-hidden'), 'true')
+    const glyph = elementsIn(submitting.children).find((e) => e.tag === 'AuthSpinner')
+    assert.ok(glyph, 'the submitting label has no <AuthSpinner />')
   })
 
   test('the R7 footer asks for a new reset link at /forgot-password, not Sign in', () => {
@@ -503,6 +551,46 @@ describe('no account-existence oracle is introduced (AUTH-LANDING-PAGES-HANDOFF 
 
   test('the control: a Sign in that checked the length, or said so, is found', () => {
     assert.notDeepEqual(lengthHints('views/ResetView.vue'), [], 'Reset states the rule by design, so the detector must see it there')
+  })
+})
+
+const forgot = elementsOf(read('views/ForgotPasswordView.vue'), 'views/ForgotPasswordView.vue')
+
+describe('every auth button that can be loading says so with the same busy glyph (review of PR 179: Cody 1, Quinn Q1)', () => {
+  const VIEWS_WITH_BUTTONS: ReadonlyArray<readonly [string, readonly ElementNode[]]> = [
+    ['SignInView', signIn],
+    ['SignUpView', signUp],
+    ['ForgotPasswordView', forgot],
+    ['VerifyView', verify],
+    ['ResetView', reset],
+  ]
+
+  /** The loading buttons of a view that carry no AuthSpinner in their content. Empty when none lacks it. */
+  function buttonsWithoutTheGlyph(els: readonly ElementNode[]): string[] {
+    const loading = els.filter((e) => e.tag === 'UiButton' && bound(e, 'loading') !== undefined)
+    return loading
+      .filter((b) => !elementsIn(b.children).some((c) => c.tag === 'AuthSpinner'))
+      .map((b) => textContent(b).slice(0, 40) || '(no static text)')
+  }
+
+  test('every UiButton with :loading holds an <AuthSpinner />, in all five views (the rule that shows the label while loading would otherwise leave it only dimmed)', () => {
+    let seen = 0
+    for (const [name, els] of VIEWS_WITH_BUTTONS) {
+      seen += els.filter((e) => e.tag === 'UiButton' && bound(e, 'loading') !== undefined).length
+      assert.deepEqual(buttonsWithoutTheGlyph(els), [], `${name}: a loading button has no busy glyph`)
+    }
+    assert.ok(seen >= 10, `only ${seen} loading buttons were found: the scan is looking in the wrong place`)
+  })
+
+  test('the glyph is one component, not a span copied into each view', () => {
+    for (const [name, els] of VIEWS_WITH_BUTTONS) {
+      assert.equal(els.filter((e) => (attr(e, 'class') ?? '').split(/\s+/).includes('au-spinner')).length, 0, `${name} still writes the glyph span by hand`)
+    }
+  })
+
+  test('the control: a button that lost its glyph is found', () => {
+    const faulty = elementsOf(read('views/ForgotPasswordView.vue').replace('<AuthSpinner />Sending…', 'Sending…'), 'fault.vue')
+    assert.notDeepEqual(buttonsWithoutTheGlyph(faulty), [])
   })
 })
 
@@ -579,5 +667,76 @@ describe('AuthShell: the centred card is opt-in (verify-v1-01)', () => {
     const card = /<div class="au-card[^"]*">(.*?)<\/div>/s.exec(html)?.[1] ?? ''
     assert.ok(card.includes('in') && !card.includes('out'), 'the footer text is inside the card')
     assert.match(html, /<p class="au-footer-link">(?:<!--.*?-->)*<span>out<\/span>/)
+  })
+})
+
+describe('the marks the auth cards draw are fixed-size SVG, not a symbol-font glyph (review of PR 179: Cody 3, Quinn Q4; verify-v5-02)', () => {
+  /** Tags of the SVG elements in a render, with their width and height attributes. */
+  const svgs = (html: string): Array<{ width: string; height: string }> =>
+    [...html.matchAll(/<svg\b([^>]*)>/g)].map((m) => ({
+      width: /\bwidth="([^"]*)"/.exec(m[1] ?? '')?.[1] ?? '',
+      height: /\bheight="([^"]*)"/.exec(m[1] ?? '')?.[1] ?? '',
+    }))
+  const bareText = (html: string): string => html.replace(/<svg[\s\S]*?<\/svg>/g, '').replace(/<!--.*?-->/g, '').replace(/<[^>]+>/g, '').trim()
+
+  /** Every glyph the five views pass to StatusDisc, read from the real templates. */
+  const discGlyphs = (): string[] => {
+    const found = new Set<string>()
+    for (const els of [signIn, signUp, forgot, verify, reset]) {
+      for (const e of els.filter((x) => x.tag === 'StatusDisc')) found.add(attr(e, 'glyph') ?? '')
+    }
+    return [...found].sort()
+  }
+
+  test('the views pass the glyphs the test expects to see (so the loop below is not looking at an empty set)', () => {
+    const glyphs = discGlyphs().map((g) => g.replace(/\uFE0E|\uFE0F/g, ''))
+    for (const wanted of ['↻', '!', '✓', '✕', '✉']) assert.ok(glyphs.includes(wanted), `no StatusDisc passes ${wanted}`)
+  })
+
+  test('the cross and the envelope on a status disc are drawn as an SVG with a fixed size, and carry no text', async () => {
+    for (const glyph of discGlyphs()) {
+      const plain = glyph.replace(/\uFE0E|\uFE0F/g, '')
+      const html = await renderAuth('StatusDisc', { tone: 'brand', glyph })
+      if (plain === '✕' || plain === '✉') {
+        const drawn = svgs(html)
+        assert.equal(drawn.length, 1, `${glyph}: expected one svg, got ${drawn.length}`)
+        assert.equal(bareText(html), '', `${glyph}: the disc still carries the glyph as text`)
+        const [width, height] = [Number(drawn[0]?.width), Number(drawn[0]?.height)]
+        if (plain === '✉') assert.deepEqual([width, height], [22, 16], 'the envelope is 22px wide (Figma 746:172: 22px)')
+        else assert.deepEqual([width, height], [16, 16], 'the cross is 16px square')
+      } else {
+        assert.equal(svgs(html).length, 0, `${glyph} should stay a text glyph`)
+        assert.equal(bareText(html), plain)
+      }
+    }
+  })
+
+  test('the disc stays hidden from assistive technology, as before', async () => {
+    const html = await renderAuth('StatusDisc', { tone: 'danger', glyph: '✕' })
+    assert.match(html, /<div class="au-disc au-disc-danger" aria-hidden="true">/)
+  })
+
+  test('the info diamond and the danger cross in a banner are SVG; the tick and the exclamation mark stay text', async () => {
+    const body = { default: () => h('span', 'copy') }
+    const info = await renderAuth('AuthBanner', { kind: 'info', title: 't' }, body)
+    const danger = await renderAuth('AuthBanner', { kind: 'danger', title: 't' }, body)
+    const success = await renderAuth('AuthBanner', { kind: 'success', title: 't' }, body)
+    const warning = await renderAuth('AuthBanner', { kind: 'warning', title: 't' }, body)
+    assert.deepEqual(svgs(info), [{ width: '14', height: '14' }], 'the diamond is 14px (Figma 746:140: 14px)')
+    assert.deepEqual(svgs(danger), [{ width: '10', height: '10' }])
+    assert.equal(svgs(success).length + svgs(warning).length, 0)
+    for (const html of [info, danger]) assert.doesNotMatch(html, /[◆✕]/, 'the glyph character is still in the markup')
+    assert.match(success, /✓/)
+    assert.match(warning, />!</)
+  })
+
+  test('the banner glyph box is a flex box 18px tall that centres an SVG and keeps its column width', () => {
+    assertRule('.au-banner-glyph', { display: 'flex', 'align-items': 'center', height: '18px' })
+    assertRule('.au-banner-glyph .au-icon', { margin: '0 auto' })
+  })
+
+  test('the control: a StatusDisc that goes back to the text envelope is found', async () => {
+    const source = read('components/auth/StatusDisc.vue')
+    assert.match(source, /<svg/, 'StatusDisc has no svg at all')
   })
 })

@@ -38,6 +38,7 @@ import { useRoute, useRouter } from 'vue-router'
 import AuthShell from '@/components/auth/AuthShell.vue'
 import AuthBanner from '@/components/auth/AuthBanner.vue'
 import StatusDisc from '@/components/auth/StatusDisc.vue'
+import AuthSpinner from '@/components/auth/AuthSpinner.vue'
 import FormField from '@/components/FormField.vue'
 import UiButton from '@/components/UiButton.vue'
 import { resendVerification } from '@/lib/api/account.ts'
@@ -364,7 +365,7 @@ onBeforeUnmount(() => {
             class="au-btn au-btn-primary"
             :loading="state === 'submitting'"
           >
-            <template v-if="state === 'submitting'"><span class="au-spinner" aria-hidden="true">↻</span>Signing in…</template>
+            <template v-if="state === 'submitting'"><AuthSpinner />Signing in…</template>
             <template v-else>Sign in</template>
           </UiButton>
         </div>
@@ -401,7 +402,7 @@ onBeforeUnmount(() => {
           :loading="resendPending"
           @click="submitResend"
         >
-          <span v-if="resendPending" class="au-spinner" aria-hidden="true">↻</span>Send a verification link
+          <AuthSpinner v-if="resendPending" />Send a verification link
         </UiButton>
       </div>
       <p v-if="resendError" class="au-note" role="alert">{{ resendError }}</p>
@@ -439,7 +440,7 @@ onBeforeUnmount(() => {
 
     <!-- ============================================================ fresh link sent -->
     <template v-else>
-      <StatusDisc tone="brand" glyph="✉︎" />
+      <StatusDisc tone="brand" glyph="✉" />
       <h1 ref="heading" tabindex="-1" class="au-title">Check your inbox</h1>
       <!-- Conditional by construction, as V5. `resendVerificationEmail` returns the same
            answer for an address that is unknown, unverified or already verified, so a

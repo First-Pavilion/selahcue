@@ -30,6 +30,7 @@ import { nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import AuthShell from '@/components/auth/AuthShell.vue'
 import AuthBanner from '@/components/auth/AuthBanner.vue'
 import StatusDisc from '@/components/auth/StatusDisc.vue'
+import AuthSpinner from '@/components/auth/AuthSpinner.vue'
 import FormField from '@/components/FormField.vue'
 import UiButton from '@/components/UiButton.vue'
 import { resendVerification, verifyEmail } from '@/lib/api/account.ts'
@@ -260,7 +261,7 @@ onBeforeUnmount(() => {
             class="au-btn au-btn-primary"
             :loading="resendPending"
           >
-            <span v-if="resendPending" class="au-spinner" aria-hidden="true">↻</span>Send a new verification link
+            <AuthSpinner v-if="resendPending" />Send a new verification link
           </UiButton>
         </div>
       </form>
@@ -297,7 +298,7 @@ onBeforeUnmount(() => {
             class="au-btn au-btn-primary"
             :loading="resendPending"
           >
-            <span v-if="resendPending" class="au-spinner" aria-hidden="true">↻</span>Send a verification link
+            <AuthSpinner v-if="resendPending" />Send a verification link
           </UiButton>
         </div>
       </form>
@@ -306,7 +307,7 @@ onBeforeUnmount(() => {
 
     <!-- ============================================================== V5 link sent -->
     <template v-else-if="state === 'sent'">
-      <StatusDisc tone="brand" glyph="✉︎" />
+      <StatusDisc tone="brand" glyph="✉" />
       <h1 ref="heading" tabindex="-1" class="au-title">Check your inbox</h1>
       <!-- CONDITIONAL BY CONSTRUCTION. "If … has a SelahCue account" is load-bearing for
            no-enumeration and must not be "improved" into "We've sent you an email" — the

@@ -17,8 +17,8 @@
 import { computed } from 'vue'
 
 const props = defineProps<{
-  /** `center` centres the disc, title and body. Anything else is the left-aligned card. */
-  align?: string
+  /** `center` centres the disc, title and body; `start` (the default) is the left-aligned card. */
+  align?: 'start' | 'center'
 }>()
 
 const centred = computed(() => props.align === 'center')

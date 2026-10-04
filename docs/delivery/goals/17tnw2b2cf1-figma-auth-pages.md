@@ -16,7 +16,7 @@
 
 ## Objective
 
-Make `/signin`, `/verify` and `/reset` match Figma frames 505:124 and 743:125 to 749:217 for the 22 findings the audit gave to this ticket (V4 and R5 stay deliberately unrendered), by editing only the auth views, the auth components and `auth.css`, while using the shared `FormField` options that PR 173 added (`revealStyle="text"`, `errorStyle="glyph"`, the label-action slot) and without weakening any no-account-existence control. Class C and D items are left exactly as the audit records them.
+Make `/signin`, `/verify` and `/reset` match Figma frames 505:124 and 743:125 to 749:217 for the 23 findings the audit gave to this ticket (V4 and R5 stay deliberately unrendered), by editing only the auth views, the auth components and `auth.css`, while using the shared `FormField` options that PR 173 added (`revealStyle="text"`, `errorStyle="glyph"`, the label-action slot) and without weakening any no-account-existence control. Class C and D items are left exactly as the audit records them.
 
 ## Baseline
 

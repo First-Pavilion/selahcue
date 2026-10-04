@@ -98,6 +98,7 @@ const AUTH_PATH_MODULES = [
   'components/auth/AuthShell.vue',
   'components/auth/AuthBanner.vue',
   'components/auth/StatusDisc.vue',
+  'components/auth/AuthSpinner.vue',
   'components/Navbar.vue',
   'components/FormField.vue',
   'router/index.ts',

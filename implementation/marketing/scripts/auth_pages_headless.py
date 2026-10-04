@@ -116,8 +116,8 @@ DIST = Path(os.environ.get("SELAHCUE_MARKETING_DIST") or (MARKETING / "dist"))
 # 64 scenarios and 2266. What was added: computed-style checks, read in real Chrome with running transitions finished
 # first, for the Sign in, Verify and Reset findings (the field label, input well, 7px / 18px rhythm and placeholder on six
 # states; the centring of V1 and V2 and the left alignment of every other state; the R1 focus, Show / Hide and hint; the R2
-# cross, held button and banner; the Forgot link in the label row, its target and the tab order); two checks on EVERY state
-# through `universalChecks` (the button heights, the 358px column and the banner glyph column), and FOUR new scenarios: `reset-both-errors`,
+# cross, held button and banner; the Forgot link in the label row, its target and the tab order); five checks on EVERY state
+# through `universalChecks` (the primary and the secondary button heights, the 358px column, the size of every drawn mark and the banner glyph column), and FOUR new scenarios: `reset-both-errors`,
 # `reset-submitting`, `signin-submitting` and `verify-resend-pending` (the in-flight states, held with `gated()`, which
 # nothing measured before). The enumeration pairs were not touched; the Sign in in-flight checks are their own scenario
 # so that no measurement is added to one half of a pair.
@@ -398,6 +398,17 @@ DRIVER = r"""
     'signin-rejected-unknown':        gated(function () { return UNAUTHENTICATED(); }),
     'signin-rejected-wrong-password': gated(function () { return UNAUTHENTICATED(); }),
     'signin-submitting':              gated(function () { return UNAUTHENTICATED(); }),
+    // Held in flight so the loading buttons on Sign up and Forgot password paint and can be measured. Their OWN scenarios,
+    // outside every enumeration pair, for the reason `signin-submitting` is.
+    'signup-submitting':              gated(function () { return REGISTERED(); }),
+    'forgot-submitting':              gated(function () { return RESET_REQUESTED(); }),
+    'signup-resend-pending': (function () {
+      var heldResend = gated(function () { return json({ data: { resendVerificationEmail: { accepted: true } } }); });
+      return function (op) {
+        if (op === 'RegisterCustomerUser') return REGISTERED();
+        return heldResend(op);
+      };
+    })(),
     'signin-unverified':   function () { return json({ errors: [{ extensions: { code: 'POLICY_DENIED' } }] }); },
     'signin-resend':       function (op) {
       if (op === 'Login') return json({ errors: [{ extensions: { code: 'POLICY_DENIED' } }] });
@@ -1414,6 +1425,11 @@ DRIVER = r"""
       check(tag + ': fields are 18px apart', near(box(fields[1]).t - box(fields[0]).b, 18),
             'gap: ' + (box(fields[1]).t - box(fields[0]).b));
     }
+    // A field with no hint or error is label 16 + 7 + input 44 = 67px: the label row is 16px even when "Forgot?" shares it
+    // (the link's wrapper used to inherit the page's 24px line, which made the Sign in Password field 75px; review of PR 179, Quinn Q2).
+    var plain = Array.prototype.filter.call(fields, function (f) { return !f.querySelector('.field-error, .field-hint'); });
+    check(tag + ': a field with no hint or error is 67px tall', plain.length > 0 && plain.every(function (f) { return near(box(f).h, 67); }),
+          plain.map(function (f) { return box(f).h; }).join(','));
     var quiet = Array.prototype.filter.call(document.querySelectorAll('.au-card form .field-meta'), function (m) {
       return m.children.length === 0; });
     check(tag + ': a field with no hint or error reserves no meta row',
@@ -1470,6 +1486,18 @@ DRIVER = r"""
     var content = card ? card.clientWidth - parseFloat(css(card, 'paddingLeft')) - parseFloat(css(card, 'paddingRight')) : -1;
     check('the card content column is 358px wide', near(content, 358), 'content width: ' + content);
 
+    // Every drawn mark has the size the component gives it, in whatever engine this runs in (review of PR 179, Cody 3 / Quinn Q4):
+    // the cross is 16px, the envelope 22px, the info diamond 14px, the danger-banner cross 10px.
+    var marks = document.querySelectorAll('.au-card .au-icon');
+    check('every drawn mark is the size it is drawn at', Array.prototype.every.call(marks, function (m) {
+      var inDisc = !!m.closest('.au-disc'), inInfo = !!m.closest('.au-banner-info'), inDanger = !!m.closest('.au-banner-danger');
+      var w = box(m).w, h = box(m).h;
+      if (inDisc) return (near(w, 16) && near(h, 16)) || (near(w, 22) && near(h, 16));
+      if (inInfo) return near(w, 14) && near(h, 14);
+      if (inDanger) return near(w, 10) && near(h, 10);
+      return false;
+    }), marks.length + ' mark(s): ' + Array.prototype.map.call(marks, function (m) { return box(m).w + 'x' + box(m).h; }).join(','));
+
     // verify-v2-01: the glyph column of every banner is as wide as Figma draws it (16px, 14px for a tick), and the copy
     // starts 12px after it. The width of the glyph itself is a system font's, so the MINIMUM is what is asserted.
     var banners = document.querySelectorAll('.au-card .au-banner');
@@ -1511,6 +1539,10 @@ DRIVER = r"""
     check(tag + ': every input is at 50% in total, not 25%', inputs.length > 0 &&
           Array.prototype.every.call(inputs, function (i) { return effectiveOpacity(i) === 0.5; }),
           'effective opacities: ' + Array.prototype.map.call(inputs, effectiveOpacity).join(','));
+    check(tag + ': the Show / Hide buttons are dimmed with their inputs, to 50%', expectToggles
+            ? toggles.length > 0 && Array.prototype.every.call(toggles, function (t) { return effectiveOpacity(t) === 0.5; })
+            : toggles.length === 0,
+          'effective opacities: ' + Array.prototype.map.call(toggles, effectiveOpacity).join(','));
     check(tag + ': labels stay at full strength', labels.length > 0 &&
           Array.prototype.every.call(labels, function (l) { return effectiveOpacity(l) === 1; }),
           'effective opacities: ' + Array.prototype.map.call(labels, effectiveOpacity).join(','));
@@ -1658,11 +1690,13 @@ DRIVER = r"""
             css(v5note, 'color') === SECONDARY_INK && inkContrast(v5note) >= 4.5,
             v5note ? css(v5note, 'fontSize') + ' / ' + css(v5note, 'lineHeight') + ' ' + css(v5note, 'color') +
                      ' = ' + inkContrast(v5note).toFixed(2) + ':1' : 'no note');
-      // verify-v5-02: the envelope is the TEXT glyph (U+2709 + U+FE0E). Its width is measured by the harness,
-      // which pins Inter; the width of a fallback glyph depends on the machine's fonts and is not asserted here.
+      // verify-v5-02: the envelope is DRAWN (an SVG), 22px wide as Figma sets it, so its width no longer depends on which
+      // symbol font the visitor's browser falls back to (it was 13.2px here, and a colour emoji on some platforms).
       var v5disc = document.querySelector('.au-card .au-disc');
-      check('V5 envelope is the text glyph', !!v5disc && v5disc.textContent.trim() === '\u2709\uFE0E',
-            'disc text: ' + (v5disc ? JSON.stringify(v5disc.textContent) : 'no disc'));
+      var v5mark = v5disc && v5disc.querySelector('svg');
+      check('V5 envelope is a 22px-wide drawn mark with no text glyph', !!v5mark && near(box(v5mark).w, 22) &&
+            squash(v5disc.textContent) === '',
+            'svg ' + (v5mark ? box(v5mark).w + 'x' + box(v5mark).h : 'none') + ', disc text ' + (v5disc ? JSON.stringify(v5disc.textContent) : 'no disc'));
       var resendCall = calls.filter(function (c) { return c.op === 'ResendVerification'; })[0];
       check('resend dispatched a mutation', !!resendCall);
       // Pinned against account_schema.py:180. The field is `resendVerificationEmail`, NOT
@@ -1851,6 +1885,9 @@ DRIVER = r"""
 
       // ---- Figma fidelity (17tnw2b2cf1): one error shown. The two-error frame is `reset-both-errors`. ----
       var oneError = document.querySelectorAll('.au-card .field-error');
+      check('R2 focus moves to the invalid New password field',
+            document.activeElement === document.querySelectorAll('input[type="password"]')[0],
+            'focused: ' + (document.activeElement ? document.activeElement.tagName + '#' + document.activeElement.id : 'nothing'));
       check('R2 the field error begins with the cross, in the message text', oneError.length === 1 &&
             squash(oneError[0].textContent).indexOf('\u2715 ') === 0,
             Array.prototype.map.call(oneError, function (e) { return squash(e.textContent); }).join(' | '));
@@ -1896,6 +1933,10 @@ DRIVER = r"""
       await wait(500);
       check('NO mutation dispatched for mismatched passwords', calls.length === 0, 'calls=' + calls.length);
       check('R2 shows the mismatch error', has(cardText(), 'Both passwords must match'));
+      // Only the confirmation is invalid, so that is where focus goes.
+      check('R2 focus moves to the confirmation field when only it is invalid',
+            document.activeElement === document.querySelectorAll('input[type="password"]')[1],
+            'focused: ' + (document.activeElement ? document.activeElement.tagName + '#' + document.activeElement.id : 'nothing'));
       universalChecks();
     },
 
@@ -1911,6 +1952,13 @@ DRIVER = r"""
       await wait(50);
       check('submitted two bad passwords', submit());
       await wait(500);
+      // A held button that is pressed again must tell a screen reader user SOMETHING: focus goes to the first invalid field, whose
+      // message it is described by (review of PR 179: Cody 7, Quinn Q6). No timer: the move waits for the DOM, not for the clock.
+      var firstInvalid = document.querySelectorAll('input[type="password"]')[0];
+      check('R2 focus moves to the first invalid field, which is described by its message',
+            document.activeElement === firstInvalid && firstInvalid.getAttribute('aria-invalid') === 'true' &&
+            !!document.getElementById(firstInvalid.getAttribute('aria-describedby') || '-'),
+            'focused: ' + (document.activeElement ? document.activeElement.tagName + '#' + document.activeElement.id : 'nothing'));
       var errorLines = document.querySelectorAll('.au-card .field-error');
       check('R2 both fields carry an error that begins with the cross', errorLines.length === 2 &&
             Array.prototype.every.call(errorLines, function (e) { return squash(e.textContent).indexOf('\u2715 ') === 0; }),
@@ -1924,7 +1972,7 @@ DRIVER = r"""
             held.getAttribute('aria-disabled') === 'true' && !held.disabled && held.tabIndex >= 0,
             'aria-disabled=' + (held && held.getAttribute('aria-disabled')) + ' disabled=' + (held && held.disabled));
       await wait(120);
-      check('R2 the submit button is dimmed to 45%', !!held && css(held, 'opacity') === '0.45',
+      check('R2 the submit button is dimmed to 50% (Figma 747:194)', !!held && css(held, 'opacity') === '0.5',
             'opacity: ' + (held ? css(held, 'opacity') : 'no button'));
       check('R2 the "signs you out everywhere" banner is gone while errors show',
             document.querySelectorAll('.au-card .au-banner-info').length === 0);
@@ -2786,6 +2834,58 @@ DRIVER = r"""
     // The three states that reach the rate-limit call sites nothing else rendered. Each
     // one exists so `universalChecks`'s rendered claim ban has that call site's output to
     // look at; without them the ban was scanning three of six sites and passing.
+    /*
+     * The loading buttons of Sign up and Forgot password (review of PR 179, Cody 1 and Quinn Q1). The auth card keeps a loading
+     * button's label on screen at full strength and dims the button, so without the busy glyph the same words read as DISABLED.
+     * Three buttons were missed once; each is held in flight here and must carry the glyph, the label and the 50%.
+     */
+    'signup-submitting': async function () {
+      await wait(400);
+      fillSignup({});
+      await wait(80);
+      submit();
+      check('the in-flight state was reached', await settleInFlight());
+      await wait(120);
+      loadingButtonChecks('Sign up in flight', 'Creating account…');
+      releaseGate();
+      check('the accepted state settled', await settle('Check your email to finish setting up'));
+      universalChecks();
+    },
+
+    'signup-resend-pending': async function () {
+      await wait(400);
+      fillSignup({});
+      await wait(80);
+      submit();
+      await wait(900);
+      check('reached the accepted state', has(cardText(), 'Check your email to finish setting up'));
+      var resend = Array.prototype.filter.call(
+        document.querySelectorAll('.au-card button'),
+        function (b) { return b.textContent.indexOf('Resend verification email') !== -1; })[0];
+      check('the resend control exists', !!resend);
+      if (resend) resend.click();
+      var until = Date.now() + 3000;
+      while (!document.querySelector('.au-card .au-btn.is-loading') && Date.now() < until) await wait(20);
+      await wait(120);
+      loadingButtonChecks('Sign up resend in flight', 'Resend verification email');
+      releaseGate();
+      check('the resend settled', await settle('Check your inbox'));
+      universalChecks();
+    },
+
+    'forgot-submitting': async function () {
+      await wait(400);
+      type('input[type="email"]', 'pastor@yourchurch.org');
+      await wait(50);
+      submit();
+      check('the in-flight state was reached', await settleInFlight());
+      await wait(120);
+      loadingButtonChecks('Forgot password in flight', 'Sending…');
+      releaseGate();
+      check('the sent state settled', await settle('Check your inbox'));
+      universalChecks();
+    },
+
     'signup-locale-preselect': async function () {
       await wait(400);
       var select = document.querySelector('.au-card select');
@@ -3234,12 +3334,15 @@ SCENARIOS: list[tuple[str, str]] = [
     ("signup-rejected", "/signup"),
     ("signup-idempotency", "/signup"),
     ("signup-resend", "/signup"),
+    ("signup-submitting", "/signup"),
+    ("signup-resend-pending", "/signup"),
     ("signup-locale-preselect", "/signup"),
     ("signup-rate-limited", "/signup"),
     ("signup-resend-rate-limited", "/signup"),
     # ----------------------------------------------------------- forgot password --
     ("forgot-form", "/forgot-password"),
     ("forgot-bad-email", "/forgot-password"),
+    ("forgot-submitting", "/forgot-password"),
     ("forgot-registered", "/forgot-password"),
     ("forgot-unregistered", "/forgot-password"),
     ("forgot-failure", "/forgot-password"),
@@ -3424,6 +3527,59 @@ def check_bundle_is_current() -> str | None:
     return None
 
 
+# ----------------------------------------------------------------- leaked Chrome profiles ---
+#
+# Headless Chrome started without `--user-data-dir` makes a `scoped_dir*` profile under its own folder and does not always
+# delete it: one machine held 1,266 of them (3.7 GB), and a day's runs left 26 holding this gate's own `__scenario=` URLs
+# (review of PR 179, Vera 3). Passing `--user-data-dir=<a temp dir>` is the obvious cure and DOES NOT WORK here: with an explicit
+# profile directory `--headless=new --dump-dom` never prints the DOM and never exits (Chrome 154 on macOS: 4 of 4 launches
+# hung past 20s, with and without --use-mock-keychain, --disable-background-networking and --virtual-time-budget, and with the
+# directory inside Chrome's own headless folder; the same launch without the flag exits in 5s). So the gate cleans up after
+# itself instead, and only what is provably its own: a new profile that holds this run's own server address
+# (`127.0.0.1:<port>`, an ephemeral port nobody else uses). Another agent's profile, or a person's, never matches.
+# The folder is the macOS one; elsewhere nothing is looked for (CI runners are discarded after the job).
+CHROME_HEADLESS_ROOTS = [Path.home() / "Library" / "Application Support" / "Google" / "Chrome-headless"]
+PROFILE_SCAN_MAX_FILES = 600  # a fresh profile is ~150 files; this bounds the walk of one that is not
+PROFILE_SCAN_MAX_BYTES = 4_000_000  # per file; the marker is in small history / session files
+
+
+def reap_baseline() -> set[Path]:
+    """The profile folders that exist right now, to tell a new one from an old one after a launch."""
+    return {
+        entry
+        for root in CHROME_HEADLESS_ROOTS
+        if root.is_dir()
+        for entry in root.iterdir()
+        if entry.name.startswith("scoped_dir")
+    }
+
+
+def holds_marker(profile: Path, marker: bytes) -> bool:
+    seen = 0
+    for folder, _dirs, files in os.walk(profile):
+        for name in files:
+            seen += 1
+            if seen > PROFILE_SCAN_MAX_FILES:
+                return False
+            try:
+                with open(os.path.join(folder, name), "rb") as handle:
+                    if marker in handle.read(PROFILE_SCAN_MAX_BYTES):
+                        return True
+            except OSError:
+                continue
+    return False
+
+
+def reap_own_profiles(before: set[Path], marker: bytes) -> int:
+    """Remove the profiles a launch left behind that hold `marker`. Returns how many. Never touches one that was already there."""
+    removed = 0
+    for entry in reap_baseline() - before:
+        if holds_marker(entry, marker):
+            shutil.rmtree(entry, ignore_errors=True)
+            removed += 1
+    return removed
+
+
 def main() -> int:
     if not (DIST / "index.html").is_file():
         print(f"FAIL: no built bundle at {DIST}. Run `npm run build` first.")
@@ -3456,9 +3612,11 @@ def main() -> int:
         body: list[str] = []
         records: dict[str, str] = {}
         total = 0
+        reaped = 0
         for scenario, path in SCENARIOS:
             joiner = "&" if "?" in path else "?"
             url = f"http://127.0.0.1:{port}{path}{joiner}__scenario={scenario}"
+            started = reap_baseline()
             try:
                 out = subprocess.run(
                     [
@@ -3487,6 +3645,8 @@ def main() -> int:
                 print(f"FAIL: headless Chrome timed out on scenario {scenario} (infra)")
                 server.shutdown()
                 return 2
+            finally:
+                reaped += reap_own_profiles(started, f"127.0.0.1:{port}".encode())
 
             match = re.search(r"RESULTS\n(.*?)\nDONE\((\d+)\)", out, re.S)
             if not match:
@@ -3506,6 +3666,8 @@ def main() -> int:
                         records[key.strip()] = value
 
         server.shutdown()
+        if reaped:
+            print(f"NOTE: removed {reaped} headless Chrome profile(s) this run's own launches left behind")
 
     # The cross-scenario half of the suite. Counted into `total` like any other check, so
     # losing a group trips the EXPECTED_MIN_CHECKS gate rather than passing quietly.

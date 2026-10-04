@@ -39,6 +39,7 @@ import { nextTick, onBeforeUnmount, ref } from 'vue'
 import AuthShell from '@/components/auth/AuthShell.vue'
 import AuthBanner from '@/components/auth/AuthBanner.vue'
 import StatusDisc from '@/components/auth/StatusDisc.vue'
+import AuthSpinner from '@/components/auth/AuthSpinner.vue'
 import FormField from '@/components/FormField.vue'
 import UiButton from '@/components/UiButton.vue'
 import { registerAccount, resendVerification } from '@/lib/api/account.ts'
@@ -371,7 +372,7 @@ onBeforeUnmount(() => {
             class="au-btn au-btn-primary"
             :loading="state === 'submitting'"
           >
-            <template v-if="state === 'submitting'">Creating account…</template>
+            <template v-if="state === 'submitting'"><AuthSpinner />Creating account…</template>
             <template v-else>Create account</template>
           </UiButton>
         </div>
@@ -412,7 +413,7 @@ onBeforeUnmount(() => {
           :loading="resendPending"
           @click="submitResend"
         >
-          Resend verification email
+          <AuthSpinner v-if="resendPending" />Resend verification email
         </UiButton>
         <UiButton to="/signin" variant="secondary" size="lg" class="au-btn au-btn-secondary">
           Back to sign in
