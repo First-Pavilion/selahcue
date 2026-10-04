@@ -483,7 +483,7 @@ jobs:
         if: ${{ !cancelled() && runner.os == 'Linux' }}
         working-directory: ${{ github.workspace }}
         env:
-          CI_DISK_MIN_FREE_GB: "10"
+          CI_DISK_MIN_FREE_GB: "100000" # TEMPORARY red-check proof (PR 184); the next commit restores 10
         run: sh scripts/ci_disk.sh check after-clippy
       - name: Test (workspace, incl. GPU parity where an adapter exists)
         if: ${{ !cancelled() }}
