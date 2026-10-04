@@ -5963,8 +5963,9 @@
            the 1100px block so it wins by source order. In the widest state (the 3 status gaps exist
            only while the timer chip shows): 4px x 4 transport buttons, 2px x 3 status gaps, 4px on the
            pill, 2px on the logo pill = ~28px. The transport gap is deliberately NOT tightened: the
-           global focus ring (2px outline + 2px offset) reaches 4px out, so a gap below ~6px would put
-           a focused button's ring flush against its neighbour's border. */
+           global focus ring (2px outline + 2px offset) reaches 4px out, so a 4px gap would put a
+           focused button's ring flush against its neighbour's border; the existing 6px keeps 2px
+           clear. */
         .logo-pill {
           padding-right: 10px;
         }
