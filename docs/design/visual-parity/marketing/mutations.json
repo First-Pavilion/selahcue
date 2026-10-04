@@ -500,6 +500,110 @@
    "new": "    if False:\n        return None, \"DOM dump %s is missing\" % name",
    "control": "test_comparator_main_wiring",
    "runner": "selftest"
+  },
+  {
+   "id": "shallow-cannot-tell-off",
+   "file": "check_fidelity_audit.py",
+   "runner": "audit-selftest",
+   "old": "    if _is_shallow(repo):\n        return None  # history is truncated",
+   "new": "    if False:\n        return None  # history is truncated",
+   "control": "commit controls: an unreachable commit in a shallow clone is 'cannot tell'"
+  },
+  {
+   "id": "shallow-detect-never",
+   "file": "check_fidelity_audit.py",
+   "runner": "audit-selftest",
+   "old": "    return out.returncode == 0 and out.stdout.strip() == \"true\"",
+   "new": "    return False",
+   "control": "commit controls: a depth-1 clone is detected as shallow"
+  },
+  {
+   "id": "unreachable-always-cannot-tell",
+   "file": "check_fidelity_audit.py",
+   "runner": "audit-selftest",
+   "old": "        return None  # history is truncated: an unreachable commit is not evidence of a made-up one\n    return False",
+   "new": "        return None  # history is truncated: an unreachable commit is not evidence of a made-up one\n    return None",
+   "control": "commit controls: a made-up commit in a FULL repository is still rejected"
+  },
+  {
+   "id": "banding-constants-off",
+   "file": "vp_core.py",
+   "runner": "selftest",
+   "old": "SSIM_BAND_ROWS = 512\nSTAT_BAND_ROWS = 1024\n",
+   "new": "SSIM_BAND_ROWS = 10**9\nSTAT_BAND_ROWS = 10**9\n",
+   "control": "test_banding_bounds_the_rows_each_step_holds"
+  },
+  {
+   "id": "ssim-band-ignored",
+   "file": "vp_core.py",
+   "runner": "selftest",
+   "old": "    band_blocks = max(1, band_rows // block)\n",
+   "new": "    band_blocks = bh\n",
+   "control": "test_banding_bounds_the_rows_each_step_holds"
+  },
+  {
+   "id": "stats-band-ignored",
+   "file": "vp_core.py",
+   "runner": "selftest",
+   "old": "    w, h = a_rgb.size\n    hist = [0] * 256\n",
+   "new": "    w, h = a_rgb.size\n    hist = [0] * 256\n    band_rows = h\n",
+   "control": "test_banding_bounds_the_rows_each_step_holds"
+  },
+  {
+   "id": "ink-band-ignored",
+   "file": "vp_core.py",
+   "runner": "selftest",
+   "old": "    w, h = rgb.size\n    over = 0\n",
+   "new": "    w, h = rgb.size\n    over = 0\n    band_rows = h\n",
+   "control": "test_banding_bounds_the_rows_each_step_holds"
+  },
+  {
+   "id": "diff-band-ignored",
+   "file": "vp_core.py",
+   "runner": "selftest",
+   "old": "    out = Image.new(\"RGB\", act.size)\n    for y0 in range(0, h, band_rows):",
+   "new": "    out = Image.new(\"RGB\", act.size)\n    band_rows = h\n    for y0 in range(0, h, band_rows):",
+   "control": "test_banding_bounds_the_rows_each_step_holds"
+  },
+  {
+   "id": "cost-estimate-stale",
+   "file": "vp_core.py",
+   "runner": "selftest",
+   "old": "int(COMPARE_BASE_MB + COMPARE_MB_PER_MPX * w * h / 1e6)",
+   "new": "int(21 * w * h / 1e6)",
+   "control": "test_pixel_budget_refuses_before_decoding (the quoted cost is the measured fit)"
+  },
+  {
+   "id": "hang-counts-as-proved",
+   "file": "vp_mutation_proof.py",
+   "runner": "proof-selftest",
+   "old": "            return False, \"HUNG: the mutated",
+   "new": "            return True, \"HUNG: the mutated",
+   "control": "vp_mutation_proof.py --self-check: a hung self-test is NOT proved"
+  },
+  {
+   "id": "guard-ignores-content",
+   "file": "vp_mutation_proof.py",
+   "runner": "proof-selftest",
+   "old": "                digest.update(fh.read())",
+   "new": "                pass",
+   "control": "vp_mutation_proof.py --self-check: the guard sees a second edit to a modified file"
+  },
+  {
+   "id": "guard-never-fires",
+   "file": "vp_mutation_proof.py",
+   "runner": "proof-selftest",
+   "old": "    if before == after:\n        return None",
+   "new": "    return None",
+   "control": "vp_mutation_proof.py --self-check: the guard fires on a change"
+  },
+  {
+   "id": "scratch-symlinks-docs",
+   "file": "vp_mutation_proof.py",
+   "runner": "proof-selftest",
+   "old": "            shutil.copytree(src, os.path.join(scratch, rel), ignore=shutil.ignore_patterns(*SKIP_NAMES))",
+   "new": "            os.makedirs(os.path.dirname(os.path.join(scratch, rel)), exist_ok=True)\n            os.symlink(src, os.path.join(scratch, rel))",
+   "control": "vp_mutation_proof.py --self-check: the scratch copy has no symlinks into the checkout"
   }
  ]
 }

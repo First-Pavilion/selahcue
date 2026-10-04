@@ -92,10 +92,14 @@ MARKETING_MAX_FILES_PER_RUN = 300
 MAX_STYLE_NODES = 2500
 # Decoded-pixel ceiling for any image the comparator is asked to decode. A reference's
 # compressed bytes are capped by the store, but a full-page capture has no height of its own:
-# a page that grows (or a stretch path that multiplies it) costs about 21 MB of peak memory per
-# megapixel in the comparator. Today's largest capture is 20.8 Mpx (Terms); 60 Mpx leaves
-# ~3x headroom and refuses before decoding, with a clear failure.
+# a page that grows costs about 12 MB of peak comparator memory per megapixel on top of a ~230 MB base.
+# MEASURED 2026-10-04 on the real comparator (macOS, banded, the Terms capture tiled taller):
+# 489 MB at 20.8 Mpx, 610 at 31.2, 745 at 41.6, 862 at 52.0, 947 at 58.2, which fits
+# peak = 234 MB + 12.2 MB x Mpx (and is 16.3 MB per Mpx overall at the cap). Today's largest capture is
+# 20.8 Mpx (Terms); 60 Mpx leaves ~3x headroom and refuses before decoding, with a clear failure.
 MAX_CAPTURE_PIXELS = 60_000_000
+COMPARE_BASE_MB = 234
+COMPARE_MB_PER_MPX = 12.2
 
 
 class Suite:
@@ -184,8 +188,8 @@ def pixel_budget_problem(size, label="image"):
     if w * h > MAX_CAPTURE_PIXELS:
         return (
             "%s is %d x %d = %.1f Mpx, over MAX_CAPTURE_PIXELS=%d; refusing to decode it (a page this tall or "
-            "wide is itself a finding, and decoding it would cost about %d MB)"
-            % (label, w, h, w * h / 1e6, MAX_CAPTURE_PIXELS, int(21 * w * h / 1e6))
+            "wide is itself a finding, and comparing it would peak at about %d MB)"
+            % (label, w, h, w * h / 1e6, MAX_CAPTURE_PIXELS, int(COMPARE_BASE_MB + COMPARE_MB_PER_MPX * w * h / 1e6))
         )
     return None
 
@@ -504,10 +508,12 @@ def _channel_block_ssim(a_f, b_f, bw, bh, block):
     )
 
 
-# Rows per band when similarity, the diff picture and pixel statistics are computed. A whole
-# 1440 x 14441 page needs ~21 MB per megapixel at once; a band needs a few hundred MB less at the
-# same answer (the score is a mean of per-block values, and a block never straddles a band because
-# the band height is a multiple of the block). A multiple of SSIM_BLOCK, checked below.
+# Rows per band when similarity, the diff picture and pixel statistics are computed. Computing a whole
+# 1440 x 14441 page at once held several full-size float copies; a band holds one slice of them, at the
+# same answer (the score is a mean of per-block values, and a block never straddles a band because the
+# band height is a multiple of the block). Measured on the real comparator with a 41.6 Mpx capture: 745 MB
+# banded against 971 MB with banding switched off. A multiple of SSIM_BLOCK, checked below.
+# `vp_selftest.py::test_banding_bounds_the_rows_each_step_holds` fails when any step stops banding.
 SSIM_BAND_ROWS = 512
 STAT_BAND_ROWS = 1024
 assert SSIM_BAND_ROWS % SSIM_BLOCK == 0
