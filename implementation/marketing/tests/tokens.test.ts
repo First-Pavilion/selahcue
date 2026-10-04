@@ -39,21 +39,45 @@ const MOBILE: Env = { width: 375 }
 const props = (env: Env) => rootProperties(rules, env)
 
 /**
- * Custom properties that are used with no fallback and declared nowhere in `files`.
- * A declaration is `--x:` in a stylesheet, or the name as a string literal (`setProperty('--x', ...)`,
- * `:style="{ '--x': v }"`). A use WITH a fallback (`var(--x, 68px)`) is allowed to be undefined: that
- * is what the fallback is for.
+ * Custom properties that are used with no fallback and are not defined WHERE THEY ARE USED.
+ *
+ * "Where used" is, in order of reach:
+ *  - GLOBAL: declared (`--x:`) in any file under `assets/styles/` (the design tokens and the shared
+ *    stylesheets every page loads), or set from script (the name as a string literal: `setProperty('--x', ...)`,
+ *    `:style="{ '--x': v }"`), which this cannot place and so treats as global;
+ *  - LOCAL: declared anywhere in the SAME file (a component's own `--mark-size`, `--nav-cta-hover`).
+ * A property declared only in ANOTHER component does not count: `var(--nav-cta-hover)` used from `Footer.vue`
+ * resolves to nothing in a browser, because it is declared on one of Navbar's elements only. (Review of PR
+ * 172: the first version of this guard asked "defined somewhere in src/", and that mistake passed it.)
+ *
+ * The limit that remains, stated rather than hidden: it does not prove that the DECLARING ELEMENT is an
+ * ancestor of the using one inside a file (a custom property inherits down the tree, not sideways), so a
+ * variable declared on one element and used on its sibling in the same file still passes. A use WITH a
+ * fallback (`var(--x, 68px)`) is allowed to be undefined: that is what the fallback is for.
  */
 export function undefinedProperties(files: Readonly<Record<string, string>>): string[] {
-  const declared = new Set<string>()
-  const used = new Map<string, string>()
+  const clean = (raw: string) => stripComments(raw).replace(/<!--[\s\S]*?-->/g, '')
+  const isGlobalSheet = (path: string) => path.startsWith('assets/styles/')
+  const global = new Set<string>()
+  const local = new Map<string, Set<string>>()
   for (const [path, raw] of Object.entries(files)) {
-    const text = stripComments(raw).replace(/<!--[\s\S]*?-->/g, '')
-    for (const m of text.matchAll(/(--[\w-]+)\s*:/g)) declared.add(m[1] ?? '')
-    for (const m of text.matchAll(/['"](--[\w-]+)['"]/g)) declared.add(m[1] ?? '')
-    for (const m of text.matchAll(/var\(\s*(--[\w-]+)\s*\)/g)) if (!used.has(m[1] ?? '')) used.set(m[1] ?? '', path)
+    const text = clean(raw)
+    const mine = new Set<string>()
+    for (const m of text.matchAll(/(--[\w-]+)\s*:/g)) (isGlobalSheet(path) ? global : mine).add(m[1] ?? '')
+    for (const m of text.matchAll(/['"](--[\w-]+)['"]/g)) global.add(m[1] ?? '')
+    local.set(path, mine)
   }
-  return [...used].filter(([name]) => !declared.has(name)).map(([name, path]) => `${name} (first used in ${path})`)
+  const problems: string[] = []
+  for (const [path, raw] of Object.entries(files)) {
+    const seen = new Set<string>()
+    for (const m of clean(raw).matchAll(/var\(\s*(--[\w-]+)\s*\)/g)) {
+      const name = m[1] ?? ''
+      if (seen.has(name) || global.has(name) || local.get(path)?.has(name)) continue
+      seen.add(name)
+      problems.push(`${name} (used in ${path}, defined nowhere that reaches it)`)
+    }
+  }
+  return problems
 }
 
 describe('every custom property that is used is defined', () => {
@@ -71,19 +95,31 @@ describe('every custom property that is used is defined', () => {
 
   describe('the guard itself (checked on in-memory files)', () => {
     test('an undefined use is reported with the file that uses it', () => {
-      assert.deepEqual(undefinedProperties({ 'a.css': ':root { --a: 1px; } .x { margin: var(--a); color: var(--nope); }' }), [
-        '--nope (first used in a.css)',
+      assert.deepEqual(undefinedProperties({ 'assets/styles/a.css': ':root { --a: 1px; } .x { margin: var(--a); color: var(--nope); }' }), [
+        '--nope (used in assets/styles/a.css, defined nowhere that reaches it)',
       ])
     })
 
-    test('a definition in ANOTHER file counts, a fallback is allowed, and a JS-set property counts', () => {
-      assert.deepEqual(undefinedProperties({ 'a.css': '.x { color: var(--b); }', 'b.css': ':root { --b: red; }' }), [])
-      assert.deepEqual(undefinedProperties({ 'a.css': '.x { top: var(--n, 68px); }' }), [])
-      assert.deepEqual(undefinedProperties({ 'a.vue': '<style>.x { top: var(--live); }</style>', 'a.ts': "el.style.setProperty('--live', '1px')" }), [])
+    test('a definition in a shared stylesheet counts everywhere; a fallback is allowed; a JS-set property counts', () => {
+      assert.deepEqual(undefinedProperties({ 'views/A.vue': '<style>.x { color: var(--b); }</style>', 'assets/styles/tokens.css': ':root { --b: red; }' }), [])
+      assert.deepEqual(undefinedProperties({ 'views/A.vue': '<style>.x { top: var(--n, 68px); }</style>' }), [])
+      assert.deepEqual(undefinedProperties({ 'views/A.vue': '<style>.x { top: var(--live); }</style>', 'lib/a.ts': "el.style.setProperty('--live', '1px')" }), [])
+    })
+
+    test('a definition in the SAME component counts, in ANOTHER component does not: var(--nav-cta-hover) from the footer fails', () => {
+      const navbar = '<style scoped>.download-cta { --nav-cta-hover: #4f5ec7; } .download-cta:hover { background: var(--nav-cta-hover); }</style>'
+      assert.deepEqual(undefinedProperties({ 'components/Navbar.vue': navbar }), [])
+      assert.deepEqual(undefinedProperties({ 'components/Navbar.vue': navbar, 'components/Footer.vue': '<style scoped>.link:hover { color: var(--nav-cta-hover); }</style>' }), [
+        '--nav-cta-hover (used in components/Footer.vue, defined nowhere that reaches it)',
+      ])
+    })
+
+    test('the stated limit holds: a sibling in the same file is not told apart from a descendant (documented, not hidden)', () => {
+      assert.deepEqual(undefinedProperties({ 'components/A.vue': '<style>.a { --k: 1px; } .b { top: var(--k); }</style>' }), [])
     })
 
     test('a use that only appears in a comment is ignored', () => {
-      assert.deepEqual(undefinedProperties({ 'a.css': '/* color: var(--ghost); */ .x { color: red; }' }), [])
+      assert.deepEqual(undefinedProperties({ 'assets/styles/a.css': '/* color: var(--ghost); */ .x { color: red; }' }), [])
     })
   })
 })

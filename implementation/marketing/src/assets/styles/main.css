@@ -94,9 +94,15 @@ body {
 }
 
 /* The brand mark: a square window onto the logo file, which carries about a third of transparent padding
-   (its artwork spans 760x835 of 1254x1254 at x=247,y=215). Sized to the artwork's height and centred, so
-   the VISIBLE mark is `--mark-size` tall: 32px in the navbar, 28px in the footer (Figma 494:124, 494:128).
-   The file is not edited (it is shared with the favicon and the apps); the crop lives here. */
+   (its artwork spans 760x835 of 1254x1254 at x=247,y=215). The artwork is sized to 87.5% of the box and
+   centred, which is how Figma draws it: the ink of its 32px nav mark measures 26x28 and of its 28px footer
+   mark 22x24 (the committed reference frames; tests/chromeGlobals.test.ts re-measures them and derives
+   these ratios from the file's own alpha box, so a re-exported logo fails loudly). The box is `--mark-size`:
+   32px in the navbar, 28px in the footer (Figma 494:124, 494:128). The file is not edited (it is shared with
+   the favicon and the apps); the crop lives here.
+     width/height = 1254 * 0.875 / 835          = 1.3141
+     left         = 0.5 - 627   * 0.875 / 835   = -0.157
+     top          = 0.5 - 632.5 * 0.875 / 835   = -0.1628 */
 .brand-mark {
   position: relative;
   display: inline-block;
@@ -109,10 +115,10 @@ body {
 .brand-mark img {
   position: absolute;
   max-width: none;
-  width: calc(var(--mark-size, 32px) * 1.5018);
-  height: calc(var(--mark-size, 32px) * 1.5018);
-  left: calc(var(--mark-size, 32px) * -0.2509);
-  top: calc(var(--mark-size, 32px) * -0.2575);
+  width: calc(var(--mark-size, 32px) * 1.3141);
+  height: calc(var(--mark-size, 32px) * 1.3141);
+  left: calc(var(--mark-size, 32px) * -0.157);
+  top: calc(var(--mark-size, 32px) * -0.1628);
 }
 
 .font-h1 { font: var(--font-h1); }

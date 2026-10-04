@@ -62,6 +62,24 @@ function closing(text: string, open: number): number {
   return text.length
 }
 
+/** Split a selector list at its top-level commas: `:where(a, button), .x` is two selectors, not four. */
+export function splitSelectors(prelude: string): string[] {
+  const out: string[] = []
+  let depth = 0
+  let start = 0
+  for (let i = 0; i < prelude.length; i++) {
+    const ch = prelude[i]
+    if (ch === '(' || ch === '[') depth++
+    else if (ch === ')' || ch === ']') depth--
+    else if (ch === ',' && depth === 0) {
+      out.push(prelude.slice(start, i))
+      start = i + 1
+    }
+  }
+  out.push(prelude.slice(start))
+  return out.map((s) => s.trim()).filter(Boolean)
+}
+
 export function parseCss(css: string): Rule[] {
   const rules: Rule[] = []
   let order = 0
@@ -78,7 +96,7 @@ export function parseCss(css: string): Rule[] {
         // not part of the geometry the chrome tests resolve
       } else if (prelude) {
         rules.push({
-          selectors: prelude.split(',').map((s) => s.trim()).filter(Boolean),
+          selectors: splitSelectors(prelude),
           decls: parseDecls(body),
           media,
           order: order++,
@@ -136,6 +154,25 @@ export function effective(
   hits.sort((a, b) => a.spec - b.spec || a.order - b.order)
   const out: Record<string, string> = {}
   for (const hit of hits) Object.assign(out, hit.decls)
+  return out
+}
+
+const normalise = (selector: string) => selector.replace(/\s+/g, ' ').replace(/\s*([>+~,()])\s*/g, '$1').trim()
+
+/**
+ * The winning declarations of the rules written with EXACTLY this selector (whitespace-insensitive), at `env`.
+ * For the selectors `effective()` cannot match against an element: an id (`#how-it-works`), a `:where()`
+ * list, a descendant (`.brand-mark img`). A rule wrapped in a media block that does not hold at `env` is
+ * ignored, so a rule that can never apply (an unreachable `@media (min-width: 99999px)`) reads as absent.
+ * Later rules win; returns `{}` when no rule applies, which a test must treat as a failure.
+ */
+export function effectiveExact(rules: readonly Rule[], selector: string, env: Env): Record<string, string> {
+  const wanted = normalise(selector)
+  const out: Record<string, string> = {}
+  for (const rule of rules) {
+    if (!mediaMatches(rule.media, env)) continue
+    if (rule.selectors.some((s) => normalise(s) === wanted)) Object.assign(out, rule.decls)
+  }
   return out
 }
 
