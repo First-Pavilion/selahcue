@@ -349,6 +349,11 @@ const handleSubmit = () => {
   line-height: 18px;
 }
 
+/* An input is 44 high whatever the engine's own minimum is: WebKit draws a 15px field as 45 with a line box alone. */
+.contact-form :deep(input.field-input) {
+  height: 44px;
+}
+
 .contact-form :deep(.field-textarea) {
   min-height: 120px;
   padding: 13px;
