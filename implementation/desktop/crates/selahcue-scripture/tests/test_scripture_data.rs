@@ -358,6 +358,10 @@ fn is_acrostic_label(text: &str) -> bool {
 /// them. A check that only looks at how verses START never sees these (that is how the first
 /// version of this change shipped them). Case-sensitive: the labels are upper case, and a verse
 /// can legitimately end in a lower-case "sin" or "he".
+///
+/// **Valid only inside Psalm 119.** Outside it there are real verses that end in an upper-case
+/// letter name: Darby's Isaiah 41:4 ends "…I am HE." So this must never be widened into a scan of
+/// other chapters or books.
 fn ends_with_acrostic_label(text: &str) -> bool {
     if text.ends_with("SIN AND SHIN") {
         return true;
@@ -582,8 +586,9 @@ fn no_psalm_opens_with_its_title_in_any_bundled_translation() {
 fn psalm_119_labels_are_gone_from_both_ends_of_the_verses_they_touched() {
     // WEB and WEBBE: VPL hung each of the 21 later letter labels on the END of the verse before
     // its section (119:8 "… forsake me. BETH"), so the verse AFTER it (119:9) always started clean.
-    // These pins are the ones a start-only check cannot make. (The corpus scan above covers every
-    // verse in all five translations; these name the shapes.)
+    // These pins are the ones a start-only check cannot make. (The corpus scan above covers the
+    // first verse of every psalm and BOTH ends of every Psalm 119 verse, in all five translations;
+    // these name the shapes. It does not look at the end of any other psalm's verses.)
     for t in [Translation::Web, Translation::Webbe] {
         let v8 = verse_text(t, "Psalm 119:8");
         assert!(

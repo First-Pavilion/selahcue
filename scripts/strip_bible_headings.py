@@ -57,6 +57,7 @@ Output is byte-reproducible for a given zlib: the gzip header carries no timesta
 If bytes ever differ on another machine's zlib, compare the DECOMPRESSED TSV, not the sha.
 """
 import argparse
+import contextlib
 import gzip
 import io
 import pathlib
@@ -85,6 +86,18 @@ _NOTE = re.compile(r"\\(?:f|x)\s.*?\\(?:f|x)\*", re.S)  # footnotes and cross re
 _WORD = re.compile(r"\\\+?w\s+([^|\\]*?)(?:\|[^\\]*)?\\\+?w\*")  # \w word|strong="H1"\w*
 _MARK = re.compile(r"\\\+?[A-Za-z][A-Za-z0-9]*\*?")  # any remaining character/paragraph marker
 _INLINE_LABEL = re.compile(r"^([A-Z]{2,}\.)\s")  # DBY: "ALEPH. Blessed ..." inside the verse
+# The markers that may legitimately follow a `\d` heading line: anything that starts a new
+# paragraph/structure. Anything else (a bare line, or a CHARACTER marker such as `\w`/`\nd` that
+# continues the heading's own paragraph) means the heading carries on, and taking only its first
+# line would truncate it.
+_ENDS_HEADING = re.compile(
+    r"\\(?:v|c|d|q\d?|qa|qc|qr|qm\d?|p|pi\d?|m|mi|b|nb|s\d?|ms\d?|mr|r|sp|cl|cp|li\d?|lh|lf"
+    r"|lim\d?|ph\d?|cd|id|h|toc\d|mt\d?)(?![A-Za-z0-9])")
+# Of those, the markers that legitimately CARRY text of their own (a verse, a chapter, another
+# `\d`, a section heading). A poetry/prose marker followed by text (`\q1 Maschil, for the sons...`)
+# is the heading's own remainder on a marked line, so it is refused too.
+_CARRIES_TEXT = re.compile(
+    r"\\(?:v|c|d|s\d?|ms\d?|mr|r|sp|cl|cp|h|id|toc\d|mt\d?|cd)(?![A-Za-z0-9])")
 
 
 class Mismatch(Exception):
@@ -115,11 +128,14 @@ def headings_from_usfm(text):
     found, pending, chapter = {}, [], 0
     for raw in text.splitlines():
         line = raw.strip()
-        if pending and line and not line.startswith("\\"):
-            # A marker-less line continues the paragraph before it, i.e. the heading. Taking only
-            # its first line would truncate it, and a truncated heading still passes a prefix check.
-            raise Mismatch([f"Psalm {chapter}: heading {pending[-1]!r} continues on the next line "
-                            f"({line[:40]!r}); the parser does not join continuation lines"])
+        if pending and line:
+            ends = _ENDS_HEADING.match(line)
+            # A marker-less line, a character marker (`\w`), or a poetry/prose marker that carries
+            # text (`\q1 Maschil, ...`) continues the heading. A truncated heading still passes a
+            # prefix check, so refuse rather than take only its first line.
+            if not ends or (not _CARRIES_TEXT.match(line) and line[ends.end():].strip()):
+                raise Mismatch([f"Psalm {chapter}: heading {pending[-1]!r} continues on the next line "
+                                f"({line[:40]!r}); the parser does not join continuation lines"])
         m = re.match(r"\\c\s+(\d+)\b", line)
         if m:
             if pending:
@@ -152,7 +168,10 @@ def parse_rows(lines):
         parts = line.split("\t")
         if len(parts) != 4:
             raise ValueError(f"line {i + 1}: expected 4 tab-separated fields, got {len(parts)}")
-        rows[(int(parts[0]), int(parts[1]), int(parts[2]))] = i
+        key = (int(parts[0]), int(parts[1]), int(parts[2]))
+        if key in rows:
+            raise ValueError(f"line {i + 1}: duplicate row for {key} (first at line {rows[key] + 1})")
+        rows[key] = i
     return rows
 
 
@@ -231,10 +250,12 @@ def verify(old_lines, new_lines, edits):
     changed = {i for i, (o, n) in enumerate(zip(old_lines, new_lines)) if o != n}
     if changed != expected:
         raise Mismatch([f"changed rows differ from the edit list by {sorted(changed ^ expected)[:10]}"])
-    for (key, removed, i, _) in edits:
+    for (key, removed, i, where) in edits:
         old, new = old_lines[i].split("\t")[3], new_lines[i].split("\t")[3]
-        if old != removed + " " + new and old != new + " " + removed:
-            raise Mismatch([f"{key}: {old!r} is not {removed!r} + {new!r}"])
+        # "start" removed the front of the row; "end" and "note" removed the back of it.
+        expected_old = removed + " " + new if where == "start" else new + " " + removed
+        if old != expected_old:
+            raise Mismatch([f"{key}: {old!r} is not {removed!r} removed from the {where} (left {new!r})"])
         if not new or new != new.strip():
             raise Mismatch([f"{key}: bad remainder {new!r}"])
 
@@ -256,8 +277,8 @@ def psalms_usfm(zip_path):
 
 def process(name, asset, usfm_zip):
     """Check and compute one translation. Returns (new gzip bytes, edits, old size). Writes nothing."""
-    before = asset.stat().st_size
     try:
+        before = asset.stat().st_size
         raw = gzip.decompress(asset.read_bytes()).decode("utf-8")
         trailing = raw.endswith("\n")
         lines = raw.split("\n")[:-1] if trailing else raw.split("\n")
@@ -313,12 +334,23 @@ def run(usfm_dir, assets, write, report=None, names=None):
               f"({'written' if write else 'dry run'}; asset {before} -> {len(out)} bytes)")
         report_md += report_lines(name, edits)
     if write:
+        # Stage every file first; only when ALL are staged do the (cheap, atomic) renames start. A
+        # failure while staging removes whatever was staged and leaves every asset untouched.
         tmps = []
-        for name, (out, _, _) in results.items():
-            asset = assets / f"{name}.tsv.gz"
-            tmp = asset.with_suffix(asset.suffix + ".tmp")
-            tmp.write_bytes(out)
-            tmps.append((tmp, asset))
+        try:
+            for name, (out, _, _) in results.items():
+                asset = assets / f"{name}.tsv.gz"
+                tmp = asset.with_suffix(asset.suffix + ".tmp")
+                tmp.write_bytes(out)
+                tmps.append((tmp, asset))  # only files this run actually staged are ever removed
+        except OSError as e:
+            for tmp, _ in tmps:
+                try:
+                    tmp.unlink()
+                except OSError:
+                    pass
+            print(f"WRITE FAILED while staging ({type(e).__name__}: {e}); NOTHING WRITTEN, assets untouched.")
+            return 1
         for tmp, asset in tmps:
             tmp.replace(asset)
     if report:
@@ -437,6 +469,27 @@ def self_test():
     raises(lambda: headings_from_usfm("\\c 5 \n\\d Orphan title.\n\\c 6 \n\\v 1 Text"), "orphan heading accepted")
     raises(lambda: headings_from_usfm("\\c 5 \n\\d A title that runs\nonto a second line.\n\\v 1 Text"),
            "a continued heading was truncated silently", "continues on the next line")
+    # ...including continuations that start with a marker: a character marker, or a poetry/prose
+    # marker that carries the heading's remainder as text (`\\q1 Maschil, ...`). A bare `\\q1` between
+    # the heading and its verse is the normal case and must still be accepted.
+    raises(lambda: headings_from_usfm("\\c 5 \n\\d A title that runs\n\\w on|strong=\"H1\"\\w* here.\n\\v 1 Text"),
+           "a heading continued by a character marker was truncated silently", "continues on the next line")
+    raises(lambda: headings_from_usfm("\\c 5 \n\\d To the chief Musician,\n\\q1 Maschil, for the sons of Korah.\n\\v 1 Text"),
+           "a heading continued on a poetry line was truncated silently", "continues on the next line")
+    assert headings_from_usfm("\\c 5 \n\\d A title.\n\\q1\n\\v 1 Text") == {(5, 1): "A title."}
+    assert headings_from_usfm("\\c 5 \n\\d A title.\n\\s1 A section heading\n\\v 1 Text") == {(5, 1): "A title."}
+
+    # A row can only be edited once: "Blessed are those. BETH" starting with ALEPH would need two removals.
+    twice = tsv((19, 119, 1, "ALEPH Blessed are those. BETH"), (19, 119, 2, "Blessed are they"), (35, 3, 19, "x. " + tail))
+    raises(lambda: strip_rows(twice, {(119, 1): "ALEPH", (119, 2): "BETH"}, tail),
+           "a row was edited twice", "edited twice")
+    # A duplicated row key in an asset is refused, not half-stripped.
+    raises_value = False
+    try:
+        parse_rows(tsv((19, 1, 1, "a"), (19, 1, 1, "b")))
+    except ValueError as e:
+        raises_value = "duplicate row" in str(e)
+    assert raises_value, "a duplicated row key was accepted"
 
     # End to end through real zips and real assets, and the ALL-OR-NOTHING write.
     global EXPECTED_HEADINGS
@@ -452,7 +505,11 @@ def self_test():
                     zf.writestr("20-PSA.usfm", usfm)
             kjv_before, web_before = (d / "kjv.tsv.gz").read_bytes(), (d / "web.tsv.gz").read_bytes()
 
-            assert run(d, d, write=False, names=["kjv", "web"]) == 0
+            def quiet_run(*a, **k):  # the expected-failure messages are noise in a passing self-test
+                with contextlib.redirect_stdout(io.StringIO()):
+                    return run(*a, **k)
+
+            assert quiet_run(d, d, write=False, names=["kjv", "web"]) == 0
             assert (d / "kjv.tsv.gz").read_bytes() == kjv_before, "dry run changed an asset"
 
             # Corrupt ONE title in web's asset: web aborts, and with --write kjv must NOT be rewritten.
@@ -460,24 +517,35 @@ def self_test():
             bad[0] = bad[0].replace("Musician", "Musicien")
             (d / "web.tsv.gz").write_bytes(to_gzip(("\n".join(bad) + "\n").encode()))
             web_bad = (d / "web.tsv.gz").read_bytes()
-            assert run(d, d, write=True, names=["kjv", "web"]) == 1
+            assert quiet_run(d, d, write=True, names=["kjv", "web"]) == 1
             assert (d / "kjv.tsv.gz").read_bytes() == kjv_before, "a failure in web still rewrote kjv"
             assert (d / "web.tsv.gz").read_bytes() == web_bad
 
             # Malformed / unreadable input is a tidy abort, not a traceback.
             (d / "web.tsv.gz").write_bytes(to_gzip(b"19\t1\tnot-a-number\ttext\n"))
-            assert run(d, d, write=False, names=["web"]) == 1
+            assert quiet_run(d, d, write=False, names=["web"]) == 1
             (d / "web.tsv.gz").write_bytes(b"this is not gzip")
-            assert run(d, d, write=False, names=["web"]) == 1
+            assert quiet_run(d, d, write=False, names=["web"]) == 1
 
             # The heading-count guard fires when upstream gains or loses a heading.
             (d / "web.tsv.gz").write_bytes(web_before)
             EXPECTED_HEADINGS = {**saved, "kjv": 7, "web": 99}
-            assert run(d, d, write=False, names=["web"]) == 1
+            assert quiet_run(d, d, write=False, names=["web"]) == 1
             EXPECTED_HEADINGS = {**saved, "kjv": 7, "web": 7}
 
+            # A failure while STAGING the write (here: web's temp path is a directory) leaves every asset
+            # untouched and no temp file behind, instead of a traceback and a half-written set.
+            (d / "web.tsv.gz").write_bytes(web_before)
+            (d / "web.tsv.gz.tmp").mkdir()
+            assert quiet_run(d, d, write=True, names=["kjv", "web"]) == 1
+            assert (d / "kjv.tsv.gz").read_bytes() == kjv_before and (d / "web.tsv.gz").read_bytes() == web_before
+            assert not (d / "kjv.tsv.gz.tmp").exists(), "left kjv's temp file behind"
+            (d / "web.tsv.gz.tmp").rmdir()
+            # A missing asset is a tidy abort too.
+            assert quiet_run(d, d / "nowhere", write=False, names=["kjv"]) == 1
+
             # Both good: written, and the rewrite is what the pure functions computed.
-            assert run(d, d, write=True, names=["kjv", "web"]) == 0
+            assert quiet_run(d, d, write=True, names=["kjv", "web"]) == 0
             rows = gzip.decompress((d / "web.tsv.gz").read_bytes()).decode().split("\n")
             assert rows[-1] == "" and rows[0].endswith("\tAs the hart panteth"), rows
             assert rows[4].endswith("forsake me."), rows[4]
