@@ -6,16 +6,15 @@ import ConsoleMockup from '@/components/ConsoleMockup.vue'
 import OutputManagerMockup from '@/components/OutputManagerMockup.vue'
 import FeatureCard from '@/components/FeatureCard.vue'
 import ReliabilityPillar from '@/components/ReliabilityPillar.vue'
-import PricingCard from '@/components/PricingCard.vue'
-import TestimonialCard from '@/components/TestimonialCard.vue'
 import FaqAccordion from '@/components/FaqAccordion.vue'
 import HomeIcon from '@/components/home/HomeIcon.vue'
 
 /*
  * COPY. Figma frame 468:125 is the wording wherever the repo backs it. Where Figma claims more than the
  * repo can show, the backed part is what ships (the ledger in docs/delivery/goals/17tnw2b2cex-figma-home.md
- * lists each line and why; tests/homeView.test.ts pins it). Sentences no finding replaces are left exactly
- * as they were: removing a claim the live page already makes is ClickUp 17tnw2b0x3h, not this change.
+ * lists each line and why; tests/homeView.test.ts pins it). Nothing on this page may state a price, a plan, a billing
+ * term, a testimonial, an OS version or a capability the repo does not back (ClickUp 17tnw2b0x3h): plan names and prices
+ * come from the API once it serves them, and until then the pricing section says so.
  */
 
 /** Ties the disabled demo button to the sentence that says why (read after it in the page). */
@@ -84,96 +83,19 @@ const outputChecks = [
 const steps = [
   {
     title: 'Plan your service',
-    description: 'Add songs, scripture, and sections to the order of service. Set countdowns and give any item its own theme.'
+    description: 'Add songs, scripture, and sections to the order of service. Set countdowns.'
   },
   {
     title: 'Go live with one tap',
     description: 'Stage the next item in Preview, then Go Live. The audience, stage, and NDI outputs all update together.'
   },
   {
-    title: 'Control from anywhere',
+    title: 'Control from the console or phone',
     description: 'Drive it from the console — or pair your phone over the local network. No internet needed.'
   }
 ]
 
-/*
- * `to` is only set where a real destination exists. Free goes to /download, which says honestly that
- * nothing downloads yet (the hero and navbar buttons already go there; the owner keeps the label
- * "Download free"). Pro and Church have none, so PricingCard shows its disabled "Not available yet" state:
- *  - Pro: no billing exists.
- *  - Church: /contact is not a real destination. It waits 800 ms, says "Message Received ... we will
- *    respond within 24 hours" and sends nothing (audit contact-04, 06, 07; ClickUp 17tnw2b0x3h), so it
- *    would collect a visitor's details under a false promise. Church gets `to: '/contact'` back once that
- *    form really sends (the same answer as Pricing, PR 178).
- * The price, `/ month` and MOST POPULAR are as they were (audit home-33; removal is 17tnw2b0x3h).
- */
-const pricingPlans = [
-  {
-    name: 'Free',
-    price: 0,
-    period: 'forever',
-    description: 'Everything to run a service on one machine.',
-    features: [
-      'Live audience output + stage display',
-      'Bundled public-domain scripture + search',
-      'Service plans, timers & themes'
-    ],
-    cta: 'Download free',
-    popular: false,
-    to: '/download'
-  },
-  {
-    name: 'Pro',
-    price: 19,
-    period: 'month',
-    description: 'For multi-output and streaming churches.',
-    features: [
-      'Everything in Free',
-      'NDI + multiple simultaneous outputs',
-      'Mobile control over your local network'
-    ],
-    cta: 'Get Pro',
-    popular: true,
-    to: undefined
-  },
-  {
-    name: 'Church',
-    price: 'Custom',
-    period: '',
-    description: 'For multi-site teams and larger ministries.',
-    features: [
-      'Everything in Pro',
-      'Multi-campus / site licensing'
-    ],
-    cta: 'Talk to us',
-    popular: false,
-    to: undefined
-  }
-]
-
-/* The quotes, names and churches are as they were (audit home-36: removal is 17tnw2b0x3h). */
-const testimonials = [
-  {
-    quote: "SelahCue changed how our tech team operates on Sunday. The volunteer onboarding time dropped to zero, and the platform is rock-solid.",
-    author: "Sarah Jenkins",
-    role: "Worship Director · Grace Community",
-    color: "blue"
-  },
-  {
-    quote: "We finally have a presentation tool that works 100% offline. No more Sunday morning panic when the church internet backhaul fails.",
-    author: "Mark Davis",
-    role: "Technical Director · Redeemer Church",
-    color: "green"
-  },
-  {
-    quote: "The stage confidence monitor and built-in countdown timers keep our pastors and worship leaders synchronized throughout every service.",
-    author: "Pastor Paul Miller",
-    role: "Lead Pastor · Hope Chapel",
-    color: "amber"
-  }
-]
-
-/* The platforms answer is as it was until Uma redraws it (audit home-38, 40 and 45). */
+/* The platforms answer names Windows, macOS and Linux and no version number, architecture or file format: the product is available for all three (owner, 2026-10-04) and the repo gives no figure (audit home-38, 40, 45). */
 const faqItems = [
   {
     question: 'Do I need an internet connection?',
@@ -181,7 +103,7 @@ const faqItems = [
   },
   {
     question: 'Which platforms are supported?',
-    answer: 'SelahCue supports Windows 10/11 (64-bit) and macOS 12+ (Apple Silicon & Intel). Additionally, you can pair any iOS or Android phone over your local Wi-Fi network to control slides remotely.'
+    answer: 'SelahCue is available for Windows, macOS and Linux. Additionally, you can pair any iOS or Android phone over your local Wi-Fi network to control slides remotely.'
   },
   {
     question: 'Can I use my own songs, slides, and designs?',
@@ -193,7 +115,7 @@ const faqItems = [
   },
   {
     question: 'How does billing work?',
-    answer: 'SelahCue Pro is a simple monthly subscription; the Free plan is free forever. Cancel anytime — and the app keeps running fully offline during your service either way.'
+    answer: 'Plans and prices have not been published yet.'
   }
 ]
 </script>
@@ -215,7 +137,7 @@ const faqItems = [
         </h1>
 
         <p class="hero-subtitle">
-          SelahCue is the offline-first presentation &amp; ministry-assistance app that never blanks the screen — scripture, songs, timers, stage display, and NDI outputs, controlled from anywhere.
+          SelahCue is the offline-first presentation &amp; ministry-assistance app that never blanks the screen — scripture, songs, timers, stage display, and NDI outputs.
         </p>
 
         <div class="hero-actions">
@@ -299,7 +221,7 @@ const faqItems = [
             <!-- Figma breaks after "moment," (two lines of 470px); phones let it wrap. -->
             <h2 class="outputs-title">One live moment, <br />every output</h2>
             <p class="outputs-body">
-              Send the same live content to your projector, a stage confidence monitor, and an NDI stream — each with its own theme, orientation, scaling, and visible layers.
+              Send the same live content to your projector, a stage confidence monitor, and an NDI stream — each with its own orientation, scaling, and visible layers.
             </p>
 
             <ul class="outputs-checklist">
@@ -324,7 +246,7 @@ const faqItems = [
         <div class="section-header">
           <UiBadge variant="eyebrow">HOW IT WORKS</UiBadge>
           <h2 class="section-title">Live in three steps</h2>
-          <p class="section-subtitle">From an empty plan to a running service in minutes — no manual, no setup weekend.</p>
+          <p class="section-subtitle">From an empty plan to a running service in three steps.</p>
         </div>
 
         <ol class="steps-grid" role="list">
@@ -337,49 +259,14 @@ const faqItems = [
       </div>
     </section>
 
-    <!-- Section 6: Pricing Section -->
+    <!-- Section 6: Pricing. No plan, price or billing term is shown: none is decided, and the names and prices will come from the
+         API (ClickUp 17tnw2b0x3h). Until it serves them the section says so and draws nothing else. -->
     <section class="pricing-section">
       <div class="container">
         <div class="section-header">
           <UiBadge variant="eyebrow">PRICING</UiBadge>
-          <h2 class="section-title">Simple pricing. Cancel anytime.</h2>
-          <p class="section-subtitle">Start free, upgrade when you're ready, and cancel anytime — it still runs fully offline on Sunday.</p>
-        </div>
-
-        <div class="pricing-grid">
-          <PricingCard
-            v-for="plan in pricingPlans"
-            :key="plan.name"
-            :name="plan.name"
-            :price="plan.price"
-            :period="plan.period"
-            :description="plan.description"
-            :features="plan.features"
-            :cta="plan.cta"
-            :popular="plan.popular"
-            :to="plan.to"
-          />
-        </div>
-      </div>
-    </section>
-
-    <!-- Section 7: Community Testimonials -->
-    <section class="testimonials-section">
-      <div class="container">
-        <div class="section-header">
-          <UiBadge variant="eyebrow">TESTIMONIALS</UiBadge>
-          <h2 class="section-title is-compact">Run by volunteers. Trusted on Sunday.</h2>
-        </div>
-
-        <div class="testimonials-grid">
-          <TestimonialCard
-            v-for="t in testimonials"
-            :key="t.author"
-            :quote="t.quote"
-            :author="t.author"
-            :role="t.role"
-            :avatarColor="t.color"
-          />
+          <h2 class="section-title">Plans and pricing</h2>
+          <p class="section-subtitle">Plans and prices have not been published yet.</p>
         </div>
       </div>
     </section>
@@ -403,7 +290,7 @@ const faqItems = [
         <div class="final-cta-card">
           <h2 class="cta-title">Ready to run your best service yet?</h2>
           <p class="cta-subtitle">
-            Start free and go live this Sunday. Cancel anytime — and it runs fully offline when it matters most.
+            Start free. Core live controls keep working with no network.
           </p>
           <div class="cta-btn-group">
             <UiButton variant="inverse" size="lg" to="/download">Download free</UiButton>
@@ -745,34 +632,13 @@ const faqItems = [
   color: var(--sc-text-secondary);
 }
 
-/* Section 6: Pricing (Figma 477:124: 90px, header gap 48, cards 24 apart) */
+/* Section 6: Pricing (Figma 477:124: 90px). The three plan cards are gone (ClickUp 17tnw2b0x3h), so the header has nothing under
+   it to leave a gap for. */
 .pricing-section {
   padding-block: calc(var(--section-pad) + 2px);
   --title-lh: 48px;
-  --header-gap: 48px;
+  --header-gap: 0px;
   --sub-width: 620px;
-}
-
-.pricing-grid {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 24px;
-  align-items: start;
-}
-
-/* Section 7: Testimonials (Figma 478:124: a full-width panel band, 90px, header gap 46, cards 24 apart) */
-.testimonials-section {
-  padding-block: calc(var(--section-pad) + 1px);
-  background: var(--sc-surface);
-  border-block: 1px solid var(--sc-border);
-  --header-gap: 46px;
-  --header-gap-inner: 13px;
-}
-
-.testimonials-grid {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 24px;
 }
 
 /* Section 8: FAQ (Figma 478:153: 90px, header gap 40, a 780px list) */
@@ -850,8 +716,8 @@ const faqItems = [
   padding-top: 10px;
 }
 
-/* Tablet (768-1199): grids go 2-up (a third card wraps), pricing goes 1-up with the Pro
-   card first, the outputs image drops below its text, and the H1 steps down (design 8a/8d). */
+/* Tablet (768-1199): grids go 2-up (a third card wraps), the outputs image drops below its text, and the H1
+   steps down (design 8a/8d). */
 @media (max-width: 1199.98px) {
   .section-title,
   .section-title.is-reliability,
@@ -860,15 +726,9 @@ const faqItems = [
     font-size: 34px;
     line-height: 40px;
   }
-  .features-grid, .reliability-grid, .steps-grid, .testimonials-grid {
+  .features-grid, .reliability-grid, .steps-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
-  .pricing-grid {
-    grid-template-columns: minmax(0, 1fr);
-    max-width: 520px;
-    margin-inline: auto;
-  }
-  .pricing-grid > .popular { order: -1; }
   .outputs-layout {
     grid-template-columns: minmax(0, 1fr);
     gap: 40px;
@@ -909,11 +769,10 @@ const faqItems = [
     line-height: 34px;
   }
   .section-subtitle { font-size: 15px; line-height: 24px; }
-  .features-grid, .reliability-grid, .steps-grid, .testimonials-grid {
+  .features-grid, .reliability-grid, .steps-grid {
     grid-template-columns: minmax(0, 1fr);
     gap: 16px;
   }
-  .pricing-grid { gap: 20px; }
   .outputs-layout { gap: 32px; }
   .step-card { padding: 23px 19px; }
   .final-cta-card { padding: 40px 24px; border-radius: 20px; }
