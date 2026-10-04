@@ -182,6 +182,16 @@
   color: var(--sc-text-secondary);
 }
 
+/*
+ * The glyph column is as wide as Figma draws it: 16px for the diamond and the cross, 14px for the tick (745:124, 743:139), so the
+ * copy starts at x=585 / 583. These marks are not in Inter: each OS falls back to its own symbol font with its own advance (the
+ * diamond is 10.8px here), which pulled the copy up to 5px to the left of the frame. A MINIMUM width pins it where Figma
+ * draws it on any machine whose glyph is no wider; the `!` keeps its natural width, which is Inter's (5px).
+ */
+.au-banner-info .au-banner-glyph,
+.au-banner-danger .au-banner-glyph { min-width: 16px; }
+.au-banner-success .au-banner-glyph { min-width: 14px; }
+
 .au-banner-info { background: var(--sc-info-soft); }
 .au-banner-info .au-banner-glyph { color: var(--sc-primary); }
 

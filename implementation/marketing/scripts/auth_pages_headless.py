@@ -112,16 +112,16 @@ DIST = Path(os.environ.get("SELAHCUE_MARKETING_DIST") or (MARKETING / "dist"))
 # sweep itself, and the old name-based check kept as a complement. Measured on the tree
 # that ships it, not derived from the arithmetic.
 #
-# 1751 -> 2213 in the Figma auth ticket (17tnw2b2cf1), measured on the tree that ships it: 60 scenarios and 1751 checks became
-# 64 scenarios and 2213. What was added: computed-style checks, read in real Chrome with running transitions finished
+# 1751 -> 2266 in the Figma auth ticket (17tnw2b2cf1), measured on the tree that ships it: 60 scenarios and 1751 checks became
+# 64 scenarios and 2266. What was added: computed-style checks, read in real Chrome with running transitions finished
 # first, for the Sign in, Verify and Reset findings (the field label, input well, 7px / 18px rhythm and placeholder on six
 # states; the centring of V1 and V2 and the left alignment of every other state; the R1 focus, Show / Hide and hint; the R2
 # cross, held button and banner; the Forgot link in the label row, its target and the tab order); two checks on EVERY state
-# through `universalChecks` (the button heights and the 358px column), and FOUR new scenarios: `reset-both-errors`,
+# through `universalChecks` (the button heights, the 358px column and the banner glyph column), and FOUR new scenarios: `reset-both-errors`,
 # `reset-submitting`, `signin-submitting` and `verify-resend-pending` (the in-flight states, held with `gated()`, which
 # nothing measured before). The enumeration pairs were not touched; the Sign in in-flight checks are their own scenario
 # so that no measurement is added to one half of a pair.
-EXPECTED_MIN_CHECKS = 2213
+EXPECTED_MIN_CHECKS = 2266
 
 
 def find_chrome() -> str | None:
@@ -1469,6 +1469,16 @@ DRIVER = r"""
           secondary.length + ' secondary button(s); first: ' + (secondary[0] ? box(secondary[0]).h + 'px / ' + css(secondary[0], 'borderTopWidth') + ' ' + css(secondary[0], 'borderTopColor') : 'none'));
     var content = card ? card.clientWidth - parseFloat(css(card, 'paddingLeft')) - parseFloat(css(card, 'paddingRight')) : -1;
     check('the card content column is 358px wide', near(content, 358), 'content width: ' + content);
+
+    // verify-v2-01: the glyph column of every banner is as wide as Figma draws it (16px, 14px for a tick), and the copy
+    // starts 12px after it. The width of the glyph itself is a system font's, so the MINIMUM is what is asserted.
+    var banners = document.querySelectorAll('.au-card .au-banner');
+    check('every banner keeps its glyph column and its 12px gap to the copy', Array.prototype.every.call(banners, function (b) {
+      var glyph = b.querySelector('.au-banner-glyph');
+      var copy = b.querySelector('.au-banner-title');
+      var want = /au-banner-success/.test(b.className) ? 14 : (/au-banner-warning/.test(b.className) ? 0 : 16);
+      return !!glyph && !!copy && box(glyph).w >= want - 0.5 && near(box(copy).l - box(glyph).r, 12);
+    }), banners.length + ' banner(s)');
   }
 
   /** The loading button keeps its label (reset-r3-01): the glyph and the words, at 50%, with the generic spinner hidden. */

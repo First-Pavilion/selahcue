@@ -176,6 +176,26 @@ describe('auth titles, notes and banners carry the Figma metrics (verify-v2-01, 
   })
 })
 
+describe('the banner glyph column is as wide as Figma draws it, so the copy starts where Figma starts it (verify-v2-01)', () => {
+  test('16px for the diamond and the cross, 14px for the tick; the exclamation mark keeps its natural width', () => {
+    assert.deepEqual(mismatches(authRules, '.au-banner-info .au-banner-glyph', { 'min-width': '16px' }), [])
+    assert.deepEqual(mismatches(authRules, '.au-banner-danger .au-banner-glyph', { 'min-width': '16px' }), [])
+    assert.deepEqual(mismatches(authRules, '.au-banner-success .au-banner-glyph', { 'min-width': '14px' }), [])
+    assert.equal(effectiveExact(authRules, '.au-banner-warning .au-banner-glyph', DESKTOP)['min-width'], undefined)
+  })
+
+  test('with the 14px padding, the 12px gap and these widths, the copy starts 44px (42px for a tick) in from the banner edge', () => {
+    const banner = declared(authRules, '.au-banner')
+    const padding = (banner['padding'] ?? '').split(/\s+/)
+    const left = resolvePx(padding[1] ?? '', {})
+    const gap = resolvePx(banner['gap'] ?? '', {})
+    assert.equal(left, 16)
+    assert.equal(gap, 12)
+    assert.equal(left + resolvePx(declared(authRules, '.au-banner-info .au-banner-glyph')['min-width'] ?? '', {}) + gap, 44)
+    assert.equal(left + resolvePx(declared(authRules, '.au-banner-success .au-banner-glyph')['min-width'] ?? '', {}) + gap, 42)
+  })
+})
+
 describe('auth fields: label, input well, stroke and rhythm (signin-06, -07, -09, -08, reset-r1-03)', () => {
   test('the label is 13px / 500 on a 16px line in the secondary ink, not 14px / 600 in the primary ink', () => {
     assertRule('.au-card form .field-label', {
