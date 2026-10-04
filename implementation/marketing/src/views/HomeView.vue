@@ -262,7 +262,8 @@ const faqItems = [
       <div class="container">
         <div class="section-header">
           <UiBadge variant="eyebrow">WHY SELAHCUE</UiBadge>
-          <h2 class="section-title is-reliability">Built for the one moment you can't repeat</h2>
+          <!-- Figma draws the break after "moment" (two lines of 760px); phones let it wrap. -->
+          <h2 class="section-title is-reliability">Built for the one moment<br />you can't repeat</h2>
           <p class="section-subtitle">Sunday morning doesn't wait for a spinning cursor. SelahCue is engineered so the audience output is always up — reliable, offline, and fast.</p>
         </div>
 
@@ -452,7 +453,9 @@ const faqItems = [
   margin: 0;
   font-size: 40px;
   font-weight: 700;
-  line-height: 46px;
+  /* Figma's titles are 46px tall, except How it works and Pricing, which have no fixed line height and
+     measure 48 (the section sets --title-lh). */
+  line-height: var(--title-lh, 46px);
   letter-spacing: 0;
   color: var(--sc-text);
 }
@@ -667,6 +670,7 @@ const faqItems = [
 /* Section 5: Steps (Figma 476:124: 88px, header gap 50, cards 28 apart) */
 .steps-section {
   padding-block: var(--section-pad);
+  --title-lh: 48px;
   --header-gap: 50px;
   --sub-width: 600px;
 }
@@ -722,6 +726,7 @@ const faqItems = [
 /* Section 6: Pricing (Figma 477:124: 90px, header gap 48, cards 24 apart) */
 .pricing-section {
   padding-block: calc(var(--section-pad) + 2px);
+  --title-lh: 48px;
   --header-gap: 48px;
   --sub-width: 620px;
 }
@@ -856,11 +861,12 @@ const faqItems = [
   .hero-section { padding: 48px 0 48px; }
   .hero-content { gap: 20px; }
   /* The designed line break leaves an orphaned "with" on its own line at phone widths. */
-  .hero-title br { display: none; }
+  .hero-title br,
+  .section-title br { display: none; }
   .hero-subtitle { font-size: 16px; line-height: 26px; }
   .hero-actions { flex-direction: column; align-self: stretch; padding-top: 0; }
   .hero-actions > .ui-button { width: 100%; }
-  .hero-trust { max-width: 300px; font-size: 13px; line-height: 18px; text-wrap: balance; }
+  .hero-trust { font-size: 13px; line-height: 18px; text-wrap: balance; }
   .section-header { margin-bottom: 32px; }
   .section-title,
   .section-title.is-reliability,

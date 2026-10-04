@@ -792,6 +792,14 @@ describe('contrast of the inks the page chooses (home-07, home-44)', () => {
     assert.ok(contrast('#a5b4fc', '#0d0f14') >= 4.5, 'the hero pill ink on its darkened pill')
   })
 
+  test('the avatar initials: white on the brand fill, the dark ink on the green and gold fills (as styled, not only as computed)', () => {
+    const css = parseCss(sfcStyles('components/TestimonialCard.vue'))
+    const env = { width: 1440 }
+    assert.equal(effective(css, ['avatar-circle'], env)['color'], '#fff')
+    assert.equal(effective(css, ['avatar-circle', 'blue'], env)['background'], 'var(--sc-primary)')
+    for (const tone of ['green', 'amber']) assert.equal(effective(css, ['avatar-circle', tone], env)['color'], 'var(--sc-base)', tone)
+  })
+
   test('the CTA band copy is white: Figma\'s #dbe0fa is 3.61:1 on the lightest end of the gradient, white is 4.7:1', () => {
     assert.ok(contrast('#dbe0fa', t('--sc-primary')) < 4.5, 'the reason for the deviation still holds')
     assert.ok(contrast('#ffffff', t('--sc-primary')) >= 4.5)
