@@ -234,7 +234,10 @@ const faqItems = [
           </div>
         </div>
 
-        <p class="hero-trust">Free to start&nbsp;&nbsp;&middot;&nbsp;&nbsp;Works fully offline&nbsp;&nbsp;&middot;&nbsp;&nbsp;Windows, macOS &amp; mobile control</p>
+        <!-- One text node, as Figma draws it. Inside an item every space is a non-breaking one and the two spaces
+             either side of a dot are non-breaking too except the last, which is the place a narrow phone breaks:
+             between items, never inside one ("Free to start · Works fully / offline · ..." is what a plain space did). -->
+        <p class="hero-trust">Free&nbsp;to&nbsp;start&nbsp;&nbsp;&middot;&nbsp; Works&nbsp;fully&nbsp;offline&nbsp;&nbsp;&middot;&nbsp; Windows,&nbsp;macOS&nbsp;&amp;&nbsp;mobile&nbsp;control</p>
 
         <!-- Product Window Mockup -->
         <div class="hero-mockup-frame">
@@ -293,7 +296,8 @@ const faqItems = [
         <div class="outputs-layout">
           <div class="outputs-content">
             <UiBadge variant="eyebrow">SCREENS &amp; OUTPUTS</UiBadge>
-            <h2 class="outputs-title">One live moment, every output</h2>
+            <!-- Figma breaks after "moment," (two lines of 470px); phones let it wrap. -->
+            <h2 class="outputs-title">One live moment, <br />every output</h2>
             <p class="outputs-body">
               Send the same live content to your projector, a stage confidence monitor, and an NDI stream — each with its own theme, orientation, scaling, and visible layers.
             </p>
@@ -880,7 +884,8 @@ const faqItems = [
   .hero-content { gap: 20px; }
   /* The designed line break leaves an orphaned "with" on its own line at phone widths. */
   .hero-title br,
-  .section-title br { display: none; }
+  .section-title br,
+  .outputs-title br { display: none; }
   .hero-subtitle { font-size: 16px; line-height: 26px; }
   .hero-actions { flex-direction: column; align-self: stretch; padding-top: 0; }
   .hero-actions > .ui-button,

@@ -17,8 +17,14 @@ Usage (from implementation/marketing, after `npm run build`):
 HERMETIC. Every request that is not to the loopback server this script starts is aborted, except the two Google
 Fonts hosts that index.html loads Inter from. Inter is allowed on purpose and checked: Figma is drawn in Inter,
 and the heights below (a card, a window, a section) are the heights of text wrapped in Inter, so a run without it
-would measure the fallback face's wrapping and not the design. The run FAILS if Inter did not load, rather than
-passing against the wrong font, and it fails if the page asks any other third party for anything.
+would measure the fallback face's wrapping and not the design.
+
+The check that Inter arrived looks for LOADED FontFace objects (`document.fonts`): one whose family is Inter, with
+status "loaded", for each of the weights 400, 600 and 700 the page draws. It does NOT use `document.fonts.check()`,
+which returns true when the font set has no Inter face at all (the stylesheet never arrived), so it cannot fail;
+review round 2 ran this script with the font hosts blocked and the old check still passed in Chromium. With the
+hosts blocked this check goes red in both engines. The run also fails if the page asks any other third party for
+anything.
 
 Needs Playwright and an engine. If either is missing this exits 0 with a LOUD skip unless
 SELAHCUE_HEADLESS_REQUIRE=1, which makes a missing engine a hard failure so a gate can never silently
@@ -176,6 +182,43 @@ TAB_JS = r"""
 }
 """
 
+# One entry per weight the page draws: is there a LOADED FontFace of family Inter that covers it? (Not
+# `document.fonts.check()`: that is true when no Inter face exists at all.)
+INTER_LOADED_JS = r"""
+() => [400, 600, 700].map((w) => [...document.fonts].some((f) => {
+  if (f.family.replace(/["']/g, '') !== 'Inter' || f.status !== 'loaded') return false;
+  const [lo, hi] = f.weight.split(/\s+/).map(Number);
+  return w >= lo && w <= (hi === undefined ? lo : hi);
+}))
+"""
+
+# The lines a block of text is drawn on, as the browser broke it: one string per line, in order.
+LINES_JS = r"""
+(sel) => {
+  const el = document.querySelector(sel);
+  if (!el) return null;
+  const lines = [];
+  let last = null;
+  let cur = '';
+  const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+  const range = document.createRange();
+  for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+    for (let i = 0; i < n.data.length; i++) {
+      range.setStart(n, i);
+      range.setEnd(n, i + 1);
+      const rects = range.getClientRects();
+      if (!rects.length) { cur += n.data[i]; continue; }
+      const top = Math.round(rects[0].top);
+      if (last !== null && Math.abs(top - last) > 4) { lines.push(cur); cur = ''; }
+      last = top;
+      cur += n.data[i];
+    }
+  }
+  lines.push(cur);
+  return lines.map((l) => l.replace(/\s+/g, ' ').trim()).filter(Boolean);
+}
+"""
+
 TARGET_TOP_JS = r"""
 (id) => { const e = document.getElementById(id); return e ? e.getBoundingClientRect().top : null; }
 """
@@ -195,9 +238,16 @@ BASE_URL = ""
 FONT_HOSTS = ("fonts.googleapis.com", "fonts.gstatic.com")
 
 # For a cold load: make the page's font set report "loading" and settle 250 ms later, so the one-shot anchor
-# correction (lib/reanchor.ts) really runs in the real browser (with a fast local font load it returns
-# "fonts-already-loaded" and never reaches the lookup), and record every scrollTo behaviour so the test can see
-# the correction's `instant` scroll.
+# correction (lib/reanchor.ts) runs in the real browser, and record every scrollTo behaviour so the test can see the
+# correction's `instant` scroll.
+#
+# THIS STUB HIDES SOMETHING REAL (review round 2, Vera N2). On a real cold load the correction does not run: it reads
+# `document.fonts.status` when `router.isReady()` resolves (src/main.ts), about 0.6 to 0.75 s in, and at that moment
+# the status is still "loaded" because the browser has not started fetching Inter yet (it starts at the first layout,
+# about 1.0 to 1.25 s), so `reanchorForBrowser` returns "fonts-already-loaded" and does nothing. That was 24 of 24
+# cold loads in Chromium. The section still lands right (95px at 768 and 1440, 85px at 375) through scroll anchoring
+# and fixed line heights, and the logic is unchanged from the base, so it is a follow-up, listed in the PR under "Not
+# decided here". What this stub proves is only that the correction's LOOKUP is right once it runs.
 COLD_LOAD_STUB = """(() => {
   const ready = new Promise((resolve) => setTimeout(resolve, 250));
   Object.defineProperty(document, 'fonts', { value: { status: 'loading', ready }, configurable: true });
@@ -231,7 +281,7 @@ def run_engine(p, engine_name: str) -> Run:
 
         # ------------------------------------------------------------------ 1440: the designed layout
         m = measure(page, 1440)
-        r.check(page.evaluate("document.fonts.check('600 16px Inter') && document.fonts.check('400 16px Inter')"), "Inter loaded: the heights below are the heights of text in Inter, so a run without it would measure the wrong face")
+        r.eq(page.evaluate(INTER_LOADED_JS), [True, True, True], "Inter 400, 600 and 700 are loaded FontFace objects: the heights below are the heights of text in Inter, so a run without it would measure the wrong face")
         r.check(not m["docOverflowX"], "no horizontal scroll at 1440")
         r.eq(m["styleAttrs"], 0, "no element in main carries a style attribute (a strict style-src would drop it)")
 
@@ -250,6 +300,10 @@ def run_engine(p, engine_name: str) -> Run:
         r.eq(hb.get("Watch 2-min demo", {}).get("h"), 47, "hero Watch 2-min demo is 47px, not stretched to 49 (469:133; PR 172 review)")
         r.eq(hb.get("Watch 2-min demo", {}).get("tag"), "BUTTON", "the demo control is a button")
         r.eq(hb.get("Watch 2-min demo", {}).get("disabled"), True, "the demo button is disabled (nothing to play yet)")
+        # The breaks Figma draws (469:128, 474:127, 475:127), as the browser drew them.
+        r.eq(page.evaluate(LINES_JS, "h1.hero-title"), ["Run your service with", "total confidence."], "the H1 breaks where Figma breaks it (469:128)")
+        r.eq(page.evaluate(LINES_JS, ".section-title.is-reliability"), ["Built for the one moment", "you can't repeat"], "the Reliability title breaks after \"moment\" (474:127)")
+        r.eq(page.evaluate(LINES_JS, ".outputs-title"), ["One live moment,", "every output"], "the Screens & Outputs title breaks after \"moment,\" (475:127)")
         # The demo button's reason is VISIBLE (owner decision 2026-10-04), under the button, without moving anything.
         dn = m["demoNote"]
         r.check(dn is not None, "the demo note exists")
@@ -426,7 +480,7 @@ def run_engine(p, engine_name: str) -> Run:
         r.near(page.evaluate(TARGET_TOP_JS, "how-it-works"), 95, 2, "the navbar's How it works, clicked on /pricing, lands on the section clear of the bar")
 
         # ------------------------------------------------------------------ the other widths
-        for w in (768, 375):
+        for w in (768, 375, 320):
             mm = measure(page, w)
             r.check(not mm["docOverflowX"], f"no horizontal scroll at {w}")
             r.eq(mm["consoleRole"], "img", f"the console mock is still one image at {w}")
@@ -436,6 +490,11 @@ def run_engine(p, engine_name: str) -> Run:
             r.check(dnm is not None and dnm["y"] >= dnm["btn"]["y"] + dnm["btn"]["h"] and dnm["x"] >= 0 and dnm["x"] + dnm["w"] <= mm["vw"] and dnm["y"] + dnm["h"] <= dnm["trust"]["y"], f"the demo note is on screen and clear of the trust line at {w}: {dnm}")
             lv = [h["level"] for h in mm["headings"]]
             r.check(all(b <= a + 1 for a, b in zip(lv, lv[1:])), f"no heading level is skipped at {w}")
+            # The trust line breaks BETWEEN its three items, never inside one ("Free to start · Works fully / offline ...").
+            trust = page.evaluate(LINES_JS, ".hero-trust")
+            items = ["Free to start", "Works fully offline", "Windows, macOS & mobile control"]
+            r.check(trust is not None and all(any(item in line for line in trust) for item in items), f"no item of the hero trust line is split across lines at {w}: {trust}")
+            r.check(page.evaluate("[...document.querySelectorAll('.outputs-title br, .hero-title br, .section-title br')].every((b) => getComputedStyle(b).display === 'none') || innerWidth >= 768"), f"the designed title breaks are off on a phone ({w})")
         r.eq(page_errors, [], "no page error in the whole run")
         r.eq(off_host, [], "the page asked no third party for anything but Inter (hermetic run)")
     finally:

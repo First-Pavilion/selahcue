@@ -293,8 +293,23 @@ describe('the heading outline never skips a level (home-bug-01)', () => {
       return out.replace(/\s+/g, ' ').trim()
     }
     const withBreak = findAll(page, (e) => /^h[1-6]$/.test(e.tag) && findAll(e, (c) => c.tag === 'br').length > 0)
-    assert.ok(withBreak.length >= 2, 'the hero and Reliability titles have a designed break')
+    assert.deepEqual(
+      withBreak.map((h) => textOf(h)),
+      ['Run your service with total confidence.', "Built for the one moment you can't repeat", 'One live moment, every output'],
+      'the hero, Reliability and Screens & Outputs titles have the break Figma draws',
+    )
     for (const h of withBreak) assert.equal(joined(h), textOf(h), `"${textOf(h)}" runs two words together without its <br>`)
+  })
+
+  test('the designed breaks are the frame\'s: the Screens & Outputs title breaks after "moment,", and every designed break is hidden on a phone', () => {
+    const showcase = findAll(page, (e) => hasClass(e, 'outputs-title'))[0] as El
+    const parts = showcase.children.map((c) => (typeof c === 'string' ? c : '<br>'))
+    assert.deepEqual(parts, ['One live moment, ', '<br>', 'every output'])
+    const css = parseCss(sfcStyles('views/HomeView.vue'))
+    for (const selector of ['.hero-title br', '.section-title br', '.outputs-title br']) {
+      assert.equal(effectiveExact(css, selector, { width: 375 })['display'], 'none', `${selector} at 375`)
+      assert.equal(effectiveExact(css, selector, { width: 1440 })['display'], undefined, `${selector} at 1440`)
+    }
   })
 
   test('CONTROL: a skipped level, a second h1 and an outline that starts below h1 are each reported', () => {
@@ -537,10 +552,15 @@ describe('no control on Home is a dead end (home-32, home-18)', () => {
 
 // --------------------------------------------------------------------------- the copy
 
+/** Attributes whose value a screen reader announces, or a visitor reads on hover: they are copy too. */
+const ANNOUNCED_ATTRS = ['aria-label', 'aria-description', 'aria-roledescription', 'title', 'alt', 'placeholder'] as const
+
 /**
- * The text blocks of an element, in order: each element's own text nodes joined, trimmed, whitespace
- * collapsed, empty ones dropped. A heading with a designed <br> is one block ("Run your service with total
- * confidence."), a button is its label, a quote is the quote with its marks.
+ * The blocks of copy of an element, in order: each element's own text nodes joined, trimmed, whitespace
+ * collapsed, empty ones dropped, followed by the value of every attribute that is announced or shown on hover
+ * (`aria-label`, `title`, `alt` and the like; an empty one, like a decorative `alt=""`, is not copy). A heading
+ * with a designed <br> is one block ("Run your service with total confidence."), a button is its label, a quote
+ * is the quote with its marks, a mock's `aria-label` is a block of its own.
  */
 function blocks(root: El): string[] {
   const out: string[] = []
@@ -551,6 +571,10 @@ function blocks(root: El): string[] {
       .replace(/\s+/g, ' ')
       .trim()
     if (own) out.push(own)
+    for (const name of ANNOUNCED_ATTRS) {
+      const value = (e.attrs[name] ?? '').replace(/\s+/g, ' ').trim()
+      if (value) out.push(value)
+    }
   })
   return out
 }
@@ -568,13 +592,13 @@ const LEDGER: Readonly<Record<SectionClass, readonly string[]>> = {
   'hero-section': [
     'Church presentation, reengineered',
     'Run your service with total confidence.',
-    'SelahCue is the offline-first presentation & ministry-assistance app that never blanks the screen — scripture, songs, timers, stage display, and NDI outputs, controlled from anywhere.',
     'Download free',
     'Watch 2-min demo',
     // The reason the demo button is disabled, VISIBLE as the Pro plan's note is (owner decision, 2026-10-04).
     'Demo video not available yet',
     'Free to start · Works fully offline · Windows, macOS & mobile control',
-    // The console mock (Figma 470:124): a drawing of the product, hidden from assistive technology.
+    // The console mock (Figma 470:124): one named image for assistive technology, its drawing hidden from it.
+    'SelahCue operator console showing a Preview and a Live scripture slide',
     'SelahCue — Live Console',
     'LIVE',
     'PREVIEW',
@@ -616,11 +640,11 @@ const LEDGER: Readonly<Record<SectionClass, readonly string[]>> = {
   'outputs-section': [
     'SCREENS & OUTPUTS',
     'One live moment, every output',
-    'Send the same live content to your projector, a stage confidence monitor, and an NDI stream — each with its own theme, orientation, scaling, and visible layers.',
     'Audience projector — the program the room sees',
     'Stage display — current, next & timer, for the speaker only',
     'NDI output — broadcast to OBS, vMix, or another machine',
-    // The output window mock (Figma 475:142).
+    // The output window mock (Figma 475:142): one named image, its drawing hidden from assistive technology.
+    'Screens & Outputs window listing three outputs: the audience projector, the stage display and an NDI stream',
     'Screens & Outputs',
     '+ Add output',
     'Audience — Main',
@@ -636,26 +660,20 @@ const LEDGER: Readonly<Record<SectionClass, readonly string[]>> = {
   'steps-section': [
     'HOW IT WORKS',
     'Live in three steps',
-    'From an empty plan to a running service in minutes — no manual, no setup weekend.',
     '1',
     'Plan your service',
-    'Add songs, scripture, and sections to the order of service. Set countdowns and give any item its own theme.',
     '2',
     'Go live with one tap',
     'Stage the next item in Preview, then Go Live. The audience, stage, and NDI outputs all update together.',
     '3',
-    'Control from anywhere',
     // "No lag" is gone: it was an unmeasured promise (the PRD targets under 200 ms on the LAN, NFR-009).
     'Drive it from the console — or pair your phone over the local network. No internet needed.',
   ],
   'pricing-section': [
     'PRICING',
-    'Simple pricing. Cancel anytime.',
-    "Start free, upgrade when you're ready, and cancel anytime — it still runs fully offline on Sunday.",
     'Free',
     '$0',
     '/ forever',
-    'Everything to run a service on one machine.',
     'Download free',
     'Live audience output + stage display',
     'Bundled public-domain scripture + search',
@@ -666,7 +684,6 @@ const LEDGER: Readonly<Record<SectionClass, readonly string[]>> = {
     'Not available yet',
     'Everything in Free',
     'NDI + multiple simultaneous outputs',
-    'Mobile control over your local network',
     'For multi-site teams and larger ministries.',
     'Talk to us',
     'Not available yet',
@@ -674,7 +691,6 @@ const LEDGER: Readonly<Record<SectionClass, readonly string[]>> = {
   ],
   'testimonials-section': [
     'TESTIMONIALS',
-    'Run by volunteers. Trusted on Sunday.',
   ],
   'faq-section': [
     'Questions, answered',
@@ -687,22 +703,43 @@ const LEDGER: Readonly<Record<SectionClass, readonly string[]>> = {
     'What is NDI, and do I need it?',
     "NDI sends your program video over the local network to software like OBS or vMix — no capture card required. It's optional.",
     'How does billing work?',
-    'SelahCue Pro is a simple monthly subscription; the Free plan is free forever. Cancel anytime — and the app keeps running fully offline during your service either way.',
   ],
   'final-cta-section': [
     'Ready to run your best service yet?',
-    'Start free and go live this Sunday. Cancel anytime — and it runs fully offline when it matters most.',
     'Download free',
     'See pricing',
   ],
 }
 
 /**
- * Claims the live page ALREADY made and no finding replaces. They are allowed here only so that this change
- * adds nothing; removing them is ClickUp 17tnw2b0x3h (claims) and the decisions ticket 17tnw2b2cf3, and when
- * they go this list shrinks. Nothing below is vouched for: each reason says it is unbacked or undecided.
+ * Copy the repo does not (fully) back, allowed here ONLY so that this change adds nothing and removes nothing the
+ * live page already said. NOTHING BELOW IS VOUCHED FOR: each reason says what is unbacked, undecided or thin.
+ * Two groups, both named on ClickUp 17tnw2b0x3h (claims removal, built after the four area PRs, on top of them,
+ * and on the merge gate): claims the live page already made, and Figma lines whose backing is thin. When one is
+ * removed or reworded this list shrinks; the page does not have to keep any of them (the section tests above do
+ * not require them, only the allow-list tolerates them).
  */
 const LIVE_CLAIMS: Readonly<Record<string, string>> = {
+  // --- the live page already said these
+  'Simple pricing. Cancel anytime.': '"Cancel anytime": no billing is built, so there is nothing to cancel (home-33)',
+  "Start free, upgrade when you're ready, and cancel anytime — it still runs fully offline on Sunday.": '"cancel anytime" again (home-33); "fully offline" is NFR-015 for core live functions only',
+  'SelahCue Pro is a simple monthly subscription; the Free plan is free forever. Cancel anytime — and the app keeps running fully offline during your service either way.':
+    '"a simple monthly subscription" (cadence undecided) and "Cancel anytime" (no billing built): home-33',
+  'Start free and go live this Sunday. Cancel anytime — and it runs fully offline when it matters most.':
+    '"go live this Sunday": /download says nothing downloads yet; "Cancel anytime" a fourth time (home-33)',
+  'Mobile control over your local network': 'a Pro bullet: DEC-008 gates seats, outputs, NDI, speech hours and the watermark, not mobile control',
+  'SelahCue is the offline-first presentation & ministry-assistance app that never blanks the screen — scripture, songs, timers, stage display, and NDI outputs, controlled from anywhere.':
+    '"controlled from anywhere": PRD NG-5 says mobile control is LAN-based',
+  'Control from anywhere': 'the step 3 title: the same LAN-only mobile control (PRD NG-5)',
+  'Run by volunteers. Trusted on Sunday.': '"Trusted on Sunday" is a trust claim with no users behind it (home-36)',
+  // --- Figma lines whose backing is thin (QA, review round 2)
+  'Send the same live content to your projector, a stage confidence monitor, and an NDI stream — each with its own theme, orientation, scaling, and visible layers.':
+    '"each with its own theme": per-output theme is FR-038 (priority R2); whether it ships today is Unknown',
+  'Add songs, scripture, and sections to the order of service. Set countdowns and give any item its own theme.':
+    '"give any item its own theme": specified (THEME-MODEL spec), whether it ships today is Unknown',
+  'Everything to run a service on one machine.': 'silent on the Free watermark and the 30 minutes of speech DEC-008 gives Free',
+  'From an empty plan to a running service in minutes — no manual, no setup weekend.': '"in minutes, no manual, no setup weekend": a PRD target (G-4, METRIC-006), not a measured result',
+  // --- the live page already said these (continued)
   $19: 'a price: DEC-008 leaves price points open (home-33)',
   '/ month': 'a billing period with no billing built (home-33)',
   'MOST POPULAR': 'Pro cannot be bought yet (home-33)',
@@ -756,6 +793,40 @@ describe('copy follows the ledger: Figma\'s wording where the repo backs it', ()
     const reworded = parseHtml('<p>Start free and go live this Sunday. Cancel anytime — and it runs fully offline when it matters most!</p>')
     assert.equal(unlistedBlocks(reworded).length, 1)
     assert.deepEqual(unlistedBlocks(parseHtml('<p>Download free</p><p>$19</p>')), [])
+  })
+
+  test('CONTROL: copy that is only announced or shown on hover (aria-label, title, alt, aria-description, placeholder) is read too; an empty alt is not copy', () => {
+    for (const attr of ANNOUNCED_ATTRS) {
+      const planted = parseHtml(`<div ${attr}="Trusted by 5,000 churches"></div>`)
+      assert.deepEqual(unlistedBlocks(planted), ['Trusted by 5,000 churches'], attr)
+    }
+    assert.deepEqual(unlistedBlocks(parseHtml('<img src="/selahcue-logo.png" alt="" aria-hidden="true">')), [])
+    assert.deepEqual(unlistedBlocks(parseHtml('<span role="img" aria-label="SelahCue operator console showing a Preview and a Live scripture slide"></span>')), [])
+  })
+
+  test('the two mock images are named on the ledger, so an announced claim cannot hide in their labels', () => {
+    const labels = findAll(page, (e) => e.attrs['role'] === 'img').map((e) => e.attrs['aria-label'])
+    assert.equal(labels.length, 2)
+    for (const label of labels) assert.ok(Object.values(LEDGER).flat().includes(label as string), `${label} is not on the ledger`)
+  })
+
+  test('the list of claims the page does not back is not the ledger: none of its entries is also on the ledger (the test file does not vouch for them)', () => {
+    const ledger = new Set(Object.values(LEDGER).flat())
+    assert.deepEqual(Object.keys(LIVE_CLAIMS).filter((k) => ledger.has(k)), [])
+    for (const [text, reason] of Object.entries(LIVE_CLAIMS)) assert.ok(reason.length > 10, `no reason for: ${text}`)
+  })
+
+  test('hero trust line: each of the three items is held together (no breakable space inside one), so a narrow phone breaks BETWEEN items, never inside one', () => {
+    const trust = findAll(section(page, 'hero-section'), (e) => hasClass(e, 'hero-trust'))[0] as El
+    assert.ok(trust, 'no .hero-trust')
+    const raw = trust.children.filter((c): c is string => typeof c === 'string').join('')
+    for (const item of ['Free to start', 'Works fully offline', 'Windows, macOS & mobile control']) {
+      const joined = item.replace(/ /g, '\u00a0')
+      assert.ok(raw.includes(joined), `"${item}" can break inside itself: ${JSON.stringify(raw)}`)
+    }
+    // ...and a real space (a place to break) follows each separator.
+    assert.equal((raw.match(/·\u00a0 /g) ?? []).length, 2, 'a breakable space after each dot')
+    assert.equal(raw.replace(/\u00a0/g, ' ').replace(/\s+/g, ' '), 'Free to start · Works fully offline · Windows, macOS & mobile control')
   })
 
   test('showcase (home-24): three single-line checks', () => {
@@ -873,15 +944,97 @@ const HEX_ALLOWED: Readonly<Record<string, string>> = {
  */
 const RGB_ALLOWED: ReadonlySet<string> = new Set(['0, 0, 0', '5, 8, 15'])
 
-function literalColourProblems(css: string): string[] {
-  const clean = css.replace(/\/\*[\s\S]*?\*\//g, '')
-  const hex = new Set([...clean.matchAll(/#[0-9a-fA-F]{3,8}\b/g)].map((m) => m[0].toLowerCase()))
-  const out = [...hex].filter((h) => !(h in HEX_ALLOWED)).map((h) => `literal colour ${h} is not a token or a documented Figma literal`)
-  for (const m of clean.matchAll(/\b(rgba?|hsla?)\(\s*([^)]*)\)/gi)) {
-    const channels = (m[2] ?? '').split(/[,/]/).slice(0, 3).map((c) => c.trim()).join(', ')
-    if (m[1]?.toLowerCase().startsWith('hsl') || !RGB_ALLOWED.has(channels)) out.push(`literal colour ${m[0]} is not a token or a documented literal`)
+/** The CSS named colours (Color Module 4). A name is a literal colour exactly as a hex is. */
+const NAMED_COLOURS: ReadonlySet<string> = new Set(
+  (
+    'aliceblue antiquewhite aqua aquamarine azure beige bisque black blanchedalmond blue blueviolet brown burlywood cadetblue chartreuse chocolate coral cornflowerblue cornsilk crimson cyan darkblue darkcyan darkgoldenrod darkgray darkgreen darkgrey darkkhaki darkmagenta darkolivegreen darkorange darkorchid darkred darksalmon darkseagreen darkslateblue darkslategray darkslategrey darkturquoise darkviolet deeppink deepskyblue dimgray dimgrey dodgerblue firebrick floralwhite forestgreen fuchsia gainsboro ghostwhite gold goldenrod gray green greenyellow grey honeydew hotpink indianred indigo ivory khaki lavender lavenderblush lawngreen lemonchiffon lightblue lightcoral lightcyan lightgoldenrodyellow lightgray lightgreen lightgrey lightpink lightsalmon lightseagreen lightskyblue lightslategray lightslategrey lightsteelblue lightyellow lime limegreen linen magenta maroon mediumaquamarine mediumblue mediumorchid mediumpurple mediumseagreen mediumslateblue mediumspringgreen mediumturquoise mediumvioletred midnightblue mintcream mistyrose moccasin navajowhite navy oldlace olive olivedrab orange orangered orchid palegoldenrod palegreen paleturquoise palevioletred papayawhip peachpuff peru pink plum powderblue purple rebeccapurple red rosybrown royalblue saddlebrown salmon sandybrown seagreen seashell sienna silver skyblue slateblue slategray slategrey snow springgreen steelblue tan teal thistle tomato turquoise violet wheat white whitesmoke yellow yellowgreen'
+  ).split(' '),
+)
+
+/** Properties whose value is (or holds) a colour. */
+const COLOUR_PROPERTY = /^(color|background(-color|-image)?|border(-(top|right|bottom|left|block|inline)(-(start|end))?)?(-color)?|outline(-color)?|box-shadow|text-shadow|fill|stroke|caret-color|accent-color|text-decoration(-color)?|column-rule(-color)?|stop-color)$/
+
+/** The text inside the parentheses that open at `open`, and the index after the closing one. */
+function balanced(text: string, open: number): [string, number] {
+  let depth = 0
+  for (let i = open; i < text.length; i++) {
+    if (text[i] === '(') depth++
+    else if (text[i] === ')' && --depth === 0) return [text.slice(open + 1, i), i + 1]
   }
-  return [...new Set(out)]
+  return [text.slice(open + 1), text.length]
+}
+
+/**
+ * What is wrong with ONE colour-bearing value. The allow-list is the point: `var(--token)`, `color-mix()` made of
+ * tokens, `transparent`, `currentColor`, the documented hexes and the documented `rgba()` channels. Anything else
+ * that is a colour, in any notation (a hex, a name, `rgb()`, `hsl()`, `hwb()`, `lab()`, `lch()`, `oklab()`,
+ * `oklch()`, `color()`, `light-dark()`), is reported, so a notation nobody listed cannot slip in.
+ */
+function valueColourProblems(value: string): string[] {
+  const out: string[] = []
+  let i = 0
+  while (i < value.length) {
+    const rest = value.slice(i)
+    const fn = /^([a-zA-Z-]+)\(/.exec(rest)
+    if (fn) {
+      const name = (fn[1] as string).toLowerCase()
+      const [args, next] = balanced(value, i + (fn[0].length - 1))
+      if (name === 'var') {
+        if (!/^\s*--[\w-]+\s*(,[^]*)?$/.test(args)) out.push(`var(${args}) is not a custom property`)
+        // A fallback after the comma is a colour literal too.
+        const fallback = /,([^]*)$/.exec(args)
+        if (fallback) out.push(...valueColourProblems(fallback[1] as string))
+      } else if (name === 'color-mix' || /gradient$/.test(name)) {
+        out.push(...valueColourProblems(args))
+      } else if (name === 'rgb' || name === 'rgba') {
+        const channels = args.split(/[,/]/).slice(0, 3).map((c) => c.trim()).join(', ')
+        if (!RGB_ALLOWED.has(channels)) out.push(`${name}(${args})`)
+      } else if (['url', 'calc', 'min', 'max', 'clamp', 'translate', 'rotate', 'scale'].includes(name)) {
+        // not a colour
+      } else {
+        out.push(`${name}(${args})`)
+      }
+      i = next
+      continue
+    }
+    const hex = /^#[0-9a-fA-F]{3,8}\b/.exec(rest)
+    if (hex) {
+      if (!(hex[0].toLowerCase() in HEX_ALLOWED)) out.push(hex[0])
+      i += hex[0].length
+      continue
+    }
+    const word = /^[a-zA-Z][a-zA-Z0-9-]*/.exec(rest)
+    if (word) {
+      const w = word[0].toLowerCase()
+      if (NAMED_COLOURS.has(w)) out.push(word[0])
+      i += word[0].length
+      continue
+    }
+    i++
+  }
+  return out
+}
+
+/** Every colour in a stylesheet that is not on the allow-list, one line each. */
+function literalColourProblems(css: string): string[] {
+  const problems: string[] = []
+  for (const rule of parseCss(css)) {
+    for (const [prop, value] of Object.entries(rule.decls)) {
+      if (!COLOUR_PROPERTY.test(prop)) continue
+      for (const bad of valueColourProblems(value)) problems.push(`${prop}: literal colour ${bad} is not a token or a documented literal (in ${rule.selectors[0] ?? '?'})`)
+    }
+  }
+  return [...new Set(problems)]
+}
+
+/** `fill=` and `stroke=` written in a template are colours too: only `none` and `currentColor` are allowed. */
+function attributeColourProblems(template: string): string[] {
+  const out: string[] = []
+  for (const m of template.matchAll(/(?:^|\s):?(fill|stroke|stop-color|flood-color|color)="([^"]*)"/g)) {
+    const values = [...(m[2] as string).matchAll(/'([^']*)'/g)].map((x) => x[1] as string)
+    for (const v of values.length ? values : [m[2] as string]) if (!['none', 'currentColor', 'currentcolor'].includes(v) && !/[?:=.\w]+\./.test(v) && /^[#a-zA-Z]/.test(v) && !/^(icon|props)\./.test(v)) out.push(`${m[1]}="${v}"`)
+  }
+  return out
 }
 
 describe('the six files take their colour, weight and size from tokens (home-06, home-07, home-08)', () => {
@@ -897,14 +1050,49 @@ describe('the six files take their colour, weight and size from tokens (home-06,
     }
   })
 
-  test('CONTROL: the colour check reports a stray hex, a brand colour typed out as rgba and an hsl(), and passes tokens, black alphas, color-mix and the documented hexes', () => {
-    assert.deepEqual(literalColourProblems('.a { color: #8c97a8; } .b { color: #FFF }'), ['literal colour #8c97a8 is not a token or a documented Figma literal'])
-    assert.deepEqual(literalColourProblems('.g { background: radial-gradient(circle, rgba(110, 92, 240, 0.15) 0%, transparent 70%); }'), ['literal colour rgba(110, 92, 240, 0.15) is not a token or a documented literal'])
-    assert.equal(literalColourProblems('.h { color: hsl(250 80% 60%); }').length, 1)
+  test('CONTROL: the colour check reports a literal in ANY notation (hex, name, rgb, hsl, hwb, lab, lch, oklab, oklch, color, light-dark, inside color-mix, in a var fallback) and passes only the allow-list', () => {
+    const bad = (css: string, count = 1): void => assert.equal(literalColourProblems(css).length, count, css)
+    bad('.a { color: #8c97a8; }')
+    bad('.g { background: radial-gradient(circle, rgba(110, 92, 240, 0.15) 0%, transparent 70%); }')
+    bad('.h { color: hsl(250 80% 60%); }')
+    bad('.h { color: hwb(250 10% 10%); }')
+    // three notations, three problems
+    assert.equal(literalColourProblems('.l { color: lab(50% 40 59); } .m { color: lch(50% 40 59); } .n { color: oklab(0.6 0.1 0.1); }').length, 3)
+    bad('.o { color: oklch(0.62 0.19 285); }')
+    bad('.n { background: rebeccapurple; }')
+    bad('.n { border: 1px solid red; }')
+    bad('.n { box-shadow: 0 1px 2px Tomato; }')
+    bad('.m { background: color-mix(in srgb, #123456 10%, red); }', 2)
+    bad('.l { background: light-dark(#fff, #000); }')
+    bad('.c { color: color(display-p3 1 0 0); }')
+    bad('.v { color: var(--x, #123456); }')
+    bad('.v { color: var(--x, tomato); }')
+    bad('.v { color: var(oops); }')
+    assert.match(literalColourProblems('.a { color: #8c97a8; }')[0] as string, /#8c97a8/)
+    // the allow-list
     assert.deepEqual(
-      literalColourProblems('.a { color: var(--sc-text-secondary); background: rgba(0, 0, 0, 0.1); box-shadow: 0 1px rgba(5, 8, 15, .7); border: 1px solid #fff; fill: color-mix(in srgb, var(--sc-primary) 15%, transparent); }'),
+      literalColourProblems(
+        [
+          '.a { color: var(--sc-text-secondary); background: rgba(0, 0, 0, 0.1); box-shadow: 0 1px rgba(5, 8, 15, .7); border: 1px solid #fff; }',
+          '.b { fill: color-mix(in srgb, var(--sc-primary) 15%, transparent); color: currentColor; background: transparent; }',
+          '.c { background: linear-gradient(135deg, var(--sc-primary), transparent); border: 1px solid var(--sc-border); outline: 2px solid var(--sc-primary); }',
+          '.d { color: var(--sc-text, var(--x)); background: url(/a.png) no-repeat center / cover; margin: 0 auto; transform: translateX(-50%); }',
+          '.e { border: none; color: inherit; background: none; fill: none; }',
+        ].join('\n'),
+      ),
       [],
     )
+  })
+
+  test('CONTROL: a literal colour in a template attribute is reported; none and currentColor are not', () => {
+    assert.deepEqual(attributeColourProblems('<svg fill="red" stroke="#123456"></svg>'), ['fill="red"', 'stroke="#123456"'])
+    assert.deepEqual(attributeColourProblems('<svg fill="none" stroke="currentColor"></svg>'), [])
+    assert.deepEqual(attributeColourProblems(`<svg :fill="icon.solid ? 'currentColor' : 'none'" :stroke="icon.solid ? 'none' : 'currentColor'"></svg>`), [])
+    assert.deepEqual(attributeColourProblems(`<svg :fill="icon.solid ? 'tomato' : 'none'"></svg>`), ['fill="tomato"'])
+  })
+
+  test('no template in the files writes a literal colour into fill, stroke or color', () => {
+    for (const f of FILES) assert.deepEqual(attributeColourProblems(parse(read(f)).descriptor.template?.content ?? ''), [], f)
   })
 })
 
