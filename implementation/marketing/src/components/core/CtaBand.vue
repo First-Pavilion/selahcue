@@ -17,7 +17,7 @@ defineProps({
   title: { type: String, default: 'Ready to run your best service yet?' },
   lead: {
     type: String,
-    default: 'Start with the Free plan. SelahCue keeps working offline when it matters most.',
+    default: 'Start with the Free plan. Core live controls keep working with no network.',
   },
 })
 </script>

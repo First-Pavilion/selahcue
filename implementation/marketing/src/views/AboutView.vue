@@ -34,7 +34,7 @@ import CtaBand from '@/components/core/CtaBand.vue'
       <template #eyebrow>
         <UiBadge variant="featured">ABOUT</UiBadge>
       </template>
-      SelahCue started with one conviction: the moment a congregation is worshipping is not the moment your software should fail. So we built a church presentation app that stays up, stays offline, and stays out of the way.
+      SelahCue started with one conviction: the moment a congregation is worshipping is not the moment your software should fail. So we built a church presentation app that stays up, keeps its core controls working with no network, and stays out of the way.
     </PageHero>
 
     <!-- Figma 496:144: pad 40/96/56, gap 56; two 596px columns. -->
@@ -65,8 +65,8 @@ import CtaBand from '@/components/core/CtaBand.vue'
             <span class="value-tile tile-brand" aria-hidden="true">
               <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 9a15 15 0 0 1 19 0M5.5 12.5a10 10 0 0 1 13 0M8.7 16a5 5 0 0 1 6.6 0M12 19.5h.01" /></svg>
             </span>
-            <h3>Offline by default</h3>
-            <p>Your Sunday can't depend on the internet, so SelahCue doesn't either.</p>
+            <h3>Works without a network</h3>
+            <p>Your Sunday can't depend on the internet, so core live controls work without it.</p>
           </div>
           <div class="value-card">
             <span class="value-tile tile-warn" aria-hidden="true">

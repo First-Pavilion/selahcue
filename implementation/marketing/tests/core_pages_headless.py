@@ -171,10 +171,19 @@ def headings_ok(page, name: str) -> None:
     check(f"{name}: the outline never skips a level (pricing-bug-01, download-bug-01)", not jumps, f"{jumps} in {levels}")
 
 
+def hero_lead_ok(page, name: str, figma_height: float) -> None:
+    """The subline's height is its line count: copy that runs a line long moves every section below it."""
+    lead = rect(page, ".hero-lead")
+    check(f"{name}: the hero has a subline", lead is not None, "")
+    if lead:
+        near(f"{name}: the hero subline is {figma_height:g} tall, as many lines as Figma draws", lead["h"], figma_height, 1)
+
+
 def check_pricing(page, base: str, engine: str) -> None:
     print(f"[{engine}] pricing")
     go(page, base, "/pricing")
     headings_ok(page, "pricing")
+    hero_lead_ok(page, "pricing", 54)  # Figma 483:139
 
     # Figma 483:149: three 400px cards 24 apart from x=96; Pro (2px border) is taller, tops aligned.
     cards = rects(page, ".pricing-card")
@@ -232,6 +241,26 @@ def check_pricing(page, base: str, engine: str) -> None:
     s = state()
     check("pricing: Monthly is the drawn state", s["checked"] == ["true", "false"], str(s))
     check("pricing: only the checked radio is in the tab order", s["tab"] == [0, -1], str(s))
+    # A chord is the browser's, not the toggle's (Quinn N1): Alt+Left and Alt+Right are Back and Forward, Cmd+Left and
+    # Cmd+Right the same on a Mac, Ctrl+Home and Ctrl+End jump to the page's ends, Shift+arrow extends a selection.
+    # Each must reach the browser: not default-prevented, and the choice unchanged.
+    page.focus("[role=radio][aria-checked=true]")
+    chords = page.evaluate(
+        """() => {
+          const out = [];
+          const el = document.querySelector('[role=radio][aria-checked=true]');
+          const checked = () => [...document.querySelectorAll('[role=radio]')].map((r) => r.getAttribute('aria-checked')).join();
+          for (const [key, mod] of [['ArrowRight', 'altKey'], ['ArrowLeft', 'altKey'], ['ArrowRight', 'metaKey'], ['ArrowLeft', 'metaKey'],
+                                    ['Home', 'ctrlKey'], ['End', 'ctrlKey'], ['ArrowRight', 'shiftKey'], ['ArrowLeft', 'shiftKey']]) {
+            const ev = new KeyboardEvent('keydown', {key, bubbles: true, cancelable: true, [mod]: true});
+            el.dispatchEvent(ev);
+            out.push({chord: mod + '+' + key, prevented: ev.defaultPrevented, checked: checked()});
+          }
+          return out;
+        }"""
+    )
+    for c in chords:
+        check(f"pricing: {c['chord']} is left to the browser (not prevented, choice unchanged)", (not c["prevented"]) and c["checked"] == "true,false", str(c))
     page.focus("[role=radio][aria-checked=true]")
     page.keyboard.press("ArrowRight")
     ring = page.evaluate("(() => { const cs = getComputedStyle(document.activeElement); return [cs.outlineStyle, cs.outlineWidth]; })()")
@@ -285,6 +314,7 @@ def check_features(page, base: str, engine: str) -> None:
     print(f"[{engine}] features")
     go(page, base, "/features")
     headings_ok(page, "features")
+    hero_lead_ok(page, "features", 90)  # Figma 485:139
     rows = rects(page, ".feature-row")
     check("features: six rows", len(rows) == 6, str(len(rows)))
     for i, r in enumerate(rows):
@@ -346,6 +376,7 @@ def check_download(page, base: str, engine: str) -> None:
     print(f"[{engine}] download")
     go(page, base, "/download")
     headings_ok(page, "download")
+    hero_lead_ok(page, "download", 60)  # Figma 487:139
     cards = rects(page, ".platform-card")
     check("download: two platform cards", len(cards) == 2, str(len(cards)))
     for i, c in enumerate(cards):
@@ -396,6 +427,7 @@ def check_about(page, base: str, engine: str) -> None:
     print(f"[{engine}] about")
     go(page, base, "/about")
     headings_ok(page, "about")
+    hero_lead_ok(page, "about", 90)  # Figma 496:139
     story = rects(page, ".story-layout > *")
     if len(story) == 2:
         near("about: the story's heading column starts at x=96", story[0]["x"], 96)

@@ -5,6 +5,7 @@ import UiBadge from '@/components/UiBadge.vue'
 import FaqAccordion from '@/components/FaqAccordion.vue'
 import PageHero from '@/components/core/PageHero.vue'
 import SegmentedToggle from '@/components/core/SegmentedToggle.vue'
+import SrOnly from '@/components/core/SrOnly.vue'
 
 /*
  * WORDING FOLLOWS THE REPO, NOT THE FIGMA FRAME (owner decision: honest content wins).
@@ -178,7 +179,7 @@ const pricingFaqItems = [
         <!-- The plan names are h3 (PricingCard). This h2 keeps the outline from jumping h1 to h3 (audit
              pricing-bug-01); Figma draws no heading levels. It is inside the container so its hidden box
              sits at the gutter, not at the screen edge. -->
-        <h2 id="plans-heading" class="sr-only">Choose a plan</h2>
+        <SrOnly tag="h2" id="plans-heading">Choose a plan</SrOnly>
         <div class="pricing-grid">
           <PricingCard
             v-for="plan in plans"
@@ -217,13 +218,13 @@ const pricingFaqItems = [
                       <svg class="mark yes" viewBox="0 0 16 12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                         <path d="M2 6.4l3.8 3.8L14 2" />
                       </svg>
-                      <span class="sr-only">Included</span>
+                      <SrOnly>Included</SrOnly>
                     </template>
                     <template v-else-if="cell.kind === 'no'">
                       <svg class="mark no" viewBox="0 0 16 12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true">
                         <path d="M3 6h10" />
                       </svg>
-                      <span class="sr-only">Not included</span>
+                      <SrOnly>Not included</SrOnly>
                     </template>
                     <span v-else class="figure">{{ cell.text }}</span>
                   </td>
@@ -249,18 +250,6 @@ const pricingFaqItems = [
 </template>
 
 <style scoped>
-.sr-only {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  padding: 0;
-  margin: -1px;
-  overflow: hidden;
-  clip: rect(0, 0, 0, 0);
-  white-space: nowrap;
-  border: 0;
-}
-
 /* The toggle frame (Figma 483:144): 10px above the 42px pill. The note under it is positioned out of the
    flow on desktop, in the 48px gap above the cards, so choosing Annual moves nothing. */
 .billing {

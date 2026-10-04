@@ -49,6 +49,7 @@ import {
   outlineProblems,
   parseHtml,
   textOf,
+  walk,
   type HtmlNode,
 } from './fixtures/htmlTree.ts'
 
@@ -175,7 +176,7 @@ const BANNED: readonly Banned[] = [
   { id: 'a guarantee', pattern: /\bguarantee/, because: 'NFR-024 is failure isolation, not a guarantee (review round 1, Cody N19)' },
   { id: 'never blanks (stronger than NFR-024)', pattern: /never[- ]blank|never blanks/, because: 'say it is designed so a fault cannot black out live output (Cody N19)' },
   { id: 'forever or lifetime', pattern: /\bforever\b|lifetime/, because: 'pricing-15: "free forever" is not decided' },
-  { id: 'fully offline', pattern: /fully offline|completely offline|100\s?% offline/, because: 'NFR-015 backs core live functions only; sign-in, activation, hosted speech-to-text and the model download need the network (Shadow F1)' },
+  { id: 'fully offline', pattern: /fully offline|completely offline|100\s?% offline|stays offline|offline by default|offline when it matters|keeps working offline|doesn.t either/, because: 'NFR-015 backs core live functions only; sign-in, activation, hosted speech-to-text and the model download need the network (Shadow F1, Cody N20, Quinn N6)' },
   { id: 'cloud transcription', pattern: /\bcloud\b/, because: 'cloud-stt is RELEASE: UNSAFE and stripped from release builds (Cody N4)' },
   { id: 'jargon the owner did not choose', pattern: /compositor|desktop-authoritative/, because: 'plain English (Cody N19)' },
   { id: 'unlimited outputs', pattern: /unlimited/, because: 'features-10, pricing-16: DEC-008 caps outputs at 2, 5 and 10' },
@@ -317,9 +318,352 @@ describe('no claim the repo does not back is on the page', () => {
     }
   })
 
+  test('CONTROL (review round 2, Cody N20 and Quinn N6): the sibling phrases of "fully offline" are banned too', () => {
+    const must: Array<[string, Page]> = [
+      ['a church presentation app that stays up, stays offline, and stays out of the way', 'about'],
+      ['Offline by default', 'about'],
+      ["so SelahCue doesn't either", 'about'],
+      ['SelahCue keeps working offline when it matters most', 'features'],
+      ['and it runs offline when it matters most', 'about'],
+    ]
+    for (const [text, page] of must) assert.ok(bannedHits(text, page).length > 0, `"${text}" on ${page} should be flagged`)
+    for (const ok of ['Core live controls work offline', 'Core live controls keep working with no network', 'Works without a network']) {
+      assert.deepEqual(bannedHits(ok, 'about'), [], `"${ok}" is the NFR-015-consistent wording`)
+    }
+  })
+
   test('CONTROL: a banned string is only banned on the pages it names', () => {
     assert.deepEqual(bannedHits('4K 60fps', 'pricing'), [])
     assert.equal(bannedHits('4K 60fps', 'features').length, 1)
+  })
+})
+
+// ----------------------------------------------------------------------------------- the copy ledger
+
+/**
+ * Every block of text a page shows (an element's own text), in the order they appear. A deny-list can only catch
+ * what somebody thought to ban: Quinn planted 30 plausible unbacked sentences in an About paragraph and 20 passed
+ * (review round 2, Quinn N4). So the copy is an ALLOW-LIST too.
+ */
+function blocks(root: HtmlNode): string[] {
+  const out: string[] = []
+  walk(root, (n) => {
+    if (n.tag === '#text') return
+    const own = n.children
+      .filter((c) => c.tag === '#text')
+      .map((c) => c.text ?? '')
+      .join(' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+    if (own) out.push(own)
+  })
+  return out
+}
+
+/**
+ * THE COPY LEDGER: every block of text each page may show, in order. Figma's wording where the repo backs it, the
+ * backed part where Figma claims more, and the honest states (the disabled buttons, "To be confirmed"). A sentence
+ * is added here, in review, or it does not ship; a reworded line fails the same way. The goal contract
+ * (docs/delivery/goals/17tnw2b2cey-figma-core-pages.md) says where each wording decision comes from.
+ */
+const LEDGER: Readonly<Record<Page, readonly string[]>> = {
+  pricing: [
+    "PRICING",
+    "Pricing that grows with your church",
+    "Start with the Free plan; Pro and Platinum add outputs, NDI and devices. Prices are not announced yet.",
+    "Monthly",
+    "Annual",
+    "Choose a plan",
+    "Free",
+    "No charge",
+    "For running a service from one device. A SelahCue watermark appears on all output.",
+    "Download free",
+    "1 device",
+    "Up to 2 outputs",
+    "Hosted speech-to-text, monthly allowance",
+    "Pro",
+    "Price TBA",
+    "Price to be announced. For churches that need more outputs and NDI output.",
+    "Get Pro",
+    "Not available yet",
+    "Everything in Free, without the watermark",
+    "3 devices",
+    "Up to 5 outputs",
+    "Up to 5 NDI outputs",
+    "Larger hosted speech-to-text allowance",
+    "Platinum",
+    "Price TBA",
+    "Price to be announced. For larger teams.",
+    "Talk to us",
+    "Not available yet",
+    "Everything in Pro",
+    "7 devices",
+    "Up to 10 outputs",
+    "Up to 10 NDI outputs",
+    "Largest hosted speech-to-text allowance",
+    "Compare every plan",
+    "PLANS",
+    "Free",
+    "Pro",
+    "Platinum",
+    "Live output + stage display",
+    "Included",
+    "Included",
+    "Included",
+    "Bundled scripture + keyword search",
+    "Included",
+    "Included",
+    "Included",
+    "Service plans, timers & themes",
+    "Included",
+    "Included",
+    "Included",
+    "Devices",
+    "1",
+    "3",
+    "7",
+    "Simultaneous outputs",
+    "2",
+    "5",
+    "10",
+    "NDI streaming output",
+    "Not included",
+    "5",
+    "10",
+    "Hosted speech-to-text, monthly allowance",
+    "Included",
+    "Included",
+    "Included",
+    "No watermark on output",
+    "Not included",
+    "Included",
+    "Included",
+    "On-device transcription is not metered. The allowance is for hosted speech-to-text only.",
+    "Pricing FAQ",
+    "Can I switch plans later?",
+    "Do you offer non-profit discounts?",
+    "What payment methods are accepted?",
+  ],
+  features: [
+    "FEATURES",
+    "Everything you need to run a confident service",
+    "From the first slide to the final blessing, SelahCue keeps your scripture, songs, timers, stage display and streaming outputs in one offline-first console — with a phone in your hand as the remote.",
+    "OUTPUTS",
+    "Live presentation & outputs",
+    "Stage everything in Preview, then Go Live with a single tap. Audience projector and stage display run from one deck, with live output built to stay up.",
+    "Preview → Live with one Go Live",
+    "Designed so a fault cannot black out live output",
+    "Audience + stage from one deck",
+    "OUTPUTS",
+    "LIVE",
+    "SCRIPTURE",
+    "Scripture at your fingertips",
+    "A full public-domain translation is bundled in the app. Type a reference or search by keyword — it works with no internet at all.",
+    "Bundled WEB translation, no internet needed",
+    "Reference parsing + keyword search",
+    "Send to Preview, then push Live",
+    "SCRIPTURE",
+    "WEB",
+    "PLANNING",
+    "Service plans & timers",
+    "Order your whole service ahead of time, then run it with countdown and count-up timers so you always land on time.",
+    "Plan the full order of service",
+    "Countdown + count-up timers",
+    "Reorder on the fly, mid-service",
+    "PLANNING",
+    "TIMERS",
+    "STAGE",
+    "Stage & confidence monitor",
+    "Give your platform team a clear current / next / timer view — high-contrast and independent, so a change to the audience screen never disrupts it.",
+    "Current / next / timer for the platform",
+    "High-contrast, glanceable layout",
+    "Independent of audience output",
+    "STAGE",
+    "READY",
+    "STREAMING",
+    "NDI & multi-output",
+    "Send your program over NDI straight into OBS or vMix, and drive more than one output from the same deck.",
+    "Program over NDI to OBS / vMix",
+    "More outputs on higher plans",
+    "NDI output on the Pro and Platinum plans",
+    "STREAMING",
+    "NDI",
+    "ASSIST",
+    "On-device transcript & detection",
+    "An optional live transcript runs on your machine. It assists the operator but never gates your core controls.",
+    "Live transcript, on-device",
+    "Scripture detection that assists the operator",
+    "Assists — never gates — core controls",
+    "ASSIST",
+    "ON-DEVICE",
+    "Ready to run your best service yet?",
+    "Start with the Free plan. Core live controls keep working with no network.",
+    "Download free",
+    "See pricing",
+  ],
+  download: [
+    "DOWNLOAD",
+    "Get SelahCue for your platform",
+    "Desktop installers are not available to download yet. Core live controls work with no network, and mobile control pairs over your local network.",
+    "Free plan · Core live controls work offline",
+    "Windows",
+    "Windows desktop app · 64-bit",
+    "Download for Windows",
+    "Not available to download yet",
+    "macOS",
+    "macOS desktop app",
+    "Download for macOS",
+    "Not available to download yet",
+    "System requirements",
+    "MINIMUM",
+    "requirements",
+    "Processor",
+    "To be confirmed",
+    "Memory",
+    "To be confirmed",
+    "Graphics",
+    "To be confirmed",
+    "Storage",
+    "To be confirmed",
+    "Display",
+    "To be confirmed",
+    "RECOMMENDED",
+    "requirements",
+    "Processor",
+    "To be confirmed",
+    "Memory",
+    "To be confirmed",
+    "Graphics",
+    "To be confirmed",
+    "Storage",
+    "To be confirmed",
+    "Display",
+    "To be confirmed",
+    "MOBILE CONTROL",
+    "Control from your phone",
+    "The SelahCue Controller pairs with your desktop over your local network — scan a QR code and you're connected. It's a companion remote: your desktop always stays the authority, even if the phone drops off Wi-Fi.",
+    "Pairs over your LAN — no internet needed",
+    "iOS and Android apps are not available yet",
+    "Desktop stays authoritative if the phone drops",
+    "App Store",
+    "Coming soon",
+    "Google Play",
+    "Coming soon",
+    "The SelahCue Controller app is not in the App Store or Google Play yet.",
+    "Controller",
+    "CONNECTED",
+    "ON SCREEN NOW",
+    "John 3:16",
+    "Go Live",
+    "Blank",
+    "Next",
+    "Up and running in three steps",
+    "01",
+    "Download & install",
+    "Run the installer for your platform once it is available.",
+    "02",
+    "Build your first plan",
+    "Add scripture, songs and timers to a service plan and pick your outputs.",
+    "03",
+    "Go live & pair your phone",
+    "Hit Go Live, then scan the QR code to pair your phone as a remote.",
+  ],
+  about: [
+    "ABOUT",
+    "Built for the people running the service",
+    "SelahCue started with one conviction: the moment a congregation is worshipping is not the moment your software should fail. So we built a church presentation app that stays up, keeps its core controls working with no network, and stays out of the way.",
+    "Why we built SelahCue",
+    "Too many services are one crashed slide away from a blank screen — and the tools meant to help often assume a fast, always-on internet connection that a lot of churches simply don't have.",
+    "We wanted the opposite: an app that stays in charge on your own computer, is designed so a fault cannot blank live output, runs every core live control with no network, and lets AI assist the operator without gating core controls.",
+    "That's what SelahCue is — presentation, scripture, timers, stage display and streaming outputs in one console, with a phone in your hand as the remote, built to be dependable on the one morning you can't get a second take.",
+    "What we stand for",
+    "Reliability comes first",
+    "Live output is designed to stay up. Every decision serves the one moment you can't repeat.",
+    "Works without a network",
+    "Your Sunday can't depend on the internet, so core live controls work without it.",
+    "AI assists, never gates",
+    "Transcript and detection help the operator but stay out of the core controls.",
+    "Bounded & respectful",
+    "Memory use is designed to stay within fixed limits, so SelahCue stays light.",
+    "Ready to run your best service yet?",
+    "Start with the Free plan. Core live controls keep working with no network.",
+    "Download free",
+    "See pricing",
+  ],
+}
+
+/**
+ * Claims the live page ALREADY made and no finding of this ticket replaces. They are allowed here only so this
+ * change adds nothing; removing them is ClickUp 17tnw2b0x3h (and Uma for the section, pricing-20). Nothing below is
+ * vouched for: each reason says it is unbacked or undecided. When they go, this list shrinks.
+ */
+const LIVE_CLAIMS: Readonly<Record<Page, Readonly<Record<string, string>>>> = {
+  pricing: {
+    'MOST POPULAR': 'a popularity claim with no data; Pro cannot be bought yet. Hard-coded in PricingCard (shared file), so it waits for the shared-components pass (Cody N5)',
+    'Yes, you can upgrade or downgrade your plan at any time. Prorated charges will apply.': 'FAQ answer: no billing exists, so nothing is prorated (pricing-20, 17tnw2b0x3h)',
+    'Our pricing is already optimized for churches and non-profits.': 'FAQ answer: no price or non-profit rule is decided (pricing-20, 17tnw2b0x3h)',
+    'We accept all major credit cards, PayPal, and ACH transfers for annual plans.': 'FAQ answer: payment methods are not decided and no annual plan exists (pricing-20, 17tnw2b0x3h)',
+  },
+  features: {},
+  download: {},
+  about: {},
+}
+
+/** Every block the page shows that is on neither its ledger nor its named list of live claims. */
+function unlistedBlocks(root: HtmlNode, page: Page, ledger: Readonly<Record<Page, readonly string[]>> = LEDGER, claims = LIVE_CLAIMS): string[] {
+  const allowed = new Set([...ledger[page], ...Object.keys(claims[page])])
+  return [...new Set(blocks(root).filter((b) => !allowed.has(b)))]
+}
+
+describe('copy follows the ledger (review round 2, Quinn N4): nothing is on the page that nobody listed', () => {
+  for (const page of Object.keys(VIEWS) as Page[]) {
+    test(`${page}: every ledger line is on the page, in the order the ledger lists it`, () => {
+      const shown = blocks(pages[page])
+      let from = 0
+      for (const line of LEDGER[page]) {
+        const at = shown.indexOf(line, from)
+        assert.ok(at !== -1, `${page} is missing (or has out of order): ${line}`)
+        from = at + 1
+      }
+    })
+
+    test(`${page}: nothing else is on the page: every block of text is on the ledger or on the named live claims`, () => {
+      assert.deepEqual(unlistedBlocks(pages[page], page), [])
+    })
+  }
+
+  test('every named live claim is still on the page (so the list shrinks when a claim is removed)', () => {
+    for (const page of Object.keys(VIEWS) as Page[]) {
+      const shown = new Set(blocks(pages[page]))
+      for (const claim of Object.keys(LIVE_CLAIMS[page])) assert.ok(shown.has(claim), `${page}: the live claim is gone, delete it from LIVE_CLAIMS: ${claim}`)
+    }
+  })
+
+  test('CONTROL: sentences nobody thought to ban are reported on every page, as is a reworded ledger line', () => {
+    // Quinn's plants, review round 2 (20 of 30 passed the deny-list).
+    const plants = [
+      'Available now for Linux',
+      'Download the macOS .dmg today',
+      'Works on any computer',
+      'Rated 4.9 stars',
+      'Instant setup',
+      'Built by pastors',
+      'Never crashes',
+      'Grab the installer for your platform and run it.',
+      'Available',
+      'Trusted by 5,000 churches.',
+    ]
+    for (const page of Object.keys(VIEWS) as Page[]) {
+      for (const plant of plants) {
+        const root = parseHtml(`<div><p>${plant}</p></div>`)
+        assert.deepEqual(unlistedBlocks(root, page), [plant], `"${plant}" should be reported on ${page}`)
+      }
+      const reworded = (LEDGER[page][2] as string).replace(/\.$/, '!')
+      assert.equal(unlistedBlocks(parseHtml(`<p>${reworded}</p>`), page).length, 1, `a reworded ledger line on ${page} should be reported`)
+      assert.deepEqual(unlistedBlocks(parseHtml(`<p>${LEDGER[page][1]}</p>`), page), [], 'a ledger line is not reported')
+    }
+    assert.deepEqual(unlistedBlocks(parseHtml('<p>MOST POPULAR</p>'), 'pricing'), [], 'a named live claim is allowed on its own page')
+    assert.deepEqual(unlistedBlocks(parseHtml('<p>MOST POPULAR</p>'), 'about'), ['MOST POPULAR'], 'a live claim is not allowed on another page')
   })
 })
 
@@ -534,6 +878,18 @@ describe('the segmented toggle keyboard rules', () => {
     assert.equal(nextIndex('ArrowRight', 0, [true, false, false]), 0)
   })
 
+  test('review round 2, Quinn N1: a chord is the browser\'s, not the toggle\'s (Alt, Ctrl, Cmd or Shift held means unhandled)', async () => {
+    const { nextIndex } = await keys()
+    const on = [true, true, true]
+    for (const key of ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End']) {
+      for (const mod of ['alt', 'ctrl', 'meta', 'shift'] as const) {
+        assert.equal(nextIndex(key, 1, on, { [mod]: true }), null, `${mod}+${key} must be left to the browser (Back and Forward, jump to the ends, selection)`)
+      }
+      assert.notEqual(nextIndex(key, 1, on, {}), null, `the bare ${key} is the toggle's`)
+      assert.notEqual(nextIndex(key, 1, on, { alt: false, ctrl: false, meta: false, shift: false }), null, `an event with no modifier held handles ${key}`)
+    }
+  })
+
   test('any other key does nothing', async () => {
     const { nextIndex } = await keys()
     assert.equal(nextIndex('Enter', 0, [true, true]), null)
@@ -713,7 +1069,7 @@ describe('About', () => {
   test('about-03: "What we stand for" has Figma\'s four values in one row', () => {
     const band = byClass(pages.about, 'values-band')[0] as HtmlNode
     assert.equal(textOf(byTag(band, 'h2')[0] as HtmlNode), 'What we stand for')
-    assert.deepEqual(byTag(band, 'h3').map((n) => textOf(n)), ['Reliability comes first', 'Offline by default', 'AI assists, never gates', 'Bounded & respectful'])
+    assert.deepEqual(byTag(band, 'h3').map((n) => textOf(n)), ['Reliability comes first', 'Works without a network', 'AI assists, never gates', 'Bounded & respectful'])
     for (const card of byClass(band, 'value-card')) assert.equal(byTag(card, 'p').length, 1)
   })
 
@@ -804,6 +1160,10 @@ function focusMovementProblems(script: string): string[] {
   }
   walk(handler.body)
   const out: string[] = []
+  const text = handler.body.getText()
+  for (const prop of ['altKey', 'ctrlKey', 'metaKey', 'shiftKey']) {
+    if (!text.includes(prop)) out.push(`onKeydown never reads ${prop}, so a chord with it held is swallowed (Alt+Left is the browser's Back)`)
+  }
   if (emitAt === -1) out.push('onKeydown never emits the new choice')
   if (focusAt === -1) out.push('onKeydown never moves focus to the chosen radio (the keyboard user is stranded on a radio that left the tab order)')
   else if (emitAt !== -1 && focusAt < emitAt) out.push('onKeydown moves focus before it emits the choice')
@@ -838,12 +1198,15 @@ describe('review round 1: guards that only a browser used to give', () => {
     assert.deepEqual(focusMovementProblems(descriptor.scriptSetup?.content ?? ''), [])
   })
 
-  test('CONTROL (N9): the predicate flags a handler with no focus move, focus before emit, and no emit', () => {
-    const wrap = (body: string): string => `function onKeydown(e: KeyboardEvent, at: number) { ${body} }`
+  test('CONTROL (N9 and Quinn N1): the predicate flags a handler with no focus move, focus before emit, no emit, and no modifier reading', () => {
+    const mods = 'const m = [e.altKey, e.ctrlKey, e.metaKey, e.shiftKey];'
+    const wrap = (body: string): string => `function onKeydown(e: KeyboardEvent, at: number) { ${mods} ${body} }`
     assert.equal(focusMovementProblems(wrap("emit('update:modelValue', 'a')")).length, 1)
     assert.equal(focusMovementProblems(wrap("radios?.[to]?.focus(); emit('update:modelValue', 'a')")).length, 1)
     assert.equal(focusMovementProblems(wrap('radios?.[to]?.focus()')).length, 1)
     assert.deepEqual(focusMovementProblems(wrap("emit('update:modelValue', 'a'); radios?.[to]?.focus()")), [])
+    // a handler that never reads the modifier keys swallows Alt+Left
+    assert.equal(focusMovementProblems("function onKeydown(e: KeyboardEvent, at: number) { emit('update:modelValue', 'a'); radios?.[to]?.focus() }").length, 4)
   })
 
   test('Shadow F3: no static style attribute ships in the templates (Vue hoists it into markup a style-src policy would drop)', () => {
@@ -864,6 +1227,19 @@ describe('review round 1: guards that only a browser used to give', () => {
     assert.ok(/(^|[\s<])style="/.test('<span class="brand-mark" style="--mark-size: 16px">'))
     assert.ok(!/(^|[\s<])style="/.test('<section :style="vars">'))
     assert.ok(/:deep\(\s*\.content/.test('.x :deep(.content) { gap: 10px }'))
+  })
+})
+
+describe('review round 2: one visually-hidden rule', () => {
+  test('Cody N22: no view carries its own copy of `.sr-only`; the one rule lives in SrOnly.vue', () => {
+    for (const f of ['views/PricingView.vue', 'views/FeaturesView.vue', 'views/DownloadView.vue', 'views/AboutView.vue']) {
+      assert.ok(!/\.sr-only\s*\{/.test(sfcSource(read(f), f).css), `${f} declares its own .sr-only`)
+    }
+    assert.match(sfcSource(read('components/core/SrOnly.vue'), 'SrOnly.vue').css, /\.sr-only\s*\{[^}]*clip:/)
+  })
+
+  test('CONTROL (N22): the predicate fires on a pasted copy', () => {
+    assert.ok(/\.sr-only\s*\{/.test('.sr-only { position: absolute; }'))
   })
 })
 

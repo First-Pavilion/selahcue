@@ -33,6 +33,8 @@ function onKeydown(event: KeyboardEvent, at: number): void {
     event.key,
     at,
     props.options.map((o) => !o.disabled),
+    // A chord is the browser's (Alt+Left is Back, Cmd+Left too, Ctrl+Home jumps): leave it unhandled.
+    { alt: event.altKey, ctrl: event.ctrlKey, meta: event.metaKey, shift: event.shiftKey },
   )
   if (to === null) return
   event.preventDefault()

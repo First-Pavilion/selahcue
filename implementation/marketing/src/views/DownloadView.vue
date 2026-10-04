@@ -4,6 +4,7 @@ import UiButton from '@/components/UiButton.vue'
 import PageHero from '@/components/core/PageHero.vue'
 import ToneChip from '@/components/core/ToneChip.vue'
 import ControllerMock from '@/components/core/ControllerMock.vue'
+import SrOnly from '@/components/core/SrOnly.vue'
 
 /*
  * Figma 487:124. Layout and styling follow the frame; the wording follows the repo, because the frame's
@@ -107,7 +108,7 @@ import ControllerMock from '@/components/core/ControllerMock.vue'
         <h2>System requirements</h2>
         <div class="req-grid">
           <div class="req-card">
-            <h3 class="req-title"><ToneChip kind="req" tone="muted">MINIMUM</ToneChip><span class="sr-only"> requirements</span></h3>
+            <h3 class="req-title"><ToneChip kind="req" tone="muted">MINIMUM</ToneChip><SrOnly> requirements</SrOnly></h3>
             <dl class="req-rows">
               <div class="req-row"><dt>Processor</dt><dd>To be confirmed</dd></div>
               <div class="req-row"><dt>Memory</dt><dd>To be confirmed</dd></div>
@@ -117,7 +118,7 @@ import ControllerMock from '@/components/core/ControllerMock.vue'
             </dl>
           </div>
           <div class="req-card">
-            <h3 class="req-title"><ToneChip kind="req" tone="ready">RECOMMENDED</ToneChip><span class="sr-only"> requirements</span></h3>
+            <h3 class="req-title"><ToneChip kind="req" tone="ready">RECOMMENDED</ToneChip><SrOnly> requirements</SrOnly></h3>
             <dl class="req-rows">
               <div class="req-row"><dt>Processor</dt><dd>To be confirmed</dd></div>
               <div class="req-row"><dt>Memory</dt><dd>To be confirmed</dd></div>
@@ -146,7 +147,7 @@ import ControllerMock from '@/components/core/ControllerMock.vue'
             </li>
             <li>
               <svg class="tick" viewBox="0 0 16 19" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.3 9.6l3.1 3.2 6.9-7.3" /></svg>
-              <span>iOS and Android apps coming soon</span>
+              <span>iOS and Android apps are not available yet</span>
             </li>
             <li>
               <svg class="tick" viewBox="0 0 16 19" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.3 9.6l3.1 3.2 6.9-7.3" /></svg>
@@ -221,18 +222,6 @@ import ControllerMock from '@/components/core/ControllerMock.vue'
 </template>
 
 <style scoped>
-.sr-only {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  padding: 0;
-  margin: -1px;
-  overflow: hidden;
-  clip: rect(0, 0, 0, 0);
-  white-space: nowrap;
-  border: 0;
-}
-
 .trust-line {
   margin: 0;
   font-size: 14px;
