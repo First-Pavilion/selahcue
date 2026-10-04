@@ -108,3 +108,12 @@ and on the same-hue soft tints; white clears AA on the `primary` button (4.72:1)
 (#6b7383)** is ~4.08:1 on `base` / ~3.78:1 on `surface` — it clears **AA-large (3:1)** but NOT
 AA-normal, so it is **tertiary/label-only** and must not carry essential small body text. This
 is enforced by the audit (`text-muted` gated at 3.0) and flagged in DESIGN-2.0-HANDOFF §6.
+
+**Web exception (marketing site only, ClickUp 17tnw2b2cev).** `implementation/marketing/src/assets/styles/tokens.css`
+sets `--sc-text-muted` to **`#868ea0`** (5.9:1 on `base`, 5.5:1 on `surface`, 5.0:1 on `elevated`), not `#6b7383`.
+On the website the muted ink carries real small text on 35 routes (dates, captions, table headers, form hints, 40+
+consumers), where 3.8:1 fails AA-normal; Figma's own `text/muted` (`#9aa4b2`) maps to `--sc-text-secondary`, so the
+website's quietest tier is lifted instead of the page-by-page copy being re-pointed. The platform token above is
+**unchanged**, and so are the operator console, Rust and Flutter copies. Do not "sync" the website back to
+`#6b7383`: a test (`tests/tokens.test.ts`) fails below 4.5:1 on every surface. Uma to confirm or replace; until then
+this is a recorded web-only deviation, not a platform decision.
