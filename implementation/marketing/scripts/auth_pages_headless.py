@@ -1497,6 +1497,14 @@ DRIVER = r"""
       if (inDanger) return near(w, 10) && near(h, 10);
       return false;
     }), marks.length + ' mark(s): ' + Array.prototype.map.call(marks, function (m) { return box(m).w + 'x' + box(m).h; }).join(','));
+    // ...and the marks that must be drawn ARE: the diamond of an info banner, the cross of a danger banner, and a disc that
+    // carries a cross or an envelope. A mark that falls back to a typeset glyph would pass the size check above by being absent.
+    var drawnBanners = document.querySelectorAll('.au-card .au-banner-info, .au-card .au-banner-danger');
+    check('every info and danger banner draws its mark, and no disc types a cross or an envelope', Array.prototype.every.call(drawnBanners, function (b) {
+      return !!b.querySelector('.au-banner-glyph .au-icon');
+    }) && Array.prototype.every.call(document.querySelectorAll('.au-card .au-disc'), function (d) {
+      return !/[\u2715\u2709]/.test(d.textContent);
+    }), drawnBanners.length + ' banner(s)');
 
     // verify-v2-01: the glyph column of every banner is as wide as Figma draws it (16px, 14px for a tick), and the copy
     // starts 12px after it. The width of the glyph itself is a system font's, so the MINIMUM is what is asserted.
