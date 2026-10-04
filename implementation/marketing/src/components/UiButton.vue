@@ -91,7 +91,15 @@ const element = computed(() => buttonElement(props))
   text-decoration: none;
   cursor: pointer;
   border: 1px solid transparent;
-  transition: all var(--transition-fast);
+  /* NAMED properties, never `all`: `all` also eased the focus outline, so keyboard focus drew a white 3px
+     ring first and settled to the 2px brand ring 150ms later. The ring now appears at once. */
+  transition:
+    background-color var(--transition-fast),
+    border-color var(--transition-fast),
+    color var(--transition-fast),
+    box-shadow var(--transition-fast),
+    transform var(--transition-fast),
+    opacity var(--transition-fast);
   position: relative;
   overflow: hidden;
 }

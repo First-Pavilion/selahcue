@@ -180,6 +180,20 @@ describe('the focus ring survives forced-colors (Windows High Contrast)', () => 
     }
   })
 
+  test('the ring appears AT ONCE: the transition names its properties, so the outline is never animated (transition: all flashed a white 3px ring first)', () => {
+    const transition = effective(rules, ['ui-button'], DESKTOP)['transition'] ?? ''
+    assert.ok(transition !== '', 'the button has no transition rule at all')
+    const properties = transition.split(/,(?![^(]*\))/).map((part) => part.trim().split(/\s+/)[0] ?? '')
+    assert.ok(!properties.includes('all'), `transition: ${transition}`)
+    assert.ok(!properties.some((name) => name.startsWith('outline')), `the outline is transitioned: ${transition}`)
+    for (const wanted of ['background-color', 'box-shadow', 'transform']) assert.ok(properties.includes(wanted), `${wanted} no longer eases: ${transition}`)
+  })
+
+  test('control: `transition: all` would be caught', () => {
+    const tampered = parseCss(styleOf(src).replace(/transition:\s*background-color[^;]*;/, 'transition: all var(--transition-fast);'))
+    assert.match(effective(tampered, ['ui-button'], DESKTOP)['transition'] ?? '', /^all\b/)
+  })
+
   test('on a white or half-white band button the ring is white, so it can be seen on the gradient', () => {
     for (const v of ['inverse', 'inverse-outline']) {
       assert.equal(effective(rules, ['ui-button', `variant-${v}`], DESKTOP, 'focus-visible')['outline-color'], '#fff', v)
