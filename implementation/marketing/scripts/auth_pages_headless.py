@@ -111,7 +111,17 @@ DIST = Path(os.environ.get("SELAHCUE_MARKETING_DIST") or (MARKETING / "dist"))
 # non-vacuity row, one asserting the scenario typed a credential at all, the value-based
 # sweep itself, and the old name-based check kept as a complement. Measured on the tree
 # that ships it, not derived from the arithmetic.
-EXPECTED_MIN_CHECKS = 1751
+#
+# 1751 -> 2505 in the Figma auth ticket (17tnw2b2cf1), measured on the tree that ships it: 60 scenarios and 1751 checks became
+# 67 scenarios and 2505 (2266 at the first head; the review round added three scenarios and the checks below). What was added: computed-style checks, read in real Chrome with running transitions finished
+# first, for the Sign in, Verify and Reset findings (the field label, input well, 7px / 18px rhythm and placeholder on six
+# states; the centring of V1 and V2 and the left alignment of every other state; the R1 focus, Show / Hide and hint; the R2
+# cross, held button and banner; the Forgot link in the label row, its target and the tab order); five checks on EVERY state
+# through `universalChecks` (the primary and the secondary button heights, the 358px column, the size of every drawn mark and the banner glyph column), and SEVEN new scenarios: `reset-both-errors`,
+# `reset-submitting`, `signin-submitting`, `verify-resend-pending`, and (review round 1) `signup-submitting`,
+# `signup-resend-pending` and `forgot-submitting` (the in-flight states, held with `gated()`, which nothing measured before). The enumeration pairs were not touched; the Sign in in-flight checks are their own scenario
+# so that no measurement is added to one half of a pair.
+EXPECTED_MIN_CHECKS = 2505
 
 
 def find_chrome() -> str | None:
@@ -349,6 +359,14 @@ DRIVER = r"""
     },
     // Lands on V3 so the resend form exists, then the driver submits a malformed address.
     'verify-bad-email':    function () { return json({ errors: [{ extensions: { code: 'VALIDATION_FAILED' } }] }); },
+    // The token fails (V3), then the resend is HELD until the scenario releases it.
+    'verify-resend-pending': (function () {
+      var heldResend = gated(function () { return json({ data: { resendVerificationEmail: { accepted: true } } }); });
+      return function (op) {
+        if (op === 'VerifyEmail') return json({ errors: [{ extensions: { code: 'VALIDATION_FAILED' } }] });
+        return heldResend(op);
+      };
+    })(),
     'verify-resend-fails': function (op) {
       if (op === 'VerifyEmail') return json({ errors: [{ extensions: { code: 'VALIDATION_FAILED' } }] });
       // The mutation rejects the address as malformed. Also stands in for any future
@@ -356,6 +374,9 @@ DRIVER = r"""
       // VALIDATION_FAILED, and the page must still refuse to claim an email was sent.
       return json({ errors: [{ extensions: { code: 'VALIDATION_FAILED' } }] });
     },
+    // Held in flight, so the submitting state (R3) actually paints and can be measured.
+    'reset-submitting':    gated(function () { return json({ data: { confirmPasswordReset: { reset: true } } }); }),
+    'reset-both-errors':   function () { return json({ data: { confirmPasswordReset: { reset: true } } }); },
     'reset-success':       function () { return json({ data: { confirmPasswordReset: { reset: true } } }); },
     'reset-invalid':       function () { return json({ errors: [{ extensions: { code: 'VALIDATION_FAILED' } }] }); },
     // FR-551 / DEC-017. `confirm_password_reset` reaches its password check only after the
@@ -376,6 +397,18 @@ DRIVER = r"""
     // actually paints and can be compared. See `gated()` for why these six and not a timer.
     'signin-rejected-unknown':        gated(function () { return UNAUTHENTICATED(); }),
     'signin-rejected-wrong-password': gated(function () { return UNAUTHENTICATED(); }),
+    'signin-submitting':              gated(function () { return UNAUTHENTICATED(); }),
+    // Held in flight so the loading buttons on Sign up and Forgot password paint and can be measured. Their OWN scenarios,
+    // outside every enumeration pair, for the reason `signin-submitting` is.
+    'signup-submitting':              gated(function () { return REGISTERED(); }),
+    'forgot-submitting':              gated(function () { return RESET_REQUESTED(); }),
+    'signup-resend-pending': (function () {
+      var heldResend = gated(function () { return json({ data: { resendVerificationEmail: { accepted: true } } }); });
+      return function (op) {
+        if (op === 'RegisterCustomerUser') return REGISTERED();
+        return heldResend(op);
+      };
+    })(),
     'signin-unverified':   function () { return json({ errors: [{ extensions: { code: 'POLICY_DENIED' } }] }); },
     'signin-resend':       function (op) {
       if (op === 'Login') return json({ errors: [{ extensions: { code: 'POLICY_DENIED' } }] });
@@ -1238,9 +1271,299 @@ DRIVER = r"""
           card ? 'card ' + card.getBoundingClientRect().width + ' vs viewport ' +
                  window.innerWidth
                : 'no .au-card rendered');
+
+    // Figma fidelity (17tnw2b2cf1): the button heights and the 358px column are the same on every auth card.
+    buttonAndColumnChecks();
   }
 
   function has(text, needle) { return text.indexOf(needle) !== -1; }
+
+  // ---------------------------------------------------- Figma fidelity (ClickUp 17tnw2b2cf1) --
+  /*
+   * COMPUTED values, read from the cascade the visitor gets, in real Chrome.
+   *
+   * `tests/authFidelity.test.ts` names the rule and the value; this is the half that proves the
+   * rule APPLIES. It has to be a browser: `FormField` styles itself with SCOPED rules and the auth
+   * card overrides them from a global stylesheet, so a rule that reads correctly in the source can
+   * still lose on specificity and leave the old look on screen. Nothing below is a source match.
+   *
+   * Geometry that depends on a font's metrics (the height of a wrapped title, a card) is NOT
+   * asserted here: this driver runs with whatever font the machine has, and the marketing harness
+   * (which refuses a capture without Inter) is where card heights are measured. What is asserted
+   * is what does not depend on the glyphs: a box height, a gap, a colour, an alignment, a state.
+   */
+  /**
+   * Finish every running CSS TRANSITION, so a read returns the value the cascade ARRIVES at, not a frame on the way.
+   *
+   * The button, the fields and the focus stroke all transition opacity, colour and shadow over 150ms, and this driver
+   * runs under `--virtual-time-budget`, which fast-forwards TIMERS but not the animation clock: a read taken after a
+   * 400ms `wait()` still saw `opacity: 1` on a button whose rule says 0.5, and, worse, saw the label of a button whose
+   * rule says 0 as fully visible. The first version of these checks passed a mutant that hid the label again (found
+   * by planting it), and failed correct code depending on how loaded the machine was. Only CSSTransition is finished;
+   * the infinite CSSAnimations (the progress bar, the spinner) are left running.
+   */
+  function settleTransitions() {
+    var running = document.getAnimations ? document.getAnimations() : [];
+    for (var i = 0; i < running.length; i += 1) {
+      if (typeof CSSTransition !== 'undefined' && running[i] instanceof CSSTransition) {
+        try { running[i].finish(); } catch (e) { /* already finished */ }
+      }
+    }
+  }
+
+  function css(el, prop, pseudo) {
+    settleTransitions();
+    return getComputedStyle(el, pseudo || null)[prop];
+  }
+
+  function rgbaOf(value) {
+    var m = /rgba?\(([^)]+)\)/.exec(String(value));
+    if (!m) return null;
+    var p = m[1].split(/[\s,\/]+/).filter(Boolean).map(parseFloat);
+    return { r: p[0], g: p[1], b: p[2], a: p.length > 3 ? p[3] : 1 };
+  }
+
+  function luminanceOf(c) {
+    function chan(v) { v = v / 255; return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); }
+    return 0.2126 * chan(c.r) + 0.7152 * chan(c.g) + 0.0722 * chan(c.b);
+  }
+
+  function contrastOf(a, b) {
+    var hi = Math.max(luminanceOf(a), luminanceOf(b));
+    var lo = Math.min(luminanceOf(a), luminanceOf(b));
+    return (hi + 0.05) / (lo + 0.05);
+  }
+
+  /** The colour behind an element: its ancestors' backgrounds composited, nearest first, over --sc-base. */
+  function backdropOf(el) {
+    var layers = [];
+    for (var node = el; node && node.nodeType === 1; node = node.parentElement) {
+      var c = rgbaOf(css(node, 'backgroundColor'));
+      if (c && c.a > 0) { layers.push(c); if (c.a >= 1) break; }
+    }
+    var out = { r: 11, g: 13, b: 18, a: 1 };
+    if (layers.length && layers[layers.length - 1].a >= 1) out = layers.pop();
+    while (layers.length) {
+      var top = layers.pop();
+      out = { r: top.r * top.a + out.r * (1 - top.a), g: top.g * top.a + out.g * (1 - top.a),
+              b: top.b * top.a + out.b * (1 - top.a), a: 1 };
+    }
+    return out;
+  }
+
+  /** Contrast of an element's (or its pseudo-element's) ink against what is behind `ground`. */
+  function inkContrast(el, pseudo, ground) {
+    var fg = rgbaOf(css(el, 'color', pseudo));
+    var bg = backdropOf(ground || el);
+    return contrastOf({ r: fg.r * fg.a + bg.r * (1 - fg.a), g: fg.g * fg.a + bg.g * (1 - fg.a),
+                        b: fg.b * fg.a + bg.b * (1 - fg.a) }, bg);
+  }
+
+  /** Opacity composes DOWN the tree: a .5 on a field and a .5 on its input is a quarter, not a half. */
+  function effectiveOpacity(el) {
+    var o = 1;
+    for (var node = el; node && node.nodeType === 1; node = node.parentElement) o *= parseFloat(css(node, 'opacity'));
+    return Math.round(o * 1000) / 1000;
+  }
+
+  function box(el) {
+    var r = el.getBoundingClientRect();
+    return { l: r.left, t: r.top, w: r.width, h: r.height, r: r.right, b: r.bottom, cx: r.left + r.width / 2, cy: r.top + r.height / 2 };
+  }
+
+  function near(a, b, tolerance) { return Math.abs(a - b) <= (tolerance === undefined ? 0.6 : tolerance); }
+
+  function squash(text) { return String(text).replace(/\s+/g, ' ').trim(); }
+
+  /** The name a screen reader would give a control: aria-label, else its label, else its text. */
+  function accessibleName(el) {
+    if (el.getAttribute('aria-label')) return el.getAttribute('aria-label');
+    if (el.labels && el.labels.length) return squash(el.labels[0].textContent);
+    return squash(el.textContent);
+  }
+
+  /** Everything Tab can land on inside `root`, in DOM order, by accessible name. No positive tabindex is allowed. */
+  function tabOrder(root) {
+    var all = root.querySelectorAll('a[href], button, input, select, textarea, [tabindex]');
+    return Array.prototype.filter.call(all, function (el) { return !el.matches(':disabled') && el.tabIndex >= 0; })
+      .map(accessibleName);
+  }
+
+  var SECONDARY_INK = 'rgb(167, 174, 190)';  // --sc-text-secondary
+  var INSET_FILL = 'rgb(15, 17, 22)';        // --sc-inset
+  var HAIRLINE = 'rgb(38, 42, 52)';          // --sc-border
+  var BRAND = 'rgb(110, 92, 240)';           // --sc-primary
+  var LIVE = 'rgb(255, 77, 77)';             // --sc-live
+
+  /**
+   * The field styling every auth form shares (signin-06, -07, -08, -09, reset-r1-03): label, input well, the
+   * 7px and 18px rhythm, placeholder ink. `tag` names the state in the message.
+   */
+  function fieldFidelityChecks(tag) {
+    var labels = document.querySelectorAll('.au-card form .field-label');
+    var inputs = document.querySelectorAll('.au-card form .field-input');
+    var fields = document.querySelectorAll('.au-card form .form-field');
+    check(tag + ': the form has fields to measure', labels.length > 0 && labels.length === inputs.length,
+          'labels=' + labels.length + ' inputs=' + inputs.length);
+    var first = labels[0], input = inputs[0];
+    if (!first || !input) return;
+    check(tag + ': every label is 13px / 500', Array.prototype.every.call(labels, function (l) {
+      return css(l, 'fontSize') === '13px' && css(l, 'fontWeight') === '500'; }),
+      'first label: ' + css(first, 'fontSize') + ' / ' + css(first, 'fontWeight'));
+    check(tag + ': every label is the secondary ink, not the primary ink', Array.prototype.every.call(labels, function (l) {
+      return css(l, 'color') === SECONDARY_INK; }), 'first label colour: ' + css(first, 'color'));
+    check(tag + ': every input is 44px tall', Array.prototype.every.call(inputs, function (i) {
+      return near(box(i).h, 44); }), 'first input height: ' + box(input).h);
+    check(tag + ': every input sits on the inset well, not the elevated chip', Array.prototype.every.call(inputs, function (i) {
+      return css(i, 'backgroundColor') === INSET_FILL; }), 'first input fill: ' + css(input, 'backgroundColor'));
+    check(tag + ': the text starts 14px in (1px border + 13px padding), as Figma draws it',
+          near(parseFloat(css(input, 'paddingLeft')) + parseFloat(css(input, 'borderLeftWidth')), 14),
+          'padding ' + css(input, 'paddingLeft') + ' border ' + css(input, 'borderLeftWidth'));
+    check(tag + ': a label sits 7px above its input', near(box(input).t - box(first).b, 7),
+          'gap: ' + (box(input).t - box(first).b));
+    if (fields.length > 1) {
+      check(tag + ': fields are 18px apart', near(box(fields[1]).t - box(fields[0]).b, 18),
+            'gap: ' + (box(fields[1]).t - box(fields[0]).b));
+    }
+    // A field with no hint or error is label 16 + 7 + input 44 = 67px: the label row is 16px even when "Forgot?" shares it
+    // (the link's wrapper used to inherit the page's 24px line, which made the Sign in Password field 75px; review of PR 179, Quinn Q2).
+    var plain = Array.prototype.filter.call(fields, function (f) { return !f.querySelector('.field-error, .field-hint'); });
+    check(tag + ': a field with no hint or error is 67px tall', plain.length > 0 && plain.every(function (f) { return near(box(f).h, 67); }),
+          plain.map(function (f) { return box(f).h; }).join(','));
+    var quiet = Array.prototype.filter.call(document.querySelectorAll('.au-card form .field-meta'), function (m) {
+      return m.children.length === 0; });
+    check(tag + ': a field with no hint or error reserves no meta row',
+          quiet.every(function (m) { return css(m, 'display') === 'none'; }),
+          quiet.length + ' empty meta row(s) still take space');
+    var withPlaceholder = Array.prototype.filter.call(inputs, function (i) { return i.getAttribute('placeholder'); })[0];
+    if (withPlaceholder) {
+      check(tag + ': the placeholder is the secondary ink, 4.5:1 or better on the well',
+            css(withPlaceholder, 'color', '::placeholder') === SECONDARY_INK &&
+            inkContrast(withPlaceholder, '::placeholder', withPlaceholder) >= 4.5,
+            'placeholder ' + css(withPlaceholder, 'color', '::placeholder') + ' = ' +
+            inkContrast(withPlaceholder, '::placeholder', withPlaceholder).toFixed(2) + ':1');
+    }
+  }
+
+  /**
+   * The disc, title and body are centred in V1 and V2 and in no other state (verify-v1-01). `hasDisc` is
+   * declared by the scenario, so a state that loses its disc fails instead of skipping the check.
+   */
+  function alignmentChecks(tag, centred, hasDisc) {
+    var card = document.querySelector('.au-card');
+    var h1 = card && card.querySelector('h1');
+    var body = card && card.querySelector('.au-body');
+    var disc = card && card.querySelector('.au-disc');
+    check(tag + ': the title and body are present to measure', !!h1 && !!body);
+    if (!card || !h1 || !body) return;
+    var want = centred ? 'center' : 'left';
+    var align = function (el) { var a = css(el, 'textAlign'); return a === 'start' ? 'left' : a; };
+    check(tag + ': the title is ' + want + '-aligned', align(h1) === want, 'text-align: ' + css(h1, 'textAlign'));
+    check(tag + ': the body is ' + want + '-aligned', align(body) === want, 'text-align: ' + css(body, 'textAlign'));
+    check(tag + ': ' + (hasDisc ? 'there is a disc' : 'there is no disc'), (!!disc) === hasDisc);
+    if (disc) {
+      var c = box(card), d = box(disc);
+      var contentLeft = c.l + parseFloat(css(card, 'borderLeftWidth')) + parseFloat(css(card, 'paddingLeft'));
+      check(tag + ': the disc is ' + (centred ? 'centred in the card' : 'at the left of the content column'),
+            centred ? near(d.cx, c.cx, 1) : near(d.l, contentLeft, 1),
+            'disc x ' + d.l + '..' + d.r + ', card ' + c.l + '..' + c.r);
+    }
+  }
+
+  /** Buttons: 47px primary at weight 600, 44px secondary with a 1px hairline, the content column 358px (signin-10, -11). */
+  function buttonAndColumnChecks() {
+    var card = document.querySelector('.au-card');
+    var primary = document.querySelectorAll('.au-card .au-btn-primary');
+    var secondary = document.querySelectorAll('.au-card .au-btn-secondary');
+    check('every primary button is 47px tall at weight 600',
+          Array.prototype.every.call(primary, function (b) {
+            return near(box(b).h, 47) && css(b, 'fontWeight') === '600'; }),
+          primary.length + ' primary button(s); first: ' + (primary[0] ? box(primary[0]).h + 'px / ' + css(primary[0], 'fontWeight') : 'none'));
+    check('every secondary button is 44px tall with a 1px hairline',
+          Array.prototype.every.call(secondary, function (b) {
+            return near(box(b).h, 44) && css(b, 'borderTopWidth') === '1px' && css(b, 'borderTopColor') === HAIRLINE; }),
+          secondary.length + ' secondary button(s); first: ' + (secondary[0] ? box(secondary[0]).h + 'px / ' + css(secondary[0], 'borderTopWidth') + ' ' + css(secondary[0], 'borderTopColor') : 'none'));
+    var content = card ? card.clientWidth - parseFloat(css(card, 'paddingLeft')) - parseFloat(css(card, 'paddingRight')) : -1;
+    check('the card content column is 358px wide', near(content, 358), 'content width: ' + content);
+
+    // Every drawn mark has the size the component gives it, in whatever engine this runs in (review of PR 179, Cody 3 / Quinn Q4):
+    // the cross is 16px, the envelope 22px, the info diamond 14px, the danger-banner cross 10px.
+    var marks = document.querySelectorAll('.au-card .au-icon');
+    check('every drawn mark is the size it is drawn at', Array.prototype.every.call(marks, function (m) {
+      var inDisc = !!m.closest('.au-disc'), inInfo = !!m.closest('.au-banner-info'), inDanger = !!m.closest('.au-banner-danger');
+      var w = box(m).w, h = box(m).h;
+      if (inDisc) return (near(w, 16) && near(h, 16)) || (near(w, 22) && near(h, 16));
+      if (inInfo) return near(w, 14) && near(h, 14);
+      if (inDanger) return near(w, 10) && near(h, 10);
+      return false;
+    }), marks.length + ' mark(s): ' + Array.prototype.map.call(marks, function (m) { return box(m).w + 'x' + box(m).h; }).join(','));
+    // ...and the marks that must be drawn ARE: the diamond of an info banner, the cross of a danger banner, and a disc that
+    // carries a cross or an envelope. A mark that falls back to a typeset glyph would pass the size check above by being absent.
+    var drawnBanners = document.querySelectorAll('.au-card .au-banner-info, .au-card .au-banner-danger');
+    check('every info and danger banner draws its mark, and no disc types a cross or an envelope', Array.prototype.every.call(drawnBanners, function (b) {
+      return !!b.querySelector('.au-banner-glyph .au-icon');
+    }) && Array.prototype.every.call(document.querySelectorAll('.au-card .au-disc'), function (d) {
+      return !/[\u2715\u2709]/.test(d.textContent);
+    }), drawnBanners.length + ' banner(s)');
+
+    // verify-v2-01: the glyph column of every banner is as wide as Figma draws it (16px, 14px for a tick), and the copy
+    // starts 12px after it. The width of the glyph itself is a system font's, so the MINIMUM is what is asserted.
+    var banners = document.querySelectorAll('.au-card .au-banner');
+    check('every banner keeps its glyph column and its 12px gap to the copy', Array.prototype.every.call(banners, function (b) {
+      var glyph = b.querySelector('.au-banner-glyph');
+      var copy = b.querySelector('.au-banner-title');
+      var want = /au-banner-success/.test(b.className) ? 14 : (/au-banner-warning/.test(b.className) ? 0 : 16);
+      return !!glyph && !!copy && box(glyph).w >= want - 0.5 && near(box(copy).l - box(glyph).r, 12);
+    }), banners.length + ' banner(s)');
+  }
+
+  /** The loading button keeps its label (reset-r3-01): the glyph and the words, at 50%, with the generic spinner hidden. */
+  function loadingButtonChecks(tag, words) {
+    var btn = document.querySelector('.au-card .au-btn.is-loading');
+    check(tag + ': a button is loading', !!btn);
+    if (!btn) return;
+    var label = btn.querySelector('.content');
+    var glyph = btn.querySelector('.au-spinner');
+    check(tag + ': the label is on screen at full strength, not hidden behind a spinner',
+          !!label && squash(label.textContent).indexOf(words) !== -1 && css(label, 'opacity') === '1',
+          'label: "' + (label ? squash(label.textContent) : '') + '" opacity ' + (label ? css(label, 'opacity') : '?'));
+    check(tag + ': it carries the ↻ glyph, hidden from assistive technology',
+          !!glyph && squash(glyph.textContent) === '↻' && glyph.getAttribute('aria-hidden') === 'true');
+    check(tag + ': the generic spinner is not drawn',
+          !btn.querySelector('.spinner') || css(btn.querySelector('.spinner'), 'display') === 'none');
+    check(tag + ': the button is at 50%', css(btn, 'opacity') === '0.5', 'opacity: ' + css(btn, 'opacity'));
+  }
+
+  /**
+   * Fields are dimmed ONCE, labels stay at full strength and, where there are reveal toggles, they cannot be reached
+   * (reset-r3-02). `expectToggles` is declared by the scenario, so a form that loses its toggles fails, and so is
+   * `tabbable`: what Tab may still reach inside the form while the request is out (on Sign in that is the "Forgot?"
+   * link, which leaves the page and is not a field; on Reset it is nothing).
+   */
+  function submittingFieldChecks(tag, expectToggles, tabbable) {
+    var inputs = document.querySelectorAll('.au-card form .field-input');
+    var labels = document.querySelectorAll('.au-card form .field-label');
+    var toggles = document.querySelectorAll('.au-card form .password-toggle');
+    check(tag + ': every input is at 50% in total, not 25%', inputs.length > 0 &&
+          Array.prototype.every.call(inputs, function (i) { return effectiveOpacity(i) === 0.5; }),
+          'effective opacities: ' + Array.prototype.map.call(inputs, effectiveOpacity).join(','));
+    check(tag + ': the Show / Hide buttons are dimmed with their inputs, to 50%', expectToggles
+            ? toggles.length > 0 && Array.prototype.every.call(toggles, function (t) { return effectiveOpacity(t) === 0.5; })
+            : toggles.length === 0,
+          'effective opacities: ' + Array.prototype.map.call(toggles, effectiveOpacity).join(','));
+    check(tag + ': labels stay at full strength', labels.length > 0 &&
+          Array.prototype.every.call(labels, function (l) { return effectiveOpacity(l) === 1; }),
+          'effective opacities: ' + Array.prototype.map.call(labels, effectiveOpacity).join(','));
+    check(tag + ': the reveal toggles are ' + (expectToggles ? 'present and disabled, so Tab skips them' : 'absent, as declared'),
+          expectToggles
+            ? toggles.length > 0 && Array.prototype.every.call(toggles, function (t) { return t.matches(':disabled'); })
+            : toggles.length === 0,
+          toggles.length + ' toggle(s)');
+    check(tag + ': Tab reaches no field control while the request is out' + (tabbable ? ' (only: ' + tabbable + ')' : ''),
+          tabOrder(document.querySelector('.au-card form')).join('|') === (tabbable || ''),
+          'tab order: ' + tabOrder(document.querySelector('.au-card form')).join('|'));
+  }
+
 
   /**
    * The password typed by BOTH halves of the sign-in enumeration pair.
@@ -1265,6 +1588,12 @@ DRIVER = r"""
       var live = document.querySelector('[role="status"][aria-live="polite"]');
       check('V1 announces politely', live !== null);
       check('V1 shows a progress track', document.querySelector('.au-progress-fill') !== null);
+      // verify-v1-02: a live region announces TEXT. One that holds only a bar says nothing.
+      check('V1 live region holds the words it announces',
+            !!live && squash(live.textContent).indexOf('Verifying your email address') !== -1,
+            'live region text: "' + (live ? squash(live.textContent) : '') + '"');
+      // verify-v1-01: V1 and V2 are the only centred states.
+      alignmentChecks('V1', true, true);
       check('V1 footer offers sign in', has(pageText(), 'Taking too long?'));
       check('V1 dispatched exactly one mutation', calls.length === 1, 'calls=' + calls.length);
       check('V1 called verifyEmail', calls.length > 0 && calls[0].op === 'VerifyEmail');
@@ -1287,6 +1616,11 @@ DRIVER = r"""
       check('V2 banner explains offline presentation', has(text, 'Live presentation works offline'));
       check('V2 success disc', document.querySelector('.au-disc-success') !== null);
       check('V2 focus moved to the heading', document.activeElement === document.querySelector('h1'));
+      alignmentChecks('V2', true, true);
+      var v2banner = document.querySelector('.au-card .au-banner');
+      check('V2 banner copy stays left-aligned beside the centred card',
+            !!v2banner && ['left', 'start'].indexOf(css(v2banner, 'textAlign')) !== -1,
+            'banner text-align: ' + (v2banner ? css(v2banner, 'textAlign') : 'no banner'));
       universalChecks();
     },
 
@@ -1307,6 +1641,8 @@ DRIVER = r"""
       check('V3 resend CTA', has(text, 'Send a new verification link'));
       check('V3 already-verified banner', has(text, 'Already verified? Just sign in'));
       check('V3 danger disc', document.querySelector('.au-disc-danger') !== null);
+      alignmentChecks('V3', false, true);
+      fieldFidelityChecks('V3');
       universalChecks();
     },
 
@@ -1322,6 +1658,8 @@ DRIVER = r"""
             document.querySelector('.au-disc-neutral') !== null &&
             document.querySelector('.au-disc-danger') === null);
       check('V6 made no API call at all', calls.length === 0, 'calls=' + calls.length);
+      alignmentChecks('V6', false, true);
+      fieldFidelityChecks('V6');
       universalChecks();
     },
 
@@ -1334,6 +1672,7 @@ DRIVER = r"""
       check('transport failure names the connection', has(text, "couldn't reach SelahCue"));
       check('transport failure reassures the link survives', has(text, 'Your link still works'));
       check('transport failure offers a retry', has(text, 'Try again'));
+      alignmentChecks('V-unreachable', false, true);
       universalChecks();
     },
 
@@ -1351,6 +1690,21 @@ DRIVER = r"""
             has(text, 'If pastor@yourchurch.org has a SelahCue account'));
       check('V5 states the 24 hour TTL', has(text, 'expires in 24 hours'));
       check('V5 explains only the newest link works', has(text, 'Only the newest link works'));
+      alignmentChecks('V5', false, true);
+      // verify-v5-01: the helper note is 12.5px on a 17px line in the secondary ink, 4.5:1 or better.
+      var v5note = document.querySelector('.au-card .au-note');
+      check('V5 note is 12.5px / 17px in the secondary ink, 4.5:1 or better',
+            !!v5note && css(v5note, 'fontSize') === '12.5px' && css(v5note, 'lineHeight') === '17px' &&
+            css(v5note, 'color') === SECONDARY_INK && inkContrast(v5note) >= 4.5,
+            v5note ? css(v5note, 'fontSize') + ' / ' + css(v5note, 'lineHeight') + ' ' + css(v5note, 'color') +
+                     ' = ' + inkContrast(v5note).toFixed(2) + ':1' : 'no note');
+      // verify-v5-02: the envelope is DRAWN (an SVG), 22px wide as Figma sets it, so its width no longer depends on which
+      // symbol font the visitor's browser falls back to (it was 13.2px here, and a colour emoji on some platforms).
+      var v5disc = document.querySelector('.au-card .au-disc');
+      var v5mark = v5disc && v5disc.querySelector('svg');
+      check('V5 envelope is a 22px-wide drawn mark with no text glyph', !!v5mark && near(box(v5mark).w, 22) &&
+            squash(v5disc.textContent) === '',
+            'svg ' + (v5mark ? box(v5mark).w + 'x' + box(v5mark).h : 'none') + ', disc text ' + (v5disc ? JSON.stringify(v5disc.textContent) : 'no disc'));
       var resendCall = calls.filter(function (c) { return c.op === 'ResendVerification'; })[0];
       check('resend dispatched a mutation', !!resendCall);
       // Pinned against account_schema.py:180. The field is `resendVerificationEmail`, NOT
@@ -1423,6 +1777,26 @@ DRIVER = r"""
       universalChecks();
     },
 
+    /*
+     * The resend button in flight (reset-r3-01 applied to the resend buttons): the reply is held, so the pending
+     * state paints. The label does not change here, so what is asserted is that it stays on screen at full
+     * strength with the glyph in front of it, and that the one field dims once.
+     */
+    'verify-resend-pending': async function () {
+      await wait(600);
+      check('typed an email', type('input[type="email"]', 'pastor@yourchurch.org'));
+      await wait(50);
+      check('submitted the resend form', submit());
+      var deadline = Date.now() + 3000;
+      while (!document.querySelector('.au-card .au-btn.is-loading') && Date.now() < deadline) await wait(20);
+      await wait(120);
+      loadingButtonChecks('V3 resend in flight', 'Send a new verification link');
+      submittingFieldChecks('V3 resend in flight', false, '');
+      releaseGate();
+      check('the resend settled', await settle('Check your inbox'));
+      universalChecks();
+    },
+
     // ------------------------------------------------------------------------ reset --
     'reset-form': async function () {
       await wait(500);
@@ -1442,6 +1816,54 @@ DRIVER = r"""
       var toggle = document.querySelector('.password-toggle');
       check('password Show toggle exposes pressed state', toggle.getAttribute('aria-pressed') === 'false');
       check('password Show toggle has an accessible name', !!toggle.getAttribute('aria-label'));
+
+      // ---- Figma fidelity (17tnw2b2cf1) ----
+      // reset-r1-02: New password is focused on arrival, the title still first in the DOM.
+      var newPassword = document.querySelector('input[type="password"]');
+      var title = document.querySelector('.au-card h1');
+      check('R1 New password is focused on arrival', document.activeElement === newPassword,
+            'focused: ' + (document.activeElement ? document.activeElement.tagName : 'nothing'));
+      check('R1 the title still comes first in the DOM',
+            !!title && (title.compareDocumentPosition(newPassword) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0);
+      var stroke = css(newPassword, 'boxShadow');
+      check('R1 the focused field draws the 1.5px brand stroke (1px border + 0.5px ring) and no halo',
+            css(newPassword, 'borderTopColor') === BRAND && stroke.indexOf('inset') !== -1 &&
+            stroke.indexOf('0.5px') !== -1 && stroke.indexOf('3px') === -1,
+            'border ' + css(newPassword, 'borderTopColor') + ' shadow ' + stroke);
+      // reset-r1-01 (adopted from FormField): the control reads Show / Hide and keeps its name and state.
+      var toggles = document.querySelectorAll('.password-toggle');
+      check('R1 both reveal controls read "Show"', toggles.length === 2 &&
+            Array.prototype.every.call(toggles, function (t) { return squash(t.textContent) === 'Show'; }),
+            Array.prototype.map.call(toggles, function (t) { return squash(t.textContent); }).join('|'));
+      check('R1 each reveal control keeps its accessible name',
+            Array.prototype.every.call(toggles, function (t) { return t.getAttribute('aria-label') === 'Show password'; }));
+      check('R1 each reveal control is a 44px target',
+            Array.prototype.every.call(toggles, function (t) { return box(t).h >= 44 && box(t).w >= 44; }),
+            Array.prototype.map.call(toggles, function (t) { return box(t).w + 'x' + box(t).h; }).join('|'));
+      toggles[0].click();
+      await wait(80);
+      check('R1 pressing Show reveals the password and the control reads Hide',
+            newPassword.type === 'text' && squash(toggles[0].textContent) === 'Hide' &&
+            toggles[0].getAttribute('aria-pressed') === 'true' && toggles[0].getAttribute('aria-label') === 'Hide password',
+            'type ' + newPassword.type + ', text ' + squash(toggles[0].textContent));
+      check('R1 a revealed password is still never spell-checked',
+            newPassword.getAttribute('spellcheck') === 'false' && newPassword.getAttribute('autocorrect') === 'off');
+      toggles[0].click();
+      await wait(80);
+      check('R1 pressing Hide puts it back', newPassword.type === 'password' && squash(toggles[0].textContent) === 'Show');
+      // reset-r1-03: the hint is 12.5px on a 17px line in the secondary ink, 4.5:1 or better.
+      var hint = document.querySelector('.au-card .field-hint');
+      check('R1 hint is 12.5px / 17px in the secondary ink, 4.5:1 or better',
+            !!hint && css(hint, 'fontSize') === '12.5px' && css(hint, 'lineHeight') === '17px' &&
+            css(hint, 'color') === SECONDARY_INK && inkContrast(hint) >= 4.5,
+            hint ? css(hint, 'fontSize') + ' / ' + css(hint, 'lineHeight') + ' ' + css(hint, 'color') + ' = ' +
+                   inkContrast(hint).toFixed(2) + ':1' : 'no hint');
+      var fieldRects = document.querySelectorAll('.au-card form .form-field');
+      check('R1 fields are 16 + 7 + 44 + 7 + 17 tall with a hint, 18px apart',
+            fieldRects.length === 2 && near(box(fieldRects[0]).h, 91) && near(box(fieldRects[1]).t - box(fieldRects[0]).b, 18),
+            'first field ' + (fieldRects[0] ? box(fieldRects[0]).h : '?') + 'px');
+      fieldFidelityChecks('R1');
+      alignmentChecks('R1', false, false);
       universalChecks();
     },
 
@@ -1454,6 +1876,7 @@ DRIVER = r"""
       fields[1].value = 'abc123';
       fields[1].dispatchEvent(new Event('input', { bubbles: true }));
       await wait(50);
+      document.querySelector('.au-card .au-btn-primary').focus();
       check('submitted a 6-character password', submit());
       await wait(500);
       var text = cardText();
@@ -1468,6 +1891,24 @@ DRIVER = r"""
       var first = document.querySelectorAll('input[type="password"]')[0];
       check('errored password field is marked invalid', first.getAttribute('aria-invalid') === 'true');
       check('errored password field points at its message', !!first.getAttribute('aria-describedby'));
+
+      // ---- Figma fidelity (17tnw2b2cf1): one error shown. The two-error frame is `reset-both-errors`. ----
+      var oneError = document.querySelectorAll('.au-card .field-error');
+      check('R2 focus moves to the invalid New password field',
+            document.activeElement === document.querySelectorAll('input[type="password"]')[0],
+            'focused: ' + (document.activeElement ? document.activeElement.tagName + '#' + document.activeElement.id : 'nothing'));
+      check('R2 the field error begins with the cross, in the message text', oneError.length === 1 &&
+            squash(oneError[0].textContent).indexOf('\u2715 ') === 0,
+            Array.prototype.map.call(oneError, function (e) { return squash(e.textContent); }).join(' | '));
+      check('R2 the error is 12.5px / 500 on a 17px line, and still announced as an alert', oneError.length === 1 &&
+            css(oneError[0], 'fontSize') === '12.5px' && css(oneError[0], 'fontWeight') === '500' &&
+            css(oneError[0], 'lineHeight') === '17px' && oneError[0].getAttribute('role') === 'alert');
+      var pwFields = document.querySelectorAll('input[type="password"]');
+      var shadowOne = css(pwFields[0], 'boxShadow');
+      check('R2 the errored field draws the 1.5px live stroke and no halo; the other field keeps its own stroke',
+            css(pwFields[0], 'borderTopColor') === LIVE && shadowOne.indexOf('inset') !== -1 && shadowOne.indexOf('3px') === -1 &&
+            css(pwFields[1], 'borderTopColor') !== LIVE,
+            'first ' + css(pwFields[0], 'borderTopColor') + ', second ' + css(pwFields[1], 'borderTopColor'));
       universalChecks();
     },
 
@@ -1497,10 +1938,102 @@ DRIVER = r"""
       fields[0].value = 'a-good-passphrase'; fields[0].dispatchEvent(new Event('input', { bubbles: true }));
       fields[1].value = 'a-different-one';   fields[1].dispatchEvent(new Event('input', { bubbles: true }));
       await wait(50);
+      document.querySelector('.au-card .au-btn-primary').focus();
       submit();
       await wait(500);
       check('NO mutation dispatched for mismatched passwords', calls.length === 0, 'calls=' + calls.length);
       check('R2 shows the mismatch error', has(cardText(), 'Both passwords must match'));
+      // Only the confirmation is invalid, so that is where focus goes.
+      check('R2 focus moves to the confirmation field when only it is invalid',
+            document.activeElement === document.querySelectorAll('input[type="password"]')[1],
+            'focused: ' + (document.activeElement ? document.activeElement.tagName + '#' + document.activeElement.id : 'nothing'));
+      universalChecks();
+    },
+
+    /*
+     * R2 as Figma draws it (747:173): BOTH fields in error, the "signs you out everywhere" banner gone and the
+     * submit button held at 45%. One too short and one that does not match is the pair the harness types too.
+     */
+    'reset-both-errors': async function () {
+      await wait(500);
+      var fields = document.querySelectorAll('input[type="password"]');
+      typeInto(fields[0], 'abc123');
+      typeInto(fields[1], 'different');
+      await wait(50);
+      // The user is ON the button when the re-check runs (and New password was focused on arrival, so without this the check
+      // below would pass whether or not focus ever moved).
+      document.querySelector('.au-card .au-btn-primary').focus();
+      check('submitted two bad passwords', submit());
+      await wait(500);
+      // A held button that is pressed again must tell a screen reader user SOMETHING: focus goes to the first invalid field, whose
+      // message it is described by (review of PR 179: Cody 7, Quinn Q6). No timer: the move waits for the DOM, not for the clock.
+      var firstInvalid = document.querySelectorAll('input[type="password"]')[0];
+      check('R2 focus moves to the first invalid field, which is described by its message',
+            document.activeElement === firstInvalid && firstInvalid.getAttribute('aria-invalid') === 'true' &&
+            !!document.getElementById(firstInvalid.getAttribute('aria-describedby') || '-'),
+            'focused: ' + (document.activeElement ? document.activeElement.tagName + '#' + document.activeElement.id : 'nothing'));
+      var errorLines = document.querySelectorAll('.au-card .field-error');
+      check('R2 both fields carry an error that begins with the cross', errorLines.length === 2 &&
+            Array.prototype.every.call(errorLines, function (e) { return squash(e.textContent).indexOf('\u2715 ') === 0; }),
+            Array.prototype.map.call(errorLines, function (e) { return squash(e.textContent); }).join(' | '));
+      check('R2 both fields draw the 1.5px live stroke and no halo',
+            Array.prototype.every.call(document.querySelectorAll('input[type="password"]'), function (i) {
+              var bs = css(i, 'boxShadow');
+              return css(i, 'borderTopColor') === LIVE && bs.indexOf('inset') !== -1 && bs.indexOf('3px') === -1; }));
+      var held = document.querySelector('.au-card .au-btn-primary');
+      check('R2 the submit button is held: aria-disabled, but still focusable', !!held &&
+            held.getAttribute('aria-disabled') === 'true' && !held.disabled && held.tabIndex >= 0,
+            'aria-disabled=' + (held && held.getAttribute('aria-disabled')) + ' disabled=' + (held && held.disabled));
+      await wait(120);
+      check('R2 the submit button is dimmed to 50% (Figma 747:194)', !!held && css(held, 'opacity') === '0.5',
+            'opacity: ' + (held ? css(held, 'opacity') : 'no button'));
+      check('R2 the "signs you out everywhere" banner is gone while errors show',
+            document.querySelectorAll('.au-card .au-banner-info').length === 0);
+      var cardH = box(document.querySelector('.au-card')).h;
+      check('R2 no request was made', calls.length === 0, 'calls=' + calls.length);
+      // The user edits a field: the stale messages and the held button go, the banner comes back, and
+      // nothing was submitted (submitting re-validates).
+      typeInto(document.querySelectorAll('input[type="password"]')[0], 'abc1234');
+      await wait(200);
+      held = document.querySelector('.au-card .au-btn-primary');
+      check('R2 editing a field clears both messages', document.querySelectorAll('.au-card .field-error').length === 0);
+      check('R2 editing a field releases the button', !!held && !held.hasAttribute('aria-disabled') && css(held, 'opacity') === '1',
+            'aria-disabled=' + (held && held.getAttribute('aria-disabled')) + ' opacity ' + (held && css(held, 'opacity')));
+      check('R2 editing a field brings the banner back', document.querySelectorAll('.au-card .au-banner-info').length === 1);
+      check('R2 editing a field sent nothing', calls.length === 0, 'calls=' + calls.length);
+      check('R2 the card grew back by the banner (it was ' + cardH + 'px)', box(document.querySelector('.au-card')).h > cardH);
+      universalChecks();
+    },
+
+    /*
+     * R3, held in flight (reset-r3-01, reset-r3-02): the reply is gated, so the submitting state really paints
+     * and can be measured. Before this, nothing in the suite looked at it at all.
+     */
+    'reset-submitting': async function () {
+      await wait(500);
+      var fields = document.querySelectorAll('input[type="password"]');
+      typeInto(fields[0], 'a-good-passphrase');
+      typeInto(fields[1], 'a-good-passphrase');
+      await wait(50);
+      submit();
+      check('the in-flight state was reached', await settleInFlight());
+      await wait(120);
+      var form = document.querySelector('.au-card form');
+      check('R3 the form reports itself busy', !!form && form.getAttribute('aria-busy') === 'true');
+      loadingButtonChecks('R3', 'Updating password…');
+      submittingFieldChecks('R3', true, '');
+      check('R3 the hint is gone while submitting', document.querySelectorAll('.au-card .field-hint').length === 0);
+      check('R3 the "signs you out everywhere" banner is gone while submitting',
+            document.querySelectorAll('.au-card .au-banner-info').length === 0);
+      var wait3 = document.querySelector('.au-card .au-note[role="status"]');
+      check('R3 says "Don\'t close this tab." in a polite live region',
+            !!wait3 && wait3.getAttribute('aria-live') === 'polite' && has(squash(wait3.textContent), "Don't close this tab."));
+      check('R3 note is the secondary ink, 4.5:1 or better',
+            !!wait3 && css(wait3, 'color') === SECONDARY_INK && inkContrast(wait3) >= 4.5,
+            wait3 ? css(wait3, 'color') + ' = ' + inkContrast(wait3).toFixed(2) + ':1' : 'no note');
+      releaseGate();
+      check('R3 settled on the success state', await settle('Password updated'));
+      check('R3 dispatched exactly one mutation', calls.length === 1, 'calls=' + calls.length);
       universalChecks();
     },
 
@@ -1524,6 +2057,7 @@ DRIVER = r"""
             calls[0].variables.input.newPassword === 'a-good-passphrase');
       check('the password is gone from the rendered page',
             pageText().indexOf('a-good-passphrase') === -1);
+      alignmentChecks('R6', false, true);
       universalChecks();
     },
 
@@ -1543,6 +2077,8 @@ DRIVER = r"""
       check('R4 reassures the password is unchanged', has(text, 'Your password has not changed'));
       check('R4 offers a fresh link', has(text, 'Send a new reset link'));
       check('R4 offers an email field', document.querySelector('input[type="email"]') !== null);
+      alignmentChecks('R4', false, true);
+      fieldFidelityChecks('R4');
       universalChecks();
     },
 
@@ -1619,6 +2155,18 @@ DRIVER = r"""
       check('R7 states the link still works', has(text, 'this link still works until it expires'));
       check('R7 banner is announced', document.querySelector('.au-banner-danger[role="alert"]') !== null);
       check('R7 relabels the primary action', has(text, 'Try again'));
+      // reset-r7-01: the way out of a link that still works is a NEW LINK, not the sign-in page.
+      var r7footer = document.querySelector('.au-footer-link');
+      var r7link = r7footer && r7footer.querySelector('a');
+      check('R7 footer asks "Still stuck?" and offers "Request a new reset link"',
+            !!r7footer && has(squash(r7footer.textContent), 'Still stuck?') &&
+            !!r7link && squash(r7link.textContent) === 'Request a new reset link',
+            'footer: "' + (r7footer ? squash(r7footer.textContent) : '') + '"');
+      check('R7 footer link goes to /forgot-password, not /signin',
+            !!r7link && r7link.getAttribute('href') === '/forgot-password' &&
+            !(r7footer && r7footer.querySelector('a[href="/signin"]')),
+            'href: ' + (r7link && r7link.getAttribute('href')));
+      alignmentChecks('R7', false, false);
       universalChecks();
     },
 
@@ -1633,6 +2181,8 @@ DRIVER = r"""
             document.querySelector('.au-disc-neutral') !== null &&
             document.querySelector('.au-disc-danger') === null);
       check('no-token state made no API call', calls.length === 0, 'calls=' + calls.length);
+      alignmentChecks('R-no-token', false, true);
+      fieldFidelityChecks('R-no-token');
       universalChecks();
     },
 
@@ -1663,7 +2213,11 @@ DRIVER = r"""
     'signin-form': async function () {
       await wait(400);
       var text = cardText();
-      check('title', has(text, 'Sign in to SelahCue'));
+      // signin-01: Figma 505:124 says "Welcome back"; "Sign in to SelahCue" is the desktop A1 title.
+      var signinTitle = document.querySelector('.au-card h1');
+      check('title', !!signinTitle && squash(signinTitle.textContent) === 'Welcome back',
+            'h1: "' + (signinTitle ? squash(signinTitle.textContent) : '') + '"');
+      check('the title is not the desktop title', !has(text, 'Sign in to SelahCue'));
       check('two fields', document.querySelectorAll('.au-card input').length === 2);
       check('email field uses email autocomplete',
             document.querySelector('input[type="email"]').getAttribute('autocomplete') === 'email');
@@ -1682,6 +2236,45 @@ DRIVER = r"""
             !!document.querySelector('.password-toggle').getAttribute('aria-label'));
       check('password Show toggle exposes pressed state',
             document.querySelector('.password-toggle').getAttribute('aria-pressed') === 'false');
+
+      // ---- Figma fidelity (17tnw2b2cf1) ----
+      var pwInput = document.querySelector('input[type="password"]');
+      var pwLabel = Array.prototype.filter.call(document.querySelectorAll('.au-card .field-label'),
+        function (l) { return squash(l.textContent) === 'Password'; })[0];
+      var forgot = document.querySelector('.au-card a[href="/forgot-password"]');
+      // signin-05 (adopted from FormField): "Forgot?" sits in the Password label row.
+      check('Forgot is visible as "Forgot?" and named "Forgot your password?"',
+            !!forgot && squash(forgot.textContent) === 'Forgot?' &&
+            forgot.getAttribute('aria-label') === 'Forgot your password?',
+            'text "' + (forgot ? squash(forgot.textContent) : '') + '" label "' + (forgot && forgot.getAttribute('aria-label')) + '"');
+      check('Forgot sits on the Password label row, at the right edge of the field',
+            !!forgot && !!pwLabel && near(box(forgot).cy, box(pwLabel).cy, 3) && near(box(forgot).r, box(pwInput).r, 1.5) &&
+            box(forgot).l > box(pwLabel).l + 40,
+            forgot && pwLabel ? 'link ' + box(forgot).l + '..' + box(forgot).r + ' y ' + box(forgot).cy +
+                                ', label y ' + box(pwLabel).cy + ', input right ' + box(pwInput).r : 'missing');
+      check('Forgot is at least a 24px-tall target without moving the layout (WCAG 2.2 target size)',
+            !!forgot && box(forgot).h >= 24 && box(forgot).b <= box(pwInput).t + 0.5,
+            forgot ? 'link ' + box(forgot).t + '..' + box(forgot).b + ' (' + box(forgot).h + 'px), input top ' + box(pwInput).t : 'missing');
+      check('Forgot comes AFTER the input in the DOM, so the tab order is unchanged',
+            !!forgot && (pwInput.compareDocumentPosition(forgot) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0);
+      check('tab order is Email, Password, Show password, Forgot your password?, Sign in',
+            tabOrder(document.querySelector('.au-card')).join('|') ===
+            'Email|Password|Show password|Forgot your password?|Sign in',
+            'tab order: ' + tabOrder(document.querySelector('.au-card')).join('|'));
+      check('no element takes a positive tabindex', document.querySelectorAll('[tabindex]:not([tabindex="-1"]):not([tabindex="0"])').length === 0);
+      var eye = document.querySelector('.au-card .password-toggle');
+      check('Sign in keeps the eye icon: the toggle holds an icon and no words',
+            !!eye && !!eye.querySelector('svg') && squash(eye.textContent) === '', 'toggle text "' + (eye && squash(eye.textContent)) + '"');
+      var signinEmail = document.querySelector('input[type="email"]');
+      signinEmail.focus();
+      await wait(120);
+      var focusShadow = css(signinEmail, 'boxShadow');
+      check('a focused Sign in field draws the 1.5px brand stroke and no halo',
+            css(signinEmail, 'borderTopColor') === BRAND && focusShadow.indexOf('inset') !== -1 &&
+            focusShadow.indexOf('0.5px') !== -1 && focusShadow.indexOf('3px') === -1,
+            'border ' + css(signinEmail, 'borderTopColor') + ' shadow ' + focusShadow);
+      fieldFidelityChecks('Sign in');
+      alignmentChecks('Sign in', false, false);
       universalChecks();
     },
 
@@ -1700,6 +2293,10 @@ DRIVER = r"""
       var input = document.querySelector('input[type="email"]');
       check('errored field is marked invalid', input.getAttribute('aria-invalid') === 'true');
       check('errored field points at its message', !!input.getAttribute('aria-describedby'));
+      var errShadow = css(input, 'boxShadow');
+      check('an errored Sign in field draws the 1.5px live stroke and no halo',
+            css(input, 'borderTopColor') === LIVE && errShadow.indexOf('inset') !== -1 && errShadow.indexOf('3px') === -1,
+            'border ' + css(input, 'borderTopColor') + ' shadow ' + errShadow);
       forwardPathCheck('sign-in field validation');
       universalChecks();
     },
@@ -1746,6 +2343,28 @@ DRIVER = r"""
             document.querySelector('input[type="email"]').value !== '');
       forwardPathCheck('rejected credentials');
       recordBranch('signin-rejected-unknown');
+      universalChecks();
+    },
+
+    /*
+     * Sign in in flight (reset-r3-01 and reset-r3-02 applied to Sign in): the reply is held, so the state paints. Its OWN
+     * scenario, not a line in the enumeration pair above: that pair compares what two branches render and how long they take,
+     * and the one thing a measurement added to ONE of them must never do is add a delay to one of them.
+     */
+    'signin-submitting': async function () {
+      await wait(400);
+      fillSignIn('pastor@yourchurch.org', REJECTED_PASSWORD);
+      await wait(50);
+      submit();
+      check('the in-flight state was reached', await settleInFlight());
+      await wait(120);
+      loadingButtonChecks('Sign in in flight', 'Signing in…');
+      submittingFieldChecks('Sign in in flight', true, 'Forgot your password?');
+      var signing = document.querySelector('.au-card .au-note[role="status"]');
+      check('Sign in says "Signing you in…" in a polite live region',
+            !!signing && signing.getAttribute('aria-live') === 'polite' && has(squash(signing.textContent), 'Signing you in…'));
+      releaseGate();
+      check('the rejection settled', await settle('Invalid email or password'));
       universalChecks();
     },
 
@@ -1996,6 +2615,16 @@ DRIVER = r"""
       check('collects the country the API requires', !!document.querySelector('.au-card select'));
       check('the country control is labelled',
             !!document.querySelector('label[for="signup-country"]'));
+      // Shared components review N3: the select shows a star, so it must ANNOUNCE itself as required. The
+      // ARIA attribute, not the native one, which would put the browser's own bubble ahead of the form's message.
+      var countrySelect = document.querySelector('#signup-country');
+      check('the country control is announced as required (aria-required, not the native attribute)',
+            !!countrySelect && countrySelect.getAttribute('aria-required') === 'true' && !countrySelect.hasAttribute('required'),
+            'aria-required=' + (countrySelect && countrySelect.getAttribute('aria-required')) +
+            ' required=' + (countrySelect && countrySelect.hasAttribute('required')));
+      check('the country control is drawn like the fields beside it: 44px on the inset well',
+            !!countrySelect && near(box(countrySelect).h, 44) && css(countrySelect, 'backgroundColor') === INSET_FILL,
+            'height ' + (countrySelect && box(countrySelect).h) + ' fill ' + (countrySelect && css(countrySelect, 'backgroundColor')));
       check('the country control offers the full ISO list',
             document.querySelectorAll('.au-card select option').length > 200,
             'options: ' + document.querySelectorAll('.au-card select option').length);
@@ -2218,6 +2847,58 @@ DRIVER = r"""
     // The three states that reach the rate-limit call sites nothing else rendered. Each
     // one exists so `universalChecks`'s rendered claim ban has that call site's output to
     // look at; without them the ban was scanning three of six sites and passing.
+    /*
+     * The loading buttons of Sign up and Forgot password (review of PR 179, Cody 1 and Quinn Q1). The auth card keeps a loading
+     * button's label on screen at full strength and dims the button, so without the busy glyph the same words read as DISABLED.
+     * Three buttons were missed once; each is held in flight here and must carry the glyph, the label and the 50%.
+     */
+    'signup-submitting': async function () {
+      await wait(400);
+      fillSignup({});
+      await wait(80);
+      submit();
+      check('the in-flight state was reached', await settleInFlight());
+      await wait(120);
+      loadingButtonChecks('Sign up in flight', 'Creating account…');
+      releaseGate();
+      check('the accepted state settled', await settle('Check your email to finish setting up'));
+      universalChecks();
+    },
+
+    'signup-resend-pending': async function () {
+      await wait(400);
+      fillSignup({});
+      await wait(80);
+      submit();
+      await wait(900);
+      check('reached the accepted state', has(cardText(), 'Check your email to finish setting up'));
+      var resend = Array.prototype.filter.call(
+        document.querySelectorAll('.au-card button'),
+        function (b) { return b.textContent.indexOf('Resend verification email') !== -1; })[0];
+      check('the resend control exists', !!resend);
+      if (resend) resend.click();
+      var until = Date.now() + 3000;
+      while (!document.querySelector('.au-card .au-btn.is-loading') && Date.now() < until) await wait(20);
+      await wait(120);
+      loadingButtonChecks('Sign up resend in flight', 'Resend verification email');
+      releaseGate();
+      check('the resend settled', await settle('Check your inbox'));
+      universalChecks();
+    },
+
+    'forgot-submitting': async function () {
+      await wait(400);
+      type('input[type="email"]', 'pastor@yourchurch.org');
+      await wait(50);
+      submit();
+      check('the in-flight state was reached', await settleInFlight());
+      await wait(120);
+      loadingButtonChecks('Forgot password in flight', 'Sending…');
+      releaseGate();
+      check('the sent state settled', await settle('Check your inbox'));
+      universalChecks();
+    },
+
     'signup-locale-preselect': async function () {
       await wait(400);
       var select = document.querySelector('.au-card select');
@@ -2623,10 +3304,13 @@ SCENARIOS: list[tuple[str, str]] = [
     ("verify-rate-limited", f"/verify?token={VERIFY_TOKEN}"),
     ("verify-resend-fails", f"/verify?token={VERIFY_TOKEN}"),
     ("verify-bad-email", f"/verify?token={VERIFY_TOKEN}"),
+    ("verify-resend-pending", f"/verify?token={VERIFY_TOKEN}"),
     ("reset-form", f"/reset?token={RESET_TOKEN}"),
     ("reset-short-password", f"/reset?token={RESET_TOKEN}"),
     ("reset-whitespace-password", f"/reset?token={RESET_TOKEN}"),
     ("reset-mismatch", f"/reset?token={RESET_TOKEN}"),
+    ("reset-both-errors", f"/reset?token={RESET_TOKEN}"),
+    ("reset-submitting", f"/reset?token={RESET_TOKEN}"),
     ("reset-success", f"/reset?token={RESET_TOKEN}"),
     ("reset-invalid", f"/reset?token={RESET_TOKEN}"),
     ("reset-password-invalid", f"/reset?token={RESET_TOKEN}"),
@@ -2639,6 +3323,7 @@ SCENARIOS: list[tuple[str, str]] = [
     ("signin-expired", "/signin?reason=expired"),
     ("signin-rejected-unknown", "/signin"),
     ("signin-rejected-wrong-password", "/signin"),
+    ("signin-submitting", "/signin"),
     ("signin-unreachable", "/signin"),
     ("signin-rate-limited", "/signin"),
     ("signin-unverified", "/signin"),
@@ -2662,12 +3347,15 @@ SCENARIOS: list[tuple[str, str]] = [
     ("signup-rejected", "/signup"),
     ("signup-idempotency", "/signup"),
     ("signup-resend", "/signup"),
+    ("signup-submitting", "/signup"),
+    ("signup-resend-pending", "/signup"),
     ("signup-locale-preselect", "/signup"),
     ("signup-rate-limited", "/signup"),
     ("signup-resend-rate-limited", "/signup"),
     # ----------------------------------------------------------- forgot password --
     ("forgot-form", "/forgot-password"),
     ("forgot-bad-email", "/forgot-password"),
+    ("forgot-submitting", "/forgot-password"),
     ("forgot-registered", "/forgot-password"),
     ("forgot-unregistered", "/forgot-password"),
     ("forgot-failure", "/forgot-password"),
@@ -2852,6 +3540,59 @@ def check_bundle_is_current() -> str | None:
     return None
 
 
+# ----------------------------------------------------------------- leaked Chrome profiles ---
+#
+# Headless Chrome started without `--user-data-dir` makes a `scoped_dir*` profile under its own folder and does not always
+# delete it: one machine held 1,266 of them (3.7 GB), and a day's runs left 26 holding this gate's own `__scenario=` URLs
+# (review of PR 179, Vera 3). Passing `--user-data-dir=<a temp dir>` is the obvious cure and DOES NOT WORK here: with an explicit
+# profile directory `--headless=new --dump-dom` never prints the DOM and never exits (Chrome 154 on macOS: 4 of 4 launches
+# hung past 20s, with and without --use-mock-keychain, --disable-background-networking and --virtual-time-budget, and with the
+# directory inside Chrome's own headless folder; the same launch without the flag exits in 5s). So the gate cleans up after
+# itself instead, and only what is provably its own: a new profile that holds this run's own server address
+# (`127.0.0.1:<port>`, an ephemeral port nobody else uses). Another agent's profile, or a person's, never matches.
+# The folder is the macOS one; elsewhere nothing is looked for (CI runners are discarded after the job).
+CHROME_HEADLESS_ROOTS = [Path.home() / "Library" / "Application Support" / "Google" / "Chrome-headless"]
+PROFILE_SCAN_MAX_FILES = 600  # a fresh profile is ~150 files; this bounds the walk of one that is not
+PROFILE_SCAN_MAX_BYTES = 4_000_000  # per file; the marker is in small history / session files
+
+
+def reap_baseline() -> set[Path]:
+    """The profile folders that exist right now, to tell a new one from an old one after a launch."""
+    return {
+        entry
+        for root in CHROME_HEADLESS_ROOTS
+        if root.is_dir()
+        for entry in root.iterdir()
+        if entry.name.startswith("scoped_dir")
+    }
+
+
+def holds_marker(profile: Path, marker: bytes) -> bool:
+    seen = 0
+    for folder, _dirs, files in os.walk(profile):
+        for name in files:
+            seen += 1
+            if seen > PROFILE_SCAN_MAX_FILES:
+                return False
+            try:
+                with open(os.path.join(folder, name), "rb") as handle:
+                    if marker in handle.read(PROFILE_SCAN_MAX_BYTES):
+                        return True
+            except OSError:
+                continue
+    return False
+
+
+def reap_own_profiles(before: set[Path], marker: bytes) -> int:
+    """Remove the profiles a launch left behind that hold `marker`. Returns how many. Never touches one that was already there."""
+    removed = 0
+    for entry in reap_baseline() - before:
+        if holds_marker(entry, marker):
+            shutil.rmtree(entry, ignore_errors=True)
+            removed += 1
+    return removed
+
+
 def main() -> int:
     if not (DIST / "index.html").is_file():
         print(f"FAIL: no built bundle at {DIST}. Run `npm run build` first.")
@@ -2884,9 +3625,11 @@ def main() -> int:
         body: list[str] = []
         records: dict[str, str] = {}
         total = 0
+        reaped = 0
         for scenario, path in SCENARIOS:
             joiner = "&" if "?" in path else "?"
             url = f"http://127.0.0.1:{port}{path}{joiner}__scenario={scenario}"
+            started = reap_baseline()
             try:
                 out = subprocess.run(
                     [
@@ -2915,6 +3658,8 @@ def main() -> int:
                 print(f"FAIL: headless Chrome timed out on scenario {scenario} (infra)")
                 server.shutdown()
                 return 2
+            finally:
+                reaped += reap_own_profiles(started, f"127.0.0.1:{port}".encode())
 
             match = re.search(r"RESULTS\n(.*?)\nDONE\((\d+)\)", out, re.S)
             if not match:
@@ -2934,6 +3679,8 @@ def main() -> int:
                         records[key.strip()] = value
 
         server.shutdown()
+        if reaped:
+            print(f"NOTE: removed {reaped} headless Chrome profile(s) this run's own launches left behind")
 
     # The cross-scenario half of the suite. Counted into `total` like any other check, so
     # losing a group trips the EXPECTED_MIN_CHECKS gate rather than passing quietly.

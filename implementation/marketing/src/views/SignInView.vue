@@ -38,6 +38,7 @@ import { useRoute, useRouter } from 'vue-router'
 import AuthShell from '@/components/auth/AuthShell.vue'
 import AuthBanner from '@/components/auth/AuthBanner.vue'
 import StatusDisc from '@/components/auth/StatusDisc.vue'
+import AuthSpinner from '@/components/auth/AuthSpinner.vue'
 import FormField from '@/components/FormField.vue'
 import UiButton from '@/components/UiButton.vue'
 import { resendVerification } from '@/lib/api/account.ts'
@@ -315,7 +316,9 @@ onBeforeUnmount(() => {
         presenting throughout.
       </AuthBanner>
 
-      <h1 ref="heading" tabindex="-1" class="au-title au-title-form">Sign in to SelahCue</h1>
+      <!-- Figma 505:124 says "Welcome back". "Sign in to SelahCue" is the desktop A1 title (signin-01). The form
+           keeps its accessible name through `aria-label="Sign in"` and the button. -->
+      <h1 ref="heading" tabindex="-1" class="au-title au-title-form">Welcome back</h1>
       <p class="au-body">Manage your plan, license and the devices you have activated.</p>
 
       <form
@@ -325,27 +328,35 @@ onBeforeUnmount(() => {
         :class="{ 'is-submitting': state === 'submitting' }"
         @submit.prevent="submit"
       >
-        <FormField
-          v-model="email"
-          type="email"
-          label="Email"
-          placeholder="you@yourchurch.org"
-          autocomplete="email"
-          :error="errors.email"
-          :disabled="state === 'submitting'"
-        />
-        <FormField
-          v-model="password"
-          type="password"
-          label="Password"
-          autocomplete="current-password"
-          :error="errors.password"
-          :disabled="state === 'submitting'"
-        />
-
-        <p class="au-inline-link">
-          <router-link to="/forgot-password">Forgot your password?</router-link>
-        </p>
+        <!-- A disabled fieldset disables every control inside it, the Show / Hide button included, which
+             FormField's own `disabled` (the input only) does not. `role="none"`: it groups for the browser, not for
+             a screen reader, which would otherwise announce an unnamed group. -->
+        <fieldset class="au-fieldset" role="none" :disabled="state === 'submitting'">
+          <FormField
+            v-model="email"
+            type="email"
+            label="Email"
+            placeholder="you@yourchurch.org"
+            autocomplete="email"
+            :error="errors.email"
+            :disabled="state === 'submitting'"
+          />
+          <FormField
+            v-model="password"
+            type="password"
+            label="Password"
+            autocomplete="current-password"
+            :error="errors.password"
+            :disabled="state === 'submitting'"
+          >
+            <!-- In the Password label row, as Figma 505:124 draws it (signin-05). It is after the input in
+                 the DOM, so the tab order stays Email, Password, Show password, Forgot, Sign in. Visible
+                 "Forgot?", named "Forgot your password?" (GAP-FILL 3d). -->
+            <template #label-action>
+              <router-link to="/forgot-password" aria-label="Forgot your password?">Forgot?</router-link>
+            </template>
+          </FormField>
+        </fieldset>
 
         <div class="au-actions">
           <UiButton
@@ -354,7 +365,7 @@ onBeforeUnmount(() => {
             class="au-btn au-btn-primary"
             :loading="state === 'submitting'"
           >
-            <template v-if="state === 'submitting'">Signing in…</template>
+            <template v-if="state === 'submitting'"><AuthSpinner />Signing in…</template>
             <template v-else>Sign in</template>
           </UiButton>
         </div>
@@ -391,7 +402,7 @@ onBeforeUnmount(() => {
           :loading="resendPending"
           @click="submitResend"
         >
-          Send a verification link
+          <AuthSpinner v-if="resendPending" />Send a verification link
         </UiButton>
       </div>
       <p v-if="resendError" class="au-note" role="alert">{{ resendError }}</p>
@@ -477,11 +488,5 @@ onBeforeUnmount(() => {
 .au-title:focus-visible {
   outline: 2px solid var(--sc-primary);
   outline-offset: 4px;
-}
-
-/* Fields at 50% opacity while the mutation is in flight, matching R3. They are also
-   genuinely disabled — dimming alone would leave them editable. */
-.is-submitting :deep(.form-field) {
-  opacity: 0.5;
 }
 </style>

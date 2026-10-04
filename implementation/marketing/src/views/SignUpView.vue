@@ -39,6 +39,7 @@ import { nextTick, onBeforeUnmount, ref } from 'vue'
 import AuthShell from '@/components/auth/AuthShell.vue'
 import AuthBanner from '@/components/auth/AuthBanner.vue'
 import StatusDisc from '@/components/auth/StatusDisc.vue'
+import AuthSpinner from '@/components/auth/AuthSpinner.vue'
 import FormField from '@/components/FormField.vue'
 import UiButton from '@/components/UiButton.vue'
 import { registerAccount, resendVerification } from '@/lib/api/account.ts'
@@ -294,7 +295,10 @@ onBeforeUnmount(() => {
 
         <!-- Required by the API and absent from the handoff's field list. Not a FormField
              because that component renders inputs and textareas only; the markup below
-             carries the same label / aria-invalid / aria-describedby contract by hand. -->
+             carries the same label / aria-invalid / aria-describedby contract by hand.
+             It shows a star, so it also announces itself as required: `aria-required`, which
+             is what FormField sets, and NOT the native `required`, whose browser bubble would
+             appear ahead of the form's own message (shared components review N3, 17tnw2b2cf1). -->
         <div class="form-field" :class="{ 'has-error': !!errors.country }">
           <label for="signup-country" class="field-label">
             Country
@@ -305,6 +309,7 @@ onBeforeUnmount(() => {
             v-model="country"
             class="au-select"
             autocomplete="country"
+            aria-required="true"
             :disabled="state === 'submitting'"
             :aria-invalid="!!errors.country"
             :aria-describedby="errors.country ? 'signup-country-error' : undefined"
@@ -367,7 +372,7 @@ onBeforeUnmount(() => {
             class="au-btn au-btn-primary"
             :loading="state === 'submitting'"
           >
-            <template v-if="state === 'submitting'">Creating account…</template>
+            <template v-if="state === 'submitting'"><AuthSpinner />Creating account…</template>
             <template v-else>Create account</template>
           </UiButton>
         </div>
@@ -408,7 +413,7 @@ onBeforeUnmount(() => {
           :loading="resendPending"
           @click="submitResend"
         >
-          Resend verification email
+          <AuthSpinner v-if="resendPending" />Resend verification email
         </UiButton>
         <UiButton to="/signin" variant="secondary" size="lg" class="au-btn au-btn-secondary">
           Back to sign in

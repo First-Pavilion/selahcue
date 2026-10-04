@@ -1,5 +1,6 @@
 /*
- * Auth landing-card design system — /verify and /reset.
+ * Auth landing-card design system — /signin, /verify and /reset (and the sign-up and forgot-password
+ * cards, which share the shell).
  *
  * Geometry is transcribed from `docs/design/AUTH-LANDING-PAGES-HANDOFF.md` §2.3, which
  * says in as many words "cloned from 505:124, do not re-derive". It lives in one global
@@ -57,12 +58,23 @@
   display: flex;
   flex-direction: column;
   gap: 18px;
-  padding: 36px;
+  /* Figma draws the 1px stroke INSIDE a 430px frame with 36px of padding, so the content column is 358px
+     (x=541..899). A CSS border sits outside the padding, so 35px + 1px reproduces that inset (signin-11). */
+  padding: 35px;
   background: var(--sc-surface);
   border: 1px solid var(--sc-border);
   border-radius: 22px;
   text-align: left;
 }
+
+/*
+ * V1 and V2 centre the disc, the title and the body (Figma 743:125, 743:139); every other card, banners, buttons,
+ * notes and footers included, stays left-aligned. An opt-in modifier (AuthShell `align="center"`), reaching only
+ * those three elements, so a centred card cannot leak its alignment into the banner copy (verify-v1-01).
+ */
+.au-card-center .au-disc { align-self: center; }
+.au-card-center .au-title,
+.au-card-center .au-body { text-align: center; }
 
 /* 56x56 status disc; the glyph carries the status ink, never the body text. */
 .au-disc {
@@ -89,12 +101,17 @@
   margin: 0;
   font-size: 24px;
   font-weight: 700;
-  line-height: 1.25;
+  /* The line Figma draws (a 24px Inter title is 29px tall, 26px is 31px). `1.25` made every title line 1-2px
+     taller, which is most of what separated the card heights from the frames. */
+  line-height: 29px;
   color: var(--sc-text);
 }
 
 /* Form-led states (R1/R2/R3/R7) step the title up one notch. */
-.au-title-form { font-size: 26px; }
+.au-title-form {
+  font-size: 26px;
+  line-height: 31px;
+}
 
 .au-body {
   margin: 0;
@@ -105,9 +122,25 @@
 
 .au-note {
   margin: 0;
-  font-size: 13px;
-  line-height: 20px;
-  color: var(--sc-text-muted);
+  font-size: 12.5px;
+  line-height: 17px;
+  /* The secondary ink, as Figma draws (text/muted maps to --sc-text-secondary, handoff 2.2): 8.12:1 on the card. The
+     muted ink read 3.79:1 here, below AA for small text (verify-v5-01, reset-r3). */
+  color: var(--sc-text-secondary);
+}
+
+/* Text for assistive technology only. Clipped, never `display: none` or `visibility: hidden`, which would
+   remove it from the accessibility tree and silence the live region it sits in (verify-v1-02). */
+.au-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
 
 /* ---------------------------------------------------------------------- banner ----- */
@@ -118,33 +151,55 @@
  * keeps every pair well clear of AA and satisfies WCAG 1.4.1 — the words carry the
  * meaning, not the hue.
  */
+/* 358 wide, padding 14/16, radius 12, 12px between glyph and copy, a 3px gap between title and body (Figma 745:124:
+   a three-line body is 98px tall; it was 107px). */
 .au-banner {
   display: flex;
-  gap: 10px;
+  gap: 12px;
   padding: 14px 16px;
   border-radius: 12px;
 }
 
 .au-banner-glyph {
   flex-shrink: 0;
-  font-size: 13px;
+  /* A flex box so a drawn mark (the diamond, the cross) sits in the middle of the glyph column whatever its size, while a
+     text glyph (the tick, the exclamation mark) starts at the left edge as Figma sets it. */
+  display: flex;
+  align-items: center;
+  height: 18px;
+  font-size: 15px;
   font-weight: 700;
-  line-height: 20px;
+  line-height: 18px;
+}
+
+.au-banner-glyph .au-icon {
+  margin: 0 auto;
 }
 
 .au-banner-title {
-  margin: 0 0 2px;
-  font-size: 13.5px;
+  margin: 0 0 3px;
+  font-size: 13px;
+  line-height: 16px;
   font-weight: 600;
   color: var(--sc-text);
 }
 
 .au-banner-body {
   margin: 0;
-  font-size: 13px;
-  line-height: 19px;
+  font-size: 12.5px;
+  line-height: 17px;
   color: var(--sc-text-secondary);
 }
+
+/*
+ * The glyph column is as wide as Figma draws it: 16px for the diamond and the cross, 14px for the tick (745:124, 743:139), so the
+ * copy starts at x=585 / 583. These marks are not in Inter: each OS falls back to its own symbol font with its own advance (the
+ * diamond is 10.8px here), which pulled the copy up to 5px to the left of the frame. A MINIMUM width pins it where Figma
+ * draws it on any machine whose glyph is no wider; the `!` keeps its natural width, which is Inter's (5px).
+ */
+.au-banner-info .au-banner-glyph,
+.au-banner-danger .au-banner-glyph { min-width: 16px; }
+.au-banner-success .au-banner-glyph { min-width: 14px; }
 
 .au-banner-info { background: var(--sc-info-soft); }
 .au-banner-info .au-banner-glyph { color: var(--sc-primary); }
@@ -158,25 +213,133 @@
 .au-banner-danger { background: var(--sc-live-soft); }
 .au-banner-danger .au-banner-glyph { color: var(--sc-live); }
 
-/* --------------------------------------------------------------------- actions ----- */
+/* ---------------------------------------------------------------------- fields ----- */
 
-/* The "Forgot your password?" row inside a form — right-aligned under the password
-   field, matching Sign in `505:124`. A real link, not a button styled as one, because it
-   navigates. */
-.au-inline-link {
-  margin: -4px 0 4px;
-  text-align: right;
+/*
+ * FormField draws the generic field (MARKETING-PORTAL-GAP-FILL-HANDOFF 3a, 10a): a 14px / 600 label in the primary ink,
+ * a 45px chip on --sc-elevated, a 3px halo on focus, a reserved 20px row under every field. The auth frames draw
+ * a different field (AUTH-LANDING-PAGES-HANDOFF 2.3, which says "cloned from 505:124, do not re-derive"), and the
+ * audit asked for it on the auth cards ONLY, so the generic component keeps its look for Contact, Account and the
+ * Admin pages (signin-06, -07, -09; the Figma/AUTH versus GAP-FILL conflict is contact-19, Uma's).
+ *
+ * FormField's rules are SCOPED (`.field-input[data-v-…]`, specificity 0,2,0), so every rule here carries
+ * `.au-card form` to out-rank them without `!important`. Whether each one really applies is asserted as a
+ * COMPUTED style in a browser (`scripts/auth_pages_headless.py`), because a source match cannot see the cascade.
+ */
+.au-card form {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+/* A field is label 16 + 7 + input 44, plus 7 + 17 when a hint or an error shows. The form's own gap spaces the fields. */
+.au-card form .form-field {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  margin-bottom: 0;
+}
+
+/* The label row ("Forgot?" opposite the label): the grid FormField switches to when it is given the slot. */
+.au-card form .form-field.has-label-action {
+  gap: 7px 12px;
+}
+
+/* The link is 13px text on a 16px row, which is a 16px-tall target on a desktop (the handoff asks for 44px, WCAG 2.2 for
+   24px). Vertical padding on an INLINE box widens what can be clicked without moving a pixel of the layout; 5px stays
+   inside the 7px gap above the input, so it never covers the field. (Phones get 44px from FormField's own rule.) */
+.au-card form .label-action a {
+  padding-block: 5px;
+}
+
+/* The wrapper is a plain div, so it inherits the page's 16px/24px line and made the label row 24px tall (the Sign in Password
+   field 75px; Figma's label row is 16px and the field 67px). A 16px line alone is not enough: the empty strut at the page's 16px
+   font sits on the same baseline as the 13px link and stretches the line box to 17px (a 68px field), so the wrapper takes the
+   link's own 13px as well. (Review of PR 179, Quinn Q2.) */
+.au-card form .label-action {
   font-size: 13px;
+  line-height: 16px;
 }
 
-.au-inline-link a {
-  color: var(--sc-primary);
-  text-decoration: none;
+/* The two password fields sit in a fieldset so that, while a request is out, ONE attribute disables their
+   Show / Hide controls too (a disabled fieldset disables every button inside it; FormField only disables its
+   input). A fieldset has UA borders, padding and `min-width: min-content`, none of which belongs here, and is kept
+   a plain block so no engine's fieldset-as-flex-container quirk is in play. */
+.au-card form .au-fieldset {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  min-width: 0;
 }
 
-.au-inline-link a:hover {
-  text-decoration: underline;
+.au-card form .au-fieldset .form-field + .form-field {
+  margin-top: 18px;
 }
+
+.au-card form .field-label {
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 16px;
+  color: var(--sc-text-secondary);
+}
+
+.au-card form .field-input {
+  height: 44px;
+  /* Figma: padding 13/14 inside a stroke drawn inside the frame, so the text starts 14px in. The 1px CSS border
+     is outside the padding, hence 12px / 13px. The right side stays 16px for the eye icon. */
+  padding: 12px 16px 12px 13px;
+  line-height: 18px;
+  background: var(--sc-inset);
+}
+
+/* The secondary ink: 8.49:1 on the inset well. The muted ink read 3.45:1 on the chip (signin-08). */
+.au-card form .field-input::placeholder {
+  color: var(--sc-text-secondary);
+}
+
+/*
+ * Focus and error are a 1.5px stroke with no halo (Figma 747:153, 747:183). A browser snaps a border to whole device
+ * pixels, so at a ratio of 1 a 1.5px border would be drawn 1px; the stroke is therefore the 1px border plus a
+ * 0.5px inset ring, which is crisp at 2x and anti-aliased at 1x, and does not move the layout.
+ */
+.au-card form .field-input:focus {
+  border-color: var(--sc-primary);
+  box-shadow: inset 0 0 0 0.5px var(--sc-primary);
+}
+
+.au-card form .has-error .field-input {
+  border-color: var(--sc-live);
+  box-shadow: inset 0 0 0 0.5px var(--sc-live);
+}
+
+/* A focused field in error keeps the error stroke; FormField's own rule for that state is a halo. */
+.au-card form .has-error .field-input:focus {
+  border-color: var(--sc-live);
+  box-shadow: inset 0 0 0 0.5px var(--sc-live);
+}
+
+.au-card form .field-hint {
+  color: var(--sc-text-secondary);
+  font-size: 12.5px;
+  line-height: 17px;
+}
+
+/* The meta row exists only when there is a hint or an error to put in it: no reserved 20px under every field. */
+.au-card form .field-meta {
+  min-height: 0;
+}
+
+.au-card form .field-meta:empty {
+  display: none;
+}
+
+/* A field that is being submitted is dimmed once, on its input (FormField); its Show / Hide control follows. */
+.au-card form .form-field.is-disabled .password-toggle {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* --------------------------------------------------------------------- actions ----- */
 
 /* The terms checkbox on create-account. The whole row is the label, and the 6px padding
    plus the 20px line box carries it to the 44px effective target the auth handoff §12
@@ -208,25 +371,37 @@
   color: var(--sc-primary);
 }
 
-/* Select styled to match `.field-input` exactly — same well, same 44px height, so the
+/* Select styled to match `.field-input` exactly — same inset well, same 44px height, same 1.5px focus stroke, so the
    country row does not read as a different kind of control from the ones above it. */
-.au-select {
+.au-card form .au-select {
   width: 100%;
   height: 44px;
-  background: var(--sc-elevated);
+  background: var(--sc-inset);
   border: 1px solid var(--sc-border);
   border-radius: 10px;
-  padding: 0 14px;
+  padding: 0 13px;
   font-family: var(--font-family);
   font-size: 15px;
   color: var(--sc-text);
   box-sizing: border-box;
 }
 
-.au-select:focus {
+.au-card form .au-select:focus {
   outline: none;
   border-color: var(--sc-primary);
-  box-shadow: 0 0 0 3px rgba(110, 92, 240, 0.25);
+  box-shadow: inset 0 0 0 0.5px var(--sc-primary);
+}
+
+/* Forced-colors mode deletes box-shadows and re-colours borders, so the stroke on the fields would leave a keyboard user
+   with no indicator at all. An outline is kept in that mode (FormField turns the browser's own off). This block sits AFTER
+   the select's own `outline: none` above: at equal specificity the later rule wins, and a first version of it, placed
+   with the input rules, never reached the Country select (review of PR 179: Cody 2, Quinn Q7). */
+@media (forced-colors: active) {
+  .au-card form .field-input:focus,
+  .au-card form .au-select:focus {
+    outline: 2px solid Highlight;
+    outline-offset: 1px;
+  }
 }
 
 .au-field-error {
@@ -251,19 +426,70 @@
  * reach UiButton without :deep(); the extra class raises specificity above
  * UiButton's own scoped `.ui-button` rule so source order cannot decide the winner.
  */
-.au-btn.ui-button {
+.au-card .au-btn.ui-button {
   width: 100%;
   border-radius: 12px;
 }
 
-.au-btn.au-btn-primary {
+/*
+ * Heights are set, not left to padding and line height: UiButton's large size is 49px solid and 47px quiet, and a
+ * link button inherits the page line height on top (55px), where Figma draws 47 and 44 (signin-10). The `padding-block`
+ * lives on the variant rules because UiButton's own `.size-lg.variant-secondary` padding out-ranks `.au-btn.ui-button`.
+ * The primary is 600, not UiButton's 700 (Figma 505:142).
+ */
+.au-card .au-btn.ui-button.au-btn-primary {
+  height: 47px;
   min-height: 47px;
+  padding-block: 0;
   font-size: 15.5px;
+  font-weight: 600;
 }
 
-.au-btn.au-btn-secondary {
+.au-card .au-btn.ui-button.au-btn-secondary {
+  height: 44px;
   min-height: 44px;
+  padding-block: 0;
   font-size: 14.5px;
+  border: 1px solid var(--sc-border);
+}
+
+/*
+ * While a request is out the button keeps its words (R3: "↻ Updating password…", Figma 749:143): UiButton hides the
+ * label behind a generic spinner, which names nothing. Here the label stays at full strength, the spinner is not
+ * drawn, and the whole button is dimmed once, to 50%. The ↻ in front of the words is the view's own `.au-spinner`.
+ */
+.au-card .au-btn.is-loading {
+  opacity: 0.5;
+}
+
+.au-card .au-btn.is-loading .content {
+  opacity: 1;
+}
+
+.au-card .au-btn.is-loading .spinner {
+  display: none;
+}
+
+/* A button held by field errors (R2, Figma 747:194: opacity 0.5; R3's 749:143 is 0.5 too). The handoff prose says 45% (AUTH-LANDING-PAGES-HANDOFF
+   5.2) and the Figma file says 50%: the file is followed, and the difference is recorded on the decisions ticket. aria-disabled, not
+   `disabled`: it stays focusable, and pressing it re-validates and moves focus to the first invalid field, so a keyboard user is never
+   left on a dead control with no reason. */
+.au-card .au-btn[aria-disabled="true"] {
+  opacity: 0.5;
+}
+
+/*
+ * The busy glyph (`AuthSpinner.vue`): a 14px bold ↻ in front of the label (Figma 749:143). With the label kept visible and the
+ * button dimmed, the same words alone read as DISABLED, not busy; this is what says "working". It turns, and holds still
+ * under `prefers-reduced-motion`. Hidden from assistive technology: the label and the page's polite status line are
+ * what a screen reader gets. It was a hand-written span at seven call sites and two pages (Sign up, Forgot password) were
+ * missed when the rule changed (review of PR 179, Cody 1 and Quinn Q1), so it is one component and a test holds every
+ * `UiButton` with `:loading` in the five auth views to it.
+ */
+.au-btn .au-spinner {
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1;
 }
 
 /* ----------------------------------------------------------------- footer link ----- */
@@ -356,16 +582,17 @@
   .au-card {
     width: 92vw;
     max-width: 92vw;
-    padding: 24px;
+    padding: 23px;
   }
 
   .au-title,
   .au-title-form {
     font-size: 22px;
+    line-height: 27px;
   }
 
   /* 16px so iOS Safari does not zoom the viewport when a select is focused. */
-  .au-select {
+  .au-card form .au-select {
     font-size: 16px;
   }
 
@@ -376,20 +603,21 @@
     padding-inline: 16px;
   }
 
-  /* The secondary links ("Create an account", "Sign in", "Back to sign in", "Forgot your
-     password?") were 21px tall: a miss-tap away from the wrong destination on a phone. */
-  .au-footer-link a,
-  .au-inline-link a {
+  /* The secondary links ("Create an account", "Sign in", "Back to sign in") were 21px tall: a
+     miss-tap away from the wrong destination on a phone. (The "Forgot?" link in the Password label row
+     gets its 44px from FormField's own phone rule.) */
+  .au-footer-link a {
     display: inline-flex;
     align-items: center;
     min-height: 44px;
   }
 }
 
-/* Very narrow phones (320px): the card is 92vw, so a 24px inset leaves ~246px for the
-   form -- tighten it a little rather than let a long button label or email wrap badly. */
+/* Very narrow phones (320px): the card is 92vw, so a 23px inset leaves ~248px for the
+   form -- tighten it a little rather than let a long button label or email wrap badly.
+   (19px / 17px: one pixel less than before, the same 1px border compensation as the card.) */
 @media (max-width: 359px) {
   .au-card {
-    padding: 20px 18px;
+    padding: 19px 17px;
   }
 }

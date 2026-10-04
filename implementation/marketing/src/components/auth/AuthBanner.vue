@@ -31,9 +31,40 @@ const GLYPHS: Record<BannerKind, string> = {
 }
 </script>
 
+<!--
+  The diamond and the cross are DRAWN, not typeset (review of PR 179: Cody 3, Quinn Q4). Neither is in Inter, so each engine fell
+  back to its own symbol font: the diamond was about 7px wide on macOS Chromium and 14px on WebKit, with the same CSS. A fixed-size
+  SVG is the same everywhere. The tick and the exclamation mark stay text: the tick falls back to the Figma width and `!` is Inter's.
+-->
 <template>
   <div :class="['au-banner', `au-banner-${kind}`]" :role="alert ? 'alert' : undefined">
-    <span class="au-banner-glyph" aria-hidden="true">{{ GLYPHS[kind] }}</span>
+    <span class="au-banner-glyph" aria-hidden="true">
+      <svg
+        v-if="kind === 'info'"
+        class="au-icon"
+        width="14"
+        height="14"
+        viewBox="0 0 14 14"
+        fill="currentColor"
+        focusable="false"
+      >
+        <path d="M7 .5 13.5 7 7 13.5.5 7z" />
+      </svg>
+      <svg
+        v-else-if="kind === 'danger'"
+        class="au-icon"
+        width="10"
+        height="10"
+        viewBox="0 0 10 10"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="1.8"
+        focusable="false"
+      >
+        <path d="M1 1 9 9M9 1 1 9" />
+      </svg>
+      <template v-else>{{ GLYPHS[kind] }}</template>
+    </span>
     <div>
       <p class="au-banner-title">{{ title }}</p>
       <p class="au-banner-body"><slot /></p>

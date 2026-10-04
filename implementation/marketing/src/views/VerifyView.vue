@@ -30,6 +30,7 @@ import { nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import AuthShell from '@/components/auth/AuthShell.vue'
 import AuthBanner from '@/components/auth/AuthBanner.vue'
 import StatusDisc from '@/components/auth/StatusDisc.vue'
+import AuthSpinner from '@/components/auth/AuthSpinner.vue'
 import FormField from '@/components/FormField.vue'
 import UiButton from '@/components/UiButton.vue'
 import { resendVerification, verifyEmail } from '@/lib/api/account.ts'
@@ -194,7 +195,9 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <AuthShell>
+  <!-- V1 and V2 centre the disc, title and body (Figma 743:125, 743:139); V3 to V6 and the failure state do not
+       (verify-v1-01). One expression, so "which states are centred" is read in one place. -->
+  <AuthShell :align="state === 'verifying' || state === 'verified' ? 'center' : 'start'">
     <!-- ============================================================= V1 verifying -->
     <template v-if="state === 'verifying'">
       <StatusDisc tone="brand" glyph="↻" />
@@ -202,8 +205,12 @@ onBeforeUnmount(() => {
       <p class="au-body">This only takes a moment. Keep this tab open.</p>
       <!-- §12: announced politely. The bar is indeterminate, so it carries no
            aria-valuenow — claiming a percentage we do not have would be worse than
-           silence. It holds static under prefers-reduced-motion (auth.css). -->
-      <div role="status" aria-live="polite" aria-label="Verifying your email address">
+           silence. It holds static under prefers-reduced-motion (auth.css).
+           A live region announces TEXT, and this one held only the bar (an `aria-label` is not
+           read when a region appears), so the words are inside it, visually hidden because the
+           title above already shows them (verify-v1-02). -->
+      <div role="status" aria-live="polite">
+        <span class="au-sr-only">Verifying your email address…</span>
         <div class="au-progress"><div class="au-progress-fill"></div></div>
       </div>
     </template>
@@ -254,7 +261,7 @@ onBeforeUnmount(() => {
             class="au-btn au-btn-primary"
             :loading="resendPending"
           >
-            Send a new verification link
+            <AuthSpinner v-if="resendPending" />Send a new verification link
           </UiButton>
         </div>
       </form>
@@ -291,7 +298,7 @@ onBeforeUnmount(() => {
             class="au-btn au-btn-primary"
             :loading="resendPending"
           >
-            Send a verification link
+            <AuthSpinner v-if="resendPending" />Send a verification link
           </UiButton>
         </div>
       </form>
