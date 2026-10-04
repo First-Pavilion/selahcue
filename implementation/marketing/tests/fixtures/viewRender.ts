@@ -36,8 +36,23 @@ export async function startViewServer(): Promise<ViteDevServer> {
   })
 }
 
-/** Render `src/views/<file>` at `route` (the route the router sits on while it renders). */
-export async function renderView(server: ViteDevServer, file: string, route = '/'): Promise<string> {
+/**
+ * A state a view only reaches after something happens: a form submitted, a search typed. Server rendering cannot click, so the
+ * test puts the view's OWN bindings where the interaction would have put them, before it renders (review round 2, Quinn Q3).
+ */
+export interface ViewState {
+  /** Assigned to bindings the view declares in its `<script setup>` (refs and plain values), by name. */
+  set?: Record<string, unknown>
+  /** Then these functions the view declares are called in order: `['handleSubmit']`, `['checkField', 'email']`. */
+  call?: ReadonlyArray<readonly [name: string, ...args: unknown[]]>
+}
+
+/**
+ * Render `src/views/<file>` at `route` (the route the router sits on while it renders), optionally in a `state` the view reaches
+ * only by interaction. A binding or function the view does not declare THROWS: a renamed ref must break the test, not leave it
+ * rendering the default state and passing.
+ */
+export async function renderView(server: ViteDevServer, file: string, route = '/', state?: ViewState): Promise<string> {
   const mod = (await server.ssrLoadModule(`/src/views/${file}`)) as { default: Component }
   const router = createRouter({
     history: createMemoryHistory(),
@@ -47,7 +62,33 @@ export async function renderView(server: ViteDevServer, file: string, route = '/
   await router.isReady()
   const app = createSSRApp(mod.default)
   app.use(router)
-  return renderToString(app)
+  const problems: string[] = []
+  if (state) {
+    app.mixin({
+      created(this: { $: { type: { __file?: string }; setupState: Record<string, unknown> } }) {
+        // Only the view itself: its components are created from their own files.
+        if (!(this.$.type.__file ?? '').endsWith(`/views/${file}`)) return
+        const bound = this.$.setupState
+        try {
+          for (const [key, value] of Object.entries(state.set ?? {})) {
+            if (!(key in bound)) throw new Error(`${file} declares no binding "${key}"`)
+            bound[key] = value
+          }
+          for (const [fn, ...args] of state.call ?? []) {
+            const f = bound[fn]
+            if (typeof f !== 'function') throw new Error(`${file} declares no function "${fn}"`)
+            ;(f as (...a: unknown[]) => unknown)(...args)
+          }
+        } catch (error) {
+          problems.push(String(error))
+        }
+      },
+    })
+  }
+  const out = await renderToString(app)
+  if (problems.length) throw new Error(`could not put ${file} in its state: ${problems.join('; ')}`)
+  if (state && out.length === 0) throw new Error(`${file} rendered nothing`)
+  return out
 }
 
 // --------------------------------------------------------------------------- reading the markup
@@ -109,6 +150,33 @@ export function textRunsOf(html: string): string[] {
   }
   return out
 }
+
+/** The attributes whose value a visitor reads or hears: a tooltip, an image's text, a control's accessible name or hint. */
+export const COPY_ATTRIBUTES: readonly string[] = ['title', 'alt', 'aria-label', 'aria-description', 'aria-roledescription', 'aria-valuetext', 'placeholder']
+
+/** Every value of a copy attribute in the markup, entities decoded, whitespace collapsed, empties dropped. */
+export function attributeRunsOf(html: string): string[] {
+  const out: string[] = []
+  for (const tag of tagsOf(html.replace(/<!--[\s\S]*?-->/g, ''))) {
+    for (const name of COPY_ATTRIBUTES) {
+      const raw = tag.attrs[name]
+      if (raw === undefined) continue
+      const t = raw
+        .replace(/&amp;/g, '&')
+        .replace(/&#39;/g, "'")
+        .replace(/&quot;/g, '"')
+        .replace(/&lt;/g, '<')
+        .replace(/&gt;/g, '>')
+        .replace(/\s+/g, ' ')
+        .trim()
+      if (t) out.push(t)
+    }
+  }
+  return out
+}
+
+/** Everything a visitor can read or hear from the markup: its text runs and its copy attributes. */
+export const copyRunsOf = (html: string): string[] => [...textRunsOf(html), ...attributeRunsOf(html)]
 
 export interface Heading {
   level: number

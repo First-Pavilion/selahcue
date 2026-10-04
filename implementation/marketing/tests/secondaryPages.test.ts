@@ -25,27 +25,32 @@
  *   - each page has the structure its Figma frame draws.
  */
 import assert from 'node:assert/strict'
+import { readdirSync } from 'node:fs'
+import path from 'node:path'
 import test, { after, before, describe } from 'node:test'
 
 import type { ViteDevServer } from 'vite'
 
 import { docsArticles, docsCategories } from '../src/lib/content/docs.ts'
 import { blogPosts } from '../src/lib/content/blog.ts'
-import { supportArticles, supportCategories } from '../src/lib/content/support.ts'
-import { LEDGER, PROMISE_PATTERN, type Entry } from './fixtures/copyLedger.ts'
+import { searchSupport, supportArticles, supportCategories } from '../src/lib/content/support.ts'
+import { LEDGER, NAMED_CLAIMS, PROMISE_PATTERN, type Entry } from './fixtures/copyLedger.ts'
 import { descriptorOf, elementsOf, prop, readSrc, styleOf, valueOf, type DirectiveProp } from './fixtures/sfcSource.ts'
 import {
+  attributeRunsOf,
   classesOf,
+  copyRunsOf,
   headingsOf,
   outlineProblems,
   renderView,
+  SRC,
   startViewServer,
   tagsOf,
   textOf,
-  textRunsOf,
   withClass,
   type Heading,
   type Tag,
+  type ViewState,
 } from './fixtures/viewRender.ts'
 
 /** Grows as each page is brought to its frame; the final list is all nine. */
@@ -126,9 +131,10 @@ function usesSharedContainer(sfc: string): boolean {
 }
 
 /**
- * The copy ledger (see `fixtures/copyLedger.ts`). A rendered text run is allowed when the CONTENT LAYER owns it, or it is
- * on the page's ledger as new copy (reviewed: no promise) or as a named pre-existing line (shrink-only; removed by the
- * claims ticket 17tnw2b0x3h). Anything else is a sentence nobody listed.
+ * The copy ledger (see `fixtures/copyLedger.ts`). A piece of copy a visitor can read or hear is allowed when the CONTENT LAYER
+ * owns it, or it is on the page's ledger as new copy (reviewed: no promise), as an UNBACKED line (live before this PR, claims
+ * something the repo does not back; removed by the claims ticket 17tnw2b0x3h) or as a HARMLESS one. Anything else is a sentence
+ * nobody listed.
  */
 const CONTENT_TEXT: ReadonlySet<string> = new Set([
   ...[...docsCategories, ...supportCategories].flatMap((c) => [c.title, c.desc]),
@@ -138,12 +144,75 @@ const CONTENT_TEXT: ReadonlySet<string> = new Set([
 
 const entryMatches = (e: Entry, run: string): boolean => (typeof e === 'string' ? e === run : e.test(run))
 
-/** The runs the ledger does not account for. One definition, used by the page checks and by the planted-promise control. */
-function unlistedRuns(runs: readonly string[], page: string, content: ReadonlySet<string> = CONTENT_TEXT): string[] {
+/** Every entry of a page's ledger, whichever list it is on. */
+const listed = (page: string): Entry[] => {
   const l = LEDGER[page]
   assert.ok(l, `no ledger for ${page}`)
-  const all = [...l.newCopy, ...l.preexisting]
+  return [...l.newCopy, ...l.unbacked, ...l.harmless]
+}
+
+/** The runs the ledger does not account for. One definition, used by the page checks and by the planted-promise controls. */
+function unlistedRuns(runs: readonly string[], page: string, content: ReadonlySet<string> = CONTENT_TEXT): string[] {
+  const all = listed(page)
   return runs.filter((r) => !content.has(r) && !all.some((e) => entryMatches(e, r)))
+}
+
+/**
+ * The states each page is read in, besides the one it opens in. Server rendering cannot click, so each state is the view's OWN
+ * bindings set where the interaction would put them (`renderView` throws on a name the view does not declare). The Support
+ * queries come from the content layer, so the three result lines (one, several, none) are always the ones that really render.
+ */
+const SUPPORT_ONE = supportArticles.map((a) => a.title).find((t) => searchSupport(t)?.length === 1) ?? ''
+const SUPPORT_MANY = ['a', 'e', 'the', 'obs', 'sound'].find((q) => (searchSupport(q)?.length ?? 0) > 1) ?? ''
+
+interface PageState {
+  readonly label: string
+  readonly state: ViewState
+  /** What the markup must show for the state to count as reached: a state that silently rendered the default page would pass the ledger for the wrong reason. */
+  readonly reached: RegExp
+}
+const STATES: Readonly<Record<string, readonly PageState[]>> = {
+  Contact: [
+    { label: 'submitted: the success card', state: { set: { isSubmitted: true, name: 'Ana' } }, reached: /Message Received!/ },
+    { label: 'submitting: the button while the timer runs', state: { set: { isSubmitting: true } }, reached: /<input[^>]* disabled/ },
+    { label: 'submitted empty: every required message', state: { call: [['handleSubmit']] }, reached: /Name is required[\s\S]*Email is required[\s\S]*Message is required/ },
+    {
+      label: 'submitted with bad values: the length and email messages',
+      state: { set: { name: 'x'.repeat(101), email: 'nope', org: 'y'.repeat(101) }, call: [['handleSubmit']] },
+      reached: /Name must be 100 characters or fewer[\s\S]*Please enter a valid email address[\s\S]*Church \/ organization must be 100/,
+    },
+  ],
+  Support: [
+    { label: 'search with one result', state: { set: { searchQuery: SUPPORT_ONE } }, reached: /1 help article matches your search\./ },
+    { label: 'search with several results', state: { set: { searchQuery: SUPPORT_MANY } }, reached: /\d+ help articles match your search\./ },
+    { label: 'search with no result', state: { set: { searchQuery: 'zzzzqqqqxx' } }, reached: /No help articles match that search\./ },
+  ],
+}
+
+interface Reading {
+  readonly label: string
+  readonly markup: string
+  readonly runs: string[]
+  /** Undefined for the page as it opens. */
+  readonly reached?: RegExp
+}
+const stateRendered = new Map<string, string>()
+/** Every state the ledger reads a page in: the default render first, then each interaction state. */
+async function readings(file: string): Promise<Reading[]> {
+  const page = PAGES.find((p) => p.file === file)
+  assert.ok(page, `${file} is not one of the nine pages`)
+  const opened = await html(file)
+  const out: Reading[] = [{ label: 'the page as it opens', markup: opened, runs: copyRunsOf(opened) }]
+  for (const { label, state, reached } of STATES[ledgerKey(file)] ?? []) {
+    const key = `${file}|${label}`
+    let markup = stateRendered.get(key)
+    if (markup === undefined) {
+      markup = await renderView(server, file, page.route, state)
+      stateRendered.set(key, markup)
+    }
+    out.push({ label, markup, runs: copyRunsOf(markup), reached })
+  }
+  return out
 }
 
 const ledgerKey = (file: string): string => file.replace(/View\.vue$/, '')
@@ -201,9 +270,11 @@ describe('the nine pages: heading outline, buttons and container', () => {
     // The two legal pages render the generated legal drafts (ClickUp 17tnw2b0x3g, `npm run check:legal`): their text is
     // not this ticket's. The other seven are held to the copy ledger.
     if (!LEGAL_PAGES.has(file)) {
-      test(`${file}: every rendered line is on the copy ledger, in the content layer, or a named pre-existing line`, async () => {
-        const stray = unlistedRuns(textRunsOf(await html(file)), ledgerKey(file))
-        assert.deepEqual(stray, [], `${file} renders text nobody listed: add it to tests/fixtures/copyLedger.ts as new copy only if it carries no promise`)
+      test(`${file}: every line it shows or says, in every state, is on the copy ledger or in the content layer`, async () => {
+        for (const { label, runs } of await readings(file)) {
+          const stray = unlistedRuns(runs, ledgerKey(file))
+          assert.deepEqual(stray, [], `${file} (${label}) shows copy nobody listed: add it to tests/fixtures/copyLedger.ts as new copy only if it carries no promise`)
+        }
       })
     }
   }
@@ -246,6 +317,29 @@ describe('the nine pages: heading outline, buttons and container', () => {
 
 // --------------------------------------------------------------------------- the copy ledger
 
+/** A `content:` value that draws nothing. Anything else (a string with characters, `attr()`, `counter()`) is copy a text scan cannot see. */
+const EMPTY_CONTENT = /^(?:''|""|none|normal)$/i
+
+/** Every `content:` declaration in a component's style blocks whose value draws something, as readable strings. One definition, used by the scan and its control. */
+function drawnCssContent(sfc: string, name = 'fixture.vue'): string[] {
+  const css = styleOf(sfc, name).replace(/\/\*[\s\S]*?\*\//g, '')
+  const out: string[] = []
+  for (const m of css.matchAll(/(?<![\w-])content\s*:\s*([^;}]+)/g)) {
+    const value = (m[1] ?? '').trim().replace(/\s*!important$/i, '')
+    if (!EMPTY_CONTENT.test(value)) out.push(`content: ${value}`)
+  }
+  return out
+}
+
+/** Every `.vue` file this ticket owns: the nine views and the legal and article components. */
+function ownedVueFiles(): string[] {
+  const files = PAGES.map((p) => `views/${p.file}`)
+  for (const dir of ['components/legal', 'components/article']) {
+    for (const f of readdirSync(path.join(SRC, dir))) if (f.endsWith('.vue')) files.push(`${dir}/${f}`)
+  }
+  return files
+}
+
 describe('the copy ledger: no sentence appears on the seven pages that nobody listed', () => {
   const pages = PAGES.filter((p) => !LEGAL_PAGES.has(p.file))
 
@@ -256,24 +350,57 @@ describe('the copy ledger: no sentence appears on the seven pages that nobody li
   for (const { file } of pages) {
     const key = ledgerKey(file)
 
-    test(`${key}: every ledger entry is still rendered, so the pre-existing list can only shrink`, async () => {
-      const runs = textRunsOf(await html(file))
-      const l = LEDGER[key]!
-      const dead = [...l.newCopy, ...l.preexisting].filter((e) => !runs.some((r) => entryMatches(e, r)))
-      assert.deepEqual(dead.map(String), [], `${key}: entries no page text matches (delete them: the words are gone)`)
+    test(`${key}: every state the ledger reads was reached, not silently rendered as the default page`, async () => {
+      const all = await readings(file)
+      assert.equal(all.length, 1 + (STATES[key]?.length ?? 0))
+      for (const r of all) if (r.reached) assert.match(r.markup, r.reached, `${key}: the state "${r.label}" did not show what it should`)
     })
 
-    test(`${key}: no entry is on both lists, and none is listed twice`, () => {
-      const l = LEDGER[key]!
-      const names = [...l.newCopy, ...l.preexisting].map(String)
+    test(`${key}: every ledger entry is still shown in some state, so the unbacked list can only shrink`, async () => {
+      const runs = (await readings(file)).flatMap((r) => r.runs)
+      const dead = listed(key).filter((e) => !runs.some((r) => entryMatches(e, r)))
+      assert.deepEqual(dead.map(String), [], `${key}: entries nothing on the page matches (delete them: the words are gone)`)
+    })
+
+    test(`${key}: no entry is on two lists, and none is listed twice`, () => {
+      const names = listed(key).map(String)
       assert.equal(new Set(names).size, names.length, `${key}: an entry appears twice`)
     })
 
-    test(`${key}: new copy carries no time, money or reply promise`, () => {
-      const promising = LEDGER[key]!.newCopy.filter((e) => typeof e === 'string' && PROMISE_PATTERN.test(e))
-      assert.deepEqual(promising, [], `${key}: new copy that sounds like a promise (move it to a reviewed decision, not the ledger)`)
+    test(`${key}: new copy and harmless lines carry no time, money, reply or privacy promise`, () => {
+      const l = LEDGER[key]!
+      const promising = [...l.newCopy, ...l.harmless].filter((e) => typeof e === 'string' && PROMISE_PATTERN.test(e))
+      assert.deepEqual(promising, [], `${key}: a promise-shaped line is on newCopy or harmless; a claim belongs on unbacked, where the claims ticket removes it`)
     })
   }
+
+  test('the claims the reviewers named are on `unbacked`, where ClickUp 17tnw2b0x3h will look (a relabel as harmless fails)', () => {
+    for (const [page, sample] of NAMED_CLAIMS) {
+      assert.ok(LEDGER[page]!.unbacked.some((e) => entryMatches(e, sample)), `${page}: "${sample}" is not on unbacked`)
+      const elsewhere = [...LEDGER[page]!.newCopy, ...LEDGER[page]!.harmless].filter((e) => entryMatches(e, sample))
+      assert.deepEqual(elsewhere.map(String), [], `${page}: "${sample}" is also on another list`)
+    }
+  })
+
+  test('no scoped style of a view or of the legal and article components draws text with CSS `content`', () => {
+    const files = ownedVueFiles()
+    assert.ok(files.length >= 15, `only ${files.length} files were scanned`)
+    const found = files.flatMap((f) => drawnCssContent(readSrc(f), f).map((c) => `${f}: ${c}`))
+    assert.deepEqual(found, [], 'CSS `content` draws words the ledger cannot read: write them in the template')
+  })
+
+  test('CONTROL: the CSS content scan fires on a drawn string, a counter and attr(), and passes empty content and justify-content', () => {
+    const sfc = (rule: string): string => `<template><p/></template><style scoped>${rule}</style>`
+    assert.deepEqual(drawnCssContent(sfc(".x::after { content: 'Free for life'; }")), ["content: 'Free for life'"])
+    assert.deepEqual(drawnCssContent(sfc('.x::before { content: "Guaranteed"; color: red }')), ['content: "Guaranteed"'])
+    assert.equal(drawnCssContent(sfc('.x::after { content: attr(data-promise); }')).length, 1)
+    assert.equal(drawnCssContent(sfc('.x::before { content: counter(step) ". "; }')).length, 1)
+    assert.equal(drawnCssContent(sfc(".x::after { content: ''; position: absolute }")).length, 0)
+    assert.equal(drawnCssContent(sfc('.x::after { content: ""; }')).length, 0)
+    assert.equal(drawnCssContent(sfc('.x { justify-content: center; align-content: start; place-content: center }')).length, 0)
+    assert.equal(drawnCssContent(sfc("/* content: 'in a comment' */ .x { color: red }")).length, 0)
+    assert.equal(drawnCssContent(sfc('.x::after { content: none }')).length, 0)
+  })
 
   test('CONTROL: three planted promises in plain words are all unlisted (they stayed green under the old 16-string ban)', () => {
     const plant = (page: string, line: string): string[] => unlistedRuns([line], page)
@@ -285,18 +412,61 @@ describe('the copy ledger: no sentence appears on the seven pages that nobody li
     assert.deepEqual(plant('Support', '2 articles'), [], 'a computed count passes')
   })
 
-  test('CONTROL: the promise pattern catches a time, a figure, a reply and an earnings word, and passes ordinary copy', () => {
-    for (const bad of ['We reply within one hour', 'Free for life', 'Earn 20% recurring', 'Paid monthly', 'Guaranteed', 'Pay $50', 'Our team will respond', 'Commission on every sale']) {
+  test('CONTROL: promises planted where the old ledger could not look are unlisted: a success card, a status line, a validation message, an attribute', () => {
+    const plant = (page: string, line: string): string[] => unlistedRuns([line], page)
+    assert.deepEqual(plant('Contact', 'We reply within one hour, guaranteed.'), ['We reply within one hour, guaranteed.'], 'the Contact success card (Quinn planted this one)')
+    assert.deepEqual(plant('Contact', 'Thank you for reaching out, Ana. We will reply in one hour.'), ['Thank you for reaching out, Ana. We will reply in one hour.'], 'the success sentence edited')
+    assert.deepEqual(plant('Support', 'We answer within a minute.'), ['We answer within a minute.'], 'a Support status line')
+    assert.deepEqual(plant('Contact', 'Your message is encrypted end to end'), ['Your message is encrypted end to end'], 'a validation message')
+    const tooltip = attributeRunsOf('<a href="/x" title="Free for life" aria-label="Always online"><img alt="Earn 20%"></a>')
+    assert.deepEqual(tooltip, ['Free for life', 'Always online', 'Earn 20%'], 'title, aria-label and alt are read')
+    assert.deepEqual(unlistedRuns(tooltip, 'Careers'), tooltip, 'and none of them is listed')
+    assert.deepEqual(attributeRunsOf('<input placeholder="Jane Pastor" aria-label="Contact us" class="x" data-note="not copy" value="typed">'), ['Contact us', 'Jane Pastor'], 'placeholder and aria-label yes; a class, a data attribute and a typed value no')
+    assert.deepEqual(plant('Contact', 'Contact us'), [], 'a listed accessible name passes')
+  })
+
+  test('CONTROL: the promise pattern catches a time, a figure, a reply, an earnings word and a privacy promise, and passes ordinary copy', () => {
+    for (const bad of [
+      'We reply within one hour',
+      'Free for life',
+      'Earn 20% recurring',
+      'Paid monthly',
+      'Guaranteed',
+      'Pay $50',
+      'Our team will respond',
+      'Commission on every sale',
+      'We always answer every message.',
+      'We never share your data.',
+      'Instant help',
+      'Replies are instant',
+      'We answer every message',
+      'Immediate support',
+      'We will never sell your details',
+    ]) {
       assert.ok(PROMISE_PATTERN.test(bad), bad)
     }
-    for (const ok of ['Apply to join the SelahCue affiliate program.', 'Guides, answers and troubleshooting for running SelahCue on Sunday.', 'Not available yet', 'Refer a church']) {
+    for (const ok of [
+      'Apply to join the SelahCue affiliate program.',
+      'Guides, answers and troubleshooting for running SelahCue on Sunday.',
+      'Not available yet',
+      'Refer a church',
+      "Don't see your role? We're glad to meet thoughtful people.",
+    ]) {
       assert.ok(!PROMISE_PATTERN.test(ok), ok)
     }
   })
 
-  test('CONTROL: a line moved from the pre-existing list into the new copy is caught by the promise pattern (the ledger cannot launder a claim)', () => {
-    for (const claim of LEDGER['Affiliates']!.preexisting.filter((e): e is string => typeof e === 'string' && /20%|\$50|60-day|Earn/.test(e))) {
+  test('CONTROL: a line moved from `unbacked` into the new copy is caught by the promise pattern (the ledger cannot launder a claim)', () => {
+    for (const claim of LEDGER['Affiliates']!.unbacked.filter((e): e is string => typeof e === 'string' && /20%|\$50|60-day|Earn/.test(e))) {
       assert.ok(PROMISE_PATTERN.test(claim), `${claim} would be caught`)
+    }
+  })
+
+  test('CONTROL: every state\'s marker is shown by that state and not by the default page (the markers can tell them apart)', async () => {
+    for (const key of Object.keys(STATES)) {
+      const file = `${key}View.vue`
+      const all = await readings(file)
+      for (const r of all.slice(1)) assert.doesNotMatch(all[0]!.markup, r.reached!, `${key}: "${r.label}" shows its marker on the default page too`)
     }
   })
 })
@@ -900,6 +1070,7 @@ describe('Careers (503:124): hero, four icon-tile culture cards, a full-bleed ro
     assert.ok(note, 'the closing line is there')
     const line = page.slice(note.at, page.indexOf('</p>', note.at))
     assert.ok(textOf(line).startsWith("Don't see your role?"))
+    assert.ok(!/reach out|contact us|get in touch|write to|email|apply/i.test(textOf(line)), 'it names no way to reach anyone: the contact page is a form that sends nothing (review round 2, Quinn Q6)')
     assert.ok(!/<a[\s>]/.test(line), 'it carries no link: this line is new, and the contact page is a form that sends nothing')
     assert.ok(!/@selahcue/.test(textOf(page).replace('support@selahcue', '')), 'no invented mailbox')
     // The Apply links already existed (to the contact page) and keep that interim destination.

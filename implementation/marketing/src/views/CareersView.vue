@@ -84,7 +84,7 @@ const culture = [
         </div>
         <!-- Plain text, no link: this line is new, and the one place it could send people (the contact page) is a form
              that sends nothing. A destination returns when the contact form is honest (ClickUp 17tnw2b0x3h). -->
-        <p class="roles-note">Don't see your role? We're always glad to meet thoughtful people — reach out.</p>
+        <p class="roles-note">Don't see your role? We're glad to meet thoughtful people.</p>
       </div>
     </section>
   </div>
