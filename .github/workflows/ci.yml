@@ -302,6 +302,13 @@ jobs:
         run: |
           python3 scripts/check_launch_reachability.py --self-test
           python3 scripts/check_launch_reachability.py
+      # 17tnw2b2jfy: the translation-mirror converter's self-test (synthetic USFM, no network, about
+      # a second) and the licence rules it enforces on the committed allowlist. Same setup-zone
+      # placement and `if:` as the reachability step above, for the same ordinal-rule reason.
+      - name: Translation mirror converter self-test
+        if: runner.os != 'Windows'
+        working-directory: ${{ github.workspace }}
+        run: python3 scripts/build_translation_catalog.py --self-test
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: implementation/desktop

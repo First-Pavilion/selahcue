@@ -1,0 +1,115 @@
+{
+  "schema": 1,
+  "licences": {
+    "public-domain": {
+      "name": "Public domain",
+      "permitted": true,
+      "attribution_required": false,
+      "share_alike": false,
+      "url": null,
+      "summary": "This translation is in the public domain. You may copy, share and project it freely."
+    },
+    "cc0": {
+      "name": "Creative Commons Zero (CC0 1.0)",
+      "permitted": true,
+      "attribution_required": false,
+      "share_alike": false,
+      "url": "https://creativecommons.org/publicdomain/zero/1.0/",
+      "summary": "The publisher has dedicated this translation to the public domain. You may copy, share and project it freely. Credit is appreciated but not required."
+    },
+    "cc-by-sa-4.0": {
+      "name": "Creative Commons Attribution-ShareAlike 4.0",
+      "permitted": true,
+      "attribution_required": true,
+      "share_alike": true,
+      "url": "https://creativecommons.org/licenses/by-sa/4.0/",
+      "summary": "You may copy, share and project this translation, including in a commercial setting, as long as you keep the credit and licence notice and share any adapted copy under the same licence."
+    },
+    "cc-by-nc-nd-4.0": {
+      "name": "Creative Commons Attribution-NonCommercial-NoDerivatives 4.0",
+      "permitted": false,
+      "attribution_required": true,
+      "share_alike": false,
+      "url": "https://creativecommons.org/licenses/by-nc-nd/4.0/",
+      "summary": "Non-commercial and no changes allowed. Not usable in a commercial app that reformats the text."
+    },
+    "all-rights-reserved": {
+      "name": "All rights reserved",
+      "permitted": false,
+      "attribution_required": true,
+      "share_alike": false,
+      "url": null,
+      "summary": "The publisher has not granted permission to copy or redistribute this translation. Written permission is required."
+    }
+  },
+  "translations": [
+    {
+      "code": "BSB",
+      "ebible_id": "engbsb",
+      "name": "Berean Standard Bible",
+      "language": "eng",
+      "language_name": "English",
+      "licence": "cc0",
+      "expect_copyright": "public domain",
+      "legal_review": "cleared",
+      "legal_basis": "docs/research/LICENSING-REGISTER.md section 1 (Berean family, CC0 since 2023-04-30)",
+      "verses": {"ot": 23145, "nt": 7941},
+      "hab_3_19_note": "For the choirmaster. With stringed instruments.",
+      "attribution": null,
+      "modifications": null
+    },
+    {
+      "code": "YOR",
+      "ebible_id": "yor",
+      "name": "Yoruba Contemporary Bible",
+      "language": "yor",
+      "language_name": "Yorùbá",
+      "licence": "cc-by-sa-4.0",
+      "expect_copyright": "Biblica, Inc.",
+      "legal_review": "pending",
+      "legal_basis": "Awaiting the CC BY-SA decision in 17tnw2b2jg3 (A6): the Biblica trademark rule on modified copies, and share-alike on the mirrored dataset",
+      "verses": {"ot": 23145, "nt": 7942},
+      "attribution": "Yoruba Contemporary Bible. Copyright © 2009, 2017 Biblica, Inc. The original work by Biblica, Inc. is available for free at www.biblica.com and open.bible. Licensed under CC BY-SA 4.0.",
+      "modifications": "Section headings, footnotes and cross-references were removed and the text was reformatted into verse rows."
+    },
+    {
+      "code": "IBO",
+      "ebible_id": "ibo",
+      "name": "Igbo Contemporary Bible",
+      "language": "ibo",
+      "language_name": "Igbo",
+      "licence": "cc-by-sa-4.0",
+      "expect_copyright": "Biblica, Inc.",
+      "legal_review": "pending",
+      "legal_basis": "Awaiting the CC BY-SA decision in 17tnw2b2jg3 (A6): the Biblica trademark rule on modified copies, and share-alike on the mirrored dataset",
+      "verses": {"ot": 23145, "nt": 7958},
+      "attribution": "Igbo Contemporary Bible. Copyright © 2020 Biblica, Inc. The original work by Biblica, Inc. is available for free at www.biblica.com and open.bible. Licensed under CC BY-SA 4.0.",
+      "modifications": "Section headings, footnotes and cross-references were removed and the text was reformatted into verse rows."
+    },
+    {
+      "code": "HAU",
+      "ebible_id": "hausa",
+      "name": "Hausa Contemporary Bible",
+      "language": "hau",
+      "language_name": "Hausa",
+      "licence": "cc-by-sa-4.0",
+      "expect_copyright": "Biblica, Inc.",
+      "legal_review": "pending",
+      "legal_basis": "Awaiting the CC BY-SA decision in 17tnw2b2jg3 (A6): the Biblica trademark rule on modified copies, and share-alike on the mirrored dataset",
+      "verses": {"ot": 23145, "nt": 7942},
+      "attribution": "Hausa Contemporary Bible. Copyright © 2009, 2020 Biblica, Inc. The original work by Biblica, Inc. is available for free at www.biblica.com and open.bible. Licensed under CC BY-SA 4.0.",
+      "modifications": "Section headings, footnotes and cross-references were removed and the text was reformatted into verse rows."
+    }
+  ],
+  "excluded": [
+    {"ebible_id": "engylt", "name": "Young's Literal Translation", "reason": "eBible's USFM carries no title markup: psalm titles are fused into verse 1 with nothing to say where they end, so there is no oracle and the converter correctly refuses it. Needs a title source or a person-reviewed title table. See 17tnw2b2hkm."},
+    {"ebible_id": "engmsb", "name": "Majority Standard Bible", "reason": "Same defect as YLT. BSB cannot serve as the oracle: the two Old Testaments differ in over a hundred verses, so aligning them would guess."},
+    {"ebible_id": "engoebus", "name": "Open English Bible (US)", "reason": "Incomplete: 44 of the 66 canonical books (no 1-2 Samuel, 1-2 Kings or 1-2 Chronicles)."},
+    {"ebible_id": "engemtv", "name": "English Majority Text Version", "reason": "CC BY-NC-ND 4.0: non-commercial and no derivatives; the app is commercial and reformats the text."},
+    {"ebible_id": "pcm", "name": "Nigerian Pidgin", "reason": "eBible flags it not Redistributable ('All rights reserved', Wycliffe). Mirroring needs Wycliffe's written permission."},
+    {"ebible_id": "engnet", "name": "NET Bible", "reason": "Pending legal review of its licence terms."},
+    {"ebible_id": "engfbv", "name": "Free Bible Version", "reason": "Pending legal review of its licence terms (CC BY-SA 4.0)."},
+    {"ebible_id": "englsv", "name": "Literal Standard Version", "reason": "Pending legal review of its licence terms."},
+    {"ebible_id": "engamp", "name": "The Amplified Bible (2015)", "reason": "Listed by eBible but flagged not Redistributable and not downloadable; a Lockman Foundation licence is required."}
+  ]
+}
