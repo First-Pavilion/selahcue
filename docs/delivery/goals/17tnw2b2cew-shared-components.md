@@ -88,8 +88,8 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
 | C-009 | yes | `make marketing-check`, `npm test`, `vp_selftest.py` and `check_fidelity_audit.py --self-test` pass | run each, capture exit codes unpiped | all exit 0 | `make marketing-check` exit 0; `npm test` exit 0 (651 pass); `vp_selftest.py` exit 0 (112 checks); `check_fidelity_audit.py --self-test` exit 0 (34 checks); `check_fidelity_audit.py` exit 0 (0 problems); `npx eslint . --max-warnings 0` exit 0 inside marketing-check | PASS |
 | C-010 | yes | Contrast of every changed foreground/background pair is AA or recorded as B/D; no horizontal page scroll at 375, 768, 1440 | contrast table from `vp_core`; responsive sweep | no new failing pair; sweep reports none | 24 pairs computed; three fail and none is new: the page-eyebrow ink 3.49:1 (was 3.38, class D, one property), the label-row link primary on surface 3.83:1 (same colour as the current Forgot link, class D) and white on the live red 3.27:1 in the unchanged centred dialog (class D); the new devices dialog uses 5.94:1 dark ink instead of Figma's white; sweep: no horizontal scroll at 320, 375, 768, 1024, 1440, both engines | PASS |
 | C-011 | yes | The diff touches only the footprint plus this contract, the node test, its golden fixture, the gallery and the headless script | `git diff --name-only origin/web/17tnw2b2c75-figma-fidelity-audit` | only those paths | 13 paths: this contract; the five components; `tests/sharedComponents.test.ts`; `tests/fixtures/formfield-default.json`; four files under `tests/gallery/`; `scripts/shared_components_headless.py`; no chrome file, no `tokens.css`, no view, no audit data | PASS |
-| C-012 | yes | ClickUp has a start comment and a handoff comment with QA steps as a list, read back | ClickUp read-back | both present, lists intact | start comment 1400430000059200; handoff comment pending | PENDING |
-| C-013 | yes | A Draft PR is open with base `web/17tnw2b2c75-figma-fidelity-audit`, the description says it is stacked, and the branch is not behind its base | `gh pr view`; `git rev-list --count HEAD..origin/web/17tnw2b2c75-figma-fidelity-audit` | isDraft true; base correct; behind 0 | pending | PENDING |
+| C-012 | yes | ClickUp has a start comment and a handoff comment with QA steps as a list, read back | ClickUp read-back | both present, lists intact | start comment 1400430000059200 and handoff comment 1400430000059468, both read back with their lists intact; task moved to code review | PASS |
+| C-013 | yes | A Draft PR is open with base `web/17tnw2b2c75-figma-fidelity-audit`, the description says it is stacked, and the branch is not behind its base | `gh pr view`; `git rev-list --count HEAD..origin/web/17tnw2b2c75-figma-fidelity-audit` | isDraft true; base correct; behind 0 | PR https://github.com/First-Pavilion/selahcue/pull/173: isDraft true, base web/17tnw2b2c75-figma-fidelity-audit, 13 files, the description says it is stacked; behind count 0 and the audit head 0990433e is reachable from HEAD after the last fetch | PASS |
 | C-014 | yes | Independent review (code, performance, security, QA) passed and blocking findings are remediated | Cody, Vera, Shadow, Quinn brokered by the coordinator | all four report; no open blocking finding | not requested by this role; the coordinator brokers it on the PR head | PENDING |
 
 Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABLE`.
@@ -147,8 +147,8 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
 ## Final evaluation
 
 - Validator command: `python3 ~/.claude/skills/goal/scripts/validate_goal_contract.py docs/delivery/goals/17tnw2b2cew-shared-components.md --completion`
-- Validator result: pending
-- Independent verification result: pending
-- Terminal state: pending
-- Remaining failed or blocked criteria: pending
-- ClickUp final evidence comment: pending
+- Validator result: the structural check passes; the completion check fails on C-014 only, by design (independent review is brokered by the coordinator, not requested by this role)
+- Independent verification result: pending (Cody, Vera, Shadow and Quinn, brokered by the coordinator on PR 173)
+- Terminal state: GATE_REVIEW (all verifiable work done; independent review pending)
+- Remaining failed or blocked criteria: C-014
+- ClickUp final evidence comment: 1400430000059468 on https://app.clickup.com/t/17tnw2b2cew
