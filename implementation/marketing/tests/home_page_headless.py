@@ -14,6 +14,12 @@ whole page against the frame; this is the part of that comparison a failing test
 Usage (from implementation/marketing, after `npm run build`):
     python3 tests/home_page_headless.py [--engine chromium|webkit|both]
 
+HERMETIC. Every request that is not to the loopback server this script starts is aborted, except the two Google
+Fonts hosts that index.html loads Inter from. Inter is allowed on purpose and checked: Figma is drawn in Inter,
+and the heights below (a card, a window, a section) are the heights of text wrapped in Inter, so a run without it
+would measure the fallback face's wrapping and not the design. The run FAILS if Inter did not load, rather than
+passing against the wrong font, and it fails if the page asks any other third party for anything.
+
 Needs Playwright and an engine. If either is missing this exits 0 with a LOUD skip unless
 SELAHCUE_HEADLESS_REQUIRE=1, which makes a missing engine a hard failure so a gate can never silently
 no-op. A stale `dist/` (older than `src/`) is refused, as the harness does.
@@ -32,6 +38,7 @@ import socketserver
 import sys
 import threading
 from pathlib import Path
+from urllib.parse import urlparse
 
 HERE = Path(__file__).resolve().parent
 MARKETING = HERE.parent
@@ -122,6 +129,9 @@ MEASURE_JS = r"""
   out.eyebrowFont = font(q('.hero-eyebrow', hero));
   const hb = qa('.hero-actions .ui-button', hero);
   out.heroButtons = hb.map((b) => ({ label: b.textContent.trim(), h: box(b).h, tag: b.tagName, disabled: b.disabled === true }));
+  const demoBtn = hb.find((b) => b.textContent.trim() === 'Watch 2-min demo');
+  const note = q('.demo-note', hero);
+  out.demoNote = note && demoBtn ? { ...box(note), btn: box(demoBtn), color: cs(note).color, opacity: cs(note).opacity, visibility: cs(note).visibility, text: note.textContent.trim(), id: note.id, describes: demoBtn.getAttribute('aria-describedby'), trust: box(q('.hero-trust', hero)) } : null;
   out.consoleBox = box(q('.console-mockup', hero));
   out.consoleRole = q('.console-mockup', hero).getAttribute('role');
   out.features = { container: box(q('.container', sec('features-section'))), grid: box(q('.features-grid')), cards: qa('.feature-card').map((c) => box(c)), pad: pad(sec('features-section')) };
@@ -145,6 +155,7 @@ MEASURE_JS = r"""
   out.headings = qa('main h1, main h2, main h3, main h4, main h5, main h6').map((h) => ({ level: +h.tagName[1], text: h.textContent.trim().slice(0, 40) }));
   out.images = qa('main [role=img]').map((e) => ({ label: e.getAttribute('aria-label'), hasHeading: !!e.querySelector('h1,h2,h3,h4,h5,h6'), focusable: !!e.querySelector('a,button,input,[tabindex]') }));
   out.emptyIcons = qa('main svg').filter((s) => s.getAttribute('aria-hidden') !== 'true').length;
+  out.styleAttrs = qa('main [style]').length;
   return out;
 }
 """
@@ -180,19 +191,49 @@ def measure(page, width: int, height: int = 900):
 
 BASE_URL = ""
 
+# index.html loads Inter from these two hosts; nothing else off the machine is allowed (see HERMETIC above).
+FONT_HOSTS = ("fonts.googleapis.com", "fonts.gstatic.com")
+
+# For a cold load: make the page's font set report "loading" and settle 250 ms later, so the one-shot anchor
+# correction (lib/reanchor.ts) really runs in the real browser (with a fast local font load it returns
+# "fonts-already-loaded" and never reaches the lookup), and record every scrollTo behaviour so the test can see
+# the correction's `instant` scroll.
+COLD_LOAD_STUB = """(() => {
+  const ready = new Promise((resolve) => setTimeout(resolve, 250));
+  Object.defineProperty(document, 'fonts', { value: { status: 'loading', ready }, configurable: true });
+  const real = window.scrollTo.bind(window);
+  window.__scrolls = [];
+  window.scrollTo = (...a) => { window.__scrolls.push((a[0] && a[0].behavior) || null); return real(...a); };
+})();"""
+
 
 def run_engine(p, engine_name: str) -> Run:
     r = Run(engine_name)
     browser = getattr(p, engine_name).launch()
     try:
         context = browser.new_context(viewport={"width": 1440, "height": 900})
+        off_host: list[str] = []
+
+        def hermetic(route):
+            url = route.request.url
+            host = urlparse(url).hostname
+            if host in ("127.0.0.1", "localhost") or url.startswith(("data:", "blob:", "about:")):
+                return route.continue_()
+            if host in FONT_HOSTS:
+                return route.continue_()
+            off_host.append(url)
+            return route.abort()
+
+        context.route("**/*", hermetic)
         page_errors: list[str] = []
         page = context.new_page()
         page.on("pageerror", lambda e: page_errors.append(str(e)))
 
         # ------------------------------------------------------------------ 1440: the designed layout
         m = measure(page, 1440)
+        r.check(page.evaluate("document.fonts.check('600 16px Inter') && document.fonts.check('400 16px Inter')"), "Inter loaded: the heights below are the heights of text in Inter, so a run without it would measure the wrong face")
         r.check(not m["docOverflowX"], "no horizontal scroll at 1440")
+        r.eq(m["styleAttrs"], 0, "no element in main carries a style attribute (a strict style-src would drop it)")
 
         # Figma 469:124: padding 96 above, 72 below; H1 60/64 Bold, 0 tracking; sub 19/29 muted; trust 13.5.
         r.eq(m["heroPad"], {"top": 96, "bottom": 72}, "hero padding (469:124)")
@@ -209,6 +250,17 @@ def run_engine(p, engine_name: str) -> Run:
         r.eq(hb.get("Watch 2-min demo", {}).get("h"), 47, "hero Watch 2-min demo is 47px, not stretched to 49 (469:133; PR 172 review)")
         r.eq(hb.get("Watch 2-min demo", {}).get("tag"), "BUTTON", "the demo control is a button")
         r.eq(hb.get("Watch 2-min demo", {}).get("disabled"), True, "the demo button is disabled (nothing to play yet)")
+        # The demo button's reason is VISIBLE (owner decision 2026-10-04), under the button, without moving anything.
+        dn = m["demoNote"]
+        r.check(dn is not None, "the demo note exists")
+        if dn:
+            r.eq(dn["text"], "Demo video not available yet", "the demo note says why the button is disabled")
+            r.eq(dn["describes"], dn["id"], "the demo button is described by that note")
+            r.check(dn["w"] > 80 and dn["h"] >= 13, f"the demo note takes up room on screen: {dn['w']}x{dn['h']}")
+            r.eq((dn["opacity"], dn["visibility"], dn["color"]), ("1", "visible", SECONDARY), "the demo note is opaque, visible and in the secondary ink")
+            r.near(dn["x"] + dn["w"] / 2, dn["btn"]["x"] + dn["btn"]["w"] / 2, 2, "the demo note is centred under its button")
+            r.check(dn["y"] >= dn["btn"]["y"] + dn["btn"]["h"] + 2, "the demo note sits below the button")
+            r.check(dn["y"] + dn["h"] <= dn["trust"]["y"] - 3, f"the demo note clears the trust line below it: note bottom {dn['y'] + dn['h']}, trust top {dn['trust']['y']}")
         # 470:124: 1140 x 348 at x=150.
         r.near(m["consoleBox"]["w"], 1140, 0.5, "console mock is 1140 wide (470:124)")
         r.near(m["consoleBox"]["h"], 348, 0.5, "console mock is 348 tall (470:124)")
@@ -329,8 +381,7 @@ def run_engine(p, engine_name: str) -> Run:
         labels = [s["label"] for s in in_main]
         want = [
             "Download free",  # hero (the disabled demo button is skipped)
-            "Download free",  # the Free plan (the Pro button is disabled, skipped)
-            "Talk to us",
+            "Download free",  # the Free plan (the Pro and Church buttons are disabled, skipped)
             "Do I need an internet connection?",
             "Which platforms are supported?",
             "Can I use my own songs, slides, and designs?",
@@ -350,6 +401,7 @@ def run_engine(p, engine_name: str) -> Run:
             fresh = context.new_page()
             errors: list[str] = []
             fresh.on("pageerror", lambda e: errors.append(str(e)))
+            fresh.add_init_script(COLD_LOAD_STUB)
             fresh.goto(BASE_URL + "/" + hash_, wait_until="networkidle")
             fresh.evaluate("document.fonts && document.fonts.ready")
             fresh.wait_for_timeout(1500)  # the router scroll is smooth; let it, and the one font correction, finish
@@ -357,12 +409,14 @@ def run_engine(p, engine_name: str) -> Run:
 
         fresh, errors = cold("#how-it-works")
         r.near(fresh.evaluate(TARGET_TOP_JS, "how-it-works"), 95, 2, "a cold load of /#how-it-works puts the section 95px from the top, clear of the 79px bar")
+        r.check("instant" in fresh.evaluate("window.__scrolls"), f"the one-shot correction ran on a cold load of /#how-it-works and scrolled instantly: {fresh.evaluate('window.__scrolls')}")
         r.eq(errors, [], "a cold load of /#how-it-works raises no page error")
         fresh.close()
         for hash_ in ("#1abc", "#%", "#%E0%A4%A", "#nope"):
             fresh, errors = cold(hash_)
             r.eq(errors, [], f"a cold load of /{hash_} raises no page error")
             r.near(fresh.evaluate("window.scrollY"), 0, 1, f"a cold load of /{hash_} (no such element) stays at the top")
+            r.check("instant" not in fresh.evaluate("window.__scrolls"), f"the correction found nothing to scroll to for /{hash_} and did not scroll")
             fresh.close()
         page.goto(BASE_URL + "/pricing", wait_until="networkidle")
         page.evaluate("document.fonts && document.fonts.ready")
@@ -378,9 +432,12 @@ def run_engine(p, engine_name: str) -> Run:
             r.eq(mm["consoleRole"], "img", f"the console mock is still one image at {w}")
             hbm = {b["label"]: b for b in mm["heroButtons"]}
             r.check(hbm.get("Download free", {}).get("h", 0) >= 44, f"hero buttons clear the 44px touch target at {w}")
+            dnm = mm["demoNote"]
+            r.check(dnm is not None and dnm["y"] >= dnm["btn"]["y"] + dnm["btn"]["h"] and dnm["x"] >= 0 and dnm["x"] + dnm["w"] <= mm["vw"] and dnm["y"] + dnm["h"] <= dnm["trust"]["y"], f"the demo note is on screen and clear of the trust line at {w}: {dnm}")
             lv = [h["level"] for h in mm["headings"]]
             r.check(all(b <= a + 1 for a, b in zip(lv, lv[1:])), f"no heading level is skipped at {w}")
         r.eq(page_errors, [], "no page error in the whole run")
+        r.eq(off_host, [], "the page asked no third party for anything but Inter (hermetic run)")
     finally:
         browser.close()
     return r

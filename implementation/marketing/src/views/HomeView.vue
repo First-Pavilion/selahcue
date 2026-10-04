@@ -64,7 +64,7 @@ const pillars = [
   {
     icon: 'wifi-off',
     title: 'Works fully offline',
-    description: 'Everything runs on-device — no internet and no cloud dependency during the service. It just works.',
+    description: 'Every core live control works with no internet and no cloud dependency during the service. It just works.',
     variant: 'preview'
   },
   {
@@ -92,14 +92,19 @@ const steps = [
   },
   {
     title: 'Control from anywhere',
-    description: 'Drive it from the console — or pair your phone over the local network. No internet, no lag, no surprises.'
+    description: 'Drive it from the console — or pair your phone over the local network. No internet needed.'
   }
 ]
 
 /*
  * `to` is only set where a real destination exists. Free goes to /download, which says honestly that
- * nothing downloads yet (the hero and navbar buttons already go there). Church goes to /contact.
- * Pro has none: no billing exists, so PricingCard shows its disabled "Not available yet" state.
+ * nothing downloads yet (the hero and navbar buttons already go there; the owner keeps the label
+ * "Download free"). Pro and Church have none, so PricingCard shows its disabled "Not available yet" state:
+ *  - Pro: no billing exists.
+ *  - Church: /contact is not a real destination. It waits 800 ms, says "Message Received ... we will
+ *    respond within 24 hours" and sends nothing (audit contact-04, 06, 07; ClickUp 17tnw2b0x3h), so it
+ *    would collect a visitor's details under a false promise. Church gets `to: '/contact'` back once that
+ *    form really sends (the same answer as Pricing, PR 178).
  * The price, `/ month` and MOST POPULAR are as they were (audit home-33; removal is 17tnw2b0x3h).
  */
 const pricingPlans = [
@@ -142,7 +147,7 @@ const pricingPlans = [
     ],
     cta: 'Talk to us',
     popular: false,
-    to: '/contact'
+    to: undefined
   }
 ]
 
@@ -172,7 +177,7 @@ const testimonials = [
 const faqItems = [
   {
     question: 'Do I need an internet connection?',
-    answer: 'No. SelahCue is offline-first — the whole service runs on-device, so a dropped internet connection never stops it.'
+    answer: 'No. SelahCue is offline-first — every core live control works with no internet, so a dropped connection never stops the service.'
   },
   {
     question: 'Which platforms are supported?',
@@ -200,7 +205,7 @@ const faqItems = [
       <div class="hero-bg-glow" aria-hidden="true"></div>
       <div class="container hero-content">
         <div class="hero-eyebrow">
-          <span class="brand-mark" :style="{ '--mark-size': '18px' }"><img src="/selahcue-logo.png" alt="" aria-hidden="true" /></span>
+          <span class="brand-mark"><img src="/selahcue-logo.png" alt="" aria-hidden="true" /></span>
           <span>Church presentation, reengineered</span>
         </div>
 
@@ -217,14 +222,16 @@ const faqItems = [
           <UiButton variant="primary" size="lg" to="/download">
             Download free
           </UiButton>
-          <!-- The demo video does not exist yet (audit home-18, class C: remove or relabel is Uma's and
-               the owner's call; removing the claim is 17tnw2b0x3h). It was a link to #demo, which did
-               nothing. Disabled with a spoken reason, like the plan button below, until that is decided. -->
-          <UiButton variant="secondary" size="lg" disabled :aria-describedby="demoNoteId">
-            <HomeIcon class="demo-play" name="play" :size="11" />
-            Watch 2-min demo
-          </UiButton>
-          <span :id="demoNoteId" class="visually-hidden">The demo video is not available yet.</span>
+          <!-- The demo video does not exist yet (audit home-18). It was a link to #demo, which did nothing. The
+               owner's decision (2026-10-04): keep the button, disabled, with the reason VISIBLE, as the Pro
+               plan's "Not available yet" is, and described to assistive technology by the same note. -->
+          <div class="demo-action">
+            <UiButton variant="secondary" size="lg" disabled :aria-describedby="demoNoteId">
+              <HomeIcon class="demo-play" name="play" :size="11" />
+              Watch 2-min demo
+            </UiButton>
+            <span :id="demoNoteId" class="demo-note">Demo video not available yet</span>
+          </div>
         </div>
 
         <p class="hero-trust">Free to start&nbsp;&nbsp;&middot;&nbsp;&nbsp;Works fully offline&nbsp;&nbsp;&middot;&nbsp;&nbsp;Windows, macOS &amp; mobile control</p>
@@ -421,19 +428,6 @@ const faqItems = [
   --home-brand-ink: #a5b4fc;
 }
 
-/* Spoken, not seen: the reason the demo button is disabled. */
-.visually-hidden {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  margin: -1px;
-  padding: 0;
-  overflow: hidden;
-  clip-path: inset(50%);
-  white-space: nowrap;
-  border: 0;
-}
-
 /*
  * Section headers (Figma 472:125 and its siblings): eyebrow, title and subtitle, centred, 14px apart
  * (15 on Reliability, 13 on Testimonials), then a gap to the content that is different in every
@@ -498,7 +492,7 @@ const faqItems = [
      ever overflowed here, and clipping it with overflow:hidden would hide real bugs too. */
   width: min(900px, 100%);
   height: 600px;
-  background: radial-gradient(circle at center, rgba(110, 92, 240, 0.15) 0%, transparent 70%);
+  background: radial-gradient(circle at center, color-mix(in srgb, var(--sc-primary) 15%, transparent) 0%, transparent 70%);
   pointer-events: none;
   z-index: 0;
 }
@@ -529,6 +523,12 @@ const faqItems = [
   color: var(--home-brand-ink);
 }
 
+/* The 18px logo mark (Figma 494:132). A scoped rule, not a style attribute: a strict style-src would drop the
+   attribute and the mark would fall back to the 32px of the navbar. */
+.hero-eyebrow .brand-mark {
+  --mark-size: 18px;
+}
+
 .hero-title {
   max-width: 920px;
   margin: 0;
@@ -553,6 +553,24 @@ const faqItems = [
   justify-content: center;
   gap: 14px;
   padding-top: 8px;
+}
+
+.demo-action {
+  position: relative;
+}
+
+/* The reason the demo button is disabled, in plain sight under it. Taken out of the flow so the hero keeps
+   Figma's geometry (the row is 57px tall and the trust line sits 26px below it); there is room for one line
+   in that gap. On a phone it joins the column. */
+.demo-note {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 12px;
+  line-height: 14px;
+  color: var(--sc-text-secondary);
+  white-space: nowrap;
 }
 
 .demo-play {
@@ -865,7 +883,17 @@ const faqItems = [
   .section-title br { display: none; }
   .hero-subtitle { font-size: 16px; line-height: 26px; }
   .hero-actions { flex-direction: column; align-self: stretch; padding-top: 0; }
-  .hero-actions > .ui-button { width: 100%; }
+  .hero-actions > .ui-button,
+  .hero-actions > .demo-action,
+  .demo-action .ui-button { width: 100%; }
+  .demo-note {
+    position: static;
+    display: block;
+    margin-top: 8px;
+    transform: none;
+    text-align: center;
+    white-space: normal;
+  }
   .hero-trust { font-size: 13px; line-height: 18px; text-wrap: balance; }
   .section-header { margin-bottom: 32px; }
   .section-title,

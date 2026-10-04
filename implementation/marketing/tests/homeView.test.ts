@@ -31,7 +31,7 @@ import { fileURLToPath } from 'node:url'
 
 import { parse } from 'vue/compiler-sfc'
 
-import { effective, parseCss, resolvePx, rootProperties, styleOf, contrast } from './fixtures/cssSource.ts'
+import { effective, effectiveExact, parseCss, px, resolvePx, rootProperties, styleOf, contrast } from './fixtures/cssSource.ts'
 import {
   type El,
   type RenderServer,
@@ -337,8 +337,13 @@ describe('icons are the feather-style SVG set (home-09, home-14, home-17)', () =
     const img = findAll(mark, (e) => e.tag === 'img')[0] as El
     assert.equal(img.attrs['src'], '/selahcue-logo.png')
     assert.equal(img.attrs['alt'], '', 'the logo sits beside the words, so it is decorative')
-    assert.match(mark.attrs['style'] ?? '', /--mark-size:\s*18px/)
+    assert.equal(mark.attrs['style'], undefined, 'the 18px size is a scoped rule, not a style attribute')
+    assert.equal(effectiveExact(parseCss(sfcStyles('views/HomeView.vue')), '.hero-eyebrow .brand-mark', { width: 1440 })['--mark-size'], '18px')
     assert.equal(textOf(pill), 'Church presentation, reengineered')
+  })
+
+  test('no element on the page carries a style attribute (a strict style-src would drop it, and the mark would fall back to 32px)', () => {
+    assert.deepEqual(findAll(page, (e) => e.attrs['style'] !== undefined).map((e) => `<${e.tag} class="${e.attrs['class'] ?? ''}">`), [])
   })
 
   test('CONTROL: each fault is reported', () => {
@@ -372,6 +377,13 @@ describe('HomeIcon draws every name it accepts, as a decorative stroke icon', ()
     const html = await server.render('components/home/HomeIcon.vue', { name: 'sparkle' })
     assert.equal(findAll(parseHtml(html), (e) => e.tag === 'svg' && findAll(e, (c) => c.tag === 'path').length > 0).length, 0)
     assert.match(read('components/home/HomeIcon.vue'), /validator/)
+  })
+
+  test('a name that is a property of every object (__proto__, constructor, toString, hasOwnProperty, valueOf) draws nothing: the lookup is by own property', async () => {
+    for (const name of ['__proto__', 'constructor', 'toString', 'hasOwnProperty', 'valueOf']) {
+      const html = await server.render('components/home/HomeIcon.vue', { name })
+      assert.deepEqual(findAll(parseHtml(html), (e) => e.tag === 'svg').map((e) => e.attrs['viewBox']), [], `${name} drew an svg`)
+    }
   })
 })
 
@@ -457,11 +469,31 @@ describe('no control on Home is a dead end (home-32, home-18)', () => {
     assert.ok(demo.attrs['disabled'] !== undefined)
     assert.ok(hasClass(demo, 'variant-secondary'), 'Figma draws it as the elevated secondary button')
     const note = findAll(hero, (e) => e.attrs['id'] === demo.attrs['aria-describedby'])[0] as El
-    assert.match(textOf(note), /not available yet/i)
+    assert.equal(textOf(note), 'Demo video not available yet')
     assert.equal(findAll(page, (e) => e.tag === 'a' && e.attrs['href'] === '#demo').length, 0)
   })
 
-  test('the plans: Free goes to /download, Church to /contact, Pro has no destination and says "Not available yet"', () => {
+  test('the demo button\'s reason is VISIBLE to everyone, as the Pro plan\'s note is (not only spoken): a plain sibling of the button, not hidden, not clipped', () => {
+    const hero = section(page, 'hero-section')
+    const demo = findAll(hero, (e) => hasClass(e, 'ui-button') && textOf(e) === 'Watch 2-min demo')[0] as El
+    const note = findAll(hero, (e) => e.attrs['id'] === demo.attrs['aria-describedby'])[0] as El
+    assert.ok(note, 'the button points at a note')
+    assert.equal(note.parent, demo.parent, 'the note sits beside the button it explains')
+    for (const el of [note, ...ancestors(note)]) {
+      assert.notEqual(el.attrs['aria-hidden'], 'true', 'the note is hidden from assistive technology')
+      assert.ok(!/visually-hidden|sr-only/.test(el.attrs['class'] ?? ''), `the note (or an ancestor) is a screen-reader-only class: ${el.attrs['class']}`)
+    }
+    // The class that styles it must not take it off the screen.
+    const rule = effective(parseCss(sfcStyles('views/HomeView.vue')), ['demo-note'], { width: 1440 })
+    assert.ok(rule['font-size'] !== undefined && px(rule['font-size']) >= 12, `the note is at least 12px: ${rule['font-size']}`)
+    for (const hidden of ['clip', 'clip-path', 'display', 'opacity', 'visibility', 'width', 'height']) {
+      const v = rule[hidden]
+      assert.ok(v === undefined || !/^(rect\(|inset\(50%|none|0|1px|hidden)/.test(v), `the note is taken off the screen by ${hidden}: ${v}`)
+    }
+    assert.equal(rule['color'], 'var(--sc-text-secondary)')
+  })
+
+  test('the plans: Free goes to /download; Pro and Church have no destination and say "Not available yet" (no billing exists, and the contact form sends nothing)', () => {
     const cards = findAll(section(page, 'pricing-section'), (e) => hasClass(e, 'pricing-card'))
     assert.equal(cards.length, 3)
     const cta = (card: El): El => findAll(card, (e) => hasClass(e, 'ui-button'))[0] as El
@@ -469,13 +501,18 @@ describe('no control on Home is a dead end (home-32, home-18)', () => {
     assert.equal(cta(free).tag, 'a')
     assert.equal(cta(free).attrs['href'], '/download')
     assert.equal(textOf(cta(free)), 'Download free')
-    assert.equal(cta(church).tag, 'a')
-    assert.equal(cta(church).attrs['href'], '/contact')
-    assert.equal(textOf(cta(church)), 'Talk to us')
-    assert.equal(cta(pro).tag, 'button')
-    assert.ok(cta(pro).attrs['disabled'] !== undefined)
-    assert.equal(textOf(cta(pro)), 'Get Pro')
-    assert.match(textOf(pro), /Not available yet/)
+    // Church was a link to /contact. That page waits 800 ms, shows "Message Received ... we will respond within
+    // 24 hours" and sends nothing (audit contact-04, 06, 07; ClickUp 17tnw2b0x3h), so it is not a real destination.
+    // It gets one when the form really sends.
+    for (const [name, card, label] of [['Pro', pro, 'Get Pro'], ['Church', church, 'Talk to us']] as const) {
+      assert.equal(cta(card).tag, 'button', name)
+      assert.ok(cta(card).attrs['disabled'] !== undefined, name)
+      assert.equal(textOf(cta(card)), label, name)
+      assert.match(textOf(card), /Not available yet/, name)
+    }
+    const links = findAll(section(page, 'pricing-section'), (e) => e.tag === 'a')
+    assert.deepEqual(links.map((a) => a.attrs['href']), ['/download'], 'exactly one plan link: Free')
+    assert.equal(findAll(page, (e) => e.tag === 'a' && e.attrs['href'] === '/contact').length, 0, 'nothing on Home sends a visitor to the contact form until it sends')
   })
 
   test('the final band: Download free and See pricing, as the white and outlined buttons for a gradient card', () => {
@@ -500,83 +537,242 @@ describe('no control on Home is a dead end (home-32, home-18)', () => {
 
 // --------------------------------------------------------------------------- the copy
 
-/** The page's words, per section, joined; the ledger is compared against these. */
-const words = (cls: string): string => textOf(section(page, cls))
+/**
+ * The text blocks of an element, in order: each element's own text nodes joined, trimmed, whitespace
+ * collapsed, empty ones dropped. A heading with a designed <br> is one block ("Run your service with total
+ * confidence."), a button is its label, a quote is the quote with its marks.
+ */
+function blocks(root: El): string[] {
+  const out: string[] = []
+  walk(root, (e) => {
+    const own = e.children
+      .filter((c): c is string => typeof c === 'string')
+      .join(' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+    if (own) out.push(own)
+  })
+  return out
+}
+
+type SectionClass = (typeof SECTION_ORDER)[number]
+
+/**
+ * THE COPY LEDGER: every block of text the Home page may show, per section. The contract
+ * (docs/delivery/goals/17tnw2b2cex-figma-home.md, "Copy ledger") says where each comes from: Figma's
+ * wording where the repo backs it, the backed part where Figma claims more. The page must show every line
+ * (the section tests below) and NOTHING ELSE (the allow-list test), so a sentence cannot be added by
+ * accident, whatever it says.
+ */
+const LEDGER: Readonly<Record<SectionClass, readonly string[]>> = {
+  'hero-section': [
+    'Church presentation, reengineered',
+    'Run your service with total confidence.',
+    'SelahCue is the offline-first presentation & ministry-assistance app that never blanks the screen — scripture, songs, timers, stage display, and NDI outputs, controlled from anywhere.',
+    'Download free',
+    'Watch 2-min demo',
+    // The reason the demo button is disabled, VISIBLE as the Pro plan's note is (owner decision, 2026-10-04).
+    'Demo video not available yet',
+    'Free to start · Works fully offline · Windows, macOS & mobile control',
+    // The console mock (Figma 470:124): a drawing of the product, hidden from assistive technology.
+    'SelahCue — Live Console',
+    'LIVE',
+    'PREVIEW',
+    '1920 × 1080',
+    'PSALM 46:10',
+    'Be still, and know that I am God.',
+    'JOHN 3:16',
+    'For God so loved the world…',
+  ],
+  'features-section': [
+    'FEATURES',
+    'Everything you need to run the service',
+    'One app for the whole ministry moment — from planning the order of service to the last slide, on stage and online.',
+    'Live presentation & outputs',
+    'Stage scripture, songs, and slides in Preview, then Go Live to the audience — the output never blanks, even on a fault.',
+    'Scripture at your fingertips',
+    'A bundled public-domain Bible with instant reference parsing and keyword search.',
+    'Service plans & timers',
+    'Build the order of service, run countdowns, and keep every segment on time from the console or your phone.',
+    'Stage & confidence monitor',
+    "A dedicated speaker view — current line, what's next, and the service timer — that the audience never sees.",
+    'NDI & multi-output',
+    'Broadcast your program as an NDI source for OBS or vMix, with per-output orientation, scaling, mirror, and visible layers.',
+    'On-device transcript',
+    'AI that assists but never gates: a live transcript and spoken-scripture suggestions, on your machine by default.',
+  ],
+  'reliability-section': [
+    'WHY SELAHCUE',
+    "Built for the one moment you can't repeat",
+    "Sunday morning doesn't wait for a spinning cursor. SelahCue is engineered so the audience output is always up — reliable, offline, and fast.",
+    'Never blanks the screen',
+    'No component failure — a bad slide, a lost GPU, a dropped controller — is ever allowed to black the live output.',
+    'Works fully offline',
+    // NFR-015 is "all core live functions operate with the network disabled", not "everything".
+    'Every core live control works with no internet and no cloud dependency during the service. It just works.',
+    'Fast & bounded',
+    'Starts fast and keeps memory bounded. No runaway caches, no creeping slowdown.',
+  ],
+  'outputs-section': [
+    'SCREENS & OUTPUTS',
+    'One live moment, every output',
+    'Send the same live content to your projector, a stage confidence monitor, and an NDI stream — each with its own theme, orientation, scaling, and visible layers.',
+    'Audience projector — the program the room sees',
+    'Stage display — current, next & timer, for the speaker only',
+    'NDI output — broadcast to OBS, vMix, or another machine',
+    // The output window mock (Figma 475:142).
+    'Screens & Outputs',
+    '+ Add output',
+    'Audience — Main',
+    'MAIN',
+    'LIVE',
+    'Stage Display',
+    'STAGE',
+    'READY',
+    'Livestream Program',
+    'NDI',
+    'BROADCASTING',
+  ],
+  'steps-section': [
+    'HOW IT WORKS',
+    'Live in three steps',
+    'From an empty plan to a running service in minutes — no manual, no setup weekend.',
+    '1',
+    'Plan your service',
+    'Add songs, scripture, and sections to the order of service. Set countdowns and give any item its own theme.',
+    '2',
+    'Go live with one tap',
+    'Stage the next item in Preview, then Go Live. The audience, stage, and NDI outputs all update together.',
+    '3',
+    'Control from anywhere',
+    // "No lag" is gone: it was an unmeasured promise (the PRD targets under 200 ms on the LAN, NFR-009).
+    'Drive it from the console — or pair your phone over the local network. No internet needed.',
+  ],
+  'pricing-section': [
+    'PRICING',
+    'Simple pricing. Cancel anytime.',
+    "Start free, upgrade when you're ready, and cancel anytime — it still runs fully offline on Sunday.",
+    'Free',
+    '$0',
+    '/ forever',
+    'Everything to run a service on one machine.',
+    'Download free',
+    'Live audience output + stage display',
+    'Bundled public-domain scripture + search',
+    'Service plans, timers & themes',
+    'Pro',
+    'For multi-output and streaming churches.',
+    'Get Pro',
+    'Not available yet',
+    'Everything in Free',
+    'NDI + multiple simultaneous outputs',
+    'Mobile control over your local network',
+    'For multi-site teams and larger ministries.',
+    'Talk to us',
+    'Not available yet',
+    'Everything in Pro',
+  ],
+  'testimonials-section': [
+    'TESTIMONIALS',
+    'Run by volunteers. Trusted on Sunday.',
+  ],
+  'faq-section': [
+    'Questions, answered',
+    'Do I need an internet connection?',
+    // NFR-015: core live controls work with the network off. Sign-in, activation and the first speech-model download need it.
+    'No. SelahCue is offline-first — every core live control works with no internet, so a dropped connection never stops the service.',
+    'Which platforms are supported?',
+    'Can I use my own songs, slides, and designs?',
+    'Yes. Build multi-slide song lyrics, stage any scripture, and design your own slide templates in the Theme Designer.',
+    'What is NDI, and do I need it?',
+    "NDI sends your program video over the local network to software like OBS or vMix — no capture card required. It's optional.",
+    'How does billing work?',
+    'SelahCue Pro is a simple monthly subscription; the Free plan is free forever. Cancel anytime — and the app keeps running fully offline during your service either way.',
+  ],
+  'final-cta-section': [
+    'Ready to run your best service yet?',
+    'Start free and go live this Sunday. Cancel anytime — and it runs fully offline when it matters most.',
+    'Download free',
+    'See pricing',
+  ],
+}
+
+/**
+ * Claims the live page ALREADY made and no finding replaces. They are allowed here only so that this change
+ * adds nothing; removing them is ClickUp 17tnw2b0x3h (claims) and the decisions ticket 17tnw2b2cf3, and when
+ * they go this list shrinks. Nothing below is vouched for: each reason says it is unbacked or undecided.
+ */
+const LIVE_CLAIMS: Readonly<Record<string, string>> = {
+  $19: 'a price: DEC-008 leaves price points open (home-33)',
+  '/ month': 'a billing period with no billing built (home-33)',
+  'MOST POPULAR': 'Pro cannot be bought yet (home-33)',
+  Church: 'a tier DEC-008 does not have: it has Free, Pro and Platinum (home-33, home-34)',
+  Custom: 'the Church tier price (home-33)',
+  'Multi-campus / site licensing': 'part of the Church tier (home-33, home-34)',
+  '“SelahCue changed how our tech team operates on Sunday. The volunteer onboarding time dropped to zero, and the platform is rock-solid.”': 'an invented quote (home-36)',
+  'Sarah Jenkins': 'an invented person (home-36)',
+  SJ: 'her initials',
+  'Worship Director · Grace Community': 'an invented church (home-36)',
+  '“We finally have a presentation tool that works 100% offline. No more Sunday morning panic when the church internet backhaul fails.”': 'an invented quote (home-36)',
+  'Mark Davis': 'an invented person (home-36)',
+  MD: 'his initials',
+  'Technical Director · Redeemer Church': 'an invented church (home-36)',
+  '“The stage confidence monitor and built-in countdown timers keep our pastors and worship leaders synchronized throughout every service.”': 'an invented quote (home-36)',
+  'Pastor Paul Miller': 'an invented person (home-36)',
+  PP: 'his initials',
+  'Lead Pastor · Hope Chapel': 'an invented church (home-36)',
+  'SelahCue supports Windows 10/11 (64-bit) and macOS 12+ (Apple Silicon & Intel). Additionally, you can pair any iOS or Android phone over your local Wi-Fi network to control slides remotely.':
+    'the platforms answer: version numbers with no source, Linux not named (home-38, 40, 45)',
+}
+
+const ALLOWED_BLOCKS: ReadonlySet<string> = new Set([...Object.values(LEDGER).flat(), ...Object.keys(LIVE_CLAIMS)])
+
+/** Every block of text the page shows that is on neither the ledger nor the named live-claims list. */
+function unlistedBlocks(root: El, allowed: ReadonlySet<string> = ALLOWED_BLOCKS): string[] {
+  return [...new Set(blocks(root).filter((b) => !allowed.has(b)))]
+}
 
 describe('copy follows the ledger: Figma\'s wording where the repo backs it', () => {
-  test('hero', () => {
-    const t = words('hero-section')
-    for (const line of [
-      'Church presentation, reengineered',
-      'SelahCue is the offline-first presentation & ministry-assistance app that never blanks the screen — scripture, songs, timers, stage display, and NDI outputs, controlled from anywhere.',
-      'Download free',
-      'Watch 2-min demo',
-      'Free to start · Works fully offline · Windows, macOS & mobile control',
-    ]) assert.ok(t.includes(line), `hero is missing: ${line}`)
+  for (const cls of SECTION_ORDER) {
+    test(`${cls}: every ledger line is on the page, in the order the ledger lists it`, () => {
+      const shown = blocks(section(page, cls))
+      const lines = LEDGER[cls]
+      let from = 0
+      for (const line of lines) {
+        const at = shown.indexOf(line, from)
+        assert.ok(at !== -1, `${cls} is missing (or has out of order): ${line}`)
+        from = at + 1
+      }
+    })
+  }
+
+  test('nothing else is on the page: every block of text is on the ledger or on the named list of claims the live page already made', () => {
+    assert.deepEqual(unlistedBlocks(page), [])
   })
 
-  test('features (home-20): the subtitle and six blurbs, with the two overclaims narrowed', () => {
-    const t = words('features-section')
-    for (const line of [
-      'One app for the whole ministry moment — from planning the order of service to the last slide, on stage and online.',
-      'Stage scripture, songs, and slides in Preview, then Go Live to the audience — the output never blanks, even on a fault.',
-      'A bundled public-domain Bible with instant reference parsing and keyword search.',
-      'Build the order of service, run countdowns, and keep every segment on time from the console or your phone.',
-      "A dedicated speaker view — current line, what's next, and the service timer — that the audience never sees.",
-      'Broadcast your program as an NDI source for OBS or vMix, with per-output orientation, scaling, mirror, and visible layers.',
-      'AI that assists but never gates: a live transcript and spoken-scripture suggestions, on your machine by default.',
-    ]) assert.ok(t.includes(line), `features is missing: ${line}`)
+  test('CONTROL: a sentence nobody thought to ban ("Trusted by 5,000 churches.") is reported, in any section, as is a reworded ledger line', () => {
+    const planted = parseHtml('<section class="final-cta-section"><p>Trusted by 5,000 churches.</p><p>Start free and go live this Sunday. Cancel anytime — and it runs fully offline when it matters most.</p></section>')
+    assert.deepEqual(unlistedBlocks(planted), ['Trusted by 5,000 churches.'])
+    const reworded = parseHtml('<p>Start free and go live this Sunday. Cancel anytime — and it runs fully offline when it matters most!</p>')
+    assert.equal(unlistedBlocks(reworded).length, 1)
+    assert.deepEqual(unlistedBlocks(parseHtml('<p>Download free</p><p>$19</p>')), [])
   })
 
-  test('reliability (home-21): eyebrow, subtitle and three pillars, with no NFR id, no number and no metric badge', () => {
-    const t = words('reliability-section')
-    for (const line of [
-      'WHY SELAHCUE',
-      "Sunday morning doesn't wait for a spinning cursor. SelahCue is engineered so the audience output is always up — reliable, offline, and fast.",
-      'No component failure — a bad slide, a lost GPU, a dropped controller — is ever allowed to black the live output.',
-      'Everything runs on-device — no internet and no cloud dependency during the service. It just works.',
-      'Starts fast and keeps memory bounded. No runaway caches, no creeping slowdown.',
-    ]) assert.ok(t.includes(line), `reliability is missing: ${line}`)
-    assert.doesNotMatch(t, /NFR-/)
-    for (const metric of ['0 Blanks', '100% Offline', '≤3s Start']) assert.ok(!t.toLowerCase().includes(metric.toLowerCase()), `the frame draws no metric badge: ${metric}`)
-  })
-
-  test('showcase (home-24): body and the three one-line checks', () => {
-    const t = words('outputs-section')
-    for (const line of [
-      'SCREENS & OUTPUTS',
-      'One live moment, every output',
-      'Send the same live content to your projector, a stage confidence monitor, and an NDI stream — each with its own theme, orientation, scaling, and visible layers.',
-      'Audience projector — the program the room sees',
-      'Stage display — current, next & timer, for the speaker only',
-      'NDI output — broadcast to OBS, vMix, or another machine',
-    ]) assert.ok(t.includes(line), `showcase is missing: ${line}`)
+  test('showcase (home-24): three single-line checks', () => {
     const items = findAll(section(page, 'outputs-section'), (e) => e.tag === 'li').map((li) => textOf(li))
     assert.equal(items.length, 3, 'three single-line checks, no second line')
   })
 
-  test('how it works (home-28): subtitle and three step bodies, as an ordered list', () => {
+  test('how it works (home-28): the steps are an ordered list of three', () => {
     const steps = section(page, 'steps-section')
-    const t = textOf(steps)
-    for (const line of [
-      'From an empty plan to a running service in minutes — no manual, no setup weekend.',
-      'Add songs, scripture, and sections to the order of service. Set countdowns and give any item its own theme.',
-      'Stage the next item in Preview, then Go Live. The audience, stage, and NDI outputs all update together.',
-      'Drive it from the console — or pair your phone over the local network. No internet, no lag, no surprises.',
-    ]) assert.ok(t.includes(line), `steps is missing: ${line}`)
     assert.equal(findAll(steps, (e) => e.tag === 'ol').length, 1, 'the steps are an ordered list')
     assert.equal(findAll(steps, (e) => e.tag === 'li').length, 3)
   })
 
-  test('pricing (home-29, home-31): $0 / forever, Figma\'s descriptions and the bullets the repo backs', () => {
-    const cards = findAll(section(page, 'pricing-section'), (e) => hasClass(e, 'pricing-card')).map((c) => textOf(c))
-    assert.match(textOf(section(page, 'pricing-section')), /Start free, upgrade when you're ready, and cancel anytime — it still runs fully offline on Sunday\./)
-    const [free, pro, church] = cards as [string, string, string]
+  test('pricing (home-29): Free is $0 / forever, never a monthly charge', () => {
+    const free = textOf(findAll(section(page, 'pricing-section'), (e) => hasClass(e, 'pricing-card'))[0] as El)
     assert.ok(free.includes('$0 / forever'), `Free reads: ${free.slice(0, 60)}`)
     assert.ok(!free.includes('/ month'), 'Free is not a monthly charge')
-    for (const line of ['Everything to run a service on one machine.', 'Live audience output + stage display', 'Bundled public-domain scripture + search', 'Service plans, timers & themes']) assert.ok(free.includes(line), `Free is missing: ${line}`)
-    for (const line of ['For multi-output and streaming churches.', 'Everything in Free', 'NDI + multiple simultaneous outputs', 'Mobile control over your local network']) assert.ok(pro.includes(line), `Pro is missing: ${line}`)
-    for (const line of ['For multi-site teams and larger ministries.', 'Everything in Pro', 'Multi-campus / site licensing']) assert.ok(church.includes(line), `Church is missing: ${line}`)
   })
 
   test('testimonials (home-35): typographic quotes and the "·" role format; the label stays TESTIMONIALS', () => {
@@ -587,35 +783,18 @@ describe('copy follows the ledger: Figma\'s wording where the repo backs it', ()
     const roles = findAll(t, (e) => e.tag === 'figcaption').map((c) => textOf(c))
     for (const r of roles) assert.match(r, / · /, `role without the "·" format: ${r}`)
     assert.ok(!roles.join().includes(' @ '), 'the "@" format is gone')
-    assert.ok(textOf(t).includes('TESTIMONIALS'))
     assert.ok(!textOf(t).includes('FROM THE TECH BOOTH'), 'that label would attribute the quotes to tech teams (home-36 is open)')
   })
 
-  test('faq (home-38): the five Figma questions, in order, with the answers the repo backs', () => {
+  test('faq (home-38): the five Figma questions, in order', () => {
     const faq = section(page, 'faq-section')
-    const qs = findAll(faq, (e) => e.tag === 'button').map((b) => textOf(b))
-    assert.deepEqual(qs, [
+    assert.deepEqual(findAll(faq, (e) => e.tag === 'button').map((b) => textOf(b)), [
       'Do I need an internet connection?',
       'Which platforms are supported?',
       'Can I use my own songs, slides, and designs?',
       'What is NDI, and do I need it?',
       'How does billing work?',
     ])
-    const t = textOf(faq)
-    for (const line of [
-      'No. SelahCue is offline-first — the whole service runs on-device, so a dropped internet connection never stops it.',
-      'Yes. Build multi-slide song lyrics, stage any scripture, and design your own slide templates in the Theme Designer.',
-      "NDI sends your program video over the local network to software like OBS or vMix — no capture card required. It's optional.",
-      'SelahCue Pro is a simple monthly subscription; the Free plan is free forever. Cancel anytime — and the app keeps running fully offline during your service either way.',
-    ]) assert.ok(t.includes(line), `faq is missing: ${line}`)
-    assert.ok(t.includes('Additionally, you can pair any iOS or Android phone'), 'the platforms answer is kept as it is (home-38, 40, 45 are open)')
-  })
-
-  test('final band: heading, sub, and the two buttons', () => {
-    const t = words('final-cta-section')
-    for (const line of ['Ready to run your best service yet?', 'Start free and go live this Sunday. Cancel anytime — and it runs fully offline when it matters most.', 'Download free', 'See pricing']) {
-      assert.ok(t.includes(line), `final band is missing: ${line}`)
-    }
   })
 })
 
@@ -639,6 +818,9 @@ const FORBIDDEN: ReadonlyArray<{ re: RegExp; why: string; sample: string }> = [
   { re: /Linux/i, why: 'Linux is not drawn in Figma and no installer is confirmed', sample: 'Linux is on the roadmap' },
   { re: /installer|\.msi|\.dmg|\.exe/i, why: 'no downloadable installer is claimed', sample: 'download the installer' },
   { re: /FROM THE TECH BOOTH/i, why: 'attributes the live quotes to tech teams (home-36)', sample: 'FROM THE TECH BOOTH' },
+  { re: /Everything runs on-device/i, why: 'NFR-015 is "all core live functions operate with the network disabled", not everything (sign-in, activation and the first speech-model download need the network)', sample: 'Everything runs on-device — no internet and no cloud dependency' },
+  { re: /whole service runs on-device/i, why: 'the same overreach, in the FAQ', sample: 'the whole service runs on-device, so a dropped connection never stops it' },
+  { re: /\bno lag\b/i, why: 'an unmeasured promise (the PRD targets under 200 ms on the LAN, NFR-009); "zero lag" is banned for the same reason', sample: 'No internet, no lag, no surprises.' },
 ]
 
 describe('no unbacked claim is added', () => {
@@ -684,14 +866,27 @@ const HEX_ALLOWED: Readonly<Record<string, string>> = {
   '#a5b4fc': 'the hero pill ink: accessible light indigo kept instead of Figma\'s #5b6bd6 (3.7:1; home-15, class B; 9.6:1 here)',
 }
 
-function hexProblems(css: string): string[] {
-  const found = new Set([...css.replace(/\/\*[\s\S]*?\*\//g, '').matchAll(/#[0-9a-fA-F]{3,8}\b/g)].map((m) => m[0].toLowerCase()))
-  return [...found].filter((h) => !(h in HEX_ALLOWED)).map((h) => `literal colour ${h} is not a token or a documented Figma literal`)
+/**
+ * `rgb()` and `rgba()` literals that may appear: black, for the shadow and the darkened pill, and Figma's
+ * shadow ink #05080f. A brand colour with an alpha is `color-mix()` of the token, not a copy of its channels
+ * (the hero glow was `rgba(110, 92, 240, 0.15)`, the brand colour typed out).
+ */
+const RGB_ALLOWED: ReadonlySet<string> = new Set(['0, 0, 0', '5, 8, 15'])
+
+function literalColourProblems(css: string): string[] {
+  const clean = css.replace(/\/\*[\s\S]*?\*\//g, '')
+  const hex = new Set([...clean.matchAll(/#[0-9a-fA-F]{3,8}\b/g)].map((m) => m[0].toLowerCase()))
+  const out = [...hex].filter((h) => !(h in HEX_ALLOWED)).map((h) => `literal colour ${h} is not a token or a documented Figma literal`)
+  for (const m of clean.matchAll(/\b(rgba?|hsla?)\(\s*([^)]*)\)/gi)) {
+    const channels = (m[2] ?? '').split(/[,/]/).slice(0, 3).map((c) => c.trim()).join(', ')
+    if (m[1]?.toLowerCase().startsWith('hsl') || !RGB_ALLOWED.has(channels)) out.push(`literal colour ${m[0]} is not a token or a documented literal`)
+  }
+  return [...new Set(out)]
 }
 
 describe('the six files take their colour, weight and size from tokens (home-06, home-07, home-08)', () => {
   test('no off-token colour literal in any of the files (the grey #8c97a8, the ink #717d93, the grounds #090a0f and #12151e are gone)', () => {
-    for (const f of FILES) assert.deepEqual(hexProblems(sfcStyles(f)), [], f)
+    for (const f of FILES) assert.deepEqual(literalColourProblems(sfcStyles(f)), [], f)
   })
 
   test('no !important and no 800-weight heading in any of the files', () => {
@@ -702,9 +897,14 @@ describe('the six files take their colour, weight and size from tokens (home-06,
     }
   })
 
-  test('CONTROL: the colour check reports a stray literal and passes tokens, rgba and the documented ones', () => {
-    assert.deepEqual(hexProblems('.a { color: #8c97a8; } .b { color: #FFF }'), ['literal colour #8c97a8 is not a token or a documented Figma literal'])
-    assert.deepEqual(hexProblems('.a { color: var(--sc-text-secondary); background: rgba(110, 92, 240, 0.15); border: 1px solid #fff; }'), [])
+  test('CONTROL: the colour check reports a stray hex, a brand colour typed out as rgba and an hsl(), and passes tokens, black alphas, color-mix and the documented hexes', () => {
+    assert.deepEqual(literalColourProblems('.a { color: #8c97a8; } .b { color: #FFF }'), ['literal colour #8c97a8 is not a token or a documented Figma literal'])
+    assert.deepEqual(literalColourProblems('.g { background: radial-gradient(circle, rgba(110, 92, 240, 0.15) 0%, transparent 70%); }'), ['literal colour rgba(110, 92, 240, 0.15) is not a token or a documented literal'])
+    assert.equal(literalColourProblems('.h { color: hsl(250 80% 60%); }').length, 1)
+    assert.deepEqual(
+      literalColourProblems('.a { color: var(--sc-text-secondary); background: rgba(0, 0, 0, 0.1); box-shadow: 0 1px rgba(5, 8, 15, .7); border: 1px solid #fff; fill: color-mix(in srgb, var(--sc-primary) 15%, transparent); }'),
+      [],
+    )
   })
 })
 
@@ -789,6 +989,28 @@ describe('the layout numbers the audit measured (home-04, 05, 06, 08, 16, 26, 41
   test('the hero button row is centred, so the quiet 47px button is not stretched to the 49px solid one (Cody, PR 172)', () => {
     assert.equal(at(['hero-actions'])['align-items'], 'center')
     assert.equal(at(['cta-btn-group'])['align-items'], 'center')
+  })
+})
+
+describe('the FAQ skin: Home draws the Figma rows over the shared accordion until its defaults change', () => {
+  const skin = parseCss(sfcStyles('views/HomeView.vue'))
+  const rule = (selector: string): Record<string, string> => effectiveExact(skin, selector, { width: 1440 })
+
+  test('the three overrides exist with Figma\'s numbers (478:155: questions 18/600, answers 15.5/24, 10px under an open question)', () => {
+    assert.equal(rule('.faq-wrapper :deep(.faq-question)')['font-size'], '18px')
+    assert.equal(rule('.faq-wrapper :deep(.faq-item.open .faq-question)')['padding-bottom'], '10px')
+    const answer = rule('.faq-wrapper :deep(.faq-answer p)')
+    assert.deepEqual([answer['font-size'], answer['line-height']], ['15.5px', '24px'])
+  })
+
+  test('every class the skin reaches into exists in the rendered accordion, so renaming one in FaqAccordion fails here instead of silently dropping the skin', () => {
+    const faq = findAll(page, (e) => hasClass(e, 'faq-wrapper'))[0] as El
+    assert.ok(faq, 'no .faq-wrapper')
+    assert.ok(findAll(faq, (e) => hasClass(e, 'faq-question') && e.tag === 'button').length === 5, '.faq-question buttons')
+    assert.ok(findAll(faq, (e) => hasClass(e, 'faq-item') && hasClass(e, 'open')).length === 1, 'one open .faq-item')
+    assert.ok(findAll(faq, (e) => hasClass(e, 'faq-item') && hasClass(e, 'open')).every((item) => findAll(item, (e) => hasClass(e, 'faq-question')).length === 1), 'an open item holds its .faq-question')
+    assert.ok(findAll(faq, (e) => hasClass(e, 'faq-answer')).every((a) => findAll(a, (e) => e.tag === 'p').length === 1), '.faq-answer holds a p')
+    assert.equal(findAll(faq, (e) => hasClass(e, 'faq-answer')).length, 5)
   })
 })
 

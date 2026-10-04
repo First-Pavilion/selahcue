@@ -71,7 +71,8 @@ const props = defineProps({
   stroke: { type: Number, default: 1.74 },
 })
 
-const icon = computed(() => ICONS[props.name])
+// An own property, never an inherited one: `constructor` and `__proto__` are "properties" of every object.
+const icon = computed(() => (Object.hasOwn(ICONS, props.name) ? ICONS[props.name] : undefined))
 const strokeUnits = computed(() => (props.stroke * (icon.value?.box ?? 24)) / props.size)
 </script>
 
