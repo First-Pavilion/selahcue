@@ -31,6 +31,7 @@ import type { ViteDevServer } from 'vite'
 
 import { elementsOf, prop, readSrc, styleOf, valueOf } from './fixtures/sfcSource.ts'
 import {
+  classesOf,
   headingsOf,
   outlineProblems,
   renderView,
@@ -39,12 +40,14 @@ import {
   textOf,
   withClass,
   type Heading,
+  type Tag,
 } from './fixtures/viewRender.ts'
 
 /** Grows as each page is brought to its frame; the final list is all nine. */
 const PAGES = [
   { file: 'ContactView.vue', route: '/contact' },
   { file: 'SupportView.vue', route: '/support' },
+  { file: 'DocsView.vue', route: '/docs' },
 ] as const
 
 let server: ViteDevServer
@@ -115,6 +118,8 @@ const UNBACKED_FIGMA_STRINGS = [
   'within one business day',
   'We usually reply',
   'Response time',
+  '10 minutes',
+  'Windows & macOS install',
 ] as const
 
 function addedClaims(text: string): string[] {
@@ -339,5 +344,92 @@ describe('Support (498:124): hero, search, category cards, one grouped article p
     const page = await html('SupportView.vue')
     assert.ok(/\d+ articles?/.test(textOf(page)))
     assert.ok(withClass(page, 'cat-article-link').length >= 11, 'every real article is still linked from its category card')
+  })
+})
+
+// --------------------------------------------------------------------------- Docs
+
+describe('Docs (499:124): centred hero, grouped sidebar with an active item, getting-started hub', () => {
+  test('the hero is a DOCS pill, h1 "Documentation" and a lead, outside any card (docs-01)', async () => {
+    const page = await html('DocsView.vue')
+    const [h1] = headingsOf(page)
+    assert.equal(h1?.level, 1)
+    assert.equal(h1?.text, 'Documentation')
+    assert.ok(textOf(page).includes('DOCS'))
+    assert.equal(withClass(page, 'docs-content').length, 0, 'the old one-card wrapper is gone')
+    assert.equal(withClass(page, 'breadcrumb').length, 0, 'the frame draws no breadcrumb')
+    assert.ok(page.indexOf('Documentation</h1>') < page.indexOf('docs-sidebar'), 'the hero is above the sidebar')
+  })
+
+  test('the lead makes no promise the content layer does not back (docs-01, docs-04)', async () => {
+    const text = textOf(await html('DocsView.vue'))
+    assert.ok(!/Everything you need to install/i.test(text), 'Figma says "install"; there is no installation article')
+  })
+
+  test('the sidebar is grouped GETTING STARTED / GUIDES / REFERENCE and holds every real category once (docs-02)', async () => {
+    const page = await html('DocsView.vue')
+    const labels = withClass(page, 'group-label')
+    const text = textOf(page)
+    assert.deepEqual(labels.map((t) => t.name), ['p', 'p', 'p'])
+    for (const label of ['GETTING STARTED', 'GUIDES', 'REFERENCE']) assert.ok(text.includes(label), label)
+    const items = withClass(page, 'nav-item')
+    assert.equal(items.length, 6)
+    assert.deepEqual(
+      items.map((t) => t.attrs['href']),
+      ['/docs#getting-started', '/docs#display-outputs', '/docs#scripture-bibles', '/docs#timers-plans', '/docs#mobile-control', '/docs#troubleshooting'],
+    )
+  })
+
+  test('exactly one sidebar item is the current one, programmatically and visibly (docs-02)', async () => {
+    const page = await html('DocsView.vue')
+    const items = withClass(page, 'nav-item')
+    const current = items.filter((t) => t.attrs['aria-current'] !== undefined && t.attrs['aria-current'] !== 'false')
+    assert.equal(current.length, 1, 'one item carries aria-current')
+    assert.equal(current[0]?.attrs['aria-current'], 'location')
+    assert.ok(classesOf(current[0] as Tag).includes('is-active'), 'and the same item has the visible active class')
+    assert.equal(withClass(page, 'is-active').length, 1)
+    assert.ok(!/aria-current-value/.test(page), 'the junk attribute is gone')
+    const css = styleOf(readSrc('views/DocsView.vue'))
+    assert.match(css, /\.nav-item\.is-active\s*\{[^}]*font-weight:\s*600/)
+  })
+
+  test('the sidebar is 248 wide and the content column follows it at a 40px gap (docs-08)', () => {
+    const css = styleOf(readSrc('views/DocsView.vue'))
+    assert.match(css, /grid-template-columns:\s*248px minmax\(0, 1fr\)/)
+    assert.match(css, /\.docs-layout\s*\{[^}]*gap:\s*40px/)
+  })
+
+  test('the group labels are not in the muted ink (docs-07)', () => {
+    const css = styleOf(readSrc('views/DocsView.vue'))
+    assert.match(css, /\.group-label\s*\{[^}]*color:\s*var\(--sc-text-secondary\)/)
+  })
+
+  test('the getting-started hub: h2, intro, a callout that goes to a real article, and a tile for every category (docs-03)', async () => {
+    const page = await html('DocsView.vue')
+    const heads = headingsOf(page)
+    assert.ok(heads.some((h) => h.level === 2 && h.text === 'Getting started'))
+    const callout = withClass(page, 'start-callout')
+    assert.equal(callout.length, 1)
+    const startLink = tagsOf(page).find((t) => t.name === 'a' && classesOf(t).includes('start-button'))
+    assert.ok(startLink && /^\/docs\/[a-z-]+\/[a-z-]+$/.test(startLink.attrs['href'] ?? ''), 'Start guide links to a real article')
+    assert.ok(textOf(page).includes('Start guide'))
+    const tiles = withClass(page, 'topic-tile')
+    assert.equal(tiles.length, 6)
+    for (const tile of tiles) {
+      assert.equal(tile.name, 'a')
+      assert.ok((tile.attrs['href'] ?? '').startsWith('/docs#'), 'a tile goes to its category section')
+    }
+    assert.ok(!heads.some((h) => h.level >= 4))
+  })
+
+  test('the callout and tiles claim nothing the repo does not back (docs-04): no 10 minutes, no install or audio copy', async () => {
+    const text = textOf(await html('DocsView.vue'))
+    for (const bad of ['10 minutes', 'Windows & macOS install', 'audio, and per-output']) assert.ok(!text.includes(bad), bad)
+  })
+
+  test('the build\'s own article index stays under the hub (docs-05, 06 are decisions)', async () => {
+    const page = await html('DocsView.vue')
+    assert.ok(withClass(page, 'topic-link').length >= 11)
+    assert.equal(withClass(page, 'topic').length, 6)
   })
 })

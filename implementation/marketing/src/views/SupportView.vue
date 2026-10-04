@@ -2,6 +2,7 @@
 import { computed, ref } from 'vue'
 import UiBadge from '@/components/UiBadge.vue'
 import UiButton from '@/components/UiButton.vue'
+import CategoryIcon from '@/components/article/CategoryIcon.vue'
 import { searchSupport, supportArticles, supportCategories, supportIn, supportPath } from '@/lib/content/support.ts'
 import { readMinutes } from '@/lib/content/text.ts'
 
@@ -13,40 +14,9 @@ const searchQuery = ref('')
 const startHere = supportArticles.filter((a) => a.startHere)
 const categoryTitle = (id: string): string => supportCategories.find((c) => c.id === id)?.title ?? id
 
-/**
- * The frame's icon tile for each category: a feather-style stroke icon (MARKETING-SITE-HANDOFF 7) on
- * a brand, preview, warn or live fill, in the frame's order. The content source carries an emoji;
- * the page draws its own icon instead, and an id with no entry here falls back to the first.
- */
-type Shape = readonly [tag: string, attrs: Record<string, string>]
-const ICONS: Record<string, readonly Shape[]> = {
-  'getting-started': [['polygon', { points: '13 2 3 14 12 14 11 22 21 10 12 10 13 2' }]],
-  'display-outputs': [
-    ['rect', { x: '2', y: '3', width: '20', height: '14', rx: '2', ry: '2' }],
-    ['line', { x1: '8', y1: '21', x2: '16', y2: '21' }],
-    ['line', { x1: '12', y1: '17', x2: '12', y2: '21' }]
-  ],
-  'scripture-bibles': [
-    ['path', { d: 'M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z' }],
-    ['path', { d: 'M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z' }]
-  ],
-  'timers-clocks': [
-    ['circle', { cx: '12', cy: '12', r: '10' }],
-    ['polyline', { points: '12 6 12 12 16 14' }]
-  ],
-  'mobile-control': [
-    ['rect', { x: '5', y: '2', width: '14', height: '20', rx: '2', ry: '2' }],
-    ['line', { x1: '12', y1: '18', x2: '12.01', y2: '18' }]
-  ],
-  troubleshooting: [
-    ['circle', { cx: '12', cy: '12', r: '10' }],
-    ['line', { x1: '12', y1: '8', x2: '12', y2: '12' }],
-    ['line', { x1: '12', y1: '16', x2: '12.01', y2: '16' }]
-  ]
-}
-const TONES = ['is-brand', 'is-preview', 'is-warn', 'is-brand', 'is-preview', 'is-live']
-const iconFor = (id: string): readonly Shape[] => ICONS[id] ?? ICONS['getting-started'] ?? []
-const toneFor = (index: number): string => TONES[index % TONES.length] ?? 'is-brand'
+/** The tile's fill, in the frame's order: brand, preview, warn, brand, preview, live (Figma 498:152 to 498:187). */
+const TONES = ['brand', 'preview', 'warn', 'brand', 'preview', 'live'] as const
+const toneFor = (index: number) => TONES[index % TONES.length] ?? 'brand'
 
 /**
  * Client-side filter over the local articles (`lib/content/search.ts`, tested in node):
@@ -112,11 +82,7 @@ const statusText = computed(() => {
       <section class="categories-section container">
         <div class="categories-grid">
           <div v-for="(cat, index) in supportCategories" :id="cat.id" :key="cat.id" class="category-card">
-            <div :class="['cat-icon', toneFor(index)]" aria-hidden="true">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <component :is="shape[0]" v-for="(shape, si) in iconFor(cat.id)" :key="si" v-bind="shape[1]" />
-              </svg>
-            </div>
+            <CategoryIcon :id="cat.id" :tone="toneFor(index)" size="lg" />
             <h2 class="cat-title">{{ cat.title }}</h2>
             <p class="cat-desc">{{ cat.desc }}</p>
             <ul class="cat-articles">
@@ -272,26 +238,6 @@ const statusText = computed(() => {
   padding: 25px 23px;
   cursor: default;
 }
-
-.cat-icon {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 48px;
-  height: 48px;
-  border-radius: 13px;
-  color: #fff;
-}
-
-.cat-icon svg {
-  width: 24px;
-  height: 24px;
-}
-
-.cat-icon.is-brand { background: var(--sc-primary); }
-.cat-icon.is-preview { background: var(--sc-preview); }
-.cat-icon.is-warn { background: var(--sc-warn); }
-.cat-icon.is-live { background: var(--sc-live); }
 
 .cat-title {
   font-size: 18px;
