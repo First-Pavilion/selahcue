@@ -13,15 +13,41 @@ const errors = ref<Record<string, string>>({})
 const isSubmitting = ref(false)
 const isSubmitted = ref(false)
 
+/**
+ * One rule per field, so a field can be checked when it loses focus and again on submit. The 100
+ * character limits on name and church (MARKETING-PORTAL-GAP-FILL-HANDOFF 6a) are rules here, not a
+ * `maxlength`: FormField puts `maxlength` on a textarea only, so an input would ignore it.
+ */
+const NAME_LIMIT = 100
+
+const rules: Record<string, () => string> = {
+  name: () => {
+    if (!name.value) return 'Name is required'
+    return name.value.length > NAME_LIMIT ? `Name must be ${NAME_LIMIT} characters or fewer` : ''
+  },
+  email: () => {
+    if (!email.value) return 'Email is required'
+    return /\S+@\S+\.\S+/.test(email.value) ? '' : 'Please enter a valid email address'
+  },
+  org: () => (org.value.length > NAME_LIMIT ? `Church / organization must be ${NAME_LIMIT} characters or fewer` : ''),
+  message: () => (message.value ? '' : 'Message is required')
+}
+
+/** Validation on blur (MARKETING-PORTAL-GAP-FILL-HANDOFF 6b): show or clear that one field's error. */
+const checkField = (field: string) => {
+  const problem = rules[field]?.() ?? ''
+  const next = { ...errors.value }
+  if (problem) next[field] = problem
+  else delete next[field]
+  errors.value = next
+}
+
 const handleSubmit = () => {
   errors.value = {}
-  if (!name.value) errors.value.name = 'Name is required'
-  if (!email.value) {
-    errors.value.email = 'Email is required'
-  } else if (!/\S+@\S+\.\S+/.test(email.value)) {
-    errors.value.email = 'Please enter a valid email address'
+  for (const field of Object.keys(rules)) {
+    const problem = rules[field]?.() ?? ''
+    if (problem) errors.value[field] = problem
   }
-  if (!message.value) errors.value.message = 'Message is required'
 
   if (Object.keys(errors.value).length === 0) {
     isSubmitting.value = true
@@ -35,45 +61,15 @@ const handleSubmit = () => {
 
 <template>
   <div class="contact-page">
-    <div class="container">
+    <section class="page-hero container">
+      <UiBadge variant="featured">CONTACT</UiBadge>
+      <h1 class="hero-title">Let's talk</h1>
+      <p class="hero-sub">Questions about SelahCue, help with getting set up, or partnering with us. Here is how to get in touch.</p>
+    </section>
+
+    <div class="container contact-split">
       <div class="contact-layout">
-        <!-- Left: Contact Info Cards -->
-        <div class="contact-info">
-          <UiBadge variant="featured">Get in Touch</UiBadge>
-          <h1 class="info-title">We're here to help your church succeed</h1>
-          <p class="info-sub">Have a question about SelahCue, pricing, licensing, or custom deployment? Reach out to our team.</p>
-
-          <div class="method-cards">
-            <div class="method-card">
-              <div class="method-icon">💬</div>
-              <div>
-                <h4>Community & Discord</h4>
-                <p>Join 1,200+ worship tech leaders on Discord for instant help.</p>
-                <a href="#" class="method-link">Join Discord Community →</a>
-              </div>
-            </div>
-
-            <div class="method-card">
-              <div class="method-icon">📧</div>
-              <div>
-                <h4>Support & Sales Email</h4>
-                <p>Email our dedicated support team directly.</p>
-                <a href="mailto:support@selahcue.app" class="method-link">support@selahcue.app →</a>
-              </div>
-            </div>
-
-            <div class="method-card">
-              <div class="method-icon">🏢</div>
-              <div>
-                <h4>Enterprise & Multi-Campus</h4>
-                <p>Talk to our church solutions architect for enterprise SLAs.</p>
-                <a href="#" class="method-link">Schedule a Demo Call →</a>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <!-- Right: Contact Form -->
+        <!-- Left: the form. First in the DOM so Tab order is the form, then the cards (Figma column order). -->
         <div class="contact-form-card">
           <div v-if="isSubmitted" class="success-state">
             <div class="success-icon">✓</div>
@@ -84,55 +80,107 @@ const handleSubmit = () => {
             </UiButton>
           </div>
 
-          <form v-else @submit.prevent="handleSubmit">
+          <form v-else class="contact-form" aria-label="Contact us" @submit.prevent="handleSubmit">
             <h2 class="form-title">Send us a message</h2>
-            
+
             <FormField
               v-model="name"
-              label="Your Name"
-              placeholder="Sarah Jenkins"
+              label="Full name"
+              placeholder="Jane Pastor"
               required
               :error="errors.name"
               :disabled="isSubmitting"
+              @blur="checkField('name')"
             />
 
             <FormField
               v-model="email"
               type="email"
-              label="Email Address"
-              placeholder="sarah@gracechurch.org"
+              label="Email"
+              placeholder="jane@yourchurch.org"
               required
               :error="errors.email"
               :disabled="isSubmitting"
+              @blur="checkField('email')"
             />
 
             <FormField
               v-model="org"
-              label="Church / Organization (Optional)"
+              label="Church / organization"
               placeholder="Grace Community Church"
+              :error="errors.org"
               :disabled="isSubmitting"
+              @blur="checkField('org')"
             />
 
             <FormField
               v-model="message"
               type="textarea"
-              label="Your Message"
-              placeholder="Tell us how we can help..."
+              label="How can we help?"
+              placeholder="Tell us a little about what you need…"
               required
               :maxLength="2000"
               :error="errors.message"
               :disabled="isSubmitting"
+              @blur="checkField('message')"
             />
 
-            <UiButton 
-              variant="gradient" 
-              size="lg" 
-              class="full-btn"
+            <UiButton
+              variant="primary"
+              size="lg"
+              block
               :loading="isSubmitting"
             >
-              Send Message
+              Send message
             </UiButton>
           </form>
+        </div>
+
+        <!-- Right: the other ways to get in touch. -->
+        <div class="method-cards">
+          <div class="method-card">
+            <div class="method-icon is-brand" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z" />
+                <polyline points="22,6 12,13 2,6" />
+              </svg>
+            </div>
+            <div class="method-body">
+              <h2>Support & Sales Email</h2>
+              <p>Email our dedicated support team directly.</p>
+              <a href="mailto:support@selahcue.app" class="method-link">support@selahcue.app</a>
+            </div>
+          </div>
+
+          <div class="method-card">
+            <div class="method-icon is-warn" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
+                <circle cx="9" cy="7" r="4" />
+                <path d="M23 21v-2a4 4 0 0 0-3-3.87" />
+                <path d="M16 3.13a4 4 0 0 1 0 7.75" />
+              </svg>
+            </div>
+            <div class="method-body">
+              <h2>Community & Discord</h2>
+              <p>Join 1,200+ worship tech leaders on Discord for instant help.</p>
+              <a href="#" class="method-link">Join Discord Community</a>
+            </div>
+          </div>
+
+          <div class="method-card">
+            <div class="method-icon is-preview" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="2" y="7" width="20" height="14" rx="2" ry="2" />
+                <path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16" />
+              </svg>
+            </div>
+            <div class="method-body">
+              <h2>Enterprise & Multi-Campus</h2>
+              <p>Talk to our church solutions architect for enterprise SLAs.</p>
+              <a href="#" class="method-link">Schedule a Demo Call</a>
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -141,43 +189,59 @@ const handleSubmit = () => {
 
 <style scoped>
 .contact-page {
-  padding: 80px 0;
   background: var(--sc-base);
-  min-height: calc(100vh - 160px);
+  padding-bottom: 64px;
 }
 
-.container {
-  max-width: 1140px;
-  margin: 0 auto;
-  padding: 0 var(--page-gutter);
+/* HERO (Figma 497:139): padding 96 top / 32 bottom, 20px between the pill, the headline and the
+   subline, all centred. The headline takes the shared page-hero token and is set to the frame's 50/56
+   from the desktop breakpoint up; below it the token's own steps (44, 36) apply. */
+.page-hero {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 20px;
+  padding-top: 96px;
+  padding-bottom: 32px;
+  text-align: center;
+}
+
+.hero-title {
+  font: var(--font-h1-page);
+  color: var(--sc-text);
+}
+
+@media (min-width: 1200px) {
+  .hero-title {
+    font-size: 50px;
+    line-height: 56px;
+  }
+}
+
+.hero-sub {
+  max-width: 680px;
+  font-size: 19px;
+  line-height: 30px;
+  color: var(--sc-text-secondary);
+}
+
+/* THE SPLIT (Figma 497:144): two 604px columns at 1440 (1248 content, 40px gap), form left, cards
+   right, both starting at the top. */
+.contact-split {
+  padding-top: 40px;
 }
 
 .contact-layout {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 60px;
+  gap: 40px;
   align-items: start;
-}
-
-.info-title {
-  font-size: 38px;
-  font-weight: 700;
-  color: var(--sc-text);
-  margin: 16px 0;
-  line-height: 1.2;
-}
-
-.info-sub {
-  font-size: 16px;
-  color: var(--sc-text-secondary);
-  line-height: 1.6;
-  margin-bottom: 40px;
 }
 
 .method-cards {
   display: flex;
   flex-direction: column;
-  gap: 20px;
+  gap: 16px;
 }
 
 .method-card {
@@ -185,30 +249,57 @@ const handleSubmit = () => {
   gap: 16px;
   background: var(--sc-surface);
   border: 1px solid var(--sc-border);
-  border-radius: 14px;
-  padding: 20px;
+  border-radius: 16px;
+  /* Figma pads 20 / 22 from the frame's edge and draws the stroke inside it, so the CSS padding is
+     one pixel less each side to put the icon and the text where the frame does. */
+  padding: 19px 21px;
 }
 
 .method-icon {
-  font-size: 24px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 46px;
+  height: 46px;
+  border-radius: 12px;
+  color: #fff;
 }
 
-.method-card h4 {
-  font-size: 16px;
+.method-icon svg {
+  width: 22px;
+  height: 22px;
+}
+
+.method-icon.is-brand { background: var(--sc-primary); }
+.method-icon.is-preview { background: var(--sc-preview); }
+.method-icon.is-warn { background: var(--sc-warn); }
+
+.method-body {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+  min-width: 0;
+}
+
+.method-card h2 {
+  font-size: 16.5px;
   font-weight: 600;
+  line-height: 20px;
   color: var(--sc-text);
-  margin: 0 0 4px 0;
 }
 
 .method-card p {
-  font-size: 13px;
+  font-size: 13.5px;
+  line-height: 16px;
   color: var(--sc-text-secondary);
-  margin: 0 0 8px 0;
 }
 
 .method-link {
-  font-size: 13px;
-  font-weight: 600;
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 17px;
   color: var(--sc-primary);
   text-decoration: none;
 }
@@ -217,23 +308,66 @@ const handleSubmit = () => {
   text-decoration: underline;
 }
 
+/* THE FORM CARD (Figma 497:145): 604 wide, padding 32 from the edge (31 plus the 1px border), 18px
+   between the title, the fields and the button, and no shadow. */
 .contact-form-card {
   background: var(--sc-surface);
   border: 1px solid var(--sc-border);
   border-radius: 20px;
-  padding: 40px;
-  box-shadow: 0 20px 50px rgba(0,0,0,0.4);
+  padding: 31px;
+}
+
+.contact-form {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
 }
 
 .form-title {
-  font-size: 22px;
-  font-weight: 700;
+  font-size: 20px;
+  font-weight: 600;
+  line-height: 24px;
   color: var(--sc-text);
-  margin: 0 0 24px 0;
 }
 
-.full-btn {
-  width: 100%;
+/* FormField is shared and owns its look (label and well styling are a pending decision between two
+   handoffs, contact-19). Only the GEOMETRY the frame fixes is set here: a field row is 16 + 7 + 44 =
+   67px, the input 44 high, the textarea 120, no spare line under a field that has nothing to say.
+   The placeholder and the counter take the secondary ink (the frame's own, 7.4:1 on the well);
+   the muted ink was the wrong role for them (contact-13). */
+.contact-form :deep(.form-field) {
+  margin-bottom: 0;
+  gap: 7px;
+}
+
+.contact-form :deep(.field-label) {
+  line-height: 16px;
+}
+
+.contact-form :deep(.field-input) {
+  padding: 12px 13px;
+  line-height: 18px;
+}
+
+.contact-form :deep(.field-textarea) {
+  min-height: 120px;
+  padding: 13px;
+}
+
+.contact-form :deep(.field-input::placeholder) {
+  color: var(--sc-text-secondary);
+}
+
+.contact-form :deep(.field-meta:empty) {
+  display: none;
+}
+
+.contact-form :deep(.char-count) {
+  color: var(--sc-text-secondary);
+}
+
+.contact-form :deep(.char-count.at-limit) {
+  color: var(--sc-live);
 }
 
 .success-state {
@@ -269,14 +403,14 @@ const handleSubmit = () => {
 @media (max-width: 1023.98px) {
   .contact-layout {
     grid-template-columns: minmax(0, 1fr);
-    gap: 40px;
   }
 }
 
 @media (max-width: 767.98px) {
-  .contact-page { padding: 40px 0 var(--section-pad-sm); }
-  .info-title { font-size: 36px; line-height: 40px; }
-  .info-sub { margin-bottom: 28px; }
+  .contact-page { padding-bottom: var(--section-pad-sm); }
+  .page-hero { padding-top: 56px; padding-bottom: 24px; gap: 16px; }
+  .hero-sub { font-size: 17px; line-height: 26px; }
+  .contact-split { padding-top: 24px; }
   .method-card { padding: 16px; }
   .method-link { display: inline-flex; align-items: center; min-height: 44px; }
   .contact-form-card { padding: 24px 20px; border-radius: 16px; }
