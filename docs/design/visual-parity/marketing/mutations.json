@@ -1,0 +1,609 @@
+{
+ "_comment": [
+  "One edit per control. scripts/vp_mutation_proof.py applies each to a scratch copy of scripts/ and requires the named self-test to go red.",
+  "A mutation that does not apply (the code moved) or that the self-test survives is a failure: update the list or fix the control.",
+  "Re-prove after any change to a cap, gate or check: python3 scripts/vp_mutation_proof.py"
+ ],
+ "mutations": [
+  {
+   "id": "slice-cap-off",
+   "file": "vp_slice.py",
+   "old": "> MAX_OUT_PIXELS:",
+   "new": "> 10**18:",
+   "runner": "selftest",
+   "control": "test_slice_output_cap_is_checked_before_allocation"
+  },
+  {
+   "id": "probe-counts-all-files",
+   "file": "vp_compare.py",
+   "old": "    js_files = sorted(n for n in os.listdir(assets) if n.endswith(\".js\"))\n    if len(js_files) > MAX_PROBE_JS_FILES:",
+   "new": "    js_files = sorted(os.listdir(assets))[:MAX_PROBE_JS_FILES]\n    if False:",
+   "runner": "selftest",
+   "control": "test_bundle_probe_counts_only_js_and_fails_at_its_cap"
+  },
+  {
+   "id": "run-cap-off",
+   "file": "vp_compare.py",
+   "old": "    if expected > suite.max_files_per_run:",
+   "new": "    if False:",
+   "runner": "selftest",
+   "control": "test_per_run_file_cap_is_enforced / test_comparator_main_wiring"
+  },
+  {
+   "id": "run-cap-ignores-reports",
+   "file": "vp_compare.py",
+   "old": "    expected = files + suite.report_files",
+   "new": "    expected = files",
+   "runner": "selftest",
+   "control": "test_comparator_main_wiring"
+  },
+  {
+   "id": "dump-cap-off",
+   "file": "vp_capture_marketing.py",
+   "old": "    if len(items) > MAX_DOM_ITEMS:",
+   "new": "    if False:",
+   "runner": "selftest",
+   "control": "test_dump_and_call_caps_bite"
+  },
+  {
+   "id": "focus-cap-off",
+   "file": "vp_capture_marketing.py",
+   "old": "    if len(focus) > MAX_FOCUS_ITEMS:",
+   "new": "    if False:",
+   "runner": "selftest",
+   "control": "test_dump_and_call_caps_bite"
+  },
+  {
+   "id": "calls-cap-off",
+   "file": "vp_capture_marketing.py",
+   "old": "        if len(calls) < MAX_CALLS:\n            calls.append(op)",
+   "new": "        if True:\n            calls.append(op)",
+   "runner": "selftest",
+   "control": "test_dump_and_call_caps_bite"
+  },
+  {
+   "id": "held-cap-off",
+   "file": "vp_capture_marketing.py",
+   "old": "            if len(held) < MAX_CALLS:\n                held.append(route)",
+   "new": "            if True:\n                held.append(route)",
+   "runner": "selftest",
+   "control": "test_dump_and_call_caps_bite"
+  },
+  {
+   "id": "settle-cap-off",
+   "file": "vp_capture_marketing.py",
+   "old": "page.wait_for_timeout(min(int(entry.get(\"settle_ms\", 700)), settle_cap))",
+   "new": "page.wait_for_timeout(int(entry.get(\"settle_ms\", 700)))",
+   "runner": "selftest",
+   "control": "test_capture_entry_wiring"
+  },
+  {
+   "id": "style-nodes-cap-off",
+   "file": "vp_core.py",
+   "old": "if len(texts) + len(boxes) > MAX_STYLE_NODES:",
+   "new": "if False:",
+   "runner": "selftest",
+   "control": "test_style_and_figma_node_caps_bite"
+  },
+  {
+   "id": "vsd-dom-cap-off",
+   "file": "vp_style_diff.py",
+   "old": "    if len(data.get(\"items\", [])) > MAX_NODES:",
+   "new": "    if False:",
+   "runner": "selftest",
+   "control": "test_style_and_figma_node_caps_bite"
+  },
+  {
+   "id": "vsd-figma-cap-off",
+   "file": "vp_style_diff.py",
+   "old": "    if n > MAX_NODES:",
+   "new": "    if False:",
+   "runner": "selftest",
+   "control": "test_style_and_figma_node_caps_bite"
+  },
+  {
+   "id": "artifact-images-cap-off",
+   "file": "build_fidelity_artifact.py",
+   "old": "    if len(plan) > MAX_IMAGES:",
+   "new": "    if False:",
+   "runner": "selftest",
+   "control": "test_artifact_builder_caps_refuse_before_writing"
+  },
+  {
+   "id": "artifact-bytes-cap-off",
+   "file": "build_fidelity_artifact.py",
+   "old": "        if total_bytes > MAX_TOTAL_BYTES:",
+   "new": "        if False:",
+   "runner": "selftest",
+   "control": "test_artifact_builder_caps_refuse_before_writing"
+  },
+  {
+   "id": "artifact-page-cap-off",
+   "file": "build_fidelity_artifact.py",
+   "old": "    if total > MAX_TOTAL_BYTES:",
+   "new": "    if False:",
+   "runner": "selftest",
+   "control": "test_artifact_builder_caps_refuse_before_writing"
+  },
+  {
+   "id": "pixel-budget-off",
+   "file": "vp_core.py",
+   "old": "    if w * h > MAX_CAPTURE_PIXELS:",
+   "new": "    if False:",
+   "runner": "selftest",
+   "control": "test_pixel_budget_refuses_before_decoding"
+  },
+  {
+   "id": "banded-ssim-wrong",
+   "file": "vp_core.py",
+   "old": "    return total / len(values), values, (bw, bh)",
+   "new": "    return total / (len(values) + 1), values, (bw, bh)",
+   "runner": "selftest",
+   "control": "test_banded_similarity_equals_the_whole_image_result"
+  },
+  {
+   "id": "pixel-stats-zero",
+   "file": "vp_core.py",
+   "old": "    total = sum(hist) or 1\n    mean = sum(i * n for i, n in enumerate(hist)) / total\n    over = sum(n for i, n in enumerate(hist) if i > threshold)\n    return mean, over / total",
+   "new": "    return 0.0, 0.0",
+   "runner": "selftest",
+   "control": "test_pixel_statistics_are_pinned"
+  },
+  {
+   "id": "inter-gate-off",
+   "file": "vp_capture_marketing.py",
+   "old": "    if require_inter and not (dump.get(\"doc\") or {}).get(\"inter\"):",
+   "new": "    if False:",
+   "runner": "selftest",
+   "control": "test_capture_entry_wiring"
+  },
+  {
+   "id": "truncated-gate-off",
+   "file": "vp_capture_marketing.py",
+   "old": "        if dump.get(\"truncated\"):\n            errors.append(",
+   "new": "        if False:\n            errors.append(",
+   "runner": "selftest",
+   "control": "test_capture_entry_wiring"
+  },
+  {
+   "id": "interrupt-guard-off",
+   "file": "vp_capture_marketing.py",
+   "old": "        if not interrupted:",
+   "new": "        if True:",
+   "runner": "selftest",
+   "control": "test_capture_entry_wiring"
+  },
+  {
+   "id": "unbuilt-probe-forced",
+   "file": "vp_compare.py",
+   "old": "            if probe.get(\"confirmed\"):",
+   "new": "            if True:",
+   "runner": "selftest",
+   "control": "test_comparator_main_wiring"
+  },
+  {
+   "id": "notrendered-probe-removed",
+   "file": "vp_compare.py",
+   "old": "                problem = source_probe_problem(probe_def) if probe_def else \\",
+   "new": "                problem = None if probe_def else \\",
+   "runner": "selftest",
+   "control": "test_comparator_main_wiring"
+  },
+  {
+   "id": "dom-failclosed-off",
+   "file": "vp_compare.py",
+   "old": "            if dom_problem:\n                # FAIL CLOSED.",
+   "new": "            if False:\n                # FAIL CLOSED.",
+   "runner": "selftest",
+   "control": "test_comparator_main_wiring"
+  },
+  {
+   "id": "unchecked-tolerated",
+   "file": "vp_compare.py",
+   "old": "        if row[\"status\"] == \"UNCHECKED\" and not args.allow_missing:",
+   "new": "        if False:",
+   "runner": "selftest",
+   "control": "test_comparator_main_wiring"
+  },
+  {
+   "id": "first-engine-only",
+   "file": "vp_compare.py",
+   "old": "        for engine, got in sorted(by_engine.items()):\n            row = dict(base, engine=engine)",
+   "new": "        for engine, got in sorted(by_engine.items())[:1]:\n            row = dict(base, engine=engine)",
+   "runner": "selftest",
+   "control": "test_marketing_deviation_gate_can_fail / test_comparator_main_wiring"
+  },
+  {
+   "id": "crop-width-not-cropped",
+   "file": "vp_compare.py",
+   "old": "    w = min(ref.width, act.width)\n    h = min(ref.height, act.height)",
+   "new": "    w = ref.width\n    h = min(ref.height, act.height)",
+   "runner": "selftest",
+   "control": "test_top_crop_alignment_reports_height_not_a_phantom_diff"
+  },
+  {
+   "id": "owned-allowlist-off",
+   "file": "check_fidelity_audit.py",
+   "runner": "audit-selftest",
+   "old": "            if owner not in OWNER_TICKETS:",
+   "new": "            if False:",
+   "control": "check_fidelity_audit.py --self-test"
+  },
+  {
+   "id": "owned-class-A-off",
+   "file": "check_fidelity_audit.py",
+   "runner": "audit-selftest",
+   "old": "            if cls != \"A\":\n                problems.append(\"%s: owned_by is only",
+   "new": "            if False:\n                problems.append(\"%s: owned_by is only",
+   "control": "check_fidelity_audit.py --self-test"
+  },
+  {
+   "id": "owned-cap-off",
+   "file": "check_fidelity_audit.py",
+   "runner": "audit-selftest",
+   "old": "    if owned_count > MAX_OWNED_BY:",
+   "new": "    if False:",
+   "control": "check_fidelity_audit.py --self-test"
+  },
+  {
+   "id": "dup-class-off",
+   "file": "check_fidelity_audit.py",
+   "runner": "audit-selftest",
+   "old": "                if t.get(\"class\") != cls:",
+   "new": "                if False:",
+   "control": "check_fidelity_audit.py --self-test"
+  },
+  {
+   "id": "dup-area-off",
+   "file": "check_fidelity_audit.py",
+   "runner": "audit-selftest",
+   "old": "                if t_area != area and t.get(\"scope\") != \"shared\" and t_area != \"shared-chrome\":",
+   "new": "                if False:",
+   "control": "check_fidelity_audit.py --self-test"
+  },
+  {
+   "id": "substance-off",
+   "file": "check_fidelity_audit.py",
+   "runner": "audit-selftest",
+   "old": "            elif _short(f.get(key), minimum):",
+   "new": "            elif False:",
+   "control": "check_fidelity_audit.py --self-test"
+  },
+  {
+   "id": "fix-thin-off",
+   "file": "check_fidelity_audit.py",
+   "runner": "audit-selftest",
+   "old": "            elif _short(f.get(\"fix\"), MIN_FIX):",
+   "new": "            elif False:",
+   "control": "check_fidelity_audit.py --self-test"
+  },
+  {
+   "id": "decision-thin-off",
+   "file": "check_fidelity_audit.py",
+   "runner": "audit-selftest",
+   "old": "            elif _short(f.get(\"decision\"), MIN_DECISION):",
+   "new": "            elif False:",
+   "control": "check_fidelity_audit.py --self-test"
+  },
+  {
+   "id": "b-source-unchecked",
+   "file": "check_fidelity_audit.py",
+   "runner": "audit-selftest",
+   "old": "                for why in source_problems(f[\"source\"], repo):",
+   "new": "                for why in []:",
+   "control": "check_fidelity_audit.py --self-test"
+  },
+  {
+   "id": "doc-existence-off",
+   "file": "check_fidelity_audit.py",
+   "runner": "audit-selftest",
+   "old": "        if tok in stems:\n            resolved += 1",
+   "new": "        if True:\n            resolved += 1",
+   "control": "check_fidelity_audit.py --self-test"
+  },
+  {
+   "id": "dec-existence-off",
+   "file": "check_fidelity_audit.py",
+   "runner": "audit-selftest",
+   "old": "        if dec in _decision_ids(repo):",
+   "new": "        if True:",
+   "control": "check_fidelity_audit.py --self-test"
+  },
+  {
+   "id": "file-existence-off",
+   "file": "check_fidelity_audit.py",
+   "runner": "audit-selftest",
+   "old": "        if exists:\n            resolved += 1\n        else:\n            problems.append(\"cites the file",
+   "new": "        if True:\n            resolved += 1\n        else:\n            problems.append(\"cites the file",
+   "control": "check_fidelity_audit.py --self-test"
+  },
+  {
+   "id": "commit-existence-off",
+   "file": "check_fidelity_audit.py",
+   "runner": "audit-selftest",
+   "old": "        elif found is False:\n            problems.append(\"cites commit",
+   "new": "        elif False:\n            problems.append(\"cites commit",
+   "control": "check_fidelity_audit.py --self-test"
+  },
+  {
+   "id": "measurement-recompute-off",
+   "file": "check_fidelity_audit.py",
+   "runner": "audit-selftest",
+   "old": "                if abs(actual - float(claimed)) > 0.06:",
+   "new": "                if False:",
+   "control": "check_fidelity_audit.py --self-test"
+  },
+  {
+   "id": "expected-node-off",
+   "file": "check_fidelity_audit.py",
+   "runner": "audit-selftest",
+   "old": "            elif got.get(\"node\") != node or got.get(\"kind\") != kind:",
+   "new": "            elif False:",
+   "control": "check_fidelity_audit.py --self-test"
+  },
+  {
+   "id": "ticket-known-off",
+   "file": "check_fidelity_audit.py",
+   "runner": "audit-selftest",
+   "old": "        if t_ref and tickets is not None and t_ref not in known_ids:",
+   "new": "        if False:",
+   "control": "check_fidelity_audit.py --self-test"
+  },
+  {
+   "id": "ticket-group-off",
+   "file": "check_fidelity_audit.py",
+   "runner": "audit-selftest",
+   "old": "                    elif f.get(\"ticket\") != known[g].get(\"id\"):",
+   "new": "                    elif False:",
+   "control": "check_fidelity_audit.py --self-test"
+  },
+  {
+   "id": "url-exact-off",
+   "file": "check_fidelity_audit.py",
+   "runner": "audit-selftest",
+   "old": "            elif safe_ticket_url(t) is None:",
+   "new": "            elif False:",
+   "control": "check_fidelity_audit.py --self-test"
+  },
+  {
+   "id": "safe-url-off",
+   "file": "check_fidelity_audit.py",
+   "runner": "audit-selftest",
+   "old": "    if TICKET_RE.match(tid) and url == CLICKUP_TASK_URL + tid:",
+   "new": "    if True:",
+   "control": "check_fidelity_audit.py --self-test"
+  },
+  {
+   "id": "meta-agree-off",
+   "file": "check_fidelity_audit.py",
+   "runner": "audit-selftest",
+   "old": "    if \"\" in origins or len(origins) != 1:",
+   "new": "    if False:",
+   "control": "check_fidelity_audit.py --self-test"
+  },
+  {
+   "id": "meta-commit-off",
+   "file": "check_fidelity_audit.py",
+   "runner": "audit-selftest",
+   "old": "        if found is False:\n            problems.append(\"origin_main",
+   "new": "        if False:\n            problems.append(\"origin_main",
+   "control": "check_fidelity_audit.py --self-test"
+  },
+  {
+   "id": "report-drift-off",
+   "file": "check_fidelity_audit.py",
+   "runner": "audit-selftest",
+   "old": "    if have == want:\n        return None",
+   "new": "    if True:\n        return None",
+   "control": "check_fidelity_audit.py --self-test"
+  },
+  {
+   "id": "bug-group-off",
+   "file": "check_fidelity_audit.py",
+   "runner": "audit-selftest",
+   "old": "            if b.get(\"group\") not in BUG_GROUPS:",
+   "new": "            if False:",
+   "control": "check_fidelity_audit.py --self-test"
+  },
+  {
+   "id": "api-status-off",
+   "file": "check_fidelity_audit.py",
+   "runner": "audit-selftest",
+   "old": "            if g.get(\"status\") not in API_STATUSES:",
+   "new": "            if False:",
+   "control": "check_fidelity_audit.py --self-test"
+  },
+  {
+   "id": "expected-surfaces-loop-off",
+   "file": "check_fidelity_audit.py",
+   "runner": "audit-selftest",
+   "old": "        for slug, (node, kind) in expected_surfaces.items():\n            got = catalogue.get(slug)",
+   "new": "        for slug, (node, kind) in []:\n            got = catalogue.get(slug)",
+   "control": "check_fidelity_audit.py --self-test"
+  },
+  {
+   "id": "radius-effective-off",
+   "file": "vp_style_diff.py",
+   "old": "    return min(half, r)\n",
+   "new": "    return r\n",
+   "control": "test_style_diff_review_fixes",
+   "runner": "selftest"
+  },
+  {
+   "id": "apostrophe-fold-off",
+   "file": "vp_style_diff.py",
+   "old": "    elif fold_punct(ft[\"t\"]).strip() != fold_punct(dt[\"text\"]).strip() and dt.get(\"tt\", \"none\") == \"none\":",
+   "new": "    elif ft[\"t\"].strip() != dt[\"text\"].strip() and dt.get(\"tt\", \"none\") == \"none\":",
+   "control": "test_style_diff_review_fixes",
+   "runner": "selftest"
+  },
+  {
+   "id": "textalign-always",
+   "file": "vp_style_diff.py",
+   "old": "        if f_ta != \"left\" or wide_box:",
+   "new": "        if True:",
+   "control": "test_style_diff_review_fixes",
+   "runner": "selftest"
+  },
+  {
+   "id": "prefilter-unsound",
+   "file": "vp_style_diff.py",
+   "old": "    return 2.0 * matches / total >= threshold",
+   "new": "    return 2.0 * matches / total >= threshold + 0.2",
+   "control": "test_style_diff_review_fixes",
+   "runner": "selftest"
+  },
+  {
+   "id": "prefilter-never-skips",
+   "file": "vp_style_diff.py",
+   "old": "    return 2.0 * matches / total >= threshold",
+   "new": "    return True",
+   "control": "test_style_diff_review_fixes",
+   "runner": "selftest"
+  },
+  {
+   "id": "reingest-style-dropped",
+   "file": "vp_core.py",
+   "old": "            entries[slug][\"style\"] = previous_style",
+   "new": "            pass",
+   "control": "test_reingest_keeps_style_registration",
+   "runner": "selftest"
+  },
+  {
+   "id": "orchestrator-guard-off",
+   "file": "visual_parity.py",
+   "old": "    if args.suite == \"marketing\" and (args.skip_web or args.skip_native):",
+   "new": "    if False:",
+   "control": "test_orchestrator_rejects_operator_only_flags_for_marketing",
+   "runner": "selftest"
+  },
+  {
+   "id": "artifact-link-always",
+   "file": "build_fidelity_artifact.py",
+   "old": "    if safe:\n        return '<a href=\"%s\">%s</a>' % (esc(safe), label)",
+   "new": "    if True:\n        return '<a href=\"%s\">%s</a>' % (esc(url), label)",
+   "control": "test_artifact_links_only_exact_ticket_urls",
+   "runner": "selftest"
+  },
+  {
+   "id": "dom-truncated-flag-ignored",
+   "file": "vp_compare.py",
+   "old": "    if dom.get(\"truncated\"):",
+   "new": "    if False:",
+   "control": "test_comparator_main_wiring",
+   "runner": "selftest"
+  },
+  {
+   "id": "dom-missing-ignored",
+   "file": "vp_compare.py",
+   "old": "    if not os.path.exists(path):\n        return None, \"DOM dump %s is missing\" % name",
+   "new": "    if False:\n        return None, \"DOM dump %s is missing\" % name",
+   "control": "test_comparator_main_wiring",
+   "runner": "selftest"
+  },
+  {
+   "id": "shallow-cannot-tell-off",
+   "file": "check_fidelity_audit.py",
+   "runner": "audit-selftest",
+   "old": "    if _is_shallow(repo):\n        return None  # history is truncated",
+   "new": "    if False:\n        return None  # history is truncated",
+   "control": "commit controls: an unreachable commit in a shallow clone is 'cannot tell'"
+  },
+  {
+   "id": "shallow-detect-never",
+   "file": "check_fidelity_audit.py",
+   "runner": "audit-selftest",
+   "old": "    return out.returncode == 0 and out.stdout.strip() == \"true\"",
+   "new": "    return False",
+   "control": "commit controls: a depth-1 clone is detected as shallow"
+  },
+  {
+   "id": "unreachable-always-cannot-tell",
+   "file": "check_fidelity_audit.py",
+   "runner": "audit-selftest",
+   "old": "        return None  # history is truncated: an unreachable commit is not evidence of a made-up one\n    return False",
+   "new": "        return None  # history is truncated: an unreachable commit is not evidence of a made-up one\n    return None",
+   "control": "commit controls: a made-up commit in a FULL repository is still rejected"
+  },
+  {
+   "id": "banding-constants-off",
+   "file": "vp_core.py",
+   "runner": "selftest",
+   "old": "SSIM_BAND_ROWS = 512\nSTAT_BAND_ROWS = 1024\n",
+   "new": "SSIM_BAND_ROWS = 10**9\nSTAT_BAND_ROWS = 10**9\n",
+   "control": "test_banding_bounds_the_rows_each_step_holds"
+  },
+  {
+   "id": "ssim-band-ignored",
+   "file": "vp_core.py",
+   "runner": "selftest",
+   "old": "    band_blocks = max(1, band_rows // block)\n",
+   "new": "    band_blocks = bh\n",
+   "control": "test_banding_bounds_the_rows_each_step_holds"
+  },
+  {
+   "id": "stats-band-ignored",
+   "file": "vp_core.py",
+   "runner": "selftest",
+   "old": "    w, h = a_rgb.size\n    hist = [0] * 256\n",
+   "new": "    w, h = a_rgb.size\n    hist = [0] * 256\n    band_rows = h\n",
+   "control": "test_banding_bounds_the_rows_each_step_holds"
+  },
+  {
+   "id": "ink-band-ignored",
+   "file": "vp_core.py",
+   "runner": "selftest",
+   "old": "    w, h = rgb.size\n    over = 0\n",
+   "new": "    w, h = rgb.size\n    over = 0\n    band_rows = h\n",
+   "control": "test_banding_bounds_the_rows_each_step_holds"
+  },
+  {
+   "id": "diff-band-ignored",
+   "file": "vp_core.py",
+   "runner": "selftest",
+   "old": "    out = Image.new(\"RGB\", act.size)\n    for y0 in range(0, h, band_rows):",
+   "new": "    out = Image.new(\"RGB\", act.size)\n    band_rows = h\n    for y0 in range(0, h, band_rows):",
+   "control": "test_banding_bounds_the_rows_each_step_holds"
+  },
+  {
+   "id": "cost-estimate-stale",
+   "file": "vp_core.py",
+   "runner": "selftest",
+   "old": "int(COMPARE_BASE_MB + COMPARE_MB_PER_MPX * w * h / 1e6)",
+   "new": "int(21 * w * h / 1e6)",
+   "control": "test_pixel_budget_refuses_before_decoding (the quoted cost is the measured fit)"
+  },
+  {
+   "id": "hang-counts-as-proved",
+   "file": "vp_mutation_proof.py",
+   "runner": "proof-selftest",
+   "old": "            return False, \"HUNG: the mutated",
+   "new": "            return True, \"HUNG: the mutated",
+   "control": "vp_mutation_proof.py --self-check: a hung self-test is NOT proved"
+  },
+  {
+   "id": "guard-ignores-content",
+   "file": "vp_mutation_proof.py",
+   "runner": "proof-selftest",
+   "old": "                digest.update(fh.read())",
+   "new": "                pass",
+   "control": "vp_mutation_proof.py --self-check: the guard sees a second edit to a modified file"
+  },
+  {
+   "id": "guard-never-fires",
+   "file": "vp_mutation_proof.py",
+   "runner": "proof-selftest",
+   "old": "    if before == after:\n        return None",
+   "new": "    return None",
+   "control": "vp_mutation_proof.py --self-check: the guard fires on a change"
+  },
+  {
+   "id": "scratch-symlinks-docs",
+   "file": "vp_mutation_proof.py",
+   "runner": "proof-selftest",
+   "old": "            shutil.copytree(src, os.path.join(scratch, rel), ignore=shutil.ignore_patterns(*SKIP_NAMES))",
+   "new": "            os.makedirs(os.path.dirname(os.path.join(scratch, rel)), exist_ok=True)\n            os.symlink(src, os.path.join(scratch, rel))",
+   "control": "vp_mutation_proof.py --self-check: the scratch copy has no symlinks into the checkout"
+  }
+ ]
+}

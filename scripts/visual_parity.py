@@ -5,6 +5,8 @@
     python3 scripts/visual_parity.py --engine webkit  # closest-to-shipped web engine
     python3 scripts/visual_parity.py --only console stage-worship-running
     python3 scripts/visual_parity.py --skip-native    # web surfaces only
+    python3 scripts/visual_parity.py --suite marketing # the marketing site + account screens
+    python3 scripts/visual_parity.py --suite marketing --engine both --only home pricing
 
 Writes into a fresh run directory under `.visual-parity/` (gitignored) and PRUNES
 old runs to `vp_core.MAX_RUNS_KEPT`. That eviction is the harness's own
@@ -33,39 +35,69 @@ def run(cmd):
     return subprocess.run(cmd).returncode
 
 
+def run_marketing(args, d):
+    """The `marketing` suite: build-from-dist capture (Playwright), then compare."""
+    cmd = [sys.executable, os.path.join(HERE, "vp_capture_marketing.py"), "--out", os.path.join(d, "marketing"),
+           "--engine", args.engine]
+    if args.only:
+        cmd += ["--only"] + args.only
+    codes = [("marketing capture", run(cmd))]
+    cmp_cmd = [sys.executable, os.path.join(HERE, "vp_compare.py"), "--run", d, "--suite", "marketing"]
+    if args.min_ssim is not None:
+        cmp_cmd += ["--min-ssim", str(args.min_ssim)]
+    if args.only:
+        cmp_cmd.append("--allow-missing")
+    codes.append(("compare", run(cmp_cmd)))
+    return codes
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--engine", default="both", choices=["blink", "webkit", "both"])
+    ap.add_argument("--suite", default="operator", choices=list(vp.SUITE_NAMES))
+    ap.add_argument("--engine", default=None, choices=["blink", "webkit", "both"],
+                    help="operator default: both. marketing default: blink (pages are plain DOM; "
+                         "WebKit doubles the files per run)")
     ap.add_argument("--only", nargs="*", default=None, help="limit web captures to these slugs")
     ap.add_argument("--skip-web", action="store_true")
     ap.add_argument("--skip-native", action="store_true")
     ap.add_argument("--min-ssim", type=float, default=None)
     ap.add_argument("--name", default=None, help="run directory name (default: a UTC timestamp)")
     args = ap.parse_args()
+    if args.suite == "marketing" and (args.skip_web or args.skip_native):
+        # They narrow the operator suite's capture groups. The marketing suite has one group, so honouring them
+        # would mean "capture nothing", and ignoring them silently (as this used to) hides a typo.
+        print("FAIL: --skip-web and --skip-native apply to the operator suite only; use --only SLUG ... to narrow "
+              "a marketing run")
+        return 2
+    if args.engine is None:
+        args.engine = "both" if args.suite == "operator" else "blink"
 
     d = vp.run_dir(args.name)
     print("run directory: " + d)
 
     codes = []
-    if not args.skip_web:
+    if args.suite == "marketing":
+        codes = run_marketing(args, d)
+    elif not args.skip_web:
         cmd = [sys.executable, os.path.join(HERE, "vp_capture_web.py"), "--out", os.path.join(d, "web"),
                "--engine", args.engine]
         if args.only:
             cmd += ["--only"] + args.only
         codes.append(("web capture", run(cmd)))
-    if not args.skip_native:
+    if args.suite == "operator" and not args.skip_native:
         codes.append(
             ("native capture", run([sys.executable, os.path.join(HERE, "vp_capture_native.py"),
                                     "--out", os.path.join(d, "native")]))
         )
-    cmp_cmd = [sys.executable, os.path.join(HERE, "vp_compare.py"), "--run", d]
-    if args.min_ssim is not None:
-        cmp_cmd += ["--min-ssim", str(args.min_ssim)]
-    # A deliberately narrowed run must not be reported as a full one; only then is
-    # an absent catalogued surface acceptable.
-    if args.only or args.skip_web or args.skip_native:
-        cmp_cmd.append("--allow-missing")
-    codes.append(("compare", run(cmp_cmd)))
+    if args.suite == "operator":
+        cmp_cmd = [sys.executable, os.path.join(HERE, "vp_compare.py"), "--run", d]
+        if args.min_ssim is not None:
+            cmp_cmd += ["--min-ssim", str(args.min_ssim)]
+        # A deliberately narrowed run must not be reported as a full one; only then is
+        # an absent catalogued surface acceptable.
+        if args.only or args.skip_web or args.skip_native:
+            cmp_cmd.append("--allow-missing")
+        codes.append(("compare", run(cmp_cmd)))
 
     print("\n=== visual-parity stages ===")
     for name, code in codes:

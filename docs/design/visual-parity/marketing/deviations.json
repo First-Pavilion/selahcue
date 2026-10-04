@@ -1,0 +1,109 @@
+{
+  "_comment": [
+    "Allowed-deviation gate for the marketing suite (python3 scripts/visual_parity.py --suite marketing).",
+    "Every entry is a GATE, not a comment: it carries a measurable bound, vp_compare re-measures it from each run's capture, and it goes FAIL if the page stops meeting it.",
+    "Metrics: doc_height (min px), text_present / text_absent (a regex over every rendered text node).",
+    "Only deviations the build ALREADY satisfies are listed. Differences that are still open are findings in findings/*.json, not entries here:",
+    "an entry for a defect would be red from day one, and a gate that starts red authorises being ignored."
+  ],
+  "deviations": [
+    {
+      "id": "legal-pages-render-the-real-drafts-privacy",
+      "capture": "privacy",
+      "metric": "doc_height",
+      "requires": {
+        "min": 5000
+      },
+      "category": "documented-deviation",
+      "permanence": "permanent",
+      "retire_when": "never while the legal pages render the generated drafts; if Figma is redrawn around the real documents, re-measure the bound",
+      "source": "ClickUp 17tnw2b0x3g (PR #142, e7566a96): the drafts in docs/legal/ are generated into src/lib/legal/*.generated.ts and rendered by src/components/legal/LegalPage.vue",
+      "figma": {
+        "draws": "placeholder prose, 1440x1772",
+        "measured": 1772
+      },
+      "reason": "Figma designs the page chrome around placeholder prose. The build carries the full draft, so it is several times taller. The gate fails if the page falls back to placeholder length, which would mean the real text was removed."
+    },
+    {
+      "id": "legal-pages-render-the-real-drafts-terms",
+      "capture": "terms",
+      "metric": "doc_height",
+      "requires": {
+        "min": 5000
+      },
+      "category": "documented-deviation",
+      "permanence": "permanent",
+      "retire_when": "same as the privacy entry",
+      "source": "ClickUp 17tnw2b0x3g (PR #142, e7566a96); docs/legal/",
+      "figma": {
+        "draws": "placeholder prose, 1440x1959",
+        "measured": 1959
+      },
+      "reason": "As for Privacy."
+    },
+    {
+      "id": "download-actions-are-honest-disabled-states",
+      "capture": "download",
+      "metric": "text_present",
+      "requires": {
+        "pattern": "Not available to download yet"
+      },
+      "category": "honest-content",
+      "permanence": "until-downloads-ship",
+      "retire_when": "the downloads backend returns real artefacts (ClickUp 86ak10afm) and the buttons are wired; then replace this entry with a check for the real label",
+      "source": "ClickUp 17tnw2b0q9j / PR #134; src/views/DownloadView.vue comments; tests/downloadView.test.ts",
+      "figma": {
+        "draws": "live Windows and macOS download buttons with sizes (.msi ~84 MB, .dmg ~92 MB)"
+      },
+      "reason": "Nothing downloads yet. The build shows a visible disabled state instead of a button that looks live and does nothing."
+    },
+    {
+      "id": "signin-has-no-google-button",
+      "capture": "signin",
+      "metric": "text_absent",
+      "requires": {
+        "pattern": "Continue with Google"
+      },
+      "category": "honest-content",
+      "permanence": "until-owner-decides",
+      "retire_when": "the owner reopens DEC-007 and an OAuth provider exists, or Figma drops the button",
+      "source": "DEC-007 rejected OIDC; the API has no social login (audit finding signin-03, class C, owner decision pending)",
+      "figma": {
+        "draws": "'or' divider and 'Continue with Google' under the Sign in button"
+      },
+      "reason": "Figma draws a sign-in method the product does not have. Layout is kept, the claim is not shipped."
+    },
+    {
+      "id": "verify-v3-does-not-claim-expiry",
+      "capture": "verify-v3",
+      "metric": "text_absent",
+      "requires": {
+        "pattern": "This verification link has expired"
+      },
+      "category": "documented-deviation",
+      "permanence": "until-backend-signals-expiry",
+      "retire_when": "the backend can prove expiry (AUTH-LANDING-PAGES-HANDOFF 10.2); then V4 is built and this entry is removed",
+      "source": "AUTH-LANDING-PAGES-HANDOFF 4.3, 4.4 and 10.2",
+      "figma": {
+        "draws": "V3 'Link no longer valid' is the shipping failure state; V4 'expired' is drawn but needs a backend signal"
+      },
+      "reason": "Every token failure is one VALIDATION_FAILED, so the page must not assert expiry."
+    },
+    {
+      "id": "reset-r4-does-not-claim-expiry",
+      "capture": "reset-r4",
+      "metric": "text_absent",
+      "requires": {
+        "pattern": "This reset link has expired"
+      },
+      "category": "documented-deviation",
+      "permanence": "until-backend-signals-expiry",
+      "retire_when": "same as the verify entry (AUTH-LANDING-PAGES-HANDOFF 10.2); then R5 is built",
+      "source": "AUTH-LANDING-PAGES-HANDOFF 5.4, 5.5 and 10.2",
+      "figma": {
+        "draws": "R4 'Link no longer valid' ships; R5 'expired' needs a backend signal"
+      },
+      "reason": "As for V3."
+    }
+  ]
+}
