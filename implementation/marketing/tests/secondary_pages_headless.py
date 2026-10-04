@@ -257,6 +257,106 @@ def check_contact(page, c: Checks, base: str) -> None:
     c.eq(page.locator("[aria-required='true']").count(), 3, "contact: three fields are aria-required")
 
 
+def settle_scroll(page) -> None:
+    """The site scrolls smoothly, so a Tab that moves the page is still moving it when the call returns: wait until it stops."""
+    last = None
+    for _ in range(50):
+        y = page.evaluate("scrollY")
+        if y == last:
+            return
+        last = y
+        page.wait_for_timeout(120)
+
+
+def press_with_mouse(page, locator, edge: str) -> None:
+    """Press and release the REAL mouse on a button, `edge` ('top' or 'bottom') 8px inside it.
+
+    The button's position is read when the mouse arrives, as a person's eye does. The point is 8px inside the edge the
+    button moves AWAY from when an error line appears (top) or disappears (bottom), so a shift of an error line (23 to
+    27px) always carries the button out from under the pointer: a click that reaches the button is the fix working, not luck.
+    """
+    locator.scroll_into_view_if_needed()
+    b = locator.bounding_box()
+    x = b["x"] + b["width"] / 2
+    y = b["y"] + 8 if edge == "top" else b["y"] + b["height"] - 8
+    page.mouse.move(x, y)
+    page.mouse.down()
+    page.mouse.up()
+
+
+def check_contact_behaviour(page, c: Checks, base: str) -> None:
+    """What the form DOES under a real mouse and keyboard (review round 2: Quinn Q1 and Q2, Vera 1)."""
+    name_input = ".contact-form input >> nth=0"
+    send = page.locator(".contact-form button").last
+
+    # Q1: correct an error, then press the mouse on Send. The first press must submit.
+    open_page(page, base, "/contact", ".contact-form-card")
+    page.fill(".contact-form input >> nth=1", "jane@yourchurch.org")
+    page.fill(".contact-form textarea", "Hello there")
+    page.focus(name_input)
+    press_tab(page, c)
+    c.ok("Name is required" in page.locator(".contact-form").inner_text(), "contact: leaving the empty name shows its error (set-up for the first-click check)")
+    page.click(name_input)
+    page.keyboard.type("Ana")
+    c.ok("Name is required" not in page.locator(".contact-form").inner_text(), "contact: typing in a field takes its error away at once, so a later blur changes nothing on the page")
+    press_with_mouse(page, send, "bottom")
+    try:
+        page.locator(".success-state").wait_for(state="visible", timeout=4000)
+        sent = True
+    except Exception:  # noqa: BLE001
+        sent = False
+    c.ok(sent, "contact: after correcting an error, the FIRST mouse press on Send submits (the blur used to remove the error and move the button before the mouse came up)")
+
+    # Q1, the other direction: a field is focused and empty, the mouse goes down on Send. The blur must not add an error line
+    # under the pointer; the press then validates every field, so the message's error appears too (a blur alone would show only the name's).
+    open_page(page, base, "/contact", ".contact-form-card")
+    page.fill(".contact-form input >> nth=1", "jane@yourchurch.org")
+    page.click(name_input)
+    press_with_mouse(page, send, "top")
+    page.wait_for_timeout(250)
+    text = page.locator(".contact-form").inner_text()
+    c.ok("Name is required" in text and "Message is required" in text, "contact: pressing Send while an empty field is focused submits at the first press and shows every error (a blur that added its error first moved the button away)")
+
+    # Vera 1: the email check runs on blur, so a long value must not freeze the page. 2,000 characters of `a@` took about
+    # 0.75s in the unguarded pattern; the cap makes it a few milliseconds.
+    open_page(page, base, "/contact", ".contact-form-card")
+    got = page.evaluate(
+        """async () => { const el = document.querySelector('.contact-form input[type="email"]'); el.focus();
+          el.value = 'a@'.repeat(1000); el.dispatchEvent(new Event('input', { bubbles: true }));
+          const t0 = performance.now(); el.blur(); const ms = performance.now() - t0;
+          await new Promise((r) => setTimeout(r, 60)); return { ms, text: document.querySelector('.contact-form').innerText }; }"""
+    )
+    c.ok(got["ms"] < 100, f"contact: leaving an email field holding 2,000 characters of a@ costs {got['ms']:.1f}ms (the unguarded pattern took ~750ms; limit 100)")
+    c.ok("Please enter a valid email address" in got["text"], "contact: and that value is refused with the email message")
+
+    # Q2: Tab from Send message jumps UP to the first card link; on a short window it must not stop under the sticky navbar.
+    size = page.viewport_size
+    for height in (700, 800):
+        page.set_viewport_size({"width": size["width"], "height": height})
+        open_page(page, base, "/contact", ".contact-form-card")
+        # The fault needs a link that is INSIDE the window but under the navbar (the browser scrolls only when a focus target is
+        # outside the window, and it does not know the sticky navbar covers the top 79px). That is where a reader who has
+        # scrolled lands, and where a Tab walk ends on some window heights (69px at 700 high, 33px at 800: the review's measure).
+        # Built directly so it does not depend on how this engine scrolls the walk: Send is visible, the link is 40px from the top.
+        page.evaluate(
+            """() => { const l = document.querySelector('.method-link'); window.scrollTo({ top: l.getBoundingClientRect().top + scrollY - 40, behavior: 'instant' }); }"""
+        )
+        settle_scroll(page)
+        page.locator(".contact-form button").last.focus()
+        c.eq(page.evaluate(FOCUS_JS), "Send message", f"contact: at {height} high Send message holds focus")
+        settle_scroll(page)
+        press_tab(page, c)
+        settle_scroll(page)
+        got = page.evaluate(
+            """() => { const a = document.activeElement, r = a.getBoundingClientRect();
+              return { cls: a.className, top: r.top, bottom: r.bottom, nav: document.querySelector('header').getBoundingClientRect().bottom, vh: innerHeight }; }"""
+        )
+        c.ok("method-link" in got["cls"], f"contact: at {height} high, Tab from Send reaches the first card link ({got['cls']!r})")
+        c.ok(got["top"] >= got["nav"] - 1, f"contact: at {height} high the focused card link is not under the sticky navbar (top {got['top']:.0f}, navbar ends {got['nav']:.0f}; WCAG 2.2 SC 2.4.11)")
+        c.ok(got["bottom"] <= got["vh"], f"contact: and it is inside the window (bottom {got['bottom']:.0f} of {got['vh']})")
+    page.set_viewport_size(size)
+
+
 def check_support(page, c: Checks, base: str) -> None:
     open_page(page, base, "/support", ".search-input")
     s = box(page, ".search-input")
@@ -510,6 +610,7 @@ def check_no_sideways_scroll(page, c: Checks, base: str) -> None:
 
 GROUPS = {
     "contact": check_contact,
+    "contact-behaviour": check_contact_behaviour,
     "support": check_support,
     "docs": check_docs,
     "changelog": check_changelog,
@@ -595,6 +696,7 @@ def main() -> int:
                 failed += len(c.failures)
     finally:
         srv.shutdown()
+        srv.server_close()
     print("PASS secondary pages headless" if not failed else f"FAIL secondary pages headless ({failed})")
     return 1 if failed else 0
 

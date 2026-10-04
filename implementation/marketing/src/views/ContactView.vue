@@ -4,6 +4,7 @@ import FormField from '@/components/FormField.vue'
 import UiButton from '@/components/UiButton.vue'
 import UiBadge from '@/components/UiBadge.vue'
 import CategoryIcon from '@/components/article/CategoryIcon.vue'
+import { looksLikeEmail } from '@/lib/contactForm.ts'
 
 const name = ref('')
 const email = ref('')
@@ -28,14 +29,26 @@ const rules: Record<string, () => string> = {
   },
   email: () => {
     if (!email.value) return 'Email is required'
-    return /\S+@\S+\.\S+/.test(email.value) ? '' : 'Please enter a valid email address'
+    return looksLikeEmail(email.value) ? '' : 'Please enter a valid email address'
   },
   org: () => (org.value.length > NAME_LIMIT ? `Church / organization must be ${NAME_LIMIT} characters or fewer` : ''),
   message: () => (message.value ? '' : 'Message is required')
 }
 
-/** Validation on blur (MARKETING-PORTAL-GAP-FILL-HANDOFF 6b): show or clear that one field's error. */
+/**
+ * Validation on blur (MARKETING-PORTAL-GAP-FILL-HANDOFF 6b): show or clear that one field's error.
+ *
+ * A blur must never move the Send button out from under the pointer (review round 2, Quinn Q1): pressing the
+ * mouse on a button blurs the focused field FIRST, and an error line that appears or goes away at that moment
+ * moves the button before the mouse is released, so the browser sees no click and the first press is lost.
+ * Two rules keep the layout still at that moment. An error is taken away when the value CHANGES (`clearError`,
+ * on every keystroke), never on blur; and while the pointer is down on Send the blur does not check at all
+ * (`pressingSend`): the click that follows validates every field anyway.
+ */
+const pressingSend = ref(false)
+
 const checkField = (field: string) => {
+  if (pressingSend.value) return
   const problem = rules[field]?.() ?? ''
   const next = { ...errors.value }
   if (problem) next[field] = problem
@@ -43,7 +56,21 @@ const checkField = (field: string) => {
   errors.value = next
 }
 
+/** Typing in a field takes that field's error away at once. */
+const clearError = (field: string) => {
+  if (!errors.value[field]) return
+  const next = { ...errors.value }
+  delete next[field]
+  errors.value = next
+}
+
+/** The pointer went down inside the form: remember whether it is on the Send button. A focus moving into any field ends it. */
+const notePointer = (event: PointerEvent) => {
+  pressingSend.value = event.target instanceof Element && event.target.closest('button') !== null
+}
+
 const handleSubmit = () => {
+  pressingSend.value = false
   errors.value = {}
   for (const field of Object.keys(rules)) {
     const problem = rules[field]?.() ?? ''
@@ -81,7 +108,14 @@ const handleSubmit = () => {
             </UiButton>
           </div>
 
-          <form v-else class="contact-form" aria-label="Contact us" @submit.prevent="handleSubmit">
+          <form
+            v-else
+            class="contact-form"
+            aria-label="Contact us"
+            @submit.prevent="handleSubmit"
+            @pointerdown="notePointer"
+            @focusin="pressingSend = false"
+          >
             <h2 class="form-title">Send us a message</h2>
 
             <FormField
@@ -91,6 +125,7 @@ const handleSubmit = () => {
               required
               :error="errors.name"
               :disabled="isSubmitting"
+              @update:model-value="clearError('name')"
               @blur="checkField('name')"
             />
 
@@ -102,6 +137,7 @@ const handleSubmit = () => {
               required
               :error="errors.email"
               :disabled="isSubmitting"
+              @update:model-value="clearError('email')"
               @blur="checkField('email')"
             />
 
@@ -111,6 +147,7 @@ const handleSubmit = () => {
               placeholder="Grace Community Church"
               :error="errors.org"
               :disabled="isSubmitting"
+              @update:model-value="clearError('org')"
               @blur="checkField('org')"
             />
 
@@ -123,6 +160,7 @@ const handleSubmit = () => {
               :maxLength="2000"
               :error="errors.message"
               :disabled="isSubmitting"
+              @update:model-value="clearError('message')"
               @blur="checkField('message')"
             />
 
@@ -175,6 +213,15 @@ const handleSubmit = () => {
 .contact-page {
   background: var(--sc-base);
   padding-bottom: 64px;
+}
+
+/* Figma's column order puts the form before the cards, so Tab from "Send message" jumps UP the page to the first
+   card link. `anchors.css` gives focus a scroll margin on the article pages only, and without one a short window
+   leaves that link under the sticky navbar (WCAG 2.2 SC 2.4.11, focus not obscured): its top was 69px at 700 high
+   and 33px at 800, the navbar ends at 79 (review round 2, Quinn Q2). The same shared offset the article pages use,
+   on every focusable control of the page, FormField's inner input and textarea and UiButton's button included. */
+.contact-page :deep(:is(a[href], button, input, select, textarea)) {
+  scroll-margin-top: var(--sc-anchor-offset);
 }
 
 /* HERO (Figma 497:139): padding 96 top / 32 bottom, 20px between the pill, the headline and the

@@ -33,7 +33,7 @@ import { docsArticles, docsCategories } from '../src/lib/content/docs.ts'
 import { blogPosts } from '../src/lib/content/blog.ts'
 import { supportArticles, supportCategories } from '../src/lib/content/support.ts'
 import { LEDGER, PROMISE_PATTERN, type Entry } from './fixtures/copyLedger.ts'
-import { descriptorOf, elementsOf, prop, readSrc, styleOf, valueOf } from './fixtures/sfcSource.ts'
+import { descriptorOf, elementsOf, prop, readSrc, styleOf, valueOf, type DirectiveProp } from './fixtures/sfcSource.ts'
 import {
   classesOf,
   headingsOf,
@@ -147,6 +147,35 @@ function unlistedRuns(runs: readonly string[], page: string, content: ReadonlySe
 }
 
 const ledgerKey = (file: string): string => file.replace(/View\.vue$/, '')
+
+/**
+ * The FormFields of a view that do NOT clear their own error when their value changes, as readable names. A field is
+ * covered when it has `v-model="x"` and an `update:modelValue` listener whose expression is `clearError('x')`. One
+ * definition, used by the Contact test and by its planted-fault control (review round 2, Quinn Q1).
+ */
+function fieldsWithoutClearOnInput(sfc: string, view = 'fixture.vue'): string[] {
+  const out: string[] = []
+  for (const el of elementsOf(sfc, view).filter((e) => e.tag === 'FormField')) {
+    const model = el.props.find((p): p is DirectiveProp => p.type === 7 && p.name === 'model')
+    const field = model?.exp?.content.trim() ?? '(no v-model)'
+    const listener = el.props.find(
+      (p): p is DirectiveProp => p.type === 7 && p.name === 'on' && (p.arg?.content ?? '').replace(/-/g, '').toLowerCase() === 'update:modelvalue',
+    )
+    if (listener?.exp?.content.trim() !== `clearError('${field}')`) out.push(field)
+  }
+  return out
+}
+
+/** A rule in the view's own <style> that gives every focusable control of the page the shared anchor offset as its scroll margin. */
+function focusScrollMarginRules(sfc: string): string[] {
+  const out: string[] = []
+  for (const m of styleOf(sfc).matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+    const selector = (m[1] ?? '').trim()
+    const covers = /:is\([^)]*\ba\[href\][^)]*\bbutton\b[^)]*\binput\b[^)]*\btextarea\b[^)]*\)/.test(selector)
+    if (covers && /(^|[;\s])scroll-margin-top\s*:\s*var\(--sc-anchor-offset\)/.test(m[2] ?? '')) out.push(selector)
+  }
+  return out
+}
 
 // --------------------------------------------------------------------------- every page
 
@@ -422,6 +451,36 @@ describe('Contact (497:124): centred hero, then the form, then the method cards'
   test('the hero has no promise of a reply or of a person: the sentence is reworded (contact-01, honest content)', async () => {
     const text = textOf(await html('ContactView.vue')).toLowerCase()
     assert.ok(!text.includes('real person'), 'Figma says "a real person"; the repo does not back who answers')
+  })
+
+  test('every field takes its own error away when its value changes, and the form hears the pointer go down (review round 2, Quinn Q1)', () => {
+    const sfc = readSrc('views/ContactView.vue')
+    assert.equal(elementsOf(sfc).filter((el) => el.tag === 'FormField').length, 4, 'name, email, church and message')
+    assert.deepEqual(fieldsWithoutClearOnInput(sfc, 'ContactView.vue'), [], 'a field that keeps its error until blur moves the Send button when it blurs')
+    const form = elementsOf(sfc).find((el) => el.tag === 'form')
+    assert.ok(form?.props.some((p) => p.type === 7 && p.name === 'on' && p.arg?.content === 'pointerdown'), 'the form notes when the pointer goes down on Send, so the blur that follows does not move it')
+  })
+
+  test('every focusable control of the page has the shared anchor offset as its scroll margin (review round 2, Quinn Q2)', () => {
+    assert.equal(focusScrollMarginRules(readSrc('views/ContactView.vue')).length, 1, 'Tab from Send to the first card link must not stop under the sticky navbar')
+  })
+
+  test('the email check is the length-capped rule from lib/contactForm.ts, not a pattern written in the view (review round 2, Vera 1)', () => {
+    const script = descriptorOf(readSrc('views/ContactView.vue'), 'ContactView.vue').scriptSetup?.content ?? ''
+    assert.ok(script.includes("from '@/lib/contactForm.ts'") && script.includes('looksLikeEmail(email.value)'))
+  })
+
+  test('CONTROL: the clear-on-input and scroll-margin predicates fire on a planted fault', () => {
+    const ok = `<template><form @pointerdown="x"><FormField v-model="name" @update:model-value="clearError('name')" /><FormField v-model="org" @update:modelValue="clearError('org')" /></form></template>`
+    assert.deepEqual(fieldsWithoutClearOnInput(ok), [])
+    assert.deepEqual(fieldsWithoutClearOnInput(ok.replace(`clearError('org')`, `clearError('name')`)), ['org'], 'a listener that clears another field')
+    assert.deepEqual(fieldsWithoutClearOnInput(ok.replace(' @update:modelValue="clearError(\'org\')"', '')), ['org'], 'a field with no listener')
+    assert.deepEqual(fieldsWithoutClearOnInput('<template><FormField @blur="x" /></template>'), ['(no v-model)'])
+    const css = '<template><p/></template><style scoped>.contact-page :deep(:is(a[href], button, input, select, textarea)) { scroll-margin-top: var(--sc-anchor-offset); }</style>'
+    assert.equal(focusScrollMarginRules(css).length, 1)
+    assert.equal(focusScrollMarginRules(css.replace('--sc-anchor-offset', '--nav-height')).length, 0, 'a different offset is not the shared one')
+    assert.equal(focusScrollMarginRules(css.replace(' button,', '')).length, 0, 'a rule that leaves out the button')
+    assert.equal(focusScrollMarginRules(css.replace('scroll-margin-top', 'margin-top')).length, 0)
   })
 })
 
