@@ -236,8 +236,8 @@
           "title": "Footer link columns do not match Figma: wrong entries, wrong order, missing 'Setup guides' / 'NDI & streaming', a fourth Legal column",
           "figma": "Footer 479:133 (identical on all 14 pages) draws three link columns: PRODUCT (Features, Pricing, Download, Changelog), RESOURCES (Documentation, Setup guides, NDI & streaming, Support), COMPANY (About, Blog, Contact, Careers, Affiliates). Privacy and Terms sit in the bottom bar (479:162) next to 'Windows · macOS'. Handoff section 1: 'NDI & streaming' points to Features, 'Setup guides' to Documentation, Company includes Affiliates.",
           "build": "Footer.vue:18-53 builds FOUR columns: Product (Features, Pricing, Download, How it works), Resources (Documentation, Support, Blog, Changelog), Company (About, Careers, Contact, Affiliates), Legal (Privacy Policy, Terms of Service). Changelog moved to Resources, Blog moved to Resources, 'How it works' added, 'Setup guides' and 'NDI & streaming' absent, Company order differs, Legal is a column with longer labels instead of two short bottom-bar links, and there is no 'Windows · macOS' tag.",
-          "evidence": "vp_style_diff --figma chrome-footer.json: design-only copy 'Setup guides', 'NDI & streaming', 'Privacy', 'Terms', 'Windows · macOS'; dom footer link list (focus order): Features Pricing Download How it works / Documentation Support Blog Changelog / About Careers Contact Affiliates / Privacy Policy Terms of Service.",
-          "fix": "Footer.vue columns to Figma: Product = Features /features, Pricing /pricing, Download /download, Changelog /changelog. Resources = Documentation /docs, Setup guides /docs, NDI & streaming /features, Support /support. Company = About /about, Blog /blog, Contact /contact, Careers /careers, Affiliates /affiliates. Remove the Legal column; render Privacy /privacy and Terms /terms (13px, muted, gap 22) plus the 'Windows · macOS' text in the bottom bar's right group. Every target exists in router/index.ts.",
+          "evidence": "vp_style_diff --figma chrome-footer.json: design-only copy 'Setup guides', 'NDI & streaming', 'Privacy', 'Terms', 'Windows · macOS'; dom footer link list (focus order): Features Pricing Download How it works / Documentation Support Blog Changelog / About Careers Contact Affiliates / Privacy Policy Terms of Service. Product confirmed on 2026-10-04 that SelahCue is available for Windows, Linux and macOS, so 'Windows · macOS' is backed and stays exactly as Figma draws it; Linux is not drawn anywhere (shared-chrome-35, class D).",
+          "fix": "Footer.vue columns to Figma: Product = Features /features, Pricing /pricing, Download /download, Changelog /changelog. Resources = Documentation /docs, Setup guides /docs, NDI & streaming /features, Support /support. Company = About /about, Blog /blog, Contact /contact, Careers /careers, Affiliates /affiliates. Remove the Legal column; render Privacy /privacy and Terms /terms (13px, muted, gap 22) plus the 'Windows · macOS' text in the bottom bar's right group. Every target exists in router/index.ts. Keep 'Windows · macOS' exactly as drawn (it is product-backed); do not add Linux here, that is Uma's decision (shared-chrome-35).",
           "source": null,
           "decision": null,
           "a11y": false,
@@ -321,10 +321,10 @@
           "title": "Footer tagline and legal line carry 'subscription-simple' and 'Cancel anytime', which the repo does not back",
           "figma": "Tagline 'Church presentation, done right. Offline-first, subscription-simple, built for the moment that matters.' (479:135, 14/21) and legal line '© 2026 SelahCue · Works offline · Cancel anytime' (479:160), with 'Windows · macOS' on the right.",
           "build": "The build shows neither claim and neither wording: Footer.vue:98 tagline 'Church presentation, reengineered', Footer.vue:129 '© 2026 SelahCue. All rights reserved.'",
-          "evidence": "Footer.vue:98,129; implementation/api/selahcue_api/apps/billing and apps/downloads hold no models or endpoints (no subscription, no cancel flow); MARKETING-SITE-HANDOFF.md section 8 lists the subscription tiers and billing terms (monthly/annual, cancel-anytime) as Assumed. 'Works offline' and 'Windows · macOS' are backed (offline-first invariants, desktop builds for both platforms).",
+          "evidence": "Footer.vue:98,129; implementation/api/selahcue_api/apps/billing and apps/downloads hold no models or endpoints (no subscription, no cancel flow); MARKETING-SITE-HANDOFF.md section 8 lists the subscription tiers and billing terms (monthly/annual, cancel-anytime) as Assumed. 'Works offline' is backed (offline-first invariants). 'Windows · macOS' is backed by product (owner, 2026-10-04: available for Windows, Linux and macOS) and stays; Linux is not drawn (shared-chrome-35).",
           "fix": null,
           "source": null,
-          "decision": "Owner (binding rule: honest content wins): adopt Figma's layout and wording minus the unbacked parts, e.g. tagline 'Church presentation, done right. Offline-first, built for the moment that matters.' and legal line '© 2026 SelahCue · Works offline', plus the right-hand 'Windows · macOS'. Confirm the exact wording with product before it ships.",
+          "decision": "Owner (binding rule: honest content wins): adopt Figma's layout and wording minus the unbacked parts, e.g. tagline 'Church presentation, done right. Offline-first, built for the moment that matters.' and legal line '© 2026 SelahCue · Works offline', plus the right-hand 'Windows · macOS'. Confirm the exact wording with product before it ships. 'Windows · macOS' stays as drawn.",
           "a11y": false,
           "link": null
         },
@@ -579,6 +579,22 @@
           "a11y": true,
           "link": null,
           "ticket": "17tnw2b2cev"
+        },
+        {
+          "id": "shared-chrome-35",
+          "class": "D",
+          "scope": "shared",
+          "component": "footer",
+          "severity": "medium",
+          "title": "Linux is not drawn anywhere platforms are named (footer, Download cards, Home FAQ) although product says it is available",
+          "figma": "Footer 479:133 bottom bar draws 'Windows · macOS' only; the Download frame (487:124) draws a Windows card and a macOS card only; the Home FAQ row 'Which platforms are supported?' (478:155) answers with Windows and macOS and says Linux is on the roadmap.",
+          "build": "Footer.vue has no platform line; DownloadView.vue:28-46 has Windows and macOS cards and no Linux card; HomeView.vue:86-89 names Windows 10/11 and macOS 12+ only. No platform list on the site names Linux.",
+          "evidence": "Product (owner, 2026-10-04): SelahCue is available for Windows, Linux and macOS. grep -i linux in implementation/marketing/src finds support.ts:108, docs.ts:145 and docs.ts:317 (and a CSS comment): none is a platform list. docs/product/prds/SelahCue-PRD.md:33 (G-2) targets Windows, macOS and Linux.",
+          "fix": null,
+          "source": null,
+          "decision": "Uma: draw Linux wherever platforms are named (footer line, a Download card or entry, the FAQ answer) or confirm Windows and macOS only. Figma's 'Linux is on the roadmap' now contradicts product and must change either way. Do not add Linux to the build until it is drawn. It is NOT yet known whether 'available' means a downloadable installer exists today on each platform, or that the app supports all three while only the Windows installer is packaged. Until that is answered no page may claim a downloadable macOS or Linux installer (the Download buttons stay disabled, PR #134).",
+          "a11y": false,
+          "link": null
         }
       ]
     }

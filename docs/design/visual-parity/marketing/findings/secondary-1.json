@@ -298,13 +298,13 @@
           "scope": "shared",
           "component": "footer",
           "severity": "medium",
-          "title": "Footer bottom-bar claims 'Cancel anytime' and 'Windows · macOS'",
+          "title": "Footer bottom-bar claims 'Cancel anytime', which the repo does not back",
           "figma": "Bottom bar: '© 2026 SelahCue · Works offline · Cancel anytime' and 'Windows · macOS' on every frame.",
           "build": "Footer shows only '© 2026 SelahCue. All rights reserved.'; neither claim is shown today.",
-          "evidence": "design-only list on all five surfaces (y=1401 '© 2026 SelahCue · Works offline · Cancel anytime', 'Windows · macOS'); LEGAL-DRAFT-NOTES 9.4 (no macOS release pipeline; billing and cancellation not built)",
+          "evidence": "design-only list on all five surfaces (y=1401 '© 2026 SelahCue · Works offline · Cancel anytime', 'Windows · macOS'); billing and cancellation are not built (LEGAL-DRAFT-NOTES 9.4). 'Windows · macOS' is product-backed (owner, 2026-10-04) and not in question.",
           "fix": null,
           "source": null,
-          "decision": "Keep the bar's layout; drop 'Cancel anytime' until billing exists and 'macOS' until a macOS build ships (owner decision, chrome auditor to fold into the footer ticket).",
+          "decision": "Keep the bar's layout and 'Windows · macOS'; drop 'Cancel anytime' until billing exists (owner decision, folded into the footer ticket). Linux is not drawn: shared-chrome-35.",
           "a11y": false,
           "link": "17tnw2b0x3h",
           "dup_of": "shared-chrome-19"
@@ -498,6 +498,22 @@
           "a11y": true,
           "link": null,
           "ticket": "17tnw2b2cez"
+        },
+        {
+          "id": "support-11",
+          "class": "C",
+          "scope": "page",
+          "component": null,
+          "severity": "medium",
+          "title": "Support article says 'There is no macOS or Linux installer yet', which contradicts what product says",
+          "figma": "Figma draws no such sentence; the NDI troubleshooting article is part of the undrawn content layer (support-08).",
+          "build": "support.ts:108 (NDI article): 'Use a build that includes NDI. The Windows installer is built with it and carries the NDI runtime. There is no macOS or Linux installer yet.'",
+          "evidence": "Product (owner, 2026-10-04): SelahCue is available for Windows, Linux and macOS. For: docs/product/prds/SelahCue-PRD.md:33 (G-2) targets Windows, macOS and Linux; .github/workflows/ci.yml builds and tests on ubuntu, macOS and Windows; docs.ts:145 documents a Linux data folder. Against: tauri bundle targets are only 'nsis' and the installer workflow uploads only *-setup.exe.",
+          "fix": null,
+          "source": null,
+          "decision": "Owner: It is NOT yet known whether 'available' means a downloadable installer exists today on each platform, or that the app supports all three while only the Windows installer is packaged. Reconcile the sentence with the answer. Until then no page may claim a downloadable macOS or Linux installer (Download buttons stay disabled, PR #134).",
+          "a11y": false,
+          "link": null
         }
       ]
     },
@@ -570,7 +586,7 @@
           "evidence": "LEGAL-DRAFT-NOTES 9.4: app version is 0.1.0 and there is no macOS release pipeline; docs.ts article list has no install, update or audio-config article; no measurement of a first service duration exists",
           "fix": null,
           "source": null,
-          "decision": "'10 minutes' is an unmeasured claim; 'macOS install and updates' describes something not shipped (no macOS pipeline, no update mechanism evidenced); 'audio' configuration is unverified. Keep the callout and tile layout with honest copy or omit those tiles; owner decision.",
+          "decision": "'10 minutes' is an unmeasured claim; 'Windows & macOS install and updates': product says macOS is available (2026-10-04) but no macOS installer or update mechanism is evidenced in the repo (open question: docs-09); 'audio' configuration is unverified. Keep the callout and tile layout with honest copy or omit those tiles; owner decision.",
           "a11y": false,
           "link": "17tnw2b0x3h"
         },
@@ -639,6 +655,22 @@
           "a11y": false,
           "link": null,
           "ticket": "17tnw2b2cez"
+        },
+        {
+          "id": "docs-09",
+          "class": "C",
+          "scope": "page",
+          "component": null,
+          "severity": "medium",
+          "title": "Docs known-limits note says 'There is no macOS or Linux installer yet', which contradicts what product says",
+          "figma": "Figma draws no such note; it sits in the undrawn article layer (docs-06).",
+          "build": "docs.ts:317 (callout 'Known limits'): 'There is no macOS or Linux installer yet, so the Windows installer is the only packaged build that includes NDI.'",
+          "evidence": "Product (owner, 2026-10-04): SelahCue is available for Windows, Linux and macOS. Same evidence for and against as support-11 (PRD G-2 line 33; CI matrix; docs.ts:145 Linux data folder; tauri target nsis only).",
+          "fix": null,
+          "source": null,
+          "decision": "Owner: It is NOT yet known whether 'available' means a downloadable installer exists today on each platform, or that the app supports all three while only the Windows installer is packaged. Reconcile the sentence with the answer (same question as support-11). Until then no page may claim a downloadable macOS or Linux installer.",
+          "a11y": false,
+          "link": null
         }
       ]
     },

@@ -724,7 +724,7 @@
           "evidence": "tauri.conf.json bundle.targets ['nsis']; grep .dmg / notariz / universal in docs, workflows and src returns nothing; docs/ops/WINDOWS-INSTALLER.md.",
           "fix": null,
           "source": null,
-          "decision": "Owner: what are the shipped formats (Windows NSIS .exe; macOS not built) and the supported OS floors? Show no version or size until a release exists.",
+          "decision": "Owner: what are the shipped formats and supported OS floors? Product (owner, 2026-10-04): SelahCue is available for Windows, Linux and macOS. The repo packages only a Windows NSIS .exe, so is a macOS or Linux installer downloadable today? Show no version or size until a release exists. macOS floor: Figma says 12 Monterey+, the build says 11.0 (keep this finding).",
           "a11y": false,
           "link": "17tnw2b0x3h"
         },
@@ -877,6 +877,23 @@
           "a11y": true,
           "link": null,
           "dup_of": "account-25"
+        },
+        {
+          "id": "download-14",
+          "class": "D",
+          "scope": "page",
+          "component": null,
+          "severity": "medium",
+          "title": "The Download page draws no Linux card although product says Linux is available",
+          "figma": "487:146 row: two platform cards, Windows and macOS, and nothing for Linux.",
+          "build": "DownloadView.vue:28-46: Windows and macOS cards only; both buttons disabled ('Not available to download yet').",
+          "evidence": "Product (owner, 2026-10-04): SelahCue is available for Windows, Linux and macOS. Figma shows two cards. See shared-chrome-35.",
+          "fix": null,
+          "source": null,
+          "decision": "Uma: draw the Linux entry (card or note) or confirm it is absent. Whether any platform has a downloadable installer today is the owner's open question (support-11); buttons stay disabled until it is answered.",
+          "a11y": false,
+          "link": null,
+          "dup_of": "shared-chrome-35"
         }
       ]
     },

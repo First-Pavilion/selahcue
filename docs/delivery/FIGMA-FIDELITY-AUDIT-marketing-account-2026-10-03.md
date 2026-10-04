@@ -20,16 +20,16 @@ Binding owner decisions applied: **honest content wins** over Figma where the re
 
 | area (fix ticket) | A | B | C | D | E | total |
 |---|---|---|---|---|---|---|
-| chrome | 28 | 2 | 2 | 5 | 0 | 37 |
+| chrome | 28 | 2 | 2 | 6 | 0 | 38 |
 | components | 12 | 0 | 0 | 0 | 1 | 13 |
 | home | 24 | 2 | 8 | 3 | 0 | 37 |
 | core | 34 | 2 | 10 | 3 | 0 | 49 |
-| secondary | 48 | 14 | 16 | 8 | 0 | 86 |
+| secondary | 48 | 14 | 18 | 8 | 0 | 88 |
 | auth | 23 | 5 | 2 | 7 | 0 | 37 |
 | account | 13 | 2 | 7 | 7 | 7 | 36 |
-| **all** | 182 | 27 | 45 | 33 | 8 | 295 |
+| **all** | 182 | 27 | 47 | 34 | 8 | 298 |
 
-Class A and E findings that raise fix work, by severity: high 84, medium 82, low 22. Not counted anywhere: 30 duplicates (the same defect seen again on another page; each names its canonical finding). Counted in the totals above but left out of this severity tally because they raise no fix here: 2 class A findings that another ClickUp ticket already owns (they carry `owned_by`).
+Class A and E findings that raise fix work, by severity: high 84, medium 82, low 22. Not counted anywhere: 32 duplicates (the same defect seen again on another page; each names its canonical finding). Counted in the totals above but left out of this severity tally because they raise no fix here: 2 class A findings that another ClickUp ticket already owns (they carry `owned_by`).
 
 ## Fix tickets raised from this audit
 
@@ -122,7 +122,7 @@ Keep Figma's layout and styling; ship no invented claim. Where the build already
 - **home-40** `home` (medium) — Build FAQ states false facts about Bible translations and platform versions
   - Figma: Figma FAQ makes no claim about copyrighted translations or OS versions.
   - Build: Answer 3: 'Public-domain Bibles (WEB, ASV, BSB) are bundled ... Copyrighted translations (NIV, ESV, NLT) are granted via post-activation entitlement and downloaded to an encrypted local store'; answer 2: 'Windows 10/11 (64-bit) and macOS 12+ (Apple Silicon & Intel)'; answer 1: 'built desktop-author…
-  - Decision needed: Owner: remove the licensed-translation answer (restore Figma Q3) and either cite real minimum OS versions from a release matrix or drop the version numbers. · owned by 17tnw2b0x3h
+  - Decision needed: Owner: remove the licensed-translation answer (restore Figma Q3) and either cite real minimum OS versions from a release matrix or drop the version numbers. Platforms: product says Windows, Linux and macOS are available (2026-10-04), so naming the platforms is backed; the version numbers are not. · owned by 17tnw2b0x3h
 - **home-42** `home` (high) — Build-only capability claims the repo cannot back (NDI 5, alpha, Wirecast, 4K, 60fps, internal NFR ids)
   - Figma: Figma's NDI copy says 'NDI source for OBS or vMix', 'NDI output - broadcast to OBS, vMix, or another machine'; it draws '1920 × 1080' only; no 'NDI 5', no alpha, no Wirecast, no 4K, no 60fps.
   - Build: 'Direct NDI 5 broadcast streams to OBS, vMix, and Wirecast with transparent lower thirds' (feature card, HomeView.vue:183), 'NDI 5 Stream · Alpha Channel' and 'Display 2 · 1920x1080 · 60fps' (OutputManagerMockup.vue:19,43), 'Full 4K resolution' and 'Direct IP feed with alpha channel transparency' (…
@@ -158,7 +158,7 @@ Keep Figma's layout and styling; ship no invented claim. Where the build already
 - **download-04** `download` (high) — Installer version, format, size and OS-floor claims on the platform cards are unbacked
   - Figma: 'v1.0 · .msi installer · ~84 MB', 'v1.0 · universal .dmg · ~92 MB', 'Windows 10 & 11 · 64-bit', 'macOS 12 Monterey+ · Apple silicon & Intel'.
   - Build: Build shows no version or size (disabled state) but still states 'Windows 10 / 11 (64-bit)' and 'macOS 11.0 or later (Intel & Apple Silicon)', which also disagrees with Figma's macOS 12. Repo: operator version is 0.1.0 (crates/selahcue-operator/tauri.conf.json); bundle target is only 'nsis' and CI …
-  - Decision needed: Owner: what are the shipped formats (Windows NSIS .exe; macOS not built) and the supported OS floors? Show no version or size until a release exists. · owned by 17tnw2b0x3h
+  - Decision needed: Owner: what are the shipped formats and supported OS floors? Product (owner, 2026-10-04): SelahCue is available for Windows, Linux and macOS. The repo packages only a Windows NSIS .exe, so is a macOS or Linux installer downloadable today? Show no version or size until a release exists. macOS floor: Figma says 12 Monterey+, the build says 11.0 (keep this finding). · owned by 17tnw2b0x3h
 - **download-05** `download` (high) — System requirements: Figma, the build, the PRD and the owner requirement all disagree; the repo has no single backed figure
   - Figma: Minimum: Dual-core 2 GHz / 4 GB RAM / Integrated GPU / 500 MB free / One output (audience). Recommended: Quad-core 3 GHz+ / 8 GB RAM or more / Discrete GPU (NDI / multi-out) / SSD 1 GB free / Audience + stage display.
   - Build: Build minimum: OS Windows 10 / macOS 11, CPU Intel Core i3, RAM 4GB, Storage 500MB, Graphics DirectX 10 capable. Recommended: OS Windows 11 / macOS 13+, CPU Intel Core i5 / Apple M1, RAM 8GB+, Storage 2GB SSD, Dedicated GPU for NDI. Repo: SelahCue-PRD.md reference hardware tiers (line 373): Tier A …
@@ -191,10 +191,18 @@ Keep Figma's layout and styling; ship no invented claim. Where the build already
   - Figma: Centred 15/400 #9aa4b2 line inside the band: 'Still stuck? Contact support — we reply within one business day.' (no card or button; no distinct link colour is drawn).
   - Build: .help-cta card (r20, pad 40): h3 'Still need help?' 24px, 'Our support team is available to assist your church with technical questions.', gradient 'Contact Support Team' button to /contact (SupportView.vue:112-119, 263-279).
   - Decision needed: 'We reply within one business day' is an unbacked SLA (and 'support team' implies staffing). Keep Figma's single centred line under the list with 'Contact support' linking to /contact and have the owner approve honest copy with no reply time; the CTA card is not drawn. · owned by 17tnw2b0x3h
+- **support-11** `support` (medium) — Support article says 'There is no macOS or Linux installer yet', which contradicts what product says
+  - Figma: Figma draws no such sentence; the NDI troubleshooting article is part of the undrawn content layer (support-08).
+  - Build: support.ts:108 (NDI article): 'Use a build that includes NDI. The Windows installer is built with it and carries the NDI runtime. There is no macOS or Linux installer yet.'
+  - Decision needed: Owner: It is NOT yet known whether 'available' means a downloadable installer exists today on each platform, or that the app supports all three while only the Windows installer is packaged. Reconcile the sentence with the answer. Until then no page may claim a downloadable macOS or Linux installer (Download buttons stay disabled, PR #134).
 - **docs-04** `docs` (medium) — '10 minutes' and installation / update / audio-setup claims
   - Figma: Callout 'New here? Run your first service in 10 minutes' / 'Install, build a plan, and go live — start to finish.'; tile 'Installation — Windows & macOS install and updates.'; tile 'Setup guides — Displays, audio, and per-output config.'; intro 'This hub covers installation...'.
   - Build: None of it is built. The content layer has no installation article and omits unverified workflows (docs.ts header: a workflow that could not be verified in the code is not written).
-  - Decision needed: '10 minutes' is an unmeasured claim; 'macOS install and updates' describes something not shipped (no macOS pipeline, no update mechanism evidenced); 'audio' configuration is unverified. Keep the callout and tile layout with honest copy or omit those tiles; owner decision. · owned by 17tnw2b0x3h
+  - Decision needed: '10 minutes' is an unmeasured claim; 'Windows & macOS install and updates': product says macOS is available (2026-10-04) but no macOS installer or update mechanism is evidenced in the repo (open question: docs-09); 'audio' configuration is unverified. Keep the callout and tile layout with honest copy or omit those tiles; owner decision. · owned by 17tnw2b0x3h
+- **docs-09** `docs` (medium) — Docs known-limits note says 'There is no macOS or Linux installer yet', which contradicts what product says
+  - Figma: Figma draws no such note; it sits in the undrawn article layer (docs-06).
+  - Build: docs.ts:317 (callout 'Known limits'): 'There is no macOS or Linux installer yet, so the Windows installer is the only packaged build that includes NDI.'
+  - Decision needed: Owner: It is NOT yet known whether 'available' means a downloadable installer exists today on each platform, or that the app supports all three while only the Windows installer is packaged. Reconcile the sentence with the answer (same question as support-11). Until then no page may claim a downloadable macOS or Linux installer.
 - **changelog-04** `changelog` (high) — Versions, dates and entries are unbacked in both Figma and the build
   - Figma: v1.0.0 'August 2026' [LATEST], v0.9.0 'June 2026', v0.8.0 'April 2026' with illustrative entries including 'Faster cold start (≤3 s on a release build)', 'Optional on-device live transcript', 'NDI streaming output to OBS / vMix'. MARKETING-SITE-HANDOFF 1a and 8 call the versions and dates illustrat…
   - Build: ChangelogView.vue:4-34: v1.2.0 'August 8, 2026' (Latest Release), v1.1.0 'June 15, 2026', v1.0.0 'March 1, 2026' with invented entries: 'Native NDI 5 Output Engine ... without extra plugins', 'Licensed Bible Entitlement Sync ... NIV, ESV, and NLT', 'Reduced GPU VRAM usage by 35% on 4K motion backgr…
@@ -242,7 +250,7 @@ Keep Figma's layout and styling; ship no invented claim. Where the build already
 - **shared-chrome-19** `shared-chrome` (medium) — Footer tagline and legal line carry 'subscription-simple' and 'Cancel anytime', which the repo does not back
   - Figma: Tagline 'Church presentation, done right. Offline-first, subscription-simple, built for the moment that matters.' (479:135, 14/21) and legal line '© 2026 SelahCue · Works offline · Cancel anytime' (479:160), with 'Windows · macOS' on the right.
   - Build: The build shows neither claim and neither wording: Footer.vue:98 tagline 'Church presentation, reengineered', Footer.vue:129 '© 2026 SelahCue. All rights reserved.'
-  - Decision needed: Owner (binding rule: honest content wins): adopt Figma's layout and wording minus the unbacked parts, e.g. tagline 'Church presentation, done right. Offline-first, built for the moment that matters.' and legal line '© 2026 SelahCue · Works offline', plus the right-hand 'Windows · macOS'. Confirm the exact wording with product before it ships.
+  - Decision needed: Owner (binding rule: honest content wins): adopt Figma's layout and wording minus the unbacked parts, e.g. tagline 'Church presentation, done right. Offline-first, built for the moment that matters.' and legal line '© 2026 SelahCue · Works offline', plus the right-hand 'Windows · macOS'. Confirm the exact wording with product before it ships. 'Windows · macOS' stays as drawn.
 
 ## Class D — Figma gaps (for Uma)
 
@@ -380,6 +388,10 @@ Things Figma does not draw (a state, a page, or an element the build has that no
   - Figma: Not drawn (the frames have no browser chrome).
   - Build: index.html:6 sets 'SelahCue — Church presentation, reengineered' and only /privacy, /terms and the article detail pages change it (lib/legal, lib/useDocumentMeta). Home, Features, Pricing, Download, About, Contact, Support, Docs, Changelog, Blog, Careers, Sign in and Account all report the same tit…
   - Decision needed: Uma/product: agree the title scheme (e.g. 'Pricing — SelahCue', 'Sign in — SelahCue') and a route meta.title the shell applies on navigation. WCAG 2.4.2 expects a title that describes the page.
+- **shared-chrome-35** `shared-chrome` (medium) — Linux is not drawn anywhere platforms are named (footer, Download cards, Home FAQ) although product says it is available
+  - Figma: Footer 479:133 bottom bar draws 'Windows · macOS' only; the Download frame (487:124) draws a Windows card and a macOS card only; the Home FAQ row 'Which platforms are supported?' (478:155) answers with Windows and macOS and says Linux is on the roadmap.
+  - Build: Footer.vue has no platform line; DownloadView.vue:28-46 has Windows and macOS cards and no Linux card; HomeView.vue:86-89 names Windows 10/11 and macOS 12+ only. No platform list on the site names Linux.
+  - Decision needed: Uma: draw Linux wherever platforms are named (footer line, a Download card or entry, the FAQ answer) or confirm Windows and macOS only. Figma's 'Linux is on the roadmap' now contradicts product and must change either way. Do not add Linux to the build until it is drawn. It is NOT yet known whether 'available' means a downloadable installer exists today on each platform, or that the app supports a…
 
 ## Accessibility findings
 
@@ -464,8 +476,8 @@ Things Figma does not draw (a state, a page, or an element the build has that no
 | Download (`download`) | `487:124` | `/download` | diverges | 7 | 2 | 3 | 0 | 0 |
 | About (`about`) | `496:124` | `/about` | diverges | 6 | 0 | 1 | 0 | 0 |
 | Contact (`contact`) | `497:124` | `/contact` | diverges | 7 | 2 | 3 | 2 | 0 |
-| Support (Help Center) (`support`) | `498:124` | `/support` | diverges | 6 | 1 | 2 | 1 | 0 |
-| Documentation (`docs`) | `499:124` | `/docs` | diverges | 5 | 0 | 1 | 2 | 0 |
+| Support (Help Center) (`support`) | `498:124` | `/support` | diverges | 6 | 1 | 3 | 1 | 0 |
+| Documentation (`docs`) | `499:124` | `/docs` | diverges | 5 | 0 | 2 | 2 | 0 |
 | Changelog (`changelog`) | `501:124` | `/changelog` | diverges | 4 | 0 | 2 | 0 | 0 |
 | Blog (`blog`) | `502:124` | `/blog` | diverges | 5 | 1 | 0 | 1 | 0 |
 | Careers (`careers`) | `503:124` | `/careers` | diverges | 6 | 0 | 2 | 1 | 0 |
@@ -583,7 +595,7 @@ The shared chrome is recognisably the same product but not the same layout: the 
   - Figma: Footer 479:133 (identical on all 14 pages) draws three link columns: PRODUCT (Features, Pricing, Download, Changelog), RESOURCES (Documentation, Setup guides, NDI & streaming, Support), COMPANY (About, Blog, Contact, Careers, Affiliates). Privacy and Terms sit in the bottom bar (479:162) next to 'Windows · macOS'. Handoff section 1: 'NDI & streaming' points to Features, 'Setup guides' to Documentation, Company includes Affiliates.
   - Build: Footer.vue:18-53 builds FOUR columns: Product (Features, Pricing, Download, How it works), Resources (Documentation, Support, Blog, Changelog), Company (About, Careers, Contact, Affiliates), Legal (Privacy Policy, Terms of Service). Changelog moved to Resources, Blog moved to Resources, 'How it works' added, 'Setup guides' and 'NDI & streaming' absent, Company order differs, Legal is a column with longer labels instead of two short bottom-bar links, and there is no 'Windows · macOS' tag.
   - Evidence: vp_style_diff --figma chrome-footer.json: design-only copy 'Setup guides', 'NDI & streaming', 'Privacy', 'Terms', 'Windows · macOS'; dom footer link list (focus order): Features Pricing Download How it works / Documentation Support Blog Changelog / About Careers Contact Affiliates / Privacy Policy …
-  - Fix: Footer.vue columns to Figma: Product = Features /features, Pricing /pricing, Download /download, Changelog /changelog. Resources = Documentation /docs, Setup guides /docs, NDI & streaming /features, Support /support. Company = About /about, Blog /blog, Contact /contact, Careers /careers, Affiliates /affiliates. Remove the Legal column; render Privacy /privacy and Terms /terms (13px, muted, gap 22) plus the 'Windows · macOS' text in the bottom bar's right group. Every target exists in router/index.ts.
+  - Fix: Footer.vue columns to Figma: Product = Features /features, Pricing /pricing, Download /download, Changelog /changelog. Resources = Documentation /docs, Setup guides /docs, NDI & streaming /features, Support /support. Company = About /about, Blog /blog, Contact /contact, Careers /careers, Affiliates /affiliates. Remove the Legal column; render Privacy /privacy and Terms /terms (13px, muted, gap 22) plus the 'Windows · macOS' text in the bottom bar's right group. Every target exists in router/index.ts. Keep 'Windows · macOS' exactly as drawn (it is product-backed); do not add Linux here, that i…
   - Linked: 17tnw2b2cev
 - **shared-chrome-15** · class **A** · high · shared · footer — Footer 'How it works' links to /how-it-works, which has no route and renders the 404 page
   - Figma: Figma's Product column has no 'How it works' entry (Features, Pricing, Download, Changelog). Handoff section 1: every footer link must resolve to a real page.
@@ -612,8 +624,8 @@ The shared chrome is recognisably the same product but not the same layout: the 
 - **shared-chrome-19** · class **C** · medium · shared · footer — Footer tagline and legal line carry 'subscription-simple' and 'Cancel anytime', which the repo does not back
   - Figma: Tagline 'Church presentation, done right. Offline-first, subscription-simple, built for the moment that matters.' (479:135, 14/21) and legal line '© 2026 SelahCue · Works offline · Cancel anytime' (479:160), with 'Windows · macOS' on the right.
   - Build: The build shows neither claim and neither wording: Footer.vue:98 tagline 'Church presentation, reengineered', Footer.vue:129 '© 2026 SelahCue. All rights reserved.'
-  - Evidence: Footer.vue:98,129; implementation/api/selahcue_api/apps/billing and apps/downloads hold no models or endpoints (no subscription, no cancel flow); MARKETING-SITE-HANDOFF.md section 8 lists the subscription tiers and billing terms (monthly/annual, cancel-anytime) as Assumed. 'Works offline' and 'Wind…
-  - Decision: Owner (binding rule: honest content wins): adopt Figma's layout and wording minus the unbacked parts, e.g. tagline 'Church presentation, done right. Offline-first, built for the moment that matters.' and legal line '© 2026 SelahCue · Works offline', plus the right-hand 'Windows · macOS'. Confirm the exact wording with product before it ships.
+  - Evidence: Footer.vue:98,129; implementation/api/selahcue_api/apps/billing and apps/downloads hold no models or endpoints (no subscription, no cancel flow); MARKETING-SITE-HANDOFF.md section 8 lists the subscription tiers and billing terms (monthly/annual, cancel-anytime) as Assumed. 'Works offline' is backed…
+  - Decision: Owner (binding rule: honest content wins): adopt Figma's layout and wording minus the unbacked parts, e.g. tagline 'Church presentation, done right. Offline-first, built for the moment that matters.' and legal line '© 2026 SelahCue · Works offline', plus the right-hand 'Windows · macOS'. Confirm the exact wording with product before it ships. 'Windows · macOS' stays as drawn.
 - **shared-chrome-20** · class **A** · high · shared · footer · a11y — Footer copyright fails AA: --sc-text-muted on --sc-surface is 3.79:1 at 14px (Figma's equivalent is 7.5:1)
   - Figma: Footer legal line 13/Regular #9aa4b2 on #0e1116 = 7.5:1, passes AA.
   - Build: Footer.vue:264-268 .copyright color var(--sc-text-muted) #6b7383 on --sc-surface #14161d, 14px/400: 3.79:1 against the required 4.5:1.
@@ -701,6 +713,11 @@ The shared chrome is recognisably the same product but not the same layout: the 
   - Evidence: Computed contrast #6b7383 on #0b0d12 = 4.08; source App.vue:49-56.
   - Fix: .loading color var(--sc-text-secondary) (8.7:1) and add role='status' to the fallback (or render SkeletonLoader).
   - Linked: 17tnw2b2cev
+- **shared-chrome-35** · class **D** · medium · shared · footer — Linux is not drawn anywhere platforms are named (footer, Download cards, Home FAQ) although product says it is available
+  - Figma: Footer 479:133 bottom bar draws 'Windows · macOS' only; the Download frame (487:124) draws a Windows card and a macOS card only; the Home FAQ row 'Which platforms are supported?' (478:155) answers with Windows and macOS and says Linux is on the roadmap.
+  - Build: Footer.vue has no platform line; DownloadView.vue:28-46 has Windows and macOS cards and no Linux card; HomeView.vue:86-89 names Windows 10/11 and macOS 12+ only. No platform list on the site names Linux.
+  - Evidence: Product (owner, 2026-10-04): SelahCue is available for Windows, Linux and macOS. grep -i linux in implementation/marketing/src finds support.ts:108, docs.ts:145 and docs.ts:317 (and a CSS comment): none is a platform list. docs/product/prds/SelahCue-PRD.md:33 (G-2) targets Windows, macOS and Linux.
+  - Decision: Uma: draw Linux wherever platforms are named (footer line, a Download card or entry, the FAQ answer) or confirm Windows and macOS only. Figma's 'Linux is on the roadmap' now contradicts product and must change either way. Do not add Linux to the build until it is drawn. It is NOT yet known whether 'available' means a downloadable installer exists today on each platform, or that the app supports a…
 
 ### Home — `home` (Figma `468:125`)
 
@@ -915,7 +932,7 @@ The build has all eleven designed sections in the right order and the interactio
   - Figma: 478:155 five rows (18/600 questions, 15.5/24 answers): 'Do I need an internet connection?' / 'Which platforms are supported?' / 'Can I use my own songs, slides, and designs?' / 'What is NDI, and do I need it?' / 'How does billing work?' with the Figma answers (internet, Windows+macOS with mobile companion and Linux on the roadmap, multi-slide lyrics and Theme Designer, NDI optional and off by default, free forever / cancel anytime).
   - Build: 'Does SelahCue work fully offline on Sunday morning?' / 'What platforms and operating systems are supported?' / 'How do copyrighted Bible translation entitlements work?' (replaces 'own songs, slides...') / 'Does SelahCue support NDI streaming to OBS and vMix?' (replaces 'What is NDI...') / 'How does billing work and can I cancel anytime?' with different answers; questions 17/600, answers 15/1.6; list 800 wide vs 780. HomeView.vue:82-103, FaqAccordion.vue:84, :125.
   - Evidence: vp_style_diff figma-only: all five Figma questions and answers (y=5210.5 ... 5777); build-only: 'Does SelahCue work fully offline on Sunday morning?', 'What platforms and operating systems are supported?', 'How do copyrighted Bible translation entitlements work?', 'Does SelahCue support NDI streami…
-  - Fix: HomeView.vue:82-103: restore the five Figma Q&As verbatim (subject to home-33/43 for billing and offline wording); FaqAccordion: question 18/600, answer 15.5/24, list width 780.
+  - Fix: HomeView.vue:82-103: restore the five Figma Q&As verbatim EXCEPT the platforms answer: Figma's 'Linux is on the roadmap' contradicts product (available for Windows, Linux and macOS, 2026-10-04) and waits for Uma (shared-chrome-35), so keep the build's platforms wording until it is redrawn and claim no downloadable macOS or Linux installer (home-40); billing and offline wording per home-33/43; FaqAccordion: question 18/600, answer 15.5/24, list width 780.
   - Linked: 17tnw2b2cex
 - **home-39** · class **A** · low · shared · faq-accordion · a11y — FAQ accordion: collapsed answers are still exposed to assistive tech and buttons lack aria-controls
   - Figma: Handoff section 6: accordion toggles on Enter/Space and exposes aria-expanded (FAQ as a disclosure pattern); '+' is a 22px glyph.
@@ -927,7 +944,7 @@ The build has all eleven designed sections in the right order and the interactio
   - Figma: Figma FAQ makes no claim about copyrighted translations or OS versions.
   - Build: Answer 3: 'Public-domain Bibles (WEB, ASV, BSB) are bundled ... Copyrighted translations (NIV, ESV, NLT) are granted via post-activation entitlement and downloaded to an encrypted local store'; answer 2: 'Windows 10/11 (64-bit) and macOS 12+ (Apple Silicon & Intel)'; answer 1: 'built desktop-authoritative'. HomeView.vue:88-93.
   - Evidence: docs/legal/LEGAL-DRAFT-NOTES.md section 9.1: #3 'BSB is not bundled; the bundled set is KJV, WEB, ASV, WEBBE and Darby', #2 'no licensed translation, publisher agreement or download pipeline exists'; grep for 'macOS 12' / 'Windows 10' in docs, tauri config and CI returns no supported-version statem…
-  - Decision: Owner: remove the licensed-translation answer (restore Figma Q3) and either cite real minimum OS versions from a release matrix or drop the version numbers.
+  - Decision: Owner: remove the licensed-translation answer (restore Figma Q3) and either cite real minimum OS versions from a release matrix or drop the version numbers. Platforms: product says Windows, Linux and macOS are available (2026-10-04), so naming the platforms is backed; the version numbers are not.
   - Linked: 17tnw2b0x3h
 - **home-41** · class **A** · medium · page — Final CTA band: gradient, card width, copy colour and secondary button differ
   - Figma: 479:125: 1248x337 card, radius 24, fill = brand-to-indigo gradient (token --gradient-cta #5b6bd6 -> #2b2a6b), padding 64/48, gap 22, H2 44/50 white 700, sub 19/28 #dbe0fa, buttons 'Download free' (white, label brand #5b6bd6, 15.5/700, 167x49 r11) and 'See pricing' (transparent, 1px white@50% stroke, 137x47 r11), no outer shadow.
@@ -952,6 +969,7 @@ The build has all eleven designed sections in the right order and the interactio
   - Build: The build copies the avatar failure ('MD' white on #2bb673 2.61:1, 'PP' white on #f2b53c 1.83:1, both in the report's failing list) and its LIVE mock label is 3.89:1; the eyebrows currently render white by accident (home-10), so they pass only because the variant is broken.
   - Evidence: Computed from the style dump: contrast(#5b6bd6,#0e1116)=4.07, (#5b6bd6,#171b22)=3.72, (#5b6bd6,#1e232c)=3.39, (#ef4444,#1e232c)=4.19, (#ffffff,#2bb673)=2.61, (#ffffff,#f2b53c)=1.83; report.json contrast_survey home: 'MD' 2.61, 'PP' 1.83, '● LIVE' 3.89.
   - Decision: Uma: choose accessible inks for small brand text (e.g. a lighter brand tint such as the #a5b4fc already used in the hero pill, 8.96:1), for LIVE/READY chips, and dark initials on the green/gold avatars (#0e1116 gives >7:1). This decides the fix for home-10 and home-15.
+- **home-45** · class D · duplicate of **shared-chrome-35** — Home FAQ 'Which platforms are supported?' says Linux is on the roadmap; product says it is available
 
 ### Pricing — `pricing` (Figma `483:124`)
 
@@ -1191,7 +1209,7 @@ Section order matches Figma (hero, platform cards, requirements, mobile control,
   - Figma: 'v1.0 · .msi installer · ~84 MB', 'v1.0 · universal .dmg · ~92 MB', 'Windows 10 & 11 · 64-bit', 'macOS 12 Monterey+ · Apple silicon & Intel'.
   - Build: Build shows no version or size (disabled state) but still states 'Windows 10 / 11 (64-bit)' and 'macOS 11.0 or later (Intel & Apple Silicon)', which also disagrees with Figma's macOS 12. Repo: operator version is 0.1.0 (crates/selahcue-operator/tauri.conf.json); bundle target is only 'nsis' and CI uploads *-setup.exe (.github/workflows/windows-installer.yml:218) - there is no .msi, no macOS bundle, no .dmg, no recorded installer size, and no documented macOS or Windows minimum version.
   - Evidence: tauri.conf.json bundle.targets ['nsis']; grep .dmg / notariz / universal in docs, workflows and src returns nothing; docs/ops/WINDOWS-INSTALLER.md.
-  - Decision: Owner: what are the shipped formats (Windows NSIS .exe; macOS not built) and the supported OS floors? Show no version or size until a release exists.
+  - Decision: Owner: what are the shipped formats and supported OS floors? Product (owner, 2026-10-04): SelahCue is available for Windows, Linux and macOS. The repo packages only a Windows NSIS .exe, so is a macOS or Linux installer downloadable today? Show no version or size until a release exists. macOS floor: Figma says 12 Monterey+, the build says 11.0 (keep this finding).
   - Linked: 17tnw2b0x3h
 - **download-05** · class **C** · high · page — System requirements: Figma, the build, the PRD and the owner requirement all disagree; the repo has no single backed figure
   - Figma: Minimum: Dual-core 2 GHz / 4 GB RAM / Integrated GPU / 500 MB free / One output (audience). Recommended: Quad-core 3 GHz+ / 8 GB RAM or more / Discrete GPU (NDI / multi-out) / SSD 1 GB free / Audience + stage display.
@@ -1241,6 +1259,7 @@ Section order matches Figma (hero, platform cards, requirements, mobile control,
   - Fix: Shared container fix (pricing-14); remove the install-guide band.
   - Linked: 17tnw2b2cey
 - **download-13** · class D · duplicate of **account-25** — Figma's mobile-control and eyebrow labels fail AA on their pill fills
+- **download-14** · class D · duplicate of **shared-chrome-35** — The Download page draws no Linux card although product says Linux is available
 
 ### About — `about` (Figma `496:124`)
 
@@ -1379,7 +1398,7 @@ The build is a different composition from the frame: Figma has a centred 'Let's 
 - **contact-15** · class A · duplicate of **shared-chrome-29** — Primary button skin: solid #5b6bd6 r10/r12 versus gradient pill
 - **contact-16** · class A · duplicate of **shared-chrome-01** — Navbar geometry and colours (identical on all five surfaces)
 - **contact-17** · class A · duplicate of **shared-chrome-16** — Footer structure, columns and styling (identical on all five surfaces)
-- **contact-18** · class C · duplicate of **shared-chrome-19** — Footer bottom-bar claims 'Cancel anytime' and 'Windows · macOS'
+- **contact-18** · class C · duplicate of **shared-chrome-19** — Footer bottom-bar claims 'Cancel anytime', which the repo does not back
 - **contact-19** · class **D** · medium · page — FormField styling: two handoffs disagree and one decision has to settle it for Contact and the auth pages
   - Figma: Contact (497:124) and every auth frame draw the field label as Inter Medium 13 in the secondary text colour and the input well on the inset fill, 44 high (AUTH-LANDING-PAGES-HANDOFF 2.2 and 2.3).
   - Build: FormField.vue follows MARKETING-PORTAL-GAP-FILL-HANDOFF 10a: label 14/600 in the primary text colour, input on --sc-elevated, 3px focus glow. It is used by Contact, Sign up, Forgot password, Sign in, Reset and the affiliate and admin settings pages.
@@ -1453,6 +1472,11 @@ The sections and their order match (hero with search, six category cards, articl
   - Evidence: report.json contrast_survey support: 'Getting Started · 2 min read' 3.79, 'Mobile Control · 2 min read' 3.79, '1 article' / '2 articles' / '3 articles' 3.83 (required 4.5)
   - Fix: Meta text to --sc-text-secondary (AUTH-LANDING-PAGES-HANDOFF 2.2 mapping); counts use the AA ink chosen under contact-14.
   - Linked: 17tnw2b2cez
+- **support-11** · class **C** · medium · page — Support article says 'There is no macOS or Linux installer yet', which contradicts what product says
+  - Figma: Figma draws no such sentence; the NDI troubleshooting article is part of the undrawn content layer (support-08).
+  - Build: support.ts:108 (NDI article): 'Use a build that includes NDI. The Windows installer is built with it and carries the NDI runtime. There is no macOS or Linux installer yet.'
+  - Evidence: Product (owner, 2026-10-04): SelahCue is available for Windows, Linux and macOS. For: docs/product/prds/SelahCue-PRD.md:33 (G-2) targets Windows, macOS and Linux; .github/workflows/ci.yml builds and tests on ubuntu, macOS and Windows; docs.ts:145 documents a Linux data folder. Against: tauri bundle…
+  - Decision: Owner: It is NOT yet known whether 'available' means a downloadable installer exists today on each platform, or that the app supports all three while only the Windows installer is packaged. Reconcile the sentence with the answer. Until then no page may claim a downloadable macOS or Linux installer (Download buttons stay disabled, PR #134).
 
 ### Documentation — `docs` (Figma `499:124`)
 
@@ -1482,7 +1506,7 @@ Figma is a hub: centred hero, a grouped sidebar with an active item, a 'Getting 
   - Figma: Callout 'New here? Run your first service in 10 minutes' / 'Install, build a plan, and go live — start to finish.'; tile 'Installation — Windows & macOS install and updates.'; tile 'Setup guides — Displays, audio, and per-output config.'; intro 'This hub covers installation...'.
   - Build: None of it is built. The content layer has no installation article and omits unverified workflows (docs.ts header: a workflow that could not be verified in the code is not written).
   - Evidence: LEGAL-DRAFT-NOTES 9.4: app version is 0.1.0 and there is no macOS release pipeline; docs.ts article list has no install, update or audio-config article; no measurement of a first service duration exists
-  - Decision: '10 minutes' is an unmeasured claim; 'macOS install and updates' describes something not shipped (no macOS pipeline, no update mechanism evidenced); 'audio' configuration is unverified. Keep the callout and tile layout with honest copy or omit those tiles; owner decision.
+  - Decision: '10 minutes' is an unmeasured claim; 'Windows & macOS install and updates': product says macOS is available (2026-10-04) but no macOS installer or update mechanism is evidenced in the repo (open question: docs-09); 'audio' configuration is unverified. Keep the callout and tile layout with honest copy or omit those tiles; owner decision.
   - Linked: 17tnw2b0x3h
 - **docs-05** · class **D** · high · page — Undrawn article-index layer accounts for the +1787px
   - Figma: No article rows: a six-tile grid (two rows of 83px) is the whole hub body (content column 521px tall).
@@ -1508,6 +1532,11 @@ Figma is a hub: centred hero, a grouped sidebar with an active item, a 'Getting 
   - Evidence: dom aside.docs-sidebar xywh 144,129,260,345; docs-content 452,129,844; figma boxes 499:145 and 499:172
   - Fix: 1248 content width (96px gutters), sidebar 248, gap 40, content 960, split padding 24 top / 64 bottom.
   - Linked: 17tnw2b2cez
+- **docs-09** · class **C** · medium · page — Docs known-limits note says 'There is no macOS or Linux installer yet', which contradicts what product says
+  - Figma: Figma draws no such note; it sits in the undrawn article layer (docs-06).
+  - Build: docs.ts:317 (callout 'Known limits'): 'There is no macOS or Linux installer yet, so the Windows installer is the only packaged build that includes NDI.'
+  - Evidence: Product (owner, 2026-10-04): SelahCue is available for Windows, Linux and macOS. Same evidence for and against as support-11 (PRD G-2 line 33; CI matrix; docs.ts:145 Linux data folder; tauri target nsis only).
+  - Decision: Owner: It is NOT yet known whether 'available' means a downloadable installer exists today on each platform, or that the app supports all three while only the Windows installer is packaged. Reconcile the sentence with the answer (same question as support-11). Until then no page may claim a downloadable macOS or Linux installer.
 
 ### Changelog — `changelog` (Figma `501:124`)
 
