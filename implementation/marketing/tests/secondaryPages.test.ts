@@ -29,6 +29,10 @@ import test, { after, before, describe } from 'node:test'
 
 import type { ViteDevServer } from 'vite'
 
+import { docsArticles, docsCategories } from '../src/lib/content/docs.ts'
+import { blogPosts } from '../src/lib/content/blog.ts'
+import { supportArticles, supportCategories } from '../src/lib/content/support.ts'
+import { LEDGER, PROMISE_PATTERN, type Entry } from './fixtures/copyLedger.ts'
 import { elementsOf, prop, readSrc, styleOf, valueOf } from './fixtures/sfcSource.ts'
 import {
   classesOf,
@@ -38,6 +42,7 @@ import {
   startViewServer,
   tagsOf,
   textOf,
+  textRunsOf,
   withClass,
   type Heading,
   type Tag,
@@ -120,30 +125,28 @@ function usesSharedContainer(sfc: string): boolean {
   return elementsOf(sfc).some((el) => (valueOf(prop(el, 'class')) ?? '').split(/\s+/).includes('container'))
 }
 
-/** Strings the audit marks unbacked in a Figma frame; none may be added to a page. */
-const UNBACKED_FIGMA_STRINGS = [
-  'hello@selahcue.app',
-  'community.selahcue.app',
-  'within one business day',
-  'We usually reply',
-  'Response time',
-  '10 minutes',
-  'Windows & macOS install',
-  'careers@selahcue.app',
-  "We're a small, remote team",
-  'Ship features churches use live',
-  'Sustainable pace',
-  'Senior Rust Engineer',
-  'Flutter / Mobile Engineer',
-  'Product Designer',
-  'Developer Advocate',
-  'Support Specialist',
-] as const
+/**
+ * The copy ledger (see `fixtures/copyLedger.ts`). A rendered text run is allowed when the CONTENT LAYER owns it, or it is
+ * on the page's ledger as new copy (reviewed: no promise) or as a named pre-existing line (shrink-only; removed by the
+ * claims ticket 17tnw2b0x3h). Anything else is a sentence nobody listed.
+ */
+const CONTENT_TEXT: ReadonlySet<string> = new Set([
+  ...[...docsCategories, ...supportCategories].flatMap((c) => [c.title, c.desc]),
+  ...[...docsArticles, ...supportArticles].flatMap((a) => [a.title, a.summary]),
+  ...blogPosts.flatMap((p) => [p.title, p.summary, p.category]),
+])
 
-function addedClaims(text: string): string[] {
-  const lower = text.toLowerCase()
-  return UNBACKED_FIGMA_STRINGS.filter((s) => lower.includes(s.toLowerCase()))
+const entryMatches = (e: Entry, run: string): boolean => (typeof e === 'string' ? e === run : e.test(run))
+
+/** The runs the ledger does not account for. One definition, used by the page checks and by the planted-promise control. */
+function unlistedRuns(runs: readonly string[], page: string, content: ReadonlySet<string> = CONTENT_TEXT): string[] {
+  const l = LEDGER[page]
+  assert.ok(l, `no ledger for ${page}`)
+  const all = [...l.newCopy, ...l.preexisting]
+  return runs.filter((r) => !content.has(r) && !all.some((e) => entryMatches(e, r)))
 }
+
+const ledgerKey = (file: string): string => file.replace(/View\.vue$/, '')
 
 // --------------------------------------------------------------------------- every page
 
@@ -166,12 +169,12 @@ describe('the nine pages: heading outline, buttons and container', () => {
       assert.deepEqual(mutedInkRules(readSrc(`views/${file}`)), [], `${file} colours text with --sc-text-muted`)
     })
 
-    // The two legal pages render the generated legal drafts, which are owned by ClickUp 17tnw2b0x3g and
-    // checked by `npm run check:legal`: their text is not this ticket's and may contain any of these words
-    // in its own context (the Terms mention "10 minutes" of a different thing).
+    // The two legal pages render the generated legal drafts (ClickUp 17tnw2b0x3g, `npm run check:legal`): their text is
+    // not this ticket's. The other seven are held to the copy ledger.
     if (!LEGAL_PAGES.has(file)) {
-      test(`${file}: no claim the audit marks unbacked is added`, async () => {
-        assert.deepEqual(addedClaims(textOf(await html(file))), [], `${file} shows a string Figma draws and the repo does not back`)
+      test(`${file}: every rendered line is on the copy ledger, in the content layer, or a named pre-existing line`, async () => {
+        const stray = unlistedRuns(textRunsOf(await html(file)), ledgerKey(file))
+        assert.deepEqual(stray, [], `${file} renders text nobody listed: add it to tests/fixtures/copyLedger.ts as new copy only if it carries no promise`)
       })
     }
   }
@@ -201,7 +204,7 @@ describe('the nine pages: heading outline, buttons and container', () => {
     assert.deepEqual(mutedInkRules('<template><p/></template><style scoped>.meta { font-size: 13px; color: var(--sc-text-muted); }\n.ok { color: var(--sc-text-secondary); }\n.b { border-color: var(--sc-text-muted); }</style>'), ['.meta'])
   })
 
-  test('CONTROL: the gradient, container and claim predicates fire on a planted fault', () => {
+  test('CONTROL: the gradient and container predicates fire on a planted fault', () => {
     const planted = `<template><UiButton variant="gradient">Go</UiButton><UiButton :variant="'gradient'">Go</UiButton><UiButton variant="primary">ok</UiButton></template>
 <style scoped>.container { max-width: 1140px; }</style>`
     assert.equal(gradientButtons(planted).length, 2)
@@ -209,8 +212,63 @@ describe('the nine pages: heading outline, buttons and container', () => {
     assert.equal(localContainerRules('<template><p/></template><style scoped>.container-fluid { margin: 0 }\n.page .info-container { x: y }</style>').length, 0, 'a different class that merely contains the word is not the shared container')
     assert.ok(!usesSharedContainer('<template><div class="contact-page"><p/></div></template>'))
     assert.ok(usesSharedContainer('<template><div class="hero container"><p/></div></template>'))
-    assert.deepEqual(addedClaims('Mail hello@selahcue.app, we usually reply fast. Mon-Fri, Within one business day.'), ['hello@selahcue.app', 'within one business day', 'We usually reply'])
-    assert.deepEqual(addedClaims('Nothing here is a claim.'), [])
+  })
+})
+
+// --------------------------------------------------------------------------- the copy ledger
+
+describe('the copy ledger: no sentence appears on the seven pages that nobody listed', () => {
+  const pages = PAGES.filter((p) => !LEGAL_PAGES.has(p.file))
+
+  test('the ledger covers exactly the seven non-legal pages', () => {
+    assert.deepEqual(Object.keys(LEDGER).sort(), pages.map((p) => ledgerKey(p.file)).sort())
+  })
+
+  for (const { file } of pages) {
+    const key = ledgerKey(file)
+
+    test(`${key}: every ledger entry is still rendered, so the pre-existing list can only shrink`, async () => {
+      const runs = textRunsOf(await html(file))
+      const l = LEDGER[key]!
+      const dead = [...l.newCopy, ...l.preexisting].filter((e) => !runs.some((r) => entryMatches(e, r)))
+      assert.deepEqual(dead.map(String), [], `${key}: entries no page text matches (delete them: the words are gone)`)
+    })
+
+    test(`${key}: no entry is on both lists, and none is listed twice`, () => {
+      const l = LEDGER[key]!
+      const names = [...l.newCopy, ...l.preexisting].map(String)
+      assert.equal(new Set(names).size, names.length, `${key}: an entry appears twice`)
+    })
+
+    test(`${key}: new copy carries no time, money or reply promise`, () => {
+      const promising = LEDGER[key]!.newCopy.filter((e) => typeof e === 'string' && PROMISE_PATTERN.test(e))
+      assert.deepEqual(promising, [], `${key}: new copy that sounds like a promise (move it to a reviewed decision, not the ledger)`)
+    })
+  }
+
+  test('CONTROL: three planted promises in plain words are all unlisted (they stayed green under the old 16-string ban)', () => {
+    const plant = (page: string, line: string): string[] => unlistedRuns([line], page)
+    assert.deepEqual(plant('Support', 'We reply within one hour'), ['We reply within one hour'])
+    assert.deepEqual(plant('Changelog', 'Every update is free for life and ships weekly'), ['Every update is free for life and ships weekly'])
+    assert.deepEqual(plant('Affiliates', 'Earn guaranteed recurring commission for life'), ['Earn guaranteed recurring commission for life'])
+    assert.deepEqual(plant('Careers', 'Open roles'), [], 'a listed line passes')
+    assert.deepEqual(plant('Support', 'Nothing is showing on the audience screen'), [], 'a content-layer title passes')
+    assert.deepEqual(plant('Support', '2 articles'), [], 'a computed count passes')
+  })
+
+  test('CONTROL: the promise pattern catches a time, a figure, a reply and an earnings word, and passes ordinary copy', () => {
+    for (const bad of ['We reply within one hour', 'Free for life', 'Earn 20% recurring', 'Paid monthly', 'Guaranteed', 'Pay $50', 'Our team will respond', 'Commission on every sale']) {
+      assert.ok(PROMISE_PATTERN.test(bad), bad)
+    }
+    for (const ok of ['Apply to join the SelahCue affiliate program.', 'Guides, answers and troubleshooting for running SelahCue on Sunday.', 'Not available yet', 'Refer a church']) {
+      assert.ok(!PROMISE_PATTERN.test(ok), ok)
+    }
+  })
+
+  test('CONTROL: a line moved from the pre-existing list into the new copy is caught by the promise pattern (the ledger cannot launder a claim)', () => {
+    for (const claim of LEDGER['Affiliates']!.preexisting.filter((e): e is string => typeof e === 'string' && /20%|\$50|60-day|Earn/.test(e))) {
+      assert.ok(PROMISE_PATTERN.test(claim), `${claim} would be caught`)
+    }
   })
 })
 
@@ -282,10 +340,6 @@ describe('Contact (497:124): centred hero, then the form, then the method cards'
     assert.ok(send, 'the Send button is a large UiButton')
     assert.equal(valueOf(prop(send, 'variant')), 'primary')
     assert.ok(prop(send, 'block'), 'it fills the card')
-  })
-
-  test('no claim is added: no address, reply time or note the audit marks unbacked (contact-04, 05, 06)', async () => {
-    assert.deepEqual(addedClaims(textOf(await html('ContactView.vue'))), [])
   })
 
   test('the hero has no promise of a reply or of a person: the sentence is reworded (contact-01, honest content)', async () => {
@@ -433,6 +487,19 @@ describe('Docs (499:124): centred hero, grouped sidebar with an active item, get
     assert.match(css, /\.nav-item\.is-active\s*\{[^}]*font-weight:\s*600/)
   })
 
+  test('no two h2 on the page read the same: the hub heading is not the Getting Started category heading (review round 1 M8)', async () => {
+    const h2 = headingsOf(await html('DocsView.vue')).filter((h) => h.level === 2).map((h) => h.text.toLowerCase())
+    assert.ok(h2.length >= 7, 'the hub heading and the six category sections')
+    assert.deepEqual(h2.filter((t, i) => h2.indexOf(t) !== i), [], 'a repeated h2 text')
+  })
+
+  test('the current item is marked by a border, which forced colors keeps, not a box-shadow, which it deletes (review round 1 M8)', () => {
+    const css = styleOf(readSrc('views/DocsView.vue'))
+    assert.equal(declaration(css, '.nav-item.is-active', 'border-left'), '3px solid var(--sc-primary)')
+    assert.equal(declaration(css, '.nav-item.is-active', 'padding-left'), '7px', 'the border takes 3px of the 10px padding, so no row moves')
+    assert.equal(declaration(css, '.nav-item.is-active', 'box-shadow'), undefined, 'a shadow is the cue forced colors removes')
+  })
+
   test('the sidebar is 248 wide and the content column follows it at a 40px gap (docs-08)', () => {
     const css = styleOf(readSrc('views/DocsView.vue'))
     assert.match(css, /grid-template-columns:\s*248px minmax\(0, 1fr\)/)
@@ -447,7 +514,7 @@ describe('Docs (499:124): centred hero, grouped sidebar with an active item, get
   test('the getting-started hub: h2, intro, a callout that goes to a real article, and a tile for every category (docs-03)', async () => {
     const page = await html('DocsView.vue')
     const heads = headingsOf(page)
-    assert.ok(heads.some((h) => h.level === 2 && h.text === 'Getting started'))
+    assert.ok(heads.some((h) => h.level === 2 && h.text === 'Getting started with SelahCue'), 'the hub heading (Figma: Getting started), made distinct from the Getting Started category section')
     const callout = withClass(page, 'start-callout')
     assert.equal(callout.length, 1)
     const startLink = tagsOf(page).find((t) => t.name === 'a' && classesOf(t).includes('start-button'))

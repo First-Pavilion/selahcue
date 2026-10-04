@@ -89,6 +89,27 @@ export function textOf(html: string): string {
     .trim()
 }
 
+/**
+ * Every text run in the markup: the text between tags, entities decoded, whitespace collapsed, empties dropped.
+ * Comments and style blocks are not text. A visually hidden span is a run like any other (a screen reader reads it).
+ */
+export function textRunsOf(html: string): string[] {
+  const cleaned = html.replace(/<!--[\s\S]*?-->/g, '').replace(/<style[\s\S]*?<\/style>/g, '')
+  const out: string[] = []
+  for (const chunk of cleaned.split(/<[^>]+>/)) {
+    const t = chunk
+      .replace(/&amp;/g, '&')
+      .replace(/&#39;/g, "'")
+      .replace(/&quot;/g, '"')
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/\s+/g, ' ')
+      .trim()
+    if (t) out.push(t)
+  }
+  return out
+}
+
 export interface Heading {
   level: number
   text: string

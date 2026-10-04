@@ -78,7 +78,7 @@ const startArticle = docsArticles.find((a) => a.startHere) ?? docsArticles[0]
              it is a plain column now, not the card it used to be. -->
         <div class="docs-content">
           <section class="docs-intro">
-            <h2 class="intro-title">Getting started</h2>
+            <h2 class="intro-title">Getting started with SelahCue</h2>
             <p class="intro-text">
               SelahCue is a desktop-authoritative, offline-first church presentation app. These guides cover live control,
               outputs and displays, scripture, timers and service plans, and mobile control.
@@ -238,12 +238,15 @@ const startArticle = docsArticles.find((a) => a.startHere) ?? docsArticles[0]
 /* The current item: the elevated fill, 600, and a brand bar down its edge. The frame inks the label in
    brand blue, which is 3.4:1 on that fill and fails AA at this size; which accessible brand ink replaces
    it is Uma's decision (class D), so the label keeps the primary text colour and the bar carries the
-   brand. The bar is a shadow, not a border, so no row moves. */
+   brand. The bar is a BORDER, not a shadow: forced colors (Windows High Contrast) deletes shadows and
+   fills and keeps borders, so the current item is still marked there. The padding gives back the 3px so
+   no row moves. */
 .nav-item.is-active {
   background: var(--sc-elevated);
   color: var(--sc-text);
   font-weight: 600;
-  box-shadow: inset 3px 0 0 var(--sc-primary);
+  border-left: 3px solid var(--sc-primary);
+  padding-left: 7px;
 }
 
 .nav-item:focus-visible,

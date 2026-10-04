@@ -311,6 +311,21 @@ def check_docs(page, c: Checks, base: str) -> None:
     c.eq(page.locator(".docs-sidebar .nav-item[aria-current]").first.inner_text().strip(), "Display & Outputs", "docs: and it is the one clicked")
     c.eq(page.locator(".docs-sidebar .nav-item.is-active").count(), 1, "docs: one visibly active item after a click")
     c.ok(text_contrast(page, ".group-label") >= 4.5, "docs: group labels pass AA")
+    # Forced colors (Windows High Contrast) deletes box-shadows and replaces fills with the canvas colour but keeps
+    # borders: the current item must still be marked there. Chromium applies the emulation; WebKit reports it and
+    # does not apply it, so there the check is skipped with a note (as the shared-components script does).
+    if c.engine == "chromium":
+        page.emulate_media(forced_colors="active")
+        page.wait_for_timeout(150)
+        cur = cs(page, ".docs-sidebar .nav-item.is-active", ["border-left-width", "border-left-style", "border-left-color", "background-color", "box-shadow"])
+        rest = cs(page, ".docs-sidebar .nav-item:not(.is-active)", ["border-left-width"])
+        c.eq((cur["border-left-width"], cur["border-left-style"]), ("3px", "solid"), "docs (forced colors): the current item keeps a 3px border")
+        c.eq(rest["border-left-width"], "0px", "docs (forced colors): the other items have none")
+        c.ok(cur["border-left-color"] != cur["background-color"], f"docs (forced colors): the border differs from the item's own fill ({cur['border-left-color']} against {cur['background-color']})")
+        c.eq(cur["box-shadow"], "none", "docs (forced colors): and no shadow is what carries it")
+        page.emulate_media(forced_colors="none")
+    else:
+        print(f"NOTE [{c.engine}]: this engine does not apply forced colors; the forced-colors check on the docs marker is skipped")
     tiles = page.locator(".topic-tile")
     c.eq(tiles.count(), 6, "docs: six topic tiles")
     c.near(tiles.first.bounding_box()["width"], 471, 1.5, "docs: tile 471 wide (Figma 499:186)")
