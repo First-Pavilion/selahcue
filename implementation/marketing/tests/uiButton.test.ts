@@ -16,7 +16,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test, { describe } from 'node:test'
 
-import { box, effective, parseCss, px, styleOf, type Env } from './fixtures/cssSource.ts'
+import { box, contrast, effective, hexToRgb, parseCss, px, rootProperties, styleOf, type Env } from './fixtures/cssSource.ts'
 
 const src = readFileSync(new URL('../src/components/UiButton.vue', import.meta.url), 'utf8')
 const rules = parseCss(styleOf(src))
@@ -192,6 +192,68 @@ describe('the focus ring survives forced-colors (Windows High Contrast)', () => 
     )
     const d = effective(shadowOnly, ['ui-button'], DESKTOP, 'focus-visible')
     assert.doesNotMatch(d['outline'] ?? '', /^2px solid/, 'the outline check could not tell a shadow-only ring from a real one')
+  })
+})
+
+describe('every label is readable on its fill (small text: 4.5:1)', () => {
+  const tokenRules = [
+    ...parseCss(readFileSync(new URL('../src/assets/styles/tokens.css', import.meta.url), 'utf8')),
+    ...parseCss(readFileSync(new URL('../src/assets/styles/main.css', import.meta.url), 'utf8')),
+  ]
+  const tokens = rootProperties(tokenRules, DESKTOP)
+  /** `var(--sc-x)` -> its hex; `#fff` / `white` -> #ffffff. */
+  const hex = (value: string | undefined): string => {
+    const v = (value ?? '').trim()
+    const m = /^var\((--[\w-]+)\)$/.exec(v)
+    if (m) return hex(tokens[m[1] ?? ''])
+    if (/^(#fff|white)$/i.test(v)) return '#ffffff'
+    if (/^#[0-9a-f]{6}$/i.test(v)) return v
+    throw new Error(`cannot resolve ${value} to a colour`)
+  }
+  /** `rgba(0, 0, 0, 0.2)` laid over `under`, as #rrggbb. */
+  const over = (rgba: string, under: string): string => {
+    const m = /rgba\(\s*(\d+),\s*(\d+),\s*(\d+),\s*([\d.]+)\)/.exec(rgba)
+    assert.ok(m, rgba)
+    const [r, g, b] = hexToRgb(under)
+    const a = Number.parseFloat(m?.[4] ?? '1')
+    const mix = (top: string | undefined, bottom: number) => Math.round(Number.parseInt(top ?? '0', 10) * a + bottom * (1 - a))
+    return '#' + [mix(m?.[1], r), mix(m?.[2], g), mix(m?.[3], b)].map((c) => c.toString(16).padStart(2, '0')).join('')
+  }
+
+  test('at rest, in every variant, on the surfaces it is used on', () => {
+    const pairs: [string, string, string][] = [
+      ['primary', hex(look('md', 'primary')['color']), hex(look('md', 'primary')['background'])],
+      ['gradient (alias)', hex(look('md', 'gradient')['color']), hex(look('md', 'gradient')['background'])],
+      ['secondary', hex(look('md', 'secondary')['color']), hex(look('md', 'secondary')['background'])],
+      ['ghost on the page', hex(look('md', 'ghost')['color']), hex(tokens['--sc-base'])],
+      ['ghost on a panel', hex(look('md', 'ghost')['color']), hex(tokens['--sc-surface'])],
+      ['outline on the page', hex(look('md', 'outline')['color']), hex(tokens['--sc-base'])],
+      ['outline on a panel', hex(look('md', 'outline')['color']), hex(tokens['--sc-surface'])],
+      ['inverse (brand ink on white)', hex(look('lg', 'inverse')['color']), hex(look('lg', 'inverse')['background'])],
+      // the band's lightest gradient stop is --sc-primary itself (--gradient-cta starts there)
+      ['inverse-outline on the lightest band stop', hex(look('lg', 'inverse-outline')['color']), hex(tokens['--sc-primary'])],
+    ]
+    for (const [what, ink, fill] of pairs) {
+      assert.ok(contrast(ink, fill) >= 4.5, `${what}: ${ink} on ${fill} is ${contrast(ink, fill).toFixed(2)}:1`)
+    }
+  })
+
+  test('on hover: the ones that change colour keep 4.5:1, and the ones that would not are not colour changes', () => {
+    const hover = (v: string) => look('md', v, DESKTOP, 'hover')
+    assert.ok(contrast(hex(look('md', 'secondary')['color']), hex(hover('secondary')['background'])) >= 4.5, 'secondary')
+    assert.ok(contrast(hex(look('md', 'ghost')['color']), hex(hover('ghost')['background'])) >= 4.5, 'ghost')
+    assert.ok(contrast(hex(look('md', 'outline')['color']), hex(hover('outline')['background'])) >= 4.5, 'outline')
+    // white over the band darkened by the hover wash: never lower than at rest
+    const washed = over(hover('inverse-outline')['background'] ?? '', hex(tokens['--sc-primary']))
+    assert.ok(contrast('#ffffff', washed) >= contrast('#ffffff', hex(tokens['--sc-primary'])), 'inverse-outline')
+    // inverse and gradient hover with a shadow only, so the label contrast cannot move
+    for (const v of ['inverse', 'gradient']) assert.equal(hover(v)['background'], undefined, `${v} hover must not change the fill`)
+    // NOT asserted: the primary hover (--sc-primary-hover, 3.78:1 with the white label). Its direction is
+    // held for Uma (shared-chrome-31); this file keeps the value it had.
+  })
+
+  test('control: the check bites. White on the old Design 2.0 muted ink is caught', () => {
+    assert.ok(contrast('#ffffff', '#9aa4b2') < 4.5)
   })
 })
 
