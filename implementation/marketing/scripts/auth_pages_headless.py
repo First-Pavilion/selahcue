@@ -1876,6 +1876,7 @@ DRIVER = r"""
       fields[1].value = 'abc123';
       fields[1].dispatchEvent(new Event('input', { bubbles: true }));
       await wait(50);
+      document.querySelector('.au-card .au-btn-primary').focus();
       check('submitted a 6-character password', submit());
       await wait(500);
       var text = cardText();
@@ -1937,6 +1938,7 @@ DRIVER = r"""
       fields[0].value = 'a-good-passphrase'; fields[0].dispatchEvent(new Event('input', { bubbles: true }));
       fields[1].value = 'a-different-one';   fields[1].dispatchEvent(new Event('input', { bubbles: true }));
       await wait(50);
+      document.querySelector('.au-card .au-btn-primary').focus();
       submit();
       await wait(500);
       check('NO mutation dispatched for mismatched passwords', calls.length === 0, 'calls=' + calls.length);
@@ -1958,6 +1960,9 @@ DRIVER = r"""
       typeInto(fields[0], 'abc123');
       typeInto(fields[1], 'different');
       await wait(50);
+      // The user is ON the button when the re-check runs (and New password was focused on arrival, so without this the check
+      // below would pass whether or not focus ever moved).
+      document.querySelector('.au-card .au-btn-primary').focus();
       check('submitted two bad passwords', submit());
       await wait(500);
       // A held button that is pressed again must tell a screen reader user SOMETHING: focus goes to the first invalid field, whose
