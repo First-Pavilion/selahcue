@@ -571,9 +571,11 @@ def check_allowlist_shape(allow):
             if not isinstance(spec, dict):
                 problems.append(f"allowlist: translations[{i}] must be an object")
                 continue
-            for field in ("code", "name", "language"):
+            for field in ("code", "name", "language", "licence", "legal_review"):
                 if not isinstance(spec.get(field), str):
                     problems.append(f"allowlist: translations[{i}] needs `{field}` as a string")
+            if not (spec.get("hab_3_19_note") is None or isinstance(spec.get("hab_3_19_note"), str)):
+                problems.append(f"allowlist: translations[{i}] `hab_3_19_note` must be a string or null")
             if "verses" in spec and not isinstance(spec["verses"], dict):
                 problems.append(f"allowlist: translations[{i}] `verses` must be an object")
     excluded = allow.get("excluded", [])
@@ -1206,7 +1208,7 @@ def self_test():
         linear(lambda n: clean("\\w" + " " * n + "x"), 5_000)
         linear(lambda n: clean("\\w " * n + "x" * 100_000), 10_000)
         # Many CLOSED notes must be linear too: copying the rest of the text per note (`text[pos:].lstrip()`) is quadratic.
-        linear(lambda n: clean("word\\f + n\\f* " * n), 25_000)
+        linear(lambda n: clean("word\\f + n\\f* " * n), 40_000)  # (the copying mutant measured 12x at 25,000: closer to 16x here)
         linear(lambda n: clean("word \\f + n\\f* \\wj ?\\wj* " * n), 15_000)
         raises(lambda: clean("\\f + a " * 20_000), "unterminated \\f note")
         linear(lambda n: clean("\\f + a " * n), 50_000)  # refusing is instant; a regression to a slow refusal is not allowed
@@ -1251,6 +1253,8 @@ def self_test():
         apostrophe = chr(0x2019)
         assert clean("x \\f + n\\f*" + apostrophe + "\\wj yar\\wj*") == "x " + apostrophe + "yar"
         assert clean("x \\f + n\\f*" + apostrophe + "\\wj ?\\wj*") == "x" + apostrophe + "?", "...but a closer behind a marker closes"
+        assert clean("x \\f + n\\f*" + apostrophe + "\\wj \\add yar\\add*\\wj*") == "x " + apostrophe + "yar", "a chain of markers"
+        assert clean("x \\f + n\\f*" + apostrophe + "\\wj \\add ?\\add*\\wj*") == "x" + apostrophe + "?"
         # Each closing mark closes (a literal list: the code's own set must not be the thing under test).
         for mark in ",;:.!?)":
             assert clean(f"x \\f + n\\f*{mark}") == f"x{mark}", mark
@@ -1285,6 +1289,13 @@ def self_test():
         assert v119d[(119, 5)] == "Five. \u05d1 HHETH." and not [h for c, h in h119d if c == 119], "a label mid-section is text"
         # One upper-case Latin word with no Hebrew letter at a section start is refused, never guessed (label or verse text?).
         raises(lambda: parse(psa119 + "\n\\c 119\n\\q1\n\\v 8 Last.\n\\qc HHETH.\n\\v 9 Next.", "PSA"), "looks like a Psalm 119 letter label")
+        # The look-alike is 2 to 12 capital letters: one letter and thirteen are ordinary text, twelve are refused.
+        for word, refused in (("A.", False), ("AB", True), ("ABCDEFGHIJKL.", True), ("ABCDEFGHIJKLM.", False)):
+            attempt = lambda w=word: parse(psa119 + "\n\\c 119\n\\q1\n\\v 8 Last.\n\\qc " + w + "\n\\v 9 Next.", "PSA")
+            if refused:
+                raises(attempt, "looks like a Psalm 119 letter label", word)
+            else:
+                assert attempt()[0][(119, 8)].endswith(word), word
         # A Hebrew-letter line of more than three Latin words is verse text, and the rule belongs to Psalm 119 alone.
         v119e, _, _ = parse(psa119 + "\n\\c 119\n\\q1\n\\v 8 Last.\n\\qc " + chr(0x5d1) + " ONE TWO THREE FOUR.\n\\v 9 Next.", "PSA")
         assert v119e[(119, 8)].endswith("ONE TWO THREE FOUR."), v119e[(119, 8)]
@@ -1436,8 +1447,16 @@ def self_test():
                               ("excluded is not a list", {**real, "excluded": {}}),
                               ("licences is not an object", {**real, "licences": []}),
                               ("a licence that is not an object", {**real, "licences": {"x": 1}}),
-                              ("a licence missing its fields", {**real, "licences": {"public-domain": {"name": "n"}}})]:
+                              ("a licence missing its fields", {**real, "licences": {"public-domain": {"name": "n"}}}),
+                              ("a licence that is a list", allow(licence=["cc0"])),
+                              ("a legal_review that is a list", allow(legal_review=["cleared"])),
+                              ("a Habakkuk note that is a number", allow(hab_3_19_note=5))]:
             raises(lambda: gate(broken, {}, False), "allowlist: ", label)
+        # Each field a licence must carry is required on its own.
+        for field in ("name", "summary", "permitted", "attribution_required", "share_alike"):
+            partial = {k: v for k, v in real["licences"]["public-domain"].items() if k != field}
+            raises(lambda: gate({**real, "licences": {**real["licences"], "public-domain": partial}}, {}, False),
+                   f"needs `{field}`", field)
 
         # ---- the licence page inside eBible's zip: what the allowlist entry relies on must still be there ----
         def page(html_text):
@@ -1505,8 +1524,9 @@ def self_test():
 
         raises(lambda: fetch("https://example.invalid/y", d / "y.bin", refuse), "could not download")
         assert not (d / "y.bin").exists() and not list(d.glob("*.part"))
-        raises(lambda: fetch("http://example.invalid/x", d / "h.bin", serve(b"x")), "not an HTTPS URL")
-        assert not (d / "h.bin").exists(), "a plain-http URL is refused before anything is requested"
+        for url in ("http://example.invalid/x", "ftp://example.invalid/x", "file:///etc/passwd", "//example.invalid/x", ""):
+            raises(lambda: fetch(url, d / "h.bin", serve(b"x")), "not an HTTPS URL", url)
+        assert not (d / "h.bin").exists(), "a non-https URL is refused before anything is requested"
         # A `.part` that is a planted symlink is removed, never followed: its target is not written.
         victim = d / "victim.txt"
         victim.write_text("keep me")
@@ -1564,15 +1584,23 @@ def self_test():
         (work / "translations.csv").write_text(_csv_text([row]), encoding="utf-8")
         # A corrupt or hostile catalogue is a refusal, not a traceback.
         bad_csv = d / "bad.csv"
-        header = ",".join(CATALOG_COLUMNS)  # a valid header, so these reach the error they are meant to reach
-        for label, content in [("a field over the csv limit", (header + "\n" + "x,x,x,x,x,x," + "y" * 200_000 + "\n").encode()),
-                               ("no translationId column", b"foo,bar\n1,2\n"), ("not UTF-8", b"\xff\xfe\x00"),
-                               ("a column the gate reads is missing", b"translationId,languageCode\nx,eng\n"),
-                               ("a row cut short", (header + "\nx,eng\n").encode()),
-                               ("a row with extra values", (header + "\nx,x,x,x,x,x,x,extra\n").encode()),
-                               ("a translationId twice", _csv_text([row, row]).encode("utf-8"))]:
+        # A LITERAL header (the code's own constant must not be the thing under test), so shortening CATALOG_COLUMNS fails here.
+        columns = ["translationId", "languageCode", "title", "Redistributable", "downloadable", "Copyright", "UpdateDate"]
+        assert list(CATALOG_COLUMNS) == columns
+        header = ",".join(columns)
+        for label, content, needle in [
+                ("a field over the csv limit", (header + "\n" + "x,x,x,x,x,x," + "y" * 200_000 + "\n").encode(), "field larger than field limit"),
+                ("no translationId column", b"foo,bar\n1,2\n", "missing columns"),
+                ("not UTF-8", b"\xff\xfe\x00", "UnicodeDecodeError"),
+                ("a row cut short", (header + "\nx,eng\n").encode(), "wrong number of columns"),
+                ("a row with extra values", (header + "\nx,x,x,x,x,x,x,extra\n").encode(), "wrong number of columns"),
+                ("a translationId twice", _csv_text([row, row]).encode("utf-8"), "appears twice")]:
             bad_csv.write_bytes(content)
-            raises(lambda: load_catalog_csv(bad_csv), "not a usable eBible catalogue", label)
+            raises(lambda: load_catalog_csv(bad_csv), needle, label)
+        for column in columns:  # each column the gate reads is required, one at a time
+            kept = [c for c in columns if c != column]
+            bad_csv.write_bytes((",".join(kept) + "\n" + ",".join("x" for _ in kept) + "\n").encode())
+            raises(lambda: load_catalog_csv(bad_csv), f"missing columns ['{column}']", column)
         raises(lambda: load_catalog_csv(d / "missing.csv"), "not a usable eBible catalogue")
         raises(lambda: build(allow(legal_review="pending"), work, d / "out3", require_cleared=True, offline=True),
                "--require-cleared")
