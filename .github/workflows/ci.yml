@@ -211,6 +211,44 @@ jobs:
           python3 -m pip install --quiet --break-system-packages 'pyyaml==6.0.3'
           python3 .github/scripts/check_workflows.py --self-test
           python3 .github/scripts/check_workflows.py
+      # The disk script's contract (17tnw2b2k23). `check` is the one behaviour in
+      # scripts/ci_disk.sh that can turn a build red, and `free` is the one that deletes system
+      # directories, so both have a test that runs on every PR, on a runner that is thrown away.
+      # `free` is only ever run here with its guard variables WRONG, so it must refuse (exit 2)
+      # and delete nothing; the last line proves nothing was deleted. The first case is the
+      # positive control: with the floor at 0 the script itself runs and exits 0.
+      - name: Disk script contract (check floor, usage error, free refusals)
+        run: |
+          fail=0
+          expect() {
+            want=$1
+            shift
+            if "$@" >/dev/null 2>&1; then got=0; else got=$?; fi
+            if [ "$got" -ne "$want" ]; then
+              echo "FAIL: '$*' exited $got, wanted $want"
+              fail=1
+            fi
+          }
+          present() {
+            n=0
+            for p in /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL; do
+              if [ -e "$p" ]; then n=$((n + 1)); fi
+            done
+            echo "$n"
+          }
+          before=$(present)
+          expect 0 env CI_DISK_MIN_FREE_GB=0 sh scripts/ci_disk.sh check selftest
+          expect 1 env CI_DISK_MIN_FREE_GB=100000 sh scripts/ci_disk.sh check selftest
+          expect 2 env CI_DISK_MIN_FREE_GB=-1 sh scripts/ci_disk.sh check selftest
+          expect 2 sh scripts/ci_disk.sh bogus
+          expect 2 env -u GITHUB_ACTIONS sh scripts/ci_disk.sh free
+          expect 2 env GITHUB_ACTIONS=true RUNNER_ENVIRONMENT=self-hosted sh scripts/ci_disk.sh free
+          after=$(present)
+          if [ "$before" -ne "$after" ]; then
+            echo "FAIL: a refused 'free' deleted something ($before directories before, $after after)"
+            fail=1
+          fi
+          exit "$fail"
 
   rust:
     name: rust (${{ matrix.os }})
@@ -227,22 +265,21 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       # Disk headroom on the hosted Linux runner (17tnw2b2k23). From about 21:00 UTC on
-      # 2026-10-04 this job failed on every run, at the "LAN server + app server features"
+      # 2026-10-04 this job failed on every run, in the "LAN server + app server features"
       # step, with the same code, the same runner image and the same Rust cache that had
-      # passed an hour earlier. Measured: the runner has ONE 72 GB disk with 13.3 GB free
-      # (the image uses the rest; /mnt is not a separate volume), and this job writes about
-      # 16.4 GB to it (the `target` dir reaches 16 GB), so it ran out of disk about 14.7 GB in.
-      # A full disk crashes the runner agent, which loses the step logs of the whole job
-      # (BlobNotFound), so those failures could not be read back.
+      # passed an hour earlier: the runner has one 72 GB disk with 13.3 GB free, and this job
+      # writes about 16.4 GB to it. A full disk crashes the runner agent, which loses the step
+      # logs of the whole job (BlobNotFound), so those failures could not be read back.
       #
-      # `free` deletes the preinstalled Android SDK, .NET, GHC and CodeQL (21.7 GB, none of it
-      # used here) BEFORE anything is built, and prints the disk at job start before and after.
-      # The `check` steps below print it again as the build goes and FAIL their own step if
-      # less than 5 GB is left: a red "Disk space ..." step ahead of the crash is what survives
-      # (verified: step results do, logs and annotations do not), so the next failure names its
-      # cause. The last step prints it once more. Linux only: macOS and Windows runners did not
-      # fail and are left alone. All of these sit in the setup zone or carry a status function,
-      # as check_workflows.py requires. The numbers and the reasoning are in scripts/ci_disk.sh.
+      # `free` deletes preinstalled software this job never uses (Android SDK, .NET, GHC,
+      # CodeQL; about 21.7 GB, takes about 80 s) BEFORE anything is built, and only on a
+      # GitHub-hosted runner. The `check` steps below are headroom alarms with a floor per
+      # checkpoint, set on the step: each fails its own step, by name, while there is still
+      # room to write. The last step warns below 10 GB free and adds one line to the job
+      # summary. Linux only: macOS and Windows runners did not fail and are left alone. The
+      # free step and the first check sit in the setup zone and the rest carry a status
+      # function, as check_workflows.py requires. All the numbers, and why each floor is what
+      # it is, are in scripts/ci_disk.sh.
       - name: Free disk space and report it at job start (Linux)
         if: runner.os == 'Linux'
         working-directory: ${{ github.workspace }}
@@ -410,9 +447,14 @@ jobs:
           # fontdb scans, NOT that fontdb resolves it or that it measures differently from the
           # bundled face. Those two are asserted at runtime by `verdict()` in installed_serif.
           test -f /usr/share/fonts/truetype/liberation/LiberationSerif-Regular.ttf
+      # Floor 10 GB here and after clippy (healthy runs show about 30 GB at both): the workspace
+      # test step that follows writes 7.1 GB, so 5 GB would let a runner with 9.6 to 11.7 GB
+      # free crash with no red step ahead of it. The two checks after the tests use 5 GB.
       - name: Disk space before the gates, cache restored (Linux)
         if: runner.os == 'Linux'
         working-directory: ${{ github.workspace }}
+        env:
+          CI_DISK_MIN_FREE_GB: "10"
         run: sh scripts/ci_disk.sh check before-gates-cache-restored
       # From the first GATE step onward, `!cancelled()`. Setup steps above deliberately
       # keep the default `success()`: if checkout, the toolchain install or the pin
@@ -440,6 +482,8 @@ jobs:
       - name: Disk space after clippy (Linux)
         if: ${{ !cancelled() && runner.os == 'Linux' }}
         working-directory: ${{ github.workspace }}
+        env:
+          CI_DISK_MIN_FREE_GB: "10"
         run: sh scripts/ci_disk.sh check after-clippy
       - name: Test (workspace, incl. GPU parity where an adapter exists)
         if: ${{ !cancelled() }}
@@ -603,11 +647,13 @@ jobs:
           cargo test -p selahcue-data --features encryption --no-fail-fast
           cargo test -p selahcue-desktop --features encryption --no-fail-fast
       # Last step of the job, `always()` so a failed or cancelled run still says where the disk
-      # ended up. Printed before the cache's post step, which on main tars `target` up.
+      # ended up. Runs before the cache's post step, which on main tars `target` up. It never
+      # fails the job: below 10 GB free it emits a warning (early notice while the job is still
+      # green), and it appends one line (free GB, target size, runner image) to the job summary.
       - name: Disk space at job end (Linux)
         if: ${{ always() && runner.os == 'Linux' }}
         working-directory: ${{ github.workspace }}
-        run: sh scripts/ci_disk.sh report job-end
+        run: sh scripts/ci_disk.sh end job-end
 
   # Proves the app actually LAUNCHES (windows created, first frame presented, exit
   # 0) on every OS — not just build+test — and records a per-OS cold-start figure
