@@ -52,7 +52,7 @@ const dynBanner = ref(false)
 const showDyn = ref(false)
 
 // A list whose row is removed when its dialog confirms: where does focus go? (Quinn 2)
-const devices = ref(['Studio PC', 'Booth MacBook', 'Youth Hall PC'])
+const devices = ref(['Studio PC', 'Booth MacBook', 'Youth Hall PC', 'Side Room Mac', 'Lobby PC'])
 const target = ref('')
 const showDevice = ref(false)
 const fallbackSel = ref('#devices-heading')

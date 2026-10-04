@@ -111,7 +111,7 @@ SNAPSHOT_JS = """(rootSel) => {
   const PROPS = ['font-size','font-weight','line-height','letter-spacing','color','background-color',
     'border-top-width','border-top-color','border-top-style','border-radius','padding-top','padding-right',
     'padding-bottom','padding-left','margin-top','margin-bottom','display','flex-direction','gap','text-align',
-    'opacity','box-shadow','cursor','text-transform','overflow-y','position'];
+    'opacity','box-shadow','cursor','text-transform','overflow-y','position','backdrop-filter','-webkit-backdrop-filter'];
   const out = [];
   for (const e of [root, ...root.querySelectorAll('*')]) {
     const c = getComputedStyle(e);
@@ -137,6 +137,47 @@ def style(page, sel: str, props: list[str] | None = None) -> dict:
     if got is None:
         raise LookupError(f"nothing matches {sel!r}")
     return got
+
+
+FONT_WEIGHTS = (400, 500, 600, 700)
+
+
+def open_gallery(page, url: str, ready_selector: str, attempts: int = 2, timeout_ms: int = 45000) -> None:
+    """Open the gallery, retrying ONCE on a timeout and saying so out loud.
+
+    `load` waits for the Google Fonts stylesheet, and one run in four hung on it for the default
+    30 s (review of PR 173, Quinn N2). Two attempts at 45 s each is a sane bound; a second timeout
+    is raised, and a retry is printed, so a flaky network is never hidden behind a green run.
+    """
+    last: Exception | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            page.goto(url, wait_until="load", timeout=timeout_ms)
+            page.wait_for_selector(ready_selector, timeout=timeout_ms)
+            return
+        except Exception as exc:  # noqa: BLE001 -- Playwright's TimeoutError, or a closed page
+            last = exc
+            print(f"NOTE: opening {url} failed on attempt {attempt}/{attempts}: {str(exc).splitlines()[0][:120]}")
+    raise RuntimeError(f"{url} did not open after {attempts} attempts") from last
+
+
+def wait_for_fonts(page, engine: str) -> bool:
+    """Every weight the pages use is loaded, and the font set has settled, before anything is measured.
+
+    Waiting for Inter 600 alone let a run measure with 400 still arriving: 26 heights and widths
+    differed by about 1px in one WebKit run in three (review of PR 173, Quinn N2).
+    """
+    ok = page.evaluate(
+        """async (weights) => {
+          await Promise.all(weights.map((w) => document.fonts.load(`${w} 16px Inter`)));
+          await document.fonts.ready;
+          return weights.every((w) => document.fonts.check(`${w} 16px Inter`));
+        }""",
+        list(FONT_WEIGHTS),
+    )
+    if not ok:
+        print(f"NOTE [{engine}]: Inter did not load in every weight (no network?); text-width-dependent numbers may drift")
+    return bool(ok)
 
 
 def settle(page) -> None:
@@ -616,11 +657,18 @@ def locked(page) -> list:
 def check_stacked_dialogs(page, c: Checks, errors: list[str]) -> None:
     """Vera 1: two dialogs open at once must not fight over focus, and the page must scroll again whichever closes first."""
     page.evaluate("window.__focusins = 0; document.addEventListener('focusin', () => { window.__focusins += 1 })")
-    for order in ("first-then-second", "second-then-first", "escape-twice"):
+    # "script:" cases open both dialogs with nothing focused (a script, or a mouse click in Safari and
+    # WebKit, which does not focus a button): the opener is the page body, and closing the newest
+    # used to leave focus there instead of in the dialog that is still open (Quinn N1).
+    for order in ("first-then-second", "second-then-first", "escape-twice",
+                  "script:second-then-first", "script:first-then-second", "script:escape-twice"):
         settle(page)
         errors_before, focus_before = len(errors), page.evaluate("window.__focusins")
-        page.locator("#open-both").focus()
-        page.keyboard.press("Enter")
+        if order.startswith("script:"):
+            page.evaluate("document.activeElement && document.activeElement.blur(); document.querySelector('#open-both').click()")
+        else:
+            page.locator("#open-both").focus()
+            page.keyboard.press("Enter")
         page.wait_for_function("document.querySelectorAll('.dialog-card').length === 2", timeout=3000)
         settle(page)
         page.wait_for_timeout(250)  # long enough for two dialogs fighting to overflow the stack (they did, in 3 of 3 runs)
@@ -631,13 +679,13 @@ def check_stacked_dialogs(page, c: Checks, errors: list[str]) -> None:
         newest_has_focus = page.evaluate("(() => { const cards = [...document.querySelectorAll('.dialog-card')]; return cards[cards.length - 1].contains(document.activeElement); })()")
         c.ok(newest_has_focus, f"[{order}] focus is in the newest dialog")
 
-        if order == "escape-twice":
+        if order.endswith("escape-twice"):
             page.keyboard.press("Escape")
             page.wait_for_function("document.querySelectorAll('.dialog-card').length === 1", timeout=3000)
             c.eq(locked(page), ["hidden", "hidden"], f"[{order}] Escape closed ONE dialog (the newest) and the page is still locked")
             page.keyboard.press("Escape")
         else:
-            first, second = ("#close-first", "#close-second") if order == "first-then-second" else ("#close-second", "#close-first")
+            first, second = ("#close-first", "#close-second") if order.endswith("first-then-second") else ("#close-second", "#close-first")
             page.evaluate("(sel) => document.querySelector(sel).click()", first)
             page.wait_for_function("document.querySelectorAll('.dialog-card').length === 1", timeout=3000)
             c.eq(locked(page), ["hidden", "hidden"], f"[{order}] one still open: the page stays locked (it was left unlocked or relocked wrongly before)")
@@ -655,7 +703,7 @@ def check_fallback_focus(page, c: Checks, errors: list[str]) -> None:
     settle(page)
     case = '[data-case="device-list"]'
     rows = lambda: page.locator(f"{case} .row-deactivate").count()  # noqa: E731
-    c.eq(rows(), 3, "three device rows to start")
+    c.eq(rows(), 5, "five device rows to start")
 
     # Cancel: the opener is still there, so focus goes back to IT, not to the fallback
     page.locator(f"{case} .row-deactivate").first.focus()
@@ -673,8 +721,19 @@ def check_fallback_focus(page, c: Checks, errors: list[str]) -> None:
     settle(page)
     page.locator(".dialog-card .confirm-btn").click()
     page.wait_for_selector(".dialog-card", state="detached")
-    c.eq(rows(), 2, "confirming removed the row")
+    c.eq(rows(), 4, "confirming removed the row")
     c.eq(page.evaluate("document.activeElement.id"), "devices-heading", "with fallback-focus, focus lands on the stable heading, not on the page body")
+
+    # The same with the MOUSE. A click focuses a button in Chromium but not in Safari and WebKit, so
+    # there the opener recorded was the page body, which is never removed, and the fallback was
+    # skipped: focus fell to the body (review of PR 173, Cody B).
+    page.locator(f"{case} .row-deactivate").first.click()
+    page.wait_for_selector(".dialog-card")
+    settle(page)
+    page.locator(".dialog-card .confirm-btn").click()
+    page.wait_for_selector(".dialog-card", state="detached")
+    c.eq(rows(), 3, "confirming with the mouse removed the row")
+    c.eq(page.evaluate("document.activeElement.id"), "devices-heading", "opened and confirmed with the mouse: focus still lands on the fallback (WebKit does not focus a button on click)")
 
     # Confirm without one: the documented default is unchanged
     page.locator("#fallback-off").click()
@@ -684,7 +743,7 @@ def check_fallback_focus(page, c: Checks, errors: list[str]) -> None:
     settle(page)
     page.locator(".dialog-card .confirm-btn").click()
     page.wait_for_selector(".dialog-card", state="detached")
-    c.eq(rows(), 1, "confirming removed the next row")
+    c.eq(rows(), 2, "confirming removed the next row")
     c.eq(page.evaluate("document.activeElement === document.body"), True, "without a fallback, focus drops to the body exactly as before (the default is unchanged)")
 
     # A selector the browser cannot parse is the caller's mistake: closing must not throw because of it
@@ -697,15 +756,42 @@ def check_fallback_focus(page, c: Checks, errors: list[str]) -> None:
     page.locator(".dialog-card .confirm-btn").click()
     page.wait_for_selector(".dialog-card", state="detached")
     page.wait_for_timeout(100)
-    c.eq(rows(), 0, "the last row was removed")
+    c.eq(rows(), 1, "one more row was removed")
     c.ok(len(errors) == before, f"an unparseable fallback-focus selector throws nothing: {errors[before:][:1]}")
+
+
+def check_forced_colors(page, c: Checks) -> None:
+    """Cody C: the boxed card's edge survives Windows High Contrast. An inset box-shadow does not (forced colors turns shadows off)."""
+    settle(page)
+    sel = '[data-case="faq-boxed"] .faq-accordion'
+    props = ["outline-style", "outline-width", "outline-offset", "outline-color", "box-shadow"]
+    normal = style(page, sel, props)
+    c.ok(normal["outline-color"] == "rgba(0, 0, 0, 0)", f"normally the card's outline is transparent, so the look is unchanged (got {normal['outline-color']})")
+    try:
+        page.emulate_media(forced_colors="active")
+    except Exception as exc:  # noqa: BLE001 -- an engine that cannot emulate it is reported, not silently passed
+        print(f"NOTE [{c.engine}]: forced-colors emulation is unavailable ({str(exc).splitlines()[0][:100]}); the check is skipped")
+        return
+    try:
+        page.wait_for_function("matchMedia('(forced-colors: active)').matches", timeout=3000)
+        forced = style(page, sel, props)
+        if c.engine != "chromium" and forced["box-shadow"] != "none":
+            # WebKit reports the media feature but does not adjust colours or drop shadows (there is no
+            # Windows High Contrast for it): the premise is absent, so there is nothing to check.
+            print(f"NOTE [{c.engine}]: this engine does not apply forced colors to box-shadow; the forced-colors check is skipped")
+            return
+        c.ok(forced["box-shadow"] == "none", f"forced colors turns the card's inset shadow off (got {forced['box-shadow']!r}): the premise of this check")
+        c.ok(forced["outline-style"] == "solid" and forced["outline-width"] == "1px" and forced["outline-color"] != "rgba(0, 0, 0, 0)",
+             f"so the card's edge is its 1px outline, painted in a system colour (got {forced['outline-style']} {forced['outline-width']} {forced['outline-color']})")
+    finally:
+        page.emulate_media(forced_colors="none")
 
 
 def check_narrow(browser, base: str, c: Checks, shots: Path | None) -> None:
     ctx = browser.new_context(viewport={"width": 375, "height": 800}, has_touch=True)
     page = ctx.new_page()
-    page.goto(f"{base}/index.html", wait_until="load")
-    page.wait_for_selector('[data-case="dialogs"]')
+    open_gallery(page, f"{base}/index.html", '[data-case="dialogs"]')
+    wait_for_fonts(page, c.engine)
     open_dialog(page, "#open-left")
     dlg = style(page, ".dialog-card")
     c.ok(dlg["x"] >= 0 and dlg["right"] <= 375 and dlg["bottom"] <= 800, "375px: the devices dialog is fully on screen")
@@ -730,10 +816,14 @@ def snapshot_defaults(page) -> dict:
         # (review of PR 173, Vera 2 / Quinn 4 / Cody 4: reading at once caught it half faded)
         settle(page)
         snap = page.evaluate(SNAPSHOT_JS, ".dialog-scrim")
-        # The scrim is as wide as the viewport, and the viewport is one scrollbar wider once the
-        # open dialog locks page scroll (12px in WebKit, where main.css forces a classic scrollbar;
-        # 0 in headless Chromium). That shift is the lock working, not the look changing.
-        snap[0]["w"] = None
+        # The scrim covers the viewport, and the viewport is one scrollbar wider once the open dialog
+        # locks page scroll (12px in WebKit, where main.css forces a classic scrollbar; 0 in headless
+        # Chromium). So its width is recorded as "the viewport's", not as a number: the lock's shift
+        # cannot fail the comparison, but a scrim that STOPS covering the viewport still does
+        # (review of PR 173, Cody A: `inset: 0 40px 0 0` used to pass).
+        viewport_w = page.evaluate("document.documentElement.clientWidth")
+        if abs(snap[0]["w"] - viewport_w) <= 0.5:
+            snap[0]["w"] = "viewport"
         out[name] = snap
         page.mouse.click(8, 8)
         page.wait_for_selector(".dialog-card", state="detached")
@@ -829,13 +919,8 @@ def main() -> int:
                 page = ctx.new_page()
                 errors: list[str] = []
                 page.on("pageerror", lambda e, errors=errors: errors.append(str(e)))
-                page.goto(f"{base}/index.html", wait_until="load")
-                page.wait_for_selector('[data-case="pricing"] .pricing-card')
-                if not page.evaluate("document.fonts.check('600 16px Inter')"):
-                    page.evaluate("document.fonts.load('600 16px Inter')")
-                    page.wait_for_timeout(1500)
-                if not page.evaluate("document.fonts.check('600 16px Inter')"):
-                    print(f"NOTE [{engine}]: Inter did not load (no network?); text-width-dependent numbers may drift")
+                open_gallery(page, f"{base}/index.html", '[data-case="pricing"] .pricing-card')
+                wait_for_fonts(page, engine)
                 settle(page)
 
                 if args.dump_defaults:
@@ -859,7 +944,7 @@ def main() -> int:
                         (check_badges, ()), (check_faq, ()), (check_pricing, ()), (check_formfield, ()),
                         (check_password_and_required, ()), (check_slots_after_render, ()),
                         (check_dialogs, (shots if engine == engines[0] else None,)),
-                        (check_stacked_dialogs, (errors,)), (check_fallback_focus, (errors,)),
+                        (check_stacked_dialogs, (errors,)), (check_fallback_focus, (errors,)), (check_forced_colors, ()),
                     )
                     for fn, extra in steps:
                         try:

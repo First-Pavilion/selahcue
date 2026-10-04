@@ -9,7 +9,15 @@
  * An entry is added on open and removed on close or unmount, so the list never outgrows the
  * number of dialogs that are open.
  */
-const openDialogs: object[] = []
+const openDialogs: OpenDialog[] = []
+
+/** What one open dialog lets the others ask of it. */
+interface OpenDialog {
+  /** Is keyboard focus inside this dialog right now? */
+  holdsFocus: () => boolean
+  /** Put focus back inside it (its safe action). */
+  refocus: () => void
+}
 </script>
 
 <script setup lang="ts">
@@ -91,11 +99,8 @@ const handleCancel = () => {
 const FOCUSABLE =
   'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
 
-const me = {}
 let opener: HTMLElement | null = null
 let releaseScroll: (() => void) | null = null
-
-const isNewest = () => openDialogs[openDialogs.length - 1] === me
 
 const focusables = (): HTMLElement[] =>
   card.value ? Array.from(card.value.querySelectorAll<HTMLElement>(FOCUSABLE)) : []
@@ -104,6 +109,13 @@ const focusInitial = () => {
   const cancel = card.value?.querySelector<HTMLElement>('.dialog-cancel')
   ;(cancel ?? focusables()[0] ?? card.value)?.focus()
 }
+
+const me: OpenDialog = {
+  holdsFocus: () => !!card.value?.contains(document.activeElement),
+  refocus: focusInitial,
+}
+
+const isNewest = () => openDialogs[openDialogs.length - 1] === me
 
 const trapTab = (e: KeyboardEvent) => {
   const items = focusables()
@@ -145,7 +157,12 @@ const engage = () => {
   if (engaged) return
   engaged = true
   openDialogs.push(me)
-  opener = document.activeElement instanceof HTMLElement ? document.activeElement : null
+  // The page body is not an opener. It is what `activeElement` says when nothing was focused: a
+  // script opened the dialog, or a mouse click that does not focus a button (Safari and WebKit).
+  // Treating it as one would make the fallback focus below dead, because the body is never
+  // removed from the page.
+  const active = document.activeElement
+  opener = active instanceof HTMLElement && active !== document.body && active !== document.documentElement ? active : null
   // The repo's reference-counted lock (the mobile nav sheet holds it too): two holders keep the
   // page locked until BOTH let go, whichever order they close in, and the page's own inline
   // overflow comes back exactly as it was.
@@ -167,17 +184,21 @@ const release = () => {
   // After the page has re-rendered: the confirm handler may remove the opener (a device's row)
   // in this same tick, and only then can it be told from one that is still there.
   void nextTick(() => {
-    if (back?.isConnected) {
-      back.focus()
-      return
+    // Another dialog is still open (this one was the newest of two): focus belongs inside it, not
+    // behind it. With an opener that held focus the focus-in guard of the remaining dialog already
+    // pulls it back; with none (a script, a mouse in WebKit) nothing would, and focus would sit
+    // on the page body until the next Tab (review of PR 173, Quinn N1).
+    const remaining = openDialogs[openDialogs.length - 1]
+    if (back?.isConnected) back.focus()
+    else if (!remaining && props.fallbackFocus) {
+      try {
+        document.querySelector<HTMLElement>(props.fallbackFocus)?.focus()
+      } catch {
+        // A selector the browser cannot parse is the caller's mistake; closing the dialog must not
+        // throw because of it, so focus simply stays where the browser put it.
+      }
     }
-    if (!props.fallbackFocus) return
-    try {
-      document.querySelector<HTMLElement>(props.fallbackFocus)?.focus()
-    } catch {
-      // A selector the browser cannot parse is the caller's mistake; closing the dialog must not
-      // throw because of it, so focus simply stays where the browser put it.
-    }
+    if (remaining && !remaining.holdsFocus()) remaining.refocus()
   })
 }
 

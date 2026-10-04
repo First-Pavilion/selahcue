@@ -186,6 +186,11 @@ const answerId = (index: number) => `${uid}-a-${index}`
   box-sizing: border-box;
   background: var(--sc-base);
   box-shadow: inset 0 0 0 1px var(--sc-border);
+  /* Forced colors (Windows High Contrast) turns every box-shadow off, which would take the card's
+     edge with it. A transparent outline is invisible normally and is painted in a system colour
+     there; inset by its own width it sits exactly where the ring does. */
+  outline: 1px solid transparent;
+  outline-offset: -1px;
   border-radius: 16px;
   overflow: hidden;
 }
