@@ -353,6 +353,19 @@ fn is_acrostic_label(text: &str) -> bool {
     ACROSTIC_LETTERS.contains(&first.trim_end_matches('.'))
 }
 
+/// Psalm 119's letter labels also sit at the END of the verse BEFORE the section they introduce
+/// ("…forsake me. BETH"): VPL hangs a heading on the previous line. WEB and WEBBE carry 21 of
+/// them. A check that only looks at how verses START never sees these (that is how the first
+/// version of this change shipped them). Case-sensitive: the labels are upper case, and a verse
+/// can legitimately end in a lower-case "sin" or "he".
+fn ends_with_acrostic_label(text: &str) -> bool {
+    if text.ends_with("SIN AND SHIN") {
+        return true;
+    }
+    let last = text.split_whitespace().last().unwrap_or("");
+    ACROSTIC_LETTERS.contains(&last.trim_end_matches('.'))
+}
+
 #[test]
 fn psalm_verse_one_is_the_verse_not_the_title() {
     // (translation, reference, what the verse must now OPEN with). Psalm 18's superscription
@@ -374,6 +387,32 @@ fn psalm_verse_one_is_the_verse_not_the_title() {
             "LORD, how are they increased",
         ),
         (Translation::Kjv, "Psalm 51:1", "Have mercy upon me, O God"),
+        // Psalms 3 and 51 in the other four translations (the description of this change claims all
+        // five, so they are pinned, not just the KJV).
+        (
+            Translation::Web,
+            "Psalm 3:1",
+            "LORD, how my adversaries have increased",
+        ),
+        (
+            Translation::Webbe,
+            "Psalm 3:1",
+            "LORD, how my adversaries have increased",
+        ),
+        (
+            Translation::Asv,
+            "Psalm 3:1",
+            "Jehovah, how are mine adversaries increased",
+        ),
+        (
+            Translation::Dby,
+            "Psalm 3:1",
+            "Jehovah, how many are they that trouble me",
+        ),
+        (Translation::Web, "Psalm 51:1", "Have mercy on me, God"),
+        (Translation::Webbe, "Psalm 51:1", "Have mercy on me, God"),
+        (Translation::Asv, "Psalm 51:1", "Have mercy upon me, O God"),
+        (Translation::Dby, "Psalm 51:1", "Be gracious unto me, O God"),
         (
             Translation::Kjv,
             "Psalm 145:1",
@@ -468,6 +507,20 @@ fn no_psalm_opens_with_its_title_in_any_bundled_translation() {
     assert!(!is_acrostic_label(
         "LORD, your word is settled in heaven forever."
     ));
+    // The END-of-verse matcher flags the real WEB shapes, and not ordinary endings (a lower-case
+    // "He"/"sin" is a word, not the letters HE/SIN).
+    assert!(ends_with_acrostic_label(
+        "I will observe your statutes. Don\u{2019}t utterly forsake me. BETH"
+    ));
+    assert!(ends_with_acrostic_label(
+        "Every one of your righteous ordinances endures forever. SIN AND SHIN"
+    ));
+    assert!(ends_with_acrostic_label("Deal bountifully. HE."));
+    assert!(!ends_with_acrostic_label(
+        "LORD, your word is settled in heaven forever."
+    ));
+    assert!(!ends_with_acrostic_label("Hear, and forgive us our sin."));
+    assert!(!is_acrostic_label("He taught me the way."));
 
     for t in bundled() {
         let mut psalms = 0usize;
@@ -505,7 +558,15 @@ fn no_psalm_opens_with_its_title_in_any_bundled_translation() {
                         v.verse,
                         v.text
                     );
+                    assert!(
+                        !ends_with_acrostic_label(&v.text),
+                        "{} Psalm 119:{} still ends with the label of the NEXT section: {}",
+                        t.code(),
+                        v.verse,
+                        v.text
+                    );
                 }
+                assert_eq!(vs.len(), 176, "{} Psalm 119 must keep 176 verses", t.code());
             }
         }
         assert_eq!(
@@ -515,6 +576,43 @@ fn no_psalm_opens_with_its_title_in_any_bundled_translation() {
             t.code()
         );
     }
+}
+
+#[test]
+fn psalm_119_labels_are_gone_from_both_ends_of_the_verses_they_touched() {
+    // WEB and WEBBE: VPL hung each of the 21 later letter labels on the END of the verse before
+    // its section (119:8 "… forsake me. BETH"), so the verse AFTER it (119:9) always started clean.
+    // These pins are the ones a start-only check cannot make. (The corpus scan above covers every
+    // verse in all five translations; these name the shapes.)
+    for t in [Translation::Web, Translation::Webbe] {
+        let v8 = verse_text(t, "Psalm 119:8");
+        assert!(
+            v8.ends_with("forsake me."),
+            "{} 119:8 must end at the verse, got {v8:?}",
+            t.code()
+        );
+        assert!(
+            verse_text(t, "Psalm 119:9").starts_with("How can a young man"),
+            "{} 119:9",
+            t.code()
+        );
+        let v160 = verse_text(t, "Psalm 119:160");
+        assert!(
+            v160.ends_with("endures forever."),
+            "{} 119:160 must not end in SIN AND SHIN, got {v160:?}",
+            t.code()
+        );
+        assert!(
+            verse_text(t, "Psalm 119:161").starts_with("Princes have persecuted me"),
+            "{} 119:161",
+            t.code()
+        );
+    }
+    // DBY puts its letters at the START of the verse; KJV and ASV carry none.
+    assert!(verse_text(Translation::Dby, "Psalm 119:169").starts_with("Let my cry come near"));
+    assert!(
+        verse_text(Translation::Kjv, "Psalm 119:9").starts_with("Wherewithal shall a young man")
+    );
 }
 
 #[test]
