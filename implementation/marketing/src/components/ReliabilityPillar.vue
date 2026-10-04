@@ -32,7 +32,8 @@ defineProps({
   background: var(--sc-base);
   border: 1px solid var(--sc-border);
   border-radius: 14px;
-  padding: 28px 24px;
+  /* Figma measures padding from the outer edge: the 1px border comes off it (28/24 becomes 27/23). */
+  padding: 27px 23px;
   display: flex;
   flex-direction: column;
   align-items: flex-start;

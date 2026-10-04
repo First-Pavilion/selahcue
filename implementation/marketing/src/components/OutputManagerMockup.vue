@@ -19,20 +19,24 @@ const rows = [
     role="img"
     aria-label="Screens & Outputs window listing three outputs: the audience projector, the stage display and an NDI stream"
   >
-    <div class="window-bar">
-      <span class="window-title">Screens &amp; Outputs</span>
-      <span class="add-output">+ Add output</span>
-    </div>
+    <!-- Hidden too, not only presentational: not every browser and reader prunes the children of an
+         image, and none of these words is page content. -->
+    <div aria-hidden="true">
+      <div class="window-bar">
+        <span class="window-title">Screens &amp; Outputs</span>
+        <span class="add-output">+ Add output</span>
+      </div>
 
-    <div class="output-rows">
-      <div v-for="row in rows" :key="row.name" class="output-row">
-        <span :class="['thumb', row.canvas]"></span>
-        <div class="row-main">
-          <div class="row-name">
-            <span class="output-name">{{ row.name }}</span>
-            <span :class="['pill', 'tag', row.tagTone]">{{ row.tag }}</span>
+      <div class="output-rows">
+        <div v-for="row in rows" :key="row.name" class="output-row">
+          <span :class="['thumb', row.canvas]"></span>
+          <div class="row-main">
+            <div class="row-name">
+              <span class="output-name">{{ row.name }}</span>
+              <span :class="['pill', 'tag', row.tagTone]">{{ row.tag }}</span>
+            </div>
+            <span :class="['pill', 'status', row.statusTone]"><span class="dot"></span>{{ row.status }}</span>
           </div>
-          <span :class="['pill', 'status', row.statusTone]"><span class="dot"></span>{{ row.status }}</span>
         </div>
       </div>
     </div>
@@ -63,7 +67,9 @@ const rows = [
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 13px 16px;
+  /* Figma measures padding from the outer edge of the window, so its 1px border comes off the
+     paddings that touch it (13/16 becomes 12/15 above and at the sides). */
+  padding: 12px 15px 13px;
   background: var(--sc-elevated);
 }
 
@@ -90,7 +96,7 @@ const rows = [
   display: flex;
   flex-direction: column;
   gap: 11px;
-  padding: 14px;
+  padding: 14px 13px 13px;
   background: var(--sc-base);
 }
 
@@ -98,7 +104,8 @@ const rows = [
   display: flex;
   align-items: center;
   gap: 13px;
-  padding: 11px;
+  /* 11 from the outer edge: the row's own 1px border comes off it. */
+  padding: 10px;
   background: var(--sc-surface);
   border: 1px solid var(--sc-border);
   border-radius: 11px;

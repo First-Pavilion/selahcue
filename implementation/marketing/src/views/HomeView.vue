@@ -227,13 +227,7 @@ const faqItems = [
           <span :id="demoNoteId" class="visually-hidden">The demo video is not available yet.</span>
         </div>
 
-        <p class="hero-trust">
-          <span>Free to start</span>
-          <span class="dot" aria-hidden="true">&middot;</span>
-          <span>Works fully offline</span>
-          <span class="dot" aria-hidden="true">&middot;</span>
-          <span>Windows, macOS &amp; mobile control</span>
-        </p>
+        <p class="hero-trust">Free to start&nbsp;&nbsp;&middot;&nbsp;&nbsp;Works fully offline&nbsp;&nbsp;&middot;&nbsp;&nbsp;Windows, macOS &amp; mobile control</p>
 
         <!-- Product Window Mockup -->
         <div class="hero-mockup-frame">
@@ -515,12 +509,14 @@ const faqItems = [
   gap: 26px;
 }
 
-/* Figma 469:125: a 32px pill (darkened ground, darkened edge) with the 18px logo mark and 12.5/600 words. */
+/* Figma 469:125: a 32px pill (darkened ground, darkened edge) with the 18px logo mark and 12.5/600 words.
+   Figma measures padding from the OUTER edge, so the 1px border comes off it (7/16/7/14 becomes 6/15/6/13). */
 .hero-eyebrow {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  padding: 7px 16px 7px 14px;
+  padding: 6px 15px 6px 13px;
+  line-height: 15px;
   border-radius: 999px;
   background: rgba(0, 0, 0, 0.1);
   border: 1px solid rgba(0, 0, 0, 0.4);
@@ -562,17 +558,11 @@ const faqItems = [
 }
 
 .hero-trust {
-  display: flex;
-  align-items: center;
-  gap: 8px;
   margin: 0;
   font-size: 13.5px;
+  line-height: 16px;
   letter-spacing: 0.005em;
   color: var(--sc-text-secondary);
-}
-
-.dot {
-  opacity: 0.5;
 }
 
 .hero-mockup-frame {
@@ -595,8 +585,9 @@ const faqItems = [
 }
 
 /* Section 3: Reliability (Figma 474:124: a full-width panel band, 90px, header gap 52, cards 28 apart) */
+/* The band's 1px edge rules count towards Figma's 90: Figma draws the stroke inside the frame. */
 .reliability-section {
-  padding-block: calc(var(--section-pad) + 2px);
+  padding-block: calc(var(--section-pad) + 1px);
   background: var(--sc-surface);
   border-block: 1px solid var(--sc-border);
   --header-gap: 52px;
@@ -661,6 +652,7 @@ const faqItems = [
   align-items: center;
   gap: 11px;
   font-size: 15px;
+  line-height: 18px;
   color: var(--sc-text);
 }
 
@@ -690,7 +682,8 @@ const faqItems = [
   flex-direction: column;
   align-items: flex-start;
   gap: 16px;
-  padding: 30px 28px;
+  /* Figma's 30/28 is measured from the outer edge: the 1px border comes off it. */
+  padding: 29px 27px;
   background: var(--sc-surface);
   border: 1px solid var(--sc-border);
   border-radius: 16px;
@@ -742,7 +735,7 @@ const faqItems = [
 
 /* Section 7: Testimonials (Figma 478:124: a full-width panel band, 90px, header gap 46, cards 24 apart) */
 .testimonials-section {
-  padding-block: calc(var(--section-pad) + 2px);
+  padding-block: calc(var(--section-pad) + 1px);
   background: var(--sc-surface);
   border-block: 1px solid var(--sc-border);
   --header-gap: 46px;
@@ -867,8 +860,7 @@ const faqItems = [
   .hero-subtitle { font-size: 16px; line-height: 26px; }
   .hero-actions { flex-direction: column; align-self: stretch; padding-top: 0; }
   .hero-actions > .ui-button { width: 100%; }
-  .hero-trust { flex-direction: column; gap: 4px; font-size: 13px; }
-  .hero-trust .dot { display: none; }
+  .hero-trust { max-width: 300px; font-size: 13px; line-height: 18px; text-wrap: balance; }
   .section-header { margin-bottom: 32px; }
   .section-title,
   .section-title.is-reliability,
@@ -884,7 +876,7 @@ const faqItems = [
   }
   .pricing-grid { gap: 20px; }
   .outputs-layout { gap: 32px; }
-  .step-card { padding: 24px 20px; }
+  .step-card { padding: 23px 19px; }
   .final-cta-card { padding: 40px 24px; border-radius: 20px; }
   .cta-title { font-size: 28px; line-height: 34px; }
   .cta-subtitle { font-size: 16px; line-height: 24px; }

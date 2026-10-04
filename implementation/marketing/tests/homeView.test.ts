@@ -389,6 +389,14 @@ describe('the hero console and the Screens & Outputs window are the designed pro
     assert.doesNotMatch(text, /OUTPUT MANAGER|OUTPUTS ACTIVE|60fps|1920x1080|Alpha|NDI 5|Confidence View|Audience - Main/, 'the old rows and their unbacked sub-lines are gone')
   })
 
+  test('the words inside each mock are hidden outright (aria-hidden), not only presentational: not every reader prunes the children of an image', () => {
+    for (const mock of mocks()) {
+      const kids = mock.children.filter((c): c is El => typeof c !== 'string')
+      assert.ok(kids.length >= 1)
+      for (const k of kids) assert.equal(k.attrs['aria-hidden'], 'true', `<${k.tag}> inside the image is exposed`)
+    }
+  })
+
   test('nothing inside a mock can be operated or focused: no link, button, input or tab stop (the "+ Add output" button is a picture of one)', () => {
     for (const mock of mocks()) {
       const live = findAll(mock, (e) => ['a', 'button', 'input', 'select', 'textarea', 'summary'].includes(e.tag) || e.attrs['tabindex'] !== undefined)
@@ -702,12 +710,14 @@ describe('the layout numbers the audit measured (home-04, 05, 06, 08, 16, 26, 41
     assert.equal(resolvePx(props['--content-max'] as string, props), 1248)
   })
 
-  test('section rhythm: 88 on Features and How it works, 90 on the rest, hero 96 above and 72 below', () => {
+  test('section rhythm: 88 on Features and How it works, 90 on the rest (the two bands 89 inside a 1px rule), hero 96 above and 72 below', () => {
     assert.equal(padBlock(at(['features-section'])), 88)
     assert.equal(padBlock(at(['steps-section'])), 88)
-    for (const c of ['reliability-section', 'outputs-section', 'pricing-section', 'testimonials-section', 'faq-section', 'final-cta-section']) {
+    for (const c of ['outputs-section', 'pricing-section', 'faq-section', 'final-cta-section']) {
       assert.equal(padBlock(at([c])), 90, c)
     }
+    // The two bands have a 1px edge rule, and Figma draws the stroke inside the frame: 89 + 1 = 90.
+    for (const c of ['reliability-section', 'testimonials-section']) assert.equal(padBlock(at([c])), 89, c)
     const hero = at(['hero-section'])
     assert.deepEqual(hero['padding'], '96px 0 72px', 'hero padding')
   })

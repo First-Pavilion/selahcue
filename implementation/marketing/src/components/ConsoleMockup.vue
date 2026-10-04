@@ -11,36 +11,40 @@
     role="img"
     aria-label="SelahCue operator console showing a Preview and a Live scripture slide"
   >
-    <div class="window-header">
-      <span class="traffic-lights">
-        <span class="light close"></span>
-        <span class="light minimize"></span>
-        <span class="light maximize"></span>
-      </span>
-      <span class="window-title">SelahCue — Live Console</span>
-      <span class="chip live"><span class="dot"></span>LIVE</span>
-    </div>
-
-    <div class="interface-grid">
-      <div class="pane">
-        <div class="pane-head">
-          <span class="chip preview"><span class="dot"></span>PREVIEW</span>
-          <span class="resolution">1920 × 1080</span>
-        </div>
-        <div class="slide">
-          <span class="slide-ref">PSALM 46:10</span>
-          <span class="slide-text">Be still, and know that I am God.</span>
-        </div>
+    <!-- Hidden too, not only presentational: not every browser and reader prunes the children of an
+         image, and none of these words is page content. -->
+    <div aria-hidden="true">
+      <div class="window-header">
+        <span class="traffic-lights">
+          <span class="light close"></span>
+          <span class="light minimize"></span>
+          <span class="light maximize"></span>
+        </span>
+        <span class="window-title">SelahCue — Live Console</span>
+        <span class="chip live"><span class="dot"></span>LIVE</span>
       </div>
 
-      <div class="pane">
-        <div class="pane-head">
-          <span class="chip live"><span class="dot"></span>LIVE</span>
-          <span class="resolution">1920 × 1080</span>
+      <div class="interface-grid">
+        <div class="pane">
+          <div class="pane-head">
+            <span class="chip preview"><span class="dot"></span>PREVIEW</span>
+            <span class="resolution">1920 × 1080</span>
+          </div>
+          <div class="slide">
+            <span class="slide-ref">PSALM 46:10</span>
+            <span class="slide-text">Be still, and know that I am God.</span>
+          </div>
         </div>
-        <div class="slide">
-          <span class="slide-ref">JOHN 3:16</span>
-          <span class="slide-text">For God so loved the world…</span>
+
+        <div class="pane">
+          <div class="pane-head">
+            <span class="chip live"><span class="dot"></span>LIVE</span>
+            <span class="resolution">1920 × 1080</span>
+          </div>
+          <div class="slide">
+            <span class="slide-ref">JOHN 3:16</span>
+            <span class="slide-text">For God so loved the world…</span>
+          </div>
         </div>
       </div>
     </div>
@@ -67,7 +71,9 @@
   display: flex;
   align-items: center;
   gap: 7px;
-  padding: 12px 16px;
+  /* Figma measures padding from the outer edge of the window, so its 1px border comes off the
+     paddings that touch it (12/16 becomes 11/15 above and at the sides). */
+  padding: 11px 15px 12px;
   background: var(--sc-elevated);
 }
 
@@ -123,7 +129,7 @@
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 16px;
-  padding: 18px;
+  padding: 18px 17px 17px;
   background: var(--sc-base);
 }
 

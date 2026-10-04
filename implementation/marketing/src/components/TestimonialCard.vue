@@ -47,7 +47,8 @@ const initials = computed(() => {
   background: var(--sc-base);
   border: 1px solid var(--sc-border);
   border-radius: 16px;
-  padding: 28px;
+  /* Figma measures padding from the outer edge: the 1px border comes off it (28 becomes 27). */
+  padding: 27px;
   display: flex;
   flex-direction: column;
   gap: 22px;
