@@ -38,13 +38,14 @@ type ChangeType = 'new' | 'improved' | 'fixed'
 
 /**
  * The change-type labels (Figma 501:154): one pill per GROUP of changes, in this order. The variants are
- * the ones UiBadge defines: New is the green `preview` tone, Improved is the brand `accent` tone and
- * Fixed is the amber `warn` tone. The dot beside each change takes the same colour.
+ * the ones UiBadge defines, chosen in the template as a plain choice between literals (the shared tree test
+ * can only check a variant it can read): New is the green `preview` tone, Improved is the brand `accent` tone
+ * and Fixed is the amber `warn` tone. The dot beside each change takes the same colour.
  */
-const TYPES: Array<{ type: ChangeType; label: string; variant: string }> = [
-  { type: 'new', label: 'New', variant: 'preview' },
-  { type: 'improved', label: 'Improved', variant: 'accent' },
-  { type: 'fixed', label: 'Fixed', variant: 'warn' }
+const TYPES: Array<{ type: ChangeType; label: string }> = [
+  { type: 'new', label: 'New' },
+  { type: 'improved', label: 'Improved' },
+  { type: 'fixed', label: 'Fixed' }
 ]
 
 /** A release's changes grouped by type, in the frame's order, leaving out a type it has no changes of. */
@@ -72,7 +73,12 @@ const groupsOf = (rel: (typeof releases)[number]) =>
           <div class="release-rule" aria-hidden="true"></div>
 
           <div v-for="group in groupsOf(rel)" :key="group.type" :class="['change-group', 'is-' + group.type]">
-            <UiBadge class="change-label" :variant="group.variant" size="sm">{{ group.label }}</UiBadge>
+            <UiBadge
+              class="change-label"
+              :variant="group.type === 'new' ? 'preview' : group.type === 'improved' ? 'accent' : 'warn'"
+              size="sm"
+              >{{ group.label }}</UiBadge
+            >
             <ul class="change-list">
               <li v-for="(item, idx) in group.items" :key="idx" class="change-entry">
                 <span class="change-dot" aria-hidden="true"></span>

@@ -11,19 +11,20 @@ const posts = blogPosts.filter((p) => p !== featuredPost)
 type Tone = 'brand' | 'preview' | 'warn' | 'live'
 
 /**
- * How each real category looks: the thumbnail's icon and tile colour, and the pill's UiBadge variant (the
- * frame colours every pill by its category: green, brand, amber). The content source names five
- * categories; a category with no entry here falls back to the brand look. Brand-coloured pills use
- * `accent`, whose ink is the readable text colour until Uma chooses the accessible brand ink (class D).
+ * How each real category looks: the thumbnail's icon and tile colour. The pill takes the matching UiBadge
+ * variant in the template (the frame colours every pill by its category: green, brand, amber): a tile on the
+ * green `preview` fill gets the `preview` pill, amber gets `warn`, and the brand look gets `accent`, whose ink
+ * is the readable text colour until Uma chooses the accessible brand ink (class D). The content source names
+ * five categories; a category with no entry here falls back to the brand look.
  */
-const LOOK: Record<string, { icon: string; tone: Tone; pill: string }> = {
-  'Product Strategy': { icon: 'shield-check', tone: 'brand', pill: 'accent' },
-  'Worship Tech': { icon: 'monitor', tone: 'preview', pill: 'preview' },
-  Scripture: { icon: 'book-open', tone: 'warn', pill: 'warn' },
-  Mobile: { icon: 'smartphone', tone: 'brand', pill: 'accent' },
-  Livestreaming: { icon: 'radio', tone: 'preview', pill: 'preview' }
+const LOOK: Record<string, { icon: string; tone: Tone }> = {
+  'Product Strategy': { icon: 'shield-check', tone: 'brand' },
+  'Worship Tech': { icon: 'monitor', tone: 'preview' },
+  Scripture: { icon: 'book-open', tone: 'warn' },
+  Mobile: { icon: 'smartphone', tone: 'brand' },
+  Livestreaming: { icon: 'radio', tone: 'preview' }
 }
-const look = (category: string) => LOOK[category] ?? { icon: 'shield-check', tone: 'brand' as Tone, pill: 'accent' }
+const look = (category: string) => LOOK[category] ?? { icon: 'shield-check', tone: 'brand' as Tone }
 </script>
 
 <template>
@@ -42,7 +43,7 @@ const look = (category: string) => LOOK[category] ?? { icon: 'shield-check', ton
         </div>
         <div class="featured-body">
           <div class="featured-tags">
-            <UiBadge class="featured-category" :variant="look(featuredPost.category).pill" size="sm">{{ featuredPost.category }}</UiBadge>
+            <UiBadge class="featured-category" :variant="look(featuredPost.category).tone === 'preview' ? 'preview' : look(featuredPost.category).tone === 'warn' ? 'warn' : 'accent'" size="sm">{{ featuredPost.category }}</UiBadge>
             <span class="featured-label">Featured</span>
           </div>
           <h2 id="featured-heading" class="featured-title">
@@ -60,7 +61,7 @@ const look = (category: string) => LOOK[category] ?? { icon: 'shield-check', ton
             <CategoryIcon :name="look(post.category).icon" :tone="look(post.category).tone" size="thumb" />
           </div>
           <div class="card-body">
-            <UiBadge class="card-category" :variant="look(post.category).pill" size="sm">{{ post.category }}</UiBadge>
+            <UiBadge class="card-category" :variant="look(post.category).tone === 'preview' ? 'preview' : look(post.category).tone === 'warn' ? 'warn' : 'accent'" size="sm">{{ post.category }}</UiBadge>
             <h3 class="card-title">{{ post.title }}</h3>
             <p class="card-desc">{{ post.summary }}</p>
             <div class="card-footer">
