@@ -160,6 +160,11 @@ def open_page(page, base: str, path: str, ready: str, attempts: int = 2) -> None
                 list(FONT_WEIGHTS),
             )
             page.wait_for_function("document.getAnimations().every((a) => a.playState !== 'running')", timeout=5000)
+            # Every number below is a height or width of text in Inter. A fallback face would move them all and fail for the
+            # wrong reason (or pass for it), so a page where Inter did not load in every weight is a failure, said plainly.
+            loaded = page.evaluate("[400, 500, 600, 700].every((w) => document.fonts.check(`${w} 16px Inter`))")
+            if not loaded:
+                raise RuntimeError(f"Inter did not load in every weight on {path}: the measurements would describe a fallback font (is the network up?)")
             widen_for_scrollbar(page)
             return
         except Exception as exc:  # noqa: BLE001
