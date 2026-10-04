@@ -430,7 +430,10 @@ def check_legal(page, c: Checks, base: str, path: str, label: str) -> None:
     c.eq(cs(page, ".sec-main .sec-num", ["color"])["color"], h["color"], f"{label}: the section number takes the heading ink")
     p = cs(page, ".lb-p", ["font-size", "line-height"])
     c.eq((p["font-size"], p["line-height"]), ("16px", "26px"), f"{label}: body 16/26 (Figma)")
-    c.ok(box(page, ".legal-text")["w"] <= 781, f"{label}: text column at most 780 wide")
+    # Figma draws one 780 column (504:144). The contents sidebar is build-only; the shell is sized so the text beside it is
+    # that 780 at 1440, not the 764 a 1120 shell left (review round 1, Cody M13).
+    c.near(box(page, ".legal-text")["w"], 780, 1, f"{label}: the text column measures 780 at 1440 (Figma 504:144)")
+    c.near(box(page, ".toc-col")["w"], 260, 1, f"{label}: beside a 260 contents column")
     c.ok(page.locator(".toc-link").count() >= 10, f"{label}: the contents sidebar is still there")
     if page.locator(".ll-item").count():
         m = cs(page, ".ll-item", ["padding-left"])

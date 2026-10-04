@@ -894,8 +894,13 @@ describe('Privacy and Terms (504:124, 504:203): type scale, header spacing, mark
     assert.equal(declaration(page, '.sec-num', 'color'), 'inherit')
   })
 
-  test('the text column is 780 wide (privacy-09, terms-09)', () => {
+  test('the text column is 780 wide: the shell is sized for the contents column, its gap and the 780 (privacy-09, terms-09, review round 1 M13)', () => {
     assert.equal(declaration(page, '.legal-text', 'max-width'), '780px')
+    // 24 + 24 gutters at desktop + 260 contents + 48 gap + 780 text = 1136. A narrower shell leaves the grid, not max-width, to
+    // set the column, and 1120 measured 764.
+    assert.equal(declaration(page, '.legal-shell', 'max-width'), '1136px')
+    assert.equal(declaration(page, '.legal-layout', 'grid-template-columns'), '260px minmax(0, 1fr)')
+    assert.equal(declaration(page, '.legal-layout', 'gap'), '48px')
   })
 
   test('body paragraphs and list items are 16px on a 26px line (privacy-09, terms-09)', () => {

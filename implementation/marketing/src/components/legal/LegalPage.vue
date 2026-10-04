@@ -274,8 +274,10 @@ html:has(.legal-page) {
 #legal-text {
   scroll-margin-top: var(--legal-anchor-offset);
 }
+/* 1136 = 24 + 24 gutters + the 260 contents column + its 48 gap + the 780 text column Figma draws (504:144), so the
+   text measures 780 at 1440 and not the 764 a 1120 shell left it. The contents sidebar is build-only (privacy-03). */
 .legal-shell {
-  max-width: 1120px;
+  max-width: 1136px;
   margin: 0 auto;
   /* The site's page gutter when a stylesheet defines the token (24 desktop / 48 tablet / 20
      mobile, PR #140's tokens.css/main.css); otherwise the same three values locally, stepped
