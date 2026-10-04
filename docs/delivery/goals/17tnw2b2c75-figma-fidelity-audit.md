@@ -42,7 +42,7 @@ created from the audit. **No fix is implemented in this goal.**
   `MARKETING-PORTAL-GAP-FILL-HANDOFF.md`, `docs/delivery/VISUAL-PARITY-HARNESS.md`
 - `implementation/marketing` source and built `dist/`; `implementation/api` device schema
 - ClickUp 17tnw2b2c75, epic 86ajy5v6k, 17tnw2b0x3h, Build Control 86ajnx548
-- Owner-approved plan `~/.claude/plans/pasted-content-id-f317-https-www-figma-zesty-karp.md`
+- The owner's decisions for this work are quoted in full under Constraints below (the approved plan lives outside the repo, so nothing here depends on it)
 
 ## Scope
 
@@ -63,6 +63,16 @@ created from the audit. **No fix is implemented in this goal.**
 - Changing design intent, product scope or API contracts
 
 ### Constraints
+
+Owner decisions, quoted (binding; they are the owner's words as given to this role, repeated here so the contract stands on its own):
+
+- Scope: "audit and fix straight through". Phase 0 (this contract) is the audit and the fix tickets; each fix is its own later ticket with no owner pause between the phases.
+- Honest content wins: "Where Figma shows content the repo does not back (Pro `$19/month` and \"Annual · save 20%\", named testimonials, `v1.0 · ~84 MB / ~92 MB` installers, \"Sub-3-second cold start\", FAQ answers marked Assumed, \"NDI 5\"/1080p60 style claims, support/privacy email addresses, etc.): HONEST CONTENT WINS. Keep Figma's layout and styling, do not ship the invented claim, list it for Uma/owner." Removal of such claims from the live pages belongs to ClickUp 17tnw2b0x3h, which is linked, not duplicated.
+- Accessibility: "Fidelity must not regress accessibility: if a Figma colour fails WCAG AA, keep the accessible ink in code, record it as class B and flag it to Uma."
+- Tokens: Figma's legacy colour variables against the code's `--sc-*` tokens are a deliberate divergence (AUTH-LANDING-PAGES-HANDOFF section 2.2), never reported as a defect.
+- Not in scope: `/admin/*`; `/affiliates/dashboard|referrals|payouts|resources|settings|help`; web Sign up and Forgot password (no Figma frames); mobile and tablet layouts (ClickUp 17tnw2b0q9g); pricing, version and download numbers (17tnw2b0x3h and pricing decision D1).
+
+Working constraints:
 
 - Own worktree and branch from `origin/main`; one ticket, one PR; Draft; never merge
 - Honest content wins over Figma where the repo does not back a claim (owner decision); layout stays
@@ -94,7 +104,7 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
 | C-003 | yes | The harness self-test passes, and each new control fails when fed a deliberately wrong input | `python3 scripts/vp_selftest.py` | exit 0; 45 operator controls unchanged plus the marketing controls, each shown failing as well as passing | `=== visual-parity selftest: 112 checks, 0 FAIL ===`, exit 0; deviation gate and bundle probe also mutation-proved red on a copy of a real run (harness doc, section 11) | PASS |
 | C-004 | yes | The audit data lists every page and state with node id and verdict, and every difference carries a class A to E, evidence and a fix or source | `python3 scripts/check_fidelity_audit.py --require-tickets` (self-tested: `--self-test`) | exit 0; 35 surfaces plus shared chrome; 0 problems | exit 0, 0 problems, 292 findings counted (181 A, 27 B, 45 C, 31 D, 8 E); self-test 34 checks, 0 FAIL | PASS |
 | C-005 | yes | The consolidated class C list and class D list exist for Uma and the owner | read the report sections and the decisions ticket | both sections present and non-empty | `docs/delivery/FIGMA-FIDELITY-AUDIT-marketing-account-2026-10-03.md` (C: 45, D: 31); ClickUp 17tnw2b2cf3 | PASS |
-| C-006 | yes | A side-by-side Artifact opens and shows Figma next to the render for every surface | Artifact publish, file listing and local render at 1280 and 400 wide | URL returned; 36 cards (35 surfaces plus shared chrome) with both images where a build exists | https://claude.ai/artifact/5s6P3eHuirLfQXLMKTTAha (version 2, 65 files); no horizontal overflow or console error locally; sharing still needs "anyone with the link" | PASS |
+| C-006 | yes | A side-by-side Artifact opens for someone who was not in the session and shows Figma next to the render for every surface | Artifact publish and file listing; local render at 1280 and 400 wide; an anonymous request to the URL | URL returned; 36 cards (35 surfaces plus shared chrome); and an anonymous request returns the page | https://claude.ai/artifact/5s6P3eHuirLfQXLMKTTAha (version 2, 65 files, renders cleanly at 1280 and 400 wide). **The anonymous request returns HTTP 403: the page is private.** OWNER ACTION OPEN, and the owner has not yet chosen how: (a) share the page with the team only, or (b) authorise a public build that omits `evidence`, `api_gaps` and `bugs` (security review finding 2: they name Django file paths, the licence-key storage scheme and an unfixed session weakness) and then set sharing to "anyone with the link". Neither is done; the author cannot change sharing and no public mode is built. | PENDING |
 | C-007 | yes | One fix ticket exists per non-empty area, each with observable acceptance criteria and links to the audit ticket and the epic | ClickUp read-back of each ticket | lists render (no dropped table); parent epic set; audit linked; dependencies set | 17tnw2b2cev, cew, cex, cey, cez, cf1, cf2 created through the REST API: parent 86ajy5v6k, checkbox lists present on read-back (chrome, home, account, decisions, backend checked), linked to the audit; area tickets depend on chrome and components | PASS |
 | C-008 | yes | The Sign Out bug has its own ticket; a backend ticket exists if device endpoints are missing | ClickUp read-back | tickets exist and describe exactly what is missing | Sign Out bug 17tnw2b2cbr (verified in `AccountView.vue:136`); backend 17tnw2b2cf4 (api-01, 02, 04, 05, 06, 07 missing or partial) | PASS |
 | C-009 | yes | `make marketing-check` and `npm test` pass on the audit branch | run both, capture exit codes (never piped) | both exit 0 | `make marketing-check` exit 0; `npm test` exit 0, 612 pass, 0 fail | PASS |
@@ -140,7 +150,7 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
 - Hypothesis: the tickets, artifact, PR and ClickUp notes can be generated from the audit data so they cannot disagree with it
 - Change or investigation: generated the report, the ticket bodies and the artifact page from the data; created nine tickets through the REST helper; ran every verifier fresh
 - Verifier executed: see the predicate table
-- Result: all PASS except C-013 (independent review, brokered by the coordinator)
+- Result: all PASS except C-006 (the Artifact is private and the owner has not yet chosen how to share it) and C-013 (independent review, brokered by the coordinator)
 - New evidence: a Homebrew `python3` earlier on PATH has no Pillow, and the verifiers pass with `/usr/bin/python3`; a count first written in a ClickUp comment (33 diverging surfaces) was wrong (27) and was corrected from the data
 - Decision: gate-review
 
@@ -158,8 +168,8 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
 ## Final evaluation
 
 - Validator command: `python3 ~/.claude/skills/goal/scripts/validate_goal_contract.py docs/delivery/goals/17tnw2b2c75-figma-fidelity-audit.md --completion`
-- Validator result: the structural check passes; the completion check fails on C-013 only, by design (independent review is brokered by the coordinator, not requested by this role)
+- Validator result: the structural check passes; the completion check fails on C-006 (owner decision on sharing) and C-013 (independent review, brokered by the coordinator, not requested by this role)
 - Independent verification result: pending (Cody, Vera, Shadow and Quinn, each in its own worktree pinned to the head SHA)
 - Terminal state: GATE_REVIEW (all verifiable work done; independent review pending)
-- Remaining failed or blocked criteria: C-013
+- Remaining failed or blocked criteria: C-006, C-013
 - ClickUp final evidence comment: 1400430000059177 on https://app.clickup.com/t/17tnw2b2c75
