@@ -642,7 +642,8 @@ def render_report(catalogue, findings, tickets, meta):
 
     group_list("C", "Class C — Figma content the repo does not back (for Uma and the owner)",
                "Keep Figma's layout and styling; ship no invented claim. Where the build already carries the claim, removal is "
-               "[17tnw2b0x3h](https://app.clickup.com/t/17tnw2b0x3h)'s work, not a fix ticket from this audit.")
+               "[17tnw2b0x3h](https://app.clickup.com/t/17tnw2b0x3h)'s work, not a fix ticket from this audit. A few items run the other way: "
+               "copy the repo already carries that contradicts something product has since said; each says so in its decision.")
     group_list("D", "Class D — Figma gaps (for Uma)",
                "Things Figma does not draw (a state, a page, or an element the build has that no frame shows). Not invented here.")
 

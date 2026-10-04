@@ -61,7 +61,7 @@ Class A and E findings that raise fix work, by severity: high 84, medium 82, low
 
 ## Class C — Figma content the repo does not back (for Uma and the owner)
 
-Keep Figma's layout and styling; ship no invented claim. Where the build already carries the claim, removal is [17tnw2b0x3h](https://app.clickup.com/t/17tnw2b0x3h)'s work, not a fix ticket from this audit.
+Keep Figma's layout and styling; ship no invented claim. Where the build already carries the claim, removal is [17tnw2b0x3h](https://app.clickup.com/t/17tnw2b0x3h)'s work, not a fix ticket from this audit. A few items run the other way: copy the repo already carries that contradicts something product has since said; each says so in its decision.
 
 - **account-16** `account` (high) — Licensed-translation entitlements (NIV, ESV, NLT) are shown as granted; the repo has none
   - Figma: Not drawn.
