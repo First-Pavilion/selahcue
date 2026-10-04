@@ -106,7 +106,7 @@ import CtaBand from '@/components/core/CtaBand.vue'
         eyebrow="STREAMING"
         title="NDI & multi-output"
         text="Send your program over NDI straight into OBS or vMix, and drive more than one output from the same deck."
-        :bullets="['Program over NDI to OBS / vMix', 'More outputs on higher plans', 'NDI output on the Pro and Platinum plans']"
+        :bullets="['Program over NDI to OBS / vMix', 'More than one output from one deck', 'NDI output is optional']"
         panel-title="STREAMING"
         panel-chip="NDI"
       >
