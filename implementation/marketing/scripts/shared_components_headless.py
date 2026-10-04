@@ -216,6 +216,10 @@ def check_badges(page, c: Checks) -> None:
     c.eq((m["font-size"], m["letter-spacing"]), ("11px", "0.7px"), "preview md is 11px/0.7px (ACTIVE)")
     c.near(m["h"], 23, 0.5, "preview md height (Figma ACTIVE 23)")
 
+    # PricingView passes only `text="Save 20%"`: nothing renders, and the empty pill must not show either
+    empty = style(page, '[data-case="badges"] [data-badge="text-only"]', ["display"])
+    c.eq(empty["display"], "none", "a badge with no slot content is not drawn (no empty pill)")
+    c.eq(empty["text"], "", "and the `text` attribute is not rendered into it")
     for name in ("live", "ready", "ndi", "new"):
         s = badge("badges", name)
         c.eq(s["font-weight"], "700", f"{name} shares the bold badge scale")

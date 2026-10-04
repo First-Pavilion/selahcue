@@ -71,6 +71,13 @@ if (import.meta.env.DEV && props.text !== undefined) {
   border: 1px solid transparent;
 }
 
+/* A badge with nothing in its slot draws nothing. `PricingView` gives its "Annual" badge only a
+   `text` attribute, which is not rendered (see the prop); without this it would now be an
+   empty dark pill beside the word, because the pill has a fill. */
+.ui-badge:empty {
+  display: none;
+}
+
 .size-sm {
   padding: 3px 9px;
   font-size: 10.5px;

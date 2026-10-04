@@ -54,6 +54,8 @@ const showLeft = ref(false)
       <UiBadge data-badge="ready" variant="ready">Ready</UiBadge>
       <UiBadge data-badge="ndi" variant="ndi">NDI</UiBadge>
       <UiBadge data-badge="new" variant="new">New</UiBadge>
+      <!-- the `text` prop is not rendered: what is left must be invisible, not an empty pill -->
+      <UiBadge data-badge="text-only" variant="accent" text="Save 20%" />
     </section>
 
     <!-- One line in a stylesheet, or on any ancestor, re-inks every brand badge at once. -->
