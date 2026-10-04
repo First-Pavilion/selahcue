@@ -650,7 +650,7 @@ def check_stacked_dialogs(page, c: Checks, errors: list[str]) -> None:
         c.ok(len(errors) == errors_before, f"[{order}] no page error while closing")
 
 
-def check_fallback_focus(page, c: Checks) -> None:
+def check_fallback_focus(page, c: Checks, errors: list[str]) -> None:
     """Quinn 2: when what opened the dialog is gone (its row was removed), focus goes to the stated fallback, not the body."""
     settle(page)
     case = '[data-case="device-list"]'
@@ -686,6 +686,19 @@ def check_fallback_focus(page, c: Checks) -> None:
     page.wait_for_selector(".dialog-card", state="detached")
     c.eq(rows(), 1, "confirming removed the next row")
     c.eq(page.evaluate("document.activeElement === document.body"), True, "without a fallback, focus drops to the body exactly as before (the default is unchanged)")
+
+    # A selector the browser cannot parse is the caller's mistake: closing must not throw because of it
+    page.locator("#fallback-bad").click()
+    page.locator(f"{case} .row-deactivate").first.focus()
+    page.keyboard.press("Enter")
+    page.wait_for_selector(".dialog-card")
+    settle(page)
+    before = len(errors)
+    page.locator(".dialog-card .confirm-btn").click()
+    page.wait_for_selector(".dialog-card", state="detached")
+    page.wait_for_timeout(100)
+    c.eq(rows(), 0, "the last row was removed")
+    c.ok(len(errors) == before, f"an unparseable fallback-focus selector throws nothing: {errors[before:][:1]}")
 
 
 def check_narrow(browser, base: str, c: Checks, shots: Path | None) -> None:
@@ -846,7 +859,7 @@ def main() -> int:
                         (check_badges, ()), (check_faq, ()), (check_pricing, ()), (check_formfield, ()),
                         (check_password_and_required, ()), (check_slots_after_render, ()),
                         (check_dialogs, (shots if engine == engines[0] else None,)),
-                        (check_stacked_dialogs, (errors,)), (check_fallback_focus, ()),
+                        (check_stacked_dialogs, (errors,)), (check_fallback_focus, (errors,)),
                     )
                     for fn, extra in steps:
                         try:

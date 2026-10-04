@@ -55,7 +55,7 @@ const showDyn = ref(false)
 const devices = ref(['Studio PC', 'Booth MacBook', 'Youth Hall PC'])
 const target = ref('')
 const showDevice = ref(false)
-const useFallback = ref(true)
+const fallbackSel = ref('#devices-heading')
 const askDeactivate = (name: string) => {
   target.value = name
   showDevice.value = true
@@ -168,8 +168,9 @@ const deactivate = () => {
           <button type="button" class="row-deactivate" @click="askDeactivate(d)">Deactivate {{ d }}</button>
         </li>
       </ul>
-      <button id="fallback-off" type="button" @click="useFallback = false">No fallback</button>
-      <button id="fallback-on" type="button" @click="useFallback = true">Fallback to the heading</button>
+      <button id="fallback-off" type="button" @click="fallbackSel = ''">No fallback</button>
+      <button id="fallback-on" type="button" @click="fallbackSel = '#devices-heading'">Fallback to the heading</button>
+      <button id="fallback-bad" type="button" @click="fallbackSel = '##(not a selector['">A selector that does not parse</button>
     </section>
 
     <ConfirmDialog
@@ -218,7 +219,7 @@ const deactivate = () => {
       confirm-label="Deactivate"
       cancel-label="Keep active"
       variant="warning"
-      :fallback-focus="useFallback ? '#devices-heading' : ''"
+      :fallback-focus="fallbackSel"
       @confirm="deactivate"
     />
 

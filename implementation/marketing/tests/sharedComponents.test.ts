@@ -776,6 +776,31 @@ describe('ConfirmDialog: names itself and its description for assistive technolo
   })
 })
 
+describe('REAL TREE: every required field on the sign-up, forgot-password and contact pages is announced as required', () => {
+  /** The props a view gives one FormField, where they are written as plain attributes. */
+  function staticProps(el: ElementNode): Record<string, unknown> {
+    const props: Record<string, unknown> = {}
+    for (const p of el.props) if (p.type === 6) props[p.name === 'required' ? 'required' : p.name.replace(/-([a-z])/g, (_, c: string) => c.toUpperCase())] = p.name === 'required' ? true : (p.value?.content ?? '')
+    return props
+  }
+
+  test('the FormFields those views mark `required`, rendered with the props the views give them, carry aria-required and not the native attribute', async () => {
+    let seen = 0
+    for (const view of ['views/SignUpView.vue', 'views/ForgotPasswordView.vue', 'views/ContactView.vue']) {
+      const fields = elementsOf(read(view), view).filter((e) => e.tag === 'FormField' && e.props.some((p) => p.type === 6 && p.name === 'required'))
+      for (const el of fields) {
+        seen++
+        const props = { ...staticProps(el), id: `f${seen}`, modelValue: '' }
+        const { html } = await render('FormField', props)
+        const control = tags(html).find((t) => t.name === 'input' || t.name === 'textarea')
+        assert.equal(control?.attrs['aria-required'], 'true', `${view}: <FormField label="${String(props['label'])}" required> is not announced as required`)
+        assert.ok(control && !has(control, 'required'), `${view}: the native required attribute would put the browser's own bubble ahead of the form's validation`)
+      }
+    }
+    assert.ok(seen >= 8, `only ${seen} required fields were found (sign-up 4, forgot-password 1, contact 3): the scan is looking in the wrong place`)
+  })
+})
+
 describe('ConfirmDialog: the type-to-confirm field has a name, and the page lock is the shared one', () => {
   test('the "Type cancel to confirm" label is tied to the input, so the field has an accessible name beyond its placeholder', async () => {
     const { teleported } = await render('ConfirmDialog', { show: true, title: 'T', description: 'D', requireType: 'cancel', variant: 'danger' })

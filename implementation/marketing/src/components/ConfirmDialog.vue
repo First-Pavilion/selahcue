@@ -167,8 +167,17 @@ const release = () => {
   // After the page has re-rendered: the confirm handler may remove the opener (a device's row)
   // in this same tick, and only then can it be told from one that is still there.
   void nextTick(() => {
-    if (back?.isConnected) back.focus()
-    else if (props.fallbackFocus) document.querySelector<HTMLElement>(props.fallbackFocus)?.focus()
+    if (back?.isConnected) {
+      back.focus()
+      return
+    }
+    if (!props.fallbackFocus) return
+    try {
+      document.querySelector<HTMLElement>(props.fallbackFocus)?.focus()
+    } catch {
+      // A selector the browser cannot parse is the caller's mistake; closing the dialog must not
+      // throw because of it, so focus simply stays where the browser put it.
+    }
   })
 }
 
