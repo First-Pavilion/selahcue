@@ -87,7 +87,7 @@ const handleSubmit = () => {
     <section class="page-hero container">
       <UiBadge variant="featured">CONTACT</UiBadge>
       <h1 class="hero-title">Let's talk</h1>
-      <p class="hero-sub">Questions about SelahCue, help with getting set up, or partnering with us. Here is how to get in touch.</p>
+      <p class="hero-sub">Questions about SelahCue or help with getting set up. Here is how to get in touch.</p>
     </section>
 
     <div class="container contact-split">

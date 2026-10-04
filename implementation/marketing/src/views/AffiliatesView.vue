@@ -23,9 +23,9 @@ const steps = [
 /** Made for people who talk to churches (Figma 542:124): audience descriptions, not product claims. */
 const audiences = [
   { icon: 'video', tone: 'brand', title: 'Church tech creators', body: 'Bloggers, YouTubers and newsletter writers in the worship-tech space.' },
-  { icon: 'package', tone: 'preview', title: 'AV & gear resellers', body: 'Sell projectors, mixers and stage gear? Add software your customers need.' },
+  { icon: 'package', tone: 'preview', title: 'AV & gear resellers', body: 'Sell projectors, mixers and stage gear? Tell your customers about SelahCue.' },
   { icon: 'users', tone: 'warn', title: 'Ministry networks', body: 'Denominations and multi-site networks recommending tools to member churches.' },
-  { icon: 'briefcase', tone: 'brand', title: 'Consultants & integrators', body: 'You set up church production rigs — bundle SelahCue into your builds.' }
+  { icon: 'briefcase', tone: 'brand', title: 'Consultants & integrators', body: 'You set up church production rigs — recommend SelahCue to the churches you work with.' }
 ] as const
 
 /**
