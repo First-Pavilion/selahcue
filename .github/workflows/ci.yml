@@ -227,24 +227,26 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       # Disk headroom on the hosted Linux runner (17tnw2b2k23). From about 21:00 UTC on
-      # 2026-10-04 this job failed on every run, always at or just after the "LAN server + app
-      # server features" step, with the same code, the same runner image and the same Rust
-      # cache that had passed an hour earlier: the runner's disk filled up ("No space left on
-      # device", written against the runner agent's own log, which is also why the step logs
-      # of those runs were never uploaded and cannot be read back). This workspace builds
-      # debug test binaries for ~120 test targets under several feature sets, and all of it
-      # lands on the one disk that also holds the image's tens of GB of preinstalled
-      # toolchains. `free` deletes the ones this job never uses (Android SDK, .NET, GHC,
-      # CodeQL) BEFORE anything is built, and prints where the disk stands before and after.
-      # `report` steps below print it again as the build goes; each one also posts an
-      # annotation, because annotations survive a full disk and the log does not. Linux only:
-      # macOS and Windows runners did not fail and are left alone. Setup zone (implicit
-      # success()), so it sits above the first `!cancelled()` gate as check_workflows.py
-      # requires.
+      # 2026-10-04 this job failed on every run, at the "LAN server + app server features"
+      # step, with the same code, the same runner image and the same Rust cache that had
+      # passed an hour earlier. Measured: the runner has ONE 72 GB disk with 13.3 GB free
+      # (the image uses the rest; /mnt is not a separate volume), and this job writes about
+      # 16.4 GB to it (the `target` dir reaches 16 GB), so it ran out of disk about 14.7 GB in.
+      # A full disk crashes the runner agent, which loses the step logs of the whole job
+      # (BlobNotFound), so those failures could not be read back.
+      #
+      # `free` deletes the preinstalled Android SDK, .NET, GHC and CodeQL (21.7 GB, none of it
+      # used here) BEFORE anything is built, and prints the disk at job start before and after.
+      # The `check` steps below print it again as the build goes and FAIL their own step if
+      # less than 5 GB is left: a red "Disk space ..." step ahead of the crash is what survives
+      # (verified: step results do, logs and annotations do not), so the next failure names its
+      # cause. The last step prints it once more. Linux only: macOS and Windows runners did not
+      # fail and are left alone. All of these sit in the setup zone or carry a status function,
+      # as check_workflows.py requires. The numbers and the reasoning are in scripts/ci_disk.sh.
       - name: Free disk space and report it at job start (Linux)
         if: runner.os == 'Linux'
         working-directory: ${{ github.workspace }}
-        run: sh scripts/ci_disk.sh report control-no-free-job-start
+        run: sh scripts/ci_disk.sh free
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: ${{ needs.changes.outputs.rust }}
@@ -411,7 +413,7 @@ jobs:
       - name: Disk space before the gates, cache restored (Linux)
         if: runner.os == 'Linux'
         working-directory: ${{ github.workspace }}
-        run: sh scripts/ci_disk.sh report before-gates-cache-restored
+        run: sh scripts/ci_disk.sh check before-gates-cache-restored
       # From the first GATE step onward, `!cancelled()`. Setup steps above deliberately
       # keep the default `success()`: if checkout, the toolchain install or the pin
       # assertion fails, every downstream result is meaningless or measured on the wrong
@@ -438,7 +440,7 @@ jobs:
       - name: Disk space after clippy (Linux)
         if: ${{ !cancelled() && runner.os == 'Linux' }}
         working-directory: ${{ github.workspace }}
-        run: sh scripts/ci_disk.sh report after-clippy
+        run: sh scripts/ci_disk.sh check after-clippy
       - name: Test (workspace, incl. GPU parity where an adapter exists)
         if: ${{ !cancelled() }}
         # --no-fail-fast: without it cargo stops at the first failing test BINARY, so a
@@ -457,7 +459,7 @@ jobs:
       - name: Disk space after the workspace tests (Linux)
         if: ${{ !cancelled() && runner.os == 'Linux' }}
         working-directory: ${{ github.workspace }}
-        run: sh scripts/ci_disk.sh report after-workspace-tests
+        run: sh scripts/ci_disk.sh check after-workspace-tests
       # Structural merge gates for the presentation importer (threat model B2 + the design's
       # no-I/O rule + the ADR-0025 decoder pin). These are one-line checks only because the
       # importer is its own crate; inside the operator, whose graph legitimately contains a TLS
@@ -537,7 +539,7 @@ jobs:
       - name: Disk space after the LAN and app server tests (Linux)
         if: ${{ !cancelled() && runner.os == 'Linux' }}
         working-directory: ${{ github.workspace }}
-        run: sh scripts/ci_disk.sh report after-lan-and-app-server-tests
+        run: sh scripts/ci_disk.sh check after-lan-and-app-server-tests
       - name: Test (scripture download — feature-gated, loopback only)
         if: ${{ !cancelled() }}
         run: cargo test -p selahcue-scripture --features download --no-fail-fast
