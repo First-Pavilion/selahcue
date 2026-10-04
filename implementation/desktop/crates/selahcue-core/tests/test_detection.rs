@@ -993,3 +993,44 @@ fn a_punctuated_verse_is_never_guarded_regardless_of_trailing_speech() {
     // or trailing-content-adjacent the verse number would otherwise look.
     assert_eq!(detect("Romans 8:10 more minutes"), vec!["Romans 8:10"]);
 }
+
+#[test]
+fn a_verse_marker_on_the_verse_alone_is_enough_to_trust_the_weld() {
+    // The explicit-marker positive control above ("chapter eight verse ten") also puts a
+    // marker on the CHAPTER, so it cannot tell "any marker in the span" from "a marker on
+    // the verse". This is the everyday spoken form: only the verse carries the word. The
+    // same trailing "more minutes" that makes the bare "romans eight ten" case degrade
+    // must NOT degrade here, because "verse" is deliberate citation vocabulary.
+    assert_eq!(
+        detect("romans eight verse ten more minutes"),
+        vec!["Romans 8:10"]
+    );
+    // ...and the unmarked twin of that exact sentence is the flagship fabrication case.
+    assert_eq!(detect("romans eight ten more minutes"), vec!["Romans 8"]);
+}
+
+#[test]
+fn a_spoken_verse_range_is_trusted_despite_trailing_speech() {
+    // A spoken range ("ten to twelve" -> "10-12") is a multi-word fold, like "twenty
+    // eight": two coincidentally-adjacent numbers are never joined by "to" into one token,
+    // so the range token is never treated as a bare single-word verse. This is how the
+    // guard stays out of the way of the range handling that main already had (a range token
+    // is built in step 4 of `normalize_tokens` and must stay non-atomic).
+    assert_eq!(
+        detect("romans eight ten to twelve more minutes"),
+        vec!["Romans 8:10-12"]
+    );
+}
+
+#[test]
+fn the_from_verse_filler_drop_still_leaves_the_verse_marker_in_force() {
+    // Interplay of two rules that were written independently: "from" is dropped only when
+    // it introduces "verse", and the dropped "verse" must still be remembered as a marker
+    // for the guard. Lose either half and this degrades to "Psalms 1" instead: marker lost
+    // (the bare verse is refused because "more minutes" follows) or filler kept (the window
+    // no longer parses as chapter + verse).
+    assert_eq!(
+        detect("psalm one from verse two more minutes"),
+        vec!["Psalms 1:2"]
+    );
+}
