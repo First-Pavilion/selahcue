@@ -175,9 +175,40 @@ describe('navbar: surface and tokens (shared-chrome-09, 25)', () => {
     assert.equal(scrolled['-webkit-backdrop-filter'], undefined, 'drop the hand-written prefix; the build adds it')
   })
 
-  test('the scrolled state is computed on mount, so a reload or a hash jump into the page starts correct', () => {
+  test('the scrolled state is OBSERVED, not read: an IntersectionObserver on a 10px sentinel at the document top, so nothing forces a layout in the first script task', () => {
     const mounted = /onMounted\(\(\) => \{([\s\S]*?)\n\}\)/.exec(navbar)?.[1] ?? ''
-    assert.match(mounted, /handleScroll\(\)/)
+    const code = stripComments(mounted)
+    assert.match(code, /new IntersectionObserver\(/)
+    assert.match(code, /\.observe\(sentinelEl\.value\)/)
+    // `window.scrollY` forces a style and layout pass; read synchronously in onMounted it pushed the app's first task over the
+    // 50ms long-task line on Pricing and Terms (+18-20ms layout at 4x CPU, performance review of PR 172).
+    assert.doesNotMatch(code, /scrollY/, 'onMounted reads window.scrollY')
+    assert.doesNotMatch(code.replace(/addEventListener\('scroll', handleScroll[^)]*\)/, ''), /\bhandleScroll\(/, 'onMounted calls handleScroll() synchronously')
+    assert.match(navbar, /<div ref="sentinelEl" class="scroll-sentinel" aria-hidden="true"><\/div>/)
+  })
+
+  test('the sentinel is the old "scrollY > 10" rule exactly: 10px tall at the very top of the DOCUMENT, out of flow, invisible to the pointer', () => {
+    const d = nav(['scroll-sentinel'])
+    assert.equal(d['position'], 'absolute')
+    assert.equal(d['top'], '0')
+    assert.equal(d['height'], '10px')
+    assert.equal(d['pointer-events'], 'none')
+    // absolute against the initial containing block, so no positioned ancestor may sit above it
+    assert.equal(effective(parseCss(styleOf(app)), ['app-shell'], DESKTOP)['position'], undefined)
+    assert.match(navbar, /isScrolled\.value = !\(entry\?\.isIntersecting \?\? true\)/)
+  })
+
+  test('the observer is disconnected on unmount, and old browsers without IntersectionObserver keep the scroll listener (also removed)', () => {
+    const unmounting = /onBeforeUnmount\(\(\) => \{([\s\S]*?)\n\}\)/.exec(navbar)?.[1] ?? ''
+    assert.match(unmounting, /scrollObserver\?\.disconnect\(\)/)
+    assert.match(unmounting, /removeEventListener\('scroll', handleScroll\)/)
+    assert.match(navbar, /typeof IntersectionObserver === 'function'/)
+  })
+
+  test('control: the check bites. A synchronous read in onMounted is reported', () => {
+    const tampered = navbar.replace(/(onMounted\(\(\) => \{)/, '$1\n  handleScroll()')
+    const mounted = /onMounted\(\(\) => \{([\s\S]*?)\n\}\)/.exec(tampered)?.[1] ?? ''
+    assert.match(stripComments(mounted).replace(/addEventListener\('scroll', handleScroll[^)]*\)/, ''), /\bhandleScroll\(/)
   })
 
   test('no hard-coded brand or neutral colour is left in the bar: the token layer is used', () => {
@@ -211,11 +242,21 @@ describe('navbar: How it works is a real link (shared-chrome-07)', () => {
     assert.doesNotMatch(navbar, /<a href="#how-it-works"/, 'a bare #how-it-works anchor only works on Home and does nothing there')
   })
 
-  test('it is never styled as the active route (Home is "/", so a default router-link would light it up on Home)', () => {
-    for (const tag of navbar.matchAll(/<router-link[^>]*hash: '#how-it-works'[^>]*>/g)) {
-      assert.match(tag[0], /active-class=""/)
-      assert.match(tag[0], /exact-active-class=""/)
-    }
+  test('it is never the "current page": a custom router-link that renders a plain <a>, so no aria-current and no active class (Home is "/", and the router ignores the hash)', () => {
+    const tags = [...navbar.matchAll(/<router-link[^>]*hash: '#how-it-works'[^>]*>/g)]
+    assert.equal(tags.length, 2)
+    for (const tag of tags) assert.match(tag[0], /\bcustom\b/, 'a default router-link sets aria-current="page" on Home')
+    // the slot renders a plain anchor that the link only navigates, and never forwards aria-current
+    const slots = [...navbar.matchAll(/<router-link[^>]*hash: '#how-it-works'[^>]*>\s*<a :href="href" class="(nav-item|mobile-link)"[^>]*@click="navigate[(")]/g)]
+    assert.deepEqual(slots.map((m) => m[1]).sort(), ['mobile-link', 'nav-item'])
+    const region = tags.map((t) => navbar.slice(t.index, navbar.indexOf('</router-link>', t.index))).join('\n')
+    assert.doesNotMatch(region, /aria-current/)
+  })
+
+  test('control: the check bites. A default router-link (no custom) is reported', () => {
+    const tampered = navbar.replace(/ custom v-slot="\{ href, navigate \}"/, '')
+    const tag = [...tampered.matchAll(/<router-link[^>]*hash: '#how-it-works'[^>]*>/g)][0]?.[0] ?? ''
+    assert.doesNotMatch(tag, /\bcustom\b/)
   })
 
   test('every other navbar link goes to a real route', () => {

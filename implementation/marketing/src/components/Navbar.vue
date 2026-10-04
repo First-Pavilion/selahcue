@@ -14,6 +14,7 @@ const route = useRoute()
 const isScrolled = ref(false)
 const isMobileMenuOpen = ref(false)
 
+const sentinelEl = ref<HTMLElement | null>(null)
 const toggleEl = ref<HTMLButtonElement | null>(null)
 const closeEl = ref<HTMLButtonElement | null>(null)
 const sheetEl = ref<HTMLElement | null>(null)
@@ -69,6 +70,20 @@ const handleSignOut = async () => {
     window.location.assign('/')
   }
 }
+
+/**
+ * THE SCROLLED STATE. Observed, not read: an IntersectionObserver watches a 10px sentinel at the very top of
+ * the document, so the bar is "scrolled" exactly when `window.scrollY > 10` (the old rule) without anything
+ * reading `scrollY`. Reading it in `onMounted` forced a style and layout pass inside the app's first script
+ * task and pushed that task over the 50ms long-task line on Pricing and Terms (+18-20ms of layout at 4x CPU,
+ * performance review of PR 172), and a scroll listener fires on every wheel tick. The observer's first
+ * callback reports the state the page OPENED in, so a reload in the middle of a page, a cold load onto a
+ * deep anchor and back-navigation all start right, and it is delivered with the frame's own work.
+ *
+ * `handleScroll` is only the fallback for a browser with no IntersectionObserver, which keeps the previous
+ * behaviour: a scroll listener, no read at mount.
+ */
+let scrollObserver: IntersectionObserver | null = null
 
 const handleScroll = () => {
   isScrolled.value = window.scrollY > 10
@@ -162,16 +177,22 @@ const handleBreakpointChange = (event: MediaQueryListEvent) => {
 const handlePageHide = () => closeMobileMenu({ restoreFocus: false })
 
 onMounted(() => {
-  // Read the position once now: a reload, or a hash jump into the middle of a page, never fires a
-  // scroll event, and the bar would otherwise paint its resting state over scrolled content.
-  handleScroll()
-  window.addEventListener('scroll', handleScroll, { passive: true })
+  if (typeof IntersectionObserver === 'function' && sentinelEl.value) {
+    scrollObserver = new IntersectionObserver(([entry]) => {
+      isScrolled.value = !(entry?.isIntersecting ?? true)
+    })
+    scrollObserver.observe(sentinelEl.value)
+  } else {
+    window.addEventListener('scroll', handleScroll, { passive: true })
+  }
   window.addEventListener('pagehide', handlePageHide)
   mobileQuery = window.matchMedia(MOBILE_QUERY)
   mobileQuery.addEventListener('change', handleBreakpointChange)
 })
 
 onBeforeUnmount(() => {
+  scrollObserver?.disconnect()
+  scrollObserver = null
   window.removeEventListener('scroll', handleScroll)
   window.removeEventListener('pagehide', handlePageHide)
   mobileQuery?.removeEventListener('change', handleBreakpointChange)
@@ -181,6 +202,8 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
+  <!-- Zero-size marker at the top of the document: the bar is "scrolled" when it is out of view (see `scrollObserver`). -->
+  <div ref="sentinelEl" class="scroll-sentinel" aria-hidden="true"></div>
   <header :class="['navbar-header', { 'is-scrolled': isScrolled }]">
     <div class="navbar-container">
       <!-- Left Group: Brand Logo + Nav Links -->
@@ -195,9 +218,13 @@ onBeforeUnmount(() => {
         <nav class="desktop-nav" aria-label="Primary">
           <router-link to="/features" class="nav-item" active-class="active">Features</router-link>
           <!-- To the Home route WITH the hash: a bare #how-it-works only works on Home, and on every other
-               page it just appended the fragment to the URL. Never "active": Home is "/", so a default
-               router-link would light this up on the whole Home page. -->
-          <router-link :to="{ path: '/', hash: '#how-it-works' }" class="nav-item" active-class="" exact-active-class="">How it works</router-link>
+               page it just appended the fragment to the URL. Never "current": the router matches the PATH
+               and ignores the hash, so on Home a default router-link carries aria-current="page" (and the
+               active class) while sighted users see no active state. `custom` renders the plain <a> below,
+               which only navigates. -->
+          <router-link :to="{ path: '/', hash: '#how-it-works' }" custom v-slot="{ href, navigate }">
+            <a :href="href" class="nav-item" @click="navigate">How it works</a>
+          </router-link>
           <router-link to="/pricing" class="nav-item" active-class="active">Pricing</router-link>
           <router-link to="/download" class="nav-item" active-class="active">Download</router-link>
         </nav>
@@ -267,7 +294,9 @@ onBeforeUnmount(() => {
 
           <nav class="sheet-links" aria-label="Primary">
             <router-link to="/features" class="mobile-link" @click="closeMobileMenu()">Features</router-link>
-            <router-link :to="{ path: '/', hash: '#how-it-works' }" class="mobile-link" active-class="" exact-active-class="" @click="closeMobileMenu()">How it works</router-link>
+            <router-link :to="{ path: '/', hash: '#how-it-works' }" custom v-slot="{ href, navigate }">
+              <a :href="href" class="mobile-link" @click="navigate($event); closeMobileMenu()">How it works</a>
+            </router-link>
             <router-link to="/pricing" class="mobile-link" @click="closeMobileMenu()">Pricing</router-link>
             <router-link to="/download" class="mobile-link" @click="closeMobileMenu()">Download</router-link>
           </nav>
@@ -295,6 +324,17 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
+/* Absolute against the initial containing block (nothing above it is positioned), so it sits at the very top of
+   the DOCUMENT and scrolls away with it. 10px tall = the old `scrollY > 10`. Out of flow: no layout effect. */
+.scroll-sentinel {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 1px;
+  height: 10px;
+  pointer-events: none;
+}
+
 .navbar-header {
   position: sticky;
   top: 0;
