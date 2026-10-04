@@ -1,108 +1,194 @@
 <script setup lang="ts">
 import UiBadge from '@/components/UiBadge.vue'
-import UiButton from '@/components/UiButton.vue'
+import CategoryIcon from '@/components/article/CategoryIcon.vue'
 import { blogPath, blogPosts, featuredPost } from '@/lib/content/blog.ts'
 import { formatDate, readMinutes } from '@/lib/content/text.ts'
 
 // Every card below is generated from the local content source, so each one resolves to a
 // real article (GAP-08). The featured post is shown in its own panel, not repeated in the grid.
 const posts = blogPosts.filter((p) => p !== featuredPost)
+
+type Tone = 'brand' | 'preview' | 'warn' | 'live'
+
+/**
+ * How each real category looks: the thumbnail's icon and tile colour, and the pill's UiBadge variant (the
+ * frame colours every pill by its category: green, brand, amber). The content source names five
+ * categories; a category with no entry here falls back to the brand look. Brand-coloured pills use
+ * `accent`, whose ink is the readable text colour until Uma chooses the accessible brand ink (class D).
+ */
+const LOOK: Record<string, { icon: string; tone: Tone; pill: string }> = {
+  'Product Strategy': { icon: 'shield-check', tone: 'brand', pill: 'accent' },
+  'Worship Tech': { icon: 'monitor', tone: 'preview', pill: 'preview' },
+  Scripture: { icon: 'book-open', tone: 'warn', pill: 'warn' },
+  Mobile: { icon: 'smartphone', tone: 'brand', pill: 'accent' },
+  Livestreaming: { icon: 'radio', tone: 'preview', pill: 'preview' }
+}
+const look = (category: string) => LOOK[category] ?? { icon: 'shield-check', tone: 'brand' as Tone, pill: 'accent' }
 </script>
 
 <template>
   <div class="blog-page">
-    <section class="hero-section">
-      <div class="container">
-        <UiBadge variant="featured">SelahCue Journal</UiBadge>
-        <h1 class="hero-title">Insights for Modern Worship &amp; Tech Ministry</h1>
-        <p class="hero-sub">Articles, technical guides, and best practices for church presentation teams.</p>
-      </div>
+    <section class="hero-section container">
+      <UiBadge variant="featured">BLOG</UiBadge>
+      <h1 class="hero-title">The SelahCue blog</h1>
+      <p class="hero-sub">Practical notes on running a confident service — reliability, outputs, and the craft of church tech.</p>
     </section>
 
-    <!-- Featured Post -->
-    <section v-if="featuredPost" class="featured-section" aria-labelledby="featured-heading">
-      <div class="container">
-        <div class="featured-card">
-          <div class="featured-badge"><UiBadge variant="live">Featured Article</UiBadge></div>
-          <h2 id="featured-heading" class="featured-title">{{ featuredPost.title }}</h2>
-          <p class="featured-desc">{{ featuredPost.summary }}</p>
-          <div class="featured-meta">
-            <span>SelahCue Team &middot; {{ formatDate(featuredPost.published) }} &middot; {{ readMinutes(featuredPost.body) }} min read</span>
-            <UiButton variant="gradient" size="sm" :to="blogPath(featuredPost.slug)">Read story<span class="sr-only">: {{ featuredPost.title }}</span> →</UiButton>
-          </div>
+    <div class="blog-body container">
+      <!-- Featured Post: the card is one link (the title's), stretched over the whole card. -->
+      <article v-if="featuredPost" class="featured-card" aria-labelledby="featured-heading">
+        <div class="featured-media">
+          <CategoryIcon :name="look(featuredPost.category).icon" :tone="look(featuredPost.category).tone" size="xl" />
         </div>
-      </div>
-    </section>
+        <div class="featured-body">
+          <div class="featured-tags">
+            <UiBadge class="featured-category" :variant="look(featuredPost.category).pill" size="sm">{{ featuredPost.category }}</UiBadge>
+            <span class="featured-label">Featured</span>
+          </div>
+          <h2 id="featured-heading" class="featured-title">
+            <router-link class="featured-link" :to="blogPath(featuredPost.slug)">{{ featuredPost.title }}</router-link>
+          </h2>
+          <p class="featured-desc">{{ featuredPost.summary }}</p>
+          <p class="featured-meta">SelahCue Team &middot; {{ formatDate(featuredPost.published) }} &middot; {{ readMinutes(featuredPost.body) }} min read</p>
+        </div>
+      </article>
 
-    <!-- Grid -->
-    <section class="grid-section">
-      <div class="container">
-        <div class="blog-grid">
-          <article v-for="post in posts" :key="post.slug" class="blog-card">
-            <UiBadge variant="preview" size="sm">{{ post.category }}</UiBadge>
+      <!-- Grid -->
+      <div class="blog-grid">
+        <article v-for="post in posts" :key="post.slug" class="blog-card">
+          <div class="card-media">
+            <CategoryIcon :name="look(post.category).icon" :tone="look(post.category).tone" size="thumb" />
+          </div>
+          <div class="card-body">
+            <UiBadge class="card-category" :variant="look(post.category).pill" size="sm">{{ post.category }}</UiBadge>
             <h3 class="card-title">{{ post.title }}</h3>
             <p class="card-desc">{{ post.summary }}</p>
             <div class="card-footer">
-              <span class="meta-text">{{ formatDate(post.published) }} &middot; {{ readMinutes(post.body) }} min read</span>
+              <span class="card-meta">SelahCue Team &middot; {{ formatDate(post.published) }} &middot; {{ readMinutes(post.body) }} min</span>
               <router-link class="read-link" :to="blogPath(post.slug)">Read<span class="sr-only">: {{ post.title }}</span> →</router-link>
             </div>
-          </article>
-        </div>
+          </div>
+        </article>
       </div>
-    </section>
+    </div>
   </div>
 </template>
 
 <style scoped>
-.blog-page { background: var(--sc-base); padding-bottom: 80px; }
-.container { max-width: 1140px; margin: 0 auto; padding: 0 var(--page-gutter); }
-.hero-section { padding: 80px 0 40px; text-align: center; }
-.hero-title { font-size: 40px; font-weight: 800; color: var(--sc-text); margin: 16px 0; }
-.hero-sub { font-size: 16px; color: var(--sc-text-secondary); }
+.blog-page { background: var(--sc-base); padding-bottom: 64px; }
 
-.featured-card {
-  background: linear-gradient(135deg, var(--sc-surface), #1b1938);
-  border: 1px solid var(--sc-primary);
-  border-radius: 20px;
-  padding: 40px;
-  margin-bottom: 48px;
-}
-.featured-title { font-size: 28px; font-weight: 700; color: var(--sc-text); margin: 16px 0 12px 0; }
-.featured-desc { font-size: 16px; color: var(--sc-text-secondary); line-height: 1.6; margin-bottom: 24px; }
-.featured-meta { display: flex; justify-content: space-between; align-items: center; font-size: 13px; color: var(--sc-text-muted); }
-
-.blog-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 28px; }
-.blog-card {
-  background: var(--sc-surface);
-  border: 1px solid var(--sc-border);
-  border-radius: 16px;
-  padding: 28px;
+/* HERO (Figma 502:139): padding 96 top / 40 bottom, 18px between the pill, the headline and the subline,
+   all centred. The headline takes the shared page-hero token and is set to the frame's 48/54 from the
+   desktop breakpoint up. */
+.hero-section {
   display: flex;
   flex-direction: column;
+  align-items: center;
+  gap: 18px;
+  padding-top: 96px;
+  padding-bottom: 40px;
+  text-align: center;
 }
-.card-title { font-size: 20px; font-weight: 700; color: var(--sc-text); margin: 14px 0 10px 0; line-height: 1.3; }
-.card-desc { font-size: 14px; color: var(--sc-text-secondary); line-height: 1.6; margin-bottom: 24px; flex-grow: 1; }
-.card-footer { display: flex; justify-content: space-between; align-items: center; font-size: 13px; color: var(--sc-text-muted); }
-.read-link { background: none; border: none; color: var(--sc-primary); font-weight: 600; cursor: pointer; }
+
+.hero-title { font: var(--font-h1-page); color: var(--sc-text); }
+
+@media (min-width: 1200px) {
+  .hero-title { font-size: 48px; line-height: 54px; }
+}
+
+.hero-sub { max-width: 640px; font-size: 18px; line-height: 28px; color: var(--sc-text-secondary); }
+
+/* THE BODY (Figma 502:144): padding 24 top, 40px between the featured card and the grid. */
+.blog-body { display: flex; flex-direction: column; gap: 40px; padding-top: 24px; }
+
+/* FEATURED (Figma 502:145): 1248 x 348, the panel surface, a hairline border, radius 22, padding 24 from
+   the edge (the stroke is drawn inside), a 584 x 300 media panel and the text column 32px apart. */
+.featured-card {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 584px) minmax(0, 1fr);
+  align-items: center;
+  gap: 32px;
+  background: var(--sc-surface);
+  border: 1px solid var(--sc-border);
+  border-radius: 22px;
+  padding: 23px;
+}
+
+.featured-media {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 300px;
+  background: var(--sc-elevated);
+  border-radius: 14px;
+}
+
+.featured-body { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+.featured-tags { display: flex; align-items: center; gap: 8px; }
+.featured-category { padding-block: 4px; }
+.featured-label { font-size: 12px; font-weight: 500; line-height: 15px; color: var(--sc-text-secondary); }
+.featured-title { font-size: 28px; font-weight: 700; line-height: 34px; color: var(--sc-text); }
+.featured-link { color: inherit; text-decoration: none; }
+/* One link for the whole card, so the title is the only tab stop and the ring is drawn round the card. */
+.featured-link::after { content: ''; position: absolute; inset: 0; border-radius: 22px; }
+.featured-link:focus-visible { outline: none; }
+.featured-link:focus-visible::after { outline: 2px solid var(--sc-primary); outline-offset: 2px; }
+.featured-desc { font-size: 16px; line-height: 25px; color: var(--sc-text-secondary); }
+.featured-meta { font-size: 13.5px; line-height: 16px; color: var(--sc-text-secondary); }
+
+/* THE GRID (Figma 502:159): three 400px columns, 24px apart; a card is radius 18 with padding 14 / 14 / 20 / 14
+   from the edge, a 150px thumbnail panel, then the text 14px below it, inset 6px. */
+.blog-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 24px; align-items: start; }
+
+.blog-card {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  background: var(--sc-surface);
+  border: 1px solid var(--sc-border);
+  border-radius: 18px;
+  padding: 13px 13px 19px;
+}
+
+.card-media {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 150px;
+  background: var(--sc-elevated);
+  border-radius: 14px;
+}
+
+.card-body { display: flex; flex-direction: column; align-items: flex-start; gap: 9px; padding-inline: 6px; }
+.card-category { padding-block: 4px; }
+.card-title { font-size: 17px; font-weight: 600; line-height: 23px; color: var(--sc-text); }
+.card-desc { font-size: 14px; line-height: 1.6; color: var(--sc-text-secondary); }
+.card-footer { align-self: stretch; display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.card-meta { font-size: 12.5px; line-height: 15px; color: var(--sc-text-secondary); }
+.read-link { background: none; border: none; font-size: 13px; color: var(--sc-primary); font-weight: 600; cursor: pointer; }
+
+@media (max-width: 1199.98px) {
+  .blog-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .featured-card { grid-template-columns: minmax(0, 1fr); gap: 24px; }
+  .featured-media { height: 240px; }
+}
 
 @media (max-width: 767.98px) {
   .blog-page { padding-bottom: var(--section-pad-sm); }
-  .hero-section { padding: 48px 0 32px; }
-  .hero-title { font-size: 36px; line-height: 40px; }
+  .hero-section { padding-top: 56px; padding-bottom: 28px; gap: 14px; }
+  .hero-sub { font-size: 16px; line-height: 24px; }
+  .blog-body { gap: 28px; padding-top: 8px; }
   .blog-grid { grid-template-columns: minmax(0, 1fr); gap: 20px; }
-  .featured-card { padding: 24px; margin-bottom: 32px; border-radius: 16px; }
-  .featured-title { font-size: 24px; }
-  .featured-meta { flex-direction: column; align-items: flex-start; gap: 16px; }
-  .blog-card { padding: 24px; }
+  .featured-card { padding: 15px; border-radius: 18px; }
+  .featured-media { height: 180px; }
+  .featured-title { font-size: 24px; line-height: 30px; }
   .card-footer { flex-wrap: wrap; gap: 8px; }
   /* 44px tap target for the card's action without changing how it looks at rest. */
-  .read-link { min-height: 44px; padding: 0 0 0 12px; }
+  .read-link { min-height: 44px; padding: 0 0 0 12px; display: inline-flex; align-items: center; }
 }
-</style>
 
-<style scoped>
 /* GAP-08: the cards link to real articles now. */
-.blog-card :deep(.ui-badge) { align-self: flex-start; }
 .read-link { text-decoration: none; }
 .read-link:hover { text-decoration: underline; text-underline-offset: 3px; }
 .read-link:focus-visible { outline: 2px solid var(--sc-primary); outline-offset: 3px; border-radius: 4px; }

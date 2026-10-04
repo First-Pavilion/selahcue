@@ -83,7 +83,7 @@ const startArticle = docsArticles.find((a) => a.startHere) ?? docsArticles[0]
             </p>
 
             <div v-if="startArticle" class="start-callout">
-              <CategoryIcon id="getting-started" tone="brand" size="lg" class="callout-icon" />
+              <CategoryIcon name="getting-started" tone="brand" size="lg" class="callout-icon" />
               <div class="callout-body">
                 <p class="callout-title">New here? Start with the basics</p>
                 <p class="callout-sub">{{ startArticle.title }}</p>
@@ -98,7 +98,7 @@ const startArticle = docsArticles.find((a) => a.startHere) ?? docsArticles[0]
                 class="topic-tile"
                 :to="{ hash: '#' + c.id }"
               >
-                <CategoryIcon :id="c.id" :tone="toneFor(index)" size="md" />
+                <CategoryIcon :name="c.id" :tone="toneFor(index)" size="md" />
                 <div class="tile-body">
                   <h3 class="tile-title">{{ c.title }}</h3>
                   <p class="tile-desc">{{ c.desc }}</p>

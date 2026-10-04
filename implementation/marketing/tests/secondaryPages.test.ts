@@ -49,6 +49,7 @@ const PAGES = [
   { file: 'SupportView.vue', route: '/support' },
   { file: 'DocsView.vue', route: '/docs' },
   { file: 'ChangelogView.vue', route: '/changelog' },
+  { file: 'BlogView.vue', route: '/blog' },
 ] as const
 
 let server: ViteDevServer
@@ -506,5 +507,85 @@ describe('Changelog (501:124): hero, then one grouped card per release', () => {
   test('the release column is 900 wide and centred on the shared container', () => {
     const css = styleOf(readSrc('views/ChangelogView.vue'))
     assert.match(css, /\.release-list\s*\{[^}]*max-width:\s*900px[^}]*margin-inline:\s*auto/)
+  })
+})
+
+// --------------------------------------------------------------------------- Blog
+
+describe('Blog (502:124): hero, featured post with a media panel, three-column grid with thumbnails', () => {
+  test('the hero is a BLOG pill, the h1 "The SelahCue blog" and the frame\'s subline (blog-01)', async () => {
+    const page = await html('BlogView.vue')
+    const [h1] = headingsOf(page)
+    assert.equal(h1?.text, 'The SelahCue blog')
+    const text = textOf(page)
+    assert.ok(text.includes('BLOG'))
+    assert.ok(text.includes('Practical notes on running a confident service'))
+  })
+
+  test('the featured post is a two-column card: a media panel with an SVG tile, a category pill and a Featured label (blog-02)', async () => {
+    const page = await html('BlogView.vue')
+    const card = withClass(page, 'featured-card')
+    assert.equal(card.length, 1)
+    const media = withClass(page, 'featured-media')
+    assert.equal(media.length, 1, 'the media panel is there')
+    const inner = page.slice(media[0]!.at, page.indexOf('</div></div>', media[0]!.at))
+    assert.ok(/<svg[\s>]/.test(inner), 'it holds an inline SVG icon')
+    assert.ok(withClass(page, 'featured-label').length === 1 && textOf(page).includes('Featured'), 'the small Featured label')
+    const badges = badgesOf(page)
+    assert.ok(!badges.some((b) => b.variant === 'live'), 'no red LIVE-status badge on a blog post')
+    assert.ok(!textOf(page).includes('Featured Article'), 'the red Featured Article badge is gone')
+  })
+
+  test('the featured card has no button: the title is the link to the post (blog-02)', async () => {
+    const page = await html('BlogView.vue')
+    assert.ok(!textOf(page).includes('Read story'), 'no Read story button')
+    const title = withClass(page, 'featured-title')[0]
+    assert.ok(title)
+    const after = page.slice(title.at, page.indexOf('</h2>', title.at))
+    assert.match(after, /<a [^>]*href="\/blog\/why-offline-first-matters-for-sunday-morning"/)
+  })
+
+  test('the grid is three columns of cards, each with a thumbnail panel holding an icon tile (blog-03)', async () => {
+    const page = await html('BlogView.vue')
+    const cards = withClass(page, 'blog-card')
+    assert.equal(cards.length, 4, 'the four non-featured posts (blog-04 is the owner\'s call on the count)')
+    const media = withClass(page, 'card-media')
+    assert.equal(media.length, 4)
+    for (const m of media) {
+      const inner = page.slice(m.at, page.indexOf('</div></div>', m.at))
+      assert.ok(/<svg[\s>]/.test(inner), 'each thumbnail holds an inline SVG icon')
+    }
+    assert.match(styleOf(readSrc('views/BlogView.vue')), /\.blog-grid\s*\{[^}]*grid-template-columns:\s*repeat\(3, minmax\(0, 1fr\)\)/)
+  })
+
+  test('category pills are not all one colour, and none is the red LIVE look (blog-03)', async () => {
+    const page = await html('BlogView.vue')
+    const pills = badgesOf(page).filter((b) => b.classes.includes('card-category'))
+    assert.equal(pills.length, 4)
+    assert.ok(new Set(pills.map((b) => b.variant)).size >= 3, 'at least three different pill variants across the four categories')
+    assert.ok(!pills.some((b) => b.variant === 'live'))
+  })
+
+  test('every card meta line starts with the team, then the date and the read time (blog-06)', async () => {
+    const page = await html('BlogView.vue')
+    const text = textOf(page)
+    const metas = text.match(/SelahCue Team · \d+ [A-Z][a-z]{2} \d{4} · \d+ min( read)?/g) ?? []
+    assert.equal(metas.length, 5, 'the featured card and four grid cards')
+  })
+
+  test('the meta text is in the secondary ink, 12.5px on cards (blog-07, blog-06)', () => {
+    const css = styleOf(readSrc('views/BlogView.vue'))
+    assert.match(css, /\.card-meta\s*\{[^}]*font-size:\s*12\.5px[^}]*color:\s*var\(--sc-text-secondary\)/)
+    assert.match(css, /\.featured-meta\s*\{[^}]*color:\s*var\(--sc-text-secondary\)/)
+  })
+
+  test('each card keeps ONE link to its post, named with the title (blog-03: the Read link stays; blog-04 is a decision)', async () => {
+    const page = await html('BlogView.vue')
+    for (const card of withClass(page, 'blog-card')) {
+      const end = page.indexOf('</article>', card.at)
+      const links = tagsOf(page.slice(card.at, end)).filter((t) => t.name === 'a')
+      assert.equal(links.length, 1)
+      assert.match(links[0]!.attrs['href'] ?? '', /^\/blog\/[a-z0-9-]+$/)
+    }
   })
 })

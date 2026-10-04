@@ -82,7 +82,7 @@ const statusText = computed(() => {
       <section class="categories-section container">
         <div class="categories-grid">
           <div v-for="(cat, index) in supportCategories" :id="cat.id" :key="cat.id" class="category-card">
-            <CategoryIcon :id="cat.id" :tone="toneFor(index)" size="lg" />
+            <CategoryIcon :name="cat.id" :tone="toneFor(index)" size="lg" />
             <h2 class="cat-title">{{ cat.title }}</h2>
             <p class="cat-desc">{{ cat.desc }}</p>
             <ul class="cat-articles">

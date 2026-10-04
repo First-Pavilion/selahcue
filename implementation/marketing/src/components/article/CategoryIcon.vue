@@ -1,12 +1,13 @@
 <script setup lang="ts">
 /**
- * The coloured icon tile the Support and Docs frames draw for a help category (Figma 498:151 and
- * 499:186): a rounded square on a brand, preview, warn or live fill holding a white feather-style
- * stroke icon (MARKETING-SITE-HANDOFF 7). The content source carries an emoji for each category; the
- * pages draw this instead, keyed by the category id, and an id with no entry falls back to the
- * first icon. Decorative: hidden from assistive technology (the category title next to it names it).
+ * The coloured icon tile the Support, Docs and Blog frames draw (Figma 498:151, 499:186, 502:162 and
+ * 502:147): a rounded square on a brand, preview, warn or live fill holding a white feather-style stroke
+ * icon (MARKETING-SITE-HANDOFF 7). The content source carries an emoji for each help category; the pages
+ * draw this instead, keyed by the category id or by an icon name, and a name with no entry falls back to
+ * the first icon. Decorative: hidden from assistive technology (the title next to it names it).
  *
- * `lg` is the Support card tile (48px, radius 13), `md` the Docs hub tile (40px, radius 11).
+ * Sizes: `md` the Docs hub tile (40px, radius 11), `lg` the Support card tile (48px, radius 13), `thumb` the
+ * Blog card thumbnail tile (51px, radius 14), `xl` the Blog featured tile (102px, radius 14).
  */
 import { computed } from 'vue'
 
@@ -39,19 +40,40 @@ const ICONS: Record<string, readonly Shape[]> = {
     ['circle', { cx: '12', cy: '12', r: '10' }],
     ['line', { x1: '12', y1: '8', x2: '12', y2: '12' }],
     ['line', { x1: '12', y1: '16', x2: '12.01', y2: '16' }]
+  ],
+  'shield-check': [
+    ['path', { d: 'M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z' }],
+    ['polyline', { points: '9 12 11 14 15 10' }]
+  ],
+  monitor: [
+    ['rect', { x: '2', y: '3', width: '20', height: '14', rx: '2', ry: '2' }],
+    ['line', { x1: '8', y1: '21', x2: '16', y2: '21' }],
+    ['line', { x1: '12', y1: '17', x2: '12', y2: '21' }]
+  ],
+  smartphone: [
+    ['rect', { x: '5', y: '2', width: '14', height: '20', rx: '2', ry: '2' }],
+    ['line', { x1: '12', y1: '18', x2: '12.01', y2: '18' }]
+  ],
+  radio: [
+    ['circle', { cx: '12', cy: '12', r: '2' }],
+    ['path', { d: 'M16.24 7.76a6 6 0 0 1 0 8.49m-8.48-.01a6 6 0 0 1 0-8.49m11.31-2.82a10 10 0 0 1 0 14.14m-14.14 0a10 10 0 0 1 0-14.14' }]
+  ],
+  'book-open': [
+    ['path', { d: 'M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z' }],
+    ['path', { d: 'M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z' }]
   ]
 }
 
 const props = withDefaults(
   defineProps<{
-    id: string
+    name: string
     tone?: 'brand' | 'preview' | 'warn' | 'live'
-    size?: 'md' | 'lg'
+    size?: 'md' | 'lg' | 'thumb' | 'xl'
   }>(),
   { tone: 'brand', size: 'lg' }
 )
 
-const shapes = computed<readonly Shape[]>(() => ICONS[props.id] ?? ICONS['getting-started'] ?? [])
+const shapes = computed<readonly Shape[]>(() => ICONS[props.name] ?? ICONS['getting-started'] ?? [])
 </script>
 
 <template>
@@ -83,6 +105,18 @@ const shapes = computed<readonly Shape[]>(() => ICONS[props.id] ?? ICONS['gettin
   border-radius: 11px;
 }
 
+.cat-icon.is-thumb {
+  width: 51px;
+  height: 51px;
+  border-radius: 14px;
+}
+
+.cat-icon.is-xl {
+  width: 102px;
+  height: 102px;
+  border-radius: 14px;
+}
+
 /* The Figma stroke is 2px on the large tile and 1.75px on the small one, over icons that are 24 and
    about 20 units: a 24-unit icon at 24px and at 21px reproduces both. */
 .cat-icon.is-lg svg {
@@ -93,6 +127,16 @@ const shapes = computed<readonly Shape[]>(() => ICONS[props.id] ?? ICONS['gettin
 .cat-icon.is-md svg {
   width: 21px;
   height: 21px;
+}
+
+.cat-icon.is-thumb svg {
+  width: 27px;
+  height: 27px;
+}
+
+.cat-icon.is-xl svg {
+  width: 53px;
+  height: 53px;
 }
 
 .cat-icon.is-brand { background: var(--sc-primary); }
