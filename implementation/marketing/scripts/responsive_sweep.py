@@ -578,6 +578,11 @@ def check_nav_sheet(context, base: str, width: int, fail, count) -> None:
         expect(st["sheetRight"] == st["innerWidth"], "sheet is not anchored to the right edge")
         expect(all(h >= 56 for h in st["linkHeights"]) and st["linkHeights"], f"sheet rows under 56px: {st['linkHeights']}")
         expect(st["cta"] is not None and st["cta"]["bottom"] <= st["innerHeight"], "Download CTA is not inside the viewport")
+        # On Home, "How it works" is a link to `/#how-it-works`: the router matches the PATH and ignores the
+        # hash, so a plain router-link announced it as the current page while sighted users saw no active state.
+        hiw = page.evaluate("(() => { const l = [...document.querySelectorAll('#mobile-nav-sheet .mobile-link')].find((a) => a.textContent.trim() === 'How it works'); return l ? [l.getAttribute('aria-current')] : null })()")
+        expect(hiw is not None, "the sheet has no How it works link")
+        expect(hiw is None or hiw[0] is None, f"the sheet announces How it works as the current page on Home (aria-current={hiw})")
         expect(st["cta"] is not None and abs(st["cta"]["width"] - st["cta"]["sheetWidth"]) <= 2, "CTA is not full-width")
         expect(page.evaluate("window.scrollY") > 0, "scroll position was reset when the sheet opened")
 
@@ -1117,6 +1122,22 @@ def main() -> int:
                                     f"{tag}: nav mode wrong (toggle={nav['toggleVisible']}, "
                                     f"desktopNav={nav['desktopNavVisible']}, expected mobile={is_mobile})"
                                 )
+                        if path == "/":
+                            checks += 1
+                            hiw = page.evaluate("(() => { const l = [...document.querySelectorAll('header .desktop-nav a')].find((a) => a.textContent.trim() === 'How it works'); return l ? [l.getAttribute('aria-current')] : null })()")
+                            if hiw is None:
+                                failures.append(f"{tag}: the navbar has no How it works link")
+                            elif hiw[0] is not None:
+                                failures.append(f"{tag}: the navbar announces How it works as the current page on Home (aria-current={hiw[0]})")
+                    else:
+                        # The auth and token pages are BARE on purpose (handoff section 2.1): someone mid-task
+                        # gets no nav to wander off with, and a token-bearing URL has no outbound footer links
+                        # to leak a referrer from. Only `App.vue` enforces it, and nothing else asserted it.
+                        # The non-bare branch above is the positive control: the same selectors find the chrome there.
+                        chrome = page.evaluate("({header: !!document.querySelector('#app header.navbar-header'), footer: !!document.querySelector('#app footer')})")
+                        checks += 1
+                        if chrome["header"] or chrome["footer"]:
+                            failures.append(f"{tag}: a bare route renders the site chrome (navbar: {chrome['header']}, footer: {chrome['footer']})")
 
                     if is_mobile:
                         checks += 1
