@@ -516,8 +516,12 @@ without Inter is refused), and `npm run build` in `implementation/marketing` fir
 ### Bounds
 
 Every cap below has a control in `vp_selftest.py` that **fails when the cap is removed**; each was proved by deleting the cap on a scratch copy
-of `scripts/` and watching the named control go red (the mutation list is in the PR, review round 1 remediation). A cap with no such control
-is not listed here.
+of `scripts/` and watching the named control go red. That proof is repeatable, not a one-off: `docs/design/visual-parity/marketing/mutations.json`
+lists one edit per control (62 today: the caps, the fail-closed gates, the wiring paths, the checker's rules) and
+`python3 scripts/vp_mutation_proof.py` applies each to a scratch copy of `scripts/` (docs, implementation and `.git` are symlinks, so nothing real can be
+written) and requires the named self-test to exit non-zero. A mutation that does not apply (the code moved) or that the self-test survives fails the run;
+`--only ID ...` runs some, `--list` prints them. It takes about 4 minutes (248 seconds measured, 62 of 62 red), which is why it is not in `make ci`: re-run it after changing a cap, a gate or a
+checker rule. A cap with no such control is not listed here.
 
 | bound | cap | what refuses | the control that fails without it |
 |---|---|---|---|
@@ -537,10 +541,12 @@ is not listed here.
 
 **Ctrl-C.** A KeyboardInterrupt during a capture skips the Playwright teardown and exits 130: closing a context after an interrupt spins
 at 100% CPU with the driver and every browser still alive (reproduced 3 of 3 by the performance review). The skip is covered by
-`test_capture_entry_wiring` (the context is not closed on an interrupt); the end-to-end behaviour (no process left, checked by exact PID)
-was verified by hand on a real run, not by the self-test, because it needs a browser.
-
-**Scores are reproducible to about +-0.001.** The same code on the same machine produced fourth-decimal differences on 7 of 29 pairs
+`test_capture_entry_wiring` (the context is not closed on an interrupt). The end-to-end behaviour needs a browser, so it was checked by hand on a real
+capture of the real catalogue, the capture started in its own session and every process attributed to it by ancestry and by its own
+`--user-data-dir` (never by "new since I started": other agents run browsers on this machine too), each case against the code before and after the fix:
+- SIGINT to the whole process group (what Ctrl-C does): before, the python never exited in 30 seconds and spun at 99% CPU; after, it exited 130 in 0.5 seconds with none of its processes left.
+- SIGINT to the python process alone (`kill -INT <pid>`): before, it spun at 100% CPU and left 4 browser processes alive; after, it exited 130 in 0.4 seconds with none left.
+Anything the test started was removed afterwards by exact PID.**Scores are reproducible to about +-0.001.** The same code on the same machine produced fourth-decimal differences on 7 of 29 pairs
 (up to 0.0010, e.g. Home 0.6439 then 0.6431): text edges antialias slightly differently between runs. No verdict changes at that size.
 Quote a score to two decimals.
 
@@ -574,11 +580,23 @@ committed run: the checkout is shared.
 `findings/*.json` (one file per audit area) hold every difference, each with a class A to E, severity, Figma and build values, evidence and fix/source/
 decision as the class requires. A finding may carry `dup_of` (the same defect seen again on another page: shown, counted once under the canonical
 finding) or `owned_by` (a ClickUp id: an A that another ticket already owns, so it raises no fix here). `check_fidelity_audit.py` enforces the rules and
-`--write-report` renders `docs/delivery/FIGMA-FIDELITY-AUDIT-marketing-account-2026-10-03.md` from the data.
+`--write-report` renders `docs/delivery/FIGMA-FIDELITY-AUDIT-marketing-account-2026-10-03.md` from the data, and `--check-report` fails when the committed report
+no longer matches what the data would render (a finding edited without regenerating it).
+
+The checker reads meaning, not just shape. It rejects: an `owned_by` that is not one of the five approved owner tickets, is on anything but a class A, or
+exempts more than 10 findings; a `dup_of` that points at a finding of another class or another area (unless that one is shared); a figma/build/fix/decision
+text too thin to act on; a class B finding whose source cites nothing that resolves (a document, a decision, a file or a commit that exists, and a contrast
+figure that recomputes); a surface list that is not the 16 pages and 19 states of the catalogue with the right Figma node ids; a finding naming a ticket that
+does not exist or belongs to another group; a ticket url that is not exactly `https://app.clickup.com/t/<id>` (the url becomes an `href` on the Artifact
+page, and `javascript:` would run); a bug with no group; an api gap with an invented status; and findings files that audited different commits.
+`--require-tickets` adds that every class A and E finding names its ticket. Each rule has a control in `--self-test` and a mutation in `mutations.json`.
 
 ### Self-test
 
-`python3 scripts/vp_selftest.py` now carries the marketing controls alongside the operator ones (suite caps, style registration,
+`python3 scripts/vp_selftest.py` (197 checks) carries the marketing controls alongside the operator ones (suite caps, style registration,
 top-crop alignment, bundle probe and freshness, the three deviation metrics, DOM contrast, style-diff pairing and detection, box
-diff, catalogue validation, server confinement, committed references). `python3 scripts/check_fidelity_audit.py --self-test`
-proves the audit checker rejects each kind of incomplete audit.
+diff, catalogue validation, server confinement, committed references, and the capture and comparator wiring driven through the real entry points with
+fake pages and synthetic runs). `python3 scripts/check_fidelity_audit.py --self-test` (90 checks) proves the audit checker rejects each kind of
+incomplete audit. Neither is in `make ci` yet: that is a separate ticket, [CI] Run the visual-parity self-test and the audit checker's self-test in
+`make ci` and CI (ClickUp 17tnw2b2fum, linked to the CI-masking ticket 86ak5rjh7); it was kept out of this change on purpose, so that a change to
+what `make ci` runs is reviewed on its own.

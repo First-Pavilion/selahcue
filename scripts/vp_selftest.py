@@ -1516,8 +1516,8 @@ def test_comparator_main_wiring():
        "cap with them: exit %d); ignoring them lets a run through that then writes past its cap" % code)
 
     for label, kw, expect in (
-        ("a missing DOM dump", {"dom": "missing"}, "missing"),
-        ("an unreadable DOM dump", {"dom": "garbage"}, "unreadable"),
+        ("a missing DOM dump", {"dom": "missing"}, "is missing"),
+        ("an unreadable DOM dump", {"dom": "garbage"}, "is unreadable"),
         ("a truncated DOM dump", {"dom": {"items": [{"tag": "p", "text": "x"}], "truncated": True,
                                         "doc": {"w": 1440, "h": 900}}}, "TRUNCATED"),
     ):

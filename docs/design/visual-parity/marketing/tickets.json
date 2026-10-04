@@ -92,6 +92,11 @@
       "id": "17tnw2b2cbr",
       "url": "https://app.clickup.com/t/17tnw2b2cbr",
       "title": "[Web] Account page \"Sign Out\" button never signs out: it only navigates to /signin"
+    },
+    "selftest-ci": {
+      "id": "17tnw2b2fum",
+      "url": "https://app.clickup.com/t/17tnw2b2fum",
+      "title": "[CI] Run the visual-parity self-test and the audit checker's self-test in make ci and CI (no browser, about 1 second)"
     }
   }
 }
