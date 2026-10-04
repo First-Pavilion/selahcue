@@ -2958,6 +2958,29 @@ mod tests {
         std::env::set_var("SELAHCUE_STT_MODEL", &model_path);
         std::env::set_var("SELAHCUE_STT_MODEL_SHA256", sha);
 
+        // `run_on_device` parks the loaded model in the process-wide `MODEL_CACHE` so a later
+        // stop->start can reuse it. A Rust static is never dropped at process exit, but
+        // whisper.cpp's Metal device static destructor DOES run at `exit()` and asserts that every
+        // Metal resource was already freed ("most likely you haven't deallocated all Metal
+        // resources before exiting", ggml-metal-device.m, `ggml_metal_rsets_free`). With the cache
+        // still holding the context that assert fires: the test reports `1 passed` and then the
+        // process aborts (SIGABRT; cargo reports exit 101), which stops `make ci` before its last
+        // two gates (17tnw2b2gdr). This guard clears the cache after the `worker.join()` below
+        // returns. By then the recognition thread, the only other holder of the `Arc` (through
+        // `SttEngine`), has been joined, so clearing drops the last reference. It is the join that
+        // makes this work, not drop order: if the test panics or times out before the join, a
+        // still-running worker keeps its own `Arc` and this cannot free the model.
+        struct ReleaseResidentModel;
+        impl Drop for ReleaseResidentModel {
+            fn drop(&mut self) {
+                // Take it out and drop it after the guard is released, so the ~1.6 GB `whisper_free`
+                // does not run while the cache mutex is held.
+                let released = model_cache_lock().take();
+                drop(released);
+            }
+        }
+        let _release_model = ReleaseResidentModel;
+
         *status_lock(&ENGINE_NOTE) = None;
         clear_failure();
 
