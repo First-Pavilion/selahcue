@@ -23,7 +23,7 @@ The spacing USFM puts around a footnote is not text: `egg \\f ...\\f*?` reads "e
 separator Biblica puts between two footnote callers is dropped with the notes.
 
 NORMALISATION (the same rules the bundled Bibles satisfy -- see selahcue-scripture's
-tests/test_scripture_data.rs): no `[ ] ¶ *`; no psalm title or Psalm 119 letter label in any verse;
+tests/test_scripture_data.rs): no `[ ] \u00b6 *`; no psalm title or Psalm 119 letter label in any verse;
 Habakkuk 3:19 without its musical note; numbered verses that read like titles (Hab 3:1, Isa 38:9,
 Song 1:1) stay; canonical Protestant numbering 1..66 with deuterocanon, intros and glossaries
 dropped. Text is also NFC-normalised so combining marks (Yoruba and Igbo dot-below letters with tone
@@ -44,9 +44,9 @@ does not do: decide a licence is acceptable. `permitted` and `legal_review` are 
     python3 scripts/build_translation_catalog.py --self-test
 
 `--work-dir` caches the downloaded `*_usfm.zip` files and eBible's `translations.csv`; an existing file
-is used as is (no network), a missing one is fetched, `--refresh` fetches them all again, and
-`--require-cleared` always refetches `translations.csv` (unless `--offline`) so a publish run never gates
-on yesterday's catalogue. `--out-dir` must be absent or empty: a catalogue written beside an earlier run's
+is used as is (no network), a missing one is fetched, `--refresh` fetches again the catalogue and the zips
+of the SELECTED translations, and `--require-cleared` does the same (unless `--offline`) so a publish run
+never gates on, or builds from, yesterday's files. `--out-dir` must be absent or empty: a catalogue written beside an earlier run's
 files would list some and leave the rest (maybe legal-pending text) in the folder about to be uploaded.
 `--verify-bundled` is the positive control: it converts the USFM of the five bundled Bibles and compares
 the result with the shipped assets, which proves the converter itself and not just the new translations;
@@ -75,6 +75,8 @@ import sys
 import tempfile
 import time
 import unicodedata
+import urllib.error
+import urllib.parse
 import urllib.request
 import zipfile
 import zlib
@@ -113,7 +115,9 @@ LEGAL_REVIEW = {"cleared", "pending"}
 MAX_ZIP_BYTES = 64 * 1024 * 1024
 MAX_MEMBER_BYTES = 24 * 1024 * 1024
 MAX_TOTAL_BYTES = 128 * 1024 * 1024
-MAX_MEMBERS = 500  # a Bible zip holds about 70 files; the cap bounds the central directory a hostile zip can ask for
+# A Bible zip holds about 70 files. ZipFile() has already parsed the whole directory before this cap is checked (200,000
+# entries cost 112 MB), so the cap only refuses early; what bounds a hostile directory is the 64 MiB download cap.
+MAX_MEMBERS = 500
 USER_AGENT = "selahcue-translation-mirror/1 (+https://selahcue.app)"
 
 # --- USFM line markers -------------------------------------------------------------------------
@@ -141,6 +145,9 @@ _NOTE_BREAK = re.compile(r"\\(?:v|c)\s")  # a note never contains a verse or cha
 # Punctuation that closes a phrase. A note sits AFTER the word and BEFORE this, with the USFM spacing around it
 # (`egg \f ...\f*?`); dropping the note must not leave the reader "egg ?".
 _CLOSING_PUNCT = ",;:.!?)\u201d\u2019"
+# The quotes are only closing when no letter or digit follows: Hausa begins words with U+2019 (`\u2019yan`, `\u2019yar`), so
+# "Yahuda,\f ..\f* \u2019yan" must keep its space. (A plain `?` or `.` is closing whatever follows.)
+_QUOTES_THAT_OPEN_WORDS = "\u201d\u2019"
 _MARKER_AHEAD = re.compile(r"[ \t]*\\\+?[A-Za-z][A-Za-z0-9]*(?:\*|[ \t]?)")  # spaces, then one inline marker
 _SPACES = re.compile(r"[ \t]*")
 _VERSE_TOKEN = re.compile(r"\\v\s+(\S+)\s*")
@@ -155,8 +162,9 @@ _ASCII_WS = re.compile(r"[ \t\r\n\f\v]+")
 _INLINE_MARKER = re.compile(r"\\\+?([A-Za-z][A-Za-z0-9]*)(\*|[ \t]?)")
 # A table row's cell markers may sit mid-line (`\tr \tc1 a \tc2 b`) as well as start a line; the cells are verse text.
 _TABLE_CELL = re.compile(r"tr|tc\d|tcr\d|th\d|thr\d")
-# What Psalm 119's `\qc` letter label looks like once cleaned: an optional Hebrew letter, then one to three Latin words.
-_LABEL_SHAPE = re.compile(r"(?:[֐-׿]+ )?[A-Za-z]+(?: [A-Za-z]+){0,2}\.?")
+# What Psalm 119's `\qc` letter label looks like once cleaned: a Hebrew letter, then one to three Latin words ("\u05d0 ALEPH.").
+# The Hebrew letter is REQUIRED: without it, any short line ("Amen.", "forever.") would pass as a label and vanish.
+_LABEL_SHAPE = re.compile(r"[\u0590-\u05ff]+ [A-Za-z]+(?: [A-Za-z]+){0,2}\.?")
 # Where the headings that the parser skips are recorded, to prove none of them fused into a verse.
 _ORACLE_MARKERS = {"d", "qa"}
 
@@ -173,10 +181,20 @@ TITLE_OPENERS = (
     "An instruction", "By David", "By Solomon", "For Solomon", "For Jeduthun", "Of David",
     "Of the sons of Korah", "David\u2019s Psalm", "Psalm of David")
 # Markup residue and control characters (NUL and the like): neither belongs in a verse.
-_RESIDUE = re.compile(r"[\[\]¶*|\\\x00-\x1f\x7f]")
+_RESIDUE = re.compile(r"[\[\]\u00b6*|\\\x00-\x1f\x7f]")
 
 
 # --- the converter -----------------------------------------------------------------------------
+def _closes_phrase(text, i):
+    """Whether text[i] is closing punctuation that a note's leading space must not stand in front of."""
+    if i >= len(text) or text[i] not in _CLOSING_PUNCT:
+        return False
+    if text[i] in _QUOTES_THAT_OPEN_WORDS:
+        following = text[i + 1:i + 2]
+        return not (following and following.isalnum())
+    return True
+
+
 def strip_notes(text):
     """Remove every footnote and cross-reference (`\\f ... \\f*`, `\\x ... \\x*`, ...). Linear in the text.
 
@@ -205,7 +223,7 @@ def strip_notes(text):
                             f"{inner[runs_on.start():runs_on.start() + 20]!r}: its {closer} belongs to a later note"])
         out.append(text[pos:m.start()])
         pos = end + len(closer)
-        # Look past spaces and inline markers (`\wj* \f ..\f* \wj ?\wj*` is "...’?" in Jesus' words) to the first
+        # Look past spaces and inline markers (`\wj* \f ..\f* \wj ?\wj*` is "...\u2019?" in Jesus' words) to the first
         # character that is text. If it closes a phrase, the whitespace on both sides of the note goes.
         # (Index scans, never `text[pos:].lstrip()`: that copies the rest of the text for EVERY note, which is quadratic.)
         ahead = pos
@@ -215,7 +233,7 @@ def strip_notes(text):
                 break
             ahead = marker.end()
         ahead = _SPACES.match(text, ahead).end()
-        if ahead < len(text) and text[ahead] in _CLOSING_PUNCT:
+        if _closes_phrase(text, ahead):
             while out and not out[-1].rstrip(" \t"):
                 out.pop()
             if out:
@@ -224,7 +242,7 @@ def strip_notes(text):
 
 
 def clean(text):
-    """USFM inline markup -> plain text: notes, `\\w` words, every marker, `[ ] ¶ *`, whitespace; NFC.
+    """USFM inline markup -> plain text: notes, `\\w` words, every marker, `[ ] \u00b6 *`, whitespace; NFC.
 
     The single space after an OPENING marker is USFM's delimiter, not text: `(\\add is\\add* it` reads
     "(is it". sbh.clean_usfm keeps that space (it never mattered for matching VPL-derived rows), so
@@ -241,8 +259,8 @@ def clean(text):
         return ""
 
     text = _INLINE_MARKER.sub(known_only, text)
-    text = text.translate({ord(c): None for c in "[]¶*"})
-    # ASCII whitespace only: eBible puts a no-break space between nested quote marks (`’ ”`) so the
+    text = text.translate({ord(c): None for c in "[]\u00b6*"})
+    # ASCII whitespace only: eBible puts a no-break space between nested quote marks (`\u2019\u00a0\u201d`) so the
     # closing quote cannot wrap onto its own line, and the bundled Bibles keep it.
     return unicodedata.normalize("NFC", _ASCII_WS.sub(" ", text).strip(" "))
 
@@ -290,7 +308,8 @@ def parse_book(usfm, label):
         # label (an optional Hebrew letter and one to three Latin words). The shape is structural on purpose: a
         # list of letter names missed ASV's own spelling "HHETH" and fused it into 119:56. A `\qc` line that is
         # not label-shaped is verse text and falls through to the normal paragraph handling below.
-        if marker == "qc" and label == "PSA" and chapter == 119 and "\\v" not in line:
+        # A label also sits where a section starts: the verse before it is 8k (or none yet), so it introduces 8k+1.
+        if marker == "qc" and label == "PSA" and chapter == 119 and "\\v" not in line and (verse or 0) % 8 == 0:
             rest = tidy(line[m.end():], f"chapter {chapter}")
             if _LABEL_SHAPE.fullmatch(rest):
                 skipping, last_heading = True, [chapter, rest]
@@ -375,6 +394,11 @@ def _ends_with_acrostic_label(text):
     return last.rstrip(".") in ACROSTIC_LETTERS
 
 
+def _refuse_too_many_members(zip_path, members):
+    if len(members) > MAX_MEMBERS:
+        raise Mismatch([f"{zip_path}: {len(members)} members, more than the {MAX_MEMBERS} cap; refusing a possible zip bomb"])
+
+
 def read_usfm_zip(zip_path):
     """{book number: usfm text} for the 66 canonical books in an eBible USFM zip, bounded and read-only."""
     problems, books = [], {}
@@ -384,8 +408,7 @@ def read_usfm_zip(zip_path):
         raise Mismatch([f"{zip_path}: not a readable zip ({type(e).__name__}: {e})"])
     with zf:
         everything = zf.infolist()
-        if len(everything) > MAX_MEMBERS:
-            raise Mismatch([f"{zip_path}: {len(everything)} members, more than the {MAX_MEMBERS} cap; refusing a possible zip bomb"])
+        _refuse_too_many_members(zip_path, everything)
         # A macOS `__MACOSX/._x.usfm` resource-fork sidecar is not a book; it would otherwise fail as "not UTF-8".
         infos = [i for i in everything if i.filename.lower().endswith(".usfm")
                  and not i.filename.startswith("__MACOSX/") and not pathlib.PurePosixPath(i.filename).name.startswith("._")]
@@ -507,8 +530,28 @@ def load_allowlist(path):
 
 
 def load_catalog_csv(path):
-    text = pathlib.Path(path).read_text(encoding="utf-8-sig")
-    return {r["translationId"]: r for r in csv.DictReader(io.StringIO(text))}
+    """eBible's `translations.csv` as {translationId: row}. A corrupt or hostile file is a refusal, not a traceback."""
+    try:
+        text = pathlib.Path(path).read_text(encoding="utf-8-sig")  # eBible's file starts with a UTF-8 BOM
+        return {r["translationId"]: r for r in csv.DictReader(io.StringIO(text))}
+    except (OSError, UnicodeDecodeError, csv.Error, KeyError) as e:
+        raise Mismatch([f"{path}: not a usable eBible catalogue ({type(e).__name__}: {e})"])
+
+
+def non_ascii_characters(text):
+    """The distinct non-ASCII characters in `text`, as hex code points. The two scripts must have none (see self_test)."""
+    return sorted({hex(ord(c)) for c in text if ord(c) > 127})
+
+
+def invisible_characters(text):
+    """Characters a reviewer cannot see in a diff: format and control characters (bidirectional marks, a BOM, NUL), line
+    and paragraph separators, and every space except the plain one. ("Trojan Source": hiding code in such characters.)"""
+    hidden = []
+    for c in text:
+        kind = unicodedata.category(c)
+        if (kind in ("Cf", "Cc", "Zl", "Zp") and c not in "\n\t") or (kind == "Zs" and c != " "):
+            hidden.append(hex(ord(c)))
+    return sorted(set(hidden))
 
 
 def _squash(text):
@@ -530,14 +573,14 @@ def gate(allow, rows, require_cleared, only=None):
         why = []
         if spec.get("ebible_id") in excluded:
             why.append("is on the allowlist's own excluded list")
-        if not CODE_RE.match(code):
+        if not CODE_RE.fullmatch(code):  # fullmatch: `$` alone accepts a trailing newline ("KJV\n" passed every gate)
             why.append("code must match ^[A-Z][A-Z0-9-]{1,15}$")
         if code in BUNDLED_CODES:
             why.append("code collides with a bundled translation")
         if code in seen:
             why.append("duplicate code")
         seen.add(code)
-        if not EBIBLE_ID_RE.match(spec.get("ebible_id", "")):
+        if not (isinstance(spec.get("ebible_id"), str) and EBIBLE_ID_RE.fullmatch(spec["ebible_id"])):
             why.append("ebible_id is not a plain identifier")
         lic = licences.get(spec.get("licence"))
         if lic is None:
@@ -575,39 +618,52 @@ def gate(allow, rows, require_cleared, only=None):
 
 
 # Phrases that mean the text is NOT freely redistributable. If one appears in the licence page of a translation the
-# allowlist calls free, the run stops: the entry is wrong or the licence changed.
+# allowlist calls free, the run stops: the entry is wrong or the licence changed. These are ENGLISH words, so on a
+# Yoruba, Igbo or Hausa page the real protection is the required phrase (the licence's own name, which is English).
 _FORBIDDEN_LICENCE_TEXT = ("all rights reserved", "noncommercial", "non-commercial", "noderivative", "no derivative",
-                           "not public domain")
+                           "noderivs", "no derivs", "by-nc", "not public domain")
 MAX_LICENCE_PAGE_BYTES = 1024 * 1024
+# `<` followed by anything but `<` or `>`, up to `>`: linear. (`<[^>]+>` rescans to the end of the page from every `<`;
+# 160,000 of them took 6 s and a 1 MiB page would take minutes.)
+_HTML_TAG = re.compile(r"<[^<>]*>")
 
 
-def licence_page_text(zip_path):
-    """The words of `copr.htm` inside eBible's zip (the licence page eBible generates), casefolded, or None."""
+def licence_page_texts(zip_path):
+    """The words of `copr.htm` inside eBible's zip, casefolded, in TWO forms, or None if the zip has no such page.
+
+    Tags become a space in one form and nothing in the other, so a phrase a tag splits ("Non-<b>commercial</b>")
+    is seen in one of them, and a phrase two block elements would otherwise glue together is seen in the other."""
     with zipfile.ZipFile(zip_path) as zf:
-        info = next((i for i in zf.infolist() if pathlib.PurePosixPath(i.filename).name.lower() == "copr.htm"), None)
+        everything = zf.infolist()
+        _refuse_too_many_members(zip_path, everything)
+        info = next((i for i in everything if pathlib.PurePosixPath(i.filename).name.lower() == "copr.htm"), None)
         if info is None:
             return None
         with zf.open(info) as page:
             raw = page.read(MAX_LICENCE_PAGE_BYTES + 1)
     if len(raw) > MAX_LICENCE_PAGE_BYTES:
         raise Mismatch([f"{zip_path}: copr.htm is larger than {MAX_LICENCE_PAGE_BYTES} bytes"])
-    text = re.sub(r"<[^>]+>", " ", raw.decode("utf-8", "replace"))
-    text = html.unescape(text)
-    # Invisible direction marks (U+202A and friends) sit inside some licence names ("4‪.0"); drop them.
-    text = "".join(c for c in text if unicodedata.category(c) != "Cf")
-    return _squash(text)
+    forms = []
+    for glue in (" ", ""):
+        text = html.unescape(_HTML_TAG.sub(glue, raw.decode("utf-8", "replace")))
+        # Invisible direction marks (U+202A and friends) sit inside some licence names ("4\u202a.0"); drop them.
+        forms.append(_squash("".join(c for c in text if unicodedata.category(c) != "Cf")))
+    return forms
 
 
 def check_licence_text(zip_path, spec):
-    """Prove the licence page inside eBible's own zip still says what the allowlist entry relies on."""
+    """Prove the licence page inside eBible's own zip still says what the allowlist entry relies on.
+
+    A required phrase may appear in either form of the page; a forbidden one in EITHER form stops the run."""
     try:
-        text = licence_page_text(zip_path)
+        forms = licence_page_texts(zip_path)
     except (OSError, zipfile.BadZipFile, zlib.error, EOFError, NotImplementedError, RuntimeError) as e:
         raise Mismatch([f"{zip_path}: cannot read the licence page ({type(e).__name__}: {e})"])
-    if text is None:
+    if forms is None:
         raise Mismatch([f"{zip_path}: no copr.htm, so the licence cannot be confirmed"])
-    problems = [f"the licence page no longer contains {p!r}" for p in spec["licence_text"] if _squash(p) not in text]
-    problems += [f"the licence page contains {p!r}" for p in _FORBIDDEN_LICENCE_TEXT if p in text]
+    problems = [f"the licence page no longer contains {p!r}" for p in spec["licence_text"]
+                if not any(_squash(p) in form for form in forms)]
+    problems += [f"the licence page contains {p!r}" for p in _FORBIDDEN_LICENCE_TEXT if any(p in form for form in forms)]
     if problems:
         raise Mismatch(problems)
 
@@ -645,13 +701,32 @@ def build_entry(spec, row, licence, zip_path, rows, omitted, gz):
     }
 
 
-def fetch(url, dest, opener=urllib.request.urlopen, max_bytes=MAX_ZIP_BYTES):
-    """Download `url` to `dest` through a .part file with a hard size cap; never leaves a partial file."""
+class _HttpsOnlyRedirects(urllib.request.HTTPRedirectHandler):
+    """The stdlib follows a redirect to http:// (or ftp://); a download that starts on HTTPS must stay on it."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if urllib.parse.urlsplit(newurl).scheme != "https":
+            raise urllib.error.HTTPError(newurl, code, f"refusing a redirect to a non-HTTPS URL: {newurl}", headers, fp)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+_OPENER = urllib.request.build_opener(_HttpsOnlyRedirects)
+
+
+def fetch(url, dest, opener=None, max_bytes=MAX_ZIP_BYTES):
+    """Download `url` to `dest` through a .part file with a hard size cap; never leaves a partial file.
+
+    A `.part` that already exists (a crashed run, or a planted symlink) is removed first, never followed: the new one is
+    created exclusively. The timeout is per socket operation, so a server that trickles bytes is bounded by the size cap
+    and not by the clock (accepted: this is an owner-run build, not a service)."""
     part = dest.with_suffix(dest.suffix + ".part")
+    opener = opener or _OPENER.open
     try:
         req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
         total = 0
-        with opener(req, timeout=60) as resp, open(part, "wb") as out:
+        with contextlib.suppress(OSError):
+            part.unlink()
+        with opener(req, timeout=60) as resp, open(part, "xb") as out:
             while True:
                 chunk = resp.read(64 * 1024)
                 if not chunk:
@@ -679,17 +754,22 @@ def ensure(work, name, url, offline, opener, refresh=False):
 
 
 def build(allow, work, out, only=None, require_cleared=False, base_url=None, offline=False,
-          opener=urllib.request.urlopen, refresh=False):
+          opener=None, refresh=False):
     """The whole job. Everything is computed before any file is written; a failure writes nothing.
 
     `out` must be absent or empty: a catalogue written beside files from an earlier run would list some of them
     and leave the rest (possibly legal-pending text) lying in the folder an owner is about to upload."""
-    if out.exists() and (not out.is_dir() or any(out.iterdir())):
+    try:
+        used = out.exists() and (not out.is_dir() or any(out.iterdir()))
+    except OSError as e:  # e.g. a folder this user cannot read
+        raise Mismatch([f"--out-dir {out} cannot be inspected ({type(e).__name__}: {e})"])
+    if used:
         raise Mismatch([f"--out-dir {out} must be absent or an empty directory (build into a new folder)"])
     work.mkdir(parents=True, exist_ok=True)
-    # A publish run gates on eBible's catalogue as it is NOW, never on a cached copy from an earlier day.
-    csv_path = ensure(work, "translations.csv", CATALOG_CSV_URL, offline, opener,
-                      refresh=refresh or (require_cleared and not offline))
+    # A publish run gates on eBible's catalogue AND builds from eBible's files as they are NOW, never from copies cached
+    # on an earlier day: the licence page the gate reads and the bytes that get published come out of the same zip.
+    fresh = refresh or (require_cleared and not offline)
+    csv_path = ensure(work, "translations.csv", CATALOG_CSV_URL, offline, opener, refresh=fresh)
     rows_by_id = load_catalog_csv(csv_path)
     gate(allow, rows_by_id, require_cleared, set(only) if only else None)
     specs = [s for s in allow["translations"] if not only or s["code"] in only]
@@ -699,7 +779,7 @@ def build(allow, work, out, only=None, require_cleared=False, base_url=None, off
     for spec in specs:
         try:
             zip_path = ensure(work, f"{spec['ebible_id']}_usfm.zip", f"{EBIBLE}/{spec['ebible_id']}_usfm.zip",
-                              offline, opener, refresh=refresh)
+                              offline, opener, refresh=fresh)
             check_licence_text(zip_path, spec)
             rows, omitted = convert(zip_path, spec)
         except Mismatch as e:
@@ -727,8 +807,11 @@ def write_all(out, files):
         out.mkdir(parents=True, exist_ok=True)
         for name, data in files.items():
             tmp = out / (name + ".tmp")
-            staged.append(tmp)
-            tmp.write_bytes(data)
+            # Created exclusively (a pre-planted file or symlink there is an error, never followed or overwritten), and
+            # only a file THIS call created is ever removed on failure.
+            with open(tmp, "xb") as staging:
+                staged.append(tmp)
+                staging.write(data)
     except OSError as e:
         for tmp in staged:
             with contextlib.suppress(OSError):
@@ -744,7 +827,7 @@ def write_all(out, files):
 #   upstream: eBible revised the World English Bible after the assets were imported (a living text).
 #   speaker:  Song of Solomon `\sp` speaker labels ("Friends", "Beloved", "Lover") that the VPL import
 #             fused into the verse text -- the same defect class as 17tnw2b2g7q; USFM does not emit them.
-#   selah:    the VPL import put a space in "Lord— Selah—"; the USFM has none.
+#   selah:    the VPL import put a space in "Lord\u2014 Selah\u2014"; the USFM has none.
 #   nbsp:     WEBBE's asset lost the no-break space between nested quote marks that WEB's kept.
 _UPSTREAM = {(16, 13, 5), (27, 4, 19), (27, 4, 26), (27, 6, 20), (27, 9, 11), (27, 11, 20), (27, 11, 21),
              (27, 11, 24), (30, 3, 2), (33, 3, 11), (43, 3, 2), (44, 26, 2)}
@@ -809,7 +892,7 @@ def main():
         ap.error("--refresh needs the network and --offline forbids it")
     try:
         if args.verify_bundled:
-            ok, report = verify_bundled(args.work_dir)
+            ok, report = verify_bundled(args.work_dir, BUNDLED_ASSETS)
             print("\n".join(report))
             return 0 if ok else 1
         if not args.out_dir:
@@ -860,9 +943,11 @@ def _fixture_counts():
 LICENCE_PAGE = "<html><body><p>This text is in the Public&nbsp;Domain.</p></body></html>"
 
 
-def _fixture_zip(path, patch=None, drop=(), duplicate=(), licence_page=LICENCE_PAGE, upper=(), sidecars=False):
+def _fixture_zip(path, patch=None, drop=(), duplicate=(), licence_page=LICENCE_PAGE, upper=(), sidecars=False, extras=None):
     patch = patch or {}
     with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as zf:
+        for extra_name, extra_data in (extras or {}).items():
+            zf.writestr(extra_name, extra_data)
         zf.writestr("00-FRT.usfm", "\\id FRT front matter\n\\mt1 Front\n")
         zf.writestr("99-TOB.usfm", "\\id TOB deuterocanon\n\\c 1\n\\p\n\\v 1 Not in the canon.\n")
         zf.writestr("style.css", "body {}")
@@ -1003,26 +1088,39 @@ def self_test():
             raises(lambda: read_usfm_zip(z), "declare more than the size caps")
         # An upper-case `.USFM` name is a book; macOS resource-fork sidecars are ignored, not a crash.
         assert sorted(read_usfm_zip(_fixture_zip(d / "odd.zip", upper=("GEN", "REV"), sidecars=True))) == list(range(1, 67))
+        # Only a name that ENDS in .usfm is a book: `.usfm.bak` and `.usfm.txt` are not (a loose match would read them).
+        loose = _fixture_zip(d / "loose.zip", extras={"01-GEN.usfm.bak": b"\\id GEN\n\xff", "notes.usfm.txt": b"\xff\xfe"})
+        assert sorted(read_usfm_zip(loose)) == list(range(1, 67))
         badutf = d / "badutf.zip"
         with zipfile.ZipFile(badutf, "w") as zf:
             zf.writestr("01-GEN.usfm", b"\\id GEN\n\xff\xfe\xfa")
         raises(lambda: read_usfm_zip(badutf), "is not UTF-8")
 
         # ---- the regexes cannot be made quadratic by one malformed verse ----
-        def within(seconds, fn):
-            start = time.perf_counter()
-            result = fn()
-            took = time.perf_counter() - start
-            assert took < seconds, f"took {took:.1f}s, limit {seconds}s (a quadratic regex? 40,000 spaces took 16s before)"
-            return result
+        def linear(work_for, size):
+            """`work_for(n)` must scale LINEARLY: four times the input may take about four times as long, never sixteen.
 
-        within(2.0, lambda: clean("\\w" + " " * 40_000 + "x"))
-        within(2.0, lambda: clean("\\w " * 40_000 + "x" * 100_000))
-        # Many CLOSED notes must be linear too: copying the rest of the text per note (`text[pos:].lstrip()`) took 2.4 s
-        # for 100,000 notes and quadruples per doubling; linear is 0.1 s.
-        within(1.5, lambda: clean("word\\f + n\\f* " * 100_000))
-        raises(lambda: within(2.0, lambda: clean("\\f + a " * 20_000)), "unterminated \\f note")
-        raises(lambda: within(2.0, lambda: parse("\\c 1\n\\p\n\\v 1 x\\f + a " * 20_000)), "GEN: unterminated \\f note")
+            A ratio, not a wall-clock bound, so a slow or busy machine does not make it flaky; the floor stops timer noise
+            on a fast one. (A quadratic regex ran 16x slower at 4x the input: 0.25 s then 4 s.)"""
+            def timed_run(n):
+                start = time.perf_counter()
+                try:
+                    work_for(n)
+                except Mismatch:
+                    pass  # refusing the input is fine; being slow about it is not
+                return time.perf_counter() - start
+
+            small_took, big_took = timed_run(size), timed_run(size * 4)
+            assert big_took < 10 * max(small_took, 0.02), \
+                f"{size} -> {size * 4}: {small_took:.3f}s -> {big_took:.3f}s ({big_took / max(small_took, 1e-9):.0f}x for 4x the input)"
+
+        linear(lambda n: clean("\\w" + " " * n + "x"), 5_000)
+        linear(lambda n: clean("\\w " * n + "x" * 100_000), 10_000)
+        # Many CLOSED notes must be linear too: copying the rest of the text per note (`text[pos:].lstrip()`) is quadratic.
+        linear(lambda n: clean("word\\f + n\\f* " * n), 25_000)
+        linear(lambda n: clean("word \\f + n\\f* \\wj ?\\wj* " * n), 15_000)
+        raises(lambda: clean("\\f + a " * 20_000), "unterminated \\f note")
+        raises(lambda: parse("\\c 1\n\\p\n\\v 1 x\\f + a " * 20_000), "GEN: unterminated \\f note")
         assert strip_notes("a\\f + x\\f* b\\x - y\\x* c\\fe + z\\fe* d") == "a b c d"
         assert strip_notes("no notes here") == "no notes here" and strip_notes("") == ""
         assert strip_notes("\\fr 1:1 is not an opener\\f + n\\f*") == "\\fr 1:1 is not an opener"
@@ -1038,16 +1136,34 @@ def self_test():
         raises(lambda: parse("\\c 1\n\\p\n\\v 1 text\\f + unclosed\n\\v 2 two\\f + b\\f*"), "GEN: ")
 
         # `\fm ,\fm*` is the separator Biblica puts between two footnote callers: apparatus, dropped with the notes.
-        assert clean("Ya’ar,\\f + a\\f*\\fm ,\\fm*\\f + b\\f*") == "Ya’ar,", "the \\fm comma doubled Hausa verses"
+        assert clean("Ya\u2019ar,\\f + a\\f*\\fm ,\\fm*\\f + b\\f*") == "Ya\u2019ar,", "the \\fm comma doubled Hausa verses"
         assert strip_notes("a\\fm ,\\fm*b") == "ab"
 
         # The spacing USFM puts around a note is not text: `egg \f..\f*?` is "egg?", not "egg ?".
         assert clean("egg \\f + n\\f*?") == "egg?" and clean("egg \\f + n\\f* more") == "egg more"
-        assert clean("x \\f + n\\f*”") == "x”" and clean("x \\f + n\\f*’") == "x’"
-        assert clean("x \\f + n\\f*“y") == "x “y", "an OPENING quote is not closing punctuation"
+        assert clean("x \\f + n\\f*\u201d") == "x\u201d" and clean("x \\f + n\\f*\u2019") == "x\u2019"
+        assert clean("x \\f + n\\f*\u201cy") == "x \u201cy", "an OPENING quote is not closing punctuation"
         assert clean("a \\f + n\\f* \\f + m\\f*.") == "a." and clean("a \\f + n\\f*  , b") == "a, b"
-        assert clean("’\\wj* \\f + n\\f* \\wj ?\\wj*") == "’?", "punctuation behind an inline marker still closes the phrase"
+        assert clean("\u2019\\wj* \\f + n\\f* \\wj ?\\wj*") == "\u2019?", "punctuation behind an inline marker still closes the phrase"
         assert clean("a\\f + n\\f* b") == "a b" and clean("a \\f + n\\f*") == "a"
+        # A word that BEGINS with an apostrophe (Hausa `\u2019yan`, `\u2019yar`) keeps the space that sat before the note: the
+        # first version of the spacing rule fused six real Hausa verses ("Abiya\u2019yar Zakariya").
+        assert clean("Yahuda,\\f + n\\f* \u2019yan\u2019uwanka") == "Yahuda, \u2019yan\u2019uwanka"
+        assert clean("Abiya \\f + n\\f* \u2019yar Zakariya") == "Abiya \u2019yar Zakariya"
+        assert clean("x \\f + n\\f*\u2019 y") == "x\u2019 y" and clean("x \\f + n\\f*?\u2019\u201d") == "x?\u2019\u201d"
+        assert clean("x \\f + n\\f*\u2019") == "x\u2019" and clean("x \\f + n\\f*\u201d, y") == "x\u201d, y"
+        # Each closing mark closes (a literal list: the code's own set must not be the thing under test).
+        for mark in ",;:.!?)":
+            assert clean(f"x \\f + n\\f*{mark}") == f"x{mark}", mark
+        assert clean("x\t\\f + n\\f*.") == "x." and clean("x \t\\f + n\\f*\t.") == "x.", "a tab is spacing too"
+        assert clean("a \\f + n\\f* \\f + m\\f* \\f + o\\f*.") == "a.", "three notes in a row"
+        assert clean("\\f + n\\f*.") == "." and clean(".\\f + n\\f*") == ".", "a note at the very start or end"
+        assert clean("x \\f + n\\f*\\add*.") == "x." and clean("x \\f + n\\f*\\+nd*.") == "x.", "closers between note and mark"
+        assert strip_notes("a\\ca 1\\ca*b\\vp 2\\vp*c\\ex t\\ex*d\\ef t\\ef*e\\va 3\\va*f\\fig x\\fig*g") == "abcdefg", "every note kind"
+        assert clean("\\th1 a \\thr2 b \\tc1 c") == "a b c", "table cell markers mid-line"
+        # A heading may continue on a line that starts with an inline marker; its markup is cleaned like any other.
+        _, heads_c, _ = parse("\\c 1\n\\d For the \\w chief|strong=\"H1\"\\w*\n\\sc musician\\sc* here.\n\\p\n\\v 1 x")
+        assert heads_c == [(1, "For the chief musician here.")], heads_c
 
         # Inline markers: the known ones go, anything else is refused (stripping it would keep its CONTENT).
         assert clean("\\+nd LORD\\+nd* said \\bd it\\bd*") == "LORD said it"
@@ -1062,6 +1178,12 @@ def self_test():
         psa119 = "\n".join(f"\\c {c}\n\\p\n\\v 1 x" for c in range(1, 119))
         v119b, _, _ = parse(psa119 + "\n\\c 119\n\\q1\n\\v 5 First part.\n\\qc more words of verse five, with commas.", "PSA")
         assert v119b[(119, 5)] == "First part. more words of verse five, with commas.", v119b[(119, 5)]
+        # ...and a short line is not a label either unless it has a Hebrew letter and sits where a section starts (after
+        # verse 8k): "Amen." at 119:8 must stay verse text, and a real label at 119:5 is in the wrong place.
+        v119c, h119c, _ = parse(psa119 + "\n\\c 119\n\\q1\n\\v 8 Last words.\n\\qc Amen.\n\\v 9 Next.", "PSA")
+        assert v119c[(119, 8)] == "Last words. Amen." and not [h for c, h in h119c if c == 119], (v119c[(119, 8)], h119c)
+        v119d, h119d, _ = parse(psa119 + "\n\\c 119\n\\q1\n\\v 5 Five.\n\\qc \u05d1 HHETH.\n\\v 6 Six.", "PSA")
+        assert v119d[(119, 5)] == "Five. \u05d1 HHETH." and not [h for c, h in h119d if c == 119], "a label mid-section is text"
 
         # ---- convert(): the whole translation, every post-check ----
         counts = _fixture_counts()
@@ -1106,9 +1228,13 @@ def self_test():
                "fused into the verse text")
         raises(conv({"PSA": lambda t: title(t).replace("\\v 1 PSA 3:1 text.", "\\v 1 PSA 3:1 text. Orin Dafidi.")}, language="yor"),
                "fused into the verse text")
+        # English-only nets do not run on other languages: a Yoruba verse may legitimately begin "A Psalm".
+        opener_patch = {"PSA": lambda t: t.replace("\\v 1 PSA 3:1 text.", "\\v 1 A Psalm of nothing. PSA 3:1 text.")}
+        assert conv(opener_patch, language="yor")()[0], "the English title-opener net ran on a Yoruba text"
+        raises(conv(opener_patch, language="eng"), "opens with a psalm title")
         # Control characters and a trailing no-break space are not verse text (NUL, and a space the strip does not see).
         raises(conv({"GEN": lambda t: t.replace("\\v 2 GEN 1:2 text.", "\\v 2 GEN 1:2 a\x00b")}), "markup residue")
-        raises(conv({"GEN": lambda t: t.replace("\\v 2 GEN 1:2 text.", "\\v 2 GEN 1:2 text.\\add  \\add*")}), "untrimmed")
+        raises(conv({"GEN": lambda t: t.replace("\\v 2 GEN 1:2 text.", "\\v 2 GEN 1:2 text.\\add \u00a0\\add*")}), "untrimmed")
         # A language-independent heading oracle: no English opener list is involved for a Yoruba text.
         raises(conv({"PSA": lambda t: t.replace("\\d A Psalm of David, when he fled.", "\\d Orin Dafidi.")
                      .replace("\\v 1 PSA 3:1 text.", "\\v 1 Orin Dafidi. PSA 3:1 text.")}, language="yor"),
@@ -1181,6 +1307,11 @@ def self_test():
         # Every other rule still applies to entries that are NOT being built.
         raises(lambda: gate({**two, "translations": [entry, {**pend, "licence": "cc-by-nc-nd-4.0"}]}, both, True, {"FIX"}),
                "is not permitted")
+        # `$` alone accepts a trailing newline: "KJV\n" slipped past the format AND the bundled-collision checks.
+        raises(lambda: gate(allow(code="FIX\n"), {"fixbible": row}, False), "code must match")
+        raises(lambda: gate(allow(code="KJV\n"), {"fixbible": row}, False), "code must match")
+        raises(lambda: gate(allow(ebible_id="fixbible\n"), {"fixbible\n": row}, False), "not a plain identifier")
+        raises(lambda: gate(allow(ebible_id=None), {"fixbible": row}, False), "not a plain identifier")
         bad_schema = d / "schema2.json"
         bad_schema.write_text(json.dumps({"schema": 2}), encoding="utf-8")
         raises(lambda: load_allowlist(bad_schema), "unsupported allowlist schema")
@@ -1191,7 +1322,7 @@ def self_test():
 
         check_licence_text(page(LICENCE_PAGE), entry)  # <p>, &nbsp; and wrapping do not matter
         cc = {**entry, "licence_text": ["creative commons attribution-sharealike 4.0"]}
-        check_licence_text(page("<p>Creative Commons Attribution-ShareAlike 4‪.0\n International (CC BY-SA)</p>"), cc)
+        check_licence_text(page("<p>Creative Commons Attribution-ShareAlike 4\u202a.0\n International (CC BY-SA)</p>"), cc)
         raises(lambda: check_licence_text(page("<p>Creative Commons Attribution 4.0</p>"), cc), "no longer contains")
         raises(lambda: check_licence_text(page("<p>Public Domain. All rights reserved.</p>"), entry), "contains 'all rights reserved'")
         raises(lambda: check_licence_text(page("<p>This is NOT public domain.</p>"), entry), "contains 'not public domain'")
@@ -1201,6 +1332,19 @@ def self_test():
         raises(lambda: check_licence_text(page("x" * (MAX_LICENCE_PAGE_BYTES + 1)), entry), "copr.htm is larger than")
         (d / "notzip.zip").write_bytes(b"nope")
         raises(lambda: check_licence_text(d / "notzip.zip", entry), "cannot read the licence page")
+        # A phrase a tag splits ("Non-<b>commercial</b>") is still seen; so is one that two block tags would glue together.
+        raises(lambda: check_licence_text(page("<p>Public Domain. Non-<b>commercial</b> use</p>"), entry), "'non-commercial'")
+        check_licence_text(page("<p>Public</p><p>Domain</p>"), entry)
+        # Every forbidden phrase, from a literal list (the code's own tuple must not be the thing under test).
+        for term in ["all rights reserved", "noncommercial", "non-commercial", "noderivative", "no derivative", "noderivs",
+                     "no derivs", "by-nc", "not public domain"]:
+            raises(lambda: check_licence_text(page(f"<p>Public Domain. {term.upper()}</p>"), entry), f"contains {term!r}")
+        # A hostile licence page of `<` with no `>` (the tag regex rescans to the end from every `<`) stays linear.
+        linear(lambda n: check_licence_text(page("<" * n), entry), 20_000)
+        linear(lambda n: check_licence_text(page("<b " * n), entry), 20_000)
+        # A zip with a huge central directory is refused on the licence-page path too, before it is scanned.
+        with mock.patch.object(module, "MAX_MEMBERS", 5):
+            raises(lambda: check_licence_text(page(LICENCE_PAGE), entry), "more than the 5 cap")
         # The COMMITTED allowlist must itself pass every static rule (this is what guards a bad edit in CI).
         gate(real, {t["ebible_id"]: {"languageCode": t["language"], "Redistributable": "True", "downloadable": "True",
                                      "Copyright": t["expect_copyright"], "title": "", "UpdateDate": ""}
@@ -1236,6 +1380,28 @@ def self_test():
 
         raises(lambda: fetch("https://example.invalid/y", d / "y.bin", refuse), "could not download")
         assert not (d / "y.bin").exists() and not list(d.glob("*.part"))
+        # A `.part` that is a planted symlink is removed, never followed: its target is not written.
+        victim = d / "victim.txt"
+        victim.write_text("keep me")
+        (d / "z.bin.part").symlink_to(victim)
+        fetch("https://example.invalid/z", d / "z.bin", serve(b"fresh"))
+        assert victim.read_text() == "keep me" and (d / "z.bin").read_bytes() == b"fresh" and not (d / "z.bin.part").exists()
+        (d / "w.bin.part").mkdir()  # a directory squatting on the name cannot be replaced: refused, not a traceback
+        raises(lambda: fetch("https://example.invalid/w", d / "w.bin", serve(b"x")), "could not download")
+        (d / "w.bin.part").rmdir()
+        # A redirect from HTTPS to anything but HTTPS is refused; an HTTPS one is followed.
+        redirects = _HttpsOnlyRedirects()
+        original = urllib.request.Request("https://ebible.org/a")
+        for scheme in ("http://evil.example/x", "ftp://evil.example/x", "file:///etc/passwd"):
+            try:
+                redirects.redirect_request(original, None, 302, "Found", {}, scheme)
+            except urllib.error.HTTPError as refusal:
+                assert "non-HTTPS" in str(refusal), refusal
+            else:
+                raise AssertionError(f"a redirect to {scheme} was followed")
+        followed = redirects.redirect_request(original, io.BytesIO(b""), 302, "Found", {}, "https://ebible.org/b")
+        assert followed.full_url == "https://ebible.org/b"
+        assert any(isinstance(h, _HttpsOnlyRedirects) for h in _OPENER.handlers), "the default opener lacks the redirect rule"
 
         # ---- build(): end to end, offline, deterministic, all-or-nothing ----
         work, out = d / "work", d / "out"
@@ -1258,6 +1424,24 @@ def self_test():
         build(allow(), work, d / "out2", offline=True, base_url="https://mirror.example/bibles")
         assert (d / "out2" / "fix.tsv.gz").read_bytes() == first["fix.tsv.gz"], "byte-reproducible"
         assert json.loads((d / "out2" / "catalog.json").read_text())["base_url"] == "https://mirror.example/bibles"
+
+        def keys_sorted(node):
+            if isinstance(node, dict):
+                return list(node) == sorted(node) and all(keys_sorted(v) for v in node.values())
+            return all(keys_sorted(v) for v in node) if isinstance(node, list) else True
+
+        assert keys_sorted(parsed), "catalog.json keys are sorted, so a diff between two runs shows only what changed"
+        # eBible's real translations.csv starts with a UTF-8 BOM; without `utf-8-sig` its first column is "\ufefftranslationId".
+        (work / "translations.csv").write_text("\ufeff" + _csv_text([row]), encoding="utf-8")
+        build(allow(), work, d / "out-bom", offline=True)
+        (work / "translations.csv").write_text(_csv_text([row]), encoding="utf-8")
+        # A corrupt or hostile catalogue is a refusal, not a traceback.
+        bad_csv = d / "bad.csv"
+        for label, content in [("a field over the csv limit", ("translationId\n" + "x" * 200_000 + "\n").encode()),
+                               ("no translationId column", b"foo,bar\n1,2\n"), ("not UTF-8", b"\xff\xfe\x00")]:
+            bad_csv.write_bytes(content)
+            raises(lambda: load_catalog_csv(bad_csv), "not a usable eBible catalogue", label)
+        raises(lambda: load_catalog_csv(d / "missing.csv"), "not a usable eBible catalogue")
         raises(lambda: build(allow(legal_review="pending"), work, d / "out3", require_cleared=True, offline=True),
                "--require-cleared")
         raises(lambda: build(allow(), work, d / "out3", only=["NOPE"], offline=True), "not in the allowlist")
@@ -1287,11 +1471,11 @@ def self_test():
         _fixture_zip(work / "fixbible_usfm.zip", licence_page=None)
         raises(lambda: build(allow(), work, d / "out5", offline=True), "no copr.htm")
         # The legal fields reach the catalogue exactly as the allowlist (and its licence registry) say.
-        cc_spec = {**entry, "code": "AAA", "ebible_id": "ccbible", "language": "eng", "language_name": "Yorùbá",
-                   "licence": "cc-by-sa-4.0", "expect_copyright": "Copyright © 2020 Someone",
+        cc_spec = {**entry, "code": "AAA", "ebible_id": "ccbible", "language": "eng", "language_name": "Yor\u00f9b\u00e1",
+                   "licence": "cc-by-sa-4.0", "expect_copyright": "Copyright \u00a9 2020 Someone",
                    "licence_text": ["creative commons attribution-sharealike 4.0"], "legal_review": "pending",
                    "attribution": "ATTRIBUTION TEXT", "modifications": "MODIFICATIONS TEXT", "trademark_note": "TM NOTE"}
-        both_rows = {"fixbible": row, "ccbible": {**row, "translationId": "ccbible", "Copyright": "Copyright © 2020 Someone",
+        both_rows = {"fixbible": row, "ccbible": {**row, "translationId": "ccbible", "Copyright": "Copyright \u00a9 2020 Someone",
                                                   "title": "CC Bible", "UpdateDate": "2026-02-02"}}
         (work / "translations.csv").write_text(_csv_text(list(both_rows.values())), encoding="utf-8")
         _fixture_zip(work / "fixbible_usfm.zip")
@@ -1305,9 +1489,9 @@ def self_test():
                                   "summary": real["licences"]["cc-by-sa-4.0"]["summary"],
                                   "url": "https://creativecommons.org/licenses/by-sa/4.0/",
                                   "attribution_required": True, "share_alike": True}
-        assert aaa["source"]["ebible_update_date"] == "2026-02-02" and aaa["source"]["copyright"] == "Copyright © 2020 Someone"
-        assert aaa["source"]["title"] == "CC Bible" and aaa["language_name"] == "Yorùbá" and aaa["legal_review"] == "pending"
-        assert "Yorùbá".encode("utf-8") in (d / "out6" / "catalog.json").read_bytes(), "catalog.json keeps non-ASCII readable"
+        assert aaa["source"]["ebible_update_date"] == "2026-02-02" and aaa["source"]["copyright"] == "Copyright \u00a9 2020 Someone"
+        assert aaa["source"]["title"] == "CC Bible" and aaa["language_name"] == "Yor\u00f9b\u00e1" and aaa["legal_review"] == "pending"
+        assert "Yor\u00f9b\u00e1".encode("utf-8") in (d / "out6" / "catalog.json").read_bytes(), "catalog.json keeps non-ASCII readable"
         # `--only` with `--require-cleared` builds the cleared translation and ignores the one still in review.
         only_cat = build(two_allow, work, d / "out7", only=["FIX"], require_cleared=True, offline=True)
         assert [t["code"] for t in only_cat["translations"]] == ["FIX"] and sorted(p.name for p in (d / "out7").iterdir()) == ["catalog.json", "fix.tsv.gz"]
@@ -1324,9 +1508,13 @@ def self_test():
 
         raises(lambda: build(allow(), work, d / "out9", offline=True), "does not mark it Redistributable")  # cached: stale
         assert calls == []
+        stale_zip = _fixture_zip(work / "fixbible_usfm.zip", licence_page="<p>All rights reserved</p>").read_bytes()
+        assert stale_zip != fresh_zip
+        raises(lambda: build(allow(), work, d / "out9", offline=True), "does not mark it Redistributable")  # stale csv too
         build(allow(), work, d / "out9", require_cleared=True, opener=eBible)
-        assert calls == [CATALOG_CSV_URL], f"--require-cleared must refetch the catalogue, and only the catalogue: {calls}"
-        assert (work / "translations.csv").read_bytes() == fresh_csv
+        assert calls == [CATALOG_CSV_URL, f"{EBIBLE}/fixbible_usfm.zip"], f"--require-cleared refetches the catalogue and the zip: {calls}"
+        assert (work / "translations.csv").read_bytes() == fresh_csv and (work / "fixbible_usfm.zip").read_bytes() == fresh_zip, \
+            "a publish run must build from the fresh zip, not the stale cached one (whose licence page said 'all rights reserved')"
         # `--refresh` refetches everything; offline it refuses rather than quietly using the cache.
         del calls[:]
         build(allow(), work, d / "out10", refresh=True, opener=eBible)
@@ -1339,6 +1527,18 @@ def self_test():
         (stage / "catalog.json.tmp").mkdir(parents=True)
         raises(lambda: write_all(stage, {"a.bin": b"1", "catalog.json": b"2"}), "nothing was written")
         assert not (stage / "a.bin").exists() and not (stage / "a.bin.tmp").exists() and not (stage / "catalog.json").exists()
+        # Staging is exclusive: a planted symlink is never followed, and a file this call did not create is never removed.
+        guarded, target = d / "guarded", d / "target.txt"
+        guarded.mkdir()
+        target.write_text("keep me")
+        (guarded / "a.bin.tmp").symlink_to(target)
+        raises(lambda: write_all(guarded, {"a.bin": b"new"}), "nothing was written")
+        assert target.read_text() == "keep me", "the symlink's target was overwritten"
+        assert (guarded / "a.bin.tmp").is_symlink(), "a pre-existing file this call did not create was removed"
+        # An output folder this user cannot read is a refusal, not a traceback.
+        (d / "locked").mkdir()
+        with mock.patch.object(pathlib.Path, "iterdir", side_effect=PermissionError("denied")):
+            raises(lambda: build(allow(), work, d / "locked", offline=True), "cannot be inspected")
 
         # ---- main(): the command line end to end, flag by flag ----
         _fixture_zip(work / "fixbible_usfm.zip")
@@ -1346,9 +1546,9 @@ def self_test():
         (d / "pending.json").write_text(json.dumps(allow(legal_review="pending")), encoding="utf-8")
         argv = sys.argv
 
-        def cli(*args, allowlist="allow.json"):
+        def cli(*args, allowlist="allow.json", work_dir=None):
             """Run main() with `args`; returns (exit code, stdout). Nothing here touches the network."""
-            sys.argv = ["x", "--allowlist", str(d / allowlist), "--work-dir", str(work), *args]
+            sys.argv = ["x", "--allowlist", str(d / allowlist), "--work-dir", str(work_dir or work), *args]
             buf = io.StringIO()
             try:
                 with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(io.StringIO()):
@@ -1383,6 +1583,21 @@ def self_test():
             code, printed = cli("--out-dir", str(d / "cli-off2"), "--offline")
             (work / "moved.zip").rename(work / "fixbible_usfm.zip")
         assert code == 1 and "--offline was given" in printed and no_network.call_count == 0
+        # --refresh is wired: it fetches again the catalogue and the zip of the selected translation (a local stand-in for eBible).
+        served = {CATALOG_CSV_URL: _csv_text([row]).encode("utf-8"),
+                  f"{EBIBLE}/fixbible_usfm.zip": (work / "fixbible_usfm.zip").read_bytes()}
+        fetched = []
+
+        def stand_in(self, req, data=None, timeout=None):
+            fetched.append(req.full_url)
+            return contextlib.nullcontext(io.BytesIO(served[req.full_url]))
+
+        with mock.patch.object(urllib.request.OpenerDirector, "open", stand_in):
+            code, _ = cli("--out-dir", str(d / "cli-refresh"), "--refresh")
+            assert code == 0 and fetched == [CATALOG_CSV_URL, f"{EBIBLE}/fixbible_usfm.zip"], fetched
+            del fetched[:]
+            code, _ = cli("--out-dir", str(d / "cli-cached"))
+            assert code == 0 and fetched == [], f"without --refresh a complete cache is used as it is: {fetched}"
         # --refresh cannot be combined with --offline; --out-dir is required to build; --work-dir is always required.
         assert cli("--out-dir", str(d / "cli-r"), "--offline", "--refresh")[0] == 2
         assert cli("--offline")[0] == 2
@@ -1425,10 +1640,31 @@ def self_test():
         (bundled / "kjv.tsv.gz").write_bytes(sbh.to_gzip(tsv_bytes(base_rows)))
         ok, report = verify_bundled(wk, bundled, known={"kjv": {key}})
         assert not ok and any("pinned but identical" in l for l in report), "a stale pin must fail the control"
+        # --verify-bundled is wired through main(): exit 0 and a printed report when the control holds, exit 1 when not.
+        with mock.patch.object(module, "BUNDLED_ASSETS", bundled), mock.patch.object(module, "KNOWN_DIVERGENCE", {}):
+            code, printed = cli("--verify-bundled", work_dir=wk)
+            assert code == 0 and printed.count("IDENTICAL") == 5, printed
+            (bundled / "kjv.tsv.gz").write_bytes(sbh.to_gzip(tsv_bytes(edited)))
+            code, printed = cli("--verify-bundled", work_dir=wk)
+            assert code == 1 and "UNEXPECTED DIFFERENCES" in printed, printed
+            (bundled / "kjv.tsv.gz").write_bytes(sbh.to_gzip(tsv_bytes(base_rows)))
         os_ = wk / "eng-kjv_usfm.zip"
         os_.unlink()
         raises(lambda: verify_bundled(wk, bundled, known={}), "missing")
 
+    # No invisible or bidirectional character may sit in the source where a reviewer cannot see it. The tool that edits
+    # these files once turned typed escapes into real characters, including U+202A and a BOM, so this is enforced.
+    assert non_ascii_characters("abc") == [] and non_ascii_characters("caf" + chr(0xe9)) == [hex(0xe9)]
+    assert set(invisible_characters("a" + chr(0x202a) + "b" + chr(0xfeff) + chr(0xa0) + chr(0) + chr(0x2028))) == \
+        {hex(0x202a), hex(0xfeff), hex(0xa0), hex(0), hex(0x2028)}
+    assert invisible_characters("plain text\twith a tab\nand a newline, " + chr(0xe9)) == [], "visible letters are fine"
+    here = pathlib.Path(__file__).resolve().parent
+    for script in ("build_translation_catalog.py", "translation_catalog_mutation_proof.py"):
+        if (here / script).is_file():  # the mutation proof copies only some files
+            source = (here / script).read_text(encoding="utf-8")
+            assert not non_ascii_characters(source), f"{script} has non-ASCII characters {non_ascii_characters(source)}: write escapes"
+    allowlist_hidden = invisible_characters(ALLOWLIST.read_text(encoding="utf-8"))
+    assert not allowlist_hidden, f"invisible characters in the allowlist: {allowlist_hidden}"
     # The real pins are what was measured against eBible's USFM on 2026-10-04 (17 WEB rows, 20 WEBBE rows), every one
     # a real verse address. (That WEBBE = WEB + the NBSP rows is how the sets are BUILT, so it is not asserted.)
     assert (len(KNOWN_DIVERGENCE["web"]), len(KNOWN_DIVERGENCE["webbe"])) == (17, 20), "re-measure with --verify-bundled"
