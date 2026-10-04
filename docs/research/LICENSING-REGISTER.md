@@ -141,7 +141,7 @@ Org context: First Pavilion (appears Nigeria-based) → NDPA/NDPR + GDPR both in
 ## 6. Recommended MVP licensing posture
 
 **Safe to ship / bundle now:**
-- **Bibles (bundle):** KJV, WEB, WEBBE, ASV, Darby (shipped 2026-07-24) + YLT/BSB/Webster candidates — public domain worldwide. **BBE excluded (US-only PD).** Sourced as **VPL plain text** from eBible.org. Include a courtesy attribution/copyright-metadata screen even where not required.
+- **Bibles (bundle):** KJV, WEB, WEBBE, ASV, Darby (shipped 2026-07-24) + YLT/BSB/Webster candidates — public domain worldwide. **BBE excluded (US-only PD).** Sourced as **VPL plain text** from eBible.org. Include a courtesy attribution/copyright-metadata screen even where not required. *Edited from the VPL (17tnw2b2g7q, 2026-10-04):* psalm superscriptions, Psalm 119 acrostic letter labels and the musical note closing Habakkuk 3:19 are removed from the bundled text (VPL fuses them into the verse); verse numbering is unchanged. Reproducible with `scripts/strip_bible_headings.py` against eBible's USFM for the same translations (`eng-kjv`, `engwebp`, `engwebpb`, `eng-asv`, `engDBY`) — same publisher and licence, no other source involved.
 - **Bibles (user-supplied / API-only):** NIV, ESV, NLT, NKJV, NASB, CSB, MSG, AMP — never bundled. Offer **API.Bible** (licensed tier, commercial plan) and/or **user import** of the user's licensed module. If using ESV API, respect ≤500-verse limits + non-commercial boundary (needs a commercial licence for a paid app).
 - **STT:** Whisper (MIT), on-device.
 - **Fonts:** OFL/Apache families. **Icons:** Lucide/MIT sets. **NDI:** bundle redistributable + add ndi.video link, keep updated.
