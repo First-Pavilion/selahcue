@@ -5878,9 +5878,13 @@
          (behind an ellipsis), the connection pill's text is bounded, the controls keep their labels on
          one line and their natural width (so nothing overlaps), the clock gives way at <= 1000px, and
          padding and gaps tighten. The hard minimum that remains (logo pill, the four transport buttons, the timer and
-         LIVE chips, the bell, the pill, bounded at 110px of text) is ~830px at the Chromium face in
-         the widest state, and the headless gate pins "no horizontal scroll" there and under a wider
-         face. At the supported 1400px minimum none of this applies.
+         LIVE chips, the bell, the pill, bounded at 110px of text) was measured at ~830px at the Linux
+         Chromium face in the widest state, and the headless gate pins "no horizontal scroll" there and
+         under a wider face. That number does not hold on a Mac: measured with real Chrome on macOS at
+         900px, the same state needed ~877px, and ~916px under the gate's +6% wider face, which put the
+         logo pill 16px over the first transport button (NOTIF-89d, invisible on Linux CI). The
+         max-width: 1000px block below takes ~34px out of it, so the Mac face now needs ~843px, and
+         ~882px under +6%. At the supported 1400px minimum none of this applies.
          =================================================================================== */
       @media (max-width: 1100px) {
         header {
@@ -5951,6 +5955,30 @@
       @media (max-width: 1000px) {
         #clock {
           display: none;
+        }
+
+        /* Spacing only (17tnw2b2gdu): no size, label or order changes. The 900-1000px band is below the
+           1400px window minimum, so this is hardening of the CSS floor, and it sits after the 1100px
+           block so it wins by source order. Together: 4px x 4 transport buttons, 2px x 3 transport gaps,
+           2px x 3 status gaps, 4px on the pill, 2px on the logo pill = ~34px. */
+        .logo-pill {
+          padding-right: 10px;
+        }
+
+        .topbar-transport {
+          gap: 4px;
+        }
+
+        .topbar-transport .tb-btn {
+          padding: 9px 8px;
+        }
+
+        .topbar-status {
+          gap: 6px;
+        }
+
+        .tb-conn {
+          padding: 9px 8px;
         }
       }
 
