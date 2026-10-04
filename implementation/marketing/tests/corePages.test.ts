@@ -632,6 +632,13 @@ describe('copy follows the ledger (review round 2, Quinn N4): nothing is on the 
     })
   }
 
+  // ClickUp 17tnw2b0x3h's check, executable: nothing is tolerated on these pages that the repo does not back.
+  test('no claim the repo does not back is live on any page: every LIVE_CLAIMS list is empty (ClickUp 17tnw2b0x3h)', () => {
+    for (const page of Object.keys(VIEWS) as Page[]) {
+      assert.deepEqual(Object.keys(LIVE_CLAIMS[page]), [], `${page}: unbacked lines are still tolerated; remove the words and the entry`)
+    }
+  })
+
   test('every named live claim is still on the page (so the list shrinks when a claim is removed)', () => {
     for (const page of Object.keys(VIEWS) as Page[]) {
       const shown = new Set(blocks(pages[page]))

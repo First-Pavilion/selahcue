@@ -19,9 +19,10 @@
  *   - no page passes `variant="gradient"` to a button (a temporary alias PR 172 left for these
  *     pages to leave), and none declares its own container rule (1140, 1200 and 1000 wide
  *     before; the shared `.container` is 1248 with 96/48/20 gutters);
- *   - no page ADDS a claim: the strings the audit marks unbacked in Figma (addresses nobody
- *     confirmed, reply times, commission rates) are absent. Removing claims that were already
- *     live is ClickUp 17tnw2b0x3h and is not asserted here;
+ *   - no page makes a claim the repo does not back: the strings the audit marks unbacked (addresses
+ *     nobody confirmed, reply times, commission rates, invented releases and roles) are absent, the
+ *     ledger's `unbacked` list is empty on every page, and the claims removed by ClickUp 17tnw2b0x3h
+ *     are banned from coming back (`NAMED_CLAIMS`);
  *   - each page has the structure its Figma frame draws.
  */
 import assert from 'node:assert/strict'
@@ -374,11 +375,21 @@ describe('the copy ledger: no sentence appears on the seven pages that nobody li
     })
   }
 
-  test('the claims the reviewers named are on `unbacked`, where ClickUp 17tnw2b0x3h will look (a relabel as harmless fails)', () => {
+  // ClickUp 17tnw2b0x3h's check, executable: the `unbacked` list is what the page may NOT say, so it is empty on every page.
+  test('no page has an `unbacked` entry: every claim the repo does not back is gone (ClickUp 17tnw2b0x3h)', () => {
+    for (const { file } of pages) {
+      const key = ledgerKey(file)
+      assert.deepEqual(LEDGER[key]!.unbacked.map(String), [], `${key}: unbacked lines are still live; remove the words and the entry`)
+    }
+  })
+
+  // The strings removed from the pages cannot return: not on any list, and not in any run any state renders.
+  test('the claims the reviewers named are banned: on no ledger list and rendered by no page state', async () => {
     for (const [page, sample] of NAMED_CLAIMS) {
-      assert.ok(LEDGER[page]!.unbacked.some((e) => entryMatches(e, sample)), `${page}: "${sample}" is not on unbacked`)
-      const elsewhere = [...LEDGER[page]!.newCopy, ...LEDGER[page]!.harmless].filter((e) => entryMatches(e, sample))
-      assert.deepEqual(elsewhere.map(String), [], `${page}: "${sample}" is also on another list`)
+      const onAList = listed(page).filter((e) => entryMatches(e, sample))
+      assert.deepEqual(onAList.map(String), [], `${page}: "${sample}" is on a ledger list; a removed claim must not be allow-listed`)
+      const runs = (await readings(`${page}View.vue`)).flatMap((r) => r.runs)
+      assert.deepEqual(runs.filter((r) => r === sample || r.includes(sample)), [], `${page}: "${sample}" is rendered again`)
     }
   })
 
@@ -456,10 +467,11 @@ describe('the copy ledger: no sentence appears on the seven pages that nobody li
     }
   })
 
-  test('CONTROL: a line moved from `unbacked` into the new copy is caught by the promise pattern (the ledger cannot launder a claim)', () => {
-    for (const claim of LEDGER['Affiliates']!.unbacked.filter((e): e is string => typeof e === 'string' && /20%|\$50|60-day|Earn/.test(e))) {
-      assert.ok(PROMISE_PATTERN.test(claim), `${claim} would be caught`)
-    }
+  test('CONTROL: a removed claim moved back into the new copy is caught by the promise pattern (the ledger cannot launder a claim)', () => {
+    // The `unbacked` list is empty now, so this reads the removed claims themselves: a ban list the pattern must still catch.
+    const claims = NAMED_CLAIMS.filter(([page]) => page === 'Affiliates').map(([, sample]) => sample).filter((s) => /20%|\$50|60 Days|Earn|Payouts/.test(s))
+    assert.ok(claims.length >= 4, `only ${claims.length} removed Affiliates claims were read; the control is vacuous`)
+    for (const claim of claims) assert.ok(PROMISE_PATTERN.test(claim), `${claim} would be caught`)
   })
 
   test('CONTROL: every state\'s marker is shown by that state and not by the default page (the markers can tell them apart)', async () => {

@@ -816,6 +816,11 @@ describe('copy follows the ledger: Figma\'s wording where the repo backs it', ()
     for (const [text, reason] of Object.entries(LIVE_CLAIMS)) assert.ok(reason.length > 10, `no reason for: ${text}`)
   })
 
+  // ClickUp 17tnw2b0x3h's check, executable: nothing is tolerated on Home that the repo does not back.
+  test('no claim the repo does not back is live: LIVE_CLAIMS is empty (ClickUp 17tnw2b0x3h)', () => {
+    assert.deepEqual(Object.keys(LIVE_CLAIMS), [], 'unbacked Home lines are still tolerated; remove the words and the entry')
+  })
+
   test('hero trust line: each of the three items is held together (no breakable space inside one), so a narrow phone breaks BETWEEN items, never inside one', () => {
     const trust = findAll(section(page, 'hero-section'), (e) => hasClass(e, 'hero-trust'))[0] as El
     assert.ok(trust, 'no .hero-trust')
