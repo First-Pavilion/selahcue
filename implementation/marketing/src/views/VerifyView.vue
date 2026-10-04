@@ -194,7 +194,9 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <AuthShell>
+  <!-- V1 and V2 centre the disc, title and body (Figma 743:125, 743:139); V3 to V6 and the failure state do not
+       (verify-v1-01). One expression, so "which states are centred" is read in one place. -->
+  <AuthShell :align="state === 'verifying' || state === 'verified' ? 'center' : 'start'">
     <!-- ============================================================= V1 verifying -->
     <template v-if="state === 'verifying'">
       <StatusDisc tone="brand" glyph="↻" />
@@ -202,8 +204,12 @@ onBeforeUnmount(() => {
       <p class="au-body">This only takes a moment. Keep this tab open.</p>
       <!-- §12: announced politely. The bar is indeterminate, so it carries no
            aria-valuenow — claiming a percentage we do not have would be worse than
-           silence. It holds static under prefers-reduced-motion (auth.css). -->
-      <div role="status" aria-live="polite" aria-label="Verifying your email address">
+           silence. It holds static under prefers-reduced-motion (auth.css).
+           A live region announces TEXT, and this one held only the bar (an `aria-label` is not
+           read when a region appears), so the words are inside it, visually hidden because the
+           title above already shows them (verify-v1-02). -->
+      <div role="status" aria-live="polite">
+        <span class="au-sr-only">Verifying your email address…</span>
         <div class="au-progress"><div class="au-progress-fill"></div></div>
       </div>
     </template>
@@ -254,7 +260,7 @@ onBeforeUnmount(() => {
             class="au-btn au-btn-primary"
             :loading="resendPending"
           >
-            Send a new verification link
+            <span v-if="resendPending" class="au-spinner" aria-hidden="true">↻</span>Send a new verification link
           </UiButton>
         </div>
       </form>
@@ -291,7 +297,7 @@ onBeforeUnmount(() => {
             class="au-btn au-btn-primary"
             :loading="resendPending"
           >
-            Send a verification link
+            <span v-if="resendPending" class="au-spinner" aria-hidden="true">↻</span>Send a verification link
           </UiButton>
         </div>
       </form>
@@ -300,7 +306,7 @@ onBeforeUnmount(() => {
 
     <!-- ============================================================== V5 link sent -->
     <template v-else-if="state === 'sent'">
-      <StatusDisc tone="brand" glyph="✉" />
+      <StatusDisc tone="brand" glyph="✉︎" />
       <h1 ref="heading" tabindex="-1" class="au-title">Check your inbox</h1>
       <!-- CONDITIONAL BY CONSTRUCTION. "If … has a SelahCue account" is load-bearing for
            no-enumeration and must not be "improved" into "We've sent you an email" — the

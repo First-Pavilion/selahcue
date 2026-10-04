@@ -294,7 +294,10 @@ onBeforeUnmount(() => {
 
         <!-- Required by the API and absent from the handoff's field list. Not a FormField
              because that component renders inputs and textareas only; the markup below
-             carries the same label / aria-invalid / aria-describedby contract by hand. -->
+             carries the same label / aria-invalid / aria-describedby contract by hand.
+             It shows a star, so it also announces itself as required: `aria-required`, which
+             is what FormField sets, and NOT the native `required`, whose browser bubble would
+             appear ahead of the form's own message (shared components review N3, 17tnw2b2cf1). -->
         <div class="form-field" :class="{ 'has-error': !!errors.country }">
           <label for="signup-country" class="field-label">
             Country
@@ -305,6 +308,7 @@ onBeforeUnmount(() => {
             v-model="country"
             class="au-select"
             autocomplete="country"
+            aria-required="true"
             :disabled="state === 'submitting'"
             :aria-invalid="!!errors.country"
             :aria-describedby="errors.country ? 'signup-country-error' : undefined"

@@ -56,7 +56,7 @@
  * `MARKETING-PORTAL-GAP-FILL-HANDOFF.md` §5b says 15 minutes; it is wrong, and §11.3 of
  * the auth handoff records the correction.
  */
-import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import AuthShell from '@/components/auth/AuthShell.vue'
 import AuthBanner from '@/components/auth/AuthBanner.vue'
 import StatusDisc from '@/components/auth/StatusDisc.vue'
@@ -136,10 +136,45 @@ const sentToEmail = ref('')
 
 const passwordHint = computed(() => `At least ${MIN_PASSWORD_LENGTH} characters.`)
 
+/** R2: a field-level message is on screen. */
+const hasFieldErrors = computed(() => Object.keys(errors.value).length > 0)
+
+/**
+ * The "This signs you out everywhere" banner closes R1 and is NOT drawn on R2 or R3 (Figma 747:173, 749:124): while
+ * field errors show, and while the request is out, the card is just the fields, the button and the footer. It is
+ * also not drawn above a danger banner (R7, PASSWORD_INVALID). It returns the moment the user edits a field.
+ * ONE definition, read by the template, for the reason `FORM_STATES` is one.
+ */
+const showsInfoBanner = computed(
+  () => !showsErrorBanner.value && state.value !== 'submitting' && !hasFieldErrors.value,
+)
+
+/** The first field's id, so arrival can focus it (R1 is drawn with New password focused). */
+const NEW_PASSWORD_ID = 'reset-new-password'
+
 async function focusHeading(): Promise<void> {
   await nextTick()
   heading.value?.focus()
 }
+
+/**
+ * R1 arrives with New password focused (reset-r1-02; Figma 747:153, handoff 5.1). The title stays first in the DOM,
+ * so a screen reader still meets it first when it reads the page; this only decides where typing goes. `nextTick`,
+ * not a timer: the field is already rendered, it only has to be in the document.
+ */
+async function focusNewPassword(): Promise<void> {
+  await nextTick()
+  if (unmounted) return
+  document.getElementById(NEW_PASSWORD_ID)?.focus()
+}
+
+/**
+ * R2 -> R1: once the user edits either field the messages are stale, so they go, the held button is released and
+ * the banner returns. Nothing is submitted by this: pressing the button re-validates from scratch.
+ */
+watch([password, confirmPassword], () => {
+  if (hasFieldErrors.value) errors.value = {}
+})
 
 async function submitNewPassword(): Promise<void> {
   // THE GUARD. Everything above in this file explains why it must run before the call
@@ -222,6 +257,7 @@ onMounted(() => {
   // account it is for — §5.1 is explicit that no "resetting the password for …" line
   // may be added, because nothing here knows the address.
   state.value = landingToken ? 'form' : 'missing'
+  if (landingToken) void focusNewPassword()
 })
 
 onBeforeUnmount(() => {
@@ -271,31 +307,46 @@ onBeforeUnmount(() => {
         :class="{ 'is-submitting': state === 'submitting' }"
         @submit.prevent="submitNewPassword"
       >
-        <FormField
-          v-model="password"
-          type="password"
-          label="New password"
-          autocomplete="new-password"
-          :hint="passwordHint"
-          :error="errors.password"
-          :disabled="state === 'submitting'"
-        />
-        <FormField
-          v-model="confirmPassword"
-          type="password"
-          label="Confirm new password"
-          autocomplete="new-password"
-          :error="errors.confirmPassword"
-          :disabled="state === 'submitting'"
-        />
+        <!-- A disabled fieldset disables every control inside it, the Show / Hide buttons included, which
+             FormField's own `disabled` (the input only) does not (reset-r3-02). `role="none"`: it groups for
+             the browser, not for a screen reader, which would announce an unnamed group. `reveal-style="text"` and
+             `error-style="glyph"` are the Show / Hide and the "✕ " Figma draws on R1 to R3 and R7 (handoff 5.1,
+             5.2, 12). The hint goes while submitting: R3 draws the fields without it (749:124). -->
+        <fieldset class="au-fieldset" role="none" :disabled="state === 'submitting'">
+          <FormField
+            :id="NEW_PASSWORD_ID"
+            v-model="password"
+            type="password"
+            label="New password"
+            autocomplete="new-password"
+            reveal-style="text"
+            error-style="glyph"
+            :hint="state === 'submitting' ? '' : passwordHint"
+            :error="errors.password"
+            :disabled="state === 'submitting'"
+          />
+          <FormField
+            v-model="confirmPassword"
+            type="password"
+            label="Confirm new password"
+            autocomplete="new-password"
+            reveal-style="text"
+            error-style="glyph"
+            :error="errors.confirmPassword"
+            :disabled="state === 'submitting'"
+          />
+        </fieldset>
         <div class="au-actions">
+          <!-- R2 holds the button with `aria-disabled` (45%, Figma 747:194), not `disabled`: it stays focusable,
+               and pressing it re-validates. R3 (`loading`) shows "↻ Updating password…" (749:143). -->
           <UiButton
             variant="primary"
             size="lg"
             class="au-btn au-btn-primary"
+            :aria-disabled="hasFieldErrors ? 'true' : undefined"
             :loading="state === 'submitting'"
           >
-            <template v-if="state === 'submitting'">Updating password…</template>
+            <template v-if="state === 'submitting'"><span class="au-spinner" aria-hidden="true">↻</span>Updating password…</template>
             <template v-else-if="state === 'serverError'">Try again</template>
             <template v-else>Update password</template>
           </UiButton>
@@ -311,7 +362,7 @@ onBeforeUnmount(() => {
            CustomerSession but deliberately NOT any DeviceToken, so an activated machine
            in the building keeps presenting. That is the never-blank guarantee, stated
            where it matters most. -->
-      <AuthBanner v-if="!showsErrorBanner" kind="info" title="This signs you out everywhere">
+      <AuthBanner v-if="showsInfoBanner" kind="info" title="This signs you out everywhere">
         Updating your password ends every active SelahCue session on this account. Devices
         you have already activated keep presenting offline — live output is never
         interrupted.
@@ -343,7 +394,7 @@ onBeforeUnmount(() => {
             class="au-btn au-btn-primary"
             :loading="requestPending"
           >
-            Send a new reset link
+            <span v-if="requestPending" class="au-spinner" aria-hidden="true">↻</span>Send a new reset link
           </UiButton>
         </div>
       </form>
@@ -403,7 +454,7 @@ onBeforeUnmount(() => {
             class="au-btn au-btn-primary"
             :loading="requestPending"
           >
-            Send a reset link
+            <span v-if="requestPending" class="au-spinner" aria-hidden="true">↻</span>Send a reset link
           </UiButton>
         </div>
       </form>
@@ -412,7 +463,7 @@ onBeforeUnmount(() => {
 
     <!-- ============================================= fresh link sent (V5 analogue) -->
     <template v-else>
-      <StatusDisc tone="brand" glyph="✉" />
+      <StatusDisc tone="brand" glyph="✉︎" />
       <h1 ref="heading" tabindex="-1" class="au-title">Check your inbox</h1>
       <!-- Conditional by construction, exactly as V5. `request_password_reset` returns
            accepted:true for an address with no account, so any direct claim would be an
@@ -440,7 +491,9 @@ onBeforeUnmount(() => {
         <span>Didn't do this?</span><router-link to="/support">Contact support</router-link>
       </template>
       <template v-else-if="state === 'serverError'">
-        <span>Still stuck?</span><router-link to="/signin">Back to Sign in</router-link>
+        <!-- The banner above says this link still works, so the way out is a fresh one, not the sign-in page
+             (reset-r7-01; Figma 749:244, handoff 5.7: "footer offers a fresh link"). -->
+        <span>Still stuck?</span><router-link to="/forgot-password">Request a new reset link</router-link>
       </template>
       <template v-else-if="state === 'sent'">
         <span>Need a hand?</span><router-link to="/support">Contact support</router-link>
@@ -460,11 +513,5 @@ onBeforeUnmount(() => {
 .au-title:focus-visible {
   outline: 2px solid var(--sc-primary);
   outline-offset: 4px;
-}
-
-/* R3: fields at 50% opacity while the mutation is in flight (§5.3). They are also
-   genuinely disabled — dimming alone would leave them editable. */
-.is-submitting :deep(.form-field) {
-  opacity: 0.5;
 }
 </style>
