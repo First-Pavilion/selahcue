@@ -172,7 +172,7 @@
           "source": "MARKETING-PORTAL-GAP-FILL-HANDOFF 10a (FormField: label 14px Semi Bold --sc-text, input --sc-elevated background, focus ring). FLAG FOR UMA: AUTH-LANDING-PAGES-HANDOFF 2.2/2.3 say the opposite for field wells (input well -> --sc-inset, label 13/500 --sc-text-secondary) and the Contact frame follows 2.3; the two handoffs conflict, so one decision should settle FormField for contact and auth together.",
           "decision": null,
           "a11y": false,
-          "link": null
+          "link": "contact-19"
         },
         {
           "id": "contact-11",
@@ -298,16 +298,32 @@
           "scope": "shared",
           "component": "footer",
           "severity": "medium",
-          "title": "Footer bottom-bar claims 'Cancel anytime' and 'Windows · macOS'",
+          "title": "Footer bottom-bar claims 'Cancel anytime', which the repo does not back",
           "figma": "Bottom bar: '© 2026 SelahCue · Works offline · Cancel anytime' and 'Windows · macOS' on every frame.",
           "build": "Footer shows only '© 2026 SelahCue. All rights reserved.'; neither claim is shown today.",
-          "evidence": "design-only list on all five surfaces (y=1401 '© 2026 SelahCue · Works offline · Cancel anytime', 'Windows · macOS'); LEGAL-DRAFT-NOTES 9.4 (no macOS release pipeline; billing and cancellation not built)",
+          "evidence": "design-only list on all five surfaces (y=1401 '© 2026 SelahCue · Works offline · Cancel anytime', 'Windows · macOS'); billing and cancellation are not built (LEGAL-DRAFT-NOTES 9.4). 'Windows · macOS' is product-backed (owner, 2026-10-04) and not in question.",
           "fix": null,
           "source": null,
-          "decision": "Keep the bar's layout; drop 'Cancel anytime' until billing exists and 'macOS' until a macOS build ships (owner decision, chrome auditor to fold into the footer ticket).",
+          "decision": "Keep the bar's layout and 'Windows · macOS'; drop 'Cancel anytime' until billing exists (owner decision, folded into the footer ticket). Linux is not drawn: shared-chrome-35.",
           "a11y": false,
           "link": "17tnw2b0x3h",
           "dup_of": "shared-chrome-19"
+        },
+        {
+          "id": "contact-19",
+          "class": "D",
+          "scope": "page",
+          "component": null,
+          "severity": "medium",
+          "title": "FormField styling: two handoffs disagree and one decision has to settle it for Contact and the auth pages",
+          "figma": "Contact (497:124) and every auth frame draw the field label as Inter Medium 13 in the secondary text colour and the input well on the inset fill, 44 high (AUTH-LANDING-PAGES-HANDOFF 2.2 and 2.3).",
+          "build": "FormField.vue follows MARKETING-PORTAL-GAP-FILL-HANDOFF 10a: label 14/600 in the primary text colour, input on --sc-elevated, 3px focus glow. It is used by Contact, Sign up, Forgot password, Sign in, Reset and the affiliate and admin settings pages.",
+          "evidence": "contact-10 (class B, follows 10a), signin-06 and signin-07 (class A, follow AUTH 2.3); the cited sections quote opposite values; reported by the code review of PR 171 (finding 6)",
+          "fix": null,
+          "source": null,
+          "decision": "Uma: which spec governs FormField for Contact and the auth pages together? If AUTH-LANDING 2.3: the auth variant (signin-06, signin-07) is built and contact-10 flips from class B to class A. If GAP-FILL 10a: signin-06 and signin-07 become class B citing it, and the frames are the ones to redraw. Settle it before the shared-components ticket (FormField) and the auth ticket finish.",
+          "a11y": false,
+          "link": "contact-10; signin-06; signin-07"
         }
       ]
     },
@@ -482,6 +498,22 @@
           "a11y": true,
           "link": null,
           "ticket": "17tnw2b2cez"
+        },
+        {
+          "id": "support-11",
+          "class": "C",
+          "scope": "page",
+          "component": null,
+          "severity": "medium",
+          "title": "Support article says 'There is no macOS or Linux installer yet', which contradicts what product says",
+          "figma": "Figma draws no such sentence; the NDI troubleshooting article is part of the undrawn content layer (support-08).",
+          "build": "support.ts:108 (NDI article): 'Use a build that includes NDI. The Windows installer is built with it and carries the NDI runtime. There is no macOS or Linux installer yet.'",
+          "evidence": "Product (owner, 2026-10-04): SelahCue is available for Windows, Linux and macOS. For: docs/product/prds/SelahCue-PRD.md:33 (G-2) targets Windows, macOS and Linux; .github/workflows/ci.yml builds and tests on ubuntu, macOS and Windows; docs.ts:145 documents a Linux data folder. Against: tauri bundle targets are only 'nsis' and the installer workflow uploads only *-setup.exe.",
+          "fix": null,
+          "source": null,
+          "decision": "Owner: It is NOT yet known whether 'available' means a downloadable installer exists today on each platform, or that the app supports all three while only the Windows installer is packaged. Reconcile the sentence with the answer. Until then no page may claim a downloadable macOS or Linux installer (Download buttons stay disabled, PR #134).",
+          "a11y": false,
+          "link": null
         }
       ]
     },
@@ -554,7 +586,7 @@
           "evidence": "LEGAL-DRAFT-NOTES 9.4: app version is 0.1.0 and there is no macOS release pipeline; docs.ts article list has no install, update or audio-config article; no measurement of a first service duration exists",
           "fix": null,
           "source": null,
-          "decision": "'10 minutes' is an unmeasured claim; 'macOS install and updates' describes something not shipped (no macOS pipeline, no update mechanism evidenced); 'audio' configuration is unverified. Keep the callout and tile layout with honest copy or omit those tiles; owner decision.",
+          "decision": "'10 minutes' is an unmeasured claim; 'Windows & macOS install and updates': product says macOS is available (2026-10-04) but no macOS installer or update mechanism is evidenced in the repo (open question: docs-09); 'audio' configuration is unverified. Keep the callout and tile layout with honest copy or omit those tiles; owner decision.",
           "a11y": false,
           "link": "17tnw2b0x3h"
         },
@@ -623,6 +655,22 @@
           "a11y": false,
           "link": null,
           "ticket": "17tnw2b2cez"
+        },
+        {
+          "id": "docs-09",
+          "class": "C",
+          "scope": "page",
+          "component": null,
+          "severity": "medium",
+          "title": "Docs known-limits note says 'There is no macOS or Linux installer yet', which contradicts what product says",
+          "figma": "Figma draws no such note; it sits in the undrawn article layer (docs-06).",
+          "build": "docs.ts:317 (callout 'Known limits'): 'There is no macOS or Linux installer yet, so the Windows installer is the only packaged build that includes NDI.'",
+          "evidence": "Product (owner, 2026-10-04): SelahCue is available for Windows, Linux and macOS. Same evidence for and against as support-11 (PRD G-2 line 33; CI matrix; docs.ts:145 Linux data folder; tauri target nsis only).",
+          "fix": null,
+          "source": null,
+          "decision": "Owner: It is NOT yet known whether 'available' means a downloadable installer exists today on each platform, or that the app supports all three while only the Windows installer is packaged. Reconcile the sentence with the answer (same question as support-11). Until then no page may claim a downloadable macOS or Linux installer.",
+          "a11y": false,
+          "link": null
         }
       ]
     },
@@ -859,5 +907,23 @@
         }
       ]
     }
-  }
+  },
+  "bugs": [
+    {
+      "id": "contact-bug-01",
+      "title": "Heading levels skip on Contact: h1 jumps to h4 for the contact-method cards",
+      "evidence": "contact.blink.dom.json heading sequence 1 4 4 4 2 3 3 3 3: 'Community & Discord' (y 412) is an h4 directly under the h1; found by QA (Quinn Q-1) and re-measured here",
+      "fix": "Make the contact-method card titles h2 or h3 to match the page outline so no level is skipped; a code accessibility defect independent of Figma",
+      "group": "secondary",
+      "ticket": "17tnw2b2cez"
+    },
+    {
+      "id": "changelog-bug-01",
+      "title": "Heading levels skip on Changelog: h1 jumps to h3 for each change",
+      "evidence": "changelog.blink.dom.json heading sequence 1 3 3 3 3 3 3 3 3 3 3 3 3: 'Native NDI 5 Output Engine' (y 372) is an h3 directly under the h1; found by QA (Quinn Q-1) and re-measured here",
+      "fix": "Make the release version headings h2 and keep the per-change titles h3 so the outline never skips a level; a code accessibility defect independent of Figma",
+      "group": "secondary",
+      "ticket": "17tnw2b2cez"
+    }
+  ]
 }

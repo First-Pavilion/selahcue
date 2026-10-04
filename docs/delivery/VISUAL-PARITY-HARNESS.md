@@ -283,7 +283,9 @@ Two stores, two different correct behaviours:
   that was never ingested.
 * **Run store** (`.visual-parity/`, gitignored): `prune_runs` keeps the newest
   `MAX_RUNS_KEPT = 5` run directories and deletes the rest. Each run writes ~30 images; without
-  eviction the artefact root grows linearly and forever. Ceiling ≈ 35 MB (31 MB at 5 runs today).
+  eviction the artefact root grows linearly and forever. The five kept runs are shared by BOTH suites: the operator
+  suite writes ~31 MB at 5 runs, and one marketing run is 18.5 MB on Blink and 39.7 MB with `--engine both`, so the
+  ceiling is about 200 MB (5 x 39.7 MB), not 35 MB (§11).
 * **Per-run file cap** (`MAX_FILES_PER_RUN = 200`): a *second, independent* bound, because run
   eviction caps how many runs survive, not how large one run may get — a per-state loop writing N
   images per surface would grow a single run without limit and never trip the run-count cap.
@@ -513,13 +515,43 @@ without Inter is refused), and `npm run build` in `implementation/marketing` fir
 
 ### Bounds
 
-| store | cap | enforced by |
-|---|---|---|
-| reference store (PNGs **and** style dumps) | 48 entries, 12 MB (35 entries, 5.9 MB today) | `ReferenceStore.ingest` / `register_style` refuse, never evict |
-| style dump | 2500 nodes (the extractor caps itself at 1500 and the registration refuses a capped dump) | `register_style` |
-| run | 200 files; 5 runs kept | `vp_compare` (per-suite cap), `prune_runs` |
-| DOM dump | 1500 items per page; GraphQL calls recorded: 50 | `vp_capture_marketing` |
-| capture server | one daemon thread, serves `dist/` only, no cache, path-traversal guarded | self-tested |
+Every cap below has a control in `vp_selftest.py` that **fails when the cap is removed**; each was proved by deleting the cap on a scratch copy
+of `scripts/` and watching the named control go red. That proof is repeatable, not a one-off: `docs/design/visual-parity/marketing/mutations.json`
+lists one edit per control (62 today: the caps, the fail-closed gates, the wiring paths, the checker's rules) and
+`python3 scripts/vp_mutation_proof.py` applies each to a scratch copy of `scripts/` (docs, implementation and `.git` are symlinks, so nothing real can be
+written) and requires the named self-test to exit non-zero. A mutation that does not apply (the code moved) or that the self-test survives fails the run;
+`--only ID ...` runs some, `--list` prints them. It takes about 4 minutes (248 seconds measured, 62 of 62 red), which is why it is not in `make ci`: re-run it after changing a cap, a gate or a
+checker rule. A cap with no such control is not listed here.
+
+| bound | cap | what refuses | the control that fails without it |
+|---|---|---|---|
+| reference store: PNGs **and** style dumps | 48 entries, 12 MB (35 entries, 6,335,237 bytes today) | `ReferenceStore.ingest` / `register_style` refuse, never evict | `test_marketing_suite_has_its_own_bounded_store`, `test_style_dump_registration_is_validated_and_bounded` |
+| style dump | 2500 nodes (`MAX_STYLE_NODES`); the extractor caps itself at 1500 and a capped dump is refused | `register_style` | `test_style_and_figma_node_caps_bite` |
+| style diff inputs | 2500 nodes per file (`vp_style_diff.MAX_NODES`) | `load_figma`, `load_dom` | `test_style_and_figma_node_caps_bite` |
+| DOM dump | 1500 items (`MAX_DOM_ITEMS`) and 80 focus entries (`MAX_FOCUS_ITEMS`), re-imposed in Python after the page returns; a truncated dump **fails the capture and the comparison** | `enforce_dump_caps`, `capture_entry`, `load_dom_checked` | `test_dump_and_call_caps_bite`, `test_capture_entry_wiring`, `test_comparator_main_wiring` |
+| recorded GraphQL calls and held requests | 50 each (`MAX_CALLS`) | `_bind_api` | `test_dump_and_call_caps_bite` |
+| settle wait | 5000 ms (`MAX_SETTLE_MS`) | `capture_entry` | `test_capture_entry_wiring` |
+| decoded pixels | 60 Mpx (`MAX_CAPTURE_PIXELS`), read from the file header and refused **before** decoding; a page that large is also refused before it is photographed | `pixel_budget_problem`, `vp_compare.main`, `capture_entry`, `encode_image` | `test_pixel_budget_refuses_before_decoding`, `test_capture_entry_wiring` |
+| comparator memory | similarity, the diff picture and pixel statistics are computed in 512/1024-row bands; peak 623 MB on today's 35 surfaces (was 1.16 GB), same scores to 1e-9 | `block_ssim`, `diff_image`, `pixel_delta_stats`, `ink_coverage` | `test_banded_similarity_equals_the_whole_image_result`, `test_pixel_statistics_are_pinned` |
+| run size | 300 files per marketing run (`MARKETING_MAX_FILES_PER_RUN`): 35 surfaces x 3 files (screenshot, diff, DOM dump) x 2 engines + 4 run-level files = 214 at the most; 172 today; the 3 report files still to be written are counted; the oldest of 5 runs is evicted | `vp_compare.run_files_problem` (driven end to end through `main`), `prune_runs` | `test_per_run_file_cap_is_enforced`, `test_comparator_main_wiring` |
+| bundle probe | at most 400 `.js` files (`MAX_PROBE_JS_FILES`), counting only `.js`; a bundle over the cap **fails** the probe | `source_probe_problem` | `test_bundle_probe_counts_only_js_and_fails_at_its_cap` |
+| `vp_slice` output | 12 Mpx (`MAX_OUT_PIXELS`), computed from the requested numbers **before any crop is allocated** | `plan_slice` | `test_slice_output_cap_is_checked_before_allocation` |
+| artifact page | 80 images and 13 MB (`MAX_IMAGES`, `MAX_TOTAL_BYTES`), both checked before any file is written; encoding stops at the image that crosses the byte cap | `build_fidelity_artifact.build` | `test_artifact_builder_caps_refuse_before_writing` |
+| capture server | one daemon thread running `serve_forever` on 127.0.0.1 with one short-lived daemon handler thread per connection (`ThreadingMixIn`); serves `dist/` only, no cache, path-traversal guarded | `_Handler._serve` | `test_capture_server_is_confined` |
+
+**Ctrl-C.** A KeyboardInterrupt during a capture skips the Playwright teardown and exits 130: closing a context after an interrupt spins
+at 100% CPU with the driver and every browser still alive (reproduced 3 of 3 by the performance review). The skip is covered by
+`test_capture_entry_wiring` (the context is not closed on an interrupt). The end-to-end behaviour needs a browser, so it was checked by hand on a real
+capture of the real catalogue, the capture started in its own session and every process attributed to it by ancestry and by its own
+`--user-data-dir` (never by "new since I started": other agents run browsers on this machine too), each case against the code before and after the fix:
+- SIGINT to the whole process group (what Ctrl-C does): before, the python never exited in 30 seconds and spun at 99% CPU; after, it exited 130 in 0.5 seconds with none of its processes left.
+- SIGINT to the python process alone (`kill -INT <pid>`): before, it spun at 100% CPU and left 4 browser processes alive; after, it exited 130 in 0.4 seconds with none left.
+Anything the test started was removed afterwards by exact PID.**Scores are reproducible to about +-0.001.** The same code on the same machine produced fourth-decimal differences on 7 of 29 pairs
+(up to 0.0010, e.g. Home 0.6439 then 0.6431): text edges antialias slightly differently between runs. No verdict changes at that size.
+Quote a score to two decimals.
+
+**Disk.** The reference store adds 6.3 MB to every clone for good (history keeps replaced exports): re-ingest only the frames that changed, and
+consider Git LFS before adding a second viewport suite.
 
 ### Extracting a Figma frame's style dump
 
@@ -548,11 +580,23 @@ committed run: the checkout is shared.
 `findings/*.json` (one file per audit area) hold every difference, each with a class A to E, severity, Figma and build values, evidence and fix/source/
 decision as the class requires. A finding may carry `dup_of` (the same defect seen again on another page: shown, counted once under the canonical
 finding) or `owned_by` (a ClickUp id: an A that another ticket already owns, so it raises no fix here). `check_fidelity_audit.py` enforces the rules and
-`--write-report` renders `docs/delivery/FIGMA-FIDELITY-AUDIT-marketing-account-2026-10-03.md` from the data.
+`--write-report` renders `docs/delivery/FIGMA-FIDELITY-AUDIT-marketing-account-2026-10-03.md` from the data, and `--check-report` fails when the committed report
+no longer matches what the data would render (a finding edited without regenerating it).
+
+The checker reads meaning, not just shape. It rejects: an `owned_by` that is not one of the five approved owner tickets, is on anything but a class A, or
+exempts more than 10 findings; a `dup_of` that points at a finding of another class or another area (unless that one is shared); a figma/build/fix/decision
+text too thin to act on; a class B finding whose source cites nothing that resolves (a document, a decision, a file or a commit that exists, and a contrast
+figure that recomputes); a surface list that is not the 16 pages and 19 states of the catalogue with the right Figma node ids; a finding naming a ticket that
+does not exist or belongs to another group; a ticket url that is not exactly `https://app.clickup.com/t/<id>` (the url becomes an `href` on the Artifact
+page, and `javascript:` would run); a bug with no group; an api gap with an invented status; and findings files that audited different commits.
+`--require-tickets` adds that every class A and E finding names its ticket. Each rule has a control in `--self-test` and a mutation in `mutations.json`.
 
 ### Self-test
 
-`python3 scripts/vp_selftest.py` now carries the marketing controls alongside the operator ones (suite caps, style registration,
+`python3 scripts/vp_selftest.py` (197 checks) carries the marketing controls alongside the operator ones (suite caps, style registration,
 top-crop alignment, bundle probe and freshness, the three deviation metrics, DOM contrast, style-diff pairing and detection, box
-diff, catalogue validation, server confinement, committed references). `python3 scripts/check_fidelity_audit.py --self-test`
-proves the audit checker rejects each kind of incomplete audit.
+diff, catalogue validation, server confinement, committed references, and the capture and comparator wiring driven through the real entry points with
+fake pages and synthetic runs). `python3 scripts/check_fidelity_audit.py --self-test` (90 checks) proves the audit checker rejects each kind of
+incomplete audit. Neither is in `make ci` yet: that is a separate ticket, [CI] Run the visual-parity self-test and the audit checker's self-test in
+`make ci` and CI (ClickUp 17tnw2b2fum, linked to the CI-masking ticket 86ak5rjh7); it was kept out of this change on purpose, so that a change to
+what `make ci` runs is reviewed on its own.
