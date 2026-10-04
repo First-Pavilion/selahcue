@@ -52,8 +52,11 @@ Footprint (the only files this ticket edits), under `implementation/marketing/`:
 - `src/App.vue`, `src/router/scroll.ts`
 - their tests under `tests/`
 
-Plus two test-gate edits that follow directly from the requested change and are made in a separate commit
-(see Assumptions): the 68px navbar height and four-column footer assertions in `scripts/responsive_sweep.py`.
+Plus declared edits outside that list, each made in its own commit because it follows directly from the requested change:
+
+- `scripts/responsive_sweep.py`: the 68px navbar height and four-column footer assertions (see Assumptions), and, from review round 1, a negative assertion that bare routes render no navbar or footer and one that "How it works" is not the current page on Home
+- `scripts/legal_pages_headless.py`: its hard-coded 69px bar and 82..96px anchor window (review round 1, Quinn B1)
+- `docs/design/DESIGN-TOKENS.md`: one paragraph recording the web-only `--sc-text-muted` raise (review round 1, Cody)
 
 ### Non-goals
 
@@ -98,12 +101,13 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
 | C-007 | yes | One 1248px content-width token with 96, 48 and 20px gutters and one shared container exist; section padding is 88px; `--sc-surface-alt` and `--sc-success` are defined; a test fails if a `var(--x)` used in `src/` has no definition (shared-chrome-22, 23, 24, 25, pricing-25) | `node --test tests/tokens.test.ts` (and a mutation: an undefined var makes it fail) | exit 0; the mutation turns it red | the guard was red before the change on exactly `--sc-surface-alt` and `--sc-success`, green after; in-memory controls cover undefined, fallback, other-file and comment cases | PASS |
 | C-008 | yes | Desktop nav links, brand and CTA show a visible focus-visible ring and the nav surface uses tokens, not the hard-coded dark band (shared-chrome-08, 09) | `node --test tests/chrome.test.ts` and a browser keyboard pass | tests pass; ring present on each control; computed header background equals the base token | Tab order measured in Blink: brand, Features, How it works, Pricing, Download, Sign in, Download free each show a 2px solid brand ring at 2px offset; header background rgb(11, 13, 18) = base; scrolled state computed on a hash jump | PASS |
 | C-009 | yes | After `npm run build`, `visual_parity.py --suite marketing --only home pricing features` exits 0 and `vp_style_diff.py` prints no line belonging to a class A finding of this ticket; the full suite on both engines shows no regression on any surface | `python3 scripts/visual_parity.py --suite marketing --engine both` and `vp_style_diff.py` per slug, before and after | exit 0; remaining chrome lines are documented class B, C or D | runs `.visual-parity/run-20261003-213858` (only home pricing features, exit 0) and `.visual-parity/run-20261003-215149` (all surfaces, both engines, exit 0); baseline `run-20261003-212326`; chrome lines not in the token layer 1023 to 150 over 15 pages (about 8 each: the nav border read as top-only by the harness, Affiliates ink, class C wording, page text pairings); Blink and WebKit identical | PASS |
-| C-010 | yes | `make marketing-check`, `npm test`, `npm run test:states` and `npm run test:responsive` pass (headless required) | each command with its exit code captured to a file, never piped | all exit 0 | `make marketing-check` exit 0 (699 pass, 0 fail); `npm test` exit 0 (699); `test:states` exit 0 (60 scenarios, 1751 checks, 0 FAIL); `test:responsive` exit 0 (Chromium 2281 checks, 0 failed) and `--engine webkit` exit 0 (2281, 0 failed); `vp_selftest.py` 112 checks 0 FAIL; `check_fidelity_audit.py --self-test` 34 checks 0 FAIL | PASS |
+| C-010 | yes | `make marketing-check`, `npm test`, `npm run test:states` and `npm run test:responsive` pass (headless required) | each command with its exit code captured to a file, never piped | all exit 0 | at the merged head (audit branch 1b70306d merged in): `make marketing-check` exit 0 (722 pass, 0 fail); `npm test` exit 0 (722); `test:states` exit 0 (60 scenarios, 1751 checks, 0 FAIL); the sweep under `/usr/bin/python3` with `SELAHCUE_SWEEP_REQUIRE=1` exit 0 on Chromium (2315 checks, 0 failed) and on WebKit (2315, 0 failed); `vp_selftest.py` 197 checks 0 FAIL; `check_fidelity_audit.py --self-test` 90 checks 0 FAIL, `--require-tickets` 0 problems | PASS |
 | C-011 | yes | No horizontal page scroll at 375, 768 and 1440 on the changed pages and the mobile nav sheet and 44px touch targets still pass | `npm run test:responsive` and real renders | sweep reports none; renders checked | sweep above (it caught the 37px Terms link on phones, fixed); renders at 1440, 1024, 768 and 375 read; scrollWidth equals innerWidth at 1440, 1024, 768, 375 | PASS |
-| C-012 | yes | The PR touches only this ticket's footprint plus the named gate edit; shared files owned by other tickets are untouched | `git diff --name-only origin/web/17tnw2b2c75-figma-fidelity-audit` | every path is in the footprint or the named gate script | the file list: Navbar.vue, Footer.vue, UiButton.vue, tokens.css, main.css, App.vue, scroll.ts, five test files plus the css test helper, `responsive_sweep.py`, and this contract | PASS |
+| C-012 | yes | The PR touches only this ticket's footprint plus the named gate edit; shared files owned by other tickets are untouched | `git diff --name-only origin/web/17tnw2b2c75-figma-fidelity-audit` | every path is in the footprint or the named gate script | the file list: Navbar.vue, Footer.vue, UiButton.vue, tokens.css, main.css, App.vue, scroll.ts, the test files and fixtures for them; outside the list and declared: `responsive_sweep.py`, `legal_pages_headless.py`, `DESIGN-TOKENS.md`, and this contract | PASS |
 | C-013 | yes | A Draft PR is open against the audit branch, stacked and labelled as such, and the branch is not behind the audit branch | `gh pr view` and `git rev-list --count HEAD..origin/web/17tnw2b2c75-figma-fidelity-audit` | isDraft true; base is the audit branch; behind count 0 | https://github.com/First-Pavilion/selahcue/pull/172 draft, base `web/17tnw2b2c75-figma-fidelity-audit`; behind count 0 at the last fetch (see the final message for the head) | PASS |
 | C-014 | yes | ClickUp 17tnw2b2cev is in progress with a start comment and carries the handoff comment with QA steps as a list | ClickUp read-back | both comments present, no dropped table | start comment 1400430000059199; handoff comment 1400430000059466 (read back, lists render, no table); ticket moved to code review | PASS |
 | C-015 | yes | Independent review (code, performance, security, QA) has passed and blocking findings are remediated | Cody, Vera, Shadow, Quinn brokered by the coordinator | all four report; no open blocking finding | not requested by this role; the coordinator brokers it on the PR head | PENDING |
+| C-016 | yes | The other headless gates that run on these files still pass: the legal pages gate and the article pages gate (review round 1, Quinn B1) | `SELAHCUE_HEADLESS_REQUIRE=1 npm run test:legal-pages` and `/usr/bin/python3 scripts/article_pages_headless.py` | both exit 0 | `test:legal-pages` exit 0, 419 passed, 0 failed (it was 395 passed, 24 failed with the 69px bar hard-coded); `article_pages_headless.py` exit 0, 143 of 143 | PASS |
 
 Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABLE`.
 
@@ -113,6 +117,8 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
 - Broader regression verification: `make marketing-check`, `npm test`, `npm run test:states`, `npm run test:responsive`, `vp_selftest.py`, `check_fidelity_audit.py --self-test`, the harness on all captured surfaces under Blink and WebKit
 - Independent verifier: the four-reviewer gate (coordinator-dispatched)
 - Required environment: Node 22+, `/usr/bin/python3` with Pillow and Playwright (Chromium, WebKit), headless Chrome, network for the Inter font. Rust, Flutter and API are untouched, so `make ci` is not required.
+- **`npm run test:responsive` can exit 0 while SKIPPED.** If the first `python3` on PATH has no Playwright, the sweep prints "SWEEP SKIPPED" and exits 0. A passing result counts only with `SELAHCUE_SWEEP_REQUIRE=1` (and `SELAHCUE_HEADLESS_REQUIRE=1` for the other headless gates) and `/usr/bin/python3`; every result recorded here was run that way. Pre-existing, not from this change (review round 1, Quinn N11).
+- Browser-driven gates run one at a time, in the background, to a log file that is polled; a gate that dies oddly (closed connection, killed browser) is re-run before it is trusted or reported, because another session's cleanup once killed browser processes that were not its own.
 
 ## Iteration ledger
 
@@ -155,6 +161,49 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
 - Result: all PASS except the handoff comment (written next) and independent review (brokered)
 - New evidence: contrast survey 166 to 74 entries with none in nav, footer or loading
 - Decision: gate-review
+
+### Iteration 5 (review round 1)
+
+- Target criterion: C-010, C-012, C-016 and the review findings
+- Hypothesis: every finding is fixable inside the footprint plus declared gate edits, and each guard can be shown to bite
+- Change or investigation: read the four reviews; fixed the legal pages gate; wrote each guard first and mutation-proved it (main.css ratio, unreachable media block, deleted rule, default router-link, bare route rendering chrome, footer using the navbar's variable); replaced the first-task scroll read with an observer; merged the audit branch
+- Verifier executed: the whole verify set on the merged head (see C-010 and C-016)
+- Result: all green; the legal gate fix was the only red; one first attempt (requestAnimationFrame) was rejected by an existing guard that bans timers on the auth path, so the observer replaced it
+- New evidence: the legal pages gate was the second hard-coded copy of the bar height
+- Decision: gate-review
+
+## Review round 1
+
+Reviewers on head `84e64ddd` (PR 172), brokered by the coordinator. Comments:
+
+- Shadow, CLEAR (2 Low): https://github.com/First-Pavilion/selahcue/pull/172#issuecomment-5976919528
+- Cody, CLEAR (9 non-blocking): https://github.com/First-Pavilion/selahcue/pull/172#issuecomment-5977020898
+- Quinn, BLOCKING (1 blocking, 12 non-blocking): https://github.com/First-Pavilion/selahcue/pull/172#issuecomment-5977568559
+- Vera, CLEAR (4 non-blocking): https://github.com/First-Pavilion/selahcue/pull/172#issuecomment-5977571224
+
+Fixed in this round:
+
+- Quinn B1: `legal_pages_headless.py` hard-coded a 69px bar and an 82..96px anchor window; it now follows the real bar (79px from 768, 69px below). `test:legal-pages` 395 of 419 before, 419 of 419 after. No other hard-coded bar height in `scripts/` or `tests/` is asserted (the 68px fallbacks and a stale comment are listed in the PR).
+- Cody 1: the three global rules with no guard (logo crop, global focus default, `#how-it-works` margin) now have tests that resolve the rule and compare it with the logo file's alpha box, the Figma reference frame and the anchor token; each was mutated and went red.
+- Cody 3 and Quinn N1: "How it works" is a custom router-link that renders a plain anchor, so it is never `aria-current`; asserted in node and in the sweep (bar and sheet), mutation-proved.
+- Cody 5: the undefined-property guard is scope-aware (global stylesheet or the same file); `var(--nav-cta-hover)` from the footer fails it; its remaining limit is documented and tested.
+- Cody 6 and Quinn N3: UiButton transitions named properties, so the focus ring appears at once (2px brand, measured right after Tab).
+- Cody 7 and Quinn N8: counts corrected (722 now).
+- Cody judgement call 1: DESIGN-TOKENS.md records the web-only muted ink.
+- Shadow 2: the sweep asserts bare routes render no navbar or footer, mutation-proved.
+- Quinn N5: the mark's ink measured 30 x 32 against Figma's 26 x 28; the crop is tuned to 87.5% of the box and now measures 26 x 28 in the build, guarded.
+- Quinn N11: recorded above.
+- Vera 1: the scrolled state is observed with an IntersectionObserver on a 10px sentinel instead of read in the first task; the threshold matches the old rule exactly (false at 10px, true at 11px) and a cold load onto a deep anchor starts scrolled.
+
+Declared, no code change: new hover treatments (Cody 4), the first-time Chromium backdrop blur (Vera 2, keep or drop is Uma's), the visible effects outside the chrome (Cody 8), "Windows · macOS" stays with no Linux (Cody 9, shared-chrome-35).
+
+Deferred with a note to the downstream tickets: Shadow 1 (reanchor.ts, Home ticket), Quinn N4, N9, N10, N12, N7 and N2 (page, responsive and Home tickets). Follow-up ticket for Vera 4: https://app.clickup.com/t/17tnw2b2g24 (footer visible under the loading fallback, CLS 0.4).
+
+Not changed on purpose: Quinn N6 (1.5px wider buttons; the border was taken out of the vertical padding only; Figma's own buttons vary by about 2px).
+
+Vera's measurements, recorded as positive results: the logo-load sideways shift is gone (Home CLS 0.0002 to 0), the footer at 1440 is 358px (was 405.5), the bundle grows 630 bytes gzip with the chunk count unchanged, and 120 mount and unmount cycles leak no listener and no heap.
+
+Gates re-run on the merged head (the audit branch final `1b70306d` merged in): see C-009, C-010 and C-016. Harness run `.visual-parity/run-20261004-073732`.
 
 ## Risks and rollback
 
