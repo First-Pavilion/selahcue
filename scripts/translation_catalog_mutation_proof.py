@@ -23,11 +23,11 @@ import tempfile
 
 HERE = pathlib.Path(__file__).resolve().parent
 TARGET = "build_translation_catalog.py"
+TIMEOUT_SECONDS = 90  # the self-test takes about 1 s; a quadratic-regex mutant takes about 16 s before its time bound fires
 
 # (what is being broken, the exact text to replace, what to replace it with)
 MUTATIONS = [
-    ("clean: keep the delimiter space after an opening marker",
-     '_OPEN = re.compile(r"\\\\\\+?[A-Za-z][A-Za-z0-9]*[ \\t]?")', '_OPEN = re.compile(r"\\\\\\+?[A-Za-z][A-Za-z0-9]*")'),
+    ("clean: keep the delimiter space after an opening marker", '(\\*|[ \\t]?)")', '(\\*|)")'),
     ("clean: collapse NBSP like str.split()", '_ASCII_WS.sub(" ", text).strip(" ")', '" ".join(text.split())'),
     ("clean: drop NFC", 'return unicodedata.normalize("NFC", _ASCII_WS', "return (lambda x: x)(_ASCII_WS"),
     ("parse: keep empty verses as rows", "        if text:\n            verses[key] = text",
@@ -67,9 +67,9 @@ MUTATIONS = [
     ("gate: ignore Redistributable", 'if row["Redistributable"] != "True":', "if False:"),
     ("gate: ignore downloadable", 'if row["downloadable"] != "True":', "if False:"),
     ("gate: ignore language", 'if row["languageCode"] != spec.get("language"):', "if False:"),
-    ("gate: ignore copyright drift",
-     'if spec.get("expect_copyright", "\\0").lower() not in row["Copyright"].lower():', "if False:"),
-    ("gate: ignore --require-cleared", 'elif require_cleared and spec["legal_review"] != "cleared":', "elif False:"),
+    ("gate: ignore copyright drift", 'elif _squash(expected) != _squash(row["Copyright"]):', "elif False:"),
+    ("gate: ignore --require-cleared",
+     'elif require_cleared and (only is None or code in only) and spec["legal_review"] != "cleared":', "elif False:"),
     ("gate: ignore bundled-code collision", "if code in BUNDLED_CODES:", "if False:"),
     ("gate: ignore duplicate code", "        if code in seen:", "        if False:"),
     ("gate: ignore excluded list", 'if spec.get("ebible_id") in excluded:', "if False:"),
@@ -89,6 +89,71 @@ MUTATIONS = [
     ("verify_bundled: always ok", "        ok = differ == expected", "        ok = True"),
     ("verify_bundled: ignore stale pins", "        for k in sorted(differ ^ expected)[:8]:",
      "        for k in sorted(differ - expected)[:8]:"),
+    # Added after Shadow's review of PR 181: the denial-of-service and zip-bound guards.
+    ("clean: `\\w` takes `\\s+` again (quadratic on an unclosed marker)", 'r"\\\\\\+?w\\s([^|\\\\]*?)', 'r"\\\\\\+?w\\s+([^|\\\\]*?)'),
+    ("notes: an unterminated note is accepted", "        if end < 0:\n            raise Mismatch(", "        if False:\n            raise Mismatch("),
+    ("zip: members are read without the cap", "member.read(MAX_MEMBER_BYTES + 1)", "member.read()"),
+    ("zip: no check on bytes actually read", "            if len(raw) > MAX_MEMBER_BYTES or total > MAX_TOTAL_BYTES:", "            if False:"),
+    ("zip: no member-count cap", "        if len(everything) > MAX_MEMBERS:", "        if False:"),
+    ("zip: non-UTF-8 member is a traceback", "            except UnicodeDecodeError as e:", "            except ZeroDivisionError as e:"),
+    ("zip: a corrupt member is a traceback", "            except (zipfile.BadZipFile, zlib.error,", "            except (zlib.error,"),
+    # Added after the review round on PR 181 (Quinn B1/B2, Cody F1, M1-M5, Shadow C1/C2): inline markers, note spacing,
+    # the licence page, and clause-level mutants (a guard is not tested because its whole `if` is, only its clauses).
+    ("notes: `\\fm` is not a note", r"\\(f|fe|ef|fm|x|ex|va|vp|ca|fig)\s", r"\\(f|fe|ef|x|ex|va|vp|ca|fig)\s"),
+    ("notes: a note may run on past a verse or chapter marker", "runs_on = _NOTE_BREAK.search(inner) or", "runs_on = None or"),
+    ("notes: a note may contain another note of its own kind", ' or re.search(r"\\\\" + kind + r"\\s", inner)', " or None"),
+    ("notes: keep the space before a note when punctuation follows", "        if ahead < len(text) and text[ahead] in _CLOSING_PUNCT:", "        if False:"),
+    ("notes: do not look past inline markers for the punctuation", "            ahead = marker.end()", "            break"),
+    ("notes: keep the space after a note when punctuation follows", "            pos = _SPACES.match(text, pos).end()", "            pos = pos"),
+    ("notes: the look-ahead copies the rest of the text per note (quadratic)", "        ahead = _SPACES.match(text, ahead).end()",
+     '        ahead = len(text) - len(text[ahead:].lstrip(" \\t"))'),
+    ("notes: closing quotes are not closing punctuation", '_CLOSING_PUNCT = ",;:.!?)\\u201d\\u2019"', '_CLOSING_PUNCT = ",;:.!?)"'),
+    ("notes: an opening quote counts as closing punctuation", '_CLOSING_PUNCT = ",;:.!?)\\u201d\\u2019"', '_CLOSING_PUNCT = ",;:.!?)\\u201d\\u2019\\u201c"'),
+    ("inline: unknown markers are stripped, not refused", "        if m.group(1) not in _CHARS and not _TABLE_CELL.fullmatch(m.group(1)):", "        if False:"),
+    ("inline: table cell markers are refused", "        if m.group(1) not in _CHARS and not _TABLE_CELL.fullmatch(m.group(1)):", "        if m.group(1) not in _CHARS:"),
+    ("parse: a `\\qc` line in Psalm 119 is always a label", "            if _LABEL_SHAPE.fullmatch(rest):", "            if True:"),
+    ("parse: a note refusal loses its book", '        raise Mismatch([f"{label}: {p}" for p in e.problems])', "        raise"),
+    ("convert: heading equal to the whole verse is not fused", 'if len(h) >= 3 and (text == h or text.startswith(h + " ") or text.endswith(" " + h)):',
+     'if len(h) >= 3 and (text.startswith(h + " ") or text.endswith(" " + h)):'),
+    ("convert: heading at the end of the verse is not fused", 'if len(h) >= 3 and (text == h or text.startswith(h + " ") or text.endswith(" " + h)):',
+     'if len(h) >= 3 and (text == h or text.startswith(h + " ")):'),
+    ("convert: an untrimmed verse is accepted", "if not text or text != text.strip() or _RESIDUE.search(text):", "if not text or _RESIDUE.search(text):"),
+    ("convert: control characters are accepted", '_RESIDUE = re.compile(r"[\\[\\]¶*|\\\\\\x00-\\x1f\\x7f]")', '_RESIDUE = re.compile(r"[\\[\\]¶*|\\\\]")'),
+    ("zip: the declared TOTAL is not capped", "if sum(i.file_size for i in infos) > MAX_TOTAL_BYTES or any(", "if any("),
+    ("zip: sidecars are read as books",
+     ' and not i.filename.startswith("__MACOSX/") and not pathlib.PurePosixPath(i.filename).name.startswith("._")]', "]"),
+    ("zip: `.USFM` is not a book", 'if i.filename.lower().endswith(".usfm")', 'if i.filename.endswith(".usfm")'),
+    ("gate: the licence_text pin is optional", 'if not (isinstance(phrases, list) and phrases and all(isinstance(p, str) and p.strip() for p in phrases)):', "if False:"),
+    ("gate: expect_copyright is optional", "if not isinstance(expected, str) or not expected.strip():", "if False:"),
+    ("gate: `--require-cleared` ignores which entries are built", "(only is None or code in only)", "True"),
+    ("gate: copyright compare is case- and space-sensitive", '    return " ".join(text.casefold().split())', "    return text"),
+    ("licence: the page is never checked", "            check_licence_text(zip_path, spec)", "            pass"),
+    ("licence: required phrases are not required", 'problems = [f"the licence page no longer contains {p!r}" for p in spec["licence_text"] if _squash(p) not in text]', "problems = []"),
+    ("licence: forbidden phrases are allowed", 'problems += [f"the licence page contains {p!r}" for p in _FORBIDDEN_LICENCE_TEXT if p in text]', "problems += []"),
+    ("licence: a missing page is accepted", "    if text is None:", "    if False:"),
+    ("licence: no cap on the page size", "    if len(raw) > MAX_LICENCE_PAGE_BYTES:", "    if False:"),
+    ("licence: direction marks are not removed", '    text = "".join(c for c in text if unicodedata.category(c) != "Cf")', "    text = text"),
+    ("licence: HTML entities are not decoded", "    text = html.unescape(text)", "    text = text"),
+    ("licence: a corrupt zip is a traceback", "    except (OSError, zipfile.BadZipFile, zlib.error, EOFError, NotImplementedError, RuntimeError) as e:\n        raise Mismatch([f\"{zip_path}: cannot read the licence page",
+     "    except (zlib.error,) as e:\n        raise Mismatch([f\"{zip_path}: cannot read the licence page"),
+    ("allowlist: schema is not checked", 'if data.get("schema") != 1:', "if False:"),
+    ("build: a used output folder is accepted", "    if out.exists() and (not out.is_dir() or any(out.iterdir())):", "    if False:"),
+    ("build: a file as the output folder is a traceback", "(not out.is_dir() or any(out.iterdir()))", "(any(out.iterdir()))"),
+    ("build: a cached catalogue is trusted on a publish run", "refresh=refresh or (require_cleared and not offline))", "refresh=refresh)"),
+    ("build: --refresh does not refetch zips", "offline, opener, refresh=refresh)", "offline, opener)"),
+    ("ensure: --refresh does not refetch", "    if refresh or not path.is_file():", "    if not path.is_file():"),
+    ("catalog: the catalogue's own digest is not recorded", '"translations_csv_sha256": sha256_file(csv_path),', '"translations_csv_sha256": "",'),
+    ("catalog: attribution is dropped", '"attribution": spec.get("attribution"),', '"attribution": None,'),
+    ("catalog: trademark note is dropped", '"trademark_note": spec.get("trademark_note"),', '"trademark_note": None,'),
+    ("catalog: modification notice is dropped", '"modifications": spec.get("modifications"),', '"modifications": None,'),
+    ("catalog: share-alike flag is wrong", '"share_alike": licence["share_alike"]}', '"share_alike": False}'),
+    ("catalog: attribution-required flag is wrong", '"attribution_required": licence["attribution_required"],', '"attribution_required": False,'),
+    ("catalog: eBible update date is dropped", '"ebible_update_date": row["UpdateDate"],', '"ebible_update_date": "",'),
+    ("catalog: source URL is dropped", '''"url": f"{EBIBLE}/{spec['ebible_id']}_usfm.zip",''', '"url": "",'),
+    ("catalog: entries are not sorted", 'sorted(entries, key=lambda e: e["code"])', "entries"),
+    ("catalog: non-ASCII is escaped", "ensure_ascii=False,", "ensure_ascii=True,"),
+    ("fetch: no timeout", "opener(req, timeout=60)", "opener(req, timeout=6000)"),
+    ("fetch: no User-Agent", 'headers={"User-Agent": USER_AGENT}', "headers={}"),
     ("catalog: wrong digest", '"sha256": hashlib.sha256(gz).hexdigest(),', '"sha256": hashlib.sha256(gz + b"x").hexdigest(),'),
     ("catalog: drop the omitted-verse count", '"omitted_verses": len(omitted),', '"omitted_verses": 0,'),
 ]
@@ -107,9 +172,12 @@ def main():
             for f in ("strip_bible_headings.py", "translation_allowlist.json"):
                 shutil.copy(HERE / f, tmp / f)
             (tmp / TARGET).write_text(text.replace(find, repl), encoding="utf-8")
-            r = subprocess.run([sys.executable, TARGET, "--self-test"], cwd=tmp, capture_output=True, text=True,
-                               timeout=120)
-        caught = r.returncode != 0
+            try:
+                r = subprocess.run([sys.executable, TARGET, "--self-test"], cwd=tmp, capture_output=True, text=True,
+                                   timeout=TIMEOUT_SECONDS)
+                caught = r.returncode != 0
+            except subprocess.TimeoutExpired:
+                caught = True  # a mutant that hangs (an unbounded loop or a quadratic regex) is not a green self-test
         print(f"{'caught  ' if caught else 'SURVIVED'}  {name}")
         if not caught:
             bad.append(name)
