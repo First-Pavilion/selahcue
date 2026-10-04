@@ -24,7 +24,7 @@ const features = [
   {
     icon: 'monitor',
     title: 'Live presentation & outputs',
-    description: 'Stage scripture, songs, and slides in Preview, then Go Live to the audience — the output never blanks, even on a fault.'
+    description: 'Stage scripture, plan items, and slides in Preview, then Go Live to the audience. If the renderer faults, the output holds its last good frame.'
   },
   {
     icon: 'book',
@@ -34,7 +34,7 @@ const features = [
   {
     icon: 'list',
     title: 'Service plans & timers',
-    description: 'Build the order of service, run countdowns, and keep every segment on time from the console or your phone.'
+    description: 'Build the order of service and run a service countdown from the console or your phone.'
   },
   {
     icon: 'layout',
@@ -44,7 +44,7 @@ const features = [
   {
     icon: 'radio',
     title: 'NDI & multi-output',
-    description: 'Broadcast your program as an NDI source for OBS or vMix, with per-output orientation, scaling, mirror, and visible layers.'
+    description: 'Broadcast an audience output as an NDI source for OBS or vMix. Orientation, scaling and mirror apply to the projector and stage windows.'
   },
   {
     icon: 'mic',
@@ -57,7 +57,7 @@ const pillars = [
   {
     icon: 'shield-check',
     title: 'Never blanks the screen',
-    description: 'No component failure — a bad slide, a lost GPU, a dropped controller — is ever allowed to black the live output.',
+    description: 'A renderer fault, a lost display signal or a dropped phone holds the last good frame instead of blanking the output.',
     variant: 'primary'
   },
   {
@@ -69,7 +69,7 @@ const pillars = [
   {
     icon: 'zap',
     title: 'Fast & bounded',
-    description: 'Starts fast and keeps memory bounded. No runaway caches, no creeping slowdown.',
+    description: 'Starts quickly and caps the queues and caches on the live path so memory stays bounded.',
     variant: 'warn'
   }
 ]
@@ -83,7 +83,7 @@ const outputChecks = [
 const steps = [
   {
     title: 'Plan your service',
-    description: 'Add songs, scripture, and sections to the order of service. Set countdowns.'
+    description: 'Add scripture, presentations, and sections to the order of service, and start a service countdown.'
   },
   {
     title: 'Go live with one tap',
@@ -103,11 +103,11 @@ const faqItems = [
   },
   {
     question: 'Which platforms are supported?',
-    answer: 'SelahCue is available for Windows, macOS and Linux. Additionally, you can pair any iOS or Android phone over your local Wi-Fi network to control slides remotely.'
+    answer: 'SelahCue is available for Windows, macOS and Linux. Additionally, you can pair an iOS or Android phone running the SelahCue Controller app over your local Wi-Fi network to control slides remotely.'
   },
   {
-    question: 'Can I use my own songs, slides, and designs?',
-    answer: 'Yes. Build multi-slide song lyrics, stage any scripture, and design your own slide templates in the Theme Designer.'
+    question: 'Can I use my own slides and designs?',
+    answer: 'Yes. Build multi-slide presentations with text, shapes and images, stage any scripture from the bundled Bibles, and design your own scripture themes in the Theme Designer.'
   },
   {
     question: 'What is NDI, and do I need it?',
@@ -137,7 +137,7 @@ const faqItems = [
         </h1>
 
         <p class="hero-subtitle">
-          SelahCue is the offline-first presentation &amp; ministry-assistance app that never blanks the screen — scripture, songs, timers, stage display, and NDI outputs.
+          SelahCue is the offline-first presentation &amp; ministry-assistance app that never blanks the screen — scripture, slides, a service countdown, stage display, and NDI outputs.
         </p>
 
         <div class="hero-actions">
@@ -196,7 +196,7 @@ const faqItems = [
           <UiBadge variant="eyebrow">WHY SELAHCUE</UiBadge>
           <!-- Figma draws the break after "moment" (two lines of 760px); phones let it wrap. -->
           <h2 class="section-title is-reliability">Built for the one moment <br />you can't repeat</h2>
-          <p class="section-subtitle">Sunday morning doesn't wait for a spinning cursor. SelahCue is engineered so the audience output is always up — reliable, offline, and fast.</p>
+          <p class="section-subtitle">Sunday morning doesn't wait for a spinning cursor. SelahCue is engineered so a rendering fault holds the last good frame — reliable, offline, and fast.</p>
         </div>
 
         <div class="reliability-grid">
@@ -221,7 +221,7 @@ const faqItems = [
             <!-- Figma breaks after "moment," (two lines of 470px); phones let it wrap. -->
             <h2 class="outputs-title">One live moment, <br />every output</h2>
             <p class="outputs-body">
-              Send the same live content to your projector, a stage confidence monitor, and an NDI stream — each with its own orientation, scaling, and visible layers.
+              Send the same live content to a projector, a stage monitor, and an optional NDI stream. Set orientation, scaling and mirror per window.
             </p>
 
             <ul class="outputs-checklist">

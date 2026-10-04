@@ -425,7 +425,7 @@ def run_engine(p, engine_name: str) -> Run:
             "Download free",  # hero (the disabled demo button is skipped)
             "Do I need an internet connection?",
             "Which platforms are supported?",
-            "Can I use my own songs, slides, and designs?",
+            "Can I use my own slides and designs?",
             "What is NDI, and do I need it?",
             "How does billing work?",
             "Download free",  # the final band

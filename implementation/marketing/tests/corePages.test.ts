@@ -179,6 +179,7 @@ const BANNED: readonly Banned[] = [
   { id: 'unlimited outputs', pattern: /unlimited/, because: 'features-10, pricing-16: DEC-008 caps outputs at 2, 5 and 10' },
   { id: 'always on the latest version', pattern: /latest version/, because: 'pricing-09: no source' },
   { id: 'cancel anytime or a refund', pattern: /\bcancel|refund|money.back/, because: 'no billing exists to cancel or refund (pricing-18)' },
+  { id: 'count-up timers', pattern: /count-up|count up|elapsed timer/, because: 'FR-054 asks for count-up timers but the shipped app has a single countdown (docs.ts: "no count-up or elapsed timer")' },
   { id: 'a community or customer count', pattern: /thousands of|join thousands|\d[\d,]*\+? (churches|members|users)/, because: 'about-04: no evidence of any customer count' },
   { id: 'NDI 5', pattern: /ndi 5\b/, pages: ['features'], because: 'features-07: the PRD cites NDI 6.x' },
   { id: 'a resolution or frame rate', pattern: /\b4k\b|1080p|720p|60\s?fps/, pages: ['features'], because: 'features-07: no figure exists' },
@@ -232,6 +233,7 @@ describe('no claim the repo does not back is on the page', () => {
   test('CONTROL: every banned pattern fires on a string that contains it, and a clean string passes', () => {
     const planted: Record<string, { text: string; page: Page }> = {
       'a price or currency amount': { text: 'Pro $19 / month', page: 'pricing' },
+      'count-up timers': { text: 'Countdown + count-up timers', page: 'features' },
       'an annual discount': { text: 'Annual · save 20%', page: 'pricing' },
       'a trial': { text: 'Start free trial', page: 'pricing' },
       'a Custom or Church tier': { text: 'Church Custom', page: 'pricing' },
@@ -367,7 +369,7 @@ const LEDGER: Readonly<Record<Page, readonly string[]>> = {
   features: [
     "FEATURES",
     "Everything you need to run a confident service",
-    "From the first slide to the final blessing, SelahCue keeps your scripture, songs, timers, stage display and streaming outputs in one offline-first console — with a phone in your hand as the remote.",
+    "From the first slide to the final blessing, SelahCue keeps your scripture, service plan, countdown timer, stage display and optional NDI output in one offline-first console, with a paired phone as a remote.",
     "OUTPUTS",
     "Live presentation & outputs",
     "Stage everything in Preview, then Go Live with a single tap. Audience projector and stage display run from one deck, with live output built to stay up.",
@@ -386,9 +388,9 @@ const LEDGER: Readonly<Record<Page, readonly string[]>> = {
     "WEB",
     "PLANNING",
     "Service plans & timers",
-    "Order your whole service ahead of time, then run it with countdown and count-up timers so you always land on time.",
+    "Order your whole service ahead of time, then run a service countdown so you always land on time.",
     "Plan the full order of service",
-    "Countdown + count-up timers",
+    "Service countdown timer",
     "Reorder on the fly, mid-service",
     "PLANNING",
     "TIMERS",
