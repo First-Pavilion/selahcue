@@ -155,8 +155,10 @@ import CtaBand from '@/components/core/CtaBand.vue'
   border-radius: 18px;
 }
 
-/* The tile takes the value's colour; the glyph is white, as drawn. It is decoration (aria-hidden, the
-   title carries the meaning), so it is not held to a 3:1 ratio against the gold and green fills. */
+/* The tile takes the value's colour; the glyph is white, as drawn, on the red and the brand fill (3.27:1
+   and 4.72:1). On the gold and the green fill white is 2.0:1 and 2.3:1 (Figma draws it so), so those two
+   take the page's dark ink (9.5:1 and 8.4:1). Decoration (aria-hidden, the title carries the meaning):
+   this is legibility, not a requirement. */
 .value-tile {
   display: flex;
   align-items: center;
@@ -168,12 +170,14 @@ import CtaBand from '@/components/core/CtaBand.vue'
 }
 .tile-ready {
   background: var(--sc-preview);
+  color: var(--sc-base);
 }
 .tile-brand {
   background: var(--sc-primary);
 }
 .tile-warn {
   background: var(--sc-warn);
+  color: var(--sc-base);
 }
 .tile-live {
   background: var(--sc-live);

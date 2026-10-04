@@ -157,9 +157,11 @@ defineProps({
   margin-left: 17px;
 }
 
-/* The tile takes the capability's colour; the glyph is white, as drawn. It is decoration (the panel is
-   aria-hidden and the row's heading carries the meaning), so the glyph is not held to a 3:1 ratio
-   against the gold and green fills. */
+/* The tile takes the capability's colour; the glyph is white, as drawn, on the red and the brand fill
+   (3.27:1 and 4.72:1). On the gold and the green fill white is 2.0:1 and 2.3:1 (Figma draws it so), so
+   those two take the page's dark ink (9.5:1 and 8.4:1), the way the operator console puts dark ink on its
+   green GO LIVE. The panel is decoration (aria-hidden, the heading carries the meaning); this is
+   legibility, not a requirement. */
 .panel-tile {
   display: flex;
   align-items: center;
@@ -177,9 +179,11 @@ defineProps({
 }
 .tone-warn .panel-tile {
   background: var(--sc-warn);
+  color: var(--sc-base);
 }
 .tone-ready .panel-tile {
   background: var(--sc-preview);
+  color: var(--sc-base);
 }
 
 .skeleton-bar {

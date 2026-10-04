@@ -225,6 +225,8 @@ def check_pricing(page, base: str, engine: str) -> None:
     check("pricing: only the checked radio is in the tab order", s["tab"] == [0, -1], str(s))
     page.focus("[role=radio][aria-checked=true]")
     page.keyboard.press("ArrowRight")
+    ring = page.evaluate("(() => { const cs = getComputedStyle(document.activeElement); return [cs.outlineStyle, cs.outlineWidth]; })()")
+    check("pricing: the focused radio shows a 2px ring after a key press (keyboard focus is visible)", ring == ["solid", "2px"], str(ring))
     s = state()
     check("pricing: ArrowRight chooses Annual and moves focus to it", s["checked"] == ["false", "true"] and s["active"] == "Annual", str(s))
     check("pricing: choosing Annual says it is not available, and shows no price", "not available yet" in s["note"].lower(), str(s))

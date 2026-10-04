@@ -108,6 +108,14 @@ function onKeydown(event: KeyboardEvent, at: number): void {
   opacity: 0.5;
 }
 
+/* A 44px hit area on phones and on any coarse pointer (UiButton's rule); the pill is 42px tall only where
+   a mouse is the pointer, as Figma draws it. */
+@media (max-width: 767.98px), (pointer: coarse) {
+  .segment {
+    min-height: 44px;
+  }
+}
+
 /* A forced-colors user sees the chosen segment by its outline, not its fill. */
 @media (forced-colors: active) {
   .segment[aria-checked='true'] {

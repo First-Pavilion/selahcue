@@ -147,10 +147,11 @@ const pricingFaqItems = [
     </PageHero>
 
     <section class="plans-section" aria-labelledby="plans-heading">
-      <!-- The plan names are h3 (PricingCard). This h2 keeps the outline from jumping h1 to h3 (audit
-           pricing-bug-01); Figma draws no heading levels. -->
-      <h2 id="plans-heading" class="sr-only">Choose a plan</h2>
       <div class="container">
+        <!-- The plan names are h3 (PricingCard). This h2 keeps the outline from jumping h1 to h3 (audit
+             pricing-bug-01); Figma draws no heading levels. It is inside the container so its hidden box
+             sits at the gutter, not at the screen edge. -->
+        <h2 id="plans-heading" class="sr-only">Choose a plan</h2>
         <div class="pricing-grid">
           <PricingCard
             v-for="plan in plans"
