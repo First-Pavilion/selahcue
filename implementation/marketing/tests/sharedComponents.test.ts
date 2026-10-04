@@ -25,8 +25,12 @@
  *   - the UiBadge `text` attribute is never rendered: `PricingView` passes `text="Save 20%"`,
  *     which is an unbacked claim (audit pricing-18, class C, owner decision: honest content
  *     wins), and it has stayed invisible only because UiBadge has no such prop;
- *   - the default markup of FormField is byte-identical to the markup the audit branch shipped
- *     (`fixtures/formfield-default.json`), so every existing form is unchanged;
+ *   - the default markup of FormField is pinned (`fixtures/formfield-default.json`). It is the
+ *     markup the audit branch shipped plus exactly three named additions, each with its own
+ *     test below: `aria-required` on a required field, `spellcheck`/`autocorrect`/`autocapitalize`
+ *     off on a password input, and Vue's empty `v-if` placeholder (ignored by the comparison).
+ *     "The look is unchanged" is proved in a browser, by `shared_components_headless.py
+ *     --compare-defaults`, not here;
  *   - FAQ answers are wired to their buttons and removed from the accessibility tree when
  *     collapsed;
  *   - a plan's call to action is a link or a disabled control, never a button that does
@@ -34,7 +38,9 @@
  *   - the confirm dialog names itself and its description for assistive technology.
  */
 import assert from 'node:assert/strict'
-import { readdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { spawnSync } from 'node:child_process'
 import path from 'node:path'
 import test, { after, before, describe, mock } from 'node:test'
 import { fileURLToPath } from 'node:url'
@@ -45,6 +51,8 @@ import { createSSRApp, h, type Component } from 'vue'
 import { parse } from 'vue/compiler-sfc'
 import { renderToString } from 'vue/server-renderer'
 import { createServer, type ViteDevServer } from 'vite'
+
+import { GALLERY_TITLE, unsafeOutDir } from './gallery/outDir.ts'
 
 const ROOT = fileURLToPath(new URL('../', import.meta.url))
 const SRC = path.join(ROOT, 'src')
@@ -532,30 +540,93 @@ const GOLDEN_CASES: Record<string, Record<string, unknown>> = {
   disabled: { id: 'f8', label: 'Locked', modelValue: 'x', disabled: true },
 }
 
-describe('FormField: the default markup of every existing form is unchanged', () => {
-  test('GOLDEN: default props render byte-for-byte what the audit branch rendered', async () => {
-    const got: Record<string, string> = {}
-    for (const [name, props] of Object.entries(GOLDEN_CASES)) got[name] = (await render('FormField', props)).html
+/**
+ * What is not part of "the markup" when two renders are compared: the empty comment Vue leaves
+ * where a `v-if` is false (adding the label-row slot adds one to every field: no content, no
+ * attribute, no layout) and the `data-v-xxxxxxxx` scope hash, which the Vue plugin derives from
+ * the file's PATH in development but also from its SOURCE in a production build, so it must not
+ * decide whether a field changed.
+ */
+function bare(html: string): string {
+  return html.replaceAll('<!---->', '').replace(/ data-v-[0-9a-f]{8}/g, '')
+}
+
+/** The cases whose markup differs, by name. Empty when the render matches the recording. */
+function goldenDifferences(got: Record<string, string>, want: Record<string, string>): string[] {
+  const names = [...new Set([...Object.keys(got), ...Object.keys(want)])].sort()
+  return names.filter((n) => got[n] === undefined || want[n] === undefined || bare(got[n]) !== bare(want[n]))
+}
+
+async function renderGoldenCases(): Promise<Record<string, string>> {
+  const got: Record<string, string> = {}
+  for (const [name, props] of Object.entries(GOLDEN_CASES)) got[name] = bare((await render('FormField', props)).html)
+  return got
+}
+
+describe('FormField: the default markup of every existing form is pinned', () => {
+  test('GOLDEN: default props render what was recorded', async () => {
+    const got = await renderGoldenCases()
     if (process.env['UPDATE_GOLDEN'] === '1') {
       writeFileSync(GOLDEN, JSON.stringify(got, null, 2) + '\n')
       return
     }
-    assert.ok(existsSync(GOLDEN), 'tests/fixtures/formfield-default.json is missing; record it on the audit branch with UPDATE_GOLDEN=1')
+    assert.ok(existsSync(GOLDEN), 'tests/fixtures/formfield-default.json is missing; record it with UPDATE_GOLDEN=1')
     const want = JSON.parse(readFileSync(GOLDEN, 'utf8')) as Record<string, string>
-    assert.deepEqual(Object.keys(got).sort(), Object.keys(want).sort())
-    // `<!---->` is what Vue leaves where a `v-if` is false. Adding the label-row slot adds one
-    // such empty placeholder to every field; it has no content, no attribute and no layout,
-    // so it is not part of "the markup": everything else must match to the byte.
-    const bare = (html: string): string => html.replaceAll('<!---->', '')
-    for (const name of Object.keys(want)) assert.equal(bare(got[name] as string), bare(want[name] as string), `default markup changed for the "${name}" case`)
+    assert.deepEqual(goldenDifferences(got, want), [], 'default markup changed for these cases')
   })
 
-  test('CONTROL: the golden is sensitive to a one-attribute change', async () => {
+  test('CONTROL: the comparison itself reports a planted difference, a missing case and an extra case, and passes an identical render', async () => {
     const want = JSON.parse(readFileSync(GOLDEN, 'utf8')) as Record<string, string>
-    const mutated = (want['with-error'] as string).replace('role="alert"', 'role="status"')
-    assert.notEqual(mutated, want['with-error'])
-    const got = (await render('FormField', GOLDEN_CASES['with-error'] as Record<string, unknown>)).html
-    assert.notEqual(got, mutated)
+    const same = { ...want }
+    assert.deepEqual(goldenDifferences(same, want), [])
+    // placeholders and the scope hash are ignored, in both directions
+    assert.deepEqual(goldenDifferences({ ...want, plain: (want['plain'] as string).replace('<div ', '<!----><div ').replace('class="form-field"', 'class="form-field" data-v-deadbeef') }, want), [])
+    // one attribute changed
+    assert.deepEqual(goldenDifferences({ ...want, 'with-error': (want['with-error'] as string).replace('role="alert"', 'role="status"') }, want), ['with-error'])
+    // a case dropped, a case added
+    const { disabled: _dropped, ...rest } = want
+    void _dropped
+    assert.deepEqual(goldenDifferences(rest, want), ['disabled'])
+    assert.deepEqual(goldenDifferences({ ...want, extra: '<div></div>' }, want), ['extra'])
+  })
+
+  test('the hardening and the required attribute are exactly the named additions, and nowhere else', async () => {
+    const got = await renderGoldenCases()
+    for (const [name, html] of Object.entries(got)) {
+      const inputs = tags(html).filter((t) => t.name === 'input' || t.name === 'textarea')
+      const required = name === 'required-with-placeholder'
+      const password = name.startsWith('password')
+      for (const el of inputs) {
+        assert.equal(has(el, 'aria-required'), required, `${name}: aria-required only on a required field`)
+        for (const a of ['spellcheck', 'autocorrect', 'autocapitalize']) assert.equal(has(el, a), password, `${name}: ${a} only on a password field`)
+      }
+    }
+  })
+})
+
+describe('FormField: a required field is announced as required, a password is never spell-checked', () => {
+  test('required puts aria-required="true" on the input and on the textarea, and not otherwise', async () => {
+    for (const type of ['text', 'email', 'password', 'textarea']) {
+      const yes = tags((await render('FormField', { id: 'q', label: 'L', type, modelValue: '', required: true })).html).find((t) => t.name === (type === 'textarea' ? 'textarea' : 'input'))
+      assert.equal(yes?.attrs['aria-required'], 'true', `${type} required`)
+      const no = tags((await render('FormField', { id: 'q', label: 'L', type, modelValue: '' })).html).find((t) => t.name === (type === 'textarea' ? 'textarea' : 'input'))
+      assert.ok(no && !has(no, 'aria-required'), `${type} not required`)
+    }
+  })
+
+  test('required does NOT add the native `required` attribute (it would put the browser\'s own bubbles in front of the form\'s validation)', async () => {
+    const input = tags((await render('FormField', { id: 'q', label: 'L', modelValue: '', required: true })).html).find((t) => t.name === 'input')
+    assert.ok(input && !has(input, 'required'))
+  })
+
+  test('a password input is not spell-checked, auto-corrected or auto-capitalised (shown or hidden is the browser test)', async () => {
+    const pw = tags((await render('FormField', { id: 'q', label: 'P', type: 'password', modelValue: 'x' })).html).find((t) => t.name === 'input')
+    assert.equal(pw?.attrs['type'], 'password')
+    assert.deepEqual([pw?.attrs['spellcheck'], pw?.attrs['autocorrect'], pw?.attrs['autocapitalize']], ['false', 'off', 'off'])
+    for (const type of ['text', 'email']) {
+      const el = tags((await render('FormField', { id: 'q', label: 'L', type, modelValue: 'x' })).html).find((t) => t.name === 'input')
+      assert.ok(el && !has(el, 'spellcheck') && !has(el, 'autocorrect') && !has(el, 'autocapitalize'), `${type} keeps the browser's defaults`)
+    }
   })
 })
 
@@ -702,5 +773,93 @@ describe('ConfirmDialog: names itself and its description for assistive technolo
     const { teleported } = await render('ConfirmDialog', { ...props, layout: 'banana' })
     assert.equal(withClass(teleported, 'layout-left').length, 0)
     assert.equal(withClass(teleported, 'dialog-icon-wrapper').length, 1)
+  })
+})
+
+describe('ConfirmDialog: the type-to-confirm field has a name, and the page lock is the shared one', () => {
+  test('the "Type cancel to confirm" label is tied to the input, so the field has an accessible name beyond its placeholder', async () => {
+    const { teleported } = await render('ConfirmDialog', { show: true, title: 'T', description: 'D', requireType: 'cancel', variant: 'danger' })
+    const label = tags(teleported).find((t) => t.name === 'label' && (t.attrs['class'] ?? '').includes('type-label'))
+    const input = tags(teleported).find((t) => t.name === 'input')
+    assert.ok(label && input)
+    assert.ok(input.attrs['id'], 'the input has an id for the label to point at')
+    assert.equal(label.attrs['for'], input.attrs['id'])
+  })
+
+  test('TRIPWIRE: the dialog takes the repo\'s reference-counted page lock and writes no overflow of its own', () => {
+    const sfc = parse(read('components/ConfirmDialog.vue'), { filename: 'ConfirmDialog.vue' }).descriptor
+    const script = `${sfc.script?.content ?? ''}\n${sfc.scriptSetup?.content ?? ''}`
+    assert.match(script, /import \{ pageScrollLock \} from '@\/lib\/ui\/scrollLock\.ts'/)
+    assert.match(script, /pageScrollLock\.acquire\(\)/)
+    assert.ok(!/\.style\.overflow\s*=/.test(script), 'a dialog that sets `style.overflow` itself leaks the lock when two are open (Vera 1)')
+  })
+
+  test('a banner slot or a label-row slot that appears after the first render is read from $slots in the template, not cached', () => {
+    // The behaviour is proved in a browser (`shared_components_headless.py`, "a slot added after
+    // the first render"); this is the cheap tripwire for the cause: `useSlots()` is not reactive.
+    for (const file of ['components/FormField.vue', 'components/ConfirmDialog.vue']) {
+      const sfc = parse(read(file), { filename: file }).descriptor
+      assert.ok(!/useSlots/.test(sfc.scriptSetup?.content ?? ''), `${file} caches its slots with useSlots()`)
+    }
+  })
+})
+
+// ------------------------------------------------------------------------ the gallery's output folder
+
+describe('the gallery build refuses to empty a folder that is not a gallery build', () => {
+  const made: string[] = []
+  const tmp = (): string => {
+    const d = mkdtempSync(path.join(tmpdir(), 'gallery-out-'))
+    made.push(d)
+    return d
+  }
+  after(() => {
+    for (const d of made) rmSync(d, { recursive: true, force: true })
+  })
+
+  test('a missing folder, an empty folder and an earlier gallery build are fine; anything else is refused with the reason', () => {
+    const base = tmp()
+    assert.equal(unsafeOutDir(path.join(base, 'does-not-exist')), null)
+    assert.equal(unsafeOutDir(base), null, 'empty')
+    const earlier = path.join(base, 'earlier')
+    mkdirSync(earlier)
+    writeFileSync(path.join(earlier, 'index.html'), `<!doctype html><head>${GALLERY_TITLE}</head>`)
+    assert.equal(unsafeOutDir(earlier), null, 'a previous gallery build')
+    const other = path.join(base, 'other')
+    mkdirSync(other)
+    writeFileSync(path.join(other, 'precious.txt'), 'keep me')
+    assert.match(unsafeOutDir(other) ?? '', /not empty and does not hold a gallery build/)
+    const lookalike = path.join(base, 'lookalike')
+    mkdirSync(lookalike)
+    writeFileSync(path.join(lookalike, 'index.html'), '<title>My site</title>')
+    assert.match(unsafeOutDir(lookalike) ?? '', /not empty/, 'an index.html that is not this gallery\'s')
+    const file = path.join(base, 'afile')
+    writeFileSync(file, 'x')
+    assert.match(unsafeOutDir(file) ?? '', /not a directory/)
+  })
+
+  const build = (out: string): { status: number | null; output: string } => {
+    const run = spawnSync(process.execPath, [path.join(ROOT, 'node_modules/vite/bin/vite.js'), 'build', '--config', path.join(ROOT, 'tests/gallery/vite.config.ts')], {
+      cwd: ROOT,
+      env: { ...process.env, GALLERY_OUT: out },
+      encoding: 'utf8',
+    })
+    return { status: run.status, output: `${run.stdout}${run.stderr}` }
+  }
+
+  test('REAL BUILD: `vite build` with GALLERY_OUT on a folder holding a file exits non-zero and the file survives', () => {
+    const victim = tmp()
+    writeFileSync(path.join(victim, 'precious.txt'), 'keep me')
+    const run = build(victim)
+    assert.notEqual(run.status, 0, run.output)
+    assert.match(run.output, /GALLERY_OUT refused/)
+    assert.equal(readFileSync(path.join(victim, 'precious.txt'), 'utf8'), 'keep me')
+  })
+
+  test('CONTROL: the same build into an empty folder succeeds and writes the gallery (so the refusal above is the guard, not a broken build)', () => {
+    const empty = tmp()
+    const run = build(empty)
+    assert.equal(run.status, 0, run.output)
+    assert.ok(readFileSync(path.join(empty, 'index.html'), 'utf8').includes(GALLERY_TITLE))
   })
 })

@@ -172,8 +172,12 @@ const answerId = (index: number) => `${uid}-a-${index}`
 /*
  * The boxed card (Affiliates, Figma 542:199): 880 wide, radius 16, --sc-base fill and a 1px
  * --sc-border; rows ruled by the same 1px; question 16/600, answer 15/23 with the answer
- * text 790 wide; a 10.5px plus at 1.5px stroke, primary when open. Row heights come out as
- * drawn: 55 closed, 113 open with a two-line answer.
+ * text 790 wide; a 10.5px plus at 1.5px stroke, primary when open.
+ *
+ * Figma draws every stroke INSIDE the frame, so the rows are 55 high (113 open with a two-line
+ * answer) and the card 333, rule and border included. Here the card's outline is an inset
+ * shadow (it takes no room), and each ruled row takes the rule's 1px off its bottom padding.
+ * Review of PR 173 measured 56, 114 and 339 before this.
  */
 .faq-accordion.is-boxed {
   width: 100%;
@@ -181,7 +185,7 @@ const answerId = (index: number) => `${uid}-a-${index}`
   margin: 0 auto;
   box-sizing: border-box;
   background: var(--sc-base);
-  border: 1px solid var(--sc-border);
+  box-shadow: inset 0 0 0 1px var(--sc-border);
   border-radius: 16px;
   overflow: hidden;
 }
@@ -190,6 +194,10 @@ const answerId = (index: number) => `${uid}-a-${index}`
   padding: 18px 22px;
   font-size: 16px;
   line-height: 19px;
+}
+
+.is-boxed .faq-item:not(:last-child) .faq-question {
+  padding-bottom: 17px;
 }
 
 .is-boxed .faq-item.open .faq-question {
@@ -209,5 +217,9 @@ const answerId = (index: number) => `${uid}-a-${index}`
   padding: 0 68px 18px 22px;
   font-size: 15px;
   line-height: 23px;
+}
+
+.is-boxed .faq-item:not(:last-child) .faq-answer p {
+  padding-bottom: 17px;
 }
 </style>

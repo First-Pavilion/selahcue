@@ -39,6 +39,30 @@ const lastEvent = ref('')
 const showCentered = ref(false)
 const showType = ref(false)
 const showLeft = ref(false)
+
+// Two dialogs at once, and closing either first (review of PR 173, Vera 1).
+const openBoth = () => {
+  showCentered.value = true
+  showType.value = true
+}
+
+// A slot that only appears after the first render (Cody 3): `useSlots()` cannot see it.
+const dynLink = ref(false)
+const dynBanner = ref(false)
+const showDyn = ref(false)
+
+// A list whose row is removed when its dialog confirms: where does focus go? (Quinn 2)
+const devices = ref(['Studio PC', 'Booth MacBook', 'Youth Hall PC'])
+const target = ref('')
+const showDevice = ref(false)
+const useFallback = ref(true)
+const askDeactivate = (name: string) => {
+  target.value = name
+  showDevice.value = true
+}
+const deactivate = () => {
+  devices.value = devices.value.filter((d) => d !== target.value)
+}
 </script>
 
 <template>
@@ -119,7 +143,33 @@ const showLeft = ref(false)
       <button id="open-centered" type="button" @click="showCentered = true">Open default dialog</button>
       <button id="open-type" type="button" @click="showType = true">Open type-to-confirm</button>
       <button id="open-left" type="button" @click="showLeft = true">Open devices confirm</button>
+      <button id="open-both" type="button" @click="openBoth">Open two dialogs</button>
+      <button id="close-first" type="button" @click="showCentered = false">Close the first</button>
+      <button id="close-second" type="button" @click="showType = false">Close the second</button>
+      <button id="open-dyn" type="button" @click="showDyn = true">Open dialog without banner</button>
+      <button id="toggle-banner" type="button" @click="dynBanner = !dynBanner">Toggle banner</button>
       <output id="last-event">{{ lastEvent }}</output>
+    </section>
+
+    <section data-case="dynamic-slot" class="card">
+      <FormField id="dyn-field" v-model="password" type="password" label="Password">
+        <template v-if="dynLink" #label-action>
+          <a href="/forgot-password" aria-label="Forgot your password?" data-probe="dyn-forgot">Forgot?</a>
+        </template>
+      </FormField>
+      <button id="toggle-dyn" type="button" @click="dynLink = !dynLink">Toggle link</button>
+    </section>
+
+    <section data-case="device-list" class="card">
+      <h2 id="devices-heading" tabindex="-1">Devices</h2>
+      <ul>
+        <li v-for="d in devices" :key="d" :data-row="d">
+          <span>{{ d }}</span>
+          <button type="button" class="row-deactivate" @click="askDeactivate(d)">Deactivate {{ d }}</button>
+        </li>
+      </ul>
+      <button id="fallback-off" type="button" @click="useFallback = false">No fallback</button>
+      <button id="fallback-on" type="button" @click="useFallback = true">Fallback to the heading</button>
     </section>
 
     <ConfirmDialog
@@ -144,6 +194,32 @@ const showLeft = ref(false)
       variant="danger"
       @confirm="lastEvent = 'confirm'"
       @cancel="lastEvent = 'cancel'"
+    />
+
+    <ConfirmDialog
+      v-model:show="showDyn"
+      layout="left"
+      title="Banner arrives later"
+      description="The banner slot is added after this dialog has rendered."
+      confirm-label="Go"
+      cancel-label="Keep"
+      variant="warning"
+    >
+      <template v-if="dynBanner" #banner>
+        <div class="fake-banner" data-probe="dyn-banner">A banner that was not there at first.</div>
+      </template>
+    </ConfirmDialog>
+
+    <ConfirmDialog
+      v-model:show="showDevice"
+      layout="left"
+      title="Deactivate this device?"
+      description="Its row disappears when you confirm."
+      confirm-label="Deactivate"
+      cancel-label="Keep active"
+      variant="warning"
+      :fallback-focus="useFallback ? '#devices-heading' : ''"
+      @confirm="deactivate"
     />
 
     <ConfirmDialog

@@ -1,6 +1,21 @@
+<script lang="ts">
+/**
+ * The dialogs that are open right now, oldest first, shared by every instance.
+ *
+ * Two dialogs can be open at once (one opened from the other, or two `show`s set together).
+ * Each one pulls stray focus back into itself, so with two enforcing it they fought over
+ * focus until the stack overflowed (review of PR 173, Vera 1). Only the NEWEST dialog
+ * enforces focus, handles Tab and answers Escape; an older one waits until it is on top.
+ * An entry is added on open and removed on close or unmount, so the list never outgrows the
+ * number of dialogs that are open.
+ */
+const openDialogs: object[] = []
+</script>
+
 <script setup lang="ts">
-import { ref, computed, watch, nextTick, onMounted, onUnmounted, useId, useSlots } from 'vue'
+import { ref, computed, watch, nextTick, onMounted, onUnmounted, useId } from 'vue'
 import UiButton from './UiButton.vue'
+import { pageScrollLock } from '@/lib/ui/scrollLock.ts'
 
 const props = defineProps({
   show: { type: Boolean, default: false },
@@ -23,7 +38,15 @@ const props = defineProps({
     validator: (val: string) => ['centered', 'left'].includes(val)
   },
   /** A muted line under the buttons ("Esc keeps the device active."). */
-  hint: { type: String, default: '' }
+  hint: { type: String, default: '' },
+  /**
+   * Where focus goes when the dialog closes and whatever opened it is GONE from the page: a
+   * CSS selector for a stable element that can take focus (a heading with tabindex="-1", the
+   * list). Deactivating a device removes its row, and its Deactivate button with it; without
+   * this focus would drop to the page body and a keyboard user would start again from the top.
+   * Unused when the opener is still there.
+   */
+  fallbackFocus: { type: String, default: '' }
 })
 
 const emit = defineEmits(['confirm', 'cancel', 'update:show'])
@@ -37,10 +60,7 @@ const isLeft = computed(() => props.layout === 'left')
 const uid = useId()
 const titleId = `${uid}-title`
 const descId = `${uid}-desc`
-
-/** A block under the text: the "Nothing goes dark" banner of the devices confirm. */
-const slots = useSlots()
-const hasBanner = computed(() => !!slots['banner'])
+const typeId = `${uid}-type`
 
 const card = ref<HTMLElement | null>(null)
 
@@ -71,8 +91,11 @@ const handleCancel = () => {
 const FOCUSABLE =
   'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
 
+const me = {}
 let opener: HTMLElement | null = null
-let previousOverflow = ''
+let releaseScroll: (() => void) | null = null
+
+const isNewest = () => openDialogs[openDialogs.length - 1] === me
 
 const focusables = (): HTMLElement[] =>
   card.value ? Array.from(card.value.querySelectorAll<HTMLElement>(FOCUSABLE)) : []
@@ -106,11 +129,12 @@ const trapTab = (e: KeyboardEvent) => {
 
 /** Focus that lands outside the dialog (a script, a click on the scrim) is brought back in. */
 const keepFocusInside = (e: FocusEvent) => {
-  if (props.show && card.value && e.target instanceof Node && !card.value.contains(e.target)) focusInitial()
+  if (!props.show || !isNewest()) return
+  if (card.value && e.target instanceof Node && !card.value.contains(e.target)) focusInitial()
 }
 
 const handleKeydown = (e: KeyboardEvent) => {
-  if (!props.show) return
+  if (!props.show || !isNewest()) return
   if (e.key === 'Escape') handleCancel()
   else if (e.key === 'Tab') trapTab(e)
 }
@@ -120,9 +144,12 @@ let engaged = false
 const engage = () => {
   if (engaged) return
   engaged = true
+  openDialogs.push(me)
   opener = document.activeElement instanceof HTMLElement ? document.activeElement : null
-  previousOverflow = document.body.style.overflow
-  document.body.style.overflow = 'hidden'
+  // The repo's reference-counted lock (the mobile nav sheet holds it too): two holders keep the
+  // page locked until BOTH let go, whichever order they close in, and the page's own inline
+  // overflow comes back exactly as it was.
+  releaseScroll = pageScrollLock.acquire()
   document.addEventListener('focusin', keepFocusInside)
   void nextTick(focusInitial)
 }
@@ -130,11 +157,19 @@ const engage = () => {
 const release = () => {
   if (!engaged) return
   engaged = false
+  const at = openDialogs.indexOf(me)
+  if (at !== -1) openDialogs.splice(at, 1)
   document.removeEventListener('focusin', keepFocusInside)
-  document.body.style.overflow = previousOverflow
+  releaseScroll?.()
+  releaseScroll = null
   const back = opener
   opener = null
-  if (back?.isConnected) back.focus()
+  // After the page has re-rendered: the confirm handler may remove the opener (a device's row)
+  // in this same tick, and only then can it be told from one that is still there.
+  void nextTick(() => {
+    if (back?.isConnected) back.focus()
+    else if (props.fallbackFocus) document.querySelector<HTMLElement>(props.fallbackFocus)?.focus()
+  })
 }
 
 watch(() => props.show, (newVal) => {
@@ -188,15 +223,16 @@ onUnmounted(() => {
             </li>
           </ul>
 
-          <div v-if="hasBanner" class="dialog-banner">
+          <div v-if="$slots.banner" class="dialog-banner">
             <slot name="banner"></slot>
           </div>
 
           <div v-if="requireType" class="type-confirm-wrapper">
-            <label class="type-label">
+            <label class="type-label" :for="typeId">
               Type <strong>"{{ requireType }}"</strong> to confirm:
             </label>
-            <input 
+            <input
+              :id="typeId"
               v-model="typedValue"
               type="text"
               class="type-input"
@@ -411,7 +447,9 @@ onUnmounted(() => {
   flex-direction: column;
   gap: 16px;
   max-width: 420px;
-  padding: 28px 28px 24px;
+  /* Figma measures the padding from the OUTER edge (28/28/24/28, content 364 wide); the 1px
+     border is inside that, so it comes off the padding. The buttons are then 177 wide each. */
+  padding: 27px 27px 23px;
   background: var(--sc-elevated);
   text-align: left;
 }
@@ -504,10 +542,11 @@ onUnmounted(() => {
   .layout-left .dialog-actions { flex-direction: row; }
 }
 
-/* Below 480px two buttons side by side stop fitting a longer label: stack them, Cancel last
-   in the DOM order reversed so the safe action is still the first thing the eye lands on. */
+/* Below 480px two buttons side by side stop fitting a longer label: stack them in DOM order,
+   so the safe action (Cancel, which has the initial focus) is on top and Tab runs downhill
+   to the destructive one. (The centred dialog still reverses its stack; it predates this.) */
 @media (max-width: 479.98px) {
-  .layout-left .dialog-actions { flex-direction: column-reverse; }
+  .layout-left .dialog-actions { flex-direction: column; }
   .layout-left .dialog-actions > * { flex: 0 0 auto; width: 100%; }
 }
 </style>

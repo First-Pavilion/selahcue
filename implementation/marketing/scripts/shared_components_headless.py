@@ -45,7 +45,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 MARKETING = HERE.parent
 GALLERY_CONFIG = MARKETING / "tests" / "gallery" / "vite.config.ts"
-REQUIRE = os.environ.get("SELAHCUE_HEADLESS_REQUIRE") == "1"
+REQUIRE = os.environ.get("SELAHCUE_HEADLESS_REQUIRE") == "1"  # `--require` sets it too (npm run test:components)
 
 # Colours as `getComputedStyle` writes them, from tokens.css.
 ELEVATED = "rgb(28, 31, 40)"  # --sc-elevated
@@ -276,20 +276,25 @@ def check_faq(page, c: Checks) -> None:
     page.keyboard.press("Space")
     c.eq(third.get_attribute("aria-expanded"), "false", "Space closes it again")
 
-    # BOXED (Affiliates 542:199)
+    # BOXED (Affiliates 542:199). Figma draws every stroke INSIDE the frame: rows 55 high (113 open
+    # with a two-line answer) and the card 333, rule and border included (review of PR 173: 56/114/339).
     case = '[data-case="faq-boxed"]'
-    box = style(page, f"{case} .faq-accordion", ["border-top-width", "border-top-color", "border-radius", "background-color"])
+    box = style(page, f"{case} .faq-accordion", ["box-shadow", "border-top-width", "border-radius", "background-color"])
     c.near(box["w"], 880, 0.5, "boxed card is 880 wide")
+    c.near(box["h"], 333, 0.5, "boxed card is 333 tall (Figma 542:199)")
     c.near(box["x"] - style(page, case)["x"], 80, 1, "boxed card is centred in its container")
-    c.eq((box["border-top-width"], box["border-top-color"], box["border-radius"]), ("1px", BORDER, "16px"), "boxed card: 1px --sc-border, radius 16")
+    c.ok(BORDER in box["box-shadow"] and "inset" in box["box-shadow"] and box["border-top-width"] == "0px",
+         f"boxed card outline is a 1px --sc-border INSET ring that takes no room (got {box['box-shadow']!r}, border {box['border-top-width']})")
+    c.eq(box["border-radius"], "16px", "boxed card radius 16")
     c.eq(box["background-color"], BASE, "boxed card fill is --sc-base")
     q0 = style(page, f"{case} .faq-question", ["padding-top", "padding-left", "font-size", "font-weight"])
     c.eq((q0["padding-top"], q0["padding-left"]), ("18px", "22px"), "boxed row padding 18px 22px")
     c.eq((q0["font-size"], q0["font-weight"]), ("16px", "600"), "boxed question 16px/600")
     items = page.locator(f"{case} .faq-item")
     h = [items.nth(i).bounding_box()["height"] for i in range(items.count())]
-    c.near(h[1], 55, 1.5, "boxed closed row height (Figma 55, plus its 1px rule)")
-    c.near(h[0], 113, 2.5, "boxed open row with a two-line answer (Figma 113, plus its 1px rule)")
+    c.near(h[0], 113, 0.5, "boxed open row with a two-line answer is 113 (Figma)")
+    for i in range(1, len(h)):
+        c.near(h[i], 55, 0.5, f"boxed closed row {i} is 55 (Figma), the last one included")
     ans = style(page, f"{case} .faq-answer p", ["font-size", "line-height", "padding-left"])
     c.eq((ans["font-size"], ans["line-height"], ans["padding-left"]), ("15px", "23px", "22px"), "boxed answer 15px/23px at 22px")
     ic = style(page, f"{case} .toggle-icon", ["stroke-width"])
@@ -412,7 +417,7 @@ def check_formfield(page, c: Checks) -> None:
           return r.getBoundingClientRect().right; }""",
         f"{case} #r-new ~ .password-toggle .reveal-text",
     )
-    c.near(inp["right"] - text_right, 16, 1.5, "Show ends 16px from the field's edge (Figma)")
+    c.near(inp["right"] - text_right, 14, 0.5, "Show ends 14px from the field's edge (Figma: input 899, text 885)")
     c.eq(inp["padding-right"], "64px", "the field leaves room, so a long password never runs under Show")
     btn = page.locator(f"{case} #r-new ~ .password-toggle")
     c.eq((btn.get_attribute("aria-label"), btn.get_attribute("aria-pressed")), ("Show password", "false"), "toggle keeps its accessible name and pressed state")
@@ -451,7 +456,7 @@ def check_dialogs(page, c: Checks, shots: Path | None) -> None:
     c.eq(card["max-width"], "440px", "default dialog is still 440px")
     c.eq(card["text-align"], "center", "default dialog is still centred")
     c.eq(active(page), "Keep active", "initial focus is the safe action (Cancel)")
-    c.eq(page.evaluate("getComputedStyle(document.body).overflow"), "hidden", "page scroll is locked while open")
+    c.eq(page.evaluate("[getComputedStyle(document.documentElement).overflow, getComputedStyle(document.body).overflow]"), ["hidden", "hidden"], "page scroll is locked while open (root and body, by the shared lock)")
     labelled = page.evaluate("""() => { const d = document.querySelector('.dialog-card');
       return [document.getElementById(d.getAttribute('aria-labelledby'))?.innerText, document.getElementById(d.getAttribute('aria-describedby'))?.innerText]; }""")
     c.eq(labelled[0], "Deactivate this device?", "aria-labelledby is the title")
@@ -473,6 +478,7 @@ def check_dialogs(page, c: Checks, shots: Path | None) -> None:
     c.eq(page.locator("#last-event").inner_text(), "cancel", "Escape is Cancel")
     c.eq(page.evaluate("document.activeElement.id"), "open-centered", "focus returns to what opened the dialog")
     c.ok(page.evaluate("getComputedStyle(document.body).overflow") != "hidden", "page scroll is released on close")
+    c.eq(page.evaluate("[document.documentElement.style.overflow, document.body.style.overflow]"), ["", ""], "and the page's own inline overflow is back exactly as it was")
 
     # scrim click cancels and returns focus too
     open_dialog(page, "#open-centered")
@@ -501,7 +507,9 @@ def check_dialogs(page, c: Checks, shots: Path | None) -> None:
     dlg = style(page, ".dialog-card", ["padding-top", "padding-right", "padding-bottom", "padding-left", "background-color",
                                         "border-top-width", "border-top-color", "border-radius", "text-align", "row-gap"])
     c.near(dlg["w"], 420, 0.5, "devices dialog is 420 wide (Figma 420)")
-    c.eq((dlg["padding-top"], dlg["padding-right"], dlg["padding-bottom"], dlg["padding-left"]), ("28px", "28px", "24px", "28px"), "padding 28/28/24/28")
+    # Figma's padding is measured from the outer edge, so the 1px border comes off it
+    bw = float(dlg["border-top-width"][:-2])
+    c.eq(tuple(float(dlg[k][:-2]) + bw for k in ("padding-top", "padding-right", "padding-bottom", "padding-left")), (28.0, 28.0, 24.0, 28.0), "padding plus border is 28/28/24/28")
     c.eq(dlg["background-color"], ELEVATED, "fill is --sc-elevated")
     c.eq((dlg["border-top-width"], dlg["border-top-color"], dlg["border-radius"]), ("1px", BORDER, "16px"), "1px --sc-border, radius 16")
     c.eq(dlg["text-align"], "left", "left-aligned")
@@ -531,8 +539,11 @@ def check_dialogs(page, c: Checks, shots: Path | None) -> None:
 
     cancel = style(page, ".dialog-cancel", ["border-top-width", "border-top-color", "border-radius", "background-color", "font-size", "font-weight", "color"])
     confirm = style(page, ".confirm-btn", ["border-radius", "background-color", "color", "font-size", "font-weight"])
-    c.near(cancel["w"], 177, 1.0, "Cancel is 177 wide (Figma 177)")
-    c.near(confirm["w"], 177, 1.0, "Confirm is 177 wide (Figma 177)")
+    c.near(cancel["w"], 177, 0.5, "Cancel is 177 wide (Figma 177)")
+    c.near(confirm["w"], 177, 0.5, "Confirm is 177 wide (Figma 177)")
+    c.near(banner["w"], 364, 0.5, "the banner is 364 wide: the content box (Figma 754:246)")
+    c.near(desc["w"], 364, 0.5, "the text is 364 wide: the content box (Figma 754:242 less its 28px padding)")
+    c.near(actions["w"], 364, 0.5, "the buttons row is 364 wide (Figma 754:251)")
     c.near(cancel["h"], 44, 0.5, "buttons are 44 tall (drawn 41; every target is held to 44)")
     # 1.5px computes to 1px at a device pixel ratio of 1 (a border is snapped to whole device pixels)
     c.ok(cancel["border-top-width"] in ("1px", "1.5px") and cancel["border-top-color"] == PRIMARY and cancel["border-radius"] == "10px",
@@ -548,6 +559,135 @@ def check_dialogs(page, c: Checks, shots: Path | None) -> None:
     c.eq(page.evaluate("document.activeElement.id"), "open-left", "devices dialog returns focus on Escape")
 
 
+def check_password_and_required(page, c: Checks) -> None:
+    """Shadow 1: a password input is never spell-checked, shown or hidden. Quinn 10: required is announced."""
+    settle(page)
+    attrs = """(sel) => { const e = document.querySelector(sel);
+      return [e.type, e.getAttribute('spellcheck'), e.getAttribute('autocorrect'), e.getAttribute('autocapitalize'), e.spellcheck]; }"""
+    for case, field, toggle_sel in (
+        ("signin-fields", "#s-password", "#s-password ~ .password-toggle"),
+        ("reset-fields", "#r-new", "#r-new ~ .password-toggle"),
+    ):
+        sel = f'[data-case="{case}"] {field}'
+        c.eq(page.evaluate(attrs, sel), ["password", "false", "off", "off", False], f"{field} hidden: not spell-checked, corrected or capitalised")
+        page.locator(f'[data-case="{case}"] {toggle_sel}').click()
+        c.eq(page.evaluate(attrs, sel), ["text", "false", "off", "off", False], f"{field} after Show (now type=text): still not spell-checked, corrected or capitalised")
+        page.locator(f'[data-case="{case}"] {toggle_sel}').click()
+        c.eq(page.evaluate(attrs, sel)[0], "password", f"{field} hidden again")
+    plain = page.evaluate("(sel) => { const e = document.querySelector(sel); return [e.getAttribute('spellcheck'), e.getAttribute('autocorrect')]; }", '[data-case="signin-fields"] #s-email')
+    c.eq(plain, [None, None], "an email field keeps the browser's defaults")
+    # contact-12: required fields are announced, without the browser's own validation bubbles
+    req = page.evaluate("(sel) => { const e = document.querySelector(sel); return [e.getAttribute('aria-required'), e.required, e.hasAttribute('required')]; }", '[data-case="defaults"] #d-required')
+    c.eq(req, ["true", False, False], "a required field has aria-required=true and NOT the native required attribute")
+    notreq = page.evaluate("(sel) => document.querySelector(sel).getAttribute('aria-required')", '[data-case="defaults"] #d-plain')
+    c.eq(notreq, None, "a field that is not required does not claim to be")
+
+
+def check_slots_after_render(page, c: Checks) -> None:
+    """Cody 3: a slot that appears after the first render must show up (useSlots() cached the first answer)."""
+    settle(page)
+    case = '[data-case="dynamic-slot"]'
+    c.eq(page.locator(f"{case} .label-action").count(), 0, "no label-row link before the slot exists")
+    c.eq(page.locator(f"{case} .form-field.has-label-action").count(), 0, "and the field is not a grid yet")
+    page.locator("#toggle-dyn").click()
+    page.wait_for_selector(f'{case} [data-probe="dyn-forgot"]', timeout=3000)
+    c.eq(page.locator(f"{case} .form-field.has-label-action").count(), 1, "a label-action slot added after the first render turns the field into the label row")
+    label, link = style(page, f"{case} label[for='dyn-field']"), style(page, f'{case} [data-probe="dyn-forgot"]')
+    c.near(link["y"] + link["h"] / 2, label["y"] + label["h"] / 2, 4, "and the link sits on the label's row")
+    page.locator("#toggle-dyn").click()
+    page.wait_for_function("(c) => document.querySelectorAll(c + ' .label-action').length === 0", arg=case, timeout=3000)
+    c.eq(page.locator(f"{case} .form-field.has-label-action").count(), 0, "and taking the slot away again removes it")
+
+    # the dialog's banner: the dialog is open and rendered WITHOUT one, then the page adds it
+    open_dialog(page, "#open-dyn")
+    c.eq(page.locator(".dialog-banner").count(), 0, "a dialog opened without a banner has none")
+    page.evaluate("document.querySelector('#toggle-banner').click()")  # the opener sits behind the scrim, so click it from script
+    page.wait_for_selector('.dialog-banner [data-probe="dyn-banner"]', timeout=3000)
+    c.eq(page.locator(".dialog-banner").count(), 1, "a banner slot added after the dialog rendered appears")
+    page.keyboard.press("Escape")
+    page.wait_for_selector(".dialog-card", state="detached")
+    page.evaluate("document.querySelector('#toggle-banner').click()")
+
+
+def locked(page) -> list:
+    return page.evaluate("[getComputedStyle(document.documentElement).overflow, getComputedStyle(document.body).overflow]")
+
+
+def check_stacked_dialogs(page, c: Checks, errors: list[str]) -> None:
+    """Vera 1: two dialogs open at once must not fight over focus, and the page must scroll again whichever closes first."""
+    page.evaluate("window.__focusins = 0; document.addEventListener('focusin', () => { window.__focusins += 1 })")
+    for order in ("first-then-second", "second-then-first", "escape-twice"):
+        settle(page)
+        errors_before, focus_before = len(errors), page.evaluate("window.__focusins")
+        page.locator("#open-both").focus()
+        page.keyboard.press("Enter")
+        page.wait_for_function("document.querySelectorAll('.dialog-card').length === 2", timeout=3000)
+        settle(page)
+        page.wait_for_timeout(250)  # long enough for two dialogs fighting to overflow the stack (they did, in 3 of 3 runs)
+        used = page.evaluate("window.__focusins") - focus_before
+        c.ok(len(errors) == errors_before, f"[{order}] two dialogs open: no page error (stack overflow before): {errors[errors_before:][:1]}")
+        c.ok(used <= 12, f"[{order}] two dialogs open: {used} focus events (44 and climbing before)")
+        c.eq(locked(page), ["hidden", "hidden"], f"[{order}] page locked while two are open")
+        newest_has_focus = page.evaluate("(() => { const cards = [...document.querySelectorAll('.dialog-card')]; return cards[cards.length - 1].contains(document.activeElement); })()")
+        c.ok(newest_has_focus, f"[{order}] focus is in the newest dialog")
+
+        if order == "escape-twice":
+            page.keyboard.press("Escape")
+            page.wait_for_function("document.querySelectorAll('.dialog-card').length === 1", timeout=3000)
+            c.eq(locked(page), ["hidden", "hidden"], f"[{order}] Escape closed ONE dialog (the newest) and the page is still locked")
+            page.keyboard.press("Escape")
+        else:
+            first, second = ("#close-first", "#close-second") if order == "first-then-second" else ("#close-second", "#close-first")
+            page.evaluate("(sel) => document.querySelector(sel).click()", first)
+            page.wait_for_function("document.querySelectorAll('.dialog-card').length === 1", timeout=3000)
+            c.eq(locked(page), ["hidden", "hidden"], f"[{order}] one still open: the page stays locked (it was left unlocked or relocked wrongly before)")
+            page.wait_for_timeout(120)
+            c.ok(page.evaluate("document.querySelector('.dialog-card').contains(document.activeElement)"), f"[{order}] and focus is held inside the one that is left")
+            page.evaluate("(sel) => document.querySelector(sel).click()", second)
+        page.wait_for_function("document.querySelectorAll('.dialog-card').length === 0", timeout=3000)
+        c.ok(locked(page)[0] != "hidden" and locked(page)[1] != "hidden", f"[{order}] both closed: the page scrolls again")
+        c.eq(page.evaluate("[document.documentElement.style.overflow, document.body.style.overflow]"), ["", ""], f"[{order}] and its own inline overflow is back exactly as it was")
+        c.ok(len(errors) == errors_before, f"[{order}] no page error while closing")
+
+
+def check_fallback_focus(page, c: Checks) -> None:
+    """Quinn 2: when what opened the dialog is gone (its row was removed), focus goes to the stated fallback, not the body."""
+    settle(page)
+    case = '[data-case="device-list"]'
+    rows = lambda: page.locator(f"{case} .row-deactivate").count()  # noqa: E731
+    c.eq(rows(), 3, "three device rows to start")
+
+    # Cancel: the opener is still there, so focus goes back to IT, not to the fallback
+    page.locator(f"{case} .row-deactivate").first.focus()
+    page.keyboard.press("Enter")
+    page.wait_for_selector(".dialog-card")
+    settle(page)
+    page.keyboard.press("Escape")
+    page.wait_for_selector(".dialog-card", state="detached")
+    c.ok("Studio PC" in active(page), f"cancel: focus returns to the row's own button while it is still there (got {active(page)!r})")
+
+    # Confirm with a fallback: the row is removed with its button
+    page.locator(f"{case} .row-deactivate").first.focus()
+    page.keyboard.press("Enter")
+    page.wait_for_selector(".dialog-card")
+    settle(page)
+    page.locator(".dialog-card .confirm-btn").click()
+    page.wait_for_selector(".dialog-card", state="detached")
+    c.eq(rows(), 2, "confirming removed the row")
+    c.eq(page.evaluate("document.activeElement.id"), "devices-heading", "with fallback-focus, focus lands on the stable heading, not on the page body")
+
+    # Confirm without one: the documented default is unchanged
+    page.locator("#fallback-off").click()
+    page.locator(f"{case} .row-deactivate").first.focus()
+    page.keyboard.press("Enter")
+    page.wait_for_selector(".dialog-card")
+    settle(page)
+    page.locator(".dialog-card .confirm-btn").click()
+    page.wait_for_selector(".dialog-card", state="detached")
+    c.eq(rows(), 1, "confirming removed the next row")
+    c.eq(page.evaluate("document.activeElement === document.body"), True, "without a fallback, focus drops to the body exactly as before (the default is unchanged)")
+
+
 def check_narrow(browser, base: str, c: Checks, shots: Path | None) -> None:
     ctx = browser.new_context(viewport={"width": 375, "height": 800}, has_touch=True)
     page = ctx.new_page()
@@ -558,7 +698,7 @@ def check_narrow(browser, base: str, c: Checks, shots: Path | None) -> None:
     c.ok(dlg["x"] >= 0 and dlg["right"] <= 375 and dlg["bottom"] <= 800, "375px: the devices dialog is fully on screen")
     cancel, confirm = style(page, ".dialog-cancel"), style(page, ".confirm-btn")
     c.ok(cancel["h"] >= 43.5 and confirm["h"] >= 43.5, "375px: both buttons are at least 44px tall")
-    c.ok(confirm["y"] < cancel["y"], "375px: the buttons stack, the safe action last in the DOM and lowest on screen")
+    c.ok(cancel["y"] < confirm["y"], "375px: the buttons stack with the safe action (the initial focus) on TOP and Tab running downhill to Deactivate")
     c.near(confirm["w"], dlg["w"] - 40 - 2, 1.5, "375px: stacked buttons take the card's inner width")
     c.eq(page.evaluate("(() => { const s = document.querySelector('.dialog-scrim'); return s.scrollWidth <= s.clientWidth; })()"), True, "375px: the dialog does not overflow its scrim")
     if shots:
@@ -573,7 +713,15 @@ def snapshot_defaults(page) -> dict:
     for name, opener in (("dialog-default", "#open-centered"), ("dialog-type", "#open-type")):
         open_dialog(page, opener)
         page.evaluate("document.activeElement && document.activeElement.blur()")  # focus ring is not part of the look
-        out[name] = page.evaluate(SNAPSHOT_JS, ".dialog-scrim")
+        # UiButton fades its focus ring out over 150ms (`transition: all`): read only once it has
+        # (review of PR 173, Vera 2 / Quinn 4 / Cody 4: reading at once caught it half faded)
+        settle(page)
+        snap = page.evaluate(SNAPSHOT_JS, ".dialog-scrim")
+        # The scrim is as wide as the viewport, and the viewport is one scrollbar wider once the
+        # open dialog locks page scroll (12px in WebKit, where main.css forces a classic scrollbar;
+        # 0 in headless Chromium). That shift is the lock working, not the look changing.
+        snap[0]["w"] = None
+        out[name] = snap
         page.mouse.click(8, 8)
         page.wait_for_selector(".dialog-card", state="detached")
     return out
@@ -620,10 +768,14 @@ def main() -> int:
     ap.add_argument("--engine", choices=["chromium", "webkit", "both"], default="chromium")
     ap.add_argument("--shots", help="directory for screenshots of the devices dialog (1440 and 375)")
     ap.add_argument("--gallery-src", help="build the gallery against this src directory instead of ./src")
-    ap.add_argument("--dump-defaults", help="record the default-look computed styles to this file, then exit")
-    ap.add_argument("--compare-defaults", help="diff the default-look computed styles against this recording")
+    ap.add_argument("--dump-defaults", help="record the default-look computed styles to this file ({engine} is replaced by the engine's name), then exit")
+    ap.add_argument("--compare-defaults", help="diff the default-look computed styles against this recording ({engine} is replaced by the engine's name)")
     ap.add_argument("--no-build", action="store_true", help="reuse node_modules/.tmp/gallery")
+    ap.add_argument("--require", action="store_true", help="a missing Playwright or engine is a failure, not a loud skip (what `npm run test:components` passes)")
     args = ap.parse_args()
+    if args.require:
+        global REQUIRE
+        REQUIRE = True
 
     try:
         from playwright.sync_api import sync_playwright
@@ -674,29 +826,37 @@ def main() -> int:
                 settle(page)
 
                 if args.dump_defaults:
-                    Path(args.dump_defaults).write_text(json.dumps(snapshot_defaults(page), indent=1))
-                    print(f"recorded the default look to {args.dump_defaults}")
+                    # `{engine}` in the path gives each engine its own recording: Chromium and WebKit
+                    # legitimately compute some values differently, so each is compared with itself.
+                    target = Path(args.dump_defaults.replace("{engine}", engine))
+                    target.write_text(json.dumps(snapshot_defaults(page), indent=1))
+                    print(f"[{engine}] recorded the default look to {target}")
                     browser.close()
-                    return 0
+                    continue
 
                 if args.compare_defaults:
-                    want = json.loads(Path(args.compare_defaults).read_text())
+                    want = json.loads(Path(args.compare_defaults.replace("{engine}", engine)).read_text())
                     problems = diff_defaults(snapshot_defaults(page), want)
                     c.ok(not problems, f"the default look changed in {len(problems)} computed values")
                     c.failures.extend(f"[{engine}]   {p}" for p in problems[:40])
                     elements = sum(len(v) for v in want.values() if isinstance(v, list))
                     print(f"[{engine}] compared {elements} elements' computed styles against the recording")
                 else:
-                    for fn in (check_badges, check_faq, check_pricing, check_formfield):
+                    steps = (
+                        (check_badges, ()), (check_faq, ()), (check_pricing, ()), (check_formfield, ()),
+                        (check_password_and_required, ()), (check_slots_after_render, ()),
+                        (check_dialogs, (shots if engine == engines[0] else None,)),
+                        (check_stacked_dialogs, (errors,)), (check_fallback_focus, ()),
+                    )
+                    for fn, extra in steps:
                         try:
-                            fn(page, c)
+                            fn(page, c, *extra)
                         except Exception as exc:  # noqa: BLE001 -- an aborted check is a failure, not a crash
                             c.failures.append(f"[{engine}] {fn.__name__} aborted: {str(exc).splitlines()[0][:240]}")
                     try:
-                        check_dialogs(page, c, shots if engine == engines[0] else None)
                         check_narrow(browser, base, c, shots if engine == engines[0] else None)
                     except Exception as exc:  # noqa: BLE001
-                        c.failures.append(f"[{engine}] dialogs aborted: {str(exc).splitlines()[0][:240]}")
+                        c.failures.append(f"[{engine}] narrow dialog aborted: {str(exc).splitlines()[0][:240]}")
                     c.ok(not errors, f"page errors: {errors[:3]}")
 
                 total += c.count

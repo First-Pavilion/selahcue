@@ -10,11 +10,15 @@
 import path from 'node:path'
 import vue from '@vitejs/plugin-vue'
 import { defineConfig } from 'vite'
+import { unsafeOutDir } from './outDir.ts'
 
 const HERE = import.meta.dirname
 const PROJECT = path.resolve(HERE, '../..')
 const SRC = process.env['GALLERY_SRC'] ? path.resolve(process.env['GALLERY_SRC']) : path.resolve(PROJECT, 'src')
 const OUT = process.env['GALLERY_OUT'] ? path.resolve(process.env['GALLERY_OUT']) : path.resolve(PROJECT, 'node_modules/.tmp/gallery')
+
+const refusal = unsafeOutDir(OUT)
+if (refusal) throw new Error(`GALLERY_OUT refused: ${refusal}`)
 
 export default defineConfig({
   root: HERE,

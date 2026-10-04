@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, useSlots } from 'vue'
+import { ref, computed } from 'vue'
 
 const props = defineProps({
   modelValue: { type: [String, Number], default: '' },
@@ -47,14 +47,6 @@ const showPassword = ref(false)
 const textReveal = computed(() => props.revealStyle === 'text')
 const glyphError = computed(() => props.errorStyle === 'glyph')
 
-/**
- * A link or button that sits on the label's row, at the right ("Forgot?"). It is rendered
- * AFTER the input in the DOM and placed on the label row by CSS, so the tab order stays input
- * then link (Email, Password, Forgot, Sign in), as the gap-fill handoff 3d requires.
- */
-const slots = useSlots()
-const hasLabelAction = computed(() => !!slots['label-action'])
-
 const inputType = computed(() => {
   if (props.type === 'password') {
     return showPassword.value ? 'text' : 'password'
@@ -66,6 +58,20 @@ const charCount = computed(() => {
   return String(props.modelValue || '').length
 })
 
+/**
+ * A password field is never spell-checked, auto-corrected or auto-capitalised, hidden OR shown
+ * (review of PR 173, Shadow 1). Pressing Show turns the input into `type="text"`, and a text
+ * field is sent to the browser's spell checker (Chrome's Enhanced Spell Check and Edge's
+ * Microsoft Editor upload what is typed) and learned by a phone keyboard.
+ *
+ * Known and left alone (Shadow 2): Vue also writes the typed value into the `value` ATTRIBUTE
+ * (vuejs/core#6007, framework behaviour). Nothing on the site serialises the DOM today (no
+ * analytics, session replay or crash reporting). Whoever adds such a tool must mask by field
+ * (`.form-field`, `autocomplete*="password"`), not by `input[type=password]`, which a revealed
+ * password no longer matches.
+ */
+const isPassword = computed(() => props.type === 'password')
+
 const handleInput = (event: Event) => {
   const val = (event.target as HTMLInputElement).value
   emit('update:modelValue', val)
@@ -73,7 +79,7 @@ const handleInput = (event: Event) => {
 </script>
 
 <template>
-  <div :class="['form-field', { 'has-error': !!error, 'is-disabled': disabled, 'has-label-action': hasLabelAction }]">
+  <div :class="['form-field', { 'has-error': !!error, 'is-disabled': disabled, 'has-label-action': !!$slots['label-action'] }]">
     <label v-if="label" :for="id" class="field-label">
       {{ label }}
       <span v-if="required" class="required-star" aria-hidden="true">*</span>
@@ -87,6 +93,7 @@ const handleInput = (event: Event) => {
         :placeholder="placeholder"
         :disabled="disabled"
         :maxlength="maxLength > 0 ? maxLength : undefined"
+        :aria-required="required ? 'true' : undefined"
         :aria-invalid="!!error"
         :aria-describedby="error ? `${id}-error` : hint ? `${id}-hint` : undefined"
         class="field-input field-textarea"
@@ -103,6 +110,10 @@ const handleInput = (event: Event) => {
         :placeholder="placeholder"
         :disabled="disabled"
         :autocomplete="autocomplete"
+        :spellcheck="isPassword ? 'false' : undefined"
+        :autocorrect="isPassword ? 'off' : undefined"
+        :autocapitalize="isPassword ? 'off' : undefined"
+        :aria-required="required ? 'true' : undefined"
         :aria-invalid="!!error"
         :aria-describedby="error ? `${id}-error` : hint ? `${id}-hint` : undefined"
         :class="['field-input', { 'has-reveal-text': textReveal && type === 'password' }]"
@@ -131,7 +142,7 @@ const handleInput = (event: Event) => {
       </button>
     </div>
 
-    <div v-if="hasLabelAction" class="label-action">
+    <div v-if="$slots['label-action']" class="label-action">
       <slot name="label-action"></slot>
     </div>
 
@@ -249,10 +260,11 @@ const handleInput = (event: Event) => {
 }
 
 /* The word Show / Hide in place of the eye (reset frames): 12.5px/500 on the secondary ink,
-   a 44px-tall target that ends 16px from the field's edge (6px + 10px padding), and room in
-   the field so a long password never runs under it. */
+   a 44px-tall target whose text ends 14px from the field's edge (Figma: input right edge 899,
+   text right edge 885; here 4px + 10px padding), and room in the field so a long password
+   never runs under it. */
 .password-toggle.is-text {
-  right: 6px;
+  right: 4px;
   height: 44px;
   padding: 0 10px;
   font-family: var(--font-family);
@@ -280,7 +292,7 @@ const handleInput = (event: Event) => {
   }
   .field-input { font-size: 16px; }
   .password-toggle.is-text {
-    right: 6px;
+    right: 4px;
     width: auto;
     min-width: 44px;
     padding: 0 10px;

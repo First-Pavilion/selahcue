@@ -11,6 +11,12 @@ defineProps({
   features: { type: Array as () => string[], required: true },
   cta: { type: String, required: true },
   popular: { type: Boolean, default: false },
+  /**
+   * NOT BACKED. Shows 80% of the price ("save 20%"). The repo has no annual plan and the
+   * discount is invented: audit finding pricing-18, class C, owner decision pending, and
+   * removing it belongs to ClickUp 17tnw2b0x3h. Left as it was; do not read the maths as a
+   * statement of what is on sale.
+   */
   annual: { type: Boolean, default: false },
   /**
    * Where the plan's call to action goes: a router destination (`'/download'`, `{ name: ... }`).
@@ -39,7 +45,7 @@ const noteId = `${useId()}-cta-note`
         <span class="price-period">/ {{ period }}</span>
       </template>
       <template v-else>
-        <span class="price-val custom">{{ price }}</span>
+        <span class="price-val">{{ price }}</span>
       </template>
     </div>
 
@@ -217,8 +223,8 @@ const noteId = `${useId()}-cta-note`
   flex-shrink: 0;
 }
 
-/* On a phone the card is full width, so its call to action is too (it already is: the width
-   above is 100% at every size). Only the padding steps down. */
+/* The call to action is the card's full width at every size (`width: 100%` above), so a phone
+   needs nothing for it; only the card's padding steps down. */
 @media (max-width: 767.98px) {
   .pricing-card {
     padding:
