@@ -40,7 +40,7 @@ import ControllerMock from '@/components/core/ControllerMock.vue'
       <template #eyebrow>
         <UiBadge variant="featured">DOWNLOAD</UiBadge>
       </template>
-      Desktop installers are not available to download yet. Every core live control works with no network, and mobile control pairs with your desktop over your local network.
+      Desktop installers are not available to download yet. Core live controls work with no network, and mobile control pairs over your local network.
       <template #after>
         <p class="trust-line">Free plan · Core live controls work offline</p>
       </template>

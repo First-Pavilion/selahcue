@@ -388,14 +388,14 @@ describe('Pricing', () => {
       '3 devices',
       'Up to 5 outputs',
       'Up to 5 NDI outputs',
-      'A larger monthly allowance of hosted speech-to-text',
+      'Larger hosted speech-to-text allowance',
     ],
     Platinum: [
       'Everything in Pro',
       '7 devices',
       'Up to 10 outputs',
       'Up to 10 NDI outputs',
-      'The largest monthly allowance of hosted speech-to-text',
+      'Largest hosted speech-to-text allowance',
     ],
   }
 

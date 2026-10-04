@@ -47,7 +47,7 @@ import CtaBand from '@/components/core/CtaBand.vue'
         tone="live"
         eyebrow="OUTPUTS"
         title="Live presentation & outputs"
-        text="Stage everything in Preview, then Go Live with a single tap. Audience projector and stage display run from the same deck, and live output is designed to stay up when something else fails."
+        text="Stage everything in Preview, then Go Live with a single tap. Audience projector and stage display run from one deck, with live output built to stay up."
         :bullets="['Preview → Live with one Go Live', 'Designed so a fault cannot black out live output', 'Audience + stage from one deck']"
         panel-title="OUTPUTS"
         panel-chip="LIVE"

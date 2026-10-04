@@ -257,7 +257,7 @@ def check_pricing(page, base: str, engine: str) -> None:
     stops = []
     for _ in range(4):
         page.keyboard.press(TAB)
-        stops.append(page.evaluate("(document.activeElement.innerText || document.activeElement.getAttribute('aria-label') || '').trim().slice(0, 40)"))
+        stops.append(page.evaluate("(document.activeElement.getAttribute('aria-label') || document.activeElement.innerText || '').trim().slice(0, 40)"))
     check("pricing: Tab goes to Free, then skips Pro and Platinum (both disabled) to the table", stops[0] == "Download free" and "Plan comparison" in stops[1] and "Talk to us" not in stops and "Get Pro" not in stops, str(stops))
 
     # The comparison card: 1040 wide at x=200, 45px header band, 48px rows (Figma 484:126/127/135).

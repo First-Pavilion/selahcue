@@ -43,7 +43,7 @@ import CtaBand from '@/components/core/CtaBand.vue'
         <h2>Why we built SelahCue</h2>
         <div class="story-text">
           <p>Too many services are one crashed slide away from a blank screen — and the tools meant to help often assume a fast, always-on internet connection that a lot of churches simply don't have.</p>
-          <p>We wanted the opposite: an app that runs on your own computer and stays in charge, where a fault elsewhere is designed never to blank live output, every core live control works with no network at all, and helpful AI features assist the operator without ever gating the controls that matter.</p>
+          <p>We wanted the opposite: an app that stays in charge on your own computer, is designed so a fault cannot blank live output, runs every core live control with no network, and lets AI assist the operator without gating core controls.</p>
           <p>That's what SelahCue is — presentation, scripture, timers, stage display and streaming outputs in one console, with a phone in your hand as the remote, built to be dependable on the one morning you can't get a second take.</p>
         </div>
       </div>
@@ -59,7 +59,7 @@ import CtaBand from '@/components/core/CtaBand.vue'
               <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7 3v5c0 5-3.2 8.5-7 10-3.8-1.5-7-5-7-10V6z" /><path d="M9 12l2 2 4-4" /></svg>
             </span>
             <h3>Reliability comes first</h3>
-            <p>Live output is designed to stay up when something else fails. Every decision serves the one moment you can't repeat.</p>
+            <p>Live output is designed to stay up. Every decision serves the one moment you can't repeat.</p>
           </div>
           <div class="value-card">
             <span class="value-tile tile-brand" aria-hidden="true">
@@ -80,7 +80,7 @@ import CtaBand from '@/components/core/CtaBand.vue'
               <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 18a9 9 0 1 1 16 0" /><path d="M12 14l4-4" /></svg>
             </span>
             <h3>Bounded &amp; respectful</h3>
-            <p>Memory use is designed to stay within fixed limits, so SelahCue stays light on the machine it runs on.</p>
+            <p>Memory use is designed to stay within fixed limits, so SelahCue stays light.</p>
           </div>
         </div>
       </div>
