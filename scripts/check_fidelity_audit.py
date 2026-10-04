@@ -184,12 +184,32 @@ def _decision_ids(repo):
         return frozenset(re.findall(r"^#+\s*(DEC-\d+)", fh.read(), re.M))
 
 
+def _is_shallow(repo):
+    """True when `repo` is a shallow clone (history cut off), which is what actions/checkout makes by default."""
+    try:
+        out = subprocess.run(["git", "-C", repo, "rev-parse", "--is-shallow-repository"],
+                             capture_output=True, text=True, timeout=20)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return out.returncode == 0 and out.stdout.strip() == "true"
+
+
 def _commit_exists(sha, repo):
+    """True: it is a commit here. False: it is not. None: cannot tell (git is missing, or the clone is shallow).
+
+    In a shallow clone a commit that is not reachable may simply have been cut off by `--depth`, so
+    "not found" proves nothing and must not fail the audit (CI's default checkout is `--depth 1`).
+    A full clone still says False for a made-up commit.
+    """
     try:
         out = subprocess.run(["git", "-C", repo, "cat-file", "-t", sha], capture_output=True, text=True, timeout=20)
     except (OSError, subprocess.SubprocessError):
         return None  # git unavailable: cannot tell, do not claim
-    return out.returncode == 0 and out.stdout.strip() == "commit"
+    if out.returncode == 0 and out.stdout.strip() == "commit":
+        return True
+    if _is_shallow(repo):
+        return None  # history is truncated: an unreachable commit is not evidence of a made-up one
+    return False
 
 
 def _contrast(fg_hex, bg_hex):
@@ -884,7 +904,6 @@ def self_test():
         ("a B source citing a decision that does not exist", "DEC-999 settled this", "not in docs/decisions"),
         ("a B source citing a file that does not exist", "implementation/marketing/src/views/NopeView.vue says so", "does not exist"),
         ("a B source citing a bare file name that does not exist", "NopeView.vue explains it", "does not exist"),
-        ("a B source citing a commit that does not exist", "commit 0123456789abcdef0123456789abcdef01234567", "not in this repository"),
         ("a B source with a wrong contrast measurement", "Measurement: #5b6bd6 on #0d0f14 is 9.9:1", "recomputes to"),
     ):
         breaks(label, lambda c, f, src=src: finding(f, index=1).update(source=src), expect)
@@ -893,7 +912,6 @@ def self_test():
         ("a file that exists", "implementation/marketing/src/views/DownloadView.vue comments"),
         ("a bare file name that exists", "DownloadView.vue comment lines 21-27"),
         ("a decision that exists", "DEC-008 fixed the tiers"),
-        ("a real commit", "commit e7566a96 (PR #142)"),
         ("a ClickUp id", "ClickUp 17tnw2b0q9j (honest disabled downloads)"),
         ("a correct measurement", "Measurement: #5b6bd6 on #0d0f14 is 4.12:1 and fails AA"),
     ):
@@ -987,14 +1005,53 @@ def self_test():
             d.update(kw)
         return f2
 
-    ok(meta_problems(meta_with()) == [] or any("not a commit" in p for p in meta_problems(meta_with())) is False,
-       "meta: a findings set with one agreed commit and date is accepted")
     ok(any("omit" in p for p in meta_problems(meta_with(origin_main=""))), "meta: a missing origin_main is rejected")
     ok(any("disagree" in p for p in meta_problems({"a": {"origin_main": "3fb96da8", "audited_utc": "d"},
                                                     "b": {"origin_main": "e7566a96", "audited_utc": "d"}})),
        "meta: findings files that audited different commits are rejected")
-    ok(any("not a commit in this repository" in p for p in meta_problems(meta_with(origin_main="0123456789abcdef"))),
-       "meta: a commit that is not in the repository is rejected")
+
+    # --- commit existence, on a SCRATCH repository so no control depends on this repository's history, and so
+    # the same controls pass in a `--depth 1` clone (CI's default checkout)
+    git_root = tempfile.mkdtemp(prefix="cfa-git-")
+    try:
+        scratch_full = os.path.join(git_root, "full")
+        scratch_shallow = os.path.join(git_root, "shallow")
+        env = dict(os.environ, GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_SYSTEM=os.devnull, GIT_AUTHOR_NAME="t",
+                   GIT_AUTHOR_EMAIL="t@example.invalid", GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@example.invalid")
+
+        def git(*args, cwd=None):
+            return subprocess.run(["git"] + list(args), cwd=cwd, env=env, capture_output=True, text=True, timeout=60)
+
+        git("init", "-q", scratch_full)
+        git("commit", "--allow-empty", "-q", "-m", "first", cwd=scratch_full)
+        git("commit", "--allow-empty", "-q", "-m", "second", cwd=scratch_full)
+        old_sha = git("rev-parse", "HEAD~1", cwd=scratch_full).stdout.strip()
+        git("clone", "-q", "--depth", "1", "file://" + scratch_full, scratch_shallow)
+        made_up = "0123456789abcdef0123456789abcdef01234567"
+        ok(len(old_sha) == 40 and git("rev-parse", "--is-shallow-repository", cwd=scratch_shallow).stdout.strip() == "true"
+           and git("cat-file", "-t", old_sha, cwd=scratch_shallow).returncode != 0,
+           "commit controls: the scratch full repository has 2 commits and its depth-1 clone is shallow and lacks the first")
+        ok(_commit_exists(old_sha, scratch_full) is True, "commit: a real commit in a full repository exists")
+        ok(_commit_exists(made_up, scratch_full) is False, "commit: a made-up commit in a FULL repository is False (rejected)")
+        ok(_commit_exists(old_sha, scratch_shallow) is None and _commit_exists(made_up, scratch_shallow) is None,
+           "commit: in a SHALLOW clone an unreachable commit is 'cannot tell' (None), never False")
+        ok(_commit_exists(git("rev-parse", "HEAD", cwd=scratch_shallow).stdout.strip(), scratch_shallow) is True,
+           "commit: in a shallow clone a commit that IS there is still found")
+        cited = lambda sha: "commit %s (ClickUp 17tnw2b0q9j)" % sha  # noqa: E731
+        ok(source_problems(cited(old_sha[:10]), repo=scratch_full) == [], "B source: a real commit is accepted (positive control, scratch repo)")
+        ok(any("not in this repository" in p for p in source_problems(cited(made_up), repo=scratch_full)),
+           "B source: a commit that does not exist is rejected in a full repository")
+        ok(source_problems(cited(made_up), repo=scratch_shallow) == [] and source_problems(cited(old_sha[:10]), repo=scratch_shallow) == [],
+           "B source: in a shallow clone a commit that cannot be reached does not fail the audit")
+        ok(meta_problems(meta_with(origin_main=old_sha[:10]), repo=scratch_full) == [],
+           "meta: a findings set with one agreed commit and date is accepted (scratch repo)")
+        ok(any("not a commit in this repository" in p for p in meta_problems(meta_with(origin_main=made_up), repo=scratch_full)),
+           "meta: a commit that is not in the repository is rejected (full repository)")
+        ok(meta_problems(meta_with(origin_main=old_sha[:10]), repo=scratch_shallow) == []
+           and meta_problems(meta_with(origin_main=made_up), repo=scratch_shallow) == [],
+           "meta: in a shallow clone an unreachable origin_main does not fail the audit")
+    finally:
+        shutil.rmtree(git_root, ignore_errors=True)
 
     # --- bugs and api gaps
     breaks("a bug with no group", lambda c, f: f["home"]["bugs"][0].pop("group"), "bug group")
