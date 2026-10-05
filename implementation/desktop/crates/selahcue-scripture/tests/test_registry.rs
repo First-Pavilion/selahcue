@@ -1268,10 +1268,13 @@ fn repair_rebuilds_the_receipt_from_the_files_that_match_the_catalogue() {
     let env = Env::with(&[&a, &b, &c]);
     env.install("AAA", &a.gz, NOW).unwrap();
     env.install("BBB", &b.gz, NOW).unwrap();
-    // Debris in the folder: a file of the user's, and a file named like a catalogue entry whose
-    // bytes are not the pinned ones.
+    // Debris in the folder: a file of the user's, and a file named like a catalogue entry that has
+    // the pinned SIZE but not the pinned bytes (so only the digest can tell it from the real one).
     fs::write(env.dir.join("notes.txt"), b"mine").unwrap();
-    fs::write(env.dir.join("ccc.tsv.gz"), b"not the pinned bytes").unwrap();
+    let mut decoy = c.gz.clone();
+    decoy[12] ^= 0xFF;
+    assert_eq!(decoy.len(), c.gz.len());
+    fs::write(env.dir.join("ccc.tsv.gz"), &decoy).unwrap();
     replace_file(&env.dir.join(RECEIPT_FILE), b"{not json");
     assert!(
         env.registry.installed().is_err(),
@@ -1306,10 +1309,7 @@ fn repair_rebuilds_the_receipt_from_the_files_that_match_the_catalogue() {
             "notes.txt"
         ]
     );
-    assert_eq!(
-        fs::read(env.dir.join("ccc.tsv.gz")).unwrap(),
-        b"not the pinned bytes"
-    );
+    assert_eq!(fs::read(env.dir.join("ccc.tsv.gz")).unwrap(), decoy);
     assert_eq!(env.registry.index(&code("AAA")).unwrap().len(), 3);
     assert_eq!(env.registry.index(&code("BBB")).unwrap().len(), 5);
     assert!(matches!(
@@ -1423,8 +1423,10 @@ fn an_install_queued_for_the_write_lock_gives_up_when_cancelled() {
     let src = env.source("asset.gz", &f.gz);
     let cancel = AtomicBool::new(false);
     let (verifying_tx, verifying_rx) = mpsc::channel::<()>();
-    let hold = env.registry.hold_writes_for_tests();
     std::thread::scope(|scope| {
+        // Taken INSIDE the scope, so that if an assertion below fails, unwinding drops it before
+        // the scope waits for the queued thread: a regression fails this test instead of hanging it.
+        let hold = env.registry.hold_writes_for_tests();
         let queued = scope.spawn(|| {
             let cb = |p: Progress| {
                 if p.phase == Phase::Verifying {
@@ -1455,9 +1457,9 @@ fn an_install_queued_for_the_write_lock_gives_up_when_cancelled() {
         }
         let err = queued.join().unwrap().unwrap_err();
         assert!(matches!(err, InstallError::Cancelled), "{err:?}");
+        // It gave up while the lock was STILL held: the cancel is what ended it, not the release.
+        drop(hold);
     });
-    // It gave up while the lock was STILL held: the cancel is what ended it, not the release.
-    drop(hold);
     env.assert_nothing_installed("an install cancelled while queued");
 
     // Positive control: without the flag, the same install waits for the lock and completes.
