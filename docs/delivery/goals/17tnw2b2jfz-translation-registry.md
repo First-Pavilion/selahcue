@@ -92,7 +92,7 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
 | C-009 | yes | The handle serves an installed code through the same lookups as a bundled one (verses, text, search, chapter, adjacent chapter, exists, bounds) with the same answers on the same data | `--test test_bible` (5), `--test test_bible_is_lazy`, `--test test_bible_global` | exit 0 (the bundled KJV asset installed as `KJX` is compared with `KJV` over 71 books x 154 chapters x 5 selections); mutations B1 to B4 turn it red | Iterations 3 and 4 | PASS |
 | C-010 | yes | Gates: fmt, clippy (default, `download`, `installed`), import guards, `cargo deny`, `cargo audit`, and `make ci` once at the end | commands in the verification plan | all exit 0, real output recorded in the PR description | Iteration 5 | PASS |
 | C-011 | yes | Source files are ASCII-only except where they were not before | `LC_ALL=C grep -nP '[^\x00-\x7F]'` over touched files, compared with `origin/main` | no new non-ASCII bytes and no invisible or bidirectional character in any touched file | Iteration 5 | PASS |
-| C-012 | yes | The branch is up to date and a Draft PR is open against `main` | `git rev-list --count HEAD..origin/main`; `gh pr view` | `0`; PR is Draft, base `main` | PR link on ClickUp | PENDING |
+| C-012 | yes | The branch is up to date and a Draft PR is open against `main` | `git rev-list --count HEAD..origin/main`; `gh pr view` | `0`; PR is Draft, base `main` | PR 188 (https://github.com/First-Pavilion/selahcue/pull/188), Draft, base `main`, mergeable; behind count 0 at head faa950f3; linked on ClickUp | PASS |
 | C-013 | yes | Independent review passed: code (Cody), security (Shadow), QA (Quinn) and performance (Vera, for the memory cap) each reviewed at the head SHA and every blocking finding is fixed and re-checked | review round report page linked on the PR | each verdict recorded, zero open blocking findings | report page URL | PENDING |
 
 Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABLE`.
@@ -168,9 +168,9 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
 
 ## Final evaluation
 
-- Validator command: `python3 scripts/validate_goal_contract.py docs/delivery/goals/17tnw2b2jfz-translation-registry.md`; `python3 ~/.claude/skills/goal/scripts/validate_goal_contract.py <file>` (structural). The `--completion` form is not claimed: C-012 and C-013 are open
+- Validator command: `python3 scripts/validate_goal_contract.py docs/delivery/goals/17tnw2b2jfz-translation-registry.md`; `python3 ~/.claude/skills/goal/scripts/validate_goal_contract.py <file>` (structural). The `--completion` form is not claimed: C-013 is open
 - Validator result: structural PASS with both validators
 - Independent verification result: pending (Cody, Shadow, Quinn, Vera, dispatched by the orchestrator)
-- Terminal state: not VERIFIED_COMPLETE. The implementation criteria C-001 to C-011 are PASS; the ticket stays in review until C-013 clears
-- Remaining failed or blocked criteria: C-012 (PR link recorded on ClickUp), C-013 (independent review)
+- Terminal state: not VERIFIED_COMPLETE. The implementation criteria C-001 to C-012 are PASS; the ticket is in code review until C-013 clears
+- Remaining failed or blocked criteria: C-013 (independent review)
 - ClickUp final evidence comment: posted on 17tnw2b2jfz with the PR
