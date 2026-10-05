@@ -121,7 +121,18 @@ DIST = Path(os.environ.get("SELAHCUE_MARKETING_DIST") or (MARKETING / "dist"))
 # `reset-submitting`, `signin-submitting`, `verify-resend-pending`, and (review round 1) `signup-submitting`,
 # `signup-resend-pending` and `forgot-submitting` (the in-flight states, held with `gated()`, which nothing measured before). The enumeration pairs were not touched; the Sign in in-flight checks are their own scenario
 # so that no measurement is added to one half of a pair.
-EXPECTED_MIN_CHECKS = 2505
+#
+# 2505 -> 2554 in the Account sign-out ticket (17tnw2b2cbr), measured on the tree that ships it: 67 scenarios became 70. Three
+# scenarios for the Account page's own Sign out, which used to be a link to /signin and revoked nothing: `account-signout` (one
+# request, hint cleared, lands on /signin, /account then redirects), `account-signout-pending` (held in flight: "Signing out…",
+# disabled, a second press sends nothing) and `account-signout-failure` (alert, usable again, still signed in, focus restored,
+# retry, and the navbar's message word for word the same). Run against the unchanged link they fail 25 of their 49 checks.
+#
+# 2554 -> 2570 in the review round on that ticket: 16 more checks, 70 -> 71 scenarios. `account-signout-leave` (the visitor
+# clicks away while Logout is held: not pulled back to /signin, request not repeated, hint still cleared; 12 checks) and the
+# polite "Signing out…" status region (before the press, while pending, and cleared after a failure) with a check that
+# announcing it moves nothing (4 checks across the pending and failure scenarios).
+EXPECTED_MIN_CHECKS = 2570
 
 
 def find_chrome() -> str | None:
@@ -309,7 +320,10 @@ DRIVER = r"""
    * route guard runs on the very first navigation.
    */
   var plantedHint = null;
-  if (SCENARIO === 'account-stale-hint') {
+  // The Account page's own Sign out (17tnw2b2cbr) starts ON /account with a live hint and a
+  // live server session: nothing here signs in through the form, because the form is not what
+  // is under test. The hint is what the "cleared afterwards" check needs something to clear.
+  if (SCENARIO === 'account-stale-hint' || SCENARIO.indexOf('account-signout') === 0) {
     plantedHint = JSON.stringify({
       role: 'ADMIN',
       orgId: 'org-harness',
@@ -452,6 +466,44 @@ DRIVER = r"""
       if (op === 'Logout') throw new TypeError('Failed to fetch');
       return VIEWER_OK();
     },
+
+    // ----------------------------------------- the Account page's Sign out (17tnw2b2cbr) --
+    // Three scenarios, one per outcome the ticket names. They start ON /account (see the
+    // planted hint above), so the route guard's probe is answered live, and Logout is the
+    // only operation that differs.
+    'account-signout':     function (op) {
+      if (op === 'Logout') { signedOut = true; return json({ data: { logout: { revoked: true } } }); }
+      // The guard probes before sign-out (live) and again after (gone): `signedOut` is
+      // flipped by the Logout above, exactly as in `session-lifecycle`.
+      return signedOut ? UNAUTHENTICATED() : VIEWER_OK();
+    },
+    // Logout is HELD, so "Signing out…" actually paints and a second press can be attempted
+    // while the first request is genuinely outstanding. See `gated()` for why a gate and not a timer.
+    'account-signout-pending': (function () {
+      var heldLogout = gated(function () {
+        signedOut = true;
+        return json({ data: { logout: { revoked: true } } });
+      });
+      return function (op) {
+        if (op === 'Logout') return heldLogout(op);
+        return signedOut ? UNAUTHENTICATED() : VIEWER_OK();
+      };
+    })(),
+    'account-signout-failure': function (op) {
+      if (op === 'Logout') throw new TypeError('Failed to fetch');
+      return VIEWER_OK();
+    },
+    // The visitor leaves /account while Logout is held, then the reply arrives (Shadow LOW-2).
+    'account-signout-leave': (function () {
+      var heldLogout = gated(function () {
+        signedOut = true;
+        return json({ data: { logout: { revoked: true } } });
+      });
+      return function (op) {
+        if (op === 'Logout') return heldLogout(op);
+        return signedOut ? UNAUTHENTICATED() : VIEWER_OK();
+      };
+    })(),
 
     // ------------------------------------------------------------- create account --
     // Both return the identical envelope, because `register_customer_user` does: it
@@ -1277,6 +1329,55 @@ DRIVER = r"""
   }
 
   function has(text, needle) { return text.indexOf(needle) !== -1; }
+
+  // ------------------------------------------- the Account page's Sign out (17tnw2b2cbr) --
+  /**
+   * The Sign out control INSIDE the Account page, whatever element it is.
+   *
+   * Found by what it SAYS and where it LIVES (`.account-portal`, the view's own root), not by
+   * its tag: the bug was an `<a href="/signin">` and a lookup that only matched `button`
+   * would have found nothing, skipped every later check and reported the missing control
+   * rather than the wrong one. The pattern also matches "Signing out…", so the same lookup
+   * finds the control while the request is in flight. Case-insensitive on purpose: the
+   * wording is asserted exactly by the caller, so a regression to "Sign Out" is reported as
+   * what it is.
+   */
+  function accountSignOutControl() {
+    var candidates = document.querySelectorAll('.account-portal button, .account-portal a');
+    return Array.prototype.filter.call(candidates, function (el) {
+      return /^sign(ing)? out/i.test(el.textContent.trim());
+    })[0] || null;
+  }
+
+  /** The navbar's Sign out: the same words, outside the Account page. */
+  function navbarSignOutControl() {
+    return Array.prototype.filter.call(document.querySelectorAll('button'), function (el) {
+      return /^sign(ing)? out/i.test(el.textContent.trim()) && !el.closest('.account-portal');
+    })[0] || null;
+  }
+
+  function logoutCount() {
+    return calls.filter(function (c) { return c.op === 'Logout'; }).length;
+  }
+
+  /** What a `role="alert"` region in this scope says about a sign-out that did not complete. */
+  function signOutAlert(inAccountPage) {
+    var alerts = document.querySelectorAll('[role="alert"]');
+    return Array.prototype.filter.call(alerts, function (el) {
+      return !!el.closest('.account-portal') === inAccountPage && has(el.textContent, "couldn't sign you out");
+    }).map(function (el) { return el.textContent.replace(/\s+/g, ' ').trim(); })[0] || '';
+  }
+
+  /** The header's polite live region (Quinn 4): where "Signing out…" is announced to a screen reader. */
+  function accountStatusRegion() {
+    return document.querySelector('.account-portal .portal-header [role="status"]');
+  }
+
+  /** The Account header's height, so a check can say the announcement moved nothing. */
+  function accountHeaderHeight() {
+    var header = document.querySelector('.account-portal .portal-header');
+    return header ? header.getBoundingClientRect().height : -1;
+  }
 
   // ---------------------------------------------------- Figma fidelity (ClickUp 17tnw2b2cf1) --
   /*
@@ -2564,6 +2665,9 @@ DRIVER = r"""
       check('the local hint was cleared',
             window.localStorage.getItem('selahcue.session') === null,
             'still held: ' + window.localStorage.getItem('selahcue.session'));
+      // TEMPORARY. The navbar lands on `/`; the owner's decision (2026-10-05) is that BOTH Sign out
+      // buttons land on /signin, and 17tnw2b2ka8 moves this one. That ticket changes this check to
+      // '/signin' and deletes the pin in `tests/accountSignOut.test.ts` that points here.
       check('left the account route', location.pathname === '/');
 
       // AND THE PART THAT MATTERS: the protected route is unreachable afterwards.
@@ -2596,6 +2700,199 @@ DRIVER = r"""
       check('a failed sign-out leaves the signed-in controls up', has(pageText(), 'Sign out'));
       check('a failed sign-out does not navigate away', location.pathname === '/account',
             'pathname: ' + location.pathname);
+    },
+
+    // ============================= the Account page's Sign out (17tnw2b2cbr) ==
+    // The button used to be `<UiButton to="/signin">`: a router link. It navigated and did
+    // nothing else, so the server session, the HttpOnly cookie and the hint all survived and a
+    // visitor on a shared church-office PC believed they were signed out when they were not.
+    // `session-lifecycle` and `signout-failure` above click the NAVBAR's control and could not
+    // see it: each picks the first "Sign out" in the document, and the navbar comes first.
+    //
+    // Each of these fails if the control is turned back into a plain link: the link sends no
+    // Logout, leaves the hint, and never says anything about a failure.
+    'account-signout': async function () {
+      await wait(800);
+      check('started on the Account page, signed in', location.pathname === '/account' &&
+            has(pageText(), 'Grace Community Church'), 'pathname: ' + location.pathname);
+      var control = accountSignOutControl();
+      check('the Account page offers a sign-out control', !!control);
+      check('it is a real <button>, not a link that merely navigates',
+            !!control && control.tagName === 'BUTTON', 'tag: ' + (control && control.tagName));
+      var navbarControl = navbarSignOutControl();
+      check('the navbar offers one too, to compare against', !!navbarControl);
+      check('both say the same thing',
+            !!control && !!navbarControl && control.textContent.trim() === navbarControl.textContent.trim(),
+            '"' + (control && control.textContent.trim()) + '" vs "' +
+            (navbarControl && navbarControl.textContent.trim()) + '"');
+      check('it is enabled before it is pressed', !!control && !control.disabled);
+      check('the session hint is held before sign-out (the premise of the "cleared" check below)',
+            window.localStorage.getItem('selahcue.session') !== null);
+
+      if (control) control.click();
+      await wait(1500);
+
+      check('one press sent exactly one logout request', logoutCount() === 1,
+            'ops: ' + calls.map(function (c) { return c.op; }).join(','));
+      check('and sent it to the account endpoint',
+            calls.filter(function (c) { return c.op === 'Logout'; }).every(function (c) {
+              return c.url.indexOf('/graphql/account') !== -1; }),
+            'urls: ' + calls.map(function (c) { return c.url; }).join(','));
+      check('the logout was a mutation, not a read',
+            calls.filter(function (c) { return c.op === 'Logout'; }).every(function (c) {
+              return /\bmutation\b/.test(c.query); }));
+      check('the session hint was cleared', window.localStorage.getItem('selahcue.session') === null,
+            'still held: ' + window.localStorage.getItem('selahcue.session'));
+      check('the visitor landed on /signin', location.pathname === '/signin',
+            'pathname: ' + location.pathname);
+      check('the sign-in page rendered', !!document.querySelector('.au-card'));
+
+      // AND THE PART THAT MATTERS: the protected route is closed afterwards.
+      check('drove a real client-side navigation', navigate('/account'));
+      await wait(1200);
+      check('opening /account again redirects to sign in', location.pathname === '/signin',
+            'pathname: ' + location.pathname);
+      check('and says why', has(pageText(), "You've been signed out"));
+      csrfChecks();
+    },
+
+    'account-signout-pending': async function () {
+      await wait(800);
+      var control = accountSignOutControl();
+      check('the Account page offers a sign-out control', !!control);
+      // The announcement (Quinn 4): a disabled button drops focus, so without a live region a
+      // screen-reader user hears nothing until the page changes. The region must already be
+      // there, empty, BEFORE the press: one added together with its text is not reliably spoken.
+      var idleRegion = accountStatusRegion();
+      check('a polite status region exists before the press, and is empty',
+            !!idleRegion && idleRegion.getAttribute('aria-live') === 'polite' &&
+            idleRegion.textContent.trim() === '',
+            'region: ' + (idleRegion && idleRegion.outerHTML));
+      var idleHeight = accountHeaderHeight();
+      if (control) control.click();
+
+      // The request is out and the reply is held. Poll for it rather than sleeping, so the
+      // check below reads the in-flight state and not a guess about timing.
+      var deadline = Date.now() + 3000;
+      while (Date.now() < deadline && logoutCount() === 0) await wait(20);
+      await wait(100);
+      check('the logout request is out', logoutCount() === 1, 'logouts: ' + logoutCount());
+
+      var pending = accountSignOutControl();
+      check('the control is still there while the request is out', !!pending);
+      check('it reads "Signing out…"', !!pending && pending.textContent.trim() === 'Signing out…',
+            'read: ' + (pending && pending.textContent.trim()));
+      check('and is disabled', !!pending && pending.disabled === true);
+      var pendingRegion = accountStatusRegion();
+      check('the pending state is announced to a screen reader through the polite status region',
+            !!pendingRegion && pendingRegion.textContent.trim() === 'Signing out…',
+            'region said: ' + (pendingRegion && pendingRegion.textContent.trim()));
+      check('and announcing it moved nothing: the header is exactly as tall as when idle',
+            idleHeight > 0 && Math.abs(accountHeaderHeight() - idleHeight) < 0.5,
+            'idle ' + idleHeight + 'px, pending ' + accountHeaderHeight() + 'px');
+      check('nothing has been cleared yet: the server has not answered',
+            window.localStorage.getItem('selahcue.session') !== null);
+      check('and the visitor is still on /account', location.pathname === '/account',
+            'pathname: ' + location.pathname);
+
+      // A second press, two ways. A disabled button swallows both.
+      if (pending) {
+        pending.click();
+        pending.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+      }
+      await wait(300);
+      check('a second press sends no second request', logoutCount() === 1, 'logouts: ' + logoutCount());
+
+      releaseGate();
+      await wait(1500);
+      check('releasing the reply still leaves exactly one request', logoutCount() === 1,
+            'logouts: ' + logoutCount());
+      check('the hint is cleared once the server has answered',
+            window.localStorage.getItem('selahcue.session') === null);
+      check('and the visitor lands on /signin', location.pathname === '/signin',
+            'pathname: ' + location.pathname);
+      csrfChecks();
+    },
+
+    'account-signout-failure': async function () {
+      await wait(800);
+      var control = accountSignOutControl();
+      check('the Account page offers a sign-out control', !!control);
+      if (control) control.click();
+      await wait(1000);
+
+      var after = accountSignOutControl();
+      var message = signOutAlert(true);
+      // The cookie is HttpOnly: only the server can delete it, by answering the mutation. A
+      // failed logout means the session is STILL LIVE, so nothing here may say otherwise.
+      check('a failed sign-out says so, in an announced alert on the Account page',
+            message !== '', 'alerts: ' + document.querySelectorAll('[role="alert"]').length);
+      check('the control is back to "Sign out"',
+            !!after && after.textContent.trim() === 'Sign out',
+            'read: ' + (after && after.textContent.trim()));
+      check('and enabled, so it can be pressed again', !!after && !after.disabled);
+      var failedRegion = accountStatusRegion();
+      check('the pending announcement has cleared: the alert carries the failure, not two voices',
+            !!failedRegion && failedRegion.textContent.trim() === '',
+            'region said: ' + (failedRegion && failedRegion.textContent.trim()));
+      check('the visitor stays on the Account page', location.pathname === '/account',
+            'pathname: ' + location.pathname);
+      check('the session hint was NOT cleared: they are still signed in',
+            window.localStorage.getItem('selahcue.session') !== null);
+      check('the navbar still offers the signed-in controls', !!navbarSignOutControl());
+      check('one press sent one request', logoutCount() === 1, 'logouts: ' + logoutCount());
+      check('focus is back on the control, so a keyboard user can retry without hunting for it',
+            !!after && document.activeElement === after,
+            'focus is on: ' + (document.activeElement && document.activeElement.tagName));
+
+      // Retry: the same control sends a second request, and the page still does not claim success.
+      if (after) after.click();
+      await wait(800);
+      check('pressing it again retries', logoutCount() === 2, 'logouts: ' + logoutCount());
+      check('and the failure is still reported', signOutAlert(true) !== '');
+
+      // PARITY with the navbar's control, in the same failing state: the same words.
+      var navbarControl = navbarSignOutControl();
+      if (navbarControl) navbarControl.click();
+      await wait(800);
+      var navbarMessage = signOutAlert(false);
+      check('the navbar reports the failure too', navbarMessage !== '');
+      check('in word for word the same message as the Account page',
+            navbarMessage !== '' && navbarMessage === message,
+            '"' + navbarMessage + '" vs "' + message + '"');
+      csrfChecks();
+    },
+
+    // The visitor presses Sign out, then clicks away BEFORE the server answers (Shadow LOW-2,
+    // Quinn 3). The request is not cancelled, so the session is revoked either way; what the
+    // late reply must not do is pull them off the page they chose.
+    'account-signout-leave': async function () {
+      await wait(800);
+      var control = accountSignOutControl();
+      check('the Account page offers a sign-out control', !!control);
+      if (control) control.click();
+      var deadline = Date.now() + 3000;
+      while (Date.now() < deadline && logoutCount() === 0) await wait(20);
+      await wait(100);
+      check('the logout request is out and held', logoutCount() === 1, 'logouts: ' + logoutCount());
+
+      check('drove a real client-side navigation away from /account', navigate('/pricing'));
+      await wait(1000);
+      check('the visitor is on the page they chose', location.pathname === '/pricing',
+            'pathname: ' + location.pathname);
+      check('the Account page is gone', !document.querySelector('.account-portal'));
+
+      releaseGate();
+      await wait(1500);
+      check('the late reply did NOT pull them to /signin', location.pathname === '/pricing',
+            'pathname: ' + location.pathname);
+      check('the request was not cancelled or repeated', logoutCount() === 1, 'logouts: ' + logoutCount());
+      check('they ARE signed out: the hint was cleared by the late reply',
+            window.localStorage.getItem('selahcue.session') === null,
+            'still held: ' + window.localStorage.getItem('selahcue.session'));
+      check('and the navbar now offers Sign in, not Sign out',
+            !navbarSignOutControl() && !!document.querySelector('header a[href="/signin"]'));
+      csrfChecks();
     },
 
     // ========================================================== create account ==
@@ -3336,6 +3633,11 @@ SCENARIOS: list[tuple[str, str]] = [
     ("signin-next-unmatched", "/signin?next=%2Fdoes-not-exist"),
     ("session-lifecycle", "/signin"),
     ("signout-failure", "/signin"),
+    # The Account page's own Sign out (17tnw2b2cbr): success, held in flight, and failure.
+    ("account-signout", "/account"),
+    ("account-signout-pending", "/account"),
+    ("account-signout-failure", "/account"),
+    ("account-signout-leave", "/account"),
     # ------------------------------------------------------------ create account --
     ("signup-form", "/signup"),
     ("signup-short-password", "/signup"),
