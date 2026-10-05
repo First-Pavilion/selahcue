@@ -211,6 +211,91 @@ jobs:
           python3 -m pip install --quiet --break-system-packages 'pyyaml==6.0.3'
           python3 .github/scripts/check_workflows.py --self-test
           python3 .github/scripts/check_workflows.py
+      # The disk script's contract (17tnw2b2k23). `check` is the one behaviour in
+      # scripts/ci_disk.sh that can turn a build red, and `free` is the one that deletes system
+      # directories, so both have a test that runs on every PR, on a runner that is thrown away.
+      # `free` is run here in two ways only, and neither deletes anything. With its guard
+      # variables WRONG it must refuse (exit 2); that is tried with the skip threshold at 0
+      # too, so a skip placed BEFORE the guards (it would exit 0) is caught. With the guards
+      # right and the threshold at 0 it must take the skip: exit 0, say "nothing deleted", and
+      # leave every directory in place; the last lines prove none was deleted. The deletion
+      # path itself is tested only in a throwaway container with fake directories, never here.
+      # `end` is the always() last step of the rust job and must never fail it, so it is tested
+      # too: exit 0 at the default level, and exit 0 with a ::warning line when the warning
+      # level is raised above any real free space (the output is captured, so no annotation is
+      # raised here, and the job summary is left alone). The list of directories that must
+      # survive is READ from the `doomed=` line of the script, so it cannot drift from it; if
+      # that line changes shape the step fails. The first case is the positive control: with
+      # the floor at 0 the script itself runs.
+      - name: Disk script contract (check floor, usage error, free refusals and skip, end)
+        run: |
+          fail=0
+          expect() {
+            want=$1
+            shift
+            if "$@" >/dev/null 2>&1; then got=0; else got=$?; fi
+            if [ "$got" -ne "$want" ]; then
+              echo "FAIL: '$*' exited $got, wanted $want"
+              fail=1
+            fi
+          }
+          paths=$(sed -n 's/^    doomed="\(.*\)"$/\1/p' scripts/ci_disk.sh)
+          if [ -z "$paths" ]; then
+            echo "FAIL: could not read the deletion list (the doomed= line) from scripts/ci_disk.sh"
+            exit 1
+          fi
+          present() {
+            n=0
+            for p in $paths; do
+              if [ -e "$p" ]; then n=$((n + 1)); fi
+            done
+            echo "$n"
+          }
+          before=$(present)
+          expect 0 env CI_DISK_MIN_FREE_GB=0 sh scripts/ci_disk.sh check selftest
+          expect 1 env CI_DISK_MIN_FREE_GB=100000 sh scripts/ci_disk.sh check selftest
+          expect 2 env CI_DISK_MIN_FREE_GB=-1 sh scripts/ci_disk.sh check selftest
+          expect 2 env CI_DISK_MIN_FREE_GB=0400 sh scripts/ci_disk.sh check selftest
+          expect 2 env CI_DISK_MIN_FREE_GB=00 sh scripts/ci_disk.sh check selftest
+          expect 2 env CI_DISK_WARN_FREE_GB=09 sh scripts/ci_disk.sh end selftest
+          expect 2 env CI_DISK_SKIP_FREE_AT_GB=040 sh scripts/ci_disk.sh report selftest
+          expect 0 env -u GITHUB_STEP_SUMMARY sh scripts/ci_disk.sh end selftest
+          if warned=$(env -u GITHUB_STEP_SUMMARY CI_DISK_WARN_FREE_GB=100000 sh scripts/ci_disk.sh end selftest 2>&1); then rc=0; else rc=$?; fi
+          if [ "$rc" -ne 0 ]; then
+            echo "FAIL: 'end' with a warning level of 100000 exited $rc, wanted 0 (it must never fail)"
+            fail=1
+          fi
+          case "$warned" in
+            *"::warning"*) ;;
+            *)
+              echo "FAIL: 'end' with a warning level of 100000 printed no ::warning line"
+              fail=1
+              ;;
+          esac
+          expect 2 sh scripts/ci_disk.sh bogus
+          expect 2 env -u GITHUB_ACTIONS sh scripts/ci_disk.sh free
+          expect 2 env GITHUB_ACTIONS=true RUNNER_ENVIRONMENT=self-hosted sh scripts/ci_disk.sh free
+          expect 2 env CI_DISK_SKIP_FREE_AT_GB=abc sh scripts/ci_disk.sh report selftest
+          expect 2 env -u GITHUB_ACTIONS CI_DISK_SKIP_FREE_AT_GB=0 sh scripts/ci_disk.sh free
+          expect 2 env CI_DISK_SKIP_FREE_AT_GB=0 GITHUB_ACTIONS=true RUNNER_ENVIRONMENT=self-hosted sh scripts/ci_disk.sh free
+          if skipped=$(env CI_DISK_SKIP_FREE_AT_GB=0 GITHUB_ACTIONS=true RUNNER_ENVIRONMENT=github-hosted sh scripts/ci_disk.sh free 2>&1); then rc=0; else rc=$?; fi
+          if [ "$rc" -ne 0 ]; then
+            echo "FAIL: 'free' with the threshold at 0 exited $rc, wanted 0 (skip)"
+            fail=1
+          fi
+          case "$skipped" in
+            *"nothing deleted"*) ;;
+            *)
+              echo "FAIL: 'free' with the threshold at 0 did not print the skip line"
+              fail=1
+              ;;
+          esac
+          after=$(present)
+          if [ "$before" -ne "$after" ]; then
+            echo "FAIL: a refused 'free' deleted something ($before directories before, $after after)"
+            fail=1
+          fi
+          exit "$fail"
 
   rust:
     name: rust (${{ matrix.os }})
@@ -226,6 +311,30 @@ jobs:
         working-directory: implementation/desktop
     steps:
       - uses: actions/checkout@v7
+      # Disk headroom on the hosted Linux runner (17tnw2b2k23). From about 21:00 UTC on
+      # 2026-10-04 this job failed on every run, in the "LAN server + app server features"
+      # step, with the same code, the same runner image and the same Rust cache that had
+      # passed an hour earlier: the runner has one 72 GB disk with 13.3 GB free, and this job
+      # writes about 16.4 GB to it. A full disk crashes the runner agent, which loses the step
+      # logs of the whole job (BlobNotFound), so those failures could not be read back.
+      #
+      # `free` deletes preinstalled software this job never uses (Android SDK, .NET, GHC,
+      # CodeQL; about 21.7 GB, takes about 40 to 90 s) BEFORE anything is built, only on a
+      # GitHub-hosted runner, and only when the runner is small: it SKIPS (and prints "skipped")
+      # when 40 GB or more is free at job start. On the runners seen on 2026-10-05 (86 GB free)
+      # the deletion therefore does not run at all; it was proven on the 13.3 GB runners of
+      # 2026-10-04 and matters again only if the pool shrinks. Either way the step prints the
+      # start figure. The `check` steps below are headroom alarms with a floor per
+      # checkpoint, set on the step: each fails its own step, by name, while there is still
+      # room to write. The last step warns below 10 GB free and adds one line to the job
+      # summary. Linux only: macOS and Windows runners did not fail and are left alone. The
+      # free step and the first check sit in the setup zone and the rest carry a status
+      # function, as check_workflows.py requires. All the numbers, and why each floor is what
+      # it is, are in scripts/ci_disk.sh.
+      - name: Free disk space and report it at job start (Linux)
+        if: runner.os == 'Linux'
+        working-directory: ${{ github.workspace }}
+        run: sh scripts/ci_disk.sh free
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: ${{ needs.changes.outputs.rust }}
@@ -396,6 +505,16 @@ jobs:
           # fontdb scans, NOT that fontdb resolves it or that it measures differently from the
           # bundled face. Those two are asserted at runtime by `verdict()` in installed_serif.
           test -f /usr/share/fonts/truetype/liberation/LiberationSerif-Regular.ttf
+      # Floor 10 GB here and after clippy (healthy runs show about 30 GB at both): the workspace
+      # test step that follows writes 7.1 GB, so 5 GB would let a runner that had 9.6 to 11.7 GB
+      # free AT JOB START (before the 4.6 GB written up to this point) crash with no red step
+      # ahead of it. The two checks after the tests use 5 GB.
+      - name: Disk space before the gates, cache restored (Linux)
+        if: runner.os == 'Linux'
+        working-directory: ${{ github.workspace }}
+        env:
+          CI_DISK_MIN_FREE_GB: "10"
+        run: sh scripts/ci_disk.sh check before-gates-cache-restored
       # From the first GATE step onward, `!cancelled()`. Setup steps above deliberately
       # keep the default `success()`: if checkout, the toolchain install or the pin
       # assertion fails, every downstream result is meaningless or measured on the wrong
@@ -419,6 +538,12 @@ jobs:
           cargo clippy -p selahcue-scripture --features download --all-targets -- -D warnings
           cargo clippy -p selahcue-cloud --features openai --all-targets -- -D warnings
           cargo clippy -p selahcue-stt-cloud --features deepgram --all-targets -- -D warnings
+      - name: Disk space after clippy (Linux)
+        if: ${{ !cancelled() && runner.os == 'Linux' }}
+        working-directory: ${{ github.workspace }}
+        env:
+          CI_DISK_MIN_FREE_GB: "10"
+        run: sh scripts/ci_disk.sh check after-clippy
       - name: Test (workspace, incl. GPU parity where an adapter exists)
         if: ${{ !cancelled() }}
         # --no-fail-fast: without it cargo stops at the first failing test BINARY, so a
@@ -434,6 +559,10 @@ jobs:
         # exist -- in a comment justifying a flag whose purpose is to stop results going
         # missing.)
         run: cargo test --workspace --no-fail-fast
+      - name: Disk space after the workspace tests (Linux)
+        if: ${{ !cancelled() && runner.os == 'Linux' }}
+        working-directory: ${{ github.workspace }}
+        run: sh scripts/ci_disk.sh check after-workspace-tests
       # Structural merge gates for the presentation importer (threat model B2 + the design's
       # no-I/O rule + the ADR-0025 decoder pin). These are one-line checks only because the
       # importer is its own crate; inside the operator, whose graph legitimately contains a TLS
@@ -510,6 +639,10 @@ jobs:
         run: |
           cargo test -p selahcue-lan --features server --no-fail-fast
           cargo test -p selahcue-app --features server --no-fail-fast
+      - name: Disk space after the LAN and app server tests (Linux)
+        if: ${{ !cancelled() && runner.os == 'Linux' }}
+        working-directory: ${{ github.workspace }}
+        run: sh scripts/ci_disk.sh check after-lan-and-app-server-tests
       - name: Test (scripture download — feature-gated, loopback only)
         if: ${{ !cancelled() }}
         run: cargo test -p selahcue-scripture --features download --no-fail-fast
@@ -572,6 +705,15 @@ jobs:
         run: |
           cargo test -p selahcue-data --features encryption --no-fail-fast
           cargo test -p selahcue-desktop --features encryption --no-fail-fast
+      # Last step of the job, `always()` so a failed or cancelled run still says where the disk
+      # ended up. Runs before the cache's post step, which on main tars `target` up. It never
+      # fails the job: below 10 GB free it emits a warning (an early notice that holds in a
+      # failed job too), and it appends one line (free GB, target size, runner image) to the
+      # job summary.
+      - name: Disk space at job end (Linux)
+        if: ${{ always() && runner.os == 'Linux' }}
+        working-directory: ${{ github.workspace }}
+        run: sh scripts/ci_disk.sh end job-end
 
   # Proves the app actually LAUNCHES (windows created, first frame presented, exit
   # 0) on every OS — not just build+test — and records a per-OS cold-start figure
