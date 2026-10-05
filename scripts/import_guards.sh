@@ -356,4 +356,72 @@ grep -q 'quick-xml = { version = "=' "$IMPORT_TOML" \
 grep -q 'quick-xml = {.*default-features = false' "$IMPORT_TOML" \
   || fail "quick-xml must be built with default-features = false (no serialize/encoding/async-tokio)"
 
+# --- selahcue-scripture's `installed` feature links no network crate (17tnw2b2jfz) ----------
+# Downloaded Bibles are READ by the output host from files already on disk. The host must be able
+# to do that without an HTTP client or a TLS stack in its render closure, so the crate has two
+# features: `installed` (the catalogue, the validator, the registry and the bounded cache) and
+# `download` (adds `ureq` and with it rustls). The host enables only `installed` (ticket A5).
+#
+# That is a statement about a dependency graph, so it is asked of cargo, not of Cargo.toml: it is
+# an ALLOWLIST (anything new in the graph, from any depth and under any name, fails here and has to
+# be looked at and added deliberately), with the named network crates called out as well so the
+# failure message is plain. `-e normal` excludes dev- and build-dependencies, because the question
+# is what ships inside the process.
+#
+# Two positive controls, since a walk that silently returned the wrong tree would otherwise pass:
+# the `installed` walk must reach `selahcue-core`, and the very same walk with `download` must find
+# `ureq`.
+echo ">> checking selahcue-scripture --features installed links no network crate (17tnw2b2jfz)"
+INSTALLED_TREE=$("$CARGO" tree --manifest-path "$DESKTOP/Cargo.toml" -p selahcue-scripture --no-default-features --features installed -e normal --prefix none)
+INSTALLED_PKGS=$(echo "$INSTALLED_TREE" | awk 'NF {print $1}' | sort -u)
+echo "$INSTALLED_PKGS" | grep -qx "selahcue-core" \
+  || fail "the dependency walk for selahcue-scripture --features installed did not reach selahcue-core, so it is not resolving the graph and the check below proves nothing"
+DOWNLOAD_PKGS=$("$CARGO" tree --manifest-path "$DESKTOP/Cargo.toml" -p selahcue-scripture --no-default-features --features download -e normal --prefix none | awk 'NF {print $1}' | sort -u)
+echo "$DOWNLOAD_PKGS" | grep -qx "ureq" \
+  || fail "the same walk with --features download did not find ureq, so this guard could not see a network crate if one arrived"
+
+for crate in reqwest hyper ureq ureq-proto curl isahc surf attohttpc rustls rustls-pki-types rustls-webpki webpki-roots native-tls openssl ring tokio async-std smol socket2 mio h2 http; do
+  if echo "$INSTALLED_PKGS" | grep -qx "$crate"; then
+    "$CARGO" tree --manifest-path "$DESKTOP/Cargo.toml" -p selahcue-scripture --no-default-features --features installed -e normal -i "$crate" >&2 || true
+    fail "'$crate' is in selahcue-scripture's --features installed dependency graph: the output host would link a network stack to read a file from disk"
+  fi
+done
+
+# Every crate `installed` may link, transitively. Keep sorted; add with a reason.
+#   flate2, miniz_oxide, crc32fast, adler2, simd-adler32, cfg-if  gzip decoding (already the crate's)
+#   serde_json, serde_core, itoa, memchr, zmij                    the catalogue and the receipt
+#   sha2, digest, block-buffer, const-oid, crypto-common,
+#     hybrid-array, typenum, cpufeatures, libc                    SHA-256 of installed files
+INSTALLED_ALLOWED=$(cat <<'EOF'
+adler2
+block-buffer
+cfg-if
+const-oid
+cpufeatures
+crc32fast
+crypto-common
+digest
+flate2
+hybrid-array
+itoa
+libc
+memchr
+miniz_oxide
+selahcue-core
+selahcue-scripture
+serde_core
+serde_json
+sha2
+simd-adler32
+typenum
+zmij
+EOF
+)
+INSTALLED_UNEXPECTED=$(echo "$INSTALLED_PKGS" | grep -vxF "$INSTALLED_ALLOWED" || true)
+if [ -n "$INSTALLED_UNEXPECTED" ]; then
+  echo "unexpected crates in selahcue-scripture's --features installed dependency graph:" >&2
+  echo "$INSTALLED_UNEXPECTED" >&2
+  fail "the installed-translation loader's dependency graph grew. The output host links it, so review each addition (it must not open a socket) and add it to INSTALLED_ALLOWED in this script if it is intended"
+fi
+
 echo "== import guards: OK =="

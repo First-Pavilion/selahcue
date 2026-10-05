@@ -21,10 +21,7 @@ use selahcue_scripture::{passage_exists_in, verses_in, Translation};
 /// Every translation compiled into the binary, derived rather than listed, so a sixth bundled
 /// translation joins the sweep (and the per-translation checks) automatically.
 fn bundled() -> Vec<Translation> {
-    Translation::ALL
-        .into_iter()
-        .filter(|t| !t.is_downloadable())
-        .collect()
+    Translation::ALL.into_iter().collect()
 }
 
 fn reference(book: u8, chapter: u16, verses: Option<(u16, u16)>) -> Reference {
@@ -260,15 +257,4 @@ fn a_reference_outside_the_canon_does_not_exist() {
         assert!(!renders(t, &inverted), "premise: verses_in finds nothing");
         assert!(!passage_exists_in(t, &inverted));
     }
-}
-
-#[test]
-fn a_translation_that_is_not_bundled_is_never_reported_present_when_it_has_no_verses() {
-    // YLT is downloadable; with nothing downloaded (and, in the default build, no download
-    // machinery at all) it has no verses, so nothing exists in it — the same answer `verses_in` gives.
-    let r = parsed("John 3:16");
-    assert_eq!(
-        passage_exists_in(Translation::Ylt, &r),
-        renders(Translation::Ylt, &r)
-    );
 }

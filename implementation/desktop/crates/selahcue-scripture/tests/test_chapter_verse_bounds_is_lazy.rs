@@ -51,10 +51,7 @@ fn allocated_now() -> usize {
 }
 
 fn bundled() -> Vec<Translation> {
-    Translation::ALL
-        .into_iter()
-        .filter(|t| !t.is_downloadable())
-        .collect()
+    Translation::ALL.into_iter().collect()
 }
 
 #[test]

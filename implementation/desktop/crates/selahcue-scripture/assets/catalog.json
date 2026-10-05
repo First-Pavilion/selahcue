@@ -1,0 +1,144 @@
+{
+  "base_url": null,
+  "note": "PLACEHOLDER. The digests, sizes and verse counts below come from a scratch build of scripts/build_translation_catalog.py (A1, ClickUp 17tnw2b2jfy) made on 2026-10-04, not from files that have been published. No base_url exists yet, so nothing can be downloaded. The publish job (A7, ClickUp 17tnw2b2jqd) replaces this file with the catalogue of the files it actually uploads.",
+  "schema": 1,
+  "translations": [
+    {
+      "attribution": null,
+      "code": "BSB",
+      "file_name": "bsb.tsv.gz",
+      "language": "eng",
+      "language_name": "English",
+      "legal_review": "cleared",
+      "licence": {
+        "attribution_required": false,
+        "id": "cc0",
+        "name": "Creative Commons Zero (CC0 1.0)",
+        "share_alike": false,
+        "summary": "The publisher has dedicated this translation to the public domain. You may copy, share and project it freely. Credit is appreciated but not required.",
+        "url": "https://creativecommons.org/publicdomain/zero/1.0/"
+      },
+      "modifications": null,
+      "name": "Berean Standard Bible",
+      "omitted_verses": 0,
+      "sha256": "cc27e77a2a4a362d485c5871a1c1302c3091401dc23d5d6eeac9dd416c88f8e9",
+      "size_bytes": 1308393,
+      "source": {
+        "copyright": "public domain",
+        "ebible_id": "engbsb",
+        "ebible_update_date": "2026-10-02",
+        "title": "Berean Standard Bible",
+        "url": "https://ebible.org/Scriptures/engbsb_usfm.zip",
+        "usfm_zip_sha256": "b77cc2d5161b03610204e2564934135b955ea87e534fd5ec7db336048699483b"
+      },
+      "trademark_note": null,
+      "verses": {
+        "nt": 7941,
+        "ot": 23145
+      }
+    },
+    {
+      "attribution": "Hausa Contemporary Bible. Copyright \u00a9 2009, 2020 Biblica, Inc. The original work by Biblica, Inc. is available for free at www.biblica.com and open.bible. Licensed under CC BY-SA 4.0.",
+      "code": "HAU",
+      "file_name": "hau.tsv.gz",
+      "language": "hau",
+      "language_name": "Hausa",
+      "legal_review": "pending",
+      "licence": {
+        "attribution_required": true,
+        "id": "cc-by-sa-4.0",
+        "name": "Creative Commons Attribution-ShareAlike 4.0",
+        "share_alike": true,
+        "summary": "You may copy, share and project this translation, including in a commercial setting, as long as you keep the credit and licence notice and share any adapted copy under the same licence.",
+        "url": "https://creativecommons.org/licenses/by-sa/4.0/"
+      },
+      "modifications": "Section headings, footnotes and cross-references were removed and the text was reformatted into verse rows.",
+      "name": "Hausa Contemporary Bible",
+      "omitted_verses": 0,
+      "sha256": "52ae28975c097eb9c84665163d8a6095f0cf292f711bac7927a483627d5eb511",
+      "size_bytes": 1274315,
+      "source": {
+        "copyright": "Copyright \u00a9 2009, 2020 Biblica, Inc.",
+        "ebible_id": "hausa",
+        "ebible_update_date": "2025-05-03",
+        "title": "Biblica\u00ae Bu\u0257a\u0257\u0257en Littafi Mai Tsarki, Sabon Rai Don Kowa\u2122",
+        "url": "https://ebible.org/Scriptures/hausa_usfm.zip",
+        "usfm_zip_sha256": "7a88b036b6ca7db0e46b56bb872edaa3e4027cf2250dfeb296d7ae121055ad74"
+      },
+      "trademark_note": "Biblica\u00ae is a registered trademark of Biblica, Inc. Under CC BY-SA 4.0 the trademark stays on unmodified copies and an adaptation removes it and says what changed. Headings and notes are removed here, so legal review (A6) decides whether that is an adaptation.",
+      "verses": {
+        "nt": 7942,
+        "ot": 23145
+      }
+    },
+    {
+      "attribution": "Igbo Contemporary Bible. Copyright \u00a9 2020 Biblica, Inc. The original work by Biblica, Inc. is available for free at www.biblica.com and open.bible. Licensed under CC BY-SA 4.0.",
+      "code": "IBO",
+      "file_name": "ibo.tsv.gz",
+      "language": "ibo",
+      "language_name": "Igbo",
+      "legal_review": "pending",
+      "licence": {
+        "attribution_required": true,
+        "id": "cc-by-sa-4.0",
+        "name": "Creative Commons Attribution-ShareAlike 4.0",
+        "share_alike": true,
+        "summary": "You may copy, share and project this translation, including in a commercial setting, as long as you keep the credit and licence notice and share any adapted copy under the same licence.",
+        "url": "https://creativecommons.org/licenses/by-sa/4.0/"
+      },
+      "modifications": "Section headings, footnotes and cross-references were removed and the text was reformatted into verse rows.",
+      "name": "Igbo Contemporary Bible",
+      "omitted_verses": 0,
+      "sha256": "a3726fbb16f4d412fb60f6c9e6c62d6935df6a43b98f064ae19b9f185d9af87a",
+      "size_bytes": 1450925,
+      "source": {
+        "copyright": "Copyright \u00a9 2020 Biblica, Inc.",
+        "ebible_id": "ibo",
+        "ebible_update_date": "2023-04-12",
+        "title": "Biblica\u00ae Ba\u1ecbb\u1ee5l\u1ee5 Ns\u1ecd n\u02bcIgbo Nd\u1ecb Ugbu a nke d\u1ecbr\u1ecb onye \u1ecdb\u1ee5la \u1ecbg\u1ee5",
+        "url": "https://ebible.org/Scriptures/ibo_usfm.zip",
+        "usfm_zip_sha256": "0fb6f0238db205259dc14b95f8f5d4db3f65b6134b5e0cf28aad4b0312c144c1"
+      },
+      "trademark_note": "Biblica\u00ae is a registered trademark of Biblica, Inc. Under CC BY-SA 4.0 the trademark stays on unmodified copies and an adaptation removes it and says what changed. Headings and notes are removed here, so legal review (A6) decides whether that is an adaptation.",
+      "verses": {
+        "nt": 7958,
+        "ot": 23145
+      }
+    },
+    {
+      "attribution": "Yoruba Contemporary Bible. Copyright \u00a9 2009, 2017 Biblica, Inc. The original work by Biblica, Inc. is available for free at www.biblica.com and open.bible. Licensed under CC BY-SA 4.0.",
+      "code": "YOR",
+      "file_name": "yor.tsv.gz",
+      "language": "yor",
+      "language_name": "Yor\u00f9b\u00e1",
+      "legal_review": "pending",
+      "licence": {
+        "attribution_required": true,
+        "id": "cc-by-sa-4.0",
+        "name": "Creative Commons Attribution-ShareAlike 4.0",
+        "share_alike": true,
+        "summary": "You may copy, share and project this translation, including in a commercial setting, as long as you keep the credit and licence notice and share any adapted copy under the same licence.",
+        "url": "https://creativecommons.org/licenses/by-sa/4.0/"
+      },
+      "modifications": "Section headings, footnotes and cross-references were removed and the text was reformatted into verse rows.",
+      "name": "Yoruba Contemporary Bible",
+      "omitted_verses": 0,
+      "sha256": "230d4e35ed823611c435b2cdb11fc255e121409a86b4d6e7701823b2510327a5",
+      "size_bytes": 1448274,
+      "source": {
+        "copyright": "Copyright \u00a9 2009, 2017 Biblica, Inc.",
+        "ebible_id": "yor",
+        "ebible_update_date": "2025-06-25",
+        "title": "Biblica\u00ae n\u00ed oore \u1ecd\u0300f\u1eb9\u0301 l\u00e1ti lo B\u00edb\u00e9l\u00ec M\u00edm\u1ecd\u0301 n\u00ed \u00c8d\u00e8 Yor\u00f9b\u00e1 \u00d2de-\u00d2n\u00ed",
+        "url": "https://ebible.org/Scriptures/yor_usfm.zip",
+        "usfm_zip_sha256": "adc61f6af9cadec8fca0ff570e77727027428344883ea9bd2e41c81bac459fd0"
+      },
+      "trademark_note": "Biblica\u00ae is a registered trademark of Biblica, Inc. Under CC BY-SA 4.0 the trademark stays on unmodified copies and an adaptation removes it and says what changed. Headings and notes are removed here, so legal review (A6) decides whether that is an adaptation.",
+      "verses": {
+        "nt": 7942,
+        "ot": 23145
+      }
+    }
+  ],
+  "translations_csv_sha256": "33e486e8e9a266f98bc39c80d8974beb3b7c4606b9d4db3010e6bf93176e5e46"
+}

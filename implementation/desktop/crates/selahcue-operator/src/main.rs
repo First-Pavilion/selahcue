@@ -5450,9 +5450,10 @@ async fn perform_retry(
     Err("This build does not include on-device speech-to-text.".to_string())
 }
 
-/// Every translation the app knows, with availability — bundled ones are always available; a
-/// downloadable one (e.g. YLT) is available only once its asset has been fetched. Feeds a future
-/// translation-manager UI; the offline-download modal drives the actual fetch via `download_translation`.
+/// Every translation the app knows, with availability. Today that is the five bundled ones, which
+/// are always available and never downloadable; the translations a user can download are the
+/// catalogue's (`selahcue_scripture::catalog`), and listing them here is ticket A3. Feeds a future
+/// translation-manager UI.
 #[tauri::command]
 async fn list_translations() -> Result<serde_json::Value, String> {
     let items: Vec<serde_json::Value> = selahcue_scripture::Translation::ALL
@@ -5461,7 +5462,7 @@ async fn list_translations() -> Result<serde_json::Value, String> {
             serde_json::json!({
                 "code": t.code(),
                 "name": t.name(),
-                "downloadable": t.is_downloadable(),
+                "downloadable": false,
                 "available": selahcue_scripture::is_available(*t),
             })
         })
@@ -5469,44 +5470,33 @@ async fn list_translations() -> Result<serde_json::Value, String> {
     Ok(serde_json::json!({ "translations": items }))
 }
 
-/// Download a translation asset (by catalog id) on a worker thread, streaming `bible://phase`
-/// events the offline-download modal renders (the SAME dialog the speech model uses). The catalog
-/// URL/sha are owner-supplied; with the placeholder catalog this surfaces the honest failure states.
+/// Download a translation (by catalogue code), reporting through `bible://phase` events the
+/// offline-download modal renders (the SAME dialog the speech model uses).
+///
+/// **Interim, until ticket A3.** The download itself is
+/// `selahcue_scripture::download::download_and_install`, which needs a recorded terms acceptance,
+/// and recording one is A3's job. Until then this command makes no request at all: it reports, in
+/// the modal's own failure state, why nothing was downloaded — an unknown code is an error, a
+/// translation still pending legal review says so, and everything else says it is "not published
+/// yet" (the shipped catalogue has no base URL) or that the licence terms are not accepted yet.
 #[tauri::command]
 async fn download_translation(id: String, app: tauri::AppHandle) -> Result<(), String> {
-    use selahcue_scripture::download::{self, TranslationFetchError};
-    let asset = download::catalog()
-        .into_iter()
-        .find(|a| a.id == id)
+    use selahcue_scripture::catalog::{Catalogue, LegalReview};
+    let catalogue = Catalogue::embedded();
+    let entry = catalogue
+        .find(&id)
         .ok_or_else(|| format!("unknown translation '{id}'"))?;
-    let name = asset.name.clone();
-    let cache = download::default_cache_dir();
-    tauri::async_runtime::spawn_blocking(move || {
-        let res = download::fetch_translation(&asset, &cache, |done, total| {
-            let pct = done.saturating_mul(100).checked_div(total).unwrap_or(0) as u8;
-            let _ = app.emit(
-                "bible://phase",
-                serde_json::json!({"phase":"downloading","done":done,"total":total,"pct":pct,"name":name.clone(),"id":id.clone()}),
-            );
-        });
-        let ev = match res {
-            Ok(_) => serde_json::json!({"phase":"ready","name":name,"id":id}),
-            Err(TranslationFetchError::Verify { .. })
-            | Err(TranslationFetchError::BadExpectedHash) => {
-                serde_json::json!({"phase":"failed","reason":"verify","message":"integrity check failed","resumable":false,"bytes_kept":0,"name":name,"id":id})
-            }
-            Err(TranslationFetchError::Network(m)) => {
-                serde_json::json!({"phase":"failed","reason":"connect","message":m,"resumable":false,"bytes_kept":0,"name":name,"id":id})
-            }
-            Err(e @ TranslationFetchError::TooLarge { .. }) => {
-                serde_json::json!({"phase":"failed","reason":"other","message":e.to_string(),"resumable":false,"bytes_kept":0,"name":name,"id":id})
-            }
-            Err(TranslationFetchError::Io(e)) => {
-                serde_json::json!({"phase":"failed","reason":"other","message":e.to_string(),"resumable":false,"bytes_kept":0,"name":name,"id":id})
-            }
-        };
-        let _ = app.emit("bible://phase", ev);
-    });
+    let message = if entry.legal_review != LegalReview::Cleared {
+        "this translation has not cleared legal review yet"
+    } else if !catalogue.is_published() {
+        "not published yet"
+    } else {
+        "the licence terms must be accepted before this can be downloaded"
+    };
+    let _ = app.emit(
+        "bible://phase",
+        serde_json::json!({"phase":"failed","reason":"other","message":message,"resumable":false,"bytes_kept":0,"name":entry.name,"id":id}),
+    );
     Ok(())
 }
 #[tauri::command]

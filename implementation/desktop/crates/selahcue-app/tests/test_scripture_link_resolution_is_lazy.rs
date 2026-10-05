@@ -31,10 +31,7 @@ use std::sync::{Arc, Mutex};
 /// translation joins this plan, this laziness check, and the per-translation positive control
 /// automatically.
 fn bundled() -> Vec<Translation> {
-    Translation::ALL
-        .into_iter()
-        .filter(|t| !t.is_downloadable())
-        .collect()
+    Translation::ALL.into_iter().collect()
 }
 
 /// One link in the plan under test: `(title, reference, translation code, expected status tag on
