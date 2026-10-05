@@ -1,0 +1,81 @@
+# THROWAWAY (17tnw2b2jqd): rehearses the build job of publish-translations.yml on a real runner before that
+# workflow exists on main (a workflow_dispatch workflow cannot be dispatched until then). Same steps, fixed to
+# BSB and dry run. No secrets, no environment, uploads nothing. Removed in the next commit.
+name: rehearse-publish-translations
+
+on:
+  push:
+    branches: [ci/17tnw2b2jqd-publish-translations]
+    paths: [.github/workflows/rehearse-publish-translations.yml]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build and check (no secrets, nothing uploaded)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      # Inputs and settings reach the shell only through the environment, never spliced into a script.
+      ONLY: "BSB"
+      TRANSLATIONS_BASE_URL: ${{ vars.TRANSLATIONS_BASE_URL }}
+      TRANSLATIONS_ORIGIN_URL: ${{ vars.TRANSLATIONS_ORIGIN_URL }}
+      DRY_RUN: "true"
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Say what this run will do
+        run: |
+          if [ "$DRY_RUN" = "true" ]; then
+            echo "### Dry run: nothing will be uploaded" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "### Real publish requested: the publish job waits for the environment's approval" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          echo "Branch: \`$GITHUB_REF_NAME\`, translations: \`$ONLY\`" >> "$GITHUB_STEP_SUMMARY"
+      - name: Check the inputs and settings
+        run: |
+          python3 scripts/publish_translations.py check-inputs \
+            --only-text="$ONLY" \
+            --base-url="$TRANSLATIONS_BASE_URL" \
+            ${TRANSLATIONS_ORIGIN_URL:+--origin-url="$TRANSLATIONS_ORIGIN_URL"}
+      # A converter or publisher regression stops a publish before anything is built.
+      - name: Converter self-test
+        run: python3 scripts/build_translation_catalog.py --self-test
+      - name: Publish script self-test
+        run: python3 scripts/publish_translations.py --self-test
+      # The positive control: the converter must still reproduce the five bundled Bibles from eBible's current USFM
+      # (the WEB and WEBBE differences are pinned in the converter). If eBible re-releases one of them this fails
+      # for a reason that is not the publish: see the runbook before editing the pinned differences.
+      - name: Positive control (converter against the five bundled Bibles)
+        run: |
+          python3 scripts/publish_translations.py fetch-bundled --work-dir "$RUNNER_TEMP/bundled"
+          python3 scripts/build_translation_catalog.py --work-dir "$RUNNER_TEMP/bundled" --verify-bundled
+      # `--require-cleared` refetches eBible's catalogue and the selected zips, refuses any translation still pending
+      # legal review, and `--only` limits the build to the codes asked for. The second build reads the same cached
+      # zips and must be byte-identical (a determinism check on THIS runner).
+      - name: Build, rebuild offline and compare
+        run: |
+          set -euo pipefail
+          read -r -a CODES <<< "$ONLY"
+          python3 scripts/build_translation_catalog.py --work-dir "$RUNNER_TEMP/work" \
+            --out-dir "$RUNNER_TEMP/publish/out" --only "${CODES[@]}" --require-cleared --base-url "$TRANSLATIONS_BASE_URL"
+          python3 scripts/build_translation_catalog.py --work-dir "$RUNNER_TEMP/work" \
+            --out-dir "$RUNNER_TEMP/rebuild/out" --only "${CODES[@]}" --require-cleared --offline --base-url "$TRANSLATIONS_BASE_URL"
+          diff -r "$RUNNER_TEMP/publish/out" "$RUNNER_TEMP/rebuild/out"
+          echo "two builds are byte-identical"
+      - name: Check the build against its catalogue and print the entries
+        run: |
+          set -euo pipefail
+          read -r -a CODES <<< "$ONLY"
+          python3 scripts/publish_translations.py plan --out-dir "$RUNNER_TEMP/publish/out" --only "${CODES[@]}" \
+            --base-url "$TRANSLATIONS_BASE_URL" --report-dir "$RUNNER_TEMP/publish/report"
+      # What A2 embeds in the app is built from THIS artifact (catalog.json, and report/catalog.app.json, the
+      # same data with non-ASCII escaped for the repo's ASCII scan).
+      - uses: actions/upload-artifact@v7
+        with:
+          name: translations-release-${{ github.run_id }}
+          path: ${{ runner.temp }}/publish
+          if-no-files-found: error
+          retention-days: 90
