@@ -90,22 +90,23 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
 |---|---|---|---|---|---|---|
 | C-001 | yes | The publish script's self-test passes offline and covers the guards: no overwrite, catalogue last, byte-for-byte read-back, cleared only | `python3 scripts/publish_translations.py --self-test`; throwaway mutation run over 36 listed guard breaks | exit 0 and `self-test: ok`; 36 of 36 breaks make it fail | ClickUp evidence comment; Iteration 1 | PASS |
 | C-002 | yes | The workflow is manual, ubuntu-only, `contents: read`, has secrets only in the two upload steps' `env:` of the environment job, and uses only `actions/*` | `actionlint .github/workflows/publish-translations.yml`; `python3 .github/scripts/check_workflows.py --self-test` then without the flag | exit 0; 46 cases pass; `5 workflow(s), 17 job(s) OK`; check 4 rejects a `push` trigger added to a copy | Iteration 1 | PASS |
-| C-003 | yes | A dry run on GitHub from this branch builds twice byte-identically, passes both self-tests and the positive control, prints the entries, uploads nothing and the publish job is skipped | `gh workflow run publish-translations.yml --ref ci/17tnw2b2jqd-publish-translations -f only=BSB -f dry_run=true`, then `gh run view` | run succeeds; `publish` job skipped; entries printed | run URL on the PR and ClickUp | PENDING |
+| C-003 | yes | The build job's steps run green on a real ubuntu runner: both self-tests, the positive control, two byte-identical builds, the plan with the entries printed, the release kept as an artifact, nothing uploaded. A new `workflow_dispatch` file cannot be dispatched before it is on `main` (GitHub answers 404), so a throwaway push-triggered copy of the exact build job was run on this branch and then removed | push the copy, `gh run view 37273822708 --log` | job succeeds in about 30 seconds; `KJV`, `ASV`, `DBY` IDENTICAL, `WEB` 17 and `WEBBE` 20 DIFFERS AS PINNED; `two builds are byte-identical`; BSB sha256 `cc27e77a2a4a...`; artifact `translations-release-37273822708` | run 37273822708 (rehearsal commit `6cf6fe77`); Iteration 2 | PASS |
 | C-004 | yes | The GitHub environment exists with the owner as required reviewer, restricted to `main`, and the four non-secret variables are set; no secret is set by this role | `gh api repos/First-Pavilion/selahcue/environments/translations-publish`; `.../deployment-branch-policies`; `gh api repos/First-Pavilion/selahcue/actions/variables`; `.../environments/translations-publish/secrets` | reviewer is the owner, policy `branch:main`, four variables, zero secrets | Iteration 1 | PASS |
 | C-005 | yes | What can be checked about the Space from outside is checked and reported: not listable, not writable, CDN answering, access findings | anonymous `curl` of the bucket root, the prefix, a PUT, an unknown key, the CDN hostname | 403, 403, 403, 403; CDN answers with `x-do-cdn-uuid` | Iteration 1; ClickUp comment | PASS |
 | C-006 | yes | The Space's own settings are reported from the control panel: default ACL private, listing restricted, no lifecycle rule under `translations/`, CDN TTL and custom domain | the owner's control panel or `doctl`/an authenticated S3 profile | each setting stated | none available to this role | BLOCKED |
 | C-007 | yes | A real publish is proven: after upload, each object downloaded anonymously through the CDN URL has the build's sha256, a re-run changes nothing, the key can write only this Space, no pending translation is in the bucket | the workflow's own read-back, run with `dry_run=false` after the owner says "publish BSB now" | verify steps green; evidence attached | none yet: no key, no go | BLOCKED |
 | C-008 | yes | A runbook explains how to publish, add a translation, roll back, rotate the key, set up the key, and what a CDN switch changes | read `docs/ops/TRANSLATIONS-PUBLISH.md` | all six present | the file | PASS |
-| C-009 | yes | The diff changes only the files listed under In scope, relative to A1's head | `git diff --name-only origin/feat/17tnw2b2jfy-translation-mirror-pipeline...HEAD` | the seven paths listed under In scope | PR description | PENDING |
+| C-009 | yes | The diff changes only the files listed under In scope, relative to A1's head | `git diff --name-only origin/feat/17tnw2b2jfy-translation-mirror-pipeline...HEAD` | the six paths listed under In scope (and no rehearsal workflow) | PR description | PENDING |
 | C-010 | yes | The branch contains `origin/main` and a Draft PR is open against `main`, saying it carries A1's commits until PR 181 merges | `git merge-base --is-ancestor origin/main HEAD`; `gh pr view` | exit 0; Draft; base `main` | PR link | PENDING |
 | C-011 | yes | Independent review passed: Cody, Shadow and Quinn each reviewed at the head SHA and every blocking finding is fixed (dispatched by the coordinator) | review round report page linked on the PR | zero open blocking findings | report page URL | PENDING |
+| C-013 | yes | After the PR merges, the real workflow dispatched from `main` with `dry_run=true` succeeds with the `publish` job skipped, and with `dry_run=false` it stops at the environment's approval and refuses a non-`main` ref | `gh workflow run publish-translations.yml --ref main -f only=BSB -f dry_run=true`, then `gh run view` | `build` green, `publish` skipped | run URL | PENDING |
 | C-012 | no | Performance review (Vera) | not applicable: a manual job that moves about 1.3 MB; it ships nothing to users | recorded as not applicable | this row | NOT_APPLICABLE |
 
 Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABLE`.
 
 ## Verification plan
 
-- Focused verification: C-001, C-002, C-004, C-005 and C-008 run from the worktree; C-003 on GitHub from the pushed branch.
+- Focused verification: C-001, C-002, C-004, C-005 and C-008 run from the worktree; C-003 on GitHub from the pushed branch; C-013 only after merge.
 - Broader regression verification: `python3 scripts/build_translation_catalog.py --self-test` (A1, unchanged) and the new Makefile line. The Rust and Flutter gates are unaffected by construction (nothing under `implementation/` changes) and are not claimed.
 - Independent verifier: Cody, Shadow and Quinn, dispatched by the coordinator, each in their own worktree pinned to the head SHA.
 - Required environment: Python 3.9 or later, network for the dry run only. No credentials.
@@ -121,6 +122,16 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
 - Result: all pass.
 - New evidence: (1) A2's `file_name` cannot contain `/` and `asset_url` is `{base_url}/{file_name}`, so a digest-addressed key needs `asset_url` to change; that is the one-function change A2 anticipated. (2) DigitalOcean's CDN may re-encode a response depending on `Content-Encoding` and `Accept-Encoding`, so the objects are stored with no `Content-Encoding` and the read-back fails on any. (3) The CDN endpoint already answers, so it is on. (4) The build job has no environment, so the settings it needs (the base URL) must be repository variables, not environment variables.
 - Decision: iterate (dry run on GitHub, then review).
+
+### Iteration 2
+
+- Target criterion: C-003.
+- Hypothesis: the build job runs green on a real ubuntu runner and gives the same bytes as a macOS build.
+- Change or investigation: `gh workflow run` answered `HTTP 404: workflow publish-translations.yml not found on the default branch`, so the real file cannot be dispatched before it is on `main`. A push-triggered copy of the exact build job (fixed to BSB and dry run, triggered only by a change to its own file, on this branch only) was committed, run, and removed in the next commit. No protection was weakened and nothing was uploaded.
+- Verifier executed: run 37273822708 on commit `6cf6fe77` (ubuntu-latest, 33 seconds), its log, and its artifact.
+- Result: PASS. Both self-tests, the positive control (KJV, ASV and Darby identical to the shipped assets; WEB 17 and WEBBE 20 rows differ exactly as pinned), a first build and an offline rebuild that `diff -r` found identical, the plan, and the artifact upload all succeeded.
+- New evidence: the Linux runner's BSB asset is 1,308,393 bytes with sha256 `cc27e77a2a4a362d485c5871a1c1302c3091401dc23d5d6eeac9dd416c88f8e9` and 31,086 verses (OT 23,145, NT 7,941): byte-identical to the macOS build and equal to the PLACEHOLDER digest in A2's embedded catalogue. That is one matching sample on one day, not a guarantee: the digests the app pins must still come from the real publish run.
+- Decision: iterate (open the Draft PR, request review).
 
 ## Risks and rollback
 
@@ -139,5 +150,5 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
 - Validator result: pending
 - Independent verification result: pending
 - Terminal state: pending
-- Remaining failed or blocked criteria: C-003, C-006, C-007, C-009, C-010, C-011
+- Remaining failed or blocked criteria: C-006, C-007, C-009, C-010, C-011, C-013
 - ClickUp final evidence comment: pending
