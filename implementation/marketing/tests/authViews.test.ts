@@ -95,6 +95,9 @@ const AUTH_PATH_MODULES = [
   'lib/auth/redirect.ts',
   'lib/auth/tokenParam.ts',
   'lib/auth/useLandingToken.ts',
+  // The Account page's Sign out (17tnw2b2cbr): it revokes a session, so it is on the auth path.
+  'lib/auth/signOutFlow.ts',
+  'lib/auth/useSignOut.ts',
   'components/auth/AuthShell.vue',
   'components/auth/AuthBanner.vue',
   'components/auth/StatusDisc.vue',
