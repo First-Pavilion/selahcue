@@ -1005,3 +1005,51 @@ fn installing_over_an_older_file_that_is_resident_frees_it_at_once() {
         verse_text("NEW", 1, 1, 1)
     );
 }
+
+/// A source that is interrupted (a signal during a read) once before every real chunk.
+struct Interrupted<'a> {
+    inner: &'a [u8],
+    pending_interrupt: bool,
+}
+
+impl Read for Interrupted<'_> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if self.pending_interrupt {
+            self.pending_interrupt = false;
+            return Err(std::io::Error::from(std::io::ErrorKind::Interrupted));
+        }
+        self.pending_interrupt = true;
+        self.inner.read(buf)
+    }
+}
+
+#[test]
+fn an_interrupted_read_is_retried_not_treated_as_the_end_of_the_file() {
+    let f = fixture("TST", 3, 2);
+    let env = Env::with(&[&f]);
+    let mut source = Interrupted {
+        inner: &f.gz,
+        pending_interrupt: true,
+    };
+    env.registry
+        .install_from_reader("TST", &mut source, NOW, &InstallHooks::default())
+        .expect("EINTR on a read is not a failure");
+    assert_eq!(env.registry.index(&code("TST")).unwrap().len(), 5);
+}
+
+#[test]
+fn a_first_install_whose_receipt_cannot_be_written_leaves_no_orphan_file() {
+    // A DIRECTORY sitting where the receipt goes: the data file is renamed into place, then the
+    // receipt rename fails. Nothing was installed before, so the data file would be an orphan with
+    // no receipt; it must be taken back out, and no staging or temp file may remain.
+    let f = fixture("TST", 3, 2);
+    let env = Env::with(&[&f]);
+    fs::create_dir_all(env.dir.join(RECEIPT_FILE)).unwrap();
+    let err = env.install("TST", &f.gz, NOW).unwrap_err();
+    assert!(matches!(err, InstallError::Io(_)), "{err:?}");
+    assert_eq!(
+        env.names(),
+        ["installed.json"],
+        "only the planted directory may remain: no orphan data file, no .part, no temp receipt"
+    );
+}

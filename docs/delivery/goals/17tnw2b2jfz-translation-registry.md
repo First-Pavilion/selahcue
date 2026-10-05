@@ -44,7 +44,8 @@ Footprint:
 - `implementation/desktop/crates/selahcue-app/tests/` (remove the `is_downloadable` filters and the YLT sample only)
 - `implementation/desktop/crates/selahcue-operator/src/main.rs` and its `Cargo.lock` (compile fix only: no YLT, no `catalog()`; the download command reports "not published yet" until A3 adds the terms step)
 - `scripts/import_guards.sh`, `Makefile`, `.github/workflows/ci.yml`, `.github/workflows/rust-canary.yml` (run the new feature; guard that `installed` has no network crate)
-- `implementation/desktop/Cargo.lock` (the scripture crate gains `serde_json`, which is already in the lock)
+- `implementation/desktop/Cargo.lock` and `implementation/desktop/crates/selahcue-operator/Cargo.lock` (one line each: the scripture crate gains `serde_json`, which is already in both locks)
+- `implementation/desktop/CLAUDE.md` (one paragraph on the registry and the two features)
 - this contract
 
 ### Non-goals
@@ -80,17 +81,17 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
 
 | ID | Mandatory | Criterion | Verifier | Expected result | Evidence | Status |
 |---|---|---|---|---|---|---|
-| C-001 | yes | Installing and reading N+1 translations never keeps more than N decoded indexes resident (N defaults to 3), the least recently used one is the one evicted, and removing the cap makes the test fail | `cargo test -p selahcue-scripture --features installed --test test_registry_bounded` and the mutation list in the ledger | exit 0; each listed mutation turns it red | Iteration ledger | PENDING |
-| C-002 | yes | A re-downloaded translation is served from the new file without a restart | `--test test_installed` (re-install case) | exit 0 | Iteration ledger | PENDING |
-| C-003 | yes | A decompression bomb, a wrong-hash file, a truncated file, a substituted file, an oversized file, a malformed row, a book outside 1 to 66, a wrong verse count, markup residue and out-of-order rows are each rejected and leave no installed file, no receipt entry and no staging file; a catalogue `file_name` with a path component is refused | `--test test_validate`, `--test test_installed`, `--test test_catalog` | exit 0 | Iteration ledger | PENDING |
-| C-004 | yes | An interrupted install (`.part` left behind) is cleaned up and never listed as installed; a planted symlink is never followed and a file this call did not create is never removed | `--test test_installed` | exit 0 | Iteration ledger | PENDING |
-| C-005 | yes | A build with only `installed` has no HTTP client or TLS crate in its dependency tree, and `make ci` guards it | `cargo tree -p selahcue-scripture --no-default-features --features installed -e normal`; `sh scripts/import_guards.sh` | no `ureq`, `rustls`, `hyper`, `reqwest`; guard prints OK | Iteration ledger | PENDING |
-| C-006 | yes | The embedded catalogue parses and is validated (unknown schema, duplicate code, code colliding with a bundled one, bad file name, bad digest all refused); an entry with no base URL reports "not published yet" and makes no request; a `legal_review: pending` entry is not offered and the download function refuses it | `--test test_catalog`, `--test test_download` | exit 0 | Iteration ledger | PENDING |
-| C-007 | yes | The download function refuses a non-HTTPS start URL and a redirect to a non-HTTPS URL (loopback http only through an explicit test constructor), reports progress, honours cancel, and needs a `TermsAcceptance` argument | `cargo test -p selahcue-scripture --features download --test test_download` | exit 0 | Iteration ledger | PENDING |
-| C-008 | yes | Bundled behaviour is unchanged: the five wire codes, `quote_match`, the cross-language LAN fixtures, every existing scripture test (YLT-specific ones removed) and the app and operator consumers | `cargo test -p selahcue-scripture` (3 feature sets), `cargo test -p selahcue-app --features server`, `cargo test -p selahcue-lan --features server`, `cargo check --manifest-path .../selahcue-operator/Cargo.toml` | all exit 0 | Iteration ledger | PENDING |
-| C-009 | yes | The handle serves an installed code through the same lookups as a bundled one (verses, text, search, chapter, adjacent chapter, exists, bounds) with the same answers on the same data | `--test test_bible` | exit 0 | Iteration ledger | PENDING |
-| C-010 | yes | Gates: fmt, clippy (default, `download`, `installed`), import guards, `cargo deny`, `cargo audit`, and `make ci` once at the end | commands in the verification plan | all exit 0, real output recorded | Iteration ledger | PENDING |
-| C-011 | yes | Source files are ASCII-only except where they were not before | `LC_ALL=C grep -nP '[^\x00-\x7F]'` over touched files, compared with `origin/main` | no new non-ASCII bytes | Iteration ledger | PENDING |
+| C-001 | yes | Installing and reading N+1 translations never keeps more than N decoded indexes resident (N defaults to 3), the least recently used one is the one evicted, and removing the cap makes the test fail | `cargo test -p selahcue-scripture --features installed --test test_registry_bounded` (9 tests) and the mutations in the ledger | exit 0; mutations M1 to M10, R2 M10b each turn it red | Iterations 3 and 4 | PASS |
+| C-002 | yes | A re-downloaded translation is served from the new file without a restart | `--test test_registry` (`a_reinstalled_translation_is_served_from_the_new_file_without_a_restart`, `installing_over_an_older_file_that_is_resident_frees_it_at_once`) | exit 0; mutations M6, R2 M10b turn it red | Iterations 3 and 4 | PASS |
+| C-003 | yes | A decompression bomb, a wrong-hash file, a truncated file, a substituted file, an oversized file, a malformed row, a book outside 1 to 66, a wrong verse count, markup residue and out-of-order rows are each rejected and leave no installed file, no receipt entry and no staging file; a catalogue `file_name` with a path component is refused | `--test test_validate` (18), `--test test_registry`, `--test test_catalog` (20) | exit 0; mutations V1 to V16, C4, C14, C15 turn it red | Iterations 3 and 4 | PASS |
+| C-004 | yes | An interrupted install (`.part` left behind) is cleaned up and never listed as installed; a planted symlink is never followed and a file this call did not create is never removed | `--test test_registry` | exit 0; mutations V4, V5, V6, V7, V8, R1, R2, R3, H3 turn it red | Iterations 3 and 4 | PASS |
+| C-005 | yes | A build with only `installed` has no HTTP client or TLS crate in its dependency tree, and `make ci` guards it | `cargo tree -p selahcue-scripture --no-default-features --features installed -e normal`; `sh scripts/import_guards.sh` | no `ureq`, `rustls`, `hyper`, `reqwest` (0 matches); guard prints OK; with `dep:ureq` added to `installed` the guard exits 1 | Iteration 5 | PASS |
+| C-006 | yes | The embedded catalogue parses and is validated (unknown schema, duplicate code, code colliding with a bundled one, bad file name, bad digest all refused); an entry with no base URL reports "not published yet" and makes no request; a `legal_review: pending` entry is not offered and the download function refuses it | `--test test_catalog`, `--test test_download` | exit 0; mutations C1 to C15, D1 turn it red | Iterations 3 and 4 | PASS |
+| C-007 | yes | The download function refuses a non-HTTPS start URL and a redirect to a non-HTTPS URL (loopback http only through an explicit test constructor that does not exist in release builds), reports progress, honours cancel, and needs a `TermsAcceptance` argument | `cargo test -p selahcue-scripture --features download --test test_download` (28) | exit 0; mutations D2, D4a, D5, D6, V9, V9b turn it red | Iterations 3 and 4 | PASS |
+| C-008 | yes | Bundled behaviour is unchanged: the five wire codes, `quote_match`, the cross-language LAN fixtures, every existing scripture test (YLT-specific ones removed) and the app and operator consumers | `cargo test -p selahcue-scripture` (3 feature sets), `cargo test -p selahcue-app --features server`, `cargo test -p selahcue-lan --features server`, `cargo check` of the operator, `make ci` | all exit 0 (scripture 48 / 142 / 171 passed; lan 129 passed incl. `wire_fixtures_are_stable_for_cross_language_clients`; `make ci` ALL GREEN: 4,640 Rust tests passed across 294 test binaries, 0 failed, plus the Flutter, marketing and Python gates) | Iteration 5 | PASS |
+| C-009 | yes | The handle serves an installed code through the same lookups as a bundled one (verses, text, search, chapter, adjacent chapter, exists, bounds) with the same answers on the same data | `--test test_bible` (5), `--test test_bible_is_lazy`, `--test test_bible_global` | exit 0 (the bundled KJV asset installed as `KJX` is compared with `KJV` over 71 books x 154 chapters x 5 selections); mutations B1 to B4 turn it red | Iterations 3 and 4 | PASS |
+| C-010 | yes | Gates: fmt, clippy (default, `download`, `installed`), import guards, `cargo deny`, `cargo audit`, and `make ci` once at the end | commands in the verification plan | all exit 0, real output recorded in the PR description | Iteration 5 | PASS |
+| C-011 | yes | Source files are ASCII-only except where they were not before | `LC_ALL=C grep -nP '[^\x00-\x7F]'` over touched files, compared with `origin/main` | no new non-ASCII bytes and no invisible or bidirectional character in any touched file | Iteration 5 | PASS |
 | C-012 | yes | The branch is up to date and a Draft PR is open against `main` | `git rev-list --count HEAD..origin/main`; `gh pr view` | `0`; PR is Draft, base `main` | PR link on ClickUp | PENDING |
 | C-013 | yes | Independent review passed: code (Cody), security (Shadow), QA (Quinn) and performance (Vera, for the memory cap) each reviewed at the head SHA and every blocking finding is fixed and re-checked | review round report page linked on the PR | each verdict recorded, zero open blocking findings | report page URL | PENDING |
 
@@ -110,10 +111,50 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
 - Target criterion: baseline and design
 - Hypothesis: a handle type over shared slice helpers lets one set of lookup code serve both kinds, so nothing is duplicated and the five-variant enum keeps its shape
 - Change or investigation: read the crate, every consumer, A1's converter and the real A1 build; chose an instance-based `Registry` (so tests cannot interfere through shared state) with a process-wide default for the host
-- Verifier executed: none yet
+- Verifier executed: baseline `cargo test -p selahcue-scripture --features download`: 59 tests, exit 0
 - Result: design recorded in the PR description
-- New evidence: ureq 3 checks `https_only` on every redirect hop; the real A1 BSB asset is on disk for a one-off positive control
+- New evidence: ureq 3 checks `https_only` on every redirect hop; the real A1 BSB, Yoruba, Igbo and Hausa assets are on disk for a one-off positive control
 - Decision: iterate
+
+### Iteration 2
+
+- Target criterion: C-001 to C-009 (implementation, tests first)
+- Hypothesis: modules url_policy, catalog, validate, registry, bible and download can each be driven by a failing public-API test file first
+- Change or investigation: one test file per module (`test_url_policy`, `test_catalog`, `test_validate`, `test_registry`, `test_registry_bounded`, `test_bible`, `test_bible_global`, `test_bible_is_lazy`, `test_data_dir`, `test_download`), each seen to fail to compile before its module existed; `Ylt`, `is_downloadable` and the YLT placeholder catalogue removed; consumers updated
+- Verifier executed: the three feature sets, fmt, clippy -D warnings
+- Result: all green on the first complete run, which is why iteration 3 exists
+- New evidence: removing the evict-before-decode ordering was found by review of my own code, not by a test (see iteration 3, M8/M9)
+- Decision: iterate
+
+### Iteration 3
+
+- Target criterion: every control claimed in C-001 to C-009 must fail when it is removed
+- Hypothesis: a green first run proves nothing about the tests
+- Change or investigation: a mutation runner (95 single-guard mutants over registry, validate, catalog, download, url_policy, bible), each run against the whole suite with `--features download`, the file restored from git after each
+- Verifier executed: the runner. Round one: 75 mutants, 69 caught, 5 survived, 1 invalid pattern. Round two (the survivors re-targeted plus 15 new guards): 18 caught, 2 survived
+- Result: every survivor but one was a real test gap. Round one: the install-time prune (the next read pruned anyway), the receipt size cap (the test used a whitespace-only receipt, which the parser refused first), the licence and source URL checks (no test), and the low-level policy check (nothing asserted that a refused URL creates no directory). The fifth, a start-URL check in `download_and_install`, was redundant with the per-hop check in `open_stream`, so it was removed rather than tested. Round two: an `Interrupted` read retry and the cleanup of an orphan file when the first receipt cannot be written (both untested)
+- New evidence: evict-before-decode (peak is the cap, not cap + 1) and "a bad file does not evict a good index" were added after M8 and M9 were written; `peak_decoded` is the seam that proves the first
+- Decision: iterate
+
+### Iteration 4
+
+- Target criterion: the survivors of iteration 3
+- Hypothesis: each survivor is killed by one new assertion
+- Change or investigation: padded valid receipt, resident-then-install, licence/source URL cases, `a..b.tsv.gz`, an interrupted read, a directory planted where the receipt goes, unrelated `.part`/`.tmp` files that cleanup must not touch, an assertion that a refused low-level URL creates no directory; cleanup narrowed to this module's own staging names; the two test-only constructors made `#[cfg(debug_assertions)]` so a release binary cannot build a loopback policy (a release test build fails with an explanation)
+- Verifier executed: the survivors re-run: all caught. Import guard mutated twice (a `dep:ureq` added to `installed`; `zmij` removed from the allowlist): both exit 1
+- Result: no known survivor remains. 95 mutants in total; the two redundant-check survivors are recorded above, not hidden
+- New evidence: the real A1 BSB, Yoruba, Igbo and Hausa assets (1.3 to 1.5 MB each) install through the real embedded catalogue and read back (BSB 31,086 verses, YOR 31,087, IBO 31,103, HAU 31,087; John 3:16 in BSB; Yoruba diacritics intact); install about 130 to 190 ms and first read about 115 to 150 ms in a debug build; maximum resident set 13.7 MB at a cap of 1, 24.5 MB at 3, 29.0 MB at 4 (debug build, macOS)
+- Decision: iterate
+
+### Iteration 5
+
+- Target criterion: C-005, C-008, C-010, C-011
+- Hypothesis: nothing outside the crate changed behaviour
+- Change or investigation: gates run from the worktree at the head SHA with their output captured to files and exit codes read (nothing piped into `tail`)
+- Verifier executed: `cargo fmt --check` (0); clippy `-D warnings` default, `installed`, `download` (0, 0, 0) and the library in `--release` (0); `cargo test -p selahcue-scripture` default 48, `installed` 142, `download` 171 passed; `cargo test -p selahcue-app --features server` (0); `cargo test -p selahcue-lan --features server` 129 passed; `cargo check` of the operator (0, no warnings); `sh scripts/import_guards.sh` (0); `cargo deny check licenses sources bans` (0); `cargo audit` in the desktop workspace and in the operator (0; each prints allowed warnings for crates this change did not add); `python3 .github/scripts/check_workflows.py` (0); `make ci` (0, ALL GREEN); the non-ASCII comparison against `origin/main`
+- Result: C-001 to C-011 PASS
+- New evidence: `cargo tree -p selahcue-scripture --no-default-features --features installed -e normal` lists 22 crates, none a network crate; `selahcue-app` and `selahcue-desktop` trees contain no `ureq`
+- Decision: handoff to the orchestrator for the review pipeline (C-012 needs the PR; C-013 is the four reviewers)
 
 ## Risks and rollback
 
@@ -127,9 +168,9 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
 
 ## Final evaluation
 
-- Validator command: `python3 scripts/validate_goal_contract.py docs/delivery/goals/17tnw2b2jfz-translation-registry.md`; `python3 ~/.claude/skills/goal/scripts/validate_goal_contract.py <file> --completion`
-- Validator result: pending
-- Independent verification result: pending
-- Terminal state: pending
-- Remaining failed or blocked criteria: all, at the time of writing
-- ClickUp final evidence comment: pending
+- Validator command: `python3 scripts/validate_goal_contract.py docs/delivery/goals/17tnw2b2jfz-translation-registry.md`; `python3 ~/.claude/skills/goal/scripts/validate_goal_contract.py <file>` (structural). The `--completion` form is not claimed: C-012 and C-013 are open
+- Validator result: structural PASS with both validators
+- Independent verification result: pending (Cody, Shadow, Quinn, Vera, dispatched by the orchestrator)
+- Terminal state: not VERIFIED_COMPLETE. The implementation criteria C-001 to C-011 are PASS; the ticket stays in review until C-013 clears
+- Remaining failed or blocked criteria: C-012 (PR link recorded on ClickUp), C-013 (independent review)
+- ClickUp final evidence comment: posted on 17tnw2b2jfz with the PR
