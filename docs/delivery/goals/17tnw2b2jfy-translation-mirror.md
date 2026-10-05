@@ -86,9 +86,9 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
 | C-004 | yes | The four allowlist translations build, meet eBible's own published verse counts, and rebuild byte-identically | `python3 scripts/build_translation_catalog.py --work-dir WORKDIR --out-dir OUT1`, then again with `--offline --out-dir OUT2`, then `diff -r OUT1 OUT2` | exit 0 twice; BSB 31,086, HAU 31,087, IBO 31,103, YOR 31,087 verses; `diff -r` empty | Iteration 2 below; ClickUp evidence comment | PASS |
 | C-005 | yes | The publish gate holds: with `--require-cleared` the three pending Biblica entries are refused and nothing is written; `--only BSB --require-cleared` builds the cleared translation alone | `python3 scripts/build_translation_catalog.py ... --offline --require-cleared`, then the same with `--only BSB` | first: exit 1, three `legal_review is still pending` lines, output directory not created; second: exit 0, folder holds exactly `bsb.tsv.gz` and `catalog.json` | Iterations 3 and 4 below | PASS |
 | C-006 | yes | The self-test runs in `make ci` and in CI, and the repo's workflow checker accepts the edit | `grep -n build_translation_catalog Makefile .github/workflows/ci.yml`; `python3 .github/scripts/check_workflows.py` | one hit in each file; `workflow checks: ... OK` | Iteration 3 below | PASS |
-| C-007 | yes | Nothing shipped changes: no Rust, UI, asset or wire change | `git diff --name-only origin/main...HEAD` | only the six paths listed under In scope | PR description; Iteration 3 below | PENDING |
-| C-008 | yes | The branch is up to date and a Draft PR is open against `main` | `git rev-list --count HEAD..origin/main`; `gh pr view` | `0`; PR is Draft, base `main` | PR link on ClickUp | PENDING |
-| C-009 | yes | Independent review passed: code (Cody), security (Shadow) and QA (Quinn) each reviewed at the head SHA and every blocking finding is fixed and re-checked | review round report page linked on the PR | each reviewer's verdict recorded, zero open blocking findings | report page URL | PENDING |
+| C-007 | yes | Nothing shipped changes: no Rust, UI, asset or wire change | `git diff --name-only origin/main...HEAD` | only the six paths listed under In scope | PR description; Iterations 3 and 7 below | PASS |
+| C-008 | yes | The branch is up to date and a Draft PR is open against `main` | `git rev-list --count HEAD..origin/main`; `gh pr view` | `0`; PR is Draft, base `main` | PR link on ClickUp; Iteration 7 below | PASS |
+| C-009 | yes | Independent review passed: code (Cody), security (Shadow) and QA (Quinn) each reviewed at the head SHA and every blocking finding is fixed and re-checked | review round report page linked on the PR | each reviewer's verdict recorded, zero open blocking findings | the PR comments and the ClickUp evidence comment listed in Iteration 7 below (no separate report page was published) | PASS |
 | C-010 | no | Performance review (Vera) | not applicable: an offline build script that runs in about one second on the self-test and about three seconds on the real four translations; it ships nothing to users | recorded as not applicable with that reason | this row | NOT_APPLICABLE |
 
 Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABLE`.
@@ -186,8 +186,22 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
 - **Not done, deliberately** (unchanged unless noted): a note on its own line before punctuation and a no-break space before a note (Quinn N3: no real zip has either); `\v 1 \f..\f*,` gives a misleading message (N5); per-socket, not total, download timeout (Shadow F6); splitting the 1,600-line script (Cody S1); the mutation proof records "the self-test failed", not why; `write_all`'s final rename loop is not all-or-nothing if one rename fails midway (Cody N-5: each file is staged first, so a failure there leaves complete files but a partly renamed folder); the survivors Quinn lists as low importance (zip-member BOM: 0 of 806 real members have one; an ASCII-only line strip; the number of the caps); a duplicate-looking quote class for languages neither reviewer reads.
 - **Scope change ACCEPTED by the product owner (Oluwole Majiyagbe, 2026-10-04, in the session chat, after the reviewers noted it had no recorded acceptance):** v1 is BSB, Yoruba, Igbo and Hausa. The ticket text listed MSB, YLT and OEB-US; the real data ruled them out (YLT and MSB have no title markup in eBible's USFM, OEB-US has 44 of 66 books). The ticket description was updated to match and a comment records the acceptance.
 - Verifier executed at this iteration's head: `--self-test` on Python 3.9, 3.12 and 3.14; the mutation proof (194/194); `--verify-bundled` (KJV, ASV, Darby byte-identical; WEB 17 and WEBBE 20 as pinned, unchanged); the four real translations built twice with `diff -r` empty and identical to the round-3 build; the ASCII-only scan; both goal-contract validators; `check_workflows.py`.
-- Result: all pass locally. CI and the final review confirmations are pending.
+- Result: all pass locally. CI and the final review confirmations are pending. (Superseded: see Iteration 7.)
 - Decision: iterate (confirm with the reviewers, watch CI at the new head).
+
+### Iteration 7 (final confirmations at 940e262d, CI green, branch brought up to date with main)
+
+- Target criteria: C-007, C-008, C-009.
+- **Verdicts at head `940e262dfeb24553eafd687c382112d3a0537df9`:**
+  - Shadow: **APPROVE**, no conditions (PR comment 5989276266). The delta 512aa6e5..940e262d only adds refusals and tests; she also read d7283707..512aa6e5 in full because her own earlier approval predated a context compaction on her side.
+  - Cody: **APPROVE**. All his 512aa6e5 conditions are met: the self-test is ok on Python 3.9 and 3.14, the mutation proof is 194/194, the four real translations rebuild byte for byte as in the build he reviewed, the whole delta was read. Two non-blocking notes: the PR description was out of date (fixed below), and the weakest timing case catches its mutant at about 15x against a 10x limit. His PR comment could not be posted (a permission denial in his session; he did not work around it), so the verdict is recorded here and on the ClickUp ticket.
+  - Quinn: **PASS WITH CONDITIONS, wording only**. 0 failures in 175 self-test runs (Python 3.9, 3.12, 3.14, including under a load average of about 26); 45 malformed catalogue and allowlist cases with 0 tracebacks; the mutation proof is 194/194; the four translations rebuild identically twice; `--require-cleared` and `--only BSB` behave as claimed. Her comment was written but not posted (she judged posting under the owner's identity not hers to do), so it is recorded here. Her three wording conditions are fixed without any code change: the PR description no longer says the ticket description was left unedited, nor that a catalogue without a byte-order mark is refused (the converter reads the catalogue with or without the UTF-8 BOM), and the ClickUp ticket no longer says NASB is recorded in the allowlist's excluded list (Amplified is; NASB is not).
+  - Performance (Vera): not applicable, as recorded in C-010.
+- **CI at this head:** every job green, including `rust (ubuntu-latest)` (run 37240657571, attempt 2, re-run after the account's billing block was lifted), with no change from the disk fix (PR 184). The earlier Ubuntu failures at d7283707 and 512aa6e5 were the hosted runner running out of disk, as recorded in Iteration 6; DevOps measured a 72 GB disk with 13.3 GB free on 2026-10-04 and a 145 GB disk with 86 GB free on 2026-10-05 on the same image version, and the trigger is unidentified, so PR 184 stays as a guard and early warning. The self-test step passes on ubuntu and macOS.
+- **Branch brought up to date:** `origin/main` moved to c99ad4c7 (two docs-only commits: the DEC-016 record and PR 183) and was merged into this branch with no conflict. `git diff --name-only origin/main...HEAD` still lists exactly the six paths, and `git rev-list --count HEAD..origin/main` is 0.
+- **Cross-check from the A2 reviewers (PR 188):** Quinn, Cody and Vera each rebuilt this branch's four assets at 940e262d and got digests identical to the ones in A2's embedded catalogue, and A1's `catalog.json` parses unchanged under A2's reader.
+- Criteria: C-007 PASS (six paths, no Rust, UI, asset or wire change), C-008 PASS (0 commits behind main; the PR was Draft during review and is marked Ready only after this gate), C-009 PASS (three reviewers, zero open blocking findings).
+- Decision: complete. Mark Ready and merge once CI is green on the head that carries this entry.
 
 ## Risks and rollback
 
@@ -202,8 +216,8 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
 ## Final evaluation
 
 - Validator command: `python3 scripts/validate_goal_contract.py docs/delivery/goals/17tnw2b2jfy-translation-mirror.md --require-complete`
-- Validator result: pending
-- Independent verification result: pending
-- Terminal state: pending
-- Remaining failed or blocked criteria: C-007, C-008, C-009
-- ClickUp final evidence comment: pending
+- Validator result: pass (`--require-complete`, all mandatory rows PASS)
+- Independent verification result: Shadow APPROVE, Cody APPROVE, Quinn PASS WITH CONDITIONS (wording only, fixed), all at 940e262d; see Iteration 7
+- Terminal state: VERIFIED_COMPLETE once CI is green on the head that carries this entry
+- Remaining failed or blocked criteria: none
+- ClickUp final evidence comment: 17tnw2b2jfy comment 1400430000060310
