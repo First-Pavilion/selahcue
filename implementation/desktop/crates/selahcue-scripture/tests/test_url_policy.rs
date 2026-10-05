@@ -7,6 +7,11 @@
 #![cfg(feature = "installed")]
 #![allow(clippy::unwrap_used)]
 
+// These tests call the test-only constructors (`..._for_tests`), which exist only when debug
+// assertions are on. In a build without them this file would not compile; say why instead.
+#[cfg(not(debug_assertions))]
+compile_error!("run these tests without --release: the test-only constructors exist only with debug assertions");
+
 use selahcue_scripture::url_policy::{resolve_redirect, UrlPolicy, UrlRefusal};
 
 fn product() -> UrlPolicy {

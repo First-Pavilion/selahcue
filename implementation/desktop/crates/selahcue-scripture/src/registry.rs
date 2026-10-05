@@ -372,6 +372,29 @@ pub(crate) fn create_exclusive(
     ))
 }
 
+/// Whether `name` is one of the files THIS module stages: `<file>.tsv.gz.part` or
+/// `<file>.tsv.gz.<n>.part` (an install in flight), or `.installed.json.tmp` /
+/// `.installed.json.<n>.tmp` (a receipt being written). Narrow on purpose: cleanup runs in a
+/// directory a user can point elsewhere (`SELAHCUE_SCRIPTURE_DATA`), and `movie.mp4.part` is not
+/// ours to delete.
+fn is_staging_name(name: &str) -> bool {
+    // Drop an optional `.<n>` attempt counter from the end of `stem`.
+    fn without_counter(stem: &str) -> &str {
+        match stem.rsplit_once('.') {
+            Some((head, n)) if !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()) => head,
+            _ => stem,
+        }
+    }
+    if let Some(stem) = name.strip_suffix(STAGING_SUFFIX) {
+        let file = without_counter(stem);
+        return file.ends_with(".tsv.gz") && validate_file_name(file).is_ok();
+    }
+    if let Some(stem) = name.strip_suffix(RECEIPT_TEMP_SUFFIX) {
+        return without_counter(stem) == RECEIPT_TEMP_BASE;
+    }
+    false
+}
+
 /// Flush a directory's entries to disk where the OS lets a program ask (best effort).
 fn sync_dir(dir: &Path) {
     #[cfg(unix)]
@@ -977,9 +1000,7 @@ impl Registry {
         let mut report = Recovered::default();
         for entry in entries.flatten() {
             let name = entry.file_name().to_string_lossy().into_owned();
-            let is_staging = name.ends_with(STAGING_SUFFIX)
-                || (name.starts_with(RECEIPT_TEMP_BASE) && name.ends_with(RECEIPT_TEMP_SUFFIX));
-            if !is_staging {
+            if !is_staging_name(&name) {
                 continue;
             }
             // `DirEntry::file_type` does not follow symlinks.

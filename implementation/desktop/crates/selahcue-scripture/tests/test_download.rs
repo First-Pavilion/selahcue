@@ -17,6 +17,11 @@
 // on purpose (they pin a fixture invariant) — allowed here, as `unwrap_used` is above.
 #![allow(clippy::assertions_on_constants)]
 
+// These tests call the test-only constructors (`..._for_tests`), which exist only when debug
+// assertions are on. In a build without them this file would not compile; say why instead.
+#[cfg(not(debug_assertions))]
+compile_error!("run these tests without --release: the test-only constructors exist only with debug assertions");
+
 mod common;
 
 use std::cell::RefCell;
@@ -226,6 +231,8 @@ fn oversized_stream_is_capped_before_verification_and_leaves_no_partial() {
 #[test]
 fn the_low_level_fetch_is_https_only_and_refuses_a_hostile_file_name() {
     let dir = tmp("lowpolicy");
+    // Refused before anything is created: not even the cache directory.
+    let fresh = dir.join("never-created");
     let body = b"fixture".to_vec();
     let sha256 = sha256_of(&dir, &body);
     let url = serve_once(body.clone());
@@ -247,6 +254,12 @@ fn the_low_level_fetch_is_https_only_and_refuses_a_hostile_file_name() {
         "{err:?}"
     );
     assert!(!dir.join("x.asset").exists());
+    let err = fetch_translation(&asset, &fresh, |_, _| {}).unwrap_err();
+    assert!(matches!(err, TranslationFetchError::Insecure(_)), "{err:?}");
+    assert!(
+        !fresh.exists(),
+        "a refused URL must not even create the cache directory"
+    );
     // ...and the same call under the test policy succeeds, so the refusal was the policy.
     assert!(fetch_translation_with(&asset, &dir, loopback(), |_, _| {}).is_ok());
 

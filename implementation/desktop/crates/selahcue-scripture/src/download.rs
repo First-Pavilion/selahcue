@@ -533,14 +533,18 @@ impl<'a> DownloadOptions<'a> {
         self
     }
 
-    /// **Tests only.** Allow plain http to a loopback address.
+    /// **Tests only.** Allow plain http to a loopback address. Exists only when debug assertions
+    /// are on, like [`UrlPolicy::allow_loopback_http_for_tests`].
+    #[cfg(debug_assertions)]
     #[doc(hidden)]
     pub fn allow_loopback_http_for_tests(mut self) -> Self {
         self.policy = UrlPolicy::allow_loopback_http_for_tests();
         self
     }
 
-    /// **Tests only.** Let a download proceed for an entry still pending legal review.
+    /// **Tests only.** Let a download proceed for an entry still pending legal review. Exists only
+    /// when debug assertions are on: a release build cannot download a pending translation.
+    #[cfg(debug_assertions)]
     #[doc(hidden)]
     pub fn allow_legal_pending_for_tests(mut self) -> Self {
         self.allow_pending = true;
@@ -653,10 +657,9 @@ pub fn download_and_install(
     let url = catalogue
         .download_url(entry)
         .map_err(|_| DownloadError::NotPublished)?;
-    options
-        .policy
-        .check(&url)
-        .map_err(DownloadError::Insecure)?;
+    // (The URL is checked against the policy by `open_stream`, for the first request and for every
+    // redirect hop, immediately before each is made. Not here as well: a second check ahead of the
+    // cache-hit shortcut below would only make an intact install depend on the URL's scheme.)
     options.hooks.check_cancel()?;
 
     // Already installed, same file, and the file on disk still hashes to it: nothing to fetch.

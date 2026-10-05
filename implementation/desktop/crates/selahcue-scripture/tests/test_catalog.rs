@@ -7,6 +7,11 @@
 #![cfg(feature = "installed")]
 #![allow(clippy::unwrap_used)]
 
+// These tests call the test-only constructors (`..._for_tests`), which exist only when debug
+// assertions are on. In a build without them this file would not compile; say why instead.
+#[cfg(not(debug_assertions))]
+compile_error!("run these tests without --release: the test-only constructors exist only with debug assertions");
+
 mod common;
 
 use common::{catalogue_json, catalogue_value, fixture};
@@ -249,6 +254,7 @@ fn a_file_name_that_is_not_a_plain_name_is_refused() {
         "..tsv.gz",
         "tst.tsv",
         "tst.txt",
+        "a..b.tsv.gz",
         "tst.tsv.gz ",
         " tst.tsv.gz",
         "tst .tsv.gz",
@@ -457,4 +463,31 @@ fn the_number_of_entries_is_bounded() {
 fn text_fields_are_length_bounded() {
     let err = parse_tampered(|d| entry_mut(d)["name"] = json!("x".repeat(100_000))).unwrap_err();
     assert!(matches!(err, CatalogError::TooLong { ref field } if field.contains("name")));
+}
+
+#[test]
+fn the_urls_shown_to_the_user_must_be_https() {
+    // The licence page and the source page are rendered as links, so only https ones are allowed.
+    for bad in [
+        "http://creativecommons.org/licenses/by-sa/4.0/",
+        "javascript:alert(1)",
+        "ftp://example.org/licence",
+        "//example.org/licence",
+        "not a url",
+    ] {
+        let err = parse_tampered(|d| entry_mut(d)["licence"]["url"] = json!(bad)).unwrap_err();
+        assert!(
+            matches!(err, CatalogError::BadUrl { ref field } if field.contains("licence.url")),
+            "{bad:?}: {err:?}"
+        );
+        let err = parse_tampered(|d| entry_mut(d)["source"]["url"] = json!(bad)).unwrap_err();
+        assert!(
+            matches!(err, CatalogError::BadUrl { ref field } if field.contains("source.url")),
+            "{bad:?}: {err:?}"
+        );
+    }
+    // Positive controls: an https URL passes, and a licence with no page (public domain) is fine.
+    parse_tampered(|d| entry_mut(d)["licence"]["url"] = json!("https://example.org/licence"))
+        .unwrap();
+    parse_tampered(|d| entry_mut(d)["licence"]["url"] = Value::Null).unwrap();
 }

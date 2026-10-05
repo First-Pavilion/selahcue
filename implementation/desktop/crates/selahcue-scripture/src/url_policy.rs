@@ -7,9 +7,11 @@
 //!
 //! Plain http to a loopback address exists for the crate's own tests (a one-shot local server is
 //! the only way to exercise a download without the network). It is not a setting: it needs
-//! [`UrlPolicy::allow_loopback_http_for_tests`], whose name is the warning, and the product code
-//! path never calls it. Even that policy refuses http to any host that is not literally
-//! `127.0.0.1` or `[::1]`, so a test cannot be redirected off the machine.
+//! [`UrlPolicy::allow_loopback_http_for_tests`], whose name is the warning, and that constructor is
+//! compiled only when debug assertions are on (tests and dev builds), so a release binary cannot
+//! build one: the type's only constructor there is [`UrlPolicy::https_only`]. Even the test policy
+//! refuses http to any host that is not literally `127.0.0.1` or `[::1]`, so a test cannot be
+//! redirected off the machine.
 //!
 //! The checks here are on text, before any socket is opened, so a refused URL costs no request.
 
@@ -57,7 +59,9 @@ impl UrlPolicy {
     }
 
     /// **Tests only.** Also allows plain `http` to `127.0.0.1` or `[::1]`, so a test can serve a
-    /// download from a local socket. Product code must use [`UrlPolicy::https_only`].
+    /// download from a local socket. Product code must use [`UrlPolicy::https_only`]. Exists only
+    /// when debug assertions are on: a release build has no way to make this policy.
+    #[cfg(debug_assertions)]
     #[doc(hidden)]
     pub const fn allow_loopback_http_for_tests() -> UrlPolicy {
         UrlPolicy {

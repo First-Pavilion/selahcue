@@ -640,8 +640,16 @@ fn an_interrupted_install_is_cleaned_up_and_never_counted_as_installed() {
         b"{\"schema\":1,\"transl",
     )
     .unwrap();
-    // A real, unrelated file in the same folder.
-    fs::write(env.dir.join("notes.txt"), b"mine").unwrap();
+    // Real, unrelated files in the same folder, including ones that merely look like staging files.
+    for mine in [
+        "notes.txt",
+        "movie.mp4.part",
+        "other.part",
+        "x.tmp",
+        ".installed.json.bak",
+    ] {
+        fs::write(env.dir.join(mine), b"mine").unwrap();
+    }
 
     // Never counted as installed, with or without cleanup.
     assert_eq!(env.registry.installed().unwrap(), vec![]);
@@ -652,15 +660,32 @@ fn an_interrupted_install_is_cleaned_up_and_never_counted_as_installed() {
     assert_eq!(report.skipped, 0);
     assert_eq!(
         env.names(),
-        ["notes.txt"],
-        "only the staging leftovers are removed"
+        [
+            ".installed.json.bak",
+            "movie.mp4.part",
+            "notes.txt",
+            "other.part",
+            "x.tmp"
+        ],
+        "only the files this module stages are removed, never a user's own"
     );
     assert_eq!(env.registry.installed().unwrap(), vec![]);
 
     // And a real install after a crash works and cleans leftovers itself.
     fs::write(env.dir.join("tst.tsv.gz.part"), &f.gz[..10]).unwrap();
     env.install("TST", &f.gz, NOW).unwrap();
-    assert_eq!(env.names(), ["installed.json", "notes.txt", "tst.tsv.gz"]);
+    assert_eq!(
+        env.names(),
+        [
+            ".installed.json.bak",
+            "installed.json",
+            "movie.mp4.part",
+            "notes.txt",
+            "other.part",
+            "tst.tsv.gz",
+            "x.tmp"
+        ]
+    );
 }
 
 #[cfg(unix)]
@@ -813,7 +838,13 @@ fn a_receipt_that_is_not_trustworthy_is_reported_not_used() {
             "a negative time",
             tamper(&|d| d["translations"][0]["installed_at"] = json!(-1)),
         ),
-        ("a receipt past the size cap", vec![b' '; 300 * 1024]),
+        // Valid JSON in every way except that it is far larger than any receipt can be: only the
+        // size cap can refuse it (a receipt that is merely garbage is refused by the parser).
+        ("a valid receipt past the size cap", {
+            let mut padded = good.to_string().into_bytes();
+            padded.extend(vec![b' '; 300 * 1024]);
+            padded
+        }),
     ];
     for (what, bytes) in cases {
         fs::write(env.dir.join(RECEIPT_FILE), bytes).unwrap();
@@ -928,4 +959,49 @@ fn install_from_a_path_that_is_not_a_regular_file_is_refused() {
         .unwrap_err();
     assert!(matches!(err, InstallError::Source(_)), "{err:?}");
     env.assert_nothing_installed("bad source path");
+}
+
+#[test]
+fn installing_over_an_older_file_that_is_resident_frees_it_at_once() {
+    // A registry that has decoded the OLDER file (installed by another process, under an earlier
+    // catalogue pin) and then installs the NEW one itself must drop the older index immediately,
+    // not whenever the next read happens to prune it: it is ~7 MiB that nothing will ever serve.
+    let old = fixture_labelled("TST", "OLD", 3, 2);
+    let new = fixture_labelled("TST", "NEW", 4, 2);
+    let root = tmp_dir("free-at-once");
+    let dir = root.join("data");
+    fs::write(root.join("old.gz"), &old.gz).unwrap();
+    fs::write(root.join("new.gz"), &new.gz).unwrap();
+    let earlier = Registry::new(dir.clone(), catalogue(vec![old.entry("cleared")]));
+    earlier
+        .install_from_file("TST", &root.join("old.gz"), NOW, &InstallHooks::default())
+        .unwrap();
+
+    let reg = Registry::new(dir.clone(), catalogue(vec![new.entry("cleared")]));
+    assert_eq!(
+        reg.index(&code("TST")).unwrap()[0].text,
+        verse_text("OLD", 1, 1, 1)
+    );
+    assert_eq!(
+        reg.resident_codes(),
+        ["TST"],
+        "premise: the older file is resident"
+    );
+
+    reg.install_from_file(
+        "TST",
+        &root.join("new.gz"),
+        NOW + 1,
+        &InstallHooks::default(),
+    )
+    .unwrap();
+    assert_eq!(
+        reg.resident_codes(),
+        Vec::<String>::new(),
+        "the replaced index must be dropped by the install that replaced it"
+    );
+    assert_eq!(
+        reg.index(&code("TST")).unwrap()[0].text,
+        verse_text("NEW", 1, 1, 1)
+    );
 }
