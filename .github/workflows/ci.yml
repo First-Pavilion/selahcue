@@ -1,16 +1,25 @@
-# SelahCue CI — per-OS matrix + GPU parity + Flutter + dependency audit.
+# SelahCue CI — Linux gates + GPU parity + Flutter + dependency audit; Windows on demand.
 #
-# Hosting: GitHub (user decision, 2026-07-24) — the free tier runs the full
-# Linux/macOS/Windows matrix this project's acceptance requires (GitLab Free has
-# no macOS runners; a .gitlab-ci.yml variant lives in git history if ever needed).
+# Hosting: GitHub (user decision, 2026-07-24). The repository is PRIVATE on the Team plan, so
+# hosted runners bill minutes (17tnw2b2nxk): 3,000 included a month, Linux x1, Windows x2, macOS
+# x10, and with no payment method every job is BLOCKED once the quota is gone. Measured on the 100
+# runs of 2026-10-02..05, a three-OS run cost a median 241 billable minutes, 155 of them macOS.
+# Owner decision 2026-10-05:
+#   - macOS is NOT in CI at all. The owner's local `make ci` is the only macOS gate. Do not add a
+#     macos-* runner back (.github/scripts/check_ci_minutes.py refuses it).
+#   - Pull requests and pushes to `main` run the LINUX legs only (about 21 billable minutes a run).
+#   - The WINDOWS legs (about 45 more) run on a weekly schedule, on workflow_dispatch with
+#     `windows: true`, on a pull request carrying the `full-ci` label, and on release tags `v*`.
+#   Which of those a run is, is decided once, in the `tier` step of the `changes` job below, and
+#   handed to the matrices as `needs.changes.outputs.os`.
 #
 # Local parity: `make ci` runs the same gates on a developer machine.
 #
 # GPU matrix note: the ADR-0015 parity tests (CPU rasterizer vs wgpu compositor,
 # SSIM >= 0.99) run wherever a GPU adapter exists and SKIP gracefully otherwise:
-#   - macOS runners: Metal
 #   - Ubuntu runners: Mesa software Vulkan (lavapipe, installed below)
-#   - Windows runners: DX12/WARP where available
+#   - Windows runners (weekly / on demand): DX12/WARP where available
+#   - Metal is exercised only by the owner's local `make ci` on a Mac.
 name: ci
 #
 # TOOLCHAIN: every Rust job below installs the EXACT version pinned in
@@ -25,9 +34,10 @@ name: ci
 # to a bare `@stable` with no input -- that is precisely the floating-toolchain bug
 # that left `main` without a green run for nine days (ClickUp 86ak5rc9c).
 
-# Docs-only changes skip the matrix (saves runner minutes; docs carry no code to
-# verify). A `changes` job (below) further gates the desktop vs mobile jobs by
-# path, so a single-side commit doesn't pay for the other side (macOS bills 10x).
+# Docs-only changes skip the whole workflow (saves runner minutes; docs carry no code to
+# verify; not even the lint job runs, which is cheaper than running it). A `changes` job
+# (below) further gates the desktop vs mobile jobs by path, so a single-side commit doesn't
+# pay for the other side.
 # NOTE: this gates DOWNSTREAM jobs with `if:`, so a skipped required check would
 # DEADLOCK a PR. It is safe only because this repo pushes to main with no branch
 # protection. Before enabling required status checks, add a single aggregator
@@ -36,22 +46,45 @@ name: ci
 on:
   push:
     branches: [main]
+    # Release tags run the full tier (Windows included). GitHub does not evaluate path
+    # filters for tag pushes, so `paths-ignore` below cannot swallow a tag.
+    tags: ["v[0-9]*"]
     paths-ignore:
       - "docs/**"
       - "**.md"
       - "TODO"
   pull_request:
+    # `labeled` is here so that adding `full-ci` to an OPEN pull request starts the Windows
+    # legs at once, instead of waiting for the next push (which would cost a run). Every
+    # OTHER label (Dependabot adds two or three to each PR it opens) starts a run whose jobs
+    # are all skipped by the guard on `changes` and `lint-workflows`: no runner starts, so it
+    # bills nothing, and the concurrency group below keeps it from cancelling a real run.
+    types: [opened, synchronize, reopened, labeled]
     paths-ignore:
       - "docs/**"
       - "**.md"
       - "TODO"
+  # The Windows legs, weekly: the one scheduled run that exercises the OS a trimmed push to
+  # `main` no longer tests. Sunday 03:17 UTC (off the Monday 06:00 canary and Dependabot
+  # slots, and off the top of the hour). A scheduled run always runs on the default branch.
+  schedule:
+    - cron: "17 3 * * 0"
   # Lets the alarm (and the whole matrix) be driven on demand against `main`. Without
   # this the alarm's first ever execution would be in production on an already-broken
-  # `main`, which is precisely when you do not want to find a typo in it.
+  # `main`, which is precisely when you do not want to find a typo in it. Every area runs
+  # on a dispatch; Windows only if asked (it is about 45 billable minutes on its own).
   workflow_dispatch:
+    inputs:
+      windows:
+        description: "Also run the Windows legs (about 45 billable minutes)"
+        type: boolean
+        default: false
 
 concurrency:
-  group: ci-${{ github.ref }}
+  # One group per ref AND event, so a weekly or manual run is never replaced while it waits
+  # behind a push run (a pending run is cancelled by a newer one in its group). A label that
+  # does not start Windows gets its own group so that it cannot cancel the real run.
+  group: ci-${{ github.ref }}-${{ github.event_name }}${{ (github.event_name == 'pull_request' && github.event.action == 'labeled' && github.event.label.name != 'full-ci') && '-ignored-label' || '' }}
   # Cancel superseded PR runs, but never a main run — every main commit keeps a
   # real pass/fail verdict (revert/bisect/audit trails need it).
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -61,12 +94,21 @@ env:
 
 jobs:
   # Which side of the repo changed. Most commits touch only the desktop OR only
-  # the mobile side, so the other side's jobs are pure waste — and macOS runners
-  # bill at 10x minutes, Windows at 2x. Each filter also matches this workflow so
+  # the mobile side, so the other side's jobs are pure waste — and Windows runners
+  # bill at 2x minutes. Each filter also matches this workflow so
   # a CI change re-runs everything. (Docs-only changes are already skipped at the
   # trigger's paths-ignore.) This is the cheap fan-out gate for the costly jobs.
+  #
+  # It also decides the TIER of the run (17tnw2b2nxk), in the `tier` step: every area runs
+  # (no path filter) on a weekly run, a manual dispatch and a release tag, and the matrices
+  # get Windows only when that step says so. One place decides, so the PR path and the
+  # weekly path cannot drift into two sets of rules.
   changes:
     name: detect changed areas
+    # A label other than `full-ci` starts a run only so that the label shows up in the list.
+    # Skipping here skips every job below that needs this one; `lint-workflows` carries the
+    # same guard. No runner starts, so such a run bills nothing.
+    if: ${{ !(github.event_name == 'pull_request' && github.event.action == 'labeled' && github.event.label.name != 'full-ci') }}
     runs-on: ubuntu-latest
     # `dorny/paths-filter` compares against the merge base using git on a push, but on a
     # PULL_REQUEST it calls the GitHub API (`listFiles`) instead, which needs
@@ -83,19 +125,89 @@ jobs:
       contents: read
       pull-requests: read
     outputs:
-      desktop: ${{ steps.filter.outputs.desktop }}
-      mobile: ${{ steps.filter.outputs.mobile }}
-      android: ${{ steps.filter.outputs.android }}
-      api: ${{ steps.filter.outputs.api }}
-      marketing: ${{ steps.filter.outputs.marketing }}
+      # `everything` (weekly, dispatch, release tag) turns every area on; otherwise the path
+      # filter decides. When it is true the filter step below is skipped and its outputs are
+      # empty, which the `||` makes harmless.
+      desktop: ${{ steps.tier.outputs.everything == 'true' || steps.filter.outputs.desktop == 'true' }}
+      mobile: ${{ steps.tier.outputs.everything == 'true' || steps.filter.outputs.mobile == 'true' }}
+      android: ${{ steps.tier.outputs.everything == 'true' || steps.filter.outputs.android == 'true' }}
+      api: ${{ steps.tier.outputs.everything == 'true' || steps.filter.outputs.api == 'true' }}
+      marketing: ${{ steps.tier.outputs.everything == 'true' || steps.filter.outputs.marketing == 'true' }}
+      # Whether this run includes the Windows legs, and the matrix that says so: a JSON array
+      # the `rust`, `operator` and `operator-native` jobs read with fromJSON. `windows` is also
+      # handed to the alarm, which must know whether a matrix job's result covered Windows.
+      windows: ${{ steps.tier.outputs.windows }}
+      os: ${{ steps.tier.outputs.os }}
       # The one Rust version every Rust job below installs. Read from
       # rust-toolchain.toml so the file is the single source of truth and CI cannot
       # drift from `make ci` (86ak5rc9c).
       rust: ${{ steps.toolchain.outputs.channel }}
     steps:
       - uses: actions/checkout@v7
+      # Which tier is this run. Inputs reach the script through `env:`, never spliced into the
+      # script text (a label name is attacker-chosen text). Windows is added ONLY by:
+      #   schedule              the weekly run (and every area, no path filter)
+      #   workflow_dispatch     the `windows` input; every area runs either way
+      #   push of a `v*` tag    a release (every area)
+      #   pull_request          the `full-ci` label, with the usual path filters
+      # A push to `main` and any other pull request are Linux only. Nothing here names macOS.
+      - id: tier
+        name: Decide the tier of this run (Linux only, or Linux and Windows)
+        env:
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          DISPATCH_WINDOWS: ${{ inputs.windows }}
+          HAS_FULL_CI_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'full-ci') }}
+        run: |
+          windows=false
+          everything=false
+          reason="a pull request or a push to main: Linux legs only"
+          case "$EVENT" in
+            schedule)
+              windows=true
+              everything=true
+              reason="the weekly run: every area, Linux and Windows"
+              ;;
+            workflow_dispatch)
+              everything=true
+              reason="a manual run: every area, Linux only (the windows input is off)"
+              if [ "$DISPATCH_WINDOWS" = "true" ]; then
+                windows=true
+                reason="a manual run: every area, Linux and Windows"
+              fi
+              ;;
+            push)
+              case "$REF" in
+                refs/tags/*)
+                  windows=true
+                  everything=true
+                  reason="a release tag: every area, Linux and Windows"
+                  ;;
+              esac
+              ;;
+            pull_request)
+              if [ "$HAS_FULL_CI_LABEL" = "true" ]; then
+                windows=true
+                reason="a pull request labelled full-ci: Linux and Windows legs, changed areas only"
+              fi
+              ;;
+          esac
+          if [ "$windows" = "true" ]; then
+            os='["ubuntu-latest","windows-latest"]'
+          else
+            os='["ubuntu-latest"]'
+          fi
+          {
+            echo "windows=$windows"
+            echo "everything=$everything"
+            echo "os=$os"
+          } >> "$GITHUB_OUTPUT"
+          echo "tier: $reason (os=$os)"
+          echo "CI tier: $reason. Runner matrix: \`$os\`." >> "$GITHUB_STEP_SUMMARY"
       - uses: dorny/paths-filter@v4
         id: filter
+        # Not needed (and not run) when every area runs anyway.
+        if: steps.tier.outputs.everything != 'true'
         with:
           filters: |
             desktop:
@@ -183,6 +295,8 @@ jobs:
   # workflow linter behind a path filter is how a broken workflow slips through.
   lint-workflows:
     name: workflows (actionlint + permissions)
+    # Same guard as `changes`: a label other than `full-ci` must not start a real run.
+    if: ${{ !(github.event_name == 'pull_request' && github.event.action == 'labeled' && github.event.label.name != 'full-ci') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -211,6 +325,18 @@ jobs:
           python3 -m pip install --quiet --break-system-packages 'pyyaml==6.0.3'
           python3 .github/scripts/check_workflows.py --self-test
           python3 .github/scripts/check_workflows.py
+      # The minute rules (17tnw2b2nxk): no macOS runner anywhere, Windows reachable only through
+      # the tier output, and the alarm's tier mapping. Each is one edit away from a bill: a
+      # copied matrix that names `macos-latest` costs 10x per minute, a literal `windows-latest`
+      # in a matrix puts Windows back on every pull request. The alarm self-test is in the
+      # `ci-alarm` job as well; it is repeated here so a pull request that breaks it is red on
+      # the PR and not for the first time on `main`.
+      - name: Minute rules (no macOS, Windows only via the tier) + alarm self-test
+        run: |
+          # PyYAML is installed (pinned) by the step above.
+          python3 .github/scripts/check_ci_minutes.py --self-test
+          python3 .github/scripts/check_ci_minutes.py
+          python3 .github/scripts/ci_alarm.py --self-test
       # The disk script's contract (17tnw2b2k23). `check` is the one behaviour in
       # scripts/ci_disk.sh that can turn a build red, and `free` is the one that deletes system
       # directories, so both have a test that runs on every PR, on a runner that is thrown away.
@@ -304,7 +430,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        # Linux always; Windows only when the tier step says so (17tnw2b2nxk). No macOS. The
+        # `||` fallback (Linux only, the cheap reading) is for a run where `changes` was skipped
+        # (a label other than full-ci): its output is empty and fromJSON('') is an error. Same
+        # expression in `operator` and `operator-native`; check_ci_minutes.py keeps them in step.
+        os: ${{ fromJSON(needs.changes.outputs.os || '["ubuntu-latest"]') }}
     runs-on: ${{ matrix.os }}
     defaults:
       run:
@@ -387,7 +517,9 @@ jobs:
       # operator`'s resolved feature list is a superset of the features the product has decided
       # must be default-reachable (dev-keys/openai-notes today, 86akcmzrd).
       #
-      # Linux + macOS; Windows excluded. Originally Linux-only, citing this pipeline's `nfr` job
+      # Linux only now (this was Linux + macOS until the macOS leg left CI on 2026-10-05,
+      # 17tnw2b2nxk; a Mac's own `make ci` still runs this script); Windows excluded. The history
+      # below is why macOS had been included. Originally Linux-only, citing this pipeline's `nfr` job
       # as precedent for "make is not cross-OS-reliable" — Cody and Quinn (PR #24 remediation)
       # independently tested that precedent and it does not hold: `nfr`'s macOS skip is about a
       # one-time recorded timing baseline, and its Windows skip is about a POSIX shell script
@@ -706,7 +838,7 @@ jobs:
         # as an explicit, named, feature-flagged run — redundant with the default-feature
         # coverage above in what it builds, but not in what it PROVES: it is the one place a
         # future `default = []` regression (someone dropping `encryption` back out of the
-        # default array) would still be caught by name, on all three OSes, rather than silently
+        # default array) would still be caught by name, on every OS this job runs on, rather than silently
         # falling out of the workspace run's coverage.
         if: ${{ !cancelled() }}
         run: |
@@ -723,9 +855,11 @@ jobs:
         run: sh scripts/ci_disk.sh end job-end
 
   # Proves the app actually LAUNCHES (windows created, first frame presented, exit
-  # 0) on every OS — not just build+test — and records a per-OS cold-start figure
+  # 0) — not just build+test — and records a cold-start figure
   # (story 86ajpevzp). `--smoke` self-exits 0 on the first present, or non-zero via
   # a 30s watchdog on a genuine launch failure. Linux runs headless under Xvfb.
+  # Linux only: macOS left CI on 2026-10-05 (17tnw2b2nxk; the owner's local `make ci` and
+  # `make launch` cover it) and Windows was never possible here, see the matrix below.
   launch-smoke:
     name: launch-smoke (${{ matrix.os }})
     needs: changes
@@ -740,10 +874,11 @@ jobs:
         # Windows is intentionally excluded: the app launches + presents fine on
         # the windows-latest runner (recorded 522 ms in run 30141199818), but the
         # HEADLESS runner intermittently never presents a windowed frame (a
-        # DXGI/desktop-session flake, not an app defect — macOS + Linux present
+        # DXGI/desktop-session flake, not an app defect — Linux presents
         # reliably). Documented runner limitation per 86ajpevzp; the rust +
-        # operator matrices still cover Windows build+test.
-        os: [ubuntu-latest, macos-latest]
+        # operator matrices still cover Windows build+test when the tier includes it.
+        # macOS is not here either (17tnw2b2nxk): it bills 10x and the owner runs it locally.
+        os: [ubuntu-latest]
     runs-on: ${{ matrix.os }}
     defaults:
       run:
@@ -779,12 +914,10 @@ jobs:
       - name: GUI-launch smoke (Linux, headless under Xvfb)
         if: runner.os == 'Linux'
         run: xvfb-run -a -s "-screen 0 1920x1080x24" ./target/release/selahcue-output --smoke
-      - name: GUI-launch smoke (macOS, runner display)
-        if: runner.os != 'Linux'
-        run: cargo run --release -p selahcue-desktop -- --smoke
       # Idle-memory + cold-start NFR budgets (POSIX script; ≤300MB / ≤3s), GATED
       # on Linux — a real memory regression must fail CI (no-unbounded-growth
-      # rule). macOS baseline already recorded; Windows is a POSIX-script limit.
+      # rule). The macOS baseline was recorded while macOS ran here; Windows is a
+      # POSIX-script limit.
       - name: NFR budgets (Linux under Xvfb)
         if: runner.os == 'Linux'
         working-directory: ${{ github.workspace }}
@@ -822,7 +955,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        # Linux always; Windows only when the tier step says so (17tnw2b2nxk). No macOS.
+        os: ${{ fromJSON(needs.changes.outputs.os || '["ubuntu-latest"]') }}
     runs-on: ${{ matrix.os }}
     defaults:
       run:
@@ -922,7 +1056,8 @@ jobs:
       # exposed it left the whole suite green -- so this is exactly the kind of gap a gate has to
       # cover rather than a developer remembering `make ci`. `selahcue-stt` is the standing
       # example of what happens otherwise: its own lint policy is unenforced because no CI job
-      # compiles it. Runs on all three OSes, like the steps above.
+      # compiles it. Runs on every OS this job runs on (Linux, plus Windows when the tier
+      # includes it), like the steps above.
       - name: Clippy (dev-keys)
         if: ${{ !cancelled() }}
         run: cargo clippy --features dev-keys --all-targets -- -D warnings
@@ -1060,7 +1195,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        # Linux always; Windows only when the tier step says so (17tnw2b2nxk). No macOS.
+        os: ${{ fromJSON(needs.changes.outputs.os || '["ubuntu-latest"]') }}
     runs-on: ${{ matrix.os }}
     defaults:
       run:
@@ -1143,8 +1279,8 @@ jobs:
       # in any gate -- a hardcoded argument, an inverted `!`, or a deleted early return in either
       # guard's call site would have passed every check in `operator` green. Same shape as the
       # licensing crate's RELEASE test in the `rust` job; `selahcue-operator` is excluded from
-      # the workspace, so it needs its own explicit lines, on all three OSes per this job's own
-      # matrix.
+      # the workspace, so it needs its own explicit lines, on every OS this job's own matrix runs
+      # (Linux; Windows when the tier includes it).
       - name: Clippy (dev-keys,openai-notes, RELEASE)
         if: ${{ !cancelled() }}
         run: cargo clippy --features dev-keys,openai-notes --release --all-targets -- -D warnings
@@ -1210,8 +1346,8 @@ jobs:
       # for the steps above, with an identical `selahcue-stt` feature set, so cargo reuses those
       # artefacts and this step re-checks only six packages -- `tungstenite`, `tokio-tungstenite`,
       # `selahcue-stt-cloud` (its non-`deepgram` build), `selahcue-lan`, `selahcue-app` and the
-      # operator crate itself -- the same six on all three OSes. That is why it lives here, on all
-      # three OSes, rather than in a new job (a new job would pay checkout/toolchain/cache setup
+      # operator crate itself -- the same six on every OS. That is why it lives here, on every
+      # OS this job runs on, rather than in a new job (a new job would pay checkout/toolchain/cache setup
       # AND a second cold whisper.cpp + OpenSSL build per OS) and rather than Linux-only (Windows
       # is the one OS the installer ships on, and this job's own history rejects dropping it).
       # Measured on PR #137's run 36819129002: 5s on ubuntu (a full cache miss, so `whisper-rs-sys`
@@ -1518,15 +1654,19 @@ jobs:
     # skipped dependency would otherwise skip the alarm exactly when it is needed.
     # Every job that can fail on `main` must be in this list, or its failure is invisible
     # -- which is the nine-days-unnoticed failure mode, recreated for one job.
-    # A push only ever reaches here from `main` (see `on:` at the top). A dispatch is
-    # additionally allowed from ANY ref so the alarm can be rehearsed before it is
+    # A push only ever reaches here from `main` (a release-tag push fails the `github.ref` test
+    # below). A dispatch is additionally allowed from ANY ref so the alarm can be rehearsed before it is
     # merged -- but off `main` it runs in DRY_RUN, doing every read and withholding
     # every write. Without that, its first execution ever would be on an already-broken
     # `main`, which is the worst possible moment to discover a typo; and letting a
     # branch's results write to the real issue could close a genuine alarm.
+    # The weekly run (17tnw2b2nxk) is the only run that exercises the Windows legs on `main`, so
+    # it MUST reach the alarm: a Windows failure found on a Sunday has nowhere else to go. A
+    # scheduled run is always on the default branch, so it writes for real.
     if: >-
       ${{ always()
           && ((github.event_name == 'push' && github.ref == 'refs/heads/main')
+              || github.event_name == 'schedule'
               || github.event_name == 'workflow_dispatch') }}
     runs-on: ubuntu-latest
     # BOTH scopes are load-bearing. Declaring any `permissions` block sets every scope
@@ -1555,5 +1695,10 @@ jobs:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           SHA: ${{ github.sha }}
           NEEDS: ${{ toJSON(needs) }}
+          # Did this run include the Windows legs? `rust`, `operator` and `operator-native` are
+          # matrix jobs and report ONE result for all their legs, so the alarm needs this to know
+          # what a success covered. It is the same value that built the matrix. Absent or anything
+          # but "true" is read as "Linux only", the stricter reading (see ci_alarm.py).
+          WINDOWS_RAN: ${{ needs.changes.outputs.windows }}
           DRY_RUN: ${{ github.ref != 'refs/heads/main' }}
         run: python3 .github/scripts/ci_alarm.py
