@@ -50,10 +50,33 @@
 #
 # THE FIX ITSELF. `free` deletes the preinstalled software this repo never uses (Android SDK,
 # .NET, GHC, CodeQL) before anything is built. Sizes on that image: Android 11 GB, .NET
-# 5.8 GB, ghcup 3.7 GB, CodeQL 1.4 GB, together 21.7 GB. The step takes about 80 seconds
-# (77 to 81 s on both runners measured; the deletion alone 41 to 77 s). Left alone, with
+# 5.8 GB, ghcup 3.7 GB, CodeQL 1.4 GB, together 21.7 GB. The step takes about 40 to 90
+# seconds (42, 78, 81 and 87 s on four runs; the deletion is most of it). Left alone, with
 # their sizes, in case the list ever has to grow: /usr/share/swift 3.5 GB, hostedtoolcache
 # Python 1.6 GB, /usr/lib/jvm 1.5 GB, julia 1.1 GB, docker images 1.9 GB, Go 0.8 GB.
+#
+# WHEN IT RUNS: ONLY ON A SMALL RUNNER. After the guards below, `free` measures free space
+# on / and SKIPS the deletion ("skipped: N GB free on /, at or above the M GB threshold;
+# nothing deleted", exit 0) when it is at or above CI_DISK_SKIP_FREE_AT_GB (whole GB, default
+# 40). Below it, `free` behaves as it always did. Why 40, from the logged figures: the job
+# writes about 16.4 GB and is growing; the check floors need 10 GB free at the two early
+# checkpoints (the first is after 4.3 GB written, the second after 4.6) and 5 GB at the two
+# later ones (14.7 GB written), so a runner needs about 19.7 GB at the start to pass every
+# floor, and about 26.4 GB to end with the 10 GB job-end warning silent. The pool that failed
+# on 2026-10-04 had 13.3 GB free at the start (below every one of those figures; freeing
+# 21.7 GB gave 35.0 GB and the job ended with 18.6 GB); the pool seen on 2026-10-05 has
+# 86.0 GB free. 40 GB is the 26.4 GB above plus 13.6 GB (83 percent of what the job writes
+# today) of growth, so a runner at or above it finishes with the warning silent even after
+# the job has grown by four fifths, and a runner below it is exactly the kind that fails.
+#
+# CONSEQUENCE, stated plainly: on today's runners (86 GB free) the deletion does not run in
+# CI at all. It was proven on real runners on 2026-10-04 (freed 21.7 GB; runs 37241095086 and
+# 37243123097) and in container tests with fake directories. It matters again only if the
+# pool shrinks; until then the check floors and the job-end warning are the early warning.
+#
+# The skip comes AFTER every guard, never before: a skip taken before the guards would make
+# the guards untestable (the skip would win) and a mistake in it could not be told from a
+# working guard. Nothing is deleted on any path that reaches the skip.
 #
 # Usage:
 #   ci_disk.sh report <label>   print free space, inodes and the big build directories, then
@@ -62,7 +85,9 @@
 #                               CI_DISK_MIN_FREE_GB (whole GB, default 5)
 #   ci_disk.sh end <label>      report, warn below CI_DISK_WARN_FREE_GB (whole GB, default
 #                               10), append one summary line. Never fails.
-#   ci_disk.sh free             report, delete the unused preinstalled software, report again
+#   ci_disk.sh free             report; then, only if free space on / is below
+#                               CI_DISK_SKIP_FREE_AT_GB (whole GB, default 40), delete the
+#                               unused preinstalled software and report again
 #
 # `free` DELETES SYSTEM DIRECTORIES, so it refuses (exit 2, deletes nothing) unless it is on a
 # GitHub-HOSTED runner: GITHUB_ACTIONS=true AND RUNNER_ENVIRONMENT=github-hosted. Either
@@ -84,11 +109,13 @@ cargo_home="${CARGO_HOME:-${HOME:-/nonexistent}/.cargo}"
 rustup_home="${RUSTUP_HOME:-${HOME:-/nonexistent}/.rustup}"
 min_free_gb="${CI_DISK_MIN_FREE_GB:-5}"
 warn_free_gb="${CI_DISK_WARN_FREE_GB:-10}"
+skip_free_at_gb="${CI_DISK_SKIP_FREE_AT_GB:-40}"
 
 # A floor that is not a whole number would be read differently by dash and by bash (a value
 # of -1 would silently switch the check off), so refuse it up front. At most 9 digits, so the
 # GB to KB arithmetic below cannot overflow.
-for setting in "CI_DISK_MIN_FREE_GB=$min_free_gb" "CI_DISK_WARN_FREE_GB=$warn_free_gb"; do
+for setting in "CI_DISK_MIN_FREE_GB=$min_free_gb" "CI_DISK_WARN_FREE_GB=$warn_free_gb" \
+               "CI_DISK_SKIP_FREE_AT_GB=$skip_free_at_gb"; do
     value=${setting#*=}
     case "$value" in
         '' | *[!0-9]*)
@@ -228,6 +255,18 @@ free_space() {
 
     report "job start before freeing"
     before=$(avail_kb /)
+
+    # THE SKIP. It sits after every guard and after the path-shape check above (so a bad list
+    # is refused on every run, even one where nothing would be deleted), and before the first
+    # deletion. If df cannot say (avail_kb prints 0) the runner counts as small and `free`
+    # goes ahead: it has passed the hosted-runner guards, and the deletion is the safe
+    # direction for the job.
+    skip_kb=$((skip_free_at_gb * 1048576))
+    if [ "$before" -ge "$skip_kb" ]; then
+        set +f
+        echo "skipped: $(avail_gb /) GB free on /, at or above the $skip_free_at_gb GB threshold; nothing deleted"
+        return 0
+    fi
 
     # Deleted in parallel; each deletion is waited on by pid so a failure names its path (a
     # bare `wait` always returns 0).

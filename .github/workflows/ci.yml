@@ -214,10 +214,14 @@ jobs:
       # The disk script's contract (17tnw2b2k23). `check` is the one behaviour in
       # scripts/ci_disk.sh that can turn a build red, and `free` is the one that deletes system
       # directories, so both have a test that runs on every PR, on a runner that is thrown away.
-      # `free` is only ever run here with its guard variables WRONG, so it must refuse (exit 2)
-      # and delete nothing; the last line proves nothing was deleted. The first case is the
-      # positive control: with the floor at 0 the script itself runs and exits 0.
-      - name: Disk script contract (check floor, usage error, free refusals)
+      # `free` is run here in two ways only, and neither deletes anything. With its guard
+      # variables WRONG it must refuse (exit 2); that is tried with the skip threshold at 0
+      # too, so a skip placed BEFORE the guards (it would exit 0) is caught. With the guards
+      # right and the threshold at 0 it must take the skip: exit 0, say "nothing deleted", and
+      # leave every directory in place; the last lines prove none was deleted. The deletion
+      # path itself is tested only in a throwaway container with fake directories, never here.
+      # The first case is the positive control: with the floor at 0 the script itself runs.
+      - name: Disk script contract (check floor, usage error, free refusals and skip)
         run: |
           fail=0
           expect() {
@@ -243,6 +247,21 @@ jobs:
           expect 2 sh scripts/ci_disk.sh bogus
           expect 2 env -u GITHUB_ACTIONS sh scripts/ci_disk.sh free
           expect 2 env GITHUB_ACTIONS=true RUNNER_ENVIRONMENT=self-hosted sh scripts/ci_disk.sh free
+          expect 2 env CI_DISK_SKIP_FREE_AT_GB=abc sh scripts/ci_disk.sh report selftest
+          expect 2 env -u GITHUB_ACTIONS CI_DISK_SKIP_FREE_AT_GB=0 sh scripts/ci_disk.sh free
+          expect 2 env CI_DISK_SKIP_FREE_AT_GB=0 GITHUB_ACTIONS=true RUNNER_ENVIRONMENT=self-hosted sh scripts/ci_disk.sh free
+          if skipped=$(env CI_DISK_SKIP_FREE_AT_GB=0 GITHUB_ACTIONS=true RUNNER_ENVIRONMENT=github-hosted sh scripts/ci_disk.sh free 2>&1); then rc=0; else rc=$?; fi
+          if [ "$rc" -ne 0 ]; then
+            echo "FAIL: 'free' with the threshold at 0 exited $rc, wanted 0 (skip)"
+            fail=1
+          fi
+          case "$skipped" in
+            *"nothing deleted"*) ;;
+            *)
+              echo "FAIL: 'free' with the threshold at 0 did not print the skip line"
+              fail=1
+              ;;
+          esac
           after=$(present)
           if [ "$before" -ne "$after" ]; then
             echo "FAIL: a refused 'free' deleted something ($before directories before, $after after)"
@@ -272,8 +291,12 @@ jobs:
       # logs of the whole job (BlobNotFound), so those failures could not be read back.
       #
       # `free` deletes preinstalled software this job never uses (Android SDK, .NET, GHC,
-      # CodeQL; about 21.7 GB, takes about 80 s) BEFORE anything is built, and only on a
-      # GitHub-hosted runner. The `check` steps below are headroom alarms with a floor per
+      # CodeQL; about 21.7 GB, takes about 40 to 90 s) BEFORE anything is built, only on a
+      # GitHub-hosted runner, and only when the runner is small: it SKIPS (and prints "skipped")
+      # when 40 GB or more is free at job start. On the runners seen on 2026-10-05 (86 GB free)
+      # the deletion therefore does not run at all; it was proven on the 13.3 GB runners of
+      # 2026-10-04 and matters again only if the pool shrinks. Either way the step prints the
+      # start figure. The `check` steps below are headroom alarms with a floor per
       # checkpoint, set on the step: each fails its own step, by name, while there is still
       # room to write. The last step warns below 10 GB free and adds one line to the job
       # summary. Linux only: macOS and Windows runners did not fail and are left alone. The
