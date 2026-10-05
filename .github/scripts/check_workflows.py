@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Workflow invariants that actionlint does not model.
 
-Three checks. The first two were born from defects that shipped in this branch and were
-caught by human review rather than by any gate; the third (cache saves) is described
-after them:
+Four checks. The first two were born from defects that shipped in this branch and were
+caught by human review rather than by any gate; the third (cache saves) and the fourth
+(protected environments) are described after them:
 
 1. TOKEN SCOPES FOR CHECKOUT. Declaring ANY `permissions:` block on a job sets every
    scope NOT listed to `none`. A job written as `permissions: {issues: write}` gets
@@ -60,6 +60,21 @@ after them:
    Exactly ONE spelling is accepted (`github.ref == 'refs/heads/main'`), so an inverted,
    always-true or literal value cannot pass for a decision. `github.ref_name == 'main'`
    is refused on purpose: it is also true for a tag named `main`.
+
+4. PROTECTED-ENVIRONMENT WORKFLOWS (17tnw2b2jqd). A workflow with a job that declares
+   `environment:` is one whose secrets sit behind a named approver (the translations
+   publish workflow). Two properties make that gate mean something, and neither is
+   modelled by actionlint:
+   a. It may be triggered by `workflow_dispatch` ONLY. A `push`, `pull_request`,
+      `schedule` or `workflow_run` trigger would let something other than a person who
+      chose to run it reach the job.
+   b. Any secret other than GITHUB_TOKEN may be referenced ONLY in the `env:` of a STEP of
+      a job that declares an `environment:`. Not in the workflow's `env:`, not in a
+      job-level `env:` (every step would see it), not in a job without an environment
+      (it would run without the approval), not in `with:` (handed to an action) and not
+      spliced into `run:` text (script injection and log exposure).
+   Scope: this reads the file it is given. Secrets handed to a reusable workflow
+   (`secrets: inherit`) or an environment chosen by an expression are not modelled.
 
 Known gaps, so the boundary is written down rather than assumed:
    - Check 3 covers `Swatinem/rust-cache` and `subosito/flutter-action` only. Other steps
@@ -275,11 +290,70 @@ def cache_save_violations(workflow: dict, filename: str = "<workflow>") -> list[
     return out
 
 
+SECRET_REF = re.compile(r"\bsecrets\.([A-Za-z0-9_-]+)")
+DISPATCH_ONLY = {"workflow_dispatch"}
+
+
+def secret_names(value) -> set[str]:
+    """Every `secrets.NAME` (other than GITHUB_TOKEN) mentioned anywhere inside `value`."""
+    found = set()
+    if isinstance(value, dict):
+        for k, v in value.items():
+            found |= secret_names(k) | secret_names(v)
+    elif isinstance(value, (list, tuple)):
+        for v in value:
+            found |= secret_names(v)
+    elif value is not None:
+        found |= {n for n in SECRET_REF.findall(str(value)) if n != "GITHUB_TOKEN"}
+    return found
+
+
+def protected_environment_violations(workflow: dict, filename: str = "<workflow>") -> list[str]:
+    """Secrets of a protected-environment workflow: dispatch-only, and only in the `env:` of steps of a job
+    that declares the environment. A workflow with no `environment:` job is not this check's business."""
+    jobs = {n: j for n, j in (workflow.get("jobs") or {}).items() if isinstance(j, dict)}
+    if not any("environment" in j for j in jobs.values()):
+        return []
+    out = []
+    extra = workflow_triggers(workflow) - DISPATCH_ONLY
+    if extra:
+        out.append(
+            f"{filename}: a workflow with an `environment:` job must be triggered by workflow_dispatch only, but it also "
+            f"runs on {sorted(extra)}. Its secrets sit behind a named approver; another trigger bypasses the point."
+        )
+    for name in sorted(secret_names(workflow.get("env"))):
+        out.append(f"{filename}: secret `{name}` is in the workflow-level `env:`, so every job and step can read it. "
+                   f"Put it in the `env:` of the one step that needs it.")
+    for jname, job in jobs.items():
+        has_env = "environment" in job
+        for name in sorted(secret_names(job.get("env"))):
+            out.append(f"{filename}: job `{jname}` has secret `{name}` in its job-level `env:`, so every step can read it. "
+                       f"Put it in the `env:` of the one step that needs it.")
+        for key in ("if", "concurrency", "container", "services", "outputs", "with"):
+            for name in sorted(secret_names(job.get(key))):
+                out.append(f"{filename}: job `{jname}` uses secret `{name}` in `{key}:`; only a step's `env:` may.")
+        for step in job.get("steps") or []:
+            if not isinstance(step, dict):
+                continue
+            label = step.get("name") or step.get("uses", "<step>")
+            for name in sorted(secret_names(step.get("env"))):
+                if not has_env:
+                    out.append(f"{filename}: job `{jname}` step `{label}` uses secret `{name}` but the job declares no "
+                               f"`environment:`, so it would run without the approval.")
+            for key in ("with", "run", "if", "working-directory", "shell"):
+                for name in sorted(secret_names(step.get(key))):
+                    out.append(f"{filename}: job `{jname}` step `{label}` uses secret `{name}` in `{key}:`; a secret may "
+                               f"only be passed through the step's `env:` (not handed to an action, spliced into a script "
+                               f"or a condition).")
+    return out
+
+
 def all_violations(workflow: dict, filename: str = "<workflow>") -> list[str]:
     return (
         permission_violations(workflow, filename)
         + gate_ordering_violations(workflow, filename)
         + cache_save_violations(workflow, filename)
+        + protected_environment_violations(workflow, filename)
     )
 
 
@@ -569,6 +643,116 @@ jobs:
     steps:
       - uses: subosito/flutter-action@v2
         with: {cache: true}
+"""), 0),
+        # Check 4: protected-environment workflows (17tnw2b2jqd).
+        ("an environment job, dispatch only, secret in a step env is accepted", wf("""
+on: {workflow_dispatch: {inputs: {x: {type: string}}}}
+jobs:
+  publish:
+    environment: translations-publish
+    steps:
+      - name: Upload
+        env: {AWS_SECRET_ACCESS_KEY: "${{ secrets.SPACES_SECRET_ACCESS_KEY }}"}
+        run: python3 upload.py
+"""), 0),
+        ("GITHUB_TOKEN is not a protected secret (only the push trigger is wrong here)", wf("""
+on: {push: {branches: [main]}}
+jobs:
+  publish:
+    environment: prod
+    steps:
+      - env: {GH_TOKEN: "${{ secrets.GITHUB_TOKEN }}"}
+        run: gh issue list
+"""), 1),
+        ("an environment workflow that also runs on push is rejected", wf("""
+on: {workflow_dispatch: {}, push: {branches: [main]}}
+jobs:
+  publish:
+    environment: translations-publish
+    steps:
+      - env: {K: "${{ secrets.SPACES_ACCESS_KEY_ID }}"}
+        run: x
+"""), 1),
+        ("an environment workflow that also runs on pull_request is rejected", wf("""
+on: [workflow_dispatch, pull_request]
+jobs:
+  publish:
+    environment: translations-publish
+    steps:
+      - run: x
+"""), 1),
+        ("a secret in the workflow-level env is rejected", wf("""
+on: {workflow_dispatch: {}}
+env: {K: "${{ secrets.SPACES_ACCESS_KEY_ID }}"}
+jobs:
+  publish:
+    environment: translations-publish
+    steps:
+      - run: x
+"""), 1),
+        ("a secret in a job-level env is rejected", wf("""
+on: {workflow_dispatch: {}}
+jobs:
+  publish:
+    environment: translations-publish
+    env: {K: "${{ secrets.SPACES_ACCESS_KEY_ID }}"}
+    steps:
+      - run: x
+"""), 1),
+        ("a secret in a job without an environment is rejected", wf("""
+on: {workflow_dispatch: {}}
+jobs:
+  publish:
+    environment: translations-publish
+    steps:
+      - run: x
+  build:
+    steps:
+      - env: {K: "${{ secrets.SPACES_ACCESS_KEY_ID }}"}
+        run: x
+"""), 1),
+        ("a secret handed to an action through with: is rejected", wf("""
+on: {workflow_dispatch: {}}
+jobs:
+  publish:
+    environment: translations-publish
+    steps:
+      - uses: some/action@v1
+        with: {token: "${{ secrets.SPACES_ACCESS_KEY_ID }}"}
+"""), 1),
+        ("a secret spliced into run text is rejected", wf("""
+on: {workflow_dispatch: {}}
+jobs:
+  publish:
+    environment: translations-publish
+    steps:
+      - run: echo ${{ secrets.SPACES_ACCESS_KEY_ID }}
+"""), 1),
+        ("a secret in a step condition is rejected", wf("""
+on: {workflow_dispatch: {}}
+jobs:
+  publish:
+    environment: translations-publish
+    steps:
+      - if: ${{ secrets.SPACES_ACCESS_KEY_ID != '' }}
+        run: x
+"""), 1),
+        ("a secret in a job condition is rejected", wf("""
+on: {workflow_dispatch: {}}
+jobs:
+  publish:
+    environment: translations-publish
+    if: ${{ secrets.SPACES_ACCESS_KEY_ID != '' }}
+    steps:
+      - run: x
+"""), 1),
+        ("a workflow with no environment job is out of scope for this check", wf("""
+on: {push: {branches: [main]}}
+jobs:
+  other:
+    steps:
+      - env: {K: "${{ secrets.SOMETHING }}"}
+        run: x
 """), 0),
     ]
     failures = []
