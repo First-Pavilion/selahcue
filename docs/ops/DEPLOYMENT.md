@@ -222,8 +222,8 @@ Key names follow the **First Pavilion house convention** — the same ones yhara
 | `CELERY_BROKER_URL` | `redis://redis:6379/2` | Point at the real Redis |
 | `CELERY_RESULT_BACKEND` | `redis://redis:6379/2` | Point at the real Redis |
 | `CACHE_URL` | empty → LocMemCache | **Set it.** `redis://…/1` — db **1**, never the broker's db 2. See §6b |
-| `CACHE_SOCKET_CONNECT_TIMEOUT` | `0.5` (seconds) | Leave the default. How long the cache waits to open a connection to Redis. Must be > 0; a bad value refuses to boot. See §6b |
-| `CACHE_SOCKET_TIMEOUT` | `0.5` (seconds) | Leave the default. How long the cache waits for Redis to answer one command. Must be > 0; a bad value refuses to boot. See §6b |
+| `CACHE_SOCKET_CONNECT_TIMEOUT` | `0.5` (seconds) | Leave the default. How long the cache waits to open a connection to Redis. Allowed `0.05` to `10`; anything else refuses to boot. See §6b |
+| `CACHE_SOCKET_TIMEOUT` | `0.5` (seconds) | Leave the default. How long the cache waits for Redis to answer one command. Allowed `0.05` to `10`; anything else refuses to boot. See §6b |
 | `SELAHCUE_TRUSTED_PROXY_COUNT` | `0` | Number of *your own* proxies in front of Django. See §6b |
 | `MAIL_HOST` / `MAIL_PORT` / `MAIL_USERNAME` / `MAIL_PASSWORD` | mailhog on `:1025` in dev | **Required** to send email |
 | `DEFAULT_FROM_EMAIL` / `DEFAULT_EMAIL` | SelahCue defaults | Set to your verified sending domain |
@@ -358,39 +358,86 @@ cannot take the other with it.
 "Fails open when Redis is unavailable" (above) is only true if the app gives up on a Redis that has
 gone quiet. A Redis that is **up but wedged** — a failing node, a network partition, memory pressure
 — still accepts the connection and then never replies. With no socket timeout the app waits forever
-for that reply, so the limiter never gets to fail open: every request that touches a throttle
-(native sign-in, activation, licence refresh, the entitlement manifest, both password-reset
-mutations, resend-verification) holds a web worker until the worker's own timeout, and a cache
-fault becomes a full API outage.
+for that reply, so the limiter never gets to fail open: every request that spends a throttle budget
+is held for as long as Redis stays wedged, and a cache fault becomes a full API outage.
+
+Routes that spend a budget, and how many:
+
+- **One budget:** `POST /v1/activations`, `POST /v1/sessions`, `POST /v1/activations:with-session`,
+  `POST /v1/license:refresh`, `GET /v1/entitlements/manifest`, and the GraphQL mutations
+  `verifyEmail` and `confirmPasswordReset`.
+- **Three budgets:** the GraphQL mutations `requestPasswordReset` and `resendVerificationEmail`.
 
 The cache connection therefore carries two timeouts, in seconds, both read from the environment:
 
-| Variable | Default | What it bounds |
-|----------|---------|----------------|
-| `CACHE_SOCKET_CONNECT_TIMEOUT` | `0.5` | Opening a connection to Redis |
-| `CACHE_SOCKET_TIMEOUT` | `0.5` | Waiting for Redis to answer one command, once connected |
+| Variable | Default | Allowed range | What it bounds |
+|----------|---------|---------------|----------------|
+| `CACHE_SOCKET_CONNECT_TIMEOUT` | `0.5` | `0.05` to `10` | Opening a connection to Redis |
+| `CACHE_SOCKET_TIMEOUT` | `0.5` | `0.05` to `10` | Waiting for Redis to answer one command, once connected |
 
-- A healthy Redis answers one command in about a millisecond, so the default is hundreds of times a
-  normal round trip. Nothing changes while Redis is healthy.
-- A stalled Redis is then treated exactly like a down one: the call raises, the throttle **permits
+- **Healthy Redis: nothing changes.** A healthy Redis answered one command in a few milliseconds
+  (26 ms at worst in this change's performance review), so the default is at least 19 times the
+  worst healthy sample.
+- **A stalled Redis is treated exactly like a down one.** The call raises, the throttle **permits
   the request**, the degraded send ceilings apply (`SELAHCUE_RESEND_DEGRADED_SEND_CEILING`,
   `SELAHCUE_RESET_SEND_DEGRADED_CEILING`), and the same one-line `rate-limit store unavailable`
   warning is logged (once a minute per worker; for a stall it names `TimeoutError`).
-- **What a stall costs a request.** Each budget a route spends waits up to one timeout before it
-  fails open. The `/v1` routes spend one budget (about 0.5 s extra at the defaults); the
-  password-reset request and resend-verification mutations spend three (about 1.5 s). It is a
-  ceiling, not a retry: a timed-out call is not repeated.
-- **Tuning.** Keep the defaults unless Redis is genuinely remote or often slow under load. Raising a
-  timeout tolerates a slow-but-working Redis at the price of a longer stall; keep the timeout times
-  the number of budgets a route spends well under the web worker's own timeout. Each value must be a
-  positive number: `0` is not "no timeout" (redis-py reads it as non-blocking, so every call would
-  fail at once), and an invalid value makes the API refuse to start with an error naming the
-  variable. A blank value means the default.
-- **Scope.** These settings cover `CACHE_URL` — the throttle counters in db 1 — only. They do not
-  reach the Celery broker or result backend (`CELERY_BROKER_URL`, `CELERY_RESULT_BACKEND`). Those
-  connections have no socket timeout either, so a stalled broker can still hold a request that
-  publishes a task (such as the transactional email dispatch); that is a separate problem and is not
-  addressed here.
+- **What a bad Redis costs a request.** The timeout applies to each Redis *command*, not to each
+  budget. Spending one budget takes one to three commands (`SET NX`, and once the counter exists
+  also `EXISTS` and `INCR`), and opening a new connection adds three more (two `CLIENT SETINFO`
+  and a `SELECT`).
+  - **Stalled** (accepts, never answers): the first command of a budget times out and the rest of
+    that budget is skipped, so a request costs about one timeout per budget: about 0.5 s on a
+    one-budget route and about 1.5 s on a three-budget route. Measured on a frozen Redis.
+  - **Slow but answering** (every reply just under the timeout): nothing times out and nothing
+    fails open, and each command costs nearly the full timeout: up to about 1.5 s on a one-budget
+    route and 4.5 s on a three-budget route, plus about 1.5 s when the connection has to be
+    reopened. Measured with a proxy that answered every command 0.4 s late: 1.21 s, 3.64 s and
+    1.69 s.
+
+  It is a ceiling, not a retry: a timed-out call is not repeated.
+- **Allowed range.** Each variable must be from `0.05` to `10` seconds, inclusive; a blank value
+  means the default. Anything else makes the API refuse to start, with an error naming the
+  variable, even when `CACHE_URL` is unset. Each end of the range exists to stop a typo that
+  would otherwise switch the protection off while the app starts and looks healthy:
+  - Too small (`0.001`, `1e-9`): working calls start timing out and the limiter fails open for no
+    fault of Redis's. `0` is not "no timeout" either: redis-py reads it as non-blocking, so every
+    call fails at once. The floor is about twice the worst healthy sample above.
+  - Too big: `1e10` or `1e308` is rejected by Python's socket layer on every call, so the limiter
+    fails open forever with only the once-a-minute warning to show for it; `86400` is a 24-hour
+    wait and `500` (milliseconds typed as seconds) holds a request for minutes. The ceiling is
+    ten seconds because a three-budget route can spend nine commands, which at 10 s each is
+    90 s for one request.
+- **Tuning.** Keep the defaults unless Redis is genuinely remote or often slow under load. Raising
+  a timeout multiplies every figure above: keep the timeout times the commands a route spends
+  (up to 9 on a three-budget route, 12 on a fresh connection) below any request timeout your host
+  or proxy enforces, and size threads or workers for arrival rate times the added latency. Do not
+  raise the defaults to ride out a slow cross-zone or TLS Redis: nothing in the app yet stops later
+  requests each paying the full stall during a long outage (a per-process circuit breaker would,
+  and would make about 1 s affordable; it is not built).
+- **No server timeout is configured here.** This repository ships only Django's development server
+  (`manage.py runserver`, in the `Dockerfile` and the compose file), which has no request timeout
+  and starts a thread per connection with no cap. No production application server (gunicorn,
+  uvicorn and the like) is configured in this repo, so there is no "worker timeout" to stay under
+  until one is chosen; until then a stall shows up as extra in-flight requests (arrival rate times
+  the added latency), not as refused ones.
+- **Alert on it.** Failing open is now quiet inside the app: the only in-app signal is one WARNING
+  per worker per minute (`rate-limit store unavailable (TimeoutError)`, plus `limiter unavailable`
+  when a mail send is skipped). This repo configures no `LOGGING` and has no Sentry integration
+  wired (`SENTRY_DSN` is read into settings but nothing consumes it), so those lines reach only
+  whatever collects your process output: page on them there. It is also visible from outside:
+  while it lasts, every throttled response is slower by the figures above and `RATE_LIMITED`
+  (429) answers stop appearing, so a flood is no longer refused.
+- **Scope: the Celery broker is not covered.** These settings cover `CACHE_URL` — the throttle
+  counters in db 1 — only. kombu 5.6.2's Redis transport defaults both of its socket timeouts to
+  `None` and `settings.py` sets no `CELERY_BROKER_TRANSPORT_OPTIONS`, so a stalled broker still
+  holds a request that publishes a task. That has a consequence while one Redis serves both the
+  cache and the broker (db 1 and db 2 of the same server, as in the compose file): if that Redis
+  wedges, `requestPasswordReset` for an address that **has an account** still blocks, because it
+  mints a token and publishes the email task to the stalled broker (still blocked at 12 s and at
+  30 s in two separate test runs), while an unknown address is answered after the cache timeouts
+  (about 1.5 s at the defaults). Response time then shows whether an account exists. Tracked in
+  17tnw2b2k4x.
 
 ---
 
