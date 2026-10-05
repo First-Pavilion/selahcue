@@ -1,49 +1,23 @@
 <script setup lang="ts">
 import UiBadge from '@/components/UiBadge.vue'
 import UiButton from '@/components/UiButton.vue'
-import CategoryIcon from '@/components/article/CategoryIcon.vue'
 
-// The roles are the build's own and stay exactly as they were: whether any role exists to list, and what
-// the page says when none does, are the owner's and Uma's decisions (careers-07, careers-09). The Figma
-// roles are placeholders and are not added.
-const roles = [
-  { title: 'Rust Systems & Graphics Engineer', dept: 'Core Engine', location: 'Remote (US/EU/Africa)', type: 'Full-time' },
-  { title: 'Senior Vue / Frontend Engineer', dept: 'Web & Dashboard', location: 'Remote', type: 'Full-time' },
-  { title: 'Worship Tech Solutions Specialist', dept: 'Customer Success', location: 'Remote', type: 'Full-time' }
-]
+interface Role {
+  title: string
+  dept: string
+  location: string
+  type: string
+}
 
 /**
- * The culture strip (Figma 503:144): four cards, each an icon tile on the frame's fills (brand, green, amber,
- * red). The first three keep the build's own copy (what it may claim about remote work and impact is the
- * owner's decision, careers-08). The fourth is backed by the product itself: the offline-first rule the
- * architecture and the blog post state, so it adds no company claim the repo does not support.
+ * EMPTY ON PURPOSE (ClickUp 17tnw2b0x3h). The three roles that stood here, with their departments, places and Apply buttons,
+ * were invented: nothing in the repo or the company's records opens a role. A role goes here only when it is real. The row
+ * layout below (Figma 503:173) is kept for that day; `tests/secondaryPages.test.ts` renders it with fixture data.
+ *
+ * The "culture strip" (remote-first, "high standards", "thousands of volunteer tech teams") made company claims nobody
+ * backed and is gone; its one product-true card, the offline rule, is already told on Home and in the docs.
  */
-const culture = [
-  {
-    icon: 'globe',
-    tone: 'brand',
-    title: 'Fully Remote & Flexible',
-    body: 'Work from anywhere in the world with flexible hours built around your life and family.'
-  },
-  {
-    icon: 'check-circle',
-    tone: 'preview',
-    title: 'High Technical Standards',
-    body: 'We write Rust, wgpu, and Vue 3 TypeScript. Zero compromise on memory safety, frame latency, or UX quality.'
-  },
-  {
-    icon: 'heart',
-    tone: 'warn',
-    title: 'Impact for the Local Church',
-    body: 'Your work directly supports thousands of volunteer tech teams and worship leaders every single Sunday.'
-  },
-  {
-    icon: 'wifi-off',
-    tone: 'live',
-    title: 'Built to Work Offline',
-    body: 'A service cannot be repeated, so slides, scripture and timers run on the desktop with no network.'
-  }
-] as const
+const roles: Role[] = []
 </script>
 
 <template>
@@ -51,40 +25,32 @@ const culture = [
     <section class="hero-section container">
       <UiBadge variant="featured">CAREERS</UiBadge>
       <h1 class="hero-title">Build tools churches rely on</h1>
-      <p class="hero-sub">We are an engineering-driven, remote-first team committed to high-performance, offline-first worship presentation technology.</p>
-    </section>
-
-    <!-- Culture strip: four icon-tile cards straight under the hero, no heading. -->
-    <section class="culture-section container">
-      <div class="culture-grid">
-        <div v-for="c in culture" :key="c.title" class="culture-card">
-          <CategoryIcon class="culture-icon" :name="c.icon" :tone="c.tone" size="tile" />
-          <h2>{{ c.title }}</h2>
-          <p>{{ c.body }}</p>
-        </div>
-      </div>
+      <p class="hero-sub">SelahCue is offline-first presentation software for churches.</p>
     </section>
 
     <!-- Open Roles: a full-bleed band. -->
     <section class="roles-band" aria-labelledby="roles-heading">
       <div class="container roles-inner">
         <h2 id="roles-heading" class="roles-title">Open roles</h2>
-        <div class="roles-list">
-          <article v-for="r in roles" :key="r.title" class="role-row">
-            <div class="role-main">
-              <h3 class="role-title">{{ r.title }}</h3>
-              <ul class="role-tags" aria-label="Role details">
-                <li class="role-tag">{{ r.dept }}</li>
-                <li class="role-tag">{{ r.location }}</li>
-                <li class="role-tag">{{ r.type }}</li>
-              </ul>
-            </div>
-            <UiButton variant="secondary" size="sm" to="/contact">Apply Now →<span class="sr-only"> for {{ r.title }}</span></UiButton>
-          </article>
-        </div>
-        <!-- Plain text, no link: this line is new, and the one place it could send people (the contact page) is a form
-             that sends nothing. A destination returns when the contact form is honest (ClickUp 17tnw2b0x3h). -->
-        <p class="roles-note">Don't see your role? We're glad to meet thoughtful people.</p>
+        <!-- Nothing is open, so nothing is listed and nobody is invited to apply. -->
+        <p v-if="roles.length === 0" class="roles-empty">There are no open roles right now.</p>
+        <template v-else>
+          <div class="roles-list">
+            <article v-for="r in roles" :key="r.title" class="role-row">
+              <div class="role-main">
+                <h3 class="role-title">{{ r.title }}</h3>
+                <ul class="role-tags" aria-label="Role details">
+                  <li class="role-tag">{{ r.dept }}</li>
+                  <li class="role-tag">{{ r.location }}</li>
+                  <li class="role-tag">{{ r.type }}</li>
+                </ul>
+              </div>
+              <UiButton variant="secondary" size="sm" to="/contact">Apply Now →<span class="sr-only"> for {{ r.title }}</span></UiButton>
+            </article>
+          </div>
+          <!-- Plain text, no link: the one place it could send people (the contact page) has no working form. -->
+          <p class="roles-note">Don't see your role? We're glad to meet thoughtful people.</p>
+        </template>
       </div>
     </section>
   </div>
@@ -113,26 +79,6 @@ const culture = [
 }
 
 .hero-sub { max-width: 700px; font-size: 19px; line-height: 30px; color: var(--sc-text-secondary); }
-
-/* CULTURE (Figma 503:144): padding 32 top / 48 bottom, four 294px cards 24px apart, radius 18, padding 26 / 24
-   from the edge (the stroke is drawn inside), 13px between the tile, the title and the text. */
-.culture-section { padding-top: 32px; padding-bottom: 48px; }
-
-.culture-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 24px; }
-
-.culture-card {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 13px;
-  background: var(--sc-surface);
-  border: 1px solid var(--sc-border);
-  border-radius: 18px;
-  padding: 25px 23px;
-}
-
-.culture-card h2 { font-size: 17.5px; font-weight: 600; line-height: 21px; color: var(--sc-text); }
-.culture-card p { font-size: 14px; line-height: 21px; color: var(--sc-text-secondary); }
 
 /* ROLES (Figma 503:173): a full-bleed panel-surface band, padding 44 / 48, 24px between its parts; a centred
    30/700 heading; the list 940 wide, rows 14px apart; each row radius 16 on the page fill, padding 20 / 24 from
@@ -178,6 +124,8 @@ const culture = [
   color: var(--sc-text-secondary);
 }
 
+.roles-empty { max-width: 640px; font-size: 16px; line-height: 24px; text-align: center; color: var(--sc-text-secondary); }
+
 .roles-note { max-width: 640px; font-size: 15px; line-height: 22px; text-align: center; color: var(--sc-text-secondary); }
 
 .sr-only {
@@ -189,16 +137,9 @@ const culture = [
   white-space: nowrap;
 }
 
-@media (max-width: 1199.98px) {
-  .culture-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-}
-
 @media (max-width: 767.98px) {
   .hero-section { padding-top: 56px; padding-bottom: 28px; gap: 16px; }
   .hero-sub { font-size: 17px; line-height: 26px; }
-  .culture-section { padding-top: 16px; padding-bottom: 40px; }
-  .culture-grid { grid-template-columns: minmax(0, 1fr); gap: 16px; }
-  .culture-card { padding: 21px; }
   .roles-inner { padding-top: 36px; padding-bottom: 40px; }
   .role-row { flex-direction: column; align-items: flex-start; gap: 14px; padding: 19px; }
 }

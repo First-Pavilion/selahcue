@@ -1,40 +1,29 @@
 <script setup lang="ts">
 import UiBadge from '@/components/UiBadge.vue'
 
-const releases = [
-  {
-    version: 'v1.2.0',
-    date: 'August 8, 2026',
-    tag: 'Latest Release',
-    highlights: [
-      { type: 'new', title: 'Native NDI 5 Output Engine', desc: 'Direct broadcast-quality NDI streaming to OBS, vMix, and Wirecast without extra plugins.' },
-      { type: 'new', title: 'Licensed Bible Entitlement Sync', desc: 'Encrypted post-activation downloads for NIV, ESV, and NLT translations.' },
-      { type: 'improved', title: 'Hardware Decode Optimization', desc: 'Reduced GPU VRAM usage by 35% on 4K motion backgrounds.' },
-      { type: 'fixed', title: 'Stage Monitor Timer Overrun', desc: 'Fixed edge case where stage countdown timer held at 00:00 instead of triggering TIME UP state.' }
-    ]
-  },
-  {
-    version: 'v1.1.0',
-    date: 'June 15, 2026',
-    tag: 'Feature Update',
-    highlights: [
-      { type: 'new', title: 'Flutter Mobile Companion App', desc: 'Pair iOS and Android devices over local Wi-Fi to control slides and stage timers.' },
-      { type: 'improved', title: 'Scripture Verse-by-Verse Paging', desc: 'Faster keyboard navigation using Arrow keys and spacebar.' },
-      { type: 'fixed', title: 'Display Reconnect Recovery', desc: 'Restored automatic venue display matching upon HDMI reconnect.' }
-    ]
-  },
-  {
-    version: 'v1.0.0',
-    date: 'March 1, 2026',
-    tag: 'Major Release',
-    highlights: [
-      { type: 'new', title: 'SelahCue Initial Launch', desc: 'Cross-platform offline presentation software for churches.' }
-    ]
-  }
-]
-
-
 type ChangeType = 'new' | 'improved' | 'fixed'
+
+interface Change {
+  type: ChangeType
+  title: string
+  desc: string
+}
+
+interface Release {
+  version: string
+  date: string
+  /** The pill beside the date of the NEWEST release. */
+  tag: string
+  highlights: Change[]
+}
+
+/**
+ * EMPTY ON PURPOSE (ClickUp 17tnw2b0x3h). The three releases that stood here, with their dates, a "latest" tag, an NDI engine,
+ * encrypted licensed-translation downloads and a GPU benchmark, were invented: the app is 0.1.0, no release was tagged and
+ * nothing was benchmarked. A release goes here only when it has shipped, and each entry must be true.
+ * The card layout below (Figma 501:154) is kept for that day; `tests/secondaryPages.test.ts` renders it with fixture data.
+ */
+const releases: Release[] = []
 
 /**
  * The change-type labels (Figma 501:154): one pill per GROUP of changes, in this order. The variants are
@@ -49,7 +38,7 @@ const TYPES: Array<{ type: ChangeType; label: string }> = [
 ]
 
 /** A release's changes grouped by type, in the frame's order, leaving out a type it has no changes of. */
-const groupsOf = (rel: (typeof releases)[number]) =>
+const groupsOf = (rel: Release) =>
   TYPES.map((t) => ({ ...t, items: rel.highlights.filter((h) => h.type === t.type) })).filter((g) => g.items.length > 0)
 </script>
 
@@ -62,7 +51,13 @@ const groupsOf = (rel: (typeof releases)[number]) =>
     </section>
 
     <section class="release-section container">
-      <div class="release-list">
+      <!-- Nothing has shipped, so nothing is claimed. -->
+      <div v-if="releases.length === 0" class="release-empty">
+        <h2 class="empty-title">No release notes yet</h2>
+        <p class="empty-text">New features, improvements and fixes will be listed here with each release.</p>
+      </div>
+
+      <div v-else class="release-list">
         <article v-for="(rel, index) in releases" :key="rel.version" class="release-card">
           <header class="release-head">
             <h2 class="version-code">{{ rel.version }}</h2>
@@ -148,6 +143,30 @@ const groupsOf = (rel: (typeof releases)[number]) =>
 
 /* A release card (Figma 501:145): the panel surface, a 1px border, radius 20, padding 28 / 30 from the edge
    (the stroke is drawn inside), 18px between the header, the rule and each group of changes. */
+.release-empty {
+  max-width: 900px;
+  margin-inline: auto;
+  text-align: center;
+  background: var(--sc-surface);
+  border: 1px solid var(--sc-border);
+  border-radius: 20px;
+  padding: 47px 29px;
+}
+
+.empty-title {
+  font-size: 20px;
+  font-weight: 600;
+  line-height: 24px;
+  color: var(--sc-text);
+}
+
+.empty-text {
+  margin-top: 8px;
+  font-size: 15px;
+  line-height: 24px;
+  color: var(--sc-text-secondary);
+}
+
 .release-card {
   display: flex;
   flex-direction: column;
@@ -247,6 +266,7 @@ const groupsOf = (rel: (typeof releases)[number]) =>
   .hero-sub { font-size: 16px; line-height: 24px; }
   .release-section { padding-top: 8px; }
   .release-card { padding: 21px 19px; border-radius: 16px; }
+  .release-empty { padding: 31px 19px; border-radius: 16px; }
   .change-group { flex-direction: column; gap: 10px; }
 }
 </style>

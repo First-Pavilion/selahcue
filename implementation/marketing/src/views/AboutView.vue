@@ -42,7 +42,7 @@ import CtaBand from '@/components/core/CtaBand.vue'
       <div class="container story-layout">
         <h2>Why we built SelahCue</h2>
         <div class="story-text">
-          <p>Too many services are one crashed slide away from a blank screen — and the tools meant to help often assume a fast, always-on internet connection that a lot of churches simply don't have.</p>
+          <p>A worship service is no time for presentation software to depend on a network connection.</p>
           <p>We wanted the opposite: an app that stays in charge on your own computer, is designed so a fault cannot blank live output, runs every core live control with no network, and lets AI assist the operator without gating core controls.</p>
           <p>That's what SelahCue is — presentation, scripture, timers, stage display and streaming outputs in one console, with a phone in your hand as the remote, built to be dependable on the one morning you can't get a second take.</p>
         </div>

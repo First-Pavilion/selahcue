@@ -118,7 +118,7 @@ const statusText = computed(() => {
       <div class="container">
         <div class="cta-box">
           <h2>Still need help?</h2>
-          <p>Our support team is available to assist your church with technical questions.</p>
+          <p>Can't find what you need? Get in touch.</p>
           <UiButton variant="primary" size="md" to="/contact">Contact Support Team</UiButton>
         </div>
       </div>

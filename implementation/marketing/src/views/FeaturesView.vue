@@ -39,7 +39,7 @@ import CtaBand from '@/components/core/CtaBand.vue'
       <template #eyebrow>
         <UiBadge variant="featured">FEATURES</UiBadge>
       </template>
-      From the first slide to the final blessing, SelahCue keeps your scripture, songs, timers, stage display and streaming outputs in one offline-first console — with a phone in your hand as the remote.
+      From the first slide to the final blessing, SelahCue keeps your scripture, service plan, countdown timer, stage display and optional NDI output in one offline-first console, with a paired phone as a remote.
     </PageHero>
 
     <div class="feature-rows">
@@ -76,8 +76,8 @@ import CtaBand from '@/components/core/CtaBand.vue'
         tone="warn"
         eyebrow="PLANNING"
         title="Service plans & timers"
-        text="Order your whole service ahead of time, then run it with countdown and count-up timers so you always land on time."
-        :bullets="['Plan the full order of service', 'Countdown + count-up timers', 'Reorder on the fly, mid-service']"
+        text="Order your whole service ahead of time, then run a service countdown so you always land on time."
+        :bullets="['Plan the full order of service', 'Service countdown timer', 'Reorder on the fly, mid-service']"
         panel-title="PLANNING"
         panel-chip="TIMERS"
       >
@@ -106,7 +106,7 @@ import CtaBand from '@/components/core/CtaBand.vue'
         eyebrow="STREAMING"
         title="NDI & multi-output"
         text="Send your program over NDI straight into OBS or vMix, and drive more than one output from the same deck."
-        :bullets="['Program over NDI to OBS / vMix', 'More outputs on higher plans', 'NDI output on the Pro and Platinum plans']"
+        :bullets="['Program over NDI to OBS / vMix', 'More than one output from one deck', 'NDI output is optional']"
         panel-title="STREAMING"
         panel-chip="NDI"
       >
