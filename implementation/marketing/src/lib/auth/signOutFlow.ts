@@ -49,6 +49,22 @@ export function createSignOutFlow(deps: SignOutDeps) {
   const pending = ref(false)
   /** Empty when there is nothing to report. Rendered where it is announced, because it is a failed action. */
   const error = ref('')
+  let disposed = false
+
+  /**
+   * The page that asked has gone (the visitor clicked away mid-request, and the component
+   * unmounted). Called by `useSignOut` when its scope stops.
+   *
+   * It stops the flow ACTING, nothing more. The request is not cancelled: a logout that may
+   * already have landed must not be abandoned, and `revoke` clears the session hint itself when
+   * the server says yes. What a late reply must not do is act for a page that is no longer
+   * there: a success pulling the visitor off the page they chose, or a failure written to a
+   * message nobody can see. A late failure leaves them still signed in and the navbar still
+   * showing "Sign out", which is the truth.
+   */
+  function dispose(): void {
+    disposed = true
+  }
 
   /** Resolves true when the visitor is signed out, false when they are not (or a press was ignored). */
   async function run(): Promise<boolean> {
@@ -59,12 +75,15 @@ export function createSignOutFlow(deps: SignOutDeps) {
     try {
       await deps.revoke()
     } catch {
-      error.value = SIGN_OUT_FAILED
-      pending.value = false
+      if (!disposed) {
+        error.value = SIGN_OUT_FAILED
+        pending.value = false
+      }
       return false
     }
 
     // ---- the session is GONE. Nothing below may suggest otherwise. ----
+    if (disposed) return true
     try {
       await deps.navigate(deps.landing)
     } catch {
@@ -73,9 +92,10 @@ export function createSignOutFlow(deps: SignOutDeps) {
       // for the usual cause: a running page pointing at chunks a deploy has already removed.
       deps.hardNavigate(deps.landing)
     }
-    pending.value = false
+    // The navigation itself unmounts the page that asked, so this is usually a no-op.
+    if (!disposed) pending.value = false
     return true
   }
 
-  return { pending, error, run }
+  return { pending, error, run, dispose }
 }

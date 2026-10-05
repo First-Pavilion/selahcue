@@ -127,7 +127,12 @@ DIST = Path(os.environ.get("SELAHCUE_MARKETING_DIST") or (MARKETING / "dist"))
 # request, hint cleared, lands on /signin, /account then redirects), `account-signout-pending` (held in flight: "Signing out…",
 # disabled, a second press sends nothing) and `account-signout-failure` (alert, usable again, still signed in, focus restored,
 # retry, and the navbar's message word for word the same). Run against the unchanged link they fail 25 of their 49 checks.
-EXPECTED_MIN_CHECKS = 2554
+#
+# 2554 -> 2570 in the review round on that ticket: 16 more checks, 70 -> 71 scenarios. `account-signout-leave` (the visitor
+# clicks away while Logout is held: not pulled back to /signin, request not repeated, hint still cleared; 12 checks) and the
+# polite "Signing out…" status region (before the press, while pending, and cleared after a failure) with a check that
+# announcing it moves nothing (4 checks across the pending and failure scenarios).
+EXPECTED_MIN_CHECKS = 2570
 
 
 def find_chrome() -> str | None:
@@ -488,6 +493,17 @@ DRIVER = r"""
       if (op === 'Logout') throw new TypeError('Failed to fetch');
       return VIEWER_OK();
     },
+    // The visitor leaves /account while Logout is held, then the reply arrives (Shadow LOW-2).
+    'account-signout-leave': (function () {
+      var heldLogout = gated(function () {
+        signedOut = true;
+        return json({ data: { logout: { revoked: true } } });
+      });
+      return function (op) {
+        if (op === 'Logout') return heldLogout(op);
+        return signedOut ? UNAUTHENTICATED() : VIEWER_OK();
+      };
+    })(),
 
     // ------------------------------------------------------------- create account --
     // Both return the identical envelope, because `register_customer_user` does: it
@@ -1350,6 +1366,17 @@ DRIVER = r"""
     return Array.prototype.filter.call(alerts, function (el) {
       return !!el.closest('.account-portal') === inAccountPage && has(el.textContent, "couldn't sign you out");
     }).map(function (el) { return el.textContent.replace(/\s+/g, ' ').trim(); })[0] || '';
+  }
+
+  /** The header's polite live region (Quinn 4): where "Signing out…" is announced to a screen reader. */
+  function accountStatusRegion() {
+    return document.querySelector('.account-portal .portal-header [role="status"]');
+  }
+
+  /** The Account header's height, so a check can say the announcement moved nothing. */
+  function accountHeaderHeight() {
+    var header = document.querySelector('.account-portal .portal-header');
+    return header ? header.getBoundingClientRect().height : -1;
   }
 
   // ---------------------------------------------------- Figma fidelity (ClickUp 17tnw2b2cf1) --
@@ -2638,6 +2665,9 @@ DRIVER = r"""
       check('the local hint was cleared',
             window.localStorage.getItem('selahcue.session') === null,
             'still held: ' + window.localStorage.getItem('selahcue.session'));
+      // TEMPORARY. The navbar lands on `/`; the owner's decision (2026-10-05) is that BOTH Sign out
+      // buttons land on /signin, and 17tnw2b2ka8 moves this one. That ticket changes this check to
+      // '/signin' and deletes the pin in `tests/accountSignOut.test.ts` that points here.
       check('left the account route', location.pathname === '/');
 
       // AND THE PART THAT MATTERS: the protected route is unreachable afterwards.
@@ -2730,6 +2760,15 @@ DRIVER = r"""
       await wait(800);
       var control = accountSignOutControl();
       check('the Account page offers a sign-out control', !!control);
+      // The announcement (Quinn 4): a disabled button drops focus, so without a live region a
+      // screen-reader user hears nothing until the page changes. The region must already be
+      // there, empty, BEFORE the press: one added together with its text is not reliably spoken.
+      var idleRegion = accountStatusRegion();
+      check('a polite status region exists before the press, and is empty',
+            !!idleRegion && idleRegion.getAttribute('aria-live') === 'polite' &&
+            idleRegion.textContent.trim() === '',
+            'region: ' + (idleRegion && idleRegion.outerHTML));
+      var idleHeight = accountHeaderHeight();
       if (control) control.click();
 
       // The request is out and the reply is held. Poll for it rather than sleeping, so the
@@ -2744,6 +2783,13 @@ DRIVER = r"""
       check('it reads "Signing out…"', !!pending && pending.textContent.trim() === 'Signing out…',
             'read: ' + (pending && pending.textContent.trim()));
       check('and is disabled', !!pending && pending.disabled === true);
+      var pendingRegion = accountStatusRegion();
+      check('the pending state is announced to a screen reader through the polite status region',
+            !!pendingRegion && pendingRegion.textContent.trim() === 'Signing out…',
+            'region said: ' + (pendingRegion && pendingRegion.textContent.trim()));
+      check('and announcing it moved nothing: the header is exactly as tall as when idle',
+            idleHeight > 0 && Math.abs(accountHeaderHeight() - idleHeight) < 0.5,
+            'idle ' + idleHeight + 'px, pending ' + accountHeaderHeight() + 'px');
       check('nothing has been cleared yet: the server has not answered',
             window.localStorage.getItem('selahcue.session') !== null);
       check('and the visitor is still on /account', location.pathname === '/account',
@@ -2785,6 +2831,10 @@ DRIVER = r"""
             !!after && after.textContent.trim() === 'Sign out',
             'read: ' + (after && after.textContent.trim()));
       check('and enabled, so it can be pressed again', !!after && !after.disabled);
+      var failedRegion = accountStatusRegion();
+      check('the pending announcement has cleared: the alert carries the failure, not two voices',
+            !!failedRegion && failedRegion.textContent.trim() === '',
+            'region said: ' + (failedRegion && failedRegion.textContent.trim()));
       check('the visitor stays on the Account page', location.pathname === '/account',
             'pathname: ' + location.pathname);
       check('the session hint was NOT cleared: they are still signed in',
@@ -2810,6 +2860,38 @@ DRIVER = r"""
       check('in word for word the same message as the Account page',
             navbarMessage !== '' && navbarMessage === message,
             '"' + navbarMessage + '" vs "' + message + '"');
+      csrfChecks();
+    },
+
+    // The visitor presses Sign out, then clicks away BEFORE the server answers (Shadow LOW-2,
+    // Quinn 3). The request is not cancelled, so the session is revoked either way; what the
+    // late reply must not do is pull them off the page they chose.
+    'account-signout-leave': async function () {
+      await wait(800);
+      var control = accountSignOutControl();
+      check('the Account page offers a sign-out control', !!control);
+      if (control) control.click();
+      var deadline = Date.now() + 3000;
+      while (Date.now() < deadline && logoutCount() === 0) await wait(20);
+      await wait(100);
+      check('the logout request is out and held', logoutCount() === 1, 'logouts: ' + logoutCount());
+
+      check('drove a real client-side navigation away from /account', navigate('/pricing'));
+      await wait(1000);
+      check('the visitor is on the page they chose', location.pathname === '/pricing',
+            'pathname: ' + location.pathname);
+      check('the Account page is gone', !document.querySelector('.account-portal'));
+
+      releaseGate();
+      await wait(1500);
+      check('the late reply did NOT pull them to /signin', location.pathname === '/pricing',
+            'pathname: ' + location.pathname);
+      check('the request was not cancelled or repeated', logoutCount() === 1, 'logouts: ' + logoutCount());
+      check('they ARE signed out: the hint was cleared by the late reply',
+            window.localStorage.getItem('selahcue.session') === null,
+            'still held: ' + window.localStorage.getItem('selahcue.session'));
+      check('and the navbar now offers Sign in, not Sign out',
+            !navbarSignOutControl() && !!document.querySelector('header a[href="/signin"]'));
       csrfChecks();
     },
 
@@ -3555,6 +3637,7 @@ SCENARIOS: list[tuple[str, str]] = [
     ("account-signout", "/account"),
     ("account-signout-pending", "/account"),
     ("account-signout-failure", "/account"),
+    ("account-signout-leave", "/account"),
     # ------------------------------------------------------------ create account --
     ("signup-form", "/signup"),
     ("signup-short-password", "/signup"),

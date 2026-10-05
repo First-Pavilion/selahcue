@@ -2,6 +2,7 @@
 import { nextTick, ref } from 'vue'
 import { SIGN_OUT_LABEL, SIGN_OUT_PENDING_LABEL } from '@/lib/auth/signOutFlow.ts'
 import { useSignOut } from '@/lib/auth/useSignOut.ts'
+import SrOnly from '@/components/core/SrOnly.vue'
 import UiBadge from '@/components/UiBadge.vue'
 import UiButton from '@/components/UiButton.vue'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
@@ -166,6 +167,10 @@ const invoices = ref([
           >
             {{ signOutPending ? SIGN_OUT_PENDING_LABEL : SIGN_OUT_LABEL }}
           </UiButton>
+          <!-- A disabled button drops focus, so without this a screen-reader user hears nothing until the page
+               changes. Always in the DOM and empty when idle: a live region added together with its text is not
+               reliably announced. Visually hidden and absolutely positioned (SrOnly), so it moves nothing. -->
+          <SrOnly role="status" aria-live="polite">{{ signOutPending ? SIGN_OUT_PENDING_LABEL : '' }}</SrOnly>
           <!-- Announced: a sign-out that silently did nothing is the failure most worth hearing about. -->
           <p v-if="signOutError" class="signout-error" role="alert">{{ signOutError }}</p>
         </div>
@@ -492,6 +497,8 @@ const invoices = ref([
 }
 
 .header-actions {
+  /* The containing block for the visually hidden status region (see SrOnly): an uncontained one can widen the page. */
+  position: relative;
   display: flex;
   flex-direction: column;
   align-items: flex-end;
