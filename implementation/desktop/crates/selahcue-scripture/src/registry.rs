@@ -30,10 +30,12 @@
 //! # Bounded memory
 //!
 //! Each decoded index is about 7 MiB. The registry keeps at most `capacity` of them (default
-//! [`DEFAULT_RESIDENT_INDEXES`], 3) and evicts the least recently used. A re-installed or removed
-//! translation is dropped from memory the next time anything is read (the receipt is re-read on
-//! every read, so another process's install is seen too). The bundled translations are NOT part of
-//! this and keep their own load-once indexes.
+//! [`DEFAULT_RESIDENT_INDEXES`], 3) and evicts the least recently used, making room BEFORE a decode
+//! so the peak, not just the steady state, stays at the cap. A translation this registry
+//! re-installs or removes is dropped from memory by that call; one that another process replaced
+//! is dropped by the next read (the receipt is re-read on every read, so the other process's
+//! install is seen). The bundled translations are NOT part of this and keep their own load-once
+//! indexes.
 
 use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};

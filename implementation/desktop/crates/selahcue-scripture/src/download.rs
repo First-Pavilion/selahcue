@@ -625,9 +625,10 @@ impl From<InstallError> for DownloadError {
 /// In order, and each refusal before any request is made: the code must be in the registry's
 /// catalogue; the entry must have cleared legal review (unless a test override is set); `accepted`
 /// must be an acceptance of the entry's licence; the catalogue must have a base URL ("not published
-/// yet" otherwise); the URL must pass the policy; the caller's cancel flag must not be set. If the
-/// same file (same digest) is already installed and intact, it is returned with no network at all.
-/// Otherwise the file is fetched (capped at the pinned size) and installed by
+/// yet" otherwise); the caller's cancel flag must not be set. If the same file (same digest) is
+/// already installed and intact, it is returned with no network at all. Otherwise the file is
+/// fetched: the URL, and every redirect hop, must pass the policy (https only) immediately before
+/// it is requested, and the transfer is capped at the pinned size. It is installed by
 /// [`Registry::install_from_reader`], which checks the digest, validates the file and only then
 /// installs it, replacing any earlier install of the code. `installed_at` is the caller's clock.
 pub fn download_and_install(
