@@ -26,7 +26,11 @@
 #     floor, while there is still room to write, so the next disk problem is a red,
 #     named "Disk space ..." step ahead of the crash and not an unreadable crash two steps
 #     later. A red check does not stop the steps after it (they run under `!cancelled()`),
-#     so it names the problem; it does not prevent the crash.
+#     so it names the problem; it does not prevent the crash. Observed on a throwaway run
+#     (run 37245715215, attempt 2: the after-clippy check with its floor set to 100000 GB):
+#     only that step went red, every later gate step still ran, the job-end step ran, and
+#     the macOS and Windows legs were unaffected. That a red check step would also survive an
+#     actual runner crash is inferred from the successful steps that did; it was not tested.
 #
 # FLOORS. Each checkpoint has its own floor (env CI_DISK_MIN_FREE_GB, default 5), set in the
 # workflow from what the step AFTER the checkpoint writes. Measured, GB written between
