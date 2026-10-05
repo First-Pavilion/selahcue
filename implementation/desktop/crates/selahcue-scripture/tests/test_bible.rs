@@ -517,12 +517,23 @@ fn an_installed_translation_whose_file_vanishes_answers_nothing_and_does_not_pan
     fs::remove_file(dir.join("tst.tsv.gz")).unwrap();
 
     assert!(!h.is_available());
-    assert!(h.verses(&r).is_empty());
-    assert_eq!(h.passage_text(&r), None);
-    assert!(h.search("fixture", 5).is_empty());
-    assert_eq!(h.chapter(&r), None);
-    assert_eq!(h.adjacent_chapter(&r, true), None);
-    assert!(!h.passage_exists(&r));
-    assert_eq!(h.chapter_verse_bounds(&r), None);
-    assert_eq!(h.verse_count(), 0);
+    // Every lookup after the first fails to load again. The lookups run on a detached thread under
+    // a deadline: if a failed load ever left its per-code latch held, the second lookup would wait
+    // for it forever, and a hang is not a failure anyone can read. (A detached thread, not a
+    // scoped one, because a scope would wait for it.)
+    let (done, finished) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        assert!(h.verses(&r).is_empty());
+        assert_eq!(h.passage_text(&r), None);
+        assert!(h.search("fixture", 5).is_empty());
+        assert_eq!(h.chapter(&r), None);
+        assert_eq!(h.adjacent_chapter(&r, true), None);
+        assert!(!h.passage_exists(&r));
+        assert_eq!(h.chapter_verse_bounds(&r), None);
+        assert_eq!(h.verse_count(), 0);
+        let _ = done.send(());
+    });
+    finished
+        .recv_timeout(std::time::Duration::from_secs(20))
+        .expect("a lookup on a vanished translation hung or panicked instead of answering nothing");
 }

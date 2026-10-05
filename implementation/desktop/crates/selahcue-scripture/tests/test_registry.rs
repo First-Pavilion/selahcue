@@ -9,6 +9,14 @@
 #![cfg(feature = "installed")]
 #![allow(clippy::unwrap_used)]
 
+// These tests use the test-only seams (`hold_writes_for_tests`, `set_load_hook_for_tests`), which
+// exist only when debug assertions are on. In a build without them this file would not compile; say
+// why instead.
+#[cfg(not(debug_assertions))]
+compile_error!(
+    "run these tests without --release: the test seams exist only with debug assertions"
+);
+
 mod common;
 
 use std::cell::RefCell;
@@ -1765,7 +1773,9 @@ fn a_file_found_damaged_is_not_hashed_again_until_it_changes() {
         "a file already known to be damaged was read and hashed again"
     );
 
-    // A different damaged file in its place (a new inode, other bytes) is looked at afresh.
+    // A different damaged file in its place (other bytes, and a modification time that differs from
+    // the old one by construction, so this holds where there is no inode and where two writes can
+    // share a clock tick) is looked at afresh.
     let mut other = bytes.clone();
     other[13] ^= 0xFF;
     replace_file(&path, &other);
@@ -1789,4 +1799,155 @@ fn installed_translations_come_back_as_plain_values() {
     let env = Env::with(&[&f]);
     let rec: InstalledTranslation = env.install("TST", &f.gz, NOW).unwrap();
     assert_eq!(env.registry.installed_entry(&code("TST")), Some(rec));
+}
+
+// =============================================================================================
+// Final round (review of 368a131d)
+// =============================================================================================
+
+#[test]
+fn repair_does_nothing_to_a_receipt_that_can_be_read() {
+    // Two translations are installed. A LATER catalogue drops one (BBB) and pins the other (AAA) to
+    // a different file. Rebuilding the receipt from that catalogue would forget both, leaving two
+    // files on disk that are listed nowhere. Loading trusts the receipt, not the catalogue, so a
+    // receipt that can be read is left exactly as it is.
+    let (a, b) = (fixture("AAA", 2, 1), fixture("BBB", 3, 2));
+    let env = Env::with(&[&a, &b]);
+    env.install("AAA", &a.gz, NOW).unwrap();
+    env.install("BBB", &b.gz, NOW).unwrap();
+    let receipt = env.dir.join(RECEIPT_FILE);
+    let before = fs::read(&receipt).unwrap();
+    let listed = env.registry.installed().unwrap();
+    assert_eq!(listed.len(), 2, "premise");
+
+    let a_repinned = fixture_labelled("AAA", "NEWER", 2, 1);
+    assert_ne!(
+        a_repinned.sha256, a.sha256,
+        "premise: AAA is pinned to another file"
+    );
+    let later = Registry::new(
+        env.dir.clone(),
+        catalogue(vec![a_repinned.entry("cleared")]),
+    );
+    let returned = later.repair_receipt(NOW + 5).unwrap();
+    assert_eq!(returned, listed, "the receipt is returned as it was");
+    assert_eq!(
+        fs::read(&receipt).unwrap(),
+        before,
+        "a readable receipt was rewritten"
+    );
+    assert_eq!(installed_codes(&later), ["AAA", "BBB"]);
+    assert_eq!(later.index(&code("AAA")).unwrap().len(), 3);
+    assert_eq!(later.index(&code("BBB")).unwrap().len(), 5);
+    assert_eq!(env.names(), ["aaa.tsv.gz", "bbb.tsv.gz", "installed.json"]);
+
+    // Control: it IS a rebuild when the receipt cannot be read, and from that catalogue it finds
+    // neither file (AAA is pinned elsewhere, BBB is not catalogued): exactly the loss the readable
+    // case above must not cause.
+    replace_file(&receipt, b"{not json");
+    assert_eq!(later.repair_receipt(NOW + 6).unwrap(), vec![]);
+    assert_eq!(installed_codes(&later), Vec::<String>::new());
+
+    // And a MISSING receipt is rebuilt too (from the catalogue that does pin the files).
+    fs::remove_file(&receipt).unwrap();
+    let rebuilt = env.registry.repair_receipt(NOW + 7).unwrap();
+    assert_eq!(
+        rebuilt
+            .iter()
+            .map(|r| r.code.to_string())
+            .collect::<Vec<_>>(),
+        ["AAA", "BBB"]
+    );
+    assert_eq!(installed_codes(&env.registry), ["AAA", "BBB"]);
+}
+
+#[test]
+fn the_receipt_is_noticed_changing_by_each_of_its_inode_its_modification_time_and_its_length() {
+    // `the_receipt_is_read_again_only_when_it_changed` shows that a change is seen; this shows that
+    // each of the three things the registry compares can alone make it see one. In each step the
+    // other two are held equal to the last look, so only one differs.
+    use std::io::Write;
+
+    let (a, b) = (fixture("AAA", 2, 1), fixture("BBB", 3, 2));
+    let env = Env::with(&[&a, &b]);
+    env.install("AAA", &a.gz, NOW).unwrap();
+    env.install("BBB", &b.gz, NOW).unwrap();
+    let reg = &env.registry;
+    let path = env.dir.join(RECEIPT_FILE);
+    assert!(reg.bible("AAA").is_some(), "primes the cache");
+
+    let original = fs::read(&path).unwrap();
+    let mtime = fs::metadata(&path).unwrap().modified().unwrap();
+    // The receipt's text with AAA's `installed_at` changed (same digits, so the same length) and
+    // `pad` trailing spaces (still valid JSON, but longer).
+    let text = |installed_at: u64, pad: usize| -> Vec<u8> {
+        let mut doc: Value = serde_json::from_slice(&original).unwrap();
+        doc["translations"][0]["installed_at"] = json!(installed_at);
+        let mut bytes = serde_json::to_vec_pretty(&doc).unwrap();
+        bytes.push(b'\n');
+        bytes.extend(std::iter::repeat_n(b' ', pad));
+        bytes
+    };
+    let seen = |installed_at: u64, what: &str| {
+        let before = reg.receipt_reads();
+        let rec = reg.installed_entry(&code("AAA")).unwrap();
+        assert_eq!(
+            rec.installed_at, installed_at,
+            "{what}: the change was not noticed"
+        );
+        assert_eq!(reg.receipt_reads(), before + 1, "{what}");
+    };
+    // Rewrite the existing file in place (the same inode), then set its modification time.
+    let rewrite_in_place = |bytes: &[u8], modified| {
+        let file = fs::File::options().write(true).open(&path).unwrap();
+        (&file).write_all(bytes).unwrap();
+        file.set_modified(modified).unwrap();
+    };
+
+    // 1. The INODE alone (no inode on Windows, where this step cannot apply): a new file of the
+    //    same length with the same modification time.
+    #[cfg(unix)]
+    {
+        let next = text(NOW + 1, 0);
+        assert_eq!(next.len(), original.len(), "premise: same length");
+        let swap = env.dir.join(".swap-receipt");
+        fs::write(&swap, &next).unwrap();
+        fs::File::options()
+            .write(true)
+            .open(&swap)
+            .unwrap()
+            .set_modified(mtime)
+            .unwrap();
+        fs::rename(&swap, &path).unwrap();
+        seen(
+            NOW + 1,
+            "a new inode, the same length and modification time",
+        );
+    }
+
+    // 2. The MODIFICATION TIME alone: the same file (same inode), same length, a later time.
+    let later = mtime + Duration::from_secs(10);
+    let next = text(NOW + 2, 0);
+    assert_eq!(next.len(), original.len(), "premise: same length");
+    rewrite_in_place(&next, later);
+    seen(
+        NOW + 2,
+        "a later modification time, the same inode and length",
+    );
+
+    // 3. The LENGTH alone: the same file, the same modification time as the last look, longer.
+    let next = text(NOW + 3, 7);
+    assert_eq!(next.len(), original.len() + 7, "premise: longer");
+    rewrite_in_place(&next, later);
+    seen(
+        NOW + 3,
+        "a longer file, the same inode and modification time",
+    );
+
+    // Positive control: with nothing changed there is no read.
+    let before = reg.receipt_reads();
+    for _ in 0..20 {
+        assert!(reg.installed_entry(&code("AAA")).is_some());
+    }
+    assert_eq!(reg.receipt_reads(), before);
 }

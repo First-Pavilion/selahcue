@@ -186,14 +186,27 @@ pub fn many_tiny_rows(rows: u32) -> Vec<u8> {
 }
 
 /// Replace the file at `path` with `bytes` by writing a sibling and renaming it over, so the
-/// replacement is a NEW inode. The registry notices a changed file by its length, modification time
-/// and inode; a plain in-place `fs::write` of the same length within one clock tick of the last
-/// change would leave all three equal on some file systems, which would make a test flaky for a
-/// reason that has nothing to do with what it checks.
+/// replacement is a NEW inode AND has a modification time no earlier replacement had. The registry
+/// notices a changed file by its length, modification time and inode (on Windows, which has no inode
+/// here, by length and modification time only); a plain in-place `fs::write` of the same length
+/// within one clock tick of the last change would leave all of them equal on some file systems, and
+/// two files written milliseconds apart can share one NTFS clock tick. Either would make a test
+/// flaky for a reason that has nothing to do with what it checks, so the modification time is set
+/// explicitly: five seconds further on for every call, starting in 2020 (never "now", so it also
+/// differs from a file the registry itself just wrote).
 pub fn replace_file(path: &Path, bytes: &[u8]) {
+    static SEQ: AtomicU32 = AtomicU32::new(0);
+    let n = u64::from(SEQ.fetch_add(1, Ordering::Relaxed));
+    let mtime = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_600_000_000 + 5 * n);
     let name = path.file_name().unwrap().to_string_lossy().into_owned();
     let swap = path.with_file_name(format!(".swap-{name}"));
     std::fs::write(&swap, bytes).unwrap();
+    std::fs::File::options()
+        .write(true)
+        .open(&swap)
+        .unwrap()
+        .set_modified(mtime)
+        .unwrap();
     std::fs::rename(&swap, path).unwrap();
 }
 

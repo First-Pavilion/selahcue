@@ -250,7 +250,10 @@ impl<'a> DownloadOptions<'a> {
         self
     }
 
-    /// Call `report` as the download advances (Downloading, then Verifying, then Installing).
+    /// Call `report` as the download advances (Downloading, then Verifying, then Installing). The
+    /// report for the last phase is made while the registry's write lock is held, so `report` must
+    /// not call back into the registry (see [`crate::registry::Phase::Installing`]): send it to
+    /// another thread.
     pub fn with_progress(mut self, report: &'a dyn Fn(Progress)) -> Self {
         self.hooks = std::mem::take(&mut self.hooks).with_progress(report);
         self

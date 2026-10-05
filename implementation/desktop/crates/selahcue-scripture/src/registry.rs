@@ -135,7 +135,11 @@ pub enum Phase {
     Downloading,
     /// The digest is being checked and the file's shape validated.
     Verifying,
-    /// The file and the receipt are being put in place.
+    /// The file and the receipt are being put in place. **The progress callback runs for this
+    /// phase while the registry's write lock is held.** It must not call back into the registry
+    /// (`install_*`, `remove`, `recover`, `repair_receipt`), from this thread or by waiting on
+    /// another one that does: that deadlocks. Hand the report to another thread (a channel) and
+    /// return. The other phases hold no lock.
     Installing,
 }
 
@@ -164,7 +168,9 @@ impl<'a> InstallHooks<'a> {
         self
     }
 
-    /// Call `report` as the install advances.
+    /// Call `report` as the install advances. The report for [`Phase::Installing`] is made while
+    /// the write lock is held, so `report` must not call back into the registry (see
+    /// [`Phase::Installing`]).
     pub fn with_progress(mut self, report: &'a dyn Fn(Progress)) -> Self {
         self.progress = Some(report);
         self
@@ -365,13 +371,16 @@ pub struct InstalledIndex {
 
 impl InstalledIndex {
     /// Decode `bytes` (already verified against the receipt). The only way to make one, so the
-    /// live count cannot be bypassed.
+    /// live count cannot be bypassed. `started` is called once the index is counted live and
+    /// before any row is read (a test seam: see [`LoadStage::InsideDecode`]).
     fn decode(
         bytes: &[u8],
         counts: Counts,
         live: &Arc<LiveCounter>,
+        started: impl FnOnce(),
     ) -> Result<InstalledIndex, ValidationError> {
         let guard = LiveGuard::new(live);
+        started();
         let verses = decode_verses(bytes, counts)?;
         Ok(InstalledIndex {
             verses,
@@ -462,6 +471,10 @@ pub enum LoadStage {
     /// The file has been read, verified and validated and a slot is reserved; the decode has not
     /// started. No lock is held.
     BeforeDecode,
+    /// The decode has started: the index is already counted live and its rows are about to be
+    /// read. Fired from INSIDE the decode, so a test that parks a thread here holds a decode
+    /// mid-flight. No lock is held.
+    InsideDecode,
 }
 
 type LoadHook = Arc<dyn Fn(LoadStage) + Send + Sync>;
@@ -810,7 +823,9 @@ impl Registry {
 
         // 4. No lock: decode. The index counts itself live from its first byte of memory.
         self.fire(LoadStage::BeforeDecode);
-        let decoded = InstalledIndex::decode(&bytes, counts, &self.inner.live);
+        let decoded = InstalledIndex::decode(&bytes, counts, &self.inner.live, || {
+            self.fire(LoadStage::InsideDecode)
+        });
         drop(bytes);
         let index = Arc::new(decoded.map_err(LoadError::Invalid)?);
 
@@ -1201,18 +1216,28 @@ impl Registry {
         }
     }
 
-    /// Rebuild the receipt from the files on disk, for when it is unreadable (installing and
-    /// removing refuse to run over it, so no other translation is forgotten). A catalogue entry
-    /// whose file is in the directory as a regular file of the pinned size with the pinned SHA-256
-    /// is recorded as installed (its verse counts from the entry, `installed_at` as given); every
-    /// other file is left exactly where it is and is not recorded. The old receipt is replaced
-    /// atomically. Returns what it recorded.
+    /// Rebuild the receipt from the files on disk. **Only for a receipt that is unreadable or
+    /// missing** (installing and removing refuse to run over an unreadable one, so no other
+    /// translation is forgotten). If the receipt is readable this does NOTHING and returns it as it
+    /// is: rebuilding from the catalogue would forget every installed translation the current
+    /// catalogue no longer pins (or pins with another digest), and loading trusts the receipt, not
+    /// the catalogue.
+    ///
+    /// For an unreadable or missing receipt, a catalogue entry whose file is in the directory as a
+    /// regular file of the pinned size with the pinned SHA-256 is recorded as installed (its verse
+    /// counts from the entry, `installed_at` as given); every other file is left exactly where it
+    /// is and is not recorded. The old receipt is replaced atomically. Returns what it recorded.
     pub fn repair_receipt(
         &self,
         installed_at: u64,
     ) -> Result<Vec<InstalledTranslation>, InstallError> {
         let _writer = self.lock_write();
         let dir = &self.inner.dir;
+        if fs::symlink_metadata(receipt_path(dir)).is_ok() {
+            if let Ok(readable) = read_receipts(dir) {
+                return Ok(readable);
+            }
+        }
         let mut found: Vec<InstalledTranslation> = Vec::new();
         for entry in self.inner.catalogue.translations() {
             let path = dir.join(&entry.file_name);
@@ -1353,13 +1378,19 @@ impl Registry {
         self.inner.file_reads.load(Ordering::Relaxed)
     }
 
-    /// **Test seam.** Holds the write lock until the returned value is dropped.
+    /// **Test seam.** Holds the write lock until the returned value is dropped. Exists only when
+    /// debug assertions are on, like the loopback constructors: a release build cannot park the
+    /// registry's writers.
+    #[cfg(debug_assertions)]
     #[doc(hidden)]
     pub fn hold_writes_for_tests(&self) -> WriteHold<'_> {
         WriteHold(self.lock_write())
     }
 
-    /// **Test seam.** Calls `hook` at each [`LoadStage`] of every load, with no lock held.
+    /// **Test seam.** Calls `hook` at each [`LoadStage`] of every load, with no lock held. Exists
+    /// only when debug assertions are on, like the loopback constructors: a release build cannot
+    /// install a hook that parks a reader.
+    #[cfg(debug_assertions)]
     #[doc(hidden)]
     pub fn set_load_hook_for_tests(&self, hook: Option<LoadHook>) {
         *self.inner.hook.lock().unwrap_or_else(|e| e.into_inner()) = hook;

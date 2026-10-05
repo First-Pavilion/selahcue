@@ -24,6 +24,13 @@
 #![cfg(feature = "installed")]
 #![allow(clippy::unwrap_used)]
 
+// These tests use the test-only seam `set_load_hook_for_tests`, which exists only when debug
+// assertions are on. In a build without it this file would not compile; say why instead.
+#[cfg(not(debug_assertions))]
+compile_error!(
+    "run these tests without --release: the test seams exist only with debug assertions"
+);
+
 mod common;
 
 use std::fs;
@@ -615,16 +622,24 @@ fn threads_reading_the_same_uncached_translation_decode_it_once() {
 
 #[test]
 fn a_resident_translation_is_served_while_another_is_being_decoded() {
+    // The gate is INSIDE the decode (`InsideDecode`: the index is already counted live and its rows
+    // are about to be read), so CCC's decode is held mid-flight, not merely about to start. A gate
+    // before the decode would pass even if the state lock were taken just after it.
     let (reg, _root) = installed_registry(None);
     read(&reg, "AAA");
-    let gate = Gate::install(&reg, LoadStage::BeforeDecode);
+    let gate = Gate::install(&reg, LoadStage::InsideDecode);
     std::thread::scope(|scope| {
         let _opener = gate.opener();
         let loader = scope.spawn(|| reg.index(&code("CCC")).unwrap().len());
         assert_eq!(
             gate.settle(1),
             1,
-            "premise: CCC's decode is parked at the gate"
+            "premise: CCC's decode is parked inside the gate"
+        );
+        assert_eq!(
+            reg.live_indexes(),
+            2,
+            "premise: AAA is resident and CCC's index exists, so the decode really is under way"
         );
 
         // AAA is resident: neither reading it nor asking whether it is installed may wait for CCC.
@@ -634,13 +649,15 @@ fn a_resident_translation_is_served_while_another_is_being_decoded() {
             let started = Instant::now();
             let n = reg.index(&code("AAA")).unwrap().len();
             let listed = reg.bible("AAA").is_some();
-            let _ = tx.send((n, listed, started.elapsed()));
+            let installed = reg.installed().unwrap().len();
+            let _ = tx.send((n, listed, installed, started.elapsed()));
         });
-        let (n, listed, took) = rx
+        let (n, listed, installed, took) = rx
             .recv_timeout(Duration::from_secs(5))
             .expect("a resident translation is blocked behind another one's decode");
         assert_eq!(n, 5);
         assert!(listed);
+        assert_eq!(installed, CODES.len());
         assert!(took < Duration::from_secs(2), "took {took:?}");
 
         gate.open();
