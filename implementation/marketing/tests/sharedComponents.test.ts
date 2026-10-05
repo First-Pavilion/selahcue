@@ -514,16 +514,26 @@ describe('PricingCard: a plan button is a link or an honest disabled control, ne
     for (const t of ticks) assert.equal(t.attrs['aria-hidden'], 'true')
   })
 
-  test('REAL TREE: every PricingCard in a view still passes the props the card requires', () => {
-    const required = ['name', 'price', 'description', 'features', 'cta']
-    let uses = 0
-    for (const file of allVueFiles(path.join(SRC, 'views'))) {
-      for (const el of elementsOf(readFileSync(file, 'utf8'), file).filter((e) => e.tag === 'PricingCard')) {
-        uses++
-        for (const r of required) assert.ok(prop(el, r), `${path.relative(SRC, file)}: <PricingCard> has no ${r}`)
-      }
-    }
-    assert.ok(uses >= 2, 'the scan found fewer PricingCard uses than Home and Pricing')
+  // One definition, used by the real-tree scan and by its control.
+  const REQUIRED_CARD_PROPS = ['name', 'price', 'description', 'features', 'cta']
+  const cardProblems = (source: string, file: string): string[] =>
+    elementsOf(source, file)
+      .filter((e) => e.tag === 'PricingCard')
+      .flatMap((el) => REQUIRED_CARD_PROPS.filter((r) => !prop(el, r)).map((r) => `${file}: <PricingCard> has no ${r}`))
+
+  // ClickUp 17tnw2b0x3h: Home and Pricing no longer draw plan cards (plan names and prices come from the API once it serves
+  // them), so no view uses the card today. The guard stays for the ticket that brings it back.
+  test('REAL TREE: any PricingCard a view uses passes the props the card requires', () => {
+    const problems = allVueFiles(path.join(SRC, 'views')).flatMap((file) => cardProblems(readFileSync(file, 'utf8'), path.relative(SRC, file)))
+    assert.deepEqual(problems, [])
+  })
+
+  test('CONTROL: the scan reports a card missing its props, and passes a complete one', () => {
+    assert.equal(cardProblems('<template><PricingCard name="Free" /></template>', 'planted.vue').length, 4)
+    assert.deepEqual(
+      cardProblems('<template><PricingCard name="n" price="p" description="d" :features="f" cta="c" /></template>', 'planted.vue'),
+      [],
+    )
   })
 })
 

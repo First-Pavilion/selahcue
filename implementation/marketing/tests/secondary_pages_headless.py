@@ -214,12 +214,12 @@ def check_contact(page, c: Checks, base: str) -> None:
     c.near(cards["x"], 740, 1, "contact: cards column x (Figma 740)")
     c.near(cards["w"], 604, 1, "contact: cards column width (Figma 604)")
     c.near(box(page, ".contact-form-card")["y"], box(page, ".method-cards")["y"], 1, "contact: both columns start at the same top")
+    # ClickUp 17tnw2b0x3h: ONE method card, the email address. The Discord and enterprise cards claimed channels that do not exist.
     n = page.locator(".method-card").count()
-    c.eq(n, 3, "contact: three method cards")
+    c.eq(n, 1, "contact: one method card (the confirmed email address)")
     ys = [page.locator(".method-card").nth(i).bounding_box() for i in range(n)]
     for i, b in enumerate(ys):
         c.near(b["height"], 99, 1.5, f"contact: method card {i} height (Figma 99)")
-    c.near(ys[1]["y"] - (ys[0]["y"] + ys[0]["height"]), 16, 1, "contact: 16px between method cards (Figma 16)")
     tile = cs(page, ".method-icon", ["width", "height", "border-top-left-radius"])
     c.eq((tile["width"], tile["height"], tile["border-top-left-radius"]), ("46px", "46px", "12px"), "contact: icon tile 46x46 r12 (Figma 497:168)")
     h = page.locator(".method-card h2").first
@@ -230,20 +230,26 @@ def check_contact(page, c: Checks, base: str) -> None:
     send = page.locator(".contact-form .ui-button").last.bounding_box()
     c.near(send["height"], 49, 0.6, "contact: Send button 49 high (Figma 497:163)")
     c.near(send["width"], 540, 1.5, "contact: Send button fills the card (Figma 540)")
+    # The form sends nothing, so Send is disabled and a visible note says so (ClickUp 17tnw2b0x3h).
+    c.eq(page.locator(".contact-form button[disabled]").count(), 1, "contact: Send is disabled until a send exists")
+    note = page.locator("#send-note")
+    c.ok(note.count() == 1 and "not available yet" in note.inner_text().lower(), "contact: a visible note says the form is not available yet")
+    c.ok(text_contrast(page, "#send-note") >= 4.5, f"contact: the note passes AA ({text_contrast(page, '#send-note'):.2f}:1)")
+    c.eq(page.locator(".contact-form .ui-button").last.get_attribute("aria-describedby"), "send-note", "contact: Send is described by the note")
     # placeholders and the counter take the secondary ink (contact-13)
     ph = cs(page, ".contact-form input", ["color"], pseudo="::placeholder")["color"]
     c.eq(ph, SECONDARY, "contact: placeholder ink is --sc-text-secondary")
     inp_bg = page.evaluate(BACKDROP_JS, ".contact-form input")
     c.ok(ratio(page, ph, inp_bg) >= 4.5, f"contact: placeholder passes AA ({ratio(page, ph, inp_bg):.2f}:1)")
     c.ok(text_contrast(page, ".char-count") >= 4.5, f"contact: counter passes AA ({text_contrast(page, '.char-count'):.2f}:1)")
-    # Tab order: form first (Figma), then the cards
-    order = focus_order(page, c, ".contact-form input >> nth=0", 7)
+    # Tab order: the four fields, then PAST the disabled Send to the one email link
+    order = focus_order(page, c, ".contact-form input >> nth=0", 4)
     c.eq(
-        order[:5],
-        ["Full name", "Email", "Church / organization", "How can we help?", "Send message"],
-        "contact: Tab visits the form fields and the button first",
+        order[:4],
+        ["Full name", "Email", "Church / organization", "How can we help?"],
+        "contact: Tab visits the form fields first",
     )
-    c.ok(all(x and ("@" in x or x.startswith(("Join", "Schedule"))) for x in order[5:8]), f"contact: then the three card links ({order[5:8]})")
+    c.ok(order[4] and "@" in order[4], f"contact: then skips the disabled Send to the email link ({order[4]!r})")
     # validation on blur, and the 100 character limit
     page.reload(wait_until="load")
     page.wait_for_selector(".contact-form-card")
@@ -285,37 +291,20 @@ def press_with_mouse(page, locator, edge: str) -> None:
 
 
 def check_contact_behaviour(page, c: Checks, base: str) -> None:
-    """What the form DOES under a real mouse and keyboard (review round 2: Quinn Q1 and Q2, Vera 1)."""
-    name_input = ".contact-form input >> nth=0"
-    send = page.locator(".contact-form button").last
-
-    # Q1: correct an error, then press the mouse on Send. The first press must submit.
+    """What the form DOES under a real mouse and keyboard (review round 2: Quinn Q2, Vera 1; ClickUp 17tnw2b0x3h)."""
+    # Nothing is sent, so there is no success state to reach and no first-press submit to protect (the old Quinn Q1 checks).
+    # What must hold instead: a press on the disabled Send does nothing, and no "received" or reply promise ever appears.
     open_page(page, base, "/contact", ".contact-form-card")
+    page.fill(".contact-form input >> nth=0", "Ana")
     page.fill(".contact-form input >> nth=1", "jane@yourchurch.org")
     page.fill(".contact-form textarea", "Hello there")
-    page.focus(name_input)
-    press_tab(page, c)
-    c.ok("Name is required" in page.locator(".contact-form").inner_text(), "contact: leaving the empty name shows its error (set-up for the first-click check)")
-    page.click(name_input)
-    page.keyboard.type("Ana")
-    c.ok("Name is required" not in page.locator(".contact-form").inner_text(), "contact: typing in a field takes its error away at once, so a later blur changes nothing on the page")
-    press_with_mouse(page, send, "bottom")
-    try:
-        page.locator(".success-state").wait_for(state="visible", timeout=4000)
-        sent = True
-    except Exception:  # noqa: BLE001
-        sent = False
-    c.ok(sent, "contact: after correcting an error, the FIRST mouse press on Send submits (the blur used to remove the error and move the button before the mouse came up)")
-
-    # Q1, the other direction: a field is focused and empty, the mouse goes down on Send. The blur must not add an error line
-    # under the pointer; the press then validates every field, so the message's error appears too (a blur alone would show only the name's).
-    open_page(page, base, "/contact", ".contact-form-card")
-    page.fill(".contact-form input >> nth=1", "jane@yourchurch.org")
-    page.click(name_input)
-    press_with_mouse(page, send, "top")
-    page.wait_for_timeout(250)
-    text = page.locator(".contact-form").inner_text()
-    c.ok("Name is required" in text and "Message is required" in text, "contact: pressing Send while an empty field is focused submits at the first press and shows every error (a blur that added its error first moved the button away)")
+    send = page.locator(".contact-form button").last
+    c.eq(send.is_disabled(), True, "contact: the browser reports Send disabled")
+    send.click(force=True)
+    page.wait_for_timeout(1200)
+    body = page.inner_text("main")
+    c.ok("Message Received" not in body and "respond within" not in body.lower(), "contact: pressing the disabled Send shows no success card and no reply promise (the old timer is gone)")
+    c.eq(page.locator(".success-state").count(), 0, "contact: and no success state exists")
 
     # Vera 1: the email check runs on blur, so a long value must not freeze the page. 2,000 characters of `a@` took about
     # 0.75s in the unguarded pattern; the cap makes it a few milliseconds.
@@ -329,21 +318,21 @@ def check_contact_behaviour(page, c: Checks, base: str) -> None:
     c.ok(got["ms"] < 100, f"contact: leaving an email field holding 2,000 characters of a@ costs {got['ms']:.1f}ms (the unguarded pattern took ~750ms; limit 100)")
     c.ok("Please enter a valid email address" in got["text"], "contact: and that value is refused with the email message")
 
-    # Q2: Tab from Send message jumps UP to the first card link; on a short window it must not stop under the sticky navbar.
+    # Q2: Tab from the last field jumps (past the disabled Send) DOWN-RIGHT to the email link; on a short window it must not stop
+    # under the sticky navbar.
     size = page.viewport_size
     for height in (700, 800):
         page.set_viewport_size({"width": size["width"], "height": height})
         open_page(page, base, "/contact", ".contact-form-card")
         # The fault needs a link that is INSIDE the window but under the navbar (the browser scrolls only when a focus target is
-        # outside the window, and it does not know the sticky navbar covers the top 79px). That is where a reader who has
-        # scrolled lands, and where a Tab walk ends on some window heights (69px at 700 high, 33px at 800: the review's measure).
-        # Built directly so it does not depend on how this engine scrolls the walk: Send is visible, the link is 40px from the top.
+        # outside the window, and it does not know the sticky navbar covers the top 79px). Built directly so it does not depend on
+        # how this engine scrolls the walk: the last field is visible, the link is 40px from the top.
         page.evaluate(
             """() => { const l = document.querySelector('.method-link'); window.scrollTo({ top: l.getBoundingClientRect().top + scrollY - 40, behavior: 'instant' }); }"""
         )
         settle_scroll(page)
-        page.locator(".contact-form button").last.focus()
-        c.eq(page.evaluate(FOCUS_JS), "Send message", f"contact: at {height} high Send message holds focus")
+        page.locator(".contact-form textarea").focus()
+        c.eq(page.evaluate(FOCUS_JS), "How can we help?", f"contact: at {height} high the last field holds focus")
         settle_scroll(page)
         press_tab(page, c)
         settle_scroll(page)
@@ -351,8 +340,8 @@ def check_contact_behaviour(page, c: Checks, base: str) -> None:
             """() => { const a = document.activeElement, r = a.getBoundingClientRect();
               return { cls: a.className, top: r.top, bottom: r.bottom, nav: document.querySelector('header').getBoundingClientRect().bottom, vh: innerHeight }; }"""
         )
-        c.ok("method-link" in got["cls"], f"contact: at {height} high, Tab from Send reaches the first card link ({got['cls']!r})")
-        c.ok(got["top"] >= got["nav"] - 1, f"contact: at {height} high the focused card link is not under the sticky navbar (top {got['top']:.0f}, navbar ends {got['nav']:.0f}; WCAG 2.2 SC 2.4.11)")
+        c.ok("method-link" in got["cls"], f"contact: at {height} high, Tab from the last field reaches the email link past the disabled Send ({got['cls']!r})")
+        c.ok(got["top"] >= got["nav"] - 1, f"contact: at {height} high the focused link is not under the sticky navbar (top {got['top']:.0f}, navbar ends {got['nav']:.0f}; WCAG 2.2 SC 2.4.11)")
         c.ok(got["bottom"] <= got["vh"], f"contact: and it is inside the window (bottom {got['bottom']:.0f} of {got['vh']})")
     page.set_viewport_size(size)
 
@@ -444,22 +433,16 @@ def check_docs(page, c: Checks, base: str) -> None:
 
 
 def check_changelog(page, c: Checks, base: str) -> None:
-    open_page(page, base, "/changelog", ".release-card")
-    r = box(page, ".release-card")
-    c.near(r["w"], 900, 1, "changelog: release card 900 wide (Figma 501:145)")
-    c.near(r["x"], 270, 1, "changelog: release card x 270")
-    c.eq(cs(page, ".release-card", ["border-top-left-radius"])["border-top-left-radius"], "20px", "changelog: card radius 20")
-    labels = page.locator(".change-label")
-    c.eq(labels.first.evaluate("e => getComputedStyle(e).textTransform"), "none", "changelog: label pills are sentence case (Figma)")
-    c.eq(page.locator(".is-new .change-label").first.evaluate("e => getComputedStyle(e).color"), PREVIEW, "changelog: New is green")
-    c.eq(page.locator(".is-improved .change-label").first.evaluate("e => getComputedStyle(e).color"), TEXT, "changelog: Improved takes the accent badge ink (--sc-text until Uma picks one)")
-    c.eq(page.locator(".is-fixed .change-label").first.evaluate("e => getComputedStyle(e).color"), WARN, "changelog: Fixed is amber")
-    d = cs(page, ".release-date", ["font-size", "color"])
-    c.eq((d["font-size"], d["color"]), ("14px", SECONDARY), "changelog: date 14px secondary (Figma 501:150)")
-    c.ok(text_contrast(page, ".release-date") >= 4.5, "changelog: the date passes AA")
-    c.near(box(page, ".change-label")["h"], 21, 0.6, "changelog: label pill 21 high (Figma 501:154)")
-    dot = cs(page, ".change-dot", ["width", "height"])
-    c.eq((dot["width"], dot["height"]), ("6px", "6px"), "changelog: 6px dot")
+    """ClickUp 17tnw2b0x3h: nothing has shipped, so the page shows an empty state in the release card's frame (the invented
+    releases are gone). The label, date and dot styling is covered with fixture releases by `tests/secondaryPages.test.ts`."""
+    open_page(page, base, "/changelog", ".release-empty")
+    r = box(page, ".release-empty")
+    c.near(r["w"], 900, 1, "changelog: the empty state is as wide as a release card, 900 (Figma 501:145)")
+    c.near(r["x"], 270, 1, "changelog: and sits at x 270")
+    c.eq(cs(page, ".release-empty", ["border-top-left-radius"])["border-top-left-radius"], "20px", "changelog: radius 20")
+    c.eq(page.locator(".release-card").count(), 0, "changelog: no release card is drawn")
+    c.ok("no release notes yet" in page.locator(".empty-title").inner_text().lower(), "changelog: it says there are no release notes yet")
+    c.ok(text_contrast(page, ".empty-text") >= 4.5, "changelog: the empty text passes AA")
 
 
 def check_blog(page, c: Checks, base: str) -> None:
@@ -495,27 +478,20 @@ def check_blog(page, c: Checks, base: str) -> None:
 
 
 def check_careers(page, c: Checks, base: str) -> None:
-    open_page(page, base, "/careers", ".culture-card")
+    """ClickUp 17tnw2b0x3h: no role is open and the culture strip's company claims are gone, so the page is the hero and the roles
+    band's empty line. The role rows and tags are covered with fixture roles by `tests/secondaryPages.test.ts`."""
+    open_page(page, base, "/careers", ".roles-empty")
     h1 = cs(page, ".hero-title", ["font-size", "line-height", "font-weight"])
     c.eq((h1["font-size"], h1["line-height"], h1["font-weight"]), ("50px", "56px", "700"), "careers: h1 50/56/700 (Figma 503:139)")
     c.near(box(page, ".hero-title")["w"], 498, 12, "careers: h1 about 498 wide, two lines")
-    cards = [page.locator(".culture-card").nth(i).bounding_box() for i in range(4)]
-    c.near(cards[0]["width"], 294, 1, "careers: culture card 294 wide (Figma 503:146)")
-    c.near(cards[1]["x"] - (cards[0]["x"] + cards[0]["width"]), 24, 1, "careers: 24px between culture cards")
-    tile = cs(page, ".culture-icon", ["width", "height", "border-top-left-radius"])
-    c.eq((tile["width"], tile["height"], tile["border-top-left-radius"]), ("50px", "50px", "13px"), "careers: icon tile 50x50 r13 (Figma 503:147)")
+    c.eq(page.locator(".culture-card").count(), 0, "careers: no culture card")
     band = box(page, ".roles-band")
     c.near(band["x"], 0, 1, "careers: roles band starts at the left edge")
     c.near(band["w"], 1440, 1, "careers: roles band is full-bleed")
-    c.near(box(page, ".roles-list")["w"], 940, 1, "careers: role list 940 wide (Figma 503:175)")
-    c.near(box(page, ".roles-list")["x"], 250, 1, "careers: role list x 250")
-    tag = cs(page, ".role-tag", ["font-size", "font-weight", "color", "background-color"])
-    c.eq((tag["font-size"], tag["font-weight"], tag["color"], tag["background-color"]), ("12px", "500", SECONDARY, ELEVATED), "careers: tag pill 12/500 secondary on elevated (Figma 503:180)")
-    c.near(box(page, ".role-tag")["h"], 25, 0.6, "careers: tag pill 25 high")
-    c.ok(text_contrast(page, ".role-tag") >= 4.5, "careers: the tags pass AA (careers-05)")
-    c.near(page.locator(".role-row").first.bounding_box()["height"], 95, 3, "careers: role row about 95 high (Figma 503:176)")
-    names = [page.locator(".role-row a").nth(i).inner_text().replace("\n", " ") for i in range(page.locator(".role-row a").count())]
-    c.eq(len(set(names)), 3, f"careers: the three Apply links have different names ({names})")
+    c.eq(page.locator(".role-row").count(), 0, "careers: no role row")
+    c.ok("no open roles" in page.locator(".roles-empty").inner_text().lower(), "careers: the band says there are no open roles")
+    c.eq(page.locator("main a").count(), 0, "careers: and invites no application (no link on the page)")
+    c.ok(text_contrast(page, ".roles-empty") >= 4.5, "careers: the empty line passes AA")
 
 
 def check_legal(page, c: Checks, base: str, path: str, label: str) -> None:
@@ -548,51 +524,35 @@ def check_legal(page, c: Checks, base: str, path: str, label: str) -> None:
 
 
 def check_affiliates(page, c: Checks, base: str) -> None:
+    """ClickUp 17tnw2b0x3h: no rate, window, threshold, payout rail, calculator, FAQ or apply flow (the programme is NOT-V1 and no
+    application exists), so the page is the hero, two steps, the audiences and the checklist."""
     open_page(page, base, "/affiliates", ".hero-ctas")
-    a, b = page.locator(".hero-ctas > *").nth(0).bounding_box(), page.locator(".hero-ctas > *").nth(1).bounding_box()
-    c.near(a["height"], 49, 0.6, "affiliates: Apply now 49 high (Figma 541:145)")
-    c.near(b["height"], 49, 0.6, "affiliates: Affiliate sign in 49 high (Figma 541:147), the row stretches the quiet button")
-    c.near(b["x"] - (a["x"] + a["width"]), 14, 1, "affiliates: 14px between the hero buttons")
+    a = page.locator(".hero-ctas > *").nth(0).bounding_box()
+    c.eq(page.locator(".hero-ctas > *").count(), 1, "affiliates: the hero has one button, Affiliate sign in (no Apply)")
+    # Figma draws it at 49 beside the Apply button; with Apply gone the row no longer stretches it, so it is the outline button's own 47.
+    c.near(a["height"], 47, 0.6, "affiliates: Affiliate sign in 47 high, its own size now that the Apply button it was stretched to match is gone")
     h1 = cs(page, ".hero-title", ["font-size", "line-height", "font-weight"])
     c.eq((h1["font-size"], h1["line-height"], h1["font-weight"]), ("54px", "60px", "700"), "affiliates: h1 54/60/700 (Figma 541:139)")
-    hl = [page.locator(".highlight-card").nth(i).bounding_box() for i in range(4)]
-    c.near(hl[0]["width"], 295.5, 1, "affiliates: stat card 295.5 wide (Figma 541:151)")
-    c.near(hl[0]["height"], 122, 1.5, "affiliates: stat card 122 high")
-    c.near(hl[1]["x"] - (hl[0]["x"] + hl[0]["width"]), 22, 1, "affiliates: 22px between stat cards")
-    c.eq(cs(page, ".hl-value", ["font-size", "font-weight"])["font-size"], "34px", "affiliates: stat value 34px")
+    c.eq(page.locator(".highlight-card").count(), 0, "affiliates: no stat cards")
     steps = page.locator(".step-card")
-    c.eq(steps.count(), 3, "affiliates: three step cards")
-    c.near(steps.first.bounding_box()["width"], 400, 1, "affiliates: step card 400 wide (Figma 541:168)")
+    c.eq(steps.count(), 2, "affiliates: two step cards (no apply step)")
+    c.near(steps.nth(1).bounding_box()["x"] - (steps.nth(0).bounding_box()["x"] + steps.nth(0).bounding_box()["width"]), 24, 1, "affiliates: 24px between step cards")
     c.near(box(page, ".steps-section")["w"], 1440, 1, "affiliates: How it works is a full-bleed band")
     c.near(page.locator(".audience-card").first.bounding_box()["width"], 295.5, 1, "affiliates: audience card 295.5 wide (Figma 542:127)")
     tile = cs(page, ".audience-card .cat-icon", ["width", "border-top-left-radius"])
     c.eq((tile["width"], tile["border-top-left-radius"]), ("50px", "14px"), "affiliates: audience tile 50 r14 (Figma 542:128)")
     c.eq(page.locator(".check-row").count(), 2, "affiliates: two checklist rows (the two the repo backs)")
-    c.near(box(page, ".calc-card")["w"], 420, 1, "affiliates: the calculator takes the 420px right column (Figma 542:178)")
-    c.ok(page.get_by_role("slider", name="Referred Active Churches:").count() == 1, "affiliates: the slider has an accessible name")
-    faq = page.locator(".faq-accordion.is-boxed")
-    c.eq(faq.count(), 1, "affiliates: the FAQ is the boxed card")
-    c.near(faq.bounding_box()["width"], 880, 1, "affiliates: boxed FAQ 880 wide (Figma 542:199)")
-    c.ok(page.locator(".faq-question[aria-controls]").count() >= 4, "affiliates: every question controls its answer")
-    band = page.locator(".cta-band")
-    c.ok("linear-gradient" in band.evaluate("e => getComputedStyle(e).backgroundImage"), "affiliates: the closing band is the gradient card")
-    c.near(band.bounding_box()["width"], 1248, 1, "affiliates: closing band 1248 wide (Figma 542:227)")
-    c.eq(cs(page, ".cta-band", ["border-top-left-radius"])["border-top-left-radius"], "24px", "affiliates: closing band radius 24")
-    btn = cs(page, ".cta-band .ui-button", ["background-color", "color"])
-    c.eq(btn["background-color"], "rgb(255, 255, 255)", "affiliates: the band button is white")
-    c.near(box(page, ".cta-band .ui-button")["h"], 49, 0.6, "affiliates: band button 49 high")
-    link = page.locator(".hero-ctas a").first
-    c.eq(link.get_attribute("href"), "/contact", "affiliates: Apply now is the interim link to the contact page")
+    c.eq(page.locator(".calc-card, input[type=range]").count(), 0, "affiliates: no earnings calculator")
+    c.eq(page.locator(".faq-accordion, .faq-section").count(), 0, "affiliates: no FAQ")
+    c.eq(page.locator(".cta-band, .cta-section").count(), 0, "affiliates: no closing Apply band")
     # Affiliate sign in has no destination (the only affiliate pages are shells of sample data): a disabled button that says why
     c.eq(page.locator(".hero-ctas button[disabled]").count(), 1, "affiliates: Affiliate sign in is a disabled button")
-    c.eq(page.locator(".hero-ctas a").count(), 1, "affiliates: and the hero has just the one link")
+    c.eq(page.locator(".hero-ctas a").count(), 0, "affiliates: and the hero has no link at all")
     c.ok("not available yet" in page.locator("#signin-note").inner_text().lower(), "affiliates: the reason is visible beside it")
     c.eq(page.get_by_role("button", name="Affiliate sign in").is_disabled(), True, "affiliates: the browser reports it disabled")
+    c.ok("not open yet" in page.locator(".hero-sub").inner_text().lower(), "affiliates: the hero says the programme is not open yet")
     bad = page.locator("main a[href^='/signin'], main a[href^='/affiliates/']").count()
     c.eq(bad, 0, "affiliates: no link on the page goes to the customer sign-in or into the affiliate portal shells")
-    c.eq(page.locator(".cta-band button[disabled]").count(), 1, "affiliates: the band's Apply now is disabled")
-    c.eq(page.locator(".cta-band a").count(), 0, "affiliates: and the band has no link")
-    c.ok("not available yet" in page.locator("#apply-note").inner_text().lower(), "affiliates: with its reason visible")
     c.ok(text_contrast(page, "#signin-note") >= 4.5, "affiliates: the sign-in note passes AA")
 
 

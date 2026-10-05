@@ -19,9 +19,10 @@
  *   - no page passes `variant="gradient"` to a button (a temporary alias PR 172 left for these
  *     pages to leave), and none declares its own container rule (1140, 1200 and 1000 wide
  *     before; the shared `.container` is 1248 with 96/48/20 gutters);
- *   - no page ADDS a claim: the strings the audit marks unbacked in Figma (addresses nobody
- *     confirmed, reply times, commission rates) are absent. Removing claims that were already
- *     live is ClickUp 17tnw2b0x3h and is not asserted here;
+ *   - no page makes a claim the repo does not back: the strings the audit marks unbacked (addresses
+ *     nobody confirmed, reply times, commission rates, invented releases and roles) are absent, the
+ *     ledger's `unbacked` list is empty on every page, and the claims removed by ClickUp 17tnw2b0x3h
+ *     are banned from coming back (`NAMED_CLAIMS`);
  *   - each page has the structure its Figma frame draws.
  */
 import assert from 'node:assert/strict'
@@ -173,8 +174,6 @@ interface PageState {
 }
 const STATES: Readonly<Record<string, readonly PageState[]>> = {
   Contact: [
-    { label: 'submitted: the success card', state: { set: { isSubmitted: true, name: 'Ana' } }, reached: /Message Received!/ },
-    { label: 'submitting: the button while the timer runs', state: { set: { isSubmitting: true } }, reached: /<input[^>]* disabled/ },
     { label: 'submitted empty: every required message', state: { call: [['handleSubmit']] }, reached: /Name is required[\s\S]*Email is required[\s\S]*Message is required/ },
     {
       label: 'submitted with bad values: the length and email messages',
@@ -374,11 +373,21 @@ describe('the copy ledger: no sentence appears on the seven pages that nobody li
     })
   }
 
-  test('the claims the reviewers named are on `unbacked`, where ClickUp 17tnw2b0x3h will look (a relabel as harmless fails)', () => {
+  // ClickUp 17tnw2b0x3h's check, executable: the `unbacked` list is what the page may NOT say, so it is empty on every page.
+  test('no page has an `unbacked` entry: every claim the repo does not back is gone (ClickUp 17tnw2b0x3h)', () => {
+    for (const { file } of pages) {
+      const key = ledgerKey(file)
+      assert.deepEqual(LEDGER[key]!.unbacked.map(String), [], `${key}: unbacked lines are still live; remove the words and the entry`)
+    }
+  })
+
+  // The strings removed from the pages cannot return: not on any list, and not in any run any state renders.
+  test('the claims the reviewers named are banned: on no ledger list and rendered by no page state', async () => {
     for (const [page, sample] of NAMED_CLAIMS) {
-      assert.ok(LEDGER[page]!.unbacked.some((e) => entryMatches(e, sample)), `${page}: "${sample}" is not on unbacked`)
-      const elsewhere = [...LEDGER[page]!.newCopy, ...LEDGER[page]!.harmless].filter((e) => entryMatches(e, sample))
-      assert.deepEqual(elsewhere.map(String), [], `${page}: "${sample}" is also on another list`)
+      const onAList = listed(page).filter((e) => entryMatches(e, sample))
+      assert.deepEqual(onAList.map(String), [], `${page}: "${sample}" is on a ledger list; a removed claim must not be allow-listed`)
+      const runs = (await readings(`${page}View.vue`)).flatMap((r) => r.runs)
+      assert.deepEqual(runs.filter((r) => r === sample || r.includes(sample)), [], `${page}: "${sample}" is rendered again`)
     }
   })
 
@@ -456,10 +465,11 @@ describe('the copy ledger: no sentence appears on the seven pages that nobody li
     }
   })
 
-  test('CONTROL: a line moved from `unbacked` into the new copy is caught by the promise pattern (the ledger cannot launder a claim)', () => {
-    for (const claim of LEDGER['Affiliates']!.unbacked.filter((e): e is string => typeof e === 'string' && /20%|\$50|60-day|Earn/.test(e))) {
-      assert.ok(PROMISE_PATTERN.test(claim), `${claim} would be caught`)
-    }
+  test('CONTROL: a removed claim moved back into the new copy is caught by the promise pattern (the ledger cannot launder a claim)', () => {
+    // The `unbacked` list is empty now, so this reads the removed claims themselves: a ban list the pattern must still catch.
+    const claims = NAMED_CLAIMS.filter(([page]) => page === 'Affiliates').map(([, sample]) => sample).filter((s) => /20%|\$50|60 Days|Earn|Payouts/.test(s))
+    assert.ok(claims.length >= 4, `only ${claims.length} removed Affiliates claims were read; the control is vacuous`)
+    for (const claim of claims) assert.ok(PROMISE_PATTERN.test(claim), `${claim} would be caught`)
   })
 
   test('CONTROL: every state\'s marker is shown by that state and not by the default page (the markers can tell them apart)', async () => {
@@ -510,16 +520,16 @@ describe('CategoryIcon: every name a view asks for has its own icon, and every i
   const asked = new Map(views.map((v) => [v, namesAsked(v, readSrc(`views/${v}`))] as const))
 
   test('the table was read: it has entries and no duplicates', () => {
-    assert.ok(table.length >= 20, `only ${table.length} icons were found: the reader is looking in the wrong place`)
+    assert.ok(table.length >= 15, `only ${table.length} icons were found: the reader is looking in the wrong place`)
     assert.equal(new Set(table).size, table.length)
   })
 
   test('the reader finds the names each view uses (so a view cannot stop being checked)', () => {
-    assert.deepEqual([...asked.get('ContactView.vue')!].sort(), ['briefcase', 'mail', 'users'])
+    assert.deepEqual([...asked.get('ContactView.vue')!].sort(), ['mail'])
     assert.ok(asked.get('SupportView.vue')!.length >= 6, 'the six help categories')
     assert.ok(asked.get('DocsView.vue')!.includes('getting-started') && asked.get('DocsView.vue')!.length >= 6)
     assert.ok(asked.get('BlogView.vue')!.includes('shield-check'))
-    assert.deepEqual([...asked.get('CareersView.vue')!].sort(), ['check-circle', 'globe', 'heart', 'wifi-off'])
+    assert.deepEqual([...asked.get('CareersView.vue')!].sort(), [], 'Careers draws no icon now that its culture strip is gone (17tnw2b0x3h)')
     assert.deepEqual([...asked.get('AffiliatesView.vue')!].sort(), ['briefcase', 'package', 'users', 'video'])
   })
 
@@ -533,9 +543,9 @@ describe('CategoryIcon: every name a view asks for has its own icon, and every i
     assert.deepEqual(table.filter((n) => !used.has(n)), [], 'icons no view draws: delete them')
   })
 
-  test('Contact draws its three method tiles with CategoryIcon, not inline paths', async () => {
+  test('Contact draws its one method tile with CategoryIcon, not inline paths', async () => {
     const sfc = readSrc('views/ContactView.vue')
-    assert.equal(elementsOf(sfc).filter((el) => el.tag === 'CategoryIcon').length, 3)
+    assert.equal(elementsOf(sfc).filter((el) => el.tag === 'CategoryIcon').length, 1)
     assert.ok(!elementsOf(sfc).some((el) => el.tag === 'svg'), 'no inline svg is left in the view')
   })
 
@@ -577,7 +587,7 @@ describe('Contact (497:124): centred hero, then the form, then the method cards'
   test('the method-card titles are h2 and every other heading follows (contact-bug-01)', async () => {
     const page = await html('ContactView.vue')
     const cards = withClass(page, 'method-card')
-    assert.equal(cards.length, 3, 'the three channels the build already shows stay (contact-04, 07 are decisions)')
+    assert.equal(cards.length, 1, 'one channel works today, the email address; the Discord and enterprise cards claimed channels that do not exist (17tnw2b0x3h)')
     const heads = headingsOf(page)
     assert.deepEqual(outlineProblems(heads), [])
     assert.ok(!heads.some((h) => h.level >= 4), 'no h4 left on the page')
@@ -586,7 +596,7 @@ describe('Contact (497:124): centred hero, then the form, then the method cards'
   test('the method cards carry an icon tile with an SVG, not an emoji (contact-03)', async () => {
     const page = await html('ContactView.vue')
     const tiles = withClass(page, 'method-icon')
-    assert.equal(tiles.length, 3)
+    assert.equal(tiles.length, 1)
     for (const tile of tiles) {
       const after = page.slice(tile.at, page.indexOf('</div>', tile.at))
       assert.ok(/<svg[\s>]/.test(after), 'each tile holds an inline SVG')
@@ -621,6 +631,25 @@ describe('Contact (497:124): centred hero, then the form, then the method cards'
   test('the hero has no promise of a reply or of a person: the sentence is reworded (contact-01, honest content)', async () => {
     const text = textOf(await html('ContactView.vue')).toLowerCase()
     assert.ok(!text.includes('real person'), 'Figma says "a real person"; the repo does not back who answers')
+  })
+
+  // ClickUp 17tnw2b0x3h. The form sends nothing (there is no endpoint), so the page must never say it did.
+  test('nothing is sent and the page says so: Send is disabled and described by a visible note; there is no success card, no timer and no reply promise', async () => {
+    const page = await html('ContactView.vue')
+    const sfc = readSrc('views/ContactView.vue')
+    const send = elementsOf(sfc).find((el) => el.tag === 'UiButton' && valueOf(prop(el, 'size')) === 'lg')
+    assert.ok(send && prop(send, 'disabled'), 'the Send button is disabled until a send exists')
+    assert.equal(valueOf(prop(send, 'aria-describedby')), 'send-note', 'and described by the note')
+    assert.ok(tagsOf(page).some((t) => t.attrs['id'] === 'send-note'), 'the note is on the page')
+    assert.ok(textOf(page).includes('The contact form is not available yet.'), 'and says the form is not available')
+    const script = descriptorOf(sfc, 'ContactView.vue').scriptSetup?.content ?? ''
+    assert.doesNotMatch(script, /setTimeout|isSubmitted|isSubmitting/, 'no fake send: no timer and no submitted state')
+    assert.doesNotMatch(sfc, /success-state|Message Received|respond within/i, 'no success card and no reply promise')
+  })
+
+  test('the only link on the page is the one address the owner confirmed; no link goes nowhere', async () => {
+    const hrefs = tagsOf(await html('ContactView.vue')).filter((t) => t.name === 'a').map((t) => t.attrs['href'])
+    assert.deepEqual(hrefs, ['mailto:support@selahcueapp.com'])
   })
 
   test('every field takes its own error away when its value changes, and the form hears the pointer go down (review round 2, Quinn Q1)', () => {
@@ -860,6 +889,26 @@ function badgesOf(page: string): Array<{ variant: string; text: string; classes:
   return out
 }
 
+/**
+ * FIXTURE releases, only to render the card layout the page keeps for its first real release (Figma 501:154). They are test
+ * data, not copy: they never go through the ledger, and no real release looks like these.
+ */
+const FIXTURE_RELEASES = [
+  { version: 'v9.9.9', date: 'January 1, 2000', tag: 'Fixture tag', highlights: [
+    { type: 'new', title: 'Fixture change one', desc: 'Fixture text one.' },
+    { type: 'new', title: 'Fixture change two', desc: 'Fixture text two.' },
+    { type: 'improved', title: 'Fixture change three', desc: 'Fixture text three.' },
+    { type: 'fixed', title: 'Fixture change four', desc: 'Fixture text four.' },
+  ] },
+  { version: 'v9.9.8', date: 'January 2, 2000', tag: 'Fixture tag', highlights: [
+    { type: 'new', title: 'Fixture change five', desc: 'Fixture text five.' },
+    { type: 'improved', title: 'Fixture change six', desc: 'Fixture text six.' },
+    { type: 'fixed', title: 'Fixture change seven', desc: 'Fixture text seven.' },
+  ] },
+  { version: 'v9.9.7', date: 'January 3, 2000', tag: 'Fixture tag', highlights: [{ type: 'new', title: 'Fixture change eight', desc: 'Fixture text eight.' }] },
+]
+const changelogWithReleases = (): Promise<string> => renderView(server, 'ChangelogView.vue', '/changelog', { set: { releases: FIXTURE_RELEASES } })
+
 describe('Changelog (501:124): hero, then one grouped card per release', () => {
   test('the hero is a CHANGELOG pill and the h1 "What\'s new" (changelog-01)', async () => {
     const page = await html('ChangelogView.vue')
@@ -874,26 +923,43 @@ describe('Changelog (501:124): hero, then one grouped card per release', () => {
     assert.ok(!text.includes('always on the latest'))
   })
 
-  test('one card per release, each led by an h2 version, and no sticky meta column (changelog-02, changelog-bug-01)', async () => {
+  // ClickUp 17tnw2b0x3h: nothing has shipped, so the page lists no release, no date and no "latest" tag.
+  test('with no release shipped the page shows an honest empty state, not an invented release', async () => {
     const page = await html('ChangelogView.vue')
+    assert.equal(withClass(page, 'release-card').length, 0, 'no release card')
+    assert.equal(withClass(page, 'release-empty').length, 1, 'one empty state')
+    const heads = headingsOf(page)
+    assert.deepEqual(heads.filter((h) => h.level === 2).map((h) => h.text), ['No release notes yet'])
+    assert.deepEqual(outlineProblems(heads), [])
+    assert.doesNotMatch(textOf(page), /\bv\d+\.\d+\.\d+\b|Latest Release/i, 'no version number and no "latest" tag')
+  })
+
+  test('the release list in the source is empty: an invented release cannot return without a deliberate edit', () => {
+    const script = descriptorOf(readSrc('views/ChangelogView.vue'), 'ChangelogView.vue').scriptSetup?.content ?? ''
+    assert.match(script, /const releases: Release\[\] = \[\]/, 'the releases array must stay empty until a real release ships')
+  })
+
+  test('one card per release, each led by an h2 version, and no sticky meta column (changelog-02, changelog-bug-01)', async () => {
+    const page = await changelogWithReleases()
     const cards = withClass(page, 'release-card')
     assert.equal(cards.length, 3)
+    assert.equal(withClass(page, 'release-empty').length, 0, 'the empty state is gone once a release exists')
     assert.equal(withClass(page, 'timeline-meta').length, 0, 'the left meta column is gone')
     const heads = headingsOf(page)
-    assert.deepEqual(heads.filter((h) => h.level === 2).map((h) => h.text), ['v1.2.0', 'v1.1.0', 'v1.0.0'])
+    assert.deepEqual(heads.filter((h) => h.level === 2).map((h) => h.text), ['v9.9.9', 'v9.9.8', 'v9.9.7'])
     assert.ok(heads.filter((h) => h.level === 3).length >= 8, 'the per-change titles stay h3')
     assert.deepEqual(outlineProblems(heads), [])
   })
 
   test('changes are grouped by type: one label per group, not one per change (changelog-02)', async () => {
-    const page = await html('ChangelogView.vue')
+    const page = await changelogWithReleases()
     const labels = badgesOf(page).filter((b) => b.classes.includes('change-label'))
     assert.deepEqual(labels.map((b) => b.text), ['New', 'Improved', 'Fixed', 'New', 'Improved', 'Fixed', 'New'])
     assert.equal(withClass(page, 'change-group').length, 7)
   })
 
   test('the type labels use the variants PR 173 defined: New preview, Improved accent, Fixed warn (changelog-03)', async () => {
-    const page = await html('ChangelogView.vue')
+    const page = await changelogWithReleases()
     const labels = badgesOf(page).filter((b) => b.classes.includes('change-label'))
     const variantOf = (text: string): Set<string> => new Set(labels.filter((b) => b.text === text).map((b) => b.variant))
     assert.deepEqual([...variantOf('New')], ['preview'])
@@ -902,7 +968,7 @@ describe('Changelog (501:124): hero, then one grouped card per release', () => {
   })
 
   test('only the newest release carries a tag pill beside its date', async () => {
-    const page = await html('ChangelogView.vue')
+    const page = await changelogWithReleases()
     const tags = badgesOf(page).filter((b) => !b.classes.includes('change-label') && b.variant !== 'featured')
     assert.equal(tags.length, 1, 'one pill, on the newest release')
     const cards = withClass(page, 'release-card')
@@ -1003,7 +1069,18 @@ describe('Blog (502:124): hero, featured post with a media panel, three-column g
 
 // --------------------------------------------------------------------------- Careers
 
-describe('Careers (503:124): hero, four icon-tile culture cards, a full-bleed roles band', () => {
+/**
+ * FIXTURE roles, only to render the row layout the page keeps for its first real role (Figma 503:173). Test data, not copy:
+ * they never go through the ledger, and no real role looks like these.
+ */
+const FIXTURE_ROLES = [
+  { title: 'Fixture role one', dept: 'Fixture dept A', location: 'Fixture place', type: 'Fixture type' },
+  { title: 'Fixture role two', dept: 'Fixture dept B', location: 'Fixture place', type: 'Fixture type' },
+  { title: 'Fixture role three', dept: 'Fixture dept C', location: 'Fixture place', type: 'Fixture type' },
+]
+const careersWithRoles = (): Promise<string> => renderView(server, 'CareersView.vue', '/careers', { set: { roles: FIXTURE_ROLES } })
+
+describe('Careers (503:124): hero and a full-bleed roles band', () => {
   test('the hero is a CAREERS pill and the h1 "Build tools churches rely on" at the frame\'s 50/56 (careers-01)', async () => {
     const page = await html('CareersView.vue')
     const [h1] = headingsOf(page)
@@ -1014,19 +1091,15 @@ describe('Careers (503:124): hero, four icon-tile culture cards, a full-bleed ro
     assert.match(css, /\.hero-title\s*\{[^}]*max-width:\s*500px/)
   })
 
-  test('four culture cards with a coloured icon tile holding an SVG, no emoji, no extra heading above them (careers-03)', async () => {
+  // ClickUp 17tnw2b0x3h: no company claim the repo does not back (remote-first, "zero compromise", "thousands of volunteer tech teams").
+  test('the page makes no company claim: the culture strip is gone and the hero names only the product', async () => {
     const page = await html('CareersView.vue')
-    const cards = withClass(page, 'culture-card')
-    assert.equal(cards.length, 4)
-    const tiles = withClass(page, 'culture-icon')
-    assert.equal(tiles.length, 4)
-    for (const tile of tiles) {
-      const inner = page.slice(tile.at, page.indexOf('</div></div>', tile.at))
-      assert.ok(/<svg[\s>]/.test(inner), 'each tile holds an inline SVG')
-    }
-    assert.ok(!/\p{Extended_Pictographic}/u.test(textOf(page)), 'no emoji remains')
-    assert.ok(!textOf(page).includes('Why Work With Us'), 'the frame draws no heading over the strip')
-    assert.match(styleOf(readSrc('views/CareersView.vue')), /\.culture-grid\s*\{[^}]*grid-template-columns:\s*repeat\(4, minmax\(0, 1fr\)\)/)
+    assert.equal(withClass(page, 'culture-card').length, 0)
+    assert.equal(withClass(page, 'culture-grid').length, 0)
+    const text = textOf(page)
+    assert.doesNotMatch(text, /remote|thousands|zero compromise|every single Sunday|flexible hours/i)
+    assert.ok(!/\p{Extended_Pictographic}/u.test(text), 'no emoji')
+    assert.doesNotMatch(styleOf(readSrc('views/CareersView.vue')), /culture/, 'and no style is left for it')
   })
 
   test('the roles sit in a full-bleed band under a centred "Open roles" heading (careers-04)', async () => {
@@ -1038,19 +1111,37 @@ describe('Careers (503:124): hero, four icon-tile culture cards, a full-bleed ro
     assert.match(css, /\.roles-list\s*\{[^}]*max-width:\s*940px/)
   })
 
-  test('each role row has three tag pills (department, place, type) and no single meta line (careers-04, careers-05)', async () => {
+  test('with no role open the band says so: no role, no tag, no Apply button, no "don\'t see your role" invitation', async () => {
     const page = await html('CareersView.vue')
+    assert.equal(withClass(page, 'role-row').length, 0)
+    assert.equal(withClass(page, 'role-tag').length, 0)
+    assert.equal(withClass(page, 'roles-note').length, 0, 'the closing line invites people to a role that does not exist')
+    const empty = withClass(page, 'roles-empty')[0]
+    assert.ok(empty, 'the empty line is there')
+    assert.ok(textOf(page.slice(empty.at, page.indexOf('</p>', empty.at))).startsWith('There are no open roles right now.'))
+    assert.ok(!tagsOf(page).some((t) => t.name === 'a'), 'and nothing on the page links anywhere')
+    assert.deepEqual(outlineProblems(headingsOf(page)), [])
+  })
+
+  test('the role list in the source is empty: an invented role cannot return without a deliberate edit', () => {
+    const script = descriptorOf(readSrc('views/CareersView.vue'), 'CareersView.vue').scriptSetup?.content ?? ''
+    assert.match(script, /const roles: Role\[\] = \[\]/, 'the roles array must stay empty until a real role opens')
+  })
+
+  test('each role row has three tag pills (department, place, type) and no single meta line (careers-04, careers-05)', async () => {
+    const page = await careersWithRoles()
     const rows = withClass(page, 'role-row')
-    assert.equal(rows.length, 3, 'the roles the build already shows; the Figma roles are not added (careers-07)')
+    assert.equal(rows.length, 3)
     assert.equal(withClass(page, 'role-tag').length, 9)
     assert.equal(withClass(page, 'role-meta').length, 0)
+    assert.equal(withClass(page, 'roles-empty').length, 0, 'the empty line is gone once a role exists')
     const css = styleOf(readSrc('views/CareersView.vue'))
     assert.match(css, /\.role-tag\s*\{[^}]*color:\s*var\(--sc-text-secondary\)/)
     assert.match(css, /\.role-tag\s*\{[^}]*background:\s*var\(--sc-elevated\)/)
   })
 
   test('the Apply links are distinct: each name carries its role, and still contains the visible text (careers-06)', async () => {
-    const page = await html('CareersView.vue')
+    const page = await careersWithRoles()
     const names: string[] = []
     for (const row of withClass(page, 'role-row')) {
       const slice = page.slice(row.at, page.indexOf('</article>', row.at))
@@ -1064,18 +1155,17 @@ describe('Careers (503:124): hero, four icon-tile culture cards, a full-bleed ro
     roleTitles.forEach((title, i) => assert.ok((names[i] ?? '').includes(title), `link ${i} names its role "${title}"`))
   })
 
-  test('the closing line is plain text: no link to a form that sends nothing, and no mailbox (careers-04, careers-08, review round 1 M1)', async () => {
-    const page = await html('CareersView.vue')
+  test('the closing line is plain text: no link to a form that cannot send, and no mailbox (careers-04, careers-08, review round 1 M1)', async () => {
+    const page = await careersWithRoles()
     const note = withClass(page, 'roles-note')[0]
     assert.ok(note, 'the closing line is there')
     const line = page.slice(note.at, page.indexOf('</p>', note.at))
     assert.ok(textOf(line).startsWith("Don't see your role?"))
-    assert.ok(!/reach out|contact us|get in touch|write to|email|apply/i.test(textOf(line)), 'it names no way to reach anyone: the contact page is a form that sends nothing (review round 2, Quinn Q6)')
-    assert.ok(!/<a[\s>]/.test(line), 'it carries no link: this line is new, and the contact page is a form that sends nothing')
-    assert.ok(!/@selahcue/.test(textOf(page).replace('support@selahcue', '')), 'no invented mailbox')
-    // The Apply links already existed (to the contact page) and keep that interim destination.
+    assert.ok(!/reach out|contact us|get in touch|write to|email|apply/i.test(textOf(line)), 'it names no way to reach anyone')
+    assert.ok(!/<a[\s>]/.test(line), 'it carries no link')
+    assert.ok(!/@selahcue/.test(textOf(page)), 'no invented mailbox')
     const apply = tagsOf(page).filter((t) => t.name === 'a' && (t.attrs['href'] ?? '') === '/contact')
-    assert.equal(apply.length, 3, 'the three role buttons keep the destination they had')
+    assert.equal(apply.length, 3, 'the role buttons keep their destination, the contact page')
   })
 })
 
@@ -1199,13 +1289,13 @@ function sectionOf(page: string, cls: string): string {
 /** Programme figures: a percentage, a dollar amount, a day count or a month count. */
 const hasFigure = (text: string): boolean => /\d+\s*%|\$\s*\d|\d+[- ]days?\b|\d+[- ]months?\b/i.test(text)
 
-describe('Affiliates (541:124): hero and CTAs, four stat cards, How it works, audiences, checklist, boxed FAQ, closing band', () => {
+describe('Affiliates (541:124): hero, How it works, audiences, checklist (no programme terms, no calculator, no FAQ, no apply)', () => {
   test('the hero is an AFFILIATE PROGRAM pill and the h1 at the frame\'s 54/60 (affiliates-05, affiliates-11)', async () => {
     const page = await html('AffiliatesView.vue')
     assert.ok(textOf(page).includes('AFFILIATE PROGRAM'))
     const css = styleOf(readSrc('views/AffiliatesView.vue'))
     assert.match(css, /@media \(min-width: 1200px\)\s*\{\s*\.hero-title\s*\{[^}]*font-size:\s*54px[^}]*line-height:\s*60px/)
-    assert.equal(declaration(css, '.hero-title', 'max-width'), '880px', 'two lines for the build\'s sentence')
+    assert.equal(declaration(css, '.hero-title', 'max-width'), '880px')
     assert.equal(declaration(css, '.hero-sub', 'font-size'), '19px')
     assert.equal(declaration(css, '.hero-sub', 'line-height'), '30px')
     assert.equal(declaration(css, '.hero-sub', 'max-width'), '760px')
@@ -1226,21 +1316,20 @@ describe('Affiliates (541:124): hero and CTAs, four stat cards, How it works, au
   const linksIn = (markup: string): Array<{ href: string; text: string }> =>
     [...markup.matchAll(/<a [^>]*href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/g)].map((m) => ({ href: m[1] ?? '', text: textOf(m[2] ?? '') }))
 
-  test('the hero has Apply now as a link and Affiliate sign in as a DISABLED button that says why (affiliates-06, owner review round 1)', async () => {
+  // ClickUp 17tnw2b0x3h: nothing can be applied to, so nothing says "apply" and nothing links to the contact form from here.
+  test('the hero has Affiliate sign in as a DISABLED button that says why, and no Apply: no application exists (affiliates-06)', async () => {
     const page = await html('AffiliatesView.vue')
     const hero = sectionOf(page, 'hero-section')
-    assert.deepEqual(linksIn(hero).map((l) => [l.text, l.href]), [['Apply now', '/contact']], 'one link: the interim Apply, which already existed as a CTA')
+    assert.deepEqual(linksIn(hero), [], 'no link in the hero: the interim Apply that led to a form that sends nothing is gone')
     const signIn = tagsOf(hero).find((t) => t.name === 'button')
     assert.ok(signIn, 'Affiliate sign in is a button, not a link')
     assert.ok('disabled' in signIn.attrs, 'and it is disabled')
     const note = signIn.attrs['aria-describedby']
     assert.ok(note && hero.includes(`id="${note}"`), 'tied to a visible explanation')
     assert.match(textOf(hero), /Affiliate sign in: not available yet/)
-    assert.ok(!textOf(page).includes('Calculate Earnings'))
-    const sfc = readSrc('views/AffiliatesView.vue')
-    const buttons = elementsOf(sfc).filter((el) => el.tag === 'UiButton')
-    const apply = buttons.find((el) => valueOf(prop(el, 'size')) === 'lg' && valueOf(prop(el, 'variant')) === 'primary')
-    assert.ok(apply, 'Apply now is a large primary button')
+    assert.match(textOf(hero), /The affiliate program is not open yet\./, 'and the page says the programme is not open')
+    assert.doesNotMatch(textOf(page), /\bapply\b|\bapplication\b|Calculate Earnings/i, 'nowhere does the page invite anyone to apply: no application exists')
+    assert.equal(tagsOf(page).filter((t) => t.name === 'button').length, 1, 'the one button on the page is the disabled sign-in')
   })
 
   test('no link or button on /affiliates goes to the customer sign-in or into the affiliate portal shells', async () => {
@@ -1267,28 +1356,31 @@ describe('Affiliates (541:124): hero and CTAs, four stat cards, How it works, au
     for (const bad of ['Free to join', 'No audience minimum', 'PayPal, Wise or bank']) assert.ok(!text.includes(bad), bad)
   })
 
-  test('four stat cards, left aligned, with no h3 inside them (affiliates-07)', async () => {
+  // ClickUp 17tnw2b0x3h: "states no rate, window, threshold or payout rail and has no calculator".
+  test('the page states no programme figure and no earnings or payout word, anywhere, including accessible names', async () => {
     const page = await html('AffiliatesView.vue')
-    const cards = withClass(page, 'highlight-card')
-    assert.equal(cards.length, 4)
-    for (const card of cards) {
-      const inner = page.slice(card.at, page.indexOf('</p>', card.at))
-      assert.ok(/<p[\s>]/.test(inner) && !/<h3[\s>]/.test(inner), 'the caption is a paragraph, so heading order stays h1 then h2')
-    }
-    const css = styleOf(readSrc('views/AffiliatesView.vue'))
-    assert.match(css, /\.highlights-grid\s*\{[^}]*grid-template-columns:\s*repeat\(4, minmax\(0, 1fr\)\)[^}]*gap:\s*22px/)
-    assert.ok(!/\.highlight-card\s*\{[^}]*text-align:\s*center/.test(css))
+    const everything = [textOf(page), ...attributeRunsOf(page)].join('\n')
+    assert.ok(!hasFigure(everything), 'no percentage, dollar amount, day count or month count')
+    assert.doesNotMatch(everything, /earn|commission|income|recurring|payout|payouts|PayPal|bank transfer|cookie|attribution|threshold/i)
   })
 
-  test('How it works: an h2, a line under it and three numbered step cards with h3 titles and no figure (affiliates-01, affiliates-13)', async () => {
+  test('there are no stat cards: the three that carried the rate, the window and the threshold are gone with the fourth', async () => {
+    const page = await html('AffiliatesView.vue')
+    assert.equal(withClass(page, 'highlight-card').length, 0)
+    assert.equal(withClass(page, 'highlights-section').length, 0)
+    assert.doesNotMatch(styleOf(readSrc('views/AffiliatesView.vue')), /highlight|hl-value/, 'and no style is left for them')
+  })
+
+  test('How it works: an h2, a line under it and two numbered step cards with h3 titles and no figure (affiliates-01, affiliates-13)', async () => {
     const page = await html('AffiliatesView.vue')
     assert.ok(headingsOf(page).some((h) => h.level === 2 && h.text === 'How it works'))
     const section = sectionOf(page, 'steps-section')
     const cards = withClass(section, 'step-card')
-    assert.equal(cards.length, 3)
-    assert.ok(['01', '02', '03'].every((n) => section.includes(`>${n}<`)), 'the 01, 02 and 03 chips')
+    assert.equal(cards.length, 2, 'share, then refer: there is no apply step because nothing can be applied to')
+    assert.ok(['01', '02'].every((n) => section.includes(`>${n}<`)), 'the 01 and 02 chips')
+    assert.ok(!section.includes('>03<'), 'no third chip')
     assert.ok(!hasFigure(textOf(section)), 'no commission rate, threshold, window or review time in the steps')
-    for (const bad of ['within a couple of days', 'ready-made banners', 'pass $50']) assert.ok(!textOf(section).includes(bad), bad)
+    for (const bad of ['within a couple of days', 'ready-made banners', 'pass $50', 'Apply to join']) assert.ok(!textOf(section).includes(bad), bad)
   })
 
   test('Made for people who talk to churches: four icon-tile cards with the frame\'s titles (affiliates-02)', async () => {
@@ -1317,45 +1409,25 @@ describe('Affiliates (541:124): hero and CTAs, four stat cards, How it works, au
     for (const bad of ['actually keep using', 'Recurring commission for a year', 'Banners, links and email copy']) assert.ok(!text.includes(bad), bad)
   })
 
-  test('the calculator stays beside the checklist, with a named slider (affiliates-10 is a decision; the unnamed input is a defect)', async () => {
+  test('there is no earnings calculator: no slider, no calculator card, no result amounts', async () => {
     const page = await html('AffiliatesView.vue')
-    const section = sectionOf(page, 'why-section')
-    assert.equal(withClass(section, 'calc-card').length, 1, 'the existing calculator sits in the right column')
-    const range = tagsOf(section).find((t) => t.name === 'input' && t.attrs['type'] === 'range')
-    assert.ok(range, 'the slider')
-    const labelled = range.attrs['aria-labelledby'] ?? ''
-    assert.ok(labelled && section.includes(`id="${labelled}"`), 'the slider is named by visible text on the page')
+    assert.equal(withClass(page, 'calc-card').length, 0)
+    assert.ok(!tagsOf(page).some((t) => t.name === 'input'), 'no input at all, so no slider')
+    assert.ok(!tagsOf(page).some((t) => t.attrs['id'] === 'calculator'), 'and nothing to link to')
+    const sfc = readSrc('views/AffiliatesView.vue')
+    assert.doesNotMatch(descriptorOf(sfc, 'AffiliatesView.vue').scriptSetup?.content ?? '', /monthlyReferrals|estimated(Monthly|Annual)Earnings/, 'no earnings arithmetic is left in the script')
+    assert.doesNotMatch(styleOf(sfc), /calc-card|range-slider|results-grid|result-box/, 'and no style is left for it')
   })
 
-  test('the FAQ is the boxed accordion under its own h2 "Affiliate FAQ" (affiliates-08, affiliates-09)', async () => {
+  test('there is no FAQ and no closing band: the FAQ answers restated the unbacked terms, and the band asked people to apply', async () => {
     const page = await html('AffiliatesView.vue')
-    assert.ok(headingsOf(page).some((h) => h.level === 2 && h.text === 'Affiliate FAQ'))
-    assert.ok(withClass(page, 'is-boxed').length === 1, 'FaqAccordion rendered with the boxed option')
-    const buttons = tagsOf(page).filter((t) => t.name === 'button' && t.attrs['aria-controls'])
-    assert.ok(buttons.length >= 4, 'each question controls its answer')
+    assert.equal(withClass(page, 'faq-section').length, 0)
+    assert.equal(withClass(page, 'is-boxed').length, 0)
+    assert.equal(withClass(page, 'cta-section').length, 0)
+    assert.ok(!headingsOf(page).some((h) => h.text === 'Affiliate FAQ' || h.text === 'Ready to get started?'))
     const sfc = readSrc('views/AffiliatesView.vue')
-    const faq = elementsOf(sfc).find((el) => el.tag === 'FaqAccordion')
-    assert.ok(faq && prop(faq, 'boxed'), 'the view opts into boxed')
-  })
-
-  test('the closing band: gradient card, h2, a white Apply now that is disabled and says why, no Read the terms (affiliates-04, affiliates-14)', async () => {
-    const page = await html('AffiliatesView.vue')
-    assert.ok(headingsOf(page).some((h) => h.level === 2 && h.text === 'Ready to get started?'))
-    const band = sectionOf(page, 'cta-section')
-    const text = textOf(page)
-    assert.ok(!text.includes('Read the terms'))
-    const sfc = readSrc('views/AffiliatesView.vue')
-    const inverse = elementsOf(sfc).filter((el) => el.tag === 'UiButton' && valueOf(prop(el, 'variant')) === 'inverse')
-    assert.equal(inverse.length, 1, 'one white button on the band')
-    assert.ok(!prop(inverse[0]!, 'to') && !prop(inverse[0]!, 'href'), 'it has no destination: the page newly added this button and the contact form sends nothing')
-    assert.ok(prop(inverse[0]!, 'disabled'), 'so it is disabled')
-    const btn = tagsOf(band).find((t) => t.name === 'button')
-    assert.ok(btn && 'disabled' in btn.attrs, 'a real disabled button in the markup')
-    assert.ok(band.includes(`id="${btn.attrs['aria-describedby']}"`) && textOf(band).includes('Not available yet'), 'with a visible reason')
-    assert.equal(linksIn(band).length, 0, 'no link in the band')
-    assert.match(styleOf(sfc), /\.cta-band\s*\{[^}]*background:\s*var\(--gradient-cta\)/)
-    assert.ok(!/free/i.test(textOf(band)), 'the band does not promise a free programme')
-    assert.ok(!/recurring|earning|income/i.test(textOf(band)), 'and does not restate the programme promise (that claim is the live page\'s, removed by the claims ticket)')
+    assert.ok(!elementsOf(sfc).some((el) => el.tag === 'FaqAccordion'), 'the view no longer uses the accordion')
+    assert.doesNotMatch(styleOf(sfc), /faq-|cta-band|cta-title|cta-sub|cta-actions/, 'and no style is left for them')
   })
 
   test('the new Affiliates sections restate no earnings promise: the steps and the section lines say what the visitor does', async () => {
@@ -1365,10 +1437,10 @@ describe('Affiliates (541:124): hero and CTAs, four stat cards, How it works, au
     assert.match(steps, /Refer a church/)
   })
 
-  test('the section order follows the frame', async () => {
+  test('the section order follows the frame, without the sections that carried the terms', async () => {
     const page = await html('AffiliatesView.vue')
     const at = (cls: string): number => withClass(page, cls)[0]?.at ?? -1
-    const order = ['hero-section', 'highlights-section', 'steps-section', 'audience-section', 'why-section', 'faq-section', 'cta-section'].map(at)
+    const order = ['hero-section', 'steps-section', 'audience-section', 'why-section'].map(at)
     assert.ok(order.every((n) => n > 0), 'every section exists')
     assert.deepEqual([...order].sort((a, b) => a - b), order)
   })

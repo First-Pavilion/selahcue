@@ -7,12 +7,10 @@
  *   1. from the CONTENT LAYER (`src/lib/content`: article, post and category titles and summaries, each already
  *      guarded by `tests/content.test.ts` and its cited sources), or
  *   2. in `newCopy` below: words written in THIS pull request, each reviewed as carrying no promise, or
- *   3. in `unbacked` below: words that were live BEFORE this pull request (or are on a button or line this PR cannot make
- *      true) and CLAIM something the repo does not back: a 24-hour reply, 1,200+ members, versions that do not exist, three
- *      invented roles, a 20% rate, an application that does not exist. They are NOT this ticket's to remove: owner decision
- *      2026-10-04, ClickUp 17tnw2b0x3h removes them in a branch on top of the four area PRs and joins the merge gate. THAT
- *      TICKET'S CHECK IS "`unbacked` is empty" on every page, and its test fails on a line that is no longer rendered, so
- *      the list can only shrink, and each entry has to be deleted by whoever removes the words, or
+ *   3. in `unbacked` below: words that CLAIM something the repo does not back (a 24-hour reply, 1,200+ members, versions that
+ *      do not exist, invented roles, a 20% rate, an application that does not exist). THE LIST IS EMPTY ON EVERY PAGE, and a
+ *      test fails if an entry is ever added: ClickUp 17tnw2b0x3h removed every such line from the seven pages. It stays in the
+ *      type so the check is one line ("`unbacked` is empty"), and `NAMED_CLAIMS` below bans each removed claim by name, or
  *   4. in `harmless` below: everything else that was already there, restyled and not changed in substance (a heading, a
  *      count, a validation message, an accessible name). It claims nothing; a test fails on a promise word in it, so a claim
  *      cannot hide in this list.
@@ -22,7 +20,8 @@
  * declaration in the scoped styles of every view and every component this ticket owns (anything but an empty string fails).
  *
  * WHAT IT DOES NOT SEE (so nobody reads a green ledger as more than it is): copy a state not listed in the test would show
- * (the Contact success card after a REAL send, which does not exist yet; the Docs and Blog pages' own hash states);
+ * (what Contact will say after a REAL send, which does not exist yet; the Docs and Blog pages' own hash states; the Changelog
+ * release cards and the Careers role rows, which render only when a release or a role exists and are tested with fixtures);
  * copy that only a script writes after load; the document title and meta description, which the router and the head code
  * set outside these views; text inside the content layer (it is accepted by name, and guarded by `tests/content.test.ts`);
  * text in the shared components themselves (UiButton, FormField, FaqAccordion, the footer: other tickets), except where they
@@ -30,8 +29,8 @@
  * not say any line is true.
  *
  * Tests keep the ledger honest: `newCopy` and `harmless` carry no time, money, earnings or reply word (a pattern ban); no entry
- * is on two lists; every entry is still rendered; and the named claims the reviewers listed are on `unbacked`. A regular
- * expression stands for a computed line (a count, a read time, a date, a typed name).
+ * is on two lists; every entry is still rendered; `unbacked` is empty; and the claims the reviewers named are on NO list and
+ * rendered by NO page state. A regular expression stands for a computed line (a count, a read time, a date, a typed name).
  */
 
 export type Entry = string | RegExp
@@ -39,7 +38,7 @@ export type Entry = string | RegExp
 export interface PageLedger {
   /** Written in this pull request. */
   readonly newCopy: readonly Entry[]
-  /** Claims the repo does not back (or an affordance that does not work). ClickUp 17tnw2b0x3h removes them: "empty" is its check. */
+  /** Claims the repo does not back. Empty on every page (ClickUp 17tnw2b0x3h); a test fails if it is not. */
   readonly unbacked: readonly Entry[]
   /** Already live, restyled, claiming nothing. */
   readonly harmless: readonly Entry[]
@@ -50,7 +49,7 @@ export const LEDGER: Readonly<Record<string, PageLedger>> = {
     newCopy: [
       'CONTACT',
       "Let's talk",
-      'Questions about SelahCue, help with getting set up, or partnering with us. Here is how to get in touch.',
+      'Questions about SelahCue or help with getting set up. Here is how to get in touch.',
       'Full name',
       'Email',
       'Church / organization',
@@ -64,31 +63,21 @@ export const LEDGER: Readonly<Record<string, PageLedger>> = {
       // The two length rules this PR added to the form (contact-12).
       'Name must be 100 characters or fewer',
       'Church / organization must be 100 characters or fewer',
+      // ClickUp 17tnw2b0x3h: the form sends nothing (no endpoint yet), so the page says so and names the one address the owner
+      // confirmed (2026-10-04). No reply time, no person, no channel that does not exist.
+      'The contact form is not available yet. Please email us instead.',
+      'Email us',
+      'Write to us at this address.',
+      'support@selahcueapp.com',
     ],
-    unbacked: [
-      // The three method cards: a staffing claim, a member count and "instant help", a person and SLAs. The two links go nowhere
-      // (`href="#"`). Unbacked and restyled (audit contact-04, 07); the arrow glyph that ended each link was dropped.
-      'Email our dedicated support team directly.',
-      'Join 1,200+ worship tech leaders on Discord for instant help.',
-      'Join Discord Community',
-      'Talk to our church solutions architect for enterprise SLAs.',
-      'Schedule a Demo Call',
-      // The success card: it renders after a form that sends NOTHING (an 800 ms timer), says the message was received and promises
-      // a reply inside 24 hours (audit contact-06). Visible only after a submit, which is why the test renders that state.
-      '✓',
-      'Message Received!',
-      /^Thank you for reaching out, .*\. A SelahCue specialist will respond within 24 hours\.$/,
-    ],
+    // Empty on purpose: the claims that were here (a 24-hour reply, "Message Received!", 1,200+ Discord members, two links that
+    // went nowhere, "enterprise SLAs", a "dedicated support team") were removed by ClickUp 17tnw2b0x3h and are banned in NAMED_CLAIMS.
+    unbacked: [],
     harmless: [
       'Send us a message',
       '*',
       '0/2000',
-      'Support & Sales Email',
-      'support@selahcue.app',
-      'Community & Discord',
-      'Enterprise & Multi-Campus',
       'Grace Community Church',
-      'Send Another Message',
       // The form's own validation messages from before this PR.
       'Name is required',
       'Email is required',
@@ -98,11 +87,15 @@ export const LEDGER: Readonly<Record<string, PageLedger>> = {
   },
 
   Support: {
-    newCopy: ['HELP CENTER', 'How can we help?', 'Guides, answers and troubleshooting for running SelahCue on Sunday.', 'Search help articles…'],
-    unbacked: [
-      // "Available to assist" is a staffing claim the repo does not back (audit support-08: the Figma line promised a reply time).
-      'Our support team is available to assist your church with technical questions.',
+    newCopy: [
+      'HELP CENTER',
+      'How can we help?',
+      'Guides, answers and troubleshooting for running SelahCue on Sunday.',
+      'Search help articles…',
+      // ClickUp 17tnw2b0x3h: replaces "Our support team is available to assist your church" (a staffing claim, audit support-08).
+      "Can't find what you need? Get in touch.",
     ],
+    unbacked: [],
     harmless: [
       'Start here',
       'Still need help?',
@@ -140,34 +133,18 @@ export const LEDGER: Readonly<Record<string, PageLedger>> = {
   },
 
   Changelog: {
-    newCopy: ['CHANGELOG', "What's new", 'New', 'Improved', 'Fixed'],
-    unbacked: [
-      // Every release, date, tag and entry: invented, restyled (audit changelog-04, 05). Includes a security claim about an
-      // unshipped feature ("Encrypted post-activation downloads for NIV, ESV, and NLT") and a benchmark nobody ran.
-      'v1.2.0',
-      'August 8, 2026',
-      'Latest Release',
-      'Native NDI 5 Output Engine',
-      'Direct broadcast-quality NDI streaming to OBS, vMix, and Wirecast without extra plugins.',
-      'Licensed Bible Entitlement Sync',
-      'Encrypted post-activation downloads for NIV, ESV, and NLT translations.',
-      'Hardware Decode Optimization',
-      'Reduced GPU VRAM usage by 35% on 4K motion backgrounds.',
-      'Stage Monitor Timer Overrun',
-      'Fixed edge case where stage countdown timer held at 00:00 instead of triggering TIME UP state.',
-      'v1.1.0',
-      'June 15, 2026',
-      'Flutter Mobile Companion App',
-      'Pair iOS and Android devices over local Wi-Fi to control slides and stage timers.',
-      'Scripture Verse-by-Verse Paging',
-      'Faster keyboard navigation using Arrow keys and spacebar.',
-      'Display Reconnect Recovery',
-      'Restored automatic venue display matching upon HDMI reconnect.',
-      'v1.0.0',
-      'March 1, 2026',
-      'SelahCue Initial Launch',
-      'Cross-platform offline presentation software for churches.',
+    // The group labels ("New", "Improved", "Fixed") are drawn only when a release exists; they are not rendered today, so they
+    // are not listed. The first release adds them, with its entries, in the same change.
+    newCopy: [
+      'CHANGELOG',
+      "What's new",
+      // ClickUp 17tnw2b0x3h: the empty state that replaced three invented releases.
+      'No release notes yet',
+      'New features, improvements and fixes will be listed here with each release.',
     ],
+    // Empty on purpose: v1.2.0 "Latest Release", v1.1.0, v1.0.0, their dates and every entry (an NDI engine, encrypted licensed
+    // downloads, a GPU benchmark) were invented and removed by ClickUp 17tnw2b0x3h; they are banned in NAMED_CLAIMS.
+    unbacked: [],
     harmless: ['Stay up to date with new features, performance improvements, and bug fixes in SelahCue.'],
   },
 
@@ -185,112 +162,56 @@ export const LEDGER: Readonly<Record<string, PageLedger>> = {
   },
 
   Careers: {
+    // Only what renders with no role open. The role rows, their tags, the Apply buttons and the "Don't see your role?" line are
+    // drawn only when a role exists; the first real role adds them to the ledger in the same change.
     newCopy: [
       'CAREERS',
       'Build tools churches rely on',
-      'Built to Work Offline',
-      'A service cannot be repeated, so slides, scripture and timers run on the desktop with no network.',
-      // The heading stays while roles exist; it needs an empty state when 17tnw2b0x3h removes them.
+      // ClickUp 17tnw2b0x3h: the hero line now says only what the product is (it was a remote-first company claim), and the roles
+      // band says plainly that nothing is open.
+      'SelahCue is offline-first presentation software for churches.',
       'Open roles',
-      // No "reach out": the line names no way to reach anyone because the form does not send (review round 2, Quinn Q6).
-      "Don't see your role? We're glad to meet thoughtful people.",
-      // The visually hidden tail that names a role on its Apply button (the role titles themselves are the live ones), and the
-      // accessible name of the list of roles.
-      /^for (Rust Systems & Graphics Engineer|Senior Vue \/ Frontend Engineer|Worship Tech Solutions Specialist)$/,
-      'Role details',
+      'There are no open roles right now.',
     ],
-    unbacked: [
-      // The hero subline and three culture cards: remote policy, a usage claim ("thousands of volunteer tech teams"), "zero
-      // compromise" (audit careers-08).
-      'We are an engineering-driven, remote-first team committed to high-performance, offline-first worship presentation technology.',
-      'Fully Remote & Flexible',
-      'Work from anywhere in the world with flexible hours built around your life and family.',
-      'High Technical Standards',
-      'We write Rust, wgpu, and Vue 3 TypeScript. Zero compromise on memory safety, frame latency, or UX quality.',
-      'Impact for the Local Church',
-      'Your work directly supports thousands of volunteer tech teams and worship leaders every single Sunday.',
-      // The three invented roles, their tags (the old single meta line, split) and the Apply buttons (audit careers-07, 09).
-      'Rust Systems & Graphics Engineer',
-      'Senior Vue / Frontend Engineer',
-      'Worship Tech Solutions Specialist',
-      'Core Engine',
-      'Web & Dashboard',
-      'Customer Success',
-      'Remote (US/EU/Africa)',
-      'Remote',
-      'Full-time',
-      'Apply Now →',
-    ],
+    // Empty on purpose: the remote-first line, the three culture cards ("thousands of volunteer tech teams"), the three invented
+    // roles with their tags and Apply buttons were removed by ClickUp 17tnw2b0x3h; they are banned in NAMED_CLAIMS.
+    unbacked: [],
     harmless: [],
   },
 
   Affiliates: {
     newCopy: [
       'AFFILIATE PROGRAM',
+      // ClickUp 17tnw2b0x3h: the headline and subline no longer state a rate or an income, and say the programme is not open.
+      'Recommend SelahCue to churches.',
+      'Help churches upgrade their live worship presentation. The affiliate program is not open yet.',
       'Affiliate sign in',
       'Affiliate sign in: not available yet',
-      'Offline',
-      'Slides and timers run offline',
       'How it works',
-      'Three steps to get started.',
+      'Two steps to get started.',
       '01',
       '02',
       'Share SelahCue',
       'Recommend it anywhere your audience is.',
-      '03',
       'Refer a church',
       'Introduce SelahCue to a church that could use it.',
       'Made for people who talk to churches',
       'Church tech creators',
       'Bloggers, YouTubers and newsletter writers in the worship-tech space.',
       'AV & gear resellers',
-      'Sell projectors, mixers and stage gear? Add software your customers need.',
+      'Sell projectors, mixers and stage gear? Tell your customers about SelahCue.',
       'Ministry networks',
       'Denominations and multi-site networks recommending tools to member churches.',
       'Consultants & integrators',
-      'You set up church production rigs — bundle SelahCue into your builds.',
+      'You set up church production rigs — recommend SelahCue to the churches you work with.',
       "Why it's easy to recommend",
       'Designed so a fault never blanks the live screen',
       'Offline-first: slides, scripture and timers run on the desktop with no network',
-      'Affiliate FAQ',
-      'Ready to get started?',
-      'Not available yet',
     ],
-    unbacked: [
-      // The page tells two stories about Apply (review round 2, Quinn Q5, Cody N4): the hero "Apply now" opens the Contact form,
-      // which sends nothing; the band's button is disabled ("Not available yet"); step 01 and the band's line describe an
-      // application that does not exist. Words this PR wrote, listed here because the claims ticket must settle them.
-      'Apply now',
-      'Apply to join',
-      "Tell us how you'll share SelahCue.",
-      'Apply to join the SelahCue affiliate program.',
-      // The programme's figures, rate, window, threshold, payout rails and calculator: NOT-V1, terms undecided (audit
-      // affiliates-10, 12 to 15). Restyled; none added.
-      'Recommend SelahCue. Earn 20% Recurring Commission.',
-      'Help churches upgrade their live worship presentation. Earn passive recurring income on every paid referral for 12 months.',
-      '20%',
-      'Recurring Commission',
-      '60 Days',
-      'Cookie Attribution',
-      '$50',
-      'Low Payout Threshold',
-      'Estimate Your Earnings',
-      'Slide to see how much you could earn by recommending SelahCue to churches:',
-      'Referred Active Churches:',
-      /^\d+ churches$/,
-      'Monthly Recurring Income',
-      /^\$\d+\/mo$/,
-      'Estimated Annual Payout',
-      /^\$\d+\/yr$/,
-      'What is the commission rate?',
-      'You earn a 20% recurring commission for 12 months on every paid subscription that signs up using your referral link.',
-      'How long does the referral cookie last?',
-      'Our referral tracking uses a 60-day last-click attribution window.',
-      'When are affiliate payouts made?',
-      'Payouts are processed on the 1st of every month via PayPal or Direct Bank Transfer once you reach the $50 minimum threshold.',
-      'Who can join the affiliate program?',
-      'Worship leaders, tech consultants, Christian bloggers, YouTubers, and church network leaders are welcome to apply!',
-    ],
+    // Empty on purpose: the 20% rate, the 60-day window, the $50 threshold, the PayPal / bank payout rails, "12 months", the
+    // earnings calculator, the four FAQ answers restating them and every "Apply" line were removed by ClickUp 17tnw2b0x3h (the
+    // programme is NOT-V1, its terms undecided, and no application exists); they are banned in NAMED_CLAIMS.
+    unbacked: [],
     harmless: [],
   },
 }
@@ -304,8 +225,9 @@ export const PROMISE_PATTERN =
   /\bwithin\b|\bhours?\b|\bdays?\b|\bweeks?\b|\bmonthly\b|\bguarantee|\bfree\b|\bforever\b|for life|%|\$|\bearn|\bcommission|\bincome|\brecurring|\bpayouts?\b|\bpaid\b|\breply|\brespond|\bresponse\b|\banswer(?:ed|ing)?\b|\balways\b|\binstant|\bimmediate|\bnever\s+(?:share|sell|send|store|collect|track)/i
 
 /**
- * The claims the reviewers named, as a sample run each. A test requires each to be matched by `unbacked` of its page, so that
- * moving one of them to `harmless` (where the claims ticket would never look) fails.
+ * The claims the reviewers named, as a sample run each: the BAN LIST of ClickUp 17tnw2b0x3h. A test requires that no entry on
+ * any list of the page matches a sample and that no state of the page renders it, so a removed claim cannot be allow-listed or
+ * quietly written again.
  */
 export const NAMED_CLAIMS: ReadonlyArray<readonly [page: string, sample: string]> = [
   ['Contact', 'Thank you for reaching out, Ana. A SelahCue specialist will respond within 24 hours.'],
@@ -313,14 +235,20 @@ export const NAMED_CLAIMS: ReadonlyArray<readonly [page: string, sample: string]
   ['Contact', 'Join 1,200+ worship tech leaders on Discord for instant help.'],
   ['Contact', 'Join Discord Community'],
   ['Contact', 'Schedule a Demo Call'],
+  ['Contact', 'Talk to our church solutions architect for enterprise SLAs.'],
+  ['Contact', 'support@selahcue.app'],
   ['Support', 'Our support team is available to assist your church with technical questions.'],
   ['Changelog', 'v1.2.0'],
   ['Changelog', 'Latest Release'],
   ['Changelog', 'Encrypted post-activation downloads for NIV, ESV, and NLT translations.'],
+  ['Changelog', 'Native NDI 5 Output Engine'],
+  ['Changelog', 'Reduced GPU VRAM usage by 35% on 4K motion backgrounds.'],
+  ['Changelog', 'SelahCue Initial Launch'],
   ['Careers', 'Rust Systems & Graphics Engineer'],
   ['Careers', 'Senior Vue / Frontend Engineer'],
   ['Careers', 'Worship Tech Solutions Specialist'],
   ['Careers', 'Apply Now →'],
+  ['Careers', 'Fully Remote & Flexible'],
   ['Careers', 'Your work directly supports thousands of volunteer tech teams and worship leaders every single Sunday.'],
   ['Affiliates', 'Recommend SelahCue. Earn 20% Recurring Commission.'],
   ['Affiliates', '60 Days'],

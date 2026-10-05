@@ -314,7 +314,7 @@ export const docsArticles: readonly KnowledgeArticle[] = [
         type: 'callout',
         variant: 'info',
         title: 'Known limits',
-        text: 'Every frame is opaque. The Lower Third output is not sent with an alpha channel, so it will not key over other video. There is no macOS or Linux installer yet, so the Windows installer is the only packaged build that includes NDI. We do not publish latency figures for NDI.',
+        text: 'Every frame is opaque. The Lower Third output is not sent with an alpha channel, so it will not key over other video. We do not publish latency figures for NDI.',
       },
     ],
   },
