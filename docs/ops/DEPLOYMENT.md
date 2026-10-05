@@ -372,8 +372,8 @@ The cache connection therefore carries two timeouts, in seconds, both read from 
 
 | Variable | Default | Allowed range | What it bounds |
 |----------|---------|---------------|----------------|
-| `CACHE_SOCKET_CONNECT_TIMEOUT` | `0.5` | `0.05` to `10` | Opening a connection to Redis |
-| `CACHE_SOCKET_TIMEOUT` | `0.5` | `0.05` to `10` | Waiting for Redis to answer one command, once connected |
+| `CACHE_SOCKET_CONNECT_TIMEOUT` | `0.5` | `0.05` to `10` | Opening the TCP connection to Redis, and nothing after it |
+| `CACHE_SOCKET_TIMEOUT` | `0.5` | `0.05` to `10` | Waiting on Redis for anything once the TCP connection is open: each command, and on a new connection the handshake too |
 
 - **Healthy Redis: nothing changes.** A healthy Redis answered one command in a few milliseconds
   (26 ms at worst in this change's performance review), so the default is at least 19 times the
@@ -384,16 +384,23 @@ The cache connection therefore carries two timeouts, in seconds, both read from 
   warning is logged (once a minute per worker; for a stall it names `TimeoutError`).
 - **What a bad Redis costs a request.** The timeout applies to each Redis *command*, not to each
   budget. Spending one budget takes one to three commands (`SET NX`, and once the counter exists
-  also `EXISTS` and `INCR`), and opening a new connection adds three more (two `CLIENT SETINFO`
-  and a `SELECT`).
+  also `EXISTS` and `INCR`; in the rare race where a counter's window lapses between those two,
+  one `EXPIRE` and sometimes a second `SET NX` more), and opening a new connection adds three
+  more (two `CLIENT SETINFO` and a `SELECT`). Those handshake commands, and with a `rediss://`
+  URL the TLS handshake itself, run under `CACHE_SOCKET_TIMEOUT`, not the connect timeout: redis-py
+  applies the read timeout as soon as the TCP connect returns (checked against redis-py 6.4.0, with
+  a listener that accepts and never speaks TLS: it gave up at the read timeout, not the connect
+  timeout).
   - **Stalled** (accepts, never answers): the first command of a budget times out and the rest of
     that budget is skipped, so a request costs about one timeout per budget: about 0.5 s on a
     one-budget route and about 1.5 s on a three-budget route. Measured on a frozen Redis.
   - **Slow but answering** (every reply just under the timeout): nothing times out and nothing
     fails open, and each command costs nearly the full timeout: up to about 1.5 s on a one-budget
     route and 4.5 s on a three-budget route, plus about 1.5 s when the connection has to be
-    reopened. Measured with a proxy that answered every command 0.4 s late: 1.21 s, 3.64 s and
-    1.69 s.
+    reopened. Measured with a proxy that answered every command 0.4 s late, so each figure sits at
+    about 0.8 of the maximum just given: 1.21 s for a steady one-budget call, 3.64 s for three
+    budgets (a reset or resend), and 1.69 s for the **first** call on a fresh connection (it also
+    paid the three handshake commands).
 
   It is a ceiling, not a retry: a timed-out call is not repeated.
 - **Allowed range.** Each variable must be from `0.05` to `10` seconds, inclusive; a blank value
@@ -408,13 +415,16 @@ The cache connection therefore carries two timeouts, in seconds, both read from 
     wait and `500` (milliseconds typed as seconds) holds a request for minutes. The ceiling is
     ten seconds because a three-budget route can spend nine commands, which at 10 s each is
     90 s for one request.
-- **Tuning.** Keep the defaults unless Redis is genuinely remote or often slow under load. Raising
-  a timeout multiplies every figure above: keep the timeout times the commands a route spends
-  (up to 9 on a three-budget route, 12 on a fresh connection) below any request timeout your host
-  or proxy enforces, and size threads or workers for arrival rate times the added latency. Do not
-  raise the defaults to ride out a slow cross-zone or TLS Redis: nothing in the app yet stops later
-  requests each paying the full stall during a long outage (a per-process circuit breaker would,
-  and would make about 1 s affordable; it is not built).
+- **Tuning.** Keep the defaults unless you have measured a reason not to. Raise a timeout only when
+  the slowest healthy round trips you can measure on your own Redis (including, on `rediss://`, the
+  TLS and handshake round trips of a reconnect, which all count against `CACHE_SOCKET_TIMEOUT`)
+  come within a few times of 0.5 s; a managed or TLS Redis that needs it is likely to be well served
+  by a value between `0.2` and `5`. Raising a timeout multiplies every figure above, and nothing in
+  the app yet stops later requests each paying the full stall during a long outage (a per-process
+  circuit breaker would; it is not built), so stay as low as the measurements allow and keep the
+  timeout times the commands a route spends (up to 9, rarely a few more, on a three-budget route;
+  12 on a fresh connection) below any request timeout your host or proxy enforces. Size threads or
+  workers for arrival rate times the added latency.
 - **No server timeout is configured here.** This repository ships only Django's development server
   (`manage.py runserver`, in the `Dockerfile` and the compose file), which has no request timeout
   and starts a thread per connection with no cap. No production application server (gunicorn,

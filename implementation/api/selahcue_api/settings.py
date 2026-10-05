@@ -279,8 +279,9 @@ def _socket_timeout_seconds(name: str, default: str) -> float:
 # PR #186 performance review), so this is at least 19x the worst healthy sample.
 #
 # WHAT A BAD REDIS COSTS A REQUEST. The timeout applies to each COMMAND, not to each budget. A
-# budget is up to three commands (SET NX, then EXISTS and INCR once the key exists) and a new
-# connection adds three more (two CLIENT SETINFO and a SELECT). A route spends one budget (/v1
+# budget is up to three commands (SET NX, then EXISTS and INCR once the key exists; rarely an
+# EXPIRE more, when a window lapses mid-call) and a new connection adds three more (two CLIENT
+# SETINFO and a SELECT), all under the READ timeout. A route spends one budget (/v1
 # routes, verifyEmail, confirmPasswordReset) or three (requestPasswordReset, resendVerification).
 # - A HARD stall (nothing answers): the first command of each budget times out and the rest of
 #   that budget is skipped, so the cost is about one timeout per budget: 0.5 s, or 1.5 s on the
@@ -288,7 +289,8 @@ def _socket_timeout_seconds(name: str, default: str) -> float:
 # - A SLOW Redis (every reply a little under the timeout): nothing times out, nothing fails open,
 #   and the cost is nearly the timeout PER COMMAND: about 1.5 s per budget, 4.5 s on the
 #   three-budget routes, and 1.5 s more when the connection has to be reopened. Measured with a
-#   proxy that answers every command 0.4 s late: 1.21 s, 3.64 s and 1.69 s.
+#   proxy that answers every command 0.4 s late (about 0.8 of those maxima): 1.21 s for one
+#   steady budget, 3.64 s for three, and 1.69 s for the FIRST call on a fresh connection.
 # It is a ceiling, not a retry: redis-py 6.4's default connection policy retries nothing for a
 # stalled call, and tests/test_cache_socket_timeouts.py asserts a stalled call opens exactly one
 # connection, so a client change that makes a stalled call reconnect fails it rather than

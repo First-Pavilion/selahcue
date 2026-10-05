@@ -326,6 +326,38 @@ def test_a_bad_timeout_stops_the_real_settings_module_from_loading(name, bad):
     assert name in result.stderr
 
 
+# A made-up connection string, distinctive enough to search for. Never a real secret.
+FAKE_CACHE_URL_PASSWORD = "FAKE-NOT-A-REAL-PASSWORD-7f3a9c1e"
+FAKE_CACHE_URL_USER = "cacheuser-fake"
+FAKE_CACHE_URL_HOST = "redis.internal.invalid"
+FAKE_CACHE_URL = f"redis://{FAKE_CACHE_URL_USER}:{FAKE_CACHE_URL_PASSWORD}@{FAKE_CACHE_URL_HOST}:6379/1"
+
+
+@pytest.mark.parametrize("name", TIMEOUT_VARIABLES)
+@pytest.mark.parametrize("bad", ["500", "soon"])
+def test_the_refusal_names_the_variable_and_never_echoes_the_cache_url(name, bad):
+    """`CACHE_URL` carries the Redis password. The startup error goes to deploy logs and CI
+    output, so it may name the offending TIMEOUT variable (and echo that variable's own value,
+    which is what the operator typed) but must never include any part of the connection string.
+    Nothing else pinned this: a message that appended the URL left every other test green.
+
+    The positive controls come first: the refusal really happened and really named the variable,
+    so an empty or unrelated stderr cannot make the absence checks below vacuous."""
+    result = _settings_in_subprocess(CACHE_URL=FAKE_CACHE_URL, **{name: bad})
+
+    assert result.returncode != 0, f"{name}={bad!r} was accepted: {result.stdout}"
+    assert "ImproperlyConfigured" in result.stderr
+    assert name in result.stderr
+    for output in (result.stderr, result.stdout):
+        for secret in (
+            FAKE_CACHE_URL,
+            FAKE_CACHE_URL_PASSWORD,
+            FAKE_CACHE_URL_USER,
+            FAKE_CACHE_URL_HOST,
+        ):
+            assert secret not in output, f"the refusal leaked part of CACHE_URL: {secret!r}"
+
+
 # --- the throttle against a store that accepts and never answers ----------------------------
 @needs_sigalrm
 def test_the_limiter_fails_open_after_about_the_timeout_when_the_store_stalls(
