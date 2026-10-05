@@ -410,6 +410,7 @@ jobs:
           cargo clippy -p selahcue-lan --features server --all-targets -- -D warnings
           cargo clippy -p selahcue-app --features server --all-targets -- -D warnings
           cargo clippy -p selahcue-scripture --features download --all-targets -- -D warnings
+          cargo clippy -p selahcue-scripture --features installed --all-targets -- -D warnings
           cargo clippy -p selahcue-cloud --features openai --all-targets -- -D warnings
           cargo clippy -p selahcue-stt-cloud --features deepgram --all-targets -- -D warnings
       - name: Test (workspace, incl. GPU parity where an adapter exists)
@@ -503,9 +504,15 @@ jobs:
         run: |
           cargo test -p selahcue-lan --features server --no-fail-fast
           cargo test -p selahcue-app --features server --no-fail-fast
-      - name: Test (scripture download — feature-gated, loopback only)
+      - name: Test (scripture installed + download — feature-gated, loopback only)
         if: ${{ !cancelled() }}
-        run: cargo test -p selahcue-scripture --features download --no-fail-fast
+        # `installed` is the runtime loader the output host will link (no network crate; the guard
+        # that proves it is in scripts/import_guards.sh), `download` adds the HTTP fetch on top.
+        # Both are tested on their own: `download` implies `installed`, but only the `installed`
+        # run proves that code compiles and passes without the HTTP client present.
+        run: |
+          cargo test -p selahcue-scripture --features installed --no-fail-fast
+          cargo test -p selahcue-scripture --features download --no-fail-fast
       # The OpenAI note provider (86akby7d8) lives behind an off-by-default feature, so the
       # workspace run does not build it. An off-by-default feature no gate compiles is how
       # selahcue-stt ended up linted and tested by nothing; this keeps that from repeating.

@@ -20,10 +20,7 @@ use selahcue_scripture::{chapter_verse_bounds_in, verses_in, Translation};
 /// Every translation compiled into the binary, derived rather than listed, so a sixth bundled
 /// translation joins the sweep automatically.
 fn bundled() -> Vec<Translation> {
-    Translation::ALL
-        .into_iter()
-        .filter(|t| !t.is_downloadable())
-        .collect()
+    Translation::ALL.into_iter().collect()
 }
 
 fn reference(book: u8, chapter: u16, verses: Option<(u16, u16)>) -> Reference {
@@ -198,15 +195,4 @@ fn real_chapters_have_their_real_bounds() {
             );
         }
     }
-}
-
-#[test]
-fn a_translation_that_is_not_bundled_agrees_with_its_lookup() {
-    // YLT is downloadable; with nothing downloaded (and, in the default build, no download
-    // machinery at all) it has no verses, so no chapter has bounds — the answer `verses_in` implies.
-    let r = parsed("John 3");
-    assert_eq!(
-        chapter_verse_bounds_in(Translation::Ylt, &r),
-        from_the_corpus(Translation::Ylt, r.book, r.chapter)
-    );
 }

@@ -58,10 +58,7 @@ fn allocated_now() -> usize {
 /// translation joins this test automatically (and fails it if it decodes, allocates, or has an
 /// `is_index_loaded` arm that watches the wrong index).
 fn bundled() -> Vec<Translation> {
-    Translation::ALL
-        .into_iter()
-        .filter(|t| !t.is_downloadable())
-        .collect()
+    Translation::ALL.into_iter().collect()
 }
 
 #[test]

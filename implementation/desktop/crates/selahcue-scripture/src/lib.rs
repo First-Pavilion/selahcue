@@ -16,14 +16,14 @@
 //! deliberately NOT bundled — its PD status is US-only (Cambridge UP; life+70
 //! jurisdictions plausibly until 2038).
 //!
-//! One further public-domain translation — **Young's Literal Translation (1898)**
-//! — is selectable but NOT bundled: it is the DOWNLOADABLE exemplar. It carries no
-//! `include_bytes!` asset; under the `download` feature it loads its gzipped verse
-//! index from the on-disk cache ([`download::default_cache_dir`]) at runtime, and
-//! reports [`is_available`]`== false` until its owner-supplied asset has been
-//! fetched. With the feature off it exists in the [`Translation`] enum but is never
-//! available (no runtime file I/O is compiled). Licensed translations (NIV/NLT/…)
-//! remain on story 86ajpqfyj.
+//! Further translations are DOWNLOADED, not bundled (story 17tnw2b2jfv). With the `installed`
+//! feature, [`registry::Registry`] holds the ones a user has installed in the app data directory
+//! (SHA-256-checked against a receipt, validated at install time, at most three decoded indexes in
+//! memory at once), and [`Bible`] is the one handle that answers lookups for a bundled and an
+//! installed translation alike. With the `download` feature, [`download::download_and_install`]
+//! fetches a catalogued translation. The five bundled translations stay the closed
+//! [`Translation`] enum, so their wire codes and the quote matcher are untouched. Licensed
+//! translations (NIV/NLT/...) remain on story 86ajpqfyj.
 //!
 //! Everything works offline — a hard product requirement for live services.
 //!
@@ -34,9 +34,9 @@
 //! status, which is rebuilt after every command including Blackout — must therefore use
 //! [`passage_exists_in`], never `!verses_in(..).is_empty()`. It answers from a small table of
 //! verse runs that `build.rs` derives from the embedded assets at compile time, so it decodes
-//! nothing and allocates nothing, yet returns exactly what the lookup would (86ak84fbd). A
-//! downloadable translation has no embedded asset to derive a table from; it falls back to the
-//! lookup, which decodes its verses once if (and only if) they have been downloaded.
+//! nothing and allocates nothing, yet returns exactly what the lookup would (86ak84fbd). An
+//! installed translation has no embedded asset to derive a table from;
+//! [`Bible::passage_exists`] answers from its decoded index, loading it if it is not resident.
 
 #![forbid(unsafe_code)]
 
@@ -56,19 +56,37 @@ pub use quote_match::{
     match_quote_scored_in, ranked_offered_in, warm, warm_in, MAX_ALTERNATIVES, MAX_RANKED,
 };
 
-/// Download-on-demand for additional Bible-translation assets (feature `download`).
+/// One handle for a bundled or an installed translation (see [`Bible`]).
+mod bible;
+pub use bible::Bible;
+
+/// The embedded catalogue of downloadable translations (feature `installed`).
+#[cfg(feature = "installed")]
+pub mod catalog;
+/// SHA-256 helpers shared by the installer and the downloader.
+#[cfg(feature = "installed")]
+mod digest;
+/// Installed translations: storage, receipt, install, and the bounded cache (feature `installed`).
+#[cfg(feature = "installed")]
+pub mod registry;
+/// Which URLs the download path may request: HTTPS only (feature `installed`).
+#[cfg(feature = "installed")]
+pub mod url_policy;
+/// Install-time validation of a translation asset (feature `installed`).
+#[cfg(feature = "installed")]
+pub mod validate;
+
+/// Download-on-demand for catalogued Bible translations (feature `download`).
 ///
-/// Additive, feature-gated supply-chain infra: fetch + SHA-256-verify + cache a pinned
-/// translation file, mirroring `selahcue-stt`'s model-download discipline. It exposes only
-/// the VERIFIED local file PATH — downloaded translations are deliberately NOT integrated
-/// into the compiled [`Translation`] enum, the per-translation quote-match index, or the
-/// cross-language-pinned LAN wire protocol. With the feature OFF this crate stays pure
-/// (bundled text only, no I/O), exactly as before.
+/// Fetches a catalogued translation over HTTPS, checks it against its pinned SHA-256, validates
+/// it and installs it into the [`registry::Registry`]. It cannot be called without a
+/// [`download::TermsAcceptance`], refuses an unpublished entry without making a request, and
+/// refuses one still pending legal review. With the feature OFF this crate has no HTTP client.
 #[cfg(feature = "download")]
 pub mod download;
 #[cfg(feature = "download")]
 pub use download::{
-    catalog, default_cache_dir, fetch_translation, sha256_file, TranslationAsset,
+    default_cache_dir, download_and_install, fetch_translation, sha256_file, TranslationAsset,
     TranslationFetchError,
 };
 
@@ -91,11 +109,11 @@ pub struct SearchHit {
     pub text: String,
 }
 
-/// A selectable translation (KJV is the product default — owner decision,
-/// 2026-07-24). The first five are BUNDLED (compiled into the binary) and public
-/// domain worldwide (KJV: UK Crown letters patent covers printing within the UK;
-/// see the module doc for the BBE exclusion rationale). [`Translation::Ylt`] is
-/// public domain too but DOWNLOADABLE — see [`Translation::is_downloadable`].
+/// A BUNDLED translation (KJV is the product default — owner decision, 2026-07-24). All five are
+/// compiled into the binary and public domain worldwide (KJV: UK Crown letters patent covers
+/// printing within the UK; see the module doc for the BBE exclusion rationale). Translations a user
+/// downloads are not variants of this enum: they are keyed by validated code strings in
+/// [`registry::Registry`] (feature `installed`), and [`Bible`] is the handle that covers both.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Translation {
     #[default]
@@ -104,21 +122,16 @@ pub enum Translation {
     Asv,
     Webbe,
     Dby,
-    /// Young's Literal Translation (1898) — public domain, but not bundled: its
-    /// verses load from the on-disk cache at runtime (feature `download`).
-    Ylt,
 }
 
 impl Translation {
-    /// Every selectable translation, default first (drives the picker order). Includes
-    /// downloadable translations, which may not be available yet — see [`is_available`].
-    pub const ALL: [Translation; 6] = [
+    /// Every bundled translation, default first (drives the picker order).
+    pub const ALL: [Translation; 5] = [
         Translation::Kjv,
         Translation::Web,
         Translation::Asv,
         Translation::Webbe,
         Translation::Dby,
-        Translation::Ylt,
     ];
 
     /// Short display/wire code (`"KJV"`, `"WEB"`, …).
@@ -129,7 +142,6 @@ impl Translation {
             Translation::Asv => "ASV",
             Translation::Webbe => "WEBBE",
             Translation::Dby => "DBY",
-            Translation::Ylt => "YLT",
         }
     }
 
@@ -141,11 +153,11 @@ impl Translation {
             Translation::Asv => "American Standard Version",
             Translation::Webbe => "World English Bible (British Edition)",
             Translation::Dby => "Darby Translation",
-            Translation::Ylt => "Young's Literal Translation (1898)",
         }
     }
 
-    /// Parse a wire/UI code (case-insensitive); `None` for unknown codes.
+    /// Parse a wire/UI code (case-insensitive); `None` for unknown codes. Only the five bundled
+    /// codes: a downloaded translation's code is resolved by [`Bible::from_code`].
     pub fn from_code(code: &str) -> Option<Translation> {
         match code.to_ascii_uppercase().as_str() {
             "KJV" => Some(Translation::Kjv),
@@ -153,27 +165,17 @@ impl Translation {
             "ASV" => Some(Translation::Asv),
             "WEBBE" => Some(Translation::Webbe),
             "DBY" => Some(Translation::Dby),
-            "YLT" => Some(Translation::Ylt),
             _ => None,
         }
     }
-
-    /// Whether this translation is fetched on demand — its verses load from the on-disk
-    /// cache at runtime (feature `download`) — rather than being compiled into the binary.
-    /// Pure classification: no I/O. Downloadable translations may not be available yet
-    /// (nothing downloaded); use [`is_available`] to gate a lookup.
-    pub fn is_downloadable(self) -> bool {
-        matches!(self, Translation::Ylt)
-    }
 }
 
-/// Whether translation `t` can be looked up right now. Bundled translations are always
-/// available (compiled in). A downloadable translation ([`Translation::is_downloadable`]) is
-/// available only once its verified asset has been downloaded into the cache and decodes to
-/// verses; with the `download` feature off it is never available (no runtime file I/O is
-/// compiled). Never performs network I/O and never panics.
+/// Whether bundled translation `t` can be looked up right now. Always: bundled text is compiled in.
+/// Kept so existing callers keep compiling; to ask the same of a translation that may be a
+/// downloaded one, use [`Bible::is_available`]. Never performs I/O and never panics.
 pub fn is_available(t: Translation) -> bool {
-    !t.is_downloadable() || !index_of(t).is_empty()
+    let _ = t;
+    true
 }
 
 /// Short code of the DEFAULT translation (KJV).
@@ -185,74 +187,17 @@ static ASV_INDEX: OnceLock<Vec<Verse>> = OnceLock::new();
 static WEBBE_INDEX: OnceLock<Vec<Verse>> = OnceLock::new();
 static DBY_INDEX: OnceLock<Vec<Verse>> = OnceLock::new();
 
-/// Runtime-loaded index for the downloadable YLT translation: decoded from the on-disk cache
-/// at most once (mirroring the bundled load-once discipline). A FAILED load is deliberately
-/// NOT cached, so a later successful download loads on the next access.
-#[cfg(feature = "download")]
-static YLT_INDEX: OnceLock<Vec<Verse>> = OnceLock::new();
-
-/// The verse index of `t`. A BUNDLED translation decodes lazily on FIRST use and exactly
-/// once (an unused translation costs only its compressed asset bytes). A DOWNLOADABLE
-/// translation carries no compiled asset: it loads from the on-disk cache at runtime and
-/// degrades to an EMPTY index when its file is absent/unreadable or the `download` feature is
-/// off — so every lookup helper returns "nothing" gracefully rather than panicking.
-fn index_of(t: Translation) -> &'static [Verse] {
+/// The verse index of `t`. A bundled translation decodes lazily on FIRST use and exactly once (an
+/// unused translation costs only its compressed asset bytes).
+pub(crate) fn index_of(t: Translation) -> &'static [Verse] {
     let (lock, compressed): (&OnceLock<Vec<Verse>>, &[u8]) = match t {
         Translation::Kjv => (&KJV_INDEX, include_bytes!("../assets/kjv.tsv.gz")),
         Translation::Web => (&WEB_INDEX, include_bytes!("../assets/web.tsv.gz")),
         Translation::Asv => (&ASV_INDEX, include_bytes!("../assets/asv.tsv.gz")),
         Translation::Webbe => (&WEBBE_INDEX, include_bytes!("../assets/webbe.tsv.gz")),
         Translation::Dby => (&DBY_INDEX, include_bytes!("../assets/dby.tsv.gz")),
-        Translation::Ylt => return downloadable_index_or_empty(t),
     };
     lock.get_or_init(|| decode(compressed))
-}
-
-/// The runtime-loaded verse index for a DOWNLOADABLE translation, or an empty slice when it
-/// is not available (not downloaded, unreadable, or the `download` feature is off). Never
-/// panics. Feature-gated so the default (feature-off) build compiles no file I/O and stays
-/// byte-identically pure for the bundled translations.
-fn downloadable_index_or_empty(t: Translation) -> &'static [Verse] {
-    #[cfg(feature = "download")]
-    {
-        downloadable_index(t).unwrap_or(&[])
-    }
-    #[cfg(not(feature = "download"))]
-    {
-        let _ = t;
-        &[]
-    }
-}
-
-/// Load a downloadable translation's verse index from the on-disk cache (feature `download`).
-///
-/// Reads `download::default_cache_dir().join(<file_name>)` — the SAME path the download
-/// machinery installs the verified asset to — and decodes the gzipped TSV exactly once,
-/// caching it process-wide so subsequent lookups hand out stable `&'static` verses (the same
-/// load-once discipline as the bundled indices). Returns `None` — never panics — when the
-/// translation is not downloadable, or its cached file is absent, unreadable, or decodes to no
-/// verses; a failed load is deliberately NOT cached, so a later (successful) download loads on
-/// the next access. Reads only a local file; never touches the network.
-#[cfg(feature = "download")]
-fn downloadable_index(t: Translation) -> Option<&'static [Verse]> {
-    let (lock, file_name) = match t {
-        Translation::Ylt => (&YLT_INDEX, download::YLT_FILE_NAME),
-        _ => return None,
-    };
-    if let Some(verses) = lock.get() {
-        return Some(verses.as_slice());
-    }
-    let path = download::default_cache_dir().join(file_name);
-    let compressed = std::fs::read(&path).ok()?;
-    let verses = decode(&compressed);
-    if verses.is_empty() {
-        // Absent/corrupt/empty → treat as not-yet-available WITHOUT caching, so a later
-        // successful download can still load.
-        return None;
-    }
-    // Cache the decode once; if a racing thread installed first, defer to theirs.
-    let _ = lock.set(verses);
-    lock.get().map(Vec::as_slice)
 }
 
 fn decode(compressed: &[u8]) -> Vec<Verse> {
@@ -288,62 +233,41 @@ fn decode(compressed: &[u8]) -> Vec<Verse> {
 /// Whether `reference` presents at least one verse in translation `t` — exactly
 /// `!verses_in(t, reference).is_empty()`, without the cost of `verses_in`.
 ///
-/// For a BUNDLED translation this answers from a compile-time table of verse runs: it never
-/// decodes the translation, never allocates, and keeps no cache (the table is read-only static
-/// data, ~1.2k rows of 8 bytes per translation). That is the point — it is the call to make on a
-/// path that runs per action (the operator view's link status runs after every command, Blackout
-/// and Clear included), where decoding a whole translation to ask a yes/no question is a
-/// first-press stall. A well-formed reference that names nothing (`Jude 2:1`, `Romans 99:1`) is
-/// `false`, and a verse one translation omits (the WEB has no Luke 17:36) is `false` there only.
-///
-/// A DOWNLOADABLE translation ([`Translation::is_downloadable`]) has no embedded asset to derive
-/// a table from, so it falls back to the lookup: its verses decode once, and only once they have
-/// been downloaded; until then it is `false` without decoding anything. With the `download`
-/// feature on, a translation that is NOT downloaded yet still costs a failed file read on every
-/// call (a failed load is deliberately not cached, so a later download is picked up) — cheap,
-/// but I/O, unlike the bundled path. Tracked in ClickUp 17tnw2b0wfw.
+/// It answers from a compile-time table of verse runs: it never decodes the translation, never
+/// allocates, and keeps no cache (the table is read-only static data, ~1.2k rows of 8 bytes per
+/// translation). That is the point — it is the call to make on a path that runs per action (the
+/// operator view's link status runs after every command, Blackout and Clear included), where
+/// decoding a whole translation to ask a yes/no question is a first-press stall. A well-formed
+/// reference that names nothing (`Jude 2:1`, `Romans 99:1`) is `false`, and a verse one translation
+/// omits (the WEB has no Luke 17:36) is `false` there only.
 ///
 /// An exhaustive test (`tests/test_passage_exists.rs`) pins this to `verses_in` over every chapter
 /// of every bundled translation.
 pub fn passage_exists_in(t: Translation, reference: &Reference) -> bool {
-    match versification::runs_of(t) {
-        Some(runs) => versification::contains(
-            runs,
-            reference.book,
-            reference.chapter,
-            reference.verses.map(|r| (r.start, r.end)),
-        ),
-        None => !verses_in(t, reference).is_empty(),
-    }
+    versification::contains(
+        versification::runs_of(t),
+        reference.book,
+        reference.chapter,
+        reference.verses.map(|r| (r.start, r.end)),
+    )
 }
 
 /// The first and last verse NUMBERS translation `t` has in the chapter `reference` names (its verse
-/// selection is ignored), or `None` when that chapter has no verse in `t` (outside the canon, or a
-/// downloadable translation that is not downloaded). Exactly the first and last `verse` of
-/// `verses_in(t, <the whole chapter>)`, without the cost of `verses_in`.
+/// selection is ignored), or `None` when that chapter has no verse in `t` (outside the canon).
+/// Exactly the first and last `verse` of `verses_in(t, <the whole chapter>)`, without the cost of
+/// `verses_in`.
 ///
-/// For a BUNDLED translation this answers from the same compile-time verse-run table as
-/// [`passage_exists_in`]: no decode, no allocation, no cache. It is the call to make to ask "how far
-/// does this chapter run?" on a path that must not stall (resolving a plan's links when it loads or
-/// is edited), where the answer to that question used to be a whole-translation decode (86ak84fbd).
-/// The last verse NUMBER is not the verse COUNT: a translation that omits a verse in the middle of a
-/// chapter (the WEB has no Luke 17:36 or Acts 8:37) has a last number one higher than its count.
+/// It answers from the same compile-time verse-run table as [`passage_exists_in`]: no decode, no
+/// allocation, no cache. It is the call to make to ask "how far does this chapter run?" on a path
+/// that must not stall (resolving a plan's links when it loads or is edited), where the answer to
+/// that question used to be a whole-translation decode (86ak84fbd). The last verse NUMBER is not
+/// the verse COUNT: a translation that omits a verse in the middle of a chapter (the WEB has no
+/// Luke 17:36 or Acts 8:37) has a last number one higher than its count.
 ///
-/// A DOWNLOADABLE translation has no table, so it falls back to `verses_in` (decoding once, and only
-/// once downloaded). An exhaustive test (`tests/test_chapter_verse_bounds.rs`) pins this to
-/// `verses_in` over every chapter of every bundled translation.
+/// An exhaustive test (`tests/test_chapter_verse_bounds.rs`) pins this to `verses_in` over every
+/// chapter of every bundled translation.
 pub fn chapter_verse_bounds_in(t: Translation, reference: &Reference) -> Option<(u16, u16)> {
-    match versification::runs_of(t) {
-        Some(runs) => versification::chapter_bounds(runs, reference.book, reference.chapter),
-        None => {
-            let whole_chapter = Reference {
-                verses: None,
-                ..reference.clone()
-            };
-            let verses = verses_in(t, &whole_chapter);
-            Some((verses.first()?.verse, verses.last()?.verse))
-        }
-    }
+    versification::chapter_bounds(versification::runs_of(t), reference.book, reference.chapter)
 }
 
 /// Whether translation `t`'s full verse index has been decoded yet in this process. Never
@@ -360,10 +284,6 @@ pub fn is_index_loaded(t: Translation) -> bool {
         Translation::Asv => ASV_INDEX.get().is_some(),
         Translation::Webbe => WEBBE_INDEX.get().is_some(),
         Translation::Dby => DBY_INDEX.get().is_some(),
-        #[cfg(feature = "download")]
-        Translation::Ylt => YLT_INDEX.get().is_some(),
-        #[cfg(not(feature = "download"))]
-        Translation::Ylt => false,
     }
 }
 
@@ -376,7 +296,13 @@ pub fn verses(reference: &Reference) -> Vec<&'static Verse> {
 /// whole-chapter reference (no verse range) returns the entire chapter. Empty
 /// when the reference is outside the canon (e.g. a chapter that does not exist).
 pub fn verses_in(t: Translation, reference: &Reference) -> Vec<&'static Verse> {
-    let all = index_of(t);
+    select_verses(index_of(t), reference)
+}
+
+/// The verses of `reference` in `all`, a verse index sorted by (book, chapter, verse). The ONE
+/// definition of "which verses does this reference present", shared by the bundled lookups and by
+/// [`Bible`] over an installed translation.
+pub(crate) fn select_verses<'a>(all: &'a [Verse], reference: &Reference) -> Vec<&'a Verse> {
     // The index is sorted; find the chapter span, then filter the range.
     let start = all.partition_point(|v| (v.book, v.chapter) < (reference.book, reference.chapter));
     let chapter = all[start..]
@@ -390,6 +316,19 @@ pub fn verses_in(t: Translation, reference: &Reference) -> Vec<&'static Verse> {
     }
 }
 
+/// The first and last verse numbers of the chapter `reference` names in `all` (verse selection
+/// ignored), or `None` when the chapter holds nothing. Only an installed translation needs it (a
+/// bundled one answers from its verse-run table).
+#[cfg(feature = "installed")]
+pub(crate) fn bounds_in_index(all: &[Verse], reference: &Reference) -> Option<(u16, u16)> {
+    let whole_chapter = Reference {
+        verses: None,
+        ..reference.clone()
+    };
+    let verses = select_verses(all, &whole_chapter);
+    Some((verses.first()?.verse, verses.last()?.verse))
+}
+
 /// The verse text of `reference` in the DEFAULT translation (KJV).
 pub fn passage_text(reference: &Reference) -> Option<String> {
     passage_text_in(Translation::default(), reference)
@@ -398,12 +337,17 @@ pub fn passage_text(reference: &Reference) -> Option<String> {
 /// The verse text of `reference` as one string (verses joined by a space), or
 /// `None` when nothing matches. Suitable for confidence-monitor previews.
 pub fn passage_text_in(t: Translation, reference: &Reference) -> Option<String> {
-    let vs = verses_in(t, reference);
-    if vs.is_empty() {
+    join_verses(&verses_in(t, reference))
+}
+
+/// `verses` joined by a space, or `None` when there are none.
+pub(crate) fn join_verses(verses: &[&Verse]) -> Option<String> {
+    if verses.is_empty() {
         return None;
     }
     Some(
-        vs.iter()
+        verses
+            .iter()
             .map(|v| v.text.as_str())
             .collect::<Vec<_>>()
             .join(" "),
@@ -420,12 +364,16 @@ pub fn search(query: &str, limit: usize) -> Vec<SearchHit> {
 
 /// Keyword search over translation `t` (see [`search`]).
 pub fn search_in(t: Translation, query: &str, limit: usize) -> Vec<SearchHit> {
+    search_index(index_of(t), query, limit)
+}
+
+pub(crate) fn search_index(all: &[Verse], query: &str, limit: usize) -> Vec<SearchHit> {
     let words: Vec<String> = query.split_whitespace().map(|w| w.to_lowercase()).collect();
     if words.is_empty() {
         return Vec::new();
     }
     let mut hits = Vec::new();
-    for v in index_of(t) {
+    for v in all {
         if hits.len() >= limit {
             break;
         }
@@ -481,17 +429,20 @@ pub fn chapter(reference: &Reference) -> Option<Chapter> {
 /// The full chapter containing `reference` (its verse selection is ignored),
 /// or `None` when the chapter is outside the canon.
 pub fn chapter_in(t: Translation, reference: &Reference) -> Option<Chapter> {
+    chapter_of_index(index_of(t), reference)
+}
+
+pub(crate) fn chapter_of_index(all: &[Verse], reference: &Reference) -> Option<Chapter> {
     let full = Reference {
         book: reference.book,
         book_name: reference.book_name,
         chapter: reference.chapter,
         verses: None,
     };
-    let vs = verses_in(t, &full);
+    let vs = select_verses(all, &full);
     if vs.is_empty() {
         return None;
     }
-    let all = index_of(t);
     let exists = |book: u8, chapter: u16| {
         (1..=66).contains(&book) && {
             let i = all.partition_point(|v| (v.book, v.chapter) < (book, chapter));
@@ -523,7 +474,14 @@ pub fn adjacent_chapter(reference: &Reference, forward: bool) -> Option<String> 
 /// (crossing book boundaries; `None` at the ends of the canon). The returned
 /// display string parses back via `scripture::parse_one`.
 pub fn adjacent_chapter_in(t: Translation, reference: &Reference, forward: bool) -> Option<String> {
-    let all = index_of(t);
+    adjacent_in_index(index_of(t), reference, forward)
+}
+
+pub(crate) fn adjacent_in_index(
+    all: &[Verse],
+    reference: &Reference,
+    forward: bool,
+) -> Option<String> {
     if forward {
         // First verse strictly after this chapter.
         let i = all.partition_point(|v| (v.book, v.chapter) <= (reference.book, reference.chapter));

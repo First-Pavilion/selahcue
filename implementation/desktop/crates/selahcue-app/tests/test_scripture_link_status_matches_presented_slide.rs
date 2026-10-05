@@ -33,7 +33,9 @@ const TRANSLATIONS: &[Option<&str>] = &[
     Some("ASV"),
     Some("WEBBE"),
     Some("DBY"),
-    // Downloadable and, in this build, not downloaded: nothing presents, nothing resolves.
+    // Well-formed but not a bundled code (it was once the placeholder Young's translation, which
+    // never shipped): this host does not know it, so it resolves to the default like BOGUS.
+    // How the host treats a DOWNLOADED translation's code is ticket A5.
     Some("YLT"),
 ];
 
