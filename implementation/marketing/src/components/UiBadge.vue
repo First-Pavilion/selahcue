@@ -32,9 +32,9 @@ const props = defineProps({
    * class C; the owner decision is that honest content wins). Declaring the prop is what lets
    * development say so out loud instead of leaving the attribute to fall through unread.
    *
-   * TEMPORARY, tied to that one call site: when `PricingView` stops passing `text` (the Pricing
-   * ticket 17tnw2b2cey, or the claims ticket 17tnw2b0x3h), delete this prop, the warning below
-   * and the `.ui-badge:empty` rule, so the scaffolding does not outlive the thing it covers.
+   * TEMPORARY, tied to that one call site. `PricingView` no longer passes `text` (ClickUp 17tnw2b0x3h
+   * removed the Pricing plans, toggle and FAQ), so this prop, the warning below, the `.ui-badge:empty`
+   * rule, the gallery's `text-only` badge and its tests can be deleted together in a follow-up.
    */
   text: {
     type: String,
