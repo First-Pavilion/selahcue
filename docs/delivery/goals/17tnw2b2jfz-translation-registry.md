@@ -130,7 +130,7 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
 
 - Target criterion: every control claimed in C-001 to C-009 must fail when it is removed
 - Hypothesis: a green first run proves nothing about the tests
-- Change or investigation: a mutation runner (95 single-guard mutants over registry, validate, catalog, download, url_policy, bible), each run against the whole suite with `--features download`, the file restored from git after each
+- Change or investigation: a mutation runner (95 single-guard mutant runs over registry, validate, catalog, download, url_policy, bible), each run against the whole suite with `--features download`, the file restored from git after each
 - Verifier executed: the runner. Round one: 75 mutants, 69 caught, 5 survived, 1 invalid pattern. Round two (the survivors re-targeted plus 15 new guards): 18 caught, 2 survived
 - Result: every survivor but one was a real test gap. Round one: the install-time prune (the next read pruned anyway), the receipt size cap (the test used a whitespace-only receipt, which the parser refused first), the licence and source URL checks (no test), and the low-level policy check (nothing asserted that a refused URL creates no directory). The fifth, a start-URL check in `download_and_install`, was redundant with the per-hop check in `open_stream`, so it was removed rather than tested. Round two: an `Interrupted` read retry and the cleanup of an orphan file when the first receipt cannot be written (both untested)
 - New evidence: evict-before-decode (peak is the cap, not cap + 1) and "a bad file does not evict a good index" were added after M8 and M9 were written; `peak_decoded` is the seam that proves the first
@@ -142,7 +142,7 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
 - Hypothesis: each survivor is killed by one new assertion
 - Change or investigation: padded valid receipt, resident-then-install, licence/source URL cases, `a..b.tsv.gz`, an interrupted read, a directory planted where the receipt goes, unrelated `.part`/`.tmp` files that cleanup must not touch, an assertion that a refused low-level URL creates no directory; cleanup narrowed to this module's own staging names; the two test-only constructors made `#[cfg(debug_assertions)]` so a release binary cannot build a loopback policy (a release test build fails with an explanation)
 - Verifier executed: the survivors re-run: all caught. Import guard mutated twice (a `dep:ureq` added to `installed`; `zmij` removed from the allowlist): both exit 1
-- Result: no known survivor remains. 95 mutants in total; the two redundant-check survivors are recorded above, not hidden
+- Result: no known survivor remains. 95 mutant runs in total (87 caught first time, 7 survived, 1 stale pattern); six survivors were test gaps, now tested, and one (the second start-URL check) was a redundant check, removed rather than tested
 - New evidence: the real A1 BSB, Yoruba, Igbo and Hausa assets (1.3 to 1.5 MB each) install through the real embedded catalogue and read back (BSB 31,086 verses, YOR 31,087, IBO 31,103, HAU 31,087; John 3:16 in BSB; Yoruba diacritics intact); install about 130 to 190 ms and first read about 115 to 150 ms in a debug build; maximum resident set 13.7 MB at a cap of 1, 24.5 MB at 3, 29.0 MB at 4 (debug build, macOS)
 - Decision: iterate
 
