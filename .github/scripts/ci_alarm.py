@@ -61,6 +61,38 @@ this comment.
 The reconcile step is a pure function so it can be tested without GitHub
 (`--self-test`); the workflow's first real execution should not be its first
 execution ever.
+
+WINDOWS IS NOT RUN ON EVERY PUSH (17tnw2b2nxk)
+The repository is private and bills minutes, so a pull request and a push to `main`
+run the Linux legs only; the Windows legs run on the weekly schedule, a manual
+dispatch, a `full-ci` pull request and a release tag. macOS is not in CI at all.
+
+`rust`, `operator` and `operator-native` are matrix jobs. GitHub reports ONE result for
+all the legs of a matrix job, under the job's id. If the key stayed `rust`, this would
+happen: the weekly run fails on Windows, `rust` becomes outstanding, the next push to
+`main` runs `rust` on Linux only and succeeds, and the alarm closes while Windows is
+still broken, having tested nothing about Windows. The same false all-clear, reached
+through the matrix instead of through a skip.
+
+So a result is keyed by what it covered (`tier_results`):
+
+    run included Windows  -> `rust`                 covers Linux AND Windows. A success also
+                                                    counts for `rust (linux only)`.
+    Linux-only run        -> `rust (linux only)`    covers Linux only. The plain `rust` is
+                                                    recorded as "not run": it is no evidence,
+                                                    so it never clears and never fails.
+
+Only a run that included Windows can clear a Windows failure, and the weekly run (or
+`gh workflow run ci.yml -f windows=true`) is what does. The cost is deliberate and in
+the safe direction: a Windows failure holds the alarm open until a full run passes, even
+if the cause was fixed on Linux the same day. "Not run" also keeps a marker-less issue
+from closing on a Linux-only push, because `conservative_outstanding` counts it as not
+observed succeeding.
+
+Whether Windows ran is read from WINDOWS_RAN, the very output that built the matrix. Only
+the exact string "true" counts; anything else, including a missing variable, is "Linux
+only", the stricter reading. The alarm tracks job ids, never per-OS job names, so a macOS
+leg that no longer exists cannot be missing from it.
 """
 
 from __future__ import annotations
@@ -75,6 +107,14 @@ import sys
 MARKER = "ci-red-outstanding"
 MARKER_RE = re.compile(rf"<!--\s*{MARKER}:\s*([^>]*?)\s*-->")
 LABEL = "ci-red"
+
+# The jobs whose matrix may or may not include Windows (the `os:` of each is the `changes` job's
+# `os` output). Every other tracked job runs on one OS and needs no mapping. See the module
+# docstring. A new matrix job that can include Windows must be added here, or a Linux-only success
+# of it could clear a Windows failure.
+MATRIX_JOBS = frozenset({"rust", "operator", "operator-native"})
+LINUX_ONLY = " (linux only)"
+NOT_RUN = "not run"
 
 
 # --------------------------------------------------------------------------
@@ -137,6 +177,37 @@ def outstanding_from(body: str | None, results: dict[str, str]) -> tuple[set[str
     if not recorded:
         return conservative_outstanding(results), False
     return recorded, True
+
+
+def windows_ran(value: str | None) -> bool:
+    """Did this run include the Windows legs? Exactly "true", nothing else.
+
+    Anything else -- unset, empty, "True", "1", garbage -- reads as Linux only. That is the
+    stricter reading: a Linux-only run can then never clear a Windows failure.
+    """
+    return value == "true"
+
+
+def tier_results(results: dict[str, str], windows: bool) -> dict[str, str]:
+    """Key each matrix job's result by what it covered. See the module docstring.
+
+    A run that included Windows reports `rust` for Linux AND Windows; a success there is also
+    a success for `rust (linux only)`, which it covered. A Linux-only run reports
+    `rust (linux only)` and marks the plain `rust` as "not run", which is neither a failure nor
+    a recovery but IS "not observed succeeding" for `conservative_outstanding`. Jobs outside
+    MATRIX_JOBS are passed through untouched.
+    """
+    if windows:
+        out = dict(results)
+        for job in MATRIX_JOBS:
+            if results.get(job) == "success":
+                out[job + LINUX_ONLY] = "success"
+        return out
+    out = {job: result for job, result in results.items() if job not in MATRIX_JOBS}
+    for job in MATRIX_JOBS:
+        out[job + LINUX_ONLY] = results.get(job, "")
+        out[job] = NOT_RUN
+    return out
 
 
 # --------------------------------------------------------------------------
@@ -239,6 +310,79 @@ def self_test() -> int:
     check("clean run stays clean", out, set())
     check("clean run reports no failures", failed, set())
 
+    # ------------------------------------------------------------------------------------------
+    # 17tnw2b2nxk: Windows is not run on every push any more. A matrix job reports ONE result for
+    # all its legs, so without `tier_results` a Linux-only success would clear a Windows failure.
+    # Every case below goes through tier_results, the function main() calls, not a copy of it.
+    linux_push = {"changes": "success", "lint-workflows": "success", "rust": "success",
+                  "operator": "success", "operator-native": "success", "launch-smoke": "success",
+                  "audit": "success", "api": "skipped"}
+    full_ok = dict(linux_push, api="success")
+
+    # A Windows failure found by the weekly run enters under the plain key...
+    out, failed, _ = reconcile(set(), tier_results(dict(full_ok, rust="failure"), True))
+    check("a weekly Windows failure is outstanding under the plain job id", out, {"rust"})
+    check("...and is reported as newly failed", failed, {"rust"})
+    # ...and a green Linux-only push does NOT clear it. This is the false all-clear.
+    out, _, rec = reconcile({"rust"}, tier_results(linux_push, False))
+    check("a Linux-only success must not clear a Windows failure", out, {"rust"})
+    check("...it is not even a recovery", rec, set())
+    # Same for every matrix job, not just the first one anyone thought of.
+    for job in sorted(MATRIX_JOBS):
+        out, _, _ = reconcile({job}, tier_results(linux_push, False))
+        check(f"a Linux-only success must not clear `{job}`", out, {job})
+    # A Linux-only run that did not run the job at all (an api-only push skips the desktop
+    # matrix) says nothing about either OS.
+    out, _, rec = reconcile({"rust", "rust" + LINUX_ONLY},
+                            tier_results(dict(linux_push, rust="skipped"), False))
+    check("a skipped matrix job in a Linux-only run clears nothing", out, {"rust", "rust" + LINUX_ONLY})
+    check("...and recovers nothing", rec, set())
+    # Only a run that included Windows clears it, and the Linux-only key with it.
+    out, _, rec = reconcile({"rust", "rust" + LINUX_ONLY}, tier_results(full_ok, True))
+    check("a full run that passes clears the Windows failure and the Linux-only one", out, set())
+    check("...both are recoveries", rec, {"rust", "rust" + LINUX_ONLY})
+    # A full run that FAILS does not pretend the Linux leg passed.
+    out, _, _ = reconcile({"rust" + LINUX_ONLY}, tier_results(dict(full_ok, rust="failure"), True))
+    check("a failed full run clears no Linux-only key", out, {"rust" + LINUX_ONLY, "rust"})
+    # A Linux-only failure keeps its own key and a green Linux-only run clears it.
+    out, failed, _ = reconcile(set(), tier_results(dict(linux_push, rust="failure"), False))
+    check("a Linux-only failure is keyed as Linux only", out, {"rust" + LINUX_ONLY})
+    check("...and is reported under that name", failed, {"rust" + LINUX_ONLY})
+    out, _, rec = reconcile({"rust" + LINUX_ONLY}, tier_results(linux_push, False))
+    check("a green Linux-only run clears a Linux-only failure", out, set())
+    check("...as a recovery", rec, {"rust" + LINUX_ONLY})
+    # Non-matrix jobs are untouched by the mapping in either tier.
+    for windows in (True, False):
+        mapped = tier_results(linux_push, windows)
+        check(f"non-matrix jobs pass through (windows={windows})",
+              {k: v for k, v in mapped.items() if k in ("changes", "launch-smoke", "audit", "api")},
+              {k: linux_push[k] for k in ("changes", "launch-smoke", "audit", "api")})
+    # Fail safe: only the exact string "true" means Windows ran.
+    for value, want in (("true", True), ("false", False), ("", False), (None, False),
+                        ("True", False), ("1", False), ("yes", False), (" true", False)):
+        check(f"WINDOWS_RAN={value!r} reads as {want}", windows_ran(value), want)
+    # The marker-less path (an open issue whose marker was stripped) must not close on a Linux-only
+    # push either: the plain matrix keys are recorded as "not run", which is not a success.
+    linux_all_green = dict(linux_push, api="success")  # api ran too, so only the matrix keys are in doubt
+    seeded = conservative_outstanding(tier_results(linux_all_green, False))
+    check("a marker-less issue on a Linux-only push still holds every Windows-covering job",
+          seeded, set(MATRIX_JOBS))
+    out, _, _ = reconcile(seeded, tier_results(linux_all_green, False))
+    check("...so it does not close", out, set(MATRIX_JOBS))
+    out, _, _ = reconcile(seeded, tier_results(full_ok, True))
+    check("...and a full green run still closes it", out, set())
+    # A Linux-only run must still be able to open an alarm and stay quiet when green. macOS is not
+    # in CI at all: no tier produces a macOS-named result, and its absence is never a failure.
+    for windows in (True, False):
+        mapped = tier_results(full_ok, windows)
+        check(f"no result key mentions macOS (windows={windows})",
+              [k for k in mapped if "mac" in k.lower()], [])
+        out, failed, _ = reconcile(set(), mapped)
+        check(f"a clean run is clean with no macOS job (windows={windows})", (out, failed), (set(), set()))
+    # A not-run marker is not a failure either, in the table the issue prints.
+    out, failed, _ = reconcile(set(), tier_results(linux_push, False))
+    check("`not run` is not a failure", (out, failed), (set(), set()))
+
     if failures:
         print("ci_alarm self-test FAILED:", file=sys.stderr)
         for f in failures:
@@ -294,7 +438,11 @@ def main() -> int:
     repo = os.environ["REPO"]
     run_url = os.environ["RUN_URL"]
     sha = os.environ["SHA"][:8]
-    results = {job: (data or {}).get("result", "") for job, data in json.loads(os.environ["NEEDS"]).items()}
+    raw_results = {job: (data or {}).get("result", "") for job, data in json.loads(os.environ["NEEDS"]).items()}
+    # Matrix jobs are keyed by what they covered: Windows included, or Linux only.
+    ran_windows = windows_ran(os.environ.get("WINDOWS_RAN"))
+    results = tier_results(raw_results, ran_windows)
+    print(f"this run included the Windows legs: {ran_windows}")
 
     if DRY_RUN:
         print("DRY-RUN: reads happen, writes are printed and withheld.")
@@ -364,6 +512,17 @@ def main() -> int:
         "run the others. A job leaves this list **only by actually reporting success** — a "
         "skipped job is not evidence about that job and never clears it. So a job can sit "
         "here as `skipped` because nothing has re-tested it since it broke.",
+        "",
+        "### Why a job might be listed as `not run`, or as `(linux only)`",
+        "",
+        "Pull requests and pushes to `main` run the Linux legs only; the Windows legs run on the "
+        "weekly run (Sunday 03:17 UTC), on a manual run with `windows` ticked, on a `full-ci` pull "
+        "request and on release tags. A name such as `rust (linux only)` is the result of the "
+        "Linux leg alone. A plain `rust`, `operator` or `operator-native` covers Linux **and** "
+        "Windows, and a Linux-only run reports it as `not run`: it can neither fail nor clear it. "
+        "So a Windows failure is cleared only by a run that included Windows again: "
+        "`gh workflow run ci.yml --ref main -f windows=true` (about 80 to 90 billable minutes), or "
+        "the next weekly run. macOS is not run in CI at all; the owner's local `make ci` covers it.",
         "",
         "While this issue is open, treat every branch's CI result as unreadable: a real "
         "failure cannot be told apart from this standing one.",
