@@ -29,10 +29,7 @@ use selahcue_scripture::{is_index_loaded, verses_in, Translation};
 /// Every translation compiled into the binary, derived rather than listed: a sixth bundled
 /// translation joins this plan, this laziness check and the positive control automatically.
 fn bundled() -> Vec<Translation> {
-    Translation::ALL
-        .into_iter()
-        .filter(|t| !t.is_downloadable())
-        .collect()
+    Translation::ALL.into_iter().collect()
 }
 
 /// A short chapter, a chapter with a verse missing in most translations, and a whole chapter that

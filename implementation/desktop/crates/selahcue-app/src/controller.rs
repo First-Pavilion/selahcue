@@ -2607,12 +2607,12 @@ impl LiveController {
             live_authored_id: self.presenter.authored_live_id(),
             outputs: self.output_status.clone(),
             displays: self.display_status.clone(),
-            // Advertise only translations that can actually be rendered RIGHT NOW: bundled
-            // translations are always available; a downloadable one (YLT) is withheld until its
-            // verified asset is present (in the host, compiled without the `download` feature, it
-            // is never available). This keeps an unavailable translation out of the operator
-            // picker AND out of the cross-language wire list — matching download.rs's documented
-            // boundary — so it can never be selected into a verse-less "title-only" slide.
+            // Advertise only translations that can actually be rendered RIGHT NOW. Every bundled
+            // translation is always available, so today this is all five; the filter stays so
+            // that a translation that is not available (a downloaded one whose file is gone, once
+            // the host serves those: ticket A5) is kept out of the operator picker AND out of the
+            // cross-language wire list, and can never be selected into a verse-less "title-only"
+            // slide.
             translations: selahcue_scripture::Translation::ALL
                 .iter()
                 .filter(|t| selahcue_scripture::is_available(**t))

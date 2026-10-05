@@ -1,6 +1,8 @@
 import os
 from pathlib import Path
 
+from django.core.exceptions import ImproperlyConfigured
+
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -47,8 +49,6 @@ DEBUG = env_bool("DEBUG", False)
 SECRET_KEY = os.getenv("SECRET_KEY", "")
 if not SECRET_KEY:
     if ENVIRONMENT != "dev":
-        from django.core.exceptions import ImproperlyConfigured
-
         raise ImproperlyConfigured(
             f"SECRET_KEY must be set when ENVIRONMENT={ENVIRONMENT!r}."
         )
@@ -186,8 +186,6 @@ if CELERY_TASK_ALWAYS_EAGER and ENVIRONMENT == "prod":
     # which puts SMTP back on the request path and undoes the decoupling this whole worker
     # exists for — a signup would then 500 whenever the mail provider is slow. It is a
     # test/debug lever, so an env var must not be able to switch it on in production.
-    from django.core.exceptions import ImproperlyConfigured
-
     raise ImproperlyConfigured(
         "CELERY_TASK_ALWAYS_EAGER must not be enabled when ENVIRONMENT='prod': it moves "
         "task execution (including SMTP) back into the request path."
@@ -221,12 +219,107 @@ CELERY_BEAT_SCHEDULE = {
 # unset so a bare `pytest` needs no Redis. That fallback is only safe because the
 # throttle's logic tests inject their own store.
 _cache_url = os.getenv("CACHE_URL", "")
+
+
+# The accepted range for the two cache socket timeouts, in seconds, both ends inclusive. A
+# value outside it refuses to boot. Each end is chosen to catch a distinct, plausible typo that
+# would otherwise switch the throttle's protection off while the app boots and looks healthy:
+#
+# FLOOR 0.05. A healthy Redis answered single commands in 2.6-5.5 ms at p99.9 and 26 ms at worst
+# in the PR #186 performance review (shared machine, load 7-14, through Docker Desktop), so 50 ms
+# is about twice the worst healthy sample. Below it, working calls start timing out and the
+# limiter fails open for no fault of Redis's (`0.001` and `1e-9` do exactly that); `0` is not even
+# a timeout to redis-py, it is non-blocking mode.
+#
+# CEILING 10. A request spends up to nine commands on password-reset and resend (and three more
+# on a fresh connection), and each can wait the full timeout on a slow-but-answering Redis, so the
+# ceiling is 90-120 s per request. Anything bigger is the unbounded wait this setting exists to
+# remove: `86400` is 24 hours, `500` (milliseconds typed as seconds) holds a request for minutes
+# on a stall, and values from about 9.2e9 up (`1e10`, `1e308`) are rejected by Python's socket
+# layer with an OverflowError that is not an OSError, so every cache call fails and the throttle
+# fails open forever, with only the once-a-minute warning to show for it.
+_SOCKET_TIMEOUT_MIN_SECONDS = 0.05
+_SOCKET_TIMEOUT_MAX_SECONDS = 10.0
+
+
+def _socket_timeout_seconds(name: str, default: str) -> float:
+    """Seconds from the environment, within `[_SOCKET_TIMEOUT_MIN_SECONDS,
+    _SOCKET_TIMEOUT_MAX_SECONDS]`, or the default when the variable is unset or blank. Anything
+    else — out of range, not a number, `nan`, `inf` — refuses to boot.
+
+    Strict on purpose, because this knob guards the throttle's fail-open path and its wrong
+    values are not harmless (see the range comment above for each one). A deploy should find out
+    now, from a startup error that names the variable, not under load from a once-a-minute log
+    line. Written as `not (MIN <= value <= MAX)` so `nan` (every comparison false) and `inf` are
+    refused by the same test, with no separate finiteness check.
+    """
+    raw = (os.getenv(name) or "").strip() or default
+    try:
+        value = float(raw)
+    except ValueError:
+        value = None
+    if value is None or not (_SOCKET_TIMEOUT_MIN_SECONDS <= value <= _SOCKET_TIMEOUT_MAX_SECONDS):
+        raise ImproperlyConfigured(
+            f"{name} must be a number of seconds from {_SOCKET_TIMEOUT_MIN_SECONDS:g} to "
+            f"{_SOCKET_TIMEOUT_MAX_SECONDS:g} (got {raw!r}). It bounds how long a stalled cache "
+            "store can hold a request; see docs/ops/DEPLOYMENT.md §6b."
+        )
+    return value
+
+
+# A Redis that is UP but WEDGED accepts the connection and never answers (17tnw2b1wrx). redis-py
+# has no socket timeout by default, so every cache call blocked until Redis recovered (this repo
+# configures no request timeout of its own) and the throttle's fail-open path — which only runs
+# when the store RAISES — never ran: a cache fault became a full API outage. These two bound it.
+# A call that runs past either one raises, `evaluate_budget` reads that as "store unavailable",
+# and the request proceeds exactly as it does for a store that is down (degraded send ceilings
+# and the outage warning included).
+#
+# 0.5s: a healthy Redis answers a single command in a few milliseconds (26 ms at worst in the
+# PR #186 performance review), so this is at least 19x the worst healthy sample.
+#
+# WHAT A BAD REDIS COSTS A REQUEST. The timeout applies to each COMMAND, not to each budget. A
+# budget is up to three commands (SET NX, then EXISTS and INCR once the key exists; rarely an
+# EXPIRE more, when a window lapses mid-call) and a new connection adds three more (two CLIENT
+# SETINFO and a SELECT), all under the READ timeout. A route spends one budget (/v1
+# routes, verifyEmail, confirmPasswordReset) or three (requestPasswordReset, resendVerification).
+# - A HARD stall (nothing answers): the first command of each budget times out and the rest of
+#   that budget is skipped, so the cost is about one timeout per budget: 0.5 s, or 1.5 s on the
+#   three-budget routes. Measured on a frozen Redis.
+# - A SLOW Redis (every reply a little under the timeout): nothing times out, nothing fails open,
+#   and the cost is nearly the timeout PER COMMAND: about 1.5 s per budget, 4.5 s on the
+#   three-budget routes, and 1.5 s more when the connection has to be reopened. Measured with a
+#   proxy that answers every command 0.4 s late (about 0.8 of those maxima): 1.21 s for one
+#   steady budget, 3.64 s for three, and 1.69 s for the FIRST call on a fresh connection.
+# It is a ceiling, not a retry: redis-py 6.4's default connection policy retries nothing for a
+# stalled call, and tests/test_cache_socket_timeouts.py asserts a stalled call opens exactly one
+# connection, so a client change that makes a stalled call reconnect fails it rather than
+# silently multiplying the stall.
+# Raising these buys tolerance of a slow-but-working Redis at the cost of every figure above:
+# keep timeout x commands-per-request below any request timeout in front of this service.
+CACHE_SOCKET_CONNECT_TIMEOUT = _socket_timeout_seconds("CACHE_SOCKET_CONNECT_TIMEOUT", "0.5")
+CACHE_SOCKET_TIMEOUT = _socket_timeout_seconds("CACHE_SOCKET_TIMEOUT", "0.5")
+
+
+def _cache_config(url: str, connect_timeout: float, socket_timeout: float) -> dict:
+    """The default cache: Redis (with bounded socket timeouts) when `url` is set, else the
+    per-process LocMemCache. LocMem never blocks on I/O, so it needs no timeouts. A function so
+    tests can aim the identical configuration at a stalled stub."""
+    if not url:
+        return {"BACKEND": "django.core.cache.backends.locmem.LocMemCache", "LOCATION": "selahcue"}
+    return {
+        "BACKEND": "django.core.cache.backends.redis.RedisCache",
+        "LOCATION": url,
+        # Django forwards OPTIONS to `redis.ConnectionPool.from_url(url, **OPTIONS)`.
+        "OPTIONS": {
+            "socket_connect_timeout": connect_timeout,
+            "socket_timeout": socket_timeout,
+        },
+    }
+
+
 CACHES = {
-    "default": (
-        {"BACKEND": "django.core.cache.backends.redis.RedisCache", "LOCATION": _cache_url}
-        if _cache_url
-        else {"BACKEND": "django.core.cache.backends.locmem.LocMemCache", "LOCATION": "selahcue"}
-    )
+    "default": _cache_config(_cache_url, CACHE_SOCKET_CONNECT_TIMEOUT, CACHE_SOCKET_TIMEOUT)
 }
 
 # 0 = trust REMOTE_ADDR only. Raise to the number of proxies in front of Django BEFORE

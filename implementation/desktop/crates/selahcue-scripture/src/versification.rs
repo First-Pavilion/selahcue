@@ -17,17 +17,15 @@ pub(crate) type Run = (u8, u16, u16, u16);
 
 include!(concat!(env!("OUT_DIR"), "/verse_runs.rs"));
 
-/// The run table of a BUNDLED translation, or `None` for a downloadable one, which has no
-/// embedded asset and therefore nothing to build a table from. Exhaustive on purpose: adding a
-/// `Translation` variant is a compile error here until someone decides which kind it is.
-pub(crate) fn runs_of(t: Translation) -> Option<&'static [Run]> {
+/// The run table of a bundled translation. Exhaustive on purpose: adding a `Translation` variant is
+/// a compile error here until its table is wired up.
+pub(crate) fn runs_of(t: Translation) -> &'static [Run] {
     match t {
-        Translation::Kjv => Some(KJV),
-        Translation::Web => Some(WEB),
-        Translation::Asv => Some(ASV),
-        Translation::Webbe => Some(WEBBE),
-        Translation::Dby => Some(DBY),
-        Translation::Ylt => None,
+        Translation::Kjv => KJV,
+        Translation::Web => WEB,
+        Translation::Asv => ASV,
+        Translation::Webbe => WEBBE,
+        Translation::Dby => DBY,
     }
 }
 

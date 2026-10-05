@@ -121,6 +121,7 @@ jobs:
           cargo clippy -p selahcue-lan --features server --all-targets -- -D warnings || fail=1
           cargo clippy -p selahcue-app --features server --all-targets -- -D warnings || fail=1
           cargo clippy -p selahcue-scripture --features download --all-targets -- -D warnings || fail=1
+          cargo clippy -p selahcue-scripture --features installed --all-targets -- -D warnings || fail=1
           # selahcue-operator is its own root, invisible to `--workspace`, and BOTH the
           # CI operator job and `make ci` lint it with -D warnings. Without it here, a
           # new lint firing only in the operator would leave the canary green and the

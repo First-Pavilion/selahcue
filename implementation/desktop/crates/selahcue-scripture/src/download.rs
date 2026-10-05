@@ -1,42 +1,50 @@
-//! Download-on-demand for additional Bible-translation assets (feature `download`).
+//! Download-on-demand for catalogued Bible translations (feature `download`).
 //!
-//! Additive, feature-gated supply-chain infra that mirrors `selahcue-stt`'s whisper-model
-//! download discipline (`model_fetch.rs` / `model.rs`): a pinned [`TranslationAsset`] is
-//! resolved to a verified local file. A **cache hit** returns the already-present,
-//! SHA-256-matching file with no network; otherwise the asset is downloaded (streaming, in
-//! bounded chunks), its pinned SHA-256 is verified, and only on success is it atomically
-//! installed into the cache. On any integrity failure the bad bytes are discarded and an
-//! error is returned — a corrupted or substituted file is never installed.
+//! [`download_and_install`] is the one entry point. Given a registry, a catalogue code and a
+//! [`TermsAcceptance`] (which the caller must construct, so the function cannot be called without
+//! one), it fetches the catalogue's file over HTTPS and hands the bytes to the registry's install
+//! pipeline, which checks the pinned SHA-256, validates the file's shape and only then installs it
+//! (see [`crate::registry`]). It refuses, **before any request is made**, an unknown code, a
+//! translation still pending legal review, an acceptance for a different licence, and an entry with
+//! no published base URL ("not published yet"). An install that is already there and intact needs
+//! no network at all. There is no other download function: nothing here fetches an arbitrary URL.
 //!
-//! Offline-first: nothing here runs unless the caller invokes it on an explicit action; a
-//! network failure is a plain `Err`, never a panic; a cached asset needs no network. The
-//! source URL and the pinned digest travel together in the [`TranslationAsset`], so a
-//! substituted download is rejected before it is ever used.
+//! The transport rules:
 //!
-//! **Scope boundary:** this exposes only the verified file PATH. Downloaded translations are
-//! deliberately NOT wired into the compiled `Translation` enum, the per-translation
-//! quote-match index, or the cross-language-pinned LAN wire protocol; that runtime
-//! integration is designed separately.
+//! - **HTTPS only**, for the first request and for every redirect hop ([`crate::url_policy`]).
+//!   Redirects are followed by hand, at most [`MAX_REDIRECTS`], so each hop is checked before it is
+//!   requested. Plain http to a loopback address exists for tests, behind an explicit constructor
+//!   that is compiled only with debug assertions.
+//! - **Size-capped**: a correct download is exactly the pinned `size_bytes`, so the stream is cut off
+//!   there (a hostile mirror's never-ending stream cannot fill the disk; the digest check only runs
+//!   after EOF).
+//! - **Time-bounded**: connect and response-header timeouts, and a whole-body deadline sized from
+//!   the cap at a minimum rate ([`body_deadline`]), so a stalled or trickling connection ends.
+//! - **Streamed** in bounded chunks into a staging file that is created exclusively and removed on
+//!   any failure, then verified and atomically renamed. Never held whole in memory.
+//! - **No proxy**: the request ignores `HTTP(S)_PROXY`. A network that forces a proxy cannot
+//!   download until a decision is made (ClickUp A3).
+//! - **Content encoding**: the request asks for `identity`. ureq's default `gzip` feature would
+//!   still inflate a response labelled `Content-Encoding: gzip`, but the size cap and the digest
+//!   run on the DECODED stream, so a response wrapped that way is safe: it is cut at the pinned size
+//!   and must hash to the pinned digest like any other. (The asset itself is a `.gz`; a server that
+//!   compresses it again and says so is simply undone before it is checked.)
+//! - **No query strings in errors**: every error text that mentions a URL has its query string and
+//!   fragment removed ([`crate::url_policy::redact_urls`]), because those errors end up in the UI,
+//!   in events and in logs, and a CDN's signed redirect carries its secret there.
+//!
+//! Offline-first: nothing here runs unless the caller invokes it on an explicit action; a network
+//! failure is a plain `Err`, never a panic.
 
-use std::fs::{self, File};
-use std::io::{BufReader, Read, Write};
-use std::path::{Path, PathBuf};
+use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
-use sha2::{Digest, Sha256};
+use crate::catalog::LegalReview;
+use crate::registry::{InstallError, InstallHooks, InstalledTranslation, Progress, Registry};
+use crate::url_policy::{redact_urls, resolve_redirect, UrlPolicy, UrlRefusal};
 
-/// Bytes read per hash chunk. Bounds the memory used while hashing a large asset file — a
-/// multi-MB (or larger) translation never sits whole in memory to be hashed.
-pub const HASH_CHUNK_BYTES: usize = 64 * 1024;
-
-/// Bytes streamed per read/write while downloading (bounds transient download memory).
-pub const DL_CHUNK_BYTES: usize = 64 * 1024;
-
-/// Hard ceiling on a single translation download when the pinned `size_bytes` is unknown (`0`):
-/// a backstop so an unbounded/never-ending stream cannot fill the disk. A real pinned asset caps
-/// at its EXACT `size_bytes` instead (a correct download is exactly that many bytes, since the
-/// bytes must match the pinned SHA-256); this ceiling only applies when no size is pinned.
-pub const DL_MAX_BYTES: u64 = 256 * 1024 * 1024;
+/// The most redirect hops that are followed. A real mirror redirects once; a loop must end.
+pub const MAX_REDIRECTS: usize = 5;
 
 /// Timeouts for a translation download: a stalled connection or a trickling stream must not hang
 /// the fetch indefinitely (paired with the size cap, which bounds a fast, endless stream that
@@ -59,299 +67,379 @@ fn body_deadline(max_bytes: u64) -> Duration {
     Duration::from_secs((max_bytes / DL_MIN_BYTES_PER_SEC).max(DL_READ_TIMEOUT.as_secs()))
 }
 
-/// A pinned, downloadable Bible-translation asset: a stable id, a display name, the cache
-/// file name, the source URL, the expected size, and the pinned lowercase-hex SHA-256 the
-/// downloaded bytes must match. The URL and the digest travel together — the supply-chain pin.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TranslationAsset {
-    /// Stable identifier for this asset (e.g. a translation short code, lowercase).
-    pub id: String,
-    /// Human-readable name for attribution/UI.
-    pub name: String,
-    /// File name under the cache directory once installed.
-    pub file_name: String,
-    /// Full source URL to download from.
-    pub url: String,
-    /// Expected size in bytes (used as a progress fallback when no Content-Length is sent).
-    pub size_bytes: u64,
-    /// Lowercase-hex SHA-256 (64 chars) the downloaded file must match.
-    pub sha256: String,
+// =============================================================================================
+// The transport
+// =============================================================================================
+
+/// An open response body.
+struct Stream {
+    reader: ureq::BodyReader<'static>,
 }
 
-/// Why fetching a translation asset failed. A failure never installs a file.
-#[derive(Debug)]
-pub enum TranslationFetchError {
-    /// The download itself failed (unreachable host, HTTP error, stream read error, …).
-    Network(String),
-    /// The stream exceeded its size ceiling (the pinned `size_bytes`, or the hard backstop) before
-    /// the integrity gate — the transfer was aborted and the partial file discarded, so an
-    /// oversized/never-ending stream can never fill the disk.
-    TooLarge { limit: u64 },
-    /// The pinned expected hash is not valid lowercase-hex SHA-256 (64 hex chars).
-    BadExpectedHash,
-    /// The downloaded bytes' SHA-256 did not match the pinned digest — the file was discarded.
-    Verify { expected: String, actual: String },
-    /// A filesystem error (create cache dir, write temp, install).
-    Io(std::io::Error),
-}
-
-impl std::fmt::Display for TranslationFetchError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            TranslationFetchError::Network(e) => write!(f, "translation download failed: {e}"),
-            TranslationFetchError::TooLarge { limit } => {
-                write!(
-                    f,
-                    "translation download exceeded the {limit}-byte size limit"
-                )
-            }
-            TranslationFetchError::BadExpectedHash => {
-                write!(f, "pinned translation hash is not a 64-char hex SHA-256")
-            }
-            TranslationFetchError::Verify { expected, actual } => write!(
-                f,
-                "translation integrity check failed: expected {expected}, got {actual}"
-            ),
-            TranslationFetchError::Io(e) => write!(f, "translation I/O error: {e}"),
-        }
-    }
-}
-
-impl std::error::Error for TranslationFetchError {}
-
-/// On-disk cache file name for the downloadable Young's Literal Translation index. The runtime
-/// verse loader ([`crate::is_available`] / the `Translation::Ylt` lookup path) reads
-/// [`default_cache_dir`]`().join(YLT_FILE_NAME)`, and the [`catalog`] entry installs to the
-/// same name — so a fetched asset is found by the loader. The file is a gzipped
-/// `book<TAB>chapter<TAB>verse<TAB>text` TSV (canonical book numbers 1–66), the SAME format as
-/// the bundled `assets/*.tsv.gz`.
-pub const YLT_FILE_NAME: &str = "ylt.tsv.gz";
-
-// ---------------------------------------------------------------------------------------------
-// OWNER-SUPPLIED PLACEHOLDERS for the YLT download pin.
-//
-// Young's Literal Translation (1898) is public domain, but SelahCue does not ship its text or
-// invent a download source. The URL, the pinned SHA-256, and the byte size below are PLACEHOLDERS
-// the owner MUST replace (same custody model as the NDI SDK) before YLT can actually be fetched:
-//   * `YLT_URL_PLACEHOLDER`    -> the real owner-hosted URL of the gzipped verse-index asset
-//   * `YLT_SHA256_PLACEHOLDER` -> the real lowercase-hex SHA-256 of that exact asset
-//   * `YLT_SIZE_PLACEHOLDER`   -> the real byte size of that asset
-// They are shaped as a well-formed pin (https URL, 64-char lowercase hex, positive size) so the
-// catalog seam stays testable, but they are NOT a real, downloadable source.
-// ---------------------------------------------------------------------------------------------
-const YLT_URL_PLACEHOLDER: &str = "https://OWNER-SUPPLIED.invalid/selahcue/ylt.tsv.gz";
-const YLT_SHA256_PLACEHOLDER: &str =
-    "0000000000000000000000000000000000000000000000000000000000000000";
-const YLT_SIZE_PLACEHOLDER: u64 = 1;
-
-/// The catalog of downloadable translations.
-///
-/// Holds the **Young's Literal Translation (1898)** exemplar as a downloadable pin. Its source
-/// URL and pinned SHA-256 are OWNER-SUPPLIED PLACEHOLDERS (see the constants above) — the same
-/// owner-custody model this repo uses for the NDI SDK. The mechanism is exercised with a
-/// synthetic local fixture in the tests, never the network; the owner replaces the placeholders
-/// with a real mirror + digest to make YLT actually fetchable.
-pub fn catalog() -> Vec<TranslationAsset> {
-    vec![TranslationAsset {
-        id: "ylt".into(),
-        name: "Young's Literal Translation (1898)".into(),
-        file_name: YLT_FILE_NAME.into(),
-        url: YLT_URL_PLACEHOLDER.into(),
-        size_bytes: YLT_SIZE_PLACEHOLDER,
-        sha256: YLT_SHA256_PLACEHOLDER.into(),
-    }]
-}
-
-/// The default per-user cache directory for downloaded translation assets. Honours
-/// `SELAHCUE_SCRIPTURE_CACHE`, then the platform cache convention, ending in
-/// `selahcue/translations` — deliberately distinct from the STT model cache
-/// (`selahcue/models`).
-pub fn default_cache_dir() -> PathBuf {
-    if let Ok(dir) = std::env::var("SELAHCUE_SCRIPTURE_CACHE") {
-        return PathBuf::from(dir);
-    }
-    cache_root().join("selahcue").join("translations")
-}
-
-/// Platform cache root (no `dirs` dependency; conventional locations).
-fn cache_root() -> PathBuf {
-    #[cfg(target_os = "macos")]
-    {
-        if let Ok(home) = std::env::var("HOME") {
-            return PathBuf::from(home).join("Library").join("Caches");
-        }
-    }
-    #[cfg(target_os = "windows")]
-    {
-        if let Ok(local) = std::env::var("LOCALAPPDATA") {
-            return PathBuf::from(local);
-        }
-    }
-    if let Ok(xdg) = std::env::var("XDG_CACHE_HOME") {
-        return PathBuf::from(xdg);
-    }
-    if let Ok(home) = std::env::var("HOME") {
-        return PathBuf::from(home).join(".cache");
-    }
-    std::env::temp_dir()
-}
-
-/// Compute the lowercase-hex SHA-256 of the file at `path`, reading in bounded chunks so a
-/// large file is never loaded whole into memory.
-pub fn sha256_file(path: &Path) -> Result<String, TranslationFetchError> {
-    let file = File::open(path).map_err(TranslationFetchError::Io)?;
-    let mut reader = BufReader::new(file);
-    let mut hasher = Sha256::new();
-    let mut buf = [0u8; HASH_CHUNK_BYTES];
-    loop {
-        let n = reader.read(&mut buf).map_err(TranslationFetchError::Io)?;
-        if n == 0 {
-            break;
-        }
-        hasher.update(&buf[..n]);
-    }
-    Ok(hex_lower(&hasher.finalize()))
-}
-
-/// Verify the file at `path` against `expected_sha256` (64-char lowercase-hex). Returns the
-/// verified digest on success; a malformed pin or a mismatch is an error (never accepted).
-fn verify_file(path: &Path, expected_sha256: &str) -> Result<String, TranslationFetchError> {
-    let expected = expected_sha256.trim().to_ascii_lowercase();
-    if expected.len() != 64 || !expected.bytes().all(|b| b.is_ascii_hexdigit()) {
-        return Err(TranslationFetchError::BadExpectedHash);
-    }
-    let actual = sha256_file(path)?;
-    if actual == expected {
-        Ok(actual)
-    } else {
-        Err(TranslationFetchError::Verify { expected, actual })
-    }
-}
-
-/// Stream `reader` into the file at `tmp`, writing at most `max_bytes` before aborting with
-/// [`TranslationFetchError::TooLarge`] — so an oversized/never-ending stream can't fill the disk
-/// (the integrity gate only runs after EOF). Reads/writes in bounded [`DL_CHUNK_BYTES`] chunks and
-/// reports progress as `(bytes_written, total)`. Never loads the whole file into memory.
-fn stream_capped<R: Read>(
-    reader: &mut R,
-    tmp: &Path,
-    max_bytes: u64,
-    total: u64,
-    progress: &dyn Fn(u64, u64),
-) -> Result<(), TranslationFetchError> {
-    let mut file = File::create(tmp).map_err(TranslationFetchError::Io)?;
-    let mut buf = [0u8; DL_CHUNK_BYTES];
-    let mut done: u64 = 0;
-    loop {
-        let n = reader
-            .read(&mut buf)
-            .map_err(|e| TranslationFetchError::Network(format!("read stream: {e}")))?;
-        if n == 0 {
-            break;
-        }
-        if done.saturating_add(n as u64) > max_bytes {
-            return Err(TranslationFetchError::TooLarge { limit: max_bytes });
-        }
-        file.write_all(&buf[..n])
-            .map_err(TranslationFetchError::Io)?;
-        done = done.saturating_add(n as u64);
-        progress(done, total);
-    }
-    file.flush().map_err(TranslationFetchError::Io)?;
-    Ok(())
-}
-
-/// Resolve `asset` to a verified local translation file under `cache_dir`.
-///
-/// - **Cache hit**: if the file already exists and its SHA-256 matches the pin, return it —
-///   no network is touched.
-/// - **Miss**: stream the download to a `.part` temp file (invoking `progress(done, total)`),
-///   verify the pinned SHA-256, then atomically rename it into place. On any integrity
-///   failure the temp file is removed and an error returned — a bad file is never installed.
-pub fn fetch_translation(
-    asset: &TranslationAsset,
-    cache_dir: &Path,
-    progress: impl Fn(u64, u64),
-) -> Result<PathBuf, TranslationFetchError> {
-    let target = cache_dir.join(&asset.file_name);
-    if target.exists() && verify_file(&target, &asset.sha256).is_ok() {
-        return Ok(target);
-    }
-    fs::create_dir_all(cache_dir).map_err(TranslationFetchError::Io)?;
-
-    let tmp = cache_dir.join(format!("{}.part", asset.file_name));
-    // Bounded transfer: a correct download is EXACTLY `size_bytes` (it must match the pinned
-    // SHA-256), so cap there when it is known; otherwise fall back to the hard backstop. This
-    // rejects a hostile/compromised mirror's oversized or never-ending stream BEFORE it can fill
-    // the disk — the SHA-256 gate only runs after EOF — and the connect/read timeouts bound a
-    // stalled or trickling connection.
-    let max_bytes = if asset.size_bytes > 0 {
-        asset.size_bytes
-    } else {
-        DL_MAX_BYTES
-    };
-    let agent: ureq::Agent = ureq::Agent::config_builder()
+fn agent(policy: UrlPolicy, max_bytes: u64) -> ureq::Agent {
+    ureq::Agent::config_builder()
         .timeout_connect(Some(DL_CONNECT_TIMEOUT))
         .timeout_recv_response(Some(DL_READ_TIMEOUT))
         .timeout_recv_body(Some(body_deadline(max_bytes)))
         // ureq 3 reads HTTP(S)_PROXY from the environment by default; ureq 2 never did. Keep
-        // the download's network path exactly what it was — routing it through a proxy is a
-        // product decision, not a side effect of a dependency bump. (The SHA-256 pin below
-        // means a proxy could not alter the bytes anyway.)
+        // the download's network path exactly what it was: routing it through a proxy is a
+        // product decision, not a side effect of a dependency bump. (The SHA-256 pin means a
+        // proxy could not alter the bytes anyway.)
         .proxy(None)
+        // The belt to `UrlPolicy::check`'s braces: the client itself refuses plain http, unless
+        // the (tests-only) loopback policy is in force.
+        .https_only(!policy.allows_loopback_http())
+        // Redirects are followed by hand below so that every hop is run through the policy
+        // BEFORE it is requested.
+        .max_redirects(0)
+        // The asset is already a `.gz`; ask for it as it is.
+        .accept_encoding("identity")
         .build()
-        .into();
-    let resp = agent
-        .get(&asset.url)
-        .call()
-        .map_err(|e| TranslationFetchError::Network(format!("download {}: {e}", asset.url)))?;
-    let total: u64 = resp
-        .headers()
-        .get("Content-Length")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(asset.size_bytes);
+        .into()
+}
 
-    // Stream to the `.part` file, capping the total. ANY error here (network, I/O, or over-cap)
-    // discards the partial file, so a failed download never orphans bytes on disk.
-    let mut reader = resp.into_body().into_reader();
-    if let Err(e) = stream_capped(&mut reader, &tmp, max_bytes, total, &progress) {
-        let _ = fs::remove_file(&tmp);
-        return Err(e);
-    }
-
-    // Integrity gate: the downloaded bytes must match the pinned SHA-256.
-    match verify_file(&tmp, &asset.sha256) {
-        Ok(_) => {
-            fs::rename(&tmp, &target).map_err(TranslationFetchError::Io)?;
-            Ok(target)
+/// Open `url` (following at most [`MAX_REDIRECTS`] redirects, each checked against `policy`) and
+/// return the response body of the first 2xx answer. Every error text is redacted.
+fn open_stream(url: &str, policy: UrlPolicy, max_bytes: u64) -> Result<Stream, DownloadError> {
+    let network = |what: String| DownloadError::Network(redact_urls(&what));
+    let agent = agent(policy, max_bytes);
+    let mut current = url.to_string();
+    for _hop in 0..=MAX_REDIRECTS {
+        policy.check(&current).map_err(DownloadError::Insecure)?;
+        let resp = agent
+            .get(&current)
+            .call()
+            .map_err(|e| network(format!("download {current}: {e}")))?;
+        let status = resp.status().as_u16();
+        if matches!(status, 301 | 302 | 303 | 307 | 308) {
+            let location = resp
+                .headers()
+                .get("Location")
+                .and_then(|v| v.to_str().ok())
+                .ok_or_else(|| {
+                    network(format!("download {current}: redirect without a Location"))
+                })?;
+            current = resolve_redirect(&current, location).ok_or_else(|| {
+                // `location` need not look like a URL (a relative reference has no `://`), so it
+                // is cut at its query and fragment here, not left to `redact_urls`.
+                let shown: String = location
+                    .split(['?', '#'])
+                    .next()
+                    .unwrap_or_default()
+                    .chars()
+                    .take(200)
+                    .collect();
+                network(format!(
+                    "download {current}: unsupported redirect to '{shown}'"
+                ))
+            })?;
+            continue;
         }
-        Err(e) => {
-            let _ = fs::remove_file(&tmp);
-            Err(e)
+        if !(200..300).contains(&status) {
+            return Err(network(format!(
+                "download {current}: unexpected HTTP status {status}"
+            )));
+        }
+        return Ok(Stream {
+            reader: resp.into_body().into_reader(),
+        });
+    }
+    Err(network(format!(
+        "download {url}: more than {MAX_REDIRECTS} redirects"
+    )))
+}
+
+// =============================================================================================
+// The product call
+// =============================================================================================
+
+/// A record that the user accepted a licence's terms. [`download_and_install`] takes one, so the
+/// call cannot be made without it. This crate does not store or check the acceptance beyond its
+/// licence id: recording it durably is the operator's job (ticket A3), and it constructs this value
+/// from that record.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TermsAcceptance {
+    licence_id: String,
+    terms_version: String,
+    accepted_at: u64,
+}
+
+/// Why a [`TermsAcceptance`] could not be built.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TermsError {
+    /// The licence id or the terms version is empty (or only spaces).
+    Empty,
+    /// Longer than 64 characters.
+    TooLong,
+    /// Contains a control character.
+    BadCharacter,
+}
+
+impl std::fmt::Display for TermsError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TermsError::Empty => write!(f, "the licence id and terms version must not be empty"),
+            TermsError::TooLong => write!(f, "the licence id or terms version is too long"),
+            TermsError::BadCharacter => {
+                write!(f, "the licence id or terms version has a control character")
+            }
         }
     }
 }
 
-/// Lowercase-hex encode a byte slice (no external hex dependency).
-fn hex_lower(bytes: &[u8]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut s = String::with_capacity(bytes.len() * 2);
-    for &b in bytes {
-        s.push(HEX[(b >> 4) as usize] as char);
-        s.push(HEX[(b & 0x0f) as usize] as char);
+impl std::error::Error for TermsError {}
+
+impl TermsAcceptance {
+    /// An acceptance of licence `licence_id` (the catalogue's `licence.id`, e.g. `"cc0"`), at
+    /// version `terms_version` of the terms text, at `accepted_at` (the caller's clock).
+    pub fn new(
+        licence_id: &str,
+        terms_version: &str,
+        accepted_at: u64,
+    ) -> Result<TermsAcceptance, TermsError> {
+        let (licence_id, terms_version) = (licence_id.trim(), terms_version.trim());
+        if licence_id.is_empty() || terms_version.is_empty() {
+            return Err(TermsError::Empty);
+        }
+        for s in [licence_id, terms_version] {
+            if s.chars().count() > 64 {
+                return Err(TermsError::TooLong);
+            }
+            if s.chars().any(char::is_control) {
+                return Err(TermsError::BadCharacter);
+            }
+        }
+        Ok(TermsAcceptance {
+            licence_id: licence_id.to_string(),
+            terms_version: terms_version.to_string(),
+            accepted_at,
+        })
     }
-    s
+
+    pub fn licence_id(&self) -> &str {
+        &self.licence_id
+    }
+
+    pub fn terms_version(&self) -> &str {
+        &self.terms_version
+    }
+
+    pub fn accepted_at(&self) -> u64 {
+        self.accepted_at
+    }
+}
+
+/// How a [`download_and_install`] call behaves: a progress report, a cancel flag, and (tests only)
+/// two overrides. [`DownloadOptions::new`] is the product configuration.
+#[derive(Default)]
+pub struct DownloadOptions<'a> {
+    policy: UrlPolicy,
+    allow_pending: bool,
+    hooks: InstallHooks<'a>,
+}
+
+impl<'a> DownloadOptions<'a> {
+    /// The product configuration: https only, a pending entry refused, no hooks.
+    pub fn new() -> DownloadOptions<'a> {
+        DownloadOptions::default()
+    }
+
+    /// Stop, cleanly, when `flag` becomes true. See [`InstallHooks::with_cancel`].
+    pub fn with_cancel(mut self, flag: &'a AtomicBool) -> Self {
+        self.hooks = std::mem::take(&mut self.hooks).with_cancel(flag);
+        self
+    }
+
+    /// Call `report` as the download advances (Downloading, then Verifying, then Installing). The
+    /// report for the last phase is made while the registry's write lock is held, so `report` must
+    /// not call back into the registry (see [`crate::registry::Phase::Installing`]): send it to
+    /// another thread.
+    pub fn with_progress(mut self, report: &'a dyn Fn(Progress)) -> Self {
+        self.hooks = std::mem::take(&mut self.hooks).with_progress(report);
+        self
+    }
+
+    /// **Tests only.** Allow plain http to a loopback address. Exists only when debug assertions
+    /// are on, like [`UrlPolicy::allow_loopback_http_for_tests`].
+    #[cfg(debug_assertions)]
+    #[doc(hidden)]
+    pub fn allow_loopback_http_for_tests(mut self) -> Self {
+        self.policy = UrlPolicy::allow_loopback_http_for_tests();
+        self
+    }
+
+    /// **Tests only.** Let a download proceed for an entry still pending legal review. Exists only
+    /// when debug assertions are on: a release build cannot download a pending translation.
+    #[cfg(debug_assertions)]
+    #[doc(hidden)]
+    pub fn allow_legal_pending_for_tests(mut self) -> Self {
+        self.allow_pending = true;
+        self
+    }
+
+    #[doc(hidden)]
+    pub fn url_policy(&self) -> UrlPolicy {
+        self.policy
+    }
+
+    #[doc(hidden)]
+    pub fn allows_pending_for_tests(&self) -> bool {
+        self.allow_pending
+    }
+}
+
+/// Why [`download_and_install`] did not install anything.
+#[derive(Debug)]
+pub enum DownloadError {
+    /// The catalogue has no such code.
+    UnknownCode { code: String },
+    /// The catalogue has no base URL yet: "not published yet". No request was made.
+    NotPublished,
+    /// The translation has not cleared legal review. No request was made.
+    LegalReviewPending { code: String },
+    /// The acceptance is for a different licence than the translation's. No request was made.
+    TermsMismatch { expected: String, accepted: String },
+    /// A URL (the first, or a redirect's) is not https.
+    Insecure(UrlRefusal),
+    /// The server could not be reached or answered badly, or the stream broke. The text never
+    /// carries a URL's query string or fragment.
+    Network(String),
+    /// The install pipeline refused it: cancelled, too large, wrong digest, not a valid
+    /// translation, an unreadable receipt, or a disk error. Nothing was installed.
+    Install(InstallError),
+}
+
+impl DownloadError {
+    /// Whether the caller's cancel flag stopped the download.
+    pub fn is_cancelled(&self) -> bool {
+        matches!(self, DownloadError::Install(InstallError::Cancelled))
+    }
+}
+
+impl std::fmt::Display for DownloadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DownloadError::UnknownCode { code } => write!(f, "'{code}' is not in the catalogue"),
+            DownloadError::NotPublished => write!(f, "not published yet"),
+            DownloadError::LegalReviewPending { code } => {
+                write!(f, "{code} has not cleared legal review yet")
+            }
+            DownloadError::TermsMismatch { expected, accepted } => write!(
+                f,
+                "the accepted terms are for '{accepted}', but this translation is under '{expected}'"
+            ),
+            DownloadError::Insecure(r) => write!(f, "download refused: {r}"),
+            DownloadError::Network(m) => write!(f, "{m}"),
+            DownloadError::Install(e) => write!(f, "{e}"),
+        }
+    }
+}
+
+impl std::error::Error for DownloadError {}
+
+impl From<InstallError> for DownloadError {
+    fn from(e: InstallError) -> Self {
+        match e {
+            // A read that failed while receiving is the network's failure.
+            InstallError::Source(io) => {
+                DownloadError::Network(redact_urls(&format!("read stream: {io}")))
+            }
+            other => DownloadError::Install(other),
+        }
+    }
+}
+
+/// A network failure while the caller's cancel flag is set is the cancel (a blocked read that
+/// ended after Cancel was pressed), not a connection problem.
+fn cancelled_or(e: DownloadError, hooks: &InstallHooks<'_>) -> DownloadError {
+    if matches!(e, DownloadError::Network(_)) && hooks.is_cancelled() {
+        DownloadError::Install(InstallError::Cancelled)
+    } else {
+        e
+    }
+}
+
+/// Download catalogued translation `code` and install it into `registry`.
+///
+/// In order, and each refusal before any request is made: the code must be in the registry's
+/// catalogue; the entry must have cleared legal review (unless a test override is set); `accepted`
+/// must be an acceptance of the entry's licence; the catalogue must have a base URL ("not published
+/// yet" otherwise); the caller's cancel flag must not be set; the install record must be readable
+/// (see [`Registry::repair_receipt`]). If the same file (same digest) is
+/// already installed and intact, it is returned with no network at all. Otherwise the file is
+/// fetched: the URL, and every redirect hop, must pass the policy (https only) immediately before
+/// it is requested, and the transfer is capped at the pinned size. It is installed by
+/// [`Registry::install_from_reader`], which checks the digest, validates the file and only then
+/// installs it, replacing any earlier install of the code. `installed_at` is the caller's clock.
+/// If the caller cancels while a read is blocked, the result is `Cancelled` when that read ends,
+/// not a network error.
+pub fn download_and_install(
+    registry: &Registry,
+    code: &str,
+    accepted: &TermsAcceptance,
+    installed_at: u64,
+    options: &DownloadOptions<'_>,
+) -> Result<InstalledTranslation, DownloadError> {
+    let catalogue = registry.catalogue();
+    let entry = catalogue
+        .find(code)
+        .ok_or_else(|| DownloadError::UnknownCode {
+            code: code.to_string(),
+        })?;
+    if entry.legal_review != LegalReview::Cleared && !options.allow_pending {
+        return Err(DownloadError::LegalReviewPending {
+            code: entry.code.to_string(),
+        });
+    }
+    if accepted.licence_id() != entry.licence.id {
+        return Err(DownloadError::TermsMismatch {
+            expected: entry.licence.id.clone(),
+            accepted: accepted.licence_id().to_string(),
+        });
+    }
+    let url = catalogue
+        .download_url(entry)
+        .map_err(|_| DownloadError::NotPublished)?;
+    // (The URL is checked against the policy by `open_stream`, for the first request and for every
+    // redirect hop, immediately before each is made. Not here as well: a second check ahead of the
+    // cache-hit shortcut below would only make an intact install depend on the URL's scheme.)
+    options.hooks.check_cancel()?;
+    // An unreadable install record is refused BEFORE a request is made: the install would refuse
+    // it too (it cannot tell what else is installed), so the download could only be thrown away.
+    registry
+        .installed()
+        .map_err(|e| DownloadError::Install(InstallError::Receipt(e)))?;
+
+    // Already installed, same file, and the file on disk still passes every check a load applies:
+    // nothing to fetch.
+    if let Some(installed) = registry.installed_entry(&entry.code) {
+        if installed.sha256 == entry.sha256 && registry.verify(&entry.code).is_ok() {
+            return Ok(installed);
+        }
+    }
+
+    let mut stream = open_stream(&url, options.policy, entry.size_bytes)
+        .map_err(|e| cancelled_or(e, &options.hooks))?;
+    registry
+        .install_from_reader(code, &mut stream.reader, installed_at, &options.hooks)
+        .map_err(|e| match DownloadError::from(e) {
+            DownloadError::Network(m) => {
+                DownloadError::Network(redact_urls(&format!("download {url}: {m}")))
+            }
+            other => other,
+        })
+        .map_err(|e| cancelled_or(e, &options.hooks))
 }
 
 #[cfg(test)]
 mod body_deadline_tests {
     use super::*;
+    use crate::catalog::MAX_ASSET_BYTES;
 
     #[test]
     fn a_small_asset_still_gets_the_header_timeout_as_its_floor() {
-        // 5 MiB at 32 KiB/s is 160 s, but a tiny pinned asset must never be cut off faster than
-        // the 30 s the old per-read timeout allowed.
+        // A tiny pinned asset must never be cut off faster than the 30 s the old per-read timeout
+        // allowed.
         assert_eq!(body_deadline(1), DL_READ_TIMEOUT);
         assert_eq!(body_deadline(0), DL_READ_TIMEOUT);
     }
@@ -359,8 +447,8 @@ mod body_deadline_tests {
     #[test]
     fn the_deadline_scales_with_the_cap_at_the_minimum_rate() {
         assert_eq!(body_deadline(5 * 1024 * 1024), Duration::from_secs(160));
-        // The hard backstop (256 MiB) allows 8192 s: slow links finish, a stuck trickle does not
-        // run forever.
-        assert_eq!(body_deadline(DL_MAX_BYTES), Duration::from_secs(8192));
+        // The largest asset a catalogue may pin (16 MiB) allows 512 s: slow links finish, a stuck
+        // trickle does not run forever.
+        assert_eq!(body_deadline(MAX_ASSET_BYTES), Duration::from_secs(512));
     }
 }

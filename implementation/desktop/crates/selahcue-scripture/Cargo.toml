@@ -4,24 +4,32 @@ publish.workspace = true
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Bundled public-domain scripture text (WEB) with lookup and keyword search"
+description = "Bundled public-domain scripture text with lookup and keyword search, plus a registry of installed translations"
 
 [features]
 default = []
-# Download-on-demand of a pinned Bible-translation asset (ureq + sha2). Pure-Rust — no
-# native toolchain — so it compiles anywhere; the downloaded file is SHA-256-verified before
-# it is installed. OFF by default so the crate stays pure (bundled text only, no I/O) unless
-# this is enabled AND explicitly invoked. Downloaded translations expose a verified file PATH
-# only; they are NOT wired into the compiled `Translation` enum, the per-translation
-# quote-match index, or the LAN wire protocol (that integration is out of scope by design).
-download = ["dep:ureq", "dep:sha2"]
+# Runtime loader for translations the user has already installed (SHA-256-verified, validated,
+# stored in the app data directory), plus the embedded catalogue, the installer and the
+# bounded-memory registry. NO network crate in its dependency tree: the output host enables only
+# this one, so the render closure never links an HTTP client or a TLS stack (scripts/import_guards.sh
+# fails the build if that stops being true). `serde_json` reads the catalogue and the install
+# receipt; `sha2` checks every file against the digest recorded when it was installed.
+installed = ["dep:sha2", "dep:serde_json"]
+# Download-on-demand of a catalogued translation (ureq + rustls). Implies `installed`: a download
+# ends by validating and installing into the registry. OFF by default, so the crate stays pure
+# (bundled text only, no I/O) unless this is enabled AND explicitly invoked.
+download = ["installed", "dep:ureq"]
 
 [dependencies]
 selahcue-core = { path = "../selahcue-core" }
 flate2 = "1"
-# Streaming SHA-256 for translation-asset integrity verification (feature `download`).
+# Streaming SHA-256 for translation-asset integrity verification (feature `installed`).
 # MIT/Apache-2.0; already in the workspace lock (selahcue-lan).
 sha2 = { version = "0.11", optional = true }
+# Reads `assets/catalog.json` and the `installed.json` receipt (feature `installed`). Already in the
+# workspace lock and used by several workspace crates, so no new crate enters the graph; it is a
+# new dependency EDGE for this crate only. Not a network crate.
+serde_json = { version = "1", optional = true }
 # Blocking HTTP(S) client (rustls) for translation download-on-demand (feature `download`).
 ureq = { version = "3", optional = true }
 
