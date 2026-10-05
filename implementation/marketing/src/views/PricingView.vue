@@ -1,248 +1,44 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
-import PricingCard from '@/components/PricingCard.vue'
 import UiBadge from '@/components/UiBadge.vue'
-import FaqAccordion from '@/components/FaqAccordion.vue'
 import PageHero from '@/components/core/PageHero.vue'
-import SegmentedToggle from '@/components/core/SegmentedToggle.vue'
-import SrOnly from '@/components/core/SrOnly.vue'
 
 /*
- * WORDING FOLLOWS THE REPO, NOT THE FIGMA FRAME (owner decision: honest content wins).
+ * NO PLAN, PRICE OR BILLING TERM IS SHOWN (ClickUp 17tnw2b0x3h).
  *
- * Figma draws Free / Pro / Church at $0 / $19 / Custom. None of that is decided: DEC-008 fixes the
- * tiers (Free, Pro, Platinum) and their limits, and leaves prices, tier names and the final
- * speech-to-text hours open under D1. So each card says what DEC-008 backs (devices, outputs, NDI
- * outputs, the Free watermark) and nothing else: no price, no trial, no Church tier, no SLA, no
- * annual discount. Whatever D1 decides is a change to the data below, not to the layout.
+ * The page used to draw three plan cards (Free, Pro, Platinum), a comparison table of device, output and NDI limits, a
+ * Monthly / Annual toggle and a Pricing FAQ. All of it read from DEC-008's lineup, which the owner superseded on 2026-09-27
+ * (Free, Core and Pro, with weekly allowances and no price set), and the FAQ answered with proration, a non-profit rule and
+ * PayPal / ACH payment methods that nothing backs. The Core and Pro device, output and NDI limits are still undecided.
  *
- * Audit: pricing-02, -05, -09, -12 (Copy rule on ClickUp 17tnw2b2cey); claims removal on the live
- * site is 17tnw2b0x3h.
+ * Plan names, prices and limits are data in the API's catalogue, so they will be shown HERE from the API and never typed into
+ * this file again (the follow-up tickets "public plan catalogue endpoint" and "Home and Pricing plan cards render from the
+ * API"). Until the API serves them the page says so and draws nothing else. `PricingCard` and `SegmentedToggle` stay in the
+ * component library for that work.
  */
-/*
- * DEC-008's limits, typed ONCE. The plan cards and the comparison table both read this, so the number
- * on a card cannot drift from the number in the table (review round 1, Cody N7); `tests/corePages.test.ts`
- * holds an independent, exact copy of the expected text. Order: Free, Pro, Platinum. Zero NDI outputs
- * means "none". Outputs are worded "up to": what an output counts is still open (AS-P9). The
- * speech-to-text HOURS are not shown: the final values are open under D1.
- */
-const LIMITS = {
-  devices: [1, 3, 7],
-  outputs: [2, 5, 10],
-  ndi: [0, 5, 10],
-} as const
-
-const devicesText = (n: number): string => `${n} ${n === 1 ? 'device' : 'devices'}`
-const outputsText = (n: number): string => `Up to ${n} outputs`
-const ndiText = (n: number): string => `Up to ${n} NDI outputs`
-
-interface Plan {
-  name: string
-  price: string
-  description: string
-  features: string[]
-  cta: string
-  /** Where the button goes. Without one the card shows a disabled button and says why. */
-  to?: string
-  popular: boolean
-}
-
-/*
- * Only Free has a destination. Pro has none because no purchase flow exists (audit pricing-17).
- * Platinum has none because the only place it could go, /contact, shows "Message Received" and says a
- * specialist will answer within 24 hours without sending anything (audit contact-04, -06, -07, class C,
- * ClickUp 17tnw2b0x3h): a button must not lead to a form that throws the visitor's words away (review
- * round 1, Cody B1). It gets `to: '/contact'` back when that form really sends. Without `to` the card
- * shows a disabled button and the note "Not available yet".
- */
-const plans: Plan[] = [
-  {
-    name: 'Free',
-    price: 'No charge',
-    description: 'For running a service from one device. A SelahCue watermark appears on all output.',
-    features: [
-      devicesText(LIMITS.devices[0]),
-      outputsText(LIMITS.outputs[0]),
-      'Hosted speech-to-text, monthly allowance',
-    ],
-    cta: 'Download free',
-    // The Download page says plainly that nothing downloads yet (PR 134). The label is Figma's, and the
-    // owner decided (2026-10-04) to keep "Download free" everywhere; the nav says the same.
-    to: '/download',
-    popular: false,
-  },
-  {
-    name: 'Pro',
-    price: 'Price TBA',
-    description: 'Price to be announced. For churches that need more outputs and NDI output.',
-    features: [
-      'Everything in Free, without the watermark',
-      devicesText(LIMITS.devices[1]),
-      outputsText(LIMITS.outputs[1]),
-      ndiText(LIMITS.ndi[1]),
-      'Larger hosted speech-to-text allowance',
-    ],
-    cta: 'Get Pro',
-    popular: true,
-  },
-  {
-    name: 'Platinum',
-    price: 'Price TBA',
-    description: 'Price to be announced. For larger teams.',
-    features: [
-      'Everything in Pro',
-      devicesText(LIMITS.devices[2]),
-      outputsText(LIMITS.outputs[2]),
-      ndiText(LIMITS.ndi[2]),
-      'Largest hosted speech-to-text allowance',
-    ],
-    cta: 'Talk to us',
-    popular: false,
-  },
-]
-
-/*
- * The billing toggle keeps Figma's shape and no arithmetic. There is no annual plan in the repo
- * (audit pricing-18), so choosing Annual computes no price and shows no discount; it says so.
- */
-const billing = ref('monthly')
-const billingOptions = [
-  { value: 'monthly', label: 'Monthly' },
-  { value: 'annual', label: 'Annual' },
-]
-const billingNote = computed(() => (billing.value === 'annual' ? 'Annual billing is not available yet.' : ''))
-
-type Cell = { kind: 'yes' } | { kind: 'no' } | { kind: 'value'; text: string }
-const yes: Cell = { kind: 'yes' }
-const no: Cell = { kind: 'no' }
-const value = (text: string): Cell => ({ kind: 'value', text })
-
-/*
- * Only rows the repo backs. The three base rows are in every plan (nothing in DEC-008 withholds them);
- * the rest are DEC-008's table. Figma's other rows ("Mobile control", "Theme Designer", "On-device
- * transcript" as a paid extra, "Multi-campus / site licensing", "Onboarding & priority support",
- * "Unlimited" outputs) have no decided plan assignment or no source: audit pricing-12, -16.
- */
-const rows: { label: string; cells: [Cell, Cell, Cell] }[] = [
-  { label: 'Live output + stage display', cells: [yes, yes, yes] },
-  { label: 'Bundled scripture + keyword search', cells: [yes, yes, yes] },
-  { label: 'Service plans, timers & themes', cells: [yes, yes, yes] },
-  { label: 'Devices', cells: LIMITS.devices.map((n) => value(String(n))) as [Cell, Cell, Cell] },
-  { label: 'Simultaneous outputs', cells: LIMITS.outputs.map((n) => value(String(n))) as [Cell, Cell, Cell] },
-  { label: 'NDI streaming output', cells: LIMITS.ndi.map((n) => (n === 0 ? no : value(String(n)))) as [Cell, Cell, Cell] },
-  { label: 'Hosted speech-to-text, monthly allowance', cells: [yes, yes, yes] },
-  { label: 'No watermark on output', cells: [no, yes, yes] },
-]
-
-/*
- * The Pricing FAQ is not in the Figma frame (audit pricing-20, class D: Uma decides whether it stays).
- * Its answers still carry claims the repo does not back (proration, payment methods, a non-profit
- * line); removing them belongs to ClickUp 17tnw2b0x3h, and this ticket neither decides the section nor
- * duplicates that removal. `tests/corePages.test.ts` names this region as its one exception.
- */
-const pricingFaqItems = [
-  { question: 'Can I switch plans later?', answer: 'Yes, you can upgrade or downgrade your plan at any time. Prorated charges will apply.' },
-  { question: 'Do you offer non-profit discounts?', answer: 'Our pricing is already optimized for churches and non-profits.' },
-  { question: 'What payment methods are accepted?', answer: 'We accept all major credit cards, PayPal, and ACH transfers for annual plans.' }
-]
 </script>
 
 <template>
   <div class="pricing-view">
-    <!-- Figma 483:139: pad 80/96/8, gap 16; the toggle's frame adds 10 above the pill. -->
     <PageHero
       title="Pricing that grows with your church"
       :pad-top="80"
-      :pad-bottom="8"
+      :pad-bottom="40"
       :gap="16"
       :title-size="52"
       :title-line="56"
       :title-max="520"
-      :lead-size="18"
-      :lead-line="27"
-      :lead-max="660"
     >
       <template #eyebrow>
         <UiBadge variant="eyebrow">PRICING</UiBadge>
       </template>
-      Start with the Free plan; Pro and Platinum add outputs, NDI and devices. Prices are not announced yet.
-      <template #after>
-        <div class="billing">
-          <SegmentedToggle v-model="billing" :options="billingOptions" label="Billing period" />
-          <p class="billing-note" role="status" aria-live="polite">{{ billingNote }}</p>
-        </div>
-      </template>
     </PageHero>
 
+    <!-- The h2 keeps the outline from jumping from the h1 to the footer's h3 headings (audit pricing-bug-01). -->
     <section class="plans-section" aria-labelledby="plans-heading">
       <div class="container">
-        <!-- The plan names are h3 (PricingCard). This h2 keeps the outline from jumping h1 to h3 (audit
-             pricing-bug-01); Figma draws no heading levels. It is inside the container so its hidden box
-             sits at the gutter, not at the screen edge. -->
-        <SrOnly tag="h2" id="plans-heading">Choose a plan</SrOnly>
-        <div class="pricing-grid">
-          <PricingCard
-            v-for="plan in plans"
-            :key="plan.name"
-            :name="plan.name"
-            :price="plan.price"
-            :description="plan.description"
-            :features="plan.features"
-            :cta="plan.cta"
-            :to="plan.to"
-            :popular="plan.popular"
-          />
-        </div>
-      </div>
-    </section>
-
-    <section class="compare-section">
-      <div class="container">
-        <h2>Compare every plan</h2>
-        <div class="comparison-card">
-          <div class="table-scroll" tabindex="0" role="region" aria-label="Plan comparison, scrolls sideways when wide">
-            <table class="comparison-table">
-              <thead>
-                <tr>
-                  <th scope="col" class="plans-label">PLANS</th>
-                  <th scope="col">Free</th>
-                  <th scope="col">Pro</th>
-                  <th scope="col">Platinum</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr v-for="row in rows" :key="row.label">
-                  <th scope="row">{{ row.label }}</th>
-                  <td v-for="(cell, i) in row.cells" :key="i">
-                    <template v-if="cell.kind === 'yes'">
-                      <svg class="mark yes" viewBox="0 0 16 12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                        <path d="M2 6.4l3.8 3.8L14 2" />
-                      </svg>
-                      <SrOnly>Included</SrOnly>
-                    </template>
-                    <template v-else-if="cell.kind === 'no'">
-                      <svg class="mark no" viewBox="0 0 16 12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true">
-                        <path d="M3 6h10" />
-                      </svg>
-                      <SrOnly>Not included</SrOnly>
-                    </template>
-                    <span v-else class="figure">{{ cell.text }}</span>
-                  </td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-        </div>
-        <!-- The allowance is the HOSTED path's (FR-533, FR-546); on-device transcription has no quota. -->
-        <p class="table-note">On-device transcription is not metered. The allowance is for hosted speech-to-text only.</p>
-      </div>
-    </section>
-
-    <section class="faq-section" data-region="pricing-faq">
-      <div class="container">
-        <h2>Pricing FAQ</h2>
-        <div class="faq-list">
-          <FaqAccordion :items="pricingFaqItems" :defaultOpen="0" />
+        <h2 id="plans-heading" class="plans-heading">Plans and pricing</h2>
+        <div class="plans-empty">
+          <p>Plans and prices have not been published yet.</p>
         </div>
       </div>
     </section>
@@ -250,263 +46,39 @@ const pricingFaqItems = [
 </template>
 
 <style scoped>
-/* The toggle frame (Figma 483:144): 10px above the 42px pill. The note under it never moves the cards: from
-   1200px it is out of the flow, in the 48px gap above them; below 1200px its line (8px + 18px) is RESERVED
-   whether or not it has text (review round 3, Vera N1: it used to push the cards down 26px on a phone). */
-.billing {
-  position: relative;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  padding-top: 10px;
-}
-
-.billing-note {
-  min-height: 18px;
-  margin: 8px 0 0;
-  font-size: 13px;
-  line-height: 18px;
-  color: var(--sc-text-secondary);
-}
-
-/* Figma 483:240: pad 40/96/80 around the cards; 24px between them. */
 .plans-section {
-  position: relative;
-  padding-block: 24px 48px;
-}
-
-.pricing-grid {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  gap: 24px;
-  max-width: 520px;
-  margin-inline: auto;
-}
-/* Tablet and mobile: one card per row, Pro first so the recommended plan leads (design 8d). */
-.pricing-grid > .popular {
-  order: -1;
-}
-
-/* Figma 484:124: pad 20/96/88, gap 36; the card is 1040 wide. */
-.compare-section {
   padding-block: 24px var(--section-pad);
 }
-.compare-section h2,
-.faq-section h2 {
+
+.plans-heading {
   margin: 0 0 24px;
   text-align: center;
   font: 700 26px/32px var(--font-family);
   color: var(--sc-text);
 }
 
-.comparison-card {
-  max-width: 1040px;
+/* The empty state takes the card the Changelog and Careers empty states use. */
+.plans-empty {
+  max-width: 900px;
   margin-inline: auto;
+  padding: 47px 29px;
+  text-align: center;
   background: var(--sc-surface);
   border: 1px solid var(--sc-border);
-  border-radius: 16px;
-  overflow: hidden;
+  border-radius: 20px;
 }
 
-/* The table scrolls sideways INSIDE its card (never the page) when it is wide; it is a focus stop so a
-   keyboard user can scroll it. */
-.table-scroll {
-  /* Positioned, so the visually hidden "Included" / "Not included" spans (absolute) are contained and
-     clipped HERE. Without it they escape this scroller and widen the page on a phone. */
-  position: relative;
-  overflow-x: auto;
-  -webkit-overflow-scrolling: touch;
-  overscroll-behavior-x: contain;
-}
-
-.comparison-table {
-  width: 100%;
-  min-width: 520px;
-  table-layout: fixed;
-  border-collapse: collapse;
-}
-
-.comparison-table th,
-.comparison-table td {
-  box-sizing: border-box;
-  height: 48px;
-  padding: 0 12px;
-  font-size: 14.5px;
-  line-height: 18px;
-  text-align: center;
-  vertical-align: middle;
-}
-
-.comparison-table thead tr {
-  background: var(--sc-elevated);
-}
-.comparison-table thead th {
-  height: 45px;
-  font-size: 15px;
-  font-weight: 600;
-  color: var(--sc-text);
-}
-.comparison-table thead th.plans-label {
-  font-size: 12px;
-  font-weight: 700;
-  letter-spacing: 0.1px;
+.plans-empty p {
+  margin: 0;
+  font-size: 17px;
+  line-height: 26px;
   color: var(--sc-text-secondary);
 }
 
-.comparison-table th:first-child,
-.comparison-table td:first-child {
-  width: auto;
-  padding-left: 16px;
-  text-align: left;
-}
-.comparison-table th:not(:first-child),
-.comparison-table td {
-  width: 96px;
-}
-.comparison-table th:last-child,
-.comparison-table td:last-child {
-  padding-right: 16px;
-}
-
-.comparison-table tbody th {
-  font-weight: 500;
-  color: var(--sc-text);
-}
-.comparison-table tbody tr + tr {
-  border-top: 1px solid var(--sc-border);
-}
-
-.mark {
-  display: inline-block;
-  width: 16px;
-  height: 12px;
-  vertical-align: middle;
-}
-.mark.yes {
-  color: var(--sc-preview);
-}
-.mark.no {
-  color: var(--sc-text-secondary);
-}
-
-/* The accent numerals (Figma 13.5/600 brand ink, 3.7:1 on the card: below AA). They read the single
-   brand-ink property UiBadge reads, and fall back to the readable text colour: Uma's one-line change. */
-.figure {
-  font-size: 13.5px;
-  font-weight: 600;
-  color: var(--ui-badge-ink, var(--sc-text));
-}
-
-.table-note {
-  max-width: 1040px;
-  margin: 12px auto 0;
-  font-size: 13px;
-  line-height: 18px;
-  color: var(--sc-text-secondary);
-}
-
-.faq-section {
-  padding-block: 0 var(--section-pad);
-}
-.faq-list {
-  max-width: 800px;
-  margin: 0 auto;
-}
-
-@media (min-width: 768px) {
-  .plans-section {
-    padding-block: 32px 64px;
-  }
-  .compare-section {
-    padding-top: 16px;
-  }
-  .compare-section h2,
-  .faq-section h2 {
-    margin-bottom: 32px;
-    font-size: 32px;
-    line-height: 39px;
-  }
-  .comparison-table th,
-  .comparison-table td {
-    padding-inline: 20px;
-  }
-  .comparison-table th:first-child,
-  .comparison-table td:first-child {
-    padding-left: 26px;
-  }
-  .comparison-table th:last-child,
-  .comparison-table td:last-child {
-    padding-right: 26px;
-  }
-  .comparison-table th:not(:first-child),
-  .comparison-table td {
-    width: 150px;
-  }
-  .comparison-table th:last-child,
-  .comparison-table td:last-child {
-    width: 176px;
-  }
-}
-
-/* Three across from 1200 (the sweep reads these columns). */
-@media (min-width: 1200px) {
-  .billing-note {
-    position: absolute;
-    top: 100%;
-    left: 50%;
-    min-height: 0;
-    margin: 8px 0 0;
-    transform: translateX(-50%);
-    white-space: nowrap;
-  }
-  /* An empty note stays IN the accessibility tree, only invisible: a live region that is not rendered before
-     its text arrives is often not announced (review round 1, Cody N6). Not `display: none`. Below 1200px
-     the empty note is an ordinary, reserved line instead. */
-  .billing-note:empty {
-    width: 1px;
-    height: 1px;
-    margin: -1px;
-    padding: 0;
-    overflow: hidden;
-    clip: rect(0, 0, 0, 0);
-    border: 0;
-  }
-  .plans-section {
-    padding-block: 40px 80px;
-  }
-  .pricing-grid {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    max-width: none;
-    margin-inline: 0;
-  }
-  .pricing-grid > .popular {
-    order: 0;
-  }
-  .compare-section {
-    padding-top: 20px;
-    padding-bottom: 88px;
-  }
-  .compare-section h2 {
-    margin-bottom: 36px;
-  }
-}
-
-/* A phone: the label column stays pinned so a row is still readable at the far right, and so does its
-   heading cell ("PLANS"): without it the Free and Pro headings slide over the row labels (the base pinned
-   both; review round 3, Vera). The pinned cells need a fill of their own: the band's fill is on the row. */
 @media (max-width: 767.98px) {
-  .comparison-table tbody th,
-  .comparison-table thead th.plans-label {
-    position: sticky;
-    left: 0;
-    z-index: 1;
-    box-shadow: 1px 0 0 var(--sc-border);
-  }
-  .comparison-table tbody th {
-    background: var(--sc-surface);
-  }
-  .comparison-table thead th.plans-label {
-    background: var(--sc-elevated);
+  .plans-empty {
+    padding: 31px 19px;
+    border-radius: 16px;
   }
 }
 </style>

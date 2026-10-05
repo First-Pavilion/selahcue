@@ -105,7 +105,7 @@ export const supportArticles: readonly KnowledgeArticle[] = [
       {
         type: 'ul',
         items: [
-          'Use a build that includes NDI. The Windows installer is built with it and carries the NDI runtime. There is no macOS or Linux installer yet.',
+          'Use a build that includes NDI. The Windows installer is built with it and carries the NDI runtime.',
           'Check you selected the right output. NDI is offered for **Audience — Main**, **Lower Third** and **Livestream Program**. The **Stage Display** has no NDI option.',
         ],
       },
