@@ -31,9 +31,10 @@ pub const MAX_CATALOGUE_BYTES: usize = 1024 * 1024;
 /// The most entries a catalogue may list. A bound, so a hostile or broken document cannot grow
 /// the registry's per-code bookkeeping without limit.
 pub const MAX_ENTRIES: usize = 256;
-/// The largest asset (compressed) a catalogue entry may pin: 64 MiB, the same ceiling `build.rs`
-/// puts on a bundled asset's decompressed size. Real assets are about 1.4 MB.
-pub const MAX_ASSET_BYTES: u64 = 64 * 1024 * 1024;
+/// The largest asset (compressed) a catalogue entry may pin: 16 MiB, matching the 16 MiB the
+/// installer lets one asset inflate to ([`crate::validate::MAX_DECOMPRESSED_BYTES`]). Real assets
+/// are about 1.4 MB compressed and 5.6 MB inflated, so this is about ten times the largest.
+pub const MAX_ASSET_BYTES: u64 = 16 * 1024 * 1024;
 /// The longest any one text field may be.
 const MAX_TEXT_BYTES: usize = 8 * 1024;
 /// The longest a base URL may be.
@@ -41,7 +42,7 @@ const MAX_URL_BYTES: usize = 512;
 /// The longest a catalogue file name may be.
 const MAX_FILE_NAME_BYTES: usize = 64;
 /// The most verses an Old or New Testament may claim. Real counts are about 23,000 and 8,000.
-const MAX_VERSES_PER_TESTAMENT: u64 = 100_000;
+pub(crate) const MAX_VERSES_PER_TESTAMENT: u64 = 100_000;
 
 const EMBEDDED_JSON: &str = include_str!("../assets/catalog.json");
 
@@ -295,7 +296,9 @@ impl std::fmt::Display for CatalogError {
                 "catalogue legal_review '{value}' for {code} is neither 'cleared' nor 'pending'"
             ),
             CatalogError::BadBaseUrl { base_url, reason } => {
-                write!(f, "catalogue base_url '{base_url}' is refused: {reason}")
+                // A base URL that was refused for carrying a query must not print it.
+                let shown = crate::url_policy::redact_urls(base_url);
+                write!(f, "catalogue base_url '{shown}' is refused: {reason}")
             }
             CatalogError::BadUrl { field } => {
                 write!(f, "catalogue field '{field}' is not an https URL")
@@ -723,8 +726,14 @@ impl Catalogue {
 }
 
 fn validate_base_url(url: String, policy: UrlPolicy) -> Result<String, CatalogError> {
+    // The refusal keeps the URL only with its query and fragment cut off (and at most 200
+    // characters of it), so neither `Display` nor `Debug` of the error can carry a token that was
+    // in it.
     let refuse = |reason: &str| CatalogError::BadBaseUrl {
-        base_url: url.clone(),
+        base_url: crate::url_policy::redact_urls(&url)
+            .chars()
+            .take(200)
+            .collect(),
         reason: reason.to_string(),
     };
     if url.len() > MAX_URL_BYTES {

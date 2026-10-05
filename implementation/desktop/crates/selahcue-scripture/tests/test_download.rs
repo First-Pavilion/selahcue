@@ -8,14 +8,11 @@
 //! that. With the `download` feature OFF this whole file compiles to nothing, so the pure
 //! `cargo test -p selahcue-scripture` is unaffected.
 //!
-//! Two layers are covered. `fetch_translation` is the low-level verified fetch (a pinned URL and
-//! digest into a directory); `download_and_install` is the product call (a catalogue code, a
-//! recorded terms acceptance, an installed and validated translation).
+//! One entry point is covered: `download_and_install`, the product call (a catalogue code, a
+//! recorded terms acceptance, an installed and validated translation). There is no other download
+//! function to test: the legacy fetch-a-pinned-URL-into-a-directory path was removed in round 2.
 #![cfg(feature = "download")]
 #![allow(clippy::unwrap_used)]
-// Test guards like `assert!(1_000_000 > HASH_CHUNK_BYTES, ...)` assert on compile-time constants
-// on purpose (they pin a fixture invariant) — allowed here, as `unwrap_used` is above.
-#![allow(clippy::assertions_on_constants)]
 
 // These tests call the test-only constructors (`..._for_tests`), which exist only when debug
 // assertions are on. In a build without them this file would not compile; say why instead.
@@ -28,26 +25,21 @@ use std::cell::RefCell;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
+use std::time::Duration;
 
 use common::{
-    catalogue_json, fixture, fixture_labelled, read_dir_names, sha256_hex, tmp_dir, Fixture,
+    catalogue_json, fixture, fixture_labelled, gz, read_dir_names, replace_file, sha256_hex,
+    tmp_dir, Fixture,
 };
 use selahcue_scripture::catalog::Catalogue;
 use selahcue_scripture::download::{
-    default_cache_dir, download_and_install, fetch_translation, fetch_translation_with,
-    sha256_file, DownloadError, DownloadOptions, TermsAcceptance, TermsError, TranslationAsset,
-    TranslationFetchError, HASH_CHUNK_BYTES,
+    download_and_install, DownloadError, DownloadOptions, TermsAcceptance, TermsError,
 };
-use selahcue_scripture::registry::{InstallError, Phase, Progress, Registry};
+use selahcue_scripture::registry::{InstallError, Phase, Progress, ReceiptError, Registry};
 use selahcue_scripture::url_policy::{UrlPolicy, UrlRefusal};
-
-/// Serializes the tests that mutate the PROCESS-GLOBAL `SELAHCUE_SCRIPTURE_CACHE` env var, so
-/// they never race under cargo's multi-threaded test runner. Poison-tolerant: a failing test
-/// must not wedge the others.
-static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 const NOW: u64 = 1_790_000_000;
 
@@ -56,305 +48,8 @@ fn tmp(tag: &str) -> PathBuf {
     tmp_dir(&format!("dl-{tag}"))
 }
 
-/// Serve `body` exactly once over loopback HTTP and return its URL. Detached —
-/// the thread exits after the single response. No public network is touched.
-fn serve_once(body: Vec<u8>) -> String {
-    let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
-    let addr = listener.local_addr().expect("local addr");
-    let url = format!("http://{addr}/translation.asset");
-    thread::spawn(move || {
-        if let Ok((mut stream, _)) = listener.accept() {
-            // Drain the request headers (a GET has no body).
-            let mut req = Vec::new();
-            let mut byte = [0u8; 1];
-            while let Ok(1) = stream.read(&mut byte) {
-                req.push(byte[0]);
-                if req.ends_with(b"\r\n\r\n") {
-                    break;
-                }
-            }
-            let header = format!(
-                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                body.len()
-            );
-            let _ = stream.write_all(header.as_bytes());
-            let _ = stream.write_all(&body);
-            let _ = stream.flush();
-        }
-    });
-    url
-}
-
-/// The SHA-256 of `bytes`, computed through the crate's own chunked hasher (via a
-/// temp file) so fixtures can pin the exact digest the fetcher will recompute.
-fn sha256_of(dir: &std::path::Path, bytes: &[u8]) -> String {
-    let p = dir.join("hash-src.tmp");
-    std::fs::write(&p, bytes).unwrap();
-    let d = sha256_file(&p).unwrap();
-    let _ = std::fs::remove_file(&p);
-    d
-}
-
 fn loopback() -> UrlPolicy {
     UrlPolicy::allow_loopback_http_for_tests()
-}
-
-// ================================ fetch_translation (low level) ================================
-
-#[test]
-fn cache_hit_returns_the_verified_file_without_downloading() {
-    // A correctly-hashed file already in the cache is returned as-is. The asset URL
-    // points at an unreachable port; if the fetcher tried to download it would fail,
-    // so a successful return proves the cache short-circuit ran (no network).
-    let dir = tmp("hit");
-    let body = b"KJV fixture verses".to_vec();
-    let sha256 = sha256_of(&dir, &body);
-    std::fs::write(dir.join("kjv.asset"), &body).unwrap();
-
-    let asset = TranslationAsset {
-        id: "kjv".into(),
-        name: "King James Version".into(),
-        file_name: "kjv.asset".into(),
-        url: "http://127.0.0.1:9/never".into(), // never contacted on a cache hit
-        size_bytes: body.len() as u64,
-        sha256,
-    };
-
-    let got = fetch_translation(&asset, &dir, |_, _| {}).expect("cache hit");
-    assert_eq!(got, dir.join("kjv.asset"));
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-#[test]
-fn successful_download_verifies_installs_and_reports_progress() {
-    // A cache miss downloads the bytes, verifies the pinned SHA-256, and atomically
-    // installs the file; progress is reported and ends at done == total.
-    let dir = tmp("ok");
-    let body = b"World English Bible fixture bytes, long enough to matter".to_vec();
-    let sha256 = sha256_of(&dir, &body);
-    let url = serve_once(body.clone());
-
-    let asset = TranslationAsset {
-        id: "web".into(),
-        name: "World English Bible".into(),
-        file_name: "web.asset".into(),
-        url,
-        size_bytes: body.len() as u64,
-        sha256,
-    };
-
-    let last_done = AtomicU64::new(0);
-    let total_seen = AtomicU64::new(0);
-    let got = fetch_translation_with(&asset, &dir, loopback(), |done, total| {
-        last_done.store(done, Ordering::Relaxed);
-        total_seen.store(total, Ordering::Relaxed);
-    })
-    .expect("download + verify + install");
-
-    assert_eq!(got, dir.join("web.asset"));
-    assert_eq!(std::fs::read(&got).unwrap(), body);
-    assert_eq!(last_done.load(Ordering::Relaxed), body.len() as u64);
-    assert_eq!(total_seen.load(Ordering::Relaxed), body.len() as u64);
-    // No leftover partial file.
-    assert!(!dir.join("web.asset.part").exists());
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-#[test]
-fn verify_failure_discards_the_bad_file_and_errors() {
-    // The server returns bytes that do NOT match the pinned hash. The download must be
-    // rejected, the temp file discarded, and nothing installed into the cache.
-    let dir = tmp("badhash");
-    let body = b"substituted / corrupted payload".to_vec();
-    let url = serve_once(body.clone());
-
-    let asset = TranslationAsset {
-        id: "asv".into(),
-        name: "American Standard Version".into(),
-        file_name: "asv.asset".into(),
-        url,
-        size_bytes: body.len() as u64,
-        sha256: "0".repeat(64), // valid hex, but not the body's digest
-    };
-
-    let err = fetch_translation_with(&asset, &dir, loopback(), |_, _| {})
-        .expect_err("must reject mismatch");
-    assert!(
-        matches!(err, TranslationFetchError::Verify { .. }),
-        "expected a Verify error, got {err:?}"
-    );
-    // The bad bytes were discarded: neither the installed file nor the .part remain.
-    assert!(!dir.join("asv.asset").exists(), "a bad file was installed");
-    assert!(
-        !dir.join("asv.asset.part").exists(),
-        "a .part was left behind"
-    );
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-#[test]
-fn oversized_stream_is_capped_before_verification_and_leaves_no_partial() {
-    // Bounded disk: a hostile/misconfigured mirror streams FAR more bytes than the pinned size.
-    // The fetcher must abort on the size ceiling BEFORE the (post-EOF) SHA-256 gate — so an
-    // oversized / never-ending stream can never fill the disk — and must discard the `.part`.
-    let dir = tmp("toobig");
-    let body = vec![b'x'; 200_000]; // 200 KB streamed...
-    let url = serve_once(body);
-
-    let asset = TranslationAsset {
-        id: "big".into(),
-        name: "Oversized".into(),
-        file_name: "big.asset".into(),
-        url,
-        size_bytes: 1_024, // ...but the pin says 1 KB — the transfer must be capped here.
-        sha256: "0".repeat(64),
-    };
-
-    let err = fetch_translation_with(&asset, &dir, loopback(), |_, _| {})
-        .expect_err("must reject an oversized stream");
-    assert!(
-        matches!(err, TranslationFetchError::TooLarge { limit } if limit == 1_024),
-        "expected TooLarge {{ limit: 1024 }} before verification, got {err:?}"
-    );
-    // Nothing installed, and the partial file was discarded (no orphaned bytes on disk).
-    assert!(
-        !dir.join("big.asset").exists(),
-        "an oversized file was installed"
-    );
-    assert!(
-        !dir.join("big.asset.part").exists(),
-        "a .part was left behind after the over-cap abort"
-    );
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-#[test]
-fn the_low_level_fetch_is_https_only_and_refuses_a_hostile_file_name() {
-    let dir = tmp("lowpolicy");
-    // Refused before anything is created: not even the cache directory.
-    let fresh = dir.join("never-created");
-    let body = b"fixture".to_vec();
-    let sha256 = sha256_of(&dir, &body);
-    let url = serve_once(body.clone());
-    let asset = TranslationAsset {
-        id: "x".into(),
-        name: "X".into(),
-        file_name: "x.asset".into(),
-        url,
-        size_bytes: body.len() as u64,
-        sha256: sha256.clone(),
-    };
-    // The product policy refuses the plain-http loopback URL before any request is made...
-    let err = fetch_translation(&asset, &dir, |_, _| {}).unwrap_err();
-    assert!(
-        matches!(
-            err,
-            TranslationFetchError::Insecure(UrlRefusal::NotHttps { .. })
-        ),
-        "{err:?}"
-    );
-    assert!(!dir.join("x.asset").exists());
-    let err = fetch_translation(&asset, &fresh, |_, _| {}).unwrap_err();
-    assert!(matches!(err, TranslationFetchError::Insecure(_)), "{err:?}");
-    assert!(
-        !fresh.exists(),
-        "a refused URL must not even create the cache directory"
-    );
-    // ...and the same call under the test policy succeeds, so the refusal was the policy.
-    assert!(fetch_translation_with(&asset, &dir, loopback(), |_, _| {}).is_ok());
-
-    // A file name with a path in it is refused before anything is created.
-    for name in [
-        "../escape.asset",
-        "a/b.asset",
-        "/abs.asset",
-        ".hidden",
-        "",
-        "con.asset",
-    ] {
-        let bad = TranslationAsset {
-            file_name: name.to_string(),
-            ..asset.clone()
-        };
-        let err = fetch_translation_with(&bad, &dir, loopback(), |_, _| {}).unwrap_err();
-        assert!(
-            matches!(err, TranslationFetchError::BadFileName(_)),
-            "{name:?}: {err:?}"
-        );
-    }
-    assert_eq!(read_dir_names(&dir), ["x.asset"]);
-}
-
-#[cfg(unix)]
-#[test]
-fn a_planted_symlink_at_the_staging_name_is_not_followed_by_the_low_level_fetch() {
-    let dir = tmp("lowsymlink");
-    let victim = dir.join("victim.txt");
-    std::fs::write(&victim, b"precious").unwrap();
-    let body = b"fixture bytes".to_vec();
-    let sha256 = sha256_of(&dir, &body);
-    std::os::unix::fs::symlink(&victim, dir.join("y.asset.part")).unwrap();
-    let asset = TranslationAsset {
-        id: "y".into(),
-        name: "Y".into(),
-        file_name: "y.asset".into(),
-        url: serve_once(body.clone()),
-        size_bytes: body.len() as u64,
-        sha256,
-    };
-    fetch_translation_with(&asset, &dir, loopback(), |_, _| {}).unwrap();
-    assert_eq!(
-        std::fs::read(&victim).unwrap(),
-        b"precious",
-        "written through a symlink"
-    );
-    assert_eq!(std::fs::read(dir.join("y.asset")).unwrap(), body);
-    assert!(std::fs::symlink_metadata(dir.join("y.asset.part"))
-        .unwrap()
-        .is_symlink());
-}
-
-#[test]
-fn hashing_a_large_file_is_bounded_and_correct() {
-    // Bounded memory: a 1,000,000-byte fixture is far larger than one hash chunk, so it
-    // MUST be streamed in chunks. The digest is the canonical SHA-256 test vector for one
-    // million 'a' bytes — proving the multi-chunk stream produces the correct hash without
-    // ever holding the whole file in memory (mirrors selahcue-stt/src/model.rs).
-    let dir = tmp("bounded");
-    let big = dir.join("million-a.bin");
-    std::fs::write(&big, vec![b'a'; 1_000_000]).unwrap();
-
-    assert!(
-        1_000_000 > HASH_CHUNK_BYTES,
-        "fixture must exceed one hash chunk to exercise streaming"
-    );
-    let digest = sha256_file(&big).expect("hash large file");
-    assert_eq!(
-        digest,
-        "cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0"
-    );
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-#[test]
-fn default_cache_dir_honours_env_override_and_falls_back_to_translations() {
-    // One test (not two) so the shared env var is never raced by a parallel test; the ENV_LOCK
-    // additionally serialises this against anything else that touches it.
-    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    std::env::set_var(
-        "SELAHCUE_SCRIPTURE_CACHE",
-        "/tmp/selahcue-scripture-test-cache",
-    );
-    assert_eq!(
-        default_cache_dir(),
-        PathBuf::from("/tmp/selahcue-scripture-test-cache")
-    );
-    std::env::remove_var("SELAHCUE_SCRIPTURE_CACHE");
-    assert!(
-        default_cache_dir().ends_with("selahcue/translations"),
-        "fallback cache dir was {:?}",
-        default_cache_dir()
-    );
 }
 
 // ================================== a loopback server ======================================
@@ -422,6 +117,19 @@ impl Server {
     }
 }
 
+/// Read the request headers off `stream` (a GET has no body).
+fn drain_request(stream: &mut TcpStream) -> String {
+    let mut req = Vec::new();
+    let mut byte = [0u8; 1];
+    while let Ok(1) = stream.read(&mut byte) {
+        req.push(byte[0]);
+        if req.ends_with(b"\r\n\r\n") {
+            break;
+        }
+    }
+    String::from_utf8_lossy(&req).into_owned()
+}
+
 /// A loopback server answering every request through `handler(request_index, path)`.
 fn serve(handler: impl Fn(usize, &str) -> Resp + Send + Sync + 'static) -> Server {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
@@ -441,15 +149,7 @@ fn serve(handler: impl Fn(usize, &str) -> Resp + Send + Sync + 'static) -> Serve
                 let index = hits.fetch_add(1, Ordering::Relaxed);
                 let (paths, handler) = (paths.clone(), handler.clone());
                 thread::spawn(move || {
-                    let mut req = Vec::new();
-                    let mut byte = [0u8; 1];
-                    while let Ok(1) = stream.read(&mut byte) {
-                        req.push(byte[0]);
-                        if req.ends_with(b"\r\n\r\n") {
-                            break;
-                        }
-                    }
-                    let text = String::from_utf8_lossy(&req).into_owned();
+                    let text = drain_request(&mut stream);
                     let path = text
                         .lines()
                         .next()
@@ -490,6 +190,44 @@ fn serve(handler: impl Fn(usize, &str) -> Resp + Send + Sync + 'static) -> Serve
         stop,
         addr,
     }
+}
+
+/// A one-connection server that sends the headers and the first half of `body`, tells the test it
+/// has, then goes quiet for `pause` and hangs up with the body unfinished: a download that stalls.
+fn serve_then_stall(body: Vec<u8>, sent_first_half: mpsc::Sender<()>, pause: Duration) -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    thread::spawn(move || {
+        if let Ok((mut stream, _)) = listener.accept() {
+            drain_request(&mut stream);
+            let head = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            let _ = stream.write_all(head.as_bytes());
+            let _ = stream.write_all(&body[..body.len() / 2]);
+            let _ = stream.flush();
+            let _ = sent_first_half.send(());
+            thread::sleep(pause);
+            // Dropped here: the connection closes with the body unfinished.
+        }
+    });
+    base
+}
+
+/// A one-connection server that reads the request, tells the test it has, answers nothing for
+/// `pause`, and hangs up: a connection that stalls before any response.
+fn serve_silent(got_request: mpsc::Sender<()>, pause: Duration) -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    thread::spawn(move || {
+        if let Ok((mut stream, _)) = listener.accept() {
+            drain_request(&mut stream);
+            let _ = got_request.send(());
+            thread::sleep(pause);
+        }
+    });
+    base
 }
 
 // ============================== download_and_install (the product call) ======================
@@ -548,6 +286,7 @@ fn a_catalogued_translation_downloads_validates_and_installs() {
     assert_eq!(rec.code.as_str(), "TST");
     assert_eq!(rec.sha256, f.sha256);
     assert_eq!(rec.installed_at, NOW);
+    assert_eq!((rec.verses_ot, rec.verses_nt), (3, 2));
     assert_eq!(server.hits(), 1);
     // The URL came from the catalogue's single template: base_url + file_name.
     assert_eq!(server.paths(), ["/t/tst.tsv.gz"]);
@@ -615,6 +354,75 @@ fn a_flag_already_set_cancels_before_any_request_is_made() {
     let err = download_and_install(&registry, "TST", &terms(), NOW, &opts).unwrap_err();
     assert!(err.is_cancelled(), "{err:?}");
     assert_eq!(server.hits(), 0);
+}
+
+#[test]
+fn a_read_that_fails_after_cancel_was_pressed_is_reported_as_cancelled() {
+    // The download is blocked reading the second half of the body when the user presses Cancel;
+    // the server then hangs up, which is a read error. That error is the cancel, not a network
+    // failure to put on screen.
+    let f = fixture("TST", 3, 2);
+    let (tx, rx) = mpsc::channel();
+    let base = serve_then_stall(f.gz.clone(), tx, Duration::from_millis(700));
+    let (registry, dir) = registry_for(&[&f], Some(&base), &[]);
+    let cancel = AtomicBool::new(false);
+    let result = thread::scope(|scope| {
+        let download = scope.spawn(|| {
+            let opts = test_options().with_cancel(&cancel);
+            download_and_install(&registry, "TST", &terms(), NOW, &opts)
+        });
+        rx.recv_timeout(Duration::from_secs(10))
+            .expect("the server never sent its first half");
+        // The download has taken the first half and is now blocked waiting for the rest.
+        thread::sleep(Duration::from_millis(200));
+        cancel.store(true, Ordering::SeqCst);
+        download.join().unwrap()
+    });
+    let err = result.unwrap_err();
+    assert!(err.is_cancelled(), "{err:?}");
+    assert_eq!(read_dir_names(&dir), Vec::<String>::new());
+    assert_eq!(registry.installed().unwrap(), vec![]);
+
+    // Positive control: the very same failure, with nobody having pressed Cancel, is a network
+    // failure.
+    let (tx, rx) = mpsc::channel();
+    let base = serve_then_stall(f.gz.clone(), tx, Duration::from_millis(200));
+    let (registry, _dir) = registry_for(&[&f], Some(&base), &[]);
+    let cancel = AtomicBool::new(false);
+    let opts = test_options().with_cancel(&cancel);
+    let err = download_and_install(&registry, "TST", &terms(), NOW, &opts).unwrap_err();
+    drop(rx);
+    assert!(matches!(err, DownloadError::Network(_)), "{err:?}");
+}
+
+#[test]
+fn a_connection_that_fails_after_cancel_was_pressed_is_reported_as_cancelled() {
+    // The same for the other place a request can be blocked: before any response header.
+    let f = fixture("TST", 3, 2);
+    let (tx, rx) = mpsc::channel();
+    let base = serve_silent(tx, Duration::from_millis(700));
+    let (registry, _dir) = registry_for(&[&f], Some(&base), &[]);
+    let cancel = AtomicBool::new(false);
+    let result = thread::scope(|scope| {
+        let download = scope.spawn(|| {
+            let opts = test_options().with_cancel(&cancel);
+            download_and_install(&registry, "TST", &terms(), NOW, &opts)
+        });
+        rx.recv_timeout(Duration::from_secs(10))
+            .expect("the server never saw the request");
+        thread::sleep(Duration::from_millis(200));
+        cancel.store(true, Ordering::SeqCst);
+        download.join().unwrap()
+    });
+    let err = result.unwrap_err();
+    assert!(err.is_cancelled(), "{err:?}");
+
+    // Positive control: without the flag the same hang-up is a network failure.
+    let (tx, _rx) = mpsc::channel();
+    let base = serve_silent(tx, Duration::from_millis(200));
+    let (registry, _dir) = registry_for(&[&f], Some(&base), &[]);
+    let err = download_and_install(&registry, "TST", &terms(), NOW, &test_options()).unwrap_err();
+    assert!(matches!(err, DownloadError::Network(_)), "{err:?}");
 }
 
 #[test]
@@ -916,11 +724,13 @@ fn an_already_installed_intact_translation_needs_no_network() {
         "an intact install must not be downloaded again"
     );
 
-    // Damage the file in place: the digest check fails, so it IS downloaded again and repaired.
+    // Damage the file (a replacement with the same size and one byte flipped; a new inode, so the
+    // registry's remembered answer for the old file cannot apply): the digest check fails, so it
+    // IS downloaded again and repaired.
     let path = dir.join("tst.tsv.gz");
     let mut bytes = std::fs::read(&path).unwrap();
     bytes[12] ^= 0xFF;
-    std::fs::write(&path, &bytes).unwrap();
+    replace_file(&path, &bytes);
     let repaired =
         download_and_install(&registry, "TST", &terms(), NOW + 100, &test_options()).unwrap();
     assert_eq!(server.hits(), 2, "a damaged install must be fetched again");
@@ -929,9 +739,41 @@ fn an_already_installed_intact_translation_needs_no_network() {
 }
 
 #[test]
+fn an_unreadable_install_record_is_refused_before_any_request() {
+    let f = fixture("TST", 3, 2);
+    let server = serving(&f);
+    let (registry, dir) = registry_for(&[&f], Some(&server.base), &[]);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("installed.json"), b"{not json").unwrap();
+
+    let err = download_and_install(&registry, "TST", &terms(), NOW, &test_options()).unwrap_err();
+    assert!(
+        matches!(
+            err,
+            DownloadError::Install(InstallError::Receipt(ReceiptError::Corrupt(_)))
+        ),
+        "{err:?}"
+    );
+    assert_eq!(
+        server.hits(),
+        0,
+        "a download that could only be discarded was started"
+    );
+    assert_eq!(
+        std::fs::read(dir.join("installed.json")).unwrap(),
+        b"{not json",
+        "the unreadable record was changed"
+    );
+
+    // Positive control: once the record is repaired, the same call downloads.
+    registry.repair_receipt(NOW).unwrap();
+    assert!(download_and_install(&registry, "TST", &terms(), NOW, &test_options()).is_ok());
+    assert_eq!(server.hits(), 1);
+}
+
+#[test]
 fn a_download_asks_for_the_file_as_it_is_and_not_compressed_again() {
-    // The asset is a .gz. Asking for gzip on top would let a server (or a misconfigured bucket)
-    // wrap it again and the digest would never match; the request says `identity`.
+    // The asset is a .gz. The request says `identity` so a server has no reason to wrap it again.
     let f = fixture("TST", 3, 2);
     let seen = Arc::new(Mutex::new(String::new()));
     let seen2 = seen.clone();
@@ -940,15 +782,8 @@ fn a_download_asks_for_the_file_as_it_is_and_not_compressed_again() {
     let body = f.gz.clone();
     thread::spawn(move || {
         if let Ok((mut stream, _)) = listener.accept() {
-            let mut req = Vec::new();
-            let mut byte = [0u8; 1];
-            while let Ok(1) = stream.read(&mut byte) {
-                req.push(byte[0]);
-                if req.ends_with(b"\r\n\r\n") {
-                    break;
-                }
-            }
-            *seen2.lock().unwrap() = String::from_utf8_lossy(&req).to_ascii_lowercase();
+            let request = drain_request(&mut stream);
+            *seen2.lock().unwrap() = request.to_ascii_lowercase();
             let head = format!(
                 "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
                 body.len()
@@ -965,6 +800,118 @@ fn a_download_asks_for_the_file_as_it_is_and_not_compressed_again() {
         request.contains("accept-encoding: identity"),
         "the request must ask for the file as it is, got:\n{request}"
     );
+}
+
+#[test]
+fn a_response_wrapped_in_gzip_is_undone_before_the_size_cap_and_the_digest_are_checked() {
+    // The asset is itself a .gz. A server that compresses it AGAIN and says so
+    // (`Content-Encoding: gzip`) is not trusted to be right, and does not need to be: the client
+    // undoes the wrapping, and the size cap and the digest are applied to what comes out. So a
+    // wrapped response of the right file installs, and a wrapped response that inflates to far more
+    // than the pinned size is stopped at the pinned size, however small it was on the wire.
+    let f = fixture("TST", 3, 2);
+    let wrapped = gz(&f.gz);
+    assert_ne!(wrapped.len(), f.gz.len(), "premise: it really is wrapped");
+    let server = serve(move |_, _| Resp {
+        headers: vec![("Content-Encoding".into(), "gzip".into())],
+        ..Resp::ok(wrapped.clone())
+    });
+    let (registry, _dir) = registry_for(&[&f], Some(&server.base), &[]);
+    let rec = download_and_install(&registry, "TST", &terms(), NOW, &test_options())
+        .expect("a wrapped response of the right file is undone and then checked like any other");
+    assert_eq!(rec.sha256, f.sha256);
+
+    // The bomb: 20 MiB of zeros is a few tens of KB wrapped.
+    let bomb = gz(&vec![0u8; 20 * 1024 * 1024]);
+    assert!(bomb.len() < 100 * 1024, "premise: small on the wire");
+    let server = serve(move |_, _| Resp {
+        headers: vec![("Content-Encoding".into(), "gzip".into())],
+        ..Resp::ok(bomb.clone())
+    });
+    let (registry, dir) = registry_for(&[&f], Some(&server.base), &[]);
+    let err = download_and_install(&registry, "TST", &terms(), NOW, &test_options()).unwrap_err();
+    assert!(
+        matches!(
+            err,
+            DownloadError::Install(InstallError::TooLarge { limit }) if limit == f.gz.len() as u64
+        ),
+        "{err:?}"
+    );
+    assert_eq!(read_dir_names(&dir), Vec::<String>::new());
+}
+
+#[test]
+fn error_texts_never_carry_a_query_string_or_a_fragment() {
+    // A CDN redirects to a signed URL (`?token=...`). If the download then fails, the error goes to
+    // the screen, to events and to logs: the token must not go with it, in `Display` or `Debug`.
+    let f = fixture("TST", 3, 2);
+    let signed = "?token=SECRET123&sig=abc#frag";
+    let closed = {
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        format!("http://{}", l.local_addr().unwrap())
+    };
+
+    // (what, the redirect the origin sends, a status for the signed target if it is reached,
+    //  a piece of the URL that SHOULD still be in the text: the redaction cuts, it does not blank)
+    let cases: Vec<(&str, String, u16, &str)> = vec![
+        (
+            "a signed URL answering 500",
+            format!("/signed/tst.tsv.gz{signed}"),
+            500,
+            "/signed/tst.tsv.gz",
+        ),
+        (
+            "a signed URL answering 404",
+            format!("/signed/tst.tsv.gz{signed}"),
+            404,
+            "/signed/tst.tsv.gz",
+        ),
+        (
+            "a signed URL on a host that refuses the connection",
+            format!("{closed}/x/tst.tsv.gz{signed}"),
+            500,
+            "/x/tst.tsv.gz",
+        ),
+        (
+            "a relative reference that is not followed",
+            format!("tst.tsv.gz{signed}"),
+            500,
+            "unsupported redirect to 'tst.tsv.gz'",
+        ),
+        (
+            "a redirect loop through signed URLs",
+            format!("/t/tst.tsv.gz{signed}"),
+            302,
+            "redirects",
+        ),
+    ];
+    for (what, location, target_status, keep) in cases {
+        // The catalogue's URL (`/t/...`) always redirects to `location`. Whatever is reached after
+        // that answers `target_status`, or redirects again when that is 302 (the loop case).
+        let origin = serve(move |_, path| {
+            if path.starts_with("/t/") || target_status == 302 {
+                Resp::redirect(302, &location)
+            } else {
+                Resp::status(target_status)
+            }
+        });
+        let (registry, dir) = registry_for(&[&f], Some(&origin.base), &[]);
+        let err =
+            download_and_install(&registry, "TST", &terms(), NOW, &test_options()).unwrap_err();
+        for (kind, text) in [("Display", err.to_string()), ("Debug", format!("{err:?}"))] {
+            for secret in ["SECRET123", "token=", "sig=abc", "frag"] {
+                assert!(
+                    !text.contains(secret),
+                    "{what}: {kind} of the error carries {secret:?}: {text}"
+                );
+            }
+        }
+        assert!(
+            err.to_string().contains(keep),
+            "{what}: the redaction removed more than the query: {err}"
+        );
+        assert_eq!(read_dir_names(&dir), Vec::<String>::new(), "{what}");
+    }
 }
 
 #[test]

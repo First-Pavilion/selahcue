@@ -16,7 +16,8 @@ use std::io::Write;
 
 use common::{big_asset, fixture, gz};
 use selahcue_scripture::validate::{
-    validate_asset, Counts, ValidationError, MAX_DECOMPRESSED_BYTES, MAX_LINE_BYTES,
+    refused_character, scan, validate_asset, Counts, ValidationError, MAX_DECOMPRESSED_BYTES,
+    MAX_LINE_BYTES,
 };
 
 /// Reading `rows` back through the validator with the counts they actually have.
@@ -49,13 +50,25 @@ fn a_well_formed_asset_passes_with_its_counts() {
 #[test]
 fn verse_counts_must_equal_the_catalogue_entry() {
     let f = fixture("TST", 3, 2);
-    for (ot, nt) in [(4, 2), (3, 3), (2, 2), (3, 1), (0, 0), (2, 3)] {
+    // The file holds 5 rows (3 OT, 2 NT). Counts that allow at least 5 rows read the whole file and
+    // disagree on the split; counts that allow fewer stop at the first extra row.
+    for (ot, nt) in [(4, 2), (3, 3), (2, 3), (5, 0), (0, 5)] {
         let err = validate_asset(f.gz.as_slice(), counts(ot, nt)).unwrap_err();
         assert_eq!(
             err,
             ValidationError::VerseCount {
                 expected: counts(ot, nt),
                 actual: counts(3, 2)
+            },
+            "expected {ot}/{nt}"
+        );
+    }
+    for (ot, nt) in [(2, 2), (3, 1), (0, 0), (1, 1)] {
+        let err = validate_asset(f.gz.as_slice(), counts(ot, nt)).unwrap_err();
+        assert_eq!(
+            err,
+            ValidationError::TooManyRows {
+                limit: u64::from(ot + nt)
             },
             "expected {ot}/{nt}"
         );
@@ -312,10 +325,10 @@ fn an_empty_input_is_refused() {
 fn a_decompression_bomb_is_refused_at_the_cap_and_a_big_honest_file_is_not() {
     // The cap this test is written against. If it changes, the row counts below must be re-derived,
     // and this fails to compile until they are.
-    const _: () = assert!(MAX_DECOMPRESSED_BYTES == 64 * 1024 * 1024);
-    const ROW_BYTES: u64 = 16_000 + "1\t1\t4400\t".len() as u64 + 1;
-    const UNDER: u32 = 4_000; // ~64.0 MB, under 67.1 MB
-    const OVER: u32 = 4_400; // ~70.4 MB, over it
+    const _: () = assert!(MAX_DECOMPRESSED_BYTES == 16 * 1024 * 1024);
+    const ROW_BYTES: u64 = 16_000 + "1\t1\t1100\t".len() as u64 + 1;
+    const UNDER: u32 = 1_000; // ~16.0 MB, under 16.8 MB
+    const OVER: u32 = 1_100; // ~17.6 MB, over it
     const _: () = assert!((UNDER as u64) * ROW_BYTES < MAX_DECOMPRESSED_BYTES);
     const _: () = assert!((OVER as u64) * ROW_BYTES > MAX_DECOMPRESSED_BYTES);
 
@@ -346,7 +359,7 @@ fn an_endless_line_is_refused_at_the_line_cap_not_buffered() {
     // The per-line buffer is the one place the validator holds inflated text, so it is capped. A
     // single 100 MB line with no newline must be refused as an over-long LINE after the cap's
     // worth of text. With the cap removed the whole line would be read and the answer would be the
-    // 64 MiB decompression cap instead (`TooLarge`), so this is the test that fails without it.
+    // 16 MiB decompression cap instead (`TooLarge`), so this is the test that fails without it.
     let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
     enc.write_all(b"1\t1\t1\t").unwrap();
     let chunk = vec![b'a'; 1024 * 1024];
@@ -356,4 +369,179 @@ fn an_endless_line_is_refused_at_the_line_cap_not_buffered() {
     let bomb = enc.finish().unwrap();
     let err = validate_asset(bomb.as_slice(), counts(1, 0)).unwrap_err();
     assert_eq!(err, ValidationError::LineTooLong { line: 1 });
+}
+
+// ---------------------------------------------------------------------------------------------
+// Round 2: one gzip member only, a row bound, and the stricter character refusal.
+// ---------------------------------------------------------------------------------------------
+
+/// Gzip of `lines` as ONE member, then `tail` appended raw.
+fn asset_then(lines: &[&str], tail: &[u8]) -> Vec<u8> {
+    let mut bytes = asset(lines);
+    bytes.extend_from_slice(tail);
+    bytes
+}
+
+#[test]
+fn a_second_gzip_member_after_the_first_is_refused() {
+    // Positive control: the first member alone is a valid asset, so what is refused below is the
+    // extra bytes and nothing else.
+    validate_asset(asset(&["1\t1\t1\tone"]).as_slice(), counts(1, 0)).expect("one member passes");
+
+    let second = asset(&["1\t1\t2\ttwo"]);
+    let both = asset_then(&["1\t1\t1\tone"], &second);
+    let err = validate_asset(both.as_slice(), counts(1, 0)).unwrap_err();
+    assert_eq!(err, ValidationError::TrailingData);
+    // Even when the second member would make the counts come out "right", the file is refused:
+    // the digest must not be able to vouch for a file that is two archives.
+    let err = validate_asset(both.as_slice(), counts(2, 0)).unwrap_err();
+    assert_eq!(err, ValidationError::TrailingData);
+}
+
+#[test]
+fn bytes_after_the_end_of_the_gzip_member_are_refused() {
+    for (name, tail) in [
+        ("one zero byte", &[0u8][..]),
+        ("garbage text", &b"not gzip at all"[..]),
+        ("a gzip header alone", &[0x1f, 0x8b, 8, 0][..]),
+        ("a newline", &b"\n"[..]),
+    ] {
+        let bytes = asset_then(&["1\t1\t1\tone"], tail);
+        let err = validate_asset(bytes.as_slice(), counts(1, 0)).unwrap_err();
+        assert_eq!(err, ValidationError::TrailingData, "{name}");
+    }
+}
+
+#[test]
+fn the_trailing_data_message_says_what_is_wrong() {
+    // The text used to say "not gzip, truncated, or a bad checksum", which is false for a file
+    // whose first member is perfectly good.
+    let text = ValidationError::TrailingData.to_string();
+    assert!(
+        text.contains("after the end of its gzip stream"),
+        "unhelpful: {text}"
+    );
+}
+
+#[test]
+fn more_rows_than_allowed_stops_at_the_first_extra_row() {
+    let lines: Vec<String> = (1..=50u32).map(|v| format!("1\t1\t{v}\tx")).collect();
+    let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
+    validate(&refs, counts(50, 0)).expect("positive control: exactly the allowed rows pass");
+
+    let err = validate(&refs, counts(10, 0)).unwrap_err();
+    assert_eq!(err, ValidationError::TooManyRows { limit: 10 });
+
+    // The bound bites WHILE reading, not after: the callback sees exactly `limit` rows and no
+    // more, so a file with millions of rows never has them all handed to a caller that keeps them.
+    let mut seen = 0u64;
+    let err = scan(asset(&refs).as_slice(), 10, |_| seen += 1).unwrap_err();
+    assert_eq!(err, ValidationError::TooManyRows { limit: 10 });
+    assert_eq!(seen, 10, "rows delivered before the refusal");
+}
+
+#[test]
+fn a_zero_row_budget_refuses_the_first_row() {
+    let mut seen = 0u64;
+    let err = scan(asset(&["1\t1\t1\tone"]).as_slice(), 0, |_| seen += 1).unwrap_err();
+    assert_eq!(err, ValidationError::TooManyRows { limit: 0 });
+    assert_eq!(seen, 0);
+}
+
+#[test]
+fn the_row_bound_is_checked_before_the_verse_count() {
+    // A file with too many rows reports the bound, which is the cheaper and earlier fact; a file
+    // with too few rows reports the counts.
+    let two = ["1\t1\t1\ta", "1\t1\t2\tb"];
+    assert_eq!(
+        validate(&two, counts(1, 0)).unwrap_err(),
+        ValidationError::TooManyRows { limit: 1 }
+    );
+    assert!(matches!(
+        validate(&two, counts(3, 0)).unwrap_err(),
+        ValidationError::VerseCount { .. }
+    ));
+}
+
+/// Every character the stricter refusal adds, with the reason it is there.
+fn newly_refused() -> Vec<(u32, &'static str)> {
+    let mut v = vec![
+        (0x7F, "DEL"),
+        (0x80, "first C1 control"),
+        (0x85, "NEL"),
+        (0x9F, "last C1 control"),
+        (0x2028, "line separator"),
+        (0x2029, "paragraph separator"),
+        (0x200B, "zero-width space"),
+        (0x2060, "word joiner"),
+        (0xFEFF, "byte-order mark"),
+    ];
+    for c in 0x202A..=0x202E {
+        v.push((c, "bidi embedding or override"));
+    }
+    for c in 0x2066..=0x2069 {
+        v.push((c, "bidi isolate"));
+    }
+    v
+}
+
+#[test]
+fn invisible_and_direction_changing_characters_are_refused_wherever_they_hide() {
+    for (code, why) in newly_refused() {
+        let c = ch(code);
+        assert!(refused_character(c), "U+{code:04X} ({why}) must be refused");
+        for position in ["start", "middle", "end"] {
+            let text = match position {
+                "start" => format!("{c}word and more"),
+                "middle" => format!("word {c} and more"),
+                _ => format!("word and more{c}"),
+            };
+            let line = format!("1\t1\t1\t{text}");
+            let err = validate(&[&line], counts(1, 0)).unwrap_err();
+            assert_eq!(
+                err,
+                ValidationError::Residue {
+                    line: 1,
+                    character: c
+                },
+                "U+{code:04X} ({why}) at the {position}"
+            );
+        }
+    }
+}
+
+#[test]
+fn the_whole_c1_range_is_refused_and_its_neighbours_are_not() {
+    for code in 0x7Fu32..=0x9F {
+        assert!(
+            refused_character(ch(code)),
+            "U+{code:04X} is in DEL..=C1 and must be refused"
+        );
+    }
+    // The characters just outside the range, and the ones that are allowed on purpose.
+    for (code, why) in [
+        (0x7E, "tilde"),
+        (0xA0, "no-break space"),
+        (0xA1, "inverted exclamation mark"),
+        (0x200C, "zero-width non-joiner"),
+        (0x200D, "zero-width joiner"),
+        (0x2027, "hyphenation point"),
+        (0x202F, "narrow no-break space"),
+        (0x2065, "unassigned, between the refused ranges"),
+        (0x206A, "inhibit symmetric swapping, outside the isolates"),
+    ] {
+        assert!(
+            !refused_character(ch(code)),
+            "U+{code:04X} ({why}) must not be refused"
+        );
+    }
+}
+
+#[test]
+fn zero_width_joiners_pass_inside_text() {
+    // A script that needs ZWNJ or ZWJ (Persian, Indic) must still install. U+200C and U+200D
+    // are the characters the stricter refusal deliberately leaves alone.
+    let text = format!("a{}b{}c", ch(0x200C), ch(0x200D));
+    let line = format!("1\t1\t1\t{text}");
+    validate(&[&line], counts(1, 0)).expect("ZWNJ and ZWJ are accepted");
 }

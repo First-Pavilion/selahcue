@@ -161,3 +161,43 @@ fn host_of(authority: &str) -> Option<&str> {
 fn is_loopback(host: &str) -> bool {
     matches!(host, "127.0.0.1" | "[::1]")
 }
+
+/// `text` with the query string, the fragment and any `user:password@` taken out of every URL in it.
+///
+/// A signed or tokenised URL (a CDN redirect to `...?token=SECRET`) must never reach an error
+/// message: errors travel to the operator UI, to `bible://phase` events, to logs and to bug
+/// reports. Any whitespace-separated word containing `://` is cut at its first `?` or `#`, its
+/// credentials (the text before an `@` in the authority) are replaced by `REDACTED`, the punctuation
+/// that followed the URL (a trailing `:` or `.`) is kept, and everything else is left as it was.
+pub fn redact_urls(text: &str) -> String {
+    const TAIL: &[char] = &[':', ';', ',', '.', ')', ']', '}', '\'', '"'];
+    let mut out = String::with_capacity(text.len());
+    for piece in text.split_inclusive(char::is_whitespace) {
+        let word_len = piece.trim_end_matches(char::is_whitespace).len();
+        let (word, space) = piece.split_at(word_len);
+        if word.contains("://") {
+            let core_len = word.trim_end_matches(TAIL).len();
+            let (core, tail) = word.split_at(core_len);
+            let cut = core.find(['?', '#']).unwrap_or(core.len());
+            out.push_str(&without_credentials(&core[..cut]));
+            out.push_str(tail);
+        } else {
+            out.push_str(word);
+        }
+        out.push_str(space);
+    }
+    out
+}
+
+/// `word` with the `user:password@` part of the first URL authority in it replaced by `REDACTED@`.
+fn without_credentials(word: &str) -> String {
+    let Some(start) = word.find("://").map(|i| i + 3) else {
+        return word.to_string();
+    };
+    let authority_len = word[start..].find('/').unwrap_or(word.len() - start);
+    let authority = &word[start..start + authority_len];
+    match authority.rfind('@') {
+        Some(at) => format!("{}REDACTED@{}", &word[..start], &word[start + at + 1..]),
+        None => word.to_string(),
+    }
+}

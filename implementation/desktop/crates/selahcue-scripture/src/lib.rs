@@ -66,9 +66,15 @@ pub mod catalog;
 /// SHA-256 helpers shared by the installer and the downloader.
 #[cfg(feature = "installed")]
 mod digest;
-/// Installed translations: storage, receipt, install, and the bounded cache (feature `installed`).
+/// The install receipt, `installed.json` (feature `installed`).
+#[cfg(feature = "installed")]
+pub mod receipt;
+/// Installed translations: storage, install, and the bounded cache (feature `installed`).
 #[cfg(feature = "installed")]
 pub mod registry;
+/// Staging files for installs: exclusive creation and narrow cleanup.
+#[cfg(feature = "installed")]
+mod staging;
 /// Which URLs the download path may request: HTTPS only (feature `installed`).
 #[cfg(feature = "installed")]
 pub mod url_policy;
@@ -85,10 +91,7 @@ pub mod validate;
 #[cfg(feature = "download")]
 pub mod download;
 #[cfg(feature = "download")]
-pub use download::{
-    default_cache_dir, download_and_install, fetch_translation, sha256_file, TranslationAsset,
-    TranslationFetchError,
-};
+pub use download::download_and_install;
 
 /// One verse of the bundled translation.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -443,16 +446,10 @@ pub(crate) fn chapter_of_index(all: &[Verse], reference: &Reference) -> Option<C
     if vs.is_empty() {
         return None;
     }
-    let exists = |book: u8, chapter: u16| {
-        (1..=66).contains(&book) && {
-            let i = all.partition_point(|v| (v.book, v.chapter) < (book, chapter));
-            all.get(i)
-                .is_some_and(|v| v.book == book && v.chapter == chapter)
-        }
-    };
-    let has_prev = reference.chapter > 1 && exists(reference.book, reference.chapter - 1)
-        || reference.book > 1;
-    let has_next = exists(reference.book, reference.chapter + 1) || reference.book < 66;
+    // From the index itself, never from an assumption that all 66 books are present: an index
+    // without (say) the Old Testament has no chapter before Matthew 1.
+    let has_prev = adjacent_in_index(all, reference, false).is_some();
+    let has_next = adjacent_in_index(all, reference, true).is_some();
     Some(Chapter {
         book: reference.book,
         book_name: selahcue_core::scripture::book_name(reference.book)

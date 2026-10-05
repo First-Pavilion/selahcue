@@ -56,14 +56,45 @@ fn tail() -> PathBuf {
 #[test]
 fn the_environment_override_wins_and_an_empty_one_is_ignored() {
     let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let _env = Env::set(&[(DATA_DIR_ENV, Some("/somewhere/else"))]);
+    // An absolute path (built from the temp directory so it is absolute on every platform).
+    let elsewhere = std::env::temp_dir().join("selahcue-somewhere-else");
+    let _env = Env::set(&[(DATA_DIR_ENV, Some(elsewhere.to_str().unwrap()))]);
     assert_eq!(DATA_DIR_ENV, "SELAHCUE_SCRIPTURE_DATA");
-    assert_eq!(default_data_dir(), Some(PathBuf::from("/somewhere/else")));
+    assert_eq!(default_data_dir(), Some(elsewhere.clone()));
     drop(_env);
 
     // An empty value is "not set", not "the current directory".
     let _env = Env::set(&[(DATA_DIR_ENV, Some(""))]);
     assert_ne!(default_data_dir(), Some(PathBuf::from("")));
+}
+
+#[test]
+fn a_relative_environment_override_is_refused_not_resolved_against_the_working_directory() {
+    // A relative path would mean a different directory for every directory the process happens to be
+    // started in: translations "disappear", and cleanup deletes files somewhere nobody chose. It is
+    // refused outright, and does NOT fall back to the default directory either: the user asked for a
+    // location and got a mistake, so nothing is read or written anywhere.
+    let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    for relative in [
+        "relative/dir",
+        ".",
+        "..",
+        "./data",
+        "data",
+        "~/translations",
+    ] {
+        let _env = Env::set(&[(DATA_DIR_ENV, Some(relative))]);
+        assert_eq!(
+            default_data_dir(),
+            None,
+            "{relative:?} is not an absolute path"
+        );
+    }
+    // Positive control: an absolute path is used as given, so the refusals above are about
+    // relativeness and not about the variable.
+    let absolute = std::env::temp_dir().join("selahcue-absolute");
+    let _env = Env::set(&[(DATA_DIR_ENV, Some(absolute.to_str().unwrap()))]);
+    assert_eq!(default_data_dir(), Some(absolute));
 }
 
 #[cfg(target_os = "macos")]
@@ -138,26 +169,4 @@ fn on_linux_it_is_the_xdg_data_directory_and_not_the_cache() {
         ("HOME", None),
     ]);
     assert_eq!(default_data_dir(), None);
-}
-
-#[cfg(feature = "download")]
-#[test]
-fn it_is_not_where_the_download_cache_lives() {
-    let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let _env = Env::set(&[
-        (DATA_DIR_ENV, None),
-        ("SELAHCUE_SCRIPTURE_CACHE", None),
-        ("HOME", Some("/home/someone")),
-        ("XDG_DATA_HOME", None),
-        ("XDG_CACHE_HOME", None),
-        ("LOCALAPPDATA", Some("/home/someone/AppData/Local")),
-    ]);
-    let data = default_data_dir().unwrap();
-    let cache = selahcue_scripture::download::default_cache_dir();
-    #[cfg(not(target_os = "windows"))]
-    assert_ne!(
-        data, cache,
-        "installed translations must not live in the purgeable cache directory"
-    );
-    assert!(data.ends_with(tail()) && cache.ends_with(tail()));
 }

@@ -445,6 +445,42 @@ fn the_base_url_must_be_an_https_url_without_a_query() {
 }
 
 #[test]
+fn a_refused_base_url_never_prints_its_query_fragment_or_credentials() {
+    // A base URL that is refused is quoted in the error so the author can find it; whatever secret
+    // it carried must not travel with it, in `Display` or in `Debug`.
+    let f = fixture("TST", 1, 1);
+    for bad in [
+        "https://d.example.org/t/?token=SECRET123",
+        "https://d.example.org/t/#SECRET123",
+        "https://user:SECRET123@d.example.org/t/",
+        "http://d.example.org/t/?token=SECRET123",
+        "https://d.example.org/t/?a=b#SECRET123",
+    ] {
+        let err =
+            Catalogue::parse(&catalogue_json(Some(bad), vec![f.entry("cleared")])).unwrap_err();
+        assert!(matches!(err, CatalogError::BadBaseUrl { .. }), "{bad}");
+        for (kind, text) in [("Display", err.to_string()), ("Debug", format!("{err:?}"))] {
+            assert!(
+                !text.contains("SECRET123"),
+                "{bad}: {kind} of the error carries the secret: {text}"
+            );
+            assert!(
+                text.contains("d.example.org"),
+                "{bad}: the redaction removed the host too: {text}"
+            );
+        }
+    }
+    // A very long base URL is not echoed whole either.
+    let long = format!("https://d.example.org/{}", "a".repeat(5_000));
+    let err = Catalogue::parse(&catalogue_json(Some(&long), vec![f.entry("cleared")])).unwrap_err();
+    assert!(
+        err.to_string().len() < 1_000,
+        "{} bytes",
+        err.to_string().len()
+    );
+}
+
+#[test]
 fn the_number_of_entries_is_bounded() {
     let many: Vec<Value> = (0..=MAX_ENTRIES)
         .map(|i| {

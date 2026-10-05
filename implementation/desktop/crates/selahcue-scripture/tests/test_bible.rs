@@ -16,7 +16,7 @@ use std::fs;
 use common::{catalogue_json, entry_pinning, fixture, tmp_dir};
 use selahcue_core::scripture::{book_name, parse_one, Reference, VerseRange};
 use selahcue_scripture::catalog::Catalogue;
-use selahcue_scripture::registry::{InstallHooks, Registry};
+use selahcue_scripture::registry::{InstallHooks, LoadError, Registry};
 use selahcue_scripture::validate::scan;
 use selahcue_scripture::{
     adjacent_chapter_in, chapter_in, chapter_verse_bounds_in, passage_exists_in, passage_text_in,
@@ -36,25 +36,52 @@ fn parsed(s: &str) -> Reference {
     parse_one(s).unwrap_or_else(|e| panic!("test reference {s:?} must parse: {e:?}"))
 }
 
-/// A registry with the bundled KJV text installed as translation `KJX`.
-fn kjx() -> (Registry, Bible) {
-    let bytes = fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/kjv.tsv.gz")).unwrap();
-    let counts = scan(bytes.as_slice(), |_| {})
-        .expect("the bundled KJV asset must satisfy the installed-asset rules");
-    let root = tmp_dir("bible-kjx");
+/// A registry with the bundled asset `file` (e.g. `kjv.tsv.gz`) installed as translation `code`.
+fn installed_copy(file: &str, code: &str) -> (Registry, Bible) {
+    let bytes = fs::read(format!("{}/assets/{file}", env!("CARGO_MANIFEST_DIR"))).unwrap();
+    let counts = scan(bytes.as_slice(), u64::MAX, |_| {}).unwrap_or_else(|e| {
+        panic!("the bundled {file} must satisfy the installed-asset rules: {e}")
+    });
+    let root = tmp_dir(&format!("bible-{}", code.to_ascii_lowercase()));
     let catalogue = Catalogue::parse(&catalogue_json(
         Some("https://downloads.example.org/t/"),
-        vec![entry_pinning("KJX", &bytes, counts.ot, counts.nt)],
+        vec![entry_pinning(code, &bytes, counts.ot, counts.nt)],
     ))
     .unwrap();
     let registry = Registry::new(root.join("data"), catalogue);
-    let src = root.join("kjx.src");
+    let src = root.join(format!("{code}.src"));
     fs::write(&src, &bytes).unwrap();
     registry
-        .install_from_file("KJX", &src, 1, &InstallHooks::default())
-        .expect("the bundled KJV asset installs as KJX");
-    let bible = registry.bible("KJX").expect("KJX is installed");
+        .install_from_file(code, &src, 1, &InstallHooks::default())
+        .unwrap_or_else(|e| panic!("the bundled {file} installs as {code}: {e}"));
+    let bible = registry.bible(code).expect("it is installed");
     (registry, bible)
+}
+
+/// A registry with the bundled KJV text installed as translation `KJX`.
+fn kjx() -> (Registry, Bible) {
+    installed_copy("kjv.tsv.gz", "KJX")
+}
+
+#[test]
+fn every_bundled_asset_satisfies_the_installed_asset_rules() {
+    // The rules a downloaded file must meet (including the invisible and direction-changing
+    // characters it may not contain) are the rules the real texts already meet. If a rule were
+    // tightened past the real data, a real translation would be refused at install.
+    for file in [
+        "asv.tsv.gz",
+        "dby.tsv.gz",
+        "kjv.tsv.gz",
+        "web.tsv.gz",
+        "webbe.tsv.gz",
+    ] {
+        let bytes = fs::read(format!("{}/assets/{file}", env!("CARGO_MANIFEST_DIR"))).unwrap();
+        let mut rows = 0u64;
+        let counts = scan(bytes.as_slice(), u64::MAX, |_| rows += 1)
+            .unwrap_or_else(|e| panic!("{file} is refused: {e}"));
+        assert_eq!(counts.total(), rows, "{file}");
+        assert!(rows > 30_000, "{file} has only {rows} rows");
+    }
 }
 
 #[test]
@@ -193,6 +220,210 @@ fn an_installed_translation_answers_exactly_like_the_same_text_bundled() {
         installed.passage_text(&parsed("John 3:16")),
         bundled.passage_text(&parsed("John 3:16"))
     );
+}
+
+#[test]
+fn an_installed_translation_with_verse_gaps_answers_exactly_like_the_same_text_bundled() {
+    // The King James text has every verse, so the sweep above never meets a chapter with a verse
+    // missing, which is exactly where a bundled lookup (answered from a table built at compile
+    // time) and an installed one (answered from the decoded rows) could disagree. The American
+    // Standard text omits verses. Install it as `ASX` and compare every method over every chapter
+    // that has a gap, and over each verse number in and around the gaps.
+    let (registry, installed) = installed_copy("asv.tsv.gz", "ASX");
+    let bundled = Bible::bundled(Translation::Asv);
+    assert_eq!(installed.verse_count(), bundled.verse_count());
+    assert_eq!(
+        registry.resident_codes(),
+        ["ASX"],
+        "read through the registry"
+    );
+
+    // The chapters with a verse missing, found from the bundled text itself.
+    let mut gap_chapters: Vec<(u8, u16, Vec<u16>)> = Vec::new();
+    for book in 1u8..=66 {
+        for chapter in 1u16..=150 {
+            let all = bundled.verses(&reference(book, chapter, None));
+            let Some(last) = all.last().map(|v| v.verse) else {
+                continue;
+            };
+            if usize::from(last) != all.len() {
+                let present: Vec<u16> = all.iter().map(|v| v.verse).collect();
+                let missing: Vec<u16> = (1..=last).filter(|v| !present.contains(v)).collect();
+                gap_chapters.push((book, chapter, missing));
+            }
+        }
+    }
+    assert!(
+        gap_chapters.len() >= 5,
+        "premise: the American Standard text has chapters with omitted verses ({} found)",
+        gap_chapters.len()
+    );
+
+    let mut compared = 0usize;
+    for (book, chapter, missing) in &gap_chapters {
+        let first_missing = missing[0];
+        let mut selections: Vec<Option<(u16, u16)>> = vec![
+            None,
+            Some((1, 1)),
+            Some((2, 5)),
+            Some((first_missing, first_missing)),
+            Some((first_missing.saturating_sub(1).max(1), first_missing + 1)),
+            Some((9_000, 9_001)),
+            Some((7, 3)),
+        ];
+        for m in missing {
+            selections.push(Some((*m, *m)));
+        }
+        for verses in selections {
+            let r = reference(*book, *chapter, verses);
+            let at = format!("{book} {chapter} {verses:?}");
+            assert_eq!(installed.verses(&r), bundled.verses(&r), "verses {at}");
+            assert_eq!(
+                installed.passage_text(&r),
+                bundled.passage_text(&r),
+                "passage_text {at}"
+            );
+            assert_eq!(
+                installed.passage_exists(&r),
+                bundled.passage_exists(&r),
+                "passage_exists {at}"
+            );
+            assert_eq!(
+                installed.chapter_verse_bounds(&r),
+                bundled.chapter_verse_bounds(&r),
+                "chapter_verse_bounds {at}"
+            );
+            compared += 1;
+        }
+        let r = reference(*book, *chapter, None);
+        assert_eq!(
+            installed.chapter(&r),
+            bundled.chapter(&r),
+            "chapter {book} {chapter}"
+        );
+        for forward in [true, false] {
+            assert_eq!(
+                installed.adjacent_chapter(&r, forward),
+                bundled.adjacent_chapter(&r, forward),
+                "adjacent {book} {chapter} forward={forward}"
+            );
+        }
+        // The omitted verse itself is absent in both (positive control for "absent" below).
+        for m in missing {
+            let r = reference(*book, *chapter, Some((*m, *m)));
+            assert!(
+                !installed.passage_exists(&r),
+                "{book} {chapter}:{m} is omitted"
+            );
+            assert!(installed.verses(&r).is_empty());
+        }
+        assert!(
+            installed.passage_exists(&reference(*book, *chapter, Some((1, 1)))),
+            "{book} {chapter}:1 exists"
+        );
+    }
+    assert!(compared > 40, "compared only {compared} selections");
+    for query in ["love", "in the beginning", "God said light"] {
+        assert_eq!(
+            installed.search(query, 20),
+            bundled.search(query, 20),
+            "{query:?}"
+        );
+    }
+}
+
+#[test]
+fn check_says_why_an_installed_translation_reads_as_empty() {
+    // Every lookup on a handle answers "nothing" for a translation it cannot read, and cannot say
+    // why. `check` is the one call that does.
+    let f = fixture("TST", 3, 2);
+    let root = tmp_dir("bible-check");
+    let cat = Catalogue::parse(&catalogue_json(
+        Some("https://d.example.org/t/"),
+        vec![f.entry("cleared")],
+    ))
+    .unwrap();
+    let dir = root.join("data");
+    let registry = Registry::new(dir.clone(), cat.clone());
+    fs::write(root.join("a.gz"), &f.gz).unwrap();
+    registry
+        .install_from_file("TST", &root.join("a.gz"), 1, &InstallHooks::default())
+        .unwrap();
+
+    // Positive controls: a bundled handle and a healthy installed one are fine.
+    assert!(Bible::bundled(Translation::Kjv).check().is_ok());
+    let handle = registry.bible("TST").unwrap();
+    assert!(handle.check().is_ok());
+
+    // Damage: the same size, one byte flipped. The file is still "in place", so the cheap
+    // availability answer is yes, the lookups answer nothing, and `check` names the damage.
+    let path = dir.join("tst.tsv.gz");
+    let mut bytes = fs::read(&path).unwrap();
+    bytes[12] ^= 0xFF;
+    let reader = Registry::new(dir.clone(), cat.clone());
+    let damaged = reader.bible("TST").unwrap();
+    fs::write(&path, &bytes).unwrap();
+    assert!(
+        damaged.is_available(),
+        "premise: availability does not hash the file"
+    );
+    assert_eq!(damaged.verse_count(), 0, "the lookups cannot tell why");
+    assert!(
+        matches!(damaged.check(), Err(LoadError::Mismatch { .. })),
+        "check must name the damage, got {:?}",
+        damaged.check()
+    );
+
+    // A missing file.
+    fs::remove_file(&path).unwrap();
+    assert!(!damaged.is_available());
+    assert!(matches!(damaged.check(), Err(LoadError::Missing)));
+
+    // A translation removed after the handle was made.
+    registry
+        .install_from_file("TST", &root.join("a.gz"), 2, &InstallHooks::default())
+        .unwrap();
+    assert!(handle.check().is_ok());
+    assert!(registry.remove("TST").unwrap());
+    assert!(matches!(handle.check(), Err(LoadError::NotInstalled)));
+    assert!(!handle.is_available());
+}
+
+#[test]
+fn chapter_neighbours_come_from_the_index_and_not_from_an_assumption_of_66_books() {
+    // A translation that holds only the first chapter of John has no chapter before it and none
+    // after it. A rule of "any book after Genesis has a previous chapter" would say otherwise.
+    let f = fixture("NTO", 0, 3);
+    let root = tmp_dir("bible-neighbours");
+    let cat = Catalogue::parse(&catalogue_json(
+        Some("https://d.example.org/t/"),
+        vec![f.entry("cleared")],
+    ))
+    .unwrap();
+    let registry = Registry::new(root.join("data"), cat);
+    fs::write(root.join("a.gz"), &f.gz).unwrap();
+    registry
+        .install_from_file("NTO", &root.join("a.gz"), 1, &InstallHooks::default())
+        .unwrap();
+    let handle = registry.bible("NTO").unwrap();
+    let john1 = reference(43, 1, None);
+    let chapter = handle.chapter(&john1).expect("John 1 is in the file");
+    assert_eq!(chapter.verses.len(), 3);
+    assert!(
+        !chapter.has_prev,
+        "nothing comes before John 1 in this file"
+    );
+    assert!(!chapter.has_next, "nothing comes after John 1 in this file");
+    assert_eq!(handle.adjacent_chapter(&john1, false), None);
+    assert_eq!(handle.adjacent_chapter(&john1, true), None);
+
+    // Positive control: a complete translation, bundled, keeps every neighbour it has.
+    let kjv = Bible::bundled(Translation::Kjv);
+    let at = |book, chapter| kjv.chapter(&reference(book, chapter, None)).unwrap();
+    assert!(!at(1, 1).has_prev && at(1, 1).has_next, "Genesis 1");
+    assert!(at(43, 3).has_prev && at(43, 3).has_next, "John 3");
+    assert!(at(66, 22).has_prev && !at(66, 22).has_next, "Revelation 22");
+    assert!(at(2, 1).has_prev, "Exodus 1 follows Genesis 50");
 }
 
 #[test]

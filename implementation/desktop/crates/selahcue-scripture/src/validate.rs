@@ -5,30 +5,38 @@
 //! for a downloaded asset what `build.rs` does for a bundled one: it refuses anything that is not
 //! shaped like a Bible, even if the catalogue (or the build that produced the digest) was wrong.
 //!
-//! The asset is read as a stream and never held whole: the gzip decoder is capped at 64 MiB of
+//! The asset is read as a stream and never held whole: the gzip decoder is capped at 16 MiB of
 //! output (a decompression bomb is refused at the cap, not after it has been inflated), and one
 //! line at a time is held, capped at 16 KiB. Every line must be a verse row in the same grammar the
 //! bundled assets use (`tsv_row::parse_row`, shared with `build.rs` and the runtime decoder), and:
 //!
+//! - the input is exactly ONE gzip member: any byte after its end is refused, so the digest cannot
+//!   vouch for a file that is also a valid archive of something else;
 //! - the book is 1 to 66, the chapter and verse are at least 1;
 //! - rows are strictly ascending by (book, chapter, verse), so no duplicates and no reordering
 //!   (gaps are fine: translations omit verses);
+//! - there are no more rows than the caller's verse counts allow (checked as each row is read, so a
+//!   file that claims fewer verses than it holds is stopped early);
 //! - the text is non-empty, has no leading or trailing whitespace, and contains none of
-//!   `[ ] \u{b6} * | \` nor a control character (the markup residue A1's converter also refuses);
+//!   `[ ] \u{b6} * | \`, no control character (C0, DEL or C1), and none of the invisible or
+//!   direction-changing characters listed at [`refused_character`] (the markup residue A1's
+//!   converter also refuses, and more);
 //! - the Old Testament (books 1 to 39) and New Testament (40 to 66) verse counts equal the
-//!   catalogue entry's.
+//!   caller's.
 //!
 //! A refusal names the 1-based line number where there is one. Nothing here touches the disk.
 
 use std::io::{BufRead, BufReader, Read};
 
-use flate2::read::GzDecoder;
+use flate2::bufread::GzDecoder;
 
 use crate::{tsv_row, Verse};
 
-/// The most bytes the gzip decoder may produce for one asset: 64 MiB, the same ceiling `build.rs`
-/// puts on a bundled asset. Real assets inflate to about 4.5 MB.
-pub const MAX_DECOMPRESSED_BYTES: u64 = 64 * 1024 * 1024;
+/// The most bytes the gzip decoder may produce for one downloaded asset: 16 MiB, about three times
+/// the largest real asset (5.6 MB inflated). The cap counts BYTES, and the registry keeps up to
+/// three decoded indexes, so a looser cap lets one pinned file cost far more memory per index than
+/// any real Bible does (at 64 MiB a hostile asset cost 64 MiB per index).
+pub const MAX_DECOMPRESSED_BYTES: u64 = 16 * 1024 * 1024;
 
 /// The longest one line (one verse row, without its newline) may be. The longest real verse is
 /// well under 2 KiB, so this is generous; its job is bounding the line buffer.
@@ -43,11 +51,20 @@ pub struct Counts {
     pub nt: u32,
 }
 
+impl Counts {
+    /// `ot + nt`.
+    pub fn total(self) -> u64 {
+        u64::from(self.ot) + u64::from(self.nt)
+    }
+}
+
 /// Why an asset was refused. One variant per reason; `line` is 1-based.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ValidationError {
-    /// Not a gzip stream, truncated, or its checksum does not match.
+    /// Not a valid gzip stream: not gzip at all, truncated, or its checksum does not match.
     Decode(String),
+    /// A valid gzip member is followed by more bytes (trailing data, or a second member).
+    TrailingData,
     /// The stream inflates past [`MAX_DECOMPRESSED_BYTES`].
     TooLarge {
         limit: u64,
@@ -74,7 +91,7 @@ pub enum ValidationError {
     NotAscending {
         line: u64,
     },
-    /// The text holds a markup mark or control character.
+    /// The text holds a markup mark, a control character or an invisible or direction-changing one.
     Residue {
         line: u64,
         character: char,
@@ -82,6 +99,10 @@ pub enum ValidationError {
     /// The text is empty or has leading or trailing whitespace.
     EmptyOrUntrimmed {
         line: u64,
+    },
+    /// The asset holds more verse rows than the verse counts it was checked against allow.
+    TooManyRows {
+        limit: u64,
     },
     /// The testament counts differ from what the catalogue pins.
     VerseCount {
@@ -93,7 +114,13 @@ pub enum ValidationError {
 impl std::fmt::Display for ValidationError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ValidationError::Decode(e) => write!(f, "the file is not a complete gzip stream: {e}"),
+            ValidationError::Decode(e) => write!(
+                f,
+                "the file is not a valid gzip stream (not gzip, truncated, or a bad checksum): {e}"
+            ),
+            ValidationError::TrailingData => {
+                write!(f, "the file has bytes after the end of its gzip stream")
+            }
             ValidationError::TooLarge { limit } => {
                 write!(f, "the file inflates past the {limit}-byte limit")
             }
@@ -120,6 +147,9 @@ impl std::fmt::Display for ValidationError {
             ValidationError::EmptyOrUntrimmed { line } => {
                 write!(f, "line {line} has empty or untrimmed text")
             }
+            ValidationError::TooManyRows { limit } => {
+                write!(f, "the file holds more than the {limit} verses it may")
+            }
             ValidationError::VerseCount { expected, actual } => write!(
                 f,
                 "verse counts are OT {} / NT {}, the catalogue pins OT {} / NT {}",
@@ -139,27 +169,67 @@ pub struct Row<'a> {
     pub text: &'a str,
 }
 
-/// The characters verse text must not contain: the markup marks A1's converter refuses (`[ ] * |`
-/// and `\`) and the pilcrow, plus any ASCII control character.
-fn residue(text: &str) -> Option<char> {
+/// Whether verse text may not contain `c`. Refused: the markup marks A1's converter refuses
+/// (`[ ] * |` and `\`) and the pilcrow; every control character (C0, DEL and the C1 range
+/// U+0080 to U+009F, which includes NEL, U+0085); the line and paragraph separators U+2028 and
+/// U+2029; the bidirectional embeddings, overrides and isolates (U+202A to U+202E and U+2066 to
+/// U+2069), which can make text read backwards; and the invisible characters zero-width space
+/// (U+200B), word joiner (U+2060) and byte-order mark (U+FEFF). Allowed on purpose: the
+/// no-break space (WEBBE has some), and the zero-width non-joiner and joiner (U+200C, U+200D),
+/// which a script a future translation uses may need. The real A1 assets contain none of the
+/// refused ones.
+pub fn refused_character(c: char) -> bool {
     const PILCROW: char = '\u{b6}';
-    text.chars()
-        .find(|&c| matches!(c, '[' | ']' | '*' | '|' | '\\' | PILCROW) || c < ' ' || c == '\u{7f}')
+    matches!(c, '[' | ']' | '*' | '|' | '\\' | PILCROW)
+        || c < ' '
+        || ('\u{7f}'..='\u{9f}').contains(&c)
+        || matches!(
+            c,
+            '\u{2028}'
+                | '\u{2029}'
+                | '\u{202a}'..='\u{202e}'
+                | '\u{2066}'..='\u{2069}'
+                | '\u{200b}'
+                | '\u{2060}'
+                | '\u{feff}'
+        )
 }
 
-/// Read `compressed` as a gzip stream of verse rows, applying every check except the expected
-/// counts, calling `on_row` for each row that passes, and return the counts found. Streams: only
-/// one line is held at a time, and the decoder stops at [`MAX_DECOMPRESSED_BYTES`].
+fn residue(text: &str) -> Option<char> {
+    text.chars().find(|&c| refused_character(c))
+}
+
+/// Read `compressed` as ONE gzip member of verse rows, applying every check except the expected
+/// counts, calling `on_row` for each row that passes, and return the counts found. At most
+/// `max_rows` rows are read: the next one is refused as [`ValidationError::TooManyRows`]. Streams:
+/// only one line is held at a time, and the decoder stops at [`MAX_DECOMPRESSED_BYTES`].
 pub fn scan<R: Read>(
     compressed: R,
+    max_rows: u64,
     mut on_row: impl FnMut(Row<'_>),
+) -> Result<Counts, ValidationError> {
+    let mut source = BufReader::new(compressed);
+    let counts = scan_member(&mut source, max_rows, &mut on_row)?;
+    // The member is over (its checksum has been checked). Nothing may follow it.
+    match source.fill_buf() {
+        Ok([]) => Ok(counts),
+        Ok(_) => Err(ValidationError::TrailingData),
+        Err(e) => Err(ValidationError::Decode(e.to_string())),
+    }
+}
+
+fn scan_member<R: BufRead>(
+    source: &mut R,
+    max_rows: u64,
+    on_row: &mut impl FnMut(Row<'_>),
 ) -> Result<Counts, ValidationError> {
     // One byte past the cap: reading it is how an asset EXACTLY at the cap (accepted) is told
     // apart from one that goes on (refused).
-    let decoder = GzDecoder::new(compressed).take(MAX_DECOMPRESSED_BYTES + 1);
+    let decoder = GzDecoder::new(source).take(MAX_DECOMPRESSED_BYTES + 1);
     let mut reader = BufReader::new(decoder);
     let mut buf: Vec<u8> = Vec::with_capacity(1024);
     let mut line: u64 = 0;
+    let mut rows: u64 = 0;
     let mut inflated: u64 = 0;
     let mut previous: Option<(u8, u16, u16)> = None;
     let mut counts = Counts::default();
@@ -212,6 +282,10 @@ pub fn scan<R: Read>(
             return Err(ValidationError::EmptyOrUntrimmed { line });
         }
 
+        rows += 1;
+        if rows > max_rows {
+            return Err(ValidationError::TooManyRows { limit: max_rows });
+        }
         if book <= 39 {
             counts.ot += 1;
         } else {
@@ -227,9 +301,10 @@ pub fn scan<R: Read>(
     Ok(counts)
 }
 
-/// Validate `compressed` and require its testament counts to equal `expected`.
+/// Validate `compressed` and require its testament counts to equal `expected`. A file with more
+/// rows than `expected` allows is stopped at the first extra row.
 pub fn validate_asset<R: Read>(compressed: R, expected: Counts) -> Result<(), ValidationError> {
-    let actual = scan(compressed, |_| {})?;
+    let actual = scan(compressed, expected.total(), |_| {})?;
     if actual == expected {
         Ok(())
     } else {
@@ -238,13 +313,14 @@ pub fn validate_asset<R: Read>(compressed: R, expected: Counts) -> Result<(), Va
 }
 
 /// Decode an installed asset into its verse index, applying the same checks as install did (the
-/// file may have been touched since). `size_hint` is the expected verse count, for allocation only.
+/// file may have been touched since) and the verse counts the install recorded: no more rows than
+/// they allow, and exactly them.
 pub(crate) fn decode_verses(
     compressed: &[u8],
-    size_hint: usize,
+    expected: Counts,
 ) -> Result<Vec<Verse>, ValidationError> {
-    let mut verses = Vec::with_capacity(size_hint);
-    scan(compressed, |row| {
+    let mut verses = Vec::with_capacity(expected.total().min(200_000) as usize);
+    let actual = scan(compressed, expected.total(), |row| {
         verses.push(Verse {
             book: row.book,
             chapter: row.chapter,
@@ -252,5 +328,8 @@ pub(crate) fn decode_verses(
             text: row.text.to_string(),
         });
     })?;
+    if actual != expected {
+        return Err(ValidationError::VerseCount { expected, actual });
+    }
     Ok(verses)
 }

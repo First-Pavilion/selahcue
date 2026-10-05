@@ -15,15 +15,19 @@ use std::cell::RefCell;
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::mpsc;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use common::{
-    big_asset, catalogue_json, entry_pinning, fixture, fixture_labelled, gz, read_dir_names,
-    tmp_dir, verse_text, Fixture,
+    big_asset, catalogue_json, entry_pinning, fixture, fixture_labelled, gz, many_tiny_rows, plant,
+    read_dir_names, replace_file, tmp_dir, verse_text, Fixture,
 };
 use selahcue_scripture::catalog::{Catalogue, TranslationCode};
 use selahcue_scripture::registry::{
-    InstallError, InstallHooks, LoadError, Phase, Progress, ReceiptError, Registry, RECEIPT_FILE,
+    InstallError, InstallHooks, InstalledTranslation, LoadError, LoadStage, Phase, Progress,
+    ReceiptError, Registry, RECEIPT_FILE,
 };
 use selahcue_scripture::validate::{ValidationError, MAX_DECOMPRESSED_BYTES};
 use serde_json::{json, Value};
@@ -134,6 +138,10 @@ fn installing_stores_the_file_and_an_atomic_receipt() {
     assert_eq!(e["size_bytes"], f.gz.len());
     assert_eq!(e["installed_at"], NOW);
     assert_eq!(e["catalogue_schema"], 1);
+    // The verse counts are recorded, so a later load can bound the rows it reads by them.
+    assert_eq!(e["verses_ot"], 3);
+    assert_eq!(e["verses_nt"], 2);
+    assert_eq!((rec.verses_ot, rec.verses_nt), (3, 2));
 
     // The text is served.
     let index = env.registry.index(&code("TST")).unwrap();
@@ -393,10 +401,10 @@ fn an_oversized_file_is_rejected_at_the_pinned_size() {
 #[test]
 fn a_decompression_bomb_the_catalogue_vouches_for_is_rejected() {
     // The digest is right (the catalogue pins these exact bytes), so only install-time validation
-    // can stop it: 70 MB inflated from under a megabyte.
-    let bomb = big_asset(4_400);
+    // can stop it: 17.6 MB inflated from a few tens of kilobytes (the cap is 16 MiB).
+    let bomb = big_asset(1_100);
     assert!(bomb.len() < 1024 * 1024);
-    let env = Env::new(vec![entry_pinning("TST", &bomb, 4_400, 0)]);
+    let env = Env::new(vec![entry_pinning("TST", &bomb, 1_100, 0)]);
     let err = env.install("TST", &bomb, NOW).unwrap_err();
     assert!(
         matches!(
@@ -412,8 +420,33 @@ fn a_decompression_bomb_the_catalogue_vouches_for_is_rejected() {
 fn files_that_are_not_shaped_like_a_bible_are_rejected_even_when_the_digest_matches() {
     let pilcrow = char::from_u32(0xB6).unwrap();
     let marked = format!("1\t1\t1\tbefore {pilcrow} after");
+    let rlo = char::from_u32(0x202E).unwrap();
+    let overridden = format!("1\t1\t1\tbefore {rlo} after");
+    let mut two_members = rows_gz(&["1\t1\t1\tone"]);
+    two_members.extend(rows_gz(&["1\t1\t2\ttwo"]));
     // (what, the bytes, OT count, NT count, the validation error it must reach)
     let cases: Vec<(&str, Vec<u8>, u32, u32, &str)> = vec![
+        (
+            "a second gzip member behind the first",
+            two_members,
+            1,
+            0,
+            "TrailingData",
+        ),
+        (
+            "a right-to-left override in the text",
+            rows_gz(&[overridden.as_str()]),
+            1,
+            0,
+            "Residue { line: 1",
+        ),
+        (
+            "far more rows than the verse counts allow",
+            many_tiny_rows(262_140),
+            3,
+            2,
+            "TooManyRows { limit: 5 }",
+        ),
         (
             "a verse count that differs from the catalogue",
             rows_gz(&["1\t1\t1\tone", "1\t1\t2\ttwo"]),
@@ -752,8 +785,18 @@ fn a_receipt_that_is_a_symlink_is_not_read_and_is_replaced_not_written_through()
     assert!(matches!(err, ReceiptError::Corrupt(_)), "{err:?}");
     assert!(env.registry.bible("TST").is_none());
 
-    // Installing heals it: the link is replaced by a regular file; the target is not touched.
-    env.install("TST", &f.gz, NOW + 1).unwrap();
+    // Installing refuses to run over it (it cannot tell what else was installed)...
+    let err = env.install("TST", &f.gz, NOW + 1).unwrap_err();
+    assert!(
+        matches!(err, InstallError::Receipt(ReceiptError::Corrupt(_))),
+        "{err:?}"
+    );
+    assert!(fs::symlink_metadata(env.dir.join(RECEIPT_FILE))
+        .unwrap()
+        .is_symlink());
+    // ...and repairing it replaces the link by a regular file; the target is not written through.
+    let rebuilt = env.registry.repair_receipt(NOW + 2).unwrap();
+    assert_eq!(rebuilt.len(), 1);
     assert_eq!(
         fs::read(&elsewhere).unwrap(),
         real,
@@ -838,6 +881,26 @@ fn a_receipt_that_is_not_trustworthy_is_reported_not_used() {
             "a negative time",
             tamper(&|d| d["translations"][0]["installed_at"] = json!(-1)),
         ),
+        (
+            "no verse counts at all",
+            tamper(&|d| {
+                d["translations"][0]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("verses_ot");
+            }),
+        ),
+        (
+            "verse counts that are both zero",
+            tamper(&|d| {
+                d["translations"][0]["verses_ot"] = json!(0);
+                d["translations"][0]["verses_nt"] = json!(0);
+            }),
+        ),
+        (
+            "a verse count past the largest a testament can have",
+            tamper(&|d| d["translations"][0]["verses_nt"] = json!(100_001)),
+        ),
         // Valid JSON in every way except that it is far larger than any receipt can be: only the
         // size cap can refuse it (a receipt that is merely garbage is refused by the parser).
         ("a valid receipt past the size cap", {
@@ -846,31 +909,21 @@ fn a_receipt_that_is_not_trustworthy_is_reported_not_used() {
             padded
         }),
     ];
+    let fresh = || Registry::new(env.dir.clone(), env.registry.catalogue().clone());
     for (what, bytes) in cases {
-        fs::write(env.dir.join(RECEIPT_FILE), bytes).unwrap();
+        replace_file(&env.dir.join(RECEIPT_FILE), &bytes);
         let err = env.registry.installed().unwrap_err();
         assert!(matches!(err, ReceiptError::Corrupt(_)), "{what}: {err:?}");
         assert!(
-            env.registry.bible("TST").is_none(),
+            fresh().bible("TST").is_none(),
             "{what}: served from a bad receipt"
         );
     }
 
     // Positive control: the unmodified receipt is read.
-    fs::write(env.dir.join(RECEIPT_FILE), good.to_string()).unwrap();
+    replace_file(&env.dir.join(RECEIPT_FILE), good.to_string().as_bytes());
     assert_eq!(env.registry.installed().unwrap().len(), 1);
-    assert!(env.registry.bible("TST").is_some());
-}
-
-#[test]
-fn installing_over_a_corrupt_receipt_heals_it() {
-    let f = fixture("TST", 3, 2);
-    let env = Env::with(&[&f]);
-    fs::create_dir_all(&env.dir).unwrap();
-    fs::write(env.dir.join(RECEIPT_FILE), b"{not json").unwrap();
-    assert!(env.registry.installed().is_err());
-    env.install("TST", &f.gz, NOW).unwrap();
-    assert_eq!(env.registry.installed().unwrap().len(), 1);
+    assert!(fresh().bible("TST").is_some());
 }
 
 #[test]
@@ -965,7 +1018,7 @@ fn install_from_a_path_that_is_not_a_regular_file_is_refused() {
 fn installing_over_an_older_file_that_is_resident_frees_it_at_once() {
     // A registry that has decoded the OLDER file (installed by another process, under an earlier
     // catalogue pin) and then installs the NEW one itself must drop the older index immediately,
-    // not whenever the next read happens to prune it: it is ~7 MiB that nothing will ever serve.
+    // not whenever the next read happens to prune it: it is 5 to 6 MB that nothing will ever serve.
     let old = fixture_labelled("TST", "OLD", 3, 2);
     let new = fixture_labelled("TST", "NEW", 4, 2);
     let root = tmp_dir("free-at-once");
@@ -999,6 +1052,12 @@ fn installing_over_an_older_file_that_is_resident_frees_it_at_once() {
         reg.resident_codes(),
         Vec::<String>::new(),
         "the replaced index must be dropped by the install that replaced it"
+    );
+    // Observed by the index itself, not by the cache: it is really gone from memory.
+    assert_eq!(
+        reg.live_indexes(),
+        0,
+        "the replaced index is still alive after the install that replaced it"
     );
     assert_eq!(
         reg.index(&code("TST")).unwrap()[0].text,
@@ -1039,17 +1098,693 @@ fn an_interrupted_read_is_retried_not_treated_as_the_end_of_the_file() {
 
 #[test]
 fn a_first_install_whose_receipt_cannot_be_written_leaves_no_orphan_file() {
-    // A DIRECTORY sitting where the receipt goes: the data file is renamed into place, then the
+    // A DIRECTORY appears where the receipt goes while the install is underway (planted from the
+    // progress callback that reports the final step): the data file is renamed into place, then the
     // receipt rename fails. Nothing was installed before, so the data file would be an orphan with
-    // no receipt; it must be taken back out, and no staging or temp file may remain.
+    // no receipt; it must be taken back out, and no staging or temp file may remain. (A directory
+    // there from the start is refused up front instead; see the test for an unreadable receipt.)
     let f = fixture("TST", 3, 2);
     let env = Env::with(&[&f]);
-    fs::create_dir_all(env.dir.join(RECEIPT_FILE)).unwrap();
-    let err = env.install("TST", &f.gz, NOW).unwrap_err();
+    let planted = env.dir.join(RECEIPT_FILE);
+    let plant_dir = |p: Progress| {
+        if p.phase == Phase::Installing {
+            fs::create_dir_all(&planted).unwrap();
+        }
+    };
+    let src = env.source("asset.gz", &f.gz);
+    let err = env
+        .registry
+        .install_from_file(
+            "TST",
+            &src,
+            NOW,
+            &InstallHooks::default().with_progress(&plant_dir),
+        )
+        .unwrap_err();
     assert!(matches!(err, InstallError::Io(_)), "{err:?}");
     assert_eq!(
         env.names(),
         ["installed.json"],
         "only the planted directory may remain: no orphan data file, no .part, no temp receipt"
     );
+}
+
+// =============================================================================================
+// Round 2
+// =============================================================================================
+
+fn installed_codes(registry: &Registry) -> Vec<String> {
+    registry
+        .installed()
+        .unwrap()
+        .iter()
+        .map(|r| r.code.to_string())
+        .collect()
+}
+
+/// A source that counts how often it is read.
+struct Counting<'a> {
+    inner: &'a [u8],
+    reads: &'a AtomicUsize,
+}
+
+impl Read for Counting<'_> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        self.reads.fetch_add(1, Ordering::SeqCst);
+        self.inner.read(buf)
+    }
+}
+
+/// A source that serves its first half, then blocks until released (a stalled download), then
+/// serves the rest. Dropping the release sender also releases it, so a failing test never leaves a
+/// thread blocked for good.
+struct Stalls {
+    data: Vec<u8>,
+    pos: usize,
+    stalled: bool,
+    started: mpsc::Sender<()>,
+    release: mpsc::Receiver<()>,
+}
+
+impl Stalls {
+    fn new(data: Vec<u8>, started: mpsc::Sender<()>, release: mpsc::Receiver<()>) -> Stalls {
+        Stalls {
+            data,
+            pos: 0,
+            stalled: false,
+            started,
+            release,
+        }
+    }
+}
+
+impl Read for Stalls {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let half = self.data.len() / 2;
+        if self.pos >= half && !self.stalled {
+            self.stalled = true;
+            let _ = self.started.send(());
+            let _ = self.release.recv();
+        }
+        let end = if self.stalled { self.data.len() } else { half };
+        let n = buf.len().min(end - self.pos);
+        buf[..n].copy_from_slice(&self.data[self.pos..self.pos + n]);
+        self.pos += n;
+        Ok(n)
+    }
+}
+
+// ---- an unreadable receipt (A4) --------------------------------------------------------------
+
+#[test]
+fn an_unreadable_receipt_never_makes_install_or_remove_forget_the_other_translations() {
+    let (a, b, c) = (
+        fixture("AAA", 2, 1),
+        fixture("BBB", 3, 2),
+        fixture("CCC", 1, 1),
+    );
+    let env = Env::with(&[&a, &b, &c]);
+    env.install("AAA", &a.gz, NOW).unwrap();
+    env.install("BBB", &b.gz, NOW).unwrap();
+    assert_eq!(installed_codes(&env.registry), ["AAA", "BBB"]);
+
+    let receipt = env.dir.join(RECEIPT_FILE);
+    let good = fs::read(&receipt).unwrap();
+    // Unreadable: a schema number this build does not know (a newer build wrote it, say).
+    let mut doc: Value = serde_json::from_slice(&good).unwrap();
+    doc["schema"] = json!(2);
+    let unreadable = doc.to_string().into_bytes();
+    replace_file(&receipt, &unreadable);
+    let before = env.names();
+
+    // Installing a third translation is refused, and the source is never even read: the download
+    // could only have been thrown away.
+    let reads = AtomicUsize::new(0);
+    let mut source = Counting {
+        inner: &c.gz,
+        reads: &reads,
+    };
+    let err = env
+        .registry
+        .install_from_reader("CCC", &mut source, NOW + 1, &InstallHooks::default())
+        .unwrap_err();
+    assert!(
+        matches!(err, InstallError::Receipt(ReceiptError::Corrupt(_))),
+        "{err:?}"
+    );
+    assert_eq!(
+        reads.load(Ordering::SeqCst),
+        0,
+        "the source was read although the install could only be discarded"
+    );
+    // Removing one is refused too.
+    let err = env.registry.remove("BBB").unwrap_err();
+    assert!(
+        matches!(err, InstallError::Receipt(ReceiptError::Corrupt(_))),
+        "{err:?}"
+    );
+
+    // Nothing changed: the receipt is byte for byte what it was, both files are still there.
+    assert_eq!(fs::read(&receipt).unwrap(), unreadable);
+    assert_eq!(env.names(), before);
+    assert_eq!(fs::read(env.dir.join("aaa.tsv.gz")).unwrap(), a.gz);
+    assert_eq!(fs::read(env.dir.join("bbb.tsv.gz")).unwrap(), b.gz);
+
+    // Positive control: with the receipt back, the same two calls work and NOTHING is forgotten.
+    replace_file(&receipt, &good);
+    env.install("CCC", &c.gz, NOW + 2).unwrap();
+    assert_eq!(installed_codes(&env.registry), ["AAA", "BBB", "CCC"]);
+    assert!(env.registry.remove("BBB").unwrap());
+    assert_eq!(installed_codes(&env.registry), ["AAA", "CCC"]);
+}
+
+#[test]
+fn repair_rebuilds_the_receipt_from_the_files_that_match_the_catalogue() {
+    let (a, b, c) = (
+        fixture("AAA", 2, 1),
+        fixture("BBB", 3, 2),
+        fixture("CCC", 1, 1),
+    );
+    let env = Env::with(&[&a, &b, &c]);
+    env.install("AAA", &a.gz, NOW).unwrap();
+    env.install("BBB", &b.gz, NOW).unwrap();
+    // Debris in the folder: a file of the user's, and a file named like a catalogue entry whose
+    // bytes are not the pinned ones.
+    fs::write(env.dir.join("notes.txt"), b"mine").unwrap();
+    fs::write(env.dir.join("ccc.tsv.gz"), b"not the pinned bytes").unwrap();
+    replace_file(&env.dir.join(RECEIPT_FILE), b"{not json");
+    assert!(
+        env.registry.installed().is_err(),
+        "premise: it is unreadable"
+    );
+
+    let rebuilt = env.registry.repair_receipt(NOW + 9).unwrap();
+    let codes: Vec<String> = rebuilt.iter().map(|r| r.code.to_string()).collect();
+    assert_eq!(
+        codes,
+        ["AAA", "BBB"],
+        "only files that match a pin are recorded"
+    );
+    assert!(rebuilt.iter().all(|r| r.installed_at == NOW + 9));
+    assert_eq!(
+        rebuilt
+            .iter()
+            .map(|r| (r.verses_ot, r.verses_nt))
+            .collect::<Vec<_>>(),
+        [(2, 1), (3, 2)],
+        "the verse counts come from the catalogue entry that the bytes matched"
+    );
+    assert_eq!(env.registry.installed().unwrap(), rebuilt);
+    // Nothing was deleted, and nothing the receipt does not describe was adopted.
+    assert_eq!(
+        env.names(),
+        [
+            "aaa.tsv.gz",
+            "bbb.tsv.gz",
+            "ccc.tsv.gz",
+            "installed.json",
+            "notes.txt"
+        ]
+    );
+    assert_eq!(
+        fs::read(env.dir.join("ccc.tsv.gz")).unwrap(),
+        b"not the pinned bytes"
+    );
+    assert_eq!(env.registry.index(&code("AAA")).unwrap().len(), 3);
+    assert_eq!(env.registry.index(&code("BBB")).unwrap().len(), 5);
+    assert!(matches!(
+        env.registry.index(&code("CCC")),
+        Err(LoadError::NotInstalled)
+    ));
+}
+
+#[test]
+fn repair_with_nothing_to_find_writes_an_empty_valid_receipt() {
+    let f = fixture("TST", 3, 2);
+    let env = Env::with(&[&f]);
+    assert_eq!(env.registry.repair_receipt(NOW).unwrap(), vec![]);
+    assert_eq!(env.registry.installed().unwrap(), vec![]);
+    // And now installing works.
+    env.install("TST", &f.gz, NOW + 1).unwrap();
+    assert_eq!(installed_codes(&env.registry), ["TST"]);
+}
+
+// ---- the write lock is not held across the network (A5) --------------------------------------
+
+#[test]
+fn remove_and_other_installs_are_not_blocked_behind_a_stalled_install() {
+    let (a, b, c) = (
+        fixture("AAA", 2, 1),
+        fixture("BBB", 3, 2),
+        fixture("CCC", 1, 1),
+    );
+    let env = Env::with(&[&a, &b, &c]);
+    env.install("BBB", &b.gz, NOW).unwrap();
+    let reg = env.registry.clone();
+
+    let (started_tx, started_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let stalled = std::thread::spawn({
+        let reg = reg.clone();
+        let data = c.gz.clone();
+        move || {
+            let mut source = Stalls::new(data, started_tx, release_rx);
+            reg.install_from_reader("CCC", &mut source, NOW + 1, &InstallHooks::default())
+        }
+    });
+    started_rx
+        .recv_timeout(Duration::from_secs(10))
+        .expect("the install never reached its stall");
+
+    // While CCC's download is stuck mid-transfer: remove BBB.
+    let (done_tx, done_rx) = mpsc::channel();
+    std::thread::spawn({
+        let reg = reg.clone();
+        move || {
+            let started = Instant::now();
+            let removed = reg.remove("BBB");
+            let _ = done_tx.send((removed.is_ok_and(|r| r), started.elapsed()));
+        }
+    });
+    let (removed, took) = done_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("remove() is blocked behind a stalled install");
+    assert!(removed, "BBB was installed, so removing it reports true");
+    assert!(
+        took < Duration::from_secs(2),
+        "remove() took {took:?} while an install was merely waiting for bytes"
+    );
+    assert_eq!(installed_codes(&reg), Vec::<String>::new());
+
+    // Cleanup of leftovers does not touch the staging file of the install that is running...
+    let report = reg.recover().unwrap();
+    assert_eq!(
+        (report.removed, report.skipped),
+        (0, 1),
+        "the in-flight staging file must be skipped, not deleted"
+    );
+    assert!(
+        env.names().iter().any(|n| n.ends_with(".part")),
+        "premise: the staging file is on disk: {:?}",
+        env.names()
+    );
+    // ...and a different translation installs in the meantime, also without waiting.
+    let (done_tx, done_rx) = mpsc::channel();
+    std::thread::spawn({
+        let reg = reg.clone();
+        let src = env.source("a.gz", &a.gz);
+        move || {
+            let _ =
+                done_tx.send(reg.install_from_file("AAA", &src, NOW + 2, &InstallHooks::default()));
+        }
+    });
+    let installed = done_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("a second install is blocked behind a stalled one");
+    installed.expect("the second install succeeds");
+
+    // Positive control: release the stall, and the stalled install completes with its bytes intact
+    // (the cleanup that ran meanwhile did not take its staging file).
+    release_tx.send(()).unwrap();
+    let rec = stalled
+        .join()
+        .unwrap()
+        .expect("the stalled install finishes");
+    assert_eq!(rec.code.as_str(), "CCC");
+    assert_eq!(installed_codes(&reg), ["AAA", "CCC"]);
+    assert_eq!(fs::read(env.dir.join("ccc.tsv.gz")).unwrap(), c.gz);
+    assert!(!env.names().iter().any(|n| n.ends_with(".part")));
+}
+
+#[test]
+fn an_install_queued_for_the_write_lock_gives_up_when_cancelled() {
+    let f = fixture("TST", 3, 2);
+    let env = Env::with(&[&f]);
+    let src = env.source("asset.gz", &f.gz);
+    let cancel = AtomicBool::new(false);
+    let (verifying_tx, verifying_rx) = mpsc::channel::<()>();
+    let hold = env.registry.hold_writes_for_tests();
+    std::thread::scope(|scope| {
+        let queued = scope.spawn(|| {
+            let cb = |p: Progress| {
+                if p.phase == Phase::Verifying {
+                    let _ = verifying_tx.send(());
+                }
+            };
+            let hooks = InstallHooks::default()
+                .with_cancel(&cancel)
+                .with_progress(&cb);
+            env.registry.install_from_file("TST", &src, NOW, &hooks)
+        });
+        verifying_rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the install never got as far as verifying");
+        std::thread::sleep(Duration::from_millis(150));
+        assert!(
+            !queued.is_finished(),
+            "premise: the install is waiting for the write lock, which is held"
+        );
+        cancel.store(true, Ordering::SeqCst);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !queued.is_finished() {
+            assert!(
+                Instant::now() < deadline,
+                "a cancelled install is still waiting for the write lock"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let err = queued.join().unwrap().unwrap_err();
+        assert!(matches!(err, InstallError::Cancelled), "{err:?}");
+    });
+    // It gave up while the lock was STILL held: the cancel is what ended it, not the release.
+    drop(hold);
+    env.assert_nothing_installed("an install cancelled while queued");
+
+    // Positive control: without the flag, the same install waits for the lock and completes.
+    cancel.store(false, Ordering::SeqCst);
+    assert!(env.install("TST", &f.gz, NOW).is_ok());
+}
+
+// ---- a read that fails because the caller cancelled (A8) -------------------------------------
+
+/// A source whose read raises the cancel flag and then fails, like a blocked read that timed out
+/// after the user pressed Cancel.
+struct FailsOnCancel<'a> {
+    cancel: &'a AtomicBool,
+    raise_flag: bool,
+}
+
+impl Read for FailsOnCancel<'_> {
+    fn read(&mut self, _buf: &mut [u8]) -> std::io::Result<usize> {
+        if self.raise_flag {
+            self.cancel.store(true, Ordering::SeqCst);
+        }
+        Err(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "timed out",
+        ))
+    }
+}
+
+#[test]
+fn a_read_that_fails_after_cancel_was_pressed_is_reported_as_cancelled() {
+    let f = fixture("TST", 3, 2);
+    let env = Env::with(&[&f]);
+    let cancel = AtomicBool::new(false);
+    let mut source = FailsOnCancel {
+        cancel: &cancel,
+        raise_flag: true,
+    };
+    let err = env
+        .registry
+        .install_from_reader(
+            "TST",
+            &mut source,
+            NOW,
+            &InstallHooks::default().with_cancel(&cancel),
+        )
+        .unwrap_err();
+    assert!(matches!(err, InstallError::Cancelled), "{err:?}");
+    env.assert_nothing_installed("a failed read after cancel");
+
+    // Positive control: the very same failure with no cancel is a source failure.
+    let cancel = AtomicBool::new(false);
+    let mut source = FailsOnCancel {
+        cancel: &cancel,
+        raise_flag: false,
+    };
+    let err = env
+        .registry
+        .install_from_reader(
+            "TST",
+            &mut source,
+            NOW,
+            &InstallHooks::default().with_cancel(&cancel),
+        )
+        .unwrap_err();
+    assert!(matches!(err, InstallError::Source(_)), "{err:?}");
+}
+
+// ---- a crash between the two renames, and a read that races a reinstall (A8, B14) --------------
+
+#[test]
+fn a_crash_between_the_two_renames_fails_closed_and_installing_again_repairs_it() {
+    // Two different files of the SAME size, so only the digest can tell them apart (which label
+    // compresses to the same length as the first is found, not assumed).
+    let v1 = fixture_labelled("TST", "L000", 3, 2);
+    let (label, v2) = (1..1000)
+        .map(|i| format!("L{i:03}"))
+        .map(|l| {
+            let f = fixture_labelled("TST", &l, 3, 2);
+            (l, f)
+        })
+        .find(|(_, f)| f.gz.len() == v1.gz.len() && f.sha256 != v1.sha256)
+        .expect("no second label compresses to the same length as the first");
+    let label = label.as_str();
+    let root = tmp_dir("crash");
+    let dir = root.join("data");
+    fs::write(root.join("v1.gz"), &v1.gz).unwrap();
+    fs::write(root.join("v2.gz"), &v2.gz).unwrap();
+    let first = Registry::new(dir.clone(), catalogue(vec![v1.entry("cleared")]));
+    first
+        .install_from_file("TST", &root.join("v1.gz"), NOW, &InstallHooks::default())
+        .unwrap();
+
+    // What a commit does is: (1) rename the new data file over the old one, (2) rename the new
+    // receipt over the old one. Do (1) and stop, which is exactly the state a crash between the
+    // two renames leaves behind: a new data file beside the old receipt.
+    replace_file(&dir.join("tst.tsv.gz"), &v2.gz);
+
+    // A fresh process lists it (the size is the receipt's) but will not serve it.
+    let fresh = Registry::new(dir.clone(), catalogue(vec![v2.entry("cleared")]));
+    assert_eq!(installed_codes(&fresh), ["TST"], "premise: it is listed");
+    let err = fresh.index(&code("TST")).unwrap_err();
+    assert!(
+        matches!(&err, LoadError::Mismatch { expected, .. } if *expected == v1.sha256),
+        "{err:?}"
+    );
+    assert!(matches!(
+        fresh.verify(&code("TST")),
+        Err(LoadError::Mismatch { .. })
+    ));
+    assert!(
+        fresh.resident_codes().is_empty(),
+        "the new text was served under the old receipt"
+    );
+    let bible = fresh.bible("TST").unwrap();
+    assert_eq!(bible.verse_count(), 0);
+    assert!(matches!(bible.check(), Err(LoadError::Mismatch { .. })));
+
+    // Installing again repairs it.
+    fresh
+        .install_from_file(
+            "TST",
+            &root.join("v2.gz"),
+            NOW + 1,
+            &InstallHooks::default(),
+        )
+        .unwrap();
+    assert_eq!(
+        fresh.index(&code("TST")).unwrap()[0].text,
+        verse_text(label, 1, 1, 1)
+    );
+    assert!(fresh.verify(&code("TST")).is_ok());
+}
+
+#[test]
+fn a_read_that_races_a_reinstall_retries_against_the_new_receipt() {
+    // The reader has read the receipt (it names file ONE) when another writer finishes installing
+    // file TWO: the file is now TWO, and the reader's receipt entry is stale. That is a transient
+    // mismatch, not damage; the read must look at the receipt again and serve TWO.
+    let v1 = fixture_labelled("TST", "ONE", 3, 2);
+    let v2 = fixture_labelled("TST", "TWO", 4, 2);
+    let root = tmp_dir("race");
+    let dir = root.join("data");
+    fs::write(root.join("v1.gz"), &v1.gz).unwrap();
+    fs::write(root.join("v2.gz"), &v2.gz).unwrap();
+    let host = Registry::new(dir.clone(), catalogue(vec![v1.entry("cleared")]));
+    host.install_from_file("TST", &root.join("v1.gz"), NOW, &InstallHooks::default())
+        .unwrap();
+    let writer = Registry::new(dir.clone(), catalogue(vec![v2.entry("cleared")]));
+
+    let fired = Arc::new(AtomicBool::new(false));
+    host.set_load_hook_for_tests(Some(Arc::new({
+        let (fired, v2_path) = (Arc::clone(&fired), root.join("v2.gz"));
+        move |stage| {
+            if stage == LoadStage::AfterReceipt && !fired.swap(true, Ordering::SeqCst) {
+                writer
+                    .install_from_file("TST", &v2_path, NOW + 5, &InstallHooks::default())
+                    .unwrap();
+            }
+        }
+    })));
+    let index = host
+        .index(&code("TST"))
+        .expect("a read that raced a reinstall must retry against the new receipt");
+    assert!(fired.load(Ordering::SeqCst), "premise: the race happened");
+    assert_eq!(index.len(), 6);
+    assert_eq!(index[0].text, verse_text("TWO", 1, 1, 1));
+    assert_eq!(host.loads_for("TST"), 1);
+
+    // Control: damage that is NOT a reinstall (the receipt is unchanged) is still reported.
+    host.set_load_hook_for_tests(None);
+    let reg = Registry::new(dir.clone(), catalogue(vec![v2.entry("cleared")]));
+    let mut bytes = fs::read(dir.join("tst.tsv.gz")).unwrap();
+    bytes[12] ^= 0xFF;
+    replace_file(&dir.join("tst.tsv.gz"), &bytes);
+    assert!(matches!(
+        reg.index(&code("TST")),
+        Err(LoadError::Mismatch { .. })
+    ));
+}
+
+// ---- the row bound at read time (A1) ------------------------------------------------------------
+
+#[test]
+fn a_planted_file_with_far_more_rows_than_the_receipt_records_is_refused_unread() {
+    // The receipt and the file agree on the digest (someone who can write the folder rewrote both),
+    // so only counting rows can refuse it: 262,140 one-letter rows are about 2.6 MB inflated and a
+    // few hundred KB on disk, and used to cost hundreds of MB once decoded.
+    let (a, b) = (fixture("AAA", 3, 2), fixture("BBB", 3, 2));
+    let env = Env::with(&[&a, &b]);
+    env.install("AAA", &a.gz, NOW).unwrap();
+    env.install("BBB", &b.gz, NOW).unwrap();
+    assert_eq!(env.registry.index(&code("AAA")).unwrap().len(), 5);
+    assert_eq!(env.registry.peak_live_indexes(), 1);
+
+    let hostile = many_tiny_rows(262_140);
+    assert!(
+        hostile.len() < 1024 * 1024,
+        "premise: small on disk ({} bytes)",
+        hostile.len()
+    );
+    plant(&env.dir, "BBB", &hostile, 3, 2);
+    let err = env.registry.index(&code("BBB")).unwrap_err();
+    assert!(
+        matches!(
+            err,
+            LoadError::Invalid(ValidationError::TooManyRows { limit: 5 })
+        ),
+        "{err:?}"
+    );
+    assert_eq!(
+        env.registry.peak_live_indexes(),
+        1,
+        "the hostile file was decoded (an index of it existed)"
+    );
+    assert_eq!(
+        env.registry.resident_codes(),
+        ["AAA"],
+        "refusing it must not evict the good index"
+    );
+    assert!(matches!(
+        env.registry.verify(&code("BBB")),
+        Err(LoadError::Invalid(ValidationError::TooManyRows {
+            limit: 5
+        }))
+    ));
+
+    // Positive control: a file with as many rows as the receipt records is read, whatever its size
+    // (so the bound is the recorded count, not some fixed number).
+    let honest = many_tiny_rows(100_000);
+    plant(&env.dir, "BBB", &honest, 100_000, 0);
+    assert_eq!(env.registry.index(&code("BBB")).unwrap().len(), 100_000);
+}
+
+// ---- the receipt and a damaged file are not re-read needlessly (B11) -------------------------
+
+#[test]
+fn the_receipt_is_read_again_only_when_it_changed() {
+    let (a, b) = (fixture("AAA", 2, 1), fixture("BBB", 3, 2));
+    let env = Env::with(&[&a, &b]);
+    env.install("AAA", &a.gz, NOW).unwrap();
+    env.install("BBB", &b.gz, NOW).unwrap();
+    let reg = &env.registry;
+    assert!(reg.bible("AAA").is_some(), "primes the cache");
+    let base = reg.receipt_reads();
+
+    for _ in 0..200 {
+        assert!(reg.bible("AAA").is_some());
+        assert!(reg.installed_entry(&code("BBB")).is_some());
+    }
+    assert_eq!(
+        reg.receipt_reads(),
+        base,
+        "an unchanged receipt was read and parsed again"
+    );
+
+    // A change made by someone else is seen on the next call...
+    let receipt = env.dir.join(RECEIPT_FILE);
+    let mut doc: Value = serde_json::from_slice(&fs::read(&receipt).unwrap()).unwrap();
+    doc["translations"][0]["installed_at"] = json!(NOW + 777);
+    replace_file(&receipt, doc.to_string().as_bytes());
+    let rec = reg.installed_entry(&code("AAA")).unwrap();
+    assert_eq!(
+        rec.installed_at,
+        NOW + 777,
+        "the changed receipt was not noticed"
+    );
+    assert_eq!(reg.receipt_reads(), base + 1);
+    // ...once.
+    for _ in 0..50 {
+        assert!(reg.installed_entry(&code("AAA")).is_some());
+    }
+    assert_eq!(reg.receipt_reads(), base + 1);
+}
+
+#[test]
+fn a_file_found_damaged_is_not_hashed_again_until_it_changes() {
+    let f = fixture("TST", 3, 2);
+    let env = Env::with(&[&f]);
+    env.install("TST", &f.gz, NOW).unwrap();
+    let path = env.dir.join("tst.tsv.gz");
+    let mut bytes = fs::read(&path).unwrap();
+    bytes[12] ^= 0xFF;
+    fs::write(&path, &bytes).unwrap();
+    let reg = &env.registry;
+
+    let first = reg.index(&code("TST")).unwrap_err();
+    assert!(matches!(first, LoadError::Mismatch { .. }), "{first:?}");
+    let reads = reg.file_reads();
+    assert_eq!(reads, 1, "premise: the first look read the file once");
+    for _ in 0..50 {
+        assert!(matches!(
+            reg.index(&code("TST")),
+            Err(LoadError::Mismatch { .. })
+        ));
+        assert!(matches!(
+            reg.verify(&code("TST")),
+            Err(LoadError::Mismatch { .. })
+        ));
+    }
+    assert_eq!(
+        reg.file_reads(),
+        reads,
+        "a file already known to be damaged was read and hashed again"
+    );
+
+    // A different damaged file in its place (a new inode, other bytes) is looked at afresh.
+    let mut other = bytes.clone();
+    other[13] ^= 0xFF;
+    replace_file(&path, &other);
+    assert!(matches!(
+        reg.index(&code("TST")),
+        Err(LoadError::Mismatch { .. })
+    ));
+    assert_eq!(reg.file_reads(), reads + 1);
+
+    // And the repair (installing again) is seen at once.
+    env.install("TST", &f.gz, NOW + 1).unwrap();
+    assert_eq!(reg.index(&code("TST")).unwrap().len(), 5);
+    assert_eq!(reg.file_reads(), reads + 2);
+    assert!(reg.verify(&code("TST")).is_ok());
+}
+
+#[test]
+fn installed_translations_come_back_as_plain_values() {
+    // The public record type is plain data a screen can hold and compare.
+    let f = fixture("TST", 3, 2);
+    let env = Env::with(&[&f]);
+    let rec: InstalledTranslation = env.install("TST", &f.gz, NOW).unwrap();
+    assert_eq!(env.registry.installed_entry(&code("TST")), Some(rec));
 }

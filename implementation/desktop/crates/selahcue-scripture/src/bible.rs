@@ -17,8 +17,12 @@
 //! operator's picker).
 //!
 //! An installed translation whose file is missing or damaged does not panic: every lookup answers
-//! "nothing" (empty, `None`, `0`, `false`), exactly as for a reference outside the canon, and
-//! [`Bible::is_available`] says whether it is in place.
+//! "nothing" (empty, `None`, `0`, `false`), exactly as for a reference outside the canon. **The
+//! lookups do not say WHY.** [`Bible::is_available`] only says the file is in place (it does not
+//! hash it), so a file damaged without changing its size is "available" and reads as an empty
+//! translation. A picker that lists installed translations must call [`Bible::check`] (or
+//! `Registry::verify`) before presenting one; it remembers its answer per file, so asking again
+//! costs a `stat`, not a hash.
 
 use selahcue_core::scripture::Reference;
 
@@ -105,7 +109,9 @@ impl Bible {
     /// Resolve a wire/UI code (case-insensitive): a bundled code first, then (with feature
     /// `installed`) a translation installed in the process-wide registry
     /// ([`Registry::global`]). `None` when the code is neither, or names a translation that is not
-    /// installed. Never performs network I/O.
+    /// installed. Never performs network I/O; for a code that is not bundled it DOES file I/O (the
+    /// registry's receipt, re-read only when it changed, and a `stat` of the file), so it is not a
+    /// free call on a path that runs per frame.
     pub fn from_code(code: &str) -> Option<Bible> {
         if let Some(t) = Translation::from_code(code) {
             return Some(Bible::bundled(t));
@@ -157,8 +163,9 @@ impl Bible {
 
     /// Whether lookups can be answered right now. Bundled: always. Installed: the translation has a
     /// receipt entry and its file is in place (a regular file of the recorded size). That is a cheap
-    /// check with no hashing and no decode; a file damaged in place is reported when its text is
-    /// first read. Never loads an index, so it cannot evict one.
+    /// check with no hashing and no decode, so a file damaged in place WITHOUT changing its size
+    /// still counts as available and its lookups come back empty: use [`Bible::check`] to find
+    /// out. Never loads an index, so it cannot evict one.
     pub fn is_available(&self) -> bool {
         match &self.repr {
             Repr::Bundled(_) => true,
@@ -167,8 +174,22 @@ impl Bible {
         }
     }
 
+    /// Whether the translation would actually load: for an installed one, the file's digest and
+    /// size are the receipt's and it passes the same validation a load applies. Bundled: always
+    /// `Ok`. Unlike every lookup, this says WHY a translation reads as empty
+    /// ([`crate::registry::LoadError::Mismatch`] for a damaged file, `Missing`, `Invalid`...).
+    /// Decodes nothing and evicts nothing. The answer for a given file is remembered until its
+    /// length, modification time or inode changes.
+    #[cfg(feature = "installed")]
+    pub fn check(&self) -> Result<(), crate::registry::LoadError> {
+        match &self.repr {
+            Repr::Bundled(_) => Ok(()),
+            Repr::Installed(i) => i.registry.verify(&i.code),
+        }
+    }
+
     /// Run `f` over this translation's verse index, or over an empty one when an installed
-    /// translation cannot be read.
+    /// translation cannot be read (see [`Bible::check`] for why).
     fn with_index<R>(&self, f: impl FnOnce(&[Verse]) -> R) -> R {
         match &self.repr {
             Repr::Bundled(t) => f(crate::index_of(*t)),

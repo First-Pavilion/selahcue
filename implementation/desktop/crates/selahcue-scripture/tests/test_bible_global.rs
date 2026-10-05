@@ -32,6 +32,8 @@ fn the_wire_helper_finds_an_installed_translation_in_the_global_registry() {
             "file_name": "bsb.tsv.gz",
             "sha256": f.sha256,
             "size_bytes": f.gz.len(),
+            "verses_ot": f.ot,
+            "verses_nt": f.nt,
             "installed_at": 1_790_000_000u64,
             "catalogue_schema": 1
         }]

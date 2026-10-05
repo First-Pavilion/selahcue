@@ -12,7 +12,7 @@
 #[cfg(not(debug_assertions))]
 compile_error!("run these tests without --release: the test-only constructors exist only with debug assertions");
 
-use selahcue_scripture::url_policy::{resolve_redirect, UrlPolicy, UrlRefusal};
+use selahcue_scripture::url_policy::{redact_urls, resolve_redirect, UrlPolicy, UrlRefusal};
 
 fn product() -> UrlPolicy {
     UrlPolicy::https_only()
@@ -162,4 +162,69 @@ fn a_redirect_from_https_to_http_is_refused_by_the_policy() {
         loopback_tests().check(&next),
         Err(UrlRefusal::NotHttps { .. })
     ));
+}
+
+// ---- redact_urls: no query string, fragment or credentials in a message --------------------------
+
+#[test]
+fn redaction_cuts_the_query_and_the_fragment_and_keeps_the_rest() {
+    for (text, want) in [
+        (
+            "download https://cdn.example.org/a/b.gz?token=SECRET123&sig=x: connection refused",
+            "download https://cdn.example.org/a/b.gz: connection refused",
+        ),
+        (
+            "fetch https://cdn.example.org/a#frag-secret failed",
+            "fetch https://cdn.example.org/a failed",
+        ),
+        (
+            "see (https://cdn.example.org/a?k=v#f).",
+            "see (https://cdn.example.org/a).",
+        ),
+        (
+            "unsupported redirect to 'https://cdn.example.org/x?token=S'",
+            "unsupported redirect to 'https://cdn.example.org/x'",
+        ),
+        // Two URLs in one message are each cut.
+        (
+            "http://a.example/x?one=1 then http://b.example/y?two=2",
+            "http://a.example/x then http://b.example/y",
+        ),
+        // Text with no URL in it is untouched, query-looking characters and all.
+        (
+            "why? because a=b#c and nothing else",
+            "why? because a=b#c and nothing else",
+        ),
+        // A URL with nothing to remove is untouched.
+        (
+            "https://cdn.example.org/a/b.gz",
+            "https://cdn.example.org/a/b.gz",
+        ),
+        ("", ""),
+    ] {
+        assert_eq!(redact_urls(text), want, "{text:?}");
+    }
+}
+
+#[test]
+fn redaction_replaces_the_credentials_in_a_url() {
+    assert_eq!(
+        redact_urls("refused https://user:pw@cdn.example.org/t/?x=1"),
+        "refused https://REDACTED@cdn.example.org/t/"
+    );
+    assert_eq!(
+        redact_urls("https://token@cdn.example.org"),
+        "https://REDACTED@cdn.example.org"
+    );
+    // An `@` after the authority is part of the path, not a credential.
+    assert_eq!(
+        redact_urls("https://cdn.example.org/@scope/pkg"),
+        "https://cdn.example.org/@scope/pkg"
+    );
+}
+
+#[test]
+fn redaction_keeps_whitespace_exactly() {
+    let text = "a  b\tc\nhttps://h.example/p?q=1\n\nd";
+    assert_eq!(redact_urls(text), "a  b\tc\nhttps://h.example/p\n\nd");
 }

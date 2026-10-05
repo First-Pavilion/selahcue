@@ -155,8 +155,8 @@ pub fn read_dir_names(dir: &Path) -> Vec<String> {
 }
 
 /// A valid asset that inflates to `rows` rows of one 16,000-byte verse each (about 16 KB per row,
-/// so 4,000 rows are 64 MB and 4,400 are 70 MB), compressed on the fly so a test never holds the
-/// inflated bytes. Every row is valid and ascending, so only its size can refuse it.
+/// so 1,000 rows are 16.0 MB and 1,100 are 17.6 MB), compressed on the fly so a test never holds
+/// the inflated bytes. Every row is valid and ascending, so only its size can refuse it.
 pub fn big_asset(rows: u32) -> Vec<u8> {
     let text = "a".repeat(16_000);
     let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
@@ -164,6 +164,61 @@ pub fn big_asset(rows: u32) -> Vec<u8> {
         writeln!(enc, "1\t1\t{v}\t{text}").unwrap();
     }
     enc.finish().unwrap()
+}
+
+/// `rows` valid, ascending, one-letter verse rows (`1<TAB>chapter<TAB>verse<TAB>a`), four verses to
+/// a chapter, up to 262,140 of them: every row passes the row grammar, so only COUNTING them can
+/// refuse the file. Compressed on the fly; the inflated text is never held.
+pub fn many_tiny_rows(rows: u32) -> Vec<u8> {
+    assert!(rows <= 65_535 * 4, "chapters are 16 bits");
+    let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+    let mut written = 0u32;
+    'chapters: for chapter in 1..=65_535u32 {
+        for verse in 1..=4u32 {
+            if written == rows {
+                break 'chapters;
+            }
+            writeln!(enc, "1\t{chapter}\t{verse}\ta").unwrap();
+            written += 1;
+        }
+    }
+    enc.finish().unwrap()
+}
+
+/// Replace the file at `path` with `bytes` by writing a sibling and renaming it over, so the
+/// replacement is a NEW inode. The registry notices a changed file by its length, modification time
+/// and inode; a plain in-place `fs::write` of the same length within one clock tick of the last
+/// change would leave all three equal on some file systems, which would make a test flaky for a
+/// reason that has nothing to do with what it checks.
+pub fn replace_file(path: &Path, bytes: &[u8]) {
+    let name = path.file_name().unwrap().to_string_lossy().into_owned();
+    let swap = path.with_file_name(format!(".swap-{name}"));
+    std::fs::write(&swap, bytes).unwrap();
+    std::fs::rename(&swap, path).unwrap();
+}
+
+/// Plant `bytes` as `code`'s installed file AND make the receipt describe them (digest, size and
+/// verse counts), as someone who can write the data directory could. The digest then matches, so
+/// only the registry's own checks of the file's content can refuse it.
+pub fn plant(dir: &Path, code: &str, bytes: &[u8], ot: u32, nt: u32) {
+    replace_file(
+        &dir.join(format!("{}.tsv.gz", code.to_ascii_lowercase())),
+        bytes,
+    );
+    let receipt = dir.join("installed.json");
+    let mut doc: Value = serde_json::from_slice(&std::fs::read(&receipt).unwrap()).unwrap();
+    let mut found = false;
+    for e in doc["translations"].as_array_mut().unwrap() {
+        if e["code"] == code {
+            e["sha256"] = json!(sha256_hex(bytes));
+            e["size_bytes"] = json!(bytes.len());
+            e["verses_ot"] = json!(ot);
+            e["verses_nt"] = json!(nt);
+            found = true;
+        }
+    }
+    assert!(found, "{code} is not in the receipt");
+    replace_file(&receipt, doc.to_string().as_bytes());
 }
 
 /// One catalogue entry that pins arbitrary bytes (a hostile or broken file the catalogue vouches
