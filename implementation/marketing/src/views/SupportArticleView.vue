@@ -42,7 +42,7 @@ useFocusHeading(heading, () => `${props.category}/${props.slug}`)
 </script>
 
 <template>
-  <NotFoundView embedded v-if="!article || !category" />
+  <NotFoundView v-if="!article || !category" />
   <article v-else class="sa">
     <div class="sa-wrap">
       <BreadcrumbTrail :items="supportCrumbs(article, category)" />

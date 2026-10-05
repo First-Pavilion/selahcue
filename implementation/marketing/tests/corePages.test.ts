@@ -20,10 +20,10 @@
  *   - the heading outline of every page never skips a level (audit pricing-bug-01: h1 then h3 on
  *     Pricing; download-bug-01: h2 then h4 on Download);
  *   - the unbacked claims the audit named stay out of the rendered text (honest content wins over
- *     Figma: owner decision). The one allow-listed region is the Pricing FAQ, whose answers belong to
- *     the claims ticket 17tnw2b0x3h and to a design decision (pricing-20, class D);
- *   - Pricing: three plan cards named by DEC-008, no price figure, plan buttons that are a link or a
- *     disabled control with a note, no `text="Save 20%"`, no `variant="gradient"`, the billing toggle
+ *     Figma: owner decision). There is NO allow-listed region any more: the Pricing FAQ and its unbacked
+ *     answers were removed by ClickUp 17tnw2b0x3h;
+ *   - Pricing: no plan, price, comparison table, billing toggle or FAQ (plan names and prices come from the API once
+ *     it serves them), no `text="Save 20%"`, no `variant="gradient"`, the billing toggle
  *     is a named radio group;
  *   - the views use the shared container and carry no container rule of their own.
  */
@@ -121,11 +121,8 @@ describe('the heading outline never skips a level', () => {
     })
   }
 
-  test('pricing-bug-01: the plan names (h3) sit under an h2, not straight under the h1', () => {
-    const levels = headingLevels(pages.pricing)
-    const firstPlan = levels.indexOf(3)
-    assert.ok(firstPlan > 0, 'the plan names are not h3 headings any more: this test no longer describes the page')
-    assert.equal(levels[firstPlan - 1], 2, `the heading before the first plan name is an h${levels[firstPlan - 1]}`)
+  test('pricing-bug-01: the page names no plan, so there is no h3 plan name to sit under the h1 (ClickUp 17tnw2b0x3h)', () => {
+    assert.ok(!headingLevels(pages.pricing).includes(3), 'a plan name (h3) is back on the Pricing page; plan names come from the API')
   })
 
   test('download-bug-01: the three install-step titles are h3 headings under the "three steps" h2', () => {
@@ -182,6 +179,7 @@ const BANNED: readonly Banned[] = [
   { id: 'unlimited outputs', pattern: /unlimited/, because: 'features-10, pricing-16: DEC-008 caps outputs at 2, 5 and 10' },
   { id: 'always on the latest version', pattern: /latest version/, because: 'pricing-09: no source' },
   { id: 'cancel anytime or a refund', pattern: /\bcancel|refund|money.back/, because: 'no billing exists to cancel or refund (pricing-18)' },
+  { id: 'count-up timers', pattern: /count-up|count up|elapsed timer/, because: 'FR-054 asks for count-up timers but the shipped app has a single countdown (docs.ts: "no count-up or elapsed timer")' },
   { id: 'a community or customer count', pattern: /thousands of|join thousands|\d[\d,]*\+? (churches|members|users)/, because: 'about-04: no evidence of any customer count' },
   { id: 'NDI 5', pattern: /ndi 5\b/, pages: ['features'], because: 'features-07: the PRD cites NDI 6.x' },
   { id: 'a resolution or frame rate', pattern: /\b4k\b|1080p|720p|60\s?fps/, pages: ['features'], because: 'features-07: no figure exists' },
@@ -208,19 +206,14 @@ function bannedHits(text: string, page: Page): string[] {
   return BANNED.filter((b) => (b.pages ? b.pages.includes(page) : true) && b.pattern.test(lower)).map((b) => `${b.id} (${b.because})`)
 }
 
-/** The text of a page with the one allow-listed region removed. */
+/** The text of a page. There is no allow-listed region: the Pricing FAQ that was one is gone (ClickUp 17tnw2b0x3h). */
 function claimText(page: Page): string {
-  const root = pages[page]
-  const exempt = all(root, (n) => n.attrs['data-region'] === 'pricing-faq')
-  if (page !== 'pricing') assert.equal(exempt.length, 0, 'only the Pricing page may carry the allow-listed FAQ region')
-  const skip = new Set(exempt)
   const parts: string[] = []
   const visit = (n: HtmlNode): void => {
-    if (skip.has(n)) return
     if (n.tag === '#text') parts.push(n.text ?? '')
     for (const c of n.children) visit(c)
   }
-  visit(root)
+  visit(pages[page])
   return parts.join(' ').replace(/\s+/g, ' ').trim()
 }
 
@@ -231,18 +224,16 @@ describe('no claim the repo does not back is on the page', () => {
     })
   }
 
-  test('the Pricing FAQ is the one allow-listed region, so the exception cannot outlive the section', () => {
-    const faq = all(pages.pricing, (n) => n.attrs['data-region'] === 'pricing-faq')
-    assert.equal(
-      faq.length,
-      1,
-      'the Pricing FAQ region is gone or renamed: delete this exception (and `data-region`) if the FAQ was removed on purpose',
-    )
+  test('no page carries an allow-listed region: the Pricing FAQ and its exception are gone, and cannot come back unnoticed', () => {
+    for (const page of Object.keys(VIEWS) as Page[]) {
+      assert.deepEqual(all(pages[page], (n) => n.attrs['data-region'] === 'pricing-faq'), [], `${page}: a data-region="pricing-faq" is back`)
+    }
   })
 
   test('CONTROL: every banned pattern fires on a string that contains it, and a clean string passes', () => {
     const planted: Record<string, { text: string; page: Page }> = {
       'a price or currency amount': { text: 'Pro $19 / month', page: 'pricing' },
+      'count-up timers': { text: 'Countdown + count-up timers', page: 'features' },
       'an annual discount': { text: 'Annual · save 20%', page: 'pricing' },
       'a trial': { text: 'Start free trial', page: 'pricing' },
       'a Custom or Church tier': { text: 'Church Custom', page: 'pricing' },
@@ -367,87 +358,18 @@ function blocks(root: HtmlNode): string[] {
  * (docs/delivery/goals/17tnw2b2cey-figma-core-pages.md) says where each wording decision comes from.
  */
 const LEDGER: Readonly<Record<Page, readonly string[]>> = {
+  // The plan cards, the comparison table, the billing toggle and the FAQ are gone (ClickUp 17tnw2b0x3h): plan names and prices
+  // come from the API once it serves them.
   pricing: [
     "PRICING",
     "Pricing that grows with your church",
-    "Start with the Free plan; Pro and Platinum add outputs, NDI and devices. Prices are not announced yet.",
-    "Monthly",
-    "Annual",
-    "Choose a plan",
-    "Free",
-    "No charge",
-    "For running a service from one device. A SelahCue watermark appears on all output.",
-    "Download free",
-    "1 device",
-    "Up to 2 outputs",
-    "Hosted speech-to-text, monthly allowance",
-    "Pro",
-    "Price TBA",
-    "Price to be announced. For churches that need more outputs and NDI output.",
-    "Get Pro",
-    "Not available yet",
-    "Everything in Free, without the watermark",
-    "3 devices",
-    "Up to 5 outputs",
-    "Up to 5 NDI outputs",
-    "Larger hosted speech-to-text allowance",
-    "Platinum",
-    "Price TBA",
-    "Price to be announced. For larger teams.",
-    "Talk to us",
-    "Not available yet",
-    "Everything in Pro",
-    "7 devices",
-    "Up to 10 outputs",
-    "Up to 10 NDI outputs",
-    "Largest hosted speech-to-text allowance",
-    "Compare every plan",
-    "PLANS",
-    "Free",
-    "Pro",
-    "Platinum",
-    "Live output + stage display",
-    "Included",
-    "Included",
-    "Included",
-    "Bundled scripture + keyword search",
-    "Included",
-    "Included",
-    "Included",
-    "Service plans, timers & themes",
-    "Included",
-    "Included",
-    "Included",
-    "Devices",
-    "1",
-    "3",
-    "7",
-    "Simultaneous outputs",
-    "2",
-    "5",
-    "10",
-    "NDI streaming output",
-    "Not included",
-    "5",
-    "10",
-    "Hosted speech-to-text, monthly allowance",
-    "Included",
-    "Included",
-    "Included",
-    "No watermark on output",
-    "Not included",
-    "Included",
-    "Included",
-    "On-device transcription is not metered. The allowance is for hosted speech-to-text only.",
-    "Pricing FAQ",
-    "Can I switch plans later?",
-    "Do you offer non-profit discounts?",
-    "What payment methods are accepted?",
+    "Plans and pricing",
+    "Plans and prices have not been published yet.",
   ],
   features: [
     "FEATURES",
     "Everything you need to run a confident service",
-    "From the first slide to the final blessing, SelahCue keeps your scripture, songs, timers, stage display and streaming outputs in one offline-first console — with a phone in your hand as the remote.",
+    "From the first slide to the final blessing, SelahCue keeps your scripture, service plan, countdown timer, stage display and optional NDI output in one offline-first console, with a paired phone as a remote.",
     "OUTPUTS",
     "Live presentation & outputs",
     "Stage everything in Preview, then Go Live with a single tap. Audience projector and stage display run from one deck, with live output built to stay up.",
@@ -466,9 +388,9 @@ const LEDGER: Readonly<Record<Page, readonly string[]>> = {
     "WEB",
     "PLANNING",
     "Service plans & timers",
-    "Order your whole service ahead of time, then run it with countdown and count-up timers so you always land on time.",
+    "Order your whole service ahead of time, then run a service countdown so you always land on time.",
     "Plan the full order of service",
-    "Countdown + count-up timers",
+    "Service countdown timer",
     "Reorder on the fly, mid-service",
     "PLANNING",
     "TIMERS",
@@ -484,8 +406,8 @@ const LEDGER: Readonly<Record<Page, readonly string[]>> = {
     "NDI & multi-output",
     "Send your program over NDI straight into OBS or vMix, and drive more than one output from the same deck.",
     "Program over NDI to OBS / vMix",
-    "More outputs on higher plans",
-    "NDI output on the Pro and Platinum plans",
+    "More than one output from one deck",
+    "NDI output is optional",
     "STREAMING",
     "NDI",
     "ASSIST",
@@ -541,7 +463,7 @@ const LEDGER: Readonly<Record<Page, readonly string[]>> = {
     "To be confirmed",
     "MOBILE CONTROL",
     "Control from your phone",
-    "The SelahCue Controller pairs with your desktop over your local network — scan a QR code and you're connected. It's a companion remote: your desktop always stays the authority, even if the phone drops off Wi-Fi.",
+    "The SelahCue Controller pairs with your desktop over your local network — scan a QR code, approve the device on the desktop, and you're paired. It's a companion remote: your desktop always stays the authority, even if the phone drops off Wi-Fi.",
     "Pairs over your LAN — no internet needed",
     "iOS and Android apps are not available yet",
     "Desktop stays authoritative if the phone drops",
@@ -563,17 +485,17 @@ const LEDGER: Readonly<Record<Page, readonly string[]>> = {
     "Run the installer for your platform once it is available.",
     "02",
     "Build your first plan",
-    "Add scripture, songs and timers to a service plan and pick your outputs.",
+    "Add scripture and presentations to a service plan and pick your outputs.",
     "03",
     "Go live & pair your phone",
-    "Hit Go Live, then scan the QR code to pair your phone as a remote.",
+    "Go live, and pair your phone from Network & Mobile in Settings.",
   ],
   about: [
     "ABOUT",
     "Built for the people running the service",
     "SelahCue started with one conviction: the moment a congregation is worshipping is not the moment your software should fail. So we built a church presentation app that stays up, keeps its core controls working with no network, and stays out of the way.",
     "Why we built SelahCue",
-    "Too many services are one crashed slide away from a blank screen — and the tools meant to help often assume a fast, always-on internet connection that a lot of churches simply don't have.",
+    "A worship service is no time for presentation software to depend on a network connection.",
     "We wanted the opposite: an app that stays in charge on your own computer, is designed so a fault cannot blank live output, runs every core live control with no network, and lets AI assist the operator without gating core controls.",
     "That's what SelahCue is — presentation, scripture, timers, stage display and streaming outputs in one console, with a phone in your hand as the remote, built to be dependable on the one morning you can't get a second take.",
     "What we stand for",
@@ -593,17 +515,12 @@ const LEDGER: Readonly<Record<Page, readonly string[]>> = {
 }
 
 /**
- * Claims the live page ALREADY made and no finding of this ticket replaces. They are allowed here only so this
- * change adds nothing; removing them is ClickUp 17tnw2b0x3h (and Uma for the section, pricing-20). Nothing below is
- * vouched for: each reason says it is unbacked or undecided. When they go, this list shrinks.
+ * EMPTY ON PURPOSE (ClickUp 17tnw2b0x3h). This was the list of claims the live pages already made (on Pricing: "MOST POPULAR" and
+ * three FAQ answers about proration, a non-profit rule and PayPal / ACH). They were removed, and a test below fails if an entry
+ * is ever added. The mechanism stays so the allow-list below keeps one definition.
  */
 const LIVE_CLAIMS: Readonly<Record<Page, Readonly<Record<string, string>>>> = {
-  pricing: {
-    'MOST POPULAR': 'a popularity claim with no data; Pro cannot be bought yet. Hard-coded in PricingCard (shared file), so it waits for the shared-components pass (Cody N5)',
-    'Yes, you can upgrade or downgrade your plan at any time. Prorated charges will apply.': 'FAQ answer: no billing exists, so nothing is prorated (pricing-20, 17tnw2b0x3h)',
-    'Our pricing is already optimized for churches and non-profits.': 'FAQ answer: no price or non-profit rule is decided (pricing-20, 17tnw2b0x3h)',
-    'We accept all major credit cards, PayPal, and ACH transfers for annual plans.': 'FAQ answer: payment methods are not decided and no annual plan exists (pricing-20, 17tnw2b0x3h)',
-  },
+  pricing: {},
   features: {},
   download: {},
   about: {},
@@ -632,6 +549,13 @@ describe('copy follows the ledger (review round 2, Quinn N4): nothing is on the 
     })
   }
 
+  // ClickUp 17tnw2b0x3h's check, executable: nothing is tolerated on these pages that the repo does not back.
+  test('no claim the repo does not back is live on any page: every LIVE_CLAIMS list is empty (ClickUp 17tnw2b0x3h)', () => {
+    for (const page of Object.keys(VIEWS) as Page[]) {
+      assert.deepEqual(Object.keys(LIVE_CLAIMS[page]), [], `${page}: unbacked lines are still tolerated; remove the words and the entry`)
+    }
+  })
+
   test('every named live claim is still on the page (so the list shrinks when a claim is removed)', () => {
     for (const page of Object.keys(VIEWS) as Page[]) {
       const shown = new Set(blocks(pages[page]))
@@ -658,193 +582,50 @@ describe('copy follows the ledger (review round 2, Quinn N4): nothing is on the 
         const root = parseHtml(`<div><p>${plant}</p></div>`)
         assert.deepEqual(unlistedBlocks(root, page), [plant], `"${plant}" should be reported on ${page}`)
       }
-      const reworded = (LEDGER[page][2] as string).replace(/\.$/, '!')
+      const sentence = LEDGER[page].find((line) => line.endsWith('.')) as string
+      assert.ok(sentence, `${page} has no sentence on its ledger to reword`)
+      const reworded = sentence.replace(/\.$/, '!')
       assert.equal(unlistedBlocks(parseHtml(`<p>${reworded}</p>`), page).length, 1, `a reworded ledger line on ${page} should be reported`)
       assert.deepEqual(unlistedBlocks(parseHtml(`<p>${LEDGER[page][1]}</p>`), page), [], 'a ledger line is not reported')
     }
-    assert.deepEqual(unlistedBlocks(parseHtml('<p>MOST POPULAR</p>'), 'pricing'), [], 'a named live claim is allowed on its own page')
-    assert.deepEqual(unlistedBlocks(parseHtml('<p>MOST POPULAR</p>'), 'about'), ['MOST POPULAR'], 'a live claim is not allowed on another page')
+    // The claims tolerated before ClickUp 17tnw2b0x3h are reported on every page now, their old home included.
+    assert.deepEqual(unlistedBlocks(parseHtml('<p>MOST POPULAR</p>'), 'pricing'), ['MOST POPULAR'], 'a removed claim is not allowed on its old page')
+    assert.deepEqual(unlistedBlocks(parseHtml('<p>MOST POPULAR</p>'), 'about'), ['MOST POPULAR'], 'and not on another page')
   })
 })
 
 // ------------------------------------------------------------------------------------ Pricing
 
 describe('Pricing', () => {
-  const cards = (): HtmlNode[] => byClass(pages.pricing, 'pricing-card')
-  const plan = (card: HtmlNode): string => textOf(byClass(card, 'plan-name')[0] as HtmlNode)
-
-  test('hero: the PRICING eyebrow, the Figma headline and a subline', () => {
+  test('hero: the PRICING eyebrow and the Figma headline, then an h2 over the empty state that says plans and prices are not published', () => {
     const h1 = byTag(pages.pricing, 'h1')[0] as HtmlNode
     assert.equal(textOf(h1), 'Pricing that grows with your church')
     assert.ok(textOf(pages.pricing).includes('PRICING'), 'no PRICING eyebrow')
-    const lead = byClass(pages.pricing, 'hero-lead')[0]
-    assert.ok(lead && textOf(lead).length > 40, 'no subline under the headline')
+    assert.deepEqual(byClass(pages.pricing, 'hero-lead'), [], 'the subline went with the plans it introduced')
+    assert.deepEqual(byTag(pages.pricing, 'h2').map((h) => textOf(h)), ['Plans and pricing'], 'the h2 keeps the outline from skipping to the footer h3s')
+    const empty = byClass(pages.pricing, 'plans-empty')[0]
+    assert.ok(empty, 'no empty state')
+    assert.equal(textOf(empty as HtmlNode), 'Plans and prices have not been published yet.')
   })
 
-  test('the plans are Free, Pro and Platinum (DEC-008), never Church, and none prints a price figure', () => {
-    assert.deepEqual(cards().map(plan), ['Free', 'Pro', 'Platinum'])
-    for (const c of cards()) assert.ok(!/\$/.test(textOf(c)), `a price figure in the ${plan(c)} card: ${textOf(c)}`)
+  // ClickUp 17tnw2b0x3h: plan names, prices and limits are the API catalogue's data, so until it serves them the page shows none.
+  test('the page draws no plan, price, limit, comparison table, billing toggle or FAQ: it says plans and prices are not published yet', () => {
+    assert.deepEqual(byClass(pages.pricing, 'pricing-card'), [], 'a plan card is back')
+    assert.deepEqual(byClass(pages.pricing, 'pricing-grid'), [])
+    assert.deepEqual(byTag(pages.pricing, 'table'), [], 'a comparison table is back')
+    assert.deepEqual(all(pages.pricing, (n) => n.attrs['role'] === 'radiogroup'), [], 'a billing toggle is back')
+    assert.deepEqual(byClass(pages.pricing, 'faq-section'), [], 'a FAQ is back')
+    assert.deepEqual(byTag(pages.pricing, 'h3'), [], 'a plan name is back')
+    assert.deepEqual(byClass(pages.pricing, 'ui-button'), [], 'a plan button is back')
+    const text = textOf(pages.pricing)
+    assert.doesNotMatch(text, /\$|\bPro\b|\bPlatinum\b|\bCore\b|\bChurch plan\b|devices?\b|NDI|watermark|prorat|PayPal|ACH|non-profit|MOST POPULAR|Monthly|Annual/i)
   })
 
-  test('pricing-02: no card reads "$0 / month" or a per-month price of any kind', () => {
-    for (const c of cards()) assert.ok(!/\/\s*month|\/\s*forever/.test(textOf(c)), `${plan(c)}: ${textOf(c)}`)
-  })
-
-  test('every plan button is a link to a real destination or a disabled control with a visible note', () => {
-    const buttons = cards().map((c) => ({ c, btn: byClass(c, 'ui-button')[0] as HtmlNode }))
-    for (const { c, btn } of buttons) {
-      assert.ok(btn, `${plan(c)} has no call to action`)
-      if (btn.tag === 'a') {
-        assert.match(btn.attrs['href'] ?? '', /^\//, `${plan(c)}: the link has no internal destination`)
-      } else {
-        assert.equal(btn.tag, 'button')
-        assert.ok('disabled' in btn.attrs, `${plan(c)}: an enabled button that goes nowhere`)
-        const note = btn.attrs['aria-describedby']
-        assert.ok(note && all(c, (n) => n.attrs['id'] === note && textOf(n).length > 0).length === 1, `${plan(c)}: the disabled button has no visible reason`)
-      }
-    }
-  })
-
-  test('Free goes to /download; Pro (no billing) and Platinum (the contact form sends nothing) are disabled and say "Not available yet"', () => {
-    const [free, pro, third] = cards().map((c) => byClass(c, 'ui-button')[0] as HtmlNode) as [HtmlNode, HtmlNode, HtmlNode]
-    assert.equal(free.attrs['href'], '/download')
-    for (const [name, btn, card] of [['Pro', pro, cards()[1]], ['Platinum', third, cards()[2]]] as const) {
-      assert.equal(btn.tag, 'button', `${name} has a destination`)
-      assert.ok('disabled' in btn.attrs, `${name}'s button is not disabled`)
-      assert.ok(textOf(card as HtmlNode).includes('Not available yet'), `${name} does not say why`)
-    }
-  })
-
-  test('review round 1, Cody B1: no plan button leads to /contact, which shows "Message Received" and sends nothing', () => {
-    const hrefs = cards().flatMap((c) => byClass(c, 'ui-button').map((b) => b.attrs['href']))
-    assert.ok(!hrefs.includes('/contact'), `a plan button links to /contact: ${hrefs.join(', ')}`)
+  test('the view types no plan name and no limit: they will come from the API, not from this file', () => {
     const { descriptor } = parse(readFileSync(path.join(SRC, 'views/PricingView.vue'), 'utf8'), { filename: 'PricingView.vue' })
     const code = (descriptor.scriptSetup?.content ?? '').replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '')
-    assert.ok(!/to:\s*['"]\/contact['"]/.test(code), 'PricingView passes to: /contact again')
-  })
-
-  // The expected text is typed here independently of PricingView's `LIMITS`, so the cards and the table cannot
-  // drift together without this file noticing (review round 1, Cody N7: four changed limits stayed green).
-  const DEC008_CARDS: Record<string, string[]> = {
-    Free: ['1 device', 'Up to 2 outputs', 'Hosted speech-to-text, monthly allowance'],
-    Pro: [
-      'Everything in Free, without the watermark',
-      '3 devices',
-      'Up to 5 outputs',
-      'Up to 5 NDI outputs',
-      'Larger hosted speech-to-text allowance',
-    ],
-    Platinum: [
-      'Everything in Pro',
-      '7 devices',
-      'Up to 10 outputs',
-      'Up to 10 NDI outputs',
-      'Largest hosted speech-to-text allowance',
-    ],
-  }
-
-  test('the card bullets are exactly DEC-008\'s limits (devices 1/3/7, outputs 2/5/10, NDI 5/10), nothing else', () => {
-    const got = Object.fromEntries(cards().map((c) => [plan(c), byTag(c, 'li').map((li) => textOf(li))]))
-    assert.deepEqual(got, DEC008_CARDS)
-  })
-
-  test('review round 1, Shadow F2: the allowance is named as the HOSTED path, and a note says on-device transcription is not metered', () => {
-    for (const [name, bullets] of Object.entries(DEC008_CARDS)) {
-      assert.ok(bullets.some((b) => /hosted speech-to-text/i.test(b)), `${name}: no bullet names hosted speech-to-text`)
-    }
-    const row = byTag(byTag(byTag(pages.pricing, 'table')[0] as HtmlNode, 'tbody')[0] as HtmlNode, 'tr').find((r) => /speech-to-text/i.test(textOf(byTag(r, 'th')[0] as HtmlNode)))
-    assert.ok(row, 'no speech-to-text row')
-    assert.match(textOf(byTag(row as HtmlNode, 'th')[0] as HtmlNode), /^Hosted speech-to-text/)
-    const note = byClass(pages.pricing, 'table-note')[0]
-    assert.ok(note, 'no note under the table')
-    assert.match(textOf(note as HtmlNode), /on-device transcription is not metered/i)
-  })
-
-  test('the Free plan says its output carries a watermark (DEC-008), and Pro says it does not', () => {
-    const [free, pro] = cards()
-    assert.match(textOf(free as HtmlNode).toLowerCase(), /watermark/)
-    assert.match(textOf(pro as HtmlNode).toLowerCase(), /without the watermark|no watermark/)
-  })
-
-  test('the cards are three across in a grid the responsive sweep reads, with Pro marked popular', () => {
-    const grid = byClass(pages.pricing, 'pricing-grid')[0] as HtmlNode
-    assert.equal(grid.children.filter((c) => c.tag !== '#text').length, 3)
-    assert.deepEqual(cards().map((c) => hasClass(c, 'popular')), [false, true, false])
-  })
-
-  describe('the billing toggle', () => {
-    const group = (): HtmlNode => all(pages.pricing, (n) => n.attrs['role'] === 'radiogroup')[0] as HtmlNode
-
-    test('pricing-06: a radio group with a name, two radios, exactly one checked', () => {
-      assert.ok(group(), 'no radio group')
-      assert.ok((group().attrs['aria-label'] ?? '').length > 0, 'the group has no name')
-      const radios = all(group(), (n) => n.attrs['role'] === 'radio')
-      assert.deepEqual(radios.map((r) => textOf(r)), ['Monthly', 'Annual'])
-      assert.equal(radios.filter((r) => r.attrs['aria-checked'] === 'true').length, 1)
-      assert.equal(radios[0]?.attrs['aria-checked'], 'true', 'Monthly is the drawn state')
-    })
-
-    test('roving tabindex: only the checked radio is in the tab order', () => {
-      const radios = all(group(), (n) => n.attrs['role'] === 'radio')
-      assert.deepEqual(radios.map((r) => r.attrs['tabindex']), ['0', '-1'])
-    })
-
-    test('pricing-05, pricing-18: the labels are plain Monthly and Annual, with no discount and no badge', () => {
-      assert.ok(!/save|%|off/i.test(textOf(group())), textOf(group()))
-      assert.equal(all(group(), (n) => hasClass(n, 'ui-badge')).length, 0)
-    })
-
-    test('a live region is there from the first render, so a later message is announced', () => {
-      const live = all(pages.pricing, (n) => n.attrs['aria-live'] === 'polite' && hasClass(n, 'billing-note'))
-      assert.equal(live.length, 1)
-    })
-  })
-
-  describe('the comparison table', () => {
-    const table = (): HtmlNode => byTag(pages.pricing, 'table')[0] as HtmlNode
-
-    test('pricing-10: the heading is "Compare every plan", and the table sits in a card, not a full-bleed band', () => {
-      assert.ok(byTag(pages.pricing, 'h2').some((n) => textOf(n) === 'Compare every plan'))
-      assert.ok(byClass(pages.pricing, 'comparison-card').length === 1, 'no .comparison-card')
-    })
-
-    test('the header names the three plans in order, over column headers', () => {
-      const cols = byTag(byTag(table(), 'thead')[0] as HtmlNode, 'th')
-      assert.deepEqual(cols.map((c) => textOf(c)), ['PLANS', 'Free', 'Pro', 'Platinum'])
-      for (const c of cols) assert.equal(c.attrs['scope'], 'col')
-    })
-
-    test('pricing-12: every row has a row header and three value cells, and no row is one the repo cannot back', () => {
-      const rows = byTag(byTag(table(), 'tbody')[0] as HtmlNode, 'tr')
-      assert.ok(rows.length >= 6 && rows.length <= 10, `${rows.length} rows`)
-      for (const r of rows) {
-        assert.equal(byTag(r, 'th').length, 1, `row without one row header: ${textOf(r)}`)
-        assert.equal((byTag(r, 'th')[0] as HtmlNode).attrs['scope'], 'row')
-        assert.equal(byTag(r, 'td').length, 3, `row "${textOf(r)}" does not have three value cells`)
-      }
-    })
-
-    test('pricing-11: a tick is an SVG with the words "Included", a dash says "Not included"; no bare glyph', () => {
-      const cells = byTag(byTag(table(), 'tbody')[0] as HtmlNode, 'td')
-      for (const c of cells) {
-        const words = textOf(c)
-        assert.ok(!/[✓—]/.test(words), `a bare glyph in a cell: ${words}`)
-        if (/Included/.test(words) && !/Not included/.test(words)) assert.equal(byTag(c, 'svg').length, 1, `a tick with no icon: ${words}`)
-        assert.ok(words.length > 0, 'an empty cell')
-      }
-      assert.ok(cells.some((c) => /Not included/.test(textOf(c))), 'no dash cell: the Free column has nothing it lacks, so the table is not telling the difference')
-    })
-
-    test('the plan limits agree with DEC-008: outputs 2, 5, 10; NDI none, 5, 10; devices 1, 3, 7', () => {
-      const row = (label: RegExp): string[] => {
-        const r = byTag(byTag(table(), 'tbody')[0] as HtmlNode, 'tr').find((x) => label.test(textOf(byTag(x, 'th')[0] as HtmlNode)))
-        assert.ok(r, `no row matching ${label}`)
-        return byTag(r as HtmlNode, 'td').map((c) => textOf(c))
-      }
-      assert.deepEqual(row(/outputs/i).map((t) => t.replace(/\D/g, '')), ['2', '5', '10'])
-      assert.deepEqual(row(/ndi/i), ['Not included', '5', '10'])
-      assert.deepEqual(row(/devices/i).map((t) => t.replace(/\D/g, '')), ['1', '3', '7'])
-    })
+    assert.doesNotMatch(code, /name:|price:|LIMITS|plans\b|rows\b|pricingFaqItems|PricingCard|SegmentedToggle/, 'PricingView holds plan data again')
+    assert.doesNotMatch(descriptor.template?.content ?? '', /PricingCard|SegmentedToggle|FaqAccordion|<table/)
   })
 })
 
@@ -1128,15 +909,6 @@ function sectionProblems(root: HtmlNode, where: string): string[] {
   return out
 }
 
-/** The live note must not be `display: none` when empty: a region absent from the accessibility tree is often not announced. */
-function liveRegionProblems(css: string): string[] {
-  const out: string[] = []
-  for (const m of css.matchAll(/\.billing-note[^{]*\{([^}]*)\}/g)) {
-    if (/display:\s*none/.test(m[1] as string)) out.push('a .billing-note rule sets display: none, so the live region leaves the accessibility tree while empty')
-  }
-  return out
-}
-
 /**
  * A tripwire, not a behaviour test (the behaviour is `npm run test:core`): the key handler must emit the new
  * choice and then move focus to that radio, in that order. Removing the `.focus()` line strands a keyboard user on
@@ -1182,17 +954,6 @@ describe('review round 1: guards that only a browser used to give', () => {
     assert.equal(sectionProblems(parseHtml('<section class="s"><div class="container x"></div></section>'), 'f').length, 0)
   })
 
-  test('N6: the billing note is a polite status region that is never display: none (source), and is rendered from the first render', () => {
-    const { css } = sfcSource(read('views/PricingView.vue'), 'PricingView.vue')
-    assert.deepEqual(liveRegionProblems(css), [])
-    assert.equal(all(pages.pricing, (n) => n.attrs['role'] === 'status' && n.attrs['aria-live'] === 'polite' && hasClass(n, 'billing-note')).length, 1)
-  })
-
-  test('CONTROL (N6): the predicate flags display: none on the note, and accepts a visually hidden one', () => {
-    assert.equal(liveRegionProblems('.billing-note:empty { display: none; }').length, 1)
-    assert.deepEqual(liveRegionProblems('.billing-note:empty { position: absolute; clip: rect(0,0,0,0); }'), [])
-  })
-
   test('N9: the toggle emits the new choice and then moves focus to it (a tripwire; the behaviour is `npm run test:core`)', () => {
     const { descriptor } = parse(read('components/core/SegmentedToggle.vue'), { filename: 'SegmentedToggle.vue' })
     assert.deepEqual(focusMovementProblems(descriptor.scriptSetup?.content ?? ''), [])
@@ -1227,86 +988,6 @@ describe('review round 1: guards that only a browser used to give', () => {
     assert.ok(/(^|[\s<])style="/.test('<span class="brand-mark" style="--mark-size: 16px">'))
     assert.ok(!/(^|[\s<])style="/.test('<section :style="vars">'))
     assert.ok(/:deep\(\s*\.content/.test('.x :deep(.content) { gap: 10px }'))
-  })
-})
-
-// ------------------------------------------------ review round 3: the pinned heading and the reserved note
-
-/** The text between the braces of the first `@media (query) { ... }`, braces balanced; '' when there is none. */
-function mediaBlock(css: string, query: string): string {
-  const at = css.indexOf(`@media ${query}`)
-  if (at === -1) return ''
-  const open = css.indexOf('{', at)
-  let depth = 0
-  for (let i = open; i < css.length; i++) {
-    if (css[i] === '{') depth++
-    else if (css[i] === '}' && --depth === 0) return css.slice(open + 1, i)
-  }
-  return ''
-}
-
-/** The css with every `@media ... { ... }` block removed: the rules that apply at every width. */
-function outsideMedia(css: string): string {
-  let out = css
-  for (;;) {
-    const at = out.indexOf('@media')
-    if (at === -1) return out
-    const open = out.indexOf('{', at)
-    let depth = 0
-    let end = out.length
-    for (let i = open; i < out.length; i++) {
-      if (out[i] === '{') depth++
-      else if (out[i] === '}' && --depth === 0) {
-        end = i + 1
-        break
-      }
-    }
-    out = out.slice(0, at) + out.slice(end)
-  }
-}
-
-/** On a phone the label column AND its heading cell are pinned, each with a fill of its own. Empty when sound. */
-function pinnedColumnProblems(css: string): string[] {
-  const block = mediaBlock(css, '(max-width: 767.98px)')
-  const rules = [...block.matchAll(/([^{}]+)\{([^{}]*)\}/g)].map((m) => ({ sel: (m[1] as string).trim(), body: m[2] as string }))
-  const out: string[] = []
-  const pins = (needle: string): boolean => rules.some((r) => r.sel.includes(needle) && /position:\s*sticky/.test(r.body) && /left:\s*0/.test(r.body))
-  const fills = (needle: string): boolean => rules.some((r) => r.sel.includes(needle) && /background:\s*var\(--sc-(surface|elevated)\)/.test(r.body))
-  if (!pins('tbody th')) out.push('the row labels are not pinned on a phone')
-  if (!pins('thead th.plans-label')) out.push('the PLANS heading cell is not pinned: the Free and Pro headings slide over the row labels')
-  if (!fills('tbody th')) out.push('the pinned row labels have no fill of their own')
-  if (!fills('thead th.plans-label')) out.push('the pinned heading cell has no fill of its own (the band\'s fill is on the row and scrolls away)')
-  return out
-}
-
-/** The billing note's line is reserved at every width below 1200px, so choosing Annual moves nothing. */
-function noteReservationProblems(css: string): string[] {
-  const rule = [...outsideMedia(css).matchAll(/\.billing-note\s*\{([^}]*)\}/g)].map((m) => m[1] as string).join(' ')
-  return /min-height:\s*(1[0-9]|[2-9][0-9])px/.test(rule) ? [] : ['the .billing-note has no min-height at every width, so choosing Annual pushes the cards down below 1200px']
-}
-
-describe('review round 3 (Vera): the pinned heading cell and the reserved billing note', () => {
-  test('the PLANS heading cell is pinned on a phone with the row labels, each with its own fill (a regression against the base)', () => {
-    assert.deepEqual(pinnedColumnProblems(sfcSource(read('views/PricingView.vue'), 'PricingView.vue').css), [])
-  })
-
-  test('CONTROL: the predicate flags a missing header pin, a missing fill, and accepts both pinned', () => {
-    const only = '@media (max-width: 767.98px) { .t tbody th { position: sticky; left: 0; background: var(--sc-surface); } }'
-    assert.equal(pinnedColumnProblems(only).length, 2)
-    const noFill = '@media (max-width: 767.98px) { .t tbody th, .t thead th.plans-label { position: sticky; left: 0; } .t tbody th { background: var(--sc-surface); } }'
-    assert.equal(pinnedColumnProblems(noFill).length, 1)
-    const both = '@media (max-width: 767.98px) { .t tbody th, .t thead th.plans-label { position: sticky; left: 0; } .t tbody th { background: var(--sc-surface); } .t thead th.plans-label { background: var(--sc-elevated); } }'
-    assert.deepEqual(pinnedColumnProblems(both), [])
-  })
-
-  test('the billing note has a min-height at every width, so choosing Annual cannot push the plan cards down', () => {
-    assert.deepEqual(noteReservationProblems(sfcSource(read('views/PricingView.vue'), 'PricingView.vue').css), [])
-  })
-
-  test('CONTROL: the predicate flags a note with no reserved line, or one reserved only inside a media query', () => {
-    assert.equal(noteReservationProblems('.billing-note { margin: 8px 0 0; }').length, 1)
-    assert.equal(noteReservationProblems('@media (min-width: 1200px) { .billing-note { min-height: 18px; } }').length, 1)
-    assert.deepEqual(noteReservationProblems('.billing-note { min-height: 18px; margin: 8px 0 0; } @media (min-width: 1200px) { .billing-note { min-height: 0; } }'), [])
   })
 })
 

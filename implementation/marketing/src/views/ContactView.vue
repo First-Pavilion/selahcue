@@ -12,8 +12,6 @@ const org = ref('')
 const message = ref('')
 
 const errors = ref<Record<string, string>>({})
-const isSubmitting = ref(false)
-const isSubmitted = ref(false)
 
 /**
  * One rule per field, so a field can be checked when it loses focus and again on submit. The 100
@@ -69,20 +67,17 @@ const notePointer = (event: PointerEvent) => {
   pressingSend.value = event.target instanceof Element && event.target.closest('button') !== null
 }
 
+/**
+ * NOTHING IS SENT. There is no contact endpoint yet (the contact-send ticket is separate, ClickUp 17tnw2b0x3h), so the Send
+ * button is disabled and the page says so. This is only the validation seam that ticket extends: it checks every field and
+ * never reports a send, a receipt or a reply. It also stops a stray submit from navigating the page.
+ */
 const handleSubmit = () => {
   pressingSend.value = false
   errors.value = {}
   for (const field of Object.keys(rules)) {
     const problem = rules[field]?.() ?? ''
     if (problem) errors.value[field] = problem
-  }
-
-  if (Object.keys(errors.value).length === 0) {
-    isSubmitting.value = true
-    setTimeout(() => {
-      isSubmitting.value = false
-      isSubmitted.value = true
-    }, 800)
   }
 }
 </script>
@@ -92,24 +87,14 @@ const handleSubmit = () => {
     <section class="page-hero container">
       <UiBadge variant="featured">CONTACT</UiBadge>
       <h1 class="hero-title">Let's talk</h1>
-      <p class="hero-sub">Questions about SelahCue, help with getting set up, or partnering with us. Here is how to get in touch.</p>
+      <p class="hero-sub">Questions about SelahCue or help with getting set up. Here is how to get in touch.</p>
     </section>
 
     <div class="container contact-split">
       <div class="contact-layout">
         <!-- Left: the form. First in the DOM so Tab order is the form, then the cards (Figma column order). -->
         <div class="contact-form-card">
-          <div v-if="isSubmitted" class="success-state">
-            <div class="success-icon">✓</div>
-            <h2>Message Received!</h2>
-            <p>Thank you for reaching out, {{ name }}. A SelahCue specialist will respond within 24 hours.</p>
-            <UiButton variant="outline" @click="isSubmitted = false; name=''; email=''; org=''; message=''">
-              Send Another Message
-            </UiButton>
-          </div>
-
           <form
-            v-else
             class="contact-form"
             aria-label="Contact us"
             @submit.prevent="handleSubmit"
@@ -117,6 +102,8 @@ const handleSubmit = () => {
             @focusin="pressingSend = false"
           >
             <h2 class="form-title">Send us a message</h2>
+            <!-- Said BEFORE the visitor types, and tied to the disabled button below. Nothing here sends, replies or confirms. -->
+            <p id="send-note" class="form-note">The contact form is not available yet. Please email us instead.</p>
 
             <FormField
               v-model="name"
@@ -124,7 +111,6 @@ const handleSubmit = () => {
               placeholder="Jane Pastor"
               required
               :error="errors.name"
-              :disabled="isSubmitting"
               @update:model-value="clearError('name')"
               @blur="checkField('name')"
             />
@@ -136,7 +122,6 @@ const handleSubmit = () => {
               placeholder="jane@yourchurch.org"
               required
               :error="errors.email"
-              :disabled="isSubmitting"
               @update:model-value="clearError('email')"
               @blur="checkField('email')"
             />
@@ -146,7 +131,6 @@ const handleSubmit = () => {
               label="Church / organization"
               placeholder="Grace Community Church"
               :error="errors.org"
-              :disabled="isSubmitting"
               @update:model-value="clearError('org')"
               @blur="checkField('org')"
             />
@@ -159,7 +143,6 @@ const handleSubmit = () => {
               required
               :maxLength="2000"
               :error="errors.message"
-              :disabled="isSubmitting"
               @update:model-value="clearError('message')"
               @blur="checkField('message')"
             />
@@ -168,39 +151,22 @@ const handleSubmit = () => {
               variant="primary"
               size="lg"
               block
-              :loading="isSubmitting"
+              disabled
+              aria-describedby="send-note"
             >
               Send message
             </UiButton>
           </form>
         </div>
 
-        <!-- Right: the other ways to get in touch. -->
+        <!-- Right: the one way to get in touch that works today. -->
         <div class="method-cards">
           <div class="method-card">
             <CategoryIcon class="method-icon" name="mail" tone="brand" size="method" />
             <div class="method-body">
-              <h2>Support & Sales Email</h2>
-              <p>Email our dedicated support team directly.</p>
-              <a href="mailto:support@selahcue.app" class="method-link">support@selahcue.app</a>
-            </div>
-          </div>
-
-          <div class="method-card">
-            <CategoryIcon class="method-icon" name="users" tone="warn" size="method" />
-            <div class="method-body">
-              <h2>Community & Discord</h2>
-              <p>Join 1,200+ worship tech leaders on Discord for instant help.</p>
-              <a href="#" class="method-link">Join Discord Community</a>
-            </div>
-          </div>
-
-          <div class="method-card">
-            <CategoryIcon class="method-icon" name="briefcase" tone="preview" size="method" />
-            <div class="method-body">
-              <h2>Enterprise & Multi-Campus</h2>
-              <p>Talk to our church solutions architect for enterprise SLAs.</p>
-              <a href="#" class="method-link">Schedule a Demo Call</a>
+              <h2>Email us</h2>
+              <p>Write to us at this address.</p>
+              <a href="mailto:support@selahcueapp.com" class="method-link">support@selahcueapp.com</a>
             </div>
           </div>
         </div>
@@ -386,34 +352,10 @@ const handleSubmit = () => {
   color: var(--sc-live);
 }
 
-.success-state {
-  text-align: center;
-  padding: 40px 20px;
-}
-
-.success-icon {
-  width: 60px;
-  height: 60px;
-  border-radius: 50%;
-  background: var(--sc-preview-soft);
-  color: var(--sc-preview);
-  font-size: 28px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  margin: 0 auto 20px;
-}
-
-.success-state h2 {
-  font-size: 24px;
-  color: var(--sc-text);
-  margin-bottom: 12px;
-}
-
-.success-state p {
-  font-size: 15px;
+.form-note {
+  font-size: 14px;
+  line-height: 20px;
   color: var(--sc-text-secondary);
-  margin-bottom: 28px;
 }
 
 @media (max-width: 1023.98px) {
@@ -430,6 +372,5 @@ const handleSubmit = () => {
   .method-card { padding: 16px; }
   .method-link { display: inline-flex; align-items: center; min-height: 44px; }
   .contact-form-card { padding: 24px 20px; border-radius: 16px; }
-  .success-state { padding: 24px 0; }
 }
 </style>
