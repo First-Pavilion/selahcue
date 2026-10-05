@@ -12,13 +12,6 @@ defineProps({
   cta: { type: String, required: true },
   popular: { type: Boolean, default: false },
   /**
-   * NOT BACKED. Shows 80% of the price ("save 20%"). The repo has no annual plan and the
-   * discount is invented: audit finding pricing-18, class C, owner decision pending, and
-   * removing it belongs to ClickUp 17tnw2b0x3h. Left as it was; do not read the maths as a
-   * statement of what is on sale.
-   */
-  annual: { type: Boolean, default: false },
-  /**
    * Where the plan's call to action goes: a router destination (`'/download'`, `{ name: ... }`).
    * The card never renders a button that does nothing. With a destination the call to action
    * is a link; without one it is a DISABLED button that says why (`unavailableNote`), which is
@@ -41,7 +34,7 @@ const noteId = `${useId()}-cta-note`
 
     <div class="plan-price-box">
       <template v-if="typeof price === 'number'">
-        <span class="price-val">${{ annual && price > 0 ? Math.round(price * 0.8) : price }}</span>
+        <span class="price-val">${{ price }}</span>
         <span class="price-period">/ {{ period }}</span>
       </template>
       <template v-else>

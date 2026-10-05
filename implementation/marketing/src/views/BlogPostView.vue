@@ -66,7 +66,7 @@ onBeforeUnmount(() => clearTimeout(copyTimer))
 </script>
 
 <template>
-  <NotFoundView embedded v-if="!post" />
+  <NotFoundView v-if="!post" />
   <article v-else class="bp">
     <div class="bp-wrap">
       <header class="bp-header">

@@ -717,6 +717,12 @@ ci: ## Run the local Rust/Flutter CI gate (see the header for what CI runs that 
 	# no matching audit step in .github/workflows/ci.yml.
 	python3 scripts/check_dependency_audit_coverage.py --self-test
 	python3 scripts/check_dependency_audit_coverage.py
+	# 17tnw2b2jfy: the translation-mirror converter turns eBible USFM into the pinned assets users
+	# download. Its self-test needs no network (synthetic USFM fixtures) and takes about a second; it
+	# also validates the COMMITTED allowlist (scripts/translation_allowlist.json) against every licence
+	# rule, so a bad edit there fails here. The network half (converting the real USFM, and the
+	# positive control against the five bundled Bibles) is run by hand: see the script's docstring.
+	python3 scripts/build_translation_catalog.py --self-test
 	# 86ak5rjh7 (marketing half) / 17tnw2b0q9j: `make ci` verified NOTHING about implementation/marketing,
 	# so a type or lint error there passed here and failed only in CI. The same target the CI job calls,
 	# via recursive make so there is exactly one definition. Placed before the cargo gates because it

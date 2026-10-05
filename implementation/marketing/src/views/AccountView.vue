@@ -1,10 +1,33 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { nextTick, ref } from 'vue'
+import { SIGN_OUT_LABEL, SIGN_OUT_PENDING_LABEL } from '@/lib/auth/signOutFlow.ts'
+import { useSignOut } from '@/lib/auth/useSignOut.ts'
+import SrOnly from '@/components/core/SrOnly.vue'
 import UiBadge from '@/components/UiBadge.vue'
 import UiButton from '@/components/UiButton.vue'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
 import Toast from '@/components/Toast.vue'
 import SkeletonLoader from '@/components/SkeletonLoader.vue'
+
+/**
+ * Sign out for real (ClickUp 17tnw2b2cbr). This was a link to /signin: it navigated and never
+ * revoked anything, so the server session, the cookie and the session hint all survived. It now
+ * runs the same revocation the navbar's Sign out does, and only then lands on /signin. If the
+ * server cannot be reached the visitor is told so and stays signed in, because that is the truth:
+ * the cookie is HttpOnly and only the server can end the session. The rules live in
+ * `lib/auth/signOutFlow.ts`.
+ */
+const { pending: signOutPending, error: signOutError, run: runSignOut } = useSignOut('/signin')
+const signOutButton = ref<InstanceType<typeof UiButton> | null>(null)
+
+const handleSignOut = async () => {
+  await runSignOut()
+  if (signOutError.value === '') return
+  // A disabled button gives up focus. After a failure the visitor is still here and is meant to
+  // retry, so put focus back where they were rather than leaving a keyboard user on <body>.
+  await nextTick()
+  ;(signOutButton.value?.$el as HTMLElement | undefined)?.focus()
+}
 
 // Active Tab
 const activeTab = ref('overview') // 'overview' | 'subscription' | 'license' | 'bibles' | 'invoices' | 'settings'
@@ -133,7 +156,23 @@ const invoices = ref([
           </div>
         </div>
         <div class="header-actions">
-          <UiButton variant="outline" size="sm" to="/signin">Sign Out</UiButton>
+          <!-- A real <button>, not a link: it has to revoke the session before anything navigates. -->
+          <UiButton
+            ref="signOutButton"
+            type="button"
+            variant="outline"
+            size="sm"
+            :disabled="signOutPending"
+            @click="handleSignOut"
+          >
+            {{ signOutPending ? SIGN_OUT_PENDING_LABEL : SIGN_OUT_LABEL }}
+          </UiButton>
+          <!-- A disabled button drops focus, so without this a screen-reader user hears nothing until the page
+               changes. Always in the DOM and empty when idle: a live region added together with its text is not
+               reliably announced. Visually hidden and absolutely positioned (SrOnly), so it moves nothing. -->
+          <SrOnly role="status" aria-live="polite">{{ signOutPending ? SIGN_OUT_PENDING_LABEL : '' }}</SrOnly>
+          <!-- Announced: a sign-out that silently did nothing is the failure most worth hearing about. -->
+          <p v-if="signOutError" class="signout-error" role="alert">{{ signOutError }}</p>
         </div>
       </header>
 
@@ -455,6 +494,29 @@ const invoices = ref([
   display: flex;
   align-items: center;
   gap: 16px;
+}
+
+.header-actions {
+  /* The containing block for the visually hidden status region (see SrOnly): an uncontained one can widen the page. */
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+  max-width: 320px;
+}
+
+/* The same soft-red surface as the past-due banner below, so a failed action reads as one. */
+.signout-error {
+  margin: 0;
+  padding: 8px 12px;
+  background: var(--sc-live-soft);
+  border: 1px solid var(--sc-live-border);
+  border-radius: 8px;
+  color: var(--sc-text);
+  font-size: 13px;
+  line-height: 1.4;
+  text-align: left;
 }
 
 .avatar {
@@ -874,6 +936,7 @@ const invoices = ref([
     margin-bottom: 24px;
     padding-bottom: 20px;
   }
+  .header-actions { align-items: flex-start; max-width: none; }
   .user-lockup { gap: 12px; min-width: 0; }
   .user-lockup > div { min-width: 0; }
   .org-title { font-size: 20px; overflow-wrap: anywhere; }
