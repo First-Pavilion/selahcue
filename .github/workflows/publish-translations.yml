@@ -18,14 +18,26 @@
 # The reads go to the public URL exactly as the app makes them (`Accept-Encoding: identity`, no redirect followed)
 # and fail on any difference, including a `Content-Encoding` the CDN may add. The CDN URL is the app's base URL.
 #
-# SETTINGS (non-secret, repository variables; the build job has no environment, so they cannot be environment ones):
+# SETTINGS (non-secret variables). The `publish` job reads them from the ENVIRONMENT `translations-publish`, which only an
+# administrator can change (an environment variable overrides a repository variable of the same name for a job that uses
+# the environment). The `build` job has no environment, so it reads the REPOSITORY-level copies of the two it needs, which a
+# write-access account can change: if those differ from the environment's, the publish job refuses at "Re-check the
+# release" (the catalogue records its base_url), so a repository-level change cannot redirect a publish.
 #   TRANSLATIONS_BASE_URL    https://bible-translations.sfo3.cdn.digitaloceanspaces.com   (what the app downloads from;
-#                                                  recorded in catalog.json, so a CDN or hostname change edits this alone)
-#   TRANSLATIONS_ORIGIN_URL  https://bible-translations.sfo3.digitaloceanspaces.com       (optional: also read back here)
-#   TRANSLATIONS_BUCKET      bible-translations
-#   TRANSLATIONS_ENDPOINT    https://sfo3.digitaloceanspaces.com                          (the S3 API, for uploads)
-# SECRETS (environment `translations-publish` only; set by the owner, never through chat or an agent):
+#                                                  recorded in catalog.json; BOTH levels, and they must be equal)
+#   TRANSLATIONS_ORIGIN_URL  https://bible-translations.sfo3.digitaloceanspaces.com       (optional: also read back here; both levels)
+#   TRANSLATIONS_BUCKET      bible-translations                                           (environment only)
+#   TRANSLATIONS_ENDPOINT    https://sfo3.digitaloceanspaces.com                          (the S3 API; environment only)
+# The script also refuses a bucket, region and base URL that disagree about which Space this is.
+# SECRETS (environment `translations-publish` only; set by the owner, never through chat or an agent, NEVER as
+# repository secrets):
 #   SPACES_ACCESS_KEY_ID, SPACES_SECRET_ACCESS_KEY   a key limited to the `bible-translations` Space and nothing else.
+#
+# ACTIONS ARE PINNED BY FULL COMMIT SHA, with the release tag in a trailing comment. This is the one workflow in the
+# repository that holds a secret, and the checkout and download steps run in the same workspace as the steps that hold the
+# key: an action swapped under a movable tag could edit the script that receives it. Every other workflow pins tags (they
+# hold no secret). Dependabot keeps SHA pins current; `.github/scripts/check_workflows.py` refuses an unpinned or
+# non-`actions/` step here.
 name: publish-translations
 
 on:
@@ -57,7 +69,7 @@ jobs:
       TRANSLATIONS_ORIGIN_URL: ${{ vars.TRANSLATIONS_ORIGIN_URL }}
       DRY_RUN: ${{ inputs.dry_run }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Say what this run will do
@@ -88,11 +100,14 @@ jobs:
           python3 scripts/build_translation_catalog.py --work-dir "$RUNNER_TEMP/bundled" --verify-bundled
       # `--require-cleared` refetches eBible's catalogue and the selected zips, refuses any translation still pending
       # legal review, and `--only` limits the build to the codes asked for. The second build reads the same cached
-      # zips and must be byte-identical (a determinism check on THIS runner).
+      # zips and must be byte-identical (a determinism check on THIS runner). The converter takes the codes as separate
+      # arguments, so they come from `publish_translations.py codes`, which has validated them: nothing option-shaped
+      # and no line break can get through.
       - name: Build, rebuild offline and compare
         run: |
           set -euo pipefail
-          read -r -a CODES <<< "$ONLY"
+          CODES_TEXT=$(python3 scripts/publish_translations.py codes --only-text="$ONLY")
+          read -r -a CODES <<< "$CODES_TEXT"
           python3 scripts/build_translation_catalog.py --work-dir "$RUNNER_TEMP/work" \
             --out-dir "$RUNNER_TEMP/publish/out" --only "${CODES[@]}" --require-cleared --base-url "$TRANSLATIONS_BASE_URL"
           python3 scripts/build_translation_catalog.py --work-dir "$RUNNER_TEMP/work" \
@@ -101,13 +116,11 @@ jobs:
           echo "two builds are byte-identical"
       - name: Check the build against its catalogue and print the entries
         run: |
-          set -euo pipefail
-          read -r -a CODES <<< "$ONLY"
-          python3 scripts/publish_translations.py plan --out-dir "$RUNNER_TEMP/publish/out" --only "${CODES[@]}" \
-            --base-url "$TRANSLATIONS_BASE_URL" --report-dir "$RUNNER_TEMP/publish/report"
+          python3 scripts/publish_translations.py plan --out-dir "$RUNNER_TEMP/publish/out" --only-text="$ONLY" \
+            --base-url="$TRANSLATIONS_BASE_URL" --report-dir="$RUNNER_TEMP/publish/report"
       # What A2 embeds in the app is built from THIS artifact (catalog.json, and report/catalog.app.json, the
       # same data with non-ASCII escaped for the repo's ASCII scan).
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: translations-release-${{ github.run_id }}
           path: ${{ runner.temp }}/publish
@@ -128,6 +141,7 @@ jobs:
       cancel-in-progress: false
     env:
       ONLY: ${{ inputs.only }}
+      # Environment-level variables (administrator-controlled) win over the repository-level ones of the same name here.
       TRANSLATIONS_BASE_URL: ${{ vars.TRANSLATIONS_BASE_URL }}
       TRANSLATIONS_ORIGIN_URL: ${{ vars.TRANSLATIONS_ORIGIN_URL }}
       TRANSLATIONS_BUCKET: ${{ vars.TRANSLATIONS_BUCKET }}
@@ -139,10 +153,10 @@ jobs:
             echo "A real publish runs from main only (this is $GITHUB_REF). Rehearse with dry_run ticked." >&2
             exit 1
           fi
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: translations-release-${{ github.run_id }}
           path: ${{ runner.temp }}/publish
@@ -156,43 +170,34 @@ jobs:
             ${TRANSLATIONS_ORIGIN_URL:+--origin-url="$TRANSLATIONS_ORIGIN_URL"}
       # Re-checks every downloaded file against catalog.json (digest, size, cleared, nothing extra): this job does
       # not trust the build job's word for it.
+      # It also refuses when the catalogue's base_url differs from this job's (environment-level) TRANSLATIONS_BASE_URL.
       - name: Re-check the release
         run: |
-          set -euo pipefail
-          read -r -a CODES <<< "$ONLY"
-          python3 scripts/publish_translations.py plan --out-dir "$RUNNER_TEMP/publish/out" --only "${CODES[@]}" \
-            --base-url "$TRANSLATIONS_BASE_URL" --report-dir "$RUNNER_TEMP/recheck"
+          python3 scripts/publish_translations.py plan --out-dir "$RUNNER_TEMP/publish/out" --only-text="$ONLY" \
+            --base-url="$TRANSLATIONS_BASE_URL" --report-dir="$RUNNER_TEMP/recheck"
       - name: Upload the assets (an existing key is never overwritten)
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.SPACES_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.SPACES_SECRET_ACCESS_KEY }}
         run: |
-          set -euo pipefail
-          read -r -a CODES <<< "$ONLY"
           python3 scripts/publish_translations.py upload --stage assets --out-dir "$RUNNER_TEMP/publish/out" \
-            --only "${CODES[@]}" --base-url "$TRANSLATIONS_BASE_URL" \
-            --bucket "$TRANSLATIONS_BUCKET" --endpoint "$TRANSLATIONS_ENDPOINT"
+            --only-text="$ONLY" --base-url="$TRANSLATIONS_BASE_URL" \
+            --bucket="$TRANSLATIONS_BUCKET" --endpoint="$TRANSLATIONS_ENDPOINT"
       - name: Read the assets back from the public URLs
         run: |
-          set -euo pipefail
-          read -r -a CODES <<< "$ONLY"
           python3 scripts/publish_translations.py verify --stage assets --out-dir "$RUNNER_TEMP/publish/out" \
-            --only "${CODES[@]}" --base-url "$TRANSLATIONS_BASE_URL" \
+            --only-text="$ONLY" --base-url="$TRANSLATIONS_BASE_URL" \
             ${TRANSLATIONS_ORIGIN_URL:+--origin-url="$TRANSLATIONS_ORIGIN_URL"}
       - name: Upload the catalogue (last, so it never names a missing file)
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.SPACES_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.SPACES_SECRET_ACCESS_KEY }}
         run: |
-          set -euo pipefail
-          read -r -a CODES <<< "$ONLY"
           python3 scripts/publish_translations.py upload --stage catalogue --out-dir "$RUNNER_TEMP/publish/out" \
-            --only "${CODES[@]}" --base-url "$TRANSLATIONS_BASE_URL" \
-            --bucket "$TRANSLATIONS_BUCKET" --endpoint "$TRANSLATIONS_ENDPOINT"
+            --only-text="$ONLY" --base-url="$TRANSLATIONS_BASE_URL" \
+            --bucket="$TRANSLATIONS_BUCKET" --endpoint="$TRANSLATIONS_ENDPOINT"
       - name: Read the catalogue back from the public URLs
         run: |
-          set -euo pipefail
-          read -r -a CODES <<< "$ONLY"
           python3 scripts/publish_translations.py verify --stage catalogue --out-dir "$RUNNER_TEMP/publish/out" \
-            --only "${CODES[@]}" --base-url "$TRANSLATIONS_BASE_URL" \
+            --only-text="$ONLY" --base-url="$TRANSLATIONS_BASE_URL" \
             ${TRANSLATIONS_ORIGIN_URL:+--origin-url="$TRANSLATIONS_ORIGIN_URL"}

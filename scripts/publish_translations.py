@@ -8,11 +8,16 @@ that were built. It is run by `.github/workflows/publish-translations.yml`, neve
 between zlib builds, so the digests the app pins must be those of the files THAT RUN uploaded.
 
     publish_translations.py check-inputs --only-text="BSB" --base-url URL [--bucket B --endpoint E --origin-url U]
+    publish_translations.py codes  --only-text="BSB"
     publish_translations.py fetch-bundled --work-dir DIR
-    publish_translations.py plan   --out-dir DIR --only BSB --base-url URL --report-dir DIR
-    publish_translations.py upload --stage assets|catalogue --out-dir DIR --only BSB --base-url URL --bucket B --endpoint E
-    publish_translations.py verify --stage assets|catalogue --out-dir DIR --only BSB --base-url URL [--origin-url U]
+    publish_translations.py plan   --out-dir DIR --only-text="BSB" --base-url URL --report-dir DIR
+    publish_translations.py upload --stage assets|catalogue --out-dir DIR --only-text="BSB" --base-url URL --bucket B --endpoint E
+    publish_translations.py verify --stage assets|catalogue --out-dir DIR --only-text="BSB" --base-url URL [--origin-url U]
     publish_translations.py --self-test
+
+The codes always travel as ONE argument (`--only-text`) and are split and validated here, never by the shell: an
+option-shaped word such as `--out-dir` can then never reach argparse (it is refused as not being a code), and a line
+break in the input is refused instead of silently dropping everything after the first line.
 
 KEY LAYOUT (decided here; the reasons are the point):
 
@@ -25,8 +30,11 @@ KEY LAYOUT (decided here; the reasons are the point):
 * The Space has a CDN in front of it. A cache may hold any object for as long as it likes, so the one safe rule is
   that no cached URL ever changes meaning. Content-addressed keys make that true by construction, which is also
   why the objects carry `Cache-Control: public, max-age=31536000, immutable`.
-* Re-running with unchanged inputs finds every key already present with the same size and MD5, uploads nothing,
-  and still re-verifies every byte through the public URLs.
+* Re-running with unchanged inputs finds every key already present with the same size and MD5, uploads no object,
+  and still re-verifies every byte through the public URLs. It DOES re-assert `public-read` on every existing key
+  (`put-object-acl`), so an object an operator made private (a takedown) becomes public again when its code is run
+  again. The catalogue key changes whenever eBible's live catalogue changes (the converter records its digest), so
+  "nothing changes" holds for the ASSET keys only.
 * `<CODE>` is the catalogue's own upper-case code (`BSB`). `base_url` is only the host (the CDN endpoint today):
   moving to a custom hostname changes `base_url` and nothing else.
 * The app's `asset_url` (selahcue-scripture `catalog.rs`) must build `{base_url}/translations/{code}/{sha256}.tsv.gz`
@@ -36,7 +44,8 @@ WHAT IT REFUSES (each is a message, and each stops the run before anything more 
 an input that does not look right; a catalogue entry that is not `cleared`; a code that was not asked for or is
 missing; a file whose size or SHA-256 is not the catalogue's; an extra file in the output folder; a key outside the
 layout above; an existing object whose size or MD5 differs from the file (never overwritten); a catalogue upload
-while any asset is missing from the bucket; any response from the public URL that is not exactly the built bytes.
+while any asset is missing from the bucket; any response from the public URL that is not exactly the built bytes;
+a bucket, region or base URL that do not agree with each other when the base URL is a DigitalOcean host.
 
 OBJECT SETTINGS. `public-read` is set per object, because the Space's default is private and nothing else in the
 Space should become public. `Content-Type: application/gzip` and NO `Content-Encoding`: the client asks for
@@ -49,6 +58,7 @@ Standard library only (plus the converter next door, for the bundled-Bible downl
 import argparse
 import contextlib
 import hashlib
+import http.client
 import http.server
 import io
 import json
@@ -72,6 +82,9 @@ import strip_bible_headings as sbh
 CODE_RE = re.compile(r"^[A-Z][A-Z0-9-]{1,15}$")
 SHA_RE = re.compile(r"^[0-9a-f]{64}$")
 PLAIN_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+# Windows refuses these as file names (the app's catalog.rs `is_reserved_device_name`, mirrored): CON PRN AUX NUL and
+# COM1..COM9, LPT1..LPT9, with or without an extension. COM0 and LPT0 are NOT reserved there, so they are not here.
+RESERVED_DEVICE_NAMES = {"CON", "PRN", "AUX", "NUL"}
 # The ONLY keys this script will ever write or read. A bug elsewhere cannot make it touch another prefix.
 KEY_RE = re.compile(r"^translations/(?:catalog/[0-9a-f]{64}\.json|[A-Z][A-Z0-9-]{1,15}/[0-9a-f]{64}\.tsv\.gz)$")
 BUCKET_RE = re.compile(r"^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$")
@@ -135,7 +148,14 @@ def md5_file(path):
 
 # --- inputs ------------------------------------------------------------------------------------
 def parse_codes(text):
-    codes = (text or "").split()
+    text = text or ""
+    # Only printable ASCII: a line break, tab or other control character is refused outright. (`read` in a shell keeps just
+    # the first line, so a newline would otherwise pass this check and then publish a subset without saying so.)
+    if any(not 0x20 <= ord(c) <= 0x7E for c in text):
+        raise Refusal("the translation codes contain a line break, tab or other control or non-ASCII character; give "
+                      "them on one line separated by spaces")
+    codes = text.split(" ")
+    codes = [c for c in codes if c]
     if not codes:
         raise Refusal("no translation codes given: name the cleared ones to publish, for example BSB")
     if len(codes) > MAX_CODES:
@@ -172,6 +192,38 @@ def check_bucket(bucket):
     return bucket
 
 
+def check_space_settings(base_url, bucket, endpoint, origin_url=None):
+    """The bucket, the region (from the S3 endpoint) and the base URL must describe the SAME Space.
+
+    A DigitalOcean host names its Space and region (`<bucket>.<region>.cdn.digitaloceanspaces.com`, or without `.cdn` for
+    the origin), so a wrong bucket variable would otherwise write objects into another Space before the read-back notices.
+    A custom hostname cannot be checked this way: it is covered by the settings being admin-controlled (environment-level
+    variables) and by the read-back."""
+    bucket = check_bucket(bucket)
+    region = check_endpoint(endpoint)
+    allowed = {f"{bucket}.{region}.digitaloceanspaces.com", f"{bucket}.{region}.cdn.digitaloceanspaces.com"}
+    for what, url in (("base URL", base_url), ("origin URL", origin_url)):
+        if not url:
+            continue
+        host = (urllib.parse.urlsplit(url).hostname or "").lower()
+        if host.endswith(".digitaloceanspaces.com") and host not in allowed:
+            raise Refusal(f"the {what} host {host!r} is a DigitalOcean Space host, but not the one that bucket {bucket!r} in "
+                          f"region {region!r} has ({sorted(allowed)}): the settings disagree about which Space this is")
+    return bucket, region
+
+
+def is_reserved_device_name(stem):
+    s = stem.upper()
+    return s in RESERVED_DEVICE_NAMES or (len(s) == 4 and s[:3] in ("COM", "LPT") and s[3] in "123456789")
+
+
+def check_key(key):
+    """The one gate every object key passes: only the two layouts above can ever be written or read."""
+    if not isinstance(key, str) or not KEY_RE.fullmatch(key):
+        raise Refusal(f"internal: key {str(key)[:100]!r} is outside the publishing layout")
+    return key
+
+
 def object_url(base_url, key):
     return f"{base_url}/{key}"
 
@@ -194,7 +246,8 @@ def load_release(out_dir, codes, base_url):
         catalog = json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, ValueError) as e:
         raise Refusal(f"catalog.json is not valid UTF-8 JSON ({type(e).__name__})")
-    if not isinstance(catalog, dict) or catalog.get("schema") != SCHEMA:
+    # `type(...) is not int` keeps `true` and `1.0` out: Python says True == 1 and 1.0 == 1, and the app reads a whole number.
+    if not isinstance(catalog, dict) or type(catalog.get("schema")) is not int or catalog["schema"] != SCHEMA:
         raise Refusal(f"catalog.json schema is not {SCHEMA}")
     if catalog.get("base_url") != base_url:
         raise Refusal(f"catalog.json records base_url {str(catalog.get('base_url'))[:80]!r} but this run publishes for "
@@ -226,6 +279,8 @@ def load_release(out_dir, codes, base_url):
         if not isinstance(name, str) or not PLAIN_NAME_RE.fullmatch(name) or ".." in name or not name.endswith(".tsv.gz") \
                 or len(name) == len(".tsv.gz"):
             raise Refusal(f"{where}: file_name {str(name)[:40]!r} is not a plain '*.tsv.gz' name")
+        if is_reserved_device_name(name.split(".")[0]):
+            raise Refusal(f"{where}: file_name {name!r} is a reserved device name on Windows, which the app refuses")
         verses = e.get("verses")
         if not (isinstance(verses, dict) and all(isinstance(verses.get(k), int) and not isinstance(verses.get(k), bool)
                                                   for k in ("ot", "nt"))):
@@ -258,8 +313,7 @@ def load_release(out_dir, codes, base_url):
                     "sha256": cat_sha, "size": len(raw), "content_type": CATALOGUE_CONTENT_TYPE,
                     "cache_control": IMMUTABLE, "entry": None})
     for o in objects:
-        if not KEY_RE.fullmatch(o["key"]):
-            raise Refusal(f"internal: key {o['key']!r} is outside the publishing layout")
+        check_key(o["key"])
     return entries, objects
 
 
@@ -272,7 +326,7 @@ def stage_objects(objects, stage):
 
 # --- plan ---------------------------------------------------------------------------------------
 def cmd_plan(a):
-    codes = parse_codes(" ".join(a.only))
+    codes = parse_codes(a.only_text)
     base_url = check_base_url(a.base_url)
     entries, objects = load_release(a.out_dir, codes, base_url)
     report = pathlib.Path(a.report_dir)
@@ -317,9 +371,14 @@ def cmd_check_inputs(a):
     if a.origin_url:
         check_base_url(a.origin_url, "TRANSLATIONS_ORIGIN_URL")
     if a.bucket is not None or a.endpoint is not None:
-        check_bucket(a.bucket)
-        check_endpoint(a.endpoint)
+        check_space_settings(a.base_url, a.bucket, a.endpoint, a.origin_url)
     say(f"inputs ok: publishing {' '.join(codes)} for {a.base_url}")
+    return 0
+
+
+def cmd_codes(a):
+    """Print the validated codes on one line, for the one tool that takes them as separate arguments (the converter)."""
+    say(" ".join(parse_codes(a.only_text)))
     return 0
 
 
@@ -367,10 +426,9 @@ def head_object(key, env, bucket, endpoint):
 
 
 def cmd_upload(a):
-    codes = parse_codes(" ".join(a.only))
+    codes = parse_codes(a.only_text)
     base_url = check_base_url(a.base_url)
-    bucket = check_bucket(a.bucket)
-    region = check_endpoint(a.endpoint)
+    bucket, region = check_space_settings(base_url, a.bucket, a.endpoint)
     entries, objects = load_release(a.out_dir, codes, base_url)
     todo = stage_objects(objects, a.stage)
     if not os.environ.get("AWS_ACCESS_KEY_ID") or not os.environ.get("AWS_SECRET_ACCESS_KEY"):
@@ -421,6 +479,9 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 
 
 _OPENER = urllib.request.build_opener(_NoRedirect)
+# Everything a network read can raise that is not a refusal: OSError covers URLError, timeouts, resets and TLS errors;
+# HTTPException covers IncompleteRead, BadStatusLine and RemoteDisconnected.
+_TRANSPORT_ERRORS = (OSError, http.client.HTTPException)
 
 
 def fetch_once(url, accept_encoding, max_bytes, opener=None, allow_http=False):
@@ -432,11 +493,21 @@ def fetch_once(url, accept_encoding, max_bytes, opener=None, allow_http=False):
     try:
         resp = (opener or _OPENER.open)(req, timeout=HTTP_TIMEOUT)
     except urllib.error.HTTPError as e:
-        return e.code, {k.lower(): v for k, v in e.headers.items()}, e.read(512)
-    except (urllib.error.URLError, OSError) as e:
+        try:
+            body = e.read(512)
+        except _TRANSPORT_ERRORS:
+            body = b""
+        return e.code, {k.lower(): v for k, v in e.headers.items()}, body
+    except _TRANSPORT_ERRORS as e:  # URLError, a timeout and a reset are OSErrors; a bad status line is an HTTPException
         return 0, {}, f"{type(e).__name__}: {e}".encode()
-    with contextlib.closing(resp):
-        return resp.status, {k.lower(): v for k, v in resp.headers.items()}, resp.read(max_bytes + 1)
+    try:
+        # THE BODY IS READ INSIDE THE TRY TOO: a connection reset, a timeout or a short read part-way through 1.3 MB is the
+        # likeliest failure of a CDN read-back, and it must be a failed attempt like any other (status 0, retried with the
+        # same backoff), not a traceback that ends the one-time run after one attempt.
+        with contextlib.closing(resp):
+            return resp.status, {k.lower(): v for k, v in resp.headers.items()}, resp.read(max_bytes + 1)
+    except _TRANSPORT_ERRORS as e:
+        return 0, {}, f"{type(e).__name__}: {e}".encode()
 
 
 def response_problems(o, status, headers, body):
@@ -501,14 +572,17 @@ def gzip_probe(base, o, opener, allow_http=False):
     """Information only, never a failure: what a client that DOES accept gzip gets from the CDN for this object."""
     status, headers, body = fetch_once(object_url(base, o["key"]), "gzip", MAX_ASSET_BYTES, opener, allow_http)
     same = status == 200 and len(body) == o["size"] and sha256_bytes(body) == o["sha256"]
-    line = (f"  probe with Accept-Encoding: gzip: HTTP {status}, Content-Encoding "
-            f"{headers.get('content-encoding', '(none)')}, bytes identical to the object: {same}")
+    if status == 0:
+        line = f"  probe with Accept-Encoding: gzip: no answer ({body[:120].decode('utf-8', 'replace')}); not a failure"
+    else:
+        line = (f"  probe with Accept-Encoding: gzip: HTTP {status}, Content-Encoding "
+                f"{headers.get('content-encoding', '(none)')}, bytes identical to the object: {same}")
     say(line)
     summary("- " + line.strip())
 
 
 def cmd_verify(a, sleep=time.sleep, opener=None, allow_http=False):
-    codes = parse_codes(" ".join(a.only))
+    codes = parse_codes(a.only_text)
     base_url = check_base_url(a.base_url)
     origin = check_base_url(a.origin_url, "origin URL") if a.origin_url else None
     entries, objects = load_release(a.out_dir, codes, base_url)
@@ -601,6 +675,9 @@ elif op == "put-object":
                                     | {"has_content_encoding": "content-encoding" in opts}))
     print("{}")
 elif op == "put-object-acl":
+    if os.environ.get("FAKE_ACL_FAIL"):
+        sys.stderr.write("An error occurred (AccessDenied) when calling the PutObjectAcl operation\n")
+        sys.exit(1)
     meta = json.loads(meta_path.read_text())
     meta["acl"] = opts["acl"]
     meta_path.write_text(json.dumps(meta))
@@ -632,6 +709,8 @@ class _FakeHttp:
         self.status, self.headers, self._body, self._pos = status, dict(headers), body, 0
 
     def read(self, n):
+        if isinstance(self._body, BaseException):  # a connection that dies part-way through the body
+            raise self._body
         chunk = self._body[self._pos:self._pos + n]
         self._pos += len(chunk)
         return chunk
@@ -692,13 +771,18 @@ def _self_test_checks():
 
         # --- inputs ---
         check(parse_codes("BSB YOR") == ["BSB", "YOR"], "codes parse")
-        for bad in ("bsb", "B", "BSB BSB", "BSB;rm", "--base-url", "X" * 17, "BS$"):
+        for bad in ("bsb", "B", "BSB BSB", "BSB;rm", "--base-url", "X" * 17, "BS$", "BSB --out-dir", "--only-text=BSB"):
             try:
                 parse_codes(bad)
                 failures.append(f"parse_codes accepted {bad!r}")
             except Refusal:
                 pass
         raises(lambda: parse_codes(""), "no translation codes", "empty codes")
+        raises(lambda: parse_codes("   "), "no translation codes", "blank codes")
+        check(parse_codes("  BSB   YOR ") == ["BSB", "YOR"], "spaces around and between codes are fine")
+        for bad in ("BSB\nYOR", "BSB\r\nYOR", "BSB\n", "\nBSB", "BSB\tYOR", "BSB\x00", "BSB\u00a0YOR", "BSB\x7f", "B\u0301SB"):
+            raises(lambda b=bad: parse_codes(b), "line break, tab or other control", f"control or non-ASCII character {bad!r}")
+        raises(lambda: parse_codes(" ".join(f"A{i:02d}" for i in range(MAX_CODES + 1))), "more than", "too many codes")
         good_url = "https://bible-translations.sfo3.cdn.digitaloceanspaces.com"
         check(check_base_url(good_url) == good_url and check_base_url("https://dl.example.org/mirror") == "https://dl.example.org/mirror",
               "good base URLs")
@@ -718,6 +802,31 @@ def _self_test_checks():
             except Refusal:
                 pass
         check(check_bucket("bible-translations") == "bible-translations", "bucket ok")
+        ep = "https://sfo3.digitaloceanspaces.com"
+        origin_ok = "https://bible-translations.sfo3.digitaloceanspaces.com"
+        check(check_space_settings(good_url, "bible-translations", ep, origin_ok) == ("bible-translations", "sfo3"),
+              "the CDN and origin hosts of the right Space agree with the bucket and region")
+        check(check_space_settings("https://downloads.example.org/bibles", "bible-translations", ep)[0] == "bible-translations",
+              "a custom hostname cannot be cross-checked and is accepted")
+        raises(lambda: check_space_settings("https://installers.sfo3.cdn.digitaloceanspaces.com", "bible-translations", ep),
+               "disagree", "a base URL on another Space")
+        raises(lambda: check_space_settings("https://bible-translations.nyc3.cdn.digitaloceanspaces.com", "bible-translations", ep),
+               "disagree", "a base URL in another region")
+        raises(lambda: check_space_settings(good_url, "installers", ep), "disagree", "a bucket that is not the base URL's Space")
+        raises(lambda: check_space_settings(good_url, "bible-translations", "https://nyc3.digitaloceanspaces.com"), "disagree",
+               "an endpoint in another region")
+        raises(lambda: check_space_settings(good_url, "bible-translations", ep, "https://installers.sfo3.digitaloceanspaces.com"),
+               "origin URL", "an origin URL on another Space")
+        check(check_space_settings("https://bible-translations.sfo3.cdn.digitaloceanspaces.com.evil.example", "bible-translations", ep)
+              [0] == "bible-translations", "a host that only CONTAINS the DigitalOcean name is a custom host, not a Space host")
+        good_key = "translations/BSB/" + "a" * 64 + ".tsv.gz"
+        check(check_key(good_key) == good_key and check_key("translations/catalog/" + "0" * 64 + ".json"), "good keys pass the gate")
+        for bad in ("translations/../" + "a" * 64, "installers/BSB/" + "a" * 64 + ".tsv.gz", good_key + "\n", "\n" + good_key,
+                    "translations/bsb/" + "a" * 64 + ".tsv.gz", "translations/BSB/" + "A" * 64 + ".tsv.gz",
+                    "translations/BSB/" + "a" * 63 + ".tsv.gz", "translations/BSB/" + "a" * 64 + ".json",
+                    "translations/catalog/" + "a" * 64 + ".tsv.gz", "translations//" + "a" * 64 + ".tsv.gz",
+                    "translations/BSB/x/" + "a" * 64 + ".tsv.gz", "/translations/BSB/" + "a" * 64 + ".tsv.gz", "", None, 5):
+            raises(lambda k=bad: check_key(k), "outside the publishing layout", f"key outside the layout {bad!r}")
         for bad in ("", "A", "Bible", "a/b", "-x-", "a" * 64):
             try:
                 check_bucket(bad)
@@ -735,6 +844,9 @@ def _self_test_checks():
         check(a_obj["key"] == f"translations/BSB/{a_obj['sha256']}.tsv.gz", "asset key is content-addressed")
         check(c_obj["key"] == f"translations/catalog/{sha256_file(out / 'catalog.json')}.json", "catalogue key is content-addressed")
         check(a_obj["cache_control"] == IMMUTABLE and a_obj["content_type"] == "application/gzip", "asset headers")
+        check(IMMUTABLE == "public, max-age=31536000, immutable" and c_obj["cache_control"] == "public, max-age=31536000, immutable",
+              "the Cache-Control value is pinned as a literal (a year, immutable): content-addressed keys never change")
+        check(c_obj["content_type"] == "application/json", "the catalogue is served as JSON")
         raises(lambda: load_release(out, ["BSB", "YOR"], base), "asked to publish", "missing requested code")
         raises(lambda: load_release(out, [], base), "asked to publish", "no code requested")
         raises(lambda: load_release(out, ["BSB"], "https://other.example"), "base_url", "base_url mismatch")
@@ -791,6 +903,40 @@ def _self_test_checks():
         (link / "bsb.tsv.gz").unlink()
         (link / "bsb.tsv.gz").symlink_to(real)
         raises(lambda: load_release(link, ["BSB"], base), "is missing", "a symlink is not a file")
+        for label, code in (("CON", "CON"), ("PRN", "PRN"), ("AUX", "AUX"), ("NUL", "NUL"), ("COM1", "COM1"), ("COM9", "COM9"),
+                            ("LPT1", "LPT1"), ("LPT9", "LPT9")):
+            p = d / ("dev-" + label)
+            _write_release(p, code=code, base=base)
+            raises(lambda q=p, c=code: load_release(q, [c], base), "reserved device name", f"Windows device name {label}")
+        for code in ("COM0", "LPT0", "COM10", "CONS", "AUXX", "BSB"):
+            p = d / ("nodev-" + code)
+            _write_release(p, code=code, base=base)
+            load_release(p, [code], base)  # not a device name on Windows (the app accepts them): must not be refused
+        for label, mutate in (("schema 2", lambda c: c.update(schema=2)), ("schema missing", lambda c: c.pop("schema")),
+                              ("schema a string", lambda c: c.update(schema="1")), ("schema true", lambda c: c.update(schema=True)),
+                              ("schema 1.0", lambda c: c.update(schema=1.0)),
+                              ("not an object", None)):
+            p = d / ("schema-" + label.replace(" ", "-"))
+            _write_release(p, base=base)
+            if mutate is None:
+                (p / "catalog.json").write_text("[]")
+            else:
+                cat = json.loads((p / "catalog.json").read_text())
+                mutate(cat)
+                (p / "catalog.json").write_text(json.dumps(cat))
+            raises(lambda q=p: load_release(q, ["BSB"], base), "schema is not", f"catalogue {label}")
+        nolist = d / "nolist"
+        _write_release(nolist, base=base)
+        cat = json.loads((nolist / "catalog.json").read_text())
+        cat["translations"] = []
+        (nolist / "catalog.json").write_text(json.dumps(cat))
+        raises(lambda: load_release(nolist, ["BSB"], base), "lists no translations", "an empty catalogue")
+        big = d / "big"
+        _write_release(big, base=base)
+        cat = json.loads((big / "catalog.json").read_text())
+        cat["pad"] = "x" * MAX_CATALOGUE_BYTES
+        (big / "catalog.json").write_text(json.dumps(cat))
+        raises(lambda: load_release(big, ["BSB"], base), "larger than", "a catalogue over the size the app reads")
         bom = d / "bom"
         _write_release(bom, base=base)
         (bom / "catalog.json").write_bytes(b"\xef\xbb\xbf" + (bom / "catalog.json").read_bytes())
@@ -805,16 +951,17 @@ def _self_test_checks():
         bucket_dir = d / "bucket"
         bucket_dir.mkdir()
         saved = {k: os.environ.get(k) for k in ("PATH", "FAKE_BUCKET_DIR", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY",
-                                                "FAKE_FAIL_PUT_AFTER", "FAKE_HEAD_ERROR", "FAKE_ETAG", "FAKE_PUT_NOOP")}
+                                                "FAKE_FAIL_PUT_AFTER", "FAKE_HEAD_ERROR", "FAKE_ETAG", "FAKE_PUT_NOOP", "FAKE_ACL_FAIL")}
         os.environ["PATH"] = f"{fake_bin}{os.pathsep}{os.environ['PATH']}"
         os.environ["FAKE_BUCKET_DIR"] = str(bucket_dir)
         os.environ.pop("FAKE_FAIL_PUT_AFTER", None)
         os.environ.pop("FAKE_HEAD_ERROR", None)
         os.environ.pop("FAKE_ETAG", None)
         os.environ.pop("FAKE_PUT_NOOP", None)
+        os.environ.pop("FAKE_ACL_FAIL", None)
 
         def up(stage, release=out, only=("BSB",), url=base):
-            ns = argparse.Namespace(stage=stage, out_dir=str(release), only=list(only), base_url=url,
+            ns = argparse.Namespace(stage=stage, out_dir=str(release), only_text=" ".join(only), base_url=url,
                                     bucket="bible-translations", endpoint="https://sfo3.digitaloceanspaces.com")
             return cmd_upload(ns)
 
@@ -840,7 +987,7 @@ def _self_test_checks():
             check(len(stored()) == 1 and stored()[0].startswith("translations__BSB__"), "the asset is uploaded under its key")
             meta = json.loads(next((bucket_dir / "objects").glob("*.meta")).read_text())
             check(meta["acl"] == "public-read" and meta["content-type"] == "application/gzip"
-                  and meta["cache-control"] == IMMUTABLE and meta["has_content_encoding"] is False,
+                  and meta["cache-control"] == "public, max-age=31536000, immutable" and meta["has_content_encoding"] is False,
                   f"object settings: {meta}")
             up("catalogue")
             check(len(stored()) == 2, "the catalogue is uploaded after the assets")
@@ -848,6 +995,18 @@ def _self_test_checks():
             up("assets")
             up("catalogue")
             check(sum(1 for c in calls() if c.startswith("put-object ")) == puts_after_first, "a second run uploads nothing")
+            # ... but it DOES re-assert public-read on every key that is already there, which is what makes an object an operator
+            # made private (a takedown) public again; the runbook says so, and this pins it so it cannot change unnoticed.
+            check(f"put-object-acl {a_obj['key']}" in calls(), "a re-run sets the ACL of an existing key")
+            asset_meta = bucket_dir / "objects" / (a_obj["key"].replace("/", "__") + ".meta")
+            made_private = json.loads(asset_meta.read_text())
+            made_private["acl"] = "private"
+            asset_meta.write_text(json.dumps(made_private))
+            up("assets")
+            check(json.loads(asset_meta.read_text())["acl"] == "public-read", "a re-run makes a privately-held object public again")
+            os.environ["FAKE_ACL_FAIL"] = "1"
+            raises(lambda: up("assets"), "put-object-acl", "a failed ACL call on an existing key is a refusal, not a success")
+            os.environ.pop("FAKE_ACL_FAIL")
 
             # an existing key whose bytes differ is never overwritten
             key_file = next(p for p in (bucket_dir / "objects").iterdir() if p.name.startswith("translations__BSB__")
@@ -903,6 +1062,13 @@ def _self_test_checks():
             raises(lambda: up("assets"), "cannot tell whether it exists", "a 403 is not an absent key")
             os.environ.pop("FAKE_HEAD_ERROR")
             raises(lambda: up("assets", pend, ("BSB",)), "not 'cleared'", "upload refuses a pending translation")
+            # the settings must agree before any aws call is made
+            n_calls = len(calls())
+            for bad_bucket in ("installers", "bible-translations-2"):
+                raises(lambda b=bad_bucket: cmd_upload(argparse.Namespace(
+                    stage="assets", out_dir=str(out), only_text="BSB", base_url="https://bible-translations.sfo3.cdn.digitaloceanspaces.com",
+                    bucket=b, endpoint="https://sfo3.digitaloceanspaces.com")), "disagree", f"upload with bucket {bad_bucket}")
+            check(len(calls()) == n_calls, "no aws call was made with disagreeing settings")
         finally:
             for k, v in saved.items():
                 if v is None:
@@ -921,16 +1087,18 @@ def _self_test_checks():
             def opener(req, timeout=None):
                 verify_calls.append((req.full_url, req.get_header("Accept-encoding")))
                 status, headers, body = script(req)
+                if status == "raise":  # the connection fails before any answer
+                    raise headers
                 if status != 200:
-                    raise urllib.error.HTTPError(req.full_url, status, "x", headers, io.BytesIO(body))
-                resp = _FakeHttp(status, headers, body)
-                return resp
+                    fp = _FakeHttp(status, {}, body) if isinstance(body, BaseException) else io.BytesIO(body)
+                    raise urllib.error.HTTPError(req.full_url, status, "x", headers, fp)
+                return _FakeHttp(status, headers, body)
             return opener
 
         def verify(script, origin=None, attempts=3, stage="assets"):
             verify_calls.clear()
             sleeps.clear()
-            ns = argparse.Namespace(stage=stage, out_dir=str(out), only=["BSB"], base_url=base, origin_url=origin,
+            ns = argparse.Namespace(stage=stage, out_dir=str(out), only_text="BSB", base_url=base, origin_url=origin,
                                     attempts=attempts)
             return cmd_verify(ns, sleep=sleeps.append, opener=make_opener(script), allow_http=False)
 
@@ -960,6 +1128,41 @@ def _self_test_checks():
         fails(lambda r: (301, {"location": "https://elsewhere.example/x"}, b""), "HTTP 301", "a redirect is not followed")
         check(len(sleeps) == 2 and sleeps == [2, 4], f"bounded retries with backoff: {sleeps}")
         fails(lambda r: (200, dict(hdr), b"x"), "after 3 attempts", "attempt count is reported", attempts=3)
+        check(len(verify_calls) == 3, f"exactly 3 fetches for 3 attempts, no more: {len(verify_calls)}")
+        fails(lambda r: (403, {}, b"denied"), "after 5 attempts", "five attempts when five are allowed", attempts=5)
+        check(len(verify_calls) == 5 and sleeps == [2, 4, 8, 16], f"5 fetches and capped backoff: {len(verify_calls)} {sleeps}")
+        fails(lambda r: (403, {}, b"denied"), "after 1 attempts", "one attempt when one is allowed", attempts=1)
+        check(len(verify_calls) == 1 and sleeps == [], "one fetch and no sleep for one attempt")
+        # the time budget stops the retries even when attempts remain
+        global VERIFY_BUDGET_SECONDS
+        budget_was = VERIFY_BUDGET_SECONDS
+        VERIFY_BUDGET_SECONDS = -1
+        try:
+            fails(lambda r: (403, {}, b"denied"), "time budget", "the verification time budget stops the retries", attempts=5)
+            check(len(verify_calls) == 1 and sleeps == [], f"one fetch once the budget is spent: {len(verify_calls)} {sleeps}")
+        finally:
+            VERIFY_BUDGET_SECONDS = budget_was
+        # a failure while the BODY is being read is a failed attempt like any other (Cody 1, Quinn Q1)
+        for exc in (ConnectionResetError("connection reset by peer"), TimeoutError("timed out"),
+                    http.client.IncompleteRead(b"abc", 100), http.client.RemoteDisconnected("closed"), OSError("network down"),
+                    http.client.BadStatusLine("junk")):
+            name = type(exc).__name__
+            fails(lambda r, e=exc: (200, dict(hdr), e), name, f"{name} while reading the body, every attempt")
+            check(len(verify_calls) == 3 and sleeps == [2, 4], f"{name}: retried like any failure ({len(verify_calls)} fetches, {sleeps})")
+            fails(lambda r, e=exc: ("raise", e, b""), name, f"{name} before any answer, every attempt")
+            check(len(verify_calls) == 3, f"{name} before any answer: retried ({len(verify_calls)} fetches)")
+            fails(lambda r, e=exc: (500, {}, e), "HTTP 500", f"{name} while reading an error body")
+            tries = {"n": 0}
+
+            def flaky(r, e=exc, t=tries):
+                t["n"] += 1
+                return (200, dict(hdr), e) if t["n"] == 1 else (200, dict(hdr), good_body)
+
+            check(verify(flaky) == 0, f"{name} once, then the object: passes after a retry")
+            check(sleeps == [2] and tries["n"] >= 2, f"{name} once: one backoff ({sleeps})")
+            # the information-only gzip probe never fails the run, whatever it throws
+            check(verify(lambda r, e=exc: (200, dict(hdr), e) if r.get_header("Accept-encoding") == "gzip" else (200, dict(hdr), good_body)) == 0,
+                  f"{name} in the gzip probe is not a failure")
         # propagation: the first two answers are 403, then it is there
         seen = {"n": 0}
 
@@ -1024,7 +1227,7 @@ def _self_test_checks():
 
         # --- plan ---
         report = d / "report"
-        ns = argparse.Namespace(out_dir=str(out), only=["BSB"], base_url=base, report_dir=str(report))
+        ns = argparse.Namespace(out_dir=str(out), only_text="BSB", base_url=base, report_dir=str(report))
         check(cmd_plan(ns) == 0 and sorted(p.name for p in report.iterdir()) == ["catalog.app.json", "plan.json", "summary.md"],
               "plan writes its three report files")
         app = (report / "catalog.app.json").read_text()
@@ -1037,6 +1240,23 @@ def _self_test_checks():
         with contextlib.redirect_stderr(io.StringIO()):
             check(main(["check-inputs", "--only-text=bsb", f"--base-url={good_url}"]) == 1, "main reports a refusal as exit 1")
             check(main(["check-inputs", "--only-text=BSB", "--base-url=http://x.example"]) == 1, "an http base URL exits 1")
+            check(main(["check-inputs", "--only-text=BSB\nYOR", f"--base-url={good_url}"]) == 1, "a newline in the codes exits 1")
+            check(main(["check-inputs", "--only-text=BSB", f"--base-url={good_url}", "--bucket=installers",
+                        "--endpoint=https://sfo3.digitaloceanspaces.com"]) == 1, "a bucket that is not the base URL's Space exits 1")
+            # an option-shaped word never reaches argparse as an option: it is one value of --only-text, and it is refused as a code
+            check(main(["plan", f"--out-dir={out}", "--only-text=BSB --out-dir /elsewhere", f"--base-url={base}",
+                        f"--report-dir={d / 'r2'}"]) == 1, "option-shaped words inside --only-text are refused")
+            check(not (d / "r2").exists(), "and nothing was written for them")
+        raises(lambda: cmd_plan(argparse.Namespace(out_dir=str(out), only_text="BSB --out-dir /elsewhere", base_url=base,
+                                                   report_dir=str(d / "r3"))), "is not a translation code",
+               "plan validates the codes itself, before it reads anything")
+        raises(lambda: cmd_plan(argparse.Namespace(out_dir=str(out), only_text="BSB\nYOR", base_url=base,
+                                                   report_dir=str(d / "r3"))), "line break",
+               "plan refuses a line break in the codes")
+        with contextlib.redirect_stdout(io.StringIO()) as shown:
+            check(main(["codes", "--only-text=BSB  YOR"]) == 0 and shown.getvalue() == "BSB YOR\n", "the codes command prints them on one line")
+        with contextlib.redirect_stderr(io.StringIO()):
+            check(main(["codes", "--only-text=BSB\nYOR"]) == 1, "the codes command refuses a line break")
 
     return failures
 
@@ -1056,9 +1276,12 @@ def main(argv=None):
     p = sub.add_parser("fetch-bundled", help="download the five bundled Bibles' USFM zips for --verify-bundled")
     p.add_argument("--work-dir", required=True)
 
-    def common(p, upload=False):
+    p = sub.add_parser("codes", help="validate the codes and print them on one line")
+    p.add_argument("--only-text", required=True)
+
+    def common(p):
         p.add_argument("--out-dir", required=True, help="the converter's output folder")
-        p.add_argument("--only", nargs="+", required=True, metavar="CODE")
+        p.add_argument("--only-text", required=True, help="the codes as ONE argument, for example 'BSB'")
         p.add_argument("--base-url", required=True)
 
     p = sub.add_parser("plan", help="check the build against its catalogue and print what would be published")
@@ -1080,8 +1303,8 @@ def main(argv=None):
     args = ap.parse_args(argv)
     if args.self_test:
         return self_test()
-    handlers = {"check-inputs": cmd_check_inputs, "fetch-bundled": cmd_fetch_bundled, "plan": cmd_plan,
-                "upload": cmd_upload, "verify": cmd_verify}
+    handlers = {"check-inputs": cmd_check_inputs, "codes": cmd_codes, "fetch-bundled": cmd_fetch_bundled,
+                "plan": cmd_plan, "upload": cmd_upload, "verify": cmd_verify}
     if args.cmd not in handlers:
         ap.error("a command is required")
     if args.cmd == "verify" and not 1 <= args.attempts <= 10:
