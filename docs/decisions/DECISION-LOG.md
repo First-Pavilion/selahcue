@@ -73,13 +73,13 @@ What *does* need an exception is the user-facing half. Under the absolute collap
 
 ---
 
-## DEC-016 — ProPresenter UI adoption posture: adopt/adapt/reject per the Operator UI PRD (PROPOSED)
+## DEC-016 — ProPresenter UI adoption posture: adopt/adapt/reject per the Operator UI PRD (DECIDED)
 
-- **Date:** 2026-08-28
+- **Date:** 2026-08-28 (proposed) · 2026-10-04 (decided)
 - **Stage:** Owner-commissioned ProPresenter UI report + PRD (pre-ticket; Diego cuts ClickUp tickets only after the owner gate)
-- **Decided by:** PROPOSED by Product Manager (Priya) — **awaiting owner gate; no owner decision is recorded here**
+- **Decided by:** User (product owner). Proposed by Product Manager (Priya) on 2026-08-28. The answers to OQ-1…OQ-9 are the owner's: written in the owner's comment on the gate ticket [86ak7kgja](https://app.clickup.com/t/86ak7kgja) on 2026-10-04 ("all questions has the default as the answer"; OQ-3 amended) and confirmed by the owner in chat the same day. Accepting the posture below and the two ticket-level rulings were drafted by Claude at the owner's instruction in chat and approved by the owner with that plan.
 - **Type:** Product scope posture (operator console UI)
-- **Status:** PROPOSED
+- **Status:** DECIDED
 
 **Proposal.** SelahCue selectively imports ProPresenter interaction patterns per `docs/product/prds/SelahCue-Operator-UI-PRD.md` §13: **8 adopt · 15 adapt · 14 reject · 5 already-ship**, grounded in the cited evidence report `docs/research/PROPRESENTER-UI-RESEARCH.md` (Rowan, 2026-08-28) and the owner's two annotated screenshots. First slice = the owner-flagged slide-grid view-density cluster + thumbnail-size slider, plan section groups + durations, attention badges, song group colours + hotkeys, and re-semanticised per-screen status.
 
@@ -90,9 +90,35 @@ What *does* need an exception is the user-facing half. Under the absolute collap
 2. **Colour-semantics guard** — ProPresenter's screen indicators use red=off; SelahCue's UX-CANONICAL uses red=live. No imported pattern may carry the reference product's colour semantics.
 3. **Evidence grades** — the stacked "Show" view, per-presentation header icon roster, countdown badges and preview audio meter are owner-screenshot-derived and vendor-undocumented; group hotkeys are Pro6-documented only. Each is adopted on SelahCue's own merits and designed from SelahCue's model, not cloned.
 
-**Open questions raised to the owner (PRD §28, not decided):** OQ-1 default density; OQ-2 arrangements priority; OQ-3 content-pack marketplace; OQ-4 audio bin; OQ-5 screen-status semantics; OQ-6 stacked-view default; OQ-7 hotkey assignment; **OQ-8 staging invariant vs the reference's click-to-live (recommend keeping the invariant); OQ-9 "Presenter One" identity (product not found; WorshipTools Presenter substituted).**
+**Decision (2026-10-04).** The posture above stands as proposed: PRD §13, **8 adopt · 15 adapt · 14 reject · 5 already-ship**. Every ProPresenter pattern is adopted on SelahCue's own model, never cloned, and no imported pattern may carry the reference product's colour semantics.
 
-**Reversibility.** Fully reversible pre-gate: the PRD is a draft, no tickets exist, no code is touched.
+**Answers to the open questions (PRD §28).** The owner's answer for every question still open on 2026-10-04 is the PRD's stated default.
+
+| OQ | Question | Answer | Recorded |
+|---|---|---|---|
+| OQ-1 | Default view density | Grid at the middle tier (step 7, 6 columns); a one-constant change per surface if it is revisited | owner, 2026-10-04 (default) |
+| OQ-2 | Arrangements priority | FR-212 stays LATER | owner, 2026-10-04 (default) |
+| OQ-3 | Content marketplace | **Yes, wanted, in V2.** The owner asked on 2026-10-04 for a low-priority "SelahContent" ticket ([17tnw2b2k21](https://app.clickup.com/t/17tnw2b2k21)). Not in this epic's scope and not sequenced into its MVP | owner, 2026-08-28 and 2026-10-04 |
+| OQ-4 | Audio bin | Stays out until the DEC-003 media engine lands | owner, 2026-10-04 (default) |
+| OQ-5 | Screen-status semantics | The PRD mapping as written: red dot = the screen is rendering live content, struck through = disabled | owner, 2026-10-04 (default) |
+| OQ-6 | Stacked view default | Opt-in first | owner, 2026-10-04 (default) |
+| OQ-7 | Group hotkey letters | Auto-assigned only in v1 (the Proclaim model) | owner, 2026-10-04 (default) |
+| OQ-8 | Staging invariant vs click-to-live | Keep the staging invariant and add a double-click accelerator | owner, 2026-08-28 |
+| OQ-9 | "Presenter One" identity | The WorshipTools Presenter substitution stands | owner, 2026-10-04 (default) |
+
+**Ticket-level rulings (drafted by Claude at the owner's instruction, approved with the plan, 2026-10-04):**
+- **Attention badges (UI-A2, [86ak7kgnm](https://app.clickup.com/t/86ak7kgnm)):** the "over-long text" badge is descoped from the first slice, because no detection for it exists on main. The three attention types that have real detection ship (missing media, missing presentation, unassigned output). A later ticket would ask the engine for a ShrinkToFit-floor signal. The badge stays specified.
+- **Wording:** keep the labels operators already see in the shipped console; do not introduce a second PREVIEW/LIVE versus STAGED/ON AIR vocabulary.
+
+**Implementation conditions carried from the specs (not decisions):**
+- FR-214 (OQ-5): `SCREEN-STATUS-spec.md` §7 F2 asks that the per-screen live signal be verified against [86ak4xxwm](https://app.clickup.com/t/86ak4xxwm) before the build is sized. The shipped status pill (`dist/app.js`, `statusPillFor`) uses "LIVE" to mean the output is healthy and assigned, not that on-air content is playing, so the new meaning needs a different word or the old pill needs re-labelling. If the signal does not exist, the spec's own fallback is enabled / closed / disabled / fault with LIVE added when the signal arrives.
+- FR-211 (OQ-7): `B` can never mean Bridge, because it is Blackout.
+
+**Flag for Product (not decided here).** `DOUBLE-CLICK-GO-LIVE-proposal.md` found the double-click accelerator already ships three different ways. Two of them, the console Slides tab and the Presentations Library grid, write straight to Live without verifying the commit. Only the scripture list is hardened. This bears on the staging invariant and needs an FR of its own.
+
+**Gate state.** Scope note from 2026-08-29: FR-202 (duration roll-ups) shipped under epic 86ajxxqtp (PRs #12 and #13), outside this gate. FR-201, FR-204, FR-205, FR-206, FR-210, FR-211 and FR-214 have specs and Figma frames and no implementation on main as of 2026-10-04. The five design specs still say "DEC-016 remains PROPOSED"; they have not been edited and should be refreshed when each ticket is next touched.
+
+**Reversibility.** Reversible: this is a scope posture. The work it gates is design-only so far, and the one slice that shipped (FR-202) did so independently of it.
 
 ---
 

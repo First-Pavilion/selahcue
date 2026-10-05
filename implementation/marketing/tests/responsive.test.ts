@@ -422,7 +422,6 @@ describe('sideways-scrolling table wrappers are keyboard focusable', () => {
     // links depends on the data -- so the wrapper itself must be focusable.
     const files = [
       'components/DataTable.vue',
-      'views/PricingView.vue',
       'views/AccountView.vue',
       'views/admin/AdminCustomerDetailView.vue',
     ]

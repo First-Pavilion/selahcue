@@ -180,184 +180,27 @@ def hero_lead_ok(page, name: str, figma_height: float) -> None:
 
 
 def check_pricing(page, base: str, engine: str) -> None:
+    """ClickUp 17tnw2b0x3h: the page draws no plan, price, comparison table, billing toggle or FAQ. Plan names, prices and limits are
+    the API catalogue's data, so until it serves them the page says "Plans and prices have not been published yet." and nothing else."""
     print(f"[{engine}] pricing")
     go(page, base, "/pricing")
     headings_ok(page, "pricing")
-    hero_lead_ok(page, "pricing", 54)  # Figma 483:139
 
-    # Figma 483:149: three 400px cards 24 apart from x=96; Pro (2px border) is taller, tops aligned.
-    cards = rects(page, ".pricing-card")
-    check("pricing: three plan cards", len(cards) == 3, str(len(cards)))
-    if len(cards) == 3:
-        for i, (c, x) in enumerate(zip(cards, (96, 520, 944))):
-            near(f"pricing: card {i + 1} is 400 wide", c["w"], 400)
-            near(f"pricing: card {i + 1} starts at x={x}", c["x"], x)
-        check("pricing: card tops are equal", len({round(c['y']) for c in cards}) == 1, str([c["y"] for c in cards]))
-        check("pricing: Pro is taller than Free (top-aligned grid, as drawn)", cards[1]["h"] > cards[0]["h"], str([c["h"] for c in cards]))
+    for selector, what in (
+        (".pricing-card", "a plan card"),
+        (".pricing-grid", "a plan grid"),
+        (".comparison-table", "a comparison table"),
+        ("[role=radiogroup]", "a billing toggle"),
+        (".faq-section", "a FAQ"),
+        ("main .ui-button", "a plan button"),
+    ):
+        check(f"pricing: no {what}", page.query_selector(selector) is None, selector)
 
     text = page.inner_text("main") if page.query_selector("main") else page.inner_text("body")
     check("pricing: no price figure is shown", "$" not in text, "a dollar sign is on the page")
-
-    # Plan buttons: Free to /download, Platinum to /contact, Pro disabled and out of the tab order.
-    buttons = page.evaluate(
-        """() => [...document.querySelectorAll('.pricing-card .ui-button')].map((b) => ({
-          tag: b.tagName.toLowerCase(), href: b.getAttribute('href'), disabled: b.disabled === true,
-          text: b.innerText.trim(), height: b.getBoundingClientRect().height, width: b.getBoundingClientRect().width}))"""
-    )
-    check("pricing: Free goes to /download", buttons[0]["href"] == "/download", str(buttons[0]))
-    check("pricing: Pro is a disabled button", buttons[1]["tag"] == "button" and buttons[1]["disabled"], str(buttons[1]))
-    # /contact shows "Message Received" without sending anything (contact-04, -06, -07, 17tnw2b0x3h), so Platinum
-    # has no destination until that form sends: a disabled button, like Pro (review round 1, Cody B1).
-    check("pricing: Platinum is a disabled button (the contact form does not send)", buttons[2]["tag"] == "button" and buttons[2]["disabled"], str(buttons[2]))
-    check("pricing: no plan button links to /contact", all(b["href"] != "/contact" for b in buttons), str(buttons))
-    near("pricing: plan button is 340 wide (Figma 483:157)", buttons[0]["width"], 340)
-
-    # The billing toggle: a named radio group, one tab stop, arrows move choice AND focus.
-    group = page.query_selector("[role=radiogroup]")
-    check("pricing: the billing toggle is a radio group with a name", bool(group and group.get_attribute("aria-label")), "")
-    pill = rect(page, "[role=radiogroup]")
-    if pill:
-        near("pricing: the pill is 42 tall (Figma 483:143)", pill["h"], 42)
-        near("pricing: the pill sits at y=399", pill["y"], 399, 2)
-    seg = rects(page, "[role=radio]")
-    if seg:
-        near("pricing: a segment is 34 tall (Figma 483:145)", seg[0]["h"], 34)
-
-    def state():
-        return page.evaluate(
-            """() => ({checked: [...document.querySelectorAll('[role=radio]')].map((r) => r.getAttribute('aria-checked')),
-                      tab: [...document.querySelectorAll('[role=radio]')].map((r) => r.tabIndex),
-                      active: document.activeElement && document.activeElement.textContent.trim(),
-                      note: (document.querySelector('.billing-note') || {}).textContent || ''})"""
-        )
-
-    # The live note is in the accessibility tree from the first render, only invisible (a region that is
-    # display:none until its text arrives is often not announced: Cody N6).
-    note = page.evaluate(
-        """() => { const n = document.querySelector('.billing-note'); const cs = getComputedStyle(n);
-                    return {role: n.getAttribute('role'), live: n.getAttribute('aria-live'), display: cs.display, visibility: cs.visibility, text: n.textContent}; }"""
-    )
-    check("pricing: the empty billing note is rendered (not display: none) and is a polite status region", note["role"] == "status" and note["live"] == "polite" and note["display"] != "none" and note["visibility"] == "visible" and note["text"] == "", str(note))
-    s = state()
-    check("pricing: Monthly is the drawn state", s["checked"] == ["true", "false"], str(s))
-    check("pricing: only the checked radio is in the tab order", s["tab"] == [0, -1], str(s))
-    # A chord is the browser's, not the toggle's (Quinn N1): Alt+Left and Alt+Right are Back and Forward, Cmd+Left and
-    # Cmd+Right the same on a Mac, Ctrl+Home and Ctrl+End jump to the page's ends, Shift+arrow extends a selection.
-    # Each must reach the browser: not default-prevented, and the choice unchanged.
-    page.focus("[role=radio][aria-checked=true]")
-    chords = page.evaluate(
-        """() => {
-          const out = [];
-          const el = document.querySelector('[role=radio][aria-checked=true]');
-          const checked = () => [...document.querySelectorAll('[role=radio]')].map((r) => r.getAttribute('aria-checked')).join();
-          for (const [key, mod] of [['ArrowRight', 'altKey'], ['ArrowLeft', 'altKey'], ['ArrowRight', 'metaKey'], ['ArrowLeft', 'metaKey'],
-                                    ['Home', 'ctrlKey'], ['End', 'ctrlKey'], ['ArrowRight', 'shiftKey'], ['ArrowLeft', 'shiftKey']]) {
-            const ev = new KeyboardEvent('keydown', {key, bubbles: true, cancelable: true, [mod]: true});
-            el.dispatchEvent(ev);
-            out.push({chord: mod + '+' + key, prevented: ev.defaultPrevented, checked: checked()});
-          }
-          return out;
-        }"""
-    )
-    for c in chords:
-        check(f"pricing: {c['chord']} is left to the browser (not prevented, choice unchanged)", (not c["prevented"]) and c["checked"] == "true,false", str(c))
-    page.focus("[role=radio][aria-checked=true]")
-    page.keyboard.press("ArrowRight")
-    ring = page.evaluate("(() => { const cs = getComputedStyle(document.activeElement); return [cs.outlineStyle, cs.outlineWidth]; })()")
-    check("pricing: the focused radio shows a 2px ring after a key press (keyboard focus is visible)", ring == ["solid", "2px"], str(ring))
-    s = state()
-    check("pricing: ArrowRight chooses Annual and moves focus to it", s["checked"] == ["false", "true"] and s["active"] == "Annual", str(s))
-    check("pricing: choosing Annual says it is not available, and shows no price", "not available yet" in s["note"].lower(), str(s))
-    page.keyboard.press("ArrowRight")
-    s = state()
-    check("pricing: ArrowRight wraps to Monthly", s["checked"] == ["true", "false"] and s["active"] == "Monthly", str(s))
-    page.keyboard.press("End")
-    check("pricing: End goes to the last option", state()["checked"] == ["false", "true"], str(state()))
-    page.keyboard.press("Home")
-    check("pricing: Home goes to the first option", state()["checked"] == ["true", "false"], str(state()))
-    page.keyboard.press("ArrowLeft")
-    check("pricing: ArrowLeft wraps to the last option", state()["checked"] == ["false", "true"], str(state()))
-    after = page.evaluate("document.body.innerText")
-    check("pricing: choosing Annual still shows no price", "$" not in after, "")
-    page.keyboard.press("Home")
-
-    # Tab order: the toggle is ONE stop, and the disabled Pro button is skipped.
-    page.focus("[role=radio][aria-checked=true]")
-    stops = []
-    for _ in range(4):
-        page.keyboard.press(TAB)
-        stops.append(page.evaluate("(document.activeElement.getAttribute('aria-label') || document.activeElement.innerText || '').trim().slice(0, 40)"))
-    check("pricing: Tab goes to Free, then skips Pro and Platinum (both disabled) to the table", stops[0] == "Download free" and "Plan comparison" in stops[1] and "Talk to us" not in stops and "Get Pro" not in stops, str(stops))
-
-    # The comparison card: 1040 wide at x=200, 45px header band, 48px rows (Figma 484:126/127/135).
-    card = rect(page, ".comparison-card")
-    if card:
-        near("pricing: the comparison card is 1040 wide", card["w"], 1040)
-        near("pricing: the comparison card starts at x=200", card["x"], 200)
-    head = rect(page, ".comparison-table thead tr")
-    if head:
-        near("pricing: the header band is 45 tall", head["h"], 45)
-    body_rows = rects(page, ".comparison-table tbody tr")
-    check("pricing: the table has body rows", len(body_rows) >= 6, str(len(body_rows)))
-    for i, r in enumerate(body_rows):
-        near(f"pricing: table row {i + 1} is 48 tall", r["h"], 48)
-    ths = rects(page, ".comparison-table thead th")
-    if len(ths) == 4:
-        near("pricing: the Free column is 150 wide (Figma 484:129)", ths[1]["w"], 150)
-    ticks = page.evaluate(
-        """() => [...document.querySelectorAll('.comparison-table td svg.yes')].map((s) => getComputedStyle(s).color)"""
-    )
-    check("pricing: a tick is drawn in the success green, not the inherited white", bool(ticks) and all(c == "rgb(53, 192, 138)" for c in ticks), str(set(ticks)))
-
-
-def check_pricing_table_pin_and_note(page, base: str, engine: str) -> None:
-    """Review round 3 (Vera): the pinned PLANS heading on a phone, and a billing note that moves nothing."""
-    print(f"[{engine}] pricing: pinned heading and reserved note")
-    go(page, base, "/pricing", width=375)
-    # Scroll the table all the way right, then read where everything sits.
-    state = page.evaluate(
-        """() => {
-          const scroller = document.querySelector('.table-scroll');
-          // On screen first: elementFromPoint answers null for a point below the fold.
-          document.querySelector('.comparison-table thead').scrollIntoView({block: 'center'});
-          scroller.scrollLeft = scroller.scrollWidth;
-          const box = (el) => { const r = el.getBoundingClientRect(); return {l: r.left, r: r.right, t: r.top, b: r.bottom, w: r.width}; };
-          const head = document.querySelector('.comparison-table thead th.plans-label');
-          const rowLabel = document.querySelector('.comparison-table tbody th');
-          const heads = [...document.querySelectorAll('.comparison-table thead th:not(.plans-label)')];
-          const cells = [...document.querySelectorAll('.comparison-table tbody tr:first-child td')];
-          const hb = box(head);
-          const hit = document.elementFromPoint((hb.l + hb.r) / 2, (hb.t + hb.b) / 2);
-          return {
-            scrolled: scroller.scrollLeft, scroller: box(scroller), head: hb, rowLabel: box(rowLabel),
-            heads: heads.map(box), cells: cells.map(box),
-            hitIsHeading: !!hit && !!hit.closest('th.plans-label'),
-          };
-        }"""
-    )
-    check("pricing at 375: the table really scrolled sideways for this check", state["scrolled"] > 50, str(state["scrolled"]))
-    near("pricing at 375: the PLANS heading cell stays pinned at the card's left edge", state["head"]["l"], state["scroller"]["l"], 1.5)
-    near("pricing at 375: the pinned row labels are at the same left edge", state["rowLabel"]["l"], state["scroller"]["l"], 1.5)
-    near("pricing at 375: the heading cell is as wide as the row-label column under it", state["head"]["w"], state["rowLabel"]["w"], 1)
-    check("pricing at 375: the pinned heading cell is on top (the Free and Pro headings do not slide over it)", state["hitIsHeading"], str(state["head"]))
-    for i, (h, c) in enumerate(zip(state["heads"], state["cells"])):
-        near(f"pricing at 375: column heading {i + 1} stays aligned with its cells", (h["l"] + h["r"]) / 2, (c["l"] + c["r"]) / 2, 1)
-
-    # Choosing Annual must move nothing at any width: record the cards' top before and after, and after going back.
-    for width in (375, 768, 1024, 1199, 1200, 1440):
-        go(page, base, "/pricing", width=width)
-        top = lambda: page.evaluate("document.querySelector('.pricing-grid').getBoundingClientRect().top + scrollY")  # noqa: E731
-        before = top()
-        page.locator("[role=radio]").nth(1).click()
-        page.wait_for_timeout(200)
-        note = page.evaluate("document.querySelector('.billing-note').textContent")
-        after = top()
-        page.locator("[role=radio]").nth(0).click()
-        page.wait_for_timeout(200)
-        back = top()
-        check(f"pricing at {width}: choosing Annual shows the note", "not available yet" in note.lower(), note)
-        near(f"pricing at {width}: choosing Annual moves the plan cards by nothing", after, before, 0.5)
-        near(f"pricing at {width}: choosing Monthly again moves them by nothing", back, before, 0.5)
+    check("pricing: the empty state says plans and prices are not published yet", page.query_selector(".plans-empty") is not None and "have not been published yet" in page.inner_text(".plans-empty"), "")
+    levels = page.evaluate("[...document.querySelectorAll('main h1, main h2')].map((h) => h.tagName)")
+    check("pricing: the page's own headings are one h1 and one h2 (so the footer h3s do not follow an h1)", levels == ["H1", "H2"], str(levels))
 
 
 def check_features(page, base: str, engine: str) -> None:
@@ -504,13 +347,6 @@ def check_no_sideways_scroll(page, base: str, engine: str) -> None:
             go(page, base, route, width=width)
             over = page.evaluate("document.documentElement.scrollWidth - window.innerWidth")
             check(f"{route} at {width}: no horizontal page scroll", over <= 0, f"{over}px wider than the window")
-    # Pro first below 1200 (design 8d), three across above it: the responsive sweep reads the same.
-    go(page, base, "/pricing", width=768)
-    first_popular = page.evaluate("[...document.querySelectorAll('.pricing-card')].sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top)[0].classList.contains('popular')")
-    check("pricing at 768: the popular plan leads", first_popular, "")
-    go(page, base, "/pricing", width=375)
-    scroller = page.evaluate("(() => { const s = document.querySelector('.table-scroll'); return {sw: s.scrollWidth, cw: s.clientWidth}; })()")
-    check("pricing at 375: the table scrolls inside its own card, never the page", scroller["sw"] >= scroller["cw"], str(scroller))
 
 
 def main() -> int:
@@ -565,7 +401,6 @@ def main() -> int:
                 page.on("pageerror", lambda e: errors.append(str(e)))
                 try:
                     check_pricing(page, base, engine)
-                    check_pricing_table_pin_and_note(page, base, engine)
                     check_features(page, base, engine)
                     check_download(page, base, engine)
                     check_about(page, base, engine)

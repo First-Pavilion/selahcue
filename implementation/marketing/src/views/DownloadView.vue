@@ -138,7 +138,7 @@ import SrOnly from '@/components/core/SrOnly.vue'
           <ToneChip kind="row" tone="brand">MOBILE CONTROL</ToneChip>
           <h2>Control from your phone</h2>
           <p class="mobile-lead">
-            The SelahCue Controller pairs with your desktop over your local network — scan a QR code and you're connected. It's a companion remote: your desktop always stays the authority, even if the phone drops off Wi-Fi.
+            The SelahCue Controller pairs with your desktop over your local network — scan a QR code, approve the device on the desktop, and you're paired. It's a companion remote: your desktop always stays the authority, even if the phone drops off Wi-Fi.
           </p>
           <ul class="mobile-bullets">
             <li>
@@ -208,12 +208,12 @@ import SrOnly from '@/components/core/SrOnly.vue'
           <div class="step-card">
             <span class="step-num">02</span>
             <h3>Build your first plan</h3>
-            <p>Add scripture, songs and timers to a service plan and pick your outputs.</p>
+            <p>Add scripture and presentations to a service plan and pick your outputs.</p>
           </div>
           <div class="step-card">
             <span class="step-num">03</span>
             <h3>Go live &amp; pair your phone</h3>
-            <p>Hit Go Live, then scan the QR code to pair your phone as a remote.</p>
+            <p>Go live, and pair your phone from Network & Mobile in Settings.</p>
           </div>
         </div>
       </div>

@@ -150,9 +150,7 @@ MEASURE_JS = r"""
   const steps = sec('steps-section');
   out.steps = { id: steps.id, pad: pad(steps), cards: qa('.step-card', steps).map((c) => box(c)), marker: font(q('.step-marker', steps)), markerBg: cs(q('.step-marker', steps)).backgroundColor, markerR: cs(q('.step-marker', steps)).borderRadius, title: font(q('.step-title', steps)), body: font(q('.step-body', steps)) };
   const pr = sec('pricing-section');
-  out.pricing = { pad: pad(pr), cards: qa('.pricing-card', pr).map((c) => box(c)), h2: font(q('h2', pr)) };
-  const te = sec('testimonials-section');
-  out.testimonials = { bg: cs(te).backgroundColor, bt: cs(te).borderTopWidth, pad: pad(te), cards: qa('.testimonial-card', te).map((c) => ({ ...box(c), bg: cs(c).backgroundColor })), h2: font(q('h2', te)), quote: font(q('blockquote', te)), name: font(q('.author-name', te)), role: font(q('.author-role', te)), avatars: qa('.avatar-circle', te).map((a) => ({ bg: cs(a).backgroundColor, color: cs(a).color, w: box(a).w })) };
+  out.pricing = { pad: pad(pr), cards: qa('.pricing-card', pr).length, h2: font(q('h2', pr)), sub: q('.section-subtitle', pr) ? q('.section-subtitle', pr).textContent.trim() : null };
   const faq = sec('faq-section');
   out.faq = { pad: pad(faq), h2: font(q('h2', faq)), list: box(q('.faq-wrapper', faq)), q: font(q('.faq-question', faq)), a: font(q('.faq-answer p', faq)) };
   const cta = sec('final-cta-section');
@@ -366,24 +364,12 @@ def run_engine(p, engine_name: str) -> Run:
         r.eq((s["title"]["size"], s["title"]["weight"]), ("21px", "600"), "step title 21/600 (476:133)")
         r.eq((s["body"]["size"], s["body"]["lh"]), ("15px", "23px"), "step body 15/23 (476:134)")
 
-        # 477:124: padding 90; cards 400 wide, 24 apart.
+        # 477:124: padding 90. The plan cards are gone (ClickUp 17tnw2b0x3h): plan names and prices come from the API, so the
+        # section is its heading and one honest line. The testimonials section is gone too: its quotes were invented.
         pr = m["pricing"]
         r.eq(pr["pad"], {"top": 90, "bottom": 90}, "Pricing padding 90 (477:124)")
-        r.check(all(abs(c["w"] - 400) <= 0.5 for c in pr["cards"]), f"plan cards are 400 wide (477:130): {[c['w'] for c in pr['cards']]}")
-        r.near(pr["cards"][1]["x"] - (pr["cards"][0]["x"] + pr["cards"][0]["w"]), 24, 0.5, "plan cards are 24 apart (477:129)")
-
-        # 478:124: a full-width band; cards 400 on base, radius 16, 24 apart; avatar 42; quote 17/26; title 38.
-        t = m["testimonials"]
-        r.eq((t["bg"], t["bt"]), (SURFACE, "1px"), "Testimonials band fill and edge (478:124)")
-        r.check(all(c["bg"] == BASE for c in t["cards"]), "testimonial cards sit on the base ground (478:129)")
-        r.check(all(abs(c["w"] - 400) <= 0.5 for c in t["cards"]), f"testimonial cards are 400 wide (478:129): {[c['w'] for c in t['cards']]}")
-        r.eq((t["h2"]["size"], t["h2"]["weight"]), ("38px", "700"), "Testimonials title 38 Bold (478:126)")
-        r.eq((t["quote"]["size"], t["quote"]["lh"], t["quote"]["color"]), ("17px", "26px", TEXT), "quote 17/26 in the primary ink (478:130)")
-        r.eq((t["name"]["size"], t["name"]["weight"]), ("14.5px", "600"), "name 14.5/600 (478:133)")
-        r.eq((t["role"]["size"], t["role"]["color"]), ("12.5px", SECONDARY), "role 12.5 muted (478:135)")
-        r.check(all(abs(a["w"] - 42) <= 0.5 for a in t["avatars"]), "avatars are 42px (478:132)")
-        # The dark initials on the green and gold fills (Figma's white is 2.3:1 and 2.0:1; audit home-44).
-        r.eq([a["color"] for a in t["avatars"]], ["rgb(255, 255, 255)", BASE, BASE], "initials: white on the brand fill, dark on green and gold")
+        r.eq(pr["cards"], 0, "the pricing section draws no plan card")
+        r.eq(pr["sub"], "Plans and prices have not been published yet.", "the pricing section says plans and prices are not published yet")
 
         # 478:153: padding 90; title 38; the list 780 wide.
         q = m["faq"]
@@ -397,7 +383,9 @@ def run_engine(p, engine_name: str) -> Run:
         c = m["cta"]
         r.eq(c["pad"], {"top": 90, "bottom": 90}, "Final CTA padding 90 (479:124)")
         r.near(c["card"]["w"], 1248, 0.5, "final CTA card is 1248 wide (479:125)")
-        r.near(c["card"]["h"], 337, 1, "final CTA card is 337 tall (479:125)")
+        # Figma draws a two-line subtitle (337 tall). The copy that carried "Cancel anytime" and "go live this Sunday" is gone
+        # (ClickUp 17tnw2b0x3h) and the honest sentence fits one 28px line, so the card is 28px shorter: 309.
+        r.near(c["card"]["h"], 309, 1, "final CTA card is 309 tall: Figma's 337 less the second subtitle line (479:125)")
         r.eq((c["radius"], c["shadow"]), ("24px", "none"), "final CTA card radius 24 and no shadow (479:125)")
         r.check(c["bgImage"].startswith("linear-gradient"), f"final CTA card is the gradient token: {c['bgImage']}")
         r.eq((c["h2"]["size"], c["h2"]["lh"], c["h2"]["weight"]), ("44px", "50px", "700"), "final CTA title 44/50 Bold (479:127)")
@@ -435,10 +423,9 @@ def run_engine(p, engine_name: str) -> Run:
         labels = [s["label"] for s in in_main]
         want = [
             "Download free",  # hero (the disabled demo button is skipped)
-            "Download free",  # the Free plan (the Pro and Church buttons are disabled, skipped)
             "Do I need an internet connection?",
             "Which platforms are supported?",
-            "Can I use my own songs, slides, and designs?",
+            "Can I use my own slides and designs?",
             "What is NDI, and do I need it?",
             "How does billing work?",
             "Download free",  # the final band

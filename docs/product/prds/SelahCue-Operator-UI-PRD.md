@@ -319,6 +319,8 @@ Nothing here bundles third-party content. The ProContent rejection (table #28) i
 
 ## 28. Open questions (owner decisions — raised, not decided)
 
+> **Update 2026-10-04:** answered. DEC-016 is DECIDED and records the owner's answer to each question below (the PRD defaults, with OQ-3 amended: a marketplace is wanted in V2). See `docs/decisions/DECISION-LOG.md`, DEC-016. The questions are kept as written for the record.
+
 - **OQ-1 — Default view density:** should Grid remain the default for new operators, and at which thumbnail tier? (FR-205/206 ship with grid + middle tier unless directed.)
 - **OQ-2 — Arrangements priority:** FR-212 is scoped LATER; the owner may want it pulled into R2 alongside FR-213 (they share the song-model work). Worship-heavy churches feel this gap most.
 - **OQ-3 — Content marketplace:** ProContent is rejected as a UI ticket, but does SelahCue ever want a curated (licensed) media pack store as a commercial feature? Platform-PRD territory if yes.
