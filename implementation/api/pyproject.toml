@@ -20,7 +20,7 @@ dependencies = [
   #   strawberry-graphql==0.328.0       highest ceiling <=0.315.6 (fixed 0.315.7)
   #   graphql-core==3.3.0              0 advisories exist for this package
   #   cross-web==0.7.0                  0 advisories exist for this package
-  #   cryptography==50.0.1              highest ceiling <50.0.0 (fixed 50.0.0)
+  #   cryptography==50.0.2              highest ceiling <50.0.0 (fixed 50.0.0)
   #   celery[redis]==5.6.3              highest ceiling <5.2.2 (fixed 5.2.2)
   #
   # strawberry-graphql, graphql-core, and cross-web are undeclared transitive
@@ -35,7 +35,7 @@ dependencies = [
   # Ed25519 for the signed offline entitlement envelope (DEC-004). Django ships no
   # asymmetric primitives. 50.0.1 is PyPI's current latest — a wheel-only OpenSSL
   # rebuild on top of 50.0.0, where the advisory ceiling's fix actually lands.
-  "cryptography==50.0.1",
+  "cryptography==50.0.2",
   # Async task runtime: transactional email (worker) + revocation cascade and expiry
   # sweeps (beat). Redis is the broker; see CELERY_BROKER_URL in settings.
   "celery[redis]==5.6.3",
