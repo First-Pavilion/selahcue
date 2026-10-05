@@ -220,8 +220,14 @@ jobs:
       # right and the threshold at 0 it must take the skip: exit 0, say "nothing deleted", and
       # leave every directory in place; the last lines prove none was deleted. The deletion
       # path itself is tested only in a throwaway container with fake directories, never here.
-      # The first case is the positive control: with the floor at 0 the script itself runs.
-      - name: Disk script contract (check floor, usage error, free refusals and skip)
+      # `end` is the always() last step of the rust job and must never fail it, so it is tested
+      # too: exit 0 at the default level, and exit 0 with a ::warning line when the warning
+      # level is raised above any real free space (the output is captured, so no annotation is
+      # raised here, and the job summary is left alone). The list of directories that must
+      # survive is READ from the `doomed=` line of the script, so it cannot drift from it; if
+      # that line changes shape the step fails. The first case is the positive control: with
+      # the floor at 0 the script itself runs.
+      - name: Disk script contract (check floor, usage error, free refusals and skip, end)
         run: |
           fail=0
           expect() {
@@ -233,9 +239,14 @@ jobs:
               fail=1
             fi
           }
+          paths=$(sed -n 's/^    doomed="\(.*\)"$/\1/p' scripts/ci_disk.sh)
+          if [ -z "$paths" ]; then
+            echo "FAIL: could not read the deletion list (the doomed= line) from scripts/ci_disk.sh"
+            exit 1
+          fi
           present() {
             n=0
-            for p in /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL; do
+            for p in $paths; do
               if [ -e "$p" ]; then n=$((n + 1)); fi
             done
             echo "$n"
@@ -244,6 +255,23 @@ jobs:
           expect 0 env CI_DISK_MIN_FREE_GB=0 sh scripts/ci_disk.sh check selftest
           expect 1 env CI_DISK_MIN_FREE_GB=100000 sh scripts/ci_disk.sh check selftest
           expect 2 env CI_DISK_MIN_FREE_GB=-1 sh scripts/ci_disk.sh check selftest
+          expect 2 env CI_DISK_MIN_FREE_GB=0400 sh scripts/ci_disk.sh check selftest
+          expect 2 env CI_DISK_MIN_FREE_GB=00 sh scripts/ci_disk.sh check selftest
+          expect 2 env CI_DISK_WARN_FREE_GB=09 sh scripts/ci_disk.sh end selftest
+          expect 2 env CI_DISK_SKIP_FREE_AT_GB=040 sh scripts/ci_disk.sh report selftest
+          expect 0 env -u GITHUB_STEP_SUMMARY sh scripts/ci_disk.sh end selftest
+          if warned=$(env -u GITHUB_STEP_SUMMARY CI_DISK_WARN_FREE_GB=100000 sh scripts/ci_disk.sh end selftest 2>&1); then rc=0; else rc=$?; fi
+          if [ "$rc" -ne 0 ]; then
+            echo "FAIL: 'end' with a warning level of 100000 exited $rc, wanted 0 (it must never fail)"
+            fail=1
+          fi
+          case "$warned" in
+            *"::warning"*) ;;
+            *)
+              echo "FAIL: 'end' with a warning level of 100000 printed no ::warning line"
+              fail=1
+              ;;
+          esac
           expect 2 sh scripts/ci_disk.sh bogus
           expect 2 env -u GITHUB_ACTIONS sh scripts/ci_disk.sh free
           expect 2 env GITHUB_ACTIONS=true RUNNER_ENVIRONMENT=self-hosted sh scripts/ci_disk.sh free
@@ -471,8 +499,9 @@ jobs:
           # bundled face. Those two are asserted at runtime by `verdict()` in installed_serif.
           test -f /usr/share/fonts/truetype/liberation/LiberationSerif-Regular.ttf
       # Floor 10 GB here and after clippy (healthy runs show about 30 GB at both): the workspace
-      # test step that follows writes 7.1 GB, so 5 GB would let a runner with 9.6 to 11.7 GB
-      # free crash with no red step ahead of it. The two checks after the tests use 5 GB.
+      # test step that follows writes 7.1 GB, so 5 GB would let a runner that had 9.6 to 11.7 GB
+      # free AT JOB START (before the 4.6 GB written up to this point) crash with no red step
+      # ahead of it. The two checks after the tests use 5 GB.
       - name: Disk space before the gates, cache restored (Linux)
         if: runner.os == 'Linux'
         working-directory: ${{ github.workspace }}
@@ -671,8 +700,9 @@ jobs:
           cargo test -p selahcue-desktop --features encryption --no-fail-fast
       # Last step of the job, `always()` so a failed or cancelled run still says where the disk
       # ended up. Runs before the cache's post step, which on main tars `target` up. It never
-      # fails the job: below 10 GB free it emits a warning (early notice while the job is still
-      # green), and it appends one line (free GB, target size, runner image) to the job summary.
+      # fails the job: below 10 GB free it emits a warning (an early notice that holds in a
+      # failed job too), and it appends one line (free GB, target size, runner image) to the
+      # job summary.
       - name: Disk space at job end (Linux)
         if: ${{ always() && runner.os == 'Linux' }}
         working-directory: ${{ github.workspace }}

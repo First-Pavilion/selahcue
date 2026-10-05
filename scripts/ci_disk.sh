@@ -67,7 +67,10 @@
 # 21.7 GB gave 35.0 GB and the job ended with 18.6 GB); the pool seen on 2026-10-05 has
 # 86.0 GB free. 40 GB is the 26.4 GB above plus 13.6 GB (83 percent of what the job writes
 # today) of growth, so a runner at or above it finishes with the warning silent even after
-# the job has grown by four fifths, and a runner below it is exactly the kind that fails.
+# the job has grown by four fifths. Below 40 GB the deletion runs as MARGIN, not because the
+# job is bound to fail: a runner with 26.4 to 40 GB free passes today without it. When the
+# deletion does run, it emits a `::warning title=small runner` naming the free space and the
+# threshold, so a pool that shrank shows on the Checks page and not only in the log.
 #
 # CONSEQUENCE, stated plainly: on today's runners (86 GB free) the deletion does not run in
 # CI at all. It was proven on real runners on 2026-10-04 (freed 21.7 GB; runs 37241095086 and
@@ -94,8 +97,11 @@
 # variable alone is not enough: self-hosted runners and `act` also set GITHUB_ACTIONS=true.
 # It does nothing on a non-Linux runner. A developer who runs it on their own machine must
 # not lose their Android SDK. If RUNNER_ENVIRONMENT were ever absent on a hosted runner the
-# step fails loudly and, being in the setup zone, skips everything after it; the log prints
-# the value it saw.
+# step would fail, and the setup steps after it (toolchain install, pin check, cache restore)
+# would be skipped; every gate step still runs under `!cancelled()`, without the pin check.
+# The guards sit before the skip, so on a big runner that would turn a job red where nothing
+# would have been deleted. That is deliberate (the guards come first, always), and the
+# variable is seen set on hosted runners. The log prints the value the guard saw.
 #
 # `set -u` WITHOUT `-e` IS DELIBERATE, although the sibling scripts use `set -eu`. `report`
 # and `end` must never fail the job, so a failing df, du or sudo must not abort them; `check`
@@ -112,14 +118,16 @@ warn_free_gb="${CI_DISK_WARN_FREE_GB:-10}"
 skip_free_at_gb="${CI_DISK_SKIP_FREE_AT_GB:-40}"
 
 # A floor that is not a whole number would be read differently by dash and by bash (a value
-# of -1 would silently switch the check off), so refuse it up front. At most 9 digits, so the
-# GB to KB arithmetic below cannot overflow.
+# of -1 would silently switch the check off), so refuse it up front. A leading zero is
+# refused too (except the value 0 itself): shell arithmetic reads 0400 as octal 256, and 09
+# aborts `end`, which must never fail. At most 9 digits, so the GB to KB arithmetic below
+# cannot overflow.
 for setting in "CI_DISK_MIN_FREE_GB=$min_free_gb" "CI_DISK_WARN_FREE_GB=$warn_free_gb" \
                "CI_DISK_SKIP_FREE_AT_GB=$skip_free_at_gb"; do
     value=${setting#*=}
     case "$value" in
-        '' | *[!0-9]*)
-            echo "ci_disk: ${setting%%=*} must be a whole number of GB, 0 or more; got '$value'." >&2
+        '' | *[!0-9]* | 0?*)
+            echo "ci_disk: ${setting%%=*} must be a whole number of GB, 0 or more, with no leading zero; got '$value'." >&2
             exit 2
             ;;
     esac
@@ -135,10 +143,16 @@ avail_gb() {
     echo "${out:-n/a}"
 }
 
-# Free space on a path in KB, or 0 if df cannot say.
+# Free space on a path in KB, or 0 if df cannot say. Anything that is not a whole number
+# counts as 0 too, so a caller's `[ ... -ge ... ]` never meets a non-number: a broken
+# measurement reads as "no space", which is the safe direction for every caller (the skip does
+# not skip, `check` fails, `end` warns).
 avail_kb() {
     out=$(df -Pk "$1" 2>/dev/null | awk 'NR==2 { print $4 }')
-    echo "${out:-0}"
+    case "$out" in
+        '' | *[!0-9]*) echo 0 ;;
+        *) echo "$out" ;;
+    esac
 }
 
 # Size of a path as `du -sh` prints it, or "absent".
@@ -195,7 +209,7 @@ end() {
     free_kb=$(avail_kb /)
     warn_kb=$((warn_free_gb * 1048576))
     if [ "$free_kb" -lt "$warn_kb" ]; then
-        echo "::warning title=low disk headroom ($label)::only $free_gb GB free on / at the end of the job, below the $warn_free_gb GB warning level. The job passed, but it is getting close to running out of disk"
+        echo "::warning title=low disk headroom ($label)::only $free_gb GB free on / at the end of the job, below the $warn_free_gb GB warning level. This step runs even in a failed job; the runner is getting close to running out of disk"
     fi
     line="disk at $label: free $free_gb GB on /, target dir $(size_of "$target_dir"), runner image ${ImageOS:-unknown} ${ImageVersion:-unknown}"
     echo "$line"
@@ -235,6 +249,11 @@ free_space() {
     # glob, no trailing slash, no space. It is checked below, and the whole list is refused if
     # any entry is not of the shape /dir/dir[/...]. An entry built from an expansion that came
     # out empty would otherwise become a path nobody meant to delete.
+    #
+    # KEEP THE NEXT LINE'S FORM (one line, four spaces of indent, `doomed="..."`): the
+    # "Disk script contract" step in .github/workflows/ci.yml reads the list from it, by
+    # that exact shape, to check that a refused or skipped `free` deleted none of these. If
+    # the line changes shape the step fails loudly ("could not read the deletion list").
     doomed="/usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL"
     tab=$(printf '\t')
     set -f # no globbing while the list is split into words, so a glob character cannot expand
@@ -247,8 +266,9 @@ free_space() {
             *" "* | *"$tab"* | *\** | *\?* | *\[* | *\]*)
                 refuse_path "$d" "contains a space or a glob character"
                 ;;
-            */ | */. | */./* | */.. | */../*)
-                refuse_path "$d" "has a trailing slash or a dot segment"
+            */ | */. | */./* | */.. | */../* | *//*)
+                # `//usr` matches /*/* above and rm treats it as /usr: one component.
+                refuse_path "$d" "has a trailing slash, an empty segment (//) or a dot segment"
                 ;;
         esac
     done
@@ -258,15 +278,19 @@ free_space() {
 
     # THE SKIP. It sits after every guard and after the path-shape check above (so a bad list
     # is refused on every run, even one where nothing would be deleted), and before the first
-    # deletion. If df cannot say (avail_kb prints 0) the runner counts as small and `free`
-    # goes ahead: it has passed the hosted-runner guards, and the deletion is the safe
-    # direction for the job.
+    # deletion. If df cannot say, or prints something that is not a whole number, avail_kb
+    # returns 0: the runner counts as small and `free` goes ahead (at a threshold of 0 it
+    # skips, 0 being at or above 0). It has passed the hosted-runner guards, and the deletion
+    # is the safe direction for the job.
     skip_kb=$((skip_free_at_gb * 1048576))
     if [ "$before" -ge "$skip_kb" ]; then
         set +f
         echo "skipped: $(avail_gb /) GB free on /, at or above the $skip_free_at_gb GB threshold; nothing deleted"
         return 0
     fi
+    # The deletion is about to run, so the runner is below the threshold: say so as an
+    # annotation (never a failure), so a pool that shrank is not silent.
+    echo "::warning title=small runner::only $(avail_gb /) GB free on / at job start, below the $skip_free_at_gb GB threshold: deleting preinstalled software to make room. The runner pool may have shrunk"
 
     # Deleted in parallel; each deletion is waited on by pid so a failure names its path (a
     # bare `wait` always returns 0).
