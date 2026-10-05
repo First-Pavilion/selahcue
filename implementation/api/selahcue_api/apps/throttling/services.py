@@ -93,6 +93,11 @@ def evaluate_budget(store, key: str, limit: int, window_seconds: int) -> BudgetO
     prevent. The difference is that the caller can now SEE that it was a fail-open, and a
     caller with an expensive side effect (sending mail) can bound that side effect instead of
     treating the outage as a clean allow.
+
+    This branch runs only when the store RAISES. A store that is up but wedged does not raise,
+    it blocks — so a wedged Redis reaches here only because the cache connection carries socket
+    timeouts (`settings.CACHE_SOCKET_CONNECT_TIMEOUT` / `CACHE_SOCKET_TIMEOUT`, 17tnw2b1wrx). Take
+    them off and "fails open" silently shrinks back to "fails open when the store is down".
     """
     global _last_store_error_log
     try:
