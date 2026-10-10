@@ -723,6 +723,10 @@ ci: ## Run the local Rust/Flutter CI gate (see the header for what CI runs that 
 	# rule, so a bad edit there fails here. The network half (converting the real USFM, and the
 	# positive control against the five bundled Bibles) is run by hand: see the script's docstring.
 	python3 scripts/build_translation_catalog.py --self-test
+	# 17tnw2b2jqd: the publish half of the same mirror (.github/workflows/publish-translations.yml). Its self-test
+	# needs no network, no `aws` and no credentials: a fake `aws` and a fake network stand in, and it proves a published
+	# key is never overwritten, a catalogue never names a missing file, and a read-back must match byte for byte.
+	python3 scripts/publish_translations.py --self-test
 	# 86ak5rjh7 (marketing half) / 17tnw2b0q9j: `make ci` verified NOTHING about implementation/marketing,
 	# so a type or lint error there passed here and failed only in CI. The same target the CI job calls,
 	# via recursive make so there is exactly one definition. Placed before the cargo gates because it

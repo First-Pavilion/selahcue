@@ -550,6 +550,14 @@ jobs:
         if: runner.os != 'Windows'
         working-directory: ${{ github.workspace }}
         run: python3 scripts/build_translation_catalog.py --self-test
+      # 17tnw2b2jqd: the publish half of the same mirror (scripts/publish_translations.py, run by the manual
+      # publish-translations workflow). Its self-test needs no network, no `aws` and no credentials: a fake `aws`
+      # (a POSIX script, hence the same non-Windows `if:`) and a fake network stand in. Same setup-zone placement as
+      # the converter step above, for the same ordinal-rule reason.
+      - name: Translation publish script self-test
+        if: runner.os != 'Windows'
+        working-directory: ${{ github.workspace }}
+        run: python3 scripts/publish_translations.py --self-test
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: implementation/desktop
