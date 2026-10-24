@@ -145,18 +145,24 @@ def _race_behind_row_lock(key, targets):
 
     holder = threading.Thread(target=hold)
     holder.start()
-    assert holding.wait(30), "the holder never took the licence-row lock"
-    threads = [threading.Thread(target=run, args=(target,)) for target in targets]
-    for t in threads:
-        t.start()
-    deadline = time.monotonic() + 15
-    while _licence_row_waiters() < len(targets) and time.monotonic() < deadline:
-        time.sleep(0.02)
-    waiting = _licence_row_waiters()
-    release.set()
-    holder.join(timeout=60)
-    for t in threads:
-        t.join(timeout=60)
+    threads = []
+    try:
+        assert holding.wait(30), "the holder never took the licence-row lock"
+        threads = [threading.Thread(target=run, args=(target,)) for target in targets]
+        for t in threads:
+            t.start()
+        deadline = time.monotonic() + 15
+        while _licence_row_waiters() < len(targets) and time.monotonic() < deadline:
+            time.sleep(0.02)
+        waiting = _licence_row_waiters()
+    finally:
+        # Whatever happened above (a failed assertion, an error in the polling query), free
+        # the row: otherwise the holder keeps it locked for its full 60 s wait and stalls
+        # the next test's teardown.
+        release.set()
+        holder.join(timeout=60)
+        for t in threads:
+            t.join(timeout=60)
     assert not holder.is_alive() and not any(t.is_alive() for t in threads), (
         "an activation did not complete once the licence row was released"
     )
@@ -181,6 +187,28 @@ def _licence_transitions(key):
     return AuditEvent.objects.filter(
         target_type=AUDIT_TARGET_TYPE, target_id=str(key.pk), action="license_key.activated"
     ).count()
+
+
+def test_a_polling_error_releases_the_held_licence_row_promptly(monkeypatch):
+    """If the poll in `_race_behind_row_lock` raises, the holder must be released at once, not
+    left holding the licence row for its full 60 s wait (which would stall the next test)."""
+    key, full_key = _seed_license_key(tag="pollerror", device_limit=1)
+
+    def broken_poll():
+        raise RuntimeError("simulated pg_stat_activity failure")
+
+    monkeypatch.setitem(globals(), "_licence_row_waiters", broken_poll)
+    started = time.monotonic()
+
+    with pytest.raises(RuntimeError, match="simulated pg_stat_activity failure"):
+        _race_behind_row_lock(
+            key, [_enroll(full_key, idem="poll-error-activation", fingerprint="fp-poll-error")]
+        )
+
+    assert time.monotonic() - started < 20, "the holder kept the row locked after a poll error"
+    # The row is free again: a NOWAIT lock succeeds instead of raising.
+    with transaction.atomic():
+        AppLicenseKey.objects.select_for_update(nowait=True).get(pk=key.pk)
 
 
 def test_concurrent_activations_cannot_exceed_the_device_limit():
