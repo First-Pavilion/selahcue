@@ -146,7 +146,9 @@ pub struct ActivationResponse {
     #[serde(default)]
     pub activation_token: Option<Token>,
     pub device: DeviceDto,
-    #[serde(default)]
+    /// Always present in the server's payload (`_activation_payload`), with null members on a
+    /// replay that has no live token. Required, not defaulted: a missing object would otherwise
+    /// read as "no token metadata" when it is a drifted contract.
     pub token: TokenMetaDto,
     pub license: LicenseDto,
 }
@@ -183,11 +185,13 @@ pub struct TokenMetaDto {
 }
 
 /// The licence backing the activation.
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+///
+/// No `Default`, on purpose: the enforcement work reads `expires_at`, and a fabricated empty
+/// string there would be indistinguishable from a real value.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LicenseDto {
     pub status: String,
-    /// Python `isoformat()` — see [`TokenMetaDto::expires_at`].
-    #[serde(default)]
+    /// Python `isoformat()` — see [`TokenMetaDto::expires_at`]. Always sent by the server.
     pub expires_at: String,
 }
 
@@ -196,6 +200,10 @@ pub struct LicenseDto {
 // ---------------------------------------------------------------------------
 
 /// The server's error vocabulary (`graphql/errors.py:6-17`).
+///
+/// `PASSWORD_INVALID` also exists server-side but is raised only by the browser's
+/// password-reset confirmation, which this client never calls; it parses as
+/// [`ErrorCode::Unknown`], which is harmless.
 ///
 /// Not a `derive(Deserialize)` enum on purpose: an unknown code from a newer server must
 /// parse into [`ErrorCode::Unknown`] and be handled, never fail deserialization and turn

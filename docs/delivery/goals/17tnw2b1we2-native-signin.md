@@ -10,7 +10,7 @@
 - Execution engine: goal
 - ClickUp task: https://app.clickup.com/t/17tnw2b1we2
 - Created: 2026-10-24
-- Updated: 2026-10-24
+- Updated: 2026-10-24 (review round 1 remediated)
 - Maximum iterations: 8
 - Independent verification required: yes
 
@@ -41,7 +41,9 @@
 ### In scope
 
 - `selahcue-licensing`: `contract.rs`, `client.rs`, `error.rs`, `lib.rs` docs and the tests under `tests/`
-- Typed sign-in failures (`InvalidCredentials`, `AccountNotActive`) so a wrong password and an unverified account are not reported as "session expired" or "plan limit"
+- Typed sign-in failures (`InvalidCredentials`, `AccountNotActive`, `SignInInvalidInput`, `SignInRateLimited`) so a wrong password, an unverified account, bad input and a rate limit are not reported in activation or "session expired" wording, and a sign-in rate limit is not silently retried
+- `selahcue-cloud`: `Token::is_blank` / `has_control_characters` (so blank or header-splitting tokens are refused without a new `expose()` site) and `tests/test_wire.rs`, a loopback test of what the real `ReqwestTransport` puts on the wire; wired into `make ci` and `.github/workflows/ci.yml` (`--features http`)
+- Stale statements about the desktop being blocked: `LEGAL-DRAFT-NOTES.md` L-13, ADR-0029 Consequences, and a dated note on the two BLOCKED rows of `GOAL-be-86ak5t1gw-native-account-surface.md` (statuses left as written)
 - A parse-side response cap, a shape check on unknown error codes, and parse errors that describe position only
 - `implementation/api/README.md`: remove the sentence saying the desktop does not yet call the native routes
 
@@ -50,7 +52,7 @@
 - Any API change (stop and report BLOCKED if one is needed; none was)
 - Wiring sign-in into the operator UI (no workspace crate calls this client yet)
 - A native revoke route or activation-only grant (ClickUp 17tnw2b1wf2)
-- Redirect policy of the production `ReqwestTransport` (shared crate; recorded as a follow-up)
+- Redirect policy of the production `ReqwestTransport` (shared crate; ClickUp 17tnw2b9aaz, whose scope also covers refusing a redirect target's reply as a token, an https-only transport and a loopback redirect test)
 - Enrollment-key path behaviour (unchanged on the wire; its failure text only gets the same body-free guarantee)
 
 ### Constraints
@@ -84,11 +86,12 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
 | C-006 | yes | A response over `MAX_RESPONSE_BODY_BYTES` (64 KiB, below the transport's 4 MiB read cap) is refused unparsed, success or error, while one exactly at the cap is read | `--test test_client a_success_body_over_the_cap...`, `an_error_body_over_the_cap...` | pass; mutations M2, M6 turn them red | test output + mutation log | PASS |
 | C-007 | yes | Credential-hygiene sweeps (formatted-types sweep, `expose()` site pin, Token-typed fields, never-blank enumeration) still pass and cover the new wire types | `cargo test -p selahcue-licensing` | all tests pass | test output | PASS |
 | C-008 | yes | The enrollment-key path still works: same URL, body, no bearer; its tests pass | `--test test_client the_enrollment_key_*` and live run (C-009) | pass | test output + live log | PASS |
-| C-009 | yes | Against a RUNNING API seeded with a verified admin, a MEMBER, an unverified user, a no-licence admin and one real licence key, the real `ReqwestTransport` client completes sign-in then activation, the minted token works on `/v1/license:refresh`, and the failure cases come back typed; the old route is shown returning 403 HTML | scratchpad harness `17tnw2b1we2-live-harness` run against `manage.py runserver` | output as posted on the ticket | `docs/delivery/goals/17tnw2b1we2-native-signin.md` evidence section + ClickUp comment | PASS |
-| C-010 | yes | `cargo fmt --check`; `cargo clippy -D warnings` (debug and `--release`) on `selahcue-licensing`; workspace clippy and tests via one `make ci` | commands in the PR body | all exit 0 | PR body with exit codes | PASS |
-| C-011 | yes | Diff has no stray non-ASCII | grep for non-ASCII bytes in the added lines of `git diff origin/main -U0` | no output | command output | PASS |
+| C-009 | yes | Against a RUNNING API seeded with a verified admin, a MEMBER, an unverified user, a no-licence admin and one real licence key, the real `ReqwestTransport` client completes sign-in then activation, the minted token works on `/v1/license:refresh`, and the failure cases come back typed; the old route is shown returning 403 HTML | the committed harness and seed in `docs/delivery/goals/17tnw2b1we2-evidence/` (commands in its `README.md`) run against `manage.py runserver` on a throwaway SQLite database | output as recorded below | the "Live-run evidence" section of this file and the ClickUp comment | PASS |
+| C-010 | yes | `cargo fmt --check`; `cargo clippy -D warnings` (debug and `--release`) on `selahcue-licensing` and `selahcue-cloud --features http`; tests for both; workspace clippy and tests via one `make ci` | commands in the PR body | all exit 0 | PR body with exit codes | PASS |
+| C-011 | yes | The diff adds no invisible or unexpected non-ASCII | list the distinct non-ASCII code points in the added lines of `git diff origin/main -U0` | only U+2014 (em dash) and U+2192 (arrow), the punctuation these files already use; no BOM, NBSP or direction marks | command output in the PR body | PASS |
 | C-012 | yes | 86ak5mn11's "both activation paths work" claim is re-verified against the live server and the result is posted on that ticket | ClickUp comment on 86ak5mn11 | comment present | ClickUp | PASS |
-| C-013 | yes | Owner rule 2b: every applicable happy-path and edge case has a test that goes red when its behaviour is mutated (case list below; 19 mutations, all caught) | `python3 17tnw2b1we2-mutate.py` (scratchpad) | each mutation fails at least one named test | PR body mutation table | PASS |
+| C-013 | yes | Owner rule 2b: every applicable happy-path and edge case has a test that goes red when its behaviour is mutated (case list below; 64 mutations in round 2, all killed, none survived) | `python3 docs/delivery/goals/17tnw2b1we2-evidence/mutate.py` | each mutation fails at least one named test | `docs/delivery/goals/17tnw2b1we2-evidence/mutate.py` and the PR body | PASS |
+| C-014 | yes | The real `ReqwestTransport` puts `Content-Type: application/json`, the bearer (when given) and a correct `Content-Length` on the wire, no Authorization when none is given, and never a Cookie, Origin, Referer or CSRF header, even after the server sets a cookie | `cargo test -p selahcue-cloud --features http --test test_wire` (in `make ci`) | 4 tests pass; header, content-type, bearer and cookie-jar mutations turn them red | `selahcue-cloud/tests/test_wire.rs` | PASS |
 
 Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABLE`.
 
@@ -104,7 +107,9 @@ Covered (tests in `crates/selahcue-licensing/tests/`):
 - Connection failures and timeouts: five transport reasons on all three calls (unreachable, retryable, silent); outage on the second call after a good sign-in, then a successful retry with the same session.
 - Retry and repeat: retry sends a byte-identical body and the same idempotency key; replay keeps the cached token; replay with nothing cached is reported; a refused re-activation leaves the cached token alone.
 - Credentials and logging: the right secret in the right place (bearer is the session token, password only in the sign-in body, nothing in a URL); no password, session token, device token, enrollment key or body text in any failure `Display`/`Debug` (sweep over 15 hostile replies x 3 calls); success-path `Debug` of the session, activation and transport; the existing formatted-types sweep, `expose()` site pin and Token-typed-field scan updated for the new wire types.
-- Structure: no `graphql`, cookie, CSRF, Origin or Referer in the crate source; every request is a `/v1` POST.
+- Structure: no `graphql`, cookie, CSRF, Origin or Referer in the crate source (raw-line tripwire with positive controls for the blind spots a reviewer found); every request is a `/v1` POST.
+- Wire (round 1): exact value of every field of all three request bodies; what the real `ReqwestTransport` sends (Content-Type, bearer, Content-Length in bytes, no Authorization without a bearer, no Cookie/Origin/Referer/CSRF header, cookie from the server never replayed).
+- Round 1 additions: sign-in wording and retry flag per failure; blank, whitespace-only and header-splitting session and device tokens; email sent exactly as typed; a table of 22 failure shapes (bare 429, empty 4xx/5xx bodies, INTERNAL with 503/500/400, truncated or wrong-typed envelopes, BOM, 200 with an error envelope, deeply nested JSON under the cap, status 0 and 65535); `token` and `license.expires_at` required.
 - Live: the real `ReqwestTransport` client against a running server (C-009).
 
 Deliberately not covered:
@@ -184,6 +189,6 @@ Server log for the run: `POST /v1/sessions` 200/401/401/403/200/200, `POST /v1/a
 - Validator command: `python3 ~/.claude/skills/goal/scripts/validate_goal_contract.py docs/delivery/goals/17tnw2b1we2-native-signin.md`
 - Validator result: structural and `--completion` both OK (see PR)
 - Independent verification result: PENDING (Cody, Shadow, Vera, Quinn are dispatched by the orchestrator; this author does not self-certify)
-- Terminal state: implementation VERIFIED_COMPLETE; awaiting independent review
+- Terminal state: GATE_REVIEW (implementation complete and review round 1 remediated; not VERIFIED_COMPLETE until the independent reviewers re-clear it)
 - Remaining failed or blocked criteria: none known
 - ClickUp final evidence comment: posted on 17tnw2b1we2 (live run) and 86ak5mn11 (re-verification)

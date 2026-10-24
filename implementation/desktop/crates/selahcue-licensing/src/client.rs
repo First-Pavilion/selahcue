@@ -227,11 +227,12 @@ impl<T: HttpTransport> LicensingClient<T> {
         let body = Self::encode(&request)?;
         let response = self.post(SESSIONS_PATH, &body, None)?;
         let parsed: SessionResponse = Self::decode(response, ActivationFailure::from_sign_in_code)?;
-        if parsed.session_token.is_empty() {
-            // The server never issues one. Accepting it would store a blank credential and
-            // send a blank bearer on the next call, which fails as an unexplained 401.
+        if Self::unusable_bearer(&parsed.session_token) {
+            // The server never issues one. Accepting it would store a blank (or header-
+            // splitting) credential and send it as the bearer on the next call, which fails as
+            // an unexplained 401. Nothing about the value is repeated.
             return Err(ActivationFailure::Malformed(
-                "the response carried an empty session token".into(),
+                "the response carried an unusable session token".into(),
             ));
         }
 
@@ -256,6 +257,11 @@ impl<T: HttpTransport> LicensingClient<T> {
         identity: &DeviceIdentity,
         idempotency_key: &IdempotencyKey,
     ) -> Result<Activation, ActivationFailure> {
+        if Self::unusable_bearer(session) {
+            // Nothing sensible can be sent: the server would answer 401 to a blank bearer, and
+            // a control character cannot be put in a header at all. Say so without a request.
+            return Err(ActivationFailure::Unauthenticated);
+        }
         let request = SessionActivationRequest {
             idempotency_key: idempotency_key.as_str().to_string(),
             device_fingerprint: identity.fingerprint.clone(),
@@ -269,7 +275,7 @@ impl<T: HttpTransport> LicensingClient<T> {
             ActivationFailure::from_code(code, ActivationPath::AccountSession)
         })?;
 
-        Ok(Self::activation(ActivationPath::AccountSession, parsed))
+        Self::activation(ActivationPath::AccountSession, parsed)
     }
 
     // -----------------------------------------------------------------------
@@ -301,7 +307,7 @@ impl<T: HttpTransport> LicensingClient<T> {
             ActivationFailure::from_code(code, ActivationPath::EnrollmentKey)
         })?;
 
-        Ok(Self::activation(ActivationPath::EnrollmentKey, parsed))
+        Self::activation(ActivationPath::EnrollmentKey, parsed)
     }
 
     // -----------------------------------------------------------------------
@@ -309,9 +315,14 @@ impl<T: HttpTransport> LicensingClient<T> {
     // -----------------------------------------------------------------------
 
     /// The one place a request leaves this crate: a JSON `POST`, with the session token as
-    /// the only credential header there can be. The transport seam carries a bearer and
-    /// nothing else — no cookie jar, no CSRF header, no `Origin`/`Referer` — which is the
-    /// property the native routes' CSRF exemption rests on.
+    /// the only credential header there can be. This crate sets no cookie, CSRF, `Origin` or
+    /// `Referer` header, and the transport seam (`post_json(url, body, bearer)`) gives it no way
+    /// to; that is the property the native routes' CSRF exemption rests on.
+    ///
+    /// What the production transport really puts on the wire is pinned by
+    /// `selahcue-cloud/tests/test_wire.rs`. One caveat that test does not claim to cover: when
+    /// `reqwest` follows a redirect it adds a `Referer` of its own. The redirect policy is not
+    /// this crate's to set; it is tracked as ClickUp 17tnw2b9aaz.
     fn post(
         &self,
         path: &str,
@@ -330,8 +341,22 @@ impl<T: HttpTransport> LicensingClient<T> {
             .map_err(|_| ActivationFailure::Malformed("the request could not be encoded".into()))
     }
 
-    fn activation(path: ActivationPath, response: ActivationResponse) -> Activation {
-        Activation {
+    fn activation(
+        path: ActivationPath,
+        response: ActivationResponse,
+    ) -> Result<Activation, ActivationFailure> {
+        // `Some("")` is not a replay (that is `null`): persisting it would overwrite a working
+        // device token with a blank one and report `Stored`.
+        if response
+            .activation_token
+            .as_ref()
+            .is_some_and(Self::unusable_bearer)
+        {
+            return Err(ActivationFailure::Malformed(
+                "the response carried an unusable device token".into(),
+            ));
+        }
+        Ok(Activation {
             path,
             token: response.activation_token,
             created: response.created,
@@ -340,7 +365,13 @@ impl<T: HttpTransport> LicensingClient<T> {
             platform: response.device.platform,
             token_meta: response.token,
             license: response.license,
-        }
+        })
+    }
+
+    /// A token that cannot serve as a bearer: blank, or holding a control character. Asked of
+    /// [`Token`] itself so no new `expose()` site is needed.
+    fn unusable_bearer(token: &Token) -> bool {
+        token.is_blank() || token.has_control_characters()
     }
 
     /// Decode a response, mapping non-2xx onto coded failures with `classify`.
@@ -359,7 +390,7 @@ impl<T: HttpTransport> LicensingClient<T> {
                     "the response was larger than the {MAX_RESPONSE_BODY_BYTES}-byte limit"
                 ))
             } else {
-                Self::status_failure(response.status)
+                Self::status_failure(response.status, &classify)
             });
         }
         if !ok {
@@ -379,17 +410,31 @@ impl<T: HttpTransport> LicensingClient<T> {
         classify: impl Fn(ErrorCode) -> ActivationFailure,
     ) -> ActivationFailure {
         match serde_json::from_str::<ApiErrorEnvelope>(&response.body) {
-            Ok(envelope) => classify(ErrorCode::parse(&envelope.error.code)),
-            Err(_) => Self::status_failure(response.status),
+            Ok(envelope) => match classify(ErrorCode::parse(&envelope.error.code)) {
+                // `INTERNAL` carries no status of its own; keep the real 5xx the server sent
+                // rather than flattening 502/503/504 to 500.
+                ActivationFailure::Server(_) if (500..600).contains(&response.status) => {
+                    ActivationFailure::Server(response.status)
+                }
+                other => other,
+            },
+            Err(_) => Self::status_failure(response.status, &classify),
         }
     }
 
-    /// A 5xx is the server failing; anything else at a non-2xx is something in FRONT of the
-    /// application answering — a proxy page, a Django middleware rejection, a wrong-method
-    /// 405. Neither is contract drift, and calling them `Malformed` sent the reader hunting
-    /// for a schema change that does not exist.
-    fn status_failure(status: u16) -> ActivationFailure {
-        if (500..600).contains(&status) {
+    /// A 5xx is the server failing; a bare 429 is rate limiting whoever said it (a proxy's page
+    /// is as good a signal as the API's envelope, and "try again shortly" is true of both);
+    /// anything else at a non-2xx is something in FRONT of the application answering — a proxy
+    /// page, a Django middleware rejection, a wrong-method 405. None of these is contract
+    /// drift, and calling them `Malformed` sent the reader hunting for a schema change that
+    /// does not exist.
+    fn status_failure(
+        status: u16,
+        classify: &impl Fn(ErrorCode) -> ActivationFailure,
+    ) -> ActivationFailure {
+        if status == 429 {
+            classify(ErrorCode::RateLimited)
+        } else if (500..600).contains(&status) {
             ActivationFailure::Server(status)
         } else {
             ActivationFailure::UnexpectedStatus(status)
@@ -426,7 +471,12 @@ impl<T: HttpTransport> LicensingClient<T> {
 /// The field name in a serde `missing field `name`` message, when it is one and the name is
 /// plainly an identifier. Anything else yields `None`, so no free text from a message is
 /// ever forwarded.
-fn missing_field(message: &str) -> Option<&str> {
+///
+/// `pub` and hidden only so that `tests/` can drive it with messages serde would never
+/// produce from this crate's own structs: with real parse errors the identifier check can
+/// never fire, which would leave it untested.
+#[doc(hidden)]
+pub fn missing_field(message: &str) -> Option<&str> {
     let rest = message.strip_prefix("missing field `")?;
     let name = &rest[..rest.find('`')?];
     let identifier = !name.is_empty()

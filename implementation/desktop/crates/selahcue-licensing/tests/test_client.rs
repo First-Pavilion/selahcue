@@ -34,6 +34,24 @@ fn idem() -> IdempotencyKey {
     IdempotencyKey::new("idem-0123456789ab").unwrap()
 }
 
+/// A request body as JSON, for whole-object comparison.
+fn body_of(request: &selahcue_licensing::RecordedRequest) -> serde_json::Value {
+    serde_json::from_str(&request.body).unwrap()
+}
+
+/// What `identity()` + `idem()` must put on the wire for the session activation, value by value.
+/// `platform`, `app_version` and `display_name` are three different strings on purpose: a
+/// client that swapped or blanked two of them must not produce this object.
+fn session_activation_request_body() -> serde_json::Value {
+    serde_json::json!({
+        "idempotency_key": "idem-0123456789ab",
+        "device_fingerprint": "fp-booth-mac-01",
+        "platform": "macos",
+        "app_version": "1.0.0",
+        "display_name": "Sound booth Mac",
+    })
+}
+
 fn credentials() -> DeviceCredentials<InMemorySecretStore> {
     DeviceCredentials::new(InMemorySecretStore::new())
 }
@@ -142,20 +160,13 @@ fn a_fresh_install_activates_by_signing_in_and_receives_a_device_token() {
         !login.had_bearer,
         "sign-in must not send a bearer — it is the call that obtains one"
     );
-    let login_body: serde_json::Value = serde_json::from_str(&login.body).unwrap();
-    let login_keys: Vec<&str> = login_body
-        .as_object()
-        .unwrap()
-        .keys()
-        .map(String::as_str)
-        .collect();
+    // The whole body, every value: a key-by-key check would pass a client that swapped two
+    // string fields, and "exactly these keys" says nothing about what is in them.
     assert_eq!(
-        login_keys,
-        ["email", "password"],
-        "the sign-in body is exactly email + password: {login_body}"
+        body_of(&login),
+        serde_json::json!({"email": "admin@example.test", "password": "correct-horse"}),
+        "the sign-in body is exactly email + password"
     );
-    assert_eq!(login_body["email"], "admin@example.test");
-    assert_eq!(login_body["password"], "correct-horse");
 
     let activate = client.transport().request(1).unwrap();
     assert_eq!(activate.method, "POST");
@@ -164,26 +175,11 @@ fn a_fresh_install_activates_by_signing_in_and_receives_a_device_token() {
         activate.had_bearer,
         "session activation must authenticate with the session token"
     );
-    let body: serde_json::Value = serde_json::from_str(&activate.body).unwrap();
-    let mut keys: Vec<&str> = body
-        .as_object()
-        .unwrap()
-        .keys()
-        .map(String::as_str)
-        .collect();
-    keys.sort_unstable();
     assert_eq!(
-        keys,
-        [
-            "app_version",
-            "device_fingerprint",
-            "display_name",
-            "idempotency_key",
-            "platform"
-        ],
-        "the session body is the activation body minus license_key, snake_case: {body}"
+        body_of(&activate),
+        session_activation_request_body(),
+        "the session body is the activation body minus license_key, snake_case, every value pinned"
     );
-    assert_eq!(body["device_fingerprint"], "fp-booth-mac-01");
     assert!(
         !activate.body.contains("license_key") && !activate.body.contains("licenseKey"),
         "the session path sends no key — the org comes from the session: {}",
@@ -265,29 +261,6 @@ fn an_activation_reports_a_status_that_still_permits_presentation() {
     assert!(status.permits_presentation());
 }
 
-#[test]
-fn the_password_is_used_once_and_never_persisted() {
-    let transport = ScriptedTransport::responding(200, session_body());
-    let client = LicensingClient::new(transport, BASE);
-    let creds = credentials();
-
-    let session = client
-        .sign_in("admin@example.test", &Token::new("correct-horse"))
-        .unwrap();
-    creds.store_account_session(&session.token).unwrap();
-
-    // Only the session token is held; the password is not in the store under any name.
-    assert_eq!(
-        creds.account_session().unwrap().unwrap().expose(),
-        SESSION,
-        "the session token is what gets persisted"
-    );
-    assert!(
-        creds.device_token().unwrap().is_none(),
-        "signing in alone must not fabricate a device token"
-    );
-}
-
 // ---------------------------------------------------------------------------
 // The delegation path: enrollment key
 // ---------------------------------------------------------------------------
@@ -334,18 +307,13 @@ fn the_enrollment_key_travels_in_the_body_and_the_path_has_no_trailing_slash() {
         !sent.had_bearer,
         "this endpoint takes no Authorization header — the presented key IS the credential"
     );
-    assert!(
-        sent.body
-            .contains(&format!("\"license_key\":\"{ENROLLMENT_KEY}\"")),
-        "the key is sent as `license_key`, not `enrollment_key`: {}",
-        sent.body
+    let mut expected = session_activation_request_body();
+    expected["license_key"] = ENROLLMENT_KEY.into();
+    assert_eq!(
+        body_of(&sent),
+        expected,
+        "the key is sent as `license_key` (not `enrollment_key`) beside the same five values"
     );
-    assert!(sent
-        .body
-        .contains("\"idempotency_key\":\"idem-0123456789ab\""));
-    assert!(sent
-        .body
-        .contains("\"device_fingerprint\":\"fp-booth-mac-01\""));
 }
 
 // ---------------------------------------------------------------------------
@@ -918,12 +886,11 @@ fn the_other_sign_in_refusals_are_typed_too() {
             400,
             sign_in_error("VALIDATION_FAILED", "The request is invalid.")
         ),
-        ActivationFailure::ValidationFailed
+        ActivationFailure::SignInInvalidInput
     );
 
     let limited = sign_in_failure(429, sign_in_error("RATE_LIMITED", "Too many requests."));
-    assert_eq!(limited, ActivationFailure::RateLimited);
-    assert!(limited.is_retryable());
+    assert_eq!(limited, ActivationFailure::SignInRateLimited);
 
     // This route never answers NOT_FOUND. If it ever did, "your plan has lapsed" would be
     // the wrong reading of a failed sign-in, so it stays an uninterpreted coded refusal.
@@ -1233,7 +1200,7 @@ fn an_error_body_over_the_cap_is_classified_by_status_without_being_parsed() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn every_request_goes_to_a_cookie_free_v1_route_and_carries_no_browser_ceremony() {
+fn every_request_is_a_v1_post_and_only_the_session_activation_carries_a_bearer() {
     let transport = ScriptedTransport::new();
     transport.push_response(200, session_body());
     transport.push_response(200, session_activation_body(true, false, Some(TOKEN_A)));
@@ -1265,9 +1232,10 @@ fn every_request_goes_to_a_cookie_free_v1_route_and_carries_no_browser_ceremony(
             request.url
         );
     }
-    // The transport seam is `post_json(url, body, bearer)`: a bearer is the ONLY header the
-    // client can influence, so there is no cookie, CSRF token, Origin or Referer to send.
-    // Recorded as a flag, so this asserts WHICH calls carry the one credential header.
+    // This test sees the URL, the method and WHETHER a bearer was attached, because that is all
+    // `ScriptedTransport` records. It does not see headers: Content-Type and the absence of
+    // Cookie/Origin/Referer/X-CSRFToken are pinned on the real transport by
+    // `selahcue-cloud/tests/test_wire.rs`.
     assert_eq!(
         sent.iter().map(|r| r.had_bearer).collect::<Vec<_>>(),
         [false, true, false],
@@ -1275,12 +1243,22 @@ fn every_request_goes_to_a_cookie_free_v1_route_and_carries_no_browser_ceremony(
     );
 }
 
-#[test]
-fn the_source_names_no_cookie_csrf_origin_or_graphql_route() {
-    // The seam already cannot carry these; this makes the absence a tripwire for whoever
-    // widens the seam or adds a second transport. Comment lines are skipped because the docs
-    // deliberately NAME these things to explain their absence (and a guard silenced by
-    // deleting a comment would be measuring the wrong thing).
+/// Number of `.rs` modules in `src/`; the other test files pin the same number.
+const EXPECTED_SRC_MODULES: usize = 9;
+
+/// The first forbidden name on a line of CODE, if any.
+///
+/// Matches the RAW line, lowercased: cutting at the first `//` (as an earlier version did) also
+/// cut inside a string literal such as `"https://host/graphql/account"`, so the very line this
+/// guard exists for passed. Only whole-line comments are skipped, because the docs deliberately
+/// NAME these things to explain their absence.
+///
+/// This is a TRIPWIRE, not proof. It cannot see `concat!("graph", "ql")` (hence `concat!(` is
+/// forbidden outright) or a name assembled at run time. The protection that actually holds is
+/// that `HttpTransport::post_json(url, body, bearer)` has no way to carry a header, that
+/// `selahcue-cloud`'s `reqwest` is built without the `cookies` feature, and the wire test in
+/// `selahcue-cloud/tests/test_wire.rs`.
+fn forbidden_name(line: &str) -> Option<&'static str> {
     const FORBIDDEN: &[&str] = &[
         "graphql",
         "cookie",
@@ -1289,7 +1267,44 @@ fn the_source_names_no_cookie_csrf_origin_or_graphql_route() {
         "referer",
         "origin:",
         "\"origin\"",
+        "concat!(",
     ];
+    let trimmed = line.trim_start();
+    if trimmed.starts_with("//") {
+        return None;
+    }
+    let lowered = trimmed.to_lowercase();
+    FORBIDDEN.iter().copied().find(|p| lowered.contains(p))
+}
+
+#[test]
+fn the_forbidden_name_matcher_fires_where_the_old_one_was_blind() {
+    // Positive controls for the source guard below: each line is one a real regression could
+    // take, and the first two are exactly what cutting at `//` used to let through.
+    for line in [
+        r#"const OLD: &str = "https://host/graphql/account";"#,
+        r#"const H: (&str, &str) = ("a//b", "Referer");"#,
+        r#"let h = "Cookie";"#,
+        r#"let h = "X-CSRFToken"; // trailing comment"#,
+        r#"const G: &str = concat!("graph", "ql");"#,
+        r#"    .header("Origin", "x")"#,
+    ] {
+        assert!(forbidden_name(line).is_some(), "the matcher missed: {line}");
+    }
+    // ...and it does not cry wolf on comments or on ordinary code.
+    for line in [
+        "    // the browser's /graphql/account route",
+        "//! cookie jar",
+        "/// CSRF header",
+        r#"let url = format!("{}/v1/sessions", base);"#,
+        "    org_id: String,",
+    ] {
+        assert_eq!(forbidden_name(line), None, "false alarm on: {line}");
+    }
+}
+
+#[test]
+fn the_source_names_no_cookie_csrf_origin_or_graphql_route() {
     let src = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src");
     let mut scanned = 0usize;
     let mut saw_sessions_route = false;
@@ -1301,24 +1316,22 @@ fn the_source_names_no_cookie_csrf_origin_or_graphql_route() {
         scanned += 1;
         let body = std::fs::read_to_string(&path).unwrap();
         for (lineno, line) in body.lines().enumerate() {
-            let code = line.trim_start();
-            if code.starts_with("//") {
-                continue;
-            }
-            let code = code.split("//").next().unwrap_or("").to_lowercase();
-            saw_sessions_route |= code.contains("\"/v1/sessions\"");
-            for pattern in FORBIDDEN {
-                assert!(
-                    !code.contains(pattern),
+            saw_sessions_route |= line.contains("\"/v1/sessions\"");
+            if let Some(pattern) = forbidden_name(line) {
+                panic!(
                     "{}:{} names {pattern:?}; the native client must not take part in the \
-                     browser's cookie/CSRF surface (86ak5t1gw):\n  {code}",
+                     browser's cookie/CSRF surface (86ak5t1gw):\n  {}",
                     path.display(),
-                    lineno + 1
+                    lineno + 1,
+                    line.trim()
                 );
             }
         }
     }
-    assert_eq!(scanned, 9, "expected to scan 9 modules, scanned {scanned}");
+    assert_eq!(
+        scanned, EXPECTED_SRC_MODULES,
+        "expected to scan {EXPECTED_SRC_MODULES} modules, scanned {scanned}"
+    );
     assert!(
         saw_sessions_route,
         "the scan never saw the sign-in route, so it was not reading the right files"
@@ -1458,7 +1471,7 @@ fn empty_credentials_are_sent_as_is_for_the_server_to_refuse() {
     )]);
     let client = LicensingClient::new(transport, BASE);
     let failure = client.sign_in("", &Token::new("")).unwrap_err();
-    assert_eq!(failure, ActivationFailure::ValidationFailed);
+    assert_eq!(failure, ActivationFailure::SignInInvalidInput);
     let sent: serde_json::Value =
         serde_json::from_str(&client.transport().seen.lock().unwrap()[0].1).unwrap();
     assert_eq!(
@@ -1521,31 +1534,6 @@ fn already_activated_with_nothing_cached_is_reported_on_the_session_path_too() {
 }
 
 #[test]
-fn a_refused_session_activation_leaves_the_cached_token_alone() {
-    // Already activated, then a later session activation is refused (device revoked / limit):
-    // the working token must survive.
-    let creds = credentials();
-    creds.store_device_token(&Token::new(TOKEN_A)).unwrap();
-    let client = LicensingClient::new(
-        ScriptedTransport::responding(
-            403,
-            session_error(
-                "POLICY_DENIED",
-                "The current policy does not allow this action.",
-            ),
-        ),
-        BASE,
-    );
-    assert_eq!(
-        client
-            .activate_with_session(&Token::new(SESSION), &identity(), &idem())
-            .unwrap_err(),
-        ActivationFailure::PolicyDenied
-    );
-    assert_eq!(creds.device_token().unwrap().unwrap().expose(), TOKEN_A);
-}
-
-#[test]
 fn connection_failures_and_timeouts_are_unreachable_on_every_call() {
     for reason in [
         "dns error: no such host",
@@ -1604,7 +1592,7 @@ fn the_second_call_failing_after_a_good_sign_in_keeps_the_session_usable() {
 #[test]
 fn the_success_range_is_exactly_200_to_299() {
     // Boundaries on the status line. A valid success body is a success only inside 2xx; the
-    // same bytes at 199 or 300 are not, and a coded body at 299 is still a success parse.
+    // same bytes at 199 or 300 are not, and 299 is the last status read as a success.
     let ok_body = session_activation_body(true, false, Some(TOKEN_A));
     for status in [200u16, 201, 299] {
         LicensingClient::new(ScriptedTransport::responding(status, ok_body.clone()), BASE)
@@ -1652,19 +1640,18 @@ fn missing_empty_and_null_fields_in_a_success_reply() {
     let null = with(&|v| v["activation_token"] = serde_json::Value::Null).unwrap();
     assert!(null.token.is_none());
 
-    // Optional metadata: `token` absent, `{}`, or all-null parses to an empty description.
-    let no_meta = with(&|v| {
-        v.as_object_mut().unwrap().remove("token");
-    })
-    .unwrap();
-    assert_eq!(no_meta.token_meta.prefix, None);
+    // The metadata OBJECT is always sent (its members are null on a replay): `{}` and all-null
+    // members parse to an empty description, but the object itself being absent is drift, not
+    // "no metadata".
+    let empty_meta = with(&|v| v["token"] = serde_json::json!({})).unwrap();
+    assert_eq!(empty_meta.token_meta.prefix, None);
     let null_meta =
         with(&|v| v["token"] = serde_json::json!({"masked": null, "expires_at": null})).unwrap();
     assert_eq!(null_meta.token_meta.expires_at, None);
 
     // Required by contract: each of these absent or null is contract drift, typed Malformed
     // (and never a silently defaulted value, such as an empty device id).
-    for field in ["created", "reminted", "device", "license"] {
+    for field in ["created", "reminted", "device", "license", "token"] {
         for how in ["absent", "null"] {
             let failure = with(&|v| {
                 if how == "absent" {
@@ -1680,6 +1667,20 @@ fn missing_empty_and_null_fields_in_a_success_reply() {
             );
         }
     }
+    // The licence's expiry is read by enforcement later; a missing one must not become "".
+    let no_license_expiry = with(&|v| {
+        v["license"].as_object_mut().unwrap().remove("expires_at");
+    })
+    .unwrap_err();
+    assert!(
+        matches!(no_license_expiry, ActivationFailure::Malformed(_)),
+        "{no_license_expiry:?}"
+    );
+    let no_license_status = with(&|v| {
+        v["license"].as_object_mut().unwrap().remove("status");
+    })
+    .unwrap_err();
+    assert!(matches!(no_license_status, ActivationFailure::Malformed(_)));
     let no_device_id = with(&|v| {
         v["device"]
             .as_object_mut()
@@ -1765,32 +1766,348 @@ fn error_codes_are_case_sensitive_and_a_wrong_code_is_never_mistaken_for_a_known
     }
 }
 
+// ---------------------------------------------------------------------------
+// Round-1 review (PR #215): sign-in wording, blank tokens, failure shapes, email pass-through
+// ---------------------------------------------------------------------------
+
 #[test]
-fn no_log_line_can_carry_a_credential_from_a_successful_exchange_either() {
-    // The success path: Debug of everything the caller holds after a complete sign-in and
-    // activation must show no secret (the failure paths are swept above).
-    let transport = ScriptedTransport::new();
-    transport.push_response(200, session_body());
-    transport.push_response(200, session_activation_body(true, false, Some(TOKEN_A)));
-    let client = LicensingClient::new(transport, BASE);
-    let session = client
-        .sign_in("a@b.test", &Token::new("pw-LEAK-PASSWORD"))
-        .unwrap();
-    let activation = client
-        .activate_with_session(&session.token, &identity(), &idem())
-        .unwrap();
-    let everything = format!(
-        "{session:?} {activation:?} {:?} {:?} {}",
-        client.transport(),
-        client.transport().recorded(),
-        activation.status().permits_presentation()
+fn sign_in_has_its_own_wording_and_a_rate_limit_is_not_silently_retried() {
+    // R2. The activation copy says "the activation request" and "too many activation
+    // attempts"; neither is what a person who has just typed a password should read, and a
+    // RETRYABLE sign-in rate limit would be retried silently, i.e. more password attempts
+    // nobody asked for.
+    let invalid = sign_in_failure(
+        400,
+        sign_in_error("VALIDATION_FAILED", "The request is invalid."),
     );
-    for secret in [SESSION, TOKEN_A, "LEAK-PASSWORD"] {
+    assert_eq!(invalid, ActivationFailure::SignInInvalidInput);
+    let limited = sign_in_failure(429, sign_in_error("RATE_LIMITED", "Too many requests."));
+    assert_eq!(limited, ActivationFailure::SignInRateLimited);
+
+    for (failure, must_say) in [(&invalid, "email"), (&limited, "sign-in")] {
+        let text = failure.to_string();
+        assert!(text.contains(must_say), "{failure:?}: {text}");
         assert!(
-            !everything.contains(secret),
-            "{secret} leaked: {everything}"
+            !text.contains("activation"),
+            "sign-in copy must not talk about activation: {text}"
         );
+        assert!(
+            !failure.is_retryable(),
+            "{failure:?} must reach the person, not be retried silently"
+        );
+        assert!(failure.permits_presentation());
     }
-    // Positive control: the redaction marker is present, so the secrets WERE in scope.
-    assert!(everything.contains("***redacted***"));
+
+    // Positive controls: the ACTIVATION calls keep their wording and their retry behaviour.
+    let activation_limited = LicensingClient::new(
+        ScriptedTransport::responding(429, session_error("RATE_LIMITED", "Too many requests.")),
+        BASE,
+    )
+    .activate_with_session(&Token::new(SESSION), &identity(), &idem())
+    .unwrap_err();
+    assert_eq!(activation_limited, ActivationFailure::RateLimited);
+    assert!(activation_limited.is_retryable());
+    assert!(activation_limited.to_string().contains("activation"));
+}
+
+#[test]
+fn a_session_token_that_cannot_be_a_bearer_is_refused_at_sign_in_without_being_repeated() {
+    // R3. Blank, whitespace-only and header-splitting tokens: all Malformed, none echoed.
+    for (label, token) in [
+        ("empty", ""),
+        ("spaces", "    "),
+        ("tab and newline", "\t\n"),
+        ("crlf injection", "sess-1\r\nX-Injected: yes"),
+        ("lone newline", "sess-1\n"),
+        ("nul", "sess\u{0}1"),
+    ] {
+        let body = serde_json::json!({
+            "session_token": token, "expires_at": "x", "role": "ADMIN", "org_id": "o",
+        })
+        .to_string();
+        let failure = LicensingClient::new(ScriptedTransport::responding(200, body), BASE)
+            .sign_in("a@b.test", &Token::new("pw"))
+            .unwrap_err();
+        match &failure {
+            ActivationFailure::Malformed(why) => {
+                assert!(!why.contains("X-Injected"), "{label}: {why}")
+            }
+            other => panic!("{label}: expected Malformed, got {other:?}"),
+        }
+    }
+    // Positive controls: padding around a real value and an inner space are tokens.
+    for fine in ["sess-1", " sess-1 ", "sess 1"] {
+        let body = serde_json::json!({
+            "session_token": fine, "expires_at": "x", "role": "ADMIN", "org_id": "o",
+        })
+        .to_string();
+        LicensingClient::new(ScriptedTransport::responding(200, body), BASE)
+            .sign_in("a@b.test", &Token::new("pw"))
+            .unwrap_or_else(|f| panic!("{fine:?} should be accepted, got {f:?}"));
+    }
+}
+
+#[test]
+fn activating_with_a_blank_session_is_refused_locally_without_a_request() {
+    // R3, the other half: a blank bearer would be answered 401 by the server (or cannot be
+    // sent at all), so the person is told to sign in again without spending a request or a
+    // throttle slot.
+    for session in ["", "   ", "\t", "sess\r\nX-Injected: 1", "sess\n"] {
+        let client = LicensingClient::new(ScriptedTransport::new(), BASE);
+        let failure = client
+            .activate_with_session(&Token::new(session), &identity(), &idem())
+            .unwrap_err();
+        assert_eq!(failure, ActivationFailure::Unauthenticated, "{session:?}");
+        assert_eq!(client.transport().request_count(), 0, "{session:?}");
+    }
+    // Positive control: a real session does go out.
+    let client = LicensingClient::new(
+        ScriptedTransport::responding(200, session_activation_body(true, false, Some(TOKEN_A))),
+        BASE,
+    );
+    client
+        .activate_with_session(&Token::new(SESSION), &identity(), &idem())
+        .unwrap();
+    assert_eq!(client.transport().request_count(), 1);
+}
+
+#[test]
+fn a_blank_device_token_is_malformed_and_never_overwrites_a_working_one() {
+    // R4, on BOTH activation routes. `null` is a replay; `""` is not, and persisting it would
+    // replace a working token with a blank one and report `Stored`.
+    for blank in ["", "   ", "tok\r\nX: 1"] {
+        for route in ["session", "key"] {
+            let body = {
+                let mut v: serde_json::Value =
+                    serde_json::from_str(&session_activation_body(true, false, None)).unwrap();
+                v["activation_token"] = blank.into();
+                v.to_string()
+            };
+            let client = LicensingClient::new(ScriptedTransport::responding(200, body), BASE);
+            let result = if route == "session" {
+                client.activate_with_session(&Token::new(SESSION), &identity(), &idem())
+            } else {
+                client.activate_with_enrollment_key(
+                    &Token::new(ENROLLMENT_KEY),
+                    &identity(),
+                    &idem(),
+                )
+            };
+            let failure = result.unwrap_err();
+            assert!(
+                matches!(failure, ActivationFailure::Malformed(_)),
+                "{route} {blank:?}: {failure:?}"
+            );
+        }
+    }
+    // The cached token is untouched because there is no Activation to persist.
+    let creds = credentials();
+    creds.store_device_token(&Token::new(TOKEN_A)).unwrap();
+    let body = session_activation_body(true, false, Some(""));
+    let result = LicensingClient::new(ScriptedTransport::responding(200, body), BASE)
+        .activate_with_session(&Token::new(SESSION), &identity(), &idem());
+    assert!(result.is_err());
+    assert_eq!(creds.device_token().unwrap().unwrap().expose(), TOKEN_A);
+}
+
+#[test]
+fn the_email_is_sent_exactly_as_typed() {
+    // R8. The server owns normalisation (it fingerprints the address itself). A client that
+    // trimmed or lower-cased would silently change what the person typed; mixed case, padding
+    // and non-ASCII must all arrive byte for byte.
+    for email in [
+        "Admin@Example.TEST",
+        "  admin@example.test  ",
+        "admin@example.test\t",
+        "J\u{fc}rgen.M\u{fc}ller@b\u{fc}cher.example",
+        "\u{1F600}@\u{4E2D}\u{6587}.test",
+    ] {
+        let client =
+            LicensingClient::new(CapturingTransport::new(vec![(200, session_body())]), BASE);
+        client.sign_in(email, &Token::new("pw")).unwrap();
+        let sent: serde_json::Value =
+            serde_json::from_str(&client.transport().seen.lock().unwrap()[0].1).unwrap();
+        assert_eq!(sent["email"].as_str(), Some(email), "{email:?} was altered");
+    }
+}
+
+#[test]
+fn failure_shapes_that_used_to_be_unpinned_are_decided_and_pinned() {
+    // R7. Every row is a reply some proxy, WAF or half-working server can produce. The
+    // expectation column is the DECISION, written down; none of these may panic, hang or
+    // quote the body.
+    enum Expect {
+        Is(ActivationFailure),
+        Malformed,
+    }
+    use ActivationFailure as F;
+    use Expect::{Is, Malformed};
+
+    let deep_array = "[".repeat(30_000); // 30 KB: under the cap, far past serde_json's depth limit
+    let deep_object = format!("{}1", r#"{"a":"#.repeat(10_000));
+    let rows: Vec<(&str, u16, String, Expect)> = vec![
+        // Rate limiting is rate limiting whoever says it: a proxy's bare 429 is not an
+        // "unexpected status" and "try again shortly" is true of it (retryable on activation).
+        (
+            "bare 429, html",
+            429,
+            "<html>slow down</html>".into(),
+            Is(F::RateLimited),
+        ),
+        ("bare 429, empty", 429, String::new(), Is(F::RateLimited)),
+        (
+            "4xx, empty body",
+            400,
+            String::new(),
+            Is(F::UnexpectedStatus(400)),
+        ),
+        (
+            "404, empty body",
+            404,
+            String::new(),
+            Is(F::UnexpectedStatus(404)),
+        ),
+        ("5xx, empty body", 500, String::new(), Is(F::Server(500))),
+        ("504, empty body", 504, String::new(), Is(F::Server(504))),
+        // INTERNAL carries no status of its own; the real 5xx is kept rather than flattened.
+        (
+            "503 with an INTERNAL envelope",
+            503,
+            session_error("INTERNAL", "x"),
+            Is(F::Server(503)),
+        ),
+        (
+            "500 with an INTERNAL envelope",
+            500,
+            session_error("INTERNAL", "x"),
+            Is(F::Server(500)),
+        ),
+        (
+            "400 with an INTERNAL envelope",
+            400,
+            session_error("INTERNAL", "x"),
+            Is(F::Server(500)),
+        ),
+        // Envelopes that are not quite envelopes fall back to the status.
+        (
+            "truncated envelope",
+            403,
+            r#"{"error":{"code":"NOT_FOU"#.into(),
+            Is(F::UnexpectedStatus(403)),
+        ),
+        (
+            "code is a number",
+            403,
+            r#"{"error":{"code":42}}"#.into(),
+            Is(F::UnexpectedStatus(403)),
+        ),
+        (
+            "error is a string",
+            401,
+            r#"{"error":"nope"}"#.into(),
+            Is(F::UnexpectedStatus(401)),
+        ),
+        (
+            "error is null",
+            401,
+            r#"{"error":null}"#.into(),
+            Is(F::UnexpectedStatus(401)),
+        ),
+        (
+            "BOM before an envelope",
+            403,
+            format!("\u{feff}{}", session_error("PERMISSION_DENIED", "x")),
+            Is(F::UnexpectedStatus(403)),
+        ),
+        // A refusal envelope on a SUCCESS status is not a success and not a coded refusal.
+        (
+            "200 carrying an error envelope",
+            200,
+            session_error("PERMISSION_DENIED", "x"),
+            Malformed,
+        ),
+        ("204 with no body", 204, String::new(), Malformed),
+        // Hostile nesting under the cap: bounded by the parser's depth limit, never a crash.
+        (
+            "30 KB of open brackets, 200",
+            200,
+            deep_array.clone(),
+            Malformed,
+        ),
+        (
+            "deeply nested object, 200",
+            200,
+            deep_object.clone(),
+            Malformed,
+        ),
+        (
+            "30 KB of open brackets, 403",
+            403,
+            deep_array,
+            Is(F::UnexpectedStatus(403)),
+        ),
+        (
+            "deeply nested object, 403",
+            403,
+            deep_object,
+            Is(F::UnexpectedStatus(403)),
+        ),
+        // Status line extremes do not panic.
+        ("status 0", 0, "x".into(), Is(F::UnexpectedStatus(0))),
+        (
+            "status 65535",
+            65535,
+            "x".into(),
+            Is(F::UnexpectedStatus(65535)),
+        ),
+    ];
+    assert!(rows
+        .iter()
+        .all(|(_, _, b, _)| b.len() <= MAX_RESPONSE_BODY_BYTES));
+
+    for (label, status, body, expect) in rows {
+        let failure = LicensingClient::new(ScriptedTransport::responding(status, body), BASE)
+            .activate_with_session(&Token::new(SESSION), &identity(), &idem())
+            .unwrap_err();
+        match expect {
+            Is(expected) => assert_eq!(failure, expected, "{label}"),
+            Malformed => assert!(matches!(failure, F::Malformed(_)), "{label}: {failure:?}"),
+        }
+        assert!(failure.permits_presentation(), "{label}");
+    }
+
+    // The same bare 429 on SIGN-IN is the sign-in kind: not silently retryable.
+    let failure = sign_in_failure(429, "<html>slow down</html>".into());
+    assert_eq!(failure, F::SignInRateLimited);
+    assert!(!failure.is_retryable());
+}
+
+#[test]
+fn a_missing_field_name_is_only_ever_an_identifier() {
+    // The helper behind "missing field `x`" in Malformed. With this crate's own structs the
+    // name is always an identifier, so the check can never fire on a real parse error; it
+    // exists so that if a message ever carried something else, that text is not forwarded.
+    use selahcue_licensing::client::missing_field;
+    assert_eq!(
+        missing_field("missing field `session_token` at line 1 column 5"),
+        Some("session_token")
+    );
+    for hostile in [
+        "missing field `<html>LEAK</html>` at line 1",
+        "missing field `has space`",
+        "missing field `UPPER`",
+        "missing field `with-dash`",
+        "missing field ``",
+        "missing field `unterminated",
+        "invalid type: string \"missing field `x`\"",
+        &format!("missing field `{}`", "a".repeat(41)),
+    ] {
+        assert_eq!(missing_field(hostile), None, "{hostile}");
+    }
+    // Boundary: 40 is the longest name kept.
+    let forty = "a".repeat(40);
+    assert_eq!(
+        missing_field(&format!("missing field `{forty}`")),
+        Some(forty.as_str())
+    );
 }

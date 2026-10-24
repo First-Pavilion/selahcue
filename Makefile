@@ -770,6 +770,12 @@ ci: ## Run the local Rust/Flutter CI gate (see the header for what CI runs that 
 	# this is the licensing-crate pattern (`test -p selahcue-licensing --release`) applied here.
 	$(CARGO) test $(WS) -p selahcue-cloud --features openai --release --no-fail-fast
 	$(CARGO) clippy $(WS) -p selahcue-cloud --features openai --release --all-targets -- -D warnings
+	# The production HTTP transport (feature `http`) is off by default, so nothing above compiles
+	# or runs it -- and `tests/test_wire.rs` is the only thing that looks at the bytes it really
+	# sends (Content-Type, the bearer, and the ABSENCE of Cookie/Origin/Referer/CSRF headers that
+	# the native sign-in routes' CSRF exemption rests on, 86ak5t1gw / 17tnw2b1we2). Loopback only.
+	$(CARGO) test $(WS) -p selahcue-cloud --features http --no-fail-fast
+	$(CARGO) clippy $(WS) -p selahcue-cloud --features http --all-targets -- -D warnings
 	# The Deepgram streaming transport (86akby4yz) is behind an off-by-default feature, so the
 	# workspace run above does NOT build it. Lint + test it explicitly: an off-by-default feature
 	# that no gate ever compiles is exactly how selahcue-stt ended up linted by nothing. The

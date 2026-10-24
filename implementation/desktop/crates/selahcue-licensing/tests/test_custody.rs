@@ -51,6 +51,14 @@ const SESSION_TOKEN: &str = "sess-11112222333344445555666677778888";
 const ENROLLMENT_KEY: &str = "SC-TRIAL-Z9Y8-X7W6-V5U4-T3S2-R1Q0-P9N8-M7L6-K5J4";
 const PASSWORD: &str = "correct-horse-battery-staple";
 
+/// A licence block with no meaning of its own; `LicenseDto` has no `Default` on purpose.
+fn license() -> LicenseDto {
+    LicenseDto {
+        status: "ACTIVATED".into(),
+        expires_at: "2026-12-31T23:59:59.999999+00:00".into(),
+    }
+}
+
 fn credentials() -> DeviceCredentials<InMemorySecretStore> {
     DeviceCredentials::new(InMemorySecretStore::new())
 }
@@ -221,7 +229,7 @@ fn no_type_this_crate_exposes_leaks_credential_material_when_formatted() {
                 device_public_id: "dev_00000000000000000000000000000000".into(),
                 platform: "macos".into(),
                 token_meta: TokenMetaDto::default(),
-                license: LicenseDto::default(),
+                license: license(),
             }
         ),
     ));
@@ -268,7 +276,7 @@ fn no_type_this_crate_exposes_leaks_credential_material_when_formatted() {
             platform: "macos".into(),
         },
         token: TokenMetaDto::default(),
-        license: LicenseDto::default(),
+        license: license(),
     };
     formatted.push((
         "ActivationResponse/Debug",
@@ -415,8 +423,12 @@ fn every_secret_bearing_public_field_is_token_typed_so_the_sweep_cannot_fall_beh
             "metadata only (masked/prefix/suffix/fingerprint); no secret",
         ),
         (
+            "token_meta: TokenMetaDto",
+            "metadata only (masked/prefix/suffix/fingerprint); no secret",
+        ),
+        (
             "password: String",
-            "must be String to serialize; hand-redacted Debug on LoginInput",
+            "must be String to serialize; hand-redacted Debug on SessionRequest",
         ),
         (
             "license_key: String",
@@ -427,10 +439,6 @@ fn every_secret_bearing_public_field_is_token_typed_so_the_sweep_cannot_fall_beh
             "a client-chosen correlation id, deliberately visible in logs",
         ),
         ("key_id: String", "names a PUBLIC key; not secret"),
-        (
-            "token_meta: Option<TokenMetaDto>",
-            "metadata only; no secret",
-        ),
         (
             "had_bearer: bool",
             "a flag recording THAT a bearer was sent, never its value",
@@ -488,9 +496,11 @@ fn every_secret_bearing_public_field_is_token_typed_so_the_sweep_cannot_fall_beh
             {
                 continue;
             }
-            // The TYPE must be Token — not the line, not a comment on it.
+            // The TYPE must be exactly `Token` or `Option<Token>` — not the line, not a comment
+            // on it, and not any type whose NAME merely contains the word (`TokenMetaDto` did
+            // pass a `contains("Token")` check while being a plain struct of strings).
             assert!(
-                ty.contains("Token"),
+                ty == "Token" || ty == "Option<Token>",
                 "{}:{} declares a credential-named field whose TYPE is not `Token`, so a \
                  `{{:?}}` on its struct would print the secret verbatim:\n  {code}\n\
                  Type it as `Token`, or add it to ALLOWED with the reason it is safe.",
