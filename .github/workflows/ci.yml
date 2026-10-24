@@ -814,6 +814,21 @@ jobs:
       - name: Clippy (cloud openai feature, RELEASE)
         if: ${{ !cancelled() }}
         run: cargo clippy -p selahcue-cloud --features openai --release --all-targets -- -D warnings
+      # The production HTTP transport is behind an off-by-default feature, so nothing above builds
+      # or runs it. `test_wire.rs` reads the bytes it really sends: Content-Type, the bearer, and
+      # no Cookie/Origin/Referer/CSRF header (the native sign-in routes' CSRF exemption rests on
+      # that, 86ak5t1gw / 17tnw2b1we2). Loopback socket only; its own steps for the same reason as
+      # the clippy/test split above.
+      - name: Test (cloud http feature - the real transport's wire format, loopback only)
+        if: ${{ !cancelled() }}
+        # The transport honours HTTP_PROXY/ALL_PROXY and has no loopback bypass (and must not gain
+        # one: it would change behaviour for real proxy users), so keep loopback off any proxy.
+        env:
+          NO_PROXY: 127.0.0.1,localhost
+        run: cargo test -p selahcue-cloud --features http --no-fail-fast
+      - name: Clippy (cloud http feature)
+        if: ${{ !cancelled() }}
+        run: cargo clippy -p selahcue-cloud --features http --all-targets -- -D warnings
       # The Deepgram streaming transport (86akby4yz) is behind an off-by-default feature, so the
       # workspace run does not build it. An off-by-default feature no gate compiles is how
       # selahcue-stt ended up linted and tested by nothing; this keeps that from repeating.
