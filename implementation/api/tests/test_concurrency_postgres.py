@@ -10,6 +10,7 @@ import time
 from datetime import timedelta
 
 import pytest
+from django.core.cache import cache
 from django.db import connection, connections, transaction
 from django.utils import timezone
 
@@ -28,8 +29,17 @@ from selahcue_api.apps.devices.services import (
     activate_device_with_session,
 )
 from selahcue_api.apps.license_keys.models import AppLicenseKey, LicenseKeyStatus
-from selahcue_api.apps.license_keys.state_machine import AUDIT_TARGET_TYPE
-from selahcue_api.graphql.context import ActorContext, ActorKind
+from selahcue_api.apps.license_keys.services import (
+    ReinstateLicenseKeyData,
+    SuspendLicenseKeyData,
+    reinstate_license_key,
+    suspend_license_key,
+)
+from selahcue_api.apps.license_keys.state_machine import (
+    AUDIT_TARGET_TYPE,
+    apply_license_status_transition,
+)
+from selahcue_api.graphql.context import ActorContext, ActorKind, StaffPermission
 from selahcue_api.graphql.errors import ErrorCode, SafeAPIError
 
 pytestmark = [
@@ -39,6 +49,16 @@ pytestmark = [
         reason="select_for_update is a no-op on SQLite; this race is only observable on Postgres",
     ),
 ]
+
+
+@pytest.fixture(autouse=True)
+def _fresh_lifecycle_budget():
+    """The lifecycle mutations spend a per-staff throttle budget kept in a process-wide
+    cache, and several races here share an actor. Start every test with an empty cache so
+    headroom never depends on which tests ran before."""
+    cache.clear()
+    yield
+    cache.clear()
 
 
 # Module-local seeding helper, copied verbatim from tests/test_entitlement_manifest_slice.py
@@ -110,6 +130,72 @@ def _licence_row_waiters():
         return cursor.fetchone()[0]
 
 
+def _park_then_release(key, targets, *, one_at_a_time):
+    """The park-then-release machinery shared by `_race_behind_row_lock` and
+    `_race_in_arrival_order`. Returns (results, errors, waiting): `results` are
+    (index, return value) and `errors` are (index, exception), each sorted by the target's
+    index; `waiting` is how many callers were provably parked on a lock at release time.
+
+    A third connection holds `FOR UPDATE` on the licence row, the targets are started, and
+    this waits (polling `pg_stat_activity`) until they are provably parked. With
+    `one_at_a_time` each target is started only once the previous one is parked, so they join
+    the lock queue in the order given; otherwise all are started at once.
+    """
+    holding = threading.Event()
+    release = threading.Event()
+    results = []
+    errors = []
+
+    def hold():
+        try:
+            with transaction.atomic():
+                AppLicenseKey.objects.select_for_update().get(pk=key.pk)
+                holding.set()
+                release.wait(timeout=60)
+        finally:
+            connections.close_all()
+
+    def run(index, target):
+        try:
+            results.append((index, target()))
+        except Exception as exc:
+            errors.append((index, exc))
+        finally:
+            connections.close_all()
+
+    def wait_for_waiters(count):
+        deadline = time.monotonic() + 15
+        while _licence_row_waiters() < count and time.monotonic() < deadline:
+            time.sleep(0.02)
+
+    holder = threading.Thread(target=hold)
+    holder.start()
+    threads = []
+    waiting = 0
+    try:
+        assert holding.wait(30), "the holder never took the licence-row lock"
+        for index, target in enumerate(targets):
+            thread = threading.Thread(target=run, args=(index, target))
+            threads.append(thread)
+            thread.start()
+            if one_at_a_time:
+                wait_for_waiters(index + 1)
+        wait_for_waiters(len(targets))
+        waiting = _licence_row_waiters()
+    finally:
+        # Whatever happened above (a failed assertion, an error in the polling query), free
+        # the row: otherwise the holder keeps it locked for its full 60 s wait and stalls
+        # the next test's teardown.
+        release.set()
+        holder.join(timeout=60)
+        for t in threads:
+            t.join(timeout=60)
+    assert not holder.is_alive() and not any(t.is_alive() for t in threads), (
+        "a caller did not complete once the licence row was released"
+    )
+    return sorted(results, key=lambda r: r[0]), sorted(errors, key=lambda e: e[0]), waiting
+
+
 def _race_behind_row_lock(key, targets):
     """Run `targets` concurrently with the overlap at the licence-row lock GUARANTEED.
 
@@ -122,51 +208,8 @@ def _race_behind_row_lock(key, targets):
     parked at release time, for the caller to assert, so that "the race never formed" fails
     loudly instead of reading as a pass.
     """
-    holding = threading.Event()
-    release = threading.Event()
-    errors = []
-
-    def hold():
-        try:
-            with transaction.atomic():
-                AppLicenseKey.objects.select_for_update().get(pk=key.pk)
-                holding.set()
-                release.wait(timeout=60)
-        finally:
-            connections.close_all()
-
-    def run(target):
-        try:
-            target()
-        except Exception as exc:
-            errors.append(exc)
-        finally:
-            connections.close_all()
-
-    holder = threading.Thread(target=hold)
-    holder.start()
-    threads = []
-    try:
-        assert holding.wait(30), "the holder never took the licence-row lock"
-        threads = [threading.Thread(target=run, args=(target,)) for target in targets]
-        for t in threads:
-            t.start()
-        deadline = time.monotonic() + 15
-        while _licence_row_waiters() < len(targets) and time.monotonic() < deadline:
-            time.sleep(0.02)
-        waiting = _licence_row_waiters()
-    finally:
-        # Whatever happened above (a failed assertion, an error in the polling query), free
-        # the row: otherwise the holder keeps it locked for its full 60 s wait and stalls
-        # the next test's teardown.
-        release.set()
-        holder.join(timeout=60)
-        for t in threads:
-            t.join(timeout=60)
-    assert not holder.is_alive() and not any(t.is_alive() for t in threads), (
-        "an activation did not complete once the licence row was released"
-    )
-    return errors, waiting
+    _, errors, waiting = _park_then_release(key, targets, one_at_a_time=False)
+    return [exc for _, exc in errors], waiting
 
 
 def _enroll(full_key, *, idem, fingerprint):
@@ -189,9 +232,10 @@ def _licence_transitions(key):
     ).count()
 
 
-def test_a_polling_error_releases_the_held_licence_row_promptly(monkeypatch):
-    """If the poll in `_race_behind_row_lock` raises, the holder must be released at once, not
-    left holding the licence row for its full 60 s wait (which would stall the next test)."""
+@pytest.mark.parametrize("race_name", ["_race_behind_row_lock", "_race_in_arrival_order"])
+def test_a_polling_error_releases_the_held_licence_row_promptly(monkeypatch, race_name):
+    """If the poll in either helper raises, the holder must be released at once, not left
+    holding the licence row for its full 60 s wait (which would stall the next test)."""
     key, full_key = _seed_license_key(tag="pollerror", device_limit=1)
 
     def broken_poll():
@@ -201,7 +245,7 @@ def test_a_polling_error_releases_the_held_licence_row_promptly(monkeypatch):
     started = time.monotonic()
 
     with pytest.raises(RuntimeError, match="simulated pg_stat_activity failure"):
-        _race_behind_row_lock(
+        globals()[race_name](
             key, [_enroll(full_key, idem="poll-error-activation", fingerprint="fp-poll-error")]
         )
 
@@ -578,8 +622,6 @@ def test_an_enrollment_activation_racing_an_account_activation_writes_one_transi
 
 # --- 86ak5mn0c: staff suspend / reinstate under a real race -------------------------------
 def _lifecycle_staff(actor_id="staff_race_susp"):
-    from selahcue_api.graphql.context import StaffPermission
-
     return ActorContext(
         kind=ActorKind.STAFF,
         actor_id=actor_id,
@@ -593,8 +635,6 @@ RACE_REASON = "Race battery: holding the licence while billing follows up."
 
 
 def _suspend_call(key, idem, *, actor_id="staff_race_susp"):
-    from selahcue_api.apps.license_keys.services import SuspendLicenseKeyData, suspend_license_key
-
     return lambda: suspend_license_key(
         _lifecycle_staff(actor_id),
         SuspendLicenseKeyData(
@@ -604,11 +644,6 @@ def _suspend_call(key, idem, *, actor_id="staff_race_susp"):
 
 
 def _reinstate_call(key, idem, *, actor_id="staff_race_susp"):
-    from selahcue_api.apps.license_keys.services import (
-        ReinstateLicenseKeyData,
-        reinstate_license_key,
-    )
-
     return lambda: reinstate_license_key(
         _lifecycle_staff(actor_id),
         ReinstateLicenseKeyData(
@@ -619,8 +654,6 @@ def _reinstate_call(key, idem, *, actor_id="staff_race_susp"):
 
 def _revoke_call(key, idem):
     """The revoke mutation (86ak1090r) is a sibling ticket; its writer call is this."""
-    from selahcue_api.apps.license_keys.state_machine import apply_license_status_transition
-
     return lambda: apply_license_status_transition(
         key,
         to_status=LicenseKeyStatus.REVOKED,
@@ -632,55 +665,17 @@ def _revoke_call(key, idem):
 
 def _race_in_arrival_order(key, targets):
     """`_race_behind_row_lock`, but the targets are released into the lock queue ONE AT A TIME,
-    each parked before the next is started, so the order they are granted the row is the order
-    given. Postgres queues row-lock waiters, so the first parked is the first served.
+    each parked before the next is started, so the order they join the queue is the order
+    given. Returns (results, errors, waiting), indexed by target (see `_park_then_release`).
 
-    That is what lets a test name BOTH outcomes of a race instead of asserting a disjunction
-    over whichever one the scheduler happened to pick: suspend-wins and activation-wins are
-    different states, and each is checked against its own expectation.
+    What this does and does not control. With TWO waiters, Postgres serves the first parked
+    first, which is what lets a test name BOTH outcomes of a two-way race and check each
+    against its own expectation. With MORE than two the first is still served first, but the
+    rest are woken together and their order is a scheduling race (measured: 6 of 20 inversions
+    with six waiters), so a test with three or more callers must assert invariants that hold
+    for every order of the later ones, not a particular order.
     """
-    holding = threading.Event()
-    release = threading.Event()
-    results, errors = [], []
-
-    def hold():
-        try:
-            with transaction.atomic():
-                AppLicenseKey.objects.select_for_update().get(pk=key.pk)
-                holding.set()
-                release.wait(timeout=60)
-        finally:
-            connections.close_all()
-
-    def run(index, target):
-        try:
-            results.append((index, target()))
-        except Exception as exc:
-            errors.append((index, exc))
-        finally:
-            connections.close_all()
-
-    holder = threading.Thread(target=hold)
-    holder.start()
-    threads = []
-    waiting = 0
-    try:
-        assert holding.wait(30), "the holder never took the licence-row lock"
-        for index, target in enumerate(targets):
-            thread = threading.Thread(target=run, args=(index, target))
-            threads.append(thread)
-            thread.start()
-            deadline = time.monotonic() + 15
-            while _licence_row_waiters() < index + 1 and time.monotonic() < deadline:
-                time.sleep(0.02)
-        waiting = _licence_row_waiters()
-    finally:
-        release.set()
-        holder.join(timeout=60)
-        for t in threads:
-            t.join(timeout=60)
-    assert not holder.is_alive() and not any(t.is_alive() for t in threads)
-    return sorted(results, key=lambda r: r[0]), sorted(errors, key=lambda e: e[0]), waiting
+    return _park_then_release(key, targets, one_at_a_time=True)
 
 
 def _lifecycle_rows(key, **filters):
@@ -817,11 +812,10 @@ def test_two_concurrent_suspensions_write_exactly_one_audit_row(same_key):
 
 
 def test_a_reinstate_retried_while_the_original_is_in_flight_succeeds_once_and_never_errors():
-    """The retry hazard the pre-check alone cannot cover. Two copies of the SAME reinstate are
-    both past the "have I already done this?" check (nothing has committed yet) and parked on
-    the licence row. The first reinstates; the second then finds a licence that is no longer
-    suspended — an ordinary reinstatement would refuse that, but this is the same request, so
-    the caller must get the original success back, not a CONFLICT for a request that worked."""
+    """Two copies of the SAME reinstate are both parked on the licence row. The first
+    reinstates; the second finds, under the lock, that its own request already took effect
+    and returns that outcome. An ordinary second reinstate would be refused (the licence is no
+    longer suspended); this one is not, and it leaves no refusal row behind."""
     key, _ = _seed_license_key(tag="reinretry")
     suspender = _suspend_call(key, "reinretry-suspend-0001")
     suspender()
@@ -838,6 +832,57 @@ def test_a_reinstate_retried_while_the_original_is_in_flight_succeeds_once_and_n
     key.refresh_from_db()
     assert key.status == LicenseKeyStatus.ISSUED and key.prior_status == ""
     assert _lifecycle_rows(key, action="license_key.reinstated", result="SUCCESS").count() == 1
+    assert not _lifecycle_rows(key, result="DENIED").exists(), "no spurious refusal row"
+
+
+ROUNDS = 3
+
+
+@pytest.mark.parametrize("direction", ["reinstate-k1", "suspend-k1"])
+def test_a_duplicate_request_with_another_staff_action_between_the_copies_is_not_reapplied(
+    direction,
+):
+    """The race the retry lookup must win by being UNDER the row lock. Three callers are parked
+    on the licence row: the original request (staff_a, key K1), a different staff member's
+    opposite action, and a duplicate of K1. The original is served first; the other two
+    follow in either order. If the duplicate is served after the other staff member's action
+    it meets a licence in the state K1 was meant to leave it in — so a lookup that is merely
+    "is the state still right?" (or one made before the lock) would apply K1 a SECOND time and
+    silently undo that staff member's action.
+
+    Invariants that hold for every order of the last two: nobody errors, K1 has exactly one
+    SUCCESS row, no refusal rows, and the licence ends where the OTHER staff member's action
+    left it. Repeated over several licences because the order of the last two is a scheduling
+    race; each round is checked on its own."""
+    for round_number in range(ROUNDS):
+        tag = f"dupmid-{direction}-{round_number}"
+        key, _ = _seed_license_key(tag=tag)
+        if direction == "reinstate-k1":
+            _suspend_call(key, f"{tag}-seed-suspend", actor_id="staff_seed")()
+            original = _reinstate_call(key, f"{tag}-K1", actor_id="staff_a")
+            other = _suspend_call(key, f"{tag}-other", actor_id="staff_b")
+            duplicate = _reinstate_call(key, f"{tag}-K1", actor_id="staff_a")
+            ends_as, action = LicenseKeyStatus.SUSPENDED, "license_key.reinstated"
+        else:
+            original = _suspend_call(key, f"{tag}-K1", actor_id="staff_a")
+            other = _reinstate_call(key, f"{tag}-other", actor_id="staff_b")
+            duplicate = _suspend_call(key, f"{tag}-K1", actor_id="staff_a")
+            ends_as, action = LicenseKeyStatus.ISSUED, "license_key.suspended"
+
+        results, errors, waiting = _race_in_arrival_order(key, [original, other, duplicate])
+
+        assert waiting == 3, (tag, "all three callers should be parked on the licence row")
+        assert errors == [], (tag, errors)
+        key.refresh_from_db()
+        assert key.status == ends_as, (tag, "the other staff member's action must stand")
+        assert (
+            _lifecycle_rows(key, action=action, request_id=f"{tag}-K1", result="SUCCESS").count()
+            == 1
+        ), (tag, "K1 took effect exactly once")
+        assert not _lifecycle_rows(key, result="DENIED").exists(), tag
+        by_index = dict(results)
+        assert by_index[0].changed is True
+        assert by_index[2].changed is False and by_index[2].audit_event is not None
 
 
 def test_a_suspend_and_a_reinstate_racing_each_other_end_in_a_state_the_trail_explains():

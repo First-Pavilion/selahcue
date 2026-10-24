@@ -67,7 +67,7 @@ reinstate do (`license_keys.services._require_autocommit`, 86ak5mn0c).
 86ak5v7av), which transitions ISSUED -> ACTIVATED inside its own `atomic()` block because the
 status change, the device, its token and both audit rows must commit or roll back together.
 Losing the DENIED row there is accepted: the refusal is unreachable in production, since
-`_assert_key_activatable` has already admitted the row it holds locked, and the ISSUED ->
+`require_commercial_service` has already admitted the row it holds locked, and the ISSUED ->
 ACTIVATED edge is pinned by
 `test_the_table_matches_the_prd_transition_list_except_where_documented`. It can only arise
 if that edge is removed from the table, and activation then fails closed with no device and
@@ -252,6 +252,7 @@ SUSPENDABLE_SOURCES: frozenset[LicenseKeyStatus] = frozenset(
 
 AUDIT_TARGET_TYPE = "app_license_key"
 REFUSED_ACTION = "license_key.status_change_refused"
+SUSPEND_ACTION = "license_key.suspended"
 REINSTATE_ACTION = "license_key.reinstated"
 
 # Derived from the audit fields, not restated. A migration that widens or narrows either
@@ -384,7 +385,20 @@ def _default_action(to_status: LicenseKeyStatus, requested: TransitionTarget) ->
     move back to ACTIVATED/EXPIRING."""
     if requested is PRIOR_STATUS:
         return REINSTATE_ACTION
+    if to_status is LicenseKeyStatus.SUSPENDED:
+        return SUSPEND_ACTION
     return f"license_key.{to_status.value.lower()}"
+
+
+def _intended_action(requested: TransitionTarget, explicit: str | None) -> str:
+    """The audit action name a request would be recorded under, known BEFORE the target is
+    resolved. The retry lookup needs it up front: a duplicate reinstate arrives at a licence
+    that is no longer suspended, where `_resolve_target` would refuse it."""
+    if explicit:
+        return explicit
+    if requested is PRIOR_STATUS:
+        return REINSTATE_ACTION
+    return _default_action(requested, requested)
 
 
 def _coerce_status(value: Any) -> LicenseKeyStatus:
@@ -466,6 +480,7 @@ def apply_license_status_transition(
     source_surface: str = "admin_graphql",
     extra_before: dict[str, Any] | None = None,
     extra_after: dict[str, Any] | None = None,
+    recognise_retry: bool = False,
 ) -> LicenseTransitionResult:
     """The audited writer for `AppLicenseKey.status` (FR-501, FR-508, NFR-506).
 
@@ -478,8 +493,20 @@ def apply_license_status_transition(
     Pass `PRIOR_STATUS` as `to_status` to reinstate a suspended licence; the target is read
     from the row, never assumed.
 
+    `recognise_retry=True` (opt-in; staff mutations that carry a client retry key) adds a
+    request-level check, made UNDER the row lock: if this actor already has a SUCCESS row for
+    the same action, licence and `request_id`, the call is a retry of a request that took
+    effect, and returns that outcome (`changed=False`, `audit_event` = the original row)
+    without applying anything. "Already in the target state" cannot stand in for this: a
+    retry that arrives after another staff action has moved the licence on would otherwise
+    re-apply and silently undo it. Doing the lookup inside the lock is what closes the window
+    in which a duplicate could pass an unlocked check, wait, and then act on a licence that
+    has since changed. Known limit: a request that was a no-op wrote no row, so it cannot be
+    recognised on retry.
+
     Outcomes, in the order they are decided:
 
+    0. **Retry of a request that already took effect** (only with `recognise_retry`).
     1. **Idempotent replay** — the licence already holds the target status. Nothing is
        written and no audit row is created; `changed` is False. Checked before legality so
        a second revoke of an already-REVOKED licence is a no-op rather than a refusal.
@@ -513,6 +540,23 @@ def apply_license_status_transition(
             locked = AppLicenseKey.objects.select_for_update().get(pk=license_key.pk)
             before = _coerce_status(locked.status)
             before_prior = locked.prior_status
+
+            if recognise_retry:
+                earlier = _earlier_success(
+                    actor,
+                    action=_intended_action(requested, cleaned_action),
+                    target_id=str(locked.pk),
+                    request_id=cleaned_request_id,
+                )
+                if earlier is not None:
+                    _sync(license_key, locked)
+                    return LicenseTransitionResult(
+                        license_key=locked,
+                        from_status=before,
+                        to_status=before,
+                        changed=False,
+                        audit_event=earlier,
+                    )
 
             resolved = _resolve_target(before=before, prior_status=before_prior, requested=requested)
 
@@ -604,6 +648,30 @@ def apply_license_status_transition(
             refusal_code=refused.refusal_code,
             detail=refused.detail,
         ) from None
+
+
+def _earlier_success(
+    actor: ActorContext, *, action: str, target_id: str, request_id: str
+) -> AuditEvent | None:
+    """The SUCCESS row this exact request (actor, action, licence, request id) already
+    produced, if any. Scoped to the actor, so another staff member reusing a string is a
+    different request; to the action, so a key spent on a suspend does not turn a reinstate
+    into a replay; to the licence, so one key on two licences is two requests. Only SUCCESS
+    rows count: a refused attempt is re-evaluated, because the state that caused the refusal
+    may have changed. Must be called with the licence row locked."""
+    return (
+        AuditEvent.objects.filter(
+            actor_kind=actor.kind.value,
+            actor_id=actor.actor_id,
+            action=action,
+            target_type=AUDIT_TARGET_TYPE,
+            target_id=target_id,
+            request_id=request_id,
+            result=AuditResult.SUCCESS,
+        )
+        .order_by("-id")
+        .first()
+    )
 
 
 def _resolve_target(

@@ -31,22 +31,28 @@ import logging
 from datetime import timedelta
 
 import pytest
+from django.conf import settings as django_settings
 from django.core.cache import cache
 from django.db import connection, transaction
 from django.utils import timezone
 
+from selahcue_api.apps.accounts.models import CustomerOrg
 from selahcue_api.apps.audit.models import AuditEvent, AuditResult
 from selahcue_api.apps.devices.models import Device, DeviceToken, DeviceTokenStatus
+from selahcue_api.apps.devices.services import (
+    ACTIVATABLE_KEY_STATUSES,
+    require_commercial_service,
+)
 from selahcue_api.apps.devices.tasks import cascade_license_revocations
 from selahcue_api.apps.entitlements.services import build_entitlement_manifest
 from selahcue_api.apps.entitlements.signing import load_signing_key, verify_envelope
 from selahcue_api.apps.license_keys import services as license_services
 from selahcue_api.apps.license_keys.models import AppLicenseKey, LicenseKeyStatus
 from selahcue_api.apps.license_keys.services import (
-    REINSTATE_ACTION,
-    SUSPEND_ACTION,
+    GenerateLicenseKeyData,
     ReinstateLicenseKeyData,
     SuspendLicenseKeyData,
+    generate_license_key,
     reinstate_license_key,
     suspend_license_key,
 )
@@ -54,13 +60,27 @@ from selahcue_api.apps.license_keys.state_machine import (
     AUDIT_TARGET_TYPE,
     PRIOR_STATUS,
     REFUSED_ACTION,
+    REINSTATE_ACTION,
+    SUSPEND_ACTION,
     SUSPENDABLE_SOURCES,
     IllegalLicenseTransition,
     _default_action,
     apply_license_status_transition,
 )
-from selahcue_api.graphql.context import ActorContext, ActorKind, StaffPermission
+from selahcue_api.graphql.context import (
+    ACTOR_ID_MAX_LENGTH,
+    ActorContext,
+    ActorKind,
+    StaffPermission,
+)
 from selahcue_api.graphql.errors import ErrorCode, SafeAPIError
+from selahcue_api.graphql.route_contracts import (
+    LICENCE_GATE_ALLOWED_WHILE_SUSPENDED,
+    LICENCE_GATE_COMMERCIAL,
+    LICENCE_GATES,
+    CommandEndpointContract,
+    desktop_command_contracts,
+)
 
 pytestmark = pytest.mark.django_db(transaction=True)
 
@@ -102,12 +122,6 @@ def _staff(permissions=BOTH_PERMS, actor_id="staff_billing_1") -> ActorContext:
 
 def _seed_key(tag, *, device_limit=3):
     """Returns (AppLicenseKey, full_key) — a freshly issued, ISSUED licence."""
-    from selahcue_api.apps.accounts.models import CustomerOrg
-    from selahcue_api.apps.license_keys.services import (
-        GenerateLicenseKeyData,
-        generate_license_key,
-    )
-
     customer = CustomerOrg.objects.create(
         name=f"Suspend Church {tag}",
         slug=f"suspend-church-{tag}",
@@ -225,8 +239,11 @@ def test_the_oracle_covers_every_status_and_agrees_with_the_table():
 
 
 def test_the_audit_action_names_are_the_writers_own():
-    """The retry lookup matches on the action name the WRITER stamps. If the writer's naming
-    moves, retries would silently stop being recognised."""
+    """The audit trail's action names are a contract (support queries by them, the retry
+    lookup matches on them): pinned literally, and tied to the writer's own default naming so
+    the constant and the behaviour cannot drift apart."""
+    assert SUSPEND_ACTION == "license_key.suspended"
+    assert REINSTATE_ACTION == "license_key.reinstated"
     assert SUSPEND_ACTION == _default_action(S.SUSPENDED, S.SUSPENDED)
     assert REINSTATE_ACTION == _default_action(S.ACTIVATED, PRIOR_STATUS)
 
@@ -495,46 +512,69 @@ def test_a_stale_reinstate_retry_cannot_lift_a_later_suspension():
     assert _rows(key).count() == rows_before
 
 
-def test_an_in_flight_duplicate_that_loses_the_race_replays_instead_of_conflicting(monkeypatch):
-    """The same reinstate sent twice at once: both copies pass the "already done?" check
-    because nothing has committed, the first reinstates, and the second reaches a licence that
-    is no longer suspended. That is a refusal for an ordinary request but this is the SAME
-    request, which worked, so the caller must get the original success, not a CONFLICT.
-    (The real race is on Postgres in `test_concurrency_postgres.py`; here the stale check is
-    forced.)"""
-    key, _ = _seed_key("inflight-dup")
+def test_a_duplicate_reinstate_after_another_staff_member_suspended_again_changes_nothing():
+    """The window the retry lookup exists to close: reinstate K1 took effect, then ANOTHER
+    staff member suspended the licence again, then the duplicate of K1 arrives. The licence is
+    suspended once more, so an "is it still suspended?" test would happily reinstate it a
+    second time and silently undo that staff member's action."""
+    key, _ = _seed_key("dup-between-reinstate")
     _drive_to(key, S.ACTIVATED)
-    _suspend(key)
-    original = _reinstate(key, "inflight-dup-request-1")
-    real = license_services._prior_success
-    calls = []
+    _suspend(key, "dup-between-susp-first", actor=_staff(actor_id="staff_a"))
+    _reinstate(key, "dup-between-reinstate-K1", actor=_staff(actor_id="staff_a"))
+    _suspend(key, "dup-between-susp-other", actor=_staff(actor_id="staff_b"))
+    rows_before = _rows(key).count()
 
-    def blind_the_first_check(*args, **kwargs):
-        calls.append(1)
-        return None if len(calls) == 1 else real(*args, **kwargs)
+    duplicate = _reinstate(key, "dup-between-reinstate-K1", actor=_staff(actor_id="staff_a"))
 
-    monkeypatch.setattr(license_services, "_prior_success", blind_the_first_check)
-
-    duplicate = _reinstate(key, "inflight-dup-request-1")
-
-    assert len(calls) == 2, "the duplicate reached the writer and was then recognised"
-    assert duplicate.changed is False
-    assert duplicate.audit_event.pk == original.audit_event.pk
-    assert duplicate.license_key.status == S.ACTIVATED
-    assert _fresh(key).status == S.ACTIVATED
-    assert _rows(key, action=REINSTATE_ACTION, result=AuditResult.SUCCESS).count() == 1
+    assert duplicate.changed is False and duplicate.audit_event is not None
+    assert _fresh(key).status == S.SUSPENDED, "the other staff member's suspension stands"
+    assert _rows(key).count() == rows_before
+    assert _rows(key, action=REINSTATE_ACTION, request_id="dup-between-reinstate-K1").count() == 1
 
 
-def test_a_genuine_refusal_is_still_raised_when_no_earlier_success_exists():
-    """Positive control for the test above: the recognise-and-replay path must not swallow
-    refusals in general — a different request id for the same illegal move still conflicts."""
-    key, _ = _seed_key("genuine-refusal")
+def test_a_duplicate_suspend_after_another_staff_member_reinstated_changes_nothing():
+    key, _ = _seed_key("dup-between-suspend")
     _drive_to(key, S.ACTIVATED)
-    _suspend(key)
-    _reinstate(key, "genuine-refusal-first-1")
+    _suspend(key, "dup-between-suspend-K1", actor=_staff(actor_id="staff_a"))
+    _reinstate(key, "dup-between-reinst-other", actor=_staff(actor_id="staff_b"))
+    rows_before = _rows(key).count()
 
-    with pytest.raises(IllegalLicenseTransition):
-        _reinstate(key, "genuine-refusal-other")
+    duplicate = _suspend(key, "dup-between-suspend-K1", actor=_staff(actor_id="staff_a"))
+
+    assert duplicate.changed is False and duplicate.audit_event is not None
+    assert _fresh(key).status == S.ACTIVATED, "the other staff member's reinstatement stands"
+    assert _rows(key).count() == rows_before
+    assert _rows(key, action=SUSPEND_ACTION, request_id="dup-between-suspend-K1").count() == 1
+
+
+def test_a_replayed_request_is_flagged_and_an_already_suspended_no_op_is_not():
+    """`changed=False` alone is ambiguous; the audit row the result carries is what tells a
+    retry that already took effect apart from a plain "already in that state"."""
+    key, _ = _seed_key("replayed-flag")
+    first = _suspend(key, "replayed-flag-req-1")
+    replay = _suspend(key, "replayed-flag-req-1")
+    plain_no_op = _suspend(key, "replayed-flag-req-2")
+
+    assert (first.changed, first.audit_event is not None) == (True, True)
+    assert (replay.changed, replay.audit_event is not None) == (False, True)
+    assert (plain_no_op.changed, plain_no_op.audit_event) == (False, None)
+
+
+def test_a_retry_of_a_request_that_was_itself_a_no_op_is_not_recognised():
+    """The documented limit: a no-op wrote no audit row, so there is nothing to recognise.
+    staff_b's no-op suspend, retried after staff_a reinstated, therefore applies. Pinned so
+    the limit is a known behaviour (and a deliberate decision to leave it) rather than a
+    surprise; adding a row for a no-op is explicitly NOT wanted."""
+    key, _ = _seed_key("noop-limit")
+    _drive_to(key, S.ACTIVATED)
+    _suspend(key, "noop-limit-staff-a-1", actor=_staff(actor_id="staff_a"))
+    noop = _suspend(key, "noop-limit-staff-b-1", actor=_staff(actor_id="staff_b"))
+    assert noop.changed is False
+    _reinstate(key, "noop-limit-staff-a-2", actor=_staff(actor_id="staff_a"))
+
+    retried = _suspend(key, "noop-limit-staff-b-1", actor=_staff(actor_id="staff_b"))
+
+    assert retried.changed is True
 
 
 def test_one_key_used_on_two_licences_is_two_requests_and_both_take_effect():
@@ -711,6 +751,7 @@ def test_a_licence_reference_that_names_nothing_is_one_uniform_not_found(mutatio
         )
 
     assert raised.value.code == ErrorCode.NOT_FOUND
+    assert raised.value.message == "The requested resource was not found."
     assert AuditEvent.objects.count() == audit_before
 
 
@@ -733,6 +774,7 @@ def test_spellings_of_a_real_licence_id_that_python_would_parse_do_not_resolve()
                 ),
             )
         assert raised.value.code == ErrorCode.NOT_FOUND, repr(spelling)
+        assert raised.value.message == "The requested resource was not found."
     assert _fresh(key).status == S.ISSUED
 
 
@@ -754,17 +796,28 @@ def test_a_padded_reference_to_a_real_licence_still_resolves():
 UNAUTHORISED = [
     pytest.param(None, ErrorCode.UNAUTHENTICATED, id="no-actor"),
     pytest.param(
-        ActorContext(kind=ActorKind.CUSTOMER, actor_id="cust_1", org_id="1", role="ADMIN"),
+        # Every non-staff kind below carries BOTH staff permissions on purpose: the kind check, not
+    # the missing permission, is what must refuse them, so a gate that only inspected the
+    # permission set would be caught here at the service level.
+    ActorContext(
+        kind=ActorKind.CUSTOMER,
+        actor_id="cust_1",
+        org_id="1",
+        role="ADMIN",
+        staff_permissions=BOTH_PERMS,
+    ),
         ErrorCode.PERMISSION_DENIED,
         id="customer-admin",
     ),
     pytest.param(
-        ActorContext(kind=ActorKind.DEVICE, actor_id="dev_1"),
+        ActorContext(kind=ActorKind.DEVICE, actor_id="dev_1", staff_permissions=BOTH_PERMS),
         ErrorCode.PERMISSION_DENIED,
         id="device",
     ),
     pytest.param(
-        ActorContext(kind=ActorKind.SERVICE, actor_id="expiry-sweep"),
+        ActorContext(
+            kind=ActorKind.SERVICE, actor_id="expiry-sweep", staff_permissions=BOTH_PERMS
+        ),
         ErrorCode.PERMISSION_DENIED,
         id="service",
     ),
@@ -988,6 +1041,7 @@ def test_writes_go_through_the_state_machine_not_a_direct_status_write(monkeypat
     assert calls and calls[0]["to_status"] == S.SUSPENDED
     assert calls[0]["actor"].actor_id == "staff_billing_1"
     assert calls[0]["request_id"] == "suspend-req-0001"
+    assert calls[0]["recognise_retry"] is True, "retries are recognised inside the writer"
 
     calls.clear()
     with pytest.raises(RuntimeError, match="writer reached"):
@@ -1041,7 +1095,8 @@ SUSPEND_MUTATION = """
     mutation Suspend($input: AdminSuspendLicenseKeyInput!) {
       adminSuspendLicenseKey(input: $input) {
         changed
-        licenseKey { id status priorStatus maskedKey customer { id name } }
+        replayed
+        licenseKey { id status priorStatus maskedKey }
       }
     }
 """
@@ -1049,6 +1104,7 @@ REINSTATE_MUTATION = """
     mutation Reinstate($input: AdminReinstateLicenseKeyInput!) {
       adminReinstateLicenseKey(input: $input) {
         changed
+        replayed
         licenseKey { id status priorStatus }
       }
     }
@@ -1097,7 +1153,7 @@ def test_graphql_suspend_then_reinstate_happy_path(client):
     assert payload["licenseKey"]["status"] == "SUSPENDED"
     assert payload["licenseKey"]["priorStatus"] == "EXPIRING"
     assert payload["licenseKey"]["id"] == str(key.pk)
-    assert payload["licenseKey"]["customer"]["name"] == "Suspend Church gql-happy"
+    assert payload["replayed"] is False
     assert full_key not in json.dumps(body)
 
     reinstated = _gql(
@@ -1120,7 +1176,9 @@ def test_graphql_retry_reports_changed_false(client):
     second = _gql(client, SUSPEND_MUTATION, variables, permissions="suspend_license_key")
 
     assert first.json()["data"]["adminSuspendLicenseKey"]["changed"] is True
+    assert first.json()["data"]["adminSuspendLicenseKey"]["replayed"] is False
     assert second.json()["data"]["adminSuspendLicenseKey"]["changed"] is False
+    assert second.json()["data"]["adminSuspendLicenseKey"]["replayed"] is True
     assert _rows(key, action=SUSPEND_ACTION).count() == 1
 
 
@@ -1421,19 +1479,20 @@ def test_an_already_cached_offline_entitlement_survives_suspension_unchanged(
     suspension does not shorten the token that backs it."""
     key, _full, token, device = running_device
     issued = _manifest(client, token).json()
-    payload_before = verify_envelope(
-        issued, public_key=load_signing_key(TEST_SEED_B64).public_key()
-    )
+    payload = verify_envelope(issued, public_key=load_signing_key(TEST_SEED_B64).public_key())
+    licence_expiry = _fresh(key).expires_at
 
     _suspend(key)
 
-    payload_after = verify_envelope(
-        issued, public_key=load_signing_key(TEST_SEED_B64).public_key()
-    )
-    assert payload_after == payload_before
-    assert payload_after["expires_at"] == _fresh(key).expires_at.isoformat()
-    assert payload_after["license_valid_now"] is True, "the cached artefact is a snapshot"
-    assert DeviceToken.objects.get(device=device).expires_at == _fresh(key).expires_at
+    # What the suspension must NOT have moved. The envelope itself is a static artefact the
+    # server cannot recall, so the live, mutable things that decide how long the device keeps
+    # serving are the two expiries below (the first was fixed when it was signed).
+    assert payload["expires_at"] == licence_expiry.isoformat()
+    assert payload["license_valid_now"] is True, "the cached artefact is a snapshot"
+    assert _fresh(key).expires_at == licence_expiry, "suspension does not shorten the window"
+    token_row = DeviceToken.objects.get(device=device)
+    assert token_row.expires_at == licence_expiry
+    assert token_row.status == DeviceTokenStatus.ACTIVE
 
 
 def test_a_cascade_run_over_a_suspended_licence_is_idempotent_and_writes_no_audit_row(
@@ -1456,3 +1515,366 @@ def test_build_manifest_service_refuses_a_suspended_licence_directly(running_dev
         build_entitlement_manifest(token)
 
     assert raised.value.code == ErrorCode.POLICY_DENIED
+
+
+# =============================================================================================
+# 6. The enforcement point for commercial device calls, and the sweep that keeps it honest
+# =============================================================================================
+# `authenticate_device_token` checks the token and never the licence, and a suspension no
+# longer kills tokens (D3). So nothing but a route's own call to `require_commercial_service`
+# stops a suspended licence's device using a commercial surface. These tests make that
+# decision impossible to forget: every bearer-token route must declare it, and each
+# declaration is checked against what the route actually does.
+BEARER_AUTH = "device_token"
+
+
+def _undeclared_device_token_routes(contracts):
+    return [
+        contract.path
+        for contract in contracts
+        if contract.auth_context == BEARER_AUTH and contract.licence_gate not in LICENCE_GATES
+    ]
+
+
+def test_every_device_token_route_declares_how_it_treats_a_suspended_licence():
+    contracts = desktop_command_contracts()
+    bearer_routes = [c for c in contracts if c.auth_context == BEARER_AUTH]
+    assert len(bearer_routes) >= 5, "positive control: the sweep found the device-token routes"
+    assert _undeclared_device_token_routes(contracts) == []
+    assert {c.licence_gate for c in bearer_routes} == {
+        LICENCE_GATE_COMMERCIAL,
+        LICENCE_GATE_ALLOWED_WHILE_SUSPENDED,
+    }, "both declarations are in use, so neither is a dead branch of the sweep"
+    # The declaration belongs to device-token routes only.
+    assert all(c.licence_gate == "" for c in contracts if c.auth_context != BEARER_AUTH)
+
+
+def test_the_sweep_fails_for_a_new_route_that_declares_neither():
+    """The sweep must be able to fail: a device-token route added without a decision is
+    reported, whether it declares nothing or something unrecognised."""
+    contracts = desktop_command_contracts() + (
+        CommandEndpointContract("desktop", "v1/ai:complete", "POST", BEARER_AUTH),
+        CommandEndpointContract(
+            "desktop", "v1/ai:stream", "POST", BEARER_AUTH, licence_gate="whatever"
+        ),
+    )
+    assert _undeclared_device_token_routes(contracts) == ["v1/ai:complete", "v1/ai:stream"]
+
+
+def _route_url(path: str) -> str:
+    return "/" + path.replace("<lease_id>", "lease-1")
+
+
+def test_each_declaration_matches_what_the_route_does_for_a_suspended_licence(
+    client, running_device
+):
+    """Commercial routes refuse a suspended licence's device (or are still 501, in which case
+    the moment one starts answering it must refuse); allowed routes stay reachable. A route
+    declared commercial that answered 200 would fail here."""
+    key, _full, token, _device = running_device
+    _suspend(key)
+
+    for contract in desktop_command_contracts():
+        if contract.auth_context != BEARER_AUTH:
+            continue
+        response = client.generic(
+            contract.method,
+            _route_url(contract.path),
+            HTTP_AUTHORIZATION=f"Bearer {token}",
+            content_type="application/json",
+        )
+        label = f"{contract.method} {contract.path} ({contract.licence_gate})"
+        if contract.licence_gate == LICENCE_GATE_COMMERCIAL:
+            assert response.status_code in (403, 501), f"{label} answered {response.status_code}"
+            if response.status_code == 403:
+                assert response.json()["error"]["code"] == "POLICY_DENIED", label
+        else:
+            assert response.status_code in (200, 501), f"{label} answered {response.status_code}"
+
+
+@pytest.mark.parametrize("status", list(S), ids=lambda s: s.value)
+def test_the_enforcement_point_admits_only_activatable_statuses(status):
+    now = timezone.now()
+    licence = AppLicenseKey(
+        status=status, starts_at=now - timedelta(days=1), expires_at=now + timedelta(days=1)
+    )
+
+    if status in ACTIVATABLE_KEY_STATUSES:
+        require_commercial_service(licence)
+    else:
+        with pytest.raises(SafeAPIError) as raised:
+            require_commercial_service(licence)
+        assert raised.value.code == ErrorCode.POLICY_DENIED
+
+
+@pytest.mark.parametrize(
+    ("starts", "ends"),
+    [(timedelta(hours=1), timedelta(days=2)), (timedelta(days=-2), timedelta(seconds=-1))],
+    ids=["not-started-yet", "already-expired"],
+)
+def test_the_enforcement_point_also_refuses_outside_the_licence_window(starts, ends):
+    now = timezone.now()
+    licence = AppLicenseKey(status=S.ACTIVATED, starts_at=now + starts, expires_at=now + ends)
+
+    with pytest.raises(SafeAPIError) as raised:
+        require_commercial_service(licence)
+    assert raised.value.code == ErrorCode.POLICY_DENIED
+
+
+# =============================================================================================
+# 7. Activations RESUME after reinstatement
+# =============================================================================================
+def test_a_second_device_is_refused_while_suspended_and_admitted_after_reinstatement(client):
+    """With room under the seat limit (2 seats, 1 device) the ONLY thing refusing the second
+    device while suspended is the suspension — so this cannot be mistaken for the instance
+    limit the way a one-seat licence's refusal could."""
+    key, full_key = _seed_key("resume", device_limit=2)
+    first = _activate_over_http(client, full_key, "resume-1")
+    assert first.status_code == 200
+
+    _suspend(key)
+    refused = _activate_over_http(client, full_key, "resume-2")
+    assert refused.status_code == 403
+    assert refused.json()["error"]["code"] == "POLICY_DENIED"
+    assert Device.objects.filter(license_key=key).count() == 1
+
+    _reinstate(key)
+    admitted = _activate_over_http(client, full_key, "resume-2")
+
+    assert admitted.status_code == 200, admitted.content
+    assert Device.objects.filter(license_key=key).count() == 2
+
+
+def test_a_never_activated_licence_can_be_suspended_reinstated_and_then_first_activated(client):
+    """Suspended from ISSUED, reinstated back to ISSUED, then the FIRST activation: the licence
+    ends ACTIVATED with no stale prior status (the schema's check constraint would reject one),
+    and the device exists."""
+    key, full_key = _seed_key("resume-issued")
+    _suspend(key)
+    assert _fresh(key).prior_status == "ISSUED"
+    refused = _activate_over_http(client, full_key, "resume-issued-1")
+    assert refused.status_code == 403
+    _reinstate(key)
+    assert _fresh(key).status == S.ISSUED
+
+    response = _activate_over_http(client, full_key, "resume-issued-2")
+
+    assert response.status_code == 200, response.content
+    stored = _fresh(key)
+    assert stored.status == S.ACTIVATED and stored.prior_status == ""
+    assert Device.objects.filter(license_key=key).count() == 1
+
+
+# =============================================================================================
+# 8. The cascade spares a suspension from an activatable status, and only that
+# =============================================================================================
+def _activate_and_get_device(client, full_key, tag):
+    response = _activate_over_http(client, full_key, tag)
+    assert response.status_code == 200, response.content
+    payload = response.json()
+    return (
+        payload["activation_token"],
+        Device.objects.get(device_public_id=payload["device"]["device_public_id"]),
+    )
+
+
+def _writer(key, status, request_id, actor_id="staff_cascade_driver"):
+    apply_license_status_transition(
+        key,
+        to_status=status,
+        actor=ActorContext(kind=ActorKind.STAFF, actor_id=actor_id),
+        reason="Walking the licence for the cascade scoping tests.",
+        request_id=request_id,
+    )
+
+
+@pytest.mark.parametrize(
+    ("path", "spared"),
+    [
+        ([], True),
+        ([S.EXPIRING], True),
+        ([S.CONVERTED], False),
+        ([S.EXPIRING, S.EXPIRED], False),
+    ],
+    ids=["from-activated", "from-expiring", "from-converted", "from-expired"],
+)
+def test_the_cascade_spares_a_suspended_licences_tokens_only_if_it_came_from_an_activatable_status(
+    client, path, spared
+):
+    """Suspending an EXPIRED or CONVERTED licence must not rescue tokens the cascade would
+    have killed: the exemption follows the status the licence was suspended FROM."""
+    key, full_key = _seed_key(f"scope-{'-'.join(s.value for s in path) or 'activated'}".lower())
+    token, device = _activate_and_get_device(client, full_key, "scope")
+    for step, status in enumerate(path):
+        _writer(key, status, f"scope-walk-{step}-{status.value.lower()}")
+    _suspend(key)
+
+    killed = cascade_license_revocations()
+
+    stored = DeviceToken.objects.get(device=device)
+    refreshed = _refresh(client, token)
+    if spared:
+        assert killed == 0
+        assert stored.status == DeviceTokenStatus.ACTIVE
+        assert refreshed.status_code == 200
+    else:
+        assert killed == 1
+        assert stored.status == DeviceTokenStatus.REVOKED
+        assert refreshed.status_code == 401
+
+
+def test_a_suspended_licence_that_is_then_revoked_loses_its_tokens_on_the_next_cascade(client):
+    key, full_key = _seed_key("susp-then-rev")
+    token, device = _activate_and_get_device(client, full_key, "susp-then-rev")
+    _suspend(key)
+    assert cascade_license_revocations() == 0
+    assert _refresh(client, token).status_code == 200
+
+    _writer(key, S.REVOKED, "susp-then-rev-revoke")
+
+    assert _fresh(key).prior_status == "", "revocation clears the suspension bookkeeping"
+    assert cascade_license_revocations() == 1
+    assert DeviceToken.objects.get(device=device).status == DeviceTokenStatus.REVOKED
+    assert _refresh(client, token).status_code == 401
+
+
+def test_an_expiring_licence_keeps_its_device_through_suspension_and_comes_back_expiring(client):
+    key, full_key = _seed_key("expiring-keeps")
+    token, device = _activate_and_get_device(client, full_key, "expiring-keeps")
+    _writer(key, S.EXPIRING, "expiring-keeps-walk")
+    _suspend(key)
+
+    assert cascade_license_revocations() == 0
+    assert DeviceToken.objects.get(device=device).status == DeviceTokenStatus.ACTIVE
+
+    _reinstate(key)
+
+    assert _fresh(key).status == S.EXPIRING
+    body = _refresh(client, token).json()
+    assert body["license"]["status"] == "EXPIRING" and body["license"]["valid_now"] is True
+
+
+def test_one_cascade_batch_over_suspended_and_revoked_licences_kills_only_the_right_tokens(client):
+    spared_key, spared_full = _seed_key("batch-spared")
+    revoked_key, revoked_full = _seed_key("batch-revoked")
+    converted_key, converted_full = _seed_key("batch-converted")
+    _, spared_device = _activate_and_get_device(client, spared_full, "batch-spared")
+    _, revoked_device = _activate_and_get_device(client, revoked_full, "batch-revoked")
+    _, converted_device = _activate_and_get_device(client, converted_full, "batch-converted")
+    _suspend(spared_key)
+    _writer(revoked_key, S.REVOKED, "batch-revoke")
+    _writer(converted_key, S.CONVERTED, "batch-convert")
+    _suspend(converted_key, "batch-susp-converted")
+
+    killed = cascade_license_revocations()
+
+    assert killed == 2
+    status_of = lambda device: DeviceToken.objects.get(device=device).status  # noqa: E731
+    assert status_of(spared_device) == DeviceTokenStatus.ACTIVE
+    assert status_of(revoked_device) == DeviceTokenStatus.REVOKED
+    assert status_of(converted_device) == DeviceTokenStatus.REVOKED
+
+
+# =============================================================================================
+# 9. Actor identities that cannot be audited are refused at the boundary
+# =============================================================================================
+def test_the_actor_id_limit_is_the_audit_column_width():
+    assert ACTOR_ID_MAX_LENGTH == AuditEvent._meta.get_field("actor_id").max_length
+
+
+def test_an_actor_id_longer_than_the_audit_column_is_refused_before_any_write():
+    key, _ = _seed_key("actor-long")
+    _drive_to(key, S.ACTIVATED)
+    rows_before = AuditEvent.objects.count()
+
+    with pytest.raises(SafeAPIError) as raised:
+        _suspend(key, actor=_staff(actor_id="s" * (ACTOR_ID_MAX_LENGTH + 1)))
+
+    assert raised.value.code == ErrorCode.UNAUTHENTICATED
+    assert _fresh(key).status == S.ACTIVATED
+    assert AuditEvent.objects.count() == rows_before
+
+
+def test_an_actor_id_at_the_limit_still_gets_a_clean_conflict_and_a_durable_denial():
+    """The boundary the other side of the refusal above: 128 characters fits the column, so
+    an illegal transition by that actor is a CONFLICT with its DENIED row intact (on Postgres
+    a wider id lost the row and answered VALIDATION_FAILED)."""
+    key, _ = _seed_key("actor-limit")
+    _drive_to(key, S.REVOKED)
+    actor = _staff(actor_id="s" * ACTOR_ID_MAX_LENGTH)
+
+    with pytest.raises(IllegalLicenseTransition) as raised:
+        _suspend(key, actor=actor)
+
+    assert raised.value.code == ErrorCode.CONFLICT
+    denied = _rows(key, result=AuditResult.DENIED).get()
+    assert denied.actor_id == "s" * ACTOR_ID_MAX_LENGTH
+
+
+def test_graphql_refuses_an_over_long_actor_id_header_as_unauthenticated(client):
+    key, _ = _seed_key("actor-header")
+    too_long = "h" * (ACTOR_ID_MAX_LENGTH + 1)
+
+    response = _gql(
+        client, SUSPEND_MUTATION, _input(key, "actor-header-req-1"),
+        permissions="suspend_license_key", actor_id=too_long,
+    )
+    assert _error_code(response) == "UNAUTHENTICATED"
+    assert _fresh(key).status == S.ISSUED
+
+    at_limit = _gql(
+        client, SUSPEND_MUTATION, _input(key, "actor-header-req-2"),
+        permissions="suspend_license_key", actor_id="h" * ACTOR_ID_MAX_LENGTH,
+    )
+    assert "errors" not in at_limit.json()
+    assert _fresh(key).status == S.SUSPENDED
+
+
+# =============================================================================================
+# 10. The payload does not widen what a lifecycle permission can read
+# =============================================================================================
+def test_a_suspend_only_actor_cannot_read_customer_details_through_the_payload(client):
+    """`AdminLicenseKey.customer` has no permission check of its own, so the lifecycle
+    mutations return a licence view WITHOUT it. An actor holding only the suspend permission
+    (not VIEW_CUSTOMERS) asking for the customer gets a schema error and no customer data."""
+    key, _ = _seed_key("no-customer")
+    leaking = SUSPEND_MUTATION.replace(
+        "licenseKey { id status priorStatus maskedKey }",
+        "licenseKey { id customer { name primaryContactEmail country plan } }",
+    )
+
+    refused = _gql(
+        client, leaking, _input(key, "no-customer-req-1"), permissions="suspend_license_key"
+    )
+
+    assert _error_code(refused) == "VALIDATION_FAILED"
+    text = refused.content.decode()
+    assert "rivercity" not in text and "suspend.example" not in text
+    assert "Suspend Church" not in text
+    # The same actor's plain mutation still works, and it is the only thing that applies.
+    ok = _gql(client, SUSPEND_MUTATION, _input(key, "no-customer-req-2"), permissions="suspend_license_key")
+    assert "errors" not in ok.json()
+    assert _fresh(key).status == S.SUSPENDED
+    # Control: the same actor is refused the customer query itself.
+    query = '{ adminCustomers(search: "suspend-church-no-customer", first: 1) { nodes { name } } }'
+    denied = _gql(client, query, {}, permissions="suspend_license_key")
+    assert _error_code(denied) == "PERMISSION_DENIED"
+
+
+# =============================================================================================
+# 11. The shipped throttle default
+# =============================================================================================
+def test_the_shipped_throttle_default_allows_thirty_calls_a_minute_and_refuses_the_next():
+    """No setting override anywhere: this is the budget production runs with. The module-level
+    default and the shipped setting must agree, or one of them is dead."""
+    assert django_settings.SELAHCUE_THROTTLE_ADMIN_LICENCE_LIFECYCLE == (30, 60)
+    assert license_services.LIFECYCLE_BUDGET == (30, 60)
+    key, _ = _seed_key("shipped-default")
+    staff = _staff(actor_id="staff_default_budget")
+
+    for n in range(30):
+        suspend_license_key(staff, _suspend_data(key, f"default-budget-{n:04d}-x"))
+
+    with pytest.raises(SafeAPIError) as raised:
+        suspend_license_key(staff, _suspend_data(key, "default-budget-0030-x"))
+    assert raised.value.code == ErrorCode.RATE_LIMITED

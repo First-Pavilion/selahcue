@@ -70,7 +70,12 @@ class AdminGenerateLicenseKeyInput:
 
 @strawberry.input
 class AdminSuspendLicenseKeyInput:
-    # Retry key: the same key on the same licence is the same request and takes effect once.
+    # The retry key, one per USER INTENT: send a fresh key for each deliberate action and
+    # re-send the same key only to retry that action. A retry of a request that already took
+    # effect returns its original outcome and applies nothing, even if another staff action
+    # has moved the licence on since. Send ONE mutation per HTTP request: the lifecycle
+    # throttle counts calls, and a batch of aliased mutations that exhausts it fails as a
+    # whole.
     idempotency_key: str
     license_key_id: strawberry.ID
     # Mandatory (FR-504); recorded on the audit row beside the acting staff member.
@@ -79,13 +84,20 @@ class AdminSuspendLicenseKeyInput:
 
 @strawberry.input
 class AdminReinstateLicenseKeyInput:
+    # Same retry-key rules as `AdminSuspendLicenseKeyInput`.
     idempotency_key: str
     license_key_id: strawberry.ID
     reason: str
 
 
 @strawberry.type
-class AdminLicenseKey:
+class AdminLicenseKeySummary:
+    """A licence WITHOUT its customer. The lifecycle mutations return this, not
+    `AdminLicenseKey`, on purpose: `AdminLicenseKey.customer` carries no permission check of
+    its own (it relies on the query that reached it having checked VIEW_CUSTOMERS), so
+    handing it to an actor who holds only the suspend or reinstate permission would let them
+    read customer contact details they cannot otherwise query."""
+
     id: strawberry.ID
     key_type: str
     status: str
@@ -99,6 +111,9 @@ class AdminLicenseKey:
     starts_at: str
     expires_at: str
 
+
+@strawberry.type
+class AdminLicenseKey(AdminLicenseKeySummary):
     @strawberry.field
     def customer(self) -> "AdminCustomer":
         return customer_to_type(self._model.customer)
@@ -157,16 +172,20 @@ class AdminGenerateLicenseKeyPayload:
 
 @strawberry.type
 class AdminSuspendLicenseKeyPayload:
-    license_key: AdminLicenseKey
-    # False when nothing changed: the licence was already suspended, or this was a retry of a
-    # request that had already taken effect.
+    license_key: AdminLicenseKeySummary
+    # False when this call changed nothing: the licence was already suspended, OR this was a
+    # retry of a request that already took effect (then `replayed` is also true).
     changed: bool
+    # True only for the retry case, so a console can tell "already suspended" from "your
+    # earlier request went through".
+    replayed: bool
 
 
 @strawberry.type
 class AdminReinstateLicenseKeyPayload:
-    license_key: AdminLicenseKey
+    license_key: AdminLicenseKeySummary
     changed: bool
+    replayed: bool
 
 
 def customer_to_type(customer: CustomerOrg) -> AdminCustomer:
@@ -184,6 +203,21 @@ def customer_to_type(customer: CustomerOrg) -> AdminCustomer:
     )
 
 
+def license_key_to_summary(license_key: AppLicenseKey) -> AdminLicenseKeySummary:
+    return AdminLicenseKeySummary(
+        id=strawberry.ID(str(license_key.id)),
+        key_type=license_key.key_type,
+        status=license_key.status,
+        prior_status=license_key.prior_status,
+        key_prefix=license_key.key_prefix,
+        key_suffix=license_key.key_suffix,
+        masked_key=license_key.masked_key,
+        feature_scope=license_key.feature_scope,
+        starts_at=license_key.starts_at.isoformat(),
+        expires_at=license_key.expires_at.isoformat(),
+    )
+
+
 def license_key_to_type(license_key: AppLicenseKey) -> AdminLicenseKey:
     return AdminLicenseKey(
         id=strawberry.ID(str(license_key.id)),
@@ -198,6 +232,12 @@ def license_key_to_type(license_key: AppLicenseKey) -> AdminLicenseKey:
         expires_at=license_key.expires_at.isoformat(),
         _model=license_key,
     )
+
+
+def _is_replay(result) -> bool:
+    """A no-change result that carries the original audit row is a retry of a request that
+    already took effect; a plain "already in that state" no-op carries none."""
+    return (not result.changed) and result.audit_event is not None
 
 
 @strawberry.type
@@ -297,8 +337,9 @@ class AdminMutation:
             ),
         )
         return AdminSuspendLicenseKeyPayload(
-            license_key=license_key_to_type(result.license_key),
+            license_key=license_key_to_summary(result.license_key),
             changed=result.changed,
+            replayed=_is_replay(result),
         )
 
     @strawberry.mutation
@@ -316,8 +357,9 @@ class AdminMutation:
             ),
         )
         return AdminReinstateLicenseKeyPayload(
-            license_key=license_key_to_type(result.license_key),
+            license_key=license_key_to_summary(result.license_key),
             changed=result.changed,
+            replayed=_is_replay(result),
         )
 
 

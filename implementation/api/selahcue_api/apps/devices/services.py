@@ -159,7 +159,21 @@ def _assert_device_activatable(device: Device) -> None:
         raise SafeAPIError(ErrorCode.POLICY_DENIED)
 
 
-def _assert_key_activatable(license_key: AppLicenseKey) -> None:
+def require_commercial_service(license_key: AppLicenseKey) -> None:
+    """THE enforcement point for commercial device calls: POLICY_DENIED unless the licence is
+    in an activatable status and inside its window.
+
+    D3 / DEC-010: a SUSPENDED licence degrades commercial surfaces only — new activations,
+    manifest issuance, cloud and AI features — while a running device keeps its token.
+    `authenticate_device_token` deliberately does not look at licence status (a token is not a
+    licence), so nothing stops a suspended licence's device from calling a commercial route
+    unless that route calls this. Every `device_token` route declares in
+    `graphql/route_contracts.py` whether it is `commercial` (calls this) or deliberately
+    allowed while suspended, and `tests/test_license_suspend_reinstate.py` sweeps that
+    declaration, so a new route cannot ship having decided neither.
+
+    Allow-list, not deny-list: a status added later is refused by default.
+    """
     now = timezone.now()
     if license_key.status not in ACTIVATABLE_KEY_STATUSES:
         raise SafeAPIError(ErrorCode.POLICY_DENIED)
@@ -226,7 +240,7 @@ def _remint_device_token(
     token is never read, never compared, and never sufficient — `authenticate_device_token`
     deliberately has NO re-mint path, so a token can never be the credential that revives
     itself. That also keeps re-mint useless as a revocation bypass: the licence-status gate
-    (`_assert_key_activatable`) has already run under the row lock before we get here.
+    (`require_commercial_service`) has already run under the row lock before we get here.
 
     The new expiry comes from `license_key.expires_at` as re-read under that lock, so it
     tracks the licence's CURRENT window rather than the value frozen at first activation.
@@ -401,7 +415,7 @@ def _activate_device_for_key(
             .select_related("customer")
             .get(pk=license_key.pk)
         )
-        _assert_key_activatable(license_key)
+        require_commercial_service(license_key)
 
         # Retry-idempotency: same key + client idempotency key → the same device, and a token
         # that is still usable is NOT re-shown (show-once). A dead one is replaced.
@@ -531,7 +545,7 @@ def activate_device(data: ActivateDeviceData) -> ActivateDeviceResult:
         raise _validation_error()
 
     license_key = _resolve_license_key(data.presented_key)
-    _assert_key_activatable(license_key)
+    require_commercial_service(license_key)
     return _activate_device_for_key(
         license_key,
         idempotency_key=idempotency_key,

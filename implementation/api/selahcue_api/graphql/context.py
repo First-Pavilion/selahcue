@@ -46,6 +46,14 @@ class ActorContext:
     role: str | None = None
 
 
+# The width of `AuditEvent.actor_id`. An actor id longer than this cannot be audited: Postgres
+# raises `DataError` when the row is written, which on a refusal path destroys the DENIED row
+# and turns a clean CONFLICT into VALIDATION_FAILED (86ak5mn0c, Shadow L3). Kept here as a
+# constant, not read off the model, because the audit app imports this module;
+# `tests/test_license_suspend_reinstate.py` pins it equal to the column.
+ACTOR_ID_MAX_LENGTH = 128
+
+
 # Cookie carrying the opaque account session token for browser clients (HttpOnly/Secure/SameSite).
 ACCOUNT_SESSION_COOKIE = "selahcue_account_session"
 
@@ -127,7 +135,7 @@ def actor_from_request(request) -> ActorContext | None:
 
     kind_value = request.headers.get("X-SelahCue-Actor-Kind")
     actor_id = request.headers.get("X-SelahCue-Actor-Id")
-    if not kind_value or not actor_id:
+    if not kind_value or not actor_id or len(actor_id) > ACTOR_ID_MAX_LENGTH:
         return None
     try:
         kind = ActorKind(kind_value)
@@ -158,6 +166,10 @@ def require_staff_permission(
         raise SafeAPIError(ErrorCode.UNAUTHENTICATED)
     if actor.kind is not ActorKind.STAFF:
         raise SafeAPIError(ErrorCode.PERMISSION_DENIED)
+    # An identity that cannot be written to the audit trail cannot act: refused here, before
+    # any state is touched, rather than failing inside a writer's transaction.
+    if not actor.actor_id or len(actor.actor_id) > ACTOR_ID_MAX_LENGTH:
+        raise SafeAPIError(ErrorCode.UNAUTHENTICATED)
     if permission not in actor.staff_permissions:
         raise SafeAPIError(ErrorCode.PERMISSION_DENIED)
     return actor
