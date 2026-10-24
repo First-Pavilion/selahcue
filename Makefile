@@ -679,6 +679,13 @@ marketing-check: ## Marketing site gate: type-check + lint + node tests + produc
 # (SQL_ENGINE=postgresql, SQL_HOST=db, CACHE_URL=redis://redis) cannot turn this into a different,
 # confusing failure: the gate means the same thing on every machine.
 #
+# THE TARGET'S OWN LOGIC is tested by `scripts/check_api_gate.py --self-test` (run by `make ci`, offline,
+# about 15 seconds): it copies this Makefile into a scratch repo with a fake API and runs `make api-check`
+# through 18 cases (fresh build, reuse, rebuild, wrong-tree venv, failing test, missing migration, failed
+# install, no/old interpreter, scrubbed environment, other working directory, ...). `--mutation-proof`
+# breaks this Makefile on purpose, 16 ways, and requires the named case to go red each time. Run it
+# after editing anything between here and the end of `api-check`.
+#
 # THE VIRTUALENV is `implementation/api/.venv`: gitignored (api/.gitignore) and therefore PER
 # CHECKOUT. That is the point. The API is installed editable (`pip install -e`), and an editable
 # install points at the source tree it was run in -- so a venv shared with another checkout (the main
@@ -804,6 +811,12 @@ ci: ## Run the local CI gate: Rust, Flutter, marketing and Django API (see the h
 	# recursive-make pattern as marketing-check, same position (before the long cargo gates) so an API
 	# error fails in about two minutes instead of after the whole Rust run. First run builds the
 	# gitignored per-checkout venv and needs the network once; see the api-check comment above.
+	# The gate's own logic, tested against a fake API in a scratch repo (about 15 seconds, offline): that
+	# api-check builds the venv, reuses it, rebuilds it, refuses a venv from another checkout, goes red
+	# on a failing test / missing migration / failed install, and never skips. `--mutation-proof`
+	# (by hand, after editing the api-check target) breaks the Makefile on purpose and requires each
+	# case to go red.
+	python3 scripts/check_api_gate.py --self-test
 	$(MAKE_RECURSE) --no-print-directory api-check
 	cd $(DESKTOP) && $(CARGO) fmt --check
 	cd $(OPERATOR) && $(CARGO) fmt --check

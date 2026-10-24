@@ -41,6 +41,7 @@ tests) is named in the target's help text, the Makefile and `CLAUDE.md`.
 - Root `CLAUDE.md`, `Makefile`, `.github/workflows/ci.yml` (job `api`, path filters)
 - `implementation/api/pyproject.toml`, `pytest.ini`, `.gitignore`, `.dockerignore`, `selahcue_api/settings.py`
 - `scripts/check_launch_reachability.py`, `scripts/check_dependency_audit_coverage.py` (guards that read the Makefile)
+- Owner requirement 2b (happy paths and edge cases, each test able to fail), received mid-task
 
 ## Scope
 
@@ -51,6 +52,7 @@ tests) is named in the target's help text, the Makefile and `CLAUDE.md`.
 - `make ci` calls it.
 - The Makefile header, the target's help text, `CLAUDE.md` and `implementation/api/README.md` state what is and is not covered.
 - Linked follow-up tickets for the acceptance criteria not in this PR.
+- `scripts/check_api_gate.py`: self-test of the target's logic against a fake API, and a mutation proof.
 
 ### Non-goals
 
@@ -95,6 +97,7 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
 | C-010 | yes | CI workflow is unchanged and no macOS or extra job is added | `git diff origin/main --stat -- .github` | empty | `git diff` | PASS |
 | C-011 | yes | Ticket criteria not in this PR are tracked, not dropped | ClickUp search, then follow-ups | 17tnw2b9aaw (selahcue-stt), 17tnw2b9aax (run every gate, path-aware dispatch) created and linked | ClickUp | PASS |
 | C-012 | yes | A full `make ci` on the branch head exits 0 with `api-check` inside it | `make ci`, one at a time, output to a file, exit code captured unpiped | exit 0; `ALL GREEN` | PR description | PENDING |
+| C-014 | yes | The target's logic is covered by tests that can fail: 18 cases (fresh worktree, reuse, rebuild on pyproject change, wrong-tree venv, failing test, missing migration, system check failure, missing pytest, no interpreter, old interpreter, failed install, scrubbed environment, venv path override, other working directory, wrong-directory `make -f`, `make -n ci` wiring, help text, skip statement) | `python3 scripts/check_api_gate.py --self-test`, then `--mutation-proof` | self-test exit 0, 18 cases; mutation proof exit 0, 16 of 16 mutations caught (one real gap found and fixed: the old-interpreter fake could not tell a missing version check from a failing one) | PR description | PASS |
 | C-013 | yes | No stray non-ASCII in the diff, no tracked virtualenv | grep the added lines of `git diff origin/main -U0` for non-ASCII characters; `git status --short` | only U+2014 in `CLAUDE.md` (the file's own style); only 4 paths changed | PR description | PASS |
 
 Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABLE`.
