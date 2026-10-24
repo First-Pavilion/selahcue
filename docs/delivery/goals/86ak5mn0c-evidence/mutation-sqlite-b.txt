@@ -1,0 +1,22 @@
+# Mutation run against code head 845e4695a570ca713ac6b5a41aec46c553460d47, 2026-10-24
+# command: python mutate.py --python $VENV_PYTHON --only M19..M36 --allow-skip
+# exit code: 0
+# (SKIPPED lines are the mutants belonging to the other mode, listed by the script)
+M19 KILLED: one throttle bucket shared by every staff member | 1 failed, 167 passed in 48.28s | 1 red
+M20 KILLED: the throttle is spent before the permission gate | 6 failed, 162 passed in 59.24s | 6 red
+M21 KILLED: the shipped budget default is ten times too generous | 1 failed, 167 passed in 59.79s | 1 red
+M22 KILLED: lenient licence-id parsing | 5 failed, 163 passed in 45.37s | 2 red
+M23 KILLED: an unknown licence is VALIDATION_FAILED instead of NOT_FOUND | 5 failed, 163 passed in 55.36s | 2 red
+M24 KILLED: the NOT_FOUND refusal carries a bespoke message (a lookup oracle) | 23 failed, 145 passed in 56.19s | 2 red
+M25 KILLED: idempotency keys are not validated | 4 failed, 164 passed in 48.11s | 1 red
+M26 KILLED: the writer is handed a different reason | 15 failed, 153 passed in 51.20s | 4 red
+M27 KILLED: the admin read type reports no prior status | 1 failed, 167 passed in 171.06s (0:02:51) | 1 red
+M28 KILLED: the suspend payload returns the full licence view, customer included | 1 failed, 167 passed in 160.41s (0:02:40) | 1 red
+M29 KILLED: a replayed request is never flagged | 1 failed, 167 passed in 103.01s (0:01:43) | 1 red
+M30 KILLED: actor ids longer than the audit column are accepted (service gate) | 1 failed, 167 passed in 91.28s (0:01:31) | 1 red
+M31 KILLED: actor ids longer than the audit column are accepted (header bridge) | 1 failed, 167 passed in 184.25s (0:03:04) | 1 red
+M32 KILLED: the commercial gate admits any licence status | 11 failed, 157 passed in 318.06s (0:05:18) | 7 red
+M33 KILLED: the commercial gate ignores the licence window | 2 failed, 166 passed in 106.26s (0:01:46) | 1 red
+M34 KILLED: the manifest route is declared allowed while suspended but still enforces | 1 failed, 167 passed in 87.82s (0:01:27) | 1 red
+M35 KILLED: a device-token route stops declaring a licence gate | 2 failed, 166 passed in 192.99s (0:03:12) | 2 red
+M36 KILLED: assign the licence status directly instead of going through the writer | 31 failed, 265 passed in 251.75s (0:04:11) | 23 red
