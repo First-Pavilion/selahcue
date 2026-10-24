@@ -308,25 +308,11 @@ fn the_largest_local_number_binds_like_any_other() {
     ));
 }
 
-#[test]
-fn the_exporters_number_is_not_an_input_so_it_cannot_be_the_answer() {
-    // Exhaustive over a small domain: the exporter numbered the deck 1..=20; the receiving library
-    // holds decks numbered 1..=20 too, but none of them has the uid. Whatever the overlap, the
-    // result is the sentinel -- never a number from either side's counter.
-    for exported_number in 1..=20u64 {
-        let exported = deck(exported_number, "Communion");
-        let portable = export_deck_link(&exported, |_| Some(uid(UID_A))).unwrap();
-        let (c, m) = import_deck_link(&portable, |wanted| {
-            // The receiving library has decks 1..=20, all with other identities.
-            (wanted == &uid(UID_B)).then(|| local(exported_number, "Other", 1))
-        });
-        assert_eq!(m, DeckLinkMatch::NotInLibrary, "number {exported_number}");
-        let ItemContent::Deck { deck_id, .. } = c else {
-            panic!("a deck link stays a deck link");
-        };
-        assert_eq!(deck_id, UNRESOLVED_DECK_ID, "number {exported_number}");
-    }
-}
+// There is deliberately no test that "the exporter's number is not an input": `import_deck_link`
+// takes only the portable link (whose type has no field for a local number) and a lookup into the
+// RECEIVING library, so the compiler already guarantees the property, and a test that looped over
+// exporter numbers could not fail. The tests that bite are the ones that fix what the lookup
+// returns and assert what comes out (the matched and not-found cases above and below).
 
 #[test]
 fn the_same_identity_imported_twice_binds_to_the_same_deck_both_times() {

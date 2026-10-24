@@ -5,6 +5,8 @@
 //! planned-time roll-up — with stable per-item ids. Persistence and UI live in
 //! other crates; this layer has no I/O.
 
+use crate::deck_ref::UNRESOLVED_DECK_ID;
+
 /// The kinds of item a service plan can contain (FR-002).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ItemKind {
@@ -815,7 +817,13 @@ impl ServicePlan {
                             deck_id: prev_id,
                             label: prev_label,
                             ..
-                        }) if *prev_id == deck_id => prev_label.clone(),
+                        // The "unresolved" number is shared by EVERY link that bound to no deck, so
+                        // it is not evidence that this is the same deck as before: carrying a name
+                        // across two of them would show one missing presentation under another's
+                        // name. Only a real deck number identifies a deck across a relink.
+                        }) if *prev_id == deck_id && deck_id != UNRESOLVED_DECK_ID => {
+                            prev_label.clone()
+                        }
                         _ => None,
                     }),
                 };

@@ -59,6 +59,7 @@ Verified on origin/main 09c69736 (2026-10-24):
 ### Assumptions and unknowns
 
 - ASSUMED: the fix may be settled at the import boundary rather than by changing every resolution site (ADR-0031 "Options considered"); owner/architect review decides whether the "uid everywhere" option is wanted now.
+- ASSUMED: a uid is an unauthenticated claim (ADR-0031 "A uid is a claim"); no ingress may keep a foreign uid until a trust decision is recorded, so `adopt` always mints. Validation owner: Security Reviewer.
 - ASSUMED: copying a SQLite store between machines and attaching two differently-stocked operators to one host are out of scope (ticket: unsupported; 86ajy02zq).
 - Validation owner for both: Software Architect review of ADR-0031.
 
@@ -73,19 +74,20 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
 
 | ID | Mandatory | Criterion | Verifier | Expected result | Evidence | Status |
 |---|---|---|---|---|---|---|
-| C-001 | yes | The defect reproduces: carrying a link by number into an overlapping library shows a different presentation | `a_link_carried_by_number_never_shows_a_different_presentation` run on the unmodified library at the base SHA | test FAILS naming the wrong deck | PR body, "red" evidence | PENDING |
+| C-001 | yes | The defect reproduces: carrying a link by number into an overlapping library shows a different presentation | At the base SHA the by-number form of the acceptance test failed (message in the PR body); at the head `characterisation_lookup_by_number_alone_still_shows_a_different_presentation` pins the same wrong-deck behaviour | red at base naming the wrong deck; the characterisation passes at head | PR body, "red" evidence | PENDING |
 | C-002 | yes | Two overlapping libraries: every imported link is the same presentation or explicitly missing, never a different one | operator `identity_tests` overlap tests | pass | operator test output | PENDING |
-| C-003 | yes | A presentation present in both libraries under different numbers resolves to the receiving library's own deck | operator `identity_tests` (identity travels via adopt) | pass | operator test output | PENDING |
+| C-003 | yes | IN-PROCESS ONLY: a presentation present in both libraries under different numbers resolves to the receiving library's own deck (decks moved between two libraries with `adopt_trusted_identity`) | operator `identity_tests` | pass | operator test output | PENDING |
 | C-004 | yes | A presentation absent from the receiving library is the missing-content state carrying its last known name | operator + core tests | pass; `unresolved_content` lists the item | test output | PENDING |
-| C-005 | yes | Existing decks are backfilled with a uid once, persisted, and stable across reloads; ids, names, slides and plan links unchanged | operator legacy-row equivalence tests | pass | test output | PENDING |
-| C-006 | yes | Duplicate gets a new uid; rename, store, replace, restore keep it; adopt never keeps a held uid; no two decks share one | operator library tests | pass | test output | PENDING |
+| C-005 | yes | Existing decks are backfilled with a uid once, persisted to the row they were read from only, and stable across reloads; the whole stored deck is unchanged apart from the uid; a row whose key differs from its deck name is never rewritten; the backfill stops at the first failed write | operator legacy-row equivalence, row-key, blank-name and failed-write tests | pass | test output | PENDING |
+| C-006 | yes | Duplicate gets a new uid; rename, store, replace, restore keep it; `adopt` and `adopt_with_policy` always mint a fresh uid (a hostile deck cannot choose its identity); `adopt_trusted_identity` keeps a free uid and never a held one; no two decks share one | operator library tests | pass | test output | PENDING |
 | C-007 | yes | Hostile/malformed identity or label input never panics, never reaches the library, and output is bounded | core `test_deck_ref` | pass | test output | PENDING |
 | C-008 | yes | A corrupt stored uid never costs the operator the deck | present `test_deck` + operator heal test | pass | test output | PENDING |
-| C-009 | yes | Wire and plan storage unchanged | `git diff origin/main` touches no protocol/fixture/plan-codec file; `selahcue-lan` protocol tests pass | empty diff on those paths; pass | PR body | PENDING |
+| C-009 | yes | Wire and plan storage unchanged | `git diff origin/main` shows no change to the plan encode/decode, the wire views, `selahcue-lan`, the Dart app or `dist/`; `plan.rs` changes one visibility keyword and one label-carry guard for the unresolved number; `selahcue-lan` protocol tests pass | no change to encode/decode or the wire views; pass | PR body | PENDING |
 | C-010 | yes | Each guard test goes red when its guarded behaviour is mutated | mutation table in the PR body | every mutation caught | PR body | PENDING |
 | C-011 | yes | `cargo fmt --check`, clippy `-D warnings`, workspace and operator tests, and `make ci` pass | commands in PR body | exit 0 | PR body | PENDING |
-| C-012 | yes | FR-139 test matrix carries the non-empty-destination case | comment on 86ak0qn15 | comment posted | ClickUp | PENDING |
+| C-012 | yes | FR-139 test matrix carries the populated-destination case and the contract | A comment with the matrix addition and the contract was posted on 86ak0qn15 by the author on 2026-10-24 (before the adopt change; ADR-0031's contract section supersedes it). The orchestrator updates the ticket's description and acceptance criteria. | comment exists; orchestrator update pending | ClickUp | PENDING |
 | C-013 | yes | Independent review requirement satisfied | Cody, Shadow, Quinn (orchestrator dispatches) | verdicts posted | review report | PENDING |
+| C-014 | no | Ticket acceptance criterion 3, in production: the same presentation travelling with a plan resolves on another machine | needs a feature that carries a uid-bearing deck between machines; none exists (`ImportItemView` has no deck, the FR-139 bundle does not carry decks, there is no deck export). Until then every cross-machine deck link imports as missing, the safe direction. | DEFERRED to that feature, not met | ADR-0031 "What this does and does not enforce" | BLOCKED |
 
 Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABLE`.
 
