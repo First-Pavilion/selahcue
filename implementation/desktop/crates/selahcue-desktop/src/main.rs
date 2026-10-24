@@ -4207,34 +4207,13 @@ mod remote_control_warmup_tests {
         demo_plan, start_remote_control_in, BindFuture, LiveController, RemoteShared, ServerEnv,
         ServerIo, SessionRegistry, Theme,
     };
+    use crate::endpoint::test_support::Scratch;
     use crate::endpoint::{is_complete_descriptor, json_field};
     use std::path::Path;
     use std::sync::{Arc, Mutex, OnceLock};
     use std::time::{Duration, Instant};
     use tokio::net::TcpListener;
     use tokio::sync::Mutex as AsyncMutex;
-
-    /// A private scratch directory, removed on drop — also when an assertion unwinds — so the
-    /// test leaves nothing behind in the shared temp dir.
-    struct Scratch(std::path::PathBuf);
-
-    impl Scratch {
-        fn new(tag: &str) -> Self {
-            let dir = std::env::temp_dir().join(format!(
-                "selahcue-desktop-test-{tag}-{}-{:?}",
-                std::process::id(),
-                std::thread::current().id()
-            ));
-            std::fs::create_dir_all(&dir).expect("create scratch dir");
-            Scratch(dir)
-        }
-    }
-
-    impl Drop for Scratch {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
-        }
-    }
 
     fn fresh_remote() -> Arc<RemoteShared> {
         Arc::new(RemoteShared {
@@ -4514,7 +4493,8 @@ mod remote_control_warmup_tests {
         );
     }
 
-    /// PINS CURRENT BEHAVIOUR; the owner decision on what a failed warm-up SHOULD do is pending.
+    /// PINS CURRENT BEHAVIOUR; the owner decision on what a failed warm-up SHOULD do is pending
+    /// (ticket 17tnw2b9ahr).
     /// Nothing in 17tnw2b1258 or PR #145 says; they only require the warm-up to finish before
     /// the bind. Today a panic in the hook unwinds the server thread: it never binds, never
     /// publishes a port or a descriptor, and the thread ends (releasing everything it held). The

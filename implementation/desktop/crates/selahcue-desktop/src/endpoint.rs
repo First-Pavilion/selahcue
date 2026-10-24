@@ -3,14 +3,21 @@
 //!
 //! It carries a bearer token, and the operator shell re-reads it for the life of its session
 //! (`selahcue-operator`'s `read_endpoint_at`, which also refuses anything but mode `0600`). So the
-//! one property that matters is that **a reader never finds the path half-written or looser than
-//! `0600`**. The first cut used `std::fs::write`, which creates and truncates the final path
-//! BEFORE writing and only `chmod`s afterwards: a reader in that gap saw an empty descriptor (the
-//! flake that failed `the_scripture_warm_up_runs_before_the_listener_is_bound` on ubuntu CI) or, on
-//! Linux where `temp_dir()` is the shared `/tmp`, a world-readable file holding the token.
+//! one property that matters is that **a reader never finds the path half-written or, on Unix,
+//! looser than `0600`**. The first cut used `std::fs::write`, which creates and truncates the
+//! final path BEFORE writing and only `chmod`s afterwards: a reader in that gap saw an empty
+//! descriptor (the flake that failed `the_scripture_warm_up_runs_before_the_listener_is_bound` on
+//! ubuntu CI) or, on Linux where `temp_dir()` is the shared `/tmp`, a world-readable file holding
+//! the token.
 //!
 //! [`write_endpoint`] therefore stages the bytes in an owner-only sibling file and `rename`s it
-//! over the path.
+//! over the path. "Owner-only" is a Unix guarantee (creation mode `0600`, then an explicit
+//! `chmod`); on Windows the staging file and the descriptor keep the ACL they inherit from the
+//! directory (a pre-existing property, tracked in 17tnw2b9agb).
+//!
+//! What this does NOT stop: a local account that can see our pid can still pre-create every
+//! staging name and make the publish fail (see [`staging_path`]). That is a denial of service
+//! only, the same as squatting the final path, and is tracked in 17tnw2b9agb.
 
 use std::io::Write;
 use std::net::SocketAddr;
@@ -24,23 +31,45 @@ use std::time::Duration;
 /// staging suffix.
 const STAGING_PREFIX: &str = ".selahcue-endpoint";
 
-/// Fresh staging names tried before a publish gives up. Collisions need a hostile or crashed
-/// neighbour (see [`staging_path`]), so one retry is already generous.
+/// Staging names tried before a publish gives up. A name can be taken by a crashed predecessor's
+/// leftover or by something hostile; this is the bound on how long the publisher keeps looking,
+/// so that something holding every name costs the publish (it returns an error) and never an
+/// unbounded loop. Collisions with our own names are not expected, so one retry is already
+/// generous. Pinned to 8 by a test so a change to it is a deliberate one.
 const MAX_STAGING_ATTEMPTS: usize = 8;
 
-/// Windows only: antivirus and the search indexer sometimes hold a freshly written file open for
-/// a moment, and `rename` over a path then fails with a sharing violation. Try a few times
-/// before giving up; the previous descriptor is untouched either way (never worse than before).
-const RENAME_ATTEMPTS: usize = if cfg!(windows) { 5 } else { 1 };
-const RENAME_RETRY_DELAY: Duration = Duration::from_millis(20);
+/// How the final `rename` is retried. Only Windows retries: antivirus and the search indexer
+/// sometimes hold a freshly written file open for a moment, and `rename` over a path then fails
+/// with a sharing violation. It makes 5 attempts in all (4 retries, 80 ms of sleeping between
+/// them); if every one fails the publish fails and the previous descriptor is untouched (never
+/// worse than before). Off Windows it is a single attempt.
+struct RenamePolicy {
+    /// Attempts in all, the first included.
+    attempts: usize,
+    delay: Duration,
+    /// Which failures are worth another attempt.
+    transient: fn(&std::io::Error) -> bool,
+}
+
+const RENAME_POLICY: RenamePolicy = RenamePolicy {
+    attempts: if cfg!(windows) { 5 } else { 1 },
+    delay: Duration::from_millis(20),
+    transient: transient_rename_error,
+};
+
+fn transient_rename_error(e: &std::io::Error) -> bool {
+    cfg!(windows) && is_sharing_error(e)
+}
 
 /// Write a local endpoint descriptor so the operator shell on this machine can
 /// auto-discover + connect (a loopback-only convenience; real pairing is QR + host
 /// confirmation). Values are simple ASCII (addr/hex/ids), so a hand-built JSON string is
 /// safe. Returns the path written, if any.
 ///
-/// Published ATOMICALLY and owner-only from the first byte: see the module docs and
-/// [`publish_owner_only`].
+/// Published ATOMICALLY, and on Unix owner-only from the first byte: see the module docs and
+/// [`publish_owner_only`]. On failure it returns `None` after a line on stderr; note that the
+/// release Windows build is a GUI-subsystem binary (`windows_subsystem = "windows"`), where
+/// stderr goes nowhere, so there the operator simply finds no descriptor.
 pub(crate) fn write_endpoint(
     path: &Path,
     addr: SocketAddr,
@@ -68,26 +97,36 @@ pub(crate) fn remove(path: &Path) {
 
 /// A fresh staging file name beside `path`: same directory (so the final rename never crosses a
 /// filesystem), dot-prefixed, and unique per CALL — the pid separates processes, a process-wide
-/// counter separates calls within one. A predictable per-process name let two publishers in one
-/// process share a file (torn reads, failed publishes) and let another account pre-create it in a
-/// sticky `/tmp` to make every publish fail.
+/// counter separates calls within one. That fixes two things the first cut's per-process name got
+/// wrong: two publishers in one process shared a file (torn reads, failed publishes), and a
+/// crashed predecessor's leftover under a recycled pid blocked every later publish.
+///
+/// It does NOT fix hostile squatting: the name is still predictable (pid plus a counter from 0),
+/// so a local account that can see our pid (e.g. in `/proc`) can pre-create all
+/// [`MAX_STAGING_ATTEMPTS`] names and make the publish fail. That is a denial of service only
+/// (nothing is written through, deleted or read; the descriptor is then not published, the
+/// server keeps serving, and the operator falls back to its stand-alone demo), the same as
+/// squatting the final path. Tracked in 17tnw2b9agb, which should also move the staging files
+/// together with the descriptor into a per-user directory.
 fn staging_path(path: &Path) -> PathBuf {
     static NEXT: AtomicU64 = AtomicU64::new(0);
     let n = NEXT.fetch_add(1, Ordering::Relaxed);
     path.with_file_name(format!("{STAGING_PREFIX}.{}.{n}.tmp", std::process::id()))
 }
 
-/// Replace `path` with `contents` so that no reader ever observes a partial or a looser-than-
-/// `0600` file: stage in a [`staging_path`] created owner-only with `create_new` (`O_EXCL`: a
-/// planted file, directory or symlink at that name is never opened, followed or deleted; the
-/// publish just moves on to a fresh name), write it fully, then `rename` it into place. On any
+/// Replace `path` with `contents` so that no reader ever observes a partial file (and, on Unix,
+/// a looser-than-`0600` one): stage in a [`staging_path`] created with `create_new` (`O_EXCL`; on
+/// Unix with mode `0600` from the first instant), write it fully, then `rename` it into place. A
+/// file, directory or symlink already at a staging name is never opened, followed, written or
+/// deleted; the publish just moves on to a fresh name, [`MAX_STAGING_ATTEMPTS`] at most. On any
 /// failure the staging file WE created is removed, so nothing accumulates in the shared temp
 /// dir, and the previous descriptor is left as it was.
 ///
 /// There is no `fsync`: the descriptor is ephemeral and regenerated, with a fresh token and
 /// port, on every start, so losing it in a crash loses nothing. A process killed between creating
-/// the staging file and renaming it leaves one `0600` dot-file holding a token that died with
-/// the process; nothing sweeps it (the window is microseconds).
+/// the staging file and renaming it leaves one dot-file (mode `0600` on Unix) holding a token
+/// that died with the process; one per killed process, and nothing sweeps it (the window is
+/// microseconds).
 fn publish_owner_only(path: &Path, contents: &[u8]) -> std::io::Result<()> {
     publish_with(path, contents, &mut || staging_path(path))
 }
@@ -103,14 +142,20 @@ fn publish_with(
     let staged = fill_staging(&mut file, contents);
     // Closed before the rename: Windows will not replace a file that is still open.
     drop(file);
-    let published = staged.and_then(|()| rename_into_place(&tmp, path));
+    let published = staged.and_then(|()| {
+        rename_into_place(&tmp, path, &RENAME_POLICY, &mut |from, to| {
+            std::fs::rename(from, to)
+        })
+    });
     if published.is_err() {
         let _ = std::fs::remove_file(&tmp);
     }
     published
 }
 
-/// Create a staging file that did not exist, owner-only from the first instant.
+/// Create a staging file that did not exist, owner-only (on Unix) from the first instant. Only
+/// "already exists" moves on to the next name; any other failure (no permission, no such
+/// directory, ...) is returned at once and as it was.
 fn create_staging(
     next_staging: &mut dyn FnMut() -> PathBuf,
 ) -> std::io::Result<(PathBuf, std::fs::File)> {
@@ -135,8 +180,8 @@ fn create_staging(
 }
 
 fn fill_staging(file: &mut std::fs::File, contents: &[u8]) -> std::io::Result<()> {
-    // Exactly `0600` whatever the umask did to the creation mode — `selahcue-operator` refuses
-    // anything else — and before any byte of the token is written.
+    // On Unix: exactly `0600` whatever the umask did to the creation mode — `selahcue-operator`
+    // refuses anything else — and before any byte of the token is written.
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -145,12 +190,19 @@ fn fill_staging(file: &mut std::fs::File, contents: &[u8]) -> std::io::Result<()
     file.write_all(contents)
 }
 
-fn rename_into_place(tmp: &Path, path: &Path) -> std::io::Result<()> {
+/// Rename `tmp` over `path` under `policy`. The rename itself is passed in, so a test can drive
+/// the real `std::fs::rename` against a real failure and count the attempts.
+fn rename_into_place(
+    tmp: &Path,
+    path: &Path,
+    policy: &RenamePolicy,
+    rename: &mut dyn FnMut(&Path, &Path) -> std::io::Result<()>,
+) -> std::io::Result<()> {
     retry(
-        RENAME_ATTEMPTS,
-        RENAME_RETRY_DELAY,
-        || std::fs::rename(tmp, path),
-        |e| cfg!(windows) && is_sharing_error(e),
+        policy.attempts,
+        policy.delay,
+        || rename(tmp, path),
+        policy.transient,
     )
 }
 
@@ -200,52 +252,61 @@ pub(crate) fn is_complete_descriptor(json: &str) -> bool {
             .all(|k| json_field(json, k).is_some_and(|v| !v.is_empty()))
 }
 
+/// A private scratch directory for tests, shared with `main.rs`'s warm-up tests.
 #[cfg(test)]
-mod tests {
-    use super::{
-        create_staging, is_complete_descriptor, is_sharing_error, json_field, publish_with, remove,
-        retry, staging_path, write_endpoint, MAX_STAGING_ATTEMPTS, STAGING_PREFIX,
-    };
-    use std::io::Read;
-    use std::path::{Path, PathBuf};
-    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-    use std::sync::Arc;
-    use std::time::{Duration, Instant};
+pub(crate) mod test_support {
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU64, Ordering};
 
-    /// A private scratch directory, removed on drop — also when an assertion unwinds.
-    struct Scratch(PathBuf);
+    /// Created fresh (`create_dir` fails if the name exists, so a directory another account made
+    /// is never adopted), under a name no one can predict from the pid alone, and removed on
+    /// drop — also when an assertion unwinds.
+    pub(crate) struct Scratch(pub(crate) PathBuf);
 
     impl Scratch {
-        fn new(tag: &str) -> Self {
+        pub(crate) fn new(tag: &str) -> Self {
+            static NEXT: AtomicU64 = AtomicU64::new(0);
+            let nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.subsec_nanos());
             let dir = std::env::temp_dir().join(format!(
-                "selahcue-endpoint-test-{tag}-{}-{:?}",
+                "selahcue-test-{tag}-{}-{}-{nanos}",
                 std::process::id(),
-                std::thread::current().id()
+                NEXT.fetch_add(1, Ordering::Relaxed)
             ));
-            std::fs::create_dir_all(&dir).expect("create scratch dir");
+            std::fs::create_dir(&dir).expect("create a fresh scratch dir");
             Scratch(dir)
         }
 
-        fn descriptor(&self) -> PathBuf {
+        pub(crate) fn descriptor(&self) -> PathBuf {
             self.0.join("endpoint.json")
         }
 
-        fn entries(&self) -> usize {
+        pub(crate) fn entries(&self) -> usize {
             std::fs::read_dir(&self.0).expect("list scratch").count()
         }
     }
 
     impl Drop for Scratch {
         fn drop(&mut self) {
-            #[cfg(unix)]
-            {
-                // A test that made the directory read-only must not strand it.
-                use std::os::unix::fs::PermissionsExt;
-                let _ = std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(0o700));
-            }
             let _ = std::fs::remove_dir_all(&self.0);
         }
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::test_support::Scratch;
+    use super::{
+        create_staging, is_complete_descriptor, is_sharing_error, json_field, publish_with, remove,
+        rename_into_place, retry, staging_path, write_endpoint, RenamePolicy, MAX_STAGING_ATTEMPTS,
+        RENAME_POLICY, STAGING_PREFIX,
+    };
+    use std::io::Read;
+    use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
 
     fn addr() -> std::net::SocketAddr {
         ([127, 0, 0, 1], 4242).into()
@@ -675,15 +736,24 @@ mod tests {
     }
 
     /// Every name the publisher is willing to try is taken: it must give up with the
-    /// `AlreadyExists` error after exactly `MAX_STAGING_ATTEMPTS` names, and leave both the
-    /// previous descriptor and the planted files as they were.
+    /// `AlreadyExists` error after exactly 8 names, and leave both the previous descriptor and
+    /// the planted files as they were.
+    ///
+    /// The planted count is hard-coded, NOT derived from `MAX_STAGING_ATTEMPTS`: a mutant that
+    /// made the constant huge once filled a temp directory with 65,535 planted files. The
+    /// constant is pinned first, before anything is planted.
     #[test]
     fn running_out_of_staging_names_fails_cleanly_after_a_bounded_number_of_tries() {
+        const PLANTED: usize = 8;
+        assert_eq!(
+            MAX_STAGING_ATTEMPTS, PLANTED,
+            "MAX_STAGING_ATTEMPTS changed: update this test's planted count on purpose"
+        );
         let scratch = Scratch::new("exhausted");
         let path = scratch.descriptor();
         assert!(publish(&path, "old").is_some());
         let old = std::fs::read_to_string(&path).expect("old descriptor");
-        let taken: Vec<PathBuf> = (0..MAX_STAGING_ATTEMPTS)
+        let taken: Vec<PathBuf> = (0..PLANTED)
             .map(|i| scratch.0.join(format!("{STAGING_PREFIX}.1.{i}.tmp")))
             .collect();
         for t in &taken {
@@ -694,13 +764,38 @@ mod tests {
 
         let err = result.expect_err("no free staging name");
         assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
-        assert_eq!(asked, MAX_STAGING_ATTEMPTS, "the retry must be bounded");
+        assert_eq!(asked, PLANTED, "the retry must be bounded");
         assert_eq!(std::fs::read_to_string(&path).expect("descriptor"), old);
         assert!(
             taken.iter().all(|t| t.exists()),
             "planted files must survive"
         );
-        assert_eq!(scratch.entries(), 1 + MAX_STAGING_ATTEMPTS);
+        assert_eq!(scratch.entries(), 1 + PLANTED);
+    }
+
+    /// Only "already exists" moves on to another name. Any other failure from creating the
+    /// staging file is returned at once, after ONE try, and as it was: here the directory is
+    /// missing (`NotFound`); the next test does the same for a read-only directory.
+    #[test]
+    fn a_failure_other_than_a_taken_name_is_returned_at_once_and_unchanged() {
+        let scratch = Scratch::new("create-fails");
+        let missing = scratch
+            .0
+            .join("no-such-dir")
+            .join(format!("{STAGING_PREFIX}.1.0.tmp"));
+        let mut asked = 0usize;
+
+        let err = create_staging(&mut || {
+            asked += 1;
+            missing.clone()
+        })
+        .expect_err("the directory does not exist");
+
+        assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
+        assert_eq!(
+            asked, 1,
+            "a failure that is not a taken name must not be retried"
+        );
     }
 
     /// The destination is itself a symlink: the link is replaced by the new regular file and the
@@ -758,8 +853,22 @@ mod tests {
         );
     }
 
-    /// A read-only directory: the publish fails, the previous descriptor survives, and no
-    /// staging file is left. (Skipped when the process can write anyway, e.g. as root.)
+    /// Puts a directory's mode back when dropped, so a test that made it read-only can never
+    /// strand it (even when an assertion unwinds); the directory is one the test created.
+    #[cfg(unix)]
+    struct RestoreMode(PathBuf);
+
+    #[cfg(unix)]
+    impl Drop for RestoreMode {
+        fn drop(&mut self) {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(0o700));
+        }
+    }
+
+    /// A read-only directory: the publish fails with `PermissionDenied` after ONE try (not eight
+    /// retries that swallow the real cause), the previous descriptor survives, and no staging
+    /// file is left. (Skipped when the process can write anyway, e.g. as root.)
     #[cfg(unix)]
     #[test]
     fn an_unwritable_directory_returns_none_and_keeps_the_previous_descriptor() {
@@ -768,6 +877,7 @@ mod tests {
         let path = scratch.descriptor();
         assert!(publish(&path, "old").is_some());
         let old = std::fs::read_to_string(&path).expect("old descriptor");
+        let _restore = RestoreMode(scratch.0.clone());
         std::fs::set_permissions(&scratch.0, std::fs::Permissions::from_mode(0o500))
             .expect("make read-only");
         if std::fs::File::create(scratch.0.join("probe")).is_ok() {
@@ -776,13 +886,25 @@ mod tests {
         }
 
         let result = publish(&path, "new");
+        let mut asked = 0usize;
+        let kind = create_staging(&mut || {
+            asked += 1;
+            staging_path(&path)
+        })
+        .expect_err("a read-only directory")
+        .kind();
 
-        std::fs::set_permissions(&scratch.0, std::fs::Permissions::from_mode(0o700))
-            .expect("restore");
         assert!(
             result.is_none(),
             "publishing into a read-only directory must fail"
         );
+        assert_eq!(kind, std::io::ErrorKind::PermissionDenied);
+        assert_eq!(
+            asked, 1,
+            "a permission failure must not be retried as if taken"
+        );
+        std::fs::set_permissions(&scratch.0, std::fs::Permissions::from_mode(0o700))
+            .expect("restore");
         assert_eq!(std::fs::read_to_string(&path).expect("descriptor"), old);
         assert_eq!(scratch.entries(), 1, "no staging file may be left");
     }
@@ -812,15 +934,21 @@ mod tests {
         assert_eq!(scratch.entries(), 1);
     }
 
+    /// The staging file is never wider than owner-only AT CREATION, before any chmod. Checked as
+    /// "no group or other bits" rather than exactly `0600`, because the creation mode is `0600`
+    /// minus whatever the umask clears (a umask such as `0277` makes it `0400`); the exact `0600`
+    /// is the explicit chmod's job, pinned by the hostile-umask test below. (That the name must be
+    /// NEW is pinned by the taken-name tests.)
+    #[cfg(unix)]
     #[test]
-    fn staging_file_creation_is_owner_only_and_new() {
+    fn staging_file_creation_is_never_wider_than_owner_only() {
         let scratch = Scratch::new("create");
-        let mut names = vec![scratch.0.join("a.tmp")].into_iter();
-        let (path, file) = create_staging(&mut || names.next().expect("one name")).expect("create");
-        #[cfg(unix)]
-        assert_eq!(mode_of(&file.metadata().expect("stat")), 0o600);
+        let name = scratch.0.join("a.tmp");
+        let (path, file) = create_staging(&mut || name.clone()).expect("create");
+        let mode = mode_of(&file.metadata().expect("stat"));
         drop(file);
-        assert_eq!(path, scratch.0.join("a.tmp"));
+        assert_eq!(path, name);
+        assert_eq!(mode & 0o077, 0, "group/other bits at creation: {mode:o}");
     }
 
     // ---- the Windows rename retry (logic runs everywhere, with no sleeping) --------------------
@@ -890,16 +1018,103 @@ mod tests {
         assert!(!is_sharing_error(&std::io::Error::other("boom")));
     }
 
+    /// The wiring of the rename retry, against the real `std::fs::rename` failing for real: the
+    /// destination is a non-empty directory, so every attempt fails. The policy is injected (the
+    /// production one only retries on Windows) and the attempts are counted.
+    fn rename_onto_a_non_empty_directory(policy: &RenamePolicy) -> (std::io::Result<()>, usize) {
+        let scratch = Scratch::new("rename-policy");
+        let tmp = scratch.0.join("staged");
+        std::fs::write(&tmp, "x").expect("staged file");
+        let blocked = scratch.descriptor();
+        std::fs::create_dir_all(&blocked).expect("destination directory");
+        std::fs::write(blocked.join("keep"), "x").expect("make it non-empty");
+        let mut calls = 0usize;
+        let result = rename_into_place(&tmp, &blocked, policy, &mut |from, to| {
+            calls += 1;
+            std::fs::rename(from, to)
+        });
+        assert!(blocked.join("keep").exists(), "the destination was damaged");
+        (result, calls)
+    }
+
+    #[test]
+    fn a_rename_that_keeps_failing_is_attempted_exactly_as_often_as_the_policy_says() {
+        let policy = RenamePolicy {
+            attempts: 3,
+            delay: Duration::ZERO,
+            transient: |_| true,
+        };
+        let (result, calls) = rename_onto_a_non_empty_directory(&policy);
+        assert!(
+            result.is_err(),
+            "renaming onto a non-empty directory must fail"
+        );
+        assert_eq!(calls, 3);
+    }
+
+    #[test]
+    fn a_rename_failure_the_policy_calls_permanent_is_attempted_once() {
+        let policy = RenamePolicy {
+            attempts: 3,
+            delay: Duration::ZERO,
+            transient: |_| false,
+        };
+        let (result, calls) = rename_onto_a_non_empty_directory(&policy);
+        assert!(result.is_err());
+        assert_eq!(calls, 1);
+    }
+
+    #[test]
+    fn a_rename_that_works_is_attempted_once_and_moves_the_file() {
+        let scratch = Scratch::new("rename-ok");
+        let (tmp, dest) = (scratch.0.join("staged"), scratch.descriptor());
+        std::fs::write(&tmp, "payload").expect("staged file");
+        let policy = RenamePolicy {
+            attempts: 3,
+            delay: Duration::ZERO,
+            transient: |_| true,
+        };
+        let mut calls = 0usize;
+        rename_into_place(&tmp, &dest, &policy, &mut |from, to| {
+            calls += 1;
+            std::fs::rename(from, to)
+        })
+        .expect("rename");
+        assert_eq!(calls, 1);
+        assert_eq!(std::fs::read_to_string(&dest).expect("dest"), "payload");
+        assert!(!tmp.exists());
+    }
+
+    /// The policy production actually uses. Only Windows retries (5 attempts in all, sharing and
+    /// access errors transient); everywhere else exactly one attempt. The Windows half of this
+    /// runs only on Windows; the other half is what stops the Windows-only retry from leaking
+    /// onto other platforms.
+    #[test]
+    fn the_production_rename_policy_retries_on_windows_only() {
+        let sharing: std::io::Error = std::io::ErrorKind::PermissionDenied.into();
+        let missing: std::io::Error = std::io::ErrorKind::NotFound.into();
+        if cfg!(windows) {
+            assert_eq!(RENAME_POLICY.attempts, 5);
+            assert!((RENAME_POLICY.transient)(&sharing));
+        } else {
+            assert_eq!(RENAME_POLICY.attempts, 1);
+            assert!(!(RENAME_POLICY.transient)(&sharing));
+        }
+        assert!(!(RENAME_POLICY.transient)(&missing));
+        assert!(RENAME_POLICY.delay <= Duration::from_millis(100));
+    }
+
     // ---- other processes and the OS (unix) ---------------------------------------------------------
 
-    /// Run THIS test binary again as a child, running only `child_test`, optionally under a
-    /// shell prefix such as `umask 0400;`. Fails unless the child really ran that one test and
-    /// it passed: `--exact` with a wrong name would "pass" with zero tests.
+    /// Run THIS test binary again as a child, running only `child_test` (they are `#[ignore]`d, so
+    /// they never run, or count as passed, on their own), optionally under a shell prefix such as
+    /// `umask 0400;`. Fails unless the child really ran that one test and it passed: `--exact`
+    /// with a wrong name would "pass" with zero tests.
     #[cfg(unix)]
     fn run_child(child_test: &str, shell_prefix: &str, env: &[(&str, &Path)]) {
         let exe = std::env::current_exe().expect("current exe");
         let script = format!(
-            "{shell_prefix} exec \"$0\" --exact endpoint::tests::{child_test} --test-threads=1"
+            "{shell_prefix} exec \"$0\" --ignored --exact endpoint::tests::{child_test} --test-threads=1"
         );
         let mut command = std::process::Command::new("sh");
         command.arg("-c").arg(script).arg(exe);
@@ -915,13 +1130,12 @@ mod tests {
         );
     }
 
-    /// Child half: when asked, publish under whatever umask the parent set and check the mode.
+    /// Child half: publish under whatever umask the parent set and check the mode.
     #[cfg(unix)]
     #[test]
+    #[ignore = "child process of the umask test; run only by its parent"]
     fn child_publishes_under_a_hostile_umask() {
-        let Some(path) = std::env::var_os("ENDPOINT_TEST_UMASK_PATH") else {
-            return; // not running as the child
-        };
+        let path = std::env::var_os("ENDPOINT_TEST_UMASK_PATH").expect("run by its parent only");
         let path = PathBuf::from(path);
         assert!(publish(&path, "tok").is_some());
         assert_eq!(mode_of(&std::fs::metadata(&path).expect("stat")), 0o600);
@@ -949,10 +1163,9 @@ mod tests {
     /// Child half of the disk-full test: runs under a 512-byte file-size limit.
     #[cfg(unix)]
     #[test]
+    #[ignore = "child process of the disk-full test; run only by its parent"]
     fn child_publishes_when_the_disk_is_full() {
-        let Some(path) = std::env::var_os("ENDPOINT_TEST_FULL_PATH") else {
-            return;
-        };
+        let path = std::env::var_os("ENDPOINT_TEST_FULL_PATH").expect("run by its parent only");
         let path = PathBuf::from(path);
         assert!(publish(&path, "old").is_some(), "a small descriptor fits");
         let before = std::fs::read_to_string(&path).expect("old descriptor");
@@ -987,14 +1200,13 @@ mod tests {
     /// Child half of the two-process test: publish until the parent creates the stop file.
     #[cfg(unix)]
     #[test]
+    #[ignore = "child process of the two-processes test; run only by its parent"]
     fn child_publishes_until_stopped() {
-        let (Some(path), Some(stop), Some(id)) = (
-            std::env::var_os("ENDPOINT_TEST_PATH"),
-            std::env::var_os("ENDPOINT_TEST_STOP"),
-            std::env::var("ENDPOINT_TEST_ID").ok(),
-        ) else {
-            return;
-        };
+        let (path, stop, id) = (
+            std::env::var_os("ENDPOINT_TEST_PATH").expect("run by its parent only"),
+            std::env::var_os("ENDPOINT_TEST_STOP").expect("run by its parent only"),
+            std::env::var("ENDPOINT_TEST_ID").expect("run by its parent only"),
+        );
         let (path, stop) = (PathBuf::from(path), PathBuf::from(stop));
         let started = Instant::now();
         let mut failed = 0usize;
@@ -1023,6 +1235,7 @@ mod tests {
         let spawn = |id: &str| {
             std::process::Command::new(&exe)
                 .args([
+                    "--ignored",
                     "--exact",
                     "endpoint::tests::child_publishes_until_stopped",
                     "--test-threads=1",
