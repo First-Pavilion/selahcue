@@ -2168,8 +2168,34 @@ fn the_publish_viewer_and_template_view_fields_have_a_pinned_wire_shape() {
 
 // --- FR-082: `ServerMessage::kind()` is a payload-free label (17tnw2axppb) ---
 
+/// The number of `ServerMessage` variants, tied to the enum by the exhaustive, wildcard-free
+/// `match` in [`variant_index`]: adding a variant stops this file compiling until it has an arm;
+/// bump this with it, and [`every_server_message_with_marker`] then refuses to build until its
+/// sample list has an entry for the new variant too.
+const VARIANT_COUNT: usize = 15;
+
+fn variant_index(m: &ServerMessage) -> usize {
+    match m {
+        ServerMessage::Ack { .. } => 0,
+        ServerMessage::Denied { .. } => 1,
+        ServerMessage::State { .. } => 2,
+        ServerMessage::ScriptureResults { .. } => 3,
+        ServerMessage::Chapter { .. } => 4,
+        ServerMessage::OperatorState { .. } => 5,
+        ServerMessage::ConsoleThumbnails { .. } => 6,
+        ServerMessage::ScreenFrame { .. } => 7,
+        ServerMessage::RemoteDevices { .. } => 8,
+        ServerMessage::PairingCode { .. } => 9,
+        ServerMessage::ActiveTranscriptId { .. } => 10,
+        ServerMessage::SermonNoteDraft { .. } => 11,
+        ServerMessage::SermonNoteRegenerationState { .. } => 12,
+        ServerMessage::AutosaveSlots { .. } => 13,
+        ServerMessage::Error { .. } => 14,
+    }
+}
+
 /// One sample of EVERY `ServerMessage` variant, each carrying a recognisable marker in every
-/// free-text field it has, so the tests below can prove a label never carries a payload.
+/// free-text field it has. Panics unless the list holds exactly one sample per variant.
 fn every_server_message_with_marker(marker: &str) -> Vec<ServerMessage> {
     use selahcue_lan::protocol::{
         AutosaveSlotView, ScriptureHitView, SermonNoteDraftView, ServerMessage as M,
@@ -2192,7 +2218,7 @@ fn every_server_message_with_marker(marker: &str) -> Vec<ServerMessage> {
         r#"{{"event":"operator_state","view":{{"plan_name":"{marker}-plan","items":[],"live_index":null,"staged_index":null,"blackout":false,"timer":null,"transcript":[{{"id":0,"start_ms":0,"end_ms":1,"text":"{marker}-transcript"}}],"partial_transcript":"{marker}-partial","detections":[{{"id":1,"reference":"{marker}-ref","text":"{marker}-detection"}}]}}}}"#
     ))
     .unwrap();
-    vec![
+    let samples = vec![
         M::Ack { request_id: 1 },
         M::Denied {
             request_id: 2,
@@ -2269,7 +2295,16 @@ fn every_server_message_with_marker(marker: &str) -> Vec<ServerMessage> {
         M::Error {
             message: format!("{marker}-error"),
         },
-    ]
+    ];
+    let mut seen = [0usize; VARIANT_COUNT];
+    for m in &samples {
+        seen[variant_index(m)] += 1;
+    }
+    assert_eq!(
+        seen, [1; VARIANT_COUNT],
+        "exactly one sample per ServerMessage variant"
+    );
+    samples
 }
 
 /// `kind()` must be exactly the `event` tag the variant serializes under, for EVERY variant:
@@ -2278,10 +2313,8 @@ fn every_server_message_with_marker(marker: &str) -> Vec<ServerMessage> {
 #[test]
 fn server_message_kind_is_the_wire_event_tag_for_every_variant() {
     let msgs = every_server_message_with_marker("MARK");
-    // One sample per variant. If this count drifts, a variant was added or removed: the
-    // exhaustive `match` in `ServerMessage::kind` forces a label for it at compile time, and this
-    // sample list must gain the matching entry so the label is checked against the wire tag.
-    assert_eq!(msgs.len(), 15, "one sample per ServerMessage variant");
+    // One sample per variant (enforced by the builder against the exhaustive `variant_index`).
+    assert_eq!(msgs.len(), VARIANT_COUNT);
 
     let mut seen = std::collections::BTreeSet::new();
     for m in &msgs {
@@ -2296,19 +2329,15 @@ fn server_message_kind_is_the_wire_event_tag_for_every_variant() {
     }
 }
 
-/// The label never carries a payload: no free-text field of any variant can reach it. Checked
-/// against a planted marker in every field of every variant (the sample builder above), so a
-/// future "helpful" arm that formats a field into the label turns this red.
+/// Labels are plain lower_snake_case identifiers: no spaces, quotes, braces, digits or other
+/// punctuation that a formatted payload (or a `Debug` dump) would introduce. (That a label cannot
+/// carry payload TEXT is already guaranteed by `kind()` returning `&'static str`; this pins its
+/// shape so a future "helpful" arm cannot return something formatted-looking.)
 #[test]
-fn server_message_kind_never_contains_payload_text() {
+fn server_message_kind_labels_are_plain_snake_case_identifiers() {
     for m in every_server_message_with_marker("SECRET-MARK") {
         let label = m.kind();
-        assert!(
-            !label.contains("SECRET") && !label.contains("MARK"),
-            "label {label:?} leaked payload text"
-        );
-        // Labels are lower_snake_case identifiers: no spaces, quotes, braces or digits that a
-        // formatted payload would introduce.
+        assert!(!label.is_empty());
         assert!(
             label.chars().all(|c| c.is_ascii_lowercase() || c == '_'),
             "label {label:?} is not a plain snake_case identifier"

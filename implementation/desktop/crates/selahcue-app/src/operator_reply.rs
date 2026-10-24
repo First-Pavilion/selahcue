@@ -28,8 +28,10 @@ pub(crate) type PairingCode = (String, String, u64, Option<String>);
 
 /// The error for a reply that is not the one the caller asked for. Names what was expected and
 /// the variant that arrived - never any of its contents. Takes the reply by value so the payload
-/// is dropped here and cannot be reached by whatever the caller does next.
-pub(crate) fn unexpected_reply(expected: &str, got: ServerMessage) -> TransportError {
+/// is dropped here and cannot be reached by whatever the caller does next. `expected` is a
+/// `&'static str` on purpose: only a literal can go there, so runtime text (a reply field) cannot
+/// be passed in by mistake.
+pub(crate) fn unexpected_reply(expected: &'static str, got: ServerMessage) -> TransportError {
     TransportError::Protocol(format!("expected {expected}, got: {}", got.kind()))
 }
 
@@ -171,121 +173,18 @@ pub(crate) fn expect_operator_state(
 }
 
 #[cfg(test)]
+#[path = "../tests/common/mod.rs"]
+mod fixtures;
+
+#[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
     //! Every `expect_*` branch x every possible `ServerMessage` variant: the matching reply
     //! succeeds, every other reply is an error that names the variant it got and the one it
     //! wanted and contains NONE of the reply's payload, in `Display` or in `Debug`.
+    use super::fixtures::{draft_view, every_reply, reply_of_kind, SECRET, VARIANT_COUNT};
     use super::*;
-    use selahcue_lan::protocol::{
-        from_json, DenyReason, RemoteDeviceView, ScriptureHitView, SermonNoteDraftView, VerseView,
-    };
-    use selahcue_lan::Role;
-
-    const SECRET: &str = "SECRET-LIVE-TEXT-7f3a";
-
-    fn draft() -> SermonNoteDraftView {
-        SermonNoteDraftView {
-            title: format!("{SECRET}-title"),
-            summary: Some(format!("{SECRET}-summary")),
-            sections_json: format!(r#"[{{"heading":"{SECRET}"}}]"#),
-            scriptures_json: "[]".into(),
-            ai_generated: true,
-            disclosure: Some(format!("{SECRET}-disclosure")),
-            provider: format!("{SECRET}-provider"),
-            model: Some(format!("{SECRET}-model")),
-            created_at_ms: 1,
-            edited_at_ms: 2,
-        }
-    }
-
-    /// One reply of EVERY `ServerMessage` variant, each carrying `SECRET` in every free-text
-    /// field it has. `OperatorState` is the realistic worst case: the live transcript, the
-    /// partial transcript and a detection (reference + verse text), all planted.
-    fn every_reply() -> Vec<ServerMessage> {
-        let operator_state: ServerMessage = from_json(&format!(
-            r#"{{"event":"operator_state","view":{{"plan_name":"{SECRET}-plan","items":[],"live_index":null,"staged_index":null,"blackout":false,"timer":null,"transcript":[{{"id":0,"start_ms":0,"end_ms":1,"text":"{SECRET}-transcript"}}],"partial_transcript":"{SECRET}-partial","detections":[{{"id":1,"reference":"{SECRET}-ref","text":"{SECRET}-detection"}}]}}}}"#
-        ))
-        .unwrap();
-        vec![
-            ServerMessage::Ack { request_id: 1 },
-            ServerMessage::Denied {
-                request_id: 2,
-                reason: DenyReason::Forbidden,
-            },
-            ServerMessage::State {
-                live_item: Some(5),
-                blackout: false,
-            },
-            ServerMessage::ScriptureResults {
-                query: format!("{SECRET}-query"),
-                references: vec![format!("{SECRET}-reference")],
-                hits: vec![ScriptureHitView {
-                    reference: format!("{SECRET}-hit-ref"),
-                    text: format!("{SECRET}-hit-text"),
-                }],
-            },
-            ServerMessage::Chapter {
-                book_name: format!("{SECRET}-book"),
-                chapter: 1,
-                translation: "KJV".into(),
-                verses: vec![VerseView {
-                    number: 1,
-                    text: format!("{SECRET}-verse"),
-                }],
-                prev_ref: None,
-                next_ref: None,
-            },
-            operator_state,
-            ServerMessage::ConsoleThumbnails {
-                preview: Some(ThumbView::from_rgba(1, 1, &[1, 2, 3, 4])),
-                live: None,
-            },
-            ServerMessage::ScreenFrame {
-                screen: format!("{SECRET}-screen"),
-                frame: None,
-            },
-            ServerMessage::RemoteDevices {
-                devices: vec![RemoteDeviceView {
-                    device_id: format!("{SECRET}-device"),
-                    name: format!("{SECRET}-name"),
-                    platform: "iOS".into(),
-                    role: Role::Viewer,
-                    idle_secs: 0,
-                    pinned: false,
-                }],
-                pending: vec![],
-            },
-            ServerMessage::PairingCode {
-                code: format!("{SECRET}-code"),
-                fingerprint: format!("{SECRET}-fingerprint"),
-                expires_in_secs: 120,
-                uri: Some(format!("selahcue://pair?code={SECRET}")),
-            },
-            ServerMessage::ActiveTranscriptId {
-                transcript_id: Some(7),
-            },
-            ServerMessage::SermonNoteDraft {
-                transcript_id: 7,
-                draft: Some(draft()),
-            },
-            ServerMessage::SermonNoteRegenerationState {
-                transcript_id: 7,
-                current: Some(draft()),
-                pending: Some(draft()),
-            },
-            ServerMessage::AutosaveSlots {
-                slots: vec![AutosaveSlotView {
-                    slot: 1,
-                    saved_at_ms: 1,
-                    label: Some(format!("{SECRET}-label")),
-                }],
-            },
-            ServerMessage::Error {
-                message: format!("{SECRET}-error"),
-            },
-        ]
-    }
+    use selahcue_lan::protocol::DenyReason;
 
     /// One row per `expect_*` function: what it says it expected, which reply kinds it ACCEPTS,
     /// and the function itself reduced to `Result<(), TransportError>`.
@@ -375,14 +274,17 @@ mod tests {
 
     #[test]
     fn the_matrix_covers_every_branch_and_every_reply_variant() {
-        // 12 `expect_*` functions and 15 `ServerMessage` variants (the 15 is also pinned by
-        // `selahcue-lan`'s `kind()` test): if either grows, this forces the matrix to grow too.
+        // 12 `expect_*` functions; one sample reply per `ServerMessage` variant (the fixture
+        // refuses to build unless its list covers an exhaustive `match` over the enum, so a new
+        // variant cannot slip past this matrix).
         assert_eq!(branches().len(), 12, "one row per expect_* function");
-        let kinds: std::collections::BTreeSet<_> =
-            every_reply().iter().map(ServerMessage::kind).collect();
+        let kinds: std::collections::BTreeSet<_> = every_reply(SECRET)
+            .iter()
+            .map(ServerMessage::kind)
+            .collect();
         assert_eq!(
             kinds.len(),
-            15,
+            VARIANT_COUNT,
             "one sample reply per ServerMessage variant"
         );
         // Every accepted kind a row names is a real variant (a typo would silently turn an
@@ -397,12 +299,14 @@ mod tests {
     #[test]
     fn a_non_matching_reply_is_a_protocol_error_that_names_both_variants_and_leaks_nothing() {
         let mut errors_checked = 0;
+        let mut accepted_pairs = 0;
         for b in branches() {
-            for reply in every_reply() {
+            for reply in every_reply(SECRET) {
                 let got = reply.kind();
                 let outcome = (b.call)(reply);
                 if b.accepts.contains(&got) {
                     assert!(outcome.is_ok(), "{} must accept a {got} reply", b.name);
+                    accepted_pairs += 1;
                     continue;
                 }
                 let err = outcome.expect_err(&format!("{} must refuse a {got} reply", b.name));
@@ -433,11 +337,12 @@ mod tests {
                 errors_checked += 1;
             }
         }
-        // 12 branches x 15 variants, minus the accepted pairs (1+1+1+1+1+2+2+1+1+1+2+1 = 15).
+        // Every (branch, variant) pair was either accepted or checked as an error: none skipped.
+        // (The accepted count is the sum of the rows' `accepts`: 1+1+1+1+1+2+2+1+1+1+2+1 = 15.)
+        assert_eq!(accepted_pairs, 15);
         assert_eq!(
-            errors_checked,
-            12 * 15 - 15,
-            "no branch/variant pair skipped"
+            errors_checked + accepted_pairs,
+            branches().len() * VARIANT_COUNT
         );
     }
 
@@ -446,7 +351,7 @@ mod tests {
         // Pins the one wording every downstream message and log search relies on, and that it is
         // the variant NAME: a payload-bearing format (Debug, Display of a field) cannot produce
         // this exact string.
-        let err = expect_active_transcript_id(every_reply().remove(5)).unwrap_err();
+        let err = expect_active_transcript_id(reply_of_kind(SECRET, "operator_state")).unwrap_err();
         assert_eq!(
             err.to_string(),
             "protocol error: expected active_transcript_id, got: operator_state"
@@ -465,7 +370,7 @@ mod tests {
     fn unexpected_reply_takes_ownership_so_the_payload_is_gone() {
         // The signature is the guard: it consumes the reply. (Compile-time property; this
         // exercises it with the worst-case payload and checks the output once more.)
-        let operator_state = every_reply().remove(5);
+        let operator_state = reply_of_kind(SECRET, "operator_state");
         let err = unexpected_reply("anything", operator_state);
         assert!(!err.to_string().contains("SECRET"));
         assert!(!format!("{err:?}").contains("SECRET"));
@@ -541,7 +446,7 @@ mod tests {
             1
         );
 
-        let view = expect_operator_state(every_reply().remove(5)).unwrap();
+        let view = expect_operator_state(reply_of_kind(SECRET, "operator_state")).unwrap();
         assert_eq!(view.plan_name, format!("{SECRET}-plan"));
         assert_eq!(
             view.transcript.len(),
@@ -554,7 +459,7 @@ mod tests {
     fn sermon_note_draft_replies_distinguish_present_absent_and_refused() {
         let found = ServerMessage::SermonNoteDraft {
             transcript_id: 7,
-            draft: Some(draft()),
+            draft: Some(draft_view(SECRET)),
         };
         let none = ServerMessage::SermonNoteDraft {
             transcript_id: 7,
@@ -568,7 +473,7 @@ mod tests {
         // error for a READ.
         assert_eq!(
             expect_sermon_note_draft(found.clone()).unwrap(),
-            Some(draft())
+            Some(draft_view(SECRET))
         );
         assert_eq!(expect_sermon_note_draft(none.clone()).unwrap(), None);
         let err = expect_sermon_note_draft(denied()).unwrap_err();
@@ -576,7 +481,7 @@ mod tests {
         // Save/Update: the same, but a host refusal fails soft to Ok(None).
         assert_eq!(
             expect_sermon_note_draft_or_denied(found).unwrap(),
-            Some(draft())
+            Some(draft_view(SECRET))
         );
         assert_eq!(expect_sermon_note_draft_or_denied(none).unwrap(), None);
         assert_eq!(expect_sermon_note_draft_or_denied(denied()).unwrap(), None);
@@ -586,12 +491,12 @@ mod tests {
     fn regeneration_replies_map_state_and_refusal() {
         let slot = expect_regeneration_state(ServerMessage::SermonNoteRegenerationState {
             transcript_id: 7,
-            current: Some(draft()),
+            current: Some(draft_view(SECRET)),
             pending: None,
         })
         .unwrap()
         .unwrap();
-        assert_eq!(slot.current, Some(draft()));
+        assert_eq!(slot.current, Some(draft_view(SECRET)));
         assert_eq!(slot.pending, None, "an empty pending slot stays empty");
         // The honest (should-not-happen) case: nothing accepted and nothing pending is still a
         // well-formed state, not a refusal.
