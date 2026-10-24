@@ -10,6 +10,8 @@ pub mod autosave_store;
 mod controller;
 pub mod keymap;
 mod operator;
+#[cfg(feature = "server")]
+mod operator_reply;
 pub mod sermon_note_store;
 pub mod transcript_pump;
 pub mod transcript_sink;
