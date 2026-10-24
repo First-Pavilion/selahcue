@@ -708,9 +708,9 @@ marketing-check: ## Marketing site gate: type-check + lint + node tests + produc
 # `API_ENV=` or `API=<elsewhere>` cannot weaken the gate. Only API_PYTHON is yours to set; it is passed
 # to the helper through the environment, never spliced into shell text.
 #
-# THE TARGET'S OWN LOGIC is tested by `scripts/check_api_gate.py --self-test` (run by `make ci`, offline,
-# seconds): it copies this Makefile and the helper into a scratch repo with a fake API and runs the
-# targets through every situation listed in its docstring. `--mutation-proof` breaks this Makefile and the
+# THE TARGET'S OWN LOGIC is tested by `scripts/check_api_gate.py --self-test` (run by `make ci`, offline):
+# it copies this Makefile and the helper into a scratch repo with a fake API and runs the targets through
+# every situation `--list` shows. `--mutation-proof` breaks this Makefile and the
 # helper on purpose and requires the named case to go red each time. Run it after editing anything
 # between here and the end of `api-install`.
 # Defined BEFORE the export: GNU Make 3.81 (macOS's make) exports an `export VAR` that precedes its
@@ -817,7 +817,7 @@ ci: ## Local CI gate: Rust, Flutter, marketing, Django API on SQLite (needs `mak
 	# recursive-make pattern as marketing-check, and like it this NEVER installs: a fresh worktree runs
 	# `make api-install` once (network, Python 3.14), and api-check refuses with that instruction until
 	# then. See the api-check comment above for everything it does and does not cover.
-	# The gate's own logic, tested against a fake API in a scratch repo (offline, seconds): that the
+	# The gate's own logic, tested against a fake API in a scratch repo (offline): that the
 	# targets refuse, install, reuse, rebuild, refuse a venv from another checkout, go red on a failing
 	# test / missing migration / failed install, and never skip. `--mutation-proof` (by hand, after
 	# editing the api targets or scripts/api_venv.py) breaks them on purpose and requires each case to

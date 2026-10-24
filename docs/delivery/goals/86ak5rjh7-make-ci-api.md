@@ -95,22 +95,22 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
 
 | ID | Mandatory | Criterion | Verifier | Expected result | Evidence | Status |
 |---|---|---|---|---|---|---|
-| C-001 | yes | In a fresh worktree `make api-check` refuses with `make api-install` named, installs nothing and runs nothing; after `make api-install` it passes | `make api-check`, `make api-install`, `make api-check` in the worktree | exit 2 then 0 then 0; pass, skip and xfail counts printed by pytest | PR description | PENDING |
-| C-002 | yes | A failing API test makes the gate exit non-zero and names the test | append a failing test to `tests/test_foundation_contract.py`, run `make api-check`, revert | non-zero exit; the test named in the `FAILED` summary line | PR description | PENDING |
-| C-003 | yes | A model field without a migration makes the gate exit non-zero before pytest | add a field to `CustomerOrg`, run `make api-check`, revert | non-zero exit at `makemigrations --check`, naming the missing migration | PR description | PENDING |
-| C-004 | yes | The gate refuses a venv from another checkout, a symlink, a changed `pyproject.toml`, a changed interpreter and an unfinished install, with an actionable message, and does not refuse a content-neutral `touch` | self-test cases for each, real `pyproject.toml` edit on the real API | each refusal exits non-zero naming `make api-install`; the touch passes | PR description | PENDING |
-| C-005 | yes | The targets never run on or clear what is not theirs: a developer's own `.venv` and any directory without the marker are untouched; overrides on the command line change nothing; two installs do not overlap | self-test cases | all pass | PR description | PENDING |
-| C-006 | yes | Missing, empty, old and hostile interpreter values fail loudly; an interpreter path with spaces works; a failed install or rebuild leaves no stamp and the next install retries | self-test cases | all pass | PR description | PENDING |
-| C-007 | yes | The test commands run under the venv's interpreter, in a scrubbed environment with an in-memory database; a developer's `db.sqlite3` cannot break them | self-test cases; the real API with an inconsistent `db.sqlite3` present | self-test pass; real run exit 0 | PR description | PENDING |
-| C-008 | yes | `make ci` includes `api-check`, never `api-install`, and `make -n ci` stays a clean preview | self-test case; `make -n ci` | exit 0 | PR description | PENDING |
-| C-009 | yes | The Makefile's three API commands match `ci.yml`'s `api` job, and `ci.yml` is unchanged | self-test case; `git diff origin/main --stat -- .github` | match; empty diff | PR description | PENDING |
-| C-010 | yes | The Postgres/Redis-only skips are named in the output, the help text, the Makefile and `CLAUDE.md`; the install's unlocked state is stated in the same places and in the README | self-test cases; read the diff | present | `git diff` | PENDING |
-| C-011 | yes | `implementation/api/pyproject.toml` has an exact `setuptools` pin that builds on Python 3.14 | `make api-install` from scratch; `grep` the pin | exit 0 | PR description | PENDING |
-| C-012 | yes | The self-test and the mutation proof pass, and every mutation is caught | `python3 scripts/check_api_gate.py --self-test`, then `--mutation-proof` | both exit 0; counts as printed | PR description | PENDING |
-| C-013 | yes | Guards that read the Makefile stay green | `check_launch_reachability.py` and `check_dependency_audit_coverage.py`, self-test and real | all exit 0 | PR description | PENDING |
-| C-014 | yes | A full `make ci` on the branch head exits 0 with the self-test and `api-check` inside it | `make ci`, one at a time, output to a file, exit code captured unpiped | exit 0; `ALL GREEN` | PR description | PENDING |
+| C-001 | yes | In a fresh worktree `make api-check` refuses with `make api-install` named, installs nothing and runs nothing; after `make api-install` it passes | `make api-check`, `make api-install`, `make api-check` in the worktree | exit 2 then 0 then 0; pass, skip and xfail counts printed by pytest | PR description | PASS |
+| C-002 | yes | A failing API test makes the gate exit non-zero and names the test | append a failing test to `tests/test_foundation_contract.py`, run `make api-check`, revert | non-zero exit; the test named in the `FAILED` summary line | PR description | PASS |
+| C-003 | yes | A model field without a migration makes the gate exit non-zero before pytest | add a field to `CustomerOrg`, run `make api-check`, revert | non-zero exit at `makemigrations --check`, naming the missing migration | PR description | PASS |
+| C-004 | yes | The gate refuses a venv from another checkout, a symlink, a changed `pyproject.toml`, a changed interpreter and an unfinished install, with an actionable message, and does not refuse a content-neutral `touch` | self-test cases for each, real `pyproject.toml` edit on the real API | each refusal exits non-zero naming `make api-install`; the touch passes | PR description | PASS |
+| C-005 | yes | The targets never run on or clear what is not theirs: a developer's own `.venv` and any directory without the marker are untouched; overrides on the command line change nothing; two installs do not overlap | self-test cases | all pass | PR description | PASS |
+| C-006 | yes | Missing, empty, old and hostile interpreter values fail loudly; an interpreter path with spaces works; a failed install or rebuild leaves no stamp and the next install retries | self-test cases | all pass | PR description | PASS |
+| C-007 | yes | The test commands run under the venv's interpreter, in a scrubbed environment with an in-memory database; a developer's `db.sqlite3` cannot break them | self-test cases; the real API with an inconsistent `db.sqlite3` present | self-test pass; real run exit 0 | PR description | PASS |
+| C-008 | yes | `make ci` includes `api-check`, never `api-install`, and `make -n ci` stays a clean preview | self-test case; `make -n ci` | exit 0 | PR description | PASS |
+| C-009 | yes | The Makefile's three API commands match `ci.yml`'s `api` job, and `ci.yml` is unchanged | self-test case; `git diff origin/main --stat -- .github` | match; empty diff | PR description | PASS |
+| C-010 | yes | The Postgres/Redis-only skips are named in the output, the help text, the Makefile and `CLAUDE.md`; the install's unlocked state is stated in the same places and in the README | self-test cases; read the diff | present | `git diff` | PASS |
+| C-011 | yes | `implementation/api/pyproject.toml` has an exact `setuptools` pin that builds on Python 3.14 | `make api-install` from scratch; `grep` the pin | exit 0 | PR description | PASS |
+| C-012 | yes | The self-test and the mutation proof pass, and every mutation is caught | `python3 scripts/check_api_gate.py --self-test`, then `--mutation-proof` | both exit 0; counts as printed | PR description | PASS |
+| C-013 | yes | Guards that read the Makefile stay green | `check_launch_reachability.py` and `check_dependency_audit_coverage.py`, self-test and real | all exit 0 | PR description | PASS |
+| C-014 | yes | A full `make ci` on the branch head exits 0 with the self-test and `api-check` inside it | `make ci`, one at a time, output to a file, exit code captured unpiped | exit 0; `ALL GREEN` | PR description | PASS |
 | C-015 | yes | Ticket criteria not in this PR are tracked, not dropped | ClickUp | 17tnw2b9aaw and 17tnw2b9aax exist and are linked | ClickUp | PASS |
-| C-016 | yes | No stray non-ASCII in the diff, no tracked virtualenv, branch not behind `origin/main` | scan the added lines of `git diff origin/main -U0`; `git status --short`; `git rev-list --count HEAD..origin/main` | only U+2014 in `CLAUDE.md` and this file's title; 0 | PR description | PENDING |
+| C-016 | yes | No stray non-ASCII in the diff, no tracked virtualenv, branch not behind `origin/main` | scan the added lines of `git diff origin/main -U0`; `git status --short`; `git rev-list --count HEAD..origin/main` | only U+2014 in `CLAUDE.md` and this file's title; 0 | PR description | PASS |
 
 Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABLE`.
 
@@ -149,7 +149,7 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
 - Hypothesis: following the marketing gate's precedent (the gate never installs) removes the surprise install, the stale-venv problem and most of the races at once.
 - Change or investigation: Cody and Shadow found no blockers. Applied: `api-install` and a refusing `api-check`; `scripts/api_venv.py`; a venv name only this target uses with a marker, symlink refusal, lock, content-hash and interpreter stamp; `override` on every variable; in-memory database in the scrubbed environment; exact `setuptools` pin; honest wording about the unlocked install; the corrected reason for the wrong-tree assertion (a borrowed venv's packages came from another tree's `pyproject.toml`; it would not test that tree's code); a comparison with `ci.yml`; fixes to the self-test and mutation proof the reviewers listed.
 - Verifier executed: see the PR description for exit codes and counts at the head SHA.
-- Result: pending the final runs recorded in the table above.
+- Result: all rows above PASS at the PR head; counts and exit codes are in the PR description.
 - New evidence: GNU Make 3.81 exports `export VAR` placed before `VAR ?= x` as an empty string; the default interpreter is defined first and a case plus a mutation pin it.
 - Decision: gate-review
 
@@ -166,7 +166,7 @@ Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABL
 ## Final evaluation
 
 - Validator command: `python3 ~/.claude/skills/goal/scripts/validate_goal_contract.py docs/delivery/goals/86ak5rjh7-make-ci-api.md`
-- Validator result: see PR description
+- Validator result: OK (structural) and OK (completion), see PR description
 - Independent verification result: round 1 (Cody, Shadow) approve with conditions, applied above; Quinn and later rounds pending
 - Terminal state: GATE_REVIEW (the implementation is done and verified by its author; this is not VERIFIED_COMPLETE until the reviews finish)
 - Remaining failed or blocked criteria: none known; criteria of the parent ticket outside the API half are in 17tnw2b9aaw and 17tnw2b9aax

@@ -585,12 +585,16 @@ def blank_interpreter_never_refreshes_a_stale_venv(ctx):
     original = r.pyproject.read_text()
     r.pyproject.write_text(original + "\n# pin changed\n")
     stamp_before = r.stamp.read_text(), r.stamp.stat().st_mtime_ns
-    for blank in ("", "   "):
-        rc, out = r.install(python=blank)
-        check(rc != 0 and "API_PYTHON is empty" in out, "API_PYTHON=%r was not rejected as empty:\n%s" % (blank, out))
-        check((r.stamp.read_text(), r.stamp.stat().st_mtime_ns) == stamp_before, "a blank API_PYTHON refreshed the stamp")
-        rc, out = r.check_gate(python=blank)
-        check(rc != 0 and "make api-install" in out, "the stale venv passed with API_PYTHON=%r:\n%s" % (blank, out))
+    # `API_PYTHON=` on the command line reaches the helper empty (Make strips the blanks); whitespace-only
+    # can only arrive through the environment, so both routes are exercised.
+    routes = (("API_PYTHON= on the command line", {"python": ""}),
+              ("API_PYTHON='   ' in the environment", {"python": False, "env": {"API_PYTHON": "   "}}))
+    for label, kw in routes:
+        rc, out = r.install(**kw)
+        check(rc != 0 and "API_PYTHON is empty" in out, "%s was not rejected as empty:\n%s" % (label, out))
+        check((r.stamp.read_text(), r.stamp.stat().st_mtime_ns) == stamp_before, "%s refreshed the stamp" % label)
+        rc, out = r.check_gate(**kw)
+        check(rc != 0 and "make api-install" in out, "the stale venv passed with %s:\n%s" % (label, out))
         check(r.calls() == [], "commands ran against a stale venv: %r" % r.calls())
 
 
