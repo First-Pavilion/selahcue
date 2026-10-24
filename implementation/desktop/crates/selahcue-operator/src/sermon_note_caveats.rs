@@ -1614,7 +1614,7 @@ mod tests {
             r#"[{"heading":"A","items":["x"],"points":[{"text":"t","sub_points":["s"]}]}]"#,
             r#"[{"heading":"A","points":[{"text":"t"}]}]"#,
             r#"[{"heading":"A","points":[{"text":"t","sub_points":null}]}]"#,
-            r#"[{"heading":"A","extra":{"deep":[[[[[1]]]]]},"items":["é"]}]"#,
+            r#"[{"heading":"A","extra":{"deep":[[[[[1]]]]]},"items":["\u00e9"]}]"#,
             r#"[{"heading":"A","items":["x"]},{"heading":"B","items":[]},null]"#,
             r#"[{"heading":"A","items":["x"]},7]"#,
             "[1,2]",
