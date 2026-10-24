@@ -1,17 +1,18 @@
 [build-system]
 # EXACT pin (86ak5rjh7, owner-accepted interim, 2026-10-24). Without this table pip builds the editable
 # install with whatever setuptools is newest on PyPI at install time, in an isolated environment, so the
-# one piece of code that runs at install time was the one thing not pinned. 84.0.0 is a PyPI release from
-# 2026-08-08 (more than two weeks old when chosen), supports PEP 660 editable installs and Python 3.14.
+# one piece of code that runs at install time was the one thing not pinned. 84.1.0 is a PyPI release from
+# 2026-10-19 (5 days old on 2026-10-24, so INSIDE the two-week window; taken on purpose because it is the fix
+# for the advisory below), supports PEP 660 editable installs and Python 3.14 (checked 2026-10-24: `pip install -v
+# -e .` on 3.14.5 builds with setuptools-84.1.0).
 # Every installer that reads this file gets it: the CI `api` job, the Dockerfile and `make api-install`.
 # It is NOT hash-locked and the transitive dependencies are still unlocked: that is ClickUp 17tnw2az0kw.
-# KNOWN ADVISORY, kept on purpose (decided by the orchestrator on 2026-10-24 and put to the owner, who has not
-# objected; the owner's recorded acceptance covers the unlocked install and this pin, not this advisory
-# specifically): GHSA-xmj3-9gf7-h52w (LOW, CWE-22) affects setuptools 38.2.2 up to but
-# not including 84.1.0 (fixed 2026-10-19, which is inside the two-week window): a path escape through a wheel's
-# namespace_packages.txt on WINDOWS, in setuptools' legacy wheel install_as_egg path. It does not apply here:
-# this file is only ever built as an editable PEP 517/660 install on macOS, Linux CI and Linux Docker, with no
-# egg install and no setup_requires. Bump to 84.1.0 or later on or after 2026-11-02.
+# ADVISORY FIXED BY THIS PIN (checked 2026-10-24, GitHub Advisory DB + OSV.dev): GHSA-xmj3-9gf7-h52w (LOW,
+# CWE-22) affected setuptools 38.2.2 up to but not including 84.1.0: a path escape through a wheel's
+# namespace_packages.txt on WINDOWS, in setuptools' legacy wheel install_as_egg path. It never applied to this
+# file's editable PEP 517/660 build (macOS, Linux CI, Linux Docker; no egg install, no setup_requires), and
+# 84.1.0 closes it: both databases list 0 advisories for 84.1.0. 84.1.0's release notes also name
+# GHSA-grgh-hr87-3jpw (archive_util member paths on Windows); neither database has a record of it.
 # Dependabot (pip, this directory) may propose a bump of this pin; take it as an ordinary reviewed PR.
 requires = ["setuptools==84.1.0"]
 build-backend = "setuptools.build_meta"
