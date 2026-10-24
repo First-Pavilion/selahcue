@@ -15,8 +15,8 @@
 
 use selahcue_licensing::client::{Activation, ActivationPath};
 use selahcue_licensing::contract::{
-    ActivateDevicePayload, ActivateWithSessionData, ActivationRequest, ActivationResponse,
-    DeviceDto, GraphQlResponse, LicenseDto, LoginData, LoginInput, LoginPayload, TokenMetaDto,
+    ActivationRequest, ActivationResponse, DeviceDto, LicenseDto, SessionRequest, SessionResponse,
+    TokenMetaDto,
 };
 use selahcue_licensing::{
     AccountSession, DeviceCredentials, DeviceIdentity, IdempotencyKey, InMemorySecretStore,
@@ -30,14 +30,14 @@ const EXPECTED_SRC_MODULES: usize = 9;
 
 /// Number of formatted renderings the credential sweep covers. Pinned so an entry cannot
 /// quietly disappear from it.
-const SWEPT_RENDERINGS: usize = 14;
+const SWEPT_RENDERINGS: usize = 10;
 
 /// Number of sanctioned `Token::expose()` call sites in `src/`.
 ///
 /// Each one hands out a raw credential. All three are "attach this to an outbound request",
 /// and none may be a formatter:
 ///
-/// - `client.rs` — the password into the sign-in mutation's variables
+/// - `client.rs` — the password into the sign-in request body
 /// - `client.rs` — the enrollment key into the activation request body
 /// - `client.rs` — `bearer.map(Token::expose)`, the session token into the Authorization
 ///   header. This one is a **path call**, which is exactly the form the guard used to miss.
@@ -50,6 +50,14 @@ const DEVICE_TOKEN: &str = "SC-DEV-A1B2-C3D4-E5F6-G7H8-J9K2-L3M4-N5P6-Q7R8";
 const SESSION_TOKEN: &str = "sess-11112222333344445555666677778888";
 const ENROLLMENT_KEY: &str = "SC-TRIAL-Z9Y8-X7W6-V5U4-T3S2-R1Q0-P9N8-M7L6-K5J4";
 const PASSWORD: &str = "correct-horse-battery-staple";
+
+/// A licence block with no meaning of its own; `LicenseDto` has no `Default` on purpose.
+fn license() -> LicenseDto {
+    LicenseDto {
+        status: "ACTIVATED".into(),
+        expires_at: "2026-12-31T23:59:59.999999+00:00".into(),
+    }
+}
 
 fn credentials() -> DeviceCredentials<InMemorySecretStore> {
     DeviceCredentials::new(InMemorySecretStore::new())
@@ -217,11 +225,11 @@ fn no_type_this_crate_exposes_leaks_credential_material_when_formatted() {
                 path: ActivationPath::EnrollmentKey,
                 token: Some(Token::new(DEVICE_TOKEN)),
                 created: true,
-                reminted: Some(false),
+                reminted: false,
                 device_public_id: "dev_00000000000000000000000000000000".into(),
                 platform: "macos".into(),
-                token_meta: None,
-                license: None,
+                token_meta: TokenMetaDto::default(),
+                license: license(),
             }
         ),
     ));
@@ -242,10 +250,10 @@ fn no_type_this_crate_exposes_leaks_credential_material_when_formatted() {
         ),
     ));
     formatted.push((
-        "LoginInput/Debug",
+        "SessionRequest/Debug",
         format!(
             "{:?}",
-            LoginInput {
+            SessionRequest {
                 email: "admin@example.test".into(),
                 password: PASSWORD.into(),
             }
@@ -268,55 +276,20 @@ fn no_type_this_crate_exposes_leaks_credential_material_when_formatted() {
             platform: "macos".into(),
         },
         token: TokenMetaDto::default(),
-        license: LicenseDto::default(),
+        license: license(),
     };
     formatted.push((
         "ActivationResponse/Debug",
         format!("{activation_response:?}"),
     ));
 
-    let login_payload = LoginPayload {
+    let session_response = SessionResponse {
         session_token: Token::new(SESSION_TOKEN),
         expires_at: "2026-09-24T10:11:12.123456+00:00".into(),
         role: "ADMIN".into(),
         org_id: "org_1".into(),
     };
-    formatted.push(("LoginPayload/Debug", format!("{login_payload:?}")));
-
-    let activate_payload = ActivateDevicePayload {
-        full_token: Some(Token::new(DEVICE_TOKEN)),
-        created: true,
-        device_public_id: "dev_1".into(),
-        platform: "macos".into(),
-    };
-    formatted.push((
-        "ActivateDevicePayload/Debug",
-        format!("{activate_payload:?}"),
-    ));
-
-    // ...and the wrappers that print them transitively. A leak-free leaf is worth nothing
-    // if the envelope around it re-exposes the value.
-    let login_data = LoginData {
-        login: login_payload,
-    };
-    formatted.push(("LoginData/Debug", format!("{login_data:?}")));
-
-    let activate_data = ActivateWithSessionData {
-        activate_device_with_session: activate_payload,
-    };
-    formatted.push((
-        "ActivateWithSessionData/Debug",
-        format!("{activate_data:?}"),
-    ));
-
-    let graphql_envelope: GraphQlResponse<LoginData> = GraphQlResponse {
-        data: Some(login_data),
-        errors: None,
-    };
-    formatted.push((
-        "GraphQlResponse<LoginData>/Debug",
-        format!("{graphql_envelope:?}"),
-    ));
+    formatted.push(("SessionResponse/Debug", format!("{session_response:?}")));
 
     // --- the test-support transport ----------------------------------------------------
     // `ScriptedTransport` records request bodies verbatim, and those bodies carry the
@@ -331,8 +304,7 @@ fn no_type_this_crate_exposes_leaks_credential_material_when_formatted() {
     transport.push_response(
         200,
         format!(
-            r#"{{"data":{{"login":{{"sessionToken":"{SESSION_TOKEN}","expiresAt":"x",
-            "role":"ADMIN","orgId":"o"}}}}}}"#
+            r#"{{"session_token":"{SESSION_TOKEN}","expires_at":"x","role":"ADMIN","org_id":"o"}}"#
         ),
     );
     transport.push_response(
@@ -451,8 +423,12 @@ fn every_secret_bearing_public_field_is_token_typed_so_the_sweep_cannot_fall_beh
             "metadata only (masked/prefix/suffix/fingerprint); no secret",
         ),
         (
+            "token_meta: TokenMetaDto",
+            "metadata only (masked/prefix/suffix/fingerprint); no secret",
+        ),
+        (
             "password: String",
-            "must be String to serialize; hand-redacted Debug on LoginInput",
+            "must be String to serialize; hand-redacted Debug on SessionRequest",
         ),
         (
             "license_key: String",
@@ -463,10 +439,6 @@ fn every_secret_bearing_public_field_is_token_typed_so_the_sweep_cannot_fall_beh
             "a client-chosen correlation id, deliberately visible in logs",
         ),
         ("key_id: String", "names a PUBLIC key; not secret"),
-        (
-            "token_meta: Option<TokenMetaDto>",
-            "metadata only; no secret",
-        ),
         (
             "had_bearer: bool",
             "a flag recording THAT a bearer was sent, never its value",
@@ -524,9 +496,11 @@ fn every_secret_bearing_public_field_is_token_typed_so_the_sweep_cannot_fall_beh
             {
                 continue;
             }
-            // The TYPE must be Token — not the line, not a comment on it.
+            // The TYPE must be exactly `Token` or `Option<Token>` — not the line, not a comment
+            // on it, and not any type whose NAME merely contains the word (`TokenMetaDto` did
+            // pass a `contains("Token")` check while being a plain struct of strings).
             assert!(
-                ty.contains("Token"),
+                ty == "Token" || ty == "Option<Token>",
                 "{}:{} declares a credential-named field whose TYPE is not `Token`, so a \
                  `{{:?}}` on its struct would print the secret verbatim:\n  {code}\n\
                  Type it as `Token`, or add it to ALLOWED with the reason it is safe.",
