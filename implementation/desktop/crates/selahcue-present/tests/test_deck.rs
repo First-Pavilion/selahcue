@@ -2,6 +2,7 @@
 
 #![allow(clippy::unwrap_used)]
 
+use selahcue_core::deck_ref::DeckUid;
 use selahcue_present::deck::{
     AuthoredSlide, DeckId, SlideDeck, SlideId, Transition, MAX_DECK_SLIDES, MAX_NOTES_LEN,
 };
@@ -344,4 +345,78 @@ fn confidence_slide_of_a_textless_slide_is_blank() {
         slide.confidence_slide().is_blank(),
         "no text and no notes → a blank confidence slide"
     );
+}
+
+// --- deck identity (ClickUp 86ak196cr): the uid a plan link is translated through ---------------
+
+const UID: &str = "00112233445566778899aabbccddeeff";
+
+fn deck_json_with_uid(uid_json: &str) -> String {
+    format!(r#"{{"name":"Sermon","id":7,"uid":{uid_json},"slides":[{{"id":1}}],"next_id":2}}"#)
+}
+
+#[test]
+fn a_deck_with_no_uid_serialises_exactly_as_before_and_reads_back_without_one() {
+    let mut deck = SlideDeck::new("Sermon");
+    assert!(deck.uid().is_none(), "a fresh deck has no identity yet");
+    deck.set_id(DeckId(7));
+    let js = serde_json::to_string(&deck).unwrap();
+    assert_eq!(js, r#"{"name":"Sermon","id":7,"slides":[],"next_id":1}"#);
+    assert!(!js.contains("uid"), "no key while unset: {js}");
+    let back: SlideDeck = serde_json::from_str(&js).unwrap();
+    assert!(back.uid().is_none(), "legacy JSON reads as unidentified");
+}
+
+#[test]
+fn a_uid_round_trips_as_its_canonical_string() {
+    let mut deck = SlideDeck::new("Sermon");
+    deck.set_uid(DeckUid::parse(UID));
+    let js = serde_json::to_string(&deck).unwrap();
+    assert!(js.contains(&format!(r#""uid":"{UID}""#)), "{js}");
+    let back: SlideDeck = serde_json::from_str(&js).unwrap();
+    assert_eq!(back.uid().map(DeckUid::as_str), Some(UID));
+    assert_eq!(back, deck, "the whole deck round-trips");
+}
+
+#[test]
+fn set_uid_none_clears_it_and_a_clone_carries_it() {
+    let mut deck = SlideDeck::new("Sermon");
+    deck.set_uid(DeckUid::parse(UID));
+    let copy = deck.clone();
+    assert_eq!(copy.uid(), deck.uid(), "a clone is the same identity");
+    deck.set_uid(None);
+    assert!(deck.uid().is_none());
+    assert!(
+        copy.uid().is_some(),
+        "clearing one does not touch the clone"
+    );
+}
+
+#[test]
+fn a_damaged_uid_costs_the_deck_its_identity_but_never_the_deck() {
+    // Each of these is something a hand-edited, truncated or foreign-written row could hold.
+    let damaged = [
+        "null".to_string(),
+        "42".to_string(),
+        "true".to_string(),
+        r#"{"a":1}"#.to_string(),
+        r#"[1,2]"#.to_string(),
+        r#""""#.to_string(),
+        r#""not-a-uid""#.to_string(),
+        format!(r#""{}""#, UID.to_uppercase()),
+        format!(r#""{UID}00""#),
+        format!(r#""{}""#, "0".repeat(32)),
+    ];
+    for uid_json in damaged {
+        let back: SlideDeck = serde_json::from_str(&deck_json_with_uid(&uid_json))
+            .unwrap_or_else(|e| panic!("uid {uid_json} made the deck unreadable: {e}"));
+        assert!(back.uid().is_none(), "uid {uid_json} must read as none");
+        assert_eq!(back.name, "Sermon", "the deck survived uid {uid_json}");
+        assert_eq!(back.id(), DeckId(7));
+        assert_eq!(back.len(), 1, "its slides survived uid {uid_json}");
+    }
+    // Positive control: the same row with a good uid keeps it, so the loop above is not just
+    // testing a field that is always ignored.
+    let ok: SlideDeck = serde_json::from_str(&deck_json_with_uid(&format!(r#""{UID}""#))).unwrap();
+    assert_eq!(ok.uid().map(DeckUid::as_str), Some(UID));
 }

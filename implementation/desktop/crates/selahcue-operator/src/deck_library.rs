@@ -12,6 +12,10 @@
 //! suffix on collision) — otherwise an upsert on a name owned by a *different* deck would clobber it.
 
 use crate::deck_workspace::deck_image_paths;
+use selahcue_core::deck_ref::{
+    export_deck_link, import_deck_link, DeckLinkMatch, DeckUid, LocalDeck, PortableDeckLink,
+};
+use selahcue_core::plan::ItemContent;
 use selahcue_data::{deck_repo, Database};
 use selahcue_present::{
     render_authored_slide, DeckId, DeckTrash, FrameBuffer, SlideDeck, SlideId, Theme,
@@ -146,6 +150,26 @@ impl MediaKeepers {
     }
 }
 
+/// A source of 128 random bits for a new deck identity, or `None` if the platform has none to give.
+///
+/// A plain `fn` pointer, not a boxed closure: the library lives in the shell's shared state and
+/// must stay `Send`, and the one production source ([`os_entropy`]) captures nothing. Tests swap in
+/// a counter, a stuck source and a failing one to prove the library never hands two decks the same
+/// identity and degrades to "unidentified" rather than to a guess.
+type Entropy = fn() -> Option<[u8; 16]>;
+
+/// The operating system's random source.
+fn os_entropy() -> Option<[u8; 16]> {
+    let mut bytes = [0u8; 16];
+    getrandom::fill(&mut bytes).ok()?;
+    Some(bytes)
+}
+
+/// How many times minting a uid retries when the draw is refused (all-zero) or already held. With
+/// a working source a retry is never needed (2^-128); the bound exists so a stuck source ends in
+/// "no identity" instead of a loop.
+const MINT_UID_ATTEMPTS: usize = 8;
+
 /// The persisted deck library.
 pub struct DeckLibrary {
     /// The persistence handle, or `None` when running in the in-memory fallback.
@@ -163,13 +187,19 @@ pub struct DeckLibrary {
     /// ([`DeckTrash`]) because this crate is excluded from the workspace and nothing here
     /// gets real tests.
     trash: DeckTrash,
+    /// Where new deck identities come from (see [`Entropy`]).
+    entropy: Entropy,
 }
 
 impl DeckLibrary {
     /// Build the library from an optional DB: load every persisted deck, deserialize, and
-    /// **self-heal** to unique non-zero ids + unique names. A missing/failed DB → an empty
-    /// in-memory library (never an error — persistence is best-effort).
+    /// **self-heal** to unique non-zero ids + unique names + unique identities. A missing/failed
+    /// DB → an empty in-memory library (never an error — persistence is best-effort).
     pub fn load(db: Option<Database>) -> Self {
+        Self::load_inner(db, os_entropy)
+    }
+
+    fn load_inner(db: Option<Database>, entropy: Entropy) -> Self {
         let mut decks: Vec<SlideDeck> = Vec::new();
         if let Some(db) = &db {
             if let Ok(rows) = deck_repo::load_all(db) {
@@ -186,6 +216,7 @@ impl DeckLibrary {
             decks,
             next_id: 1,
             trash: DeckTrash::new(),
+            entropy,
         };
         lib.heal();
         lib
@@ -202,6 +233,10 @@ impl DeckLibrary {
     /// one) or a name (which would make a `save_one` upsert clobber a sibling).
     fn heal(&mut self) {
         use std::collections::HashSet;
+        // The names the rows were stored under, before pass 2 can change any in memory: the
+        // identity pass below writes a healed deck back under ITS ROW'S name, and only when the
+        // name did not move (a renamed-in-memory deck would otherwise gain a second row).
+        let stored_names: Vec<String> = self.decks.iter().map(|d| d.name.clone()).collect();
         self.next_id = self
             .decks
             .iter()
@@ -244,6 +279,106 @@ impl DeckLibrary {
             seen_names.insert(unique.clone());
             self.decks[i].name = unique;
         }
+        // Pass 3 — identities (86ak196cr): every deck keeps a valid uid that no other deck holds;
+        // a deck with none (stored before identities existed, or with a damaged value) or with a
+        // copy of another deck's gets a fresh one. A copy is cleared FIRST so it cannot keep the
+        // original's identity if minting fails -- two decks sharing an identity is the one outcome
+        // this pass exists to make impossible.
+        let mut held: HashSet<DeckUid> = HashSet::new();
+        let mut need_uid: Vec<usize> = Vec::new();
+        for (i, d) in self.decks.iter().enumerate() {
+            match d.uid() {
+                Some(u) if held.insert(u.clone()) => {}
+                _ => need_uid.push(i),
+            }
+        }
+        for &i in &need_uid {
+            self.decks[i].set_uid(None);
+        }
+        for i in need_uid {
+            let fresh = self.mint_uid();
+            self.decks[i].set_uid(fresh);
+            // Persist, so the identity is the same on the next launch. Without this a legacy deck
+            // would be given a different one every run and a bundle exported yesterday could not
+            // name it today. Best-effort like every write here.
+            if self.decks[i].uid().is_some() && self.decks[i].name == stored_names[i] {
+                self.persist_one(&self.decks[i]);
+            }
+        }
+    }
+
+    /// Whether `uid` already identifies a deck here -- saved, or sitting in the undo-delete trash,
+    /// because restoring that deck would otherwise put two decks under one identity.
+    fn uid_held(&self, uid: &DeckUid) -> bool {
+        self.decks.iter().any(|d| d.uid() == Some(uid))
+            || self
+                .trashed_decks()
+                .into_iter()
+                .any(|d| d.uid() == Some(uid))
+    }
+
+    /// Mint a deck identity no deck here holds, or `None` if the source has none to give or keeps
+    /// offering ones that are refused or held ([`MINT_UID_ATTEMPTS`]). `None` leaves the deck
+    /// working and unidentified: it exports as "not identifiable" and so can only ever import as
+    /// missing elsewhere, and the next load tries again. It never falls back to a derived or
+    /// reused value.
+    fn mint_uid(&self) -> Option<DeckUid> {
+        for _ in 0..MINT_UID_ATTEMPTS {
+            let bytes = (self.entropy)()?;
+            if let Some(uid) = DeckUid::from_bytes(bytes) {
+                if !self.uid_held(&uid) {
+                    return Some(uid);
+                }
+            }
+        }
+        None
+    }
+
+    /// Give `deck` an identity fit to be added: the one it arrives with when that is valid and free
+    /// (so the same presentation keeps its identity as it travels), otherwise a fresh one.
+    fn ensure_free_uid(&self, deck: &mut SlideDeck) {
+        let keep = deck.uid().is_some_and(|u| !self.uid_held(u));
+        if !keep {
+            deck.set_uid(self.mint_uid());
+        }
+    }
+
+    // --- cross-machine identity (86ak196cr · FINDING-LIB-07 · ADR-0031) ---------------------------
+
+    /// The globally unique identity of the saved deck `id`, or `None` if there is no such deck or it
+    /// could not be given one (see [`mint_uid`](Self::mint_uid)). A deck in the undo-delete trash
+    /// is not in the library and has no answer here.
+    #[allow(dead_code)] // consumed by the plan-bundle export (FR-139, 86ak0qn15)
+    pub fn uid_of(&self, id: DeckId) -> Option<DeckUid> {
+        self.decks.iter().find(|d| d.id() == id)?.uid().cloned()
+    }
+
+    /// The saved deck that carries `uid`, as the facts an imported link is rebuilt from, or `None`.
+    /// Only SAVED decks answer: a deleted deck is missing, even if "Undo delete" could bring it
+    /// back, because a plan must not claim a presentation the library does not currently hold.
+    #[allow(dead_code)] // consumed by the plan-bundle import (FR-139, 86ak0qn15)
+    pub fn find_by_uid(&self, uid: &DeckUid) -> Option<LocalDeck> {
+        let d = self.decks.iter().find(|d| d.uid() == Some(uid))?;
+        Some(LocalDeck {
+            id: d.id().0,
+            slide_count: u32::try_from(d.len()).unwrap_or(u32::MAX),
+            name: d.name.clone(),
+        })
+    }
+
+    /// A deck link as it may leave this machine: this library's identity for the deck, never its
+    /// local number ([`export_deck_link`]). `None` for anything but a deck link.
+    #[allow(dead_code)] // consumed by the plan-bundle export (FR-139, 86ak0qn15)
+    pub fn export_link(&self, content: &ItemContent) -> Option<PortableDeckLink> {
+        export_deck_link(content, |id| self.uid_of(DeckId(id)))
+    }
+
+    /// Bind a deck link that arrived from another machine to THIS library: the saved deck with the
+    /// same identity, or the missing-content state ([`import_deck_link`]). Never a deck chosen by
+    /// the sender's local number. Reads the library only -- it adds, removes and renumbers nothing.
+    #[allow(dead_code)] // consumed by the plan-bundle import (FR-139, 86ak0qn15)
+    pub fn import_link(&self, link: &PortableDeckLink) -> (ItemContent, DeckLinkMatch) {
+        import_deck_link(link, |uid| self.find_by_uid(uid))
     }
 
     /// Mint a fresh library deck id (monotonic, never reused). **Self-healing** (mirrors
@@ -311,6 +446,7 @@ impl DeckLibrary {
         let mut deck = SlideDeck::new(unique);
         let id = self.mint_id();
         deck.set_id(id);
+        deck.set_uid(self.mint_uid());
         deck.add_slide(); // "One empty slide, ready to edit"
         self.persist_one(&deck);
         self.decks.push(deck.clone());
@@ -339,6 +475,7 @@ impl DeckLibrary {
             let id = self.mint_id();
             deck.set_id(id);
         }
+        self.ensure_free_uid(&mut deck);
         let base = adopt_base_name(&deck);
         let unique = uniquify(&base, &self.name_set());
         deck.name = unique;
@@ -421,6 +558,7 @@ impl DeckLibrary {
         }
         let mut updated = deck;
         updated.set_id(target); // the id plan items link — never re-minted
+        updated.set_uid(self.decks[i].uid().cloned()); // ...and the identity bundles link
         updated.name = self.decks[i].name.clone(); // the row key — so this upserts, not orphans
         self.decks[i] = updated.clone();
         self.persist_one(&updated);
@@ -472,6 +610,9 @@ impl DeckLibrary {
         };
         let old_name = self.decks[i].name.clone();
         let mut updated = deck.clone();
+        // The library is the authority on a saved deck's identity: whatever the editor's copy
+        // carries (nothing, for a deck it built itself), the identity stays this one.
+        updated.set_uid(self.decks[i].uid().cloned());
         // Guard the name-PK invariant even if the caller mutated name directly.
         if updated.name != old_name {
             let unique = uniquify_excluding(&updated.name, &self.name_set(), &old_name);
@@ -513,6 +654,7 @@ impl DeckLibrary {
         let mut copy = src.clone();
         let new_id = self.mint_id();
         copy.set_id(new_id);
+        copy.set_uid(self.mint_uid()); // a copy is a different presentation, not the same one twice
         let copy_name = uniquify(&format!("{} copy", src.name), &self.name_set());
         copy.name = copy_name;
         self.persist_one(&copy);
@@ -1673,3 +1815,8 @@ mod tests {
         assert_eq!(lib.get(adopted.id()).unwrap().len(), 1, "kept its slide");
     }
 }
+
+// Cross-machine identity tests (86ak196cr / FINDING-LIB-07) live beside the library, in their own
+// file, because they are about the boundary between two libraries rather than about one.
+#[cfg(test)]
+mod identity_tests;

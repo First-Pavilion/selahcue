@@ -356,7 +356,7 @@ pub fn sanitize_text(s: &str) -> String {
 /// Truncation is by CHARACTER, never by byte, so a multi-byte name can never be cut mid-scalar
 /// (which would not round-trip). Applied on the way in and again on decode, so neither a hostile
 /// wire value nor a hand-edited database row can park an unbounded string on a plan item.
-fn sanitize_label(s: &str) -> String {
+pub(crate) fn sanitize_label(s: &str) -> String {
     sanitize_field(s).chars().take(MAX_LINK_LABEL_LEN).collect()
 }
 
