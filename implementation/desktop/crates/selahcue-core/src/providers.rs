@@ -319,6 +319,17 @@ impl NoteSection {
     }
 }
 
+/// The fixed [`DraftCaveat::SectionRequestedEmpty`] label for a requested short summary that
+/// came back blank. The summary is `NoteDraft::summary`, not a section, so it has no
+/// heading of its own; this is the single definition `selahcue_cloud::openai::parse_draft`
+/// emits and the operator's persisted-draft reload (86akmfn54) recognises, so the two
+/// cannot drift apart and silently turn a stored caveat into a stale one.
+pub const SUMMARY_CAVEAT_HEADING: &str = "Summary";
+
+/// As [`SUMMARY_CAVEAT_HEADING`], for a requested scripture extraction that found nothing
+/// (`NoteDraft::scriptures`, also not a section).
+pub const SCRIPTURE_REFERENCES_CAVEAT_HEADING: &str = "Scripture references";
+
 /// A caveat attached to part of a generated draft — something the operator should not
 /// take on trust without a second look, carried on [`NoteDraft`] so the console and any
 /// later export read the same verdict rather than each computing their own.
