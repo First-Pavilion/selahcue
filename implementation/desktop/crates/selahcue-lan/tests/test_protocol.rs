@@ -2165,3 +2165,182 @@ fn the_publish_viewer_and_template_view_fields_have_a_pinned_wire_shape() {
         r#"{"id":"sunday-morning","name":"Sunday Morning","items":5}"#
     );
 }
+
+// --- FR-082: `ServerMessage::kind()` is a payload-free label (17tnw2axppb) ---
+
+/// The number of `ServerMessage` variants, tied to the enum by the exhaustive, wildcard-free
+/// `match` in [`variant_index`]: adding a variant stops this file compiling until it has an arm;
+/// bump this with it, and [`every_server_message_with_marker`] then refuses to build until its
+/// sample list has an entry for the new variant too.
+const VARIANT_COUNT: usize = 15;
+
+fn variant_index(m: &ServerMessage) -> usize {
+    match m {
+        ServerMessage::Ack { .. } => 0,
+        ServerMessage::Denied { .. } => 1,
+        ServerMessage::State { .. } => 2,
+        ServerMessage::ScriptureResults { .. } => 3,
+        ServerMessage::Chapter { .. } => 4,
+        ServerMessage::OperatorState { .. } => 5,
+        ServerMessage::ConsoleThumbnails { .. } => 6,
+        ServerMessage::ScreenFrame { .. } => 7,
+        ServerMessage::RemoteDevices { .. } => 8,
+        ServerMessage::PairingCode { .. } => 9,
+        ServerMessage::ActiveTranscriptId { .. } => 10,
+        ServerMessage::SermonNoteDraft { .. } => 11,
+        ServerMessage::SermonNoteRegenerationState { .. } => 12,
+        ServerMessage::AutosaveSlots { .. } => 13,
+        ServerMessage::Error { .. } => 14,
+    }
+}
+
+/// One sample of EVERY `ServerMessage` variant, each carrying a recognisable marker in every
+/// free-text field it has. Panics unless the list holds exactly one sample per variant.
+fn every_server_message_with_marker(marker: &str) -> Vec<ServerMessage> {
+    use selahcue_lan::protocol::{
+        AutosaveSlotView, ScriptureHitView, SermonNoteDraftView, ServerMessage as M,
+    };
+    let draft = SermonNoteDraftView {
+        title: format!("{marker}-title"),
+        summary: Some(format!("{marker}-summary")),
+        sections_json: format!(r#"[{{"heading":"{marker}"}}]"#),
+        scriptures_json: "[]".into(),
+        ai_generated: true,
+        disclosure: Some(format!("{marker}-disclosure")),
+        provider: format!("{marker}-provider"),
+        model: Some(format!("{marker}-model")),
+        created_at_ms: 1,
+        edited_at_ms: 2,
+    };
+    // `OperatorState` is built from the wire JSON (its view has ~30 fields, all but four
+    // defaulted) with the live transcript, partial transcript and a detection planted in it.
+    let operator_state: ServerMessage = from_json(&format!(
+        r#"{{"event":"operator_state","view":{{"plan_name":"{marker}-plan","items":[],"live_index":null,"staged_index":null,"blackout":false,"timer":null,"transcript":[{{"id":0,"start_ms":0,"end_ms":1,"text":"{marker}-transcript"}}],"partial_transcript":"{marker}-partial","detections":[{{"id":1,"reference":"{marker}-ref","text":"{marker}-detection"}}]}}}}"#
+    ))
+    .unwrap();
+    let samples = vec![
+        M::Ack { request_id: 1 },
+        M::Denied {
+            request_id: 2,
+            reason: DenyReason::Forbidden,
+        },
+        M::State {
+            live_item: Some(5),
+            blackout: false,
+        },
+        M::ScriptureResults {
+            query: format!("{marker}-query"),
+            references: vec![format!("{marker}-reference")],
+            hits: vec![ScriptureHitView {
+                reference: format!("{marker}-hit-ref"),
+                text: format!("{marker}-hit-text"),
+            }],
+        },
+        M::Chapter {
+            book_name: format!("{marker}-book"),
+            chapter: 1,
+            translation: "KJV".into(),
+            verses: vec![VerseView {
+                number: 1,
+                text: format!("{marker}-verse"),
+            }],
+            prev_ref: None,
+            next_ref: None,
+        },
+        operator_state,
+        M::ConsoleThumbnails {
+            preview: Some(ThumbView::from_rgba(1, 1, &[1, 2, 3, 4])),
+            live: None,
+        },
+        M::ScreenFrame {
+            screen: format!("{marker}-screen"),
+            frame: None,
+        },
+        M::RemoteDevices {
+            devices: vec![RemoteDeviceView {
+                device_id: format!("{marker}-device"),
+                name: format!("{marker}-name"),
+                platform: "iOS".into(),
+                role: Role::Viewer,
+                idle_secs: 0,
+                pinned: false,
+            }],
+            pending: vec![],
+        },
+        M::PairingCode {
+            code: format!("{marker}-code"),
+            fingerprint: format!("{marker}-fingerprint"),
+            expires_in_secs: 120,
+            uri: Some(format!("selahcue://pair?code={marker}")),
+        },
+        M::ActiveTranscriptId {
+            transcript_id: Some(7),
+        },
+        M::SermonNoteDraft {
+            transcript_id: 7,
+            draft: Some(draft.clone()),
+        },
+        M::SermonNoteRegenerationState {
+            transcript_id: 7,
+            current: Some(draft.clone()),
+            pending: Some(draft),
+        },
+        M::AutosaveSlots {
+            slots: vec![AutosaveSlotView {
+                slot: 1,
+                saved_at_ms: 1,
+                label: Some(format!("{marker}-label")),
+            }],
+        },
+        M::Error {
+            message: format!("{marker}-error"),
+        },
+    ];
+    let mut seen = [0usize; VARIANT_COUNT];
+    for m in &samples {
+        seen[variant_index(m)] += 1;
+    }
+    assert_eq!(
+        seen, [1; VARIANT_COUNT],
+        "exactly one sample per ServerMessage variant"
+    );
+    samples
+}
+
+/// `kind()` must be exactly the `event` tag the variant serializes under, for EVERY variant:
+/// a stable, human-meaningful label that matches the wire spelling the docs and logs already
+/// use. (A wrong or copy-pasted arm, e.g. `Chapter` labelled `"state"`, fails here.)
+#[test]
+fn server_message_kind_is_the_wire_event_tag_for_every_variant() {
+    let msgs = every_server_message_with_marker("MARK");
+    // One sample per variant (enforced by the builder against the exhaustive `variant_index`).
+    assert_eq!(msgs.len(), VARIANT_COUNT);
+
+    let mut seen = std::collections::BTreeSet::new();
+    for m in &msgs {
+        let json = to_json(m).unwrap();
+        let expected_prefix = format!(r#"{{"event":"{}""#, m.kind());
+        assert!(
+            json.starts_with(&expected_prefix),
+            "kind() {:?} is not the wire event tag of {json}",
+            m.kind()
+        );
+        assert!(seen.insert(m.kind()), "duplicate label {}", m.kind());
+    }
+}
+
+/// Labels are plain lower_snake_case identifiers: no spaces, quotes, braces, digits or other
+/// punctuation that a formatted payload (or a `Debug` dump) would introduce. (That a label cannot
+/// carry payload TEXT is already guaranteed by `kind()` returning `&'static str`; this pins its
+/// shape so a future "helpful" arm cannot return something formatted-looking.)
+#[test]
+fn server_message_kind_labels_are_plain_snake_case_identifiers() {
+    for m in every_server_message_with_marker("SECRET-MARK") {
+        let label = m.kind();
+        assert!(!label.is_empty());
+        assert!(
+            label.chars().all(|c| c.is_ascii_lowercase() || c == '_'),
+            "label {label:?} is not a plain snake_case identifier"
+        );
+    }
+}

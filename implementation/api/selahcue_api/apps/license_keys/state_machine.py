@@ -4,13 +4,16 @@
 consults `LEGAL_TRANSITIONS` below, refuses anything absent from it with a coded error, and
 writes exactly one audit row per outcome (FR-508, NFR-506).
 
-**One shipped writer bypasses it**, and saying otherwise would be false: first activation
-flips ISSUED -> ACTIVATED inline at `apps/devices/services.py:443-445` and audits the move
-as `target_type="device"`, not `app_license_key`. That predates this module and this ticket
-was scoped not to change it; routing it through here is tracked as 86ak5v7av. Until that
-lands, "every transition writes one licence audit row" holds for every transition EXCEPT
-that one. `tests/test_license_state_machine.py` pins the bypass by site, so a second one
-cannot appear quietly.
+First activation (ISSUED -> ACTIVATED) writes through here too, from
+`apps/devices/services.py`, as the activating device (or the signed-in customer on the
+account path), so the licence audit trail carries it as `target_type="app_license_key"` next
+to the device-level `device.activated` row (86ak5v7av). The only remaining writer of a
+status outside this module is staff issuance, which seeds ISSUED onto a new row rather than
+transitioning one. `tests/test_license_state_machine.py` scans for that by site, which
+catches the common shapes (direct assignment, a constructor, a queryset `update(status=...)`
+rooted at the model) but not every spelling: an aliased queryset or related-manager update,
+`update(**{"status": ...})`, `setattr(key, "status", ...)` and an import alias all evade it,
+so review remains the control for those.
 
 Calling contract — authorisation is the CALLER's job
 --------------------------------------------------------------------------------------
@@ -58,6 +61,18 @@ wrapping a transition at all.
 The project does not set `ATOMIC_REQUESTS`, so a top-level GraphQL resolver runs in
 autocommit and gets the durable case for free. Admin mutations should assert
 `not connection.in_atomic_block` at their boundary rather than assume it.
+
+**The one deliberate wrapped caller is device activation** (`_activate_device_for_key`,
+86ak5v7av), which transitions ISSUED -> ACTIVATED inside its own `atomic()` block because the
+status change, the device, its token and both audit rows must commit or roll back together.
+Losing the DENIED row there is accepted: the refusal is unreachable in production, since
+`_assert_key_activatable` has already admitted the row it holds locked, and the ISSUED ->
+ACTIVATED edge is pinned by
+`test_the_table_matches_the_prd_transition_list_except_where_documented`. It can only arise
+if that edge is removed from the table, and activation then fails closed with no device and
+no token. A new caller whose refusals ARE reachable (any staff mutation, the expiry job,
+conversion) must not copy this shape: call outside a wrapping transaction, or the denial it
+exists to record is rolled back with everything else.
 
 **Agreed escalation, recorded so it is not re-litigated under pressure:** if a flow ever
 needs both a durable denial and a wider atomic block, the answer is a small `audit` database
@@ -482,7 +497,9 @@ def apply_license_status_transition(
     `atomic()` block unwinds, so it survives on its own. A CALLER that wraps this in its
     own transaction and then lets `IllegalLicenseTransition` propagate will roll that row
     back with everything else — callers that need the denial durable must not swallow the
-    transition inside a wider atomic block.
+    transition inside a wider atomic block. Device activation is the one caller that does
+    this on purpose; see "durability of refusals" in the module docstring for why that is
+    safe there and why it is not a shape to copy.
     """
     cleaned_reason = require_reason(reason)
     cleaned_request_id = _require_request_id(request_id)

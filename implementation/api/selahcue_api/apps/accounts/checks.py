@@ -17,6 +17,11 @@ SAME-ORIGIN — `implementation/marketing/vite.config.ts` proxies `/graphql` in 
 add a second, weaker route to the same surface that cannot carry that cookie and would
 invite exactly the "just set SameSite=None" fix the Strict setting exists to prevent.
 Turning it on is a security decision for the owner, not a config tweak.
+
+A second check lives here for the same account surface: `selahcue_accounts.W002` warns when a
+non-dev deployment has not told Django it sits behind a TLS-terminating proxy (17tnw2b1wtr).
+Without that, a browser's `Origin: https://<host>` is refused by CSRF and HSTS is never sent,
+and nothing at boot says so.
 """
 
 from __future__ import annotations
@@ -25,6 +30,7 @@ from django.conf import settings
 from django.core.checks import Warning as CheckWarning, register
 
 INERT_CORS_WARNING = "selahcue_accounts.W001"
+UNTRUSTED_PROXY_PROTO_WARNING = "selahcue_accounts.W002"
 
 
 def _cors_middleware_installed() -> bool:
@@ -60,5 +66,41 @@ def cors_allowed_origins_has_no_middleware(app_configs, **kwargs):
                 "as a security decision rather than relaxing SameSite."
             ),
             id=INERT_CORS_WARNING,
+        )
+    ]
+
+
+@register()
+def forwarded_proto_is_trusted_behind_a_tls_proxy(app_configs, **kwargs):
+    """Warn when a deployed (non-dev, non-debug) process has not opted in to
+    `X-Forwarded-Proto` (`SELAHCUE_TRUST_FORWARDED_PROTO`).
+
+    A Warning, not an Error, for two reasons. It is a deployment decision the code cannot
+    verify: the setting is only safe when every route to Django goes through a proxy that
+    overwrites the header, and a Django that terminates TLS itself needs no proxy at all. And the
+    failure direction is closed: without the opt-in, Django refuses the browser's https Origin
+    and sends no HSTS, which is the original, visible symptom, never a forged-https hole.
+
+    Quiet in dev and under DEBUG, so a bare `pytest`, CI's `manage.py check` and the compose
+    stack stay clean.
+    """
+    if settings.DEBUG or getattr(settings, "ENVIRONMENT", "dev") == "dev":
+        return []
+    if getattr(settings, "SECURE_PROXY_SSL_HEADER", None):
+        return []
+    return [
+        CheckWarning(
+            "SELAHCUE_TRUST_FORWARDED_PROTO is off, so Django treats every request as plain "
+            "http, even behind a TLS-terminating proxy.",
+            hint=(
+                "Behind a proxy that terminates TLS this makes the browser's "
+                "'Origin: https://...' fail CSRF (403 on /graphql/account and /graphql/admin) "
+                "and stops Strict-Transport-Security from ever being sent. Set "
+                "SELAHCUE_TRUST_FORWARDED_PROTO=1 once the proxy overwrites X-Forwarded-Proto "
+                "and is the only way to reach Django: see docs/ops/DEPLOYMENT.md section 6c. "
+                "If Django terminates TLS itself (no proxy in front), this does not apply: "
+                "silence it with SILENCED_SYSTEM_CHECKS = ['selahcue_accounts.W002']."
+            ),
+            id=UNTRUSTED_PROXY_PROTO_WARNING,
         )
     ]
