@@ -212,6 +212,21 @@ def _race_behind_row_lock(key, targets):
     return [exc for _, exc in errors], waiting
 
 
+def _race_in_arrival_order(key, targets):
+    """`_race_behind_row_lock`, but the targets are released into the lock queue ONE AT A TIME,
+    each parked before the next is started, so the order they join the queue is the order
+    given. Returns (results, errors, waiting), indexed by target (see `_park_then_release`).
+
+    What this does and does not control. With TWO waiters, Postgres serves the first parked
+    first, which is what lets a test name BOTH outcomes of a two-way race and check each
+    against its own expectation. With MORE than two the first is still served first, but the
+    rest are woken together and their order is a scheduling race (measured: 6 of 20 inversions
+    with six waiters), so a test with three or more callers must assert invariants that hold
+    for every order of the later ones, not a particular order.
+    """
+    return _park_then_release(key, targets, one_at_a_time=True)
+
+
 def _enroll(full_key, *, idem, fingerprint):
     return lambda: activate_device(
         ActivateDeviceData(
@@ -232,8 +247,10 @@ def _licence_transitions(key):
     ).count()
 
 
-@pytest.mark.parametrize("race_name", ["_race_behind_row_lock", "_race_in_arrival_order"])
-def test_a_polling_error_releases_the_held_licence_row_promptly(monkeypatch, race_name):
+@pytest.mark.parametrize(
+    "race", [_race_behind_row_lock, _race_in_arrival_order], ids=["all-at-once", "in-arrival-order"]
+)
+def test_a_polling_error_releases_the_held_licence_row_promptly(monkeypatch, race):
     """If the poll in either helper raises, the holder must be released at once, not left
     holding the licence row for its full 60 s wait (which would stall the next test)."""
     key, full_key = _seed_license_key(tag="pollerror", device_limit=1)
@@ -245,9 +262,7 @@ def test_a_polling_error_releases_the_held_licence_row_promptly(monkeypatch, rac
     started = time.monotonic()
 
     with pytest.raises(RuntimeError, match="simulated pg_stat_activity failure"):
-        globals()[race_name](
-            key, [_enroll(full_key, idem="poll-error-activation", fingerprint="fp-poll-error")]
-        )
+        race(key, [_enroll(full_key, idem="poll-error-activation", fingerprint="fp-poll-error")])
 
     assert time.monotonic() - started < 20, "the holder kept the row locked after a poll error"
     # The row is free again: a NOWAIT lock succeeds instead of raising.
@@ -661,21 +676,6 @@ def _revoke_call(key, idem):
         reason=RACE_REASON,
         request_id=idem,
     )
-
-
-def _race_in_arrival_order(key, targets):
-    """`_race_behind_row_lock`, but the targets are released into the lock queue ONE AT A TIME,
-    each parked before the next is started, so the order they join the queue is the order
-    given. Returns (results, errors, waiting), indexed by target (see `_park_then_release`).
-
-    What this does and does not control. With TWO waiters, Postgres serves the first parked
-    first, which is what lets a test name BOTH outcomes of a two-way race and check each
-    against its own expectation. With MORE than two the first is still served first, but the
-    rest are woken together and their order is a scheduling race (measured: 6 of 20 inversions
-    with six waiters), so a test with three or more callers must assert invariants that hold
-    for every order of the later ones, not a particular order.
-    """
-    return _park_then_release(key, targets, one_at_a_time=True)
 
 
 def _lifecycle_rows(key, **filters):

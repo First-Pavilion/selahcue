@@ -30,7 +30,7 @@ from selahcue_api.graphql.context import ActorContext, ActorKind
 CASCADE_ACTOR_ID = "revocation-cascade"
 
 
-def _licences_whose_tokens_survive() -> Q:
+def _licenses_whose_tokens_survive() -> Q:
     """Licences whose device tokens the cascade LEAVES alone.
 
     Every activatable status, plus SUSPENDED **when it was suspended from an activatable
@@ -70,7 +70,7 @@ def cascade_license_revocations(batch_size: int = 500) -> int:
     stale = list(
         DeviceToken.objects.select_related("device__license_key")
         .filter(status=DeviceTokenStatus.ACTIVE)
-        .exclude(_licences_whose_tokens_survive())
+        .exclude(_licenses_whose_tokens_survive())
         .order_by("id")[:batch_size]
     )
     now = timezone.now()

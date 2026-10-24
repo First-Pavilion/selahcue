@@ -216,7 +216,7 @@ def test_renewed_licence_revives_an_expired_device_token(client):
     assert _manifest(client, new_token).status_code == 200
 
 
-# --- AC1 (revocation half / G4 reinstatement): restored licence revives a revoked token --
+# --- AC1 (revocation half): a restored licence revives a token the cascade revoked --
 def test_restored_licence_revives_a_revoked_device_token(client):
     """The one-way revocation dead-end: a licence that leaves the activatable set has its tokens
     revoked by the hourly cascade, and before this slice restoring the licence could never
@@ -231,7 +231,7 @@ def test_restored_licence_revives_a_revoked_device_token(client):
     EXPIRED, because what this test pins is the re-mint path.
     """
     key, full_key = _seed_license_key(tag="restore")
-    first = _activate(client, license_key=full_key, fingerprint="mac-susp", idem="remint-rest-01")
+    first = _activate(client, license_key=full_key, fingerprint="mac-restore", idem="remint-rest-01")
     original_token = first.json()["activation_token"]
     assert _refresh(client, original_token).status_code == 200
 
@@ -247,7 +247,7 @@ def test_restored_licence_revives_a_revoked_device_token(client):
     # Late renewal: EXPIRED -> ACTIVATED.
     _renew(key, expires_at=key.expires_at)
 
-    again = _activate(client, license_key=full_key, fingerprint="mac-susp", idem="remint-rest-02")
+    again = _activate(client, license_key=full_key, fingerprint="mac-restore", idem="remint-rest-02")
     assert again.status_code == 200
     new_token = again.json()["activation_token"]
     assert new_token is not None, "a reinstated licence must be able to restore a device token"

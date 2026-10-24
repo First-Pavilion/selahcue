@@ -547,7 +547,7 @@ SELAHCUE_THROTTLE_VERIFY_EMAIL_IP = (20, 3600)
 # hammering licence state, and an IP key would let a whole support floor behind one NAT
 # throttle each other. 30 a minute is far above a human working a queue of billing holds and
 # far below a script. Fails OPEN when the cache is down, like every budget in this file.
-SELAHCUE_THROTTLE_ADMIN_LICENCE_LIFECYCLE = (30, 60)
+SELAHCUE_THROTTLE_ADMIN_LICENSE_LIFECYCLE = (30, 60)
 
 # --- Mail --------------------------------------------------------------------------------
 # Dev points at mailhog (compose service, port 1025) so the transactional templates

@@ -345,9 +345,11 @@ def generate_license_key(
 #
 # Retry semantics, for the console author. The idempotency key is per USER INTENT: send a new
 # key for each deliberate action and re-send the same key only to retry that action. A retry of
-# a request that took effect returns its original outcome and applies nothing, even if another
-# staff action has moved the licence on since. `changed=False` therefore means either "already
-# in that state" or "this request already took effect". Known limit: a request that was itself a
+# a request that took effect applies nothing and reports the licence's CURRENT state with
+# `changed=False` (the original audit row is attached, and the GraphQL payload says
+# `replayed=true`), even if another staff action has moved the licence on since.
+# `changed=False` therefore means either "already in that state" or "this request already took
+# effect". Known limit: a request that was itself a
 # no-op (already suspended) wrote no audit row, so a later retry of it is not recognised and
 # applies if the licence has since moved. Send ONE mutation per HTTP request: the throttle
 # applies per call, and a batch of aliased mutations fails as a whole when it runs out of budget.
@@ -358,6 +360,8 @@ LIFECYCLE_BUDGET_SCOPE = "admin_licence_lifecycle"
 
 # `AppLicenseKey.id` is a BigAutoField: 19 digits can already overflow it, and an id that long
 # cannot name a row anyway, so it takes the same refusal as any other id that names nothing.
+# Defence in depth only: Django 6.1 answers a lookup past the column's range with no row, so
+# removing this cap would not change behaviour today (it is unguarded by a test on purpose).
 _MAX_LICENSE_KEY_ID_DIGITS = 18
 
 
@@ -411,7 +415,7 @@ def _enforce_lifecycle_budget(staff: ActorContext) -> None:
     enforce_budget(
         LIFECYCLE_BUDGET_SCOPE,
         identity,
-        "SELAHCUE_THROTTLE_ADMIN_LICENCE_LIFECYCLE",
+        "SELAHCUE_THROTTLE_ADMIN_LICENSE_LIFECYCLE",
         LIFECYCLE_BUDGET,
     )
 

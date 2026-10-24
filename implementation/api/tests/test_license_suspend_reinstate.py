@@ -9,9 +9,15 @@ Layout, in the order a reviewer will want it:
 
 1. the two mutations over the service layer — happy paths, every source status, retry;
 2. validation, authorisation, existence, throttling and the transaction guard;
-3. the audit trail — shape, pairing, durability of a refusal, no secrets;
+3. the audit trail — no secrets;
 4. the GraphQL surface, end to end over HTTP;
-5. the D3 behaviour on real devices — tokens survive, activations and manifests refuse.
+5. the D3 behaviour on real devices — tokens survive, activations and manifests refuse;
+6. the enforcement point for commercial device calls, and the sweeps that keep it honest;
+7. activations RESUME after reinstatement (and the session path while suspended);
+8. the cascade spares a suspension from an activatable status, and only that;
+9. actor identities that cannot be audited are refused at the boundary;
+10. the payloads do not widen what a lifecycle permission can read;
+11. the shipped throttle default.
 
 Every test is `transaction=True`. That is not decoration: the mutations REFUSE to run inside
 a caller's transaction (see `_require_autocommit`), because a refusal's DENIED audit row
@@ -28,12 +34,14 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import re
 from datetime import timedelta
 
 import pytest
 from django.conf import settings as django_settings
 from django.core.cache import cache
 from django.db import connection, transaction
+from django.urls import get_resolver
 from django.utils import timezone
 
 from selahcue_api.apps.accounts.models import CustomerOrg
@@ -41,6 +49,8 @@ from selahcue_api.apps.audit.models import AuditEvent, AuditResult
 from selahcue_api.apps.devices.models import Device, DeviceToken, DeviceTokenStatus
 from selahcue_api.apps.devices.services import (
     ACTIVATABLE_KEY_STATUSES,
+    ActivateDeviceWithSessionData,
+    activate_device_with_session,
     require_commercial_service,
 )
 from selahcue_api.apps.devices.tasks import cascade_license_revocations
@@ -76,9 +86,9 @@ from selahcue_api.graphql.context import (
 )
 from selahcue_api.graphql.errors import ErrorCode, SafeAPIError
 from selahcue_api.graphql.route_contracts import (
-    LICENCE_GATE_ALLOWED_WHILE_SUSPENDED,
-    LICENCE_GATE_COMMERCIAL,
-    LICENCE_GATES,
+    LICENSE_GATE_ALLOWED_WHILE_SUSPENDED,
+    LICENSE_GATE_COMMERCIAL,
+    LICENSE_GATES,
     CommandEndpointContract,
     desktop_command_contracts,
 )
@@ -561,6 +571,29 @@ def test_a_replayed_request_is_flagged_and_an_already_suspended_no_op_is_not():
     assert (plain_no_op.changed, plain_no_op.audit_event) == (False, None)
 
 
+def test_a_replay_refreshes_the_callers_licence_instance():
+    """The writer's contract is that the caller's in-memory licence reflects what is committed,
+    on the replay branch too: a caller holding an instance from before the request took
+    effect must not keep reading the stale status after it is told the request was a replay."""
+    key, _ = _seed_key("replay-sync")
+    _drive_to(key, S.ACTIVATED)
+    stale = AppLicenseKey.objects.get(pk=key.pk)
+    assert stale.status == S.ACTIVATED
+    _suspend(key, "replay-sync-request-1")
+
+    result = apply_license_status_transition(
+        stale,
+        to_status=S.SUSPENDED,
+        actor=_staff(),
+        reason=REASON,
+        request_id="replay-sync-request-1",
+        recognise_retry=True,
+    )
+
+    assert result.changed is False and result.audit_event is not None
+    assert stale.status == S.SUSPENDED and stale.prior_status == "ACTIVATED"
+
+
 def test_a_retry_of_a_request_that_was_itself_a_no_op_is_not_recognised():
     """The documented limit: a no-op wrote no audit row, so there is nothing to recognise.
     staff_b's no-op suspend, retried after staff_a reinstated, therefore applies. Pinned so
@@ -796,17 +829,17 @@ def test_a_padded_reference_to_a_real_licence_still_resolves():
 
 UNAUTHORISED = [
     pytest.param(None, ErrorCode.UNAUTHENTICATED, id="no-actor"),
-    pytest.param(
-        # Every non-staff kind below carries BOTH staff permissions on purpose: the kind check, not
+    # Every non-staff kind below carries BOTH staff permissions on purpose: the kind check, not
     # the missing permission, is what must refuse them, so a gate that only inspected the
     # permission set would be caught here at the service level.
-    ActorContext(
-        kind=ActorKind.CUSTOMER,
-        actor_id="cust_1",
-        org_id="1",
-        role="ADMIN",
-        staff_permissions=BOTH_PERMS,
-    ),
+    pytest.param(
+        ActorContext(
+            kind=ActorKind.CUSTOMER,
+            actor_id="cust_1",
+            org_id="1",
+            role="ADMIN",
+            staff_permissions=BOTH_PERMS,
+        ),
         ErrorCode.PERMISSION_DENIED,
         id="customer-admin",
     ),
@@ -958,7 +991,7 @@ def _spend(actor, key, n):
 
 
 def test_the_lifecycle_mutations_are_rate_limited_per_staff_member(settings):
-    settings.SELAHCUE_THROTTLE_ADMIN_LICENCE_LIFECYCLE = (3, 60)
+    settings.SELAHCUE_THROTTLE_ADMIN_LICENSE_LIFECYCLE = (3, 60)
     key, _ = _seed_key("throttle")
     _drive_to(key, S.ACTIVATED)
     alice = _staff(actor_id="staff_alice")
@@ -979,7 +1012,7 @@ def test_the_lifecycle_mutations_are_rate_limited_per_staff_member(settings):
 
 
 def test_suspend_and_reinstate_draw_on_one_shared_budget(settings):
-    settings.SELAHCUE_THROTTLE_ADMIN_LICENCE_LIFECYCLE = (2, 60)
+    settings.SELAHCUE_THROTTLE_ADMIN_LICENSE_LIFECYCLE = (2, 60)
     key, _ = _seed_key("throttle-shared")
     _drive_to(key, S.ACTIVATED)
     alice = _staff(actor_id="staff_alice")
@@ -996,7 +1029,7 @@ def test_suspend_and_reinstate_draw_on_one_shared_budget(settings):
 def test_refused_callers_cannot_spend_a_staff_members_budget(settings):
     """An unauthorised caller using a real staff id must not be able to exhaust that member's
     budget: the gate runs first, so only authorised calls are counted."""
-    settings.SELAHCUE_THROTTLE_ADMIN_LICENCE_LIFECYCLE = (2, 60)
+    settings.SELAHCUE_THROTTLE_ADMIN_LICENSE_LIFECYCLE = (2, 60)
     key, _ = _seed_key("throttle-gate")
     impostor = ActorContext(kind=ActorKind.STAFF, actor_id="staff_alice")  # no permissions
 
@@ -1011,7 +1044,7 @@ def test_refused_callers_cannot_spend_a_staff_members_budget(settings):
 def test_the_budget_applies_to_refusals_too(settings):
     """A refused-but-authorised call still costs a unit — otherwise hammering an illegal
     transition would be free."""
-    settings.SELAHCUE_THROTTLE_ADMIN_LICENCE_LIFECYCLE = (2, 60)
+    settings.SELAHCUE_THROTTLE_ADMIN_LICENSE_LIFECYCLE = (2, 60)
     key, _ = _seed_key("throttle-refusals")
     _drive_to(key, S.REVOKED)
 
@@ -1183,6 +1216,43 @@ def test_graphql_retry_reports_changed_false(client):
     assert _rows(key, action=SUSPEND_ACTION).count() == 1
 
 
+def test_graphql_reinstate_retry_is_flagged_as_a_replay(client):
+    key, _ = _seed_key("gql-reinstate-retry")
+    _drive_to(key, S.EXPIRING)
+    _suspend(key)
+    variables = _input(key, "gql-reinstate-retry-1")
+
+    first = _gql(client, REINSTATE_MUTATION, variables, permissions="reinstate_license_key")
+    second = _gql(client, REINSTATE_MUTATION, variables, permissions="reinstate_license_key")
+
+    one = first.json()["data"]["adminReinstateLicenseKey"]
+    two = second.json()["data"]["adminReinstateLicenseKey"]
+    assert (one["changed"], one["replayed"]) == (True, False)
+    assert (two["changed"], two["replayed"]) == (False, True)
+    assert two["licenseKey"]["status"] == "EXPIRING"
+    assert _rows(key, action=REINSTATE_ACTION).count() == 1
+
+
+def test_graphql_a_plain_no_op_is_not_flagged_as_a_replay(client):
+    """`replayed` means "this request already took effect", not merely "nothing changed". A
+    second suspend with a NEW key, and another staff member reusing the first one's key, are
+    both plain no-ops on an already-suspended licence: changed=false and replayed=false."""
+    key, _ = _seed_key("gql-noop")
+    first = _gql(client, SUSPEND_MUTATION, _input(key, "gql-noop-first-key"),
+                 permissions="suspend_license_key", actor_id="staff_a")
+    assert first.json()["data"]["adminSuspendLicenseKey"]["changed"] is True
+
+    new_key = _gql(client, SUSPEND_MUTATION, _input(key, "gql-noop-second-key"),
+                   permissions="suspend_license_key", actor_id="staff_a")
+    other_actor = _gql(client, SUSPEND_MUTATION, _input(key, "gql-noop-first-key"),
+                       permissions="suspend_license_key", actor_id="staff_b")
+
+    for response in (new_key, other_actor):
+        payload = response.json()["data"]["adminSuspendLicenseKey"]
+        assert (payload["changed"], payload["replayed"]) == (False, False)
+    assert _rows(key, action=SUSPEND_ACTION).count() == 1
+
+
 def test_graphql_refuses_missing_or_wrong_permission_and_changes_nothing(client):
     key, _ = _seed_key("gql-authz")
     _drive_to(key, S.ACTIVATED)
@@ -1264,7 +1334,7 @@ def test_graphql_requires_the_reason_and_the_key_in_the_schema_itself(client, va
 
 
 def test_graphql_rate_limit_surfaces_as_a_coded_error(client, settings):
-    settings.SELAHCUE_THROTTLE_ADMIN_LICENCE_LIFECYCLE = (2, 60)
+    settings.SELAHCUE_THROTTLE_ADMIN_LICENSE_LIFECYCLE = (2, 60)
     key, _ = _seed_key("gql-throttle")
     for n in range(2):
         ok = _gql(client, SUSPEND_MUTATION, _input(key, f"gql-throttle-req-{n}1"), permissions="suspend_license_key")
@@ -1533,7 +1603,7 @@ def _undeclared_device_token_routes(contracts):
     return [
         contract.path
         for contract in contracts
-        if contract.auth_context == BEARER_AUTH and contract.licence_gate not in LICENCE_GATES
+        if contract.auth_context == BEARER_AUTH and contract.license_gate not in LICENSE_GATES
     ]
 
 
@@ -1542,12 +1612,12 @@ def test_every_device_token_route_declares_how_it_treats_a_suspended_licence():
     bearer_routes = [c for c in contracts if c.auth_context == BEARER_AUTH]
     assert len(bearer_routes) >= 5, "positive control: the sweep found the device-token routes"
     assert _undeclared_device_token_routes(contracts) == []
-    assert {c.licence_gate for c in bearer_routes} == {
-        LICENCE_GATE_COMMERCIAL,
-        LICENCE_GATE_ALLOWED_WHILE_SUSPENDED,
+    assert {c.license_gate for c in bearer_routes} == {
+        LICENSE_GATE_COMMERCIAL,
+        LICENSE_GATE_ALLOWED_WHILE_SUSPENDED,
     }, "both declarations are in use, so neither is a dead branch of the sweep"
     # The declaration belongs to device-token routes only.
-    assert all(c.licence_gate == "" for c in contracts if c.auth_context != BEARER_AUTH)
+    assert all(c.license_gate == "" for c in contracts if c.auth_context != BEARER_AUTH)
 
 
 def test_the_sweep_fails_for_a_new_route_that_declares_neither():
@@ -1556,10 +1626,53 @@ def test_the_sweep_fails_for_a_new_route_that_declares_neither():
     contracts = desktop_command_contracts() + (
         CommandEndpointContract("desktop", "v1/ai:complete", "POST", BEARER_AUTH),
         CommandEndpointContract(
-            "desktop", "v1/ai:stream", "POST", BEARER_AUTH, licence_gate="whatever"
+            "desktop", "v1/ai:stream", "POST", BEARER_AUTH, license_gate="whatever"
         ),
     )
     assert _undeclared_device_token_routes(contracts) == ["v1/ai:complete", "v1/ai:stream"]
+
+
+def _v1_urlconf_routes() -> set[str]:
+    """Every `v1/` route the URL resolver actually serves, with converters stripped
+    (`<str:lease_id>` -> `<lease_id>`) so they compare with the contract table's spelling."""
+    found: set[str] = set()
+
+    def walk(patterns, prefix=""):
+        for entry in patterns:
+            route = prefix + str(entry.pattern)
+            if hasattr(entry, "url_patterns"):
+                walk(entry.url_patterns, route)
+            else:
+                found.add(re.sub(r"<\w+:(\w+)>", r"<\1>", route))
+
+    walk(get_resolver().url_patterns)
+    return {route for route in found if route.startswith("v1/")}
+
+
+def _urlconf_routes_without_a_contract(urlconf_routes, contracts) -> list[str]:
+    return sorted(urlconf_routes - {contract.path for contract in contracts})
+
+
+def test_every_v1_route_in_the_urlconf_has_a_contract_entry():
+    """The sweeps above read the hand-written contract table, so a route added to
+    `platform/urls.py` WITHOUT an entry would escape every one of them (a new device-token
+    view with no gate answered 200 for a suspended licence's token in review). This ties the
+    two together: the `v1/` routes the resolver serves and the contract paths must be the
+    same set, in both directions. It cannot see a route registered outside `v1/`."""
+    contracts = desktop_command_contracts()
+
+    assert _urlconf_routes_without_a_contract(_v1_urlconf_routes(), contracts) == []
+    assert {c.path for c in contracts} - _v1_urlconf_routes() == set(), (
+        "a contract entry names a route the URLconf does not serve"
+    )
+    assert len(_v1_urlconf_routes()) >= 8, "positive control: the resolver walk found the routes"
+
+
+def test_the_urlconf_comparison_reports_a_route_that_has_no_contract_entry():
+    routes = _v1_urlconf_routes() | {"v1/ai:models"}
+    assert _urlconf_routes_without_a_contract(routes, desktop_command_contracts()) == [
+        "v1/ai:models"
+    ]
 
 
 def _route_url(path: str) -> str:
@@ -1584,8 +1697,8 @@ def test_each_declaration_matches_what_the_route_does_for_a_suspended_licence(
             HTTP_AUTHORIZATION=f"Bearer {token}",
             content_type="application/json",
         )
-        label = f"{contract.method} {contract.path} ({contract.licence_gate})"
-        if contract.licence_gate == LICENCE_GATE_COMMERCIAL:
+        label = f"{contract.method} {contract.path} ({contract.license_gate})"
+        if contract.license_gate == LICENSE_GATE_COMMERCIAL:
             assert response.status_code in (403, 501), f"{label} answered {response.status_code}"
             if response.status_code == 403:
                 assert response.json()["error"]["code"] == "POLICY_DENIED", label
@@ -1664,6 +1777,47 @@ def test_a_never_activated_licence_can_be_suspended_reinstated_and_then_first_ac
     stored = _fresh(key)
     assert stored.status == S.ACTIVATED and stored.prior_status == ""
     assert Device.objects.filter(license_key=key).count() == 1
+
+
+def _org_admin_for(key):
+    return ActorContext(
+        kind=ActorKind.CUSTOMER,
+        actor_id="1",
+        org_id=str(key.customer_id),
+        role="ADMIN",
+    )
+
+
+def test_session_activation_on_a_suspended_licence_is_not_found_and_resumes_after_reinstatement():
+    """The signed-in-admin path looks only for ACTIVATABLE licences, so a suspended one is
+    simply not found (NOT_FOUND) where the enrollment-key path answers POLICY_DENIED. The
+    caller is the organisation's own admin, so it is not a leak, but the desktop cannot tell
+    "suspended" from "no licence" here. Behaviour deliberately unchanged; pinned so a change
+    is a decision. No device is created while suspended, and activation resumes afterwards."""
+    key, _ = _seed_key("session-path", device_limit=2)
+    admin = _org_admin_for(key)
+
+    def activate(n):
+        return activate_device_with_session(
+            admin,
+            ActivateDeviceWithSessionData(
+                idempotency_key=f"session-path-act-{n:04d}-x",
+                device_fingerprint=f"fp-session-path-{n}",
+                platform="macos",
+            ),
+        )
+
+    assert activate(1).created is True
+    _suspend(key)
+    with pytest.raises(SafeAPIError) as raised:
+        activate(2)
+    assert raised.value.code == ErrorCode.NOT_FOUND
+    assert Device.objects.filter(license_key=key).count() == 1
+
+    _reinstate(key)
+
+    assert activate(3).created is True
+    assert Device.objects.filter(license_key=key).count() == 2
 
 
 # =============================================================================================
@@ -1879,13 +2033,43 @@ def test_a_suspend_only_actor_cannot_read_customer_details_through_the_payload(c
     assert _error_code(denied) == "PERMISSION_DENIED"
 
 
+@pytest.mark.parametrize("mutation", ["suspend", "reinstate"])
+@pytest.mark.parametrize("shape", ["direct", "inline-fragment"])
+def test_neither_lifecycle_payload_can_be_asked_for_customer_details(client, mutation, shape):
+    """The same regression for BOTH payloads, and for the inline-fragment spelling of the ask.
+    Widening either payload back to `AdminLicenseKey` would hand a suspend-only or
+    reinstate-only actor the customer's contact details, which they cannot otherwise query."""
+    key, _ = _seed_key(f"no-customer-{mutation}-{shape}")
+    permission = f"{mutation}_license_key"
+    if mutation == "reinstate":
+        _suspend(key)
+    audit_before = AuditEvent.objects.count()
+    status_before = _fresh(key).status
+    ask = (
+        "licenseKey { customer { name primaryContactEmail } }"
+        if shape == "direct"
+        else "licenseKey { ... on AdminLicenseKey { customer { name primaryContactEmail } } }"
+    )
+    base = SUSPEND_MUTATION if mutation == "suspend" else REINSTATE_MUTATION
+    query = re.sub(r"licenseKey \{[^}]*\}", ask, base, count=1)
+    assert "primaryContactEmail" in query, "positive control: the query really asks for the customer"
+
+    refused = _gql(client, query, _input(key, f"no-customer-{mutation}-{shape}"), permissions=permission)
+
+    assert _error_code(refused) == "VALIDATION_FAILED"
+    assert "suspend.example" not in refused.content.decode()
+    assert "Suspend Church" not in refused.content.decode()
+    assert _fresh(key).status == status_before, "the refused query changed nothing"
+    assert AuditEvent.objects.count() == audit_before
+
+
 # =============================================================================================
 # 11. The shipped throttle default
 # =============================================================================================
 def test_the_shipped_throttle_default_allows_thirty_calls_a_minute_and_refuses_the_next():
     """No setting override anywhere: this is the budget production runs with. The module-level
     default and the shipped setting must agree, or one of them is dead."""
-    assert django_settings.SELAHCUE_THROTTLE_ADMIN_LICENCE_LIFECYCLE == (30, 60)
+    assert django_settings.SELAHCUE_THROTTLE_ADMIN_LICENSE_LIFECYCLE == (30, 60)
     assert license_services.LIFECYCLE_BUDGET == (30, 60)
     key, _ = _seed_key("shipped-default")
     staff = _staff(actor_id="staff_default_budget")

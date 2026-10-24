@@ -102,7 +102,6 @@ def build_entitlement_manifest(presented_token: str) -> EntitlementManifestResul
     # a status added to LicenseKeyStatus later denies by default instead of silently
     # qualifying for a signed entitlement). Past it, the licence is valid now by definition.
     require_commercial_service(license_key)
-    valid_now = True
 
     instances_used = Device.objects.filter(
         license_key=license_key, status=DeviceStatus.ACTIVE
@@ -134,7 +133,7 @@ def build_entitlement_manifest(presented_token: str) -> EntitlementManifestResul
         "device_fingerprint": device.device_fingerprint,
         "customer_org_id": str(license_key.customer_id),
         "license_status": license_key.status,
-        "license_valid_now": valid_now,
+        "license_valid_now": True,  # past the gate above, the licence is valid now by definition
         "license_starts_at": license_key.starts_at.isoformat(),
         "license_expires_at": license_key.expires_at.isoformat(),
         # Display labels, both of them. Kept for humans and for backward compatibility;

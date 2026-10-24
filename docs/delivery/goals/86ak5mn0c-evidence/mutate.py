@@ -8,9 +8,9 @@ guard it with their siblings still running, and records which went red. A mutant
 * WEAK     - some test went red but not every `must_fail` one: the guard is incomplete;
 * SURVIVED - nothing went red: the behaviour is unguarded.
 
-The script exits non-zero if any mutant that is not declared `equivalent` is not KILLED. An
-`equivalent` mutant is expected to survive (its edit cannot change observable behaviour); if
-one is ever killed the script says so, so the declaration cannot go stale silently.
+The script exits non-zero if any mutant that is not declared `equivalent` is not KILLED, and
+also if a mutant declared `equivalent` is KILLED (a stale declaration: the edit does change
+behaviour after all, so it needs a real guard or a new classification).
 
 Safety: it edits production files in place, so it REFUSES to run unless
 
@@ -23,11 +23,13 @@ again when the run ends.
 Usage, from a dedicated worktree of the branch:
 
     python docs/delivery/goals/86ak5mn0c-evidence/mutate.py --python <venv>/bin/python \
-        [--postgres] [--only M01,M02] [--log run.log]
+        [--postgres] [--only M01,M02] [--allow-skip] [--log run.log]
 
-`--postgres` selects the Postgres-only mutants (row-lock races); the SQL_* environment
-variables must already point at a disposable Postgres. Without it those mutants are listed
-as SKIPPED and the script exits non-zero unless `--allow-skip` is given.
+Two commands cover everything: the SQLite mutants with `--allow-skip`, then the Postgres
+mutants with `--postgres` (the SQL_* environment variables must already point at a disposable
+Postgres). Each mode lists the other mode's mutants as SKIPPED; without `--allow-skip` the
+SQLite run exits non-zero because the Postgres mutants were not run. `--only` takes a
+comma-separated list of ids (for example `--only M01,M02,M03`).
 """
 
 from __future__ import annotations
@@ -58,6 +60,7 @@ SCHEMA = "selahcue_api/graphql/admin_schema.py"
 CTX = "selahcue_api/graphql/context.py"
 ROUTES = "selahcue_api/graphql/route_contracts.py"
 SETTINGS = "selahcue_api/settings.py"
+URLS = "selahcue_api/platform/urls.py"
 
 MAIN = "tests/test_license_suspend_reinstate.py"
 CASCADE = "tests/test_revocation_cascade.py"
@@ -172,7 +175,7 @@ MUTANTS = [
         "    _enforce_lifecycle_budget(actor)\n    staff = require_staff_permission(actor, permission)\n    _require_autocommit()\n")],
       [MAIN], ["test_refused_callers_cannot_spend_a_staff_members_budget"]),
     m("M21", "the shipped budget default is ten times too generous",
-      [(SETTINGS, "SELAHCUE_THROTTLE_ADMIN_LICENCE_LIFECYCLE = (30, 60)", "SELAHCUE_THROTTLE_ADMIN_LICENCE_LIFECYCLE = (300, 60)")],
+      [(SETTINGS, "SELAHCUE_THROTTLE_ADMIN_LICENSE_LIFECYCLE = (30, 60)", "SELAHCUE_THROTTLE_ADMIN_LICENSE_LIFECYCLE = (300, 60)")],
       [MAIN], ["test_the_shipped_throttle_default_allows_thirty_calls_a_minute_and_refuses_the_next"]),
     m("M22", "lenient licence-id parsing",
       [(SVC, "        or not (cleaned.isascii() and cleaned.isdecimal())\n", "        or not cleaned.lstrip('+-').replace('_', '').isalnum()\n")],
@@ -210,21 +213,21 @@ MUTANTS = [
       [(CTX, "    if not kind_value or not actor_id or len(actor_id) > ACTOR_ID_MAX_LENGTH:", "    if not kind_value or not actor_id:")],
       [MAIN], ["test_the_header_bridge_drops_an_actor_id_longer_than_the_audit_column"]),
     m("M32", "the commercial gate admits any licence status",
-      [(DEVSVC, "    if license_key.status not in ACTIVATABLE_KEY_STATUSES:\n        raise SafeAPIError(ErrorCode.POLICY_DENIED)\n    if not (license_key.starts_at <= now < license_key.expires_at):",
-        "    if not (license_key.starts_at <= now < license_key.expires_at):")],
+      [(DEVSVC, "        license_key.status in ACTIVATABLE_KEY_STATUSES\n        and license_key.starts_at <= now < license_key.expires_at",
+        "        license_key.starts_at <= now < license_key.expires_at")],
       [MAIN], ["test_the_enforcement_point_admits_only_activatable_statuses",
                "test_a_suspended_licence_refuses_manifest_issuance_and_reinstatement_restores_it",
                "test_a_suspended_licence_refuses_a_new_activation_with_a_coded_error"]),
     m("M33", "the commercial gate ignores the licence window",
-      [(DEVSVC, "    if not (license_key.starts_at <= now < license_key.expires_at):\n        raise SafeAPIError(ErrorCode.POLICY_DENIED)\n\n\ndef _new_device_token",
-        "\n\ndef _new_device_token")],
+      [(DEVSVC, "        license_key.status in ACTIVATABLE_KEY_STATUSES\n        and license_key.starts_at <= now < license_key.expires_at\n",
+        "        license_key.status in ACTIVATABLE_KEY_STATUSES\n")],
       [MAIN], ["test_the_enforcement_point_also_refuses_outside_the_licence_window"]),
     m("M34", "the manifest route is declared allowed while suspended but still enforces",
-      [(ROUTES, '"desktop", "v1/entitlements/manifest", "GET", "device_token",\n            licence_gate=LICENCE_GATE_COMMERCIAL,',
-        '"desktop", "v1/entitlements/manifest", "GET", "device_token",\n            licence_gate=LICENCE_GATE_ALLOWED_WHILE_SUSPENDED,')],
+      [(ROUTES, '"desktop", "v1/entitlements/manifest", "GET", "device_token",\n            license_gate=LICENSE_GATE_COMMERCIAL,',
+        '"desktop", "v1/entitlements/manifest", "GET", "device_token",\n            license_gate=LICENSE_GATE_ALLOWED_WHILE_SUSPENDED,')],
       [MAIN], ["test_each_declaration_matches_what_the_route_does_for_a_suspended_licence"]),
     m("M35", "a device-token route stops declaring a licence gate",
-      [(ROUTES, '"desktop", "v1/usage-events:batch", "POST", "device_token",\n            licence_gate=LICENCE_GATE_COMMERCIAL,',
+      [(ROUTES, '"desktop", "v1/usage-events:batch", "POST", "device_token",\n            license_gate=LICENSE_GATE_COMMERCIAL,',
         '"desktop", "v1/usage-events:batch", "POST", "device_token",')],
       [MAIN], ["test_every_device_token_route_declares_how_it_treats_a_suspended_licence"]),
     m("M36", "assign the licence status directly instead of going through the writer",
@@ -232,6 +235,30 @@ MUTANTS = [
         "    if to_status == LicenseKeyStatus.SUSPENDED:\n        AppLicenseKey.objects.filter(pk=license_key.pk).update(status='SUSPENDED', prior_status=license_key.status)\n        return LicenseTransitionResult(license_key, LicenseKeyStatus(license_key.status), LicenseKeyStatus.SUSPENDED, True, None)\n    return apply_license_status_transition(\n        license_key,\n        to_status=to_status,")],
       [MAIN, SM_TESTS], ["test_no_production_module_writes_a_licence_status_outside_the_state_machine",
                          "test_writes_go_through_the_state_machine_not_a_direct_status_write"]),
+    m("M37", "a v1 route is added to the URLconf with no contract entry (review round 2, R3)",
+      [(URLS, '    path("downloads:prepare", views.download_prepare_not_implemented, name="download-prepare"),',
+        '    path("ai:models", views.entitlement_manifest, name="ai-models"),\n    path("downloads:prepare", views.download_prepare_not_implemented, name="download-prepare"),')],
+      [MAIN], ["test_every_v1_route_in_the_urlconf_has_a_contract_entry"]),
+    m("M38", "the reinstate payload is widened back to the full licence view, customer included (round 2, X2)",
+      [(SCHEMA, "class AdminReinstateLicenseKeyPayload:\n    license_key: AdminLicenseKeySummary", "class AdminReinstateLicenseKeyPayload:\n    license_key: AdminLicenseKey"),
+       (SCHEMA, "        return AdminReinstateLicenseKeyPayload(\n            license_key=license_key_to_summary(result.license_key),", "        return AdminReinstateLicenseKeyPayload(\n            license_key=license_key_to_type(result.license_key),")],
+      [MAIN], ["test_neither_lifecycle_payload_can_be_asked_for_customer_details"]),
+    m("M39", "the reinstate payload never reports a replay (round 2, R4)",
+      [(SCHEMA, "        return AdminReinstateLicenseKeyPayload(\n            license_key=license_key_to_summary(result.license_key),\n            changed=result.changed,\n            replayed=_is_replay(result),",
+        "        return AdminReinstateLicenseKeyPayload(\n            license_key=license_key_to_summary(result.license_key),\n            changed=result.changed,\n            replayed=False,")],
+      [MAIN], ["test_graphql_reinstate_retry_is_flagged_as_a_replay"]),
+    m("M40", "any no-change result is flagged as a replay (round 2, Q3)",
+      [(SCHEMA, "    return (not result.changed) and result.audit_event is not None", "    return not result.changed")],
+      [MAIN], ["test_graphql_a_plain_no_op_is_not_flagged_as_a_replay"]),
+    m("M41", "the writer does not refresh the caller's instance on a replay (round 2, Q9)",
+      [(SM, "                if earlier is not None:\n                    _sync(license_key, locked)\n", "                if earlier is not None:\n")],
+      [MAIN], ["test_a_replay_refreshes_the_callers_licence_instance"]),
+    m("M42", "session activation also admits SUSPENDED licences",
+      [(DEVSVC, "            status__in=ACTIVATABLE_KEY_STATUSES,\n            starts_at__lte=now,", "            status__in=list(ACTIVATABLE_KEY_STATUSES) + [LicenseKeyStatus.SUSPENDED],\n            starts_at__lte=now,")],
+      [MAIN], ["test_session_activation_on_a_suspended_licence_is_not_found_and_resumes_after_reinstatement"]),
+    m("M43", "refresh reports every licence as valid now",
+      [(DEVSVC, "    valid_now = license_allows_commercial_service(license_key)\n", "    valid_now = True\n")],
+      [MAIN], ["test_suspension_leaves_every_issued_device_token_valid_through_a_cascade_run"]),
     # ---- Postgres-only: the row lock and the lookup UNDER it -------------------------------
     m("P01", "the writer no longer locks the licence row",
       [(SM, "locked = AppLicenseKey.objects.select_for_update().get(pk=license_key.pk)", "locked = AppLicenseKey.objects.get(pk=license_key.pk)")],
@@ -345,8 +372,8 @@ def main():
                 status = "KILLED"
             else:
                 status = "WEAK"
-            if status not in ("KILLED", "EQUIVALENT-SURVIVED") and not status.startswith("EQUIVALENT"):
-                failures += 1
+            if status not in ("KILLED", "EQUIVALENT-SURVIVED"):
+                failures += 1  # includes a stale "equivalent" declaration (EQUIVALENT-KILLED)
             missing = [n for n in mutant.must_fail if n not in red]
             probable = [n for n in mutant.should_fail if n not in red]
             line = f"{mutant.id} {status}: {mutant.what} | {summary} | {len(red)} red"

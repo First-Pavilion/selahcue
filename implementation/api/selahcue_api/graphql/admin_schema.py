@@ -72,8 +72,9 @@ class AdminGenerateLicenseKeyInput:
 class AdminSuspendLicenseKeyInput:
     # The retry key, one per USER INTENT: send a fresh key for each deliberate action and
     # re-send the same key only to retry that action. A retry of a request that already took
-    # effect returns its original outcome and applies nothing, even if another staff action
-    # has moved the licence on since. Send ONE mutation per HTTP request: the lifecycle
+    # effect applies nothing and reports the licence's CURRENT state with `changed=false` and
+    # `replayed=true` (so after another staff action it reports that action's result, not the
+    # one this request produced). Send ONE mutation per HTTP request: the lifecycle
     # throttle counts calls, and a batch of aliased mutations that exhausts it fails as a
     # whole.
     idempotency_key: str

@@ -15,16 +15,18 @@ class GraphQLEndpointContract:
 
 
 # What a `device_token` route does for a device whose licence is SUSPENDED (D3 / DEC-010).
-# Every such route MUST pick one: a suspension degrades commercial surfaces and nothing else,
-# so each route is either one of those surfaces or deliberately not. Nothing else enforces
-# this, because `authenticate_device_token` checks the token and never the licence.
+# Every route whose auth_context is exactly "device_token" MUST pick one (the account-session
+# bearer on `activations:with-session` is gated through activation instead): a suspension
+# degrades commercial surfaces and nothing else, so each route is either one of those
+# surfaces or deliberately not. Nothing else enforces this, because `authenticate_device_token`
+# checks the token and never the licence.
 #
 # COMMERCIAL — refused with POLICY_DENIED while the licence is not activatable, by calling
 #   `devices.services.require_commercial_service` (the one named enforcement point).
 # ALLOWED_WHILE_SUSPENDED — reachable on purpose; the reason is on the route below.
-LICENCE_GATE_COMMERCIAL = "commercial"
-LICENCE_GATE_ALLOWED_WHILE_SUSPENDED = "allowed_while_suspended"
-LICENCE_GATES = frozenset({LICENCE_GATE_COMMERCIAL, LICENCE_GATE_ALLOWED_WHILE_SUSPENDED})
+LICENSE_GATE_COMMERCIAL = "commercial"
+LICENSE_GATE_ALLOWED_WHILE_SUSPENDED = "allowed_while_suspended"
+LICENSE_GATES = frozenset({LICENSE_GATE_COMMERCIAL, LICENSE_GATE_ALLOWED_WHILE_SUSPENDED})
 
 
 @dataclass(frozen=True)
@@ -35,8 +37,9 @@ class CommandEndpointContract:
     auth_context: str
     # Required for `device_token` routes, empty for every other auth context.
     # `tests/test_license_suspend_reinstate.py` sweeps `desktop_command_contracts()` and fails
-    # when a device-token route declares neither value.
-    licence_gate: str = ""
+    # when a device-token route declares neither value, and fails when a `v1/` route exists in
+    # the URLconf without an entry here.
+    license_gate: str = ""
 
 
 def graphql_endpoint_contracts(*, debug: bool) -> tuple[GraphQLEndpointContract, ...]:
@@ -76,28 +79,33 @@ def desktop_command_contracts() -> tuple[CommandEndpointContract, ...]:
         # can act on it; refusing it would blind the very device that needs to learn it.
         CommandEndpointContract(
             "desktop", "v1/license:refresh", "POST", "device_token",
-            licence_gate=LICENCE_GATE_ALLOWED_WHILE_SUSPENDED,
+            license_gate=LICENSE_GATE_ALLOWED_WHILE_SUSPENDED,
         ),
         CommandEndpointContract(
             "desktop", "v1/entitlements/manifest", "GET", "device_token",
-            licence_gate=LICENCE_GATE_COMMERCIAL,
+            license_gate=LICENSE_GATE_COMMERCIAL,
         ),
-        # Downloads stay reachable while suspended: FR-531 keeps security patches available in
-        # degraded licence states, and the show must be patchable.
+        # Downloads are declared reachable while suspended on the strength of FR-531, which keeps
+        # SECURITY PATCHES available in degraded licence states (the show must be patchable). Two
+        # cautions for whoever builds these: FR-531 is a proposed requirement and covers security
+        # patches only, so a feature-upgrade request through `downloads:prepare` must still call
+        # `require_commercial_service` (or this route needs a third, partly-commercial
+        # declaration); and both routes are 501 stubs today, so the sweep cannot test this
+        # declaration against real behaviour yet.
         CommandEndpointContract(
             "desktop", "v1/downloads:prepare", "POST", "device_token",
-            licence_gate=LICENCE_GATE_ALLOWED_WHILE_SUSPENDED,
+            license_gate=LICENSE_GATE_ALLOWED_WHILE_SUSPENDED,
         ),
         CommandEndpointContract(
             "desktop", "v1/downloads/<lease_id>:complete", "POST", "device_token",
-            licence_gate=LICENCE_GATE_ALLOWED_WHILE_SUSPENDED,
+            license_gate=LICENSE_GATE_ALLOWED_WHILE_SUSPENDED,
         ),
         # Metered usage is a commercial surface (FR-533/546). Still 501, so nothing enforces
         # it yet; the sweep requires a commercial route to refuse a suspended licence the
         # moment it stops answering 501.
         CommandEndpointContract(
             "desktop", "v1/usage-events:batch", "POST", "device_token",
-            licence_gate=LICENCE_GATE_COMMERCIAL,
+            license_gate=LICENSE_GATE_COMMERCIAL,
         ),
     )
 

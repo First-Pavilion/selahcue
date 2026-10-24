@@ -496,8 +496,10 @@ def apply_license_status_transition(
     `recognise_retry=True` (opt-in; staff mutations that carry a client retry key) adds a
     request-level check, made UNDER the row lock: if this actor already has a SUCCESS row for
     the same action, licence and `request_id`, the call is a retry of a request that took
-    effect, and returns that outcome (`changed=False`, `audit_event` = the original row)
-    without applying anything. "Already in the target state" cannot stand in for this: a
+    effect. It applies nothing and returns the licence's CURRENT state (`from_status` and
+    `to_status` both the status it holds now, `changed=False`) with `audit_event` set to the
+    original row; after another staff action that current state is the other action's result,
+    not the one the request produced. "Already in the target state" cannot stand in for this: a
     retry that arrives after another staff action has moved the licence on would otherwise
     re-apply and silently undo it. Doing the lookup inside the lock is what closes the window
     in which a duplicate could pass an unlocked check, wait, and then act on a licence that

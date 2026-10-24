@@ -159,25 +159,47 @@ def _assert_device_activatable(device: Device) -> None:
         raise SafeAPIError(ErrorCode.POLICY_DENIED)
 
 
+def license_allows_commercial_service(license_key: AppLicenseKey) -> bool:
+    """Whether the licence is in an activatable status and inside its window RIGHT NOW.
+
+    The one predicate behind `require_commercial_service` (which refuses) and
+    `refresh_license` (which reports it as `valid_now`), so the two cannot drift. Allow-list,
+    not deny-list: a status added later is not activatable until it is added here.
+    """
+    now = timezone.now()
+    return (
+        license_key.status in ACTIVATABLE_KEY_STATUSES
+        and license_key.starts_at <= now < license_key.expires_at
+    )
+
+
 def require_commercial_service(license_key: AppLicenseKey) -> None:
-    """THE enforcement point for commercial device calls: POLICY_DENIED unless the licence is
-    in an activatable status and inside its window.
+    """THE enforcement point for commercial device calls: POLICY_DENIED unless
+    `license_allows_commercial_service`.
 
     D3 / DEC-010: a SUSPENDED licence degrades commercial surfaces only — new activations,
     manifest issuance, cloud and AI features — while a running device keeps its token.
     `authenticate_device_token` deliberately does not look at licence status (a token is not a
     licence), so nothing stops a suspended licence's device from calling a commercial route
-    unless that route calls this. Every `device_token` route declares in
-    `graphql/route_contracts.py` whether it is `commercial` (calls this) or deliberately
-    allowed while suspended, and `tests/test_license_suspend_reinstate.py` sweeps that
-    declaration, so a new route cannot ship having decided neither.
+    unless that route calls this.
 
-    Allow-list, not deny-list: a status added later is refused by default.
+    What guards that, precisely. Every `device_token` route in `graphql/route_contracts.py`
+    declares `license_gate` (`commercial` calls this, or `allowed_while_suspended`), and
+    `tests/test_license_suspend_reinstate.py` (a) fails when such a route declares neither,
+    (b) fails when a `v1/` route exists in the URLconf with no contract entry, and (c) calls
+    each declared route with a suspended licence's token. It does NOT prove that a route
+    declared `commercial` while it still answers 501 enforces anything — the sweep can only
+    check that once such a route answers, it refuses — and it cannot see a route registered
+    outside `v1/`. Review remains the control for those.
+
+    Session activation (`/v1/activations:with-session`) reaches the same gate through
+    `_resolve_org_active_license_key`, which looks only for ACTIVATABLE licences, so on a
+    suspended licence it answers NOT_FOUND where enrollment-key activation answers
+    POLICY_DENIED. The caller is the organisation's own signed-in admin, so this is not a
+    leak, but the desktop cannot tell "suspended" from "no licence" on that path. Behaviour
+    left as it is on purpose; pinned by a test.
     """
-    now = timezone.now()
-    if license_key.status not in ACTIVATABLE_KEY_STATUSES:
-        raise SafeAPIError(ErrorCode.POLICY_DENIED)
-    if not (license_key.starts_at <= now < license_key.expires_at):
+    if not license_allows_commercial_service(license_key):
         raise SafeAPIError(ErrorCode.POLICY_DENIED)
 
 
@@ -659,15 +681,11 @@ def refresh_license(presented_token: str) -> LicenseRefreshResult:
     token = authenticate_device_token(presented_token)
     device = token.device
     license_key = device.license_key
-    now = timezone.now()
 
     instances_used = Device.objects.filter(
         license_key=license_key, status=DeviceStatus.ACTIVE
     ).count()
-    valid_now = (
-        license_key.status in ACTIVATABLE_KEY_STATUSES
-        and license_key.starts_at <= now < license_key.expires_at
-    )
+    valid_now = license_allows_commercial_service(license_key)
 
     return LicenseRefreshResult(
         device_public_id=device.device_public_id,
