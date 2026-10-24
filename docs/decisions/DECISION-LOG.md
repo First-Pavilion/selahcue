@@ -4,6 +4,34 @@ Durable record of material product/scope/architecture decisions, with traceabili
 
 ---
 
+## DEC-019 - The cloud client trusts the operating-system certificate store; ring stays the only crypto provider (reqwest 0.13)
+
+- **Date:** 2026-10-24
+- **Stage:** Dependency maintenance - Dependabot PR #190 (reqwest 0.12.28 to 0.13.5), ClickUp [17tnw2b9ax2](https://app.clickup.com/t/17tnw2b9ax2)
+- **Decided by:** User (product owner)
+- **Type:** Security posture / architecture
+- **Status:** DECIDED
+
+**Decision.** `selahcue-cloud`'s HTTP transport (`ReqwestTransport`, feature `http`) trusts the **operating system's certificate store**, through `rustls-platform-verifier`, which is reqwest 0.13's own default. It no longer carries a bundled Mozilla root set. `ring` remains the **only** rustls crypto provider in the workspace: reqwest is built with `rustls-no-provider` and the transport installs ring itself, once per process, before the first client is built. The owner chose this over keeping the bundled `webpki-roots` set (reqwest 0.13 `tls_backend_preconfigured`), which was built and tested as the alternative.
+
+**Why it was needed at all.** reqwest 0.13 renamed the `rustls-tls` feature to `rustls`, removed the bundled-roots features, and made aws-lc-rs the default provider. Dependabot's PR #190 asked for the old feature name, so `cargo metadata` failed in the workspace and in `selahcue-operator`. Keeping ring needed `rustls-no-provider`; keeping the bundled roots needed extra code.
+
+**Consequences accepted.**
+- **A TLS-inspecting root installed on a machine is trusted by this client.** Trust depends on the machine: a root a church administrator (or malware with the rights to install one) has added to the operating-system store is accepted for the SelahCue cloud endpoints, exactly as it is by that machine's browser. The previous bundled-roots model did not have this property, and it also did not follow the operating system's own distrust decisions (RUSTSEC-2026-0381 is a bundled-roots staleness advisory).
+- **Linux and Windows behaviour is unverified.** Only macOS was exercised. On Linux the verifier reads the system CA bundle and, from reading its source, fails closed with a `TransportError` when it finds none; on Windows it uses the system chain engine, whose revocation-check latency is unknown. The first real run on those systems is CI and the first Windows installer build.
+- The workspace gains the `rustls-platform-verifier` family of crates and the lock files lose reqwest 0.12's `quinn` entries (five advisories reported by `cargo audit`; `cargo tree` shows the crate was not in the resolved build graph for any target). No aws-lc crate is added.
+- Unchanged and still open: a redirect replays a 307/308 request body to another host (17tnw2b9aaz).
+
+**Enforcement.** `scripts/import_guards.sh` fails the build if aws-lc, a webpki-roots bundle, native-tls or OpenSSL enters `selahcue-cloud --features http`'s resolved graph, or if any committed `Cargo.lock` contains aws-lc. `selahcue-cloud/src/transport/tls_tests.rs` pins that an unknown signer, a wrong name and an expired certificate are refused before any request byte is sent.
+
+**Affected items.**
+- `implementation/desktop/crates/selahcue-cloud` (Cargo.toml, `transport.rs`, tests), both `deny.toml` files (comments), `scripts/import_guards.sh`.
+- Dependabot PR #190, superseded by the PR that records this decision.
+
+**Reversibility.** Reversible: the bundled-roots alternative is about ten lines (`tls_backend_preconfigured` with `webpki-roots` and ring); switching back changes only which roots are trusted.
+
+---
+
 ## DEC-018 — The media panel's Import copies images into app storage (OVERRIDES the in-place reference of design §8.5)
 
 - **Date:** 2026-10-01
