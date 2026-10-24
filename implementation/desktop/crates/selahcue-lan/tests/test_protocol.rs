@@ -2165,3 +2165,153 @@ fn the_publish_viewer_and_template_view_fields_have_a_pinned_wire_shape() {
         r#"{"id":"sunday-morning","name":"Sunday Morning","items":5}"#
     );
 }
+
+// --- FR-082: `ServerMessage::kind()` is a payload-free label (17tnw2axppb) ---
+
+/// One sample of EVERY `ServerMessage` variant, each carrying a recognisable marker in every
+/// free-text field it has, so the tests below can prove a label never carries a payload.
+fn every_server_message_with_marker(marker: &str) -> Vec<ServerMessage> {
+    use selahcue_lan::protocol::{
+        AutosaveSlotView, ScriptureHitView, SermonNoteDraftView, ServerMessage as M,
+    };
+    let draft = SermonNoteDraftView {
+        title: format!("{marker}-title"),
+        summary: Some(format!("{marker}-summary")),
+        sections_json: format!(r#"[{{"heading":"{marker}"}}]"#),
+        scriptures_json: "[]".into(),
+        ai_generated: true,
+        disclosure: Some(format!("{marker}-disclosure")),
+        provider: format!("{marker}-provider"),
+        model: Some(format!("{marker}-model")),
+        created_at_ms: 1,
+        edited_at_ms: 2,
+    };
+    // `OperatorState` is built from the wire JSON (its view has ~30 fields, all but four
+    // defaulted) with the live transcript, partial transcript and a detection planted in it.
+    let operator_state: ServerMessage = from_json(&format!(
+        r#"{{"event":"operator_state","view":{{"plan_name":"{marker}-plan","items":[],"live_index":null,"staged_index":null,"blackout":false,"timer":null,"transcript":[{{"id":0,"start_ms":0,"end_ms":1,"text":"{marker}-transcript"}}],"partial_transcript":"{marker}-partial","detections":[{{"id":1,"reference":"{marker}-ref","text":"{marker}-detection"}}]}}}}"#
+    ))
+    .unwrap();
+    vec![
+        M::Ack { request_id: 1 },
+        M::Denied {
+            request_id: 2,
+            reason: DenyReason::Forbidden,
+        },
+        M::State {
+            live_item: Some(5),
+            blackout: false,
+        },
+        M::ScriptureResults {
+            query: format!("{marker}-query"),
+            references: vec![format!("{marker}-reference")],
+            hits: vec![ScriptureHitView {
+                reference: format!("{marker}-hit-ref"),
+                text: format!("{marker}-hit-text"),
+            }],
+        },
+        M::Chapter {
+            book_name: format!("{marker}-book"),
+            chapter: 1,
+            translation: "KJV".into(),
+            verses: vec![VerseView {
+                number: 1,
+                text: format!("{marker}-verse"),
+            }],
+            prev_ref: None,
+            next_ref: None,
+        },
+        operator_state,
+        M::ConsoleThumbnails {
+            preview: Some(ThumbView::from_rgba(1, 1, &[1, 2, 3, 4])),
+            live: None,
+        },
+        M::ScreenFrame {
+            screen: format!("{marker}-screen"),
+            frame: None,
+        },
+        M::RemoteDevices {
+            devices: vec![RemoteDeviceView {
+                device_id: format!("{marker}-device"),
+                name: format!("{marker}-name"),
+                platform: "iOS".into(),
+                role: Role::Viewer,
+                idle_secs: 0,
+                pinned: false,
+            }],
+            pending: vec![],
+        },
+        M::PairingCode {
+            code: format!("{marker}-code"),
+            fingerprint: format!("{marker}-fingerprint"),
+            expires_in_secs: 120,
+            uri: Some(format!("selahcue://pair?code={marker}")),
+        },
+        M::ActiveTranscriptId {
+            transcript_id: Some(7),
+        },
+        M::SermonNoteDraft {
+            transcript_id: 7,
+            draft: Some(draft.clone()),
+        },
+        M::SermonNoteRegenerationState {
+            transcript_id: 7,
+            current: Some(draft.clone()),
+            pending: Some(draft),
+        },
+        M::AutosaveSlots {
+            slots: vec![AutosaveSlotView {
+                slot: 1,
+                saved_at_ms: 1,
+                label: Some(format!("{marker}-label")),
+            }],
+        },
+        M::Error {
+            message: format!("{marker}-error"),
+        },
+    ]
+}
+
+/// `kind()` must be exactly the `event` tag the variant serializes under, for EVERY variant:
+/// a stable, human-meaningful label that matches the wire spelling the docs and logs already
+/// use. (A wrong or copy-pasted arm, e.g. `Chapter` labelled `"state"`, fails here.)
+#[test]
+fn server_message_kind_is_the_wire_event_tag_for_every_variant() {
+    let msgs = every_server_message_with_marker("MARK");
+    // One sample per variant. If this count drifts, a variant was added or removed: the
+    // exhaustive `match` in `ServerMessage::kind` forces a label for it at compile time, and this
+    // sample list must gain the matching entry so the label is checked against the wire tag.
+    assert_eq!(msgs.len(), 15, "one sample per ServerMessage variant");
+
+    let mut seen = std::collections::BTreeSet::new();
+    for m in &msgs {
+        let json = to_json(m).unwrap();
+        let expected_prefix = format!(r#"{{"event":"{}""#, m.kind());
+        assert!(
+            json.starts_with(&expected_prefix),
+            "kind() {:?} is not the wire event tag of {json}",
+            m.kind()
+        );
+        assert!(seen.insert(m.kind()), "duplicate label {}", m.kind());
+    }
+}
+
+/// The label never carries a payload: no free-text field of any variant can reach it. Checked
+/// against a planted marker in every field of every variant (the sample builder above), so a
+/// future "helpful" arm that formats a field into the label turns this red.
+#[test]
+fn server_message_kind_never_contains_payload_text() {
+    for m in every_server_message_with_marker("SECRET-MARK") {
+        let label = m.kind();
+        assert!(
+            !label.contains("SECRET") && !label.contains("MARK"),
+            "label {label:?} leaked payload text"
+        );
+        // Labels are lower_snake_case identifiers: no spaces, quotes, braces or digits that a
+        // formatted payload would introduce.
+        assert!(
+            label.chars().all(|c| c.is_ascii_lowercase() || c == '_'),
+            "label {label:?} is not a plain snake_case identifier"
+        );
+    }
+}

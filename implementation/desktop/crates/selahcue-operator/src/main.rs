@@ -2804,15 +2804,15 @@ async fn transcript_get(
     //
     // The error is deliberately NOT interpolated (Sana, PR #50 F1): `Backend::load_sermon_note_
     // draft`'s `Remote` path stringifies whatever `TransportError` `RemoteOperator::
-    // load_sermon_note_draft` returns, and its non-conforming-reply branch
-    // (`selahcue-app/src/operator.rs`) builds that via `TransportError::Protocol(format!("expected
-    // sermon_note_draft, got: {other:?}"))` — a `Debug` dump of the ENTIRE unexpected
-    // `ServerMessage`, which can be `OperatorState` carrying live `transcript`/`partial_transcript`/
-    // `detections` text verbatim. Reaching this needs a non-conforming host reply (version skew, a
-    // host bug, or a request/response desync — `ControlClient::command` does not correlate
-    // `request_id`), but FR-082 (no transcript/detection text reaches a diagnostic verbatim) covers
-    // that text the same as draft text, so this path drops the error entirely rather than assume
-    // any given `TransportError` variant is safe to print.
+    // load_sermon_note_draft` returns. Its non-conforming-reply branch used to build that as a
+    // `Debug` dump of the ENTIRE unexpected `ServerMessage` (which can be `OperatorState` carrying
+    // live `transcript`/`partial_transcript`/`detections` text verbatim); 17tnw2axppb fixed that
+    // ROOT cause for every `RemoteOperator` method (`selahcue-app/src/operator_reply.rs` now names
+    // the variant only). This call site keeps dropping the error anyway, as defence in depth:
+    // a `TransportError::Json` from a malformed frame still quotes the offending value (serde's
+    // `invalid type: string "..."`), so no `TransportError` variant is assumed safe to print.
+    // FR-082 (no transcript/detection text reaches a diagnostic verbatim) covers that text the
+    // same as draft text.
     let draft_view = match state.backend.load_sermon_note_draft(id).await {
         Ok(view) => view,
         Err(_) => {
