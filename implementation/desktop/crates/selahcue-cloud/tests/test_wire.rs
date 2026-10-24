@@ -7,6 +7,14 @@
 //! [`ReqwestTransport`] at a loopback socket (`std::net` only, no new dependency) and reads the
 //! request back off it.
 //!
+//! PROXIES. `ReqwestTransport` honours `HTTP_PROXY` / `ALL_PROXY` and has no loopback bypass of its
+//! own (adding one would change behaviour for people who really do sit behind a proxy). On a
+//! machine with such a variable exported these loopback requests would go to the proxy and every
+//! test here would fail. `make ci` and `ci.yml` therefore run this file with
+//! `NO_PROXY=127.0.0.1,localhost`; run it by hand the same way. A test below refuses to run, with
+//! this explanation, when a proxy variable is set without that bypass, rather than failing with a
+//! connection error that points nowhere.
+//!
 //! Deliberately NOT asserted here: anything about redirects. The transport follows them today
 //! and that is tracked as ClickUp 17tnw2b9aaz; pinning it here would pin the wrong behaviour.
 
@@ -19,6 +27,28 @@ use std::net::TcpListener;
 use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
+
+/// Fail early and clearly when an ambient proxy would swallow the loopback requests.
+fn assert_loopback_is_not_proxied() {
+    let var = |n: &str| std::env::var(n).ok().filter(|v| !v.trim().is_empty());
+    let proxied = ["HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"]
+        .iter()
+        .any(|n| var(n).is_some());
+    let bypassed = ["NO_PROXY", "no_proxy"]
+        .iter()
+        .filter_map(|n| var(n))
+        .any(|v| {
+            v.split(',')
+                .map(str::trim)
+                .any(|h| h == "127.0.0.1" || h == "*")
+        });
+    assert!(
+        !proxied || bypassed,
+        "a proxy variable (HTTP_PROXY / ALL_PROXY) is set without NO_PROXY=127.0.0.1,localhost: \
+         ReqwestTransport would send these loopback requests to the proxy. Run with \
+         NO_PROXY=127.0.0.1,localhost (see the header of this file)."
+    );
+}
 
 /// One parsed HTTP/1.1 request.
 struct Wire {
@@ -89,6 +119,7 @@ fn read_request(stream: &mut std::net::TcpStream) -> Wire {
 /// A loopback server that answers each of `replies` (raw HTTP) in turn, one connection each,
 /// and hands back the requests it saw.
 fn serve(replies: Vec<String>) -> (u16, mpsc::Receiver<Wire>) {
+    assert_loopback_is_not_proxied();
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     let (tx, rx) = mpsc::channel();

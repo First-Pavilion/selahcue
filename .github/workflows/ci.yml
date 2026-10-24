@@ -818,6 +818,10 @@ jobs:
       # the clippy/test split above.
       - name: Test (cloud http feature - the real transport's wire format, loopback only)
         if: ${{ !cancelled() }}
+        # The transport honours HTTP_PROXY/ALL_PROXY and has no loopback bypass (and must not gain
+        # one: it would change behaviour for real proxy users), so keep loopback off any proxy.
+        env:
+          NO_PROXY: 127.0.0.1,localhost
         run: cargo test -p selahcue-cloud --features http --no-fail-fast
       - name: Clippy (cloud http feature)
         if: ${{ !cancelled() }}

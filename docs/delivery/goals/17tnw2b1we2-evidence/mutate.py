@@ -1,13 +1,66 @@
 """Mutation runner for 17tnw2b1we2 (PR #215): applies ONE source mutation at a time to
-selahcue-licensing / selahcue-cloud, runs the relevant tests, reports KILLED / SURVIVED, restores the
-file. Run from inside the worktree with a clean tree:  python3 docs/delivery/goals/17tnw2b1we2-evidence/mutate.py [name-prefix ...]
-Needs cargo on PATH. The tree must be committed first: a crash mid-run leaves a mutated file behind
-(restore it with `git checkout -- <file>`)."""
+selahcue-licensing / selahcue-cloud, runs the relevant tests, reports KILLED / SURVIVED, restores
+the file.
+
+IT EDITS SOURCE FILES IN PLACE, so it refuses to start unless
+  * the current directory is inside a DEDICATED linked git worktree (not the main checkout, which
+    other sessions share), and
+  * `git status --porcelain` is empty (everything committed), so a restore can never lose work.
+Each file is restored in a `finally` block; at the end the tree is checked clean again.
+
+Exit code: 0 only when EVERY mutation was KILLED. A SURVIVED mutant, a COMPILE-ERROR, a pattern that
+no longer matches the source, a name filter that selects nothing, or a dirty tree afterwards all
+exit non-zero.
+
+  git worktree add -b mutate-check ../mutate-check <commit>   # a dedicated worktree
+  cd ../mutate-check && python3 docs/delivery/goals/17tnw2b1we2-evidence/mutate.py [name-prefix ...]
+  python3 docs/delivery/goals/17tnw2b1we2-evidence/mutate.py --self-test   # the guard, no edits
+"""
 import subprocess, os, sys, re
-REPO=subprocess.run(['git','rev-parse','--show-toplevel'],capture_output=True,text=True,check=True).stdout.strip()
-ROOT=REPO+'/implementation/desktop'
-LIC=ROOT+'/crates/selahcue-licensing/src/'
-CLD=ROOT+'/crates/selahcue-cloud/src/'
+
+
+def git(*args):
+    return subprocess.run(['git', *args], capture_output=True, text=True, check=True).stdout.strip()
+
+
+def guard(git_dir, common_dir, porcelain):
+    """Why mutation testing must NOT start here, or None."""
+    if os.path.realpath(git_dir) == os.path.realpath(common_dir):
+        return 'this is the main checkout, not a dedicated linked worktree (git worktree add ...)'
+    if porcelain.strip():
+        return 'the working tree is not clean; commit or discard first so a restore cannot lose work'
+    return None
+
+
+def self_test():
+    cases = [
+        ('linked worktree, clean', '/r/.git/worktrees/w', '/r/.git', '', False),
+        ('main checkout, clean', '/r/.git', '/r/.git', '', True),
+        ('linked worktree, modified file', '/r/.git/worktrees/w', '/r/.git', ' M a.rs\n', True),
+        ('linked worktree, untracked file', '/r/.git/worktrees/w', '/r/.git', '?? new.rs\n', True),
+        ('main checkout, dirty', '/r/.git', '/r/.git', ' M a.rs\n', True),
+    ]
+    bad = 0
+    for label, gd, cd, porcelain, should_refuse in cases:
+        reason = guard(gd, cd, porcelain)
+        good = (reason is not None) == should_refuse
+        bad += not good
+        print(('ok   ' if good else 'FAIL ') + label + (f' -> refused: {reason}' if reason else ' -> accepted'))
+    print('self-test:', 'FAILED' if bad else 'passed')
+    return 1 if bad else 0
+
+
+if '--self-test' in sys.argv:
+    sys.exit(self_test())
+
+_refusal = guard(git('rev-parse', '--absolute-git-dir'), git('rev-parse', '--path-format=absolute', '--git-common-dir'),
+                 git('status', '--porcelain'))
+if _refusal:
+    sys.exit('REFUSING TO RUN: ' + _refusal)
+REPO = git('rev-parse', '--show-toplevel')
+ROOT = REPO + '/implementation/desktop'
+LIC = ROOT + '/crates/selahcue-licensing/src/'
+CLD = ROOT + '/crates/selahcue-cloud/src/'
 env=dict(os.environ)
 LIC_SUITE=['cargo','test','-p','selahcue-licensing','--no-fail-fast']
 CLD_SUITE=['cargo','test','-p','selahcue-cloud','--features','http','--no-fail-fast','--test','test_wire','--test','test_secret_store']
@@ -110,16 +163,26 @@ add('W9 GET gains a content-type',T,rep('        let mut req = self.client.get(u
 add('K1 Token::is_blank = is_empty','secret.rs',rep('self.0.trim().is_empty()','self.0.is_empty()'),'cld')
 add('K2 Token::has_control_characters = false','secret.rs',rep('self.0.chars().any(char::is_control)','false'),'cld')
 add('K3 Token::has_control_characters ignores CR/LF','secret.rs',rep('self.0.chars().any(char::is_control)',"self.0.chars().any(|c| c.is_control() && c != '\\r' && c != '\\n')"),'cld')
+# --- round 3 (PR #215): password case, copy, the 429 boundary --------------------------------
+add('X28 sign-in lowercases the password','client.rs',rep('password: password.expose().to_string(),','password: password.expose().to_lowercase(),'))
+add('N10c sign-in rate-limit copy loses "wait a minute"','error.rs',rep('wait a minute before trying again','try again later'))
+add('B1 bare 429 boundary: >= 429','client.rs',rep('if status == 429 {','if status >= 429 {'))
+add('B2 bare 429 boundary: 428 and 429','client.rs',rep('if status == 429 {','if (428..=429).contains(&status) {'))
+add('B3 bare 429 boundary: 430 instead','client.rs',rep('if status == 429 {','if status == 430 {'))
+add('B4 oversized 429 loses its status meaning','client.rs',rep('                Self::status_failure(response.status, &classify)\n            });','                ActivationFailure::UnexpectedStatus(response.status)\n            });'))
 
-only=sys.argv[1:]
-for name,f,fn,suite in M:
-    if only and not any(name.startswith(o) for o in only): continue
+only=[a for a in sys.argv[1:] if not a.startswith('--')]
+results={}
+selected=[m for m in M if not only or any(m[0].startswith(o) for o in only)]
+if not selected:
+    sys.exit('no mutation name starts with any of: ' + ', '.join(only))
+for name,f,fn,suite in selected:
     p=(LIC if suite=='lic' and f!='secret.rs' and f!='transport.rs' else CLD)+f
     orig=open(p).read()
     try:
         new=fn(orig)
     except AssertionError as e:
-        print(name,'->',e,flush=True); continue
+        print(name,'->','PATTERN-NOT-FOUND',e,flush=True); results[name]='PATTERN-NOT-FOUND'; continue
     open(p,'w').write(new)
     try:
         r=subprocess.run(LIC_SUITE if suite=='lic' else CLD_SUITE,cwd=ROOT,env=env,capture_output=True,text=True)
@@ -127,7 +190,13 @@ for name,f,fn,suite in M:
         failed=sorted(set(l.split()[1] for l in out.splitlines() if l.startswith('test ') and l.endswith('FAILED')))
         ce='error[' in out or 'could not compile' in out
         status='SURVIVED' if r.returncode==0 else ('COMPILE-ERROR' if ce and not failed else 'KILLED')
+        results[name]=status
         print(name,'->',status,len(failed),failed[:3],flush=True)
     finally:
         open(p,'w').write(orig)
-print('DONE')
+dirty=git('status','--porcelain')
+if dirty:
+    print('TREE NOT CLEAN AFTER THE RUN (restore with git checkout -- <file>):\n'+dirty)
+bad={k:v for k,v in results.items() if v!='KILLED'}
+print(f'{len(results)} mutations: {len(results)-len(bad)} killed, {len(bad)} not killed', *(f'\n  {k}: {v}' for k,v in bad.items()))
+sys.exit(1 if bad or dirty else 0)

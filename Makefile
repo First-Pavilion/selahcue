@@ -774,7 +774,10 @@ ci: ## Run the local Rust/Flutter CI gate (see the header for what CI runs that 
 	# or runs it -- and `tests/test_wire.rs` is the only thing that looks at the bytes it really
 	# sends (Content-Type, the bearer, and the ABSENCE of Cookie/Origin/Referer/CSRF headers that
 	# the native sign-in routes' CSRF exemption rests on, 86ak5t1gw / 17tnw2b1we2). Loopback only.
-	$(CARGO) test $(WS) -p selahcue-cloud --features http --no-fail-fast
+	# NO_PROXY: the transport honours HTTP_PROXY/ALL_PROXY and has no loopback bypass of its own
+	# (and must not gain one: that would change behaviour for real proxy users), so on a machine
+	# with an ambient proxy variable these loopback tests would be sent to the proxy and fail.
+	NO_PROXY=127.0.0.1,localhost no_proxy=127.0.0.1,localhost $(CARGO) test $(WS) -p selahcue-cloud --features http --no-fail-fast
 	$(CARGO) clippy $(WS) -p selahcue-cloud --features http --all-targets -- -D warnings
 	# The Deepgram streaming transport (86akby4yz) is behind an off-by-default feature, so the
 	# workspace run above does NOT build it. Lint + test it explicitly: an off-by-default feature

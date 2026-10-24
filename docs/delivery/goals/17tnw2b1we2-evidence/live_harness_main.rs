@@ -11,6 +11,8 @@ fn main() {
     let base = std::env::args().nth(1).expect("base url");
     let seed: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(std::env::args().nth(2).expect("seed")).unwrap()).unwrap();
+    // The password is random per seed run and lives only in the 0600 seed file (seed_live_api.py);
+    // it is read here and never printed.
     let password = seed["password"].as_str().unwrap().to_string();
     let enrollment_key = seed["enrollment_key"].as_str().unwrap().to_string();
 

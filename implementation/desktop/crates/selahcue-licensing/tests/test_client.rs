@@ -1445,7 +1445,10 @@ fn awkward_credentials_survive_json_encoding_unchanged() {
     // Quotes, backslashes, newlines, non-ASCII and the server's maximum lengths (email 254,
     // password 200) must round-trip through the request body exactly: a hand-built body
     // would corrupt them, and a client that trimmed would change a valid password.
-    let password = format!(" p\"a\\ss\nw\u{e9}rd{} ", "x".repeat(200 - 13));
+    // Capitals and an upper-case accented letter are in there on purpose: a client that
+    // case-folded the password (the way an email is sometimes folded) would still pass an
+    // all-lower-case fixture and lock the person out of an account they typed correctly.
+    let password = format!(" P\"A\\ss\nW\u{c9}Rd{} ", "x".repeat(200 - 13));
     assert_eq!(password.chars().count(), 200);
     let email = format!("{}@example.test", "a".repeat(254 - 13));
     assert_eq!(email.len(), 254);
@@ -1784,6 +1787,9 @@ fn sign_in_has_its_own_wording_and_a_rate_limit_is_not_silently_retried() {
     let limited = sign_in_failure(429, sign_in_error("RATE_LIMITED", "Too many requests."));
     assert_eq!(limited, ActivationFailure::SignInRateLimited);
 
+    // The rate-limit copy tells the person what to DO, not just what happened.
+    assert!(limited.to_string().contains("wait a minute"), "{limited}");
+
     for (failure, must_say) in [(&invalid, "email"), (&limited, "sign-in")] {
         let text = failure.to_string();
         assert!(text.contains(must_say), "{failure:?}: {text}");
@@ -2110,4 +2116,44 @@ fn a_missing_field_name_is_only_ever_an_identifier() {
         missing_field(&format!("missing field `{forty}`")),
         Some(forty.as_str())
     );
+}
+
+#[test]
+fn only_status_429_is_a_bare_rate_limit_and_an_oversized_one_still_is() {
+    // The boundary of the "a proxy's bare 429 is rate limiting" decision: its neighbours are
+    // not. 428 and 430 are ordinary unexpected 4xx; 429 is the one status that means "slow down".
+    use ActivationFailure as F;
+    for (status, expected) in [
+        (428u16, F::UnexpectedStatus(428)),
+        (429, F::RateLimited),
+        (430, F::UnexpectedStatus(430)),
+    ] {
+        for body in ["<html>x</html>", ""] {
+            let failure = LicensingClient::new(
+                ScriptedTransport::responding(status, body.to_string()),
+                BASE,
+            )
+            .activate_with_session(&Token::new(SESSION), &identity(), &idem())
+            .unwrap_err();
+            assert_eq!(failure, expected, "status {status}, body {body:?}");
+        }
+    }
+
+    // Over the 64 KiB cap the body is never parsed, so the status alone must still say "rate
+    // limited": on activation (retryable) and on sign-in (the sign-in kind, not retryable).
+    let huge = "x".repeat(MAX_RESPONSE_BODY_BYTES + 1);
+    let activation = LicensingClient::new(ScriptedTransport::responding(429, huge.clone()), BASE)
+        .activate_with_session(&Token::new(SESSION), &identity(), &idem())
+        .unwrap_err();
+    assert_eq!(activation, F::RateLimited);
+    assert!(activation.is_retryable());
+    let sign_in = sign_in_failure(429, huge.clone());
+    assert_eq!(sign_in, F::SignInRateLimited);
+    assert!(!sign_in.is_retryable());
+    assert!(!format!("{activation} {sign_in}").contains("xxxx"));
+    // ...and an oversized 430 is the neighbour's answer, not a rate limit.
+    let neighbour = LicensingClient::new(ScriptedTransport::responding(430, huge), BASE)
+        .activate_with_session(&Token::new(SESSION), &identity(), &idem())
+        .unwrap_err();
+    assert_eq!(neighbour, F::UnexpectedStatus(430));
 }
