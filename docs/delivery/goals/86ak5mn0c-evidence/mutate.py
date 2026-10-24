@@ -208,7 +208,7 @@ MUTANTS = [
       [MAIN], ["test_an_actor_id_longer_than_the_audit_column_is_refused_before_any_write"]),
     m("M31", "actor ids longer than the audit column are accepted (header bridge)",
       [(CTX, "    if not kind_value or not actor_id or len(actor_id) > ACTOR_ID_MAX_LENGTH:", "    if not kind_value or not actor_id:")],
-      [MAIN], ["test_graphql_refuses_an_over_long_actor_id_header_as_unauthenticated"]),
+      [MAIN], ["test_the_header_bridge_drops_an_actor_id_longer_than_the_audit_column"]),
     m("M32", "the commercial gate admits any licence status",
       [(DEVSVC, "    if license_key.status not in ACTIVATABLE_KEY_STATUSES:\n        raise SafeAPIError(ErrorCode.POLICY_DENIED)\n    if not (license_key.starts_at <= now < license_key.expires_at):",
         "    if not (license_key.starts_at <= now < license_key.expires_at):")],

@@ -72,6 +72,7 @@ from selahcue_api.graphql.context import (
     ActorContext,
     ActorKind,
     StaffPermission,
+    actor_from_request,
 )
 from selahcue_api.graphql.errors import ErrorCode, SafeAPIError
 from selahcue_api.graphql.route_contracts import (
@@ -1809,6 +1810,23 @@ def test_an_actor_id_at_the_limit_still_gets_a_clean_conflict_and_a_durable_deni
     assert raised.value.code == ErrorCode.CONFLICT
     denied = _rows(key, result=AuditResult.DENIED).get()
     assert denied.actor_id == "s" * ACTOR_ID_MAX_LENGTH
+
+
+def test_the_header_bridge_drops_an_actor_id_longer_than_the_audit_column(rf):
+    """The first of two layers (the second is `require_staff_permission`): the bridge itself
+    yields no actor, so no surface ever sees an identity it cannot audit. Asserted directly
+    because the GraphQL test below passes on the second layer alone."""
+    def request_with(actor_id):
+        return rf.post(
+            "/graphql/admin",
+            HTTP_X_SELAHCUE_ACTOR_KIND="staff",
+            HTTP_X_SELAHCUE_ACTOR_ID=actor_id,
+            HTTP_X_SELAHCUE_STAFF_PERMISSIONS="suspend_license_key",
+        )
+
+    assert actor_from_request(request_with("h" * (ACTOR_ID_MAX_LENGTH + 1))) is None
+    at_limit = actor_from_request(request_with("h" * ACTOR_ID_MAX_LENGTH))
+    assert at_limit is not None and at_limit.actor_id == "h" * ACTOR_ID_MAX_LENGTH
 
 
 def test_graphql_refuses_an_over_long_actor_id_header_as_unauthenticated(client):
