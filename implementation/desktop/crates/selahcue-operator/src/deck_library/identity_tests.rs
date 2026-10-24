@@ -928,3 +928,13 @@ fn the_all_zero_draw_is_never_an_identity() {
     assert!(d.uid().is_none());
     assert_eq!(lib.list().len(), 1);
 }
+
+#[test]
+fn the_production_source_gives_fresh_non_zero_bits_on_every_call() {
+    // The one real source: two libraries on two machines draw from it independently, so a constant
+    // or repeating answer would hand different presentations the same identity -- the defect again.
+    let draws: Vec<[u8; 16]> = (0..32).map(|_| os_entropy().unwrap()).collect();
+    assert!(draws.iter().all(|d| d.iter().any(|b| *b != 0)));
+    let distinct: std::collections::HashSet<&[u8; 16]> = draws.iter().collect();
+    assert_eq!(distinct.len(), draws.len());
+}
