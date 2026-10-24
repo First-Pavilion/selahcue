@@ -9,9 +9,13 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 from selahcue_api.apps.accounts.checks import (
     INERT_CORS_WARNING,
+    UNTRUSTED_PROXY_PROTO_WARNING,
     cors_allowed_origins_has_no_middleware,
+    forwarded_proto_is_trusted_behind_a_tls_proxy,
 )
 from selahcue_api.apps.throttling.checks import (
     SHARED_BUCKET_WARNING,
@@ -148,3 +152,50 @@ def test_the_shipped_configuration_emits_no_cors_headers(client, settings):
     settings.CORS_ALLOWED_ORIGINS = ("http://localhost:5173",)
     response = client.get("/graphql/account", HTTP_ORIGIN="http://localhost:5173")
     assert "Access-Control-Allow-Origin" not in response.headers
+
+
+# --- accounts W002: deployed, but Django was not told it is behind a TLS proxy ---------------
+PROXY_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+
+
+@pytest.mark.parametrize("environment", ["staging", "prod"])
+def test_untrusted_proxy_proto_warning_fires_in_a_deployed_environment(settings, environment):
+    """17tnw2b1wtr: a deployed process that never opted in sees every request as plain http, so
+    a browser's https Origin fails CSRF and HSTS is never sent, with nothing said at boot."""
+    settings.DEBUG = False
+    settings.ENVIRONMENT = environment
+    settings.SECURE_PROXY_SSL_HEADER = None
+
+    issues = forwarded_proto_is_trusted_behind_a_tls_proxy(None)
+
+    assert [issue.id for issue in issues] == [UNTRUSTED_PROXY_PROTO_WARNING]
+    # The id is part of the operator-facing contract (docs/ops/DEPLOYMENT.md names it, and
+    # SILENCED_SYSTEM_CHECKS takes it), so pin the literal rather than the constant, and keep the
+    # id the hint tells people to silence in step with the id the warning carries.
+    assert issues[0].id == "selahcue_accounts.W002"
+    assert issues[0].id in issues[0].hint
+    # A Warning, not an Error: Django may terminate TLS itself, and the failure is closed.
+    assert issues[0].level < 40, "an Error here would fail every non-dev `manage.py check`"
+    assert "docs/ops/DEPLOYMENT.md section 6c" in issues[0].hint
+    assert "SELAHCUE_TRUST_FORWARDED_PROTO" in issues[0].msg
+
+
+def test_untrusted_proxy_proto_warning_is_silent_once_opted_in(settings):
+    settings.DEBUG = False
+    settings.ENVIRONMENT = "prod"
+    settings.SECURE_PROXY_SSL_HEADER = PROXY_HEADER
+    assert forwarded_proto_is_trusted_behind_a_tls_proxy(None) == []
+
+
+def test_untrusted_proxy_proto_warning_is_silent_in_dev_and_under_debug(settings):
+    """CI, a bare `pytest` and the compose stack run with ENVIRONMENT=dev and must stay clean;
+    DEBUG is a developer's own machine whatever ENVIRONMENT says."""
+    settings.SECURE_PROXY_SSL_HEADER = None
+
+    settings.DEBUG = False
+    settings.ENVIRONMENT = "dev"
+    assert forwarded_proto_is_trusted_behind_a_tls_proxy(None) == []
+
+    settings.DEBUG = True
+    settings.ENVIRONMENT = "prod"
+    assert forwarded_proto_is_trusted_behind_a_tls_proxy(None) == []

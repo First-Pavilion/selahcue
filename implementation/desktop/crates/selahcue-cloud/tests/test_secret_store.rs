@@ -51,3 +51,40 @@ fn empty_token_is_reported_empty() {
     assert!(Token::new("").is_empty());
     assert!(!Token::new("x").is_empty());
 }
+
+#[test]
+fn a_blank_token_is_empty_or_only_whitespace_and_nothing_else() {
+    for blank in ["", " ", "   ", "\t", "\n", " \r\n\t "] {
+        assert!(
+            Token::new(blank).is_blank(),
+            "{blank:?} is not a credential"
+        );
+    }
+    // Positive controls: padding around a real value, and a lone real character, are not blank.
+    for real in ["x", " x ", "sess-1", "a b"] {
+        assert!(!Token::new(real).is_blank(), "{real:?} is a value");
+    }
+}
+
+#[test]
+fn control_characters_are_detected_including_cr_and_lf() {
+    for bad in [
+        "sess\r\nX-Injected: 1",
+        "sess\n",
+        "sess\r",
+        "se\0ss",
+        "se\tss",
+        "\u{7f}",
+    ] {
+        assert!(Token::new(bad).has_control_characters(), "{bad:?}");
+    }
+    for fine in [
+        "",
+        "sess-1112222",
+        "sess with space",
+        "d\u{e9}j\u{e0}",
+        "\u{4e2d}\u{6587}",
+    ] {
+        assert!(!Token::new(fine).has_control_characters(), "{fine:?}");
+    }
+}

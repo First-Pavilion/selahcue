@@ -1,3 +1,21 @@
+[build-system]
+# EXACT pin (86ak5rjh7, owner-accepted interim, 2026-10-24). Without this table pip builds the editable
+# install with whatever setuptools is newest on PyPI at install time, in an isolated environment, so the
+# one piece of code that runs at install time was the one thing not pinned. 84.0.0 is a PyPI release from
+# 2026-08-08 (more than two weeks old when chosen), supports PEP 660 editable installs and Python 3.14.
+# Every installer that reads this file gets it: the CI `api` job, the Dockerfile and `make api-install`.
+# It is NOT hash-locked and the transitive dependencies are still unlocked: that is ClickUp 17tnw2az0kw.
+# KNOWN ADVISORY, kept on purpose (decided by the orchestrator on 2026-10-24 and put to the owner, who has not
+# objected; the owner's recorded acceptance covers the unlocked install and this pin, not this advisory
+# specifically): GHSA-xmj3-9gf7-h52w (LOW, CWE-22) affects setuptools 38.2.2 up to but
+# not including 84.1.0 (fixed 2026-10-19, which is inside the two-week window): a path escape through a wheel's
+# namespace_packages.txt on WINDOWS, in setuptools' legacy wheel install_as_egg path. It does not apply here:
+# this file is only ever built as an editable PEP 517/660 install on macOS, Linux CI and Linux Docker, with no
+# egg install and no setup_requires. Bump to 84.1.0 or later on or after 2026-11-02.
+# Dependabot (pip, this directory) may propose a bump of this pin; take it as an ordinary reviewed PR.
+requires = ["setuptools==84.0.0"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "selahcue-api"
 version = "0.1.0"
@@ -15,7 +33,7 @@ dependencies = [
   #
   # version — advisory ceiling that makes it safe (GitHub Advisory DB + OSV.dev,
   # cross-checked against both):
-  #   Django==6.1.1                     0 advisories affect this version
+  #   Django==6.1.2                     0 advisories affect this version (checked 2026-10-24)
   #   strawberry-graphql-django==0.92.0 0 advisories exist for this package
   #   strawberry-graphql==0.328.0       highest ceiling <=0.315.6 (fixed 0.315.7)
   #   graphql-core==3.3.0              0 advisories exist for this package
@@ -23,10 +41,15 @@ dependencies = [
   #   cryptography==50.0.2              highest ceiling <50.0.0 (fixed 50.0.0)
   #   celery[redis]==5.6.3              highest ceiling <5.2.2 (fixed 5.2.2)
   #
+  # Django needs a third source. Its four 2026-10-06 CVEs (CVE-2026-77050, -84429, -87890, -87975), all fixed in
+  # 6.1.2, are in the GitHub Advisory DB with NO version range and in OSV with git-commit ranges only, so a
+  # version query wrongly reports 6.1.1 as clean. Check https://docs.djangoproject.com/en/dev/releases/security/
+  # as well when bumping Django.
+  #
   # strawberry-graphql, graphql-core, and cross-web are undeclared transitive
   # dependencies imported directly by this app's own code; pinned here for the
   # same Dependabot-visibility reason as the four declared deps above.
-  "Django==6.1.1",
+  "Django==6.1.2",
   # 0.87 declares `django>=5.2` with no upper bound, so it is compatible with 6.1.
   "strawberry-graphql-django==0.92.0",
   "strawberry-graphql==0.328.0",
