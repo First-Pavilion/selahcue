@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from django.core.exceptions import ImproperlyConfigured
 
@@ -12,6 +13,13 @@ def env_bool(name: str, default: bool) -> bool:
     if raw is None:
         return default
     return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def env_list(name: str, default: str = "") -> list[str]:
+    """Space-separated, matching the house convention (`DJANGO_ALLOWED_HOSTS=localhost 127.0.0.1`).
+    Commas are also tolerated so an older comma-separated value cannot silently collapse into a
+    single bogus entry."""
+    return [item for item in os.getenv(name, default).replace(",", " ").split() if item]
 
 
 def _database_config() -> dict:
@@ -54,16 +62,7 @@ if not SECRET_KEY:
         )
     SECRET_KEY = "selahcue-dev-only-insecure-key"
 
-# Space-separated, matching the house convention (`DJANGO_ALLOWED_HOSTS=localhost 127.0.0.1`).
-# Commas are also tolerated so an older comma-separated value cannot silently collapse into a
-# single bogus host.
-ALLOWED_HOSTS = [
-    host
-    for host in os.getenv("DJANGO_ALLOWED_HOSTS", "localhost 127.0.0.1 testserver")
-    .replace(",", " ")
-    .split()
-    if host
-]
+ALLOWED_HOSTS = env_list("DJANGO_ALLOWED_HOSTS", "localhost 127.0.0.1 testserver")
 
 INSTALLED_APPS = [
     "django.contrib.auth",
@@ -138,6 +137,127 @@ CSRF_COOKIE_SAMESITE = "Strict"
 SECURE_HSTS_SECONDS = int(os.getenv("SECURE_HSTS_SECONDS", "31536000" if not DEBUG else "0"))
 SECURE_HSTS_INCLUDE_SUBDOMAINS = env_bool("SECURE_HSTS_INCLUDE_SUBDOMAINS", not DEBUG)
 SECURE_HSTS_PRELOAD = env_bool("SECURE_HSTS_PRELOAD", not DEBUG)
+
+# --- Behind a TLS-terminating proxy (17tnw2b1wtr) ---------------------------------------------
+# In production TLS ends at the edge (Cloudflare / Coolify's proxy, then the marketing nginx)
+# and Django receives plain HTTP, so `request.is_secure()` is False for every request. Two
+# things then break without any error at boot: CsrfViewMiddleware compares a browser's
+# `Origin: https://<host>` with `http://<host>` and 403s every account/admin mutation, and
+# SecurityMiddleware never emits Strict-Transport-Security (it only does so over a secure
+# request, so the SECURE_HSTS_* values above are dead).
+#
+# OPT-IN, DEFAULT OFF, because the fix is a trust decision. `X-Forwarded-Proto` is a request
+# header: a client that reaches Django without passing through a proxy that OVERWRITES it can
+# send `https` and be believed. Set `SELAHCUE_TRUST_FORWARDED_PROTO=1` only in an environment
+# where every path to Django goes through such a proxy (docs/ops/DEPLOYMENT.md section 6c). It
+# is deliberately separate from SELAHCUE_TRUSTED_PROXY_COUNT below: that setting is about how
+# many X-Forwarded-For entries to believe, this one is about a different header, and setting
+# the first must not silently decide the second.
+SELAHCUE_TRUST_FORWARDED_PROTO = env_bool("SELAHCUE_TRUST_FORWARDED_PROTO", False)
+if SELAHCUE_TRUST_FORWARDED_PROTO:
+    SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+else:
+    SECURE_PROXY_SSL_HEADER = None
+
+
+def _without_credentials(entry: str) -> str:
+    """`entry` safe to print: anything before the last `@` (the userinfo of a pasted
+    `https://user:secret@host`) is replaced with `***`, keeping a leading `scheme://`. A refusal
+    message ends up in logs and terminals, so it must never echo a password."""
+    head, at, tail = entry.rpartition("@")
+    if not at:
+        return entry
+    scheme, sep, _ = head.partition("://")
+    return f"{scheme}://***@{tail}" if sep else f"***@{tail}"
+
+
+def _exact_origin(name: str, entry: str, debug: bool) -> str:
+    """One `scheme://host[:port]` origin from the environment, or a refusal to boot.
+
+    A trusted origin is a cross-origin trust grant on the CSRF-enforced surfaces, and the only
+    value anyone should ever need here is the SPA's own public origin. So the entry must be that
+    shape exactly: `https` (`http` only under DEBUG, for a local proxy), a host, an optional
+    port, and nothing else. One trailing `/` is forgiven (a browser's Origin never has a path, so
+    `https://x/` could never match and would fail closed with no hint). The host is lowercased,
+    because browsers send it lowercase and Django compares the strings exactly.
+
+    Refused outright, each for a reason:
+    - wildcards: `https://*.example.com` would admit every subdomain AND the apex;
+    - a host with a leading dot (`https://.example.com`, `https://.com`): Django's Referer
+      fallback reads it as 'this domain and every subdomain', i.e. a wildcard in disguise, so
+      an attacker's page on any subdomain would pass the check; and an empty label (`a..b`) or a
+      trailing dot, which no browser Origin contains;
+    - the default port (`:443` on https, `:80` on http) and port 0: a browser omits the default
+      port from its Origin and never uses port 0, so the entry could never match and would fail
+      closed with no hint (the entry is refused rather than silently rewritten);
+    - a backslash anywhere, and a non-ASCII host (use the punycode `xn--` form, which is what
+      a browser sends): URL parsers disagree about both;
+    - credentials, path, query and fragment.
+    The refusal message never echoes credentials (`_without_credentials`)."""
+    shown = _without_credentials(entry)
+
+    def refuse(reason: str):
+        raise ImproperlyConfigured(
+            f"{name} entry {shown!r} is not accepted: {reason}. Each entry must be an exact "
+            "origin, scheme://host[:port] with no path, query or wildcard "
+            "(for example 'https://selahcue.example'); see docs/ops/DEPLOYMENT.md section 6c."
+        ) from None
+
+    candidate = entry[:-1] if entry.endswith("/") else entry
+    if "\\" in entry:
+        refuse("it contains a backslash")
+    if not entry.isascii():
+        refuse("it contains non-ASCII characters; use the punycode (xn--) form of the host")
+    if "*" in candidate:
+        refuse("wildcards are not allowed, list each origin")
+    try:
+        parts = urlsplit(candidate)
+        port = parts.port
+    except ValueError:
+        refuse("it is not a valid URL")
+    allowed = ("https", "http") if debug else ("https",)
+    if parts.scheme not in allowed:
+        refuse(f"the scheme must be {' or '.join(allowed)}")
+    host = parts.hostname
+    if not host:
+        refuse("it has no host")
+    if "@" in parts.netloc:
+        refuse("it must not carry credentials")
+    if host.startswith(".") or host.endswith(".") or ".." in host:
+        refuse(
+            "the host must not start or end with a dot or contain an empty label "
+            "(a leading dot is read by Django as 'every subdomain')"
+        )
+    if parts.path or parts.query or parts.fragment:
+        refuse("it must not have a path, query or fragment")
+    if port == 0:
+        refuse("port 0 is not valid")
+    if port == {"https": 443, "http": 80}[parts.scheme]:
+        refuse(
+            f"the default port :{port} is never part of a browser Origin, so this could never "
+            f"match; write the origin without ':{port}'"
+        )
+    return f"{parts.scheme}://{parts.netloc.lower()}"
+
+
+def _csrf_trusted_origins(name: str, debug: bool) -> list[str]:
+    """Validated, de-duplicated origins from the space- or comma-separated variable `name`,
+    in the order given. Empty entries (a stray comma, a trailing space) are dropped."""
+    origins: list[str] = []
+    for entry in env_list(name):
+        origin = _exact_origin(name, entry, debug)
+        if origin not in origins:
+            origins.append(origin)
+    return origins
+
+
+# Public origins (scheme included, e.g. `https://selahcue.example`) whose browsers may POST to
+# the CSRF-enforced surfaces. Needed only when the Origin a browser sends differs from
+# `<scheme>://<Host header>`, i.e. when the proxy does not forward the public Host (nginx's
+# `$host` also drops a non-default port). Empty by default: an entry here is a cross-origin trust
+# grant, so list only the SPA's own origin. Validated at boot by `_exact_origin` above.
+CSRF_TRUSTED_ORIGINS = _csrf_trusted_origins("DJANGO_CSRF_TRUSTED_ORIGINS", DEBUG)
+
 SECURE_CONTENT_TYPE_NOSNIFF = True
 SECURE_REFERRER_POLICY = "same-origin"
 X_FRAME_OPTIONS = "DENY"

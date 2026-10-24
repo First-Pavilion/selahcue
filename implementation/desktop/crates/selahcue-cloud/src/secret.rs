@@ -70,6 +70,18 @@ impl Token {
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
+
+    /// Whether the token is empty or only whitespace: present, but not a credential.
+    pub fn is_blank(&self) -> bool {
+        self.0.trim().is_empty()
+    }
+
+    /// Whether the token holds a control character. CR and LF are the dangerous ones: a bearer
+    /// carrying either cannot be a valid header value, and one that reached a hand-built
+    /// request would split it. No server this app talks to issues such a token.
+    pub fn has_control_characters(&self) -> bool {
+        self.0.chars().any(char::is_control)
+    }
 }
 
 // Redacting formatters: printing a Token never reveals its value.

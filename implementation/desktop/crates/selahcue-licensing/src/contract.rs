@@ -1,21 +1,30 @@
 //! The Platform API licensing **contract** — serde wire types pinned to the shipped
 //! server, read from its source rather than from documentation.
 //!
-//! ## The two activation paths do not share a transport
+//! ## One transport, three routes
 //!
-//! This is the single most important fact about this contract, and it is easy to get
-//! wrong: `POST /v1/activations` is the **enrollment-key path only**. It has no session
-//! branch and no discriminator field — the handler passes `license_key` straight into
-//! the service (`platform/views.py:65-72`). The **account sign-in path is a GraphQL
-//! mutation**, `activateDeviceWithSession` on `POST /graphql/account`
-//! (`graphql/account_schema.py:236-255`). The two converge server-side in
-//! `_activate_device_for_key` but arrive over different transports with different
-//! response shapes (REST `snake_case` / `activation_token` vs GraphQL `camelCase` /
-//! `fullToken`). Both are permanently in scope (DEC-011 pt 3).
+//! Every call this client makes is a JSON `POST` to a `/v1` route, which is the server's
+//! device-facing surface: `csrf_exempt` because it never reads or sets a cookie.
+//!
+//! - `POST /v1/activations` — the **enrollment-key** path (`platform/views.py::activate_device`).
+//! - `POST /v1/sessions` — account **sign-in** (`platform/views.py::create_session`).
+//! - `POST /v1/activations:with-session` — activation authenticated by the session token
+//!   (`platform/views.py::activate_device_with_session`).
+//!
+//! The last two exist because the account GraphQL route (`/graphql/account`) authenticates
+//! from a session cookie and so enforces CSRF; a native client has no cookie jar and got
+//! Django's 403 HTML page on every request (86ak5t1gw, ADR-0029; fixed here by 17tnw2b1we2).
+//! **This crate must never call `/graphql/account`** — exempting it server-side was
+//! rejected on purpose, and `tests/test_client.rs` pins the absence.
+//!
+//! Both activation routes answer with **one shape** ([`ActivationResponse`]), which is why
+//! the session path now reports `reminted`, the token metadata and the licence block that
+//! the GraphQL payload could not.
 //!
 //! ## Field-name traps pinned here on purpose
 //!
 //! - The presented enrollment key is sent as **`license_key`**, not `enrollment_key`.
+//!   The session path sends no key at all: the org comes from the session.
 //! - The returned device token is **`activation_token`**, not `device_token` — the
 //!   server's audit redaction denylist normalises `device_token`/`deviceToken`/
 //!   `DEVICE-TOKEN` to one key and *raises* on it (`graphql/redaction.py:41-46`), so the
@@ -25,13 +34,17 @@
 //!   device already holds a live token. That is success, not an error.
 //! - The sibling `token` object carries only *metadata* (masked/prefix/suffix/
 //!   fingerprint/expiry) and never the secret.
+//! - The sign-in secret is `session_token`, show-once, and is never persisted anywhere but
+//!   the OS secret store.
 //!
 //! ## Errors
 //!
-//! REST and GraphQL share one code vocabulary ([`ErrorCode`]) with fixed, detail-free
-//! messages (`graphql/errors.py:20-32`). **Branch on the code, never the HTTP status or
-//! the message**: `PERMISSION_DENIED` and `POLICY_DENIED` both map to 403, and the
-//! message string is a constant per code that carries no detail at all.
+//! One code vocabulary ([`ErrorCode`]) with fixed, detail-free messages
+//! (`graphql/errors.py:20-32`) in the `/v1` envelope [`ApiErrorEnvelope`]. **Branch on the
+//! code, never the HTTP status or the message**: `PERMISSION_DENIED` and `POLICY_DENIED`
+//! both map to 403, and the message string is a constant per code that carries no detail
+//! at all. A response that is not that envelope is classified by status alone and is never
+//! quoted (see [`crate::client`]).
 
 use selahcue_cloud::Token;
 use serde::{Deserialize, Serialize};
@@ -55,8 +68,12 @@ pub(crate) fn redacted(value: &str) -> &'static str {
 /// `path("activations", ...)` (`platform/urls.py:7`), so a trailing slash is a 404.
 pub const ACTIVATIONS_PATH: &str = "/v1/activations";
 
-/// The account GraphQL surface: sign-in and session-authenticated activation.
-pub const ACCOUNT_GRAPHQL_PATH: &str = "/graphql/account";
+/// Account sign-in (`platform/urls.py`: `path("sessions", ...)`). No trailing slash.
+pub const SESSIONS_PATH: &str = "/v1/sessions";
+
+/// Activation authenticated by an account session (`Authorization: Bearer <session_token>`).
+/// The colon is part of the route, not a typo: `path("activations:with-session", ...)`.
+pub const ACTIVATIONS_WITH_SESSION_PATH: &str = "/v1/activations:with-session";
 
 /// The signed entitlement manifest. Fetching, verifying and caching it is **not** this
 /// ticket's work (86ak5mn1d); the path and the envelope shape are pinned here so that
@@ -106,11 +123,13 @@ impl core::fmt::Debug for ActivationRequest {
     }
 }
 
-/// Success body for `POST /v1/activations` (HTTP 200).
+/// Success body for `POST /v1/activations` **and** `POST /v1/activations:with-session`
+/// (HTTP 200). The server builds both from one function (`_activation_payload`), differing
+/// only in the unsigned `operation` label, which is ignored here.
 // No `Serialize` here, and that is deliberate: this is a response type, the client only
 // ever reads it, and leaving the derive off means the show-once token below cannot be
-// written back out to JSON by accident. The same reasoning applies to the two GraphQL
-// payloads further down.
+// written back out to JSON by accident. The same reasoning applies to
+// [`SessionResponse`] below.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct ActivationResponse {
     pub created: bool,
@@ -127,7 +146,9 @@ pub struct ActivationResponse {
     #[serde(default)]
     pub activation_token: Option<Token>,
     pub device: DeviceDto,
-    #[serde(default)]
+    /// Always present in the server's payload (`_activation_payload`), with null members on a
+    /// replay that has no live token. Required, not defaulted: a missing object would otherwise
+    /// read as "no token metadata" when it is a drifted contract.
     pub token: TokenMetaDto,
     pub license: LicenseDto,
 }
@@ -164,19 +185,25 @@ pub struct TokenMetaDto {
 }
 
 /// The licence backing the activation.
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+///
+/// No `Default`, on purpose: the enforcement work reads `expires_at`, and a fabricated empty
+/// string there would be indistinguishable from a real value.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LicenseDto {
     pub status: String,
-    /// Python `isoformat()` — see [`TokenMetaDto::expires_at`].
-    #[serde(default)]
+    /// Python `isoformat()` — see [`TokenMetaDto::expires_at`]. Always sent by the server.
     pub expires_at: String,
 }
 
 // ---------------------------------------------------------------------------
-// Coded errors — shared by the REST and GraphQL surfaces
+// Coded errors — one vocabulary for every /v1 route
 // ---------------------------------------------------------------------------
 
 /// The server's error vocabulary (`graphql/errors.py:6-17`).
+///
+/// `PASSWORD_INVALID` also exists server-side but is raised only by the browser's
+/// password-reset confirmation, which this client never calls; it parses as
+/// [`ErrorCode::Unknown`], which is harmless.
 ///
 /// Not a `derive(Deserialize)` enum on purpose: an unknown code from a newer server must
 /// parse into [`ErrorCode::Unknown`] and be handled, never fail deserialization and turn
@@ -192,12 +219,35 @@ pub enum ErrorCode {
     RateLimited,
     NotImplemented,
     Internal,
-    /// A code this build does not know about.
+    /// A code this build does not know about. The string is **always** a plausible code
+    /// (`[A-Z][A-Z0-9_]*`, at most [`MAX_CODE_LEN`] bytes) or [`UNRECOGNISED_CODE`]: see
+    /// [`ErrorCode::parse`].
     Unknown(String),
+}
+
+/// The longest code this client will carry. The server's longest is 17 characters.
+pub const MAX_CODE_LEN: usize = 64;
+
+/// What an [`ErrorCode::Unknown`] holds when the wire value was not shaped like a code.
+pub const UNRECOGNISED_CODE: &str = "UNRECOGNISED";
+
+fn is_code_shaped(value: &str) -> bool {
+    let mut bytes = value.bytes();
+    value.len() <= MAX_CODE_LEN
+        && bytes.next().is_some_and(|b| b.is_ascii_uppercase())
+        && bytes.all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_')
 }
 
 impl ErrorCode {
     /// Parse a wire code. Unrecognised values become [`ErrorCode::Unknown`].
+    ///
+    /// **The `code` field is not trusted to be a code.** The envelope is parsed from a body
+    /// that anything in front of the API can have written, and an unknown code is later
+    /// printed (`ActivationFailure::Coded`'s `Display`). Carrying whatever string arrived
+    /// would let a proxy's JSON error page, or a body of any size, reach an operator's
+    /// screen and a log line verbatim. A value that is not shaped like a code is therefore
+    /// replaced by [`UNRECOGNISED_CODE`]; one that is shaped like a code is kept, so a newer
+    /// server's state is still reportable.
     pub fn parse(value: &str) -> Self {
         match value {
             "UNAUTHENTICATED" => ErrorCode::Unauthenticated,
@@ -209,7 +259,8 @@ impl ErrorCode {
             "RATE_LIMITED" => ErrorCode::RateLimited,
             "NOT_IMPLEMENTED" => ErrorCode::NotImplemented,
             "INTERNAL" => ErrorCode::Internal,
-            other => ErrorCode::Unknown(other.to_string()),
+            other if is_code_shaped(other) => ErrorCode::Unknown(other.to_string()),
+            _ => ErrorCode::Unknown(UNRECOGNISED_CODE.to_string()),
         }
     }
 
@@ -251,149 +302,56 @@ pub struct ApiErrorBody {
 }
 
 // ---------------------------------------------------------------------------
-// Account GraphQL surface — sign-in and session activation
+// Account sign-in — POST /v1/sessions, POST /v1/activations:with-session
 // ---------------------------------------------------------------------------
 
-/// The `login` mutation document. Field names are camelCase: Strawberry auto-camel-cases
-/// and this schema is built with the default config (`account_schema.py:258-261`).
-pub const LOGIN_MUTATION: &str = "mutation Login($input: LoginInput!) { \
-login(input: $input) { sessionToken expiresAt role orgId } }";
-
-/// The session-authenticated activation mutation (`account_schema.py:236-255`).
-pub const ACTIVATE_WITH_SESSION_MUTATION: &str =
-    "mutation ActivateDeviceWithSession($input: ActivateDeviceInput!) { \
-activateDeviceWithSession(input: $input) { fullToken created devicePublicId platform } }";
-
-/// A GraphQL request: a document plus its variables.
-#[derive(Debug, Clone, PartialEq, Serialize)]
-pub struct GraphQlRequest<V> {
-    pub query: &'static str,
-    pub variables: V,
-}
-
-/// `{"input": {...}}` — every mutation here takes a single `input` argument.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct InputVariables<T> {
-    pub input: T,
-}
-
-/// `LoginInput` (`account_schema.py:52-55`).
+/// Request body for `POST /v1/sessions`. The server bounds `email` at 254 and `password`
+/// at 200 characters and answers anything longer `VALIDATION_FAILED` without trying it.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct LoginInput {
+pub struct SessionRequest {
     pub email: String,
     pub password: String,
 }
 
-impl core::fmt::Debug for LoginInput {
+impl core::fmt::Debug for SessionRequest {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("LoginInput")
+        f.debug_struct("SessionRequest")
             .field("email", &self.email)
             .field("password", &redacted(&self.password))
             .finish()
     }
 }
 
-/// `ActivateDeviceInput` (`account_schema.py:113-119`), camelCased for the wire.
+/// Success body for `POST /v1/sessions` (HTTP 200, `platform/views.py::create_session`).
 ///
-/// Note what is **absent**: no key, no org id. The caller's org is resolved server-side
-/// from the session, which is exactly why this path spares a volunteer installer the
-/// admin's password — they sign in as themselves.
+/// Every field is required: the server always emits all four, so a missing one is contract
+/// drift and should say so rather than be defaulted to an empty string that a later call
+/// would send as an org id. The unsigned `surface`/`operation` labels are ignored.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct SessionResponse {
+    /// The show-once account session token. [`Token`]-typed for the reason given on
+    /// [`ActivationResponse::activation_token`].
+    pub session_token: Token,
+    /// Python `isoformat()` — see [`TokenMetaDto::expires_at`].
+    pub expires_at: String,
+    /// `"ADMIN"` | `"MEMBER"`.
+    pub role: String,
+    pub org_id: String,
+}
+
+/// Request body for `POST /v1/activations:with-session`: the [`ActivationRequest`] body
+/// **minus `license_key`**. The caller's org is resolved server-side from the session,
+/// which is exactly why this path spares a volunteer installer the enrollment key.
+///
+/// The server coerces missing values to `""` and rejects empty `device_fingerprint` and
+/// `platform`, so every field is sent explicitly.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ActivateDeviceInput {
+pub struct SessionActivationRequest {
     pub idempotency_key: String,
     pub device_fingerprint: String,
     pub platform: String,
     pub app_version: String,
     pub display_name: String,
-}
-
-/// A GraphQL response: `data` and/or `errors`. Both are optional — a mutation that fails
-/// returns HTTP 200 with `errors` populated and `data` null.
-#[derive(Debug, Clone, PartialEq, Deserialize)]
-pub struct GraphQlResponse<T> {
-    #[serde(default = "none")]
-    pub data: Option<T>,
-    #[serde(default)]
-    pub errors: Option<Vec<GraphQlError>>,
-}
-
-fn none<T>() -> Option<T> {
-    None
-}
-
-/// One GraphQL error. The code lives in `extensions.code`
-/// (`graphql/errors.py:41-52`).
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-pub struct GraphQlError {
-    #[serde(default)]
-    pub message: String,
-    #[serde(default)]
-    pub extensions: Option<GraphQlErrorExtensions>,
-}
-
-impl GraphQlError {
-    /// The coded error, when the server supplied one.
-    pub fn code(&self) -> Option<ErrorCode> {
-        self.extensions
-            .as_ref()
-            .and_then(|e| e.code.as_deref())
-            .map(ErrorCode::parse)
-    }
-}
-
-/// The `extensions` bag; only `code` is contractual.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-pub struct GraphQlErrorExtensions {
-    #[serde(default)]
-    pub code: Option<String>,
-}
-
-/// `data` for the `login` mutation.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-pub struct LoginData {
-    pub login: LoginPayload,
-}
-
-/// `LoginPayload` (`account_schema.py:76-82`).
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct LoginPayload {
-    /// The show-once account session token. [`Token`]-typed for the reason given on
-    /// [`ActivationResponse::activation_token`].
-    pub session_token: Token,
-    #[serde(default)]
-    pub expires_at: String,
-    #[serde(default)]
-    pub role: String,
-    #[serde(default)]
-    pub org_id: String,
-}
-
-/// `data` for the `activateDeviceWithSession` mutation.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ActivateWithSessionData {
-    pub activate_device_with_session: ActivateDevicePayload,
-}
-
-/// `ActivateDevicePayload` (`account_schema.py:122-128`).
-///
-/// Deliberately **narrower** than the REST response: no `reminted`, no token metadata,
-/// no licence block. See [`crate::client::LicensingClient::activate_with_session`] for
-/// how the two are reconciled without inventing values the server did not send.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ActivateDevicePayload {
-    /// The show-once device token; `null` on an idempotent replay. [`Token`]-typed for
-    /// the reason given on [`ActivationResponse::activation_token`].
-    #[serde(default)]
-    pub full_token: Option<Token>,
-    pub created: bool,
-    #[serde(default)]
-    pub device_public_id: String,
-    #[serde(default)]
-    pub platform: String,
 }
 
 // ---------------------------------------------------------------------------
