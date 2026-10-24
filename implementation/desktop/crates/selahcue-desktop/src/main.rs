@@ -4273,28 +4273,16 @@ mod remote_control_warmup_tests {
     /// bind (before or after the port is published), or run on another thread.
     #[test]
     fn the_scripture_warm_up_runs_before_the_listener_is_bound() {
-        let events: Arc<Mutex<Vec<&'static str>>> = Arc::default();
+        let events: Events = Arc::default();
         let scratch = Scratch::new("warm-before-bind");
         let endpoint = scratch.0.join("endpoint.json");
 
         let warm_events = events.clone();
-        let bind_events = events.clone();
-        let env = ServerEnv {
-            warm: Box::new(move || warm_events.lock().expect("event log").push("warm")),
-            io: ServerIo {
-                bind: Box::new(move || -> BindFuture {
-                    bind_events.lock().expect("event log").push("bind");
-                    // Loopback + an OS-assigned port: no LAN exposure, no clash with a live host.
-                    Box::pin(TcpListener::bind("127.0.0.1:0"))
-                }),
-                lan_ip: || std::net::IpAddr::from([127, 0, 0, 1]),
-                advertise_mdns: false,
-                endpoint_file: Some(endpoint.clone()),
-            },
-        };
-
-        let remote = fresh_remote();
-        start_remote_control_in(fresh_controller(), remote.clone(), env);
+        let remote = start_server(
+            &events,
+            &endpoint,
+            Box::new(move || log(&warm_events, "warm")),
+        );
 
         // `remote.lan` is published immediately after the bind, so once it is set the bind has
         // happened and every event it should be ordered against has already been logged.
@@ -4302,7 +4290,7 @@ mod remote_control_warmup_tests {
             remote.lan.get().is_some()
         });
         assert_eq!(
-            *events.lock().expect("event log"),
+            logged(&events),
             ["warm", "bind"],
             "the scripture warm-up must run exactly once and strictly BEFORE the control \
              listener is bound; otherwise the first IngestTranscript a remote controller sends \
@@ -4311,15 +4299,14 @@ mod remote_control_warmup_tests {
 
         // The endpoint descriptor (a bearer token) must have gone to the INJECTED path, not the
         // shared `$TMPDIR/selahcue-operator-endpoint.json` a live host owns.
-        let (port, _pin) = remote.lan.get().expect("published above").clone();
-        wait_for("the endpoint descriptor to be written", || {
-            endpoint.exists()
-        });
-        let written = std::fs::read_to_string(&endpoint).expect("read descriptor");
-        assert!(
-            written.contains(&format!("\"addr\":\"127.0.0.1:{port}\"")),
+        let (port, pin) = remote.lan.get().expect("published above").clone();
+        let written = wait_for_descriptor(&endpoint);
+        assert_eq!(
+            json_field(&written, "addr"),
+            Some(format!("127.0.0.1:{port}").as_str()),
             "descriptor should name this test server's loopback port {port}: {written}"
         );
+        assert_eq!(json_field(&written, "pin"), Some(pin.as_str()));
     }
 
     /// The wiring half: the hook `ServerEnv::production()` hands the real server genuinely
@@ -4343,6 +4330,536 @@ mod remote_control_warmup_tests {
             "a warm() call took {elapsed:?} after the production warm-up hook ran — the hook \
              does not build the scripture quote-match index, so the first remote \
              IngestTranscript would pay the cold build inline (17tnw2b1258)"
+        );
+    }
+
+    // ---- Warm-up / bind ordering against the real server thread -------------------------------
+
+    type Events = Arc<Mutex<Vec<&'static str>>>;
+
+    fn log(events: &Events, what: &'static str) {
+        events.lock().expect("event log").push(what);
+    }
+
+    fn logged(events: &Events) -> Vec<&'static str> {
+        events.lock().expect("event log").clone()
+    }
+
+    /// Start the real server thread with `warm` as its warm-up hook and a loopback bind seam that
+    /// logs `"bind"` when it is called. The endpoint descriptor goes to `endpoint`.
+    fn start_server(
+        events: &Events,
+        endpoint: &std::path::Path,
+        warm: Box<dyn FnOnce() + Send>,
+    ) -> Arc<RemoteShared> {
+        let bind_events = events.clone();
+        let env = ServerEnv {
+            warm,
+            io: ServerIo {
+                bind: Box::new(move || -> BindFuture {
+                    log(&bind_events, "bind");
+                    // Loopback + an OS-assigned port: no LAN exposure, no clash with a live host.
+                    Box::pin(TcpListener::bind("127.0.0.1:0"))
+                }),
+                lan_ip: || std::net::IpAddr::from([127, 0, 0, 1]),
+                advertise_mdns: false,
+                endpoint_file: Some(endpoint.to_path_buf()),
+            },
+        };
+        let remote = fresh_remote();
+        start_remote_control_in(fresh_controller(), remote.clone(), env);
+        remote
+    }
+
+    /// Wait for the descriptor to be published and return it. Publication is atomic (an
+    /// owner-only temp file renamed into place), so a descriptor that EXISTS is a complete one:
+    /// this is a wait for the server thread to reach the write, never a wait for the write to
+    /// finish. (Waiting on `exists()` alone and reading at once was the 17tnw2b2q2z flake: the
+    /// file used to appear empty, before its contents were written.)
+    fn wait_for_descriptor(path: &std::path::Path) -> String {
+        wait_for("the endpoint descriptor to be published", || path.exists());
+        let json = std::fs::read_to_string(path).expect("read descriptor");
+        assert!(
+            is_complete_descriptor(&json),
+            "a published descriptor must be complete: {json:?}"
+        );
+        json
+    }
+
+    /// Open the first control connection exactly as the operator shell does: from the
+    /// descriptor's address, certificate pin and operator credential. Returns the granted role.
+    fn first_control_connection(descriptor: &str) -> selahcue_lan::Role {
+        let field = |k: &str| json_field(descriptor, k).unwrap_or_else(|| panic!("no {k}"));
+        let addr: std::net::SocketAddr = field("addr").parse().expect("socket address");
+        let pin = selahcue_lan::CertPin::from_hex(field("pin")).expect("pin hex");
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("client runtime");
+        runtime.block_on(async {
+            let client = selahcue_lan::ControlClient::connect(
+                addr,
+                "localhost",
+                pin,
+                field("device"),
+                field("token"),
+            )
+            .await
+            .expect("the first control connection must be accepted and authenticated");
+            let role = client.role();
+            let _ = client.close().await;
+            role
+        })
+    }
+
+    /// A slow index build (here: parked until the test releases it, i.e. as slow as the test
+    /// likes, with no sleep and no timing assumption) must hold back BOTH the bind and therefore
+    /// the first control connection. The hook parks the server thread INSIDE `warm()`, so
+    /// anything the thread does after the warm-up provably has not happened yet when the
+    /// assertions run; only after the release does the listener appear and a controller get in.
+    #[test]
+    fn a_slow_warm_up_holds_back_the_listener_and_the_first_control_connection() {
+        let events: Events = Arc::default();
+        let scratch = Scratch::new("warm-slow");
+        let endpoint = scratch.0.join("endpoint.json");
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel::<()>();
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+
+        let warm_events = events.clone();
+        let remote = start_server(
+            &events,
+            &endpoint,
+            Box::new(move || {
+                log(&warm_events, "warm:start");
+                let _ = entered_tx.send(());
+                // Parked until released. If the test unwinds first, the dropped sender wakes this.
+                let _ = release_rx.recv();
+                log(&warm_events, "warm:done");
+            }),
+        );
+
+        // Normally this returns the moment the hook is entered. A server that bound (and so
+        // published its port) WITHOUT running the warm-up first also ends the wait, so that
+        // breakage fails at the assertions below instead of waiting out the 60 s bound.
+        wait_for("the warm-up hook to be entered", || {
+            entered_rx.try_recv().is_ok() || remote.lan.get().is_some()
+        });
+
+        // The server thread is parked inside warm(): no bind, no published port, no descriptor.
+        assert_eq!(
+            logged(&events),
+            ["warm:start"],
+            "nothing may run past the warm-up while it is still building the index"
+        );
+        assert!(
+            remote.lan.get().is_none(),
+            "the control port must not be published while the warm-up is still running"
+        );
+        assert!(
+            !endpoint.exists(),
+            "the descriptor a controller would use must not exist while the warm-up is running"
+        );
+
+        release_tx.send(()).expect("server thread is parked");
+        wait_for("the control listener to be bound", || {
+            remote.lan.get().is_some()
+        });
+        assert_eq!(
+            logged(&events),
+            ["warm:start", "warm:done", "bind"],
+            "the listener must be bound only AFTER the slow warm-up finished"
+        );
+
+        // Positive control: once the warm-up is over the same server really does accept and
+        // authenticate a controller, so "nothing was reachable" above was the warm-up's doing and
+        // not a dead server.
+        let descriptor = wait_for_descriptor(&endpoint);
+        assert_eq!(
+            first_control_connection(&descriptor),
+            selahcue_lan::Role::Operator
+        );
+    }
+
+    /// The fast case: a warm-up that finishes at once (the index was already built) is still
+    /// strictly before the bind, and the first controller is served.
+    #[test]
+    fn a_fast_warm_up_still_precedes_the_bind_and_the_first_control_connection_is_served() {
+        let events: Events = Arc::default();
+        let scratch = Scratch::new("warm-fast");
+        let endpoint = scratch.0.join("endpoint.json");
+
+        let warm_events = events.clone();
+        let remote = start_server(
+            &events,
+            &endpoint,
+            Box::new(move || log(&warm_events, "warm")),
+        );
+
+        wait_for("the control listener to be bound", || {
+            remote.lan.get().is_some()
+        });
+        assert_eq!(logged(&events), ["warm", "bind"]);
+        let descriptor = wait_for_descriptor(&endpoint);
+        assert_eq!(
+            first_control_connection(&descriptor),
+            selahcue_lan::Role::Operator
+        );
+    }
+
+    /// The warm-up cannot build the index (here: the hook panics). The decision, pinned: the
+    /// server FAILS CLOSED. It never binds, never publishes a port or a descriptor, and its
+    /// thread ends (releasing everything it held) — a host that cannot guarantee a warm index
+    /// does not open a control port whose first `IngestTranscript` would time out and poison the
+    /// connection (17tnw2b1258). The output window and local keyboard control are untouched: the
+    /// panic is confined to the server thread, which is why this test itself survives it.
+    #[test]
+    fn a_failing_warm_up_never_binds_and_the_server_thread_ends() {
+        let events: Events = Arc::default();
+        let scratch = Scratch::new("warm-fails");
+        let endpoint = scratch.0.join("endpoint.json");
+
+        let warm_events = events.clone();
+        let remote = start_server(
+            &events,
+            &endpoint,
+            Box::new(move || {
+                log(&warm_events, "warm:panic");
+                panic!("simulated scripture index build failure");
+            }),
+        );
+
+        // The thread held one clone of `remote`; it is gone only once the thread has unwound
+        // (the `ServerEnv`, its bind closure and the runtime are dropped with it). A server that
+        // survived the failed warm-up and went on to publish its port ends the wait too, so that
+        // breakage fails at the assertions below instead of waiting out the 60 s bound.
+        wait_for("the server thread to end", || {
+            Arc::strong_count(&remote) == 1 || remote.lan.get().is_some()
+        });
+
+        assert_eq!(
+            logged(&events),
+            ["warm:panic"],
+            "the listener must never be bound after a failed warm-up"
+        );
+        assert!(
+            remote.lan.get().is_none(),
+            "no control port may be published"
+        );
+        assert!(!endpoint.exists(), "no descriptor may be published");
+    }
+
+    /// The sibling failure: the warm-up succeeds but the listener cannot be created (port
+    /// refused). Nothing is published, and the thread ends instead of lingering.
+    #[test]
+    fn a_failed_bind_publishes_nothing_and_the_server_thread_ends() {
+        let events: Events = Arc::default();
+        let scratch = Scratch::new("bind-fails");
+        let endpoint = scratch.0.join("endpoint.json");
+
+        let bind_events = events.clone();
+        let warm_events = events.clone();
+        let env = ServerEnv {
+            warm: Box::new(move || log(&warm_events, "warm")),
+            io: ServerIo {
+                bind: Box::new(move || -> BindFuture {
+                    log(&bind_events, "bind");
+                    Box::pin(async {
+                        Err(std::io::Error::new(
+                            std::io::ErrorKind::AddrInUse,
+                            "simulated bind failure",
+                        ))
+                    })
+                }),
+                lan_ip: || std::net::IpAddr::from([127, 0, 0, 1]),
+                advertise_mdns: false,
+                endpoint_file: Some(endpoint.clone()),
+            },
+        };
+        let remote = fresh_remote();
+        start_remote_control_in(fresh_controller(), remote.clone(), env);
+
+        wait_for("the server thread to end", || {
+            Arc::strong_count(&remote) == 1
+        });
+
+        assert_eq!(logged(&events), ["warm", "bind"]);
+        assert!(
+            remote.lan.get().is_none(),
+            "no control port may be published"
+        );
+        assert!(!endpoint.exists(), "no descriptor may be published");
+    }
+
+    // ---- The endpoint descriptor is published atomically (17tnw2b2q2z) ----------------------
+
+    /// A descriptor as `write_endpoint` lays it out: one flat JSON object of four ASCII strings
+    /// (`addr`, `pin`, `device`, `token`), no escapes. Returns the value of `key`, or `None` if
+    /// the key is absent — which is what a half-written file looks like.
+    fn json_field<'a>(json: &'a str, key: &str) -> Option<&'a str> {
+        let needle = format!("\"{key}\":\"");
+        let start = json.find(&needle)? + needle.len();
+        let len = json[start..].find('"')?;
+        Some(&json[start..start + len])
+    }
+
+    /// True only for a COMPLETE descriptor: a closed object carrying all four fields.
+    fn is_complete_descriptor(json: &str) -> bool {
+        json.starts_with('{')
+            && json.ends_with('}')
+            && ["addr", "pin", "device", "token"]
+                .iter()
+                .all(|k| json_field(json, k).is_some_and(|v| !v.is_empty()))
+    }
+
+    /// The ticket's failure, reproduced without any server: one thread publishes the descriptor
+    /// over and over (alternating "fresh path" and "replace the previous one") while another
+    /// spins reading it. `std::fs::write` truncates-then-writes the final path in place and the
+    /// `chmod 0600` comes after that, so a reader landing in between saw an EMPTY file (the
+    /// ticket's `descriptor should name ... port 44879: ` with nothing after the colon) or a
+    /// 0644 file holding a bearer token. Published by rename, a reader sees the path absent,
+    /// the previous descriptor, or the new one — each complete and owner-only.
+    ///
+    /// Not timing-dependent on the passing side: nothing here asserts how long anything took,
+    /// and the writer keeps going until the reader has made enough complete observations for the
+    /// run to mean something, so a starved reader cannot turn this into a vacuous pass.
+    #[test]
+    fn a_reader_polling_the_descriptor_never_sees_a_partial_or_loose_one() {
+        use std::io::Read;
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        const MIN_PUBLISHES: usize = 1500;
+        const MIN_COMPLETE_READS: usize = 200;
+        /// Memory bound: the reader keeps the first few offending observations, not all of them.
+        const MAX_KEPT_PROBLEMS: usize = 5;
+
+        let scratch = Scratch::new("publish-hammer");
+        let path = scratch.0.join("endpoint.json");
+        let done = Arc::new(AtomicBool::new(false));
+        let complete_reads = Arc::new(AtomicUsize::new(0));
+
+        let reader = {
+            let (path, done, complete_reads) = (path.clone(), done.clone(), complete_reads.clone());
+            std::thread::spawn(move || {
+                let mut problems: Vec<String> = Vec::new();
+                #[cfg(unix)]
+                let staging = super::endpoint_tmp_path(&path);
+                while !done.load(Ordering::Acquire) {
+                    // The staging file never holds anything but a token either, so it must be
+                    // owner-only from the moment it exists, not just once it is renamed.
+                    #[cfg(unix)]
+                    if let Ok(staged) = std::fs::File::open(&staging) {
+                        use std::os::unix::fs::PermissionsExt;
+                        let mode = staged
+                            .metadata()
+                            .map(|m| m.permissions().mode() & 0o777)
+                            .ok();
+                        if mode != Some(0o600) && problems.len() < MAX_KEPT_PROBLEMS {
+                            problems.push(format!("staging file mode {mode:?} (want 0600)"));
+                        }
+                    }
+                    let Ok(mut file) = std::fs::File::open(&path) else {
+                        continue; // absent: allowed
+                    };
+                    #[cfg(unix)]
+                    let mode = {
+                        use std::os::unix::fs::PermissionsExt;
+                        file.metadata().map(|m| m.permissions().mode() & 0o777).ok()
+                    };
+                    let mut body = String::new();
+                    if file.read_to_string(&mut body).is_err() {
+                        continue;
+                    }
+                    let mut problem = None;
+                    if !is_complete_descriptor(&body) {
+                        problem = Some(format!("incomplete descriptor: {body:?}"));
+                    }
+                    #[cfg(unix)]
+                    if mode != Some(0o600) {
+                        problem = Some(format!("mode {mode:?} (want 0600) on {body:?}"));
+                    }
+                    match problem {
+                        Some(p) if problems.len() < MAX_KEPT_PROBLEMS => problems.push(p),
+                        Some(_) => {}
+                        None => {
+                            complete_reads.fetch_add(1, Ordering::Relaxed);
+                        }
+                    }
+                }
+                problems
+            })
+        };
+
+        let addr: std::net::SocketAddr = ([127, 0, 0, 1], 4242).into();
+        let deadline = Instant::now() + Duration::from_secs(60);
+        let mut publishes = 0usize;
+        while publishes < MIN_PUBLISHES
+            || complete_reads.load(Ordering::Relaxed) < MIN_COMPLETE_READS
+        {
+            assert!(
+                Instant::now() < deadline,
+                "reader made only {} complete observations in 60s",
+                complete_reads.load(Ordering::Relaxed)
+            );
+            if publishes.is_multiple_of(2) {
+                let _ = std::fs::remove_file(&path); // alternate: fresh path / replace previous
+            }
+            let token = format!("token-{publishes}");
+            assert!(
+                super::write_endpoint(&path, addr, "ab12", "operator-shell", &token).is_some(),
+                "publish #{publishes} failed"
+            );
+            publishes += 1;
+        }
+        done.store(true, Ordering::Release);
+        let problems = reader.join().expect("reader thread");
+
+        assert!(
+            problems.is_empty(),
+            "a reader observed a descriptor that was not complete and owner-only: {problems:#?}"
+        );
+        assert_eq!(
+            std::fs::read_dir(&scratch.0).expect("list scratch").count(),
+            1,
+            "publishing {publishes} times must leave exactly the descriptor behind"
+        );
+    }
+
+    /// Deterministic twin of the test above (Unix): a reader that already has the previous
+    /// descriptor open must keep seeing that COMPLETE descriptor — never an emptied or
+    /// half-rewritten one — while a new one is published. An in-place truncate-and-rewrite
+    /// changes what the open handle reads; replacing the file by rename cannot.
+    #[cfg(unix)]
+    #[test]
+    fn publishing_over_a_descriptor_replaces_it_rather_than_rewriting_it_in_place() {
+        use std::io::Read;
+        use std::os::unix::fs::PermissionsExt;
+        let scratch = Scratch::new("publish-replace");
+        let path = scratch.0.join("endpoint.json");
+        let addr: std::net::SocketAddr = ([127, 0, 0, 1], 4242).into();
+
+        assert!(
+            super::write_endpoint(&path, addr, "ab12", "operator-shell", "old-token").is_some()
+        );
+        let before = std::fs::read_to_string(&path).expect("read first descriptor");
+        let mut held = std::fs::File::open(&path).expect("open first descriptor");
+
+        assert!(
+            super::write_endpoint(&path, addr, "ab12", "operator-shell", "new-token").is_some()
+        );
+
+        let mut seen_by_held_handle = String::new();
+        held.read_to_string(&mut seen_by_held_handle)
+            .expect("read through the held handle");
+        assert_eq!(
+            seen_by_held_handle, before,
+            "a reader holding the previous descriptor must still see it complete; the file was \
+             rewritten in place instead of being replaced"
+        );
+        let after = std::fs::read_to_string(&path).expect("read new descriptor");
+        assert!(
+            is_complete_descriptor(&after) && after.contains("new-token"),
+            "the path must now hold the new, complete descriptor: {after:?}"
+        );
+        let mode = std::fs::metadata(&path).expect("stat").permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "the descriptor carries a bearer token");
+    }
+
+    // ---- Publication of a descriptor: happy path and failure paths ---------------------------
+
+    fn sample_addr() -> std::net::SocketAddr {
+        ([127, 0, 0, 1], 4242).into()
+    }
+
+    #[test]
+    fn write_endpoint_publishes_a_complete_owner_only_descriptor() {
+        let scratch = Scratch::new("publish-happy");
+        let path = scratch.0.join("endpoint.json");
+
+        let written =
+            super::write_endpoint(&path, sample_addr(), "ab12", "operator-shell", "tok-1");
+        assert_eq!(written.as_deref(), Some(path.as_path()));
+
+        let json = std::fs::read_to_string(&path).expect("read descriptor");
+        assert!(is_complete_descriptor(&json), "{json:?}");
+        assert_eq!(json_field(&json, "addr"), Some("127.0.0.1:4242"));
+        assert_eq!(json_field(&json, "pin"), Some("ab12"));
+        assert_eq!(json_field(&json, "device"), Some("operator-shell"));
+        assert_eq!(json_field(&json, "token"), Some("tok-1"));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&path).expect("stat").permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600, "the descriptor carries a bearer token");
+        }
+        assert_eq!(
+            std::fs::read_dir(&scratch.0).expect("list scratch").count(),
+            1,
+            "no temporary file may be left beside the descriptor"
+        );
+    }
+
+    #[test]
+    fn publishing_again_replaces_the_previous_descriptor_completely() {
+        let scratch = Scratch::new("publish-again");
+        let path = scratch.0.join("endpoint.json");
+        // The previous run's descriptor is LONGER than the new one, so an in-place rewrite that
+        // forgot to truncate would leave a stale tail behind.
+        let long_token = "t".repeat(200);
+        assert!(
+            super::write_endpoint(&path, sample_addr(), "ab12", "operator-shell", &long_token)
+                .is_some()
+        );
+        assert!(
+            super::write_endpoint(&path, sample_addr(), "ab12", "operator-shell", "short")
+                .is_some()
+        );
+
+        // Exact bytes: also pins the layout `selahcue-operator`'s `Endpoint` deserialiser reads.
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read descriptor"),
+            "{\"addr\":\"127.0.0.1:4242\",\"pin\":\"ab12\",\"device\":\"operator-shell\",\"token\":\"short\"}"
+        );
+        assert_eq!(std::fs::read_dir(&scratch.0).expect("list").count(), 1);
+    }
+
+    #[test]
+    fn a_leftover_temp_file_from_a_crashed_publish_does_not_block_publishing() {
+        let scratch = Scratch::new("publish-stale-tmp");
+        let path = scratch.0.join("endpoint.json");
+        let tmp = super::endpoint_tmp_path(&path);
+        std::fs::write(&tmp, "half a descriptor from a process that died").expect("plant");
+
+        assert!(
+            super::write_endpoint(&path, sample_addr(), "ab12", "operator-shell", "tok").is_some()
+        );
+
+        let json = std::fs::read_to_string(&path).expect("read descriptor");
+        assert!(is_complete_descriptor(&json), "{json:?}");
+        assert!(!tmp.exists(), "the temp file must not outlive the publish");
+    }
+
+    #[test]
+    fn a_publish_that_cannot_complete_returns_none_and_leaves_nothing_behind() {
+        // The directory is missing: nothing can be created, nothing is returned.
+        let scratch = Scratch::new("publish-failure");
+        let missing = scratch.0.join("no-such-dir").join("endpoint.json");
+        assert!(super::write_endpoint(&missing, sample_addr(), "ab12", "d", "tok").is_none());
+        assert!(!missing.exists());
+
+        // The temp file IS created but the final rename fails (the destination is a non-empty
+        // directory): the temp file must be cleaned up and the directory left untouched.
+        let blocked = scratch.0.join("endpoint.json");
+        std::fs::create_dir_all(&blocked).expect("make destination a directory");
+        std::fs::write(blocked.join("keep"), "x").expect("make it non-empty");
+        assert!(super::write_endpoint(&blocked, sample_addr(), "ab12", "d", "tok").is_none());
+        assert!(blocked.is_dir() && blocked.join("keep").exists());
+        let names: Vec<_> = std::fs::read_dir(&scratch.0)
+            .expect("list scratch")
+            .map(|e| e.expect("entry").file_name())
+            .collect();
+        assert_eq!(
+            names,
+            [std::ffi::OsString::from("endpoint.json")],
+            "a failed publish must not leave its temp file behind"
         );
     }
 }
@@ -4456,6 +4973,15 @@ fn endpoint_path() -> std::path::PathBuf {
 /// auto-discover + connect (a loopback-only convenience; real pairing is QR + host
 /// confirmation). Values are simple ASCII (addr/hex/ids), so a hand-built JSON string is
 /// safe. Returns the path written, if any.
+///
+/// Published ATOMICALLY and owner-only from the first byte (17tnw2b2q2z): the contents go to an
+/// owner-only temp file beside `path`, which is then renamed over it. The descriptor carries a
+/// bearer token and the operator shell re-reads it for the life of its session, so a reader must
+/// never find `path` half-written or looser than `0600`. The previous `std::fs::write` +
+/// `set_permissions` did both: it created the final path (default mode, `0644` under the usual
+/// umask) and truncated it BEFORE writing, so a reader in that gap saw an empty descriptor — the
+/// flake that failed `the_scripture_warm_up_runs_before_the_listener_is_bound` on ubuntu CI — or,
+/// on Linux where `temp_dir()` is the shared `/tmp`, a world-readable file holding the token.
 fn write_endpoint(
     path: &std::path::Path,
     addr: SocketAddr,
@@ -4466,20 +4992,70 @@ fn write_endpoint(
     let json = format!(
         "{{\"addr\":\"{addr}\",\"pin\":\"{pin_hex}\",\"device\":\"{device}\",\"token\":\"{token}\"}}"
     );
-    if let Err(e) = std::fs::write(path, json) {
-        eprintln!("SelahCue: could not write operator endpoint file: {e}");
-        return None;
+    match publish_owner_only(path, json.as_bytes()) {
+        Ok(()) => Some(path.to_path_buf()),
+        Err(e) => {
+            eprintln!("SelahCue: could not write operator endpoint file: {e}");
+            None
+        }
     }
-    // The descriptor carries a bearer token. On macOS `temp_dir()` is already a per-user
-    // private dir, but on Linux it is world-readable `/tmp`, so restrict to owner-only.
-    // (This is a loopback-only demo convenience; real pairing is QR + host confirmation
-    // and persists no token.)
+}
+
+/// The sibling temp file [`publish_owner_only`] stages `path` in: same directory (so the final
+/// rename never crosses a filesystem), dot-prefixed, and per-process so two hosts never share one.
+fn endpoint_tmp_path(path: &std::path::Path) -> std::path::PathBuf {
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    path.with_file_name(format!(".{name}.{}.tmp", std::process::id()))
+}
+
+/// Replace `path` with `contents` so that no reader ever observes a partial or a looser-than-
+/// `0600` file: stage in a [`endpoint_tmp_path`] created owner-only (`create_new`, so a planted
+/// file or symlink at that name is never followed), write it fully, then `rename` it into place.
+/// On any failure the temp file is removed, so nothing accumulates in the shared temp dir.
+fn publish_owner_only(path: &std::path::Path, contents: &[u8]) -> std::io::Result<()> {
+    let tmp = endpoint_tmp_path(path);
+    let staged = stage_owner_only(&tmp, contents).and_then(|()| std::fs::rename(&tmp, path));
+    if staged.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    staged
+}
+
+fn stage_owner_only(tmp: &std::path::Path, contents: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let create = || {
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        options.open(tmp)
+    };
+    let mut file = match create() {
+        // A leftover from a process that died mid-publish under a recycled pid: it is ours to
+        // discard (removing a symlink removes the link, never its target), then stage afresh.
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            std::fs::remove_file(tmp)?;
+            create()?
+        }
+        other => other?,
+    };
+    // Exactly `0600` whatever the umask did to the creation mode — `selahcue-operator` refuses
+    // anything else (`read_endpoint_at`) — and before any byte of the token is written.
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
     }
-    Some(path.to_path_buf())
+    file.write_all(contents)?;
+    // Closed before the rename: Windows will not replace a file that is still open.
+    drop(file);
+    Ok(())
 }
 
 fn print_connect_banner(
