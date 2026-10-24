@@ -216,31 +216,38 @@ def test_renewed_licence_revives_an_expired_device_token(client):
     assert _manifest(client, new_token).status_code == 200
 
 
-# --- AC1 (revocation half / G4 reinstatement): restored licence revives a revoked token --
+# --- AC1 (revocation half): a restored licence revives a token the cascade revoked --
 def test_restored_licence_revives_a_revoked_device_token(client):
-    """The one-way revocation dead-end: suspending a licence revokes its tokens through the
-    hourly cascade, and before this slice restoring the licence could never restore a token."""
+    """The one-way revocation dead-end: a licence that leaves the activatable set has its tokens
+    revoked by the hourly cascade, and before this slice restoring the licence could never
+    restore a token.
+
+    This used to drive the dead end with a SUSPENDED licence. D3 / DEC-010 (86ak5mn0c) made
+    suspension soft: the cascade spares the tokens of a licence suspended from an activatable
+    status, so the dead end is reached through a status that still kills them. EXPIRED is the
+    reachable stand-in: it leaves the activatable set, and its way back (late renewal,
+    EXPIRED -> ACTIVATED, FR-509) is a legal lifecycle edge. (REVOKED would be a lie here: the
+    real lifecycle never lets it back.) The raw write skips the clock that would produce
+    EXPIRED, because what this test pins is the re-mint path.
+    """
     key, full_key = _seed_license_key(tag="restore")
-    first = _activate(client, license_key=full_key, fingerprint="mac-susp", idem="remint-rest-01")
+    first = _activate(client, license_key=full_key, fingerprint="mac-restore", idem="remint-rest-01")
     original_token = first.json()["activation_token"]
     assert _refresh(client, original_token).status_code == 200
 
-    # Suspend, then let the real hourly cascade revoke the live token.
-    # A real suspension records where it came from in the same statement (DEC-010); the
-    # database constraint refuses a SUSPENDED row without it. The licence is ACTIVATED here.
-    AppLicenseKey.objects.filter(pk=key.pk).update(
-        status=LicenseKeyStatus.SUSPENDED, prior_status=LicenseKeyStatus.ACTIVATED
-    )
+    # Take the licence out of the activatable set, then let the real hourly cascade revoke
+    # the live token. (`prior_status` stays blank: only a SUSPENDED row may carry one.)
+    AppLicenseKey.objects.filter(pk=key.pk).update(status=LicenseKeyStatus.EXPIRED)
     from selahcue_api.apps.devices.tasks import cascade_license_revocations
 
     assert cascade_license_revocations() == 1
     assert DeviceToken.objects.get().status == DeviceTokenStatus.REVOKED
     assert _refresh(client, original_token).status_code == 401
 
-    # Reinstate the licence.
+    # Late renewal: EXPIRED -> ACTIVATED.
     _renew(key, expires_at=key.expires_at)
 
-    again = _activate(client, license_key=full_key, fingerprint="mac-susp", idem="remint-rest-02")
+    again = _activate(client, license_key=full_key, fingerprint="mac-restore", idem="remint-rest-02")
     assert again.status_code == 200
     new_token = again.json()["activation_token"]
     assert new_token is not None, "a reinstated licence must be able to restore a device token"

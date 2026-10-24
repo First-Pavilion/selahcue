@@ -1897,6 +1897,21 @@ EXPECTED_MIN_CHECKS = 2121  # measured: 2121 checks, 0 FAIL
 # budget raised 75000 -> 90000 (see the flags below). Any PR that edits this constant must re-measure after
 # the other lands.
 EXPECTED_MIN_CHECKS = 2281  # measured: 2281 checks, 0 FAIL
+#
+# 2281 -> 2289 (86akmfn54, requested-but-empty caveat survives persistence): +8 net. The two TR
+# "86akc0tua parity" checks that asserted the OLD behaviour (a caveated-empty section is NEVER sent
+# to update_sermon_note_draft) are replaced, because that behaviour is exactly what lost the caveat
+# on reload: they now assert the opposite (the section IS sent, still empty; the save reports it in
+# requestedEmpty; a populated section is not reported; the line is still painted after the save) = 4
+# in place of 2. New: the caveated section is listed in the edit form so it can be renamed (1), the
+# renamed section is reported under its new name only (1) and still shows its line (1), the Summary
+# caveat is reported by its fixed label (1) with a blank summary sent as null (1), and a draft with no
+# caveat reports an empty list (1). Net 4 - 2 + 6 = +8; measured by a clean run, not hand-summed.
+#
+# 2289 -> 2290 (86akmfn54 round 1 review, Cody 6): the Scripture references label was reported by
+# the same line as Summary but no check covered it (removing it from transcripts.js left the gate
+# green). +1 check that the save reports it; measured by a clean run.
+EXPECTED_MIN_CHECKS = 2290  # measured: 2290 checks, 0 FAIL
 
 
 def find_chrome():
@@ -3970,6 +3985,28 @@ STUB = r"""
         : null;
       return { verdicts: verdicts, caveats: caveats, note: note };
     }
+    // 86akmfn54: mirrors `sermon_note_caveats::still_requested_empty` (selahcue-operator) -- a
+    // requested-but-empty heading the edit surface reports is kept ONLY while the content it names
+    // is still empty, so a filled-in section / summary clears its own caveat. The real rule is
+    // unit-tested in Rust; this stand-in exists so the console can be driven end to end.
+    function mockSectionEmpty(s) {
+      return (s.items || []).every(function (i) { return !String(i).trim(); }) &&
+        (s.points || []).every(function (p) {
+          return !String(p.text).trim() && (p.sub_points || []).every(function (sp) { return !String(sp).trim(); });
+        });
+    }
+    function mockKeptRequestedEmpty(a) {
+      var kept = [];
+      (a.requestedEmpty || []).forEach(function (h) {
+        if (kept.indexOf(h) !== -1) return;
+        var still;
+        if (h === "Summary") still = !(a.summary && String(a.summary).trim());
+        else if (h === "Scripture references") still = (a.scriptures || []).every(function (r) { return !String(r).trim(); });
+        else still = (a.sections || []).some(function (s) { return s.heading === h && mockSectionEmpty(s); });
+        if (still) kept.push(h);
+      });
+      return kept;
+    }
     if (cmd === "load_sermon_note_draft") {
       if (!SN.draft) return Promise.resolve({ok:false}); // no persistence connection / nothing saved
       var loadReVerified = mockReVerify(SN.draft.draft.scriptures);
@@ -4003,17 +4040,20 @@ STUB = r"""
       // existing Settings-panel test (all of which use `SN`) is completely unaffected.
       var trDetailForEdit = window.__TR && window.__TR.detail && window.__TR.detail[args.transcriptId];
       if ((!SN.draft || SN.draft.transcript_id !== args.transcriptId) && trDetailForEdit && trDetailForEdit.draft) {
+        var trKept = mockKeptRequestedEmpty(args);
         var trUpdated = {
           title: args.title,
           summary: args.summary,
           sections: (args.sections || []).map(function(s){
-            return { heading: s.heading, items: s.items || [], points: s.points || [] };
+            return { heading: s.heading, items: s.items || [], points: s.points || [],
+                     empty_requested: trKept.indexOf(s.heading) !== -1 && mockSectionEmpty(s) };
           }),
           scriptures: args.scriptures || []
         };
         var trReVerified = mockReVerify(trUpdated.scriptures);
         trUpdated.scripture_verdicts = trReVerified.verdicts;
-        trUpdated.caveats = trReVerified.caveats;
+        trUpdated.caveats = trKept.map(function (h) { return { kind: "section_empty", heading: h }; })
+          .concat(trReVerified.caveats);
         trDetailForEdit.draft = trUpdated;
         return Promise.resolve({
           ok:true, transcript_id: args.transcriptId,
@@ -8608,22 +8648,97 @@ DRIVER = r"""
       ok(el("tr-detail-notes").classList.contains("tr-notes-on"),
          "TR notes: the notes badge still reads generated after an edit — editing a draft is not the same as un-generating it");
 
-      // TR 86akc0tua parity (bfedaf2's fix, ported): this ticket's own edit surface reaches the
-      // SAME update_sermon_note_draft call as settings.js's, via the SAME transcript-id-generic
-      // command — so it needs the identical client-side caveated-empty-section filter settings.js
-      // already carries. The just-completed save above did not touch "Prayer points" (empty,
-      // empty_requested:true in the fixture): it must never have reached the payload, while the
-      // populated "Main points" section (edited via the title-only change above, itself untouched)
-      // still does (positive control) — proves the filter drops the RIGHT section, not every one.
-      ok(!trSaveCall.args.sections.some(function (s) { return s.heading === "Prayer points"; }),
-         "TR notes (86akc0tua parity, edit-save fix): a caveated-empty section the operator did " +
-         "not fill in is NEVER sent to update_sermon_note_draft from the Transcripts workspace " +
-         "either — the same bug bfedaf2 fixed for the Settings panel, ported to this ticket's own " +
-         "edit surface");
-      ok(trSaveCall.args.sections.some(function (s) { return s.heading === "Main points"; }),
-         "TR notes (positive control): an ordinary populated section is NOT dropped by the same " +
-         "filter — without this, the assertion above could pass on a mechanism that drops every " +
-         "section");
+      // 86akmfn54: a requested-but-empty section is persisted WITH the draft, so the edit-save must
+      // KEEP it and report its caveat. (86akc0tua's bfedaf2 dropped such a section from this payload
+      // so a save could not persist "a bare heading, no explanation"; dropping it now is exactly what
+      // would lose the caveat on the next reload.) The save above did not touch "Prayer points"
+      // (empty, empty_requested:true in the fixture).
+      var trPrayerSent = trSaveCall.args.sections.filter(function (s) { return s.heading === "Prayer points"; })[0];
+      ok(!!trPrayerSent && trPrayerSent.items.length === 0 && trPrayerSent.points.length === 0,
+         "TR notes (86akmfn54): a caveated-empty section the operator did not fill in IS sent to " +
+         "update_sermon_note_draft, still empty -- the edit-save no longer drops it");
+      ok(JSON.stringify(trSaveCall.args.requestedEmpty) === JSON.stringify(["Prayer points"]),
+         "TR notes (86akmfn54): the save reports the caveat it was shown (requestedEmpty = " +
+         "[\"Prayer points\"]), and only that one");
+      ok(trSaveCall.args.sections.some(function (s) { return s.heading === "Main points"; }) &&
+         !trSaveCall.args.requestedEmpty.some(function (h) { return h === "Main points"; }),
+         "TR notes (positive control): the populated section is sent and is NOT reported as " +
+         "requested-but-empty");
+      var trAfterSaveEmpty = Array.prototype.filter.call(
+        el("tr-gen-result").querySelectorAll(".pp-gen-empty"),
+        function (p) { return /nothing came back/.test(p.textContent); });
+      ok(trAfterSaveEmpty.length === 1 && getComputedStyle(trAfterSaveEmpty[0]).display !== "none",
+         "TR notes (86akmfn54): the requested-but-empty line is STILL painted after a save " +
+         "(computed), once, for the one caveated section");
+
+      // A caveated section's heading can be renamed in the edit form: the save must report the
+      // caveat under the NEW name (the old one names nothing any more).
+      document.getElementById("tr-gen-edit").click();
+      var trPrayerHeadInput = Array.prototype.filter.call(
+        el("tr-gen-result").querySelectorAll(".pp-edit-section-heading"),
+        function (i) { return i.value === "Prayer points"; })[0];
+      ok(!!trPrayerHeadInput, "TR notes (86akmfn54): the caveated section is listed in the edit form, so it can be renamed");
+      trPrayerHeadInput.value = "Prayers";
+      var trRenameBefore = window.__calls.filter(function (c) { return c.cmd === "update_sermon_note_draft"; }).length;
+      document.getElementById("tr-gen-save").click();
+      await waitFor(function () { return window.__calls.filter(function (c) { return c.cmd === "update_sermon_note_draft"; }).length > trRenameBefore; });
+      await sleep(30);
+      var trRenameCall = window.__calls.filter(function (c) { return c.cmd === "update_sermon_note_draft"; }).slice(-1)[0];
+      ok(JSON.stringify(trRenameCall.args.requestedEmpty) === JSON.stringify(["Prayers"]) &&
+         trRenameCall.args.sections.some(function (s) { return s.heading === "Prayers"; }) &&
+         !trRenameCall.args.sections.some(function (s) { return s.heading === "Prayer points"; }),
+         "TR notes (86akmfn54): after a rename the save reports the caveat under the new heading " +
+         "only, and sends the section under it");
+      ok(/Prayers/.test(el("tr-gen-result").textContent) &&
+         Array.prototype.some.call(el("tr-gen-result").querySelectorAll(".pp-gen-empty"),
+           function (p) { return /nothing came back/.test(p.textContent); }),
+         "TR notes (86akmfn54): the renamed section still shows its requested-but-empty line");
+
+      // The two requested fields that are not sections (summary, scripture references) are reported
+      // too, by their fixed labels. Re-open transcript 7 with a blank summary that carries the caveat.
+      window.__TR.detail[7].draft.summary = "";
+      window.__TR.detail[7].draft.caveats = [{kind: "section_empty", heading: "Summary"}, {kind: "section_empty", heading: "Scripture references"}].concat(window.__TR.detail[7].draft.caveats || []);
+      el("tr-detail-back").click();
+      await waitFor(function () { return el("tr-list").querySelectorAll(".tr-card").length >= 4; });
+      el('tr-list').querySelector('.tr-card[data-id="7"] .tr-card-open').click();
+      await waitFor(function () { return window.__trRenderedRowCount && window.__trRenderedRowCount() > 0; });
+      document.getElementById("tr-gen-edit").click();
+      var trSummaryBefore = window.__calls.filter(function (c) { return c.cmd === "update_sermon_note_draft"; }).length;
+      document.getElementById("tr-gen-save").click();
+      await waitFor(function () { return window.__calls.filter(function (c) { return c.cmd === "update_sermon_note_draft"; }).length > trSummaryBefore; });
+      await sleep(30);
+      var trSummaryCall = window.__calls.filter(function (c) { return c.cmd === "update_sermon_note_draft"; }).slice(-1)[0];
+      ok(trSummaryCall.args.requestedEmpty.indexOf("Summary") !== -1 &&
+         trSummaryCall.args.requestedEmpty.indexOf("Prayers") !== -1,
+         "TR notes (86akmfn54): the save reports the non-section Summary caveat by its fixed label, " +
+         "alongside the section one");
+      ok(trSummaryCall.args.requestedEmpty.indexOf("Scripture references") !== -1,
+         "TR notes (86akmfn54): the save reports the Scripture references caveat by its fixed label too");
+      ok(trSummaryCall.args.summary === null,
+         "TR notes (86akmfn54): a blank summary is sent as null (the backend keeps the Summary caveat for it)");
+
+      // A draft with NO caveat reports none (negative control for the above: the field is not simply
+      // always filled). Transcript 1 holds the draft the earlier from-history generate produced; none
+      // of its sections is empty_requested.
+      el("tr-detail-back").click();
+      await waitFor(function () { return el("tr-list").querySelectorAll(".tr-card").length >= 4; });
+      el('tr-list').querySelector('.tr-card[data-id="1"] .tr-card-open').click();
+      await waitFor(function () { return window.__trRenderedRowCount && window.__trRenderedRowCount() > 0; });
+      document.getElementById("tr-gen-edit").click();
+      var trNoCaveatBefore = window.__calls.filter(function (c) { return c.cmd === "update_sermon_note_draft"; }).length;
+      document.getElementById("tr-gen-save").click();
+      await waitFor(function () { return window.__calls.filter(function (c) { return c.cmd === "update_sermon_note_draft"; }).length > trNoCaveatBefore; });
+      await sleep(30);
+      var trNoCaveatCall = window.__calls.filter(function (c) { return c.cmd === "update_sermon_note_draft"; }).slice(-1)[0];
+      ok(trNoCaveatCall.args.transcriptId === 1 && Array.isArray(trNoCaveatCall.args.requestedEmpty) &&
+         trNoCaveatCall.args.requestedEmpty.length === 0,
+         "TR notes (86akmfn54): a draft with no requested-but-empty caveat reports an empty list, " +
+         "not a stale one from the previously open transcript");
+      // Leave transcript 7 open again, as the correction-layer checks below expect.
+      el("tr-detail-back").click();
+      await waitFor(function () { return el("tr-list").querySelectorAll(".tr-card").length >= 4; });
+      el('tr-list').querySelector('.tr-card[data-id="7"] .tr-card-open').click();
+      await waitFor(function () { return window.__trRenderedRowCount && window.__trRenderedRowCount() > 0; });
 
       // Correction layer (86akgqdxr; "reachable from one screen", read-only in this ticket — see
       // the linked follow-up for actual editing): transcript 7's segment 701 carries an existing

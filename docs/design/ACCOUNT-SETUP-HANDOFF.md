@@ -128,7 +128,7 @@ Recurrence note: the offline (A7) and expired (A6) conditions can also surface *
 | Masked-only token/key; never render a secret (all frames) | `DeviceToken` (masked triple only); show-once contract |
 | Invalid key → inline NOT_FOUND, no exists-vs-mismatch leak (A4) | `_resolve_license_key` (NOT_FOUND for both) |
 | Instance limit reached → POLICY_DENIED + manage-devices path (A5) | `activate_device` instance-limit `POLICY_DENIED` |
-| Expired / not-yet-active → POLICY_DENIED + renew/contact (A6) | `_assert_key_activatable` validity window `POLICY_DENIED` |
+| Expired / not-yet-active → POLICY_DENIED + renew/contact (A6) | `require_commercial_service` validity window `POLICY_DENIED` |
 | Offline "keeps working"; every error/offline never-blank copy (A5/A6/A7/A8 footer) | **NFR-015**, **CON-2**, **NFR-024** |
 | Cloud-connected status + Providers & Privacy link (A8) | FR-132 (cloud opt-in); Providers & Privacy `338:124` |
 | Admin-only activate/deactivate/manage; neutral managed line (A10) | **FR-137** (Administrator-gated); SETTINGS-2.0 §3 neutral copy |

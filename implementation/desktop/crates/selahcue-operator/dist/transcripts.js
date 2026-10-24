@@ -1526,35 +1526,17 @@
     titleInput.focus();
   }
 
-  // A section round-tripped through the form is still empty — no non-blank item, no
-  // point with non-blank text or a non-blank sub-point. Judged on content only, never
-  // the heading, matching openai.rs's own emptiness test on the server side and
-  // settings.js's own `isStillEmpty` (86akc0tua, bfedaf2) this mirrors.
-  function isStillEmpty(s) {
-    var hasItem = (s.items || []).some(function (it) { return it && it.trim(); });
-    if (hasItem) return false;
-    return !(s.points || []).some(function (pt) {
-      if (pt.text && pt.text.trim()) return true;
-      return (pt.sub_points || []).some(function (sp) { return sp && sp.trim(); });
-    });
-  }
-
   // Reads the edit form's current values back into the sections/points/items shape the backend
   // expects — keyed off the SAME positions `renderDraftEditForm` drew the inputs at (scoped to
   // `form`, never `document`, so this is safe even though `.pp-edit-*` classes also exist in
   // settings.js's own edit form elsewhere in the document).
   //
-  // 86akc0tua remediation (bfedaf2, Cody's second finding on PR #46 — the first, `generate`'s own
-  // persistence call site, is fixed server-side by `sections_to_persist`; this edit-save route has
-  // no caveat data at THIS call site to filter on server-side: `NoteSectionInput` carries no
-  // `empty_requested` field). This ticket's own edit surface reaches the SAME
-  // `update_sermon_note_draft` call as settings.js's, so it needs the identical client-side
-  // filter: a section that was `empty_requested` on the loaded draft and is STILL empty after
-  // reading the form (the operator did not fill it in) is dropped here before the payload is
-  // built — otherwise saving any OTHER edit in this draft would silently persist that section's
-  // confusing "bare heading, no explanation" state. A section the operator DID fill in is kept:
-  // not a blanket "drop empty sections" filter, only "don't re-persist the exact caveated-empty
-  // state unchanged."
+  // Every section the form drew is returned, including one that came back empty from a request
+  // (`empty_requested`). 86akc0tua dropped those here so that saving some OTHER edit would not
+  // persist "a bare heading, no explanation"; 86akmfn54 persists the caveat WITH the draft, so
+  // dropping the section now would be what loses it. `empty_requested` rides along on each
+  // returned section so `saveDraftEdit` can report the headings by the name the form now gives
+  // them (the operator may have renamed one).
   function readSectionsFromForm(form, sections) {
     return (sections || [])
       .map(function (s, si) {
@@ -1571,16 +1553,30 @@
             });
             return { text: textEl ? textEl.value : (pt && pt.text) || "", sub_points: subPoints };
           });
-          return { heading: heading, items: [], points: points, __empty_requested: !!s.empty_requested };
+          return { heading: heading, items: [], points: points, empty_requested: !!s.empty_requested };
         }
         var items = (s.items || []).map(function (it, ii) {
           var itEl = form.querySelector('.pp-edit-item-text[data-si="' + si + '"][data-ii="' + ii + '"]');
           return itEl ? itEl.value : it;
         });
-        return { heading: heading, items: items, points: [], __empty_requested: !!s.empty_requested };
-      })
-      .filter(function (s) { return !(s.__empty_requested && isStillEmpty(s)); })
-      .map(function (s) { return { heading: s.heading, items: s.items, points: s.points }; });
+        return { heading: heading, items: items, points: [], empty_requested: !!s.empty_requested };
+      });
+  }
+
+  // The headings of the "nothing came back" caveats the operator was shown, for the backend to
+  // store with the saved draft (86akmfn54): each caveated section by its current form heading,
+  // plus the two requested fields that are not sections (summary, scripture references). The
+  // backend keeps one only while its content is still empty, so a filled-in summary or section
+  // clears itself there; this just reports what was on screen.
+  function requestedEmptyHeadings(d, formSections) {
+    var out = [];
+    (d.caveats || []).forEach(function (c) {
+      if (c.kind === "section_empty" && (c.heading === "Summary" || c.heading === "Scripture references")) {
+        out.push(c.heading);
+      }
+    });
+    formSections.forEach(function (s) { if (s.empty_requested) out.push(s.heading); });
+    return out;
   }
 
   function saveDraftEdit(form) {
@@ -1590,7 +1586,11 @@
     var summaryEl = document.getElementById("tr-edit-summary");
     var title = titleEl ? titleEl.value : (d.title || "");
     var summaryVal = summaryEl ? summaryEl.value : "";
-    var sections = readSectionsFromForm(form, d.sections);
+    var formSections = readSectionsFromForm(form, d.sections);
+    var requestedEmpty = requestedEmptyHeadings(d, formSections);
+    var sections = formSections.map(function (s) {
+      return { heading: s.heading, items: s.items, points: s.points };
+    });
     var scriptures = d.scriptures || []; // scripture list editing is not in this ticket's scope
 
     var saveBtn = document.getElementById("tr-gen-save");
@@ -1601,6 +1601,7 @@
       summary: summaryVal.trim() ? summaryVal : null,
       sections: sections,
       scriptures: scriptures,
+      requestedEmpty: requestedEmpty,
     }).then(function (res) {
       if (!res || res.ok !== true) {
         var err = res || {};

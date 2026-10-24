@@ -701,7 +701,7 @@ pub fn parse_draft(body: &str, inc: &IncludeInNotes) -> Result<(NoteDraft, Clamp
     // empty").
     if inc.short_summary && summary.is_none() && is_json_string(summary_field) {
         caveats.push(DraftCaveat::SectionRequestedEmpty {
-            heading: "Summary".to_string(),
+            heading: selahcue_core::providers::SUMMARY_CAVEAT_HEADING.to_string(),
         });
     }
 
@@ -730,7 +730,7 @@ pub fn parse_draft(body: &str, inc: &IncludeInNotes) -> Result<(NoteDraft, Clamp
         // rather than a symptom of a cut-off response.
         if scriptures.is_empty() && is_json_string(main_field) && is_json_array(supporting_field) {
             caveats.push(DraftCaveat::SectionRequestedEmpty {
-                heading: "Scripture references".to_string(),
+                heading: selahcue_core::providers::SCRIPTURE_REFERENCES_CAVEAT_HEADING.to_string(),
             });
         }
     }
