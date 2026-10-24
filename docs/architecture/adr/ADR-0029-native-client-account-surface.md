@@ -69,7 +69,7 @@ None of these is a CSRF problem and none is new in kind; they are stated so that
 
 ## Consequences
 
-- **The desktop must move to the new routes.** Until it does, the primary activation path stays blocked (fail-closed; never-blank is unaffected). The change is in `selahcue-licensing` (tracked as a follow-up). 86ak5mn11's "both activation paths work" claim must be re-verified after that lands, against a running server.
+- **The desktop moves to the new routes.** Done in `selahcue-licensing` by ClickUp 17tnw2b1we2 (PR #215); until that landed the primary activation path was blocked (fail-closed; never-blank was unaffected). 86ak5mn11's "both activation paths work" claim was re-verified against a running server on that ticket: the key path worked, the sign-in path did not until the move.
 - **The activation response gains the REST shape** on the primary path: `reminted`, token metadata and the licence block, which the desktop could not see before.
 - **The set of `csrf_exempt` routes is pinned** by `test_the_set_of_csrf_exempt_routes_is_pinned_and_excludes_every_graphql_route`: exempting anything else — in particular a GraphQL route — is a deliberate edit to that set, reviewed as a security decision.
 - **The 30-day account session** (DEC-007) is what the native client holds after sign-in. That is the decided model; a narrower activation-only grant and a native revoke route would shrink it and are recorded as a follow-up (17tnw2b1wf2), not a blocker. There is no native `refreshSession` or `logout` either: those exist only on the CSRF-enforced browser surface.
