@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from django.core.exceptions import ImproperlyConfigured
 
@@ -158,12 +159,63 @@ if SELAHCUE_TRUST_FORWARDED_PROTO:
 else:
     SECURE_PROXY_SSL_HEADER = None
 
+
+def _exact_origin(name: str, entry: str, debug: bool) -> str:
+    """One `scheme://host[:port]` origin from the environment, or a refusal to boot.
+
+    A trusted origin is a cross-origin trust grant on the CSRF-enforced surfaces, and the only
+    value anyone should ever need here is the SPA's own public origin. So the entry must be that
+    shape exactly: `https` (`http` only under DEBUG, for a local proxy), a host, an optional
+    port, and nothing else. One trailing `/` is forgiven (a browser's Origin never has a path, so
+    `https://x/` could never match and would fail closed with no hint). Wildcards are refused
+    outright: `https://*.example.com` would admit every subdomain AND the apex, and `*` alone is
+    not even a valid origin. The host is lowercased, because browsers send it lowercase and
+    Django compares the strings exactly."""
+    candidate = entry[:-1] if entry.endswith("/") else entry
+
+    def refuse(reason: str):
+        raise ImproperlyConfigured(
+            f"{name} entry {entry!r} is not accepted: {reason}. Each entry must be an exact "
+            "origin, scheme://host[:port] with no path, query or wildcard "
+            "(for example 'https://selahcue.example'); see docs/ops/DEPLOYMENT.md section 6c."
+        )
+
+    if "*" in candidate:
+        refuse("wildcards are not allowed, list each origin")
+    try:
+        parts = urlsplit(candidate)
+        parts.port  # noqa: B018  (raises ValueError on a malformed or out-of-range port)
+    except ValueError:
+        refuse("it is not a valid URL")
+    allowed = ("https", "http") if debug else ("https",)
+    if parts.scheme not in allowed:
+        refuse(f"the scheme must be {' or '.join(allowed)}")
+    if not parts.hostname:
+        refuse("it has no host")
+    if "@" in parts.netloc:
+        refuse("it must not carry credentials")
+    if parts.path or parts.query or parts.fragment:
+        refuse("it must not have a path, query or fragment")
+    return f"{parts.scheme}://{parts.netloc.lower()}"
+
+
+def _csrf_trusted_origins(name: str, debug: bool) -> list[str]:
+    """Validated, de-duplicated origins from the space- or comma-separated variable `name`,
+    in the order given. Empty entries (a stray comma, a trailing space) are dropped."""
+    origins: list[str] = []
+    for entry in env_list(name):
+        origin = _exact_origin(name, entry, debug)
+        if origin not in origins:
+            origins.append(origin)
+    return origins
+
+
 # Public origins (scheme included, e.g. `https://selahcue.example`) whose browsers may POST to
 # the CSRF-enforced surfaces. Needed only when the Origin a browser sends differs from
-# `<scheme>://<Host header>`, i.e. when the proxy does not forward the public Host. Empty by
-# default: an entry here is a cross-origin trust grant, so list only the SPA's own origin.
-# Django's system check (4_0.E001) fails `manage.py check` on an entry without a scheme.
-CSRF_TRUSTED_ORIGINS = env_list("DJANGO_CSRF_TRUSTED_ORIGINS")
+# `<scheme>://<Host header>`, i.e. when the proxy does not forward the public Host (nginx's
+# `$host` also drops a non-default port). Empty by default: an entry here is a cross-origin trust
+# grant, so list only the SPA's own origin. Validated at boot by `_exact_origin` above.
+CSRF_TRUSTED_ORIGINS = _csrf_trusted_origins("DJANGO_CSRF_TRUSTED_ORIGINS", DEBUG)
 
 SECURE_CONTENT_TYPE_NOSNIFF = True
 SECURE_REFERRER_POLICY = "same-origin"
