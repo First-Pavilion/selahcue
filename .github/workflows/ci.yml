@@ -241,6 +241,9 @@ jobs:
             # push triggered the workflow and then ran nothing.
             api:
               - 'implementation/api/**'
+              # tests/test_nginx_forwarded_proto.py reads this file: it is the nginx half of
+              # the Django TLS-proxy chain (17tnw2b1wtr), so a change must re-run the api job.
+              - 'implementation/marketing/nginx.conf'
               - '.github/workflows/ci.yml'
             # The marketing site + customer web portal (Vue SPA). This filter is the
             # SAME omission the api one above documents, recurring: implementation/marketing
