@@ -71,7 +71,7 @@ BACKEND = textwrap.dedent(
         name = "selahcue_api-0.0.0"
         files = {
             "selahcue_api_editable.pth": HERE + "\\n",
-            name + ".dist-info/METADATA": "Metadata-Version: 2.1\\nName: selahcue-api\\nVersion: 0.0.0\\nProvides-Extra: dev\\n",
+            name + ".dist-info/METADATA": "Metadata-Version: 2.1\\nName: selahcue-api\\nVersion: 0.0.0\\nProvides-Extra: dev\\nRequires-Dist: extradep; extra == 'dev'\\n",
             name + ".dist-info/WHEEL": "Wheel-Version: 1.0\\nGenerator: fake\\nRoot-Is-Purelib: true\\nTag: py3-none-any\\n",
         }
         record = "".join("%s,,\\n" % p for p in files) + name + ".dist-info/RECORD,,\\n"
@@ -83,6 +83,26 @@ BACKEND = textwrap.dedent(
         return wheel
     '''
 )
+
+# A local wheel that the fake API's `dev` extra requires. pip finds it through PIP_FIND_LINKS with PIP_NO_INDEX,
+# so nothing is downloaded, and the fakes fail if it is missing: that is how a dropped `[dev]` shows up.
+EXTRA_DEP = "extradep"
+
+
+def build_wheelhouse(directory):
+    import zipfile
+    directory.mkdir(parents=True, exist_ok=True)
+    name = "%s-1.0" % EXTRA_DEP
+    files = {
+        "%s.py" % EXTRA_DEP: "",
+        name + ".dist-info/METADATA": "Metadata-Version: 2.1\nName: %s\nVersion: 1.0\n" % EXTRA_DEP,
+        name + ".dist-info/WHEEL": "Wheel-Version: 1.0\nGenerator: fake\nRoot-Is-Purelib: true\nTag: py3-none-any\n",
+    }
+    with zipfile.ZipFile(str(directory / (name + "-py3-none-any.whl")), "w") as z:
+        for path, body in files.items():
+            z.writestr(path, body)
+        z.writestr(name + ".dist-info/RECORD", "".join("%s,,\n" % p for p in files) + name + ".dist-info/RECORD,,\n")
+
 
 PYPROJECT = textwrap.dedent(
     """\
@@ -96,7 +116,7 @@ PYPROJECT = textwrap.dedent(
     version = "0.0.0"
 
     [project.optional-dependencies]
-    dev = []
+    dev = ["extradep"]
     """
 )
 
@@ -112,6 +132,11 @@ GUARD = textwrap.dedent(
     leaked = [k for k in %r if k in os.environ]
     if leaked:
         print("FAILED env leak: " + ",".join(leaked))
+        sys.exit(1)
+    try:
+        import extradep  # noqa: F401
+    except ImportError:
+        print("FAILED the dev extra was not installed (extradep missing)")
         sys.exit(1)
     if os.environ.get("SQL_DATABASE") != ":memory:":
         print("FAILED SQL_DATABASE is %%r, not ':memory:'" %% os.environ.get("SQL_DATABASE"))
@@ -188,8 +213,9 @@ def fake_interpreter(real, path, version_tuple):
 class Repo:
     """A scratch repo root: the Makefile and helper under test plus a fake implementation/api."""
 
-    def __init__(self, parent, makefile_text, helper_text, python, name):
+    def __init__(self, parent, makefile_text, helper_text, python, name, wheelhouse):
         self.root = Path(parent) / name
+        self.wheelhouse = wheelhouse
         self.api = self.root / "implementation" / "api"
         self.python = python
         (self.api / "selahcue_api").mkdir(parents=True)
@@ -230,6 +256,8 @@ class Repo:
         e = dict(os.environ)
         for k in ["API_PYTHON", "MAKEFLAGS", "MAKELEVEL", "MFLAGS", "SQL_DATABASE"] + LEAKY:
             e.pop(k, None)
+        e["PIP_NO_INDEX"] = "1"  # pip install runs with the developer's environment: here, offline
+        e["PIP_FIND_LINKS"] = str(self.wheelhouse)
         e.update(env or {})
         cmd = ["make"]
         cmd += ["-f", str(makefile)] if makefile else ["-C", str(self.root)]
@@ -247,7 +275,7 @@ class Repo:
 
 
 def new_repo(ctx, name):
-    return Repo(ctx["tmp"], ctx["makefile_text"], ctx["helper_text"], ctx["python"], name)
+    return Repo(ctx["tmp"], ctx["makefile_text"], ctx["helper_text"], ctx["python"], name, ctx["wheelhouse"])
 
 
 def installed_repo(ctx, name):
@@ -335,6 +363,7 @@ def default_interpreter_is_python3_14(ctx):
     link = shim / "python3.14"
     if not link.exists():
         link.symlink_to(ctx["python"])
+        fake_interpreter(ctx["python"], shim / "python3", (3, 9, 0))  # a default of plain `python3` would pick this
     rc, out = r.install(python=False, env={"PATH": "%s%s%s" % (shim, os.pathsep, os.environ["PATH"])})
     check(rc == 0, "api-install did not find python3.14 by default:\n" + out)
 
@@ -550,6 +579,51 @@ def empty_interpreter_fails_loudly(ctx):
     check(not r.venv.exists(), "a venv was left behind")
 
 
+def blank_interpreter_never_refreshes_a_stale_venv(ctx):
+    """Empty and whitespace-only API_PYTHON fail loudly and leave a stale venv stale (no false green)."""
+    r = installed_repo(ctx, "blank")
+    original = r.pyproject.read_text()
+    r.pyproject.write_text(original + "\n# pin changed\n")
+    stamp_before = r.stamp.read_text(), r.stamp.stat().st_mtime_ns
+    for blank in ("", "   "):
+        rc, out = r.install(python=blank)
+        check(rc != 0 and "API_PYTHON is empty" in out, "API_PYTHON=%r was not rejected as empty:\n%s" % (blank, out))
+        check((r.stamp.read_text(), r.stamp.stat().st_mtime_ns) == stamp_before, "a blank API_PYTHON refreshed the stamp")
+        rc, out = r.check_gate(python=blank)
+        check(rc != 0 and "make api-install" in out, "the stale venv passed with API_PYTHON=%r:\n%s" % (blank, out))
+        check(r.calls() == [], "commands ran against a stale venv: %r" % r.calls())
+
+
+def api_recipes_do_not_start_with_a_user_variable(ctx):
+    """No recipe line of the api targets starts with an expansion the user sets: an empty value would become `-c ...`."""
+    in_api, bad = False, []
+    for line in ctx["makefile_text"].splitlines():
+        if re.match(r"^api-(install|check):", line):
+            in_api = True
+            continue
+        if in_api and not line.startswith("\t"):
+            in_api = False
+        if in_api and re.match(r"^\t[@+-]*\$\((API_PYTHON)\)", line):
+            bad.append(line)
+    check(not bad, "recipe lines start with a user-settable variable (empty would run `-c`, and `-` ignores errors): %r" % bad)
+
+
+def broken_venv_is_refused_with_the_fix(ctx):
+    """A venv whose interpreter is gone or dangling: refused naming `make api-install`, never a raw sh error."""
+    for name, make_dangling in (("gone", False), ("dangling", True)):
+        r = installed_repo(ctx, "broken-" + name)
+        py = r.venv / "bin" / "python"
+        py.unlink()
+        if make_dangling:
+            os.symlink(str(Path(ctx["tmp"]) / "nowhere" / "python"), str(py))
+        rc, out = r.check_gate()
+        check(rc != 0, "a venv with %s interpreter was accepted:\n%s" % (name, out))
+        check("make api-install" in out, "the refusal for a %s interpreter does not name the fix:\n%s" % (name, out))
+        check("Error 127" not in out and "No such file" not in out and "Traceback" not in out,
+              "a raw error instead of a refusal for a %s interpreter:\n%s" % (name, out))
+        check(r.calls() == [], "commands ran: %r" % r.calls())
+
+
 def old_interpreter_fails_loudly(ctx):
     """Python below 3.12: non-zero, fix named, no venv."""
     r = new_repo(ctx, "oldpython")
@@ -725,6 +799,9 @@ CASES = [
     api_install_rebuilds_cleanly,
     api_check_output_states_the_skips,
     default_interpreter_is_python3_14,
+    blank_interpreter_never_refreshes_a_stale_venv,
+    api_recipes_do_not_start_with_a_user_variable,
+    broken_venv_is_refused_with_the_fix,
     failing_test_goes_red,
     missing_migration_goes_red,
     system_check_failure_goes_red,
@@ -762,7 +839,9 @@ def run_cases(makefile_path, helper_path, only=None, quiet=False):
     results = {}
     with tempfile.TemporaryDirectory(prefix="check_api_gate_") as tmp:
         ctx = {"tmp": tmp, "python": python, "makefile_path": str(makefile_path),
-               "makefile_text": Path(makefile_path).read_text(), "helper_text": Path(helper_path).read_text()}
+               "makefile_text": Path(makefile_path).read_text(), "helper_text": Path(helper_path).read_text(),
+               "wheelhouse": Path(tmp) / "wheelhouse"}
+        build_wheelhouse(ctx["wheelhouse"])
         for fn in CASES:
             if only and fn.__name__ not in only:
                 continue
@@ -851,6 +930,13 @@ MUTATIONS = [
     ("api-check rewrites the stamp", H, [('    print("api-check: venv %s, Python %s" % (venv, actual[0]))',
                                          '    print("api-check: venv %s, Python %s" % (venv, actual[0]))\n    os.utime(str(venv / STAMP), None)')],
      "second_check_reuses_the_venv"),
+    ("whitespace-only API_PYTHON accepted as set", H, [("    if not raw.strip():", "    if not raw:")], "blank_interpreter_never_refreshes_a_stale_venv"),
+    ("recipe starts with the user's API_PYTHON", M, [("\t$(API_HELPER) install", "\t$(API_PYTHON) -c pass; $(API_HELPER) install")],
+     "api_recipes_do_not_start_with_a_user_variable"),
+    ("interpreter-gone check removed", H, [("    if actual is None:", "    if False:")], "broken_venv_is_refused_with_the_fix"),
+    ("[dev] extra dropped from the pip install", H, [('"-e", ".[dev]"', '"-e", "."')], "install_then_check_passes"),
+    ("--self-test line removed from ci", M, [("\tpython3 scripts/check_api_gate.py --self-test\n", "")], "ci_target_includes_api_check"),
+    ("default interpreter is plain python3", M, [("API_PYTHON ?= python3.14", "API_PYTHON ?= python3")], "default_interpreter_is_python3_14"),
     ("empty API_PYTHON check removed", H, [("    if not raw.strip():", "    if False:")], "empty_interpreter_fails_loudly"),
 ]
 
