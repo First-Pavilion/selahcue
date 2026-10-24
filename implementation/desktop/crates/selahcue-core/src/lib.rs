@@ -9,6 +9,7 @@
 //! Modules:
 //! - [`scripture`] — Bible reference parsing (FR-027).
 //! - [`plan`] — the service-plan domain model (FR-001/002).
+//! - [`deck_ref`] — how a presentation link survives a machine boundary (86ak196cr).
 //! - [`media`] — the bounded media-asset library (FR-003; Design 2.0 node 329:124).
 //! - [`timer`] — monotonic-clock timers with a TIME UP state (FR-054/065, NFR-022).
 //! - [`transcript`] — bounded, timestamped transcript segments + the STT provider seam
@@ -27,6 +28,7 @@
 #![cfg_attr(test, allow(clippy::unwrap_used))]
 
 pub mod audio_capacity;
+pub mod deck_ref;
 pub mod detection;
 pub mod detector;
 pub mod media;

@@ -5,6 +5,8 @@
 //! planned-time roll-up — with stable per-item ids. Persistence and UI live in
 //! other crates; this layer has no I/O.
 
+use crate::deck_ref::UNRESOLVED_DECK_ID;
+
 /// The kinds of item a service plan can contain (FR-002).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ItemKind {
@@ -356,7 +358,7 @@ pub fn sanitize_text(s: &str) -> String {
 /// Truncation is by CHARACTER, never by byte, so a multi-byte name can never be cut mid-scalar
 /// (which would not round-trip). Applied on the way in and again on decode, so neither a hostile
 /// wire value nor a hand-edited database row can park an unbounded string on a plan item.
-fn sanitize_label(s: &str) -> String {
+pub(crate) fn sanitize_label(s: &str) -> String {
     sanitize_field(s).chars().take(MAX_LINK_LABEL_LEN).collect()
 }
 
@@ -815,7 +817,13 @@ impl ServicePlan {
                             deck_id: prev_id,
                             label: prev_label,
                             ..
-                        }) if *prev_id == deck_id => prev_label.clone(),
+                        // The "unresolved" number is shared by EVERY link that bound to no deck, so
+                        // it is not evidence that this is the same deck as before: carrying a name
+                        // across two of them would show one missing presentation under another's
+                        // name. Only a real deck number identifies a deck across a relink.
+                        }) if *prev_id == deck_id && deck_id != UNRESOLVED_DECK_ID => {
+                            prev_label.clone()
+                        }
                         _ => None,
                     }),
                 };
