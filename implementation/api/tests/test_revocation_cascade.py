@@ -19,7 +19,7 @@ from django.utils import timezone
 from selahcue_api.apps.audit.models import AuditEvent
 from selahcue_api.apps.devices.models import Device, DeviceToken, DeviceTokenStatus
 from selahcue_api.apps.devices.tasks import cascade_license_revocations
-from selahcue_api.apps.license_keys.models import LicenseKeyStatus
+from selahcue_api.apps.license_keys.models import AppLicenseKey, LicenseKeyStatus
 
 pytestmark = pytest.mark.django_db
 
@@ -163,6 +163,45 @@ def test_cascade_records_no_token_material(activated):
     event = AuditEvent.objects.get(action="device_token.revoked_by_cascade")
     assert token not in json.dumps({"reason": event.reason, "after": event.after})
     assert event.target_type == "device_token"
+
+
+# --- Which licence statuses the cascade kills (D3 / DEC-010, 86ak5mn0c) ----------------
+# Pinned in the cascade's own module so the scoping is visible where the job lives, not only
+# in the suspend/reinstate suite. SUSPENDED is a reversible hold that spares a running
+# device, but ONLY when the licence was suspended from a status that is itself activatable:
+# suspending an EXPIRED or CONVERTED licence must not rescue tokens the cascade would have
+# killed.
+@pytest.mark.parametrize(
+    ("status", "prior", "token_dies"),
+    [
+        (LicenseKeyStatus.ACTIVATED, "", False),
+        (LicenseKeyStatus.EXPIRING, "", False),
+        (LicenseKeyStatus.SUSPENDED, "ISSUED", False),
+        (LicenseKeyStatus.SUSPENDED, "ACTIVATED", False),
+        (LicenseKeyStatus.SUSPENDED, "EXPIRING", False),
+        (LicenseKeyStatus.SUSPENDED, "EXPIRED", True),
+        (LicenseKeyStatus.SUSPENDED, "CONVERTED", True),
+        (LicenseKeyStatus.EXPIRED, "", True),
+        (LicenseKeyStatus.REVOKED, "", True),
+        (LicenseKeyStatus.CONVERTED, "", True),
+        (LicenseKeyStatus.ARCHIVED, "", True),
+    ],
+    ids=lambda v: v.value if hasattr(v, "value") else (str(v) or "-"),
+)
+def test_cascade_kills_tokens_for_every_non_activatable_status_except_a_suspension_from_an_activatable_one(
+    activated, status, prior, token_dies
+):
+    device, _token, key = activated
+    # A raw write on purpose: this pins the CASCADE's reading of a licence row, whatever the
+    # lifecycle would have allowed to reach it. `prior_status` is set only for SUSPENDED, as
+    # the schema's check constraint requires.
+    AppLicenseKey.objects.filter(pk=key.pk).update(status=status, prior_status=prior)
+
+    killed = cascade_license_revocations()
+
+    assert killed == (1 if token_dies else 0)
+    expected = DeviceTokenStatus.REVOKED if token_dies else DeviceTokenStatus.ACTIVE
+    assert DeviceToken.objects.get(device=device).status == expected
 
 
 def test_cascade_is_bounded_by_batch_size(client):

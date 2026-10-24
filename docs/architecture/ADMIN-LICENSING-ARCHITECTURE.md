@@ -256,6 +256,8 @@ Endpoint: `POST /graphql/admin`
 | ADMIN-GQL-012 | `Mutation.adminLinkSupportCase` | Staff `ManageSupport` | Creates/links external support case refs. |
 | ADMIN-GQL-013 | `Query.adminAuditEvents` | Staff `ViewAudit` | Tamper-resistant search; redacted detail by role. |
 | ADMIN-GQL-014 | `Mutation.adminCreateLicenceUsageExport` | Staff `ExportLicenceReports` | Starts async report job; export itself audited. |
+| ADMIN-GQL-015 | `Mutation.adminSuspendLicenseKey` | Staff `SuspendLicenseKey` | Soft, reversible hold (D3 / DEC-010): requires reason and a retry key; records the prior status; refuses new activations and manifest issuance while running devices keep working. Returns the licence without its customer; `changed=false` means already suspended or `replayed=true` for a retry that already took effect. Per-staff lifecycle throttle (FR-539). |
+| ADMIN-GQL-016 | `Mutation.adminReinstateLicenseKey` | Staff `ReinstateLicenseKey` | Returns a suspended licence to exactly the status recorded at suspension time (never a constant); same reason, retry-key and throttle rules; refuses a licence that is not suspended. |
 
 ### Customer Account GraphQL
 

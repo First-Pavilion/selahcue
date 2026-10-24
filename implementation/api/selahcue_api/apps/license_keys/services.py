@@ -16,6 +16,13 @@ from django.utils import timezone
 from selahcue_api.apps.accounts.models import CustomerOrg, CustomerStatus
 from selahcue_api.apps.audit.services import record_audit_event
 from selahcue_api.apps.license_keys.models import AppLicenseKey, LicenseKeyStatus, LicenseKeyType
+from selahcue_api.apps.license_keys.state_machine import (
+    PRIOR_STATUS,
+    LicenseTransitionResult,
+    PriorStatusTarget,
+    apply_license_status_transition,
+)
+from selahcue_api.apps.throttling.guards import enforce_budget
 from selahcue_api.graphql.context import (
     ActorContext,
     StaffPermission,
@@ -326,3 +333,186 @@ def generate_license_key(
             },
         )
         return GenerateLicenseKeyResult(license_key=license_key, full_key=full_key, created=True)
+
+
+# --- Suspend / reinstate (86ak5mn0c: FR-504, FR-510, FLOW-506; D3 / DEC-010) -----------------
+#
+# Both mutations are THIN on purpose. The transition table, the row lock, the prior-status
+# bookkeeping, the request-level retry recognition and the audit row all live in
+# `state_machine.apply_license_status_transition`; what is added here is the half the writer
+# deliberately does not do (PRD §19: "§15 actor gating + FR-508 audit"): who may ask, how
+# often, and which licence.
+#
+# Retry semantics, for the console author. The idempotency key is per USER INTENT: send a new
+# key for each deliberate action and re-send the same key only to retry that action. A retry of
+# a request that took effect applies nothing and reports the licence's CURRENT state with
+# `changed=False` (the original audit row is attached, and the GraphQL payload says
+# `replayed=true`), even if another staff action has moved the licence on since.
+# `changed=False` therefore means either "already in that state" or "this request already took
+# effect". Known limit: a request that was itself a
+# no-op (already suspended) wrote no audit row, so a later retry of it is not recognised and
+# applies if the licence has since moved. Send ONE mutation per HTTP request: the throttle
+# applies per call, and a batch of aliased mutations fails as a whole when it runs out of budget.
+
+# Shared by every licence-lifecycle mutation; see the setting's own comment.
+LIFECYCLE_BUDGET = (30, 60)
+LIFECYCLE_BUDGET_SCOPE = "admin_licence_lifecycle"
+
+# `AppLicenseKey.id` is a BigAutoField: 19 digits can already overflow it, and an id that long
+# cannot name a row anyway, so it takes the same refusal as any other id that names nothing.
+# Defence in depth only: Django 6.1 answers a lookup past the column's range with no row, so
+# removing this cap would not change behaviour today (it is unguarded by a test on purpose).
+_MAX_LICENSE_KEY_ID_DIGITS = 18
+
+
+@dataclass(frozen=True)
+class SuspendLicenseKeyData:
+    idempotency_key: str
+    license_key_id: str
+    reason: str
+
+
+@dataclass(frozen=True)
+class ReinstateLicenseKeyData:
+    idempotency_key: str
+    license_key_id: str
+    reason: str
+
+
+def _require_autocommit() -> None:
+    """Refuse to run inside a caller's transaction.
+
+    The writer records a refusal's DENIED audit row AFTER its own `atomic()` unwinds, so the
+    row commits on its own — unless this call sits inside a wider transaction and the refusal
+    propagates, in which case the denial rolls back with everything else and the one record
+    PRD §13 demands for an illegal transition ("refused and audited") is silently lost. Every
+    refusal reachable from a staff mutation is exactly that case, so this checks the
+    connection instead of trusting a docstring (see "durability of refusals" in
+    `state_machine`). The project sets no `ATOMIC_REQUESTS`, so a top-level resolver passes.
+
+    Fails closed BEFORE any change is made. A new caller that really needs both a durable
+    denial and a wider transaction needs the agreed `audit` database alias, not an exemption
+    here.
+    """
+    if transaction.get_connection().in_atomic_block:
+        logger.error(
+            "a licence suspend/reinstate was attempted inside an open transaction; refused "
+            "because a DENIED audit row written in this state would be rolled back with the "
+            "caller's transaction (durability of refusals, state_machine docstring)."
+        )
+        raise SafeAPIError(ErrorCode.INTERNAL)
+
+
+def _enforce_lifecycle_budget(staff: ActorContext) -> None:
+    """Spend one unit of the acting staff member's lifecycle budget (FR-539).
+
+    Keyed on a digest of the actor id rather than the raw id: it lands in the cache key, and
+    under the header bridge an id is caller-supplied text. Called AFTER the permission gate,
+    so the identity being counted has already been authorised and an unauthenticated caller
+    cannot spend (or exhaust) a real staff member's budget.
+    """
+    identity = hashlib.sha256(staff.actor_id.encode("utf-8")).hexdigest()[:32]
+    enforce_budget(
+        LIFECYCLE_BUDGET_SCOPE,
+        identity,
+        "SELAHCUE_THROTTLE_ADMIN_LICENSE_LIFECYCLE",
+        LIFECYCLE_BUDGET,
+    )
+
+
+def _get_license_key_or_not_found(raw_id: str) -> AppLicenseKey:
+    """Resolve a licence reference. Anything that does not name a row — unknown, malformed,
+    negative, signed, non-ASCII digits, absurdly long — is the SAME NOT_FOUND, so the refusal
+    says nothing about which ids exist or what shape the lookup expects. Whitespace around an
+    otherwise valid id is ignored (`str.strip`, which is wider than the ASCII space: it also
+    drops some control and Unicode space characters, none of which can be part of an id).
+
+    No tenant filter: staff authority is platform-wide (§15), and a CUSTOMER or DEVICE actor
+    never reaches this line because `require_staff_permission` refuses them first, with the
+    same answer whether or not the licence exists.
+    """
+    cleaned = (raw_id or "").strip()
+    if (
+        not cleaned
+        or len(cleaned) > _MAX_LICENSE_KEY_ID_DIGITS
+        or not (cleaned.isascii() and cleaned.isdecimal())
+    ):
+        raise SafeAPIError(ErrorCode.NOT_FOUND)
+    try:
+        return AppLicenseKey.objects.select_related("customer").get(pk=int(cleaned))
+    except AppLicenseKey.DoesNotExist as error:
+        raise SafeAPIError(ErrorCode.NOT_FOUND) from error
+
+
+def _lifecycle_mutation(
+    actor: ActorContext | None,
+    *,
+    permission: StaffPermission,
+    to_status: LicenseKeyStatus | PriorStatusTarget,
+    raw_idempotency_key: str,
+    raw_license_key_id: str,
+    raw_reason: str,
+) -> LicenseTransitionResult:
+    staff = require_staff_permission(actor, permission)
+    _require_autocommit()
+    _enforce_lifecycle_budget(staff)
+    idempotency_key = validate_idempotency_key(raw_idempotency_key)
+    reason = require_reason(raw_reason)
+    license_key = _get_license_key_or_not_found(raw_license_key_id)
+
+    return apply_license_status_transition(
+        license_key,
+        to_status=to_status,
+        actor=staff,
+        reason=reason,
+        request_id=idempotency_key,
+        # Retry recognition happens inside the writer, under the row lock (see its docstring).
+        recognise_retry=True,
+    )
+
+
+def suspend_license_key(
+    actor: ActorContext | None, data: SuspendLicenseKeyData
+) -> LicenseTransitionResult:
+    """Put a licence on a reversible hold (FR-504). Staff only, reason mandatory.
+
+    Decided (D3 / DEC-010): SUSPENDED is soft. This writes the status and nothing else — it
+    does not touch a device token, and it must not: running devices keep working, new
+    activations and manifest issuance are refused because SUSPENDED is outside
+    `ACTIVATABLE_KEY_STATUSES`, and the already-cached offline entitlement runs to its own
+    expiry (RISK-501). The pre-suspension status is recorded by the writer in the same
+    UPDATE, which is what lets `reinstate_license_key` return to it.
+
+    Suspending an already-SUSPENDED licence is a no-op (`changed=False`, no second audit
+    row). Suspending from a status the table does not allow (REVOKED, ARCHIVED) is refused
+    with CONFLICT and one durable DENIED audit row.
+    """
+    return _lifecycle_mutation(
+        actor,
+        permission=StaffPermission.SUSPEND_LICENSE_KEY,
+        to_status=LicenseKeyStatus.SUSPENDED,
+        raw_idempotency_key=data.idempotency_key,
+        raw_license_key_id=data.license_key_id,
+        raw_reason=data.reason,
+    )
+
+
+def reinstate_license_key(
+    actor: ActorContext | None, data: ReinstateLicenseKeyData
+) -> LicenseTransitionResult:
+    """Lift a suspension, returning the licence to EXACTLY the status it held before (FR-510).
+
+    The target is `PRIOR_STATUS` — stored data, read from the row under the writer's lock,
+    never a constant. A licence that is not suspended, or whose recorded prior status is
+    missing or unusable, is refused with CONFLICT and a durable DENIED row; it is never
+    defaulted to ACTIVATED. Devices need no re-activation: their tokens never died, so the
+    next `license:refresh` simply reports the licence valid again.
+    """
+    return _lifecycle_mutation(
+        actor,
+        permission=StaffPermission.REINSTATE_LICENSE_KEY,
+        to_status=PRIOR_STATUS,
+        raw_idempotency_key=data.idempotency_key,
+        raw_license_key_id=data.license_key_id,
+        raw_reason=data.reason,
+    )
