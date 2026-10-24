@@ -27,6 +27,7 @@
 // discovers this window, so suppressing the console changes no behaviour.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod endpoint;
 mod guard;
 #[cfg(feature = "encryption")]
 mod keys;
@@ -4181,7 +4182,7 @@ async fn run_server(
     let endpoint = io
         .endpoint_file
         .as_deref()
-        .and_then(|path| write_endpoint(path, local, &pin.to_hex(), device, &token));
+        .and_then(|path| endpoint::write_endpoint(path, local, &pin.to_hex(), device, &token));
     print_connect_banner(local, &pin.to_hex(), device, &token, endpoint.as_deref());
     server
         .run(listener)
@@ -4206,32 +4207,13 @@ mod remote_control_warmup_tests {
         demo_plan, start_remote_control_in, BindFuture, LiveController, RemoteShared, ServerEnv,
         ServerIo, SessionRegistry, Theme,
     };
+    use crate::endpoint::test_support::Scratch;
+    use crate::endpoint::{is_complete_descriptor, json_field};
+    use std::path::Path;
     use std::sync::{Arc, Mutex, OnceLock};
     use std::time::{Duration, Instant};
     use tokio::net::TcpListener;
     use tokio::sync::Mutex as AsyncMutex;
-
-    /// A private scratch directory, removed on drop — also when an assertion unwinds — so the
-    /// test leaves nothing behind in the shared temp dir.
-    struct Scratch(std::path::PathBuf);
-
-    impl Scratch {
-        fn new(tag: &str) -> Self {
-            let dir = std::env::temp_dir().join(format!(
-                "selahcue-desktop-test-{tag}-{}-{:?}",
-                std::process::id(),
-                std::thread::current().id()
-            ));
-            std::fs::create_dir_all(&dir).expect("create scratch dir");
-            Scratch(dir)
-        }
-    }
-
-    impl Drop for Scratch {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
-        }
-    }
 
     fn fresh_remote() -> Arc<RemoteShared> {
         Arc::new(RemoteShared {
@@ -4273,28 +4255,16 @@ mod remote_control_warmup_tests {
     /// bind (before or after the port is published), or run on another thread.
     #[test]
     fn the_scripture_warm_up_runs_before_the_listener_is_bound() {
-        let events: Arc<Mutex<Vec<&'static str>>> = Arc::default();
+        let events: Events = Arc::default();
         let scratch = Scratch::new("warm-before-bind");
         let endpoint = scratch.0.join("endpoint.json");
 
         let warm_events = events.clone();
-        let bind_events = events.clone();
-        let env = ServerEnv {
-            warm: Box::new(move || warm_events.lock().expect("event log").push("warm")),
-            io: ServerIo {
-                bind: Box::new(move || -> BindFuture {
-                    bind_events.lock().expect("event log").push("bind");
-                    // Loopback + an OS-assigned port: no LAN exposure, no clash with a live host.
-                    Box::pin(TcpListener::bind("127.0.0.1:0"))
-                }),
-                lan_ip: || std::net::IpAddr::from([127, 0, 0, 1]),
-                advertise_mdns: false,
-                endpoint_file: Some(endpoint.clone()),
-            },
-        };
-
-        let remote = fresh_remote();
-        start_remote_control_in(fresh_controller(), remote.clone(), env);
+        let remote = start_server(
+            &endpoint,
+            Box::new(move || log(&warm_events, "warm")),
+            loopback_bind(&events),
+        );
 
         // `remote.lan` is published immediately after the bind, so once it is set the bind has
         // happened and every event it should be ordered against has already been logged.
@@ -4302,7 +4272,7 @@ mod remote_control_warmup_tests {
             remote.lan.get().is_some()
         });
         assert_eq!(
-            *events.lock().expect("event log"),
+            logged(&events),
             ["warm", "bind"],
             "the scripture warm-up must run exactly once and strictly BEFORE the control \
              listener is bound; otherwise the first IngestTranscript a remote controller sends \
@@ -4311,15 +4281,14 @@ mod remote_control_warmup_tests {
 
         // The endpoint descriptor (a bearer token) must have gone to the INJECTED path, not the
         // shared `$TMPDIR/selahcue-operator-endpoint.json` a live host owns.
-        let (port, _pin) = remote.lan.get().expect("published above").clone();
-        wait_for("the endpoint descriptor to be written", || {
-            endpoint.exists()
-        });
-        let written = std::fs::read_to_string(&endpoint).expect("read descriptor");
-        assert!(
-            written.contains(&format!("\"addr\":\"127.0.0.1:{port}\"")),
+        let (port, pin) = remote.lan.get().expect("published above").clone();
+        let written = wait_for_descriptor(&endpoint);
+        assert_eq!(
+            json_field(&written, "addr"),
+            Some(format!("127.0.0.1:{port}").as_str()),
             "descriptor should name this test server's loopback port {port}: {written}"
         );
+        assert_eq!(json_field(&written, "pin"), Some(pin.as_str()));
     }
 
     /// The wiring half: the hook `ServerEnv::production()` hands the real server genuinely
@@ -4344,6 +4313,269 @@ mod remote_control_warmup_tests {
              does not build the scripture quote-match index, so the first remote \
              IngestTranscript would pay the cold build inline (17tnw2b1258)"
         );
+    }
+
+    // ---- Warm-up / bind ordering against the real server thread -------------------------------
+
+    type Events = Arc<Mutex<Vec<&'static str>>>;
+
+    fn log(events: &Events, what: &'static str) {
+        events.lock().expect("event log").push(what);
+    }
+
+    fn logged(events: &Events) -> Vec<&'static str> {
+        events.lock().expect("event log").clone()
+    }
+
+    /// The bind seam every test but the failing-bind one uses: it logs `"bind"` when called, then
+    /// binds loopback with an OS-assigned port (no LAN exposure, no clash with a live host).
+    fn loopback_bind(events: &Events) -> Box<dyn FnOnce() -> BindFuture + Send> {
+        let bind_events = events.clone();
+        Box::new(move || -> BindFuture {
+            log(&bind_events, "bind");
+            Box::pin(TcpListener::bind("127.0.0.1:0"))
+        })
+    }
+
+    /// Start the real server thread with `warm` as its warm-up hook and `bind` as its listener
+    /// seam. The endpoint descriptor goes to `endpoint`.
+    fn start_server(
+        endpoint: &Path,
+        warm: Box<dyn FnOnce() + Send>,
+        bind: Box<dyn FnOnce() -> BindFuture + Send>,
+    ) -> Arc<RemoteShared> {
+        let env = ServerEnv {
+            warm,
+            io: ServerIo {
+                bind,
+                lan_ip: || std::net::IpAddr::from([127, 0, 0, 1]),
+                advertise_mdns: false,
+                endpoint_file: Some(endpoint.to_path_buf()),
+            },
+        };
+        let remote = fresh_remote();
+        start_remote_control_in(fresh_controller(), remote.clone(), env);
+        remote
+    }
+
+    /// Wait for the descriptor to be published and return it. Publication is atomic (an
+    /// owner-only temp file renamed into place), so a descriptor that EXISTS is a complete one:
+    /// this is a wait for the server thread to reach the write, never a wait for the write to
+    /// finish. (Waiting on `exists()` alone and reading at once was the 17tnw2b2q2z flake: the
+    /// file used to appear empty, before its contents were written.)
+    fn wait_for_descriptor(path: &Path) -> String {
+        wait_for("the endpoint descriptor to be published", || path.exists());
+        let json = std::fs::read_to_string(path).expect("read descriptor");
+        assert!(
+            is_complete_descriptor(&json),
+            "a published descriptor must be complete: {json:?}"
+        );
+        json
+    }
+
+    /// Open the first control connection exactly as the operator shell does: from the
+    /// descriptor's address, certificate pin and operator credential. Returns the granted role.
+    fn first_control_connection(descriptor: &str) -> selahcue_lan::Role {
+        let field = |k: &str| json_field(descriptor, k).unwrap_or_else(|| panic!("no {k}"));
+        let addr: std::net::SocketAddr = field("addr").parse().expect("socket address");
+        let pin = selahcue_lan::CertPin::from_hex(field("pin")).expect("pin hex");
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("client runtime");
+        runtime.block_on(async {
+            let client = selahcue_lan::ControlClient::connect(
+                addr,
+                "localhost",
+                pin,
+                field("device"),
+                field("token"),
+            )
+            .await
+            .expect("the first control connection must be accepted and authenticated");
+            let role = client.role();
+            let _ = client.close().await;
+            role
+        })
+    }
+
+    /// A slow index build (here: parked until the test releases it, i.e. as slow as the test
+    /// likes, with no sleep and no timing assumption) must hold back BOTH the bind and therefore
+    /// the first control connection. The hook parks the server thread INSIDE `warm()`, so
+    /// anything the thread does after the warm-up provably has not happened yet when the
+    /// assertions run; only after the release does the listener appear and a controller get in.
+    #[test]
+    fn a_slow_warm_up_holds_back_the_listener_and_the_first_control_connection() {
+        let events: Events = Arc::default();
+        let scratch = Scratch::new("warm-slow");
+        let endpoint = scratch.0.join("endpoint.json");
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel::<()>();
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+
+        let warm_events = events.clone();
+        let remote = start_server(
+            &endpoint,
+            Box::new(move || {
+                log(&warm_events, "warm:start");
+                let _ = entered_tx.send(());
+                // Parked until released. If the test unwinds first, the dropped sender wakes this.
+                let _ = release_rx.recv();
+                log(&warm_events, "warm:done");
+            }),
+            loopback_bind(&events),
+        );
+
+        // Normally this returns the moment the hook is entered. A server that bound (and so
+        // published its port) WITHOUT running the warm-up first also ends the wait, so that
+        // breakage fails at the assertions below instead of waiting out the 60 s bound.
+        wait_for("the warm-up hook to be entered", || {
+            entered_rx.try_recv().is_ok() || remote.lan.get().is_some()
+        });
+
+        // The server thread is parked inside warm(): no bind, no published port, no descriptor.
+        assert_eq!(
+            logged(&events),
+            ["warm:start"],
+            "nothing may run past the warm-up while it is still building the index"
+        );
+        assert!(
+            remote.lan.get().is_none(),
+            "the control port must not be published while the warm-up is still running"
+        );
+        assert!(
+            !endpoint.exists(),
+            "the descriptor a controller would use must not exist while the warm-up is running"
+        );
+
+        release_tx.send(()).expect("server thread is parked");
+        wait_for("the control listener to be bound", || {
+            remote.lan.get().is_some()
+        });
+        assert_eq!(
+            logged(&events),
+            ["warm:start", "warm:done", "bind"],
+            "the listener must be bound only AFTER the slow warm-up finished"
+        );
+
+        // Positive control: once the warm-up is over the same server really does accept and
+        // authenticate a controller, so "nothing was reachable" above was the warm-up's doing and
+        // not a dead server.
+        let descriptor = wait_for_descriptor(&endpoint);
+        assert_eq!(
+            first_control_connection(&descriptor),
+            selahcue_lan::Role::Operator
+        );
+    }
+
+    /// The fast case: a warm-up that finishes at once (the index was already built) is still
+    /// strictly before the bind, and the first controller is served.
+    #[test]
+    fn a_fast_warm_up_still_precedes_the_bind_and_the_first_control_connection_is_served() {
+        let events: Events = Arc::default();
+        let scratch = Scratch::new("warm-fast");
+        let endpoint = scratch.0.join("endpoint.json");
+
+        let warm_events = events.clone();
+        let remote = start_server(
+            &endpoint,
+            Box::new(move || log(&warm_events, "warm")),
+            loopback_bind(&events),
+        );
+
+        wait_for("the control listener to be bound", || {
+            remote.lan.get().is_some()
+        });
+        assert_eq!(logged(&events), ["warm", "bind"]);
+        let descriptor = wait_for_descriptor(&endpoint);
+        assert_eq!(
+            first_control_connection(&descriptor),
+            selahcue_lan::Role::Operator
+        );
+    }
+
+    /// PINS CURRENT BEHAVIOUR; the owner decision on what a failed warm-up SHOULD do is pending
+    /// (ticket 17tnw2b9ahr).
+    /// Nothing in 17tnw2b1258 or PR #145 says; they only require the warm-up to finish before
+    /// the bind. Today a panic in the hook unwinds the server thread: it never binds, never
+    /// publishes a port or a descriptor, and the thread ends (releasing everything it held). The
+    /// output window and local keyboard control are untouched, since the panic is confined to the
+    /// server thread — which is also why this test survives it.
+    ///
+    /// Two caveats. The production hook is built not to panic (a decode failure degrades to an
+    /// empty index, `selahcue-scripture`), so the realistic failure is a DEGRADED index, after
+    /// which the server does come up — the fast-warm-up test covers that shape. And no profile
+    /// sets `panic = "abort"` today and tests always unwind; under `abort` the same panic would
+    /// take the whole output process down instead.
+    #[test]
+    fn a_failing_warm_up_never_binds_and_the_server_thread_ends() {
+        let events: Events = Arc::default();
+        let scratch = Scratch::new("warm-fails");
+        let endpoint = scratch.0.join("endpoint.json");
+
+        let warm_events = events.clone();
+        let remote = start_server(
+            &endpoint,
+            Box::new(move || {
+                log(&warm_events, "warm:panic");
+                panic!("simulated scripture index build failure");
+            }),
+            loopback_bind(&events),
+        );
+
+        // The thread held one clone of `remote`; it is gone only once the thread has unwound
+        // (the `ServerEnv`, its bind closure and the runtime are dropped with it). A server that
+        // survived the failed warm-up and went on to publish its port ends the wait too, so that
+        // breakage fails at the assertions below instead of waiting out the 60 s bound.
+        wait_for("the server thread to end", || {
+            Arc::strong_count(&remote) == 1 || remote.lan.get().is_some()
+        });
+
+        assert_eq!(
+            logged(&events),
+            ["warm:panic"],
+            "the listener must never be bound after a failed warm-up"
+        );
+        assert!(
+            remote.lan.get().is_none(),
+            "no control port may be published"
+        );
+        assert!(!endpoint.exists(), "no descriptor may be published");
+    }
+
+    /// The sibling failure: the warm-up succeeds but the listener cannot be created (port
+    /// refused). Nothing is published, and the thread ends instead of lingering.
+    #[test]
+    fn a_failed_bind_publishes_nothing_and_the_server_thread_ends() {
+        let events: Events = Arc::default();
+        let scratch = Scratch::new("bind-fails");
+        let endpoint = scratch.0.join("endpoint.json");
+
+        let bind_events = events.clone();
+        let warm_events = events.clone();
+        let remote = start_server(
+            &endpoint,
+            Box::new(move || log(&warm_events, "warm")),
+            Box::new(move || -> BindFuture {
+                log(&bind_events, "bind");
+                Box::pin(async {
+                    Err(std::io::Error::new(
+                        std::io::ErrorKind::AddrInUse,
+                        "simulated bind failure",
+                    ))
+                })
+            }),
+        );
+
+        wait_for("the server thread to end", || {
+            Arc::strong_count(&remote) == 1
+        });
+
+        assert_eq!(logged(&events), ["warm", "bind"]);
+        assert!(
+            remote.lan.get().is_none(),
+            "no control port may be published"
+        );
+        assert!(!endpoint.exists(), "no descriptor may be published");
     }
 }
 
@@ -4450,36 +4682,6 @@ fn print_pairing_block(uri: &str, code: &str) {
 /// ever name it — nothing a test drives may.
 fn endpoint_path() -> std::path::PathBuf {
     std::env::temp_dir().join("selahcue-operator-endpoint.json")
-}
-
-/// Write a local endpoint descriptor so the operator shell on this machine can
-/// auto-discover + connect (a loopback-only convenience; real pairing is QR + host
-/// confirmation). Values are simple ASCII (addr/hex/ids), so a hand-built JSON string is
-/// safe. Returns the path written, if any.
-fn write_endpoint(
-    path: &std::path::Path,
-    addr: SocketAddr,
-    pin_hex: &str,
-    device: &str,
-    token: &str,
-) -> Option<std::path::PathBuf> {
-    let json = format!(
-        "{{\"addr\":\"{addr}\",\"pin\":\"{pin_hex}\",\"device\":\"{device}\",\"token\":\"{token}\"}}"
-    );
-    if let Err(e) = std::fs::write(path, json) {
-        eprintln!("SelahCue: could not write operator endpoint file: {e}");
-        return None;
-    }
-    // The descriptor carries a bearer token. On macOS `temp_dir()` is already a per-user
-    // private dir, but on Linux it is world-readable `/tmp`, so restrict to owner-only.
-    // (This is a loopback-only demo convenience; real pairing is QR + host confirmation
-    // and persists no token.)
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
-    }
-    Some(path.to_path_buf())
 }
 
 fn print_connect_banner(
@@ -4603,7 +4805,7 @@ fn main() {
     }
     // Best-effort: don't leave a stale endpoint (with a now-dead token/port) behind on a
     // clean exit, so a later operator shell doesn't try to attach to a defunct window.
-    let _ = std::fs::remove_file(endpoint_path());
+    endpoint::remove(&endpoint_path());
 }
 
 /// The window-lifecycle decision (the pure half of the toggle / close-button path).
