@@ -13,7 +13,7 @@ This root contains the Django + Strawberry backend for SelahCue Admin licensing,
 - **Customer authentication** (DEC-007 / ADR-0023): signup, email verification, login/logout, session refresh, password reset — opaque server-side hashed sessions, not JWT
 - **Device activation** `POST /v1/activations` — enrollment-key authed, instance-limit enforced, show-once device token
 - **Account-based activation** `activateDeviceWithSession` (GraphQL, ADMIN-only per DEC-005)
-- **Native-client account sign-in** `POST /v1/sessions` (email + password → session token) and `POST /v1/activations:with-session` (`Authorization: Bearer <session token>` → device token). These are what the desktop **should** call (it does not yet — the desktop client still targets `/graphql/account` until ClickUp 17tnw2b1we2 lands): `/graphql/account` authenticates from a session cookie, so it keeps CSRF enforced and a cookie-less native client cannot use it. The two routes are `csrf_exempt` because they read the session from the `Authorization` header only and never set a cookie. Wire contract: `docs/design/ACCOUNT-AUTH-API-HANDOFF.md`; decision and safety argument: ADR-0029 (86ak5t1gw).
+- **Native-client account sign-in** `POST /v1/sessions` (email + password → session token) and `POST /v1/activations:with-session` (`Authorization: Bearer <session token>` → device token). These are what the desktop calls (`selahcue-licensing`, ClickUp 17tnw2b1we2); it never calls `/graphql/account`, which authenticates from a session cookie, so it keeps CSRF enforced and a cookie-less native client cannot use it. The two routes are `csrf_exempt` because they read the session from the `Authorization` header only and never set a cookie. Wire contract: `docs/design/ACCOUNT-AUTH-API-HANDOFF.md`; decision and safety argument: ADR-0029 (86ak5t1gw).
 - **License refresh** `POST /v1/license:refresh` — device-token authed, pure read
 - **Signed offline entitlement** `GET /v1/entitlements/manifest` — see below
 
@@ -50,12 +50,25 @@ Requires `SELAHCUE_ENTITLEMENT_SIGNING_KEY` (see `docs/ops/DEPLOYMENT.md` §6a).
 
 ## Local verification
 
-Mirrors the `api` job in `.github/workflows/ci.yml`. From this directory:
+From the repository root:
 
 ```bash
-/private/tmp/selahcue-api-venv/bin/python manage.py check
-/private/tmp/selahcue-api-venv/bin/python manage.py makemigrations --check --noinput
-/private/tmp/selahcue-api-venv/bin/python -m pytest tests -q
+make api-install   # once per checkout, and after pyproject.toml changes: builds the venv, needs the network
+make api-check     # django check + migrations committed + pytest, the same three commands as the CI `api` job
+```
+
+`make ci` runs `make api-check`; it never installs, so on a fresh worktree it stops with an instruction to run `make api-install`. `api-install` needs Python 3.14 on PATH (CI's version) or `API_PYTHON=/path/to/python` for any 3.12 or newer.
+
+- The venv is `implementation/api/.venv-api-check`, a name only these targets use (your own `.venv` is never touched), gitignored and per checkout. `api-check` refuses it when it is a symlink, was built with another Python minor version (a patch update is fine) or from another checkout, or `pyproject.toml` changed since (content hash, so a `touch` is fine). If you built it with an interpreter other than the default `python3.14`, keep `API_PYTHON` exported for `make api-check` as well. An interrupted or failed `make api-install` can simply be run again.
+- It runs on SQLite in memory, so the tests that need Postgres or Redis (`tests/test_concurrency_postgres.py`, one test in `tests/test_cache_socket_timeouts.py`) **skip locally**; only CI runs them.
+- The install is not locked: direct dependencies and the build backend (`[build-system]`) are pinned exactly, transitive dependencies are not locked or hashed, so the venv holds whatever resolved when you ran `make api-install` while CI re-resolves each run (ClickUp 17tnw2az0kw).
+
+By hand, from this directory, with a venv that has `pip install -e ".[dev]"` run in this checkout:
+
+```bash
+.venv-api-check/bin/python manage.py check
+.venv-api-check/bin/python manage.py makemigrations --check --noinput
+.venv-api-check/bin/python -m pytest tests -q
 ```
 
 Migrations are **hand-committed**; the `makemigrations --check` gate catches a model shipped without one. Every app needs a `migrations/` package for that gate to see it — Django silently excludes apps without one from autodetection.

@@ -278,7 +278,7 @@ endif
 ENCRYPTION_STATUS := on (SQLCipher; key via OS secret store, or Argon2id from SELAHCUE_PASSPHRASE)
 
 .DEFAULT_GOAL := help
-.PHONY: help launch run run-release launch-release output-release output output-ndi ndi-preflight operator operator-headless stt-preflight release-ai-guard stage-operator-binaries verify-stage-operator-binaries-create-only remote timer stop-timer demo mobile mobile-test marketing-install marketing-check up down ci nfr build build-output build-operator test test-stt-real-model check clippy fmt clean
+.PHONY: help launch run run-release launch-release output-release output output-ndi ndi-preflight operator operator-headless stt-preflight release-ai-guard stage-operator-binaries verify-stage-operator-binaries-create-only remote timer stop-timer demo mobile mobile-test marketing-install marketing-check api-install api-check up down ci nfr build build-output build-operator test test-stt-real-model check clippy fmt clean
 
 # Recursive-make calls that must NOT get GNU Make's special "$(MAKE) literal text" handling
 # (documented in the GNU Make manual, "How the MAKE Variable Works": a recipe LINE containing
@@ -661,6 +661,81 @@ marketing-check: ## Marketing site gate: type-check + lint + node tests + produc
 	cd $(MARKETING) && $(NPM) test
 	cd $(MARKETING) && $(NPM) run build
 
+# The Django + Strawberry platform API (implementation/api). `api-check` is the local mirror of the
+# `api (django)` job in .github/workflows/ci.yml and is called by `make ci` (86ak5rjh7, API half):
+# Django system checks, `makemigrations --check --noinput` (a model shipped without its hand-written
+# migration fails here, not only in CI), then the pytest suite. The three commands are written here AND
+# in ci.yml's `api` job; scripts/check_api_gate.py compares the two (its ci.yml case) so a change to one
+# that is not made to the other fails `make ci`.
+#
+# NEVER INSTALLS, like `marketing-check`. `make ci` and `make api-check` are offline and deterministic; a
+# desktop developer never gets packages installed by surprise. The venv comes from a deliberate
+# `make api-install` (needs the network; Python 3.14 on PATH, or API_PYTHON=/path/to/python >=3.12), and
+# `api-check` REFUSES, naming `make api-install`, when the venv is missing, was not made by api-install,
+# is a symlink, was built with another Python minor version, or pyproject.toml changed since it was
+# installed (SHA-256 of the file, so a content-neutral `touch` does not refuse, and neither does a patch
+# update such as 3.14.5 to 3.14.6). If the venv was built with an interpreter other than the default
+# python3.14, keep API_PYTHON exported for api-check too, or it will see the mismatch. A fresh worktree therefore needs
+# `make api-install` once, then again after a pyproject.toml change. The logic lives in
+# scripts/api_venv.py; its header explains every guard.
+#
+# WHAT IT DOES NOT COVER, stated here, in the target's help text and in CLAUDE.md so the absence is a
+# known limit and not a silent hole: it runs on SQLite (in memory) with Django's local-memory cache, no
+# Postgres, no Redis. Some tests SKIP by design: those in
+# `tests/test_concurrency_postgres.py` (the DEC-004 device instance-limit race and the other lock-ordering
+# races; select_for_update is a no-op on SQLite) and the real-Redis one in `tests/test_cache_socket_timeouts.py`. `-rfEs` prints each
+# skip with its reason and each failure by test name, so nothing is silent. CI's `api` job runs them
+# against Postgres 16 + Redis 7.
+#
+# The three commands run in a scrubbed environment (`env -i`, plus SQL_DATABASE=:memory:) so a shell that
+# sourced a docker-style .env (SQL_ENGINE=postgresql, SQL_HOST=db, CACHE_URL=redis://redis) cannot turn
+# this into a different, confusing failure, and a developer's own implementation/api/db.sqlite3 cannot
+# leak in. `pip install` in api-install is NOT scrubbed: pip needs HOME, proxy and certificate settings,
+# so the install sees the developer's full environment.
+#
+# THE VENV is `implementation/api/.venv-api-check`: a name only this target uses (a developer's own
+# `.venv` is never touched), gitignored and dockerignored, per checkout. api-install takes a lock, then
+# only ever rebuilds a directory whose marker file (`.venv-api-check.marker`, written before any venv
+# content) exists, so an interrupted install can always be retried. The first recipe line of api-check also asserts, on every run,
+# that `selahcue_api` imports from THIS checkout (python -I). That is not because a borrowed venv would
+# test the other checkout's code (the cwd and pytest.ini's `pythonpath = .` win on sys.path); it is
+# because the venv's third-party packages would have been resolved from ANOTHER tree's pyproject.toml.
+#
+# WHAT THE INSTALL IS: direct dependencies are pinned exactly and the build backend is pinned in
+# pyproject.toml's [build-system]; TRANSITIVE dependencies are neither locked nor hashed. The venv holds
+# whatever resolved on the day it was built, while CI re-resolves on every run, so the two can differ.
+# The owner accepted that interim on 2026-10-24 until the hash-locked requirements file of ClickUp
+# 17tnw2az0kw lands.
+#
+# Every variable that decides what runs is `override`, so `make api-check API_VPY=/usr/bin/true`,
+# `API_ENV=` or `API=<elsewhere>` cannot weaken the gate. Only API_PYTHON is yours to set; it is passed
+# to the helper through the environment, never spliced into shell text.
+#
+# THE TARGET'S OWN LOGIC is tested by `scripts/check_api_gate.py --self-test` (run by `make ci`, offline):
+# it copies this Makefile and the helper into a scratch repo with a fake API and runs the targets through
+# every situation `--list` shows. `--mutation-proof` breaks this Makefile and the
+# helper on purpose and requires the named case to go red each time. Run it after editing anything
+# between here and the end of `api-install`.
+# Defined BEFORE the export: GNU Make 3.81 (macOS's make) exports an `export VAR` that precedes its
+# `?=` as an EMPTY string and then never assigns the default.
+API_PYTHON ?= python3.14
+export API_PYTHON
+override API        := implementation/api
+override API_VENV   := $(API)/.venv-api-check
+override API_VPY    := $(CURDIR)/$(API_VENV)/bin/python
+override API_HELPER := python3 scripts/api_venv.py
+override API_ENV    := env -i PATH="$$PATH" HOME="$$HOME" TMPDIR="$$TMPDIR" LANG="$$LANG" LC_ALL="$$LC_ALL" SQL_DATABASE=:memory:
+
+api-install: ## Build the Django API venv (implementation/api/.venv-api-check) and pip install -e ".[dev]": the one step that installs; needs the network and Python 3.14 (API_PYTHON=...)
+	$(API_HELPER) install --api $(API) --venv $(API_VENV)
+
+api-check: ## Django API gate: check + migrations committed + pytest on SQLite; never installs (run `make api-install` first); the Postgres/Redis-only tests SKIP here, CI runs them
+	$(API_HELPER) verify --api $(API) --venv $(API_VENV)
+	@echo "api-check: SQLite in memory + local cache. Tests that need Postgres or Redis (the DEC-004 instance-limit race in tests/test_concurrency_postgres.py, the real-Redis cache test) SKIP here -- see the SKIPPED lines at the end; CI's api job runs them."
+	cd $(API) && $(API_ENV) "$(API_VPY)" manage.py check
+	cd $(API) && $(API_ENV) "$(API_VPY)" manage.py makemigrations --check --noinput
+	cd $(API) && $(API_ENV) "$(API_VPY)" -m pytest tests -q -rfEs
+
 # Mirrors the Rust/Flutter gates in .github/workflows/ci.yml. It does NOT cover
 # everything CI runs -- see the "Not covered here" list below and in CLAUDE.md.
 #
@@ -669,24 +744,32 @@ marketing-check: ## Marketing site gate: type-check + lint + node tests + produc
 # target could pass on one compiler while CI failed on another -- which is exactly
 # how `main` went nine days without a green run while this printed ALL GREEN (86ak5rc9c).
 #
+# Covered besides Rust/Flutter: the Node-only half of the `marketing (vue spa)` job
+# (type-check, lint, node tests, build) via `marketing-check`, and the `api (django)`
+# job's three commands (system checks, migrations committed, pytest) via `api-check`,
+# both below. `api-check` runs on SQLite and local cache, so the Postgres/Redis-only
+# tests SKIP here (named in its output and in its comment above). It NEVER installs:
+# a fresh worktree runs `make api-install` once first (network, Python 3.14), and
+# `make ci` stops at `api-check` with that instruction until it has.
+#
 # Not covered here (CI-only): cargo audit / cargo deny (supply chain), the
 # Playwright WebKit engine smoke, launch-smoke + `make nfr`, the Android APK
-# compile-check, the `api (django)` job entirely, and the part of the `marketing
-# (vue spa)` job that needs extra runtimes (client/server mirrors need a pinned
-# Django; the headless auth-page states need Chrome). The Node-only half of the
-# marketing job -- type-check, lint, node tests, build -- IS covered, via the
-# `marketing-check` line below. Run the uncovered areas' own tooling before
-# pushing changes to them.
+# compile-check, `selahcue-stt` (excluded from the workspace; no gate lints or tests
+# it, 17tnw2b9aaw), the `api (django)` tests that need Postgres/Redis, and the part of
+# the `marketing (vue spa)` job that needs extra runtimes (client/server mirrors need
+# a pinned Django; the headless auth-page states need Chrome). Run the uncovered
+# areas' own tooling before pushing changes to them.
 #
 # One masking difference from CI, deliberate and not yet closed: CI now runs the
 # steps after Clippy under `if: !cancelled()`, so one failing gate no longer hides
 # the rest. Make still aborts the target at the first failing recipe line, so a
 # clippy failure here still stops you seeing the test results. The test commands
 # below carry --no-fail-fast (measured: it surfaces a second failing test binary
-# that would otherwise be hidden), but line-level aborts remain. Tracked on
-# 86ak5rjh7 -- fixing it means restructuring this target, which is not a change to
-# smuggle into a toolchain fix.
-ci: ## Run the local Rust/Flutter CI gate (see the header for what CI runs that this does not)
+# that would otherwise be hidden), but line-level aborts remain: a failure in the
+# marketing or API gate below stops the run before any cargo gate. Nor is the target
+# path-aware: it runs every area every time. Both -- run every gate, collect, exit
+# non-zero at the end; dispatch on what changed -- are tracked in 17tnw2b9aax.
+ci: ## Local CI gate: Rust, Flutter, marketing, Django API on SQLite (needs `make api-install` once). NOT covered: audit/deny, WebKit, Android, launch-smoke, selahcue-stt, Postgres/Redis tests; see header
 	sh scripts/check_toolchain.sh
 	# Stage the operator's gitignored sidecar/NDI placeholders (86akc2kmh) as an explicit recipe
 	# line, deliberately AFTER the toolchain check above and NOT as a same-level prerequisite of
@@ -732,6 +815,19 @@ ci: ## Run the local Rust/Flutter CI gate (see the header for what CI runs that 
 	# via recursive make so there is exactly one definition. Placed before the cargo gates because it
 	# takes seconds, so a marketing error fails fast instead of after the whole Rust run.
 	$(MAKE_RECURSE) --no-print-directory marketing-check
+	# 86ak5rjh7 (API half): `make ci` ran NOTHING for implementation/api, so a failing Django test or a
+	# model shipped without its migration passed here and failed only in CI's `api (django)` job. Same
+	# recursive-make pattern as marketing-check, and like it this NEVER installs: a fresh worktree runs
+	# `make api-install` once (network, Python 3.14), and api-check refuses with that instruction until
+	# then. See the api-check comment above for everything it does and does not cover.
+	$(MAKE_RECURSE) --no-print-directory api-check
+	# After api-check on purpose: a fresh worktree is told to run `make api-install` at once instead of waiting
+	# for this to finish first. The gate's own logic, tested against a fake API in a scratch repo (offline): that the
+	# targets refuse, install, reuse, rebuild, refuse a venv from another checkout, go red on a failing
+	# test / missing migration / failed install, and never skip. `--mutation-proof` (by hand, after
+	# editing the api targets or scripts/api_venv.py) breaks them on purpose and requires each case to
+	# go red.
+	python3 scripts/check_api_gate.py --self-test
 	cd $(DESKTOP) && $(CARGO) fmt --check
 	cd $(OPERATOR) && $(CARGO) fmt --check
 	$(CARGO) clippy $(WS) --workspace --all-targets -- -D warnings
@@ -770,6 +866,15 @@ ci: ## Run the local Rust/Flutter CI gate (see the header for what CI runs that 
 	# this is the licensing-crate pattern (`test -p selahcue-licensing --release`) applied here.
 	$(CARGO) test $(WS) -p selahcue-cloud --features openai --release --no-fail-fast
 	$(CARGO) clippy $(WS) -p selahcue-cloud --features openai --release --all-targets -- -D warnings
+	# The production HTTP transport (feature `http`) is off by default, so nothing above compiles
+	# or runs it -- and `tests/test_wire.rs` is the only thing that looks at the bytes it really
+	# sends (Content-Type, the bearer, and the ABSENCE of Cookie/Origin/Referer/CSRF headers that
+	# the native sign-in routes' CSRF exemption rests on, 86ak5t1gw / 17tnw2b1we2). Loopback only.
+	# NO_PROXY: the transport honours HTTP_PROXY/ALL_PROXY and has no loopback bypass of its own
+	# (and must not gain one: that would change behaviour for real proxy users), so on a machine
+	# with an ambient proxy variable these loopback tests would be sent to the proxy and fail.
+	NO_PROXY=127.0.0.1,localhost no_proxy=127.0.0.1,localhost $(CARGO) test $(WS) -p selahcue-cloud --features http --no-fail-fast
+	$(CARGO) clippy $(WS) -p selahcue-cloud --features http --all-targets -- -D warnings
 	# The Deepgram streaming transport (86akby4yz) is behind an off-by-default feature, so the
 	# workspace run above does NOT build it. Lint + test it explicitly: an off-by-default feature
 	# that no gate ever compiles is exactly how selahcue-stt ended up linted by nothing. The
@@ -852,7 +957,7 @@ ci: ## Run the local Rust/Flutter CI gate (see the header for what CI runs that 
 	python3 scripts/operator_headless.py
 	cd $(MOBILE) && $(FLUTTER) analyze && $(FLUTTER) test
 	@echo ""
-	@echo "== local Rust/Flutter gate: ALL GREEN (see the ci: header for CI-only gates) =="
+	@echo "== local Rust/Flutter/marketing/API gate: ALL GREEN (see the ci: header for CI-only gates) =="
 
 nfr: ## Measure the walking-skeleton NFRs (idle memory / cold start) on a release build
 	sh scripts/measure_nfr.sh
