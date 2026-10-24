@@ -305,3 +305,68 @@ def test_concurrent_transitions_write_exactly_one_audit_row():
         ).count()
         == 0
     ), "the losing caller replays idempotently; it is not a refusal"
+
+
+# --- 86ak5v7av: first activation goes through the state machine, under a real race -------
+def test_concurrent_first_activations_write_exactly_one_licence_transition():
+    """Two desktops presenting the same, still-ISSUED enrollment key at the same instant are
+    two legitimate devices (the limit allows both), but the licence moves ISSUED -> ACTIVATED
+    exactly once and that move is audited exactly once.
+
+    `_activate_device_for_key` holds `select_for_update` on the licence row, and the state
+    machine then locks the same row inside the same transaction. The loser re-reads the row
+    after the winner commits, sees ACTIVATED and never calls the machine, so this also proves
+    the nested lock neither deadlocks (the barrier-gated threads would hang past `join`'s
+    timeout) nor double-audits.
+    """
+    from selahcue_api.apps.audit.models import AuditEvent
+    from selahcue_api.apps.license_keys.models import LicenseKeyStatus
+    from selahcue_api.apps.license_keys.state_machine import AUDIT_TARGET_TYPE
+
+    key, full_key = _seed_license_key(tag="firstconc", device_limit=3)
+    assert key.status == LicenseKeyStatus.ISSUED
+
+    errors = []
+    start = threading.Barrier(2, timeout=30)
+    barrier_failures = []
+
+    def activate(n):
+        try:
+            start.wait()
+        except threading.BrokenBarrierError as exc:
+            barrier_failures.append(exc)
+            connections.close_all()
+            return
+        try:
+            activate_device(
+                ActivateDeviceData(
+                    idempotency_key=f"first-conc-activation-{n}",
+                    presented_key=full_key,
+                    device_fingerprint=f"fp-first-conc-{n}",
+                    platform="macos",
+                )
+            )
+        except Exception as exc:
+            errors.append(exc)
+        finally:
+            connections.close_all()
+
+    threads = [threading.Thread(target=activate, args=(n,)) for n in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=60)
+
+    assert not any(t.is_alive() for t in threads), "activation deadlocked on the nested lock"
+    assert barrier_failures == [], f"the two activations never overlapped: {barrier_failures}"
+    assert errors == [], f"both devices fit under the limit; neither may fail: {errors}"
+
+    key.refresh_from_db()
+    assert key.status == LicenseKeyStatus.ACTIVATED
+    assert Device.objects.filter(license_key=key).count() == 2
+    transitions = AuditEvent.objects.filter(
+        target_type=AUDIT_TARGET_TYPE, target_id=str(key.pk), action="license_key.activated"
+    ).count()
+    assert transitions == 1, (
+        f"one ISSUED -> ACTIVATED move produced {transitions} audit rows (NFR-506)"
+    )

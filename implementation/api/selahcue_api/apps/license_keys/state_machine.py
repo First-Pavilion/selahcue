@@ -4,13 +4,13 @@
 consults `LEGAL_TRANSITIONS` below, refuses anything absent from it with a coded error, and
 writes exactly one audit row per outcome (FR-508, NFR-506).
 
-**One shipped writer bypasses it**, and saying otherwise would be false: first activation
-flips ISSUED -> ACTIVATED inline at `apps/devices/services.py:443-445` and audits the move
-as `target_type="device"`, not `app_license_key`. That predates this module and this ticket
-was scoped not to change it; routing it through here is tracked as 86ak5v7av. Until that
-lands, "every transition writes one licence audit row" holds for every transition EXCEPT
-that one. `tests/test_license_state_machine.py` pins the bypass by site, so a second one
-cannot appear quietly.
+First activation (ISSUED -> ACTIVATED) writes through here too, from
+`apps/devices/services.py`, as the activating device (or the signed-in customer on the
+account path), so the licence audit trail carries it as `target_type="app_license_key"` next
+to the device-level `device.activated` row (86ak5v7av). The only remaining writer of a
+status outside this module is staff issuance, which seeds ISSUED onto a new row rather than
+transitioning one. `tests/test_license_state_machine.py` pins that by site, so a second
+bypass cannot appear quietly.
 
 Calling contract — authorisation is the CALLER's job
 --------------------------------------------------------------------------------------

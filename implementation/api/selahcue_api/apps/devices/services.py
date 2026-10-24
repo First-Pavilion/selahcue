@@ -21,6 +21,7 @@ from selahcue_api.apps.devices.models import (
 )
 from selahcue_api.apps.accounts.models import CustomerRole
 from selahcue_api.apps.license_keys.models import AppLicenseKey, LicenseKeyStatus
+from selahcue_api.apps.license_keys.state_machine import apply_license_status_transition
 from selahcue_api.graphql.context import (
     ActorContext,
     ActorKind,
@@ -39,6 +40,10 @@ TOKEN_GROUP_SIZE = 4
 ACTIVATABLE_KEY_STATUSES = frozenset(
     {LicenseKeyStatus.ISSUED, LicenseKeyStatus.ACTIVATED, LicenseKeyStatus.EXPIRING}
 )
+
+# The mandatory `reason` (>= 8 characters) the licence audit row carries for the automated
+# ISSUED -> ACTIVATED move; there is no operator to supply one.
+FIRST_ACTIVATION_REASON = "First device activation of the enrollment key."
 
 
 @dataclass(frozen=True)
@@ -461,12 +466,27 @@ def _activate_device_for_key(
 
         token, full_token = _new_device_token(device, license_key)
 
-        # First activation flips the enrollment key ISSUED → ACTIVATED.
-        if license_key.status == LicenseKeyStatus.ISSUED:
-            license_key.status = LicenseKeyStatus.ACTIVATED
-            license_key.save(update_fields=["status", "updated_at"])
-
         actor = audit_actor or ActorContext(kind=ActorKind.DEVICE, actor_id=device_public_id)
+
+        # First activation flips the enrollment key ISSUED → ACTIVATED, through the licence
+        # state machine so the edge is table-checked and audited as a licence transition
+        # (FR-501, FR-508, NFR-506) — not assigned inline. The machine re-locks the row we
+        # already hold in this transaction (same-transaction re-entry, no second waiter) and
+        # runs inside this atomic block, so the status, the device and both audit rows commit
+        # or roll back together. Its DENIED refusal row rolls back here too; that only arises
+        # if the table itself loses the edge, and failing closed (no device, no token) is the
+        # right outcome for that.
+        if license_key.status == LicenseKeyStatus.ISSUED:
+            apply_license_status_transition(
+                license_key,
+                to_status=LicenseKeyStatus.ACTIVATED,
+                actor=actor,
+                reason=FIRST_ACTIVATION_REASON,
+                request_id=idempotency_key,
+                source_surface=source_surface,
+                extra_after={"device_public_id": device.device_public_id},
+            )
+
         record_audit_event(
             actor,
             action="device.activated",
