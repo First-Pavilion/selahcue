@@ -679,9 +679,9 @@ marketing-check: ## Marketing site gate: type-check + lint + node tests + produc
 #
 # WHAT IT DOES NOT COVER, stated here, in the target's help text and in CLAUDE.md so the absence is a
 # known limit and not a silent hole: it runs on SQLite (in memory) with Django's local-memory cache, no
-# Postgres, no Redis. Four tests SKIP by design when this was written: the three in
-# `tests/test_concurrency_postgres.py` (the DEC-004 device instance-limit race; select_for_update is a
-# no-op on SQLite) and the real-Redis one in `tests/test_cache_socket_timeouts.py`. `-rfEs` prints each
+# Postgres, no Redis. Some tests SKIP by design: those in
+# `tests/test_concurrency_postgres.py` (the DEC-004 device instance-limit race and the other lock-ordering
+# races; select_for_update is a no-op on SQLite) and the real-Redis one in `tests/test_cache_socket_timeouts.py`. `-rfEs` prints each
 # skip with its reason and each failure by test name, so nothing is silent. CI's `api` job runs them
 # against Postgres 16 + Redis 7.
 #
