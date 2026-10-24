@@ -15,8 +15,8 @@ use selahcue_licensing::client::{
 };
 use selahcue_licensing::contract::ACTIVATIONS_PATH;
 use selahcue_licensing::{
-    ActivationFailure, DeviceCredentials, DeviceIdentity, IdempotencyKey, InMemorySecretStore,
-    LicensingClient, LicensingStatus, ScriptedTransport, Token,
+    ActivationFailure, DeviceCredentials, DeviceIdentity, ErrorCode, IdempotencyKey,
+    InMemorySecretStore, LicensingClient, LicensingStatus, ScriptedTransport, Token,
 };
 
 const BASE: &str = "https://api.selahcue.example";
@@ -994,6 +994,19 @@ fn hostile_responses() -> Vec<(&'static str, u16, String)> {
         ),
         ("200 with a truncated body", 200, format!(r#"{{"session_token":"{LEAK}"#)),
         ("200 with an empty body", 200, String::new()),
+        ("200 with a JSON array", 200, format!(r#"["{LEAK}"]"#)),
+        ("200 with JSON null", 200, "null".to_string()),
+        ("200 with a bare string", 200, format!(r#""{LEAK}""#)),
+        (
+            "envelope with a null code",
+            403,
+            format!(r#"{{"error":{{"code":null,"message":"{LEAK}"}}}}"#),
+        ),
+        (
+            "envelope with no code",
+            403,
+            format!(r#"{{"error":{{"message":"{LEAK}"}}}}"#),
+        ),
     ]
 }
 
@@ -1310,4 +1323,474 @@ fn the_source_names_no_cookie_csrf_origin_or_graphql_route() {
         saw_sessions_route,
         "the scan never saw the sign-in route, so it was not reading the right files"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Owner requirement (rule 2b): the remaining happy-path and edge cases
+// ---------------------------------------------------------------------------
+
+/// A transport that keeps what the client actually put on the wire, INCLUDING the bearer's
+/// value, which `ScriptedTransport` deliberately does not record. Test-only.
+struct CapturingTransport {
+    seen: std::sync::Mutex<Vec<(String, String, Option<String>)>>,
+    replies: std::sync::Mutex<std::collections::VecDeque<(u16, String)>>,
+}
+
+impl CapturingTransport {
+    fn new(replies: Vec<(u16, String)>) -> Self {
+        CapturingTransport {
+            seen: Default::default(),
+            replies: std::sync::Mutex::new(replies.into()),
+        }
+    }
+}
+
+impl selahcue_licensing::HttpTransport for CapturingTransport {
+    fn post_json(
+        &self,
+        url: &str,
+        body: &str,
+        bearer: Option<&str>,
+    ) -> Result<selahcue_cloud::transport::HttpResponse, selahcue_licensing::TransportError> {
+        self.seen
+            .lock()
+            .unwrap()
+            .push((url.into(), body.into(), bearer.map(str::to_string)));
+        let (status, body) = self
+            .replies
+            .lock()
+            .unwrap()
+            .pop_front()
+            .expect("a queued reply");
+        Ok(selahcue_cloud::transport::HttpResponse { status, body })
+    }
+
+    fn get(
+        &self,
+        _url: &str,
+        _bearer: Option<&str>,
+    ) -> Result<selahcue_cloud::transport::HttpResponse, selahcue_licensing::TransportError> {
+        unreachable!("the licensing client only POSTs")
+    }
+}
+
+#[test]
+fn the_right_credential_goes_in_the_right_place_and_nowhere_else() {
+    // Not just "a bearer was sent": WHICH value. The session token must be the activation's
+    // bearer; the password must appear only in the sign-in body, never in a URL or as a
+    // bearer; the enrollment key only in its own body.
+    let transport = CapturingTransport::new(vec![
+        (200, session_body()),
+        (200, session_activation_body(true, false, Some(TOKEN_A))),
+        (200, rest_body(true, false, Some(TOKEN_B))),
+    ]);
+    let client = LicensingClient::new(transport, BASE);
+    let session = client
+        .sign_in("admin@example.test", &Token::new("pw-for-placement"))
+        .unwrap();
+    client
+        .activate_with_session(&session.token, &identity(), &idem())
+        .unwrap();
+    client
+        .activate_with_enrollment_key(&Token::new(ENROLLMENT_KEY), &identity(), &idem())
+        .unwrap();
+
+    let seen = client.transport().seen.lock().unwrap().clone();
+    assert_eq!(seen[0].2, None, "sign-in carries no bearer");
+    assert!(seen[0].1.contains("pw-for-placement"));
+    assert_eq!(
+        seen[1].2.as_deref(),
+        Some(SESSION),
+        "the session activation's bearer is the session token, not anything else"
+    );
+    assert_eq!(seen[2].2, None, "the key path carries no bearer");
+    for (i, (url, body, bearer)) in seen.iter().enumerate() {
+        assert!(
+            !url.contains("pw-for-placement")
+                && !url.contains(SESSION)
+                && !url.contains(ENROLLMENT_KEY),
+            "request {i}: a credential is in the URL"
+        );
+        if i != 0 {
+            assert!(
+                !body.contains("pw-for-placement"),
+                "request {i}: the password leaked past sign-in"
+            );
+        }
+        assert_ne!(bearer.as_deref(), Some("pw-for-placement"), "request {i}");
+        assert_ne!(bearer.as_deref(), Some(ENROLLMENT_KEY), "request {i}");
+    }
+    assert!(
+        !seen[1].1.contains(SESSION),
+        "the session token is a header, never a body field"
+    );
+    assert!(seen[2].1.contains(ENROLLMENT_KEY));
+}
+
+#[test]
+fn awkward_credentials_survive_json_encoding_unchanged() {
+    // Quotes, backslashes, newlines, non-ASCII and the server's maximum lengths (email 254,
+    // password 200) must round-trip through the request body exactly: a hand-built body
+    // would corrupt them, and a client that trimmed would change a valid password.
+    let password = format!(" p\"a\\ss\nw\u{e9}rd{} ", "x".repeat(200 - 13));
+    assert_eq!(password.chars().count(), 200);
+    let email = format!("{}@example.test", "a".repeat(254 - 13));
+    assert_eq!(email.len(), 254);
+    let transport = CapturingTransport::new(vec![(200, session_body())]);
+    let client = LicensingClient::new(transport, BASE);
+    client
+        .sign_in(&email, &Token::new(password.clone()))
+        .unwrap();
+
+    let sent: serde_json::Value =
+        serde_json::from_str(&client.transport().seen.lock().unwrap()[0].1).unwrap();
+    assert_eq!(sent["password"], password.as_str());
+    assert_eq!(sent["email"], email.as_str());
+}
+
+#[test]
+fn empty_credentials_are_sent_as_is_for_the_server_to_refuse() {
+    // Boundary 0. Bounds belong to the server (it answers VALIDATION_FAILED without trying
+    // anything); the client neither trims nor pre-judges, and surfaces that answer typed.
+    let transport = CapturingTransport::new(vec![(
+        400,
+        sign_in_error("VALIDATION_FAILED", "The request is invalid."),
+    )]);
+    let client = LicensingClient::new(transport, BASE);
+    let failure = client.sign_in("", &Token::new("")).unwrap_err();
+    assert_eq!(failure, ActivationFailure::ValidationFailed);
+    let sent: serde_json::Value =
+        serde_json::from_str(&client.transport().seen.lock().unwrap()[0].1).unwrap();
+    assert_eq!(
+        (sent["email"].as_str(), sent["password"].as_str()),
+        (Some(""), Some(""))
+    );
+}
+
+#[test]
+fn a_base_url_with_a_trailing_slash_does_not_double_the_slash() {
+    let transport = CapturingTransport::new(vec![(200, session_body())]);
+    let client = LicensingClient::new(transport, format!("{BASE}/"));
+    client.sign_in("a@b.test", &Token::new("pw")).unwrap();
+    assert_eq!(
+        client.transport().seen.lock().unwrap()[0].0,
+        format!("{BASE}/v1/sessions")
+    );
+}
+
+#[test]
+fn a_retry_sends_the_same_idempotency_key_so_the_server_can_replay() {
+    // The retry contract: after a timeout the caller repeats the call with the SAME key and
+    // the server answers the replay. The client must not mint a new key or alter the body.
+    let transport = CapturingTransport::new(vec![
+        (200, session_activation_body(true, false, Some(TOKEN_A))),
+        (200, session_activation_body(false, false, None)),
+    ]);
+    let client = LicensingClient::new(transport, BASE);
+    let first = client
+        .activate_with_session(&Token::new(SESSION), &identity(), &idem())
+        .unwrap();
+    let again = client
+        .activate_with_session(&Token::new(SESSION), &identity(), &idem())
+        .unwrap();
+
+    let seen = client.transport().seen.lock().unwrap().clone();
+    assert_eq!(seen[0].1, seen[1].1, "a retry must be byte-identical");
+    assert!(seen[0].1.contains("idem-0123456789ab"));
+    assert!(first.token.is_some() && again.token.is_none());
+    assert_eq!(first.device_public_id, again.device_public_id);
+}
+
+#[test]
+fn already_activated_with_nothing_cached_is_reported_on_the_session_path_too() {
+    // The "already in the target state" case, awkward half: the server replays (no token) but
+    // this install holds none. Same as on the key path, and must not read as success.
+    let client = LicensingClient::new(
+        ScriptedTransport::responding(200, session_activation_body(false, false, None)),
+        BASE,
+    );
+    let creds = credentials();
+    let activation = client
+        .activate_with_session(&Token::new(SESSION), &identity(), &idem())
+        .unwrap();
+    assert_eq!(
+        activation.persist(&creds).unwrap(),
+        PersistOutcome::MissingLocally
+    );
+    assert!(!creds.is_activated().unwrap());
+}
+
+#[test]
+fn a_refused_session_activation_leaves_the_cached_token_alone() {
+    // Already activated, then a later session activation is refused (device revoked / limit):
+    // the working token must survive.
+    let creds = credentials();
+    creds.store_device_token(&Token::new(TOKEN_A)).unwrap();
+    let client = LicensingClient::new(
+        ScriptedTransport::responding(
+            403,
+            session_error(
+                "POLICY_DENIED",
+                "The current policy does not allow this action.",
+            ),
+        ),
+        BASE,
+    );
+    assert_eq!(
+        client
+            .activate_with_session(&Token::new(SESSION), &identity(), &idem())
+            .unwrap_err(),
+        ActivationFailure::PolicyDenied
+    );
+    assert_eq!(creds.device_token().unwrap().unwrap().expose(), TOKEN_A);
+}
+
+#[test]
+fn connection_failures_and_timeouts_are_unreachable_on_every_call() {
+    for reason in [
+        "dns error: no such host",
+        "connection refused",
+        "operation timed out",
+        "timed out reading the response body",
+        "response exceeded the 4194304-byte transport cap",
+    ] {
+        let failures = [
+            LicensingClient::new(ScriptedTransport::failing(reason), BASE)
+                .sign_in("a@b.test", &Token::new("pw-LEAK-PASSWORD"))
+                .unwrap_err(),
+            LicensingClient::new(ScriptedTransport::failing(reason), BASE)
+                .activate_with_session(&Token::new(SESSION), &identity(), &idem())
+                .unwrap_err(),
+            LicensingClient::new(ScriptedTransport::failing(reason), BASE)
+                .activate_with_enrollment_key(&Token::new(ENROLLMENT_KEY), &identity(), &idem())
+                .unwrap_err(),
+        ];
+        for failure in failures {
+            assert!(
+                matches!(failure, ActivationFailure::Unreachable(_)),
+                "{reason}: {failure:?}"
+            );
+            assert!(failure.is_retryable());
+            assert!(failure.permits_presentation());
+            let text = format!("{failure} {failure:?}");
+            for secret in ["LEAK-PASSWORD", SESSION, ENROLLMENT_KEY] {
+                assert!(!text.contains(secret), "{reason}: {text}");
+            }
+        }
+    }
+}
+
+#[test]
+fn the_second_call_failing_after_a_good_sign_in_keeps_the_session_usable() {
+    // Ordering: sign-in succeeds, activation hits an outage. The session the caller holds is
+    // untouched (the client is stateless) and the retry succeeds.
+    let transport = ScriptedTransport::new();
+    transport.push_response(200, session_body());
+    transport.push_failure("connection reset");
+    transport.push_response(200, session_activation_body(true, false, Some(TOKEN_A)));
+    let client = LicensingClient::new(transport, BASE);
+
+    let session = client.sign_in("a@b.test", &Token::new("pw")).unwrap();
+    let outage = client
+        .activate_with_session(&session.token, &identity(), &idem())
+        .unwrap_err();
+    assert!(outage.is_retryable());
+    let retried = client
+        .activate_with_session(&session.token, &identity(), &idem())
+        .expect("the same session works on retry");
+    assert!(retried.created);
+}
+
+#[test]
+fn the_success_range_is_exactly_200_to_299() {
+    // Boundaries on the status line. A valid success body is a success only inside 2xx; the
+    // same bytes at 199 or 300 are not, and a coded body at 299 is still a success parse.
+    let ok_body = session_activation_body(true, false, Some(TOKEN_A));
+    for status in [200u16, 201, 299] {
+        LicensingClient::new(ScriptedTransport::responding(status, ok_body.clone()), BASE)
+            .activate_with_session(&Token::new(SESSION), &identity(), &idem())
+            .unwrap_or_else(|f| panic!("{status} should be a success, got {f:?}"));
+    }
+    for (status, expected) in [
+        (100u16, ActivationFailure::UnexpectedStatus(100)),
+        (199, ActivationFailure::UnexpectedStatus(199)),
+        (300, ActivationFailure::UnexpectedStatus(300)),
+        (302, ActivationFailure::UnexpectedStatus(302)),
+        (399, ActivationFailure::UnexpectedStatus(399)),
+        (499, ActivationFailure::UnexpectedStatus(499)),
+        (500, ActivationFailure::Server(500)),
+        (599, ActivationFailure::Server(599)),
+        (600, ActivationFailure::UnexpectedStatus(600)),
+    ] {
+        let failure =
+            LicensingClient::new(ScriptedTransport::responding(status, ok_body.clone()), BASE)
+                .activate_with_session(&Token::new(SESSION), &identity(), &idem())
+                .unwrap_err();
+        assert_eq!(
+            failure, expected,
+            "status {status} carrying a success-shaped body"
+        );
+    }
+}
+
+#[test]
+fn missing_empty_and_null_fields_in_a_success_reply() {
+    let with = |mutate: &dyn Fn(&mut serde_json::Value)| {
+        let mut v: serde_json::Value =
+            serde_json::from_str(&session_activation_body(true, false, Some(TOKEN_A))).unwrap();
+        mutate(&mut v);
+        LicensingClient::new(ScriptedTransport::responding(200, v.to_string()), BASE)
+            .activate_with_session(&Token::new(SESSION), &identity(), &idem())
+    };
+
+    // Optional by contract: the token key absent, or null, is a replay, not an error.
+    let no_key = with(&|v| {
+        v.as_object_mut().unwrap().remove("activation_token");
+    })
+    .unwrap();
+    assert!(no_key.token.is_none());
+    let null = with(&|v| v["activation_token"] = serde_json::Value::Null).unwrap();
+    assert!(null.token.is_none());
+
+    // Optional metadata: `token` absent, `{}`, or all-null parses to an empty description.
+    let no_meta = with(&|v| {
+        v.as_object_mut().unwrap().remove("token");
+    })
+    .unwrap();
+    assert_eq!(no_meta.token_meta.prefix, None);
+    let null_meta =
+        with(&|v| v["token"] = serde_json::json!({"masked": null, "expires_at": null})).unwrap();
+    assert_eq!(null_meta.token_meta.expires_at, None);
+
+    // Required by contract: each of these absent or null is contract drift, typed Malformed
+    // (and never a silently defaulted value, such as an empty device id).
+    for field in ["created", "reminted", "device", "license"] {
+        for how in ["absent", "null"] {
+            let failure = with(&|v| {
+                if how == "absent" {
+                    v.as_object_mut().unwrap().remove(field);
+                } else {
+                    v[field] = serde_json::Value::Null;
+                }
+            })
+            .unwrap_err();
+            assert!(
+                matches!(failure, ActivationFailure::Malformed(_)),
+                "{field} {how}: {failure:?}"
+            );
+        }
+    }
+    let no_device_id = with(&|v| {
+        v["device"]
+            .as_object_mut()
+            .unwrap()
+            .remove("device_public_id");
+    })
+    .unwrap_err();
+    assert!(
+        matches!(no_device_id, ActivationFailure::Malformed(_)),
+        "{no_device_id:?}"
+    );
+}
+
+#[test]
+fn a_sign_in_reply_with_missing_null_or_blank_fields_is_malformed_not_a_blank_session() {
+    let attempt = |body: String| {
+        LicensingClient::new(ScriptedTransport::responding(200, body), BASE)
+            .sign_in("a@b.test", &Token::new("pw"))
+    };
+    let base: serde_json::Value = serde_json::from_str(&session_body()).unwrap();
+    for field in ["session_token", "expires_at", "role", "org_id"] {
+        let mut absent = base.clone();
+        absent.as_object_mut().unwrap().remove(field);
+        let mut null = base.clone();
+        null[field] = serde_json::Value::Null;
+        for v in [absent, null] {
+            let failure = attempt(v.to_string()).unwrap_err();
+            assert!(
+                matches!(failure, ActivationFailure::Malformed(_)),
+                "{field}: {failure:?}"
+            );
+        }
+    }
+    // A blank token would be stored and then sent as an empty bearer.
+    let mut blank = base.clone();
+    blank["session_token"] = "".into();
+    let failure = attempt(blank.to_string()).unwrap_err();
+    assert!(
+        matches!(failure, ActivationFailure::Malformed(_)),
+        "{failure:?}"
+    );
+
+    // Positive control: a MEMBER's successful sign-in still parses (role is data, not a gate).
+    let mut member = base.clone();
+    member["role"] = "MEMBER".into();
+    assert_eq!(attempt(member.to_string()).unwrap().role, "MEMBER");
+}
+
+#[test]
+fn error_codes_are_case_sensitive_and_a_wrong_code_is_never_mistaken_for_a_known_one() {
+    // `unauthenticated` is not `UNAUTHENTICATED`: a lenient match would let a proxy page that
+    // happens to say it classify as a real server decision.
+    for wrong in [
+        "unauthenticated",
+        "Unauthenticated",
+        " UNAUTHENTICATED",
+        "UNAUTHENTICATED ",
+    ] {
+        let failure = LicensingClient::new(
+            ScriptedTransport::responding(401, session_error(wrong, "x")),
+            BASE,
+        )
+        .activate_with_session(&Token::new(SESSION), &identity(), &idem())
+        .unwrap_err();
+        assert!(
+            matches!(failure, ActivationFailure::Coded(_)),
+            "{wrong:?}: {failure:?}"
+        );
+        assert_ne!(failure, ActivationFailure::Unauthenticated);
+    }
+    // The known-but-unmapped codes keep their identity rather than collapsing.
+    for (code, expected) in [
+        ("CONFLICT", ErrorCode::Conflict),
+        ("NOT_IMPLEMENTED", ErrorCode::NotImplemented),
+    ] {
+        let failure = LicensingClient::new(
+            ScriptedTransport::responding(409, session_error(code, "x")),
+            BASE,
+        )
+        .activate_with_session(&Token::new(SESSION), &identity(), &idem())
+        .unwrap_err();
+        assert_eq!(failure, ActivationFailure::Coded(expected));
+    }
+}
+
+#[test]
+fn no_log_line_can_carry_a_credential_from_a_successful_exchange_either() {
+    // The success path: Debug of everything the caller holds after a complete sign-in and
+    // activation must show no secret (the failure paths are swept above).
+    let transport = ScriptedTransport::new();
+    transport.push_response(200, session_body());
+    transport.push_response(200, session_activation_body(true, false, Some(TOKEN_A)));
+    let client = LicensingClient::new(transport, BASE);
+    let session = client
+        .sign_in("a@b.test", &Token::new("pw-LEAK-PASSWORD"))
+        .unwrap();
+    let activation = client
+        .activate_with_session(&session.token, &identity(), &idem())
+        .unwrap();
+    let everything = format!(
+        "{session:?} {activation:?} {:?} {:?} {}",
+        client.transport(),
+        client.transport().recorded(),
+        activation.status().permits_presentation()
+    );
+    for secret in [SESSION, TOKEN_A, "LEAK-PASSWORD"] {
+        assert!(
+            !everything.contains(secret),
+            "{secret} leaked: {everything}"
+        );
+    }
+    // Positive control: the redaction marker is present, so the secrets WERE in scope.
+    assert!(everything.contains("***redacted***"));
 }

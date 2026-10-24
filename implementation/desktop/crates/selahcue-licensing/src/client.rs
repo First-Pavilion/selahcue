@@ -227,6 +227,13 @@ impl<T: HttpTransport> LicensingClient<T> {
         let body = Self::encode(&request)?;
         let response = self.post(SESSIONS_PATH, &body, None)?;
         let parsed: SessionResponse = Self::decode(response, ActivationFailure::from_sign_in_code)?;
+        if parsed.session_token.is_empty() {
+            // The server never issues one. Accepting it would store a blank credential and
+            // send a blank bearer on the next call, which fails as an unexplained 401.
+            return Err(ActivationFailure::Malformed(
+                "the response carried an empty session token".into(),
+            ));
+        }
 
         Ok(AccountSession {
             token: parsed.session_token,

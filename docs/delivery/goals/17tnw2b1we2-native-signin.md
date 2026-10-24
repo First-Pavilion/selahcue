@@ -88,8 +88,32 @@ All mandatory rows must be `PASS` for `VERIFIED_COMPLETE`.
 | C-010 | yes | `cargo fmt --check`; `cargo clippy -D warnings` (debug and `--release`) on `selahcue-licensing`; workspace clippy and tests via one `make ci` | commands in the PR body | all exit 0 | PR body with exit codes | PENDING |
 | C-011 | yes | Diff has no stray non-ASCII | grep for non-ASCII bytes in the added lines of `git diff origin/main -U0` | no output | command output | PENDING |
 | C-012 | yes | 86ak5mn11's "both activation paths work" claim is re-verified against the live server and the result is posted on that ticket | ClickUp comment on 86ak5mn11 | comment present | ClickUp | PENDING |
+| C-013 | yes | Owner rule 2b: every applicable happy-path and edge case has a test that goes red when its behaviour is mutated (case list below; 19 mutations, all caught) | `python3 17tnw2b1we2-mutate.py` (scratchpad) | each mutation fails at least one named test | PR body mutation table | PENDING |
 
 Allowed criterion statuses: `PENDING`, `PASS`, `FAIL`, `BLOCKED`, `NOT_APPLICABLE`.
+
+## Test case matrix (owner rule 2b)
+
+Covered (tests in `crates/selahcue-licensing/tests/`):
+
+- Success shapes: first activation with token; show-once replay (null token); re-mint; absent `activation_token` key; absent or all-null `token` metadata; MEMBER sign-in success; enrollment-key success.
+- Missing, null, blank: each required activation field absent and null (`created`, `reminted`, `device`, `license`, `device_public_id`); each sign-in field absent and null; blank session token; envelope with null or no `code`.
+- Boundaries: body exactly at and one past the 64 KiB cap (success and error, 4xx and 5xx); status 100/199/200/201/299/300/302/399/499/500/599/600; email 254 and password 200 characters; empty email and password; leading and trailing whitespace in a password; base URL with a trailing slash; error code at and over 64 bytes.
+- Hostile or malformed bodies: Django CSRF 403 page, proxy 502 and 429 pages, captive-portal 200 HTML, WAF JSON, free-text and 4000-byte codes, wrong-typed field, truncated JSON, empty body, JSON array, null, bare string; on all three calls.
+- Error codes: all six the ticket names on the right call, PERMISSION_DENIED versus POLICY_DENIED, same code meaning different things at sign-in versus activation, lower-case and padded codes, known-but-unmapped codes (CONFLICT, NOT_IMPLEMENTED), unknown code-shaped and non-code-shaped codes.
+- Connection failures and timeouts: five transport reasons on all three calls (unreachable, retryable, silent); outage on the second call after a good sign-in, then a successful retry with the same session.
+- Retry and repeat: retry sends a byte-identical body and the same idempotency key; replay keeps the cached token; replay with nothing cached is reported; a refused re-activation leaves the cached token alone.
+- Credentials and logging: the right secret in the right place (bearer is the session token, password only in the sign-in body, nothing in a URL); no password, session token, device token, enrollment key or body text in any failure `Display`/`Debug` (sweep over 15 hostile replies x 3 calls); success-path `Debug` of the session, activation and transport; the existing formatted-types sweep, `expose()` site pin and Token-typed-field scan updated for the new wire types.
+- Structure: no `graphql`, cookie, CSRF, Origin or Referer in the crate source; every request is a `/v1` POST.
+- Live: the real `ReqwestTransport` client against a running server (C-009).
+
+Deliberately not covered:
+
+- Server-side bounds, lockout, throttle and tenant isolation: owned and tested by the API (`test_native_account_surface.py`); the client only relays the typed result.
+- Concurrency between calls: `LicensingClient` is stateless and holds no lock or cache; there is nothing to race. Concurrent keychain writes belong to `custody`, unchanged here.
+- A blank `activation_token` string: the key-path behaviour is unchanged and `is_activated` already treats an empty stored token as not activated; changing it would alter the enrollment path.
+- Real timeouts and the 4 MiB socket read cap: owned by `selahcue-cloud` (`test_transport.rs`); here the transport is injected and reports them as errors, which is what is tested.
+- Redirect handling: a shared-transport behaviour, measured and filed as 17tnw2b9aaz.
 
 ## Verification plan
 
