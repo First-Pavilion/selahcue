@@ -774,6 +774,17 @@ fn a_hostile_deck_cannot_choose_its_identity_through_adopt_or_adopt_with_policy(
             .unwrap();
         assert_ne!(d.uid().cloned(), Some(real_uid.clone()), "{name}");
     }
+    // On a NAME collision KeepBoth files the deck beside the original, and still mints -- even
+    // when the identity it claims is free (a held one would be re-minted by any code).
+    let beside = lib
+        .adopt_with_policy(
+            claim("Real", DeckUid::parse(UID_X)),
+            NameCollisionPolicy::KeepBoth,
+            None,
+        )
+        .unwrap();
+    assert_eq!(beside.name, "Real (2)");
+    assert_ne!(beside.uid().map(DeckUid::as_str), Some(UID_X));
     // Claiming a FREE identity is not honoured either.
     let free = lib
         .adopt_with_policy(
